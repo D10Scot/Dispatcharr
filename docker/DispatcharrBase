@@ -15,9 +15,22 @@ ENV UV_LINK_MODE=copy
 
 # --- Install Python 3.13 and build dependencies ---
 # Note: Hardware acceleration (VA-API, VDPAU, NVENC) already included in base ffmpeg image
+#
+# deadsnakes is added by hand rather than via `add-apt-repository ppa:deadsnakes/ppa`:
+# that command calls Launchpad's REST API (lpppa.getSigningKeyData()) to fetch the
+# signing key, which is a live third-party dependency in the build's critical path —
+# it returned `HTTP 500 / GPGKeyTemporarilyNotFoundError` and broke every build for
+# ~20 minutes on 2026-08-23. Fetching the key by pinned fingerprint from
+# keyserver.ubuntu.com (a different, HA service) and writing the sources.list entry
+# ourselves removes that dependency entirely and matches the signed-by pattern already
+# used for Redis/PostgreSQL below. Fingerprint from https://launchpad.net/~deadsnakes/+archive/ubuntu/ppa.
 RUN apt-get update && apt-get install --no-install-recommends -y \
-    ca-certificates software-properties-common gnupg2 curl wget \
-    && add-apt-repository ppa:deadsnakes/ppa \
+    ca-certificates lsb-release gnupg2 curl wget \
+    && curl -fsSL --retry 3 --retry-delay 2 \
+        "https://keyserver.ubuntu.com/pks/lookup?op=get&exact=on&search=0xF23C5A6CF475977595C89F51BA6932366A755776" \
+        | gpg --dearmor -o /usr/share/keyrings/deadsnakes-archive-keyring.gpg \
+    && echo "deb [signed-by=/usr/share/keyrings/deadsnakes-archive-keyring.gpg] https://ppa.launchpadcontent.net/deadsnakes/ppa/ubuntu $(lsb_release -cs) main" \
+        > /etc/apt/sources.list.d/deadsnakes.list \
     && apt-get update \
     && apt-get install --no-install-recommends -y \
     python3.13 python3.13-dev python3.13-venv libpython3.13 \
@@ -107,11 +120,19 @@ ENV UV_LINK_MODE=copy
 # --- Install runtime system dependencies (no build toolchain) ---
 # python3.13 + libpython3.13 back the copied venv; libpcre2-8-0 backs uWSGI;
 # libopenblas0 backs the legacy NumPy wheel; libargtable2-0 is for comskip;
-# ca-certificates/gnupg2/curl/wget and software-properties-common are kept
-# for TLS and the AIO runtime apt step.
+# ca-certificates/gnupg2/curl/wget are kept for TLS and the AIO runtime apt step.
+# deadsnakes is added by pinned fingerprint, not `add-apt-repository` — see the
+# builder stage above for why. software-properties-common is deliberately not
+# installed here: it pulls in dbus/systemd/policykit/packagekit (70+ packages) as
+# transitive deps for a command (`add-apt-repository`) nothing in this image runs
+# after build time.
 RUN apt-get update && apt-get install --no-install-recommends -y \
-    ca-certificates software-properties-common gnupg2 curl wget \
-    && add-apt-repository ppa:deadsnakes/ppa \
+    ca-certificates lsb-release gnupg2 curl wget \
+    && curl -fsSL --retry 3 --retry-delay 2 \
+        "https://keyserver.ubuntu.com/pks/lookup?op=get&exact=on&search=0xF23C5A6CF475977595C89F51BA6932366A755776" \
+        | gpg --dearmor -o /usr/share/keyrings/deadsnakes-archive-keyring.gpg \
+    && echo "deb [signed-by=/usr/share/keyrings/deadsnakes-archive-keyring.gpg] https://ppa.launchpadcontent.net/deadsnakes/ppa/ubuntu $(lsb_release -cs) main" \
+        > /etc/apt/sources.list.d/deadsnakes.list \
     && apt-get update \
     && apt-get install --no-install-recommends -y \
     python3.13 python3.13-venv libpython3.13 \
@@ -129,14 +150,14 @@ COPY --from=builder /opt/numpy-*.whl /opt/
 COPY --from=builder /usr/local/bin/comskip /usr/local/bin/comskip
 
 # --- Set up Redis 7.x ---
-RUN curl -fsSL https://packages.redis.io/gpg | gpg --dearmor -o /usr/share/keyrings/redis-archive-keyring.gpg && \
+RUN curl -fsSL --retry 3 --retry-delay 2 https://packages.redis.io/gpg | gpg --dearmor -o /usr/share/keyrings/redis-archive-keyring.gpg && \
     echo "deb [signed-by=/usr/share/keyrings/redis-archive-keyring.gpg] https://packages.redis.io/deb $(lsb_release -cs) main" | \
     tee /etc/apt/sources.list.d/redis.list && \
     apt-get update && apt-get install -y redis-server && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # --- Set up PostgreSQL 17.x ---
-RUN curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc | gpg --dearmor -o /usr/share/keyrings/postgresql-keyring.gpg && \
+RUN curl -fsSL --retry 3 --retry-delay 2 https://www.postgresql.org/media/keys/ACCC4CF8.asc | gpg --dearmor -o /usr/share/keyrings/postgresql-keyring.gpg && \
     echo "deb [signed-by=/usr/share/keyrings/postgresql-keyring.gpg] http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" | \
     tee /etc/apt/sources.list.d/pgdg.list && \
     apt-get update && apt-get install -y postgresql-17 postgresql-contrib-17 && \
