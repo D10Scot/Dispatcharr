@@ -80,8 +80,13 @@ export class StreamClient {
     const deadline = Date.now() + ms;
     while (Date.now() < deadline) {
       const remaining = deadline - Date.now();
+      const pumping = this.pump();
+      // If the timeout below wins, this read is left outstanding. Catch it
+      // here so a later rejection (e.g. from close()'s abort()) settles
+      // quietly instead of being surfaced as an unhandled rejection.
+      pumping.catch(() => {});
       const timed = await Promise.race([
-        this.pump(),
+        pumping,
         new Promise<'timeout'>((resolve) => setTimeout(() => resolve('timeout'), remaining)),
       ]);
       if (timed === 'timeout' || timed === false) break;
