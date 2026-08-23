@@ -1,0 +1,13 @@
+title = "Dispatcharr gitleaks config"
+
+# Keep every default rule; only add allowlist entries below for confirmed
+# false positives, each with a reason. Don't broaden this to silence real
+# findings — the whole point of the CI gate is that it's supposed to fail.
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Vendored, minified drf-yasg ReDoc bundle: short minified identifiers trip generic-api-key at low entropy. Not a credential — see the commit link for the source."
+paths = [
+  '''^staticfiles/drf-yasg/redoc/redoc\.min\.js$''',
+]

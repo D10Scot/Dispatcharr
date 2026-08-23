@@ -1,0 +1,100 @@
+name: Lint
+
+# Static analysis that isn't zizmor (see actions-lint.yml): workflow syntax
+# (actionlint), Dockerfile anti-patterns (hadolint), committed secrets
+# (gitleaks, full history), and uv.lock freshness against pyproject.toml.
+#
+# Every tool below runs as a digest-pinned container rather than a
+# marketplace action — the same reasoning the supply-chain checklist applies
+# to vulnerability scanners: the thing auditing this repo's supply chain
+# shouldn't have an unpinned supply chain of its own.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: lint-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  actionlint:
+    name: actionlint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: actionlint
+        # shellcheck/pyflakes integrations disabled: they audit `run:` shell
+        # quality, a different concern from actionlint's own workflow-syntax
+        # checks, and would fail immediately on pre-existing debt across
+        # every workflow file. actionlint's own checks are 0 findings; keep
+        # it that way rather than opening with a backlog like zizmor did.
+        run: |
+          docker run --rm -v "$PWD:/repo" -w /repo \
+            rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 \
+            -color -shellcheck= -pyflakes=
+
+  hadolint:
+    name: hadolint (${{ matrix.dockerfile }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        dockerfile: [docker/Dockerfile, docker/DispatcharrBase]
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: hadolint
+        # --failure-threshold error: only true errors block. The warnings
+        # DispatcharrBase currently has (DL3008 unpinned apt versions,
+        # DL4006 missing `set -o pipefail`, DL3003/DL3015) are pre-existing,
+        # and DL3008 specifically is in tension with "OS patches applied at
+        # build time" (see docker/DispatcharrBase) — pinning apt package
+        # versions is what that control deliberately avoids.
+        env:
+          DOCKERFILE: ${{ matrix.dockerfile }}
+        run: |
+          docker run --rm -i hadolint/hadolint@sha256:32dac94127fd60b7b7e3fbfc65e1383b9b5e25c9bfd7b8536de7a539fe68a12d \
+            --failure-threshold error < "$DOCKERFILE"
+
+  gitleaks:
+    name: gitleaks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: gitleaks (full history)
+        # .gitleaks.toml allowlists one confirmed false positive (a vendored,
+        # minified third-party JS bundle) with the reason recorded inline —
+        # do not broaden it to silence a real finding.
+        run: |
+          docker run --rm -v "$PWD:/repo" -w /repo \
+            zricethezav/gitleaks@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f \
+            detect --source=/repo --config=/repo/.gitleaks.toml -v --redact --exit-code=1
+
+  lockfile-fresh:
+    name: uv.lock freshness
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: uv lock --check
+        run: |
+          docker run --rm -v "$PWD:/repo" -w /repo \
+            ghcr.io/astral-sh/uv:0.12.5@sha256:e85be844203885286c60ffad8a858d48afb6c5a5c237ca0e67f12e74b8f174b1 \
+            lock --check
