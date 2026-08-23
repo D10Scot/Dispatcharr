@@ -53,35 +53,42 @@ jobs:
       sync_python_deps: ${{ steps.base_image.outputs.sync_python_deps }}
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
+          persist-credentials: false
           fetch-depth: 0
 
       - name: Collect changed paths
         id: changed
         shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          FULL_SUITE: ${{ inputs.full_suite }}
+          BASE_REF: ${{ github.base_ref }}
+          EVENT_BEFORE: ${{ github.event.before }}
+          HEAD_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
           : > /tmp/changed_paths.txt
 
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            if [ "${{ inputs.full_suite }}" = "true" ]; then
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            if [ "$FULL_SUITE" = "true" ]; then
               : > /tmp/changed_paths.txt
               echo "mode=full" >> "$GITHUB_OUTPUT"
             else
               git diff --name-only HEAD~1 HEAD > /tmp/changed_paths.txt || true
               echo "mode=diff" >> "$GITHUB_OUTPUT"
             fi
-          elif [ "${{ github.event_name }}" = "pull_request" ]; then
-            git fetch origin "${{ github.base_ref }}"
-            git diff --name-only "origin/${{ github.base_ref }}...HEAD" > /tmp/changed_paths.txt
+          elif [ "$EVENT_NAME" = "pull_request" ]; then
+            git fetch origin "$BASE_REF"
+            git diff --name-only "origin/${BASE_REF}...HEAD" > /tmp/changed_paths.txt
             echo "mode=pr" >> "$GITHUB_OUTPUT"
           else
-            if [ "${{ github.event.before }}" = "0000000000000000000000000000000000000000" ]; then
+            if [ "$EVENT_BEFORE" = "0000000000000000000000000000000000000000" ]; then
               git ls-files > /tmp/changed_paths.txt
               echo "mode=initial-push" >> "$GITHUB_OUTPUT"
             else
-              git diff --name-only "${{ github.event.before }}" "${{ github.sha }}" > /tmp/changed_paths.txt
+              git diff --name-only "$EVENT_BEFORE" "$HEAD_SHA" > /tmp/changed_paths.txt
               echo "mode=push" >> "$GITHUB_OUTPUT"
             fi
           fi
@@ -89,22 +96,28 @@ jobs:
       - name: Select base image
         id: base_image
         shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+          REF_NAME: ${{ github.ref_name }}
+          REPOSITORY_OWNER: ${{ github.repository_owner }}
+          REPOSITORY_NAME: ${{ github.event.repository.name }}
         run: |
           set -euo pipefail
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            TARGET_BRANCH="${{ github.base_ref }}"
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            TARGET_BRANCH="$BASE_REF"
           else
-            TARGET_BRANCH="${{ github.ref_name }}"
+            TARGET_BRANCH="$REF_NAME"
           fi
           if [ "$TARGET_BRANCH" = "main" ]; then
             TAG="base"
           else
             TAG="base-dev"
           fi
-          REPO_OWNER="$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')"
-          REPO_NAME="$(echo "${{ github.event.repository.name }}" | tr '[:upper:]' '[:lower:]')"
+          REPO_OWNER="$(echo "$REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')"
+          REPO_NAME="$(echo "$REPOSITORY_NAME" | tr '[:upper:]' '[:lower:]')"
           echo "image=ghcr.io/${REPO_OWNER}/${REPO_NAME}:${TAG}" >> "$GITHUB_OUTPUT"
-          if grep -qx 'pyproject.toml' /tmp/changed_paths.txt || [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          if grep -qx 'pyproject.toml' /tmp/changed_paths.txt || [ "$EVENT_NAME" = "workflow_dispatch" ]; then
             echo "sync_python_deps=true" >> "$GITHUB_OUTPUT"
           else
             echo "sync_python_deps=false" >> "$GITHUB_OUTPUT"
@@ -132,7 +145,12 @@ jobs:
     if: needs.plan.outputs.has_tests == 'true'
     runs-on: ubuntu-latest
     container:
-      image: ${{ needs.plan.outputs.base_image }}
+      # This is this repository's own base image, rebuilt by base-image.yml and
+      # selected by branch (:base on main, :base-dev elsewhere) in the plan job.
+      # A digest pin cannot apply to a deliberately floating own-built tag, and
+      # resolving the digest at runtime in this same job would trust the same
+      # registry response the tag already does — no integrity gained.
+      image: ${{ needs.plan.outputs.base_image }} # zizmor: ignore[unpinned-images]
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
@@ -153,9 +171,12 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
 
       - name: Run tests in base image
         env:
           GITHUB_WORKSPACE: ${{ github.workspace }}
-        run: bash scripts/ci_bootstrap_backend.sh "${{ matrix.label }}" -v2
+          TEST_LABEL: ${{ matrix.label }}
+        run: bash scripts/ci_bootstrap_backend.sh "$TEST_LABEL" -v2

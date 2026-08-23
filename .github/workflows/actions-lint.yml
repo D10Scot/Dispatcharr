@@ -1,0 +1,57 @@
+name: Actions lint
+
+# Static analysis of this repo's own GitHub Actions, via zizmor.
+#
+# It audits every workflow, composite action and dependabot config zizmor can
+# collect from the repo root — not just the files a given PR touched — so a
+# regression anywhere fails the build rather than waiting to be noticed.
+#
+# The same check runs locally as a PostToolUse hook (.claude/hooks/
+# run-affected-tests.sh) on every workflow edit. The zizmor version below is
+# pinned to the version that hook was validated against, so the two can never
+# disagree about what passes; bump both together.
+#
+# Findings are emitted as inline PR annotations rather than uploaded to the
+# Security tab. SARIF upload (advanced-security: true, the action's default) is
+# the richer integration, but it needs security-events: write — a permission
+# GITHUB_TOKEN does not carry on pull requests from forks, which would make this
+# job fail for exactly the contributors it is meant to help. Annotations behave
+# identically for fork and branch PRs.
+
+on:
+  push:
+    branches:
+      - main
+      - dev
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: actions-lint-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  zizmor:
+    name: zizmor
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - uses: zizmorcore/zizmor-action@3dc1ecc9bcb9e94e9b2c709687979e1298497054 # v0.6.2
+        with:
+          # Pinned deliberately: 'latest' (the action's default) means a new
+          # zizmor release can fail an unrelated PR by adding an audit.
+          version: "1.29.0"
+          advanced-security: false
+          annotations: true
+          # Enables impostor-commit, known-vulnerable-actions and
+          # stale-action-refs. impostor-commit is the one that matters here: it
+          # catches a SHA that is not in the repository it claims to come from,
+          # which the offline audits cannot see at all. Read-only API access, so
+          # it works with the token a fork PR gets.
+          online-audits: true

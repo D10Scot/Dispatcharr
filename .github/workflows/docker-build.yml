@@ -6,6 +6,9 @@ on:
       - main
       - dev
 
+permissions:
+  contents: read
+
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
@@ -15,13 +18,15 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
 
       - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v4
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -29,20 +34,24 @@ jobs:
 
       - name: Determine image tag and branch
         id: set-tag-branch
+        env:
+          GITHUB_REF_NAME_FULL: ${{ github.ref }}
         run: |
-          if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
+          if [[ "$GITHUB_REF_NAME_FULL" == "refs/heads/main" ]]; then
             echo "TAG=latest" >> $GITHUB_ENV
             echo "BRANCH=main" >> $GITHUB_ENV
-          elif [[ "${{ github.ref }}" == "refs/heads/dev" ]]; then
+          elif [[ "$GITHUB_REF_NAME_FULL" == "refs/heads/dev" ]]; then
             echo "TAG=dev" >> $GITHUB_ENV
             echo "BRANCH=dev" >> $GITHUB_ENV
           fi
 
       - name: Convert repository name to lowercase
-        run: echo "REPO_NAME=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
+        env:
+          REPOSITORY: ${{ github.repository }}
+        run: echo "REPO_NAME=$(echo "$REPOSITORY" | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
 
       - name: Build and push Docker image
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
           file: docker/Dockerfile
