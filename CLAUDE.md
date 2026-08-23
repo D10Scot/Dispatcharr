@@ -161,3 +161,17 @@ Backend: DRF serializers for every endpoint (never return raw dicts); register r
 Tests: `CELERY_TASK_ALWAYS_EAGER` is deliberately **off** globally — `post_save` on `M3UAccount`/`EPGSource` calls `.delay()`, and eager mode runs it inside the `TestCase` transaction and poisons the connection. Opt in per-test with `@override_settings(CELERY_TASK_ALWAYS_EAGER=True)`. `settings_test` also forces the plain `postgresql` backend rather than `django-db-geventpool`, which breaks `TestCase` isolation on pooled connections.
 
 See `CONTRIBUTING.md` for the upstream PR process and fuller style guide.
+
+## Agent skills
+
+### Issue tracker
+
+GitHub Issues on the fork, `D10Scot/Dispatcharr` — **always with an explicit `--repo` flag, never inferred.** This clone is a fork of `Dispatcharr/Dispatcharr`, so `gh` resolves to the upstream public tracker whenever no default is set; the `DISABLED` push URL does not guard against that. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+The five canonical roles, label strings equal to their names: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: `CONTEXT.md` and `docs/adr/` at the repo root. See `docs/agents/domain.md`.
