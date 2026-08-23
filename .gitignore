@@ -26,3 +26,6 @@ models
 uv.lock
 playwright-report/
 test-results/
+
+# E2E auth state — contains live JWTs
+e2e/playwright/.auth/
