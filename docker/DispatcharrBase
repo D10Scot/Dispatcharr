@@ -42,11 +42,15 @@ RUN apt-get update && apt-get upgrade -y && apt-get install --no-install-recomme
 COPY --from=ghcr.io/astral-sh/uv:0.12.5@sha256:e85be844203885286c60ffad8a858d48afb6c5a5c237ca0e67f12e74b8f174b1 /uv /uvx /bin/
 
 # --- Create Python virtual environment and install dependencies ---
+# --locked fails the build instead of silently re-resolving if uv.lock and
+# pyproject.toml disagree, so the versions and hashes actually installed here
+# are exactly the ones recorded (and reviewed) in the committed lockfile.
 WORKDIR /tmp/build
 COPY pyproject.toml /tmp/build/
+COPY uv.lock /tmp/build/
 COPY version.py /tmp/build/
 COPY README.md /tmp/build/
-RUN uv sync --python 3.13 --no-cache --no-install-project --no-dev
+RUN uv sync --python 3.13 --no-cache --no-install-project --no-dev --locked
 WORKDIR /
 
 # --- Build legacy NumPy wheel for old hardware (store for runtime switching) ---

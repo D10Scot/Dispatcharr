@@ -7,12 +7,14 @@ on:
       - 'docker/DispatcharrBase'
       - '.github/workflows/base-image.yml'
       - 'pyproject.toml'
+      - 'uv.lock'
   pull_request:
     branches: [main]
     paths:
       - 'docker/DispatcharrBase'
       - '.github/workflows/base-image.yml'
       - 'pyproject.toml'
+      - 'uv.lock'
   workflow_dispatch: # Allow manual triggering
 
 permissions:

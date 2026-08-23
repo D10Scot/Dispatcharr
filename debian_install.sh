@@ -249,7 +249,7 @@ setup_python_env() {
   uv venv --python 3.13 env
 
   export UV_PROJECT_ENVIRONMENT="$APP_DIR/env"
-  uv sync --no-dev
+  uv sync --no-dev --locked
 EOSU
 
   ln -sf /usr/bin/ffmpeg "$APP_DIR/env/bin/ffmpeg"
