@@ -5288,6 +5288,16 @@ class CatchupProxyTests(TestCase):
         self.factory = APIRequestFactory()
         self.user = MagicMock(id=1, user_level=10, is_authenticated=True)
         self.channel_uuid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+        # Every catchup_proxy return goes through _finalize_timeshift_response,
+        # which calls close_old_connections(). Under TestCase that closes the
+        # connection holding the test's transaction, so the next DB access —
+        # here or in any test that runs after — dies with "the connection is
+        # closed". Closing on return is deliberate and has its own dedicated
+        # tests (test_*_closes_db_before_return); patching it out here stops
+        # that behaviour leaking across tests in this class.
+        close_patcher = patch.object(views, "close_old_connections")
+        close_patcher.start()
+        self.addCleanup(close_patcher.stop)
 
     def test_requires_authentication(self):
         request = self.factory.get(
