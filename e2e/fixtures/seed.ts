@@ -14,7 +14,7 @@ function sanitise(value: string): string {
  */
 export class Seeder {
   private counter = 0;
-  private runToken = Math.random().toString(36).slice(2, 8);
+  private runToken = Math.random().toString(36).slice(2, 8).padEnd(6, '0');
 
   constructor(
     private api: ApiClient,
