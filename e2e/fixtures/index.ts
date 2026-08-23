@@ -5,6 +5,7 @@ import { Seeder } from './seed';
 import { makeUserClient } from './auth';
 import { Waiter } from './wait';
 import { WsListener } from './ws';
+import { StreamClient, expectTsAligned, TS_PACKET_SIZE, TS_SYNC_BYTE } from './stream-client';
 
 export type Fixtures = {
   api: ApiClient;
@@ -13,6 +14,7 @@ export type Fixtures = {
   adminPage: Page;
   waitFor: Waiter;
   ws: WsListener;
+  streamClient: StreamClient;
 };
 
 export const test = base.extend<Fixtures>({
@@ -42,6 +44,11 @@ export const test = base.extend<Fixtures>({
     await use(listener);
     listener.close();
   },
+  streamClient: async ({ baseURL }, use) => {
+    const client = new StreamClient(baseURL!);
+    await use(client);
+    await client.close();
+  },
 });
 
 export { expect } from '@playwright/test';
@@ -50,3 +57,4 @@ export { Seeder } from './seed';
 export { makeUserClient } from './auth';
 export { Waiter } from './wait';
 export { WsListener } from './ws';
+export { StreamClient, expectTsAligned, TS_PACKET_SIZE, TS_SYNC_BYTE } from './stream-client';
