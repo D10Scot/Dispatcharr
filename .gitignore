@@ -19,7 +19,10 @@ debugpy*
 uwsgi.sock
 .uwsgi-reload
 package-lock.json
+!e2e/package-lock.json
 models
 .idea
 .vite/
 uv.lock
+playwright-report/
+test-results/
