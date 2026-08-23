@@ -60,17 +60,26 @@ export class Waiter {
     options: WaitOptions = {}
   ): Promise<T> {
     let latest: T | undefined;
+    // Distinct from `latest`: a non-OK response never reaches res.json(), so
+    // without this a persistently-failing endpoint describes nothing at
+    // timeout — less signal than the not-yet-matching case above it.
+    let lastFailure: string | undefined;
 
     await this.condition(
       async () => {
         const res = await this.api.get(url);
-        if (!res.ok()) return false;
+        if (!res.ok()) {
+          lastFailure = `HTTP ${res.status()}: ${truncate(await res.text())}`;
+          return false;
+        }
+        lastFailure = undefined;
         latest = await res.json();
         return predicate(latest as T);
       },
       {
         description: `${url} to satisfy predicate`,
-        describeLast: () => (latest === undefined ? undefined : truncate(JSON.stringify(latest))),
+        describeLast: () =>
+          lastFailure ?? (latest === undefined ? undefined : truncate(JSON.stringify(latest))),
         ...options,
       }
     );
