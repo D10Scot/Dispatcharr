@@ -16,7 +16,10 @@ if [ ! -e "/tmp/init" ]; then
 
     # Install frontend dependencies
     cd /app/frontend && npm install
-    # Install Python dependencies using UV
+    # Install Python dependencies using UV. Deliberately not --locked here,
+    # unlike the CI/release paths: this is the interactive dev container, and
+    # a developer editing pyproject.toml locally shouldn't have to regenerate
+    # uv.lock before their venv picks it up.
     cd /app && uv sync --python $UV_PROJECT_ENVIRONMENT/bin/python --no-install-project --no-dev
 
     # Install debugpy for remote debugging

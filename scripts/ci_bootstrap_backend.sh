@@ -33,7 +33,7 @@ fi
 
 if [[ "${SYNC_PYTHON_DEPS:-}" == "true" ]]; then
   echo "Syncing Python dependencies with uv..."
-  uv sync --python /dispatcharrpy/bin/python --no-install-project --no-dev
+  uv sync --python /dispatcharrpy/bin/python --no-install-project --no-dev --locked
 fi
 
 echo "Setting up CI user and PostgreSQL data directory..."
