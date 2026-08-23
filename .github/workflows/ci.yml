@@ -304,12 +304,24 @@ jobs:
         # actions/attest-sbom is deprecated in favor of actions/attest (same
         # inputs) — confirmed via a real run of this exact job before this
         # rename, which also surfaced the deprecation warning below.
+        #
+        # create-storage-record: false — verified via a real run that the
+        # default (true) fails here with "no artifacts found": the storage
+        # record feature expects a GitHub Actions build artifact (uploaded
+        # via actions/upload-artifact) to correlate with, which a pure
+        # container-image subject never has. The attest-build-provenance
+        # step below hits the same subject and succeeds at it, so this is
+        # specific to SBOM-mode subject resolution, not a permissions gap —
+        # the SBOM attestation itself still pushes to the registry fine
+        # either way, this only turns off the (currently broken) sidebar
+        # summary indexing.
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-name: ${{ steps.resolved.outputs.image }}
           subject-digest: ${{ steps.resolved.outputs.digest }}
           sbom-path: sbom.spdx.json
           push-to-registry: true
+          create-storage-record: false
 
       - name: Attest build provenance
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
