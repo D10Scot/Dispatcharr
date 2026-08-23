@@ -4,6 +4,10 @@
 #   ./scripts/e2e_up.sh --reset  destroy container + volume first
 set -euo pipefail
 
+# `docker build ... .` below needs the repo root as its context, and the
+# README's quick start invokes this as ./scripts/e2e_up.sh from anywhere.
+cd "$(dirname "${BASH_SOURCE[0]}")/.."
+
 NAME="${DISPATCHARR_E2E_CONTAINER:-dispatcharr-e2e}"
 VOLUME="${DISPATCHARR_E2E_VOLUME:-dispatcharr-e2e-data}"
 IMAGE="${DISPATCHARR_E2E_IMAGE:-dispatcharr-e2e:local}"

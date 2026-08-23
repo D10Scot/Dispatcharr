@@ -13,6 +13,7 @@ tests.** Status: `todo` / `done` / `known-bug` (asserted correct, marked
 | Harness | Non-admin principal (asUser) | G1 | done |
 | Harness | REST polling and WebSocket waiting | G1 | done |
 | Harness | Byte-level TS stream reading | G1 | done |
+| Harness | Source factories (stream profile, M3U, EPG) | G1 | done |
 | Sources | M3U account create → refresh → streams appear | G3 | todo |
 | Sources | EPG source create → refresh → programme data | G3 | todo |
 | Sources | Channel creation from streams | G3 | todo |
@@ -49,7 +50,8 @@ tests.** Status: `todo` / `done` / `known-bug` (asserted correct, marked
 | Lifecycle | PUID/PGID honoured | G7 | todo |
 | Lifecycle | TLS Postgres connection | G7 | todo |
 
-The seven G1 rows above each correspond to a real, passing spec:
+The eight G1 rows above are covered by these specs (the two seeding rows
+share one file):
 
 - `e2e/tests/pristine/first-run-setup-and-login.spec.ts`
 - `e2e/tests/seeded/authenticated-session.spec.ts`

@@ -48,8 +48,19 @@ E2E_BASE_URL=http://my-box:9191 npm run test:seeded
 ```
 
 `bootstrap` POSTs to `/api/accounts/initialize-superuser/`, which is IP-gated
-to private/loopback addresses (`dispatcharr/utils.py:142`). Against a public
-instance, set `DISPATCHARR_SETUP_ALLOWED_IP` on that instance first.
+to private/loopback addresses (`setup_ip_allowed` in `dispatcharr/utils.py`).
+Against a public instance, set `DISPATCHARR_SETUP_ALLOWED_IP` on that instance
+first.
+
+> **Only ever point `E2E_BASE_URL` at a throwaway instance.** If the target
+> has no superuser yet, `bootstrap` creates one — `e2e-admin`, with a password
+> committed to this repository in plain text, as a permanent superuser. On a
+> real deployment that is a handed-over admin account, and setting
+> `DISPATCHARR_SETUP_ALLOWED_IP` is precisely what removes the product-side
+> guard against it. `bootstrap` therefore refuses to create a superuser when
+> `E2E_BASE_URL` names anything but this machine, unless you set
+> `E2E_ALLOW_REMOTE_SUPERUSER=1`. Running against an instance that is already
+> set up needs neither variable and is unaffected.
 
 ## The login throttle — read this before writing a multi-user test
 
@@ -146,6 +157,11 @@ so you inherit the analysis instead of rediscovering it through a mystery
 projects in automatically, and a project missing from the matrix gets no CI
 coverage and no failure signal.
 
+These three jobs are **not** required checks on `main` — nobody has configured
+branch protection on this fork, so a red E2E run does not block a merge today.
+Making them required is a one-time step in the repository settings, not
+something this workflow can do for itself.
+
 ## Architecture note
 
 Local builds are native-architecture; CI is amd64. If you need parity,
@@ -162,3 +178,16 @@ Local builds are native-architecture; CI is amd64. If you need parity,
 | `waitFor` | `condition`, `resource`, `m3uRefreshComplete` |
 | `ws` | `/ws/` subscription; `waitForMessage(type)` |
 | `streamClient` | `open`, `readPackets`, `collectFor`, `close` |
+
+Plus two exports that are not fixtures, from the same `../../fixtures` module:
+
+| Export | Provides |
+|---|---|
+| `expectTsAligned(buffer)` | Asserts a buffer is 188-byte-aligned MPEG-TS — whole packets, `0x47` on every boundary. The assertion byte-level streaming tests are built on; reach for it before hand-rolling one |
+| `TS_PACKET_SIZE` / `TS_SYNC_BYTE` | `188` and `0x47`, for tests doing their own arithmetic |
+| `SEEDED_USER_PASSWORD` | The password `seed.user()` assigns — import it rather than repeating the literal |
+
+`e2e/fixtures/index.ts` opens with the full method inventory for all seven
+fixtures. That header, this file, the root `CONTEXT.md` and `COVERAGE.md` are
+meant to be enough to write a test without opening a fixture; if you had to,
+say so in the PR — that is a documentation bug.
