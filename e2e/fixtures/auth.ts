@@ -1,15 +1,38 @@
 import type { APIRequestContext } from '@playwright/test';
 import { ApiClient } from './api';
 
+type TokenPair = { access: string; refresh: string };
+
 /**
- * An ApiClient authenticated as an arbitrary user rather than the bootstrap
- * admin. Tokens are held in memory; nothing is written to the auth files.
+ * Token pairs by username, for the life of this worker process.
+ *
+ * `POST /api/accounts/token/` is throttled at 3/minute per client IP
+ * (`DEFAULT_THROTTLE_RATES` in dispatcharr/settings.py, applied by
+ * `LoginRateThrottle`), and the whole suite runs from one IP — a budget the
+ * bootstrap project is already spending from. One login per `asUser()` call
+ * therefore exhausts it as soon as a spec drives more than a couple of
+ * principals, which is exactly what an authorization matrix does. Caching
+ * means N tests sharing a principal cost one login between them.
+ *
+ * Module scope is per worker process, which matches the parallelism that
+ * causes the problem.
+ *
+ * What is cached is the token pair, never the `ApiClient`:
+ * `expireAccessTokenForTest()` mutates a client's in-memory tokens, so a
+ * shared instance would let one test corrupt another's. Every caller gets a
+ * fresh client, and `useTokens` copies the pair in rather than aliasing it.
+ *
+ * A cached access token going stale needs no handling here — `ApiClient`
+ * already retries through its refresh path on a 401, and the refresh token
+ * outlives any run.
  */
-export async function makeUserClient(
+const tokenCache = new Map<string, TokenPair>();
+
+async function login(
   ctx: APIRequestContext,
   username: string,
   password: string
-): Promise<ApiClient> {
+): Promise<TokenPair> {
   const res = await ctx.post('/api/accounts/token/', {
     data: { username, password },
   });
@@ -19,8 +42,25 @@ export async function makeUserClient(
     );
   }
   const { access, refresh } = await res.json();
+  return { access, refresh };
+}
+
+/**
+ * An ApiClient authenticated as an arbitrary user rather than the bootstrap
+ * admin. Tokens are held in memory; nothing is written to the auth files.
+ */
+export async function makeUserClient(
+  ctx: APIRequestContext,
+  username: string,
+  password: string
+): Promise<ApiClient> {
+  let tokens = tokenCache.get(username);
+  if (!tokens) {
+    tokens = await login(ctx, username, password);
+    tokenCache.set(username, tokens);
+  }
 
   const client = new ApiClient(ctx);
-  client.useTokens({ access, refresh });
+  client.useTokens(tokens);
   return client;
 }
