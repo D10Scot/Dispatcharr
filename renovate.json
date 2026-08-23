@@ -1,0 +1,38 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    "helpers:pinGitHubActionDigestsToSemver",
+    "docker:pinDigests"
+  ],
+  "dependencyDashboard": true,
+  "minimumReleaseAge": "3 days",
+  "packageRules": [
+    {
+      "description": "GitHub Actions touch CI credentials directly — longer cooldown, and always a human merge regardless of how clean the diff looks. Matches the asymmetry docker-ansible's own renovate.json uses.",
+      "matchManagers": ["github-actions"],
+      "minimumReleaseAge": "7 days",
+      "automerge": false
+    },
+    {
+      "description": "Docker base-image digest bumps: low blast radius (a rebuild, not a permission change) and this repo's own OS-patch-at-build-time control already assumes fresh bases — automerge once CI is green and the cooldown has passed.",
+      "matchManagers": ["dockerfile"],
+      "matchUpdateTypes": ["digest", "patch"],
+      "automerge": true,
+      "platformAutomerge": true
+    },
+    {
+      "description": "Python/JS dependency patch bumps: automerge after cooldown + green CI, same reasoning as Docker digests above.",
+      "matchManagers": ["pep621", "npm"],
+      "matchUpdateTypes": ["patch"],
+      "automerge": true,
+      "platformAutomerge": true
+    },
+    {
+      "description": "Minor/major dependency bumps get a human look — a range widen or a real API change is not the same risk class as a patch.",
+      "matchManagers": ["pep621", "npm"],
+      "matchUpdateTypes": ["minor", "major"],
+      "automerge": false
+    }
+  ]
+}
