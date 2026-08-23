@@ -20,7 +20,14 @@ if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
   docker build -f docker/Dockerfile -t "$IMAGE" .
 fi
 
-if ! docker ps --format '{{.Names}}' | grep -qx "$NAME"; then
+if docker ps --format '{{.Names}}' | grep -qx "$NAME"; then
+  : # already running
+elif docker ps -a --format '{{.Names}}' | grep -qx "$NAME"; then
+  # Exists but stopped (Docker Desktop restart, host reboot, OOM kill) —
+  # `docker ps` alone would miss this and fall through to `docker run`,
+  # which then fails with "name is already in use".
+  docker start "$NAME" >/dev/null
+else
   # /data must be a mounted volume: the entrypoint has no fallback and
   # crashes on mktemp against a nonexistent directory.
   docker run -d --name "$NAME" \
