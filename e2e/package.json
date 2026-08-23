@@ -3,9 +3,15 @@
   "private": true,
   "version": "1.0.0",
   "scripts": {
-    "test": "playwright test"
+    "test": "playwright test",
+    "test:pristine": "playwright test --project=pristine",
+    "test:seeded": "playwright test --project=seeded",
+    "test:streaming": "playwright test --project=streaming",
+    "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
-    "@playwright/test": "^1.49.0"
+    "@playwright/test": "^1.49.0",
+    "@types/node": "^24.0.0",
+    "typescript": "^5.7.2"
   }
 }
