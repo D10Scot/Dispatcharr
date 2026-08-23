@@ -4,7 +4,19 @@ export type WaitOptions = {
   timeoutMs?: number;
   intervalMs?: number;
   description?: string;
+  /**
+   * Called once, only if the wait times out, to describe the last observed
+   * state for the error message. Kept separate from the predicate because
+   * `condition()` has no notion of a "state" — only `resource()` does.
+   */
+  describeLast?: () => string | undefined;
 };
+
+const DESCRIBE_LAST_MAX_LENGTH = 300;
+
+function truncate(value: string, maxLength = DESCRIBE_LAST_MAX_LENGTH): string {
+  return value.length > maxLength ? `${value.slice(0, maxLength)}…` : value;
+}
 
 /**
  * REST polling. The default way to wait for Celery-backed work: the HTTP call
@@ -15,7 +27,12 @@ export class Waiter {
 
   async condition(
     predicate: () => Promise<boolean>,
-    { timeoutMs = 60_000, intervalMs = 1_000, description = 'condition' }: WaitOptions = {}
+    {
+      timeoutMs = 60_000,
+      intervalMs = 1_000,
+      description = 'condition',
+      describeLast,
+    }: WaitOptions = {}
   ): Promise<void> {
     const deadline = Date.now() + timeoutMs;
     let lastError: unknown;
@@ -29,8 +46,10 @@ export class Waiter {
       await new Promise((resolve) => setTimeout(resolve, intervalMs));
     }
 
+    const lastObserved = describeLast?.();
     throw new Error(
       `timed out after ${timeoutMs}ms waiting for ${description}` +
+        (lastObserved ? ` (last observed: ${lastObserved})` : '') +
         (lastError ? ` (last error: ${lastError})` : '')
     );
   }
@@ -49,7 +68,11 @@ export class Waiter {
         latest = await res.json();
         return predicate(latest as T);
       },
-      { description: `${url} to satisfy predicate`, ...options }
+      {
+        description: `${url} to satisfy predicate`,
+        describeLast: () => (latest === undefined ? undefined : truncate(JSON.stringify(latest))),
+        ...options,
+      }
     );
 
     return latest as T;
