@@ -6,10 +6,20 @@ import { startStaticUpstream } from '../../support/static-upstream';
 // and a live stream never finishes.
 //
 // The upstream here is throwaway scaffolding, replaced by G2's fake provider.
+// Base port for the throwaway upstream. The worker index is added to it: this
+// project runs more than one worker, and a second spec copying this exemplar —
+// which is what an exemplar is for — would otherwise collide on the port about
+// half the time. startStaticUpstream fails fast on a conflict rather than
+// silently reading the other worker's stream, but a hard failure is still a
+// failure. Derive the port; never hardcode one.
+const UPSTREAM_BASE_PORT = 9401;
+
 test('streamClient reads aligned TS packets from an endless stream', async ({
   streamClient,
-}) => {
-  const upstream = await startStaticUpstream(9401);
+}, testInfo) => {
+  const upstream = await startStaticUpstream(
+    UPSTREAM_BASE_PORT + testInfo.workerIndex
+  );
 
   try {
     await streamClient.open(`${upstream.url}/loop.ts`);

@@ -25,6 +25,13 @@ export default defineConfig({
       testDir: './tests/pristine',
       workers: 1,
       fullyParallel: false,
+      // Never retry, whatever the global setting says. These tests consume
+      // first-run state: attempt 1 creates the superuser, so attempt 2 is
+      // served the login form instead of the setup form and dies on the first
+      // assertion — making every pristine failure report the same wrong
+      // error, whatever actually broke. `seeded` and `streaming` may retry
+      // safely: their seeded names carry fresh runToken entropy per attempt.
+      retries: 0,
     },
     {
       name: 'seeded',

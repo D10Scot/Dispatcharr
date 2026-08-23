@@ -18,8 +18,10 @@ test('seeded names are unique within a test', async ({ seed }) => {
 });
 
 test('overrides are applied', async ({ seed }) => {
-  const profile = await seed.channelProfile();
-  expect(profile.name).toMatch(/channelProfile/);
+  // Never a bare `profile` — CONTEXT.md's first rule. Three different things
+  // in this product are called one.
+  const channelProfile = await seed.channelProfile();
+  expect(channelProfile.name).toMatch(/channelProfile/);
 
   // user_level defaults to 1 in seed.ts — override to 0 so this assertion
   // can actually fail if ...overrides stopped being applied.
@@ -62,4 +64,25 @@ test('runToken makes names differ across Seeder instances with identical argumen
   expect(a).not.toBe(b);
   expect(a).toMatch(/^e2e-w0-/);
   expect(b).toMatch(/^e2e-w0-/);
+});
+
+// The remaining three factories, which no other spec exercises. Each ships a
+// set of defaults that has to stay valid against the live API — a serializer
+// gaining a required field is the failure this catches, and it would
+// otherwise surface as a mystery 400 inside whichever wave-2 test first
+// reached for the factory.
+test('the source factories create rows with the shipped defaults', async ({
+  seed,
+}) => {
+  const streamProfile = await seed.streamProfile();
+  expect(streamProfile.id).toBeTruthy();
+  expect(streamProfile.name).toMatch(/^e2e-w\d+-/);
+
+  const m3uAccount = await seed.m3uAccount();
+  expect(m3uAccount.id).toBeTruthy();
+  expect(m3uAccount.name).toMatch(/^e2e-w\d+-/);
+
+  const epgSource = await seed.epgSource();
+  expect(epgSource.id).toBeTruthy();
+  expect(epgSource.name).toMatch(/^e2e-w\d+-/);
 });

@@ -2,12 +2,7 @@ import { test as setup, expect } from '@playwright/test';
 import type { APIRequestContext } from '@playwright/test';
 import fs from 'node:fs';
 import path from 'node:path';
-
-export const ADMIN = {
-  username: 'e2e-admin',
-  password: 'Correct-Horse-Battery-Staple-42!',
-  email: 'e2e-admin@example.com',
-};
+import { ADMIN } from './credentials';
 
 const AUTH_DIR = 'playwright/.auth';
 const STATE_FILE = path.join(AUTH_DIR, 'admin.json');
@@ -65,17 +60,63 @@ async function reusableTokens(
   return { access: stored.access, refresh: stored.refresh };
 }
 
+/** Env var that opts a non-loopback target in to superuser creation. */
+const REMOTE_SETUP_OPT_IN = 'E2E_ALLOW_REMOTE_SUPERUSER';
+
+/** Whether `hostname` names this machine. */
+function isLoopbackHost(hostname: string): boolean {
+  const host = hostname.replace(/^\[|\]$/g, '').toLowerCase();
+  return (
+    host === 'localhost' ||
+    host.endsWith('.localhost') ||
+    host === '::1' ||
+    /^127\./.test(host)
+  );
+}
+
+/**
+ * Whether this run may create a superuser on the instance at `baseURL`.
+ *
+ * Against localhost — CI, and every local container — always: that instance
+ * is disposable and the credentials are throwaway. Against anything else,
+ * only on an explicit opt-in, because `ADMIN.password` is committed to this
+ * repository in plain text and the account created with it is a permanent
+ * superuser. A real instance that is deployed but not yet set up is the
+ * hazard: pointing `E2E_BASE_URL` at it would hand it a public password. The
+ * product's own IP gate is not the backstop it looks like — the escape hatch
+ * for a remote target is to set DISPATCHARR_SETUP_ALLOWED_IP, which removes
+ * that gate.
+ */
+function assertMayCreateSuperuser(baseURL: string): void {
+  if (isLoopbackHost(new URL(baseURL).hostname)) return;
+  if (process.env[REMOTE_SETUP_OPT_IN]) return;
+
+  throw new Error(
+    `refusing to create a superuser on ${baseURL}: it has no superuser yet, ` +
+      'and this suite would create one whose password is committed to this ' +
+      'repository in plain text, as a permanent admin on a host that is not ' +
+      `this machine. Point E2E_BASE_URL at a throwaway instance, or set ` +
+      `${REMOTE_SETUP_OPT_IN}=1 if that really is what you want. Running ` +
+      'against an instance that is *already* set up needs neither.'
+  );
+}
+
 setup('create the superuser and persist admin auth state', async ({
   request,
   baseURL,
 }) => {
   const status = await request.get('/api/accounts/initialize-superuser/');
-  expect(status.ok()).toBeTruthy();
+  expect(
+    status.ok(),
+    `initialize-superuser probe failed: ${status.status()} ${await status.text()}`
+  ).toBeTruthy();
 
   if (!(await status.json()).superuser_exists) {
-    // POST is IP-gated to private/loopback (dispatcharr/utils.py:142). Fine
-    // from CI and from localhost; a public E2E_BASE_URL needs
-    // DISPATCHARR_SETUP_ALLOWED_IP set on the instance.
+    assertMayCreateSuperuser(baseURL!);
+    // POST is IP-gated to private/loopback (dispatcharr/utils.py,
+    // setup_ip_allowed). Fine from CI and from localhost; a public
+    // E2E_BASE_URL needs DISPATCHARR_SETUP_ALLOWED_IP set on the instance —
+    // read the guard above before you do that.
     const created = await request.post('/api/accounts/initialize-superuser/', {
       data: ADMIN,
     });

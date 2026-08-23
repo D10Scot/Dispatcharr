@@ -1,12 +1,18 @@
-import { test, expect } from '@playwright/test';
+import { test, expect } from '../../fixtures';
 
 // Exemplar: the seeded project's storageState authenticates without ever
 // touching the login form. If this fails, bootstrap wrote the wrong keys.
-test('seeded project lands authenticated on /channels', async ({ page }) => {
-  await page.goto('/channels');
+//
+// `adminPage`, not `page`: the two are the same object in this project, but
+// naming the principal is the habit the harness wants, and importing from
+// '../../fixtures' is the rule (README, "Writing a test"). Typecheck only
+// catches a raw '@playwright/test' import when the spec destructures a custom
+// fixture — a spec using `page` alone, as this one used to, slips through.
+test('seeded project lands authenticated on /channels', async ({ adminPage }) => {
+  await adminPage.goto('/channels');
 
-  await expect(page).toHaveURL(/\/channels/);
-  await expect(page.getByText('Please log in to continue.')).toHaveCount(0);
+  await expect(adminPage).toHaveURL(/\/channels/);
+  await expect(adminPage.getByText('Please log in to continue.')).toHaveCount(0);
 
   // Positive assertion: an element that only exists inside the authenticated
   // app. The negative check above also passes before the SPA has rendered
@@ -22,6 +28,6 @@ test('seeded project lands authenticated on /channels', async ({ page }) => {
   // (this project's `seeded` container) has any channels — exactly the case
   // this suite's own seeding produces.
   await expect(
-    page.getByRole('button', { name: 'Notifications' })
+    adminPage.getByRole('button', { name: 'Notifications' })
   ).toBeVisible();
 });
