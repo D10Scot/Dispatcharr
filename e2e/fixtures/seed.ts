@@ -14,6 +14,7 @@ function sanitise(value: string): string {
  */
 export class Seeder {
   private counter = 0;
+  private runToken = Math.random().toString(36).slice(2, 8);
 
   constructor(
     private api: ApiClient,
@@ -21,9 +22,18 @@ export class Seeder {
     private testId: string
   ) {}
 
+  /**
+   * testId and workerIndex are both stable across separate invocations of
+   * the same spec, so without runToken a second `npm run test:seeded`
+   * against the same (non-reset) container would regenerate the exact same
+   * names as the first and collide with its own previous run's rows on any
+   * unique constraint. runToken is generated once per Seeder instance (one
+   * per test) so every name from one test still shares it, keeping that
+   * test's data visually grouped, while a re-run gets a fresh one.
+   */
   generatedName(entity: string): string {
     return sanitise(
-      `e2e-w${this.workerIndex}-${this.testId}-${entity}-${this.counter++}`
+      `e2e-w${this.workerIndex}-${this.runToken}-${this.testId}-${entity}-${this.counter++}`
     );
   }
 
