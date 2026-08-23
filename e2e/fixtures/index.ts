@@ -3,12 +3,16 @@ import type { Page } from '@playwright/test';
 import { ApiClient } from './api';
 import { Seeder } from './seed';
 import { makeUserClient } from './auth';
+import { Waiter } from './wait';
+import { WsListener } from './ws';
 
 export type Fixtures = {
   api: ApiClient;
   seed: Seeder;
   asUser: (username: string, password: string) => Promise<ApiClient>;
   adminPage: Page;
+  waitFor: Waiter;
+  ws: WsListener;
 };
 
 export const test = base.extend<Fixtures>({
@@ -30,9 +34,19 @@ export const test = base.extend<Fixtures>({
   adminPage: async ({ page }, use) => {
     await use(page);
   },
+  waitFor: async ({ api }, use) => {
+    await use(new Waiter(api));
+  },
+  ws: async ({ baseURL }, use) => {
+    const listener = new WsListener(baseURL!);
+    await use(listener);
+    listener.close();
+  },
 });
 
 export { expect } from '@playwright/test';
 export { ApiClient } from './api';
 export { Seeder } from './seed';
 export { makeUserClient } from './auth';
+export { Waiter } from './wait';
+export { WsListener } from './ws';
