@@ -27,6 +27,11 @@ export class ApiClient {
     this.tokens.access = 'expired.invalid.token';
   }
 
+  /** Re-point this client at a different principal's tokens. */
+  useTokens(tokens: { access: string; refresh: string }): void {
+    this.tokens = { ...this.tokens, ...tokens };
+  }
+
   private async refresh(): Promise<void> {
     const res = await this.ctx.post('/api/accounts/token/refresh/', {
       data: { refresh: this.tokens.refresh },
