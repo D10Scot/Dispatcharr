@@ -12,6 +12,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   prepare:
     runs-on: ubuntu-24.04
@@ -120,6 +124,19 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Resolve base image digest
+        # Pins the base for this build to whatever ":base" currently resolves
+        # to, once, so every arch in the matrix below builds against the
+        # identical base layer instead of a tag that could move mid-run.
+        id: base
+        env:
+          REPO_OWNER: ${{ needs.prepare.outputs.repo_owner }}
+          REPO_NAME: ${{ needs.prepare.outputs.repo_name }}
+        run: |
+          set -euo pipefail
+          DIGEST=$(docker buildx imagetools inspect "ghcr.io/${REPO_OWNER}/${REPO_NAME}:base" --format '{{json .Manifest}}' | jq -r .digest)
+          echo "image=ghcr.io/${REPO_OWNER}/${REPO_NAME}@${DIGEST}" >> "$GITHUB_OUTPUT"
+
       - name: Extract metadata for Docker
         id: meta
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
@@ -157,9 +174,7 @@ jobs:
             ghcr.io/${{ needs.prepare.outputs.repo_owner }}/${{ needs.prepare.outputs.repo_name }}:${{ needs.prepare.outputs.version }}-${{ needs.prepare.outputs.timestamp }}-${{ matrix.platform }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
-            REPO_OWNER=${{ needs.prepare.outputs.repo_owner }}
-            REPO_NAME=${{ needs.prepare.outputs.repo_name }}
-            BASE_TAG=base
+            BASE_IMAGE=${{ steps.base.outputs.image }}
             BRANCH=${{ github.ref_name }}
             REPO_URL=https://github.com/${{ github.repository }}
             TIMESTAMP=${{ needs.prepare.outputs.timestamp }}
