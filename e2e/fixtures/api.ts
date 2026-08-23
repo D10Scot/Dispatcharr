@@ -1,7 +1,16 @@
 import type { APIRequestContext, APIResponse } from '@playwright/test';
 import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 
 const TOKENS_FILE = 'playwright/.auth/tokens.json';
+
+/**
+ * How close to `exp` an access token may be before `freshAccessToken()`
+ * refreshes it. Generous: a refresh costs nothing (TokenRefreshView is not
+ * throttled) and a token that expires mid-test costs a 30-second hang.
+ */
+const TOKEN_EXPIRY_MARGIN_SECONDS = 120;
 
 type Tokens = {
   access: string;
@@ -11,12 +20,32 @@ type Tokens = {
   email: string;
 };
 
+/** The `exp` claim in unix seconds, or undefined if this isn't a readable JWT. */
+function jwtExp(accessToken: string): number | undefined {
+  try {
+    const payload = accessToken.split('.')[1];
+    const exp = JSON.parse(Buffer.from(payload, 'base64').toString('utf8')).exp;
+    return typeof exp === 'number' ? exp : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * Authenticated HTTP client. Retries once through a token refresh on 401,
  * because SIMPLE_JWT.ACCESS_TOKEN_LIFETIME is 30 minutes and suites outlive it.
  */
 export class ApiClient {
   private tokens: Tokens;
+  /**
+   * Whether a refreshed access token is written back to `tokens.json`.
+   *
+   * True only while this client still holds the bootstrap admin's pair, i.e.
+   * the pair that file describes. `useTokens()` re-points a client at another
+   * principal, and writing *that* principal's token into the file the whole
+   * suite reads would silently run everything as them.
+   */
+  private persistsTokens = true;
 
   constructor(private ctx: APIRequestContext) {
     this.tokens = JSON.parse(fs.readFileSync(TOKENS_FILE, 'utf8'));
@@ -30,6 +59,44 @@ export class ApiClient {
   /** Re-point this client at a different principal's tokens. */
   useTokens(tokens: { access: string; refresh: string }): void {
     this.tokens = { ...this.tokens, ...tokens };
+    this.persistsTokens = false;
+  }
+
+  /**
+   * An access token guaranteed to have life left in it, refreshing first if
+   * it doesn't. For handing to a reader that cannot refresh on its own —
+   * `WsListener`, whose auth is a query parameter fixed at connect time.
+   */
+  async freshAccessToken(): Promise<string> {
+    const exp = jwtExp(this.tokens.access);
+    if (exp === undefined || exp - TOKEN_EXPIRY_MARGIN_SECONDS <= Date.now() / 1000) {
+      await this.refresh();
+    }
+    return this.tokens.access;
+  }
+
+  /**
+   * Persist the current pair, so every *other* reader of this file — the next
+   * `ws` fixture, and the next run's bootstrap reuse check — sees a live
+   * access token rather than the bootstrap one from up to 30 minutes ago.
+   * Written through a temp file and renamed: parallel workers refresh
+   * concurrently, and a reader must never catch a half-written file. The temp
+   * name carries the pid so two workers don't collide on it.
+   */
+  private persistTokens(): void {
+    if (!this.persistsTokens) return;
+    try {
+      const temp = path.join(
+        path.dirname(TOKENS_FILE),
+        `.tokens.${process.pid}.${Date.now()}.tmp`
+      );
+      fs.writeFileSync(temp, JSON.stringify(this.tokens, null, 2) + os.EOL);
+      fs.renameSync(temp, TOKENS_FILE);
+    } catch {
+      // Best-effort: a client that refreshed in memory is still usable, and
+      // failing a test over an unwritable auth directory would be a worse
+      // outcome than the staleness this write-back exists to avoid.
+    }
   }
 
   private async refresh(): Promise<void> {
@@ -42,6 +109,7 @@ export class ApiClient {
       );
     }
     this.tokens.access = (await res.json()).access;
+    this.persistTokens();
   }
 
   private async send(

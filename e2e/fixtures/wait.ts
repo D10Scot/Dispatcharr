@@ -18,6 +18,20 @@ function truncate(value: string, maxLength = DESCRIBE_LAST_MAX_LENGTH): string {
   return value.length > maxLength ? `${value.slice(0, maxLength)}…` : value;
 }
 
+/** `M3UAccount.Status` values a refresh passes through while it is running. */
+const M3U_IN_FLIGHT_STATUSES = ['fetching', 'parsing'];
+
+/** `M3UAccount.Status` values a finished refresh comes to rest in. */
+const M3U_TERMINAL_STATUSES = ['success', 'error'];
+
+export type M3uRefreshWaitOptions = WaitOptions & {
+  /**
+   * Budget for the refresh to *start*, separate from `timeoutMs`, which
+   * budgets the (much longer) fetch and parse.
+   */
+  startTimeoutMs?: number;
+};
+
 /**
  * REST polling. The default way to wait for Celery-backed work: the HTTP call
  * that triggers it returns 200 immediately and completes much later.
@@ -87,12 +101,64 @@ export class Waiter {
     return latest as T;
   }
 
-  /** An M3U account whose most recent refresh has finished. */
-  async m3uRefreshComplete(accountId: number, options: WaitOptions = {}) {
+  /**
+   * An M3U account whose most recent refresh has both **started** and
+   * **finished**. Call it after triggering the refresh.
+   *
+   * Two phases, because one is not enough:
+   *
+   * 1. **Started** — wait for `fetching` or `parsing`, the two statuses
+   *    `apps/m3u/tasks.py` treats as in-flight (`_NON_TERMINAL_REFRESH_STATUSES`).
+   *    `POST /api/m3u/refresh/<id>/` only queues the Celery task and returns
+   *    202 immediately (`apps/m3u/api_views.py`, `RefreshSingleM3UAPIView`);
+   *    the status changes to `fetching` inside the worker. So the first poll
+   *    of a single-phase wait sees the *pre-refresh* status — `idle`, or
+   *    `pending_setup` on a freshly created account — and reports a refresh
+   *    that has not begun as complete. This phase has its own budget
+   *    (`startTimeoutMs`) so a refresh that never runs at all — no Celery
+   *    worker, or the task lock still held by an earlier refresh — fails
+   *    saying exactly that instead of consuming the whole timeout.
+   * 2. **Finished** — wait for `success` or `error`, asserted positively
+   *    rather than as "not in flight". The task's `finally` calls
+   *    `_ensure_m3u_refresh_terminal_status`, which forces `error` if it
+   *    exits still in flight, so one of the two always arrives. `error`
+   *    resolves this wait: the refresh finished, and whether it *succeeded*
+   *    is the caller's assertion to make, not the waiter's.
+   *
+   * `timeoutMs` bounds phase 2; `startTimeoutMs` bounds phase 1. The trade
+   * for never passing early: a refresh that starts and finishes entirely
+   * within one poll interval would fail phase 1. No real fetch-and-parse
+   * does, and phase 1 polls four times as fast as the default to shrink that
+   * window further.
+   */
+  async m3uRefreshComplete(
+    accountId: number,
+    { startTimeoutMs = 30_000, ...options }: M3uRefreshWaitOptions = {}
+  ) {
+    const url = `/api/m3u/accounts/${accountId}/`;
+
+    await this.resource(
+      url,
+      (body: any) => M3U_IN_FLIGHT_STATUSES.includes(body.status),
+      {
+        description:
+          `M3U account ${accountId} refresh to start ` +
+          `(status ${M3U_IN_FLIGHT_STATUSES.join(' or ')})`,
+        timeoutMs: startTimeoutMs,
+        intervalMs: 250,
+      }
+    );
+
     return this.resource(
-      `/api/m3u/accounts/${accountId}/`,
-      (body: any) => body.status !== 'fetching' && body.status !== 'parsing',
-      { description: `M3U account ${accountId} refresh`, timeoutMs: 180_000, ...options }
+      url,
+      (body: any) => M3U_TERMINAL_STATUSES.includes(body.status),
+      {
+        description:
+          `M3U account ${accountId} refresh to finish ` +
+          `(status ${M3U_TERMINAL_STATUSES.join(' or ')})`,
+        timeoutMs: 180_000,
+        ...options,
+      }
     );
   }
 }
