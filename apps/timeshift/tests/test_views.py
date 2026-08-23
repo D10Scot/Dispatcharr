@@ -5288,6 +5288,16 @@ class CatchupProxyTests(TestCase):
         self.factory = APIRequestFactory()
         self.user = MagicMock(id=1, user_level=10, is_authenticated=True)
         self.channel_uuid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+        # Every catchup_proxy return goes through _finalize_timeshift_response,
+        # which calls close_old_connections(). Under TestCase that closes the
+        # connection holding the test's transaction, so the next DB access —
+        # here or in any test that runs after — dies with "the connection is
+        # closed". Closing on return is deliberate and has its own dedicated
+        # tests (test_*_closes_db_before_return); patching it out here stops
+        # that behaviour leaking across tests in this class.
+        close_patcher = patch.object(views, "close_old_connections")
+        self.mock_close_connections = close_patcher.start()
+        self.addCleanup(close_patcher.stop)
 
     def test_requires_authentication(self):
         request = self.factory.get(
@@ -5296,6 +5306,18 @@ class CatchupProxyTests(TestCase):
         with patch.object(views, "network_access_allowed", return_value=True):
             response = views.catchup_proxy(request, self.channel_uuid)
         self.assertEqual(response.status_code, 401)
+
+    def test_closes_db_before_return(self):
+        # catchup_proxy has no dedicated close_old_connections test of its own —
+        # every other call site does (test_*_closes_db_before_return). This
+        # exercises the same _finalize_timeshift_response contract for the
+        # native endpoint via its simplest return path.
+        request = self.factory.get(
+            f"/proxy/catchup/{self.channel_uuid}?start=2026-06-08T17:00:00Z",
+        )
+        with patch.object(views, "network_access_allowed", return_value=True):
+            views.catchup_proxy(request, self.channel_uuid)
+        self.mock_close_connections.assert_called_once()
 
     def test_missing_start_returns_400(self):
         request = self.factory.get(f"/proxy/catchup/{self.channel_uuid}")

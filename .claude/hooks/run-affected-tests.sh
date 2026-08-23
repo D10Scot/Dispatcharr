@@ -1,15 +1,19 @@
 #!/usr/bin/env bash
 # Claude Code PostToolUse hook — verify whatever file was just edited.
 #
-# Five checks, all scoped to the edited file so nothing here depends on the
-# repo's pre-existing backlog being cleared first:
+# Six checks, all scoped to the edited file:
 #
 #   tests        *tests/test_*.py     run the whole package   (blocking)
 #                frontend/*.test.jsx  run that file           (blocking)
 #   migrations   */models.py          makemigrations --check  (blocking)
 #   boot         live_proxy leaves    manage.py check         (blocking)
 #   lint         frontend/*.js(x)     eslint that file        (advisory)
+#   actions      workflows/action.yml zizmor, whole file      (blocking)
 #   secrets      any *.py             credential-logging grep (advisory)
+#
+# All but zizmor are deliberately independent of the repo's pre-existing
+# backlog. zizmor is the exception: it holds the whole edited workflow clean,
+# because that backlog is being actively worked off rather than tolerated.
 #
 # Backend work happens in a warm local container (see start-test-container.sh).
 # Real PostgreSQL is required: a migration uses the PG-only `~` regex operator,
@@ -107,6 +111,75 @@ if [[ "$REL" == frontend/*.js || "$REL" == frontend/*.jsx ]] && [ -d frontend/no
   OUT="$(cd frontend && npx eslint "${REL#frontend/}" 2>&1)"
   [ -z "$OUT" ] || note "eslint on ${REL} (CI has the linter commented out, so nothing else reports this):"$'\n'"$(printf '%s' "$OUT" | head -15)"
 fi
+
+# ----------------------------------------------------------------- actions ---
+# zizmor's defaults already encode three rules this repo states by hand: a
+# blanket hash-pin policy (unpinned-uses), persist-credentials (artipacked) and
+# least-privilege permissions (excessive-permissions). No zizmor config is
+# needed to get them, so there deliberately isn't one. Suppress a considered
+# exception with a trailing '# zizmor: ignore[audit-name]' comment on the line.
+#
+# Blocking on every finding in the edited file, legacy included: the workflows
+# carry a real backlog and the point is to clear it, so touching a file means
+# leaving it clean. Add --min-severity=low below to stop informational findings
+# from blocking.
+#
+# Exit codes: 0 clean, 14 findings, anything else means zizmor itself failed.
+#
+# Online audits are ON. impostor-commit is the reason: it catches a SHA that
+# belongs to some other repository — a pin that looks genuine and isn't, which
+# is the exact failure mode the pinning rule warns about, and which the offline
+# run cannot see at all (verified: offline reports nothing on a cross-repo SHA).
+# known-vulnerable-actions and stale-action-refs come with it. All three only
+# have something to say about hash-pinned actions, so they find nothing until
+# the pinning sweep lands — this is insurance for that work, not a win today.
+#
+# zizmor reads the token from the environment; gh keeps it in the keyring, so
+# it has to be handed over explicitly. Passed as an env var rather than
+# --gh-token so it never shows up in ps. No token means no online audits, which
+# is said out loud rather than silently downgraded. ZIZMOR_HOOK_OFFLINE=1 opts
+# out — deliberately not zizmor's own ZIZMOR_OFFLINE, which is a true/false flag
+# this would collide with.
+case "$REL" in
+  .github/workflows/*.yml|.github/workflows/*.yaml|\
+  .github/dependabot.yml|.github/dependabot.yaml|\
+  action.yml|action.yaml|*/action.yml|*/action.yaml)
+    if command -v zizmor >/dev/null 2>&1; then
+      # Keep in sync with the pinned `version:` in actions-lint.yml — that's
+      # the whole point of this check. A silent PATH mismatch here is worse
+      # than no check: it lets local and CI disagree about what's clean.
+      ZIZMOR_EXPECTED_VERSION="1.29.0"
+      ZIZMOR_ACTUAL_VERSION="$(zizmor --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
+      if [ -n "$ZIZMOR_ACTUAL_VERSION" ] && [ "$ZIZMOR_ACTUAL_VERSION" != "$ZIZMOR_EXPECTED_VERSION" ]; then
+        note "zizmor on PATH is ${ZIZMOR_ACTUAL_VERSION}, but actions-lint.yml pins ${ZIZMOR_EXPECTED_VERSION} — local and CI findings can disagree. Run 'brew upgrade zizmor' (or reinstall to the pinned version)."
+      fi
+      ZFLAGS=(--no-progress --format=github)
+      ZTOKEN="${GH_TOKEN:-${GITHUB_TOKEN:-}}"
+      [ -n "$ZTOKEN" ] || ZTOKEN="$(gh auth token 2>/dev/null)"
+      if [ "${ZIZMOR_HOOK_OFFLINE:-}" = 1 ]; then
+        ZFLAGS+=(--no-online-audits)
+      elif [ -z "$ZTOKEN" ]; then
+        ZFLAGS+=(--no-online-audits)
+        note "zizmor ran WITHOUT its online audits on ${REL} — no GitHub token (tried \$GH_TOKEN, \$GITHUB_TOKEN, 'gh auth token'). impostor-commit is the one that catches a SHA belonging to another repo, so a pin cannot be verified as genuine here. Run 'gh auth login' to restore it."
+      fi
+      # An empty GH_TOKEN is not the same as an unset one: zizmor rejects the
+      # empty string outright, so unset it rather than pass it through.
+      if [ -n "$ZTOKEN" ]; then
+        OUT="$(GH_TOKEN="$ZTOKEN" zizmor "${ZFLAGS[@]}" "$REL" 2>&1)"; ST=$?
+      else
+        OUT="$(env -u GH_TOKEN -u GITHUB_TOKEN zizmor "${ZFLAGS[@]}" "$REL" 2>&1)"; ST=$?
+      fi
+      case $ST in
+        0) ;;
+        14) block "zizmor findings in ${REL}" \
+                  "$(printf '%s\n' "$OUT" | grep '^::' | sed -E 's/^::[a-z]+ [^:]*::/  /')"$'\n\n'"Docs: https://docs.zizmor.sh/audits/ — 'zizmor --fix .github/workflows/' applies the safe fixes." ;;
+        *) note "Did NOT lint ${REL} with zizmor (exit ${ST}): $(printf '%s' "$OUT" | tail -3)" ;;
+      esac
+    else
+      note "Did NOT lint ${REL} — zizmor is not installed. Install it with 'brew install zizmor'."
+    fi
+    ;;
+esac
 
 # ------------------------------------------------------------------- tests ---
 case "$REL" in
