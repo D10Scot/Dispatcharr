@@ -54,10 +54,15 @@ export async function makeUserClient(
   username: string,
   password: string
 ): Promise<ApiClient> {
-  let tokens = tokenCache.get(username);
+  // Keyed on the password too, not just the username: on a hit the password
+  // argument is otherwise ignored entirely, so a caller passing the wrong
+  // password for a cached username would get a working client — quietly
+  // defeating any test that changes a password and asserts the old one fails.
+  const key = `${username}:${password}`;
+  let tokens = tokenCache.get(key);
   if (!tokens) {
     tokens = await login(ctx, username, password);
-    tokenCache.set(username, tokens);
+    tokenCache.set(key, tokens);
   }
 
   const client = new ApiClient(ctx);

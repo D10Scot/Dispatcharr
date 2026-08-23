@@ -53,6 +53,15 @@ async function reusableTokens(
   });
   if (!probe.ok()) return null;
 
+  // A 200 only proves the token authenticates *someone*. Both files below
+  // describe the pair as the admin's — admin.json becomes the seeded
+  // project's storageState, and tokens.json is written beside a spread
+  // ...ADMIN — so adopting another principal's token would silently run every
+  // spec as that principal, surfacing as unexplained 403s across the suite
+  // rather than as a setup failure.
+  const who = await probe.json();
+  if (who.username !== ADMIN.username) return null;
+
   return { access: stored.access, refresh: stored.refresh };
 }
 
