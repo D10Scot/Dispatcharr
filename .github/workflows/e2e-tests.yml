@@ -15,8 +15,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  e2e:
-    name: First-run setup and login
+  build:
+    name: Build AIO image
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -24,10 +24,48 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Build the AIO image from this branch
+      # One build for all three consumers. docker/Dockerfile:14 uses
+      # `npm install` with no lockfile, so N builds can produce N different
+      # frontend bundles; building once means one artifact under test.
+      - name: Build the image
         run: docker build -f docker/Dockerfile -t dispatcharr-e2e:local .
 
-      - name: Run the AIO container
+      - name: Export the image
+        run: docker save dispatcharr-e2e:local | gzip > /tmp/dispatcharr-e2e.tar.gz
+
+      - name: Upload the image
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: dispatcharr-e2e-image
+          path: /tmp/dispatcharr-e2e.tar.gz
+          retention-days: 1
+
+  test:
+    name: ${{ matrix.project }}
+    runs-on: ubuntu-latest
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        project: [pristine, seeded, streaming]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: Download the image
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: dispatcharr-e2e-image
+          path: /tmp
+
+      - name: Load the image
+        run: docker load < /tmp/dispatcharr-e2e.tar.gz
+
+      # Each project gets its own container. pristine in particular needs an
+      # instance with no superuser, which the bootstrap project consumes.
+      - name: Run the container
         run: |
           docker run -d --name dispatcharr-e2e \
             -p 9191:9191 \
@@ -62,11 +100,15 @@ jobs:
         working-directory: ./e2e
         run: npx playwright install --with-deps chromium
 
+      - name: Typecheck
+        working-directory: ./e2e
+        run: npm run typecheck
+
       - name: Run E2E tests
         working-directory: ./e2e
         env:
           E2E_BASE_URL: http://localhost:9191
-        run: npx playwright test
+        run: npx playwright test --project=${{ matrix.project }}
 
       - name: Container logs (on failure)
         if: failure()
@@ -76,7 +118,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: playwright-report
+          name: playwright-report-${{ matrix.project }}
           path: e2e/playwright-report/
           retention-days: 7
           if-no-files-found: ignore
