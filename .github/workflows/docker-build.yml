@@ -4,7 +4,6 @@ on:
   push:
     branches:
       - main
-      - dev
 
 permissions:
   contents: read
@@ -40,9 +39,6 @@ jobs:
           if [[ "$GITHUB_REF_NAME_FULL" == "refs/heads/main" ]]; then
             echo "TAG=latest" >> $GITHUB_ENV
             echo "BRANCH=main" >> $GITHUB_ENV
-          elif [[ "$GITHUB_REF_NAME_FULL" == "refs/heads/dev" ]]; then
-            echo "TAG=dev" >> $GITHUB_ENV
-            echo "BRANCH=dev" >> $GITHUB_ENV
           fi
 
       - name: Convert repository name to lowercase

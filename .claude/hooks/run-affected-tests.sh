@@ -145,6 +145,14 @@ case "$REL" in
   .github/dependabot.yml|.github/dependabot.yaml|\
   action.yml|action.yaml|*/action.yml|*/action.yaml)
     if command -v zizmor >/dev/null 2>&1; then
+      # Keep in sync with the pinned `version:` in actions-lint.yml — that's
+      # the whole point of this check. A silent PATH mismatch here is worse
+      # than no check: it lets local and CI disagree about what's clean.
+      ZIZMOR_EXPECTED_VERSION="1.29.0"
+      ZIZMOR_ACTUAL_VERSION="$(zizmor --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
+      if [ -n "$ZIZMOR_ACTUAL_VERSION" ] && [ "$ZIZMOR_ACTUAL_VERSION" != "$ZIZMOR_EXPECTED_VERSION" ]; then
+        note "zizmor on PATH is ${ZIZMOR_ACTUAL_VERSION}, but actions-lint.yml pins ${ZIZMOR_EXPECTED_VERSION} — local and CI findings can disagree. Run 'brew upgrade zizmor' (or reinstall to the pinned version)."
+      fi
       ZFLAGS=(--no-progress --format=github)
       ZTOKEN="${GH_TOKEN:-${GITHUB_TOKEN:-}}"
       [ -n "$ZTOKEN" ] || ZTOKEN="$(gh auth token 2>/dev/null)"

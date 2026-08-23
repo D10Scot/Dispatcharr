@@ -2,7 +2,7 @@ name: Backend Tests
 
 on:
   push:
-    branches: [main, dev]
+    branches: [main]
     paths:
       - 'apps/**'
       - 'core/**'
@@ -15,7 +15,7 @@ on:
       - 'scripts/ci_bootstrap_backend.sh'
       - '.github/workflows/backend-tests.yml'
   pull_request:
-    branches: [main, dev]
+    branches: [main]
     paths:
       - 'apps/**'
       - 'core/**'
@@ -97,26 +97,16 @@ jobs:
         id: base_image
         shell: bash
         env:
-          EVENT_NAME: ${{ github.event_name }}
-          BASE_REF: ${{ github.base_ref }}
-          REF_NAME: ${{ github.ref_name }}
           REPOSITORY_OWNER: ${{ github.repository_owner }}
           REPOSITORY_NAME: ${{ github.event.repository.name }}
         run: |
           set -euo pipefail
-          if [ "$EVENT_NAME" = "pull_request" ]; then
-            TARGET_BRANCH="$BASE_REF"
-          else
-            TARGET_BRANCH="$REF_NAME"
-          fi
-          if [ "$TARGET_BRANCH" = "main" ]; then
-            TAG="base"
-          else
-            TAG="base-dev"
-          fi
+          # base-image.yml only ever publishes one tag now: `base`, built from
+          # main. This fork has no dev branch, so there's no second tag to
+          # select between.
           REPO_OWNER="$(echo "$REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')"
           REPO_NAME="$(echo "$REPOSITORY_NAME" | tr '[:upper:]' '[:lower:]')"
-          echo "image=ghcr.io/${REPO_OWNER}/${REPO_NAME}:${TAG}" >> "$GITHUB_OUTPUT"
+          echo "image=ghcr.io/${REPO_OWNER}/${REPO_NAME}:base" >> "$GITHUB_OUTPUT"
           if grep -qx 'pyproject.toml' /tmp/changed_paths.txt || [ "$EVENT_NAME" = "workflow_dispatch" ]; then
             echo "sync_python_deps=true" >> "$GITHUB_OUTPUT"
           else
@@ -145,8 +135,8 @@ jobs:
     if: needs.plan.outputs.has_tests == 'true'
     runs-on: ubuntu-latest
     container:
-      # This is this repository's own base image, rebuilt by base-image.yml and
-      # selected by branch (:base on main, :base-dev elsewhere) in the plan job.
+      # This is this repository's own base image, rebuilt by base-image.yml on
+      # every push to main and selected as `:base` in the plan job.
       # A digest pin cannot apply to a deliberately floating own-built tag, and
       # resolving the digest at runtime in this same job would trust the same
       # registry response the tag already does — no integrity gained.

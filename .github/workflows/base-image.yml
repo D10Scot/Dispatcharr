@@ -2,13 +2,13 @@ name: Base Image Build
 
 on:
   push:
-    branches: [main, dev]
+    branches: [main]
     paths:
       - 'docker/DispatcharrBase'
       - '.github/workflows/base-image.yml'
       - 'pyproject.toml'
   pull_request:
-    branches: [main, dev]
+    branches: [main]
     paths:
       - 'docker/DispatcharrBase'
       - '.github/workflows/base-image.yml'
@@ -57,8 +57,6 @@ jobs:
           # Determine branch name
           if [[ "${REF}" == "refs/heads/main" ]]; then
             echo "branch_tag=base" >> $GITHUB_OUTPUT
-          elif [[ "${REF}" == "refs/heads/dev" ]]; then
-            echo "branch_tag=base-dev" >> $GITHUB_OUTPUT
           else
             # For other branches, use the branch name
             BRANCH=$(echo "${REF}" | sed 's/refs\/heads\///' | sed 's/[^a-zA-Z0-9]/-/g')
@@ -178,7 +176,7 @@ jobs:
           echo "Creating multi-arch manifest for ${OWNER}/${REPO}"
 
           # GitHub Container Registry manifests
-          # branch tag (e.g. base or base-dev)
+          # branch tag (e.g. base, or base-<branch> for a manual dispatch)
           docker buildx imagetools create \
             --annotation "index:org.opencontainers.image.title=${PREP_REPO_NAME}" \
             --annotation "index:org.opencontainers.image.description=Your ultimate IPTV & stream Management companion." \
