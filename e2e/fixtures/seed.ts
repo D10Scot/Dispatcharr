@@ -34,55 +34,55 @@ export class Seeder {
 
   channel(overrides: Record<string, unknown> = {}) {
     return this.create('/api/channels/channels/', 'channel', {
-      name: this.generatedName('channel'),
       ...overrides,
+      name: this.generatedName('channel'),
     });
   }
 
   user(overrides: Record<string, unknown> = {}) {
     const username = this.generatedName('user');
     return this.create('/api/accounts/users/', 'user', {
-      username,
       password: 'Seeded-Password-42!',
       email: `${username}@example.com`,
       user_level: 1,
       ...overrides,
+      username,
     });
   }
 
   channelProfile(overrides: Record<string, unknown> = {}) {
     return this.create('/api/channels/profiles/', 'channelProfile', {
-      name: this.generatedName('channelProfile'),
       ...overrides,
+      name: this.generatedName('channelProfile'),
     });
   }
 
   streamProfile(overrides: Record<string, unknown> = {}) {
     return this.create('/api/core/streamprofiles/', 'streamProfile', {
-      name: this.generatedName('streamProfile'),
       command: 'ffmpeg',
       parameters: '-i {streamUrl} -c copy -f mpegts pipe:1',
       is_active: true,
       ...overrides,
+      name: this.generatedName('streamProfile'),
     });
   }
 
   m3uAccount(overrides: Record<string, unknown> = {}) {
     return this.create('/api/m3u/accounts/', 'm3uAccount', {
-      name: this.generatedName('m3uAccount'),
       server_url: 'http://127.0.0.1:9/playlist.m3u',
       is_active: false,
       ...overrides,
+      name: this.generatedName('m3uAccount'),
     });
   }
 
   epgSource(overrides: Record<string, unknown> = {}) {
     return this.create('/api/epg/sources/', 'epgSource', {
-      name: this.generatedName('epgSource'),
       source_type: 'xmltv',
       url: 'http://127.0.0.1:9/xmltv.xml',
       is_active: false,
       ...overrides,
+      name: this.generatedName('epgSource'),
     });
   }
 }
