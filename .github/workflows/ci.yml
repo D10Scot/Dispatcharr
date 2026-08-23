@@ -32,6 +32,7 @@ jobs:
       branch_tag: ${{ steps.meta.outputs.branch_tag }}
       version: ${{ steps.version.outputs.version }}
       timestamp: ${{ steps.timestamp.outputs.timestamp }}
+      base_image: ${{ steps.base.outputs.image }}
 
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
@@ -39,6 +40,11 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        # Needed for "Resolve base image digest" below (docker buildx
+        # imagetools inspect) — this job otherwise never touches Docker.
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
 
       - name: Generate timestamp for build
         id: timestamp
@@ -80,6 +86,23 @@ jobs:
           else
             echo "is_fork=false" >> $GITHUB_OUTPUT
           fi
+
+      - name: Resolve base image digest
+        # Resolved exactly once, here in `prepare`, not inside the matrix
+        # job below: the matrix runs amd64 and arm64 as separate jobs on
+        # separate runners that can start minutes apart, so resolving
+        # per-leg (the previous version of this step) could let ":base"
+        # move between them and hand each arch a different base — the
+        # opposite of what this step exists to guarantee. Every matrix leg
+        # now reads the same needs.prepare.outputs.base_image.
+        id: base
+        env:
+          REPO_OWNER: ${{ steps.meta.outputs.repo_owner }}
+          REPO_NAME: ${{ steps.meta.outputs.repo_name }}
+        run: |
+          set -euo pipefail
+          DIGEST=$(docker buildx imagetools inspect "ghcr.io/${REPO_OWNER}/${REPO_NAME}:base" --format '{{json .Manifest}}' | jq -r .digest)
+          echo "image=ghcr.io/${REPO_OWNER}/${REPO_NAME}@${DIGEST}" >> "$GITHUB_OUTPUT"
 
   docker:
     needs: [prepare]
@@ -130,19 +153,6 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Resolve base image digest
-        # Pins the base for this build to whatever ":base" currently resolves
-        # to, once, so every arch in the matrix below builds against the
-        # identical base layer instead of a tag that could move mid-run.
-        id: base
-        env:
-          REPO_OWNER: ${{ needs.prepare.outputs.repo_owner }}
-          REPO_NAME: ${{ needs.prepare.outputs.repo_name }}
-        run: |
-          set -euo pipefail
-          DIGEST=$(docker buildx imagetools inspect "ghcr.io/${REPO_OWNER}/${REPO_NAME}:base" --format '{{json .Manifest}}' | jq -r .digest)
-          echo "image=ghcr.io/${REPO_OWNER}/${REPO_NAME}@${DIGEST}" >> "$GITHUB_OUTPUT"
-
       - name: Extract metadata for Docker
         id: meta
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
@@ -180,7 +190,7 @@ jobs:
             ghcr.io/${{ needs.prepare.outputs.repo_owner }}/${{ needs.prepare.outputs.repo_name }}:${{ needs.prepare.outputs.version }}-${{ needs.prepare.outputs.timestamp }}-${{ matrix.platform }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
-            BASE_IMAGE=${{ steps.base.outputs.image }}
+            BASE_IMAGE=${{ needs.prepare.outputs.base_image }}
             BRANCH=${{ github.ref_name }}
             REPO_URL=https://github.com/${{ github.repository }}
             TIMESTAMP=${{ needs.prepare.outputs.timestamp }}
@@ -296,6 +306,7 @@ jobs:
           IMAGE: ${{ steps.resolved.outputs.image }}
           DIGEST: ${{ steps.resolved.outputs.digest }}
         run: |
+          # anchore/syft v1.51.0
           docker run --rm -v "$PWD:/out" \
             anchore/syft@sha256:678bfa565b60f747aac0f8e964fe5588a24445b8d0a480e91f6efd70020dfbb0 \
             "${IMAGE}@${DIGEST}" -o spdx-json > sbom.spdx.json

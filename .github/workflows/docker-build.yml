@@ -126,6 +126,7 @@ jobs:
           IMAGE: ${{ steps.resolved.outputs.image }}
           DIGEST: ${{ steps.resolved.outputs.digest }}
         run: |
+          # anchore/syft v1.51.0
           docker run --rm -v "$PWD:/out" \
             anchore/syft@sha256:678bfa565b60f747aac0f8e964fe5588a24445b8d0a480e91f6efd70020dfbb0 \
             "${IMAGE}@${DIGEST}" -o spdx-json > sbom.spdx.json

@@ -8,6 +8,10 @@ useDefault = true
 
 [[allowlists]]
 description = "Vendored, minified drf-yasg ReDoc bundle: short minified identifiers trip generic-api-key at low entropy. Not a credential — see the commit link for the source."
+# Scoped to the one rule that actually fires here (targetRules), not a
+# blanket path exemption — a real secret landing in this same file would
+# still be caught by every other rule.
+targetRules = ["generic-api-key"]
 paths = [
   '''^staticfiles/drf-yasg/redoc/redoc\.min\.js$''',
 ]

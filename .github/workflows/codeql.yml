@@ -5,11 +5,14 @@ name: CodeQL (Actions)
 # applied to Python/JS app code, extended to the CI definitions that can
 # push to production.
 #
-# No pull_request trigger, deliberately: SARIF upload needs
-# security-events: write, which GITHUB_TOKEN does not carry on a PR from a
-# fork (see actions-lint.yml for the same constraint on zizmor). This repo's
-# own PRs are same-repo branches, not fork PRs, so push/schedule/dispatch
-# cover the real usage pattern without ever hitting that gap.
+# No pull_request trigger, deliberately. The usual reason to avoid one
+# (SARIF upload needs security-events: write, which a fork PR's
+# GITHUB_TOKEN doesn't carry — see actions-lint.yml's zizmor comment)
+# doesn't actually bind here: this repo's PRs are same-repo branches, so
+# they get that permission fine. The real tradeoff, stated plainly: CodeQL
+# never gates a PR, findings only surface after landing on main via the
+# push/schedule/dispatch triggers below. Acceptable for a single-maintainer
+# fork; revisit if that changes.
 
 on:
   push:

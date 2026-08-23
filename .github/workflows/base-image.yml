@@ -26,9 +26,16 @@ on:
 permissions:
   contents: read
 
+# No cancel-in-progress, same reasoning as release.yml: this pushes
+# per-arch :base-amd64/:base-arm64 tags and then merges them into :base
+# with `imagetools create`. Cancelling between those two steps would leave
+# :base itself stale while the per-arch tags underneath it moved on — and
+# :base is now read live by ci.yml/docker-build.yml/release.yml's
+# "Resolve base image digest" steps, so a stale-but-still-present :base is
+# exactly the failure mode those steps exist to avoid. Serialize instead.
 concurrency:
   group: base-image-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   prepare:
@@ -272,6 +279,7 @@ jobs:
           IMAGE: ${{ steps.resolved.outputs.image }}
           DIGEST: ${{ steps.resolved.outputs.digest }}
         run: |
+          # anchore/syft v1.51.0
           docker run --rm -v "$PWD:/out" \
             anchore/syft@sha256:678bfa565b60f747aac0f8e964fe5588a24445b8d0a480e91f6efd70020dfbb0 \
             "${IMAGE}@${DIGEST}" -o spdx-json > sbom.spdx.json
