@@ -65,7 +65,7 @@ jobs:
           DOCKERFILE: ${{ matrix.dockerfile }}
         run: |
           docker run --rm -i hadolint/hadolint@sha256:32dac94127fd60b7b7e3fbfc65e1383b9b5e25c9bfd7b8536de7a539fe68a12d \
-            --failure-threshold error < "$DOCKERFILE"
+            hadolint --failure-threshold error - < "$DOCKERFILE"
 
   gitleaks:
     name: gitleaks
@@ -94,7 +94,11 @@ jobs:
           persist-credentials: false
 
       - name: uv lock --check
+        # The plain (distroless) uv:0.12.5 image has no system libc it can
+        # introspect to auto-download a managed Python, so `uv lock` fails
+        # outright inside it — use the python3.13-trixie-slim variant, which
+        # is what was actually verified to work locally before this went in.
         run: |
           docker run --rm -v "$PWD:/repo" -w /repo \
-            ghcr.io/astral-sh/uv:0.12.5@sha256:e85be844203885286c60ffad8a858d48afb6c5a5c237ca0e67f12e74b8f174b1 \
-            lock --check
+            ghcr.io/astral-sh/uv:0.12.5-python3.13-trixie-slim@sha256:d1e005e6f5aac724b7554db95f1c128a77d8d35b59ebe70e188852b4bdad3a3d \
+            uv lock --check
