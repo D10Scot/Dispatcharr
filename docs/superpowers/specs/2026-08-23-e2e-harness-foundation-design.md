@@ -27,7 +27,8 @@ Each was checked against the pinned types in `e2e/node_modules` or this repo, no
 
 | Fact | Source | Consequence |
 |---|---|---|
-| Auth is JWT; tokens live in `localStorage` as `token` / `refreshToken` | `frontend/src/api.js:168–194` | `storageState` can carry auth; no need to drive the login form per test |
+| Auth is JWT; the browser persists **three** localStorage keys: `accessToken`, `refreshToken`, `tokenExpiration` (the access token's `exp` claim, unix seconds) | `frontend/src/store/auth.jsx:15–25, 186–190` | `storageState` can carry auth. **All three keys are required** — `getToken()` reads `tokenExpiration` first and refreshes if it is missing or past, so a state with only the tokens silently forces a refresh on every call |
+| There is **no** `token` key. `api.js:192` clears a `token` key on the 401 path, but nothing ever writes it | `frontend/src/api.js:192` vs `store/auth.jsx:188` | Dead key. A hand-built `storageState` using `token` authenticates nobody and lands the test on `/login` with no obvious cause |
 | `StorageState` is `{ cookies, origins }`, `origins` carrying localStorage | `playwright/types/test.d.ts:7504` | The above actually works |
 | `TestProject` supports `dependencies`, `fullyParallel`, `retries`, `teardown`, `timeout`, `workers` | `playwright/types/test.d.ts:173, 319, 445, 624, 711, 752` | Project topology below is expressible; ordering is a real dependency, not a convention |
 | `testInfo.workerIndex` is unique per worker, and a restarted worker gets a **new** index | `test.d.ts:2705` | Prefix namespacing is safe even across worker restarts |
@@ -36,6 +37,8 @@ Each was checked against the pinned types in `e2e/node_modules` or this repo, no
 | `ci.yml` does not push on pull requests; its build is multi-arch | `.github/workflows/ci.yml:148, 79` | Image cannot be shared between jobs via GHCR on the PR path |
 | AIO image is ~3.6 GB (`:base` 3.56 GB) | `docker images` | Image transport is expensive; minimise the number of consumers |
 | The app is WebSocket-driven for async work — 40+ message types on one `updates` group | `frontend/src/WebSocket.jsx` | Background work does not complete with the HTTP response that triggers it |
+| `POST /api/accounts/initialize-superuser/` is IP-gated to private/loopback by default | `dispatcharr/utils.py:142–171` | Works from CI (the request arrives from the Docker gateway, a private address). Pointing `E2E_BASE_URL` at a *public* instance fails bootstrap unless `DISPATCHARR_SETUP_ALLOWED_IP` is set |
+| Usernames must match `^[A-Za-z0-9._@-]+$` | `apps/accounts/serializers.py:16` | The `e2e-w0-…` prefix format is legal; do not introduce other separators |
 
 ## Decisions
 
