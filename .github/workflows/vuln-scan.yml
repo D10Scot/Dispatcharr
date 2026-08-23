@@ -1,0 +1,178 @@
+name: Vulnerability Scan
+
+# Category 03 (vulnerability scanning gate). Two independent layers with
+# non-overlapping data sources:
+#   - OSV-Scanner reads the committed lockfiles directly (uv.lock,
+#     frontend/package-lock.json, e2e/package-lock.json) — fast, runs on
+#     every relevant push/PR, no image build needed.
+#   - Trivy + Grype scan the images this repo actually publishes, against
+#     independent vulnerability databases, catching OS-package CVEs a
+#     lockfile-only view can't see.
+#
+# Tiered policy throughout: CRITICAL/HIGH findings with a fix available
+# block; everything else (no fix yet, or lower severity) is logged but not
+# gated — see the comments on each job for exactly what fails vs. what's
+# informational.
+#
+# Image-scan jobs pull the public GHCR images anonymously (no login step):
+# this workflow requests no packages permission at all, let alone write —
+# it cannot publish anything even if compromised.
+#
+# DB integrity: Trivy verifies trivy-db's cosign signature before use by
+# default, and Grype verifies its DB listing checksum — both handle "don't
+# trust a poisoned DB update" without this fork standing up its own mirror,
+# which is heavier than a single-maintainer repo's threat model justifies
+# right now. Revisit if that changes.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'uv.lock'
+      - 'pyproject.toml'
+      - 'frontend/package-lock.json'
+      - 'e2e/package-lock.json'
+      - '.github/workflows/vuln-scan.yml'
+  pull_request:
+    paths:
+      - 'uv.lock'
+      - 'pyproject.toml'
+      - 'frontend/package-lock.json'
+      - 'e2e/package-lock.json'
+      - '.github/workflows/vuln-scan.yml'
+  # zizmor flags workflow_run as "almost always used insecurely" because the
+  # common misuse is checking out and building the triggering run's PR head
+  # with elevated privileges. This handler does neither: it never runs
+  # actions/checkout at all, and every image-scan job below only pulls
+  # already-published public GHCR tags by name — there is no untrusted-code
+  # execution path here for workflow_run to make dangerous.
+  workflow_run: # zizmor: ignore[dangerous-triggers]
+    workflows: ['CI Pipeline', 'Base Image Build', 'Create Release']
+    types: [completed]
+  schedule:
+    - cron: '0 5 * * *' # daily — catches newly-disclosed CVEs against already-published images
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vuln-scan-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  osv-scanner:
+    name: OSV-Scanner (lockfiles)
+    if: github.event_name != 'workflow_run' && github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: OSV-Scanner (informational — all findings, logged)
+        run: |
+          docker run --rm -v "$PWD:/repo" -w /repo \
+            ghcr.io/google/osv-scanner@sha256:8108ae94eadea5a02c9bec6e646909d5b790b44bd62d7f5b7f0b1d6d0ffc7734 \
+            scan source --lockfile=/repo/uv.lock --lockfile=/repo/frontend/package-lock.json --lockfile=/repo/e2e/package-lock.json \
+            --format table || true
+
+      - name: OSV-Scanner (blocking — CVSS >= 7.0, i.e. HIGH/CRITICAL)
+        run: |
+          docker run --rm -v "$PWD:/repo" -w /repo \
+            ghcr.io/google/osv-scanner@sha256:8108ae94eadea5a02c9bec6e646909d5b790b44bd62d7f5b7f0b1d6d0ffc7734 \
+            scan source --lockfile=/repo/uv.lock --lockfile=/repo/frontend/package-lock.json --lockfile=/repo/e2e/package-lock.json \
+            --format json --output-file=osv-results.json || true
+          python3 -c "
+          import json, sys
+          data = json.load(open('osv-results.json'))
+          worst = 0.0
+          hits = []
+          for result in data.get('results', []):
+              for pkg in result.get('packages', []):
+                  name = pkg.get('package', {}).get('name', '?')
+                  for group in pkg.get('groups', []):
+                      sev = group.get('max_severity') or '0'
+                      try:
+                          score = float(sev)
+                      except ValueError:
+                          score = 0.0
+                      worst = max(worst, score)
+                      if score >= 7.0:
+                          hits.append(f'{name}: CVSS {score} ({\",\".join(group.get(\"ids\", []))})')
+          print(f'Highest CVSS across OSV findings: {worst}')
+          if hits:
+              print('HIGH/CRITICAL findings blocking this build:')
+              for h in hits:
+                  print(f'  - {h}')
+              sys.exit(1)
+          "
+
+  trivy:
+    name: Trivy (${{ matrix.image_tag }})
+    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        image_tag: [latest, base]
+    steps:
+      - name: Resolve image reference
+        id: image
+        env:
+          REPO_OWNER: ${{ github.repository_owner }}
+          REPOSITORY: ${{ github.repository }}
+          IMAGE_TAG: ${{ matrix.image_tag }}
+        run: |
+          REPO_NAME=$(echo "$REPOSITORY" | cut -d '/' -f 2 | tr '[:upper:]' '[:lower:]')
+          OWNER=$(echo "$REPO_OWNER" | tr '[:upper:]' '[:lower:]')
+          echo "ref=ghcr.io/${OWNER}/${REPO_NAME}:${IMAGE_TAG}" >> "$GITHUB_OUTPUT"
+
+      - name: Trivy (informational — all severities, logged)
+        env:
+          IMAGE_REF: ${{ steps.image.outputs.ref }}
+        run: |
+          docker run --rm aquasec/trivy@sha256:62b1e65e8869bc4b4c6aa4fa2b21595256c7c2f6018a9d9ad61caf87187c1969 \
+            image --format table --scanners vuln --timeout 8m "$IMAGE_REF" || true
+
+      - name: Trivy (blocking — CRITICAL/HIGH, fixable only)
+        env:
+          IMAGE_REF: ${{ steps.image.outputs.ref }}
+        run: |
+          docker run --rm aquasec/trivy@sha256:62b1e65e8869bc4b4c6aa4fa2b21595256c7c2f6018a9d9ad61caf87187c1969 \
+            image --severity CRITICAL,HIGH --ignore-unfixed --exit-code 1 --format table --scanners vuln --timeout 8m \
+            "$IMAGE_REF"
+
+  grype:
+    name: Grype (${{ matrix.image_tag }})
+    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        image_tag: [latest, base]
+    steps:
+      - name: Resolve image reference
+        id: image
+        env:
+          REPO_OWNER: ${{ github.repository_owner }}
+          REPOSITORY: ${{ github.repository }}
+          IMAGE_TAG: ${{ matrix.image_tag }}
+        run: |
+          REPO_NAME=$(echo "$REPOSITORY" | cut -d '/' -f 2 | tr '[:upper:]' '[:lower:]')
+          OWNER=$(echo "$REPO_OWNER" | tr '[:upper:]' '[:lower:]')
+          echo "ref=ghcr.io/${OWNER}/${REPO_NAME}:${IMAGE_TAG}" >> "$GITHUB_OUTPUT"
+
+      - name: Grype (informational — all findings, logged)
+        env:
+          IMAGE_REF: ${{ steps.image.outputs.ref }}
+        run: |
+          docker run --rm anchore/grype@sha256:ddf9e9f204049f3a4a0955ef70873cabab6a31432125ad4f20a490b54950a253 \
+            "$IMAGE_REF" -o table || true
+
+      - name: Grype (blocking — critical, fixable only)
+        env:
+          IMAGE_REF: ${{ steps.image.outputs.ref }}
+        run: |
+          docker run --rm anchore/grype@sha256:ddf9e9f204049f3a4a0955ef70873cabab6a31432125ad4f20a490b54950a253 \
+            "$IMAGE_REF" --fail-on critical --only-fixed -o table
