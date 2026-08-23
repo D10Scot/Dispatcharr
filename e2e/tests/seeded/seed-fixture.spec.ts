@@ -21,7 +21,7 @@ test('overrides are applied', async ({ seed }) => {
   const profile = await seed.channelProfile();
   expect(profile.name).toMatch(/channelProfile/);
 
-  // user_level defaults to 1 (seed.ts:57) — override to 0 so this assertion
+  // user_level defaults to 1 in seed.ts — override to 0 so this assertion
   // can actually fail if ...overrides stopped being applied.
   const user = await seed.user({ user_level: 0 });
   expect(user.user_level).toBe(0);

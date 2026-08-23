@@ -125,10 +125,10 @@ so you inherit the analysis instead of rediscovering it through a mystery
    toast rendering to a frontend-focused test.
 6. Driving more than one non-admin principal? Read the login throttle section
    above first — it has a real budget and a real trap.
-7. New to the harness? `authorization.spec.ts`, `async-wait.spec.ts` and
-   `stream-client.spec.ts` (all under `tests/seeded` and `tests/streaming`)
-   are marked "Exemplar:" for exactly this — read one before writing the
-   equivalent kind of test.
+7. New to the harness? `authenticated-session.spec.ts`, `authorization.spec.ts`,
+   `async-wait.spec.ts` (two exemplars in one file) and `stream-client.spec.ts`
+   (under `tests/seeded` and `tests/streaming`) each carry an "Exemplar:"
+   comment for exactly this — read the one closest to what you're writing.
 8. Update `COVERAGE.md` in the same PR as the test.
 9. Found a product bug? Don't patch the product from this harness. Assert
    the *correct* behaviour, mark the test `test.fail()`, and file it:
