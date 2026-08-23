@@ -29,12 +29,17 @@ export async function startStaticUpstream(port: number) {
       const burst = Buffer.concat(
         Array.from({ length: 10 }, () => makePacket(counter++))
       );
-      if (!res.write(burst)) return;
+      res.write(burst);
     }, 20);
     res.on('close', () => clearInterval(timer));
   });
 
-  await new Promise<void>((resolve) => server.listen(port, '127.0.0.1', resolve));
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', (err) =>
+      reject(new Error(`static upstream failed to listen on port ${port}: ${err.message}`))
+    );
+    server.listen(port, '127.0.0.1', resolve);
+  });
 
   return {
     url: `http://127.0.0.1:${port}`,
