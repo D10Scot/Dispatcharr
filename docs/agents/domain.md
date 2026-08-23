@@ -45,12 +45,12 @@ When your output names a domain concept (in an issue title, a refactor proposal,
 If the concept you need isn't in the glossary yet, that's a signal: either you're inventing language the project doesn't use (reconsider) or there's a real gap (note it for `/domain-modeling`).
 
 **This repo has a known vocabulary trap.** Three distinct concepts are called "profile" —
-**Stream Profile** (how we talk upstream: Redirect / Proxy / FFmpeg), **Output Profile**
-(optional downstream transcode), and **Channel Profile** (the M2M authorization grouping) —
-and "stream" means both a `Stream` model row and the act of streaming. Never write a bare
-"profile". A root `CONTEXT.md` is planned as a deliverable of the E2E harness goal
-(`docs/superpowers/specs/2026-08-23-e2e-harness-foundation-design.md`); until it lands,
-`CLAUDE.md`'s Architecture section is the authority.
+**Stream Profile** (how we talk upstream: Redirect, Proxy, or subprocess — shipped as five
+locked rows, since `ffmpeg`/`streamlink`/`VLC` are three spellings of the subprocess
+architecture, not three architectures), **Output Profile** (optional downstream transcode),
+and **Channel Profile** (the M2M authorization grouping) — and "stream" means both a `Stream`
+model row and the act of streaming. Never write a bare "profile". The root `CONTEXT.md` is
+the authority on this vocabulary; read it before naming any of these terms.
 
 ## Flag ADR conflicts
 

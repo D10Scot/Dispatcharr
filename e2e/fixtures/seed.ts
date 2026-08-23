@@ -1,5 +1,13 @@
 import type { ApiClient } from './api';
 
+/**
+ * The password `seed.user()` assigns by default. Exported so `asUser`
+ * callers have one source of truth instead of re-declaring the literal —
+ * a caller can still override it via `overrides.password`, in which case
+ * this constant no longer describes that user.
+ */
+export const SEEDED_USER_PASSWORD = 'Seeded-Password-42!';
+
 /** Usernames are validated against ^[A-Za-z0-9._@-]+$ — keep names in that set. */
 function sanitise(value: string): string {
   return value.replace(/[^A-Za-z0-9._@-]/g, '-');
@@ -52,7 +60,7 @@ export class Seeder {
   user(overrides: Record<string, unknown> = {}) {
     const username = this.generatedName('user');
     return this.create('/api/accounts/users/', 'user', {
-      password: 'Seeded-Password-42!',
+      password: SEEDED_USER_PASSWORD,
       email: `${username}@example.com`,
       user_level: 1,
       ...overrides,

@@ -21,7 +21,7 @@ shared container seeded through the existing REST API.
 
 One container per CI job. Tests seed what they need through the REST API and
 assert only on entities they created, which carry a generated name prefixed
-with the Playwright worker index.
+`e2e-w{worker index}-` (tests assert the pattern as `/^e2e-w\d+-/`).
 
 Populations that genuinely cannot share an instance — first-run setup, global
 settings, migrations, PUID/PGID, TLS Postgres — run in a separate `pristine`

@@ -53,7 +53,7 @@ export const test = base.extend<Fixtures>({
 
 export { expect } from '@playwright/test';
 export { ApiClient } from './api';
-export { Seeder } from './seed';
+export { Seeder, SEEDED_USER_PASSWORD } from './seed';
 export { makeUserClient } from './auth';
 export { Waiter } from './wait';
 export { WsListener } from './ws';

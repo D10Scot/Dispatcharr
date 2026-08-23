@@ -5,24 +5,31 @@ Playwright against a real Dispatcharr AIO container.
 ## Quick start
 
 ```bash
-./scripts/e2e_up.sh --reset     # build + run a fresh container
+./scripts/e2e_up.sh --reset     # fresh container; reuses the existing image
 cd e2e
 npm ci
 npx playwright install --with-deps chromium
-npm run test:seeded
+npm run typecheck && npm run test:seeded
 ```
+
+`--reset` destroys the container and its data volume, but only *builds* the
+image if `dispatcharr-e2e:local` doesn't already exist (`scripts/e2e_up.sh:18-20`).
+If you changed product code and want to test it, remove the stale image first:
+`docker rmi dispatcharr-e2e:local`.
 
 ## Projects
 
 | Project | What it is for |
 |---|---|
-| `bootstrap` | Creates the superuser and writes auth state. Runs automatically as a dependency |
+| `bootstrap` | Creates the superuser and writes auth state. Runs automatically as a dependency of `seeded` and `streaming` |
 | `pristine` | Needs an instance with no superuser: first-run, migrations, PUID/PGID |
 | `seeded` | The default. Shared instance, parallel workers, API-seeded data |
 | `streaming` | Byte-level tests. Long timeouts, fewer workers |
 
-`pristine` and `seeded` cannot share a container — `bootstrap` consumes the
-first-run state. Run them separately, resetting between:
+`pristine` deliberately has no `bootstrap` dependency — it needs the
+superuser *not* to exist yet, which is the entire point of that project, and
+is why `pristine` and `seeded` cannot share a container. `bootstrap` consumes
+the first-run state, so run them separately, resetting between:
 
 ```bash
 ./scripts/e2e_up.sh --reset && npm run test:pristine
@@ -66,7 +73,9 @@ Current spend, in this harness:
   auth files, or a token older than the 30-minute access lifetime
   (`SIMPLE_JWT.ACCESS_TOKEN_LIFETIME`, `dispatcharr/settings.py:452`).
 - Each **distinct** `asUser` principal costs 1 login
-  (`e2e/fixtures/auth.ts`).
+  (`e2e/fixtures/auth.ts`). `seed.user()` assigns every principal it creates
+  the password exported as `SEEDED_USER_PASSWORD` from `../../fixtures`
+  (`e2e/fixtures/seed.ts`) — import that rather than hardcoding the literal.
 - `makeUserClient` caches token pairs keyed on `username:password`, so
   repeated `asUser` calls for the *same* principal are free after the first.
 - `TokenRefreshView` is **not** throttled (`apps/accounts/api_views.py:133`
@@ -77,10 +86,14 @@ Current spend, in this harness:
 **The trap:** `seed.user()` generates a unique username on every call
 (`e2e/fixtures/seed.ts`), so a test that seeds a fresh principal per test
 gets **no cache benefit at all** — every `asUser` call for it is a guaranteed
-miss. An authorization matrix seeding a new user per test, spread across
-parallel workers, will 429 on its third distinct principal within any
-60-second window. `makeUserClient` throws on a non-OK login response, so this
-surfaces as a hard test failure, not a retry.
+miss. DRF's throttle allows the first 3 requests inside a 60-second window and
+refuses the 4th, so the failure lands on whichever login is the fourth in that
+window: on a warm run (`bootstrap` costs 0) that's the **4th** distinct
+`asUser` principal; on a cold run (`bootstrap` costs 1) it's already the
+**3rd**. Either way, an authorization matrix seeding a new user per test,
+spread across parallel workers, hits this within seconds. `makeUserClient`
+throws on a non-OK login response, so this surfaces as a hard test failure,
+not a retry.
 
 **The remedy, for whichever goal needs a real matrix:** seed a small, fixed
 set of principals **once per worker** (a `worker`-scoped Playwright fixture)
@@ -96,19 +109,42 @@ so you inherit the analysis instead of rediscovering it through a mystery
 
 1. Read the root `CONTEXT.md`. Three different things are called "profile".
 2. Import from `../../fixtures`, never `@playwright/test` directly — the
-   fixtures module is what wires in `api`, `seed`, `asUser` and the rest, and
-   importing the raw package silently drops all of them.
+   fixtures module is what wires in `api`, `seed`, `asUser` and the rest.
+   Importing the raw package instead is caught at `npm run typecheck` (the
+   custom fixtures aren't on the base `test`'s parameter type); if you
+   somehow get past that, Playwright itself refuses at run time with "Test
+   has unknown parameter".
 3. Seed what you need with `seed`; never assume the instance is empty. It
    never is — every project shares one container across the whole suite.
-4. Never assert a global count, an unfiltered list, or a notification toast.
-   Another test's data, or another worker running concurrently, will make
-   those flake or lie. Filter on the name your `seed` call generated.
-5. Update `COVERAGE.md` in the same PR as the test.
-6. Found a product bug? Don't patch the product from this harness. Assert
+4. Never assert a global count or an unfiltered list — another test's data,
+   or another worker running concurrently, will make those flake or lie.
+   Filter on the name your `seed` call generated.
+5. Never assert on a notification toast. That doesn't flake so much as it
+   turns what should be a backend/API-level assertion into a frontend one —
+   assert the underlying state through `api`/`waitFor` instead, and leave
+   toast rendering to a frontend-focused test.
+6. Driving more than one non-admin principal? Read the login throttle section
+   above first — it has a real budget and a real trap.
+7. New to the harness? `authorization.spec.ts`, `async-wait.spec.ts` and
+   `stream-client.spec.ts` (all under `tests/seeded` and `tests/streaming`)
+   are marked "Exemplar:" for exactly this — read one before writing the
+   equivalent kind of test.
+8. Update `COVERAGE.md` in the same PR as the test.
+9. Found a product bug? Don't patch the product from this harness. Assert
    the *correct* behaviour, mark the test `test.fail()`, and file it:
    `gh issue create --repo D10Scot/Dispatcharr`. The `--repo` flag is
    mandatory here — this checkout is a fork, and `gh` without it resolves to
    upstream's public tracker, not this fork's.
+
+## CI
+
+`.github/workflows/e2e-tests.yml` builds the AIO image once, then runs
+`pristine`, `seeded` and `streaming` as a hardcoded three-job matrix
+(`e2e-tests.yml:49-50`), each against its own fresh container, each gated on
+`npm run typecheck` before tests run. **If you add a fourth project to
+`playwright.config.ts`, add it to that matrix too** — nothing wires new
+projects in automatically, and a project missing from the matrix gets no CI
+coverage and no failure signal.
 
 ## Architecture note
 

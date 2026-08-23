@@ -1,6 +1,4 @@
-import { test, expect } from '../../fixtures';
-
-const SEEDED_PASSWORD = 'Seeded-Password-42!';
+import { test, expect, SEEDED_USER_PASSWORD } from '../../fixtures';
 
 // Exemplar: how wave 2 drives a non-admin principal. The REST API is
 // deny-by-default (DEFAULT_PERMISSION_CLASSES = IsAdmin), so a Standard user
@@ -8,7 +6,7 @@ const SEEDED_PASSWORD = 'Seeded-Password-42!';
 test('a Standard user cannot list users', async ({ seed, asUser }) => {
   const user = await seed.user({ user_level: 1 });
 
-  const client = await asUser(user.username, SEEDED_PASSWORD);
+  const client = await asUser(user.username, SEEDED_USER_PASSWORD);
 
   // Establish the principal before asserting the refusal, because the refusal
   // on its own is not evidence of anything. IsAdmin extends Authenticated
