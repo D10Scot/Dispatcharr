@@ -245,6 +245,7 @@ jobs:
       packages: write # push the signature/attestation alongside the image
       id-token: write # mint the OIDC token cosign and the attest actions use
       attestations: write
+      artifact-metadata: write # required by actions/attest for the artifact storage record
     steps:
       - name: Login to GitHub Container Registry
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
@@ -285,7 +286,10 @@ jobs:
             "${IMAGE}@${DIGEST}" -o spdx-json > sbom.spdx.json
 
       - name: Attest SBOM
-        uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v4.1.0
+        # actions/attest-sbom is deprecated in favor of actions/attest (same
+        # inputs) — confirmed via a real run of this exact job before this
+        # rename, which also surfaced the deprecation warning below.
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-name: ${{ steps.resolved.outputs.image }}
           subject-digest: ${{ steps.resolved.outputs.digest }}
