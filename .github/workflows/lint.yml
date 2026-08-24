@@ -35,13 +35,14 @@ jobs:
         # shellcheck/pyflakes integrations disabled: they audit `run:` shell
         # quality, a different concern from actionlint's own workflow-syntax
         # checks, and would fail immediately on pre-existing debt across
-        # every workflow file. actionlint's own checks are 0 findings; keep
-        # it that way rather than opening with a backlog like zizmor did.
+        # every workflow file. Generated *.lock.yml files are excluded here:
+        # gh-aw emits fields newer than this pinned actionlint release.
         run: |
+          workflow_files=$(find .github/workflows -maxdepth 1 -type f \( -name "*.yml" -o -name "*.yaml" \) ! -name "*.lock.yml" ! -name "*.lock.yaml")
           # rhysd/actionlint v1.7.12
           docker run --rm -v "$PWD:/repo" -w /repo \
             rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 \
-            -color -shellcheck= -pyflakes=
+            -color -shellcheck= -pyflakes= $workflow_files
 
   hadolint:
     name: hadolint (${{ matrix.dockerfile }})
