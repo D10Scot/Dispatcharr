@@ -45,7 +45,7 @@ one up. CI binds the same way.
 | Project | What it is for |
 |---|---|
 | `bootstrap` | Creates the superuser, pre-warms the `IntervalSchedule` row (see below) and writes auth state. Runs automatically as a dependency of `seeded` and `streaming` |
-| `pristine` | Needs an instance with no superuser: first-run, migrations, PUID/PGID |
+| `pristine` | Needs an instance with **no superuser**: first-run setup, and global `CoreSettings` changes |
 | `seeded` | The default. Shared instance, parallel workers, API-seeded data |
 | `streaming` | Byte-level tests. Long timeouts, fewer workers |
 
@@ -58,6 +58,20 @@ the first-run state, so run them separately, resetting between:
 ./scripts/e2e_up.sh --reset && npm run test:pristine
 ./scripts/e2e_up.sh --reset && npm run test:seeded
 ```
+
+**`pristine` is not the home for every test that cannot use `seeded`.** Its
+requirement is narrow and specific — no superuser yet — and that is the whole
+of it. Upgrade-with-migrations, restart persistence, PUID/PGID and TLS Postgres
+need instances that are *differently configured*, not merely fresh: a previous
+image, a different launch environment, and different services and volume
+history respectively. None of them shares a container with `pristine`, or with
+each other. `docker/tests/test-puid-pgid.sh` drives 20 scenarios through its
+own `docker run` orchestration, standing up a container and a volume per
+scenario; `test-tls-postgres.sh` stands up its own PostgreSQL and Redis with
+generated certificates on a dedicated network. Those are G7's
+scenario-specific jobs, not `pristine` specs — see the G7 paragraph in
+`docs/superpowers/specs/2026-08-23-e2e-coverage-roadmap-design.md`, which is
+the authority here.
 
 `npm test` (no suffix) deliberately fails with a message telling you to pick
 one of the three — there is no single invocation that is correct for all of
