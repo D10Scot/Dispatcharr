@@ -16,7 +16,10 @@ permissions:
   contents: read
   issues: read
   pull-requests: read
-  copilot-requests: write
+engine:
+  id: copilot
+  env:
+    COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
 model: gpt-5.6-sol
 timeout-minutes: 45
 features:
