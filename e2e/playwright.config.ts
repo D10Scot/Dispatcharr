@@ -1,4 +1,6 @@
 import { defineConfig } from '@playwright/test';
+import { MAX_LOGIN_WAIT_MS } from './setup/login';
+import { PRINCIPAL_NAMES } from './setup/principals';
 
 const baseURL = process.env.E2E_BASE_URL || 'http://localhost:9191';
 
@@ -20,11 +22,23 @@ export default defineConfig({
       testDir: './setup',
       testMatch: /.*\.setup\.ts/,
       // Longer than the global 30s because this is the one place allowed to
-      // wait out the login throttle. `provisionPrincipals` backs off for a
-      // full 3/minute window rather than failing when the budget is already
-      // spent — safe here, where nothing runs in parallel and no test is
-      // waiting, and impossible in a worker. Ordinary runs take ~2s.
-      timeout: 180_000,
+      // wait out the login throttle: every login here — the admin's and one
+      // per principal — backs off for a window rather than failing when the
+      // 3/minute budget is already spent. Safe where nothing runs in parallel
+      // and no test is waiting, and impossible in a worker.
+      //
+      // Derived rather than a round number, so adding a principal to the
+      // roster cannot silently push the worst case past it: one login per
+      // principal plus the admin's, each able to block for `MAX_LOGIN_WAIT_MS`,
+      // plus a minute for the requests around them. Ordinary runs take ~2s.
+      timeout: (PRINCIPAL_NAMES.length + 1) * MAX_LOGIN_WAIT_MS + 60_000,
+      // Retries deliberately stay as the global setting (1 in CI). With the
+      // admin pair persisted before anything that can throw, and the principal
+      // file rewritten after each principal, a retry now starts *warm*: it
+      // spends no logins and re-attempts only what failed. That is the
+      // opposite of `pristine`, which sets `retries: 0` because its first
+      // attempt consumes the first-run state its second attempt would need.
+      // Bootstrap consumes nothing — it is idempotent by construction.
     },
     {
       name: 'pristine',

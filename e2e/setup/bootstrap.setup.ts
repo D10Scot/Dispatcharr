@@ -3,20 +3,14 @@ import type { APIRequestContext } from '@playwright/test';
 import fs from 'node:fs';
 import path from 'node:path';
 import { ADMIN } from './credentials';
+import { hasLifeLeft, jwtExp, loginWithThrottleBackoff } from './login';
+import type { TokenPair } from './login';
 import { provisionPrincipals } from './principals';
 import { assertMayCreateSuperuser } from './superuser-guard';
 
 const AUTH_DIR = 'playwright/.auth';
 const STATE_FILE = path.join(AUTH_DIR, 'admin.json');
 const TOKENS_FILE = path.join(AUTH_DIR, 'tokens.json');
-
-type TokenPair = { access: string; refresh: string };
-
-/** The access token's `exp` claim, in unix seconds. */
-function jwtExp(accessToken: string): number {
-  const payload = accessToken.split('.')[1];
-  return JSON.parse(Buffer.from(payload, 'base64').toString('utf8')).exp;
-}
 
 /**
  * The previous run's tokens, if the access token still authenticates.
@@ -46,16 +40,24 @@ async function reusableTokens(
   if (!stored.access || !stored.refresh) return null;
 
   let access = stored.access;
-  let probe = await request.get('/api/accounts/users/me/', {
-    headers: { Authorization: `Bearer ${access}` },
-  });
 
   // An access token expires after 30 minutes and a refresh token after a day
   // (`SIMPLE_JWT`), and `TokenRefreshView` is not throttled — so a run more
   // than half an hour after the last one can renew for free instead of
   // spending one of the three logins a minute buys. Without this, any gap
   // longer than the access lifetime made bootstrap cold again.
-  if (!probe.ok()) {
+  //
+  // Renewed on the *margin*, not only on an outright failure: a token with two
+  // seconds left probes fine, and would then be used for the pre-warm, for
+  // every admin write in provisioning, and written into `admin.json` as the
+  // seeded project's storageState for the length of the run.
+  let probe = hasLifeLeft(access)
+    ? await request.get('/api/accounts/users/me/', {
+        headers: { Authorization: `Bearer ${access}` },
+      })
+    : null;
+
+  if (!probe?.ok()) {
     const refreshed = await request.post('/api/accounts/token/refresh/', {
       data: { refresh: stored.refresh },
     });
@@ -69,8 +71,9 @@ async function reusableTokens(
   }
   if (!probe.ok()) return null;
 
-  // A 200 only proves the token authenticates *someone*. Both files below
-  // describe the pair as the admin's — admin.json becomes the seeded
+  // A 200 only proves the token authenticates *someone*. Both files
+  // `persistAdminAuth` writes describe the pair as the admin's — admin.json
+  // becomes the seeded
   // project's storageState, and tokens.json is written beside a spread
   // ...ADMIN — so adopting another principal's token would silently run every
   // spec as that principal, surfacing as unexplained 403s across the suite
@@ -199,6 +202,60 @@ function poisonedContainerError(verb: 'creating' | 'updating'): Error {
   );
 }
 
+/**
+ * Write both admin auth files: `tokens.json` for the API fixtures, and
+ * `admin.json` as the seeded project's `storageState`.
+ *
+ * Called as soon as a usable pair exists, before the pre-warm and before the
+ * principals — everything after this point can throw, and losing a spent login
+ * to an unrelated failure is what makes a retry cold.
+ */
+function persistAdminAuth(
+  baseURL: string,
+  access: string,
+  refresh: string
+): void {
+  fs.mkdirSync(AUTH_DIR, { recursive: true });
+  const exp = jwtExp(access);
+  if (exp === undefined) {
+    throw new Error(
+      'the admin access token is not a readable JWT, so `tokenExpiration` ' +
+        'cannot be written; refusing to persist a storageState the frontend ' +
+        'would treat as already expired.'
+    );
+  }
+
+  fs.writeFileSync(
+    TOKENS_FILE,
+    JSON.stringify({ access, refresh, ...ADMIN }, null, 2)
+  );
+
+  // Three keys, exactly these names. frontend/src/store/auth.jsx:186-190 is
+  // the only writer; api.js:192 clears a `token` key nothing ever sets.
+  // tokenExpiration must be the exp of whichever access token we just wrote,
+  // reused or freshly minted.
+  fs.writeFileSync(
+    STATE_FILE,
+    JSON.stringify(
+      {
+        cookies: [],
+        origins: [
+          {
+            origin: new URL(baseURL).origin,
+            localStorage: [
+              { name: 'accessToken', value: access },
+              { name: 'refreshToken', value: refresh },
+              { name: 'tokenExpiration', value: String(exp) },
+            ],
+          },
+        ],
+      },
+      null,
+      2
+    )
+  );
+}
+
 setup('create the superuser and persist admin auth state', async ({
   request,
   baseURL,
@@ -224,19 +281,22 @@ setup('create the superuser and persist admin auth state', async ({
     ).toBeTruthy();
   }
 
-  let tokens = await reusableTokens(request);
-  if (!tokens) {
-    const tokenRes = await request.post('/api/accounts/token/', {
-      data: { username: ADMIN.username, password: ADMIN.password },
-    });
-    expect(
-      tokenRes.ok(),
-      `login failed: ${tokenRes.status()} ${await tokenRes.text()}`
-    ).toBeTruthy();
-    const body = await tokenRes.json();
-    tokens = { access: body.access, refresh: body.refresh };
-  }
+  // Through the same throttle-aware path as the principals. This is the first
+  // login of a cold run and the one everything else depends on, so leaving it
+  // as a bare POST made the 3/minute budget able to fail setup outright — and
+  // report the throttle instead of whatever really went wrong.
+  const tokens =
+    (await reusableTokens(request)) ??
+    (await loginWithThrottleBackoff(request, ADMIN));
   const { access, refresh } = tokens;
+
+  // Written *before* anything that can throw, and before a single login is
+  // spent on a principal. A valid admin pair on disk beats none: with
+  // `retries` live on this project, a failure later in setup would otherwise
+  // discard a successful login and leave the retry cold, inside the very
+  // window it just emptied — which is a 429 on the admin login reported in
+  // place of the real failure.
+  persistAdminAuth(baseURL!, access, refresh);
 
   await prewarmIntervalSchedule(request, access);
 
@@ -248,35 +308,4 @@ setup('create the superuser and persist admin auth state', async ({
   // from disk and renewed through the unthrottled refresh endpoint. See
   // `principals.ts`.
   await provisionPrincipals(request, access);
-
-  fs.mkdirSync(AUTH_DIR, { recursive: true });
-  fs.writeFileSync(
-    TOKENS_FILE,
-    JSON.stringify({ access, refresh, ...ADMIN }, null, 2)
-  );
-
-  // Three keys, exactly these names. frontend/src/store/auth.jsx:186-190 is
-  // the only writer; api.js:192 clears a `token` key nothing ever sets.
-  // tokenExpiration must be the exp of whichever access token we just wrote,
-  // reused or freshly minted.
-  fs.writeFileSync(
-    STATE_FILE,
-    JSON.stringify(
-      {
-        cookies: [],
-        origins: [
-          {
-            origin: new URL(baseURL!).origin,
-            localStorage: [
-              { name: 'accessToken', value: access },
-              { name: 'refreshToken', value: refresh },
-              { name: 'tokenExpiration', value: String(jwtExp(access)) },
-            ],
-          },
-        ],
-      },
-      null,
-      2
-    )
-  );
 });

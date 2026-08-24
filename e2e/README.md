@@ -138,14 +138,38 @@ Workers read that file and never log in.
 `TokenRefreshView` is **not** throttled (`apps/accounts/api_views.py:133`
 carries no `throttle_classes`, and `DEFAULT_THROTTLE_CLASSES` is `[]`), which
 is what makes the middle row free: an access token lives 30 minutes, a refresh
-token a day, so bootstrap and `ApiClient` both renew rather than re-login.
+token a day, so bootstrap and `ApiClient` both renew rather than re-login. One
+sharp edge in that endpoint, filed as
+[#12](https://github.com/D10Scot/Dispatcharr/issues/12): a refresh token naming
+a *deleted* user gets a **500**, not a 401. Setup treats that as "log in
+instead" and is unaffected; in a worker it surfaces as
+`token refresh failed: 500`, which means `playwright/.auth/` is left over from
+a container that has since been reset — delete it and run again.
 
-The cold path sits exactly on the cap, so **adding a principal pushes it over**
-and makes the first run after a reset wait out a throttle window.
-`provisionPrincipals` handles that rather than failing — it honours
-`Retry-After` and retries, which is why the `bootstrap` project has a
-180-second timeout — but it is a real cost, so add a principal only when no
-existing one can express the case.
+The cold path sits exactly on the cap. Two things push it over: **adding a
+principal**, and a principal whose **password has drifted**, which spends a
+second login on the repair retry. Neither fails the run — every login
+`bootstrap` makes, the admin's included, goes through
+`loginWithThrottleBackoff` (`e2e/setup/login.ts`), which honours `Retry-After`
+and waits the window out. That is why the `bootstrap` project's timeout is
+derived from the roster size rather than being a round number. It is still a
+real cost, so add a principal only when no existing one can express the case.
+
+Two properties make a failed `bootstrap` cheap to retry, and both matter more
+than they look:
+
+- the admin pair is written to disk **before** the pre-warm and before any
+  principal login, so a failure later in setup cannot discard a login already
+  spent; and
+- `principals.json` is rewritten after **each** principal, not once at the end.
+
+Without those, a failure after the first login left nothing on disk, so the
+retry ran cold *inside the window it had just emptied* and died on the admin
+login with a bare 429 — reporting the throttle instead of whatever actually
+broke. `bootstrap` keeps the global `retries` setting (1 in CI) precisely
+because a retry is now warm and spends nothing; contrast `pristine`, which
+pins `retries: 0` because its first attempt consumes the state its second
+would need.
 
 ### What to reach for
 

@@ -25,14 +25,16 @@
  * The cold cost — first run after `./scripts/e2e_up.sh --reset`, or more than
  * `SIMPLE_JWT.REFRESH_TOKEN_LIFETIME` (1 day) since the last login — is one
  * login per principal, plus one for the admin: **3, which is exactly the
- * per-minute cap**. That is why `provisionPrincipals` backs off and retries on
- * a 429 instead of failing: it is serial and nothing is waiting on it, so it
- * can afford the minute. A worker cannot.
+ * per-minute cap**. That is why every login `bootstrap` makes, the admin's
+ * included, goes through `loginWithThrottleBackoff` (`./login.ts`) and waits a
+ * window out rather than failing: this phase is serial and nothing is waiting
+ * on it, so it can afford the minute. A worker cannot.
  *
- * **Adding a principal costs one more login on the cold path**, pushing it
- * over the cap and making the first run after a reset wait out a throttle
- * window. Add one only if no existing principal can express the case, and
- * expect that wait.
+ * Two things can push the cold path past 3. **Adding a principal** costs one
+ * more login — add one only if no existing principal can express the case.
+ * And a principal whose **password has drifted** spends a second login on the
+ * repair retry. Both are absorbed by the backoff rather than failing the run,
+ * at the price of a wait on the first run after a reset.
  *
  * ---------------------------------------------------------------------------
  * What they are for, and what they are not for
@@ -56,6 +58,8 @@ import type { APIRequestContext } from '@playwright/test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { hasLifeLeft, loginWithThrottleBackoff } from './login';
+import type { TokenPair } from './login';
 
 export type PrincipalName = 'streamer' | 'standard';
 
@@ -217,85 +221,49 @@ async function ensureUserRow(
   return false;
 }
 
-/** Reset a principal's password to the committed constant. */
+/**
+ * Reset a principal's password to the committed constant, so a login that was
+ * refused can be retried.
+ *
+ * Throws rather than returning quietly on failure: `loginWithThrottleBackoff`
+ * retries once after this, so a silent no-op would make that retry collect the
+ * same 401 and report the *login* as broken when the repair was.
+ */
 async function resetPassword(
   request: APIRequestContext,
   headers: Record<string, string>,
   principal: Principal
 ): Promise<void> {
   const existing = await findUser(request, headers, principal.username);
-  if (!existing) return;
-  await request.patch(`/api/accounts/users/${existing.id}/`, {
+  if (!existing) {
+    throw new Error(
+      `cannot repair the password for ${principal.username}: its login was ` +
+        'refused and the user row has vanished since it was ensured a moment ' +
+        'ago, so something outside this run is deleting principals.'
+    );
+  }
+  const patched = await request.patch(`/api/accounts/users/${existing.id}/`, {
     headers,
     data: { password: principal.password },
   });
-}
-
-/** How long to wait for a 429 to clear when the header does not say. */
-const DEFAULT_RETRY_AFTER_SECONDS = 61;
-/** One wait is a throttle window; a second means something else is wrong. */
-const MAX_THROTTLE_WAITS = 1;
-
-/**
- * Spend one login from the 3/minute budget, waiting out a throttle window if
- * the budget is already gone.
- *
- * Only ever called from `bootstrap`, which is serial and has no test waiting
- * on it. The same wait inside a worker would exceed the per-test timeout and
- * would stall three other workers, which is the whole reason workers are given
- * tokens instead of credentials.
- *
- * A 401 is treated as a password that drifted — a test that changed it, or a
- * roster edit — and is repaired through the admin API, which is free, rather
- * than being reported as a broken container.
- */
-async function login(
-  request: APIRequestContext,
-  headers: Record<string, string>,
-  principal: Principal
-): Promise<{ access: string; refresh: string }> {
-  let waits = 0;
-  let repairedPassword = false;
-
-  for (;;) {
-    const res = await request.post('/api/accounts/token/', {
-      data: { username: principal.username, password: principal.password },
-    });
-
-    if (res.ok()) {
-      const body = await res.json();
-      return { access: body.access, refresh: body.refresh };
-    }
-
-    if (res.status() === 429 && waits < MAX_THROTTLE_WAITS) {
-      waits += 1;
-      const header = Number(res.headers()['retry-after']);
-      const seconds = Number.isFinite(header) && header > 0
-        ? header + 1
-        : DEFAULT_RETRY_AFTER_SECONDS;
-      console.warn(
-        `[principals] login for ${principal.username} was throttled; ` +
-          `waiting ${seconds}s for the 3/minute window to clear. ` +
-          'This is the cold path — it should not happen on a warm run.'
-      );
-      await new Promise((resolve) => setTimeout(resolve, seconds * 1000));
-      continue;
-    }
-
-    if (res.status() === 401 && !repairedPassword) {
-      repairedPassword = true;
-      await resetPassword(request, headers, principal);
-      continue;
-    }
-
+  if (!patched.ok()) {
     throw new Error(
-      `login as principal ${principal.username} failed: ` +
-        `${res.status()} ${await res.text()}`
+      `repairing the password for ${principal.username} failed: ` +
+        `${patched.status()} ${await patched.text()}. Its login was refused ` +
+        'before this, so the password has drifted and cannot be restored.'
     );
   }
 }
 
-/** Exchange a refresh token for a new access token. Not throttled. */
+/**
+ * Exchange a refresh token for a new access token. Not throttled, so free.
+ *
+ * Null on any failure, including the 500 the product returns when the refresh
+ * token names a user that has been deleted (D10Scot/Dispatcharr#12 —
+ * `rest_framework_simplejwt` does a bare `.get()` and lets `User.DoesNotExist`
+ * escape). Callers fall through to a login, which is the right answer for all
+ * of them.
+ */
 async function refresh(
   request: APIRequestContext,
   refreshToken: string
@@ -312,12 +280,22 @@ async function refresh(
  * Make sure every principal in `PRINCIPALS` exists and has a usable token pair
  * on disk. Serial by construction, and called from `bootstrap` only.
  *
- * The order below is the login budget, in order of cost:
- *   1. the stored access token still authenticates the right user — 0 logins;
+ * The order below is the login budget, cheapest first:
+ *   1. the stored access token has life left *and* authenticates the right
+ *      user — 0 logins;
  *   2. the stored refresh token mints a new access token — 0 logins, and this
  *      is the branch that covers the 30-minute access lifetime, i.e. most
  *      re-runs of a day-old container;
- *   3. log in — 1, and only on a genuinely cold path.
+ *   3. log in — 1, and only on a genuinely cold path. A principal whose
+ *      password has drifted spends a **second** one on the repair retry, which
+ *      is the one way the cold path can exceed `1 + roster` logins; the
+ *      backoff in `loginWithThrottleBackoff` absorbs it.
+ *
+ * The file is rewritten after **each** principal, not once at the end: a
+ * failure on the second principal must not discard the login just spent on the
+ * first, or the retry starts cold inside the window it emptied. Entries for
+ * principals still in the roster are carried forward for the same reason;
+ * entries for names no longer in it are dropped.
  */
 export async function provisionPrincipals(
   request: APIRequestContext,
@@ -325,16 +303,23 @@ export async function provisionPrincipals(
 ): Promise<void> {
   const headers = { Authorization: `Bearer ${adminAccess}` };
   const stored = readStored();
+
   const next: PrincipalsFile = {};
+  for (const name of PRINCIPAL_NAMES) {
+    if (stored[name]) next[name] = stored[name];
+  }
 
   for (const name of PRINCIPAL_NAMES) {
     const principal = PRINCIPALS[name];
     const recreated = await ensureUserRow(request, headers, principal);
     const previous = recreated ? undefined : stored[name];
 
-    let tokens: { access: string; refresh: string } | null = null;
+    let tokens: TokenPair | null = null;
 
-    if (previous?.access && previous.refresh) {
+    // `hasLifeLeft` and not merely "does it still authenticate": a token with
+    // two seconds on it passes a probe and then expires in a worker's hands.
+    // Renewing early is free.
+    if (previous?.access && previous.refresh && hasLifeLeft(previous.access)) {
       const identity = await whoAmI(request, previous.access);
       if (identity?.username === principal.username) {
         tokens = { access: previous.access, refresh: previous.refresh };
@@ -352,7 +337,9 @@ export async function provisionPrincipals(
     }
 
     if (!tokens) {
-      tokens = await login(request, headers, principal);
+      tokens = await loginWithThrottleBackoff(request, principal, {
+        repairCredentials: () => resetPassword(request, headers, principal),
+      });
     }
 
     next[name] = {
@@ -360,7 +347,6 @@ export async function provisionPrincipals(
       user_level: principal.user_level,
       ...tokens,
     };
+    writeStored(next);
   }
-
-  writeStored(next);
 }

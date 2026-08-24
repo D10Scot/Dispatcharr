@@ -137,6 +137,14 @@ async function login(
  * identities at once. Do not change a principal's `user_level`, password,
  * `channel_profiles` or existence; seed a user with `seed.user()` when you
  * need a row to mutate. `e2e/setup/principals.ts` has the reasoning.
+ *
+ * The check below catches a *missing* entry. A **stale** one — tokens for a
+ * principal the container no longer has, i.e. a `principals.json` left over
+ * from a container that was reset without re-running `bootstrap` — passes it
+ * and fails later, on first use, as `token refresh failed: 500` (the product
+ * answers 500 rather than 401 when a refresh token names a deleted user:
+ * D10Scot/Dispatcharr#12). If you see that, delete `playwright/.auth/` and run
+ * again — `bootstrap` re-provisions from scratch.
  */
 export async function makePrincipalClient(
   ctx: APIRequestContext,

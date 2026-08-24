@@ -38,6 +38,7 @@ tests.** Status: `todo` / `done` / `known-bug` (asserted correct, marked
 | Output | Catch-up / timeshift URLs | G5 | todo |
 | Output | Authorization matrix by user_level | G5 | todo |
 | Output | hide_adult_content across all listing paths | G5 | todo |
+| Accounts | Token refresh with a deleted user's token 500s instead of 401 ([#12](https://github.com/D10Scot/Dispatcharr/issues/12)); needs a `test.fail()`, and pinning it costs one login | G5 | known-bug |
 | Frontend | Guide grid renders and navigates | G6 | todo |
 | Frontend | DVR: schedule, list, cancel a recording | G6 | todo |
 | Frontend | Users: create, edit, delete | G6 | todo |
@@ -52,8 +53,8 @@ tests.** Status: `todo` / `done` / `known-bug` (asserted correct, marked
 | Lifecycle | PUID/PGID honoured | G7 | todo |
 | Lifecycle | TLS Postgres connection | G7 | todo |
 
-The nine G1 rows above are covered by these specs (the two seeding rows
-share one file):
+The ten G1 rows above are covered by these specs (the two seeding rows
+share one file, as do the two principal rows):
 
 - `e2e/tests/pristine/first-run-setup-and-login.spec.ts`
 - `e2e/tests/seeded/authenticated-session.spec.ts`
