@@ -12,7 +12,30 @@ import WebSocket from 'ws';
  * here: a query-parameter token is fixed at connect time and this class has
  * no way to refresh it, so it must be handed one that is known live. The `ws`
  * fixture gets that from `api.freshAccessToken()`.
+ *
+ * Two message shapes exist on the wire, and `waitForMessage` matches either:
+ *  - top-level `type`, e.g. `{"type": "connection_established", "data": {...}}`
+ *    — the handful of connect-time pushes `dispatcharr/consumers.py` sends
+ *    directly.
+ *  - nested `data.type`, e.g. `{"type": "update", "data": {"type":
+ *    "playlist_created", ...}}` — every product event sent through
+ *    `send_websocket_update()` (`core/utils.py`). Virtually every call site
+ *    passes `event_type="update"` and puts the real event name one level
+ *    down inside `data`; `consumers.py`'s `update()` handler forwards that
+ *    dict to the client verbatim. Confirmed empirically against a live
+ *    container: creating an M3U account produced exactly
+ *    `{"type": "update", "data": {"type": "playlist_created", "playlist_id": 4}}`.
+ *    So `waitForMessage('playlist_created')` matches it correctly.
+ *    Waiting on the literal `'update'` is almost never what you want — it
+ *    matches *every* product event indiscriminately, including ones fired by
+ *    another test running concurrently against the shared instance.
  */
+
+/** True when `message` carries `type` at the top level or nested under `data`. */
+function messageMatches(message: any, type: string): boolean {
+  return message?.type === type || message?.data?.type === type;
+}
+
 export class WsListener {
   private socket: WebSocket;
   private received: any[] = [];
@@ -42,7 +65,7 @@ export class WsListener {
     this.socket.on('message', (raw) => {
       const message = JSON.parse(raw.toString());
       this.received.push(message);
-      const index = this.waiters.findIndex((w) => w.type === message.type);
+      const index = this.waiters.findIndex((w) => messageMatches(message, w.type));
       if (index >= 0) this.waiters.splice(index, 1)[0].resolve(message);
     });
     // A `ws` client is a plain Node EventEmitter: an 'error' event with no
@@ -105,8 +128,13 @@ export class WsListener {
     for (const waiter of pending) waiter.reject(this.connectionError);
   }
 
+  /**
+   * Resolves with the first received message whose top-level `type`, or
+   * whose `data.type`, equals `type` — see the class doc comment for why
+   * both forms exist and which one a real call needs.
+   */
   waitForMessage(type: string, timeoutMs = 30_000): Promise<any> {
-    const already = this.received.find((m) => m.type === type);
+    const already = this.received.find((m) => messageMatches(m, type));
     if (already) return Promise.resolve(already);
     if (this.connectionError) return Promise.reject(this.connectionError);
 

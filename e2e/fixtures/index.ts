@@ -57,17 +57,29 @@
  * `waitFor: Waiter` — polling. The default way to wait for Celery-backed work.
  *   condition(predicate, options?) → Promise<void>
  *       predicate: () => Promise<boolean>
+ *       Defaults: timeoutMs 60s, intervalMs 1s.
  *   resource<T>(url, predicate, options?) → Promise<T>
  *       polls GET url, resolves with the body that satisfied `predicate`
+ *       Defaults: timeoutMs 60s, intervalMs 1s.
  *   m3uRefreshComplete(accountId, options?) → Promise<any>
- *       two-phase: waits for the refresh to start, then to finish
+ *       Call *after* triggering the refresh — e.g. POST
+ *       /api/m3u/refresh/<accountId>/ (RefreshSingleM3UAPIView), which only
+ *       queues the Celery task and returns 202 immediately. Two-phase, each
+ *       with its own defaults: phase 1 waits for the refresh to *start*
+ *       (status fetching/parsing; 30s / 250ms, via startTimeoutMs), phase 2
+ *       waits for it to *finish* (status success/error; 180s / 1s, via
+ *       timeoutMs).
  *   options: { timeoutMs?, intervalMs?, description?, describeLast? }
- *       plus startTimeoutMs on m3uRefreshComplete. Defaults: 60s / 1s.
+ *       plus startTimeoutMs on m3uRefreshComplete.
  *
  * `ws: WsListener` — subscription to the single `updates` group on `/ws/`.
  * For state the REST API does not expose; prefer `waitFor` otherwise, the
  * message vocabulary is a fixed dict in the product and will drift.
  *   waitForMessage(type, timeoutMs = 30_000) → Promise<any>
+ *       Matches top-level `type` or nested `data.type` — most product events
+ *       arrive as `{"type": "update", "data": {"type": "<real event>"}}`, so
+ *       waiting on the literal `'update'` matches every product event and is
+ *       almost never what you want. See the doc comment in `ws.ts`.
  *   close()   the fixture already does this at teardown
  *
  * `streamClient: StreamClient` — reads endless HTTP byte streams, which

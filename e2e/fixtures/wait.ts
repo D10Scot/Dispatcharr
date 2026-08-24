@@ -115,9 +115,22 @@ export class Waiter {
    *    of a single-phase wait sees the *pre-refresh* status — `idle`, or
    *    `pending_setup` on a freshly created account — and reports a refresh
    *    that has not begun as complete. This phase has its own budget
-   *    (`startTimeoutMs`) so a refresh that never runs at all — no Celery
-   *    worker, or the task lock still held by an earlier refresh — fails
-   *    saying exactly that instead of consuming the whole timeout.
+   *    (`startTimeoutMs`) so a refresh that never runs at all fails saying
+   *    exactly that instead of consuming the whole timeout. The likeliest
+   *    cause of that in this harness: the account is inactive.
+   *    `_get_active_m3u_account()` (`apps/m3u/tasks.py`) queries
+   *    `is_active=True` and raises `DoesNotExist` before the status is ever
+   *    set to `fetching` — caught inside `_refresh_single_m3u_account_impl`,
+   *    which logs "not found or inactive" and returns without raising, so
+   *    the status is left exactly where it started (`idle`/`pending_setup`)
+   *    and *never* reaches `fetching`/`parsing` **or** `error`:
+   *    `_ensure_m3u_refresh_terminal_status`'s force-to-`error` only fires
+   *    when the status is still in `_NON_TERMINAL_REFRESH_STATUSES`, which a
+   *    never-started refresh never was. Both phases would hang forever, not
+   *    just this one. `seed.m3uAccount()` and `seed.epgSource()` both default
+   *    to `is_active: false` — pass `{ is_active: true }` when seeding an
+   *    account you intend to refresh. Other causes: no Celery worker, or the
+   *    task lock still held by an earlier refresh.
    * 2. **Finished** — wait for `success` or `error`, asserted positively
    *    rather than as "not in flight". The task's `finally` calls
    *    `_ensure_m3u_refresh_terminal_status`, which forces `error` if it

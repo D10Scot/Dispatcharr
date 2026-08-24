@@ -121,10 +121,15 @@ so you inherit the analysis instead of rediscovering it through a mystery
 1. Read the root `CONTEXT.md`. Three different things are called "profile".
 2. Import from `../../fixtures`, never `@playwright/test` directly — the
    fixtures module is what wires in `api`, `seed`, `asUser` and the rest.
-   Importing the raw package instead is caught at `npm run typecheck` (the
-   custom fixtures aren't on the base `test`'s parameter type); if you
-   somehow get past that, Playwright itself refuses at run time with "Test
-   has unknown parameter".
+   `npm run typecheck` only catches a raw `@playwright/test` import when the
+   spec destructures a custom fixture (the base `test`'s parameter type
+   doesn't have it) — a spec that destructures only `page` typechecks clean
+   and slips through (confirmed: `e2e/tests/seeded/authenticated-session.spec.ts`
+   records the hole in a comment). Playwright itself still refuses such a
+   spec at run time, once it does destructure a custom fixture, with "Test
+   has unknown parameter" — but a `page`-only spec runs with no fixtures
+   wired in and no error at all, silently bypassing the rule this item
+   exists to enforce.
 3. Seed what you need with `seed`; never assume the instance is empty. It
    never is — every project shares one container across the whole suite.
 4. Never assert a global count or an unfiltered list — another test's data,
@@ -179,7 +184,7 @@ Local builds are native-architecture; CI is amd64. If you need parity,
 | `ws` | `/ws/` subscription; `waitForMessage(type)` |
 | `streamClient` | `open`, `readPackets`, `collectFor`, `close` |
 
-Plus two exports that are not fixtures, from the same `../../fixtures` module:
+Plus three exports that are not fixtures, from the same `../../fixtures` module:
 
 | Export | Provides |
 |---|---|
