@@ -70,10 +70,16 @@ jobs:
 
       # Each project gets its own container. pristine in particular needs an
       # instance with no superuser, which the bootstrap project consumes.
+      #
+      # Published on 127.0.0.1 only, matching scripts/e2e_up.sh: once
+      # bootstrap has run, this container holds a superuser whose password is
+      # committed to this repository. Every consumer — the readiness curl
+      # below and Playwright's E2E_BASE_URL — runs on this same runner, and
+      # ubuntu-latest resolves `localhost` to 127.0.0.1.
       - name: Run the container
         run: |
           docker run -d --name dispatcharr-e2e \
-            -p 9191:9191 \
+            -p 127.0.0.1:9191:9191 \
             -v dispatcharr-e2e-data:/data \
             -e DISPATCHARR_ENV=aio \
             -e DISPATCHARR_LOG_LEVEL=info \

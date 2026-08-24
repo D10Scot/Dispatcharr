@@ -13,15 +13,38 @@ npm run typecheck && npm run test:seeded
 ```
 
 `--reset` destroys the container and its data volume, but only *builds* the
-image if `dispatcharr-e2e:local` doesn't already exist (`scripts/e2e_up.sh:18-20`).
-If you changed product code and want to test it, remove the stale image first:
+image if `dispatcharr-e2e:local` doesn't already exist. If you changed product
+code and want to test it, remove the stale image first:
 `docker rmi dispatcharr-e2e:local`.
+
+## Container lifecycle
+
+The container outlives the test run — that is what makes a second
+`npm run test:seeded` cheap. It is not self-cleaning, so stop it when you are
+done:
+
+| Command | Effect |
+|---|---|
+| `./scripts/e2e_up.sh` | Start, reusing an existing container and its data |
+| `./scripts/e2e_up.sh --stop` | Stop it, keep the container and the volume. Start again to resume with the same superuser and seeded rows |
+| `./scripts/e2e_up.sh --reset` | Destroy container + volume, then start fresh |
+| `./scripts/e2e_up.sh --down` | Destroy container + volume, start nothing |
+
+`DISPATCHARR_E2E_PORT`, `_CONTAINER`, `_VOLUME` and `_IMAGE` override the
+defaults, and every command above respects them.
+
+**The container is published on `127.0.0.1` only.** Once bootstrap has run it
+holds a superuser whose password is committed to this repository in plain
+text, so it must not be reachable from the LAN — a peer on your network would
+otherwise have an admin account on it. A container created *before* this was
+the case keeps its old binding: `--down`, then start again, to pick the new
+one up. CI binds the same way.
 
 ## Projects
 
 | Project | What it is for |
 |---|---|
-| `bootstrap` | Creates the superuser and writes auth state. Runs automatically as a dependency of `seeded` and `streaming` |
+| `bootstrap` | Creates the superuser, pre-warms the `IntervalSchedule` row (see below) and writes auth state. Runs automatically as a dependency of `seeded` and `streaming` |
 | `pristine` | Needs an instance with no superuser: first-run, migrations, PUID/PGID |
 | `seeded` | The default. Shared instance, parallel workers, API-seeded data |
 | `streaming` | Byte-level tests. Long timeouts, fewer workers |
@@ -53,14 +76,27 @@ Against a public instance, set `DISPATCHARR_SETUP_ALLOWED_IP` on that instance
 first.
 
 > **Only ever point `E2E_BASE_URL` at a throwaway instance.** If the target
-> has no superuser yet, `bootstrap` creates one — `e2e-admin`, with a password
+> has no superuser yet, this suite creates one — `e2e-admin`, with a password
 > committed to this repository in plain text, as a permanent superuser. On a
 > real deployment that is a handed-over admin account, and setting
 > `DISPATCHARR_SETUP_ALLOWED_IP` is precisely what removes the product-side
-> guard against it. `bootstrap` therefore refuses to create a superuser when
-> `E2E_BASE_URL` names anything but this machine, unless you set
-> `E2E_ALLOW_REMOTE_SUPERUSER=1`. Running against an instance that is already
-> set up needs neither variable and is unaffected.
+> guard against it.
+>
+> Both paths that can create one — `bootstrap`, over the API, and the
+> `pristine` browser test, through the first-run form — call
+> `assertMayCreateSuperuser` from `e2e/setup/superuser-guard.ts` first. It is
+> default-deny: creation proceeds only if `E2E_ALLOW_REMOTE_SUPERUSER` is
+> **exactly** the string `1`, or the target is loopback. `=true`, `=yes` and
+> `=0` are all refusals, and the error says so rather than repeating the
+> instruction you thought you had followed. Running against an instance that
+> is already set up needs no variable and is unaffected.
+>
+> The loopback exemption is deliberate, and it is not a claim that loopback is
+> safe: `localhost:9191` can be an SSH tunnel to a real box. It is there
+> because CI and every local run target loopback, and an opt-in that must be
+> set on every ordinary run ends up exported in a shell profile — where it
+> silently disarms the guard for the remote targets it exists to protect. The
+> reasoning is written out in full at the top of `superuser-guard.ts`.
 
 ## The login throttle — read this before writing a multi-user test
 
@@ -115,6 +151,43 @@ speculatively would be guessing at a shape the consuming goal hasn't asked
 for yet. If you're the goal that needs it, build it then; this paragraph is
 so you inherit the analysis instead of rediscovering it through a mystery
 429.
+
+## The `IntervalSchedule` land mine — don't delete `e2e-harness-interval-prewarm-do-not-delete`
+
+`bootstrap` creates one M3U account with that name and leaves it there
+permanently. It is not test data and no test asserts on it. It exists to make
+a product bug unreachable.
+
+`core/scheduling.py:121` calls
+`IntervalSchedule.objects.get_or_create(every=…, period=HOURS)` from an
+`M3UAccount` `post_save` receiver, and `django_celery_beat.IntervalSchedule`
+has no unique constraint on `(every, period)`. Two concurrent creates both
+miss the SELECT and both INSERT; from then on every `get_or_create` for that
+interval raises `MultipleObjectsReturned`, and **every M3U account and EPG
+source creation on that container returns 500, permanently** — there is no UI
+or API that can delete the duplicate row. Filed as
+[D10Scot/Dispatcharr#7](https://github.com/D10Scot/Dispatcharr/issues/7); it
+cost an agent an hour and four opaque test failures before it was understood.
+
+`refresh_interval` defaults to `0`, which maps to `every=1, period=HOURS`, and
+`EPGSource.refresh_interval` lands on the same row — so every default-shaped
+create in the suite contends for one row. `bootstrap` runs serially, before
+any parallel worker, so its create wins the race uncontended and every later
+`get_or_create` is a plain SELECT hit.
+
+Two things follow:
+
+- **Deleting that account re-opens the window.** Deletion runs
+  `_cleanup_orphaned_interval`, which removes the row again once nothing
+  references it. Its `refresh_task` is what pins it.
+- **A non-default `refresh_interval` is not covered.** If you write a test
+  that creates accounts with, say, `refresh_interval: 6` from parallel
+  workers, they race for the `(6, HOURS)` row. Pre-warm it the same way.
+
+If `bootstrap` itself gets a 500 from that create, it fails immediately saying
+the container is already poisoned and naming `./scripts/e2e_up.sh --reset`.
+That message is deliberate: the alternative is four unrelated tests failing
+later with an opaque 500.
 
 ## Writing a test
 

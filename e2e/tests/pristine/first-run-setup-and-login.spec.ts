@@ -7,6 +7,7 @@
 // "Writing a test".
 import { test, expect } from '@playwright/test';
 import { ADMIN } from '../../setup/credentials';
+import { assertMayCreateSuperuser } from '../../setup/superuser-guard';
 
 // Exercises Dispatcharr's very first user-facing flow end to end, against a
 // real backend: on a fresh instance there is no superuser yet, so the app
@@ -23,7 +24,14 @@ const { username: USERNAME, password: PASSWORD, email: EMAIL } = ADMIN;
 
 test('first run: create the superuser, log in, land on Channels', async ({
   page,
+  baseURL,
 }) => {
+  // This test creates a permanent superuser with a password committed to this
+  // repository, exactly as bootstrap.setup.ts does — it just does it through
+  // the browser instead of the API. Same hazard, same gate. Consulted before
+  // the first navigation so a refused target costs nothing.
+  assertMayCreateSuperuser(baseURL!);
+
   await page.goto('/');
 
   // Fresh instance: no superuser exists yet, so the setup form is served.
