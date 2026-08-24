@@ -9,11 +9,16 @@
  * READ FIRST — the login throttle
  * ---------------------------------------------------------------------------
  * `POST /api/accounts/token/` is capped at **3 logins per minute for the whole
- * suite** (one client IP, shared across every worker). Each *distinct*
- * `asUser(username, password)` principal spends one; repeats are cached and
- * free. A spec that seeds a fresh user per test blows the budget in seconds
- * and fails with a 429 that reads like a product bug. Read "The login
- * throttle" in `e2e/README.md` before writing a multi-principal test.
+ * suite** (one client IP, shared across every worker and across back-to-back
+ * runs). A full run must therefore spend a number of logins that does not grow
+ * with `workers:` or with the number of tests — so it spends **none**:
+ * `bootstrap` mints a fixed roster of principal tokens serially, before any
+ * worker starts, and hands them to workers as data.
+ *
+ * **To act as a non-admin, call `asPrincipal('streamer' | 'standard')`. It is
+ * free.** `asUser(username, password)` still exists for a user whose own
+ * properties are the subject of the test, and costs one login per distinct
+ * principal per worker — see its entry below before you reach for it.
  *
  * ---------------------------------------------------------------------------
  * FIXTURES
@@ -45,9 +50,25 @@
  *   generatedName(entity)        the naming scheme itself, for a row you
  *                                create by hand
  *
- * `asUser: (username, password) => Promise<ApiClient>` — an `ApiClient` for a
- * non-admin principal. Token pairs are cached per worker by
- * `username:password`. Costs a login on a miss — see the throttle note above.
+ * `asPrincipal: (name) => Promise<ApiClient>` — an `ApiClient` for one of the
+ * pre-provisioned principals, `'streamer'` (user_level 0) or `'standard'`
+ * (user_level 1). **Free**: the tokens were minted by `bootstrap` before any
+ * worker started, so this is a cache read whatever the worker count.
+ *   The roster is `PRINCIPALS`, also exported here — `PRINCIPALS.standard.username`
+ *   and `.user_level` are the values to assert against.
+ *   These identities are **shared and read-only**: four workers hold them at
+ *   once, so nothing may change a principal's level, password,
+ *   `channel_profiles` or existence. Need a user row to mutate or delete?
+ *   That is `seed.user()`, which is unthrottled and free.
+ *
+ * `asUser: (username, password) => Promise<ApiClient>` — an `ApiClient` for an
+ * arbitrary principal. Token pairs are cached per worker by
+ * `username:password`, and the cache is pre-loaded with the fixed principals.
+ *   **Costs one login on a miss**, out of three per minute for the whole run,
+ *   and a `seed.user()` username is a guaranteed miss every time. It is for
+ *   the user no fixed principal can express — one whose own properties the
+ *   test is about. Budget at most one such test per run and say so at the call
+ *   site; it logs a warning naming the cost when it fires.
  *
  * `adminPage: Page` — a Playwright `Page` already authenticated as the
  * bootstrap admin. Use it, not `page`: it states which principal the test
@@ -129,7 +150,8 @@ import { test as base } from '@playwright/test';
 import type { Page } from '@playwright/test';
 import { ApiClient } from './api';
 import { Seeder } from './seed';
-import { makeUserClient } from './auth';
+import { makePrincipalClient, makeUserClient } from './auth';
+import type { PrincipalName } from '../setup/principals';
 import { Waiter } from './wait';
 import { WsListener } from './ws';
 import { StreamClient, expectTsAligned, TS_PACKET_SIZE, TS_SYNC_BYTE } from './stream-client';
@@ -137,6 +159,7 @@ import { StreamClient, expectTsAligned, TS_PACKET_SIZE, TS_SYNC_BYTE } from './s
 export type Fixtures = {
   api: ApiClient;
   seed: Seeder;
+  asPrincipal: (name: PrincipalName) => Promise<ApiClient>;
   asUser: (username: string, password: string) => Promise<ApiClient>;
   adminPage: Page;
   waitFor: Waiter;
@@ -150,6 +173,9 @@ export const test = base.extend<Fixtures>({
   },
   seed: async ({ api }, use, testInfo) => {
     await use(new Seeder(api, testInfo.workerIndex, testInfo.testId));
+  },
+  asPrincipal: async ({ request }, use) => {
+    await use((name: PrincipalName) => makePrincipalClient(request, name));
   },
   asUser: async ({ request }, use) => {
     await use((username: string, password: string) =>
@@ -187,7 +213,13 @@ export const test = base.extend<Fixtures>({
 export { expect } from '@playwright/test';
 export { ApiClient } from './api';
 export { Seeder, SEEDED_USER_PASSWORD } from './seed';
-export { makeUserClient } from './auth';
+export {
+  loginsSpentByThisWorker,
+  makePrincipalClient,
+  makeUserClient,
+} from './auth';
+export { PRINCIPALS } from '../setup/principals';
+export type { PrincipalName, Principal } from '../setup/principals';
 export { Waiter } from './wait';
 export type { WaitOptions, M3uRefreshWaitOptions } from './wait';
 export { WsListener } from './ws';

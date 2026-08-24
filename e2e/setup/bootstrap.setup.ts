@@ -3,6 +3,7 @@ import type { APIRequestContext } from '@playwright/test';
 import fs from 'node:fs';
 import path from 'node:path';
 import { ADMIN } from './credentials';
+import { provisionPrincipals } from './principals';
 import { assertMayCreateSuperuser } from './superuser-guard';
 
 const AUTH_DIR = 'playwright/.auth';
@@ -44,9 +45,28 @@ async function reusableTokens(
   }
   if (!stored.access || !stored.refresh) return null;
 
-  const probe = await request.get('/api/accounts/users/me/', {
-    headers: { Authorization: `Bearer ${stored.access}` },
+  let access = stored.access;
+  let probe = await request.get('/api/accounts/users/me/', {
+    headers: { Authorization: `Bearer ${access}` },
   });
+
+  // An access token expires after 30 minutes and a refresh token after a day
+  // (`SIMPLE_JWT`), and `TokenRefreshView` is not throttled — so a run more
+  // than half an hour after the last one can renew for free instead of
+  // spending one of the three logins a minute buys. Without this, any gap
+  // longer than the access lifetime made bootstrap cold again.
+  if (!probe.ok()) {
+    const refreshed = await request.post('/api/accounts/token/refresh/', {
+      data: { refresh: stored.refresh },
+    });
+    if (!refreshed.ok()) return null;
+    const body = await refreshed.json();
+    if (typeof body?.access !== 'string') return null;
+    access = body.access;
+    probe = await request.get('/api/accounts/users/me/', {
+      headers: { Authorization: `Bearer ${access}` },
+    });
+  }
   if (!probe.ok()) return null;
 
   // A 200 only proves the token authenticates *someone*. Both files below
@@ -58,7 +78,7 @@ async function reusableTokens(
   const who = await probe.json();
   if (who.username !== ADMIN.username) return null;
 
-  return { access: stored.access, refresh: stored.refresh };
+  return { access, refresh: stored.refresh };
 }
 
 /**
@@ -219,6 +239,15 @@ setup('create the superuser and persist admin auth state', async ({
   const { access, refresh } = tokens;
 
   await prewarmIntervalSchedule(request, access);
+
+  // Mint the non-admin principals here, serially, because this is the only
+  // phase of a run that can afford a login: `POST /api/accounts/token/` allows
+  // three per minute for the whole suite and `seeded` runs four workers, so
+  // anything that logs in from a worker scales the cost with `workers:` while
+  // the budget stays at three. Steady state is 0 logins — the pairs are reused
+  // from disk and renewed through the unthrottled refresh endpoint. See
+  // `principals.ts`.
+  await provisionPrincipals(request, access);
 
   fs.mkdirSync(AUTH_DIR, { recursive: true });
   fs.writeFileSync(

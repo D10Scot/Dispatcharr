@@ -10,7 +10,8 @@ tests.** Status: `todo` / `done` / `known-bug` (asserted correct, marked
 | Harness | Authenticated session via storageState | G1 | done |
 | Harness | API client survives token expiry | G1 | done |
 | Harness | Namespaced seeding | G1 | done |
-| Harness | Non-admin principal (asUser) | G1 | done |
+| Harness | Non-admin principals at two user levels (asPrincipal) | G1 | done |
+| Harness | Login budget: driving a fixed principal spends no login | G1 | done |
 | Harness | REST polling and WebSocket waiting | G1 | done |
 | Harness | WebSocket queue semantics and event correlation | G1 | done |
 | Harness | Byte-level TS stream reading | G1 | done |

@@ -19,6 +19,12 @@ export default defineConfig({
       name: 'bootstrap',
       testDir: './setup',
       testMatch: /.*\.setup\.ts/,
+      // Longer than the global 30s because this is the one place allowed to
+      // wait out the login throttle. `provisionPrincipals` backs off for a
+      // full 3/minute window rather than failing when the budget is already
+      // spent — safe here, where nothing runs in parallel and no test is
+      // waiting, and impossible in a worker. Ordinary runs take ~2s.
+      timeout: 180_000,
     },
     {
       name: 'pristine',

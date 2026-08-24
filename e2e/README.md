@@ -104,53 +104,104 @@ first.
 client IP** (`dispatcharr/settings.py:309-310` sets `"login": "3/minute"`;
 enforced by `LoginRateThrottle` at `apps/accounts/throttling.py:20`, applied
 to the view at `apps/accounts/api_views.py:57`). The budget is shared with
-Django admin login — both go through the same throttle scope.
+Django admin login and with `POST /api/accounts/auth/login/`, which delegates
+to the same view — all three go through one throttle scope.
 
 Every run from one host is one client IP, so **the entire suite, across all
-workers, shares three logins per minute.** This is invisible until it bites,
-and when it does it looks like a flaky product bug (a 429 with no obvious
-cause), not a harness limit — read this section before you go looking for
-one.
+workers and across back-to-back runs, shares three logins per minute.** The
+budget is fixed; the number of workers and tests is not. Any design that logs
+in from a worker therefore fails at some scale, and it fails as a 429 that
+reads like a flaky product bug.
 
-Current spend, in this harness:
+**So the suite spends none.** A full `npm run test:seeded` performs **0**
+`POST /api/accounts/token/` requests in steady state, whatever `workers:` is
+set to. Three consecutive runs inside one minute were measured at 0 logins and
+0 429s; a 16-test authorization matrix spread over 4 workers added 0 to that.
+You do not have to budget anything as long as you use `asPrincipal`.
 
-- `bootstrap` costs **0** logins in steady state: it reuses a still-valid
-  token from `playwright/.auth/tokens.json` (`e2e/setup/bootstrap.setup.ts`).
-  It costs **1** on a cold path — first run after a container reset, missing
-  auth files, or a token older than the 30-minute access lifetime
-  (`SIMPLE_JWT.ACCESS_TOKEN_LIFETIME`, `dispatcharr/settings.py:452`).
-- Each **distinct** `asUser` principal costs 1 login
-  (`e2e/fixtures/auth.ts`). `seed.user()` assigns every principal it creates
-  the password exported as `SEEDED_USER_PASSWORD` from `../../fixtures`
-  (`e2e/fixtures/seed.ts`) — import that rather than hardcoding the literal.
-- `makeUserClient` caches token pairs keyed on `username:password`, so
-  repeated `asUser` calls for the *same* principal are free after the first.
-- `TokenRefreshView` is **not** throttled (`apps/accounts/api_views.py:133`
-  carries no `throttle_classes`) — refreshing an expiring access token costs
-  nothing from the login budget. `ApiClient` already does this automatically
-  on a 401.
+### How that works
 
-**The trap:** `seed.user()` generates a unique username on every call
-(`e2e/fixtures/seed.ts`), so a test that seeds a fresh principal per test
-gets **no cache benefit at all** — every `asUser` call for it is a guaranteed
-miss. DRF's throttle allows the first 3 requests inside a 60-second window and
-refuses the 4th, so the failure lands on whichever login is the fourth in that
-window: on a warm run (`bootstrap` costs 0) that's the **4th** distinct
-`asUser` principal; on a cold run (`bootstrap` costs 1) it's already the
-**3rd**. Either way, an authorization matrix seeding a new user per test,
-spread across parallel workers, hits this within seconds. `makeUserClient`
-throws on a non-OK login response, so this surfaces as a hard test failure,
-not a retry.
+`bootstrap` is the only phase of a run that logs in, because it is the only
+phase that can: it is serial, both parallel projects list it in
+`dependencies:`, and nothing is waiting on it. It provisions a fixed roster of
+non-admin principals — `e2e/setup/principals.ts` — and writes their token
+pairs to `playwright/.auth/principals.json` (gitignored, like `tokens.json`).
+Workers read that file and never log in.
 
-**The remedy, for whichever goal needs a real matrix:** seed a small, fixed
-set of principals **once per worker** (a `worker`-scoped Playwright fixture)
-and have every test in that worker reuse them. That's what makes the
-username-keyed cache in `makeUserClient` start hitting. This harness does not
-implement that fixture — G1 has no test that needs it, and building it
-speculatively would be guessing at a shape the consuming goal hasn't asked
-for yet. If you're the goal that needs it, build it then; this paragraph is
-so you inherit the analysis instead of rediscovering it through a mystery
-429.
+| Path | Logins |
+|---|---|
+| Full run, warm (`principals.json` + `tokens.json` present) | **0** |
+| More than 30 min since the last run (access tokens expired) | **0** — renewed through the *unthrottled* refresh endpoint |
+| Cold: first run after `--reset`, deleted auth files, or >1 day (`SIMPLE_JWT.REFRESH_TOKEN_LIFETIME`) | **3** = 1 admin + 1 per principal, exactly the per-minute cap |
+| Each `asUser()` call for a principal not in the roster | **+1**, per distinct `username:password`, *per worker* |
+
+`TokenRefreshView` is **not** throttled (`apps/accounts/api_views.py:133`
+carries no `throttle_classes`, and `DEFAULT_THROTTLE_CLASSES` is `[]`), which
+is what makes the middle row free: an access token lives 30 minutes, a refresh
+token a day, so bootstrap and `ApiClient` both renew rather than re-login.
+
+The cold path sits exactly on the cap, so **adding a principal pushes it over**
+and makes the first run after a reset wait out a throttle window.
+`provisionPrincipals` handles that rather than failing — it honours
+`Retry-After` and retries, which is why the `bootstrap` project has a
+180-second timeout — but it is a real cost, so add a principal only when no
+existing one can express the case.
+
+### What to reach for
+
+- **Acting as a non-admin: `asPrincipal('streamer' | 'standard')`.** Free, at
+  any scale. `PRINCIPALS` (exported from `../../fixtures`) carries their
+  usernames and levels — assert against it rather than repeating literals.
+  Streamer is `user_level` 0 and Standard is 1; admin is the bootstrap
+  account.
+- **A user row to create, mutate, assert on or delete: `seed.user()`.**
+  Creating users is an ordinary admin write — unthrottled and free. What is
+  scarce is a *token* for one, not the row.
+
+The two coexist because they answer different questions, and the difference is
+worth stating plainly since it looks like a contradiction: `seed.user()`
+generates a unique username per call *by design* (enforced at runtime, pinned
+by `seed-fixture.spec.ts`), while the principals are deliberately *fixed*. A
+generated name is what stops four parallel workers colliding on rows they each
+own; a fixed name is what lets four parallel workers share one token minted
+before any of them started. **Default to `asPrincipal` when the test is about
+authorization, and to `seed.user()` when the test is about a user.**
+
+The principals are **shared and read-only**. Four workers hold the same two
+identities simultaneously, so nothing may change a principal's `user_level`,
+password, `channel_profiles` or existence — the damage would hit unrelated
+tests mid-run and outlive it. A test that needs to *change* a user seeds one.
+(`bootstrap` re-creates a deleted principal and corrects a drifted
+`user_level` on the next run, but that repair costs a login and does not help
+the run that broke it.)
+
+### `asUser(username, password)` — the path that spends the budget
+
+Still available, for the case no fixed principal can express: a user whose own
+properties are the subject of the test, which therefore cannot be shared.
+`seed.user()` generates a fresh username every call, so such a principal is a
+guaranteed cache miss — one login, every run, per worker that drives it. Four
+tests like that across four workers is four logins in a few seconds, and DRF
+refuses the fourth in the window.
+
+If you write one: budget it at **one per run**, say so in a comment at the call
+site, and remember the cold path already spends the whole budget in bootstrap —
+a run that is cold *and* calls `asUser` will 429, and a worker cannot wait out
+a throttle window the way bootstrap can. `makeUserClient` logs a warning naming
+the cost whenever it actually logs in, and its 429 error message says the
+throttle is the harness budget rather than a product failure. The
+worker-scoped counter behind that warning is exported as
+`loginsSpentByThisWorker()`; `authorization.spec.ts` uses it to assert, as a
+delta, that driving a fixed principal spends nothing.
+
+Measuring it yourself: the container's nginx access log is the ground truth,
+and it records 429s that never reach a test.
+
+```bash
+docker exec dispatcharr-e2e grep 'POST /api/accounts/token/ ' /var/log/nginx/access.log | tail
+```
+
+The trailing space matters — it excludes `token/refresh/`, which is free.
 
 ## The `IntervalSchedule` land mine — don't delete `e2e-harness-interval-prewarm-do-not-delete`
 
@@ -200,7 +251,7 @@ early on the name.
 
 1. Read the root `CONTEXT.md`. Three different things are called "profile".
 2. Import from `../../fixtures`, never `@playwright/test` directly — the
-   fixtures module is what wires in `api`, `seed`, `asUser` and the rest.
+   fixtures module is what wires in `api`, `seed`, `asPrincipal` and the rest.
    `npm run typecheck` only catches a raw `@playwright/test` import when the
    spec destructures a custom fixture (the base `test`'s parameter type
    doesn't have it) — a spec that destructures only `page` typechecks clean
@@ -219,8 +270,9 @@ early on the name.
    turns what should be a backend/API-level assertion into a frontend one —
    assert the underlying state through `api`/`waitFor` instead, and leave
    toast rendering to a frontend-focused test.
-6. Driving more than one non-admin principal? Read the login throttle section
-   above first — it has a real budget and a real trap.
+6. Acting as a non-admin? Use `asPrincipal('streamer' | 'standard')` — it is
+   free at any worker count. `asUser` costs one login out of three a minute;
+   read the login throttle section above before you reach for it.
 7. New to the harness? `authenticated-session.spec.ts`, `authorization.spec.ts`,
    `async-wait.spec.ts` (two exemplars in one file) and `stream-client.spec.ts`
    (under `tests/seeded` and `tests/streaming`) each carry an "Exemplar:"
@@ -259,7 +311,8 @@ Local builds are native-architecture; CI is amd64. If you need parity,
 | `api` | Authed HTTP; retries once through a token refresh on 401 |
 | `seed` | `channel`, `user`, `channelProfile`, `streamProfile`, `m3uAccount`, `epgSource` |
 | `adminPage` | A `Page` authenticated as the bootstrap admin |
-| `asUser` | An `ApiClient` for a non-admin principal |
+| `asPrincipal` | An `ApiClient` for a fixed principal, `'streamer'` (level 0) or `'standard'` (level 1). Free |
+| `asUser` | An `ApiClient` for an arbitrary principal. Costs a login — see the throttle section |
 | `waitFor` | `condition`, `resource`, `m3uRefreshComplete` |
 | `ws` | `/ws/` subscription; `waitForMessage(type, { where, timeoutMs })` |
 | `streamClient` | `open`, `readPackets`, `collectFor`, `close` |
