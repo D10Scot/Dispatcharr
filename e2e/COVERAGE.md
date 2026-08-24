@@ -12,6 +12,7 @@ tests.** Status: `todo` / `done` / `known-bug` (asserted correct, marked
 | Harness | Namespaced seeding | G1 | done |
 | Harness | Non-admin principal (asUser) | G1 | done |
 | Harness | REST polling and WebSocket waiting | G1 | done |
+| Harness | WebSocket queue semantics and event correlation | G1 | done |
 | Harness | Byte-level TS stream reading | G1 | done |
 | Harness | Source factories (stream profile, M3U, EPG) | G1 | done |
 | Sources | M3U account create → refresh → streams appear | G3 | todo |
@@ -50,7 +51,7 @@ tests.** Status: `todo` / `done` / `known-bug` (asserted correct, marked
 | Lifecycle | PUID/PGID honoured | G7 | todo |
 | Lifecycle | TLS Postgres connection | G7 | todo |
 
-The eight G1 rows above are covered by these specs (the two seeding rows
+The nine G1 rows above are covered by these specs (the two seeding rows
 share one file):
 
 - `e2e/tests/pristine/first-run-setup-and-login.spec.ts`
@@ -59,6 +60,7 @@ share one file):
 - `e2e/tests/seeded/seed-fixture.spec.ts`
 - `e2e/tests/seeded/authorization.spec.ts`
 - `e2e/tests/seeded/async-wait.spec.ts`
+- `e2e/tests/seeded/ws-fixture.spec.ts`
 - `e2e/tests/streaming/stream-client.spec.ts`
 - `e2e/tests/streaming/stalled-stream.spec.ts` (regression: read ordering
   across `collectFor` → `readPackets` on a stalled stream)

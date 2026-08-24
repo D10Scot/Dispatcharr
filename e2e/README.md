@@ -181,7 +181,7 @@ Local builds are native-architecture; CI is amd64. If you need parity,
 | `adminPage` | A `Page` authenticated as the bootstrap admin |
 | `asUser` | An `ApiClient` for a non-admin principal |
 | `waitFor` | `condition`, `resource`, `m3uRefreshComplete` |
-| `ws` | `/ws/` subscription; `waitForMessage(type)` |
+| `ws` | `/ws/` subscription; `waitForMessage(type, { where, timeoutMs })` |
 | `streamClient` | `open`, `readPackets`, `collectFor`, `close` |
 
 Plus three exports that are not fixtures, from the same `../../fixtures` module:
@@ -191,6 +191,35 @@ Plus three exports that are not fixtures, from the same `../../fixtures` module:
 | `expectTsAligned(buffer)` | Asserts a buffer is 188-byte-aligned MPEG-TS — whole packets, `0x47` on every boundary. The assertion byte-level streaming tests are built on; reach for it before hand-rolling one |
 | `TS_PACKET_SIZE` / `TS_SYNC_BYTE` | `188` and `0x47`, for tests doing their own arithmetic |
 | `SEEDED_USER_PASSWORD` | The password `seed.user()` assigns — import it rather than repeating the literal |
+
+### `ws` is a shared broadcast — read this before waiting on a type
+
+`/ws/` puts every socket in one group, `updates` (`dispatcharr/consumers.py`),
+and `seeded` runs **4 workers against one container**, so your socket receives
+the other three workers' events interleaved with your own. A bare
+`waitForMessage('playlist_created')` resolves on *whoever's* playlist was
+created — your own work may not have happened yet, and the assertion after it
+either flakes or passes on another test's data.
+
+Correlate with a predicate whenever the type is not exclusively yours:
+
+```ts
+const account = await seed.m3uAccount();
+const message = await ws.waitForMessage('playlist_created', {
+  where: (data) => data.playlist_id === account.id,
+});
+```
+
+`where` receives `message.data`, which is where product events carry their
+entity ids, and is evaluated as each message arrives — so obtain the id
+*before* you start waiting. A bare type match is safe only for something
+nothing else can produce; `connection_established`, which is per socket, is
+the honest example.
+
+Messages are consumed, not replayed: two sequential waits for one type return
+two *different* messages, and a wait that times out is deregistered, so it
+cannot swallow the event a later wait is waiting for.
+`e2e/tests/seeded/ws-fixture.spec.ts` pins all three.
 
 `e2e/fixtures/index.ts` opens with the full method inventory for all seven
 fixtures. That header, this file, the root `CONTEXT.md` and `COVERAGE.md` are

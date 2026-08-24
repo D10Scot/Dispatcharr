@@ -75,11 +75,25 @@
  * `ws: WsListener` — subscription to the single `updates` group on `/ws/`.
  * For state the REST API does not expose; prefer `waitFor` otherwise, the
  * message vocabulary is a fixed dict in the product and will drift.
- *   waitForMessage(type, timeoutMs = 30_000) → Promise<any>
+ *   waitForMessage(type, options?) → Promise<any>
+ *       options: { where?: (data, message) => boolean, timeoutMs? = 30_000 }
  *       Matches top-level `type` or nested `data.type` — most product events
  *       arrive as `{"type": "update", "data": {"type": "<real event>"}}`, so
  *       waiting on the literal `'update'` matches every product event and is
- *       almost never what you want. See the doc comment in `ws.ts`.
+ *       almost never what you want.
+ *       Messages are **consumed**: two sequential waits for one type return
+ *       two different messages, and a wait that times out is deregistered and
+ *       cannot swallow a later wait's event.
+ *       `/ws/` is one broadcast group and `seeded` runs 4 workers, so your
+ *       socket sees every worker's events. **A bare type match is unsafe for
+ *       any event a parallel test could also trigger** — correlate with
+ *       `where`, which is handed `message.data`:
+ *           const account = await seed.m3uAccount();
+ *           await ws.waitForMessage('playlist_created', {
+ *             where: (data) => data.playlist_id === account.id,
+ *           });
+ *       `where` runs when the message arrives, so get the id *before* you
+ *       wait. See the doc comment in `ws.ts`.
  *   close()   the fixture already does this at teardown
  *
  * `streamClient: StreamClient` — reads endless HTTP byte streams, which
