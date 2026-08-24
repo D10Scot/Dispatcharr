@@ -60,6 +60,8 @@ share one file):
 - `e2e/tests/seeded/authorization.spec.ts`
 - `e2e/tests/seeded/async-wait.spec.ts`
 - `e2e/tests/streaming/stream-client.spec.ts`
+- `e2e/tests/streaming/stalled-stream.spec.ts` (regression: read ordering
+  across `collectFor` → `readPackets` on a stalled stream)
 
 G2 (the fake upstream provider that replaces `e2e/support/static-upstream.ts`)
 adds no rows here — it is harness infrastructure, not a covered flow.

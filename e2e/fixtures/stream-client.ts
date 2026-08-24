@@ -31,6 +31,8 @@ export class StreamClient {
   private controller?: AbortController;
   private reader?: ReadableStreamDefaultReader<Uint8Array>;
   private buffered: Buffer = Buffer.alloc(0);
+  /** The single outstanding pump(), if any. See pump(). */
+  private inFlight?: Promise<boolean>;
 
   constructor(private baseURL: string) {}
 
@@ -52,7 +54,29 @@ export class StreamClient {
     this.reader = response.body.getReader();
   }
 
-  private async pump(): Promise<boolean> {
+  /**
+   * Appends the next chunk to `buffered`; false once the stream ends.
+   *
+   * At most one `reader.read()` is ever outstanding. This matters because
+   * collectFor abandons its pump() when the timer wins, and read requests
+   * queue FIFO (ECMA/streams: read() pushes onto [[readRequests]], and an
+   * arriving chunk fulfils the *first* pending request). A second
+   * reader.read() would therefore sit behind the abandoned one: on a stalled
+   * stream the abandoned read takes the chunk and appends it here, while the
+   * new caller waits on a chunk after it that may never come — blocking with
+   * the bytes it asked for already in the buffer. Memoising the in-flight
+   * read makes the later caller wake on the *same* chunk instead.
+   */
+  private pump(): Promise<boolean> {
+    if (this.inFlight) return this.inFlight;
+    const pending: Promise<boolean> = this.readChunk().finally(() => {
+      if (this.inFlight === pending) this.inFlight = undefined;
+    });
+    this.inFlight = pending;
+    return pending;
+  }
+
+  private async readChunk(): Promise<boolean> {
     if (!this.reader) throw new Error('open() must be called before reading');
     const { done, value } = await this.reader.read();
     if (done) return false;
@@ -80,14 +104,20 @@ export class StreamClient {
     const deadline = Date.now() + ms;
     while (Date.now() < deadline) {
       const remaining = deadline - Date.now();
-      // If the timeout below wins, this pump() read is left outstanding.
-      // That's fine as-is: Promise.race attaches a handler to every input
-      // promise, not just the winner (ECMA-262 PerformPromiseRace), so the
-      // losing pump() is already handled and needs no .catch() here.
-      // Verified under `node --unhandled-rejections=strict` (no warning
-      // across 30 iterations of open/readPackets/collectFor/close). If this
-      // race is ever replaced with something that does not handle losers,
-      // that changes.
+      // If the timeout below wins, this pump() is left outstanding. Two
+      // separate reasons that is safe, both load-bearing:
+      //
+      // 1. It is not an unhandled rejection. Promise.race attaches a handler
+      //    to every input promise, not just the winner (ECMA-262
+      //    PerformPromiseRace), so the losing pump() is already handled and
+      //    needs no .catch() here. Verified under
+      //    `node --unhandled-rejections=strict` (no warning across 30
+      //    iterations of open/readPackets/collectFor/close). If this race is
+      //    ever replaced with something that does not handle losers, that
+      //    changes.
+      // 2. It does not strand the next caller. pump() memoises the in-flight
+      //    read, so a later readPackets() awaits *this* promise rather than
+      //    queueing a second reader.read() behind it. See pump().
       const timed = await Promise.race([
         this.pump(),
         new Promise<'timeout'>((resolve) => setTimeout(() => resolve('timeout'), remaining)),
@@ -100,8 +130,19 @@ export class StreamClient {
   }
 
   async close(): Promise<void> {
-    this.controller?.abort();
+    const pending = this.inFlight;
     this.reader = undefined;
+    this.inFlight = undefined;
+
+    this.controller?.abort();
+    this.controller = undefined;
+
+    // abort() errors the body stream, so a queued read rejects rather than
+    // hanging. Await it so a closed client leaves nothing outstanding — and
+    // drop the buffer only afterwards, because a read that resolved just
+    // before the abort landed still appends its chunk on the way out. The
+    // rejection is the abort we just caused, so swallowing it is deliberate.
+    if (pending) await pending.catch(() => {});
     this.buffered = Buffer.alloc(0);
   }
 }
