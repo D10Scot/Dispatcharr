@@ -62,15 +62,24 @@
  *       polls GET url, resolves with the body that satisfied `predicate`
  *       Defaults: timeoutMs 60s, intervalMs 1s.
  *   m3uRefreshComplete(accountId, options?) → Promise<any>
- *       Call *after* triggering the refresh — e.g. POST
- *       /api/m3u/refresh/<accountId>/ (RefreshSingleM3UAPIView), which only
- *       queues the Celery task and returns 202 immediately. Two-phase, each
- *       with its own defaults: phase 1 waits for the refresh to *start*
- *       (status fetching/parsing; 30s / 250ms, via startTimeoutMs), phase 2
- *       waits for it to *finish* (status success/error; 180s / 1s, via
- *       timeoutMs).
+ *       Triggers the refresh itself — do not POST it yourself first. It
+ *       reads the account's current status as a baseline, *then* POSTs
+ *       /api/m3u/refresh/<accountId>/ (RefreshSingleM3UAPIView; override via
+ *       options.trigger for a non-REST trigger, e.g. a UI click), which only
+ *       queues the Celery task and returns 202 immediately. That ordering
+ *       (baseline before trigger) is why the method must own the trigger —
+ *       reading the baseline after an externally-triggered refresh would
+ *       race it. Waits for the refresh to *start* (status fetching/parsing,
+ *       30s/250ms via startTimeoutMs) — or, if it fails fast enough that the
+ *       in-flight status is missed between polls, for a *terminal* status
+ *       that already differs from the baseline, which is proof enough it
+ *       ran. Only once genuinely in-flight does it go on to wait for it to
+ *       *finish* (status success/error; 180s / 1s, via timeoutMs). See the
+ *       doc comment in wait.ts for why `updated_at` can't be used for this
+ *       (only bumped on success) and the one gap this doesn't close
+ *       (identical back-to-back terminal failures on the same account).
  *   options: { timeoutMs?, intervalMs?, description?, describeLast? }
- *       plus startTimeoutMs on m3uRefreshComplete.
+ *       plus startTimeoutMs and trigger on m3uRefreshComplete.
  *
  * `ws: WsListener` — subscription to the single `updates` group on `/ws/`.
  * For state the REST API does not expose; prefer `waitFor` otherwise, the
