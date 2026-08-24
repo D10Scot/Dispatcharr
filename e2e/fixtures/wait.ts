@@ -137,14 +137,16 @@ export class Waiter {
    *    inactive. `_get_active_m3u_account()` (`apps/m3u/tasks.py`) queries
    *    `is_active=True` and raises `DoesNotExist` before the status is ever
    *    set to `fetching` — caught inside `_refresh_single_m3u_account_impl`,
-   *    which logs "not found or inactive" and returns without raising, so
-   *    the status is left exactly where it started (`idle`/`pending_setup`)
-   *    and *never* reaches `fetching`/`parsing` **or** `error`:
+   *    which logs that the account was not found and it is cleaning up an
+   *    orphaned task, then returns without raising, so the status is left
+   *    exactly where it started (`idle`/`pending_setup`) and *never* reaches
+   *    `fetching`/`parsing` **or** `error`:
    *    `_ensure_m3u_refresh_terminal_status`'s force-to-`error` only fires
    *    when the status is still in `_NON_TERMINAL_REFRESH_STATUSES`, which a
    *    never-started refresh never was — and the fallback below never fires
    *    either, since the status never changes from the baseline at all.
-   *    Both phases would hang forever, not just this one.
+   *    Phase 1 still fails cleanly on its own budget (`startTimeoutMs`),
+   *    with a timeout error naming the account; phase 2 never starts.
    *    `seed.m3uAccount()` and `seed.epgSource()` both default to
    *    `is_active: false` — pass `{ is_active: true }` when seeding an
    *    account you intend to refresh. Other causes: no Celery worker, or the

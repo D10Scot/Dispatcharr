@@ -41,9 +41,15 @@ for (const [name, principal] of Object.entries(PRINCIPALS)) {
     expect(me.username).toBe(principal.username);
     expect(me.user_level).toBe(principal.user_level);
 
+    // Exactly 403, not [401, 403]: the `me` check above already proved this
+    // principal is authenticated (IsAdmin extends Authenticated, and DRF only
+    // returns 401 when authentication itself fails). A 401 here would mean
+    // authentication broke between the two calls — an authentication
+    // regression, not an acceptable authorization outcome — and tolerating it
+    // would hide that.
     const res = await client.get('/api/accounts/users/');
 
-    expect([401, 403]).toContain(res.status());
+    expect(res.status()).toBe(403);
   });
 }
 

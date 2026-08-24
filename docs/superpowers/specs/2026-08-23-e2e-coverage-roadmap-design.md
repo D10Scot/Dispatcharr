@@ -61,10 +61,16 @@ whose tests are not browser tests.
 `timeshift/views.py` or `hdhr/api_views.py`, so hidden channels are unlistable but still
 streamable. See "Finding product bugs" below.
 
-**G7** is not optional. It is where every test that *cannot* share a seeded instance lives —
-the `pristine` population. First-run setup, global `CoreSettings` changes, migrations,
-PUID/PGID and TLS Postgres all belong here. It also wires up `docker/tests/test-puid-pgid.sh`
-and `test-tls-postgres.sh`, which are currently attached to no workflow at all.
+**G7** is not optional. It is where every test that *cannot* share the ordinary `seeded`
+instance lives — but that is not one population, and G7 should not build it as one. First-run
+setup and global `CoreSettings` changes are the `pristine` population: a fresh instance with no
+superuser, run with `playwright.config.ts`'s existing `pristine` project. Upgrade-with-migrations,
+restart persistence, PUID/PGID and TLS Postgres are different again from each other — a previous
+image, different launch env, and different services and volume history, respectively — and don't
+share a container with `pristine` or with each other. G7 is scenario-specific jobs, each standing
+up the container it needs; only the first-run case is `pristine`. It also wires up
+`docker/tests/test-puid-pgid.sh` and `test-tls-postgres.sh`, which are currently attached to no
+workflow at all.
 
 ## Rules binding every goal
 

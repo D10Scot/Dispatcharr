@@ -67,6 +67,13 @@ export default defineConfig({
       dependencies: ['bootstrap'],
       timeout: 300_000,
       workers: 2,
+      // Matches `seeded`: `adminPage` (in fixtures/index.ts) is an alias of
+      // `page` that states which principal a test drives, not a fixture that
+      // authenticates one — without a storageState here it would silently
+      // hand back an unauthenticated page. `bootstrap` is already a
+      // dependency of this project, so the admin auth state exists by the
+      // time any test runs.
+      use: { storageState: 'playwright/.auth/admin.json' },
     },
   ],
 });

@@ -31,3 +31,8 @@
 LICENSE
 data/
 docker/data/
+
+# E2E auth state — contains live JWTs and (in tokens.json) a plaintext password
+e2e/playwright/.auth/
+**/playwright-report/
+**/test-results/
