@@ -31,6 +31,12 @@ import WebSocket from 'ws';
  *    another test running concurrently against the shared instance.
  */
 
+/**
+ * The wire-level `type` every product event is sent under — see the class
+ * doc comment. Named so `describeReceived()` doesn't repeat the bare literal.
+ */
+const UPDATE_ENVELOPE_TYPE = 'update';
+
 /** True when `message` carries `type` at the top level or nested under `data`. */
 function messageMatches(message: any, type: string): boolean {
   return message?.type === type || message?.data?.type === type;
@@ -112,12 +118,24 @@ export class WsListener {
    * Not every push carries a top-level `type` — the cached-IP message on
    * connect nests it under `data` (dispatcharr/consumers.py) — so fall back
    * rather than printing a blank.
+   *
+   * A message wrapped in the `'update'` envelope reports its *nested* type
+   * instead: virtually every product event carries that literal at the top
+   * level (see the class doc comment), so printing it verbatim would list
+   * `[update, update, update]` for a timeout on, say,
+   * `waitForMessage('m3u_refresh')` — exactly the diagnostic this method
+   * exists to give, made useless by the very envelope `waitForMessage` was
+   * fixed to see through.
    */
   private describeReceived(): string {
     return this.received.length === 0
       ? '; no messages were received'
       : `; received: [${this.received
-          .map((m) => m?.type ?? m?.data?.type ?? '(untyped)')
+          .map((m) =>
+            m?.type === UPDATE_ENVELOPE_TYPE
+              ? (m?.data?.type ?? UPDATE_ENVELOPE_TYPE)
+              : (m?.type ?? m?.data?.type ?? '(untyped)')
+          )
           .join(', ')}]`;
   }
 
