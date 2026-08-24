@@ -24,6 +24,16 @@ destroy() {
   docker volume rm "$VOLUME" >/dev/null 2>&1 || true
 }
 
+# Every mode below is a whole-invocation choice, so a second argument is
+# always a mistake — `--stop --reset` silently dropped the --reset, and
+# `--reset --oops` silently ignored the typo, which is what the case below
+# exists to prevent.
+if [[ $# -gt 1 ]]; then
+  echo "Expected at most one argument, got $#: $*" >&2
+  sed -n '2,6p' "${BASH_SOURCE[0]}" >&2
+  exit 2
+fi
+
 case "${1:-}" in
   '')
     ;;

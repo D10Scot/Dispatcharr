@@ -40,6 +40,13 @@ const IPV4_LOOPBACK = /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/;
  * superuser. A prefix test on a string that may be a *name* rather than an
  * address is not an address test.
  *
+ * `localhost` is matched exactly, not as a suffix. `*.localhost` is reserved
+ * by RFC 6761 and cannot be delegated publicly, but the exemption would then
+ * rest on *resolver convention* rather than on the string being an address:
+ * an /etc/hosts line, a hostile internal resolver, or a search-suffix append
+ * can point `foo.localhost` off-loopback. Nothing in this harness uses a
+ * sub-label form, so there is nothing to trade for that.
+ *
  * `0.0.0.0` is deliberately absent: as a *destination* it means this machine
  * on most stacks, but it is also what a misconfigured base URL looks like,
  * and refusing it costs nothing.
@@ -48,7 +55,6 @@ export function isLoopbackHost(hostname: string): boolean {
   const host = hostname.replace(/^\[|\]$/g, '').toLowerCase();
   return (
     host === 'localhost' ||
-    host.endsWith('.localhost') ||
     host === '::1' ||
     IPV4_LOOPBACK.test(host) ||
     (host.startsWith('::ffff:') &&
@@ -116,13 +122,18 @@ export function assertMayCreateSuperuser(baseURL: string): void {
       : ` ${SETUP_OPT_IN} is currently ${JSON.stringify(optIn)}, which is not ` +
         `the literal "${OPT_IN_VALUE}" and does not opt in.`;
 
+  // Deliberately conditional about the target's state. Only the bootstrap
+  // caller has checked `superuser_exists`; the pristine spec calls this
+  // before its first request, so asserting "that instance has no superuser"
+  // here would state a fact this path does not know.
   throw new Error(
-    `refusing to create a superuser on ${baseURL}: that instance reports no ` +
-      'superuser yet, and this suite would create one whose password is ' +
+    `refusing to create a superuser on ${baseURL}: if that instance has no ` +
+      'superuser yet, this suite would create one whose password is ' +
       'committed to this repository in plain text, as a permanent admin on a ' +
       `host that is not this machine. Point E2E_BASE_URL at a throwaway ` +
       `instance, or set ${SETUP_OPT_IN}=${OPT_IN_VALUE} if that really is ` +
-      `what you want.${nearMiss} Running against an instance that is ` +
-      '*already* set up needs neither.'
+      `what you want.${nearMiss} An instance that is *already* set up is ` +
+      'unaffected either way — bootstrap never reaches this guard against ' +
+      'one.'
   );
 }

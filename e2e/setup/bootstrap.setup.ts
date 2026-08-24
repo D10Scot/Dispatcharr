@@ -99,6 +99,11 @@ const PREWARM_ACCOUNT_NAME = 'e2e-harness-interval-prewarm-do-not-delete';
  * This protects the default interval only. A test that creates accounts with
  * a *non*-default `refresh_interval` concurrently can still race for that
  * interval's row; pre-warm it the same way if you write one.
+ *
+ * Both branches below end in a write that runs the receiver, because the
+ * second half of this function's job is to *detect* a container that is
+ * already poisoned and say so once, here, rather than let four unrelated
+ * tests fail later with an opaque 500.
  */
 async function prewarmIntervalSchedule(
   request: APIRequestContext,
@@ -112,10 +117,37 @@ async function prewarmIntervalSchedule(
     `listing M3U accounts failed: ${listed.status()} ${await listed.text()}`
   ).toBeTruthy();
   const body = await listed.json();
-  const accounts: Array<{ name?: string }> = Array.isArray(body)
+  const accounts: Array<{ id?: number; name?: string }> = Array.isArray(body)
     ? body
     : (body?.results ?? []);
-  if (accounts.some((account) => account.name === PREWARM_ACCOUNT_NAME)) return;
+  const existing = accounts.find(
+    (account) => account.name === PREWARM_ACCOUNT_NAME
+  );
+
+  // Finding the account by name is NOT proof the row is warm, and returning
+  // early here made the detector one-shot. A create that 500s still commits
+  // its M3UAccount row: the receiver raises *after* the INSERT, and
+  // ATOMIC_REQUESTS is off, so the row lands with refresh_task_id NULL. On a
+  // poisoned container that means run 1 creates the row and reports the
+  // poisoning correctly, and every run after it finds the name, returns, and
+  // reports nothing — exactly the failure this function exists to prevent,
+  // starting from the most likely next thing anybody does (re-run without
+  // resetting). So probe it instead: the same post_save receiver runs on
+  // update, so a PATCH 500s on a poisoned container and is otherwise cheap.
+  // `refresh_task` is not in the list serializer's fields, so "null task
+  // means poisoned" is not available over the API as a shortcut.
+  if (existing) {
+    const probed = await request.patch(`/api/m3u/accounts/${existing.id}/`, {
+      headers,
+      data: { refresh_interval: 0 },
+    });
+    if (probed.status() === 500) throw poisonedContainerError('updating');
+    expect(
+      probed.ok(),
+      `IntervalSchedule pre-warm probe failed: ${probed.status()} ${await probed.text()}`
+    ).toBeTruthy();
+    return;
+  }
 
   const created = await request.post('/api/m3u/accounts/', {
     headers,
@@ -128,24 +160,23 @@ async function prewarmIntervalSchedule(
     },
   });
 
-  // A 500 here is the symptom described above, and it means this container is
-  // already poisoned — every M3U/EPG create on it will fail from now on. Say
-  // that here, once, instead of letting four unrelated tests fail later with
-  // an opaque 500 and no explanation.
-  if (created.status() === 500) {
-    throw new Error(
-      'This container is already poisoned: creating an M3U account returned ' +
-        '500. Almost certainly duplicate IntervalSchedule rows from a ' +
-        'concurrent-create race (D10Scot/Dispatcharr#7) — every M3U account ' +
-        'and EPG source creation on this instance will fail from now on, and ' +
-        'there is no API or UI that can repair it. Rebuild the container: ' +
-        './scripts/e2e_up.sh --reset'
-    );
-  }
+  if (created.status() === 500) throw poisonedContainerError('creating');
   expect(
     created.ok(),
     `IntervalSchedule pre-warm failed: ${created.status()} ${await created.text()}`
   ).toBeTruthy();
+}
+
+/** The one thing worth saying when the pre-warm write returns a 500. */
+function poisonedContainerError(verb: 'creating' | 'updating'): Error {
+  return new Error(
+    `This container is already poisoned: ${verb} an M3U account returned ` +
+      '500. Almost certainly duplicate IntervalSchedule rows from a ' +
+      'concurrent-create race (D10Scot/Dispatcharr#7) — every M3U account ' +
+      'and EPG source creation on this instance will fail from now on, and ' +
+      'there is no API or UI that can repair it. Rebuild the container: ' +
+      './scripts/e2e_up.sh --reset'
+  );
 }
 
 setup('create the superuser and persist admin auth state', async ({

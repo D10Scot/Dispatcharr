@@ -184,10 +184,17 @@ Two things follow:
   that creates accounts with, say, `refresh_interval: 6` from parallel
   workers, they race for the `(6, HOURS)` row. Pre-warm it the same way.
 
-If `bootstrap` itself gets a 500 from that create, it fails immediately saying
-the container is already poisoned and naming `./scripts/e2e_up.sh --reset`.
-That message is deliberate: the alternative is four unrelated tests failing
-later with an opaque 500.
+`bootstrap` fails immediately, on **every** run, if the container is already
+poisoned — saying so by name and giving `./scripts/e2e_up.sh --reset`. That
+message is deliberate: the alternative is four unrelated tests failing later
+with an opaque 500.
+
+It has to check on every run rather than only the first, because a create that
+500s still commits its `M3UAccount` row (the receiver raises *after* the
+INSERT, and `ATOMIC_REQUESTS` is off), so the account exists with a null
+`refresh_task` and its presence proves nothing. `bootstrap` therefore PATCHes
+the account it finds — the same receiver runs on update — instead of returning
+early on the name.
 
 ## Writing a test
 
