@@ -28,7 +28,10 @@
  *   get(url) / delete(url) → Promise<APIResponse>
  *   post(url, data) / patch(url, data) → Promise<APIResponse>
  *   json<T>(res, context) → Promise<T>   asserts res.ok(), throws with status
- *                                        + body prefixed by `context`
+ *                                        + body prefixed by `context`. `T`
+ *                                        defaults to `unknown`, not `any` —
+ *                                        name the shape, e.g.
+ *                                        `json<Channel>(res, 'read-back')`
  *   useTokens({ access, refresh })       re-point at another principal
  *   freshAccessToken() → Promise<string> a token with life left in it
  *   expireAccessTokenForTest()           corrupt the token, to drive the 401 path

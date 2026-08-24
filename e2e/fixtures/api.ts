@@ -155,8 +155,15 @@ export class ApiClient {
     return this.send('DELETE', url);
   }
 
-  /** JSON body of a call asserted to have succeeded. */
-  async json<T = any>(res: APIResponse, context: string): Promise<T> {
+  /**
+   * JSON body of a call asserted to have succeeded.
+   *
+   * `T` defaults to `unknown`, not `any`: this is the harness's single
+   * response boundary, and an `any` here would let one caller who forgot the
+   * type argument reopen the hole the typed fixtures exist to close. Name the
+   * shape — `api.json<Channel>(res, 'read-back')` — or narrow the `unknown`.
+   */
+  async json<T = unknown>(res: APIResponse, context: string): Promise<T> {
     if (!res.ok()) {
       throw new Error(`${context}: ${res.status()} ${await res.text()}`);
     }

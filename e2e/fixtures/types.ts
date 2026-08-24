@@ -19,7 +19,11 @@
  *    `FloatField(null=True)`, even though a create always auto-assigns one.
  *  - **Writable types** — from the serializer's `Meta.fields` minus everything
  *    read-only there (`SerializerMethodField`, `read_only=True`, and the
- *    server-generated `id`/`uuid`/`created_at`).
+ *    server-generated `id`/`uuid`/`created_at`), and then **narrowed further
+ *    to what this harness has a use for**. Each `*Overrides` type says what it
+ *    left out and why, so a missing field reads as "not needed yet" rather
+ *    than "not writable". They can therefore reject a legitimate field; they
+ *    cannot admit an invalid one, which is the direction to err in.
  *
  * ---------------------------------------------------------------------------
  * If a field you need is missing
@@ -63,7 +67,16 @@ export type Channel = {
   channel_group_id: number | null;
   /** Streamer 0 / Standard 1 / Admin 10 — the minimum level that may view. */
   user_level: number;
-  /** Stream ids, through `ChannelStream`. */
+  /**
+   * Stream ids, through `ChannelStream` — **for the default query only**.
+   * `ChannelSerializer.to_representation` swaps this for full
+   * `StreamSerializer` objects when `include_streams` is in the serializer
+   * context, which the viewset sets from `?include_streams=true`. No call this
+   * harness makes passes it, so `number[]` is accurate today — but the first
+   * test that does will get objects where this promises numbers, with no
+   * compile error to warn it. Widen this to a union at that point rather than
+   * casting at the call site.
+   */
   streams: number[];
   stream_profile_id: number | null;
   logo_id: number | null;
@@ -219,7 +232,13 @@ export type EpgSource = {
  * lines in that same file pin these types.
  */
 
-/** Writable fields on `ChannelSerializer`, minus the generated `name`. */
+/**
+ * The writable fields on `ChannelSerializer` this harness uses, minus the
+ * generated `name`. A curated subset, not the complete writable set —
+ * `auto_created_by` is omitted, as are the nested `override` and the
+ * read-only mirrors noted on {@link Channel}. Add what you need, with
+ * evidence; see this file's header.
+ */
 export type ChannelOverrides = {
   channel_number?: number | null;
   channel_group_id?: number;
@@ -238,7 +257,11 @@ export type ChannelOverrides = {
 };
 
 /**
- * Writable fields on `UserSerializer`, minus the generated `username`.
+ * The writable fields on `UserSerializer` this harness uses, minus the
+ * generated `username`. A curated subset: `is_staff`, `is_superuser`,
+ * `avatar_config`, `last_login` and `date_joined` are writable on that
+ * serializer and are deliberately not here, because nothing needs them yet
+ * and the last two are timestamps no test should be setting by hand.
  *
  * `email` and `password` *are* overridable: the factory puts both before
  * `...overrides`, unlike the username. Override `password` and
@@ -268,7 +291,12 @@ export type UserOverrides = {
  */
 export type ChannelProfileOverrides = Record<string, never>;
 
-/** Writable fields on `StreamProfileSerializer`, minus the generated `name`. */
+/**
+ * The writable fields on `StreamProfileSerializer` this harness uses, minus
+ * the generated `name`. `locked` is writable there too and is omitted on
+ * purpose: it marks the three built-in profiles, and a seeded profile has no
+ * business claiming to be one.
+ */
 export type StreamProfileOverrides = {
   command?: string;
   parameters?: string;
@@ -278,7 +306,12 @@ export type StreamProfileOverrides = {
 };
 
 /**
- * Writable fields on `M3UAccountSerializer`, minus the generated `name`.
+ * The writable fields on `M3UAccountSerializer` this harness uses, minus the
+ * generated `name`. A curated subset: `server_group`, `status`, `exp_date`,
+ * `locked` and `updated_at` are writable on that serializer and are not here.
+ * The last two only because `read_only_fields` is declared on the serializer
+ * class rather than on `Meta`, so DRF ignores it — D10Scot/Dispatcharr#15.
+ * Treating them as writable in this contract would encode that bug.
  *
  * **`refresh_interval` is load-bearing when accounts are created
  * concurrently.** Two creates racing on the same value both insert an
@@ -310,7 +343,10 @@ export type M3uAccountOverrides = {
 };
 
 /**
- * Writable fields on `EPGSourceSerializer`, minus the generated `name`.
+ * The writable fields on `EPGSourceSerializer` this harness uses, minus the
+ * generated `name`. A curated subset: `status` and `updated_at` are writable
+ * there and are not here — `updated_at` only because of the same misplaced
+ * `read_only_fields` as above (D10Scot/Dispatcharr#15).
  *
  * `refresh_interval` carries the same concurrency hazard as
  * {@link M3uAccountOverrides} — `EPGSource.refresh_interval` lands on the same

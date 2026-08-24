@@ -313,7 +313,8 @@ early on the name.
 4. The fixture signatures are typed, and `npm run typecheck` is the gate. Pass
    the response type where one is asked for (`waitFor.resource<Channel>(…)`,
    `api.json<Channel>(res, …)`) — the entity types are exported from
-   `../../fixtures`. If a field you need is missing from one, **add it to
+   `../../fixtures`, and neither of those two has an `any` default, so
+   omitting the argument leaves you with `unknown` rather than a free pass. If a field you need is missing from one, **add it to
    `e2e/fixtures/types.ts` with evidence** (the serializer, the model's
    nullability, a live response); do not cast. A cast makes the same claim
    without the check, one call site at a time. See "Types" below.
