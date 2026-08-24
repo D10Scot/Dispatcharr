@@ -39,16 +39,26 @@
  * worker-scoped names. Every factory takes optional `overrides` and returns
  * the created row; a caller-supplied `name`/`username` is deliberately
  * ignored, so filter assertions on the returned name.
- *   channel(overrides?)          /api/channels/channels/
- *   user(overrides?)             /api/accounts/users/, user_level 1,
- *                                password = SEEDED_USER_PASSWORD
- *   channelProfile(overrides?)   /api/channels/profiles/   (see CONTEXT.md:
- *                                three different things are called "profile")
- *   streamProfile(overrides?)    /api/core/streamprofiles/
- *   m3uAccount(overrides?)       /api/m3u/accounts/, is_active false
- *   epgSource(overrides?)        /api/epg/sources/, is_active false
+ *   channel(overrides?)          → Channel        /api/channels/channels/
+ *   user(overrides?)             → User           /api/accounts/users/,
+ *                                user_level 1, password = SEEDED_USER_PASSWORD
+ *   channelProfile(overrides?)   → ChannelProfile /api/channels/profiles/
+ *                                (see CONTEXT.md: three different things are
+ *                                called "profile")
+ *   streamProfile(overrides?)    → StreamProfile  /api/core/streamprofiles/
+ *   m3uAccount(overrides?)       → M3uAccount     /api/m3u/accounts/,
+ *                                is_active false
+ *   epgSource(overrides?)        → EpgSource      /api/epg/sources/,
+ *                                is_active false
  *   generatedName(entity)        the naming scheme itself, for a row you
  *                                create by hand
+ *   `overrides` is typed per entity — `ChannelOverrides`, `UserOverrides`, …
+ *   all exported here — so `seed.channel({ nmae: 'x' })` fails `npm run
+ *   typecheck` rather than being silently dropped by DRF. The identity field
+ *   is **absent from those types**: it is generated and spread after the
+ *   overrides, so passing one does nothing. `channelProfile` has no writable
+ *   field left at all, which is why `ChannelProfileOverrides` is empty.
+ *   `fixtures/types.ts` says where every field came from and how to add one.
  *
  * `asPrincipal: (name) => Promise<ApiClient>` — an `ApiClient` for one of the
  * pre-provisioned principals, `'streamer'` (user_level 0) or `'standard'`
@@ -82,7 +92,9 @@
  *   resource<T>(url, predicate, options?) → Promise<T>
  *       polls GET url, resolves with the body that satisfied `predicate`
  *       Defaults: timeoutMs 60s, intervalMs 1s.
- *   m3uRefreshComplete(accountId, options?) → Promise<any>
+ *       `T` has no default — supply it (`resource<Channel>(…)`) so the
+ *       predicate is checked against the body it will actually receive.
+ *   m3uRefreshComplete(accountId, options?) → Promise<M3uAccount>
  *       Triggers the refresh itself — do not POST it yourself first. It
  *       reads the account's current status as a baseline, *then* POSTs
  *       /api/m3u/refresh/<accountId>/ (RefreshSingleM3UAPIView; override via
@@ -103,10 +115,19 @@
  *       plus startTimeoutMs and trigger on m3uRefreshComplete.
  *
  * `ws: WsListener` — subscription to the single `updates` group on `/ws/`.
- * For state the REST API does not expose; prefer `waitFor` otherwise, the
- * message vocabulary is a fixed dict in the product and will drift.
- *   waitForMessage(type, options?) → Promise<any>
+ * For state the REST API does not expose; prefer `waitFor` otherwise — the
+ * message vocabulary is unregistered string literals at
+ * `send_websocket_update()` call sites (not the `SUPPORTED_EVENTS` dict in
+ * `apps/connect/models.py`, which is the *SystemEvent* vocabulary), and will
+ * drift.
+ *   waitForMessage(type, options?) → Promise<WsMessage>
  *       options: { where?: (data, message) => boolean, timeoutMs? = 30_000 }
+ *       `WsMessage` is `{ type?, data? }` and **both halves are optional** —
+ *       the product sends messages with no top-level `type`, and events with
+ *       no `data`. Read the payload as `message.data?.x`. Its values are
+ *       `unknown` on purpose: the event vocabulary is unregistered string
+ *       literals at `send_websocket_update()` call sites and will drift, and
+ *       they still compare (`data.playlist_id === account.id` typechecks).
  *       Matches top-level `type` or nested `data.type` — most product events
  *       arrive as `{"type": "update", "data": {"type": "<real event>"}}`, so
  *       waiting on the literal `'update'` matches every product event and is
@@ -145,6 +166,19 @@
  *   SEEDED_USER_PASSWORD      the password `seed.user()` assigns; import it
  *                             rather than repeating the literal
  *   expect                    re-exported from @playwright/test
+ *
+ * ---------------------------------------------------------------------------
+ * TYPES
+ * ---------------------------------------------------------------------------
+ * The entity shapes (`Channel`, `User`, `ChannelProfile`, `StreamProfile`,
+ * `M3uAccount`, `EpgSource`) and their `*Overrides` counterparts are exported
+ * from here and defined in `fixtures/types.ts`. They are **not** the DRF
+ * serializers: they are the subset this harness verified against the live API
+ * and the model definitions, and nothing more. Missing a field you need? Add
+ * it there with the same evidence — never cast. Read the header of that file
+ * before you do; it also states the one thing these types cannot promise
+ * (excess-property checking fires on object *literals* only, which is why the
+ * runtime identity spread in `seed.ts` is still what enforces the rule).
  */
 import { test as base } from '@playwright/test';
 import type { Page } from '@playwright/test';
@@ -223,4 +257,27 @@ export type { PrincipalName, Principal } from '../setup/principals';
 export { Waiter } from './wait';
 export type { WaitOptions, M3uRefreshWaitOptions } from './wait';
 export { WsListener } from './ws';
+export type {
+  MessagePredicate,
+  WaitForMessageOptions,
+  WsMessage,
+  WsPayload,
+} from './ws';
 export { StreamClient, expectTsAligned, TS_PACKET_SIZE, TS_SYNC_BYTE } from './stream-client';
+export type {
+  Channel,
+  ChannelOverrides,
+  ChannelProfile,
+  ChannelProfileOverrides,
+  EpgSource,
+  EpgSourceOverrides,
+  EpgSourceStatus,
+  EpgSourceType,
+  M3uAccount,
+  M3uAccountOverrides,
+  M3uAccountStatus,
+  StreamProfile,
+  StreamProfileOverrides,
+  User,
+  UserOverrides,
+} from './types';

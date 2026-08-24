@@ -53,14 +53,14 @@ test('two sequential waits for one type return two different messages', async ({
   const one = await ws.waitForMessage('playlist_created', { timeoutMs: 15_000 });
   const two = await ws.waitForMessage('playlist_created', { timeoutMs: 15_000 });
 
-  expect(one.data.type).toBe('playlist_created');
-  expect(two.data.type).toBe('playlist_created');
+  expect(one.data?.type).toBe('playlist_created');
+  expect(two.data?.type).toBe('playlist_created');
   // Deliberately not asserting *which* ids: /ws/ is a broadcast and a
   // parallel worker's playlist_created can be interleaved with these two.
   // That is exactly why the next test needs `where` — and why "different"
   // is the strongest thing a bare type match can assert here.
   expect(two).not.toBe(one);
-  expect(two.data.playlist_id).not.toBe(one.data.playlist_id);
+  expect(two.data?.playlist_id).not.toBe(one.data?.playlist_id);
 });
 
 test('a wait that timed out does not swallow a later wait\'s event', async ({
@@ -109,7 +109,7 @@ test('a wait that timed out does not swallow a later wait\'s event', async ({
   const account = await seed.m3uAccount({ refresh_interval: 3 });
   const message = await retry;
 
-  expect(message.data.type).toBe('playlist_created');
+  expect(message.data?.type).toBe('playlist_created');
   expect(account.id).toBeTruthy();
   expect(evaluationsAfterTimeout).toBe(0);
 });
@@ -127,7 +127,7 @@ test('a `where` wait resolves on its own event, not the first to arrive', async 
     timeoutMs: 15_000,
     where: (data) => data.playlist_id === second.id,
   });
-  expect(forSecond.data.playlist_id).toBe(second.id);
+  expect(forSecond.data?.playlist_id).toBe(second.id);
 
   // And skipping past it must not consume it: the message a predicate
   // declined is still there for the next wait.
@@ -135,5 +135,5 @@ test('a `where` wait resolves on its own event, not the first to arrive', async 
     timeoutMs: 15_000,
     where: (data) => data.playlist_id === first.id,
   });
-  expect(forFirst.data.playlist_id).toBe(first.id);
+  expect(forFirst.data?.playlist_id).toBe(first.id);
 });

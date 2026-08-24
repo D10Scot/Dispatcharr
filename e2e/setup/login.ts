@@ -22,6 +22,29 @@ export type Credentials = { username: string; password: string };
 export type TokenPair = { access: string; refresh: string };
 
 /**
+ * The `access` field of a token or refresh response, or undefined if the body
+ * does not carry one as a string.
+ *
+ * `res.json()` is `any`, and an `any` flowing into a `TokenPair` is how a
+ * malformed 200 becomes `Authorization: Bearer undefined` on every subsequent
+ * request — a cascade of 401s that names neither this response nor this
+ * function. Narrow once, here, and let each caller say what a miss means:
+ * `bootstrap` falls back to a login, the workers raise.
+ */
+export function accessTokenOf(body: unknown): string | undefined {
+  const access = (body as { access?: unknown } | null | undefined)?.access;
+  return typeof access === 'string' ? access : undefined;
+}
+
+/** Both halves of a token response, or undefined unless both are strings. */
+export function tokenPairOf(body: unknown): TokenPair | undefined {
+  const access = accessTokenOf(body);
+  const refresh = (body as { refresh?: unknown } | null | undefined)?.refresh;
+  if (access === undefined || typeof refresh !== 'string') return undefined;
+  return { access, refresh };
+}
+
+/**
  * How long to wait for a window to clear when the 429 carries no usable
  * `Retry-After`. DRF sets that header to the exact remaining time, so this
  * bound (a full window plus a second) is only ever the fallback.
@@ -113,8 +136,14 @@ export async function loginWithThrottleBackoff(
     });
 
     if (res.ok()) {
-      const body = await res.json();
-      return { access: body.access, refresh: body.refresh };
+      const tokens = tokenPairOf(await res.json());
+      if (tokens) return tokens;
+      throw new Error(
+        `login as ${username} returned 200 with no usable token pair. The ` +
+          'response was accepted but carried no string `access`/`refresh`, ' +
+          'so this is the token endpoint answering something unexpected, not ' +
+          'a credential or throttle failure.'
+      );
     }
 
     if (res.status() === 429 && waits < MAX_THROTTLE_WAITS) {

@@ -128,6 +128,15 @@ non-admin principals — `e2e/setup/principals.ts` — and writes their token
 pairs to `playwright/.auth/principals.json` (gitignored, like `tokens.json`).
 Workers read that file and never log in.
 
+`playwright/.auth/` is kept at `0700` and everything in it at `0600`, tightened
+on every write so a directory created by an older revision is repaired rather
+than left at `0755`. It holds live admin JWTs — good for 30 minutes, and their
+refresh tokens for a day — and once the container was bound to loopback the
+only reader left to keep out was a local one, which is precisely what a file
+mode addresses. `e2e/setup/auth-files.ts` is the single place that knows the
+modes, and says why the `mode:` option on `mkdir`/`writeFile` is not enough on
+its own.
+
 | Path | Logins |
 |---|---|
 | Full run, warm (`principals.json` + `tokens.json` present) | **0** |
@@ -287,22 +296,29 @@ early on the name.
    exists to enforce.
 3. Seed what you need with `seed`; never assume the instance is empty. It
    never is — every project shares one container across the whole suite.
-4. Never assert a global count or an unfiltered list — another test's data,
+4. The fixture signatures are typed, and `npm run typecheck` is the gate. Pass
+   the response type where one is asked for (`waitFor.resource<Channel>(…)`,
+   `api.json<Channel>(res, …)`) — the entity types are exported from
+   `../../fixtures`. If a field you need is missing from one, **add it to
+   `e2e/fixtures/types.ts` with evidence** (the serializer, the model's
+   nullability, a live response); do not cast. A cast makes the same claim
+   without the check, one call site at a time. See "Types" below.
+5. Never assert a global count or an unfiltered list — another test's data,
    or another worker running concurrently, will make those flake or lie.
    Filter on the name your `seed` call generated.
-5. Never assert on a notification toast. That doesn't flake so much as it
+6. Never assert on a notification toast. That doesn't flake so much as it
    turns what should be a backend/API-level assertion into a frontend one —
    assert the underlying state through `api`/`waitFor` instead, and leave
    toast rendering to a frontend-focused test.
-6. Acting as a non-admin? Use `asPrincipal('streamer' | 'standard')` — it is
+7. Acting as a non-admin? Use `asPrincipal('streamer' | 'standard')` — it is
    free at any worker count. `asUser` costs one login out of three a minute;
    read the login throttle section above before you reach for it.
-7. New to the harness? `authenticated-session.spec.ts`, `authorization.spec.ts`,
+8. New to the harness? `authenticated-session.spec.ts`, `authorization.spec.ts`,
    `async-wait.spec.ts` (two exemplars in one file) and `stream-client.spec.ts`
    (under `tests/seeded` and `tests/streaming`) each carry an "Exemplar:"
    comment for exactly this — read the one closest to what you're writing.
-8. Update `COVERAGE.md` in the same PR as the test.
-9. Found a product bug? Don't patch the product from this harness. Assert
+9. Update `COVERAGE.md` in the same PR as the test.
+10. Found a product bug? Don't patch the product from this harness. Assert
    the *correct* behaviour, mark the test `test.fail()`, and file it:
    `gh issue create --repo D10Scot/Dispatcharr`. The `--repo` flag is
    mandatory here — this checkout is a fork, and `gh` without it resolves to
@@ -348,6 +364,33 @@ Plus three exports that are not fixtures, from the same `../../fixtures` module:
 | `expectTsAligned(buffer)` | Asserts a buffer is 188-byte-aligned MPEG-TS — whole packets, `0x47` on every boundary. The assertion byte-level streaming tests are built on; reach for it before hand-rolling one |
 | `TS_PACKET_SIZE` / `TS_SYNC_BYTE` | `188` and `0x47`, for tests doing their own arithmetic |
 | `SEEDED_USER_PASSWORD` | The password `seed.user()` assigns — import it rather than repeating the literal |
+
+### Types — the contract is enforced, not just described
+
+Every `seed` factory takes an `overrides` object typed to that endpoint's
+*writable* fields and returns that entity's response type, both defined in
+`e2e/fixtures/types.ts` and re-exported from `../../fixtures`. So
+`seed.channel({ nmae: 'x' })` fails `npm run typecheck` rather than being
+silently dropped by DRF, which ignores unknown keys on write.
+
+Three things about them are worth knowing before you use them:
+
+- **They are not the serializers.** They are the subset this harness has
+  verified against the live API and the model definitions. Missing a field?
+  Add it there, having checked it, rather than casting at the call site.
+- **The identity field is absent on purpose.** `name` is not in
+  `ChannelOverrides` and `username` is not in `UserOverrides`, because the
+  factory generates them and spreads them *after* your overrides — passing one
+  does nothing. `ChannelProfileOverrides` is empty for the same reason: `name`
+  is the only writable field that endpoint has.
+- **The compile-time check is not the enforcement.** TypeScript only
+  excess-property-checks a fresh object literal, and nothing type-checks a body
+  that arrived from `JSON.parse` or through an `as`. The runtime spread order
+  in `seed.ts` is what actually holds; `seed-fixture.spec.ts` pins both halves.
+
+`waitFor.resource<T>` has no default for `T`, and `ws.waitForMessage` returns a
+`WsMessage` whose `type` and `data` are **both optional** — the product really
+does send messages missing either — so read a payload as `message.data?.x`.
 
 ### `ws` is a shared broadcast — read this before waiting on a type
 

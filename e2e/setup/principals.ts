@@ -58,8 +58,9 @@ import type { APIRequestContext } from '@playwright/test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { hasLifeLeft, loginWithThrottleBackoff } from './login';
+import { accessTokenOf, hasLifeLeft, loginWithThrottleBackoff } from './login';
 import type { TokenPair } from './login';
+import { AUTH_DIR, writeAuthFileAtomically } from './auth-files';
 
 export type PrincipalName = 'streamer' | 'standard';
 
@@ -92,8 +93,8 @@ export const PRINCIPALS: Record<PrincipalName, Principal> = {
 
 export const PRINCIPAL_NAMES = Object.keys(PRINCIPALS) as PrincipalName[];
 
-/** Beside `tokens.json`, under the same gitignored directory. */
-export const PRINCIPALS_FILE = 'playwright/.auth/principals.json';
+/** Beside `tokens.json`, under the same gitignored, 0700 directory. */
+export const PRINCIPALS_FILE = path.join(AUTH_DIR, 'principals.json');
 
 export type PrincipalTokens = {
   username: string;
@@ -118,16 +119,15 @@ function readStored(): PrincipalsFile {
  * Write through a temp file and rename. Nothing else writes this file — it is
  * produced serially by `bootstrap` and only ever read afterwards — but a
  * reader must still never catch a half-written file if a run is interrupted
- * here and the next one starts.
+ * here and the next one starts. The file holds one live token pair per
+ * principal, so it lands at 0600 in a 0700 directory; `./auth-files.ts` has
+ * the reasoning.
  */
 function writeStored(tokens: PrincipalsFile): void {
-  fs.mkdirSync(path.dirname(PRINCIPALS_FILE), { recursive: true });
-  const temp = path.join(
-    path.dirname(PRINCIPALS_FILE),
-    `.principals.${process.pid}.${Date.now()}.tmp`
+  writeAuthFileAtomically(
+    PRINCIPALS_FILE,
+    JSON.stringify(tokens, null, 2) + os.EOL
   );
-  fs.writeFileSync(temp, JSON.stringify(tokens, null, 2) + os.EOL);
-  fs.renameSync(temp, PRINCIPALS_FILE);
 }
 
 type Identity = { username: string; user_level: number };
@@ -148,26 +148,35 @@ async function whoAmI(
     headers: { Authorization: `Bearer ${access}` },
   });
   if (!res.ok()) return null;
-  const body = await res.json();
+  const body: Partial<Identity> | null = await res.json();
+  // Both fields checked, not just the username: `user_level` is compared
+  // against the roster by the caller, and an absent one would compare
+  // `undefined !== 0` and report a Streamer as drifted on every run.
   if (typeof body?.username !== 'string') return null;
+  if (typeof body.user_level !== 'number') return null;
   return { username: body.username, user_level: body.user_level };
 }
+
+/** The fields of a user row this file reads. Not the whole serializer. */
+type UserRow = { id: number; username: string; user_level: number };
 
 /** The user row for `username`, or null. The users list is unpaginated. */
 async function findUser(
   request: APIRequestContext,
   headers: Record<string, string>,
   username: string
-): Promise<{ id: number; username: string; user_level: number } | null> {
+): Promise<UserRow | null> {
   const res = await request.get('/api/accounts/users/', { headers });
   if (!res.ok()) {
     throw new Error(
       `listing users failed: ${res.status()} ${await res.text()}`
     );
   }
-  const body = await res.json();
-  const users = Array.isArray(body) ? body : (body?.results ?? []);
-  return users.find((user: { username?: string }) => user.username === username) ?? null;
+  // `/api/accounts/users/` returns a bare array today; the `results` branch
+  // is there in case pagination is switched on, not because it is observed.
+  const body: UserRow[] | { results?: UserRow[] } = await res.json();
+  const users: UserRow[] = Array.isArray(body) ? body : (body.results ?? []);
+  return users.find((user) => user.username === username) ?? null;
 }
 
 /**
@@ -272,8 +281,7 @@ async function refresh(
     data: { refresh: refreshToken },
   });
   if (!res.ok()) return null;
-  const body = await res.json();
-  return typeof body?.access === 'string' ? body.access : null;
+  return accessTokenOf(await res.json()) ?? null;
 }
 
 /**

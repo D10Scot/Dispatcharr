@@ -2,8 +2,10 @@ import type { APIRequestContext, APIResponse } from '@playwright/test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { accessTokenOf } from '../setup/login';
+import { AUTH_DIR, writeAuthFileAtomically } from '../setup/auth-files';
 
-const TOKENS_FILE = 'playwright/.auth/tokens.json';
+const TOKENS_FILE = path.join(AUTH_DIR, 'tokens.json');
 
 /**
  * How close to `exp` an access token may be before `freshAccessToken()`
@@ -81,17 +83,16 @@ export class ApiClient {
    * access token rather than the bootstrap one from up to 30 minutes ago.
    * Written through a temp file and renamed: parallel workers refresh
    * concurrently, and a reader must never catch a half-written file. The temp
-   * name carries the pid so two workers don't collide on it.
+   * name carries the pid so two workers don't collide on it, and the file
+   * lands at 0600 — see `setup/auth-files.ts`.
    */
   private persistTokens(): void {
     if (!this.persistsTokens) return;
     try {
-      const temp = path.join(
-        path.dirname(TOKENS_FILE),
-        `.tokens.${process.pid}.${Date.now()}.tmp`
+      writeAuthFileAtomically(
+        TOKENS_FILE,
+        JSON.stringify(this.tokens, null, 2) + os.EOL
       );
-      fs.writeFileSync(temp, JSON.stringify(this.tokens, null, 2) + os.EOL);
-      fs.renameSync(temp, TOKENS_FILE);
     } catch {
       // Best-effort: a client that refreshed in memory is still usable, and
       // failing a test over an unwritable auth directory would be a worse
@@ -108,7 +109,17 @@ export class ApiClient {
         `token refresh failed: ${res.status()} ${await res.text()}`
       );
     }
-    this.tokens.access = (await res.json()).access;
+    // Narrowed rather than destructured off `any`: a 200 carrying no string
+    // `access` would otherwise install `Bearer undefined` on this client and
+    // surface as 401s from every later call.
+    const access = accessTokenOf(await res.json());
+    if (access === undefined) {
+      throw new Error(
+        'token refresh returned 200 with no string `access` field; the ' +
+          'refresh endpoint answered something unexpected.'
+      );
+    }
+    this.tokens.access = access;
     this.persistTokens();
   }
 

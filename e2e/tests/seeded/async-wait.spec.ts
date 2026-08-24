@@ -1,4 +1,5 @@
 import { test, expect } from '../../fixtures';
+import type { Channel } from '../../fixtures';
 
 // Exemplar: polling is the default way to wait for backend state. Prefer it
 // over the WebSocket unless the state is only observable there.
@@ -9,7 +10,10 @@ test('waitFor.resource polls until a created channel appears', async ({
 }) => {
   const channel = await seed.channel();
 
-  const found = await waitFor.resource(
+  // The type argument is not decoration: `resource` has no default for it,
+  // so `(body) => body.nmae === …` is a compile error rather than a poll
+  // that can never succeed.
+  const found = await waitFor.resource<Channel>(
     `/api/channels/channels/${channel.id}/`,
     (body) => body.name === channel.name
   );
@@ -21,7 +25,10 @@ test('waitFor.resource polls until a created channel appears', async ({
 // Every socket receives connection_established on connect.
 test('ws fixture receives the connection handshake', async ({ ws }) => {
   const message = await ws.waitForMessage('connection_established');
-  expect(message.data.success).toBe(true);
+  // `data?.` and not `data.`: the product sends messages with no payload at
+  // all, so `WsMessage.data` is optional. A missing one fails this assertion
+  // as `undefined !== true` rather than throwing a TypeError.
+  expect(message.data?.success).toBe(true);
 });
 
 // Regression: waitFor.m3uRefreshComplete used to poll for an in-flight

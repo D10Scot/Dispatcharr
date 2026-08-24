@@ -6,7 +6,8 @@ import WebSocket from 'ws';
  * Auth is a `token` query parameter carrying the access JWT
  * (dispatcharr/jwt_ws_auth.py); an unauthenticated socket is refused at the
  * handshake. Use this only for state the REST API does not expose — the
- * message vocabulary is a fixed dict in the product and will drift.
+ * message vocabulary is unregistered string literals at
+ * `send_websocket_update()` call sites, and will drift.
  *
  * The token is passed in rather than read from `playwright/.auth/tokens.json`
  * here: a query-parameter token is fixed at connect time and this class has
@@ -89,11 +90,41 @@ const UPDATE_ENVELOPE_TYPE = 'update';
 const DESCRIBE_LIMIT = 40;
 
 /**
+ * The payload half of a message: `message.data`.
+ *
+ * Its keys are deliberately `unknown` rather than a union of the product's
+ * event shapes. There is no registry to derive one from: an event name is a
+ * bare string literal at whichever `send_websocket_update()` call site emits
+ * it (`'playlist_created'` is `apps/m3u/api_views.py:132`), spread across a
+ * dozen modules, each carrying its own set of ids and none of them
+ * schema'd — so a type enumerating them would be a claim this harness has
+ * not verified and could not keep current. `unknown` values still compare
+ * (`data.playlist_id === account.id` typechecks), which is what a `where`
+ * predicate does with them.
+ *
+ * `type` is called out because `waitForMessage` matches on it: virtually every
+ * product event arrives as `{type: 'update', data: {type: '<real event>'}}`.
+ */
+export type WsPayload = Record<string, unknown> & { type?: string };
+
+/**
+ * A message as it comes off the socket.
+ *
+ * Both halves are optional, and both really are: `consumers.py` pushes the
+ * cached-IP result as `{'data': {'type': 'ip_lookup_complete', ...}}` with no
+ * top-level `type` at all, and `update()` forwards whatever
+ * `send_websocket_update()` handed it — which `user_may_receive_update` reads
+ * with `event.get("data")`, so a `data`-less event is a shape the product
+ * admits. Reach for `message.data?.x`, not `message.data.x`.
+ */
+export type WsMessage = { type?: string; data?: WsPayload };
+
+/**
  * Correlates a message to the test that caused it. Receives the payload
  * (`message.data`, or `{}` when the message carries none) and, for the rare
  * case that needs it, the whole message.
  */
-export type MessagePredicate = (data: any, message: any) => boolean;
+export type MessagePredicate = (data: WsPayload, message: WsMessage) => boolean;
 
 export type WaitForMessageOptions = {
   /**
@@ -106,12 +137,12 @@ export type WaitForMessageOptions = {
 };
 
 /** True when `message` carries `type` at the top level or nested under `data`. */
-function messageMatches(message: any, type: string): boolean {
+function messageMatches(message: WsMessage, type: string): boolean {
   return message?.type === type || message?.data?.type === type;
 }
 
 /** The payload a predicate is handed: never null, never throws on access. */
-function payloadOf(message: any): any {
+function payloadOf(message: WsMessage): WsPayload {
   return message?.data ?? {};
 }
 
@@ -120,7 +151,7 @@ type Waiter = {
   where: MessagePredicate | undefined;
   /** For error messages: `'playlist_created'` or `'playlist_created' (where: …)`. */
   description: string;
-  resolve: (message: any) => void;
+  resolve: (message: WsMessage) => void;
   reject: (error: Error) => void;
 };
 
@@ -131,13 +162,13 @@ export class WsListener {
    * first. Distinct from `log`: this one is consuming, so nothing here can
    * satisfy two waits.
    */
-  private queue: any[] = [];
+  private queue: WsMessage[] = [];
   /**
    * Every message ever received, for diagnostics only — never matched
    * against, so consuming from `queue` cannot degrade a timeout message.
    * Bounded; see DESCRIBE_LIMIT.
    */
-  private log: any[] = [];
+  private log: WsMessage[] = [];
   private droppedFromLog = 0;
   /** Live waiters, oldest first. A timed-out or rejected waiter is removed. */
   private waiters: Waiter[] = [];
@@ -160,7 +191,7 @@ export class WsListener {
 
     this.socket = new WebSocket(url.toString());
     this.socket.on('message', (raw) => {
-      const message = JSON.parse(raw.toString());
+      const message: WsMessage = JSON.parse(raw.toString());
       this.remember(message);
       // Hand it to the oldest interested waiter, which consumes it; queue it
       // for a future wait if nobody is interested yet.
@@ -242,7 +273,7 @@ export class WsListener {
   }
 
   /** Append to the diagnostic log, keeping it bounded. */
-  private remember(message: any): void {
+  private remember(message: WsMessage): void {
     this.log.push(message);
     if (this.log.length > DESCRIBE_LIMIT) {
       this.log.shift();
@@ -257,7 +288,7 @@ export class WsListener {
    * message cannot also be handed to the next one, and a waiter that already
    * timed out is not in this list to take anything.
    */
-  private takeWaiterFor(message: any): Waiter | undefined {
+  private takeWaiterFor(message: WsMessage): Waiter | undefined {
     for (let i = 0; i < this.waiters.length; i++) {
       const waiter = this.waiters[i];
       if (!messageMatches(message, waiter.type)) continue;
@@ -289,7 +320,10 @@ export class WsListener {
    * Remove and return the oldest queued message satisfying this waiter, so a
    * wait registered after the event still sees it — exactly once.
    */
-  private takeQueuedFor(type: string, where: MessagePredicate | undefined): any {
+  private takeQueuedFor(
+    type: string,
+    where: MessagePredicate | undefined
+  ): WsMessage | undefined {
     for (let i = 0; i < this.queue.length; i++) {
       const message = this.queue[i];
       if (!messageMatches(message, type)) continue;
@@ -326,11 +360,14 @@ export class WsListener {
    * message and then waits for one that will never come. Get the id first and
    * then wait, or wait on the type alone.
    */
-  waitForMessage(type: string, options: WaitForMessageOptions = {}): Promise<any> {
+  waitForMessage(
+    type: string,
+    options: WaitForMessageOptions = {}
+  ): Promise<WsMessage> {
     const { where, timeoutMs = 30_000 } = options;
     const description = where ? `'${type}' (where: …)` : `'${type}'`;
 
-    let already: any;
+    let already: WsMessage | undefined;
     try {
       already = this.takeQueuedFor(type, where);
     } catch (error) {
@@ -344,7 +381,7 @@ export class WsListener {
     if (already !== undefined) return Promise.resolve(already);
     if (this.connectionError) return Promise.reject(this.connectionError);
 
-    return new Promise((resolve, reject) => {
+    return new Promise<WsMessage>((resolve, reject) => {
       const waiter: Waiter = {
         type,
         where,

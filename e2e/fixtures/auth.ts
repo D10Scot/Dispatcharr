@@ -7,8 +7,8 @@ import {
   PRINCIPAL_NAMES,
 } from '../setup/principals';
 import type { PrincipalName, PrincipalsFile } from '../setup/principals';
-
-type TokenPair = { access: string; refresh: string };
+import { tokenPairOf } from '../setup/login';
+import type { TokenPair } from '../setup/login';
 
 /**
  * Token pairs by `username:password`, for the life of this worker process.
@@ -63,6 +63,7 @@ function loadPrincipals(): void {
   } catch {
     return;
   }
+  if (!stored || typeof stored !== 'object') return;
 
   for (const name of PRINCIPAL_NAMES) {
     const tokens = stored[name];
@@ -122,8 +123,14 @@ async function login(
       `login as ${username} failed: ${res.status()} ${await res.text()}${detail}`
     );
   }
-  const { access, refresh } = await res.json();
-  return { access, refresh };
+  const tokens = tokenPairOf(await res.json());
+  if (!tokens) {
+    throw new Error(
+      `login as ${username} returned 200 with no usable token pair; the ` +
+        'token endpoint answered something unexpected.'
+    );
+  }
+  return tokens;
 }
 
 /**

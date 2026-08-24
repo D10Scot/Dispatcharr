@@ -3,12 +3,17 @@ import type { APIRequestContext } from '@playwright/test';
 import fs from 'node:fs';
 import path from 'node:path';
 import { ADMIN } from './credentials';
-import { hasLifeLeft, jwtExp, loginWithThrottleBackoff } from './login';
+import {
+  accessTokenOf,
+  hasLifeLeft,
+  jwtExp,
+  loginWithThrottleBackoff,
+} from './login';
 import type { TokenPair } from './login';
 import { provisionPrincipals } from './principals';
 import { assertMayCreateSuperuser } from './superuser-guard';
+import { AUTH_DIR, ensureAuthDir, writeAuthFile } from './auth-files';
 
-const AUTH_DIR = 'playwright/.auth';
 const STATE_FILE = path.join(AUTH_DIR, 'admin.json');
 const TOKENS_FILE = path.join(AUTH_DIR, 'tokens.json');
 
@@ -62,9 +67,9 @@ async function reusableTokens(
       data: { refresh: stored.refresh },
     });
     if (!refreshed.ok()) return null;
-    const body = await refreshed.json();
-    if (typeof body?.access !== 'string') return null;
-    access = body.access;
+    const refreshedAccess = accessTokenOf(await refreshed.json());
+    if (refreshedAccess === undefined) return null;
+    access = refreshedAccess;
     probe = await request.get('/api/accounts/users/me/', {
       headers: { Authorization: `Bearer ${access}` },
     });
@@ -78,8 +83,8 @@ async function reusableTokens(
   // ...ADMIN — so adopting another principal's token would silently run every
   // spec as that principal, surfacing as unexplained 403s across the suite
   // rather than as a setup failure.
-  const who = await probe.json();
-  if (who.username !== ADMIN.username) return null;
+  const who: { username?: unknown } = await probe.json();
+  if (who?.username !== ADMIN.username) return null;
 
   return { access, refresh: stored.refresh };
 }
@@ -139,10 +144,9 @@ async function prewarmIntervalSchedule(
     listed.ok(),
     `listing M3U accounts failed: ${listed.status()} ${await listed.text()}`
   ).toBeTruthy();
-  const body = await listed.json();
-  const accounts: Array<{ id?: number; name?: string }> = Array.isArray(body)
-    ? body
-    : (body?.results ?? []);
+  type AccountRow = { id?: number; name?: string };
+  const body: AccountRow[] | { results?: AccountRow[] } = await listed.json();
+  const accounts: AccountRow[] = Array.isArray(body) ? body : (body.results ?? []);
   const existing = accounts.find(
     (account) => account.name === PREWARM_ACCOUNT_NAME
   );
@@ -215,7 +219,11 @@ function persistAdminAuth(
   access: string,
   refresh: string
 ): void {
-  fs.mkdirSync(AUTH_DIR, { recursive: true });
+  // Before the JWT check below, not after: this is also what tightens a
+  // directory left at 0755 by a checkout that ran an older revision of the
+  // harness, and that repair should not be conditional on this particular
+  // token being readable. See `./auth-files.ts`.
+  ensureAuthDir();
   const exp = jwtExp(access);
   if (exp === undefined) {
     throw new Error(
@@ -225,7 +233,7 @@ function persistAdminAuth(
     );
   }
 
-  fs.writeFileSync(
+  writeAuthFile(
     TOKENS_FILE,
     JSON.stringify({ access, refresh, ...ADMIN }, null, 2)
   );
@@ -234,7 +242,7 @@ function persistAdminAuth(
   // the only writer; api.js:192 clears a `token` key nothing ever sets.
   // tokenExpiration must be the exp of whichever access token we just wrote,
   // reused or freshly minted.
-  fs.writeFileSync(
+  writeAuthFile(
     STATE_FILE,
     JSON.stringify(
       {
@@ -266,7 +274,8 @@ setup('create the superuser and persist admin auth state', async ({
     `initialize-superuser probe failed: ${status.status()} ${await status.text()}`
   ).toBeTruthy();
 
-  if (!(await status.json()).superuser_exists) {
+  const setupState: { superuser_exists?: boolean } = await status.json();
+  if (!setupState.superuser_exists) {
     assertMayCreateSuperuser(baseURL!);
     // POST is IP-gated to private/loopback (dispatcharr/utils.py,
     // setup_ip_allowed). Fine from CI and from localhost; a public

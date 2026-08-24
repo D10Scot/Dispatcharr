@@ -1,4 +1,5 @@
 import type { ApiClient } from './api';
+import type { M3uAccount, M3uAccountStatus } from './types';
 
 export type WaitOptions = {
   timeoutMs?: number;
@@ -19,10 +20,10 @@ function truncate(value: string, maxLength = DESCRIBE_LAST_MAX_LENGTH): string {
 }
 
 /** `M3UAccount.Status` values a refresh passes through while it is running. */
-const M3U_IN_FLIGHT_STATUSES = ['fetching', 'parsing'];
+const M3U_IN_FLIGHT_STATUSES: readonly M3uAccountStatus[] = ['fetching', 'parsing'];
 
 /** `M3UAccount.Status` values a finished refresh comes to rest in. */
-const M3U_TERMINAL_STATUSES = ['success', 'error'];
+const M3U_TERMINAL_STATUSES: readonly M3uAccountStatus[] = ['success', 'error'];
 
 export type M3uRefreshWaitOptions = WaitOptions & {
   /**
@@ -81,7 +82,18 @@ export class Waiter {
     );
   }
 
-  async resource<T = any>(
+  /**
+   * Polls `url` until its body satisfies `predicate`, and resolves with that
+   * body.
+   *
+   * `T` has no default: the body is whatever that endpoint returns, and
+   * inferring `any` let `(body) => body.nmae === x` poll forever against a
+   * typo. Supply the response type — `waitFor.resource<Channel>(...)` — and
+   * both the predicate and the return value are checked. `unknown` is the
+   * honest answer for an endpoint this harness has no type for; narrow it in
+   * the predicate.
+   */
+  async resource<T>(
     url: string,
     predicate: (body: T) => boolean,
     options: WaitOptions = {}
@@ -209,11 +221,11 @@ export class Waiter {
   async m3uRefreshComplete(
     accountId: number,
     { startTimeoutMs = 30_000, trigger, ...options }: M3uRefreshWaitOptions = {}
-  ) {
+  ): Promise<M3uAccount> {
     const url = `/api/m3u/accounts/${accountId}/`;
 
     const baselineRes = await this.api.get(url);
-    const baseline = await this.api.json<any>(
+    const baseline = await this.api.json<M3uAccount>(
       baselineRes,
       `m3uRefreshComplete baseline read for account ${accountId}`
     );
@@ -222,9 +234,9 @@ export class Waiter {
 
     let sawInFlight = false;
 
-    const firstObserved = await this.resource(
+    const firstObserved = await this.resource<M3uAccount>(
       url,
-      (body: any) => {
+      (body) => {
         if (M3U_IN_FLIGHT_STATUSES.includes(body.status)) {
           sawInFlight = true;
           return true;
@@ -250,9 +262,9 @@ export class Waiter {
       return firstObserved;
     }
 
-    return this.resource(
+    return this.resource<M3uAccount>(
       url,
-      (body: any) => M3U_TERMINAL_STATUSES.includes(body.status),
+      (body) => M3U_TERMINAL_STATUSES.includes(body.status),
       {
         description:
           `M3U account ${accountId} refresh to finish ` +

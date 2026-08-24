@@ -4,6 +4,7 @@ import {
   PRINCIPALS,
   loginsSpentByThisWorker,
 } from '../../fixtures';
+import type { User } from '../../fixtures';
 
 // Exemplar: how a later goal drives non-admin principals. The REST API is
 // deny-by-default (DEFAULT_PERMISSION_CLASSES = IsAdmin), so a non-admin is
@@ -34,7 +35,7 @@ for (const [name, principal] of Object.entries(PRINCIPALS)) {
     // ApiClient loads by default), and the level pins *which* non-admin level
     // it was: a test that could not tell a Streamer from a Standard user would
     // make its own name a quiet lie.
-    const me = await client.json<{ username: string; user_level: number }>(
+    const me = await client.json<User>(
       await client.get('/api/accounts/users/me/'),
       'asPrincipal identity check'
     );
@@ -76,7 +77,7 @@ test('driving a fixed principal spends no login', async ({
   expect(loginsSpentByThisWorker()).toBe(before);
 
   for (const client of [viaPrincipal, viaUser]) {
-    const me = await client.json<{ username: string }>(
+    const me = await client.json<User>(
       await client.get('/api/accounts/users/me/'),
       'fixed principal identity'
     );

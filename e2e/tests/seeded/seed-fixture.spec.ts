@@ -1,4 +1,5 @@
 import { test, expect, Seeder } from '../../fixtures';
+import type { Channel } from '../../fixtures';
 
 test('seeded channel is retrievable and namespaced', async ({ api, seed }) => {
   const channel = await seed.channel();
@@ -8,7 +9,11 @@ test('seeded channel is retrievable and namespaced', async ({ api, seed }) => {
 
   const res = await api.get(`/api/channels/channels/${channel.id}/`);
   expect(res.status()).toBe(200);
-  expect((await res.json()).name).toBe(channel.name);
+  // `api.json<Channel>` rather than `res.json()`: the latter is Playwright's,
+  // and returns `any`. Naming the shape is how a field that stops existing
+  // becomes a typecheck failure instead of a runtime `undefined`.
+  const fetched = await api.json<Channel>(res, 'seeded channel read-back');
+  expect(fetched.name).toBe(channel.name);
 });
 
 test('seeded names are unique within a test', async ({ seed }) => {
@@ -33,10 +38,28 @@ test('overrides are applied', async ({ seed }) => {
 // caller-supplied one — this is the whole point of the fixture. A refactor
 // that puts ...overrides back after the generated field would make these
 // tests fail without needing a container reset to notice.
+//
+// Both defences are pinned here, and each `@ts-expect-error` below carries
+// half of it:
+//
+//  - the *compile-time* half — `name` is absent from `ChannelOverrides` and
+//    `username` from `UserOverrides`, so passing one is an error.
+//    `@ts-expect-error` fails the typecheck if that error ever *stops*
+//    happening, which is what makes these lines an assertion rather than a
+//    suppression;
+//  - the *runtime* half — the body below is sent anyway (the directive is a
+//    compiler instruction, and Playwright transpiles without type checking),
+//    so the request really does carry the caller's identity field and the
+//    assertions really do prove the factory discarded it.
+//
+// Which is why these must not be softened to a cast: an `as` would silence
+// the compiler without noticing if the type were later widened to accept the
+// field, and the type would then be advertising a knob that does nothing.
 
 test('a passed name cannot override the generated channel name', async ({
   seed,
 }) => {
+  // @ts-expect-error `name` is deliberately not in ChannelOverrides — see above.
   const channel = await seed.channel({ name: 'fixed-name' });
   expect(channel.name).not.toBe('fixed-name');
   expect(channel.name).toMatch(/^e2e-w\d+-/);
@@ -45,6 +68,7 @@ test('a passed name cannot override the generated channel name', async ({
 test('a passed username cannot override the generated user username', async ({
   seed,
 }) => {
+  // @ts-expect-error `username` is deliberately not in UserOverrides — see above.
   const user = await seed.user({ username: 'fixed' });
   expect(user.username).not.toBe('fixed');
   expect(user.username).toMatch(/^e2e-w\d+-/);
