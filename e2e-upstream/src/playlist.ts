@@ -25,6 +25,14 @@ export function credentialQuery(scenario: Scenario): string {
  * `streamOrigin` must be the internal origin. Dispatcharr is what follows
  * these URLs, so they have to resolve inside the Docker network even when a
  * test fetched this playlist through the published control port.
+ *
+ * Channel `name`/`tvgId` are interpolated unescaped and are deliberately not
+ * sanitised here: `scenario.ts` already rejects the control characters
+ * (newlines, NUL) that would corrupt the playlist's line structure, so what
+ * reaches this function is safe to interpolate as-is. A double quote inside
+ * `name` is passed through on purpose — M3U has no standard escape for it,
+ * real providers emit it unescaped, and G3 needs to be able to reproduce
+ * that. Do not "fix" this by escaping quotes.
  */
 export function renderPlaylist(scenario: Scenario, streamOrigin: string): string {
   const query = credentialQuery(scenario);

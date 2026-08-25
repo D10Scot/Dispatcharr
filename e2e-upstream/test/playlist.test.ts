@@ -45,12 +45,26 @@ describe('renderPlaylist', () => {
       username: 'user@example.com',
       password: 'p a s s',
     });
-    const playlist = renderPlaylist(scenario, ORIGIN);
+    const lines = renderPlaylist(scenario, ORIGIN).trim().split('\n');
+    const streamLine = lines[2];
 
     // The product sends no credentials of its own on a standard M3U fetch,
     // so anything the provider wants to validate has to be in the URL.
-    expect(playlist).toContain('username=user%40example.com');
-    expect(playlist).toContain('password=p%20a%20s%20s');
+    // Asserted on the stream URL line specifically, not the whole document,
+    // so this can't pass because the query landed somewhere unrelated (e.g.
+    // an EXTINF attribute).
+    expect(streamLine).toBe(
+      `${ORIGIN}/s/${scenario.id}/stream/1.ts?username=user%40example.com&password=p%20a%20s%20s`,
+    );
+  });
+
+  it('passes an unescaped double quote in a channel name through, since M3U has no standard escape for it and real providers emit it that way', () => {
+    // Regression guard: without this test, someone will later "harden" the
+    // renderer by escaping quotes and silently remove a case G3 needs.
+    const scenario = new ScenarioRegistry().create({
+      channels: [{ id: 1, name: 'The "Best" Channel', tvgId: 'best.e2e', logo: null }],
+    });
+    expect(renderPlaylist(scenario, ORIGIN)).toContain('tvg-name="The "Best" Channel"');
   });
 
   it('declares the content type the product will accept', () => {

@@ -71,6 +71,22 @@ describe('parseScenarioRequest', () => {
     expect(() => parseScenarioRequest({ channels: [{}] })).toThrow(/channels/);
   });
 
+  it('rejects a newline in a channel name, naming the field', () => {
+    // A "\n" in `name` would inject an extra line into the rendered M3U,
+    // which Dispatcharr would parse as an additional, attacker-controlled
+    // channel entry.
+    const request = { channels: [{ id: 1, name: 'x\n#EXTINF:-1,Injected', tvgId: 'x.e2e', logo: null }] };
+    expect(() => parseScenarioRequest(request)).toThrow(BadRequestError);
+    expect(() => parseScenarioRequest(request)).toThrow(/name/);
+  });
+
+  it('rejects a NUL byte in a channel tvgId, naming the field', () => {
+    // A NUL would make the rendered XMLTV not well-formed.
+    const request = { channels: [{ id: 1, name: 'x', tvgId: 'x\x00.e2e', logo: null }] };
+    expect(() => parseScenarioRequest(request)).toThrow(BadRequestError);
+    expect(() => parseScenarioRequest(request)).toThrow(/tvgId/);
+  });
+
   it('rejects a negative maxConnections, naming the field', () => {
     expect(() => parseScenarioRequest({ maxConnections: -1 })).toThrow(BadRequestError);
     expect(() => parseScenarioRequest({ maxConnections: -1 })).toThrow(/maxConnections/);

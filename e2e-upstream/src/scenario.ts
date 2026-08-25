@@ -55,6 +55,25 @@ function isChannelSpec(value: unknown): value is ChannelSpec {
   );
 }
 
+// C0 controls plus DEL. These are the characters that corrupt the
+// *structure* of the M3U (a "\n" turns one channel entry into an injected
+// second one) or the XMLTV (a NUL makes the document not well-formed). They
+// are rejected here, at the door, rather than escaped at render time,
+// because `playlist.ts` and `xmltv.ts` must stay free to emit otherwise
+// ugly-but-legal content (e.g. an unescaped double quote) for tests that
+// want an awkward-but-realistic upstream. A test that wants a deliberately
+// malformed document needs an explicit mechanism for it, not one smuggled in
+// through a channel name.
+const CONTROL_CHARS = /[\x00-\x1F\x7F]/;
+
+function assertNoControlChars(value: string, field: string): void {
+  if (CONTROL_CHARS.test(value)) {
+    throw new BadRequestError(
+      `'channels' entry '${field}' must not contain control characters (e.g. newlines or NUL)`,
+    );
+  }
+}
+
 /**
  * Validates a parsed JSON body field-by-field before it ever reaches
  * `ScenarioRegistry.create`, naming the offending field in the thrown
@@ -73,6 +92,10 @@ export function parseScenarioRequest(body: Record<string, unknown>): ScenarioReq
         throw new BadRequestError(
           "'channels' array entries must each have a numeric id, string name, string tvgId, and a logo that is a string or null",
         );
+      }
+      for (const channel of body.channels) {
+        assertNoControlChars(channel.name, 'name');
+        assertNoControlChars(channel.tvgId, 'tvgId');
       }
       request.channels = body.channels as ChannelSpec[];
     } else if (isNonNegativeInteger(body.channels)) {

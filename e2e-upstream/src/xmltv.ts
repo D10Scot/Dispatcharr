@@ -7,6 +7,10 @@ const HOURS_BEFORE = 2;
 const HOURS_AFTER = 24;
 const SLOT_MS = 60 * 60 * 1000;
 
+// Escaping `& < > "` (and leaving `'` alone, which needs no escaping in
+// element text) is sufficient here because `scenario.ts` already rejects
+// control characters in `name`/`tvgId` at validation time — the only inputs
+// that could otherwise produce a not-well-formed document (e.g. a bare NUL).
 function escapeXml(value: string): string {
   return value
     .replace(/&/g, '&amp;')
