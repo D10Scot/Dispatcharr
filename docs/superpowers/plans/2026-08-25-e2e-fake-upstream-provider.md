@@ -18,7 +18,7 @@
 - **Every `FROM` is `image:tag@sha256:<digest>`.** Resolve with `docker buildx imagetools inspect <image>:<tag>`. Never hand-type a digest.
 - **Workflows set `permissions: contents: read` at the top level**, and every `actions/checkout` sets `persist-credentials: false`.
 - **zizmor is a ratchet held at zero findings.** A `PostToolUse` hook blocks on *every* finding in an edited workflow file, legacy included.
-- **`e2e/support/static-upstream.ts` is deleted in Task 10**, not before. Tasks 1–9 leave it working.
+- **`e2e/support/static-upstream.ts` is deleted in Task 9**, not before. Tasks 1–8 leave it working.
 - **No product code is modified.** Bugs found are filed with `gh issue create --repo D10Scot/Dispatcharr` — always with the explicit `--repo` flag, because this clone is a fork and `gh` otherwise resolves to the upstream public tracker.
 - **Credentials go in the URL string**, never on `M3UAccount.username`/`password` or `EPGSource.username`/`password`. The product does not send those on standard M3U or XMLTV fetches.
 - **Ports:** the provider listens on `8080` inside its container, published to `127.0.0.1:9402`. Never 9191.
