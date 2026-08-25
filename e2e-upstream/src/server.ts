@@ -11,6 +11,7 @@ import type { LoadedAsset } from './asset.js';
 import { ConnectionRegistry } from './connections.js';
 import type { LiveConnection } from './connections.js';
 import { streamLoop, STREAM_CONTENT_TYPE } from './stream.js';
+import { FaultStore, DEFAULT_REDIRECT_DEPTH, parseFaultRequest } from './faults.js';
 
 export interface RunningServer {
   close(): Promise<void>;
@@ -28,6 +29,9 @@ export function sendJson(res: ServerResponse, status: number, body: unknown): vo
 
 export const registry = new ScenarioRegistry();
 export const connections = new ConnectionRegistry();
+// Exported so Task 7 can log fault applications alongside the connection
+// events it already logs.
+export const faults = new FaultStore();
 
 /**
  * Loaded on first use, not at module scope. `readFileSync` on
@@ -46,10 +50,73 @@ function getAsset(): LoadedAsset {
   return asset;
 }
 
-async function readRawBody(req: IncomingMessage): Promise<string> {
-  const chunks: Buffer[] = [];
-  for await (const chunk of req) chunks.push(chunk as Buffer);
-  return Buffer.concat(chunks).toString('utf8');
+// A 5,000-channel scenario body is genuinely large; 1 MB is comfortable
+// headroom above that without being large enough to matter as a resource
+// exhaustion vector.
+const MAX_BODY_BYTES = 1024 * 1024;
+// Short enough that a client that opens a connection and never finishes its
+// body (accidentally or as a deliberate probe) doesn't leak that request
+// forever — readRawBody previously had no bound on either size or time.
+const BODY_READ_TIMEOUT_MS = 10_000;
+
+interface ReadBodyOptions {
+  maxBytes?: number;
+  timeoutMs?: number;
+}
+
+function readRawBody(req: IncomingMessage, options: ReadBodyOptions = {}): Promise<string> {
+  const maxBytes = options.maxBytes ?? MAX_BODY_BYTES;
+  const timeoutMs = options.timeoutMs ?? BODY_READ_TIMEOUT_MS;
+
+  // Event-based rather than `for await (const chunk of req)`: the timeout
+  // and the byte cap both need to cut the read short from outside the
+  // iteration, without destroying the underlying socket (see the comment on
+  // `finish` below) — a bare `for await` loop has no way to stop early
+  // except by destroying the stream it's iterating.
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    let total = 0;
+    let settled = false;
+
+    const finish = (error: Error | undefined, value?: string) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      req.removeListener('data', onData);
+      req.removeListener('end', onEnd);
+      req.removeListener('error', onError);
+      if (error) reject(error);
+      else resolve(value ?? '');
+    };
+
+    // Deliberately doesn't call `req.destroy()` here: an IncomingMessage's
+    // `destroy()` tears down the *socket* it shares with the response, so
+    // calling it before `sendJson` writes the 400 would kill the connection
+    // the client is waiting on — the client sees a bare connection reset
+    // instead of the error body naming what limit it hit. Removing the
+    // listeners is enough to stop this handler from accumulating any more
+    // memory and to let the promise settle; the socket itself is reclaimed
+    // once the response finishes (or by Node's own connection timeout if
+    // the client never stops sending).
+    const timer = setTimeout(() => {
+      finish(new BadRequestError(`request body took longer than ${timeoutMs}ms to arrive`));
+    }, timeoutMs);
+
+    const onData = (chunk: Buffer) => {
+      total += chunk.byteLength;
+      if (total > maxBytes) {
+        finish(new BadRequestError(`request body exceeds ${maxBytes} bytes`));
+        return;
+      }
+      chunks.push(chunk);
+    };
+    const onEnd = () => finish(undefined, Buffer.concat(chunks).toString('utf8'));
+    const onError = (error: Error) => finish(error);
+
+    req.on('data', onData);
+    req.on('end', onEnd);
+    req.on('error', onError);
+  });
 }
 
 /**
@@ -60,8 +127,11 @@ async function readRawBody(req: IncomingMessage): Promise<string> {
  * body creates a default scenario — but any non-empty, non-object body is
  * rejected with `BadRequestError` rather than silently coerced.
  */
-export async function readJsonObject(req: IncomingMessage): Promise<Record<string, unknown>> {
-  const raw = await readRawBody(req);
+export async function readJsonObject(
+  req: IncomingMessage,
+  options?: ReadBodyOptions
+): Promise<Record<string, unknown>> {
+  const raw = await readRawBody(req, options);
   if (raw.length === 0) return {};
 
   let parsed: unknown;
@@ -133,6 +203,17 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       sendJson(res, 404, { error: `no scenario ${playlistMatch[1]}` });
       return;
     }
+    // A playlist refresh has no single channel in play, so only a
+    // scenario-wide fault (no `channel` in the armed request) can fail it —
+    // see FaultStore.isActive.
+    if (faults.isActive(scenario.id, 'not-found')) {
+      sendJson(res, 404, { error: 'fault: not-found' });
+      return;
+    }
+    if (faults.isActive(scenario.id, 'auth-failure')) {
+      sendJson(res, 401, { error: 'fault: auth-failure' });
+      return;
+    }
     const body = renderPlaylist(scenario, INTERNAL_ORIGIN);
     res.writeHead(200, {
       'Content-Type': PLAYLIST_CONTENT_TYPE,
@@ -147,6 +228,14 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     const scenario = registry.get(epgMatch[1]);
     if (!scenario) {
       sendJson(res, 404, { error: `no scenario ${epgMatch[1]}` });
+      return;
+    }
+    if (faults.isActive(scenario.id, 'not-found')) {
+      sendJson(res, 404, { error: 'fault: not-found' });
+      return;
+    }
+    if (faults.isActive(scenario.id, 'auth-failure')) {
+      sendJson(res, 401, { error: 'fault: auth-failure' });
       return;
     }
     const body = renderXmltv(scenario, new Date());
@@ -166,6 +255,77 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       return;
     }
     const channelId = Number(streamMatch[2]);
+
+    // Fault checks run before tryAcquire and before the HEAD/GET branch
+    // below, in the order a real provider's own failure modes would
+    // actually short-circuit a request. A request rejected by a fault must
+    // not consume a connection slot — a maxConnections: 1 scenario with
+    // `not-found` armed would otherwise leak its one slot on the first
+    // rejected attempt, and every later assertion about the limit would be
+    // wrong for a reason that looks like broken accounting.
+
+    // 1. not-found: nothing else can happen if the URL 404s.
+    if (faults.isActive(scenario.id, 'not-found', channelId)) {
+      sendJson(res, 404, { error: 'fault: not-found' });
+      return;
+    }
+
+    // 2. auth-failure: credentials that were valid stop being accepted.
+    if (faults.isActive(scenario.id, 'auth-failure', channelId)) {
+      sendJson(res, 401, { error: 'fault: auth-failure' });
+      return;
+    }
+
+    // 3. Real credential validation, when the scenario declares any.
+    if (scenario.username !== undefined) {
+      const givenUser = url.searchParams.get('username');
+      const givenPass = url.searchParams.get('password');
+      if (givenUser !== scenario.username || givenPass !== (scenario.password ?? '')) {
+        sendJson(res, 401, { error: 'bad credentials' });
+        return;
+      }
+    }
+
+    // 4. redirect-chain: a chain of 302s that finally lands on this same
+    //    URL with ?chain=0, so the payload stays reachable by following it.
+    //    The chain param is layered onto the existing query string, so the
+    //    credential query above survives every hop.
+    const chainConfig = faults.configOf(scenario.id, 'redirect-chain');
+    if (chainConfig && faults.isActive(scenario.id, 'redirect-chain', channelId)) {
+      const remaining = Number(
+        url.searchParams.get('chain') ?? (chainConfig.depth ?? DEFAULT_REDIRECT_DEPTH)
+      );
+      if (remaining > 0) {
+        const next = new URL(url.pathname + url.search, INTERNAL_ORIGIN);
+        next.searchParams.set('chain', String(remaining - 1));
+        res.writeHead(302, { Location: next.toString() });
+        res.end();
+        return;
+      }
+      // remaining <= 0: the chain is exhausted, so fall through and serve
+      // the real thing instead of redirecting again.
+    }
+
+    // 5. non-ts-bytes: 200 with an HTML error page, which is what a
+    //    provider actually sends when it is unhappy. buffer.py's
+    //    realignment is the code this exercises.
+    if (faults.isActive(scenario.id, 'non-ts-bytes', channelId)) {
+      const body = '<html><body><h1>502 Bad Gateway</h1></body></html>';
+      res.writeHead(200, {
+        'Content-Type': 'text/html',
+        'Content-Length': Buffer.byteLength(body),
+      });
+      res.end(body);
+      return;
+    }
+
+    // 6. connection-limit as a fault forces rejection regardless of the
+    //    real count — armed so a client hits the limit without needing to
+    //    actually saturate it.
+    if (faults.isActive(scenario.id, 'connection-limit', channelId)) {
+      sendJson(res, 429, { error: 'fault: connection-limit' });
+      return;
+    }
 
     // validate_stream_url() probes with HEAD before streaming. It must
     // succeed, and it must not consume a connection slot — a
@@ -218,6 +378,36 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       },
       connection
     );
+    return;
+  }
+
+  const faultMatch = /^\/s\/([^/]+)\/fault$/.exec(url.pathname);
+  if (faultMatch && req.method === 'POST') {
+    const scenario = registry.get(faultMatch[1]);
+    if (!scenario) {
+      sendJson(res, 404, { error: `no scenario ${faultMatch[1]}` });
+      return;
+    }
+    const body = await readJsonObject(req);
+    const request = parseFaultRequest(body);
+    sendJson(res, 200, faults.apply(scenario.id, request, connections));
+    return;
+  }
+
+  const rateMatch = /^\/s\/([^/]+)\/rate$/.exec(url.pathname);
+  if (rateMatch && req.method === 'POST') {
+    const scenario = registry.get(rateMatch[1]);
+    if (!scenario) {
+      sendJson(res, 404, { error: `no scenario ${rateMatch[1]}` });
+      return;
+    }
+    const body = await readJsonObject(req);
+    if (typeof body.rate !== 'number' || !(body.rate > 0)) {
+      sendJson(res, 400, { error: 'rate must be a number greater than 0' });
+      return;
+    }
+    scenario.rate = body.rate;
+    sendJson(res, 200, { rate: scenario.rate });
     return;
   }
 
