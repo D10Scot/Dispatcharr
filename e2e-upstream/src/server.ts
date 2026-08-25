@@ -12,6 +12,7 @@ import { ConnectionRegistry } from './connections.js';
 import type { LiveConnection } from './connections.js';
 import { streamLoop, STREAM_CONTENT_TYPE } from './stream.js';
 import { FaultStore, DEFAULT_REDIRECT_DEPTH, parseFaultRequest } from './faults.js';
+import { ScenarioLog } from './log.js';
 
 export interface RunningServer {
   close(): Promise<void>;
@@ -29,9 +30,8 @@ export function sendJson(res: ServerResponse, status: number, body: unknown): vo
 
 export const registry = new ScenarioRegistry();
 export const connections = new ConnectionRegistry();
-// Exported so Task 7 can log fault applications alongside the connection
-// events it already logs.
 export const faults = new FaultStore();
+export const scenarioLog = new ScenarioLog();
 
 /**
  * Loaded on first use, not at module scope. `readFileSync` on
@@ -186,6 +186,21 @@ function scenarioUrls(scenario: Scenario, req: IncomingMessage) {
   };
 }
 
+/**
+ * Records one `'request'` log entry once a route has decided a resolved
+ * scenario's response status. Never called before a scenario is found — an
+ * unresolved scenario id has nowhere to log to — so the bare "no scenario"
+ * 404s above are deliberately not logged here.
+ */
+function logRequest(scenario: Scenario, req: IncomingMessage, url: URL, status: number): void {
+  scenarioLog.record(scenario.id, {
+    kind: 'request',
+    method: req.method,
+    path: url.pathname,
+    status,
+  });
+}
+
 async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const url = new URL(req.url ?? '/', 'http://placeholder');
 
@@ -218,14 +233,17 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     // scenario-wide fault (no `channel` in the armed request) can fail it —
     // see FaultStore.isActive.
     if (faults.isActive(scenario.id, 'not-found')) {
+      logRequest(scenario, req, url, 404);
       sendJson(res, 404, { error: 'fault: not-found' });
       return;
     }
     if (faults.isActive(scenario.id, 'auth-failure')) {
+      logRequest(scenario, req, url, 401);
       sendJson(res, 401, { error: 'fault: auth-failure' });
       return;
     }
     const body = renderPlaylist(scenario, INTERNAL_ORIGIN);
+    logRequest(scenario, req, url, 200);
     res.writeHead(200, {
       'Content-Type': PLAYLIST_CONTENT_TYPE,
       'Content-Length': Buffer.byteLength(body),
@@ -242,14 +260,17 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       return;
     }
     if (faults.isActive(scenario.id, 'not-found')) {
+      logRequest(scenario, req, url, 404);
       sendJson(res, 404, { error: 'fault: not-found' });
       return;
     }
     if (faults.isActive(scenario.id, 'auth-failure')) {
+      logRequest(scenario, req, url, 401);
       sendJson(res, 401, { error: 'fault: auth-failure' });
       return;
     }
     const body = renderXmltv(scenario, new Date());
+    logRequest(scenario, req, url, 200);
     res.writeHead(200, {
       'Content-Type': XMLTV_CONTENT_TYPE,
       'Content-Length': Buffer.byteLength(body),
@@ -277,12 +298,14 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
 
     // 1. not-found: nothing else can happen if the URL 404s.
     if (faults.isActive(scenario.id, 'not-found', channelId)) {
+      logRequest(scenario, req, url, 404);
       sendJson(res, 404, { error: 'fault: not-found' });
       return;
     }
 
     // 2. auth-failure: credentials that were valid stop being accepted.
     if (faults.isActive(scenario.id, 'auth-failure', channelId)) {
+      logRequest(scenario, req, url, 401);
       sendJson(res, 401, { error: 'fault: auth-failure' });
       return;
     }
@@ -292,6 +315,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       const givenUser = url.searchParams.get('username');
       const givenPass = url.searchParams.get('password');
       if (givenUser !== scenario.username || givenPass !== (scenario.password ?? '')) {
+        logRequest(scenario, req, url, 401);
         sendJson(res, 401, { error: 'bad credentials' });
         return;
       }
@@ -309,6 +333,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       if (remaining > 0) {
         const next = new URL(url.pathname + url.search, INTERNAL_ORIGIN);
         next.searchParams.set('chain', String(remaining - 1));
+        logRequest(scenario, req, url, 302);
         res.writeHead(302, { Location: next.toString() });
         res.end();
         return;
@@ -322,6 +347,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     //    realignment is the code this exercises.
     if (faults.isActive(scenario.id, 'non-ts-bytes', channelId)) {
       const body = '<html><body><h1>502 Bad Gateway</h1></body></html>';
+      logRequest(scenario, req, url, 200);
       res.writeHead(200, {
         'Content-Type': 'text/html',
         'Content-Length': Buffer.byteLength(body),
@@ -334,6 +360,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     //    real count — armed so a client hits the limit without needing to
     //    actually saturate it.
     if (faults.isActive(scenario.id, 'connection-limit', channelId)) {
+      logRequest(scenario, req, url, 429);
       sendJson(res, 429, { error: 'fault: connection-limit' });
       return;
     }
@@ -341,14 +368,17 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     // validate_stream_url() probes with HEAD before streaming. It must
     // succeed, and it must not consume a connection slot — a
     // maxConnections:1 scenario would otherwise reject the real client that
-    // follows.
+    // follows. Logged with its method so this probe never reads as a real
+    // viewer connecting (see ScenarioLog).
     if (req.method === 'HEAD') {
+      logRequest(scenario, req, url, 200);
       res.writeHead(200, { 'Content-Type': STREAM_CONTENT_TYPE });
       res.end();
       return;
     }
 
     if (req.method !== 'GET') {
+      logRequest(scenario, req, url, 405);
       sendJson(res, 405, { error: `${req.method} not allowed on a stream` });
       return;
     }
@@ -375,17 +405,22 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     };
 
     if (!connections.tryAcquire(scenario, connection)) {
+      logRequest(scenario, req, url, 429);
       sendJson(res, 429, { error: 'connection limit reached' });
       return;
     }
 
+    logRequest(scenario, req, url, 200);
     await streamLoop(
       res,
       asset,
       {
         scenarioRate: () => scenario.rate,
-        onConnection: () => {},
-        onClosed: () => connections.release(connection),
+        onConnection: () => scenarioLog.record(scenario.id, { kind: 'open', channelId }),
+        onClosed: (stats) => {
+          connections.release(connection);
+          scenarioLog.record(scenario.id, { kind: 'close', channelId, ...stats });
+        },
       },
       connection
     );
@@ -401,7 +436,18 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     }
     const body = await readJsonObject(req);
     const request = parseFaultRequest(body);
-    sendJson(res, 200, faults.apply(scenario.id, request, connections));
+    const result = faults.apply(scenario.id, request, connections);
+    // appliedTo: 0 is a real, common outcome — see FaultStore's own
+    // documentation of the five faults that can only affect the next
+    // request. Logging it either way is what lets a 2am reader tell "the
+    // fault was applied and reached nobody" apart from "the fault was never
+    // applied".
+    scenarioLog.record(scenario.id, {
+      kind: 'fault',
+      fault: request.fault,
+      detail: JSON.stringify(result),
+    });
+    sendJson(res, 200, result);
     return;
   }
 
@@ -419,6 +465,27 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     }
     scenario.rate = body.rate;
     sendJson(res, 200, { rate: scenario.rate });
+    return;
+  }
+
+  const logMatch = /^\/s\/([^/]+)\/log$/.exec(url.pathname);
+  if (logMatch && req.method === 'GET') {
+    sendJson(res, 200, scenarioLog.entries(logMatch[1]));
+    return;
+  }
+
+  const connectionsMatch = /^\/s\/([^/]+)\/connections$/.exec(url.pathname);
+  if (connectionsMatch && req.method === 'GET') {
+    const scenario = registry.get(connectionsMatch[1]);
+    if (!scenario) {
+      sendJson(res, 404, { error: `no scenario ${connectionsMatch[1]}` });
+      return;
+    }
+    sendJson(res, 200, {
+      live: connections.count(scenario.id),
+      maxConnections: scenario.maxConnections,
+      channels: connections.matching(scenario.id).map((connection) => connection.channelId),
+    });
     return;
   }
 

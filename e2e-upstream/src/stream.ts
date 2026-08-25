@@ -11,10 +11,7 @@ export const PACKETS_PER_CHUNK = 40;
 export interface StreamControl {
   scenarioRate(): number;
   onConnection(connection: LiveConnection): void;
-  // Task 7 widens this to onClosed(stats: { bytes: number; durationMs: number })
-  // to log connection-close events. streamLoop already tracks both `written`
-  // and `startedAt` below so that widening is just a call-site change.
-  onClosed(): void;
+  onClosed(stats: { bytes: number; durationMs: number }): void;
 }
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
@@ -63,11 +60,7 @@ export function streamLoop(
   control.onConnection(connection);
   res.on('close', () => {
     open = false;
-    // Tracked here for Task 7's onClosed({ bytes, durationMs }); nothing
-    // consumes them yet, so they aren't threaded through this call.
-    void written;
-    void (Date.now() - startedAt);
-    control.onClosed();
+    control.onClosed({ bytes: written, durationMs: Date.now() - startedAt });
   });
 
   const rewriter = new LoopRewriter(asset.loopDuration90k);
