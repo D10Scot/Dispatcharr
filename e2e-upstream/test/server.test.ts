@@ -112,6 +112,10 @@ describe('scenario routes', () => {
 
   it('round-trips a username and password containing @, space and & through credentialQuery', async () => {
     server = await startServer(0);
+    // The `&` is load-bearing: @ and space alone would still parse back
+    // correctly through URLSearchParams even with no encoding at all, so
+    // this test is non-vacuous only because `&` is a query-string separator
+    // and would silently truncate the password if left unencoded.
     const username = 'user@host name';
     const password = 'p&ss w0rd';
     const res = await fetch(`http://127.0.0.1:${server.port}/scenarios`, {

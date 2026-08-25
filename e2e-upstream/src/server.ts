@@ -1,8 +1,9 @@
 import http from 'node:http';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { ScenarioRegistry } from './scenario.js';
-import type { Scenario, ScenarioRequest } from './scenario.js';
+import { ScenarioRegistry, parseScenarioRequest } from './scenario.js';
+import type { Scenario } from './scenario.js';
+import { BadRequestError } from './errors.js';
 
 export interface RunningServer {
   close(): Promise<void>;
@@ -19,15 +20,6 @@ export function sendJson(res: ServerResponse, status: number, body: unknown): vo
 }
 
 export const registry = new ScenarioRegistry();
-
-/**
- * Thrown by request-parsing helpers on bad client input. Caught in
- * `requestListener` and mapped to 400, distinct from the generic 500 for
- * everything else — every route added from here on (Tasks 3-7's
- * `POST /s/<id>/fault` and `/rate`) should read its body through
- * `readJsonObject` rather than re-deriving this.
- */
-export class BadRequestError extends Error {}
 
 async function readRawBody(req: IncomingMessage): Promise<string> {
   const chunks: Buffer[] = [];
@@ -104,7 +96,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
 
   if (url.pathname === '/scenarios' && req.method === 'POST') {
     const body = await readJsonObject(req);
-    const scenario = registry.create(body as ScenarioRequest);
+    const scenario = registry.create(parseScenarioRequest(body));
     sendJson(res, 201, { ...scenario, ...scenarioUrls(scenario, req) });
     return;
   }

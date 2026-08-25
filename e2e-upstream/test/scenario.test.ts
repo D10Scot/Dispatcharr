@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { ScenarioRegistry } from '../src/scenario.js';
+import { ScenarioRegistry, parseScenarioRequest } from '../src/scenario.js';
+import { BadRequestError } from '../src/errors.js';
 
 describe('ScenarioRegistry', () => {
   it('generates the requested number of channels with distinct ids and tvg-ids', () => {
@@ -56,5 +57,37 @@ describe('ScenarioRegistry', () => {
     expect(registry.delete(scenario.id)).toBe(true);
     expect(registry.delete(scenario.id)).toBe(false);
     expect(registry.get(scenario.id)).toBeUndefined();
+  });
+});
+
+describe('parseScenarioRequest', () => {
+  it('rejects a non-numeric channels field, naming it, rather than silently producing zero channels', () => {
+    expect(() => parseScenarioRequest({ channels: 'x' })).toThrow(BadRequestError);
+    expect(() => parseScenarioRequest({ channels: 'x' })).toThrow(/channels/);
+  });
+
+  it('rejects a channel spec object missing required fields, naming the field', () => {
+    expect(() => parseScenarioRequest({ channels: [{}] })).toThrow(BadRequestError);
+    expect(() => parseScenarioRequest({ channels: [{}] })).toThrow(/channels/);
+  });
+
+  it('rejects a negative maxConnections, naming the field', () => {
+    expect(() => parseScenarioRequest({ maxConnections: -1 })).toThrow(BadRequestError);
+    expect(() => parseScenarioRequest({ maxConnections: -1 })).toThrow(/maxConnections/);
+  });
+
+  it('rejects a zero or negative rate, naming the field', () => {
+    expect(() => parseScenarioRequest({ rate: 0 })).toThrow(BadRequestError);
+    expect(() => parseScenarioRequest({ rate: 0 })).toThrow(/rate/);
+  });
+
+  it('rejects a non-string username, naming the field', () => {
+    expect(() => parseScenarioRequest({ username: 5 })).toThrow(BadRequestError);
+    expect(() => parseScenarioRequest({ username: 5 })).toThrow(/username/);
+  });
+
+  it('accepts the boundary values a careless validator breaks: maxConnections 0 and rate 0.5', () => {
+    expect(parseScenarioRequest({ maxConnections: 0 }).maxConnections).toBe(0);
+    expect(parseScenarioRequest({ rate: 0.5 }).rate).toBe(0.5);
   });
 });
