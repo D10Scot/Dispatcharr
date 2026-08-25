@@ -1,5 +1,6 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import http from 'node:http';
+import net from 'node:net';
 import type { AddressInfo } from 'node:net';
 import { TS_PACKET_SIZE } from '../src/ts.js';
 import { measureLoop } from '../src/asset.js';
@@ -136,5 +137,49 @@ describe('streamLoop', () => {
     }
 
     expect(total).toBe(afterBytes);
+  });
+
+  it('settles rather than hanging when a backpressured client disconnects', async () => {
+    // Regression test: Node never emits 'drain' on a destroyed stream, so a
+    // client that disconnects while streamLoop is awaiting backpressure to
+    // clear (routine once Task 6's disconnect faults exist) would otherwise
+    // leave that await — and the promise streamLoop returns — pending
+    // forever, even though the connection's slot is correctly released via
+    // 'close' independently.
+    const asset = fakeAsset();
+    let promise!: Promise<void>;
+
+    const testServer = http.createServer((_req, res) => {
+      promise = streamLoop(
+        res,
+        asset,
+        // A huge rate means near-zero pacing sleep, so writes queue up
+        // almost immediately against a client that never reads them.
+        { scenarioRate: () => 1_000_000, onConnection: () => {}, onClosed: () => {} },
+        fakeConnection()
+      );
+    });
+    await new Promise<void>((resolve) => testServer.listen(0, '127.0.0.1', resolve));
+    const port = (testServer.address() as AddressInfo).port;
+
+    const client = net.connect(port, '127.0.0.1');
+    await new Promise<void>((resolve) => client.once('connect', resolve));
+    client.write('GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n');
+    // Deliberately never read the response — leaving the socket paused lets
+    // the server's write buffer back up quickly at this pacing rate.
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    client.destroy();
+
+    await Promise.race([
+      promise,
+      new Promise<void>((_resolve, reject) =>
+        setTimeout(
+          () => reject(new Error('streamLoop did not settle within 2s — the drain wait is hanging')),
+          2000
+        )
+      ),
+    ]);
+
+    testServer.close();
   });
 });

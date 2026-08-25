@@ -6,6 +6,14 @@ export interface LiveConnection {
   setDeadAir(active: boolean): void;
   /** null = follow the scenario's own rate. */
   setRate(rate: number | null): void;
+  /**
+   * `afterBytes` is a total-bytes-written threshold, not a packet count: the
+   * cut is byte-exact and may land mid-TS-packet. That's deliberate, not a
+   * rounding bug — it's exactly what a real provider does when it dies
+   * mid-write, and it's how a realignment fault is tested. A caller that
+   * wants a clean 188-byte boundary must round `afterBytes` to a multiple of
+   * `TS_PACKET_SIZE` itself.
+   */
   disconnect(options: { clean: boolean; afterBytes?: number }): void;
 }
 

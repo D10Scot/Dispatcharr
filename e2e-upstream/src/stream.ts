@@ -117,8 +117,31 @@ export function streamLoop(
 
       if (chunk.byteLength > 0 && !res.write(chunk)) {
         // Respect backpressure, or a slow client turns into unbounded memory
-        // in this process rather than a slow stream.
-        await new Promise<void>((resolve) => res.once('drain', resolve));
+        // in this process rather than a slow stream. Racing against
+        // 'close'/'error' too matters because Node never emits 'drain' on a
+        // destroyed stream — a client that disconnects while backpressured
+        // (routine once Task 6's disconnect faults exist) would otherwise
+        // hang this promise forever even though the socket is long gone.
+        // Setting `open = false` here doesn't race the outer 'close'
+        // listener registered before the loop started: both run, in
+        // registration order, and either one is enough to make the check
+        // below true.
+        await new Promise<void>((resolve) => {
+          const onDrain = () => {
+            res.off('close', onTerminated);
+            res.off('error', onTerminated);
+            resolve();
+          };
+          const onTerminated = () => {
+            open = false;
+            res.off('drain', onDrain);
+            resolve();
+          };
+          res.once('drain', onDrain);
+          res.once('close', onTerminated);
+          res.once('error', onTerminated);
+        });
+        if (!open) return;
       }
       written += chunk.byteLength;
 

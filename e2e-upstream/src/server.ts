@@ -182,6 +182,13 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       return;
     }
 
+    // Resolved before tryAcquire, deliberately: admission doesn't depend on
+    // the asset, and acquiring the slot first would leak it if getAsset()
+    // throws (missing or corrupt UPSTREAM_ASSET) — the slot would never be
+    // released, and since a failed load isn't cached, every retry leaks
+    // another one until maxConnections is permanently exhausted.
+    const asset = getAsset();
+
     // Admission is decided, and must be decided, before streamLoop writes
     // any header — a rejected client must never see a 200 first. The
     // connection object is built here with placeholder methods and handed
@@ -203,7 +210,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
 
     await streamLoop(
       res,
-      getAsset(),
+      asset,
       {
         scenarioRate: () => scenario.rate,
         onConnection: () => {},

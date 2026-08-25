@@ -67,7 +67,13 @@ export function measureLoop(bytes: Buffer): {
   }
 
   const span = max - min;
-  const step = span / BigInt(stamps.length - 1);
+  // BigInt division truncates, so a sample count exceeding the span in
+  // ticks would otherwise yield 0n here, making loopDuration90k === span
+  // instead of strictly greater — the seam would stop advancing. Not
+  // reachable with the real ~60s asset, but every consumer downstream
+  // trusts this value to be positive, so it's floored rather than left as
+  // a landmine.
+  const step = span / BigInt(stamps.length - 1) || 1n;
   const loopDuration90k = span + step;
 
   return {
