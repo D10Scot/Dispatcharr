@@ -29,3 +29,4 @@ test-results/
 
 # E2E auth state — contains live JWTs
 e2e/playwright/.auth/
+e2e-upstream/dist/
