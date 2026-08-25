@@ -65,6 +65,25 @@ For a live channel, exactly one uWSGI worker holds the ownership lease and
 talks upstream; every other worker is a **follower**, serving its own
 clients from shared state and asking the owner to act.
 
+## Upstream provider
+
+The fake IPTV source the E2E suite controls, standing in for a real provider
+in tests. Distinct from an **M3U Account**, which is Dispatcharr's own record
+of a provider, and from a **Stream**, which is one playable URL — a single
+upstream provider serves a whole catalogue of streams.
+
+## Scenario
+
+One test's isolated view of the upstream provider: its own catalogue,
+credentials, connection limit and faults, addressed by an id in the URL
+path. Not a session; not a Playwright project.
+
+## Fault
+
+A deliberate misbehaviour the upstream provider is switched into to drive a
+Dispatcharr failure path. Distinct from a bug: a fault is expected, and the
+product is expected to survive it.
+
 ## User levels
 
 Streamer (0), Standard User (1), Admin (10) — model labels, verbatim

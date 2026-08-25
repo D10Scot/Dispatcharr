@@ -32,8 +32,14 @@ jobs:
       - name: Build the image
         run: docker build -f docker/Dockerfile -t dispatcharr-e2e:local .
 
-      - name: Export the image
-        run: docker save dispatcharr-e2e:local | gzip > /tmp/dispatcharr-e2e.tar.gz
+      - name: Build the upstream provider image
+        run: docker build -f e2e-upstream/Dockerfile -t dispatcharr-e2e-upstream:local e2e-upstream
+
+      # docker save accepts several image references and writes one archive,
+      # so the artifact plumbing and the three test-job consumers below are
+      # unchanged — docker load restores both tags.
+      - name: Export both images
+        run: docker save dispatcharr-e2e:local dispatcharr-e2e-upstream:local | gzip > /tmp/dispatcharr-e2e.tar.gz
 
       - name: Upload the image
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -41,6 +47,36 @@ jobs:
           name: dispatcharr-e2e-image
           path: /tmp/dispatcharr-e2e.tar.gz
           retention-days: 1
+
+  # A sibling of build, deliberately without needs: build — it tests the
+  # provider in isolation, so a provider regression reports in under a
+  # minute rather than after the AIO image's 45-minute budget.
+  upstream:
+    name: upstream
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '24'
+
+      - name: Install dependencies
+        working-directory: ./e2e-upstream
+        run: npm ci
+
+      - name: Typecheck
+        working-directory: ./e2e-upstream
+        run: npm run typecheck
+
+      - name: Run the provider test suite
+        working-directory: ./e2e-upstream
+        run: npm test
 
   test:
     name: ${{ matrix.project }}
@@ -122,7 +158,9 @@ jobs:
 
       - name: Container logs (on failure)
         if: failure()
-        run: docker logs dispatcharr-e2e || true
+        run: |
+          docker logs dispatcharr-e2e || true
+          docker logs e2e-upstream || true
 
       - name: Upload Playwright report
         if: always()

@@ -106,10 +106,15 @@ fi
 # resolves nothing, which is the entire reason this network exists.
 docker network inspect "$NETWORK" >/dev/null 2>&1 || docker network create "$NETWORK" >/dev/null
 
-if ! docker image inspect "$UPSTREAM_IMAGE" >/dev/null 2>&1; then
-  echo "Building $UPSTREAM_IMAGE..."
-  docker build -f e2e-upstream/Dockerfile -t "$UPSTREAM_IMAGE" e2e-upstream
-fi
+# Unlike the 3.6 GB AIO image above, this one is small and builds in
+# seconds, so it is rebuilt on every invocation rather than only when
+# absent. A build-if-absent provider image went stale silently — a routes
+# change in e2e-upstream/src/ never reached a container built from the
+# cached tag, surfacing as unexplained 404s with no indication the image
+# was the problem. CI is unaffected either way: it always loads a fresh
+# artifact.
+echo "Building $UPSTREAM_IMAGE..."
+docker build -f e2e-upstream/Dockerfile -t "$UPSTREAM_IMAGE" e2e-upstream
 
 if docker ps --format '{{.Names}}' | grep -qx "$UPSTREAM_NAME"; then
   : # already running
