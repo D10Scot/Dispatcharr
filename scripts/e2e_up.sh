@@ -37,6 +37,19 @@ UPSTREAM_NAME="${DISPATCHARR_E2E_UPSTREAM_CONTAINER:-e2e-upstream}"
 UPSTREAM_IMAGE="${DISPATCHARR_E2E_UPSTREAM_IMAGE:-dispatcharr-e2e-upstream:local}"
 UPSTREAM_PORT="${DISPATCHARR_E2E_UPSTREAM_PORT:-9402}"
 
+# A container created before $NETWORK existed (or created with `--network`
+# pointed elsewhere) gets reused as-is by the branches below, and
+# container-name DNS then silently fails until someone runs `--down` — a
+# real hour-waster on a dev machine that already had a same-named container.
+# Attach it to the network on every start rather than only at `docker run`.
+ensure_on_network() {
+  local container="$1"
+  if ! docker inspect -f '{{json .NetworkSettings.Networks}}' "$container" 2>/dev/null \
+      | grep -q "\"${NETWORK}\""; then
+    docker network connect "$NETWORK" "$container" >/dev/null 2>&1 || true
+  fi
+}
+
 destroy() {
   docker rm -f "$NAME" >/dev/null 2>&1 || true
   docker rm -f "$UPSTREAM_NAME" >/dev/null 2>&1 || true
@@ -108,6 +121,7 @@ else
     -p "127.0.0.1:${UPSTREAM_PORT}:8080" \
     "$UPSTREAM_IMAGE" >/dev/null
 fi
+ensure_on_network "$UPSTREAM_NAME"
 
 # Wait for the provider before starting Dispatcharr. Dispatcharr does not
 # contact it at boot, so the ordering is not strictly required — but a test
@@ -148,6 +162,7 @@ else
     -e DISPATCHARR_LOG_LEVEL=info \
     "$IMAGE" >/dev/null
 fi
+ensure_on_network "$NAME"
 
 echo -n "Waiting for the app"
 for _ in $(seq 1 "$READY_ATTEMPTS"); do

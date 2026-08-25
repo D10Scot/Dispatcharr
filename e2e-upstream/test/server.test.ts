@@ -1,5 +1,6 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { startServer } from '../src/server';
+import type { IncomingMessage, ServerResponse } from 'node:http';
+import { startServer, requestListener } from '../src/server.js';
 
 let server: Awaited<ReturnType<typeof startServer>> | undefined;
 
@@ -25,6 +26,37 @@ describe('server', () => {
     // than "the fault fired".
     expect(await res.json()).toMatchObject({
       error: expect.stringContaining('/nope'),
+    });
+  });
+
+  it('answers a handler failure with 500 and a JSON body', async () => {
+    // `requestListener` is the exported catch wrapper around `handle()`; a
+    // `url` getter that throws stands in for any failure inside `handle()`
+    // itself, without needing a real malformed request to provoke one.
+    const req = { method: 'GET' } as unknown as IncomingMessage;
+    Object.defineProperty(req, 'url', {
+      get() {
+        throw new Error('boom');
+      },
+    });
+
+    let status = 0;
+    let body = '';
+    const res = {
+      headersSent: false,
+      writeHead(code: number) {
+        status = code;
+      },
+      end(payload: string) {
+        body = payload;
+      },
+    } as unknown as ServerResponse;
+
+    await requestListener(req, res);
+
+    expect(status).toBe(500);
+    expect(JSON.parse(body)).toMatchObject({
+      error: expect.stringContaining('boom'),
     });
   });
 });
