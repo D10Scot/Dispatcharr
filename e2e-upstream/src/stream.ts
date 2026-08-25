@@ -40,10 +40,29 @@ export function streamLoop(
   let open = true;
   const startedAt = Date.now();
 
-  // Set only while parked in the drain wait below, so a control method
-  // called at any other time of the loop is a harmless no-op — every other
-  // point in the loop already reads fresh state on its own next iteration.
+  // Set only while parked in one of the two interruptible waits below (the
+  // pacing sleep and the drain wait), so a control method called at any
+  // other point in the loop is a harmless no-op — everywhere else already
+  // reads fresh state on its own next iteration.
   let wake: (() => void) | null = null;
+
+  // Interruptible pacing delay: without this, a disconnect or rate change
+  // fired while parked here wouldn't be noticed until the current sleep
+  // elapses naturally — seconds, at slow-trickle rates. Deliberately not
+  // used for the dead-air poll below: that one is already never more than
+  // 100ms from checking fresh state, so there's nothing worth interrupting.
+  const interruptibleSleep = (ms: number): Promise<void> =>
+    new Promise<void>((resolve) => {
+      const finish = () => {
+        wake = null;
+        resolve();
+      };
+      const timer = setTimeout(finish, ms);
+      wake = () => {
+        clearTimeout(timer);
+        finish();
+      };
+    });
 
   connection.setDeadAir = (active) => {
     deadAir = active;
@@ -173,7 +192,7 @@ export function streamLoop(
       // rate changed mid-stream takes effect on the very next chunk instead
       // of being averaged away by everything already sent.
       const rate = rateOverride ?? control.scenarioRate();
-      await sleep((chunk.byteLength / (asset.byteRate * rate)) * 1000);
+      await interruptibleSleep((chunk.byteLength / (asset.byteRate * rate)) * 1000);
     }
   })();
 }

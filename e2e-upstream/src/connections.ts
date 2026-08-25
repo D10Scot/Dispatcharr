@@ -13,6 +13,12 @@ export interface LiveConnection {
    * mid-write, and it's how a realignment fault is tested. A caller that
    * wants a clean 188-byte boundary must round `afterBytes` to a multiple of
    * `TS_PACKET_SIZE` itself.
+   *
+   * The guarantee is exact only against a draining client. If a whole chunk
+   * is already queued via `res.write()` before this fires — the client is
+   * backpressured and not reading it — those bytes can't be un-sent, so the
+   * threshold becomes a lower bound in that race, not an exact cut. Harmless
+   * in practice: a backpressured client isn't reading the excess anyway.
    */
   disconnect(options: { clean: boolean; afterBytes?: number }): void;
 }

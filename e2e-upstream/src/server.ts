@@ -218,7 +218,15 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
 
   const scenarioMatch = /^\/scenarios\/([^/]+)$/.exec(url.pathname);
   if (scenarioMatch && req.method === 'DELETE') {
-    sendJson(res, registry.delete(scenarioMatch[1]) ? 204 : 404, {});
+    const existed = registry.delete(scenarioMatch[1]);
+    // Both are harmless no-ops on an id with no state, so this runs
+    // unconditionally rather than only when `existed`. Without it, every
+    // scenario ever created leaves its log and fault state behind
+    // permanently — bounded per scenario, but not across a long CI run
+    // creating thousands of them.
+    scenarioLog.clear(scenarioMatch[1]);
+    faults.clearAll(scenarioMatch[1]);
+    sendJson(res, existed ? 204 : 404, {});
     return;
   }
 

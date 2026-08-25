@@ -162,6 +162,33 @@ describe('scenario routes', () => {
     });
     expect(second.status).toBe(404);
   });
+
+  it('clears a scenario\'s log on delete rather than leaking it forever', async () => {
+    server = await startServer(0);
+    const created = await readJson(
+      await fetch(`http://127.0.0.1:${server.port}/scenarios`, { method: 'POST' })
+    );
+
+    await fetch(`http://127.0.0.1:${server.port}/s/${created.id}/fault`, {
+      method: 'POST',
+      body: JSON.stringify({ fault: 'not-found', active: true }),
+    });
+    const before = await readJson(
+      await fetch(`http://127.0.0.1:${server.port}/s/${created.id}/log`)
+    );
+    expect(before.length).toBeGreaterThan(0);
+
+    await fetch(`http://127.0.0.1:${server.port}/scenarios/${created.id}`, { method: 'DELETE' });
+
+    // The log route doesn't 404 on an unknown scenario id — it reports
+    // whatever history is stored under that id, so this checks the deleted
+    // id's own log rather than a freshly-created scenario's (which would
+    // start empty regardless of whether delete actually clears anything).
+    const after = await readJson(
+      await fetch(`http://127.0.0.1:${server.port}/s/${created.id}/log`)
+    );
+    expect(after).toEqual([]);
+  });
 });
 
 describe('request body limits', () => {
@@ -544,12 +571,16 @@ describe('the disconnect fault under the real server, using the real streamed as
     return readJson(res);
   }
 
-  async function armDisconnect(scenarioId: string, body: Record<string, unknown> = {}) {
+  async function armFault(scenarioId: string, body: Record<string, unknown>) {
     const res = await fetch(`http://127.0.0.1:${server!.port}/s/${scenarioId}/fault`, {
       method: 'POST',
-      body: JSON.stringify({ fault: 'disconnect', active: true, ...body }),
+      body: JSON.stringify(body),
     });
     return readJson(res);
+  }
+
+  async function armDisconnect(scenarioId: string, body: Record<string, unknown> = {}) {
+    return armFault(scenarioId, { fault: 'disconnect', active: true, ...body });
   }
 
   async function connectionsOf(scenarioId: string) {
@@ -624,5 +655,49 @@ describe('the disconnect fault under the real server, using the real streamed as
     );
 
     client.destroy();
+  });
+
+  it('ends the stream well inside a slow-trickle chunk sleep, not after it', async () => {
+    // The sibling of the backpressure regression above: the same disconnect
+    // could also get stuck behind the *pacing* sleep rather than the drain
+    // wait. At a slow-trickle rate that sleep is seconds long per chunk, and
+    // disconnect() firing while parked in it used to go unnoticed until the
+    // sleep elapsed on its own — G5 combining slow-trickle with a disconnect
+    // would see the disconnect appear to do nothing for seconds.
+    server = await startServer(0);
+    const scenario = await createScenario({ rate: 1 });
+
+    const res = await fetch(`http://127.0.0.1:${server.port}/s/${scenario.id}/stream/1.ts`);
+    const reader = res.body!.getReader();
+    await reader.read(); // prove it is flowing
+
+    // This rate turns one chunk's pacing sleep into well over a minute for
+    // this tiny asset — comfortably longer than the deadline below, so
+    // ending inside it proves the sleep was interrupted, not outrun.
+    await armFault(scenario.id, { fault: 'slow-trickle', active: true, rate: 0.01 });
+    // The scenario's own rate (1) makes the *current* chunk's sleep ~1.6s;
+    // waiting past that — not just a moment — matters: disconnect merely
+    // has to wait out an already-scheduled short sleep either way, fixed or
+    // not, so arming it too early would pass regardless of this fix. This
+    // wait lets the loop actually reach the long, slow-trickle-paced sleep
+    // first, so the disconnect below can only land inside *that* one.
+    await new Promise((resolve) => setTimeout(resolve, 2500));
+
+    const result = await armDisconnect(scenario.id);
+    expect(result.appliedTo).toBe(1);
+
+    const deadline = Date.now() + 3000;
+    let live = (await connectionsOf(scenario.id)).live;
+    while (live > 0 && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      live = (await connectionsOf(scenario.id)).live;
+    }
+
+    expect(live).toBe(0);
+    expect((await logOf(scenario.id)).some((e: { kind: string }) => e.kind === 'close')).toBe(
+      true
+    );
+
+    await reader.cancel().catch(() => {});
   });
 });
