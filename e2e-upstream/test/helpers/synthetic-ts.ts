@@ -20,15 +20,25 @@ function writeTs(buffer: Buffer, offset: number, value: bigint, prefix: number):
 
 /**
  * A deliberately unrealistic stream: every packet carries an adaptation field
- * with a PCR and a complete PES header with PTS and DTS. Real video looks
- * nothing like this, and that is the point — the rewriter must not care what
- * the asset contains, so the test gives it the densest possible case.
+ * and a complete PES header with PTS and DTS. Real video looks nothing like
+ * this, and that is the point — the rewriter must not care what the asset
+ * contains, so the test gives it the densest possible case.
+ *
+ * The PCR flag is set only every fourth packet (`index % 4 === 0`), not on
+ * every packet: real muxers emit PCR far sparser than PES headers, and
+ * stamping both on every packet made `measureLoop`'s sample count
+ * `2 * packets` for reasons that had nothing to do with the asset being
+ * measured. The adaptation field itself (and its length) is present on every
+ * packet regardless, so `payloadOffset` — and anything relying on it, e.g.
+ * `onePacket()` at index 0 — is unaffected; only the PCR flag and the 6 PCR
+ * bytes vary.
  *
  * Layout, matching the offsets LoopRewriter computes:
  *   0..3    TS header, AFC=11 (adaptation + payload), PUSI set
  *   4       adaptation_field_length = 7
- *   5       adaptation flags = 0x10 (PCR present)
- *   6..11   PCR (33-bit base at 90 kHz, 6 reserved bits, 9-bit extension)
+ *   5       adaptation flags = 0x10 (PCR present) or 0x00 (absent)
+ *   6..11   PCR when present (33-bit base at 90 kHz, 6 reserved bits, 9-bit
+ *           extension); unused filler otherwise
  *   12..14  PES start code 00 00 01
  *   15      stream_id 0xE0 (video)
  *   16..17  PES_packet_length (0 = unbounded, legal for video)
@@ -47,17 +57,19 @@ export function makeSyntheticTs(options: SyntheticOptions): Buffer {
   for (let index = 0; index < packets; index += 1) {
     const base = out.subarray(index * TS_PACKET_SIZE, (index + 1) * TS_PACKET_SIZE);
     const stamp = start + step * BigInt(index);
+    const hasPcr = index % 4 === 0;
 
     base[0] = 0x47;
     base[1] = 0x40 | ((pid >> 8) & 0x1f);
     base[2] = pid & 0xff;
     base[3] = 0x30 | (index & 0x0f); // AFC = 11, continuity counter
     base[4] = 7;
-    base[5] = 0x10;
+    base[5] = hasPcr ? 0x10 : 0x00;
 
     // PCR base is 33 bits at 90 kHz — the same clock as PTS — so the seam
     // offset added to PTS applies unchanged. The 9-bit extension is left
-    // alone.
+    // alone. When this packet doesn't carry a PCR, these 6 bytes are just
+    // unused filler — the flag above is what readPcrBase actually checks.
     base[6] = Number((stamp >> 25n) & 0xffn);
     base[7] = Number((stamp >> 17n) & 0xffn);
     base[8] = Number((stamp >> 9n) & 0xffn);

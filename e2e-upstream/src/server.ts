@@ -6,6 +6,11 @@ import type { Scenario } from './scenario.js';
 import { BadRequestError } from './errors.js';
 import { renderPlaylist, credentialQuery, PLAYLIST_CONTENT_TYPE } from './playlist.js';
 import { renderXmltv, XMLTV_CONTENT_TYPE } from './xmltv.js';
+import { loadAsset } from './asset.js';
+import type { LoadedAsset } from './asset.js';
+import { ConnectionRegistry } from './connections.js';
+import type { LiveConnection } from './connections.js';
+import { streamLoop, STREAM_CONTENT_TYPE } from './stream.js';
 
 export interface RunningServer {
   close(): Promise<void>;
@@ -22,6 +27,24 @@ export function sendJson(res: ServerResponse, status: number, body: unknown): vo
 }
 
 export const registry = new ScenarioRegistry();
+export const connections = new ConnectionRegistry();
+
+/**
+ * Loaded on first use, not at module scope. `readFileSync` on
+ * `UPSTREAM_ASSET` (`/app/assets/loop.ts` by default) only succeeds inside
+ * the Docker image, where `make-asset.sh` put it there at build time — it
+ * does not exist in the environment this test suite runs in. Every test
+ * that imports this module for the scenario/playlist/EPG routes would fail
+ * at import time if this ran eagerly, long before any test ever exercises
+ * the stream route itself.
+ */
+let asset: LoadedAsset | undefined;
+function getAsset(): LoadedAsset {
+  if (!asset) {
+    asset = loadAsset(process.env.UPSTREAM_ASSET ?? '/app/assets/loop.ts');
+  }
+  return asset;
+}
 
 async function readRawBody(req: IncomingMessage): Promise<string> {
   const chunks: Buffer[] = [];
@@ -132,6 +155,62 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       'Content-Length': Buffer.byteLength(body),
     });
     res.end(body);
+    return;
+  }
+
+  const streamMatch = /^\/s\/([^/]+)\/stream\/(\d+)\.ts$/.exec(url.pathname);
+  if (streamMatch) {
+    const scenario = registry.get(streamMatch[1]);
+    if (!scenario) {
+      sendJson(res, 404, { error: `no scenario ${streamMatch[1]}` });
+      return;
+    }
+    const channelId = Number(streamMatch[2]);
+
+    // validate_stream_url() probes with HEAD before streaming. It must
+    // succeed, and it must not consume a connection slot — a
+    // maxConnections:1 scenario would otherwise reject the real client that
+    // follows.
+    if (req.method === 'HEAD') {
+      res.writeHead(200, { 'Content-Type': STREAM_CONTENT_TYPE });
+      res.end();
+      return;
+    }
+
+    if (req.method !== 'GET') {
+      sendJson(res, 405, { error: `${req.method} not allowed on a stream` });
+      return;
+    }
+
+    // Admission is decided, and must be decided, before streamLoop writes
+    // any header — a rejected client must never see a 200 first. The
+    // connection object is built here with placeholder methods and handed
+    // to streamLoop, which replaces them with the real ones once admitted;
+    // the identity tryAcquire recorded is the identity a fault handler
+    // later calls back into.
+    const connection: LiveConnection = {
+      scenarioId: scenario.id,
+      channelId,
+      setDeadAir: () => {},
+      setRate: () => {},
+      disconnect: () => {},
+    };
+
+    if (!connections.tryAcquire(scenario, connection)) {
+      sendJson(res, 429, { error: 'connection limit reached' });
+      return;
+    }
+
+    await streamLoop(
+      res,
+      getAsset(),
+      {
+        scenarioRate: () => scenario.rate,
+        onConnection: () => {},
+        onClosed: () => connections.release(connection),
+      },
+      connection
+    );
     return;
   }
 
