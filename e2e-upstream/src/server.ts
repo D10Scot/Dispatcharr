@@ -98,11 +98,22 @@ function readRawBody(req: IncomingMessage, options: ReadBodyOptions = {}): Promi
     // memory and to let the promise settle; the socket itself is reclaimed
     // once the response finishes (or by Node's own connection timeout if
     // the client never stops sending).
-    const timer = setTimeout(() => {
-      finish(new BadRequestError(`request body took longer than ${timeoutMs}ms to arrive`));
-    }, timeoutMs);
+    //
+    // Idle-based, not a wall-clock deadline from read-start: it resets on
+    // every chunk, so it only fires when the body genuinely stalls. A
+    // fixed deadline from read-start would reject a large-but-progressing
+    // body (a 5,000-channel scenario on a loaded CI runner) even though
+    // nothing ever stalled — a false positive in exactly the failure class
+    // this goal exists to eliminate.
+    let timer = setTimeout(onStall, timeoutMs);
+    function onStall() {
+      finish(new BadRequestError(`request body stalled for longer than ${timeoutMs}ms`));
+    }
 
     const onData = (chunk: Buffer) => {
+      clearTimeout(timer);
+      timer = setTimeout(onStall, timeoutMs);
+
       total += chunk.byteLength;
       if (total > maxBytes) {
         finish(new BadRequestError(`request body exceeds ${maxBytes} bytes`));

@@ -192,6 +192,36 @@ describe('request body limits', () => {
     await expect(readJsonObject(req, { timeoutMs: 20 })).rejects.toThrow(/20ms/);
   });
 
+  it('does not reject a body delivered slowly across several chunks, as long as no single gap stalls', async () => {
+    // Three chunks, each gap under the timeout, totalling well over it. A
+    // wall-clock deadline measured from read-start would reject this; the
+    // idle timer — reset on every chunk — must not, because nothing ever
+    // stalled. This is the case a 5,000-channel scenario body on a loaded
+    // CI runner looks like.
+    const req = fakeIncomingMessage();
+    const promise = readJsonObject(req, { timeoutMs: 30 });
+
+    req.emit('data', Buffer.from('{"user'));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    req.emit('data', Buffer.from('name":"a'));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    req.emit('data', Buffer.from('lice"}'));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    req.emit('end');
+
+    await expect(promise).resolves.toEqual({ username: 'alice' });
+  });
+
+  it('rejects a body that starts, then genuinely stalls past the idle timeout', async () => {
+    const req = fakeIncomingMessage();
+    const promise = readJsonObject(req, { timeoutMs: 20 });
+
+    req.emit('data', Buffer.from('{"username":'));
+    // No further data and no 'end' — only the idle timer resetting on the
+    // chunk above and then firing on its own can reject this.
+    await expect(promise).rejects.toThrow(/stalled/);
+  });
+
   it('enforces the cap end to end over a real socket on POST /scenarios', async () => {
     server = await startServer(0);
     const oversized = JSON.stringify({ username: 'x'.repeat(1024 * 1024 + 1) });
@@ -476,7 +506,12 @@ describe('the redirect-chain fault, using the real streamed asset', () => {
     await reader.cancel();
   });
 
-  it('rejects credentials that changed mid-chain, even after the first hop validated them', async () => {
+  it('checks credentials on every hop, including the first, even with redirect-chain armed', async () => {
+    // Credential validation runs before redirect-chain on every hop (see
+    // the fixed check order in server.ts), so a wrong password 401s at hop
+    // 0 and no redirect is ever attempted — "a later hop invalidates
+    // credentials" is unreachable by construction and isn't what this
+    // verifies.
     server = await startServer(0);
     const scenario = await createScenario({ username: 'alice', password: 'secret' });
     await fetch(`http://127.0.0.1:${server.port}/s/${scenario.id}/fault`, {
@@ -484,9 +519,10 @@ describe('the redirect-chain fault, using the real streamed asset', () => {
       body: JSON.stringify({ fault: 'redirect-chain', active: true, depth: 1 }),
     });
 
-    const { res } = await followChain(
+    const { res, redirects } = await followChain(
       `/s/${scenario.id}/stream/1.ts?username=alice&password=wrong`
     );
     expect(res.status).toBe(401);
+    expect(redirects).toBe(0);
   });
 });

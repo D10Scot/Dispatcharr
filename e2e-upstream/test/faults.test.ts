@@ -193,4 +193,14 @@ describe('parseFaultRequest', () => {
       parseFaultRequest({ fault: 'redirect-chain', active: true, depth: 1.5 })
     ).toThrow(BadRequestError);
   });
+
+  it('accepts depth at the cap and rejects one past it', () => {
+    // A typo'd depth (e.g. a stray zero) should 400 immediately rather than
+    // producing a legitimate-but-enormous redirect chain that just hangs a
+    // test.
+    expect(parseFaultRequest({ fault: 'redirect-chain', active: true, depth: 20 }).depth).toBe(20);
+    expect(() =>
+      parseFaultRequest({ fault: 'redirect-chain', active: true, depth: 21 })
+    ).toThrow(BadRequestError);
+  });
 });

@@ -48,6 +48,10 @@ export interface FaultResult {
 
 const DEFAULT_TRICKLE_RATE = 0.1;
 export const DEFAULT_REDIRECT_DEPTH = 2;
+// Far more than any real provider chain (G5's tests use 2-3); bounding it
+// turns a typo'd `depth: 10000` into an immediate, readable 400 instead of a
+// legitimate-but-enormous redirect chain that just hangs a test.
+const MAX_REDIRECT_DEPTH = 20;
 
 /**
  * Validates a parsed JSON body into a `FaultRequest` before it ever reaches
@@ -99,8 +103,15 @@ export function parseFaultRequest(body: Record<string, unknown>): FaultRequest {
   }
 
   if (body.depth !== undefined) {
-    if (typeof body.depth !== 'number' || !Number.isInteger(body.depth) || body.depth < 0) {
-      throw new BadRequestError("'depth' must be a non-negative integer");
+    if (
+      typeof body.depth !== 'number' ||
+      !Number.isInteger(body.depth) ||
+      body.depth < 0 ||
+      body.depth > MAX_REDIRECT_DEPTH
+    ) {
+      throw new BadRequestError(
+        `'depth' must be an integer between 0 and ${MAX_REDIRECT_DEPTH}`,
+      );
     }
     request.depth = body.depth;
   }
