@@ -40,14 +40,21 @@ export function streamLoop(
   let open = true;
   const startedAt = Date.now();
 
+  // Set only while parked in the drain wait below, so a control method
+  // called at any other time of the loop is a harmless no-op — every other
+  // point in the loop already reads fresh state on its own next iteration.
+  let wake: (() => void) | null = null;
+
   connection.setDeadAir = (active) => {
     deadAir = active;
   };
   connection.setRate = (rate) => {
     rateOverride = rate;
+    wake?.();
   };
   connection.disconnect = (options) => {
     closing = options;
+    wake?.();
   };
 
   res.writeHead(200, {
@@ -119,20 +126,38 @@ export function streamLoop(
         // listener registered before the loop started: both run, in
         // registration order, and either one is enough to make the check
         // below true.
+        //
+        // `wake` covers the fourth way out: a fault's control methods
+        // (disconnect, setRate) firing while parked here with nothing else
+        // to wake this promise. The client isn't reading, so 'drain' will
+        // never come; nobody has torn the socket down, so 'close'/'error'
+        // won't either. Without it, `disconnect()` while backpressured sets
+        // `closing` and returns, but the loop never gets back to the
+        // top-of-loop check that acts on it — the fault reports
+        // `appliedTo: 1` and the connection never actually closes.
         await new Promise<void>((resolve) => {
-          const onDrain = () => {
+          const cleanup = () => {
+            res.off('drain', onDrain);
             res.off('close', onTerminated);
             res.off('error', onTerminated);
+            wake = null;
+          };
+          const onDrain = () => {
+            cleanup();
             resolve();
           };
           const onTerminated = () => {
             open = false;
-            res.off('drain', onDrain);
+            cleanup();
             resolve();
           };
           res.once('drain', onDrain);
           res.once('close', onTerminated);
           res.once('error', onTerminated);
+          wake = () => {
+            cleanup();
+            resolve();
+          };
         });
         if (!open) return;
       }

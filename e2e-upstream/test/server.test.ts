@@ -1,6 +1,7 @@
 import { describe, it, expect, afterEach, beforeAll } from 'vitest';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { EventEmitter } from 'node:events';
+import net from 'node:net';
 import { writeFileSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -524,5 +525,104 @@ describe('the redirect-chain fault, using the real streamed asset', () => {
     );
     expect(res.status).toBe(401);
     expect(redirects).toBe(0);
+  });
+});
+
+describe('the disconnect fault under the real server, using the real streamed asset', () => {
+  beforeAll(() => {
+    const dir = mkdtempSync(join(tmpdir(), 'e2e-upstream-disconnect-asset-'));
+    const path = join(dir, 'loop.ts');
+    writeFileSync(path, makeSyntheticTs({ packets: 40, pid: 0x0100, step: 3600n }));
+    process.env.UPSTREAM_ASSET = path;
+  });
+
+  async function createScenario(body: Record<string, unknown> = {}) {
+    const res = await fetch(`http://127.0.0.1:${server!.port}/scenarios`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+    return readJson(res);
+  }
+
+  async function armDisconnect(scenarioId: string, body: Record<string, unknown> = {}) {
+    const res = await fetch(`http://127.0.0.1:${server!.port}/s/${scenarioId}/fault`, {
+      method: 'POST',
+      body: JSON.stringify({ fault: 'disconnect', active: true, ...body }),
+    });
+    return readJson(res);
+  }
+
+  async function connectionsOf(scenarioId: string) {
+    return readJson(await fetch(`http://127.0.0.1:${server!.port}/s/${scenarioId}/connections`));
+  }
+
+  async function logOf(scenarioId: string) {
+    return readJson(await fetch(`http://127.0.0.1:${server!.port}/s/${scenarioId}/log`));
+  }
+
+  it('ends the stream when disconnect is armed while the client is actively reading', async () => {
+    server = await startServer(0);
+    const scenario = await createScenario({ rate: 50 });
+
+    const res = await fetch(`http://127.0.0.1:${server.port}/s/${scenario.id}/stream/1.ts`);
+    const reader = res.body!.getReader();
+    await reader.read(); // prove it is flowing
+
+    const result = await armDisconnect(scenario.id, { clean: true });
+    expect(result.appliedTo).toBe(1);
+
+    // A clean disconnect against a client draining normally ends the
+    // response promptly: the reader eventually reports `done`, not a
+    // network error — this is the behaviour the backpressure fix below must
+    // not disturb.
+    let done = false;
+    for (let i = 0; i < 200 && !done; i += 1) {
+      done = (await reader.read()).done;
+    }
+    expect(done).toBe(true);
+
+    expect((await connectionsOf(scenario.id)).live).toBe(0);
+    expect((await logOf(scenario.id)).some((e: { kind: string }) => e.kind === 'close')).toBe(
+      true
+    );
+  });
+
+  it('ends the stream within a bounded time even when the client has stopped reading', async () => {
+    // The regression this guards: disconnect() while the loop was parked in
+    // the drain wait used to just set a flag with nothing to act on it —
+    // 'drain' never fires because the client isn't reading, and nothing had
+    // destroyed the socket. The fault reported appliedTo: 1 while the
+    // connection stayed live forever, which is exactly the two-body
+    // confusion the log exists to catch, produced by the provider itself.
+    server = await startServer(0);
+    // A huge rate means near-zero pacing sleep, so writes queue up almost
+    // immediately against a client that never reads them.
+    const scenario = await createScenario({ rate: 1_000_000 });
+
+    const client = net.connect(server.port, '127.0.0.1');
+    await new Promise<void>((resolve) => client.once('connect', resolve));
+    client.write(
+      `GET /s/${scenario.id}/stream/1.ts HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n`
+    );
+    // Deliberately never read the response — leaving the socket paused lets
+    // the server's write buffer back up quickly at this pacing rate.
+    await new Promise((resolve) => setTimeout(resolve, 200));
+
+    const result = await armDisconnect(scenario.id);
+    expect(result.appliedTo).toBe(1);
+
+    const deadline = Date.now() + 2000;
+    let live = (await connectionsOf(scenario.id)).live;
+    while (live > 0 && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      live = (await connectionsOf(scenario.id)).live;
+    }
+
+    expect(live).toBe(0);
+    expect((await logOf(scenario.id)).some((e: { kind: string }) => e.kind === 'close')).toBe(
+      true
+    );
+
+    client.destroy();
   });
 });
