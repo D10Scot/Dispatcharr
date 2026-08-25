@@ -15,39 +15,87 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  e2e:
-    name: First-run setup and login
+  build:
+    name: Build AIO image
     runs-on: ubuntu-latest
+    # A wedged docker build otherwise burns the 6-hour default.
+    timeout-minutes: 45
     steps:
       - name: Checkout code
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           persist-credentials: false
 
-      - name: Build the AIO image from this branch
+      # One build for all three consumers. docker/Dockerfile:14 uses
+      # `npm install` with no lockfile, so N builds can produce N different
+      # frontend bundles; building once means one artifact under test.
+      - name: Build the image
         run: docker build -f docker/Dockerfile -t dispatcharr-e2e:local .
 
-      - name: Run the AIO container
-        run: |
-          docker run -d --name dispatcharr-e2e \
-            -p 9191:9191 \
-            -v dispatcharr-e2e-data:/data \
-            -e DISPATCHARR_ENV=aio \
-            -e DISPATCHARR_LOG_LEVEL=info \
-            dispatcharr-e2e:local
+      - name: Export the image
+        run: docker save dispatcharr-e2e:local | gzip > /tmp/dispatcharr-e2e.tar.gz
 
-      - name: Wait for the app to be ready
-        run: |
-          for i in $(seq 1 60); do
-            if curl -sf -o /dev/null "http://localhost:9191/api/accounts/initialize-superuser/"; then
-              echo "App is up after ${i}0s"
-              exit 0
-            fi
-            sleep 10
-          done
-          echo "App never became ready; container logs:"
-          docker logs dispatcharr-e2e || true
-          exit 1
+      - name: Upload the image
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: dispatcharr-e2e-image
+          path: /tmp/dispatcharr-e2e.tar.gz
+          retention-days: 1
+
+  test:
+    name: ${{ matrix.project }}
+    runs-on: ubuntu-latest
+    needs: build
+    # Comfortably over the streaming project's 300s per-test timeout, and far
+    # under the 6-hour default a container that never becomes ready would take.
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        project: [pristine, seeded, streaming]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: Download the image
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: dispatcharr-e2e-image
+          path: /tmp
+
+      - name: Load the image
+        run: docker load < /tmp/dispatcharr-e2e.tar.gz
+
+      # The same script developers run, not a second copy of its boot path.
+      # This step used to duplicate scripts/e2e_up.sh's `docker run` and
+      # readiness loop almost verbatim — same image, volume, env and port
+      # binding — and the two had already drifted, which is the argument for
+      # calling it: a change to how the container boots can no longer be made
+      # in one place and forgotten in the other.
+      #
+      # The script does not rebuild here: its `docker image inspect`
+      # short-circuit sees the image loaded above, under the tag it defaults
+      # to. Its defaults are exactly what this job used — container
+      # dispatcharr-e2e, volume dispatcharr-e2e-data, image
+      # dispatcharr-e2e:local, port 9191 — so nothing needs overriding.
+      #
+      # Each project gets its own container. pristine in particular needs an
+      # instance with no superuser, which the bootstrap project consumes.
+      #
+      # Published on 127.0.0.1 only, which the script enforces: once bootstrap
+      # has run, this container holds a superuser whose password is committed
+      # to this repository. Every consumer — the script's readiness curl and
+      # Playwright's E2E_BASE_URL — runs on this same runner, and
+      # ubuntu-latest resolves `localhost` to 127.0.0.1.
+      - name: Run the container and wait for it to be ready
+        env:
+          # 120 polls at 5s = 600s, the budget this job's hand-rolled loop had
+          # (60 × 10s). The script's own default of 300s suits a laptop with a
+          # warm volume rather than a cold runner.
+          DISPATCHARR_E2E_READY_ATTEMPTS: '120'
+        run: ./scripts/e2e_up.sh
 
       - name: Setup Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -62,11 +110,15 @@ jobs:
         working-directory: ./e2e
         run: npx playwright install --with-deps chromium
 
+      - name: Typecheck
+        working-directory: ./e2e
+        run: npm run typecheck
+
       - name: Run E2E tests
         working-directory: ./e2e
         env:
           E2E_BASE_URL: http://localhost:9191
-        run: npx playwright test
+        run: npx playwright test --project=${{ matrix.project }}
 
       - name: Container logs (on failure)
         if: failure()
@@ -76,7 +128,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: playwright-report
+          name: playwright-report-${{ matrix.project }}
           path: e2e/playwright-report/
           retention-days: 7
           if-no-files-found: ignore

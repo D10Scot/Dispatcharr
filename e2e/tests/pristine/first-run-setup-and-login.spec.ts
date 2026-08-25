@@ -1,17 +1,37 @@
+// Importing from '@playwright/test' rather than '../../fixtures' is
+// deliberate here, and is not licence to do it elsewhere: the pristine
+// project has no `bootstrap` dependency and no auth state, so none of the
+// custom fixtures (`api`, `seed`, `ws`, …) can be constructed — they all
+// need the admin tokens this test is in the middle of creating. Every spec
+// outside tests/pristine/ imports from '../../fixtures'. See README,
+// "Writing a test".
 import { test, expect } from '@playwright/test';
+import { ADMIN } from '../../setup/credentials';
+import { assertMayCreateSuperuser } from '../../setup/superuser-guard';
 
 // Exercises Dispatcharr's very first user-facing flow end to end, against a
 // real backend: on a fresh instance there is no superuser yet, so the app
 // serves the setup form instead of login. This is the one flow every
 // deployment goes through exactly once, and it's fully self-contained (no
 // M3U/EPG/stream data needed), which makes it a good first E2E test.
-const USERNAME = 'e2e-admin';
-const PASSWORD = 'Correct-Horse-Battery-Staple-42!';
-const EMAIL = 'e2e-admin@example.com';
+//
+// The credentials come from setup/credentials.ts, the same module
+// bootstrap.setup.ts uses. Declaring them here too would let the two drift,
+// and this test is what decides which admin the container ends up with:
+// pristine and bootstrap create *the same* account on their two containers,
+// and a divergence would show up much later as a mystery 401.
+const { username: USERNAME, password: PASSWORD, email: EMAIL } = ADMIN;
 
 test('first run: create the superuser, log in, land on Channels', async ({
   page,
+  baseURL,
 }) => {
+  // This test creates a permanent superuser with a password committed to this
+  // repository, exactly as bootstrap.setup.ts does — it just does it through
+  // the browser instead of the API. Same hazard, same gate. Consulted before
+  // the first navigation so a refused target costs nothing.
+  assertMayCreateSuperuser(baseURL!);
+
   await page.goto('/');
 
   // Fresh instance: no superuser exists yet, so the setup form is served.
