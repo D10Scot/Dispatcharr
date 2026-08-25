@@ -20,11 +20,45 @@ export function sendJson(res: ServerResponse, status: number, body: unknown): vo
 
 export const registry = new ScenarioRegistry();
 
-export async function readJsonBody(req: IncomingMessage): Promise<unknown> {
+/**
+ * Thrown by request-parsing helpers on bad client input. Caught in
+ * `requestListener` and mapped to 400, distinct from the generic 500 for
+ * everything else — every route added from here on (Tasks 3-7's
+ * `POST /s/<id>/fault` and `/rate`) should read its body through
+ * `readJsonObject` rather than re-deriving this.
+ */
+export class BadRequestError extends Error {}
+
+async function readRawBody(req: IncomingMessage): Promise<string> {
   const chunks: Buffer[] = [];
   for await (const chunk of req) chunks.push(chunk as Buffer);
-  if (chunks.length === 0) return {};
-  return JSON.parse(Buffer.concat(chunks).toString('utf8'));
+  return Buffer.concat(chunks).toString('utf8');
+}
+
+/**
+ * Reads and parses a JSON request body, guaranteeing the result is a plain
+ * object (never null, an array, or a primitive) so callers can spread or
+ * index into it without a runtime crash disguising itself as a 500. An empty
+ * body is deliberately treated as `{}` — that's how `POST /scenarios` with no
+ * body creates a default scenario — but any non-empty, non-object body is
+ * rejected with `BadRequestError` rather than silently coerced.
+ */
+export async function readJsonObject(req: IncomingMessage): Promise<Record<string, unknown>> {
+  const raw = await readRawBody(req);
+  if (raw.length === 0) return {};
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new BadRequestError('request body is not valid JSON');
+  }
+
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    throw new BadRequestError('request body must be a JSON object');
+  }
+
+  return parsed as Record<string, unknown>;
 }
 
 /**
@@ -38,6 +72,15 @@ const INTERNAL_ORIGIN =
   process.env.UPSTREAM_INTERNAL_ORIGIN ?? 'http://e2e-upstream:8080';
 
 function scenarioUrls(scenario: Scenario, req: IncomingMessage) {
+  // HTTP/1.1 requires Host; a request missing it is pathological, and a
+  // fabricated fallback would produce a `control` URL that is silently
+  // wrong — the one outcome worse than failing loudly, since the whole point
+  // of the internal/control split is that the two are never interchangeable.
+  const host = req.headers.host;
+  if (!host) {
+    throw new BadRequestError('request has no Host header');
+  }
+
   const credentialQuery =
     scenario.username === undefined
       ? ''
@@ -46,7 +89,7 @@ function scenarioUrls(scenario: Scenario, req: IncomingMessage) {
 
   return {
     internal: `${INTERNAL_ORIGIN}/s/${scenario.id}`,
-    control: `http://${req.headers.host ?? '127.0.0.1'}/s/${scenario.id}`,
+    control: `http://${host}/s/${scenario.id}`,
     credentialQuery,
   };
 }
@@ -60,7 +103,8 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
   }
 
   if (url.pathname === '/scenarios' && req.method === 'POST') {
-    const scenario = registry.create((await readJsonBody(req)) as ScenarioRequest);
+    const body = await readJsonObject(req);
+    const scenario = registry.create(body as ScenarioRequest);
     sendJson(res, 201, { ...scenario, ...scenarioUrls(scenario, req) });
     return;
   }
@@ -84,7 +128,11 @@ export async function requestListener(req: IncomingMessage, res: ServerResponse)
     // Without this the process dies on a handler throw and the container
     // restarts silently mid-test, which reads as a network flake.
     if (!res.headersSent) {
-      sendJson(res, 500, { error: String(error) });
+      if (error instanceof BadRequestError) {
+        sendJson(res, 400, { error: error.message });
+      } else {
+        sendJson(res, 500, { error: String(error) });
+      }
     } else {
       res.destroy();
     }
