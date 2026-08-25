@@ -22,6 +22,37 @@ export function expectTsAligned(buffer: Buffer): void {
   }
 }
 
+export interface StreamOpenOptions {
+  headers?: Record<string, string>;
+  /**
+   * Defaults to 'follow'. Pass 'manual' when the response is expected to be a
+   * redirect to a container-internal hostname — Dispatcharr's Redirect profile
+   * 302s to the original upstream URL, which this process cannot resolve.
+   */
+  redirect?: RequestRedirect;
+}
+
+/**
+ * A DNS failure on the provider's container-internal name is the single most
+ * likely way a streaming test goes wrong, and Node reports it as a bare
+ * "fetch failed" with the cause buried. Naming it costs one function and
+ * saves the reader the whole investigation.
+ */
+function describeFetchFailure(url: string, cause: unknown): string {
+  const code = (cause as { cause?: { code?: string } })?.cause?.code;
+  const dnsFailure = code === 'ENOTFOUND' || code === 'EAI_AGAIN';
+
+  if (dnsFailure && url.includes('e2e-upstream')) {
+    return (
+      `stream open failed: cannot resolve ${url} from the test process. ` +
+      `That hostname resolves only inside the Docker network. If this came ` +
+      `from following a redirect, open with { redirect: 'manual' } and pass ` +
+      `each Location through upstream.toControl().`
+    );
+  }
+  return `stream open failed: ${url} — ${String(cause)}`;
+}
+
 /**
  * Reads endless HTTP byte streams. Node fetch, not Playwright's request
  * fixture: APIResponse.body() returns Promise<Buffer> and internally awaits
@@ -30,6 +61,9 @@ export function expectTsAligned(buffer: Buffer): void {
 export class StreamClient {
   private controller?: AbortController;
   private reader?: ReadableStreamDefaultReader<Uint8Array>;
+  /** Set once `open()` resolves. Lets a redirect test read `Location`. */
+  status?: number;
+  headers?: Headers;
   /**
    * Chunks as they arrived, oldest first. Concatenated only when bytes are
    * handed out.
@@ -51,17 +85,32 @@ export class StreamClient {
   constructor(private baseURL: string) {}
 
   /** `path` may be absolute or relative to baseURL. */
-  async open(path: string, headers: Record<string, string> = {}): Promise<void> {
+  async open(path: string, options: StreamOpenOptions = {}): Promise<void> {
     this.controller = new AbortController();
     const url = path.startsWith('http') ? path : new URL(path, this.baseURL).toString();
 
-    const response = await fetch(url, {
-      headers,
-      signal: this.controller.signal,
-    });
-    if (!response.ok) {
+    let response: Response;
+    try {
+      response = await fetch(url, {
+        headers: options.headers ?? {},
+        redirect: options.redirect ?? 'follow',
+        signal: this.controller.signal,
+      });
+    } catch (cause) {
+      throw new Error(describeFetchFailure(url, cause), { cause });
+    }
+
+    // With redirect: 'manual', a 3xx is the expected outcome, not a failure —
+    // the caller reads Location and walks the chain. res.ok is false for it,
+    // so the check below must not reject it.
+    if (
+      !response.ok &&
+      !(options.redirect === 'manual' && response.status >= 300 && response.status < 400)
+    ) {
       throw new Error(`stream open failed: ${response.status} ${response.statusText}`);
     }
+    this.status = response.status;
+    this.headers = response.headers;
     if (!response.body) {
       throw new Error('stream response carried no body');
     }

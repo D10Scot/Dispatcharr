@@ -158,10 +158,73 @@
  * `streamClient: StreamClient` — reads endless HTTP byte streams, which
  * Playwright's `request` fixture cannot (`APIResponse.body()` awaits the full
  * download).
- *   open(path, headers?) → Promise<void>   path absolute or relative to baseURL
+ *   open(path, options?) → Promise<void>   path absolute or relative to
+ *                          baseURL. `options.headers` as before;
+ *                          `options.redirect` defaults to 'follow' — pass
+ *                          'manual' when the response is expected to be a
+ *                          redirect to a container-internal hostname (see
+ *                          `upstream` below), since this process cannot
+ *                          resolve it. After `open()` resolves, `status` and
+ *                          `headers` hold the response's status and Headers,
+ *                          so a redirect test can read `Location`.
  *   readPackets(count) → Promise<Buffer>   exactly count * 188 bytes
  *   collectFor(ms) → Promise<Buffer>       everything arriving within ms
  *   close() → Promise<void>                the fixture does this at teardown
+ *
+ * `upstream: UpstreamClient` — controls G2's fake upstream provider, the
+ * container-based stand-in for a real IPTV provider used by streaming tests.
+ *   **Two origins, never interchangeable.** Every `UpstreamScenario` carries
+ *   both: `internal` (`http://e2e-upstream:8080/s/<id>`) is what Dispatcharr
+ *   itself resolves — hand these URLs to `seed.m3uAccount()` /
+ *   `seed.epgSource()` / a channel's stream URL. `control`
+ *   (`http://127.0.0.1:9402/s/<id>`, from `E2E_UPSTREAM_CONTROL_URL`) is what
+ *   this Playwright process can reach — hand these to `fetch` or
+ *   `streamClient`. Handing `internal` to the test process, or `control` to
+ *   the product, fails or silently talks to the wrong host.
+ *   scenario(request?) → Promise<UpstreamScenario>
+ *       Creates a scenario (default: one channel, no auth, no connection
+ *       limit). `request.channels` is a count or an explicit array of
+ *       `{ id, name, tvgId, logo }`. Every scenario made this way is tracked
+ *       on `upstream.created` for `attachLogs`; there is **no cleanup** —
+ *       scenarios live for the provider process's life, scoped only by the
+ *       test that made them never reusing another test's id.
+ *   fault(scenario, name, options?) / clearFault(scenario, name, options?)
+ *       → Promise<FaultResult>   arms/disarms one of the eight `FaultName`s
+ *       (`dead-air`, `slow-trickle`, `disconnect`, `not-found`,
+ *       `auth-failure`, `connection-limit`, `redirect-chain`,
+ *       `non-ts-bytes`) against a live stream. `options.channel` scopes it to
+ *       one channel id; omitted, it applies scenario-wide. `FaultResult`'s
+ *       `appliedTo` counts only *live* connections actually reached —
+ *       **`not-found`, `auth-failure`, `connection-limit`, `redirect-chain`
+ *       and `non-ts-bytes` can only affect the next request**, because
+ *       headers are already sent on any response that is already open, so
+ *       `appliedTo: 0` from those five is correct and expected, not a sign
+ *       the call did nothing. "Arm `not-found` so the next reconnect fails"
+ *       is a normal test with `appliedTo: 0`. Check `appliedTo` yourself when
+ *       your test means to disrupt something already streaming; nothing here
+ *       asserts or warns on your behalf.
+ *   rate(scenario, rate) → Promise<{ rate }>   bytes-per-tick multiplier for
+ *       the whole scenario going forward.
+ *   log(scenario) → Promise<LogEntry[]>   the scenario's request/open/close/
+ *       fault history; `attachLogs` (below) is usually a better way to see it.
+ *   connections(scenario) → Promise<{ live, maxConnections, channels }>
+ *   playlistUrl(scenario) / epgUrl(scenario) / streamUrl(scenario, channelId)
+ *       → string   internal-origin URLs, credential query included, ready to
+ *       hand to `seed.m3uAccount()` / `seed.epgSource()` / a channel.
+ *   toControl(url) → string   rewrites an `internal`-origin URL to the
+ *       equivalent `control`-origin one. Needed because Dispatcharr's
+ *       Redirect profile 302s the client to the *original* upstream URL —
+ *       validate_stream_url() follows redirects server-side but returns the
+ *       URL it was given, so `views.py` redirects the test to
+ *       `http://e2e-upstream:8080/...`, a name this process cannot resolve.
+ *       A Redirect-profile test opens with `streamClient.open(url, {
+ *       redirect: 'manual' })`, reads `Location`, and passes each hop through
+ *       `toControl()` before following it. **Throws** on a URL not under the
+ *       internal origin — it never passes an unrecognised URL through, which
+ *       is how a test would end up making a real outbound request.
+ *   created: UpstreamScenario[]   every scenario `scenario()` made this test.
+ *   attachLogs(testInfo)   the fixture calls this itself on a failed test —
+ *       you should not need to.
  *
  * ---------------------------------------------------------------------------
  * HELPERS AND CONSTANTS
@@ -197,6 +260,7 @@ import type { PrincipalName } from '../setup/principals';
 import { Waiter } from './wait';
 import { WsListener } from './ws';
 import { StreamClient, expectTsAligned, TS_PACKET_SIZE, TS_SYNC_BYTE } from './stream-client';
+import { UpstreamClient } from './upstream';
 
 export type Fixtures = {
   api: ApiClient;
@@ -207,6 +271,7 @@ export type Fixtures = {
   waitFor: Waiter;
   ws: WsListener;
   streamClient: StreamClient;
+  upstream: UpstreamClient;
 };
 
 export const test = base.extend<Fixtures>({
@@ -257,6 +322,15 @@ export const test = base.extend<Fixtures>({
     await use(client);
     await client.close();
   },
+  upstream: async ({}, use, testInfo) => {
+    const client = new UpstreamClient();
+    await use(client);
+    // Only on failure: a passing test's log is noise, and fetching it costs a
+    // round trip per scenario.
+    if (testInfo.status !== testInfo.expectedStatus) {
+      await client.attachLogs(testInfo);
+    }
+  },
 });
 
 export { expect } from '@playwright/test';
@@ -279,6 +353,17 @@ export type {
   WsPayload,
 } from './ws';
 export { StreamClient, expectTsAligned, TS_PACKET_SIZE, TS_SYNC_BYTE } from './stream-client';
+export type { StreamOpenOptions } from './stream-client';
+export { UpstreamClient, UPSTREAM_CONTROL_BASE, UPSTREAM_INTERNAL_BASE } from './upstream';
+export type {
+  FaultName,
+  FaultOptions,
+  FaultResult,
+  LogEntry,
+  ScenarioRequest,
+  UpstreamChannel,
+  UpstreamScenario,
+} from './upstream';
 export type {
   Channel,
   ChannelOverrides,
