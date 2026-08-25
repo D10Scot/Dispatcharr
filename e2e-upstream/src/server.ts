@@ -4,6 +4,8 @@ import type { AddressInfo } from 'node:net';
 import { ScenarioRegistry, parseScenarioRequest } from './scenario.js';
 import type { Scenario } from './scenario.js';
 import { BadRequestError } from './errors.js';
+import { renderPlaylist, credentialQuery, PLAYLIST_CONTENT_TYPE } from './playlist.js';
+import { renderXmltv, XMLTV_CONTENT_TYPE } from './xmltv.js';
 
 export interface RunningServer {
   close(): Promise<void>;
@@ -73,16 +75,10 @@ function scenarioUrls(scenario: Scenario, req: IncomingMessage) {
     throw new BadRequestError('request has no Host header');
   }
 
-  const credentialQuery =
-    scenario.username === undefined
-      ? ''
-      : `?username=${encodeURIComponent(scenario.username)}` +
-        `&password=${encodeURIComponent(scenario.password ?? '')}`;
-
   return {
     internal: `${INTERNAL_ORIGIN}/s/${scenario.id}`,
     control: `http://${host}/s/${scenario.id}`,
-    credentialQuery,
+    credentialQuery: credentialQuery(scenario),
   };
 }
 
@@ -104,6 +100,38 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
   const scenarioMatch = /^\/scenarios\/([^/]+)$/.exec(url.pathname);
   if (scenarioMatch && req.method === 'DELETE') {
     sendJson(res, registry.delete(scenarioMatch[1]) ? 204 : 404, {});
+    return;
+  }
+
+  const playlistMatch = /^\/s\/([^/]+)\/playlist\.m3u$/.exec(url.pathname);
+  if (playlistMatch && req.method === 'GET') {
+    const scenario = registry.get(playlistMatch[1]);
+    if (!scenario) {
+      sendJson(res, 404, { error: `no scenario ${playlistMatch[1]}` });
+      return;
+    }
+    const body = renderPlaylist(scenario, INTERNAL_ORIGIN);
+    res.writeHead(200, {
+      'Content-Type': PLAYLIST_CONTENT_TYPE,
+      'Content-Length': Buffer.byteLength(body),
+    });
+    res.end(body);
+    return;
+  }
+
+  const epgMatch = /^\/s\/([^/]+)\/epg\.xml$/.exec(url.pathname);
+  if (epgMatch && req.method === 'GET') {
+    const scenario = registry.get(epgMatch[1]);
+    if (!scenario) {
+      sendJson(res, 404, { error: `no scenario ${epgMatch[1]}` });
+      return;
+    }
+    const body = renderXmltv(scenario, new Date());
+    res.writeHead(200, {
+      'Content-Type': XMLTV_CONTENT_TYPE,
+      'Content-Length': Buffer.byteLength(body),
+    });
+    res.end(body);
     return;
   }
 
