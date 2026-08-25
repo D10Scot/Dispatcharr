@@ -1,6 +1,8 @@
 import http from 'node:http';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
+import { ScenarioRegistry } from './scenario.js';
+import type { Scenario, ScenarioRequest } from './scenario.js';
 
 export interface RunningServer {
   close(): Promise<void>;
@@ -16,11 +18,56 @@ export function sendJson(res: ServerResponse, status: number, body: unknown): vo
   res.end(payload);
 }
 
+export const registry = new ScenarioRegistry();
+
+export async function readJsonBody(req: IncomingMessage): Promise<unknown> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of req) chunks.push(chunk as Buffer);
+  if (chunks.length === 0) return {};
+  return JSON.parse(Buffer.concat(chunks).toString('utf8'));
+}
+
+/**
+ * `internal` is what Dispatcharr is given; `control` is what the Playwright
+ * host calls. They are never interchangeable — see "Two base URLs" in the
+ * spec. INTERNAL_ORIGIN is what resolves inside the Docker network; the
+ * control origin is echoed from the request's own Host header, so it is
+ * correct whatever port the caller published.
+ */
+const INTERNAL_ORIGIN =
+  process.env.UPSTREAM_INTERNAL_ORIGIN ?? 'http://e2e-upstream:8080';
+
+function scenarioUrls(scenario: Scenario, req: IncomingMessage) {
+  const credentialQuery =
+    scenario.username === undefined
+      ? ''
+      : `?username=${encodeURIComponent(scenario.username)}` +
+        `&password=${encodeURIComponent(scenario.password ?? '')}`;
+
+  return {
+    internal: `${INTERNAL_ORIGIN}/s/${scenario.id}`,
+    control: `http://${req.headers.host ?? '127.0.0.1'}/s/${scenario.id}`,
+    credentialQuery,
+  };
+}
+
 async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const url = new URL(req.url ?? '/', 'http://placeholder');
 
   if (url.pathname === '/scenarios' && req.method === 'GET') {
-    sendJson(res, 200, []);
+    sendJson(res, 200, registry.list().map((s) => ({ ...s, ...scenarioUrls(s, req) })));
+    return;
+  }
+
+  if (url.pathname === '/scenarios' && req.method === 'POST') {
+    const scenario = registry.create((await readJsonBody(req)) as ScenarioRequest);
+    sendJson(res, 201, { ...scenario, ...scenarioUrls(scenario, req) });
+    return;
+  }
+
+  const scenarioMatch = /^\/scenarios\/([^/]+)$/.exec(url.pathname);
+  if (scenarioMatch && req.method === 'DELETE') {
+    sendJson(res, registry.delete(scenarioMatch[1]) ? 204 : 404, {});
     return;
   }
 
