@@ -23,7 +23,6 @@ package-lock.json
 models
 .idea
 .vite/
-uv.lock
 playwright-report/
 test-results/
 

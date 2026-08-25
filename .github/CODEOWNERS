@@ -1,0 +1,8 @@
+# Every change needs a look from the maintainer. On a single-maintainer
+# fork this doesn't gate a second pair of eyes the way it would on a team
+# repo — the value here is narrower: it's what makes GitHub's "require
+# review from Code Owners" branch-protection rule enforceable at all, and
+# it stops Renovate (or anyone with write access later) from merging
+# something on this repo's behalf without a human in the loop.
+
+* @D10Scot

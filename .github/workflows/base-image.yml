@@ -7,16 +7,35 @@ on:
       - 'docker/DispatcharrBase'
       - '.github/workflows/base-image.yml'
       - 'pyproject.toml'
+      - 'uv.lock'
   pull_request:
     branches: [main]
     paths:
       - 'docker/DispatcharrBase'
       - '.github/workflows/base-image.yml'
       - 'pyproject.toml'
+      - 'uv.lock'
   workflow_dispatch: # Allow manual triggering
+  schedule:
+    # Weekly rebuild independent of any change in this repo: OS-level CVEs
+    # in the apt packages this base pulls in get fixed upstream on their own
+    # schedule, and `apt-get upgrade` (see docker/DispatcharrBase) only ever
+    # runs when *something* triggers a build.
+    - cron: '0 4 * * 0' # Sunday 04:00 UTC
 
 permissions:
   contents: read
+
+# No cancel-in-progress, same reasoning as release.yml: this pushes
+# per-arch :base-amd64/:base-arm64 tags and then merges them into :base
+# with `imagetools create`. Cancelling between those two steps would leave
+# :base itself stale while the per-arch tags underneath it moved on — and
+# :base is now read live by ci.yml/docker-build.yml/release.yml's
+# "Resolve base image digest" steps, so a stale-but-still-present :base is
+# exactly the failure mode those steps exist to avoid. Serialize instead.
+concurrency:
+  group: base-image-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   prepare:
@@ -211,3 +230,86 @@ jobs:
             --annotation "index:build_version=DispatcharrBase version: ${BRANCH_TAG}-${TIMESTAMP}" \
             --tag ghcr.io/${OWNER}/${REPO}:${BRANCH_TAG}-${TIMESTAMP} \
             ghcr.io/${OWNER}/${REPO}:${BRANCH_TAG}-${TIMESTAMP}-amd64 ghcr.io/${OWNER}/${REPO}:${BRANCH_TAG}-${TIMESTAMP}-arm64
+
+  sign-and-attest:
+    # Deliberately its own job — the only one in this workflow with
+    # id-token/attestations write, so auditing "what can sign a release"
+    # means reading this one job, not cross-referencing several.
+    needs: [prepare, create-manifest]
+    runs-on: ubuntu-24.04
+    if: ${{ github.event_name != 'pull_request' }}
+    permissions:
+      contents: read
+      packages: write # push the signature/attestation alongside the image
+      id-token: write # mint the OIDC token cosign and the attest actions use
+      attestations: write
+      artifact-metadata: write # required by actions/attest for the artifact storage record
+    steps:
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resolve published digest
+        id: resolved
+        env:
+          PREP_REPO_OWNER: ${{ needs.prepare.outputs.repo_owner }}
+          PREP_REPO_NAME: ${{ needs.prepare.outputs.repo_name }}
+          PREP_BRANCH_TAG: ${{ needs.prepare.outputs.branch_tag }}
+        run: |
+          set -euo pipefail
+          IMAGE="ghcr.io/${PREP_REPO_OWNER}/${PREP_REPO_NAME}"
+          DIGEST=$(docker buildx imagetools inspect "${IMAGE}:${PREP_BRANCH_TAG}" --format '{{json .Manifest}}' | jq -r .digest)
+          echo "image=${IMAGE}" >> "$GITHUB_OUTPUT"
+          echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+
+      - name: Sign image (keyless)
+        env:
+          IMAGE: ${{ steps.resolved.outputs.image }}
+          DIGEST: ${{ steps.resolved.outputs.digest }}
+        run: cosign sign --yes "${IMAGE}@${DIGEST}"
+
+      - name: Generate SBOM
+        env:
+          IMAGE: ${{ steps.resolved.outputs.image }}
+          DIGEST: ${{ steps.resolved.outputs.digest }}
+        run: |
+          # anchore/syft v1.51.0
+          docker run --rm -v "$PWD:/out" \
+            anchore/syft@sha256:678bfa565b60f747aac0f8e964fe5588a24445b8d0a480e91f6efd70020dfbb0 \
+            "${IMAGE}@${DIGEST}" -o spdx-json > sbom.spdx.json
+
+      - name: Attest SBOM
+        # actions/attest-sbom is deprecated in favor of actions/attest (same
+        # inputs) — confirmed via a real run of this exact job before this
+        # rename, which also surfaced the deprecation warning below.
+        #
+        # create-storage-record: false — verified via a real run that the
+        # default (true) fails here with "no artifacts found": the storage
+        # record feature expects a GitHub Actions build artifact (uploaded
+        # via actions/upload-artifact) to correlate with, which a pure
+        # container-image subject never has. The attest-build-provenance
+        # step below hits the same subject and succeeds at it, so this is
+        # specific to SBOM-mode subject resolution, not a permissions gap —
+        # the SBOM attestation itself still pushes to the registry fine
+        # either way, this only turns off the (currently broken) sidebar
+        # summary indexing.
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ${{ steps.resolved.outputs.image }}
+          subject-digest: ${{ steps.resolved.outputs.digest }}
+          sbom-path: sbom.spdx.json
+          push-to-registry: true
+          create-storage-record: false
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ steps.resolved.outputs.image }}
+          subject-digest: ${{ steps.resolved.outputs.digest }}
+          push-to-registry: true
