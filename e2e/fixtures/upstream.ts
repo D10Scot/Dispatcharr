@@ -79,7 +79,11 @@ export interface LogEntry {
 export class UpstreamClient {
   readonly created: UpstreamScenario[] = [];
 
-  constructor(private readonly controlBase: string = UPSTREAM_CONTROL_BASE) {}
+  constructor(
+    private readonly controlBase: string = UPSTREAM_CONTROL_BASE,
+    /** Overridable for tests; production callers always take the default. */
+    private readonly internalBase: string = UPSTREAM_INTERNAL_BASE
+  ) {}
 
   private async call<T>(path: string, init?: RequestInit): Promise<T> {
     const res = await fetch(`${this.controlBase}${path}`, {
@@ -171,23 +175,50 @@ export class UpstreamClient {
    * Throws rather than returning the input unchanged: silently passing an
    * unrecognised URL through is how a test ends up making a real outbound
    * request to whatever the URL happens to name.
+   *
+   * Compares parsed *origins*, not string prefixes: `startsWith` would let
+   * `http://e2e-upstream:8080@evil.com/x` through — a string prefix of the
+   * internal base, but an entirely different origin once `@` is read as a
+   * userinfo separator — and would mishandle a trailing slash on the
+   * configured base by dropping the leading `/` of the rewritten path.
+   * `toControl()` throwing on anything unrecognised is a safety property (a
+   * test must never be able to accidentally make a real outbound request to
+   * whatever a URL happens to name), so it has to hold structurally rather
+   * than by luck of how the strings happen to line up.
    */
   toControl(url: string): string {
-    if (!url.startsWith(UPSTREAM_INTERNAL_BASE)) {
-      throw new Error(
-        `toControl() expected a URL under ${UPSTREAM_INTERNAL_BASE}, got ${url}`
-      );
+    const internalOrigin = new URL(this.internalBase).origin;
+    let parsed: URL;
+    try {
+      parsed = new URL(url);
+    } catch {
+      throw new Error(`toControl() expected a URL under ${this.internalBase}, got ${url}`);
     }
-    return this.controlBase + url.slice(UPSTREAM_INTERNAL_BASE.length);
+    if (parsed.origin !== internalOrigin) {
+      throw new Error(`toControl() expected a URL under ${this.internalBase}, got ${url}`);
+    }
+    return this.controlBase + parsed.pathname + parsed.search + parsed.hash;
   }
 
-  /** Attaches every scenario's log to the report. Called by the fixture on failure. */
+  /**
+   * Attaches every scenario's log to the report. Called by the fixture on
+   * failure. Each scenario's fetch is wrapped separately: if the provider is
+   * unreachable — plausible exactly when a test just failed for a
+   * provider-side reason — this must attach a note explaining that rather
+   * than throw during teardown, which would bury the test's real failure
+   * under an unrelated one.
+   */
   async attachLogs(testInfo: TestInfo): Promise<void> {
     for (const scenario of this.created) {
-      await testInfo.attach(`upstream-log-${scenario.id}`, {
-        body: JSON.stringify(await this.log(scenario), null, 2),
-        contentType: 'application/json',
-      });
+      let body: string;
+      let contentType = 'application/json';
+      try {
+        body = JSON.stringify(await this.log(scenario), null, 2);
+      } catch (error) {
+        body = `could not retrieve upstream log for ${scenario.id}: ${String(error)}`;
+        contentType = 'text/plain';
+      }
+      await testInfo.attach(`upstream-log-${scenario.id}`, { body, contentType });
     }
   }
 }

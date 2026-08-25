@@ -203,8 +203,13 @@
  *       is a normal test with `appliedTo: 0`. Check `appliedTo` yourself when
  *       your test means to disrupt something already streaming; nothing here
  *       asserts or warns on your behalf.
- *   rate(scenario, rate) → Promise<{ rate }>   bytes-per-tick multiplier for
- *       the whole scenario going forward.
+ *   rate(scenario, rate) → Promise<{ rate }>   sets the scenario's own
+ *       playback-speed multiplier: the provider paces each chunk against
+ *       `asset.byteRate * rate`, so 1 is real-time, 2 is double speed. Has
+ *       **no visible effect while `slow-trickle` is armed on the same
+ *       connection** — the fault's own rate override takes priority over the
+ *       scenario rate for as long as it is active, and only the fault's own
+ *       `clearFault` call (not a `rate()` call) hands control back.
  *   log(scenario) → Promise<LogEntry[]>   the scenario's request/open/close/
  *       fault history; `attachLogs` (below) is usually a better way to see it.
  *   connections(scenario) → Promise<{ live, maxConnections, channels }>

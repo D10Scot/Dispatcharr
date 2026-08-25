@@ -86,6 +86,12 @@ export class StreamClient {
 
   /** `path` may be absolute or relative to baseURL. */
   async open(path: string, options: StreamOpenOptions = {}): Promise<void> {
+    // Cleared up front, not just set on success: otherwise a failed open on
+    // an instance already used once leaves `status`/`headers` holding a
+    // stale prior response — a stale 200 read after a failure is a
+    // genuinely misleading thing to hand someone mid-debug.
+    this.status = undefined;
+    this.headers = undefined;
     this.controller = new AbortController();
     const url = path.startsWith('http') ? path : new URL(path, this.baseURL).toString();
 
