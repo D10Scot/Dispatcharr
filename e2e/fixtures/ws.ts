@@ -191,7 +191,24 @@ export class WsListener {
 
     this.socket = new WebSocket(url.toString());
     this.socket.on('message', (raw) => {
-      const message: WsMessage = JSON.parse(raw.toString());
+      // Guarded for exactly the reason the 'error' handler below exists: `ws`
+      // invokes listeners synchronously, so anything thrown from here is an
+      // uncaught exception that takes down the whole worker process — every
+      // test sharing it, not just the one waiting. A non-JSON frame is a real
+      // possibility (a daphne error page on a mid-upgrade failure, a truncated
+      // frame from a restarting container, a future text ping), so route it
+      // through `fail()` and keep the failure inside this listener.
+      let message: WsMessage;
+      try {
+        message = JSON.parse(raw.toString());
+      } catch (error) {
+        this.fail(
+          `websocket to ${this.sanitizedUrl} sent a frame that is not JSON: ` +
+            `${(error as Error)?.message ?? error}. First 200 bytes: ` +
+            `${JSON.stringify(raw.toString().slice(0, 200))}`
+        );
+        return;
+      }
       this.remember(message);
       // Hand it to the oldest interested waiter, which consumes it; queue it
       // for a future wait if nobody is interested yet.
@@ -414,8 +431,77 @@ export class WsListener {
     });
   }
 
+  /**
+   * Resolves once this socket is subscribed to the `updates` group, so an
+   * event caused *after* it cannot be missed.
+   *
+   * **The `ws` fixture awaits this before handing the listener to a test; a
+   * test never calls it.** It is on the class because the barrier belongs with
+   * the socket, not with the fixture wiring.
+   *
+   * Why a barrier is needed at all: `dispatcharr/consumers.py` calls
+   * `accept()`, *then* `group_add(...)`, *then* sends `connection_established`.
+   * A `new WebSocket(...)` is returned long before any of that has run on
+   * daphne, so a listener handed straight to a test is a socket in no group
+   * yet. A test whose first act is `await seed.m3uAccount()` — which two of the
+   * exemplars in `tests/seeded/ws-fixture.spec.ts` do — can win that race, and
+   * its `playlist_created` is then broadcast to a group this socket has not
+   * joined. The later `where` wait times out 15 seconds on, as an intermittent
+   * flake under four workers on a loaded runner rather than as anything that
+   * names the cause.
+   *
+   * `connection_established` is the honest barrier because of that ordering:
+   * the server sends it strictly after `group_add` returns, so receiving it
+   * proves the subscription exists. It is per-socket, so waiting on it bare is
+   * safe on a shared broadcast — nothing another worker does can satisfy it.
+   *
+   * It is also **consumed** here, like any other message. A test cannot wait on
+   * `connection_established` itself; there is exactly one per socket and the
+   * fixture has already taken it.
+   */
+  async ready(timeoutMs = 30_000): Promise<void> {
+    try {
+      await this.waitForMessage('connection_established', { timeoutMs });
+    } catch (error) {
+      throw new Error(
+        `the websocket to ${this.sanitizedUrl} never became ready: ` +
+          `${(error as Error)?.message ?? error}. Until 'connection_established' ` +
+          'arrives the socket is not in the `updates` group, so no product ' +
+          'event would reach it. This is a failure to connect or authenticate ' +
+          '— check the container is up and that the access token is live.'
+      );
+    }
+  }
+
+  /**
+   * Close the socket and reject anything still waiting on it.
+   *
+   * The rejection is the point. A `waitForMessage` promise the test never
+   * awaited — a floating wait, which is a test bug but exactly the kind wave 2
+   * will write — otherwise keeps its timer running past teardown and surfaces
+   * as an unhandled rejection up to 30 seconds later, attributed by Playwright
+   * to whatever test happened to be running by then. Rejecting here does not
+   * make a floating promise handled, but it makes the failure immediate and
+   * self-naming instead of late and misattributed.
+   */
   close(): void {
     this.closedByUs = true;
+    // Done before `socket.close()`, because the 'close' handler's `closedByUs`
+    // guard would otherwise short-circuit past it — that guard exists to stop a
+    // deliberate close being *reported* as a server failure, not to leave
+    // waiters hanging.
+    //
+    // Skipped when a real failure already fired: those waiters were rejected
+    // with the actual cause, and overwriting `connectionError` here would
+    // replace "the container went away" with "teardown closed the socket".
+    if (this.waiters.length > 0 && !this.connectionError) {
+      this.fail(
+        `the websocket to ${this.sanitizedUrl} was closed by fixture teardown ` +
+          'while this wait was still pending. A wait that outlives its test ' +
+          'was never awaited — `await` it, or drop it' +
+          `${this.describeReceived()}`
+      );
+    }
     this.socket.close();
   }
 }

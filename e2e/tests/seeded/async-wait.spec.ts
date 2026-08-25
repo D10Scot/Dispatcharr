@@ -22,13 +22,32 @@ test('waitFor.resource polls until a created channel appears', async ({
 });
 
 // Exemplar: the WebSocket fixture, for state the REST API does not expose.
-// Every socket receives connection_established on connect.
-test('ws fixture receives the connection handshake', async ({ ws }) => {
-  const message = await ws.waitForMessage('connection_established');
+//
+// This waits on an event caused *after* the fixture handed the socket over,
+// which makes it an assertion about the fixture and not only about the
+// product. `dispatcharr/consumers.py` calls accept(), then group_add(), then
+// sends connection_established — so a listener handed over the moment `new
+// WebSocket(...)` returns is a socket in no group yet. The create below would
+// broadcast to a group this socket had not joined, and this wait would time
+// out. The `ws` fixture awaits `ready()` to close that window; it consumes the
+// handshake message doing so, which is why this test no longer waits on that
+// message. There is exactly one per socket and the fixture has taken it.
+//
+// `where` and not a bare type match: /ws/ is one broadcast group and `seeded`
+// runs four workers, so this socket sees every worker's playlist_created too.
+test('ws fixture is subscribed before a test can act', async ({ ws, seed }) => {
+  // A refresh_interval no other concurrent spec uses, per the IntervalSchedule
+  // race in issue #7 — see the header of ws-fixture.spec.ts.
+  const account = await seed.m3uAccount({ refresh_interval: 8532 });
+
+  const message = await ws.waitForMessage('playlist_created', {
+    where: (data) => data.playlist_id === account.id,
+  });
+
   // `data?.` and not `data.`: the product sends messages with no payload at
   // all, so `WsMessage.data` is optional. A missing one fails this assertion
-  // as `undefined !== true` rather than throwing a TypeError.
-  expect(message.data?.success).toBe(true);
+  // as `undefined !== …` rather than throwing a TypeError.
+  expect(message.data?.playlist_id).toBe(account.id);
 });
 
 // Regression: waitFor.m3uRefreshComplete used to poll for an in-flight

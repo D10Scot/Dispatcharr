@@ -68,35 +68,34 @@ jobs:
       - name: Load the image
         run: docker load < /tmp/dispatcharr-e2e.tar.gz
 
+      # The same script developers run, not a second copy of its boot path.
+      # This step used to duplicate scripts/e2e_up.sh's `docker run` and
+      # readiness loop almost verbatim — same image, volume, env and port
+      # binding — and the two had already drifted, which is the argument for
+      # calling it: a change to how the container boots can no longer be made
+      # in one place and forgotten in the other.
+      #
+      # The script does not rebuild here: its `docker image inspect`
+      # short-circuit sees the image loaded above, under the tag it defaults
+      # to. Its defaults are exactly what this job used — container
+      # dispatcharr-e2e, volume dispatcharr-e2e-data, image
+      # dispatcharr-e2e:local, port 9191 — so nothing needs overriding.
+      #
       # Each project gets its own container. pristine in particular needs an
       # instance with no superuser, which the bootstrap project consumes.
       #
-      # Published on 127.0.0.1 only, matching scripts/e2e_up.sh: once
-      # bootstrap has run, this container holds a superuser whose password is
-      # committed to this repository. Every consumer — the readiness curl
-      # below and Playwright's E2E_BASE_URL — runs on this same runner, and
+      # Published on 127.0.0.1 only, which the script enforces: once bootstrap
+      # has run, this container holds a superuser whose password is committed
+      # to this repository. Every consumer — the script's readiness curl and
+      # Playwright's E2E_BASE_URL — runs on this same runner, and
       # ubuntu-latest resolves `localhost` to 127.0.0.1.
-      - name: Run the container
-        run: |
-          docker run -d --name dispatcharr-e2e \
-            -p 127.0.0.1:9191:9191 \
-            -v dispatcharr-e2e-data:/data \
-            -e DISPATCHARR_ENV=aio \
-            -e DISPATCHARR_LOG_LEVEL=info \
-            dispatcharr-e2e:local
-
-      - name: Wait for the app to be ready
-        run: |
-          for i in $(seq 1 60); do
-            if curl -sf -o /dev/null "http://localhost:9191/api/accounts/initialize-superuser/"; then
-              echo "App is up after ${i}0s"
-              exit 0
-            fi
-            sleep 10
-          done
-          echo "App never became ready; container logs:"
-          docker logs dispatcharr-e2e || true
-          exit 1
+      - name: Run the container and wait for it to be ready
+        env:
+          # 120 polls at 5s = 600s, the budget this job's hand-rolled loop had
+          # (60 × 10s). The script's own default of 300s suits a laptop with a
+          # warm volume rather than a cold runner.
+          DISPATCHARR_E2E_READY_ATTEMPTS: '120'
+        run: ./scripts/e2e_up.sh
 
       - name: Setup Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0

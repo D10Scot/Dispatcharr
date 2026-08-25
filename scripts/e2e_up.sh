@@ -10,6 +10,15 @@
 # (e2e/setup/credentials.ts), so it must not be reachable from the LAN.
 set -euo pipefail
 
+# Resolved to an absolute path *before* the cd below, because the usage text is
+# printed by sed'ing this file. `BASH_SOURCE[0]` is whatever the caller typed,
+# so after the cd a relative invocation from anywhere but the repo root stops
+# resolving: `cd scripts && ./e2e_up.sh --oops` printed "sed: ./e2e_up.sh: No
+# such file or directory", and — `set -e` being on — exited with sed's status 1
+# rather than the intended 2, having never shown the usage block those branches
+# exist for.
+SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
+
 # `docker build ... .` below needs the repo root as its context, and the
 # README's quick start invokes this as ./scripts/e2e_up.sh from anywhere.
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
@@ -18,6 +27,10 @@ NAME="${DISPATCHARR_E2E_CONTAINER:-dispatcharr-e2e}"
 VOLUME="${DISPATCHARR_E2E_VOLUME:-dispatcharr-e2e-data}"
 IMAGE="${DISPATCHARR_E2E_IMAGE:-dispatcharr-e2e:local}"
 PORT="${DISPATCHARR_E2E_PORT:-9191}"
+# Readiness polls, 5s apart. Overridable because CI boots a cold container on a
+# slower runner than a developer's laptop; .github/workflows/e2e-tests.yml
+# raises it to keep the budget it had when it hand-rolled this loop.
+READY_ATTEMPTS="${DISPATCHARR_E2E_READY_ATTEMPTS:-60}"
 
 destroy() {
   docker rm -f "$NAME" >/dev/null 2>&1 || true
@@ -30,7 +43,7 @@ destroy() {
 # exists to prevent.
 if [[ $# -gt 1 ]]; then
   echo "Expected at most one argument, got $#: $*" >&2
-  sed -n '2,6p' "${BASH_SOURCE[0]}" >&2
+  sed -n '2,6p' "$SELF" >&2
   exit 2
 fi
 
@@ -57,7 +70,7 @@ case "${1:-}" in
   *)
     # Without this, a typo (`--rest`) silently starts a container instead.
     echo "Unknown argument: $1" >&2
-    sed -n '2,6p' "${BASH_SOURCE[0]}" >&2
+    sed -n '2,6p' "$SELF" >&2
     exit 2
     ;;
 esac
@@ -92,7 +105,7 @@ else
 fi
 
 echo -n "Waiting for the app"
-for _ in $(seq 1 60); do
+for _ in $(seq 1 "$READY_ATTEMPTS"); do
   if curl -sf -o /dev/null "http://127.0.0.1:${PORT}/api/accounts/initialize-superuser/"; then
     echo " — ready at http://localhost:${PORT}"
     exit 0

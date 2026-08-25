@@ -30,7 +30,21 @@ export function expectTsAligned(buffer: Buffer): void {
 export class StreamClient {
   private controller?: AbortController;
   private reader?: ReadableStreamDefaultReader<Uint8Array>;
-  private buffered: Buffer = Buffer.alloc(0);
+  /**
+   * Chunks as they arrived, oldest first. Concatenated only when bytes are
+   * handed out.
+   *
+   * A list rather than one growing Buffer because `Buffer.concat` on every
+   * chunk copies the whole accumulation to append one chunk — quadratic in the
+   * length of the collection window. The static upstream emits ~94 KB/s (ten
+   * packets every 20ms), so a `collectFor(60_000)` — well inside the streaming
+   * project's 300s per-test budget, and what a dead-air or failover test will
+   * do — accumulates ~5.6 MB across ~3,000 chunks and would copy on the order
+   * of 8 GB doing it. Against a real provider at several Mbit/s, worse.
+   */
+  private chunks: Buffer[] = [];
+  /** Total bytes held in `chunks`, so readPackets() need not sum them. */
+  private bufferedBytes = 0;
   /** The single outstanding pump(), if any. See pump(). */
   private inFlight?: Promise<boolean>;
 
@@ -80,23 +94,44 @@ export class StreamClient {
     if (!this.reader) throw new Error('open() must be called before reading');
     const { done, value } = await this.reader.read();
     if (done) return false;
-    this.buffered = Buffer.concat([this.buffered, Buffer.from(value)]);
+    const chunk = Buffer.from(value);
+    this.chunks.push(chunk);
+    this.bufferedBytes += chunk.byteLength;
     return true;
+  }
+
+  /**
+   * Remove and return the first `wanted` buffered bytes. Only those are
+   * copied: a chunk straddling the boundary is split and its tail put back, so
+   * a small `readPackets` against a large accumulation stays proportional to
+   * what it asked for rather than to what is held.
+   */
+  private takeBytes(wanted: number): Buffer {
+    const out = Buffer.allocUnsafe(wanted);
+    let filled = 0;
+    while (filled < wanted) {
+      const chunk = this.chunks[0];
+      const take = Math.min(chunk.byteLength, wanted - filled);
+      chunk.copy(out, filled, 0, take);
+      filled += take;
+      if (take === chunk.byteLength) this.chunks.shift();
+      else this.chunks[0] = chunk.subarray(take);
+    }
+    this.bufferedBytes -= wanted;
+    return out;
   }
 
   /** Exactly `count` TS packets (count * 188 bytes). */
   async readPackets(count: number): Promise<Buffer> {
     const wanted = count * TS_PACKET_SIZE;
-    while (this.buffered.byteLength < wanted) {
+    while (this.bufferedBytes < wanted) {
       if (!(await this.pump())) {
         throw new Error(
-          `stream ended after ${this.buffered.byteLength} bytes, wanted ${wanted}`
+          `stream ended after ${this.bufferedBytes} bytes, wanted ${wanted}`
         );
       }
     }
-    const out = this.buffered.subarray(0, wanted);
-    this.buffered = this.buffered.subarray(wanted);
-    return Buffer.from(out);
+    return this.takeBytes(wanted);
   }
 
   /** Everything that arrives within `ms`. */
@@ -124,8 +159,10 @@ export class StreamClient {
       ]);
       if (timed === 'timeout' || timed === false) break;
     }
-    const out = this.buffered;
-    this.buffered = Buffer.alloc(0);
+    // The one concat, over the whole window, instead of one per chunk.
+    const out = Buffer.concat(this.chunks, this.bufferedBytes);
+    this.chunks = [];
+    this.bufferedBytes = 0;
     return out;
   }
 
@@ -143,6 +180,7 @@ export class StreamClient {
     // before the abort landed still appends its chunk on the way out. The
     // rejection is the abort we just caused, so swallowing it is deliberate.
     if (pending) await pending.catch(() => {});
-    this.buffered = Buffer.alloc(0);
+    this.chunks = [];
+    this.bufferedBytes = 0;
   }
 }

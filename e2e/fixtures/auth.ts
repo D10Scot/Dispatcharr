@@ -210,7 +210,10 @@ export async function makeUserClient(
     tokenCache.set(key, tokens);
   }
 
-  const client = new ApiClient(ctx);
-  client.useTokens(tokens);
-  return client;
+  // Constructed *from* the pair rather than constructed-then-repointed. The
+  // no-argument constructor reads `tokens.json`, which this function is
+  // documented above not to require — and an ENOENT out of the constructor
+  // would have fired before `useTokens` could install the pair just minted.
+  // `ApiClient` still copies the pair in, so the cached one is never aliased.
+  return new ApiClient(ctx, tokens);
 }

@@ -148,7 +148,12 @@
  *           });
  *       `where` runs when the message arrives, so get the id *before* you
  *       wait. See the doc comment in `ws.ts`.
- *   close()   the fixture already does this at teardown
+ *       The socket is already subscribed when you get it — the fixture awaits
+ *       `connection_established` before handing it over, so an event your test
+ *       causes cannot be missed. That message is **consumed** by the fixture:
+ *       there is one per socket, and waiting on it in a test will hang.
+ *   close()   the fixture already does this at teardown, and a wait still
+ *             pending then is **rejected** rather than left on a 30s timer
  *
  * `streamClient: StreamClient` — reads endless HTTP byte streams, which
  * Playwright's `request` fixture cannot (`APIResponse.body()` awaits the full
@@ -237,6 +242,13 @@ export const test = base.extend<Fixtures>({
   // not throttled.
   ws: async ({ baseURL, api }, use) => {
     const listener = new WsListener(baseURL!, await api.freshAccessToken());
+    // Awaited, not handed over raw. `consumers.py` joins the `updates` group
+    // *after* accept(), so a listener given to a test before then is a socket
+    // in no group yet: a test whose first act creates something races its own
+    // event against the subscription, and the wait for it times out 15s later
+    // naming nothing. `ready()` documents why `connection_established` is the
+    // honest barrier.
+    await listener.ready();
     await use(listener);
     listener.close();
   },

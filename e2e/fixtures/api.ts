@@ -2,36 +2,26 @@ import type { APIRequestContext, APIResponse } from '@playwright/test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { accessTokenOf } from '../setup/login';
+import { hasLifeLeft, refreshAccessToken } from '../setup/login';
+import type { TokenPair } from '../setup/login';
 import { AUTH_DIR, writeAuthFileAtomically } from '../setup/auth-files';
 
 const TOKENS_FILE = path.join(AUTH_DIR, 'tokens.json');
 
 /**
- * How close to `exp` an access token may be before `freshAccessToken()`
- * refreshes it. Generous: a refresh costs nothing (TokenRefreshView is not
- * throttled) and a token that expires mid-test costs a 30-second hang.
+ * What `bootstrap` writes to `tokens.json`: the admin's pair, beside the
+ * credentials that minted it (`{ access, refresh, ...ADMIN }`).
+ *
+ * The credential fields are optional because a client handed a pair directly
+ * has none — and never needs them. Nothing here reads them; they are carried so
+ * `persistTokens()` writes the file back whole rather than truncating it to the
+ * pair, and that path only runs for the client that read the file.
  */
-const TOKEN_EXPIRY_MARGIN_SECONDS = 120;
-
-type Tokens = {
-  access: string;
-  refresh: string;
-  username: string;
-  password: string;
-  email: string;
+type Tokens = TokenPair & {
+  username?: string;
+  password?: string;
+  email?: string;
 };
-
-/** The `exp` claim in unix seconds, or undefined if this isn't a readable JWT. */
-function jwtExp(accessToken: string): number | undefined {
-  try {
-    const payload = accessToken.split('.')[1];
-    const exp = JSON.parse(Buffer.from(payload, 'base64').toString('utf8')).exp;
-    return typeof exp === 'number' ? exp : undefined;
-  } catch {
-    return undefined;
-  }
-}
 
 /**
  * Authenticated HTTP client. Retries once through a token refresh on 401,
@@ -47,10 +37,32 @@ export class ApiClient {
    * principal, and writing *that* principal's token into the file the whole
    * suite reads would silently run everything as them.
    */
-  private persistsTokens = true;
+  private persistsTokens: boolean;
 
-  constructor(private ctx: APIRequestContext) {
-    this.tokens = JSON.parse(fs.readFileSync(TOKENS_FILE, 'utf8'));
+  /**
+   * With no `tokens`, this is the bootstrap admin's client and the pair comes
+   * from `tokens.json` — which requires `bootstrap` to have run.
+   *
+   * Pass a pair to build a client for anybody else **without** that
+   * requirement. `fixtures/auth.ts` documents that a project with no
+   * `dependencies: ['bootstrap']` can still call `makeUserClient`, and
+   * `loadPrincipals()` is lazy specifically to keep that true — but an
+   * unconditional read here made the constructor throw `ENOENT` in exactly that
+   * case, before the freshly-minted pair could be installed. The contract and
+   * the code now agree.
+   *
+   * A client holding a pair it was handed never writes `tokens.json`: that file
+   * describes the admin, and persisting another principal's token into it would
+   * silently run the rest of the suite as them.
+   */
+  constructor(private ctx: APIRequestContext, tokens?: TokenPair) {
+    if (tokens) {
+      this.tokens = { ...tokens };
+      this.persistsTokens = false;
+    } else {
+      this.tokens = JSON.parse(fs.readFileSync(TOKENS_FILE, 'utf8'));
+      this.persistsTokens = true;
+    }
   }
 
   /** Test hook: corrupt the access token so the next call takes the 401 path. */
@@ -70,8 +82,7 @@ export class ApiClient {
    * `WsListener`, whose auth is a query parameter fixed at connect time.
    */
   async freshAccessToken(): Promise<string> {
-    const exp = jwtExp(this.tokens.access);
-    if (exp === undefined || exp - TOKEN_EXPIRY_MARGIN_SECONDS <= Date.now() / 1000) {
+    if (!hasLifeLeft(this.tokens.access)) {
       await this.refresh();
     }
     return this.tokens.access;
@@ -101,25 +112,21 @@ export class ApiClient {
   }
 
   private async refresh(): Promise<void> {
-    const res = await this.ctx.post('/api/accounts/token/refresh/', {
-      data: { refresh: this.tokens.refresh },
-    });
-    if (!res.ok()) {
+    // The narrowing lives in `refreshAccessToken` — a 200 carrying no string
+    // `access` comes back as a failure rather than installing
+    // `Bearer undefined` on this client and surfacing as 401s from every later
+    // call. On the worker side a miss is fatal: unlike the setup paths, there
+    // is no login to fall back to inside the throttle budget.
+    const result = await refreshAccessToken(this.ctx, this.tokens.refresh);
+    if (result.access === undefined) {
       throw new Error(
-        `token refresh failed: ${res.status()} ${await res.text()}`
+        result.status === 200
+          ? 'token refresh returned 200 with no string `access` field; the ' +
+            `refresh endpoint answered something unexpected: ${result.detail}`
+          : `token refresh failed: ${result.status} ${result.detail}`
       );
     }
-    // Narrowed rather than destructured off `any`: a 200 carrying no string
-    // `access` would otherwise install `Bearer undefined` on this client and
-    // surface as 401s from every later call.
-    const access = accessTokenOf(await res.json());
-    if (access === undefined) {
-      throw new Error(
-        'token refresh returned 200 with no string `access` field; the ' +
-          'refresh endpoint answered something unexpected.'
-      );
-    }
-    this.tokens.access = access;
+    this.tokens.access = result.access;
     this.persistTokens();
   }
 

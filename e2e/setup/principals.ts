@@ -58,8 +58,14 @@ import type { APIRequestContext } from '@playwright/test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { accessTokenOf, hasLifeLeft, loginWithThrottleBackoff } from './login';
+import {
+  hasLifeLeft,
+  loginWithThrottleBackoff,
+  refreshAccessToken,
+  whoAmI,
+} from './login';
 import type { TokenPair } from './login';
+import { listRows } from './http';
 import { AUTH_DIR, writeAuthFileAtomically } from './auth-files';
 
 export type PrincipalName = 'streamer' | 'standard';
@@ -130,33 +136,6 @@ function writeStored(tokens: PrincipalsFile): void {
   );
 }
 
-type Identity = { username: string; user_level: number };
-
-/**
- * Who an access token authenticates, or null if it authenticates nobody.
- *
- * `users/me` is the one `UserViewSet` action that opts down to `Authenticated`
- * rather than `IsAdmin` (`apps/accounts/api_views.py`), so a Streamer can call
- * it — which makes it the only honest liveness probe available for these
- * principals. It costs nothing from the login budget.
- */
-async function whoAmI(
-  request: APIRequestContext,
-  access: string
-): Promise<Identity | null> {
-  const res = await request.get('/api/accounts/users/me/', {
-    headers: { Authorization: `Bearer ${access}` },
-  });
-  if (!res.ok()) return null;
-  const body: Partial<Identity> | null = await res.json();
-  // Both fields checked, not just the username: `user_level` is compared
-  // against the roster by the caller, and an absent one would compare
-  // `undefined !== 0` and report a Streamer as drifted on every run.
-  if (typeof body?.username !== 'string') return null;
-  if (typeof body.user_level !== 'number') return null;
-  return { username: body.username, user_level: body.user_level };
-}
-
 /** The fields of a user row this file reads. Not the whole serializer. */
 type UserRow = { id: number; username: string; user_level: number };
 
@@ -172,10 +151,7 @@ async function findUser(
       `listing users failed: ${res.status()} ${await res.text()}`
     );
   }
-  // `/api/accounts/users/` returns a bare array today; the `results` branch
-  // is there in case pagination is switched on, not because it is observed.
-  const body: UserRow[] | { results?: UserRow[] } = await res.json();
-  const users: UserRow[] = Array.isArray(body) ? body : (body.results ?? []);
+  const users = listRows<UserRow>(await res.json());
   return users.find((user) => user.username === username) ?? null;
 }
 
@@ -265,26 +241,6 @@ async function resetPassword(
 }
 
 /**
- * Exchange a refresh token for a new access token. Not throttled, so free.
- *
- * Null on any failure, including the 500 the product returns when the refresh
- * token names a user that has been deleted (D10Scot/Dispatcharr#12 —
- * `rest_framework_simplejwt` does a bare `.get()` and lets `User.DoesNotExist`
- * escape). Callers fall through to a login, which is the right answer for all
- * of them.
- */
-async function refresh(
-  request: APIRequestContext,
-  refreshToken: string
-): Promise<string | null> {
-  const res = await request.post('/api/accounts/token/refresh/', {
-    data: { refresh: refreshToken },
-  });
-  if (!res.ok()) return null;
-  return accessTokenOf(await res.json()) ?? null;
-}
-
-/**
  * Make sure every principal in `PRINCIPALS` exists and has a usable token pair
  * on disk. Serial by construction, and called from `bootstrap` only.
  *
@@ -335,7 +291,12 @@ export async function provisionPrincipals(
     }
 
     if (!tokens && previous?.refresh) {
-      const access = await refresh(request, previous.refresh);
+      // Any failure falls through to a login — including the 500 the product
+      // returns when the refresh token names a deleted user
+      // (D10Scot/Dispatcharr#12 — `rest_framework_simplejwt` does a bare
+      // `.get()` and lets `User.DoesNotExist` escape). A login is the right
+      // answer for every one of them, so the status is not inspected here.
+      const { access } = await refreshAccessToken(request, previous.refresh);
       if (access) {
         const identity = await whoAmI(request, access);
         if (identity?.username === principal.username) {

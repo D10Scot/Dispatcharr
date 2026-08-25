@@ -4,12 +4,14 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { ADMIN } from './credentials';
 import {
-  accessTokenOf,
   hasLifeLeft,
   jwtExp,
   loginWithThrottleBackoff,
+  refreshAccessToken,
+  whoAmI,
 } from './login';
 import type { TokenPair } from './login';
+import { listRows } from './http';
 import { provisionPrincipals } from './principals';
 import { assertMayCreateSuperuser } from './superuser-guard';
 import { AUTH_DIR, ensureAuthDir, writeAuthFile } from './auth-files';
@@ -56,35 +58,23 @@ async function reusableTokens(
   // seconds left probes fine, and would then be used for the pre-warm, for
   // every admin write in provisioning, and written into `admin.json` as the
   // seeded project's storageState for the length of the run.
-  let probe = hasLifeLeft(access)
-    ? await request.get('/api/accounts/users/me/', {
-        headers: { Authorization: `Bearer ${access}` },
-      })
-    : null;
+  let identity = hasLifeLeft(access) ? await whoAmI(request, access) : null;
 
-  if (!probe?.ok()) {
-    const refreshed = await request.post('/api/accounts/token/refresh/', {
-      data: { refresh: stored.refresh },
-    });
-    if (!refreshed.ok()) return null;
-    const refreshedAccess = accessTokenOf(await refreshed.json());
-    if (refreshedAccess === undefined) return null;
-    access = refreshedAccess;
-    probe = await request.get('/api/accounts/users/me/', {
-      headers: { Authorization: `Bearer ${access}` },
-    });
+  if (!identity) {
+    const refreshed = await refreshAccessToken(request, stored.refresh);
+    if (refreshed.access === undefined) return null;
+    access = refreshed.access;
+    identity = await whoAmI(request, access);
   }
-  if (!probe.ok()) return null;
+  if (!identity) return null;
 
-  // A 200 only proves the token authenticates *someone*. Both files
-  // `persistAdminAuth` writes describe the pair as the admin's — admin.json
-  // becomes the seeded
+  // Authenticating *someone* is not enough. Both files `persistAdminAuth`
+  // writes describe the pair as the admin's — admin.json becomes the seeded
   // project's storageState, and tokens.json is written beside a spread
   // ...ADMIN — so adopting another principal's token would silently run every
   // spec as that principal, surfacing as unexplained 403s across the suite
   // rather than as a setup failure.
-  const who: { username?: unknown } = await probe.json();
-  if (who?.username !== ADMIN.username) return null;
+  if (identity.username !== ADMIN.username) return null;
 
   return { access, refresh: stored.refresh };
 }
@@ -145,8 +135,7 @@ async function prewarmIntervalSchedule(
     `listing M3U accounts failed: ${listed.status()} ${await listed.text()}`
   ).toBeTruthy();
   type AccountRow = { id?: number; name?: string };
-  const body: AccountRow[] | { results?: AccountRow[] } = await listed.json();
-  const accounts: AccountRow[] = Array.isArray(body) ? body : (body.results ?? []);
+  const accounts = listRows<AccountRow>(await listed.json());
   const existing = accounts.find(
     (account) => account.name === PREWARM_ACCOUNT_NAME
   );

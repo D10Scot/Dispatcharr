@@ -70,11 +70,13 @@ export const MAX_LOGIN_WAIT_MS =
 
 /**
  * How close to `exp` an access token may be before it is renewed rather than
- * reused. `fixtures/api.ts` applies the same 120 seconds for the same reason
- * on the worker side; this is the setup side of that policy, and the two are
- * deliberately separate because a worker refreshes a token it is about to use
- * while `bootstrap` refreshes one it is about to hand to somebody else for the
- * length of a run.
+ * reused. The **one** margin for the whole harness: `bootstrap` applies it to a
+ * token it is about to hand to somebody else for the length of a run, and
+ * `fixtures/api.ts` applies it to one a worker is about to use. Those were once
+ * two copies of the same literal described as "deliberately separate", with
+ * nothing keeping them equal — which is a drift bug waiting rather than a
+ * policy. If a caller ever genuinely needs a different margin, give
+ * `hasLifeLeft` a parameter; do not copy the constant.
  *
  * Generous, because renewal is free (`TokenRefreshView` is unthrottled) and a
  * token that expires in a worker's hands costs a hang.
@@ -101,6 +103,83 @@ export function hasLifeLeft(accessToken: string): boolean {
   const exp = jwtExp(accessToken);
   if (exp === undefined) return false;
   return exp - TOKEN_EXPIRY_MARGIN_SECONDS > Date.now() / 1000;
+}
+
+/**
+ * A refresh that did not produce a token, and enough to say why.
+ *
+ * `status` is the discriminator callers actually need: a **200** here means the
+ * endpoint accepted the refresh token and answered with no usable `access`,
+ * which is a different failure from a refusal and deserves a different message.
+ * A **500** is the product returning the wrong status when the refresh token
+ * names a deleted user (D10Scot/Dispatcharr#12 — `rest_framework_simplejwt`
+ * does a bare `.get()` and lets `User.DoesNotExist` escape).
+ */
+export type RefreshFailure = {
+  access?: undefined;
+  status: number;
+  detail: string;
+};
+
+export type RefreshResult = { access: string } | RefreshFailure;
+
+/**
+ * Exchange a refresh token for a new access token. **Free** — `TokenRefreshView`
+ * carries no `throttle_classes` and `DEFAULT_THROTTLE_CLASSES` is empty, so this
+ * spends nothing from the 3/minute login budget.
+ *
+ * The single implementation for the whole harness. It was three: `bootstrap`,
+ * `provisionPrincipals` and `ApiClient` each posted this body and narrowed with
+ * `accessTokenOf`, but disagreed on what a miss meant and on whether a
+ * 200-without-`access` counted as one. Narrowing happens once, here — the same
+ * split `accessTokenOf` already makes — and each caller still says what a miss
+ * means for it: the setup paths fall through to a login, the workers raise.
+ */
+export async function refreshAccessToken(
+  request: APIRequestContext,
+  refreshToken: string
+): Promise<RefreshResult> {
+  const res = await request.post('/api/accounts/token/refresh/', {
+    data: { refresh: refreshToken },
+  });
+  // `res.text()` after `res.json()` is safe: Playwright buffers the body, so
+  // both read the same bytes rather than a consumed stream.
+  if (!res.ok()) return { status: res.status(), detail: await res.text() };
+  const access = accessTokenOf(await res.json());
+  if (access === undefined) {
+    return { status: res.status(), detail: await res.text() };
+  }
+  return { access };
+}
+
+/** Who an access token authenticates. */
+export type Identity = { username: string; user_level: number };
+
+/**
+ * Who an access token authenticates, or null if it authenticates nobody.
+ *
+ * `users/me` is the one `UserViewSet` action that opts down to `Authenticated`
+ * rather than `IsAdmin` (`apps/accounts/api_views.py`), so even a Streamer can
+ * call it — which makes it the only honest liveness probe available for every
+ * principal the harness holds, admin included. It costs nothing from the login
+ * budget.
+ *
+ * Both fields are checked, not just the username: `user_level` is compared
+ * against the roster by `provisionPrincipals`, and an absent one would compare
+ * `undefined !== 0` and report a Streamer as drifted on every run.
+ */
+export async function whoAmI(
+  request: APIRequestContext,
+  access: string
+): Promise<Identity | null> {
+  const res = await request.get('/api/accounts/users/me/', {
+    headers: { Authorization: `Bearer ${access}` },
+  });
+  if (!res.ok()) return null;
+  const body: Partial<Identity> | null = await res.json();
+  if (typeof body?.username !== 'string') return null;
+  if (typeof body.user_level !== 'number') return null;
+  return { username: body.username, user_level: body.user_level };
 }
 
 export type LoginOptions = {

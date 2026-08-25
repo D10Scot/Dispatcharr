@@ -230,7 +230,25 @@ export class Waiter {
       `m3uRefreshComplete baseline read for account ${accountId}`
     );
 
-    await (trigger ?? (() => this.api.post(`/api/m3u/refresh/${accountId}/`, {})))();
+    if (trigger) {
+      await trigger();
+    } else {
+      // Checked rather than discarded. `RefreshSingleM3UAPIView` is an
+      // unconditional 202 today, so this effectively cannot fire — but a
+      // broker-down 500, or a future validation change, would otherwise be
+      // invisible: the failure would surface `startTimeoutMs` later as "the
+      // refresh never started", naming the account and not the POST that never
+      // landed. Only the default trigger can be checked this way — a custom
+      // one returns whatever it likes, a UI click returning nothing at all.
+      const triggered = await this.api.post(`/api/m3u/refresh/${accountId}/`, {});
+      if (!triggered.ok()) {
+        throw new Error(
+          `triggering the refresh of M3U account ${accountId} failed: ` +
+            `${triggered.status()} ${await triggered.text()}. No refresh was ` +
+            'queued, so there was nothing to wait for.'
+        );
+      }
+    }
 
     let sawInFlight = false;
 
