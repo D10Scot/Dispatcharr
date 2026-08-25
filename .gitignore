@@ -20,6 +20,7 @@ uwsgi.sock
 .uwsgi-reload
 package-lock.json
 !e2e/package-lock.json
+!e2e-upstream/package-lock.json
 models
 .idea
 .vite/

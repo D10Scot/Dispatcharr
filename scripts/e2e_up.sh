@@ -32,9 +32,16 @@ PORT="${DISPATCHARR_E2E_PORT:-9191}"
 # raises it to keep the budget it had when it hand-rolled this loop.
 READY_ATTEMPTS="${DISPATCHARR_E2E_READY_ATTEMPTS:-60}"
 
+NETWORK="${DISPATCHARR_E2E_NETWORK:-dispatcharr-e2e-net}"
+UPSTREAM_NAME="${DISPATCHARR_E2E_UPSTREAM_CONTAINER:-e2e-upstream}"
+UPSTREAM_IMAGE="${DISPATCHARR_E2E_UPSTREAM_IMAGE:-dispatcharr-e2e-upstream:local}"
+UPSTREAM_PORT="${DISPATCHARR_E2E_UPSTREAM_PORT:-9402}"
+
 destroy() {
   docker rm -f "$NAME" >/dev/null 2>&1 || true
+  docker rm -f "$UPSTREAM_NAME" >/dev/null 2>&1 || true
   docker volume rm "$VOLUME" >/dev/null 2>&1 || true
+  docker network rm "$NETWORK" >/dev/null 2>&1 || true
 }
 
 # Every mode below is a whole-invocation choice, so a second argument is
@@ -57,6 +64,8 @@ case "${1:-}" in
   --stop)
     # Keeps the container and its data. `./scripts/e2e_up.sh` restarts it,
     # superuser and seeded rows intact.
+    docker stop "$UPSTREAM_NAME" >/dev/null 2>&1 && echo "Stopped $UPSTREAM_NAME." \
+      || echo "$UPSTREAM_NAME was not running."
     docker stop "$NAME" >/dev/null 2>&1 && echo "Stopped $NAME." \
       || echo "$NAME was not running."
     exit 0
@@ -80,6 +89,41 @@ if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
   docker build -f docker/Dockerfile -t "$IMAGE" .
 fi
 
+# Container-name DNS works only on a user-defined network. The default bridge
+# resolves nothing, which is the entire reason this network exists.
+docker network inspect "$NETWORK" >/dev/null 2>&1 || docker network create "$NETWORK" >/dev/null
+
+if ! docker image inspect "$UPSTREAM_IMAGE" >/dev/null 2>&1; then
+  echo "Building $UPSTREAM_IMAGE..."
+  docker build -f e2e-upstream/Dockerfile -t "$UPSTREAM_IMAGE" e2e-upstream
+fi
+
+if docker ps --format '{{.Names}}' | grep -qx "$UPSTREAM_NAME"; then
+  : # already running
+elif docker ps -a --format '{{.Names}}' | grep -qx "$UPSTREAM_NAME"; then
+  docker start "$UPSTREAM_NAME" >/dev/null
+else
+  docker run -d --name "$UPSTREAM_NAME" \
+    --network "$NETWORK" \
+    -p "127.0.0.1:${UPSTREAM_PORT}:8080" \
+    "$UPSTREAM_IMAGE" >/dev/null
+fi
+
+# Wait for the provider before starting Dispatcharr. Dispatcharr does not
+# contact it at boot, so the ordering is not strictly required — but a test
+# that fails because the provider was still starting is indistinguishable
+# from one that fails because the provider is broken, and this removes that
+# whole class of confusion.
+echo -n "Waiting for the upstream provider"
+for _ in $(seq 1 30); do
+  if curl -sf -o /dev/null "http://127.0.0.1:${UPSTREAM_PORT}/scenarios"; then
+    echo " — ready"
+    break
+  fi
+  echo -n "."
+  sleep 1
+done
+
 if docker ps --format '{{.Names}}' | grep -qx "$NAME"; then
   : # already running
 elif docker ps -a --format '{{.Names}}' | grep -qx "$NAME"; then
@@ -97,6 +141,7 @@ else
   #
   # 127.0.0.1 is load-bearing, not cosmetic — see the header.
   docker run -d --name "$NAME" \
+    --network "$NETWORK" \
     -p "127.0.0.1:${PORT}:9191" \
     -v "${VOLUME}:/data" \
     -e DISPATCHARR_ENV=aio \

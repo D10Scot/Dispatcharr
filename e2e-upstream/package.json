@@ -1,0 +1,17 @@
+{
+  "name": "dispatcharr-e2e-upstream",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "24.0.0",
+    "typescript": "5.7.2",
+    "vitest": "3.2.7"
+  }
+}
