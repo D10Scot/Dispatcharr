@@ -28,7 +28,9 @@ export function payloadUnitStart(packet: Buffer): boolean {
 export function payloadOffset(packet: Buffer): number {
   if (!hasPayload(packet)) return -1;
   if (!hasAdaptationField(packet)) return 4;
-  return 5 + packet[4];
+  const offset = 5 + packet[4];
+  if (offset > TS_PACKET_SIZE) return -1;
+  return offset;
 }
 
 /**
@@ -39,7 +41,10 @@ export function payloadOffset(packet: Buffer): number {
  */
 export function readPcrBase(packet: Buffer): bigint | null {
   if (!hasAdaptationField(packet)) return null;
-  if (packet[4] === 0) return null;
+  // The PCR itself needs 6 bytes after the 1-byte flags field, and the
+  // adaptation field as declared must actually fit in the packet.
+  if (packet[4] < 7) return null;
+  if (5 + packet[4] > TS_PACKET_SIZE) return null;
   if ((packet[5] & 0x10) === 0) return null;
 
   return (

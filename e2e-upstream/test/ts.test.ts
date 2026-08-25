@@ -43,6 +43,20 @@ describe('TS packet primitives', () => {
     expect(payloadOffset(packet)).toBe(-1);
   });
 
+  it('rejects an adaptation_field_length that overruns the packet', () => {
+    const packet = onePacket();
+    packet[4] = 200; // declares far more than the 188-byte packet can hold
+    expect(payloadOffset(packet)).toBe(-1);
+    expect(readPcrBase(packet)).toBe(null);
+  });
+
+  it('reports no PCR when the adaptation field is too short to hold one', () => {
+    const packet = onePacket();
+    packet[4] = 2; // flags byte plus 1 byte: no room for a 6-byte PCR
+    packet[5] = 0x10; // PCR flag still set, but the field is too short
+    expect(readPcrBase(packet)).toBe(null);
+  });
+
   it('round-trips a PCR base without disturbing the extension bits', () => {
     const packet = onePacket();
     const before = packet[10] & 0x7f;
