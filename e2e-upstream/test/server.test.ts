@@ -5,7 +5,7 @@ import net from 'node:net';
 import { writeFileSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { startServer, requestListener, readJsonObject } from '../src/server.js';
+import { startServer, requestListener, readJsonObject, scenarioLog } from '../src/server.js';
 import { BadRequestError } from '../src/errors.js';
 import { makeSyntheticTs } from './helpers/synthetic-ts.js';
 
@@ -180,14 +180,19 @@ describe('scenario routes', () => {
 
     await fetch(`http://127.0.0.1:${server.port}/scenarios/${created.id}`, { method: 'DELETE' });
 
-    // The log route doesn't 404 on an unknown scenario id — it reports
-    // whatever history is stored under that id, so this checks the deleted
-    // id's own log rather than a freshly-created scenario's (which would
-    // start empty regardless of whether delete actually clears anything).
-    const after = await readJson(
-      await fetch(`http://127.0.0.1:${server.port}/s/${created.id}/log`)
-    );
-    expect(after).toEqual([]);
+    // The route now 404s on an unresolved id, like every sibling `/s/<id>/*`
+    // route, so it can no longer be used to observe whether the underlying
+    // log storage was actually cleared — it stops at "no such scenario"
+    // before ever reaching `scenarioLog.entries`. Checking the storage
+    // directly is what still proves `clear()` ran rather than merely that
+    // the id is gone from the registry.
+    expect(scenarioLog.entries(created.id)).toEqual([]);
+  });
+
+  it('404s the log route for an unknown scenario id, like every sibling /s/<id>/* route', async () => {
+    server = await startServer(0);
+    const res = await fetch(`http://127.0.0.1:${server.port}/s/nope/log`);
+    expect(res.status).toBe(404);
   });
 });
 
@@ -318,6 +323,9 @@ describe('fault and rate control routes', () => {
       body: JSON.stringify({ rate: 0 }),
     });
     expect(bad.status).toBe(400);
+    // Routed through BadRequestError like every other validated field, with
+    // the same wording as the identical check in parseFaultRequest.
+    expect(await readJson(bad)).toEqual({ error: "'rate' must be a number greater than 0" });
   });
 
   it('404s a rate request for an unknown scenario', async () => {
@@ -699,5 +707,89 @@ describe('the disconnect fault under the real server, using the real streamed as
     );
 
     await reader.cancel().catch(() => {});
+  });
+});
+
+describe('dead-air and slow-trickle applying to connections opened after they are armed', () => {
+  // Both faults are documented as applying to "live + new" connections.
+  // `FaultStore.apply` only reaches connections that are already open at
+  // the instant it runs; without a second entry point at connect time, a
+  // fault armed first and connected to second does nothing — the
+  // regression these two tests exist to pin. Assertions are on observed
+  // bytes/timing, not on `appliedTo`, since `appliedTo` is legitimately 0
+  // in both the correct and the broken case (there's no live connection to
+  // reach yet).
+  beforeAll(() => {
+    const dir = mkdtempSync(join(tmpdir(), 'e2e-upstream-prearm-asset-'));
+    const path = join(dir, 'loop.ts');
+    writeFileSync(path, makeSyntheticTs({ packets: 40, pid: 0x0100, step: 3600n }));
+    process.env.UPSTREAM_ASSET = path;
+  });
+
+  async function createScenario(body: Record<string, unknown> = {}) {
+    const res = await fetch(`http://127.0.0.1:${server!.port}/scenarios`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+    return readJson(res);
+  }
+
+  async function armFault(scenarioId: string, body: Record<string, unknown>) {
+    const res = await fetch(`http://127.0.0.1:${server!.port}/s/${scenarioId}/fault`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+    return readJson(res);
+  }
+
+  it('applies a pre-armed dead-air fault to a connection opened after it', async () => {
+    server = await startServer(0);
+    const scenario = await createScenario({ rate: 50 });
+
+    // No live connections exist yet, so appliedTo: 0 here is correct — this
+    // is exactly the case a warning on it would have wrongly flagged.
+    const armed = await armFault(scenario.id, { fault: 'dead-air', active: true });
+    expect(armed.appliedTo).toBe(0);
+
+    const res = await fetch(`http://127.0.0.1:${server.port}/s/${scenario.id}/stream/1.ts`);
+    const reader = res.body!.getReader();
+
+    // The asset's whole loop fits in one chunk, so a healthy connection at
+    // any rate writes it synchronously on the very first read — a stall on
+    // this very first read is only possible if dead-air took effect from
+    // the start.
+    const outcome = await Promise.race([
+      reader.read().then(() => 'read' as const),
+      new Promise<'silent'>((resolve) => setTimeout(() => resolve('silent'), 500)),
+    ]);
+    await reader.cancel().catch(() => {});
+
+    expect(outcome).toBe('silent');
+  });
+
+  it('applies a pre-armed slow-trickle fault to a connection opened after it', async () => {
+    server = await startServer(0);
+    const scenario = await createScenario({ rate: 50 });
+
+    const armed = await armFault(scenario.id, { fault: 'slow-trickle', active: true, rate: 0.01 });
+    expect(armed.appliedTo).toBe(0);
+
+    const res = await fetch(`http://127.0.0.1:${server.port}/s/${scenario.id}/stream/1.ts`);
+    const reader = res.body!.getReader();
+
+    await reader.read(); // the first chunk writes synchronously regardless of rate
+
+    // At the scenario's own rate (50x) the next chunk's pacing sleep is a
+    // few milliseconds; at the pre-armed slow-trickle rate (0.01x) it's
+    // minutes. Stalling well past the scenario's own rate, but nowhere near
+    // slow-trickle's, is only possible if the new connection actually
+    // started at the armed rate instead of the scenario's fast one.
+    const outcome = await Promise.race([
+      reader.read().then(() => 'read' as const),
+      new Promise<'stalled'>((resolve) => setTimeout(() => resolve('stalled'), 500)),
+    ]);
+    await reader.cancel().catch(() => {});
+
+    expect(outcome).toBe('stalled');
   });
 });

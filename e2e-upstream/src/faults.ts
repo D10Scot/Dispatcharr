@@ -191,6 +191,37 @@ export class FaultStore {
     return this.byScenario.get(scenarioId)?.get(fault);
   }
 
+  /**
+   * The dead-air/rate state a brand-new connection should start in, given
+   * whatever `dead-air`/`slow-trickle` faults are already armed for this
+   * scenario (and this channel, or scenario-wide) at the moment it connects.
+   *
+   * Both faults are documented as applying to "live + new" connections —
+   * `apply` above only reaches *live* ones, by walking the connections that
+   * exist at that instant. Without this second entry point, a connection
+   * opened *after* the fault is armed streams perfectly healthily: for
+   * `dead-air`, a G4 test asserting Dispatcharr keeps failing over would see
+   * the reconnected socket recover instead, and misread that as product
+   * behaviour rather than a provider limitation. For `slow-trickle`, arm-then-
+   * connect is the *only* supported use — ffmpeg's `speed=` is cumulative
+   * from process start, so the fault has to be in effect before the process
+   * starts — so this path is load-bearing, not a nice-to-have.
+   *
+   * `appliedTo` on `apply` is unaffected: it still counts only connections
+   * reached at apply time, so pre-arming still legitimately reports 0.
+   */
+  initialStateFor(scenarioId: string, channelId: number): { deadAir: boolean; rate: number | null } {
+    const deadAir = this.isActive(scenarioId, 'dead-air', channelId);
+
+    const trickle = this.configOf(scenarioId, 'slow-trickle');
+    const rate =
+      trickle && this.isActive(scenarioId, 'slow-trickle', channelId)
+        ? trickle.rate ?? DEFAULT_TRICKLE_RATE
+        : null;
+
+    return { deadAir, rate };
+  }
+
   clearAll(scenarioId: string): void {
     this.byScenario.delete(scenarioId);
   }

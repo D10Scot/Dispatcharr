@@ -419,6 +419,11 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     }
 
     logRequest(scenario, req, url, 200);
+    // dead-air and slow-trickle apply to "live + new" connections; `apply`
+    // only reaches connections that are already open at the moment a fault
+    // is armed, so a connection opened afterward needs to start already in
+    // that state rather than clean — see FaultStore.initialStateFor.
+    const initialState = faults.initialStateFor(scenario.id, channelId);
     await streamLoop(
       res,
       asset,
@@ -430,7 +435,8 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
           scenarioLog.record(scenario.id, { kind: 'close', channelId, ...stats });
         },
       },
-      connection
+      connection,
+      initialState
     );
     return;
   }
@@ -468,8 +474,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     }
     const body = await readJsonObject(req);
     if (typeof body.rate !== 'number' || !(body.rate > 0)) {
-      sendJson(res, 400, { error: 'rate must be a number greater than 0' });
-      return;
+      throw new BadRequestError("'rate' must be a number greater than 0");
     }
     scenario.rate = body.rate;
     sendJson(res, 200, { rate: scenario.rate });
@@ -478,6 +483,14 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
 
   const logMatch = /^\/s\/([^/]+)\/log$/.exec(url.pathname);
   if (logMatch && req.method === 'GET') {
+    // Every sibling `/s/<id>/*` route 404s on an unresolved scenario id
+    // before doing anything else; this one didn't, so a typo'd id silently
+    // read as "the provider recorded nothing" — a far worse diagnostic than
+    // "no such scenario" — instead of naming the actual mistake.
+    if (!registry.get(logMatch[1])) {
+      sendJson(res, 404, { error: `no scenario ${logMatch[1]}` });
+      return;
+    }
     sendJson(res, 200, scenarioLog.entries(logMatch[1]));
     return;
   }

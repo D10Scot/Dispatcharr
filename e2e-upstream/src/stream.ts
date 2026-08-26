@@ -14,6 +14,17 @@ export interface StreamControl {
   onClosed(stats: { bytes: number; durationMs: number }): void;
 }
 
+/**
+ * The dead-air/rate state to start a connection in, sourced from
+ * `FaultStore.initialStateFor` in the route — see that method for why a
+ * brand-new connection needs this rather than starting clean and waiting for
+ * `apply` to reach it later.
+ */
+export interface StreamInitialState {
+  deadAir?: boolean;
+  rate?: number | null;
+}
+
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 /**
@@ -31,10 +42,11 @@ export function streamLoop(
   res: ServerResponse,
   asset: LoadedAsset,
   control: StreamControl,
-  connection: LiveConnection
+  connection: LiveConnection,
+  initial: StreamInitialState = {}
 ): Promise<void> {
-  let deadAir = false;
-  let rateOverride: number | null = null;
+  let deadAir = initial.deadAir ?? false;
+  let rateOverride: number | null = initial.rate ?? null;
   let closing: { clean: boolean; afterBytes?: number } | undefined;
   let written = 0;
   let open = true;
@@ -82,6 +94,13 @@ export function streamLoop(
     // requests wait for bytes that never come.
     'Cache-Control': 'no-store',
   });
+  // Node buffers response headers until the first body write (or `end()`)
+  // by default. A connection that starts with dead-air already armed (see
+  // `initial` above) may not write anything for a long time, or ever, which
+  // without this would leave the client's own request hanging with no
+  // response at all — indistinguishable from the provider never having
+  // accepted the connection, rather than "connected, no bytes yet".
+  res.flushHeaders();
 
   control.onConnection(connection);
   res.on('close', () => {
