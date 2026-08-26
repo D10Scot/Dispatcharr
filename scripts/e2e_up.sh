@@ -114,10 +114,32 @@ docker network inspect "$NETWORK" >/dev/null 2>&1 || docker network create "$NET
 # was the problem. CI is unaffected either way: it always loads a fresh
 # artifact.
 echo "Building $UPSTREAM_IMAGE..."
-docker build -f e2e-upstream/Dockerfile -t "$UPSTREAM_IMAGE" e2e-upstream
+# --provenance=false: buildx's default provenance attestation embeds a build
+# timestamp, so two back-to-back builds with an entirely cache-hit Dockerfile
+# still get different image ids — which would defeat the id comparison below
+# on every single invocation, not just the ones that actually changed
+# something. This is a disposable local dev image, not a distributed
+# artifact, so there is nothing here for provenance to attest to.
+docker build --provenance=false -f e2e-upstream/Dockerfile -t "$UPSTREAM_IMAGE" e2e-upstream
+
+# Rebuilding the tag above is not enough on its own: an already-created
+# container (running or stopped) keeps the image snapshot it was created
+# from, so `docker start`-ing it or leaving it running serves the old
+# image regardless of what the tag now points at. Recreate the container
+# whenever the tag has moved, so the rebuild actually reaches it — this is
+# the most common dev loop of all (edit provider code, re-run the script
+# with the stack already up). Only when the ids match is the running
+# container left alone, which keeps the fast path when nothing changed.
+# The provider has no volume, so recreating it costs nothing but a restart.
+UPSTREAM_IMAGE_ID="$(docker image inspect -f '{{.Id}}' "$UPSTREAM_IMAGE")"
+if EXISTING_IMAGE_ID="$(docker inspect -f '{{.Image}}' "$UPSTREAM_NAME" 2>/dev/null)" \
+    && [[ "$EXISTING_IMAGE_ID" != "$UPSTREAM_IMAGE_ID" ]]; then
+  echo "Recreating $UPSTREAM_NAME: the image moved."
+  docker rm -f "$UPSTREAM_NAME" >/dev/null
+fi
 
 if docker ps --format '{{.Names}}' | grep -qx "$UPSTREAM_NAME"; then
-  : # already running
+  : # already running, same image
 elif docker ps -a --format '{{.Names}}' | grep -qx "$UPSTREAM_NAME"; then
   docker start "$UPSTREAM_NAME" >/dev/null
 else
