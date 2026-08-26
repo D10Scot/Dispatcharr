@@ -26,14 +26,19 @@ jobs:
         with:
           persist-credentials: false
 
+      # The provider builds in seconds; the AIO image takes minutes. Building
+      # it first means a broken e2e-upstream/Dockerfile — or a make-asset.sh
+      # failure, its ffmpeg being deliberately unpinned — fails this job
+      # immediately instead of after the AIO build has finished. Same
+      # rationale as the `upstream` job below having no `needs: build`.
+      - name: Build the upstream provider image
+        run: docker build -f e2e-upstream/Dockerfile -t dispatcharr-e2e-upstream:local e2e-upstream
+
       # One build for all three consumers. docker/Dockerfile:14 uses
       # `npm install` with no lockfile, so N builds can produce N different
       # frontend bundles; building once means one artifact under test.
       - name: Build the image
         run: docker build -f docker/Dockerfile -t dispatcharr-e2e:local .
-
-      - name: Build the upstream provider image
-        run: docker build -f e2e-upstream/Dockerfile -t dispatcharr-e2e-upstream:local e2e-upstream
 
       # docker save accepts several image references and writes one archive,
       # so the artifact plumbing and the three test-job consumers below are
