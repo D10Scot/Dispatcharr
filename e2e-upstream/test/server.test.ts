@@ -5,7 +5,7 @@ import net from 'node:net';
 import { writeFileSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { startServer, requestListener, readJsonObject, scenarioLog } from '../src/server.js';
+import { startServer, requestListener, readJsonObject, scenarioLog, connections } from '../src/server.js';
 import { BadRequestError } from '../src/errors.js';
 import { makeSyntheticTs } from './helpers/synthetic-ts.js';
 
@@ -464,6 +464,47 @@ describe('faults on the stream, playlist and EPG routes', () => {
     const playlist = await fetch(`http://127.0.0.1:${server.port}/s/${scenario.id}/playlist.m3u`);
     expect(playlist.status).toBe(200);
   });
+
+  it('checks credentials on the playlist route: correct 200, wrong 401, absent 401', async () => {
+    // The fixture's playlistUrl() appends the same credentialQuery the
+    // stream route checks, and a refresh is exactly the request those
+    // credentials are meant to gate — this route never checked them at all
+    // before, so a G3 "wrong credentials" test would have passed without
+    // testing anything.
+    server = await startServer(0);
+    const scenario = await createScenario({ username: 'alice', password: 'secret' });
+
+    const ok = await fetch(
+      `http://127.0.0.1:${server.port}/s/${scenario.id}/playlist.m3u?username=alice&password=secret`
+    );
+    expect(ok.status).toBe(200);
+
+    const wrong = await fetch(
+      `http://127.0.0.1:${server.port}/s/${scenario.id}/playlist.m3u?username=alice&password=wrong`
+    );
+    expect(wrong.status).toBe(401);
+
+    const absent = await fetch(`http://127.0.0.1:${server.port}/s/${scenario.id}/playlist.m3u`);
+    expect(absent.status).toBe(401);
+  });
+
+  it('checks credentials on the EPG route: correct 200, wrong 401, absent 401', async () => {
+    server = await startServer(0);
+    const scenario = await createScenario({ username: 'alice', password: 'secret' });
+
+    const ok = await fetch(
+      `http://127.0.0.1:${server.port}/s/${scenario.id}/epg.xml?username=alice&password=secret`
+    );
+    expect(ok.status).toBe(200);
+
+    const wrong = await fetch(
+      `http://127.0.0.1:${server.port}/s/${scenario.id}/epg.xml?username=alice&password=wrong`
+    );
+    expect(wrong.status).toBe(401);
+
+    const absent = await fetch(`http://127.0.0.1:${server.port}/s/${scenario.id}/epg.xml`);
+    expect(absent.status).toBe(401);
+  });
 });
 
 describe('the redirect-chain fault, using the real streamed asset', () => {
@@ -707,6 +748,43 @@ describe('the disconnect fault under the real server, using the real streamed as
     );
 
     await reader.cancel().catch(() => {});
+  });
+
+  it('ends a live stream and drops the connection when its scenario is deleted', async () => {
+    // Before this fix, DELETE never touched ConnectionRegistry: a deleted
+    // scenario's clients kept receiving TS indefinitely, and nothing could
+    // even observe or drive them afterward, since /connections, /fault and
+    // /rate all 404 on the now-gone id — checked directly against the
+    // registry here for exactly that reason.
+    server = await startServer(0);
+    const scenario = await createScenario({ rate: 50 });
+
+    const res = await fetch(`http://127.0.0.1:${server.port}/s/${scenario.id}/stream/1.ts`);
+    const reader = res.body!.getReader();
+    await reader.read(); // prove it is flowing
+    expect(connections.count(scenario.id)).toBe(1);
+
+    const deleted = await fetch(`http://127.0.0.1:${server.port}/scenarios/${scenario.id}`, {
+      method: 'DELETE',
+    });
+    expect(deleted.status).toBe(204);
+
+    // Abrupt, not a clean end-of-stream: the reader should observe an
+    // error/reset, or in the worst case just stop — either way it must not
+    // keep delivering bytes forever.
+    let endedOrErrored = false;
+    try {
+      let done = false;
+      for (let i = 0; i < 200 && !done; i += 1) {
+        done = (await reader.read()).done;
+      }
+      endedOrErrored = done;
+    } catch {
+      endedOrErrored = true;
+    }
+    expect(endedOrErrored).toBe(true);
+
+    expect(connections.count(scenario.id)).toBe(0);
   });
 });
 

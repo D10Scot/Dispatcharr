@@ -59,4 +59,16 @@ export class ConnectionRegistry {
     const all = [...(this.live.get(scenarioId) ?? [])];
     return channelId === undefined ? all : all.filter((c) => c.channelId === channelId);
   }
+
+  /**
+   * Drops the tracking set for a deleted scenario. Called after the caller
+   * has already told every live connection to disconnect — it doesn't do
+   * that itself, since disconnecting is a `LiveConnection` action this
+   * registry doesn't perform, only tracks. A late `release()` call from a
+   * connection's own teardown finding nothing to remove here is harmless:
+   * `release` already no-ops on an unknown scenario id.
+   */
+  dropScenario(scenarioId: string): void {
+    this.live.delete(scenarioId);
+  }
 }

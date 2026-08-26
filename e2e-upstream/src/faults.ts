@@ -119,12 +119,40 @@ export function parseFaultRequest(body: Record<string, unknown>): FaultRequest {
   return request;
 }
 
+// A fault's stored configuration is scoped independently per channel, or to
+// the whole scenario under the '*' key when no channel was given. Two scopes
+// of the *same* fault must not share a slot: arming `dead-air` scenario-wide
+// and then narrowing/clearing it for one channel must leave every other
+// channel's stored state untouched, and the reverse (a channel-specific arm
+// alongside a scenario-wide one) must not overwrite the wildcard either.
+// Channel ids are always non-negative integers (see parseFaultRequest), so
+// '*' can never collide with a real one.
+type Scope = number | '*';
+const scopeOf = (channel: number | undefined): Scope => channel ?? '*';
+
 /**
- * Per-scenario fault state, keyed by fault name so at most one configuration
- * of each fault is active at a time. `apply` both records the configuration
- * (for `isActive`/`configOf`, consulted by request-time checks in
- * `server.ts`) and, for the three faults that can reach an already-open
- * socket, drives the live connections directly.
+ * Per-scenario fault state, keyed by `(fault, scope)` so a channel-specific
+ * entry and a scenario-wide entry for the same fault never clobber each
+ * other. `apply` both records the configuration (for `isActive`/`configOf`,
+ * consulted by request-time checks in `server.ts`, and by
+ * `initialStateFor` for a brand-new connection) and, for the three faults
+ * that can reach an already-open socket, drives the live connections
+ * directly.
+ *
+ * Entries are stored whether `active` is true or false — never deleted —
+ * so an explicit `{ active: false, channel: 2 }` while the fault is still
+ * armed scenario-wide is itself a real, persisted fact ("channel 2 is
+ * explicitly clear"), not merely the absence of one. Deleting on `false`
+ * was the original bug: with one slot per fault (not per scope), narrowing
+ * or clearing one channel's fault deleted the *only* stored entry outright,
+ * corrupting every other channel's state along with it.
+ *
+ * `isActive`/`configOf` resolve a channel-scoped query by specificity, not
+ * recency: an entry stored under that exact channel always wins over one
+ * stored under '*', regardless of which was armed more recently. This is
+ * what makes "arm scenario-wide, then narrow one channel" and "arm
+ * scenario-wide, then arm one channel differently" both behave as
+ * independent per-scope state rather than one clobbering the other.
  *
  * `appliedTo` counts only connections a fault actually reached. Five of the
  * eight faults (`not-found`, `auth-failure`, `connection-limit`,
@@ -134,14 +162,16 @@ export function parseFaultRequest(body: Record<string, unknown>): FaultRequest {
  * "Arm not-found so the next reconnect fails" is a normal test.
  */
 export class FaultStore {
-  private byScenario = new Map<string, Map<FaultName, FaultRequest>>();
+  private byScenario = new Map<string, Map<FaultName, Map<Scope, FaultRequest>>>();
 
   apply(scenarioId: string, request: FaultRequest, connections: ConnectionRegistry): FaultResult {
-    const faults = this.byScenario.get(scenarioId) ?? new Map<FaultName, FaultRequest>();
-    this.byScenario.set(scenarioId, faults);
+    const byFault = this.byScenario.get(scenarioId) ?? new Map<FaultName, Map<Scope, FaultRequest>>();
+    this.byScenario.set(scenarioId, byFault);
 
-    if (request.active) faults.set(request.fault, request);
-    else faults.delete(request.fault);
+    const byScope = byFault.get(request.fault) ?? new Map<Scope, FaultRequest>();
+    byFault.set(request.fault, byScope);
+
+    byScope.set(scopeOf(request.channel), request);
 
     const targets = connections.matching(scenarioId, request.channel);
     let appliedTo = 0;
@@ -180,15 +210,29 @@ export class FaultStore {
     return { fault: request.fault, active: request.active, appliedTo };
   }
 
+  /**
+   * A channel-scoped entry wins over a scenario-wide one for that same
+   * channel — see the class comment for why both can legitimately exist at
+   * once and why specificity, not recency, has to be the tiebreaker.
+   */
   isActive(scenarioId: string, fault: FaultName, channelId?: number): boolean {
-    const stored = this.byScenario.get(scenarioId)?.get(fault);
-    if (stored === undefined) return false;
-    if (stored.channel === undefined) return true;
-    return stored.channel === channelId;
+    return this.mostSpecific(scenarioId, fault, channelId)?.active ?? false;
   }
 
-  configOf(scenarioId: string, fault: FaultName): FaultRequest | undefined {
-    return this.byScenario.get(scenarioId)?.get(fault);
+  configOf(scenarioId: string, fault: FaultName, channelId?: number): FaultRequest | undefined {
+    return this.mostSpecific(scenarioId, fault, channelId);
+  }
+
+  private mostSpecific(
+    scenarioId: string,
+    fault: FaultName,
+    channelId: number | undefined,
+  ): FaultRequest | undefined {
+    const byScope = this.byScenario.get(scenarioId)?.get(fault);
+    if (!byScope) return undefined;
+
+    const specific = channelId !== undefined ? byScope.get(channelId) : undefined;
+    return specific ?? byScope.get('*');
   }
 
   /**
@@ -213,7 +257,11 @@ export class FaultStore {
   initialStateFor(scenarioId: string, channelId: number): { deadAir: boolean; rate: number | null } {
     const deadAir = this.isActive(scenarioId, 'dead-air', channelId);
 
-    const trickle = this.configOf(scenarioId, 'slow-trickle');
+    // Passing channelId here matters, not just to isActive below: without
+    // it, a channel-specific slow-trickle rate that overrides a different
+    // scenario-wide one would read the wrong config even while isActive
+    // correctly reports the fault as armed for this channel.
+    const trickle = this.configOf(scenarioId, 'slow-trickle', channelId);
     const rate =
       trickle && this.isActive(scenarioId, 'slow-trickle', channelId)
         ? trickle.rate ?? DEFAULT_TRICKLE_RATE

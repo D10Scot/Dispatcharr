@@ -201,6 +201,22 @@ function logRequest(scenario: Scenario, req: IncomingMessage, url: URL, status: 
   });
 }
 
+/**
+ * Real credential validation, when the scenario declares any. Applied
+ * identically to the playlist, EPG and stream routes: the fixture's
+ * `playlistUrl()`/`epgUrl()` append the same `credentialQuery` the stream
+ * route checks, and a refresh is exactly the request those credentials are
+ * meant to gate. `auth-failure` above models something different — valid
+ * credentials that stop being accepted — so it's not a substitute for this
+ * check on the never-valid or wrong-from-the-start case.
+ */
+function credentialsMatch(scenario: Scenario, url: URL): boolean {
+  if (scenario.username === undefined) return true;
+  const givenUser = url.searchParams.get('username');
+  const givenPass = url.searchParams.get('password');
+  return givenUser === scenario.username && givenPass === (scenario.password ?? '');
+}
+
 async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const url = new URL(req.url ?? '/', 'http://placeholder');
 
@@ -219,7 +235,22 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
   const scenarioMatch = /^\/scenarios\/([^/]+)$/.exec(url.pathname);
   if (scenarioMatch && req.method === 'DELETE') {
     const existed = registry.delete(scenarioMatch[1]);
-    // Both are harmless no-ops on an id with no state, so this runs
+
+    // Without this, a deleted scenario's clients keep receiving TS
+    // indefinitely: each streamLoop holds the scenario alive through its
+    // `scenarioRate` closure, and nothing else ever touched
+    // ConnectionRegistry on delete — `/connections`, `/fault` and `/rate`
+    // all 404 on the now-gone id, so a leaked stream couldn't even be
+    // observed or driven afterward, only left to run forever. Abrupt, not
+    // clean: a deleted scenario is not a graceful end-of-stream, and the
+    // client should see an error. `matching` is read before `dropScenario`
+    // removes the very list it returns.
+    for (const connection of connections.matching(scenarioMatch[1])) {
+      connection.disconnect({ clean: false });
+    }
+    connections.dropScenario(scenarioMatch[1]);
+
+    // All three are harmless no-ops on an id with no state, so this runs
     // unconditionally rather than only when `existed`. Without it, every
     // scenario ever created leaves its log and fault state behind
     // permanently — bounded per scenario, but not across a long CI run
@@ -250,6 +281,11 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       sendJson(res, 401, { error: 'fault: auth-failure' });
       return;
     }
+    if (!credentialsMatch(scenario, url)) {
+      logRequest(scenario, req, url, 401);
+      sendJson(res, 401, { error: 'bad credentials' });
+      return;
+    }
     const body = renderPlaylist(scenario, INTERNAL_ORIGIN);
     logRequest(scenario, req, url, 200);
     res.writeHead(200, {
@@ -275,6 +311,11 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     if (faults.isActive(scenario.id, 'auth-failure')) {
       logRequest(scenario, req, url, 401);
       sendJson(res, 401, { error: 'fault: auth-failure' });
+      return;
+    }
+    if (!credentialsMatch(scenario, url)) {
+      logRequest(scenario, req, url, 401);
+      sendJson(res, 401, { error: 'bad credentials' });
       return;
     }
     const body = renderXmltv(scenario, new Date());
@@ -319,21 +360,17 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     }
 
     // 3. Real credential validation, when the scenario declares any.
-    if (scenario.username !== undefined) {
-      const givenUser = url.searchParams.get('username');
-      const givenPass = url.searchParams.get('password');
-      if (givenUser !== scenario.username || givenPass !== (scenario.password ?? '')) {
-        logRequest(scenario, req, url, 401);
-        sendJson(res, 401, { error: 'bad credentials' });
-        return;
-      }
+    if (!credentialsMatch(scenario, url)) {
+      logRequest(scenario, req, url, 401);
+      sendJson(res, 401, { error: 'bad credentials' });
+      return;
     }
 
     // 4. redirect-chain: a chain of 302s that finally lands on this same
     //    URL with ?chain=0, so the payload stays reachable by following it.
     //    The chain param is layered onto the existing query string, so the
     //    credential query above survives every hop.
-    const chainConfig = faults.configOf(scenario.id, 'redirect-chain');
+    const chainConfig = faults.configOf(scenario.id, 'redirect-chain', channelId);
     if (chainConfig && faults.isActive(scenario.id, 'redirect-chain', channelId)) {
       const remaining = Number(
         url.searchParams.get('chain') ?? (chainConfig.depth ?? DEFAULT_REDIRECT_DEPTH)

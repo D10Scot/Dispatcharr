@@ -119,6 +119,88 @@ describe('FaultStore', () => {
     // own rate, which a test may have set to something other than 1.
     expect(a.calls).toEqual(['rate:0.05', 'rate:null']);
   });
+
+  it('leaves the rest of the scenario armed when the fault is narrowed to one channel', () => {
+    // Regression for keying the store by fault name alone: narrowing or
+    // clearing one channel's fault used to delete the *only* stored entry,
+    // corrupting every other channel's state along with it.
+    const store = new FaultStore();
+    const scenario = new ScenarioRegistry().create({ channels: 2 });
+    const connections = new ConnectionRegistry();
+    const a = fakeConnection(scenario.id, 1);
+    const b = fakeConnection(scenario.id, 2);
+    connections.tryAcquire(scenario, a.connection);
+    connections.tryAcquire(scenario, b.connection);
+
+    const armed = store.apply(scenario.id, { fault: 'dead-air', active: true }, connections);
+    expect(armed.appliedTo).toBe(2);
+
+    const narrowed = store.apply(
+      scenario.id,
+      { fault: 'dead-air', active: false, channel: 2 },
+      connections
+    );
+    expect(narrowed.appliedTo).toBe(1);
+    expect(b.calls).toContain('deadAir:false');
+
+    // Channel 1 must still read as armed — this is the assertion that fails
+    // under fault-name-only keying, since the narrowing call above deletes
+    // the whole stored config rather than just channel 2's slice of it.
+    expect(store.isActive(scenario.id, 'dead-air', 1)).toBe(true);
+    expect(store.isActive(scenario.id, 'dead-air', 2)).toBe(false);
+  });
+
+  it('does not let a channel-specific arm overwrite a scenario-wide arm of the same fault', () => {
+    // The mirror of the above: arming a fault for one channel while it's
+    // already armed scenario-wide must not silently narrow the stored
+    // config for every other channel.
+    const store = new FaultStore();
+    const scenario = new ScenarioRegistry().create({ channels: 2 });
+    const connections = new ConnectionRegistry();
+    const a = fakeConnection(scenario.id, 1);
+    const b = fakeConnection(scenario.id, 2);
+    connections.tryAcquire(scenario, a.connection);
+    connections.tryAcquire(scenario, b.connection);
+
+    store.apply(scenario.id, { fault: 'dead-air', active: true }, connections);
+    store.apply(scenario.id, { fault: 'dead-air', active: true, channel: 2 }, connections);
+
+    expect(store.isActive(scenario.id, 'dead-air', 1)).toBe(true);
+    expect(store.isActive(scenario.id, 'dead-air', 2)).toBe(true);
+  });
+
+  it('lets a channel-specific slow-trickle rate override a different scenario-wide one', () => {
+    const store = new FaultStore();
+    const scenario = new ScenarioRegistry().create({ channels: 2 });
+    const connections = new ConnectionRegistry();
+
+    store.apply(scenario.id, { fault: 'slow-trickle', active: true, rate: 0.2 }, connections);
+    store.apply(
+      scenario.id,
+      { fault: 'slow-trickle', active: true, rate: 0.05, channel: 2 },
+      connections
+    );
+
+    expect(store.configOf(scenario.id, 'slow-trickle', 1)?.rate).toBe(0.2);
+    expect(store.configOf(scenario.id, 'slow-trickle', 2)?.rate).toBe(0.05);
+  });
+
+  it('resolves initialStateFor per channel, independent of a scenario-wide arm', () => {
+    // This is the scenario the reviewer flagged as most damaging: after the
+    // initialStateFor fix, the *stored* config is what a reconnecting
+    // client inherits, so a divergence between the store and live state
+    // produces exactly the "channel recovered on its own" confusion that
+    // fix exists to eliminate.
+    const store = new FaultStore();
+    const scenario = new ScenarioRegistry().create({ channels: 2 });
+    const connections = new ConnectionRegistry();
+
+    store.apply(scenario.id, { fault: 'dead-air', active: true }, connections);
+    store.apply(scenario.id, { fault: 'dead-air', active: false, channel: 2 }, connections);
+
+    expect(store.initialStateFor(scenario.id, 1).deadAir).toBe(true);
+    expect(store.initialStateFor(scenario.id, 2).deadAir).toBe(false);
+  });
 });
 
 describe('parseFaultRequest', () => {
