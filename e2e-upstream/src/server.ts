@@ -447,6 +447,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       setDeadAir: () => {},
       setRate: () => {},
       disconnect: () => {},
+      refreshRate: () => {},
     };
 
     if (!connections.tryAcquire(scenario, connection)) {
@@ -514,6 +515,16 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       throw new BadRequestError("'rate' must be a number greater than 0");
     }
     scenario.rate = body.rate;
+    // Every live connection already reads this back live through
+    // `control.scenarioRate()` — the only thing missing is a nudge to make
+    // one parked in a sleep or the drain wait notice now, rather than
+    // whenever it next elapses on its own. `refreshRate` (not `setRate`)
+    // deliberately touches no state: a connection currently overridden by a
+    // fault (e.g. slow-trickle) must keep following that override, not this
+    // baseline, until the fault itself clears it.
+    for (const connection of connections.matching(scenario.id)) {
+      connection.refreshRate();
+    }
     sendJson(res, 200, { rate: scenario.rate });
     return;
   }

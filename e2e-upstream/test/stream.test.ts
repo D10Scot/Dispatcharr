@@ -29,6 +29,7 @@ function fakeConnection(): LiveConnection {
     setDeadAir: () => {},
     setRate: () => {},
     disconnect: () => {},
+    refreshRate: () => {},
   };
 }
 
@@ -180,6 +181,63 @@ describe('streamLoop', () => {
       ),
     ]);
 
+    testServer.close();
+  });
+
+  it('closes promptly on disconnect rather than falling through into a fresh slow sleep', async () => {
+    // A wake can only resume one parked wait — the first control method to
+    // call it wins, and the second finds `wake` already null. Firing
+    // setRate() then disconnect() back to back, synchronously, reproduces
+    // that: setRate's wake is what actually resumes the drain wait, and by
+    // the time the resumed code runs, closing has already been set by
+    // disconnect() too — so if the code after the wake doesn't re-check
+    // `closing` before doing anything else, it schedules a fresh sleep at
+    // the now-slow rate and disconnect goes unacted-on until that elapses.
+    const asset = fakeAsset();
+    const connection = fakeConnection();
+    let promise!: Promise<void>;
+
+    const testServer = http.createServer((_req, res) => {
+      promise = streamLoop(
+        res,
+        asset,
+        // A huge rate means near-zero pacing sleep, so writes queue up
+        // almost immediately against a client that never reads them — this
+        // is what gets the loop genuinely parked in the drain wait, not
+        // the pacing sleep.
+        { scenarioRate: () => 1_000_000, onConnection: () => {}, onClosed: () => {} },
+        connection
+      );
+    });
+    await new Promise<void>((resolve) => testServer.listen(0, '127.0.0.1', resolve));
+    const port = (testServer.address() as AddressInfo).port;
+
+    const client = net.connect(port, '127.0.0.1');
+    await new Promise<void>((resolve) => client.once('connect', resolve));
+    client.write('GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n');
+    // Deliberately never read the response — leaving the socket paused gets
+    // the loop parked in the drain wait quickly at this rate.
+    await new Promise((resolve) => setTimeout(resolve, 200));
+
+    connection.setRate(0.01);
+    connection.disconnect({ clean: false });
+
+    await Promise.race([
+      promise,
+      new Promise<void>((_resolve, reject) =>
+        setTimeout(
+          () =>
+            reject(
+              new Error(
+                'streamLoop did not settle within 2s — disconnect was lost behind a fallthrough sleep'
+              )
+            ),
+          2000
+        )
+      ),
+    ]);
+
+    client.destroy();
     testServer.close();
   });
 });

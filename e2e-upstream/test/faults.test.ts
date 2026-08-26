@@ -13,6 +13,7 @@ function fakeConnection(scenarioId: string, channelId: number) {
     setDeadAir: (active) => calls.push(`deadAir:${active}`),
     setRate: (rate) => calls.push(`rate:${rate}`),
     disconnect: (options) => calls.push(`disconnect:${options.clean}`),
+    refreshRate: () => calls.push('refreshRate'),
   };
   return { connection, calls };
 }

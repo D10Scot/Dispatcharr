@@ -750,6 +750,36 @@ describe('the disconnect fault under the real server, using the real streamed as
     await reader.cancel().catch(() => {});
   });
 
+  it('resumes promptly when /rate changes the baseline, not after the old chunk sleep elapses', async () => {
+    // POST /rate only ever mutated scenario.rate and touched nothing live —
+    // a live connection reads that value back through control.scenarioRate()
+    // only at the moment it's about to schedule a new sleep, so a rate
+    // change had no way to interrupt a sleep already in flight and just sat
+    // unnoticed until that sleep elapsed on its own.
+    server = await startServer(0);
+    const scenario = await createScenario({ rate: 0.1 });
+
+    const res = await fetch(`http://127.0.0.1:${server.port}/s/${scenario.id}/stream/1.ts`);
+    const reader = res.body!.getReader();
+    await reader.read(); // first chunk, sent immediately regardless of rate
+
+    // This rate makes the *next* chunk's sleep on the order of 15s for this
+    // tiny asset — comfortably longer than the deadline below, so the next
+    // chunk arriving inside it proves the sleep was interrupted, not outrun.
+    await fetch(`http://127.0.0.1:${server.port}/s/${scenario.id}/rate`, {
+      method: 'POST',
+      body: JSON.stringify({ rate: 1000 }),
+    });
+
+    const outcome = await Promise.race([
+      reader.read().then(() => 'arrived' as const),
+      new Promise<'timed-out'>((resolve) => setTimeout(() => resolve('timed-out'), 2000)),
+    ]);
+
+    expect(outcome).toBe('arrived');
+    await reader.cancel().catch(() => {});
+  });
+
   it('ends a live stream and drops the connection when its scenario is deleted', async () => {
     // Before this fix, DELETE never touched ConnectionRegistry: a deleted
     // scenario's clients kept receiving TS indefinitely, and nothing could

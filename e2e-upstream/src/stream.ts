@@ -55,14 +55,19 @@ export function streamLoop(
   // Set only while parked in one of the two interruptible waits below (the
   // pacing sleep and the drain wait), so a control method called at any
   // other point in the loop is a harmless no-op — everywhere else already
-  // reads fresh state on its own next iteration.
+  // reads fresh state on its own next iteration. It resolves whichever wait
+  // is currently active exactly once — a second call before a new wait has
+  // re-armed it is also a harmless no-op, which is deliberate: the loop only
+  // needs telling once that *something* changed, not once per thing.
   let wake: (() => void) | null = null;
 
   // Interruptible pacing delay: without this, a disconnect or rate change
   // fired while parked here wouldn't be noticed until the current sleep
-  // elapses naturally — seconds, at slow-trickle rates. Deliberately not
-  // used for the dead-air poll below: that one is already never more than
-  // 100ms from checking fresh state, so there's nothing worth interrupting.
+  // elapses naturally — seconds, at slow-trickle rates. `setRate`,
+  // `disconnect` and `refreshRate` below all reach it through the same
+  // `wake`. Deliberately not used for the dead-air poll below: that one is
+  // already never more than 100ms from checking fresh state, so there's
+  // nothing worth interrupting.
   const interruptibleSleep = (ms: number): Promise<void> =>
     new Promise<void>((resolve) => {
       const finish = () => {
@@ -85,6 +90,9 @@ export function streamLoop(
   };
   connection.disconnect = (options) => {
     closing = options;
+    wake?.();
+  };
+  connection.refreshRate = () => {
     wake?.();
   };
 
@@ -153,6 +161,8 @@ export function streamLoop(
         stopAfterThisChunk = true;
       }
 
+      let backpressureOutcome: 'drained' | 'terminated' | 'woken' | undefined;
+
       if (chunk.byteLength > 0 && !res.write(chunk)) {
         // Respect backpressure, or a slow client turns into unbounded memory
         // in this process rather than a slow stream. Racing against
@@ -166,14 +176,17 @@ export function streamLoop(
         // below true.
         //
         // `wake` covers the fourth way out: a fault's control methods
-        // (disconnect, setRate) firing while parked here with nothing else
-        // to wake this promise. The client isn't reading, so 'drain' will
-        // never come; nobody has torn the socket down, so 'close'/'error'
-        // won't either. Without it, `disconnect()` while backpressured sets
-        // `closing` and returns, but the loop never gets back to the
-        // top-of-loop check that acts on it — the fault reports
-        // `appliedTo: 1` and the connection never actually closes.
-        await new Promise<void>((resolve) => {
+        // firing while parked here with nothing else to wake this promise.
+        // The client isn't reading, so 'drain' will never come; nobody has
+        // torn the socket down, so 'close'/'error' won't either. The
+        // outcome is tagged, not just resolved, because 'woken' has to be
+        // handled differently below: it means some *other* state changed
+        // while we were stuck, so the right response is to go straight back
+        // to the top of the loop and re-read everything fresh — not to fall
+        // through the normal post-write bookkeeping as if this had been an
+        // ordinary drain, which is what let a disconnect that arrived this
+        // way sit ignored behind a freshly-scheduled sleep.
+        backpressureOutcome = await new Promise<'drained' | 'terminated' | 'woken'>((resolve) => {
           const cleanup = () => {
             res.off('drain', onDrain);
             res.off('close', onTerminated);
@@ -182,24 +195,37 @@ export function streamLoop(
           };
           const onDrain = () => {
             cleanup();
-            resolve();
+            resolve('drained');
           };
           const onTerminated = () => {
             open = false;
             cleanup();
-            resolve();
+            resolve('terminated');
           };
           res.once('drain', onDrain);
           res.once('close', onTerminated);
           res.once('error', onTerminated);
           wake = () => {
             cleanup();
-            resolve();
+            resolve('woken');
           };
         });
-        if (!open) return;
+        if (backpressureOutcome === 'terminated') return;
       }
+
+      // Unconditional: `res.write()` already handed the chunk to Node
+      // whether or not it has drained yet, so the byte count is accurate
+      // regardless of why (or whether) we waited above.
       written += chunk.byteLength;
+
+      // A wake means some control method changed `closing` or the rate
+      // while we were parked above. Re-checking both at the top of the loop
+      // is what the very next line of code already does on every ordinary
+      // iteration — jumping there directly, rather than continuing through
+      // this iteration's now-stale `stopAfterThisChunk` and pacing sleep, is
+      // what makes that re-check actually happen promptly instead of after
+      // whatever this iteration was already going to do next.
+      if (backpressureOutcome === 'woken') continue;
 
       if (stopAfterThisChunk) {
         if (closing!.clean) res.end();

@@ -7,6 +7,17 @@ export interface LiveConnection {
   /** null = follow the scenario's own rate. */
   setRate(rate: number | null): void;
   /**
+   * Pokes the connection to re-read the scenario's own rate right now,
+   * without setting an override the way `setRate` would. `control
+   * .scenarioRate()` is always live — it reads `scenario.rate` fresh on
+   * every call — so a connection that isn't overridden already sees a
+   * changed baseline the *next* time it happens to check. This exists only
+   * to make that check happen promptly instead of whenever the current
+   * sleep or drain wait next elapses on its own; it's a no-op while a fault
+   * has `setRate` in control; `POST /s/<id>/rate` is the one caller.
+   */
+  refreshRate(): void;
+  /**
    * `afterBytes` is a total-bytes-written threshold, not a packet count: the
    * cut is byte-exact and may land mid-TS-packet. That's deliberate, not a
    * rounding bug — it's exactly what a real provider does when it dies
