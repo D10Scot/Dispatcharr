@@ -48,7 +48,12 @@ function isChannelSpec(value: unknown): value is ChannelSpec {
   if (typeof value !== 'object' || value === null) return false;
   const v = value as Record<string, unknown>;
   return (
-    typeof v.id === 'number' &&
+    // A non-negative integer, matching `parseFaultRequest`'s `channel`. A
+    // fractional or negative id renders a playlist URL like
+    // `.../stream/1.5.ts`, which can never match the stream route's
+    // `(\d+)\.ts` — Dispatcharr gets a 404 that fires *before* the scenario
+    // is resolved, so it is not even written to the scenario log.
+    isNonNegativeInteger(v.id) &&
     typeof v.name === 'string' &&
     typeof v.tvgId === 'string' &&
     (typeof v.logo === 'string' || v.logo === null)
@@ -90,10 +95,21 @@ export function parseScenarioRequest(body: Record<string, unknown>): ScenarioReq
     if (Array.isArray(body.channels)) {
       if (!body.channels.every(isChannelSpec)) {
         throw new BadRequestError(
-          "'channels' array entries must each have a numeric id, string name, string tvgId, and a logo that is a string or null",
+          "'channels' array entries must each have a non-negative integer id, string name, string tvgId, and a logo that is a string or null",
         );
       }
+      // Duplicate ids emit two #EXTINF entries pointing at one stream URL,
+      // and a later `channel: n` fault then applies to both — so the
+      // scenario cannot express "fault one channel, leave its sibling
+      // alone", which is what every failover test needs.
+      const ids = new Set<number>();
       for (const channel of body.channels) {
+        if (ids.has(channel.id)) {
+          throw new BadRequestError(
+            `'channels' contains more than one entry with id ${channel.id}; ids must be unique`,
+          );
+        }
+        ids.add(channel.id);
         assertNoControlChars(channel.name, 'name');
         assertNoControlChars(channel.tvgId, 'tvgId');
       }
@@ -133,6 +149,14 @@ export function parseScenarioRequest(body: Record<string, unknown>): ScenarioReq
       throw new BadRequestError("'password' must be a string");
     }
     request.password = body.password;
+  }
+
+  // `credentialQuery` returns '' when username is undefined, so a password
+  // on its own would silently produce an unauthenticated scenario — and a
+  // test asserting "wrong credentials are rejected" would pass against a
+  // provider that never checks any.
+  if (request.password !== undefined && request.username === undefined) {
+    throw new BadRequestError("'password' requires 'username'; a password alone is never used");
   }
 
   return request;

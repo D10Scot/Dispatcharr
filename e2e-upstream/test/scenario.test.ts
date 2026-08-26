@@ -107,3 +107,50 @@ describe('parseScenarioRequest', () => {
     expect(parseScenarioRequest({ rate: 0.5 }).rate).toBe(0.5);
   });
 });
+
+describe('parseScenarioRequest — channel id and credential validation', () => {
+  const spec = (over = {}) => ({ id: 1, name: 'A', tvgId: 'a.e2e', logo: null, ...over });
+
+  it('rejects a fractional channel id', () => {
+    // `.../stream/1.5.ts` can never match the stream route's (\d+)\.ts, so
+    // Dispatcharr 404s before the scenario is even resolved — the request
+    // never reaches the scenario log, which makes it invisible to debug.
+    expect(() => parseScenarioRequest({ channels: [spec({ id: 1.5 })] })).toThrow(
+      /non-negative integer id/,
+    );
+  });
+
+  it('rejects a negative channel id', () => {
+    expect(() => parseScenarioRequest({ channels: [spec({ id: -1 })] })).toThrow(
+      /non-negative integer id/,
+    );
+  });
+
+  it('rejects duplicate channel ids, naming the offending id', () => {
+    expect(() =>
+      parseScenarioRequest({ channels: [spec({ id: 2 }), spec({ id: 2, name: 'B' })] }),
+    ).toThrow(/more than one entry with id 2/);
+  });
+
+  it('accepts id 0 and distinct ids', () => {
+    // 0 is a legitimate id and must survive: the same ?? vs || trap that
+    // maxConnections has.
+    const parsed = parseScenarioRequest({
+      channels: [spec({ id: 0 }), spec({ id: 1, name: 'B', tvgId: 'b.e2e' })],
+    });
+    expect((parsed.channels as { id: number }[]).map((c) => c.id)).toEqual([0, 1]);
+  });
+
+  it('rejects a password with no username', () => {
+    // credentialQuery returns '' without a username, so this would silently
+    // create an unauthenticated scenario — and a test asserting that wrong
+    // credentials are rejected would pass against a provider checking none.
+    expect(() => parseScenarioRequest({ password: 'p' })).toThrow(/requires 'username'/);
+  });
+
+  it('accepts a username with no password', () => {
+    // The mirror case is legitimate: an empty password is a real provider
+    // configuration, and credentialQuery already emits password=''.
+    expect(parseScenarioRequest({ username: 'u' }).username).toBe('u');
+  });
+});
