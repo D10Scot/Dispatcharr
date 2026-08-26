@@ -76,6 +76,36 @@ export interface LogEntry {
   detail?: string;
 }
 
+/**
+ * The single most common mistake a test author makes with this fixture is
+ * running the suite without first bringing up the fake provider — and
+ * without this, the failure that produces is a bare `TypeError: fetch
+ * failed`, from a fixture whose entire purpose is making failures legible.
+ * Mirrors `stream-client.ts`'s `describeFetchFailure`: name what's known,
+ * fall through to a generic message for anything not confidently
+ * identifiable rather than mislabelling it.
+ */
+function describeControlFetchFailure(controlBase: string, cause: unknown): string {
+  const code = (cause as { cause?: { code?: string } })?.cause?.code;
+
+  if (code === 'ECONNREFUSED') {
+    return (
+      `upstream control fetch failed: nothing is listening at ${controlBase}. ` +
+      `The fake upstream provider isn't running — start it (and Dispatcharr) ` +
+      `with ./scripts/e2e_up.sh.`
+    );
+  }
+  if (code === 'ENOTFOUND' || code === 'EAI_AGAIN') {
+    return (
+      `upstream control fetch failed: cannot resolve the host in ${controlBase}. ` +
+      `E2E_UPSTREAM_CONTROL_URL is likely misconfigured — the default, ` +
+      `http://127.0.0.1:9402, needs no override for the local topology ` +
+      `scripts/e2e_up.sh brings up.`
+    );
+  }
+  return `upstream control fetch failed against ${controlBase}: ${String(cause)}`;
+}
+
 export class UpstreamClient {
   readonly created: UpstreamScenario[] = [];
 
@@ -86,10 +116,15 @@ export class UpstreamClient {
   ) {}
 
   private async call<T>(path: string, init?: RequestInit): Promise<T> {
-    const res = await fetch(`${this.controlBase}${path}`, {
-      ...init,
-      headers: { 'Content-Type': 'application/json', ...(init?.headers ?? {}) },
-    });
+    let res: Response;
+    try {
+      res = await fetch(`${this.controlBase}${path}`, {
+        ...init,
+        headers: { 'Content-Type': 'application/json', ...(init?.headers ?? {}) },
+      });
+    } catch (cause) {
+      throw new Error(describeControlFetchFailure(this.controlBase, cause), { cause });
+    }
     if (!res.ok) {
       throw new Error(
         `upstream control ${init?.method ?? 'GET'} ${path} failed: ` +
