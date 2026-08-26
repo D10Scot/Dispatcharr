@@ -31,7 +31,14 @@ done:
 | `./scripts/e2e_up.sh --down` | Destroy container + volume, start nothing |
 
 `DISPATCHARR_E2E_PORT`, `_CONTAINER`, `_VOLUME` and `_IMAGE` override the
-defaults, and every command above respects them.
+defaults, and every command above respects them. The equivalent
+`DISPATCHARR_E2E_UPSTREAM_CONTAINER`/`_PORT` variables exist for the fake
+upstream provider but are **not safe to change**: unlike the variables
+above, nothing downstream of `scripts/e2e_up.sh` reads them back — the
+provider's own default origin, the `upstream` fixture's base URLs, and its
+DNS-failure detection all hardcode `e2e-upstream` and `9402`. Overriding
+either starts a working container under a name or port the suite can no
+longer find.
 
 **The container is published on `127.0.0.1` only.** Once bootstrap has run it
 holds a superuser whose password is committed to this repository in plain
@@ -387,7 +394,7 @@ Local builds are native-architecture; CI is amd64. If you need parity,
 | `waitFor` | `condition`, `resource`, `m3uRefreshComplete` |
 | `ws` | `/ws/` subscription; `waitForMessage(type, { where, timeoutMs })` |
 | `streamClient` | `open`, `readPackets`, `collectFor`, `close` |
-| `upstream` | The fake upstream provider: `scenario`, `fault`, `rate`, `clearFault`, `log`, `toControl`. Worker-scoped; see `e2e-upstream/README.md` and the section above on the two-container topology |
+| `upstream` | The fake upstream provider: `scenario`, `fault`, `rate`, `clearFault`, `log`, `toControl`. Test-scoped, not worker-scoped — `attachLogs` needs `testInfo` to attach a failing scenario's log to the Playwright report, which a worker fixture cannot obtain. See `e2e-upstream/README.md` and the section above on the two-container topology |
 
 Plus three exports that are not fixtures, from the same `../../fixtures` module:
 

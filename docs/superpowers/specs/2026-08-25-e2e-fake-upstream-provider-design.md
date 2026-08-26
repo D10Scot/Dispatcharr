@@ -214,8 +214,10 @@ await upstream.log(scenario);                  // connection/request history
 upstream.toControl(scenario.internal + '/stream/1.ts');
 ```
 
-`upstream` is worker-scoped; scenarios are test-scoped. The fixture attaches the scenario log to
-the Playwright report on failure (D13).
+`upstream` is test-scoped, not worker-scoped as originally planned here: `attachLogs` needs
+`testInfo` to attach the scenario log to the Playwright report on failure (D13), which a
+worker-scoped fixture cannot obtain. One consequence worth noting: `UpstreamClient.created` resets
+per test rather than accumulating for a worker's whole run.
 
 ## Deliverables
 

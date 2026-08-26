@@ -18,8 +18,12 @@ curl http://127.0.0.1:9402/scenarios   # lists live scenarios; empty at startup
 ```
 
 `./scripts/e2e_up.sh --stop` / `--reset` / `--down` cover this container the same way they cover
-the Dispatcharr one. Unlike the Dispatcharr image, this one is rebuilt on **every** invocation —
-it's small and fast to build, so there's no reason to risk serving a stale routes table.
+the Dispatcharr one. Unlike the Dispatcharr image, this one is rebuilt on **every** invocation by
+default — it's small and fast to build, so there's no reason to risk serving a stale routes table
+— and the container is recreated automatically whenever that rebuild actually changes the image,
+so a local edit to `src/` always reaches the running container on the next `e2e_up.sh`. CI sets
+`DISPATCHARR_E2E_SKIP_UPSTREAM_BUILD=1` to opt out of the rebuild and run the exact image the
+`build` job produced and saved into the shared artifact — see `.github/workflows/e2e-tests.yml`.
 
 You will not normally talk to it directly: `e2e/fixtures/upstream.ts` is the sanctioned client.
 This document exists for when the fixture's behaviour needs explaining, not as a replacement for
@@ -68,6 +72,34 @@ Provider-facing endpoints — the ones a Dispatcharr `M3UAccount`/`EPGSource`/`S
 not ones a test calls directly: `/s/<id>/playlist.m3u`, `/s/<id>/epg.xml`,
 `/s/<id>/stream/<channelId>.ts`.
 
+G2 shipped exactly two plumbing proofs, and both cover the M3U/streaming path
+(`e2e/tests/seeded/upstream-ingest.spec.ts`,
+`e2e/tests/streaming/upstream-through-proxy.spec.ts`). **Nothing has yet proved `/s/<id>/epg.xml`
+against a real Dispatcharr `EPGSource` refresh** — `renderXmltv`, `epgUrl()` and its
+`application/xml` content type are exercised only by this package's own vitest suite. If you're
+writing G3's "EPG source → refresh → programme data" row, expect to be the first person to point
+a live `EPGSource` at this endpoint.
+
+### Scenario defaults and credentials — read before asserting on names
+
+**The default catalogue is identical across every scenario.** With no `channels` override,
+channel `1` is always `Fake Channel 1` / `fake-1.e2e`. `seeded` runs 4 workers in parallel, so
+asserting on or filtering by those default names will alias another test's scenario. Pass explicit
+channel names — `seed.generatedName(...)` is what the ingest proof uses — whenever a test needs to
+find its own channel rather than someone else's.
+
+**Scenario credentials are not secret from the control API or the test report.** `POST`/`GET
+/scenarios` echo `password` back in the response, and every `UpstreamScenario` carries
+`credentialQuery` (the same credentials, pre-formatted as a query string) so a test can build a
+provider-facing URL. That's fine while credentials are invented per test and thrown away with the
+scenario — but a test that attaches a scenario object to its own report output, or logs it,
+publishes them the same way `attachLogs` publishes the request log. Separately: Dispatcharr itself
+is known to log full provider URLs — including any `?password=` — at INFO (see the credential-
+logging entry in the root `CLAUDE.md`), and `.github/workflows/e2e-tests.yml`'s failure step prints
+`docker logs dispatcharr-e2e` straight into the CI log. Neither is a problem today, because these
+are throwaway per-test credentials with no value outside the run — but a G5 test that starts
+reusing a fixed, meaningful credential across runs should not assume either path is private.
+
 ### HEAD and probe connections
 
 Dispatcharr's Redirect stream profile probes a stream URL before redirecting a client to it
@@ -99,7 +131,7 @@ reconnect" is a normal test.
 | `not-found` | new only (`appliedTo: 0`) | 404 on the requested endpoint | Connect-failure trigger; refresh error handling |
 | `auth-failure` | new only (`appliedTo: 0`) | Credentials that were valid start being rejected | Mid-refresh credential expiry |
 | `connection-limit` | new only (`appliedTo: 0`) | Real per-scenario accounting; N+1th rejected, readmitted on close | Provider-slot semantics; `max_streams` disagreement |
-| `redirect-chain` | new only (`appliedTo: 0`) | 301/302 chain of declared depth before the payload | The Redirect stream profile |
+| `redirect-chain` | new only (`appliedTo: 0`) | 302 chain of declared depth before the payload | The Redirect stream profile |
 | `non-ts-bytes` | new only (`appliedTo: 0`) | 200 with an HTML error page instead of TS | `buffer.py`'s realignment defence |
 
 `appliedTo: 0` is correct for the five "new only" rows above — they can only take effect on the

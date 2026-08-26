@@ -111,11 +111,20 @@ jobs:
       # calling it: a change to how the container boots can no longer be made
       # in one place and forgotten in the other.
       #
-      # The script does not rebuild here: its `docker image inspect`
-      # short-circuit sees the image loaded above, under the tag it defaults
-      # to. Its defaults are exactly what this job used — container
+      # The AIO image does not rebuild here: the script's `docker image
+      # inspect` short-circuit sees the image loaded above, under the tag it
+      # defaults to. Its defaults are exactly what this job used — container
       # dispatcharr-e2e, volume dispatcharr-e2e-data, image
       # dispatcharr-e2e:local, port 9191 — so nothing needs overriding.
+      #
+      # The provider image is different: scripts/e2e_up.sh rebuilds it
+      # unconditionally by default, which here would silently discard the
+      # artifact `build` already produced and loaded above — one build
+      # feeding every consumer is the same guarantee the AIO image gets from
+      # being build-if-absent, and ffmpeg being deliberately unpinned means a
+      # second build here is not guaranteed to carry the same asset.
+      # DISPATCHARR_E2E_SKIP_UPSTREAM_BUILD below opts the script out of that
+      # rebuild so the loaded artifact is what actually runs.
       #
       # Each project gets its own container. pristine in particular needs an
       # instance with no superuser, which the bootstrap project consumes.
@@ -131,6 +140,7 @@ jobs:
           # (60 × 10s). The script's own default of 300s suits a laptop with a
           # warm volume rather than a cold runner.
           DISPATCHARR_E2E_READY_ATTEMPTS: '120'
+          DISPATCHARR_E2E_SKIP_UPSTREAM_BUILD: '1'
         run: ./scripts/e2e_up.sh
 
       - name: Setup Node.js

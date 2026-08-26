@@ -30,3 +30,7 @@ test-results/
 # E2E auth state — contains live JWTs
 e2e/playwright/.auth/
 e2e-upstream/dist/
+# Built by scripts/make-asset.sh, normally only inside the Docker builder
+# stage; .dockerignore already keeps it out of the build context, but it
+# also needs to stay untracked for anyone who runs the script on the host.
+e2e-upstream/assets/

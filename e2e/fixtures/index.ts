@@ -188,6 +188,13 @@
  *       on `upstream.created` for `attachLogs`; there is **no cleanup** —
  *       scenarios live for the provider process's life, scoped only by the
  *       test that made them never reusing another test's id.
+ *       **The default catalogue is identical across every scenario** —
+ *       channel `1` is always named `Fake Channel 1` with `tvg-id`
+ *       `fake-1.e2e` — and `seeded` runs 4 workers in parallel. Asserting
+ *       against those names, or filtering by them, will alias another
+ *       test's data. Pass explicit channel names (e.g. via
+ *       `seed.generatedName(...)`) whenever a test needs to look its own
+ *       channel up by name.
  *   fault(scenario, name, options?) / clearFault(scenario, name, options?)
  *       → Promise<FaultResult>   arms/disarms one of the eight `FaultName`s
  *       (`dead-air`, `slow-trickle`, `disconnect`, `not-found`,

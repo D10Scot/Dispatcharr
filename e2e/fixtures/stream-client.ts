@@ -69,12 +69,15 @@ export class StreamClient {
    * handed out.
    *
    * A list rather than one growing Buffer because `Buffer.concat` on every
-   * chunk copies the whole accumulation to append one chunk — quadratic in the
-   * length of the collection window. The static upstream emits ~94 KB/s (ten
-   * packets every 20ms), so a `collectFor(60_000)` — well inside the streaming
+   * chunk copies the whole accumulation to append one chunk — quadratic in
+   * the length of the collection window. The fake upstream provider
+   * (`e2e-upstream/`) paces at its own nominal bitrate times a per-scenario
+   * `rate` multiplier, so a `collectFor(60_000)` — well inside the streaming
    * project's 300s per-test budget, and what a dead-air or failover test will
-   * do — accumulates ~5.6 MB across ~3,000 chunks and would copy on the order
-   * of 8 GB doing it. Against a real provider at several Mbit/s, worse.
+   * do — accumulates megabytes across thousands of chunks; at any rate above
+   * 1 the copy volume from a growing Buffer scales quadratically well past
+   * what one test should cost. Against a real provider at several Mbit/s,
+   * worse still.
    */
   private chunks: Buffer[] = [];
   /** Total bytes held in `chunks`, so readPackets() need not sum them. */

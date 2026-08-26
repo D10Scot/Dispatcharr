@@ -33,6 +33,13 @@ PORT="${DISPATCHARR_E2E_PORT:-9191}"
 READY_ATTEMPTS="${DISPATCHARR_E2E_READY_ATTEMPTS:-60}"
 
 NETWORK="${DISPATCHARR_E2E_NETWORK:-dispatcharr-e2e-net}"
+# _CONTAINER and _PORT are honoured here, but nowhere past this script: the
+# provider's own UPSTREAM_INTERNAL_ORIGIN default, the fixture's `internal`/
+# `control` base URLs, and describeFetchFailure()'s hostname check all bake
+# in the literal `e2e-upstream` name and port 9402. Overriding either
+# variable here starts a working container under a different name or port
+# and then breaks every test that talks to it — so this is a known
+# limitation, documented rather than plumbed through further, not a bug.
 UPSTREAM_NAME="${DISPATCHARR_E2E_UPSTREAM_CONTAINER:-e2e-upstream}"
 UPSTREAM_IMAGE="${DISPATCHARR_E2E_UPSTREAM_IMAGE:-dispatcharr-e2e-upstream:local}"
 UPSTREAM_PORT="${DISPATCHARR_E2E_UPSTREAM_PORT:-9402}"
@@ -111,16 +118,29 @@ docker network inspect "$NETWORK" >/dev/null 2>&1 || docker network create "$NET
 # absent. A build-if-absent provider image went stale silently — a routes
 # change in e2e-upstream/src/ never reached a container built from the
 # cached tag, surfacing as unexplained 404s with no indication the image
-# was the problem. CI is unaffected either way: it always loads a fresh
-# artifact.
-echo "Building $UPSTREAM_IMAGE..."
-# --provenance=false: buildx's default provenance attestation embeds a build
-# timestamp, so two back-to-back builds with an entirely cache-hit Dockerfile
-# still get different image ids — which would defeat the id comparison below
-# on every single invocation, not just the ones that actually changed
-# something. This is a disposable local dev image, not a distributed
-# artifact, so there is nothing here for provenance to attest to.
-docker build --provenance=false -f e2e-upstream/Dockerfile -t "$UPSTREAM_IMAGE" e2e-upstream
+# was the problem.
+#
+# CI opts out with DISPATCHARR_E2E_SKIP_UPSTREAM_BUILD: the `build` job
+# already built and saved this image alongside the AIO one specifically so
+# every consumer tests the same artifact (the same reason the AIO image
+# below is build-if-absent rather than always rebuilt here). Rebuilding it
+# again per test job would mean up to four different provider images in one
+# run — ffmpeg is deliberately unpinned, so those builds are not guaranteed
+# to produce the same asset — and the image under test would no longer be
+# the one the artifact carried.
+if [[ -n "${DISPATCHARR_E2E_SKIP_UPSTREAM_BUILD:-}" ]]; then
+  echo "Skipping $UPSTREAM_IMAGE build (DISPATCHARR_E2E_SKIP_UPSTREAM_BUILD set) — using the loaded artifact."
+else
+  echo "Building $UPSTREAM_IMAGE..."
+  # --provenance=false: buildx's default provenance attestation embeds a
+  # build timestamp, so two back-to-back builds with an entirely cache-hit
+  # Dockerfile still get different image ids — which would defeat the id
+  # comparison below on every single invocation, not just the ones that
+  # actually changed something. This is a disposable local dev image, not a
+  # distributed artifact, so there is nothing here for provenance to attest
+  # to.
+  docker build --provenance=false -f e2e-upstream/Dockerfile -t "$UPSTREAM_IMAGE" e2e-upstream
+fi
 
 # Rebuilding the tag above is not enough on its own: an already-created
 # container (running or stopped) keeps the image snapshot it was created
@@ -151,10 +171,11 @@ fi
 ensure_on_network "$UPSTREAM_NAME"
 
 # Wait for the provider before starting Dispatcharr. Dispatcharr does not
-# contact it at boot, so the ordering is not strictly required — but a test
-# that fails because the provider was still starting is indistinguishable
-# from one that fails because the provider is broken, and this removes that
-# whole class of confusion.
+# contact it at boot, so the ordering is not strictly required — but it
+# removes the ordering hazard: without this, a test that fails because the
+# provider was still starting would be indistinguishable from one that fails
+# because the provider is broken. It does not, on its own, make a
+# crash-looping provider visible — that's what the exit below is for.
 echo -n "Waiting for the upstream provider"
 for _ in $(seq 1 30); do
   if curl -sf -o /dev/null "http://127.0.0.1:${UPSTREAM_PORT}/scenarios"; then
@@ -164,6 +185,12 @@ for _ in $(seq 1 30); do
   echo -n "."
   sleep 1
 done
+
+if ! curl -sf -o /dev/null "http://127.0.0.1:${UPSTREAM_PORT}/scenarios"; then
+  echo " — never became ready. Container logs:"
+  docker logs "$UPSTREAM_NAME" || true
+  exit 1
+fi
 
 if docker ps --format '{{.Names}}' | grep -qx "$NAME"; then
   : # already running
