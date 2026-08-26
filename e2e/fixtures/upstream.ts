@@ -85,6 +85,11 @@ export interface LogEntry {
  * fall through to a generic message for anything not confidently
  * identifiable rather than mislabelling it.
  */
+/** Trailing slashes break every `base + '/path'` concatenation below. */
+function stripTrailingSlash(base: string): string {
+  return base.replace(/\/+$/, '');
+}
+
 function describeControlFetchFailure(controlBase: string, cause: unknown): string {
   const code = (cause as { cause?: { code?: string } })?.cause?.code;
 
@@ -109,11 +114,25 @@ function describeControlFetchFailure(controlBase: string, cause: unknown): strin
 export class UpstreamClient {
   readonly created: UpstreamScenario[] = [];
 
+  private readonly controlBase: string;
+  private readonly internalBase: string;
+
   constructor(
-    private readonly controlBase: string = UPSTREAM_CONTROL_BASE,
+    controlBase: string = UPSTREAM_CONTROL_BASE,
     /** Overridable for tests; production callers always take the default. */
-    private readonly internalBase: string = UPSTREAM_INTERNAL_BASE
-  ) {}
+    internalBase: string = UPSTREAM_INTERNAL_BASE
+  ) {
+    // Normalised here rather than at each use site, because *both* consumers
+    // concatenate a '/'-prefixed path onto these: `call()` builds
+    // `${controlBase}${path}` and `toControl()` builds
+    // `controlBase + parsed.pathname`. A trailing slash therefore yields
+    // '//scenarios', which is a *scheme-relative* URL — the provider's
+    // `new URL(req.url, 'http://placeholder')` reads host 'scenarios' and
+    // path '/', so every route 404s with a message pointing at the provider
+    // rather than at the misconfigured E2E_UPSTREAM_CONTROL_URL.
+    this.controlBase = stripTrailingSlash(controlBase);
+    this.internalBase = stripTrailingSlash(internalBase);
+  }
 
   private async call<T>(path: string, init?: RequestInit): Promise<T> {
     let res: Response;

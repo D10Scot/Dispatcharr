@@ -39,4 +39,18 @@ test.describe('UpstreamClient.toControl', () => {
     const client = new UpstreamClient('http://127.0.0.1:9402', 'http://e2e-upstream:8080');
     expect(() => client.toControl('http://example.com/foo')).toThrow(/expected a URL under/);
   });
+
+  test('is unaffected by a trailing slash on the configured control base', () => {
+    // The control base is the one that bites hardest: `call()` builds
+    // `${controlBase}${path}`, so a trailing slash makes every control
+    // request '//scenarios' — a *scheme-relative* URL, which the provider
+    // parses as host 'scenarios' with path '/'. Every route then 404s, and
+    // the error names the provider rather than the misconfigured
+    // E2E_UPSTREAM_CONTROL_URL. Normalising in the constructor fixes both
+    // consumers at once; a toControl-only fix leaves call() broken.
+    const client = new UpstreamClient('http://127.0.0.1:9402/', 'http://e2e-upstream:8080');
+    expect(client.toControl('http://e2e-upstream:8080/s/abc/stream/1.ts')).toBe(
+      'http://127.0.0.1:9402/s/abc/stream/1.ts'
+    );
+  });
 });
