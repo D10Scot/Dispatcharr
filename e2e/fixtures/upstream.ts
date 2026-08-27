@@ -1,0 +1,278 @@
+import type { TestInfo } from '@playwright/test';
+
+export const UPSTREAM_CONTROL_BASE =
+  process.env.E2E_UPSTREAM_CONTROL_URL ?? 'http://127.0.0.1:9402';
+
+export const UPSTREAM_INTERNAL_BASE =
+  process.env.E2E_UPSTREAM_INTERNAL_URL ?? 'http://e2e-upstream:8080';
+
+export type FaultName =
+  | 'dead-air'
+  | 'slow-trickle'
+  | 'disconnect'
+  | 'not-found'
+  | 'auth-failure'
+  | 'connection-limit'
+  | 'redirect-chain'
+  | 'non-ts-bytes';
+
+export interface FaultOptions {
+  channel?: number;
+  rate?: number;
+  clean?: boolean;
+  afterBytes?: number;
+  depth?: number;
+}
+
+export interface FaultResult {
+  fault: FaultName;
+  active: boolean;
+  /**
+   * How many *live* connections the fault reached. Five of the eight faults
+   * can only affect the next request — headers are already sent on an open
+   * response — so 0 is correct and expected for them. Arming `not-found` for
+   * a reconnect that has not happened yet is a normal test. Assert on this
+   * value when your test means to disrupt something already streaming; do
+   * not assume it is always positive.
+   */
+  appliedTo: number;
+}
+
+export interface UpstreamChannel {
+  id: number;
+  name: string;
+  tvgId: string;
+  logo: string | null;
+}
+
+export interface ScenarioRequest {
+  channels?: number | UpstreamChannel[];
+  username?: string;
+  password?: string;
+  maxConnections?: number;
+  rate?: number;
+}
+
+export interface UpstreamScenario {
+  id: string;
+  /** Origin Dispatcharr resolves. Hand these URLs to the product. */
+  internal: string;
+  /** Origin Playwright resolves. Hand these to fetch/streamClient. */
+  control: string;
+  credentialQuery: string;
+  channels: UpstreamChannel[];
+}
+
+export interface LogEntry {
+  at: string;
+  kind: 'request' | 'open' | 'close' | 'fault';
+  method?: string;
+  path?: string;
+  status?: number;
+  channelId?: number;
+  bytes?: number;
+  durationMs?: number;
+  fault?: string;
+  detail?: string;
+}
+
+/**
+ * The single most common mistake a test author makes with this fixture is
+ * running the suite without first bringing up the fake provider — and
+ * without this, the failure that produces is a bare `TypeError: fetch
+ * failed`, from a fixture whose entire purpose is making failures legible.
+ * Mirrors `stream-client.ts`'s `describeFetchFailure`: name what's known,
+ * fall through to a generic message for anything not confidently
+ * identifiable rather than mislabelling it.
+ */
+/** Trailing slashes break every `base + '/path'` concatenation below. */
+function stripTrailingSlash(base: string): string {
+  return base.replace(/\/+$/, '');
+}
+
+function describeControlFetchFailure(controlBase: string, cause: unknown): string {
+  const code = (cause as { cause?: { code?: string } })?.cause?.code;
+
+  if (code === 'ECONNREFUSED') {
+    return (
+      `upstream control fetch failed: nothing is listening at ${controlBase}. ` +
+      `The fake upstream provider isn't running — start it (and Dispatcharr) ` +
+      `with ./scripts/e2e_up.sh.`
+    );
+  }
+  if (code === 'ENOTFOUND' || code === 'EAI_AGAIN') {
+    return (
+      `upstream control fetch failed: cannot resolve the host in ${controlBase}. ` +
+      `E2E_UPSTREAM_CONTROL_URL is likely misconfigured — the default, ` +
+      `http://127.0.0.1:9402, needs no override for the local topology ` +
+      `scripts/e2e_up.sh brings up.`
+    );
+  }
+  return `upstream control fetch failed against ${controlBase}: ${String(cause)}`;
+}
+
+export class UpstreamClient {
+  readonly created: UpstreamScenario[] = [];
+
+  private readonly controlBase: string;
+  private readonly internalBase: string;
+
+  constructor(
+    controlBase: string = UPSTREAM_CONTROL_BASE,
+    /** Overridable for tests; production callers always take the default. */
+    internalBase: string = UPSTREAM_INTERNAL_BASE
+  ) {
+    // Normalised here rather than at each use site, because *both* consumers
+    // concatenate a '/'-prefixed path onto these: `call()` builds
+    // `${controlBase}${path}` and `toControl()` builds
+    // `controlBase + parsed.pathname`. A trailing slash therefore yields
+    // '//scenarios', which is a *scheme-relative* URL — the provider's
+    // `new URL(req.url, 'http://placeholder')` reads host 'scenarios' and
+    // path '/', so every route 404s with a message pointing at the provider
+    // rather than at the misconfigured E2E_UPSTREAM_CONTROL_URL.
+    this.controlBase = stripTrailingSlash(controlBase);
+    this.internalBase = stripTrailingSlash(internalBase);
+  }
+
+  private async call<T>(path: string, init?: RequestInit): Promise<T> {
+    let res: Response;
+    try {
+      res = await fetch(`${this.controlBase}${path}`, {
+        ...init,
+        headers: { 'Content-Type': 'application/json', ...(init?.headers ?? {}) },
+      });
+    } catch (cause) {
+      throw new Error(describeControlFetchFailure(this.controlBase, cause), { cause });
+    }
+    if (!res.ok) {
+      throw new Error(
+        `upstream control ${init?.method ?? 'GET'} ${path} failed: ` +
+          `${res.status} ${res.statusText} — ${await res.text()}`
+      );
+    }
+    return (await res.json()) as T;
+  }
+
+  async scenario(request: ScenarioRequest = {}): Promise<UpstreamScenario> {
+    const scenario = await this.call<UpstreamScenario>('/scenarios', {
+      method: 'POST',
+      body: JSON.stringify(request),
+    });
+    // The provider echoes `control` from the request's Host header, which is
+    // the base this client used — so it already points at the published port.
+    this.created.push(scenario);
+    return scenario;
+  }
+
+  fault(
+    scenario: UpstreamScenario,
+    fault: FaultName,
+    options: FaultOptions = {}
+  ): Promise<FaultResult> {
+    return this.call<FaultResult>(`/s/${scenario.id}/fault`, {
+      method: 'POST',
+      body: JSON.stringify({ fault, active: true, ...options }),
+    });
+  }
+
+  clearFault(
+    scenario: UpstreamScenario,
+    fault: FaultName,
+    options: FaultOptions = {}
+  ): Promise<FaultResult> {
+    return this.call<FaultResult>(`/s/${scenario.id}/fault`, {
+      method: 'POST',
+      body: JSON.stringify({ fault, active: false, ...options }),
+    });
+  }
+
+  rate(scenario: UpstreamScenario, rate: number): Promise<{ rate: number }> {
+    return this.call(`/s/${scenario.id}/rate`, {
+      method: 'POST',
+      body: JSON.stringify({ rate }),
+    });
+  }
+
+  log(scenario: UpstreamScenario): Promise<LogEntry[]> {
+    return this.call<LogEntry[]>(`/s/${scenario.id}/log`);
+  }
+
+  connections(
+    scenario: UpstreamScenario
+  ): Promise<{ live: number; maxConnections: number | null; channels: number[] }> {
+    return this.call(`/s/${scenario.id}/connections`);
+  }
+
+  playlistUrl(scenario: UpstreamScenario): string {
+    return `${scenario.internal}/playlist.m3u${scenario.credentialQuery}`;
+  }
+
+  epgUrl(scenario: UpstreamScenario): string {
+    return `${scenario.internal}/epg.xml${scenario.credentialQuery}`;
+  }
+
+  streamUrl(scenario: UpstreamScenario, channelId: number): string {
+    return `${scenario.internal}/stream/${channelId}.ts${scenario.credentialQuery}`;
+  }
+
+  /**
+   * Rewrites a container-internal upstream URL to one the Playwright host can
+   * reach.
+   *
+   * Needed because `validate_stream_url()` follows redirects server-side but
+   * returns the URL it was *given*, and `views.py` then 302s the client to
+   * that — i.e. to `http://e2e-upstream:8080/...`, a name that resolves only
+   * inside the Docker network. A Redirect-profile test therefore opens with
+   * `redirect: 'manual'`, reads `Location`, and walks the chain itself,
+   * passing each hop through here.
+   *
+   * Throws rather than returning the input unchanged: silently passing an
+   * unrecognised URL through is how a test ends up making a real outbound
+   * request to whatever the URL happens to name.
+   *
+   * Compares parsed *origins*, not string prefixes: `startsWith` would let
+   * `http://e2e-upstream:8080@evil.com/x` through — a string prefix of the
+   * internal base, but an entirely different origin once `@` is read as a
+   * userinfo separator — and would mishandle a trailing slash on the
+   * configured base by dropping the leading `/` of the rewritten path.
+   * `toControl()` throwing on anything unrecognised is a safety property (a
+   * test must never be able to accidentally make a real outbound request to
+   * whatever a URL happens to name), so it has to hold structurally rather
+   * than by luck of how the strings happen to line up.
+   */
+  toControl(url: string): string {
+    const internalOrigin = new URL(this.internalBase).origin;
+    let parsed: URL;
+    try {
+      parsed = new URL(url);
+    } catch {
+      throw new Error(`toControl() expected a URL under ${this.internalBase}, got ${url}`);
+    }
+    if (parsed.origin !== internalOrigin) {
+      throw new Error(`toControl() expected a URL under ${this.internalBase}, got ${url}`);
+    }
+    return this.controlBase + parsed.pathname + parsed.search + parsed.hash;
+  }
+
+  /**
+   * Attaches every scenario's log to the report. Called by the fixture on
+   * failure. Each scenario's fetch is wrapped separately: if the provider is
+   * unreachable — plausible exactly when a test just failed for a
+   * provider-side reason — this must attach a note explaining that rather
+   * than throw during teardown, which would bury the test's real failure
+   * under an unrelated one.
+   */
+  async attachLogs(testInfo: TestInfo): Promise<void> {
+    for (const scenario of this.created) {
+      let body: string;
+      let contentType = 'application/json';
+      try {
+        body = JSON.stringify(await this.log(scenario), null, 2);
+      } catch (error) {
+        body = `could not retrieve upstream log for ${scenario.id}: ${String(error)}`;
+        contentType = 'text/plain';
+      }
+      await testInfo.attach(`upstream-log-${scenario.id}`, { body, contentType });
+    }
+  }
+}

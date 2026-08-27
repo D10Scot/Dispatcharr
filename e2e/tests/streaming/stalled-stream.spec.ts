@@ -1,5 +1,4 @@
 import { test, expect, expectTsAligned, TS_PACKET_SIZE } from '../../fixtures';
-import { startStaticUpstream, PACKETS_PER_BURST } from '../../support/static-upstream';
 
 // Regression: collectFor(ms) races pump() against a timer. When the timer
 // wins, that pump()'s reader.read() is left outstanding. Read requests queue
@@ -9,8 +8,9 @@ import { startStaticUpstream, PACKETS_PER_BURST } from '../../support/static-ups
 // stream that is a deadlock with the wanted bytes already in the buffer.
 // pump() now memoises the single in-flight read; this test is what proves it.
 //
-// See the exemplar in stream-client.spec.ts for the port-derivation rule.
-const UPSTREAM_BASE_PORT = 9411;
+// These two specs test streamClient's own semantics, not Dispatcharr's proxy,
+// so they hit the provider directly through `control` rather than routing
+// through the product.
 
 // The streaming project has timeout: 300_000, so an unbounded await on a
 // regression is a five-minute test with a useless "Test timeout exceeded"
@@ -40,60 +40,77 @@ async function withDeadline<T>(work: Promise<T>, ms: number, what: string): Prom
 }
 
 test('readPackets returns promptly when collectFor timed out mid-read', async ({
+  upstream,
   streamClient,
-}, testInfo) => {
-  // Burst at t=0, burst at t=600ms, silence thereafter with the socket open.
-  const upstream = await startStaticUpstream(UPSTREAM_BASE_PORT + testInfo.workerIndex, {
-    burstsAtMs: [0, 600],
-  });
+}) => {
+  const scenario = await upstream.scenario({ channels: 1, rate: 20 });
+  await streamClient.open(upstream.toControl(upstream.streamUrl(scenario, 1)));
 
-  try {
-    await streamClient.open(`${upstream.url}/stalls.ts`);
+  // Let bytes flow, then stall the socket with it still open.
+  const flowing = await streamClient.readPackets(5);
+  expectTsAligned(flowing);
 
-    // Burst 1 lands at once; the 200ms deadline then expires with a
-    // reader.read() outstanding, and collectFor drains the buffer.
-    const collected = await streamClient.collectFor(200);
-    expect(collected.byteLength).toBe(PACKETS_PER_BURST * TS_PACKET_SIZE);
+  const applied = await upstream.fault(scenario, 'dead-air');
+  // dead-air reaches live connections, so this must be 1. If it is 0 the
+  // stream was never admitted and the rest of this test proves nothing.
+  expect(applied.appliedTo).toBe(1);
 
-    // Burst 2 fulfils that outstanding read and lands in the buffer. The
-    // stream has not ended, and the bytes asked for are present — so
-    // returning them is the only correct outcome here. Throwing would be
-    // wrong: readPackets only throws when the stream *ends* short, and this
-    // one is merely silent.
-    const packets = await withDeadline(
-      streamClient.readPackets(PACKETS_PER_BURST),
-      READ_DEADLINE_MS,
-      'readPackets'
-    );
-    expect(packets.byteLength).toBe(PACKETS_PER_BURST * TS_PACKET_SIZE);
-    expectTsAligned(packets);
-  } finally {
-    await streamClient.close();
-    await upstream.close();
-  }
+  // The 200ms deadline expires with a reader.read() outstanding.
+  await streamClient.collectFor(200);
+
+  // Issue the read *before* releasing any data. readPackets must queue its
+  // own reader.read() while the collectFor-abandoned one is still pending —
+  // the same ordering the static-upstream original relied on, where burst 2
+  // arrived only after readPackets had already been called. Awaiting this
+  // later, once the fulfilling chunk has already landed, would let bytes
+  // already sitting in bufferedBytes short-circuit the pump() call
+  // entirely (the while loop below never even runs it) and prove nothing
+  // about which reader.read() actually receives them.
+  const afterPromise = withDeadline(
+    streamClient.readPackets(1),
+    READ_DEADLINE_MS,
+    'readPackets after a timed-out collectFor'
+  );
+
+  // Simply clearing dead-air is not enough: the provider's stream is
+  // endless, so a *second* chunk follows the one that fulfils the abandoned
+  // read within milliseconds, and a non-memoised pump() would happily read
+  // that second chunk instead — passing by luck instead of by fix. Slow the
+  // scenario to a crawl first, so there is a wide window between the one
+  // chunk that resuming releases and the next one the provider would
+  // otherwise produce, then re-arm dead-air — and never clear it again —
+  // inside that window. That reproduces the property that actually makes
+  // this a regression test: one chunk, then silence forever, the same as
+  // the static upstream's burstsAtMs schedule (one burst, then nothing).
+  // Permanent silence is what turns a memoisation bug into a deterministic
+  // hang instead of a race a second chunk could win and mask.
+  await upstream.rate(scenario, 0.01);
+  await upstream.clearFault(scenario, 'dead-air');
+  // The provider's own dead-air poll is 100ms — give the loop a chance to
+  // wake up and actually write that one chunk before re-arming, or the
+  // re-arm can win the race and no chunk is ever produced at all.
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  await upstream.fault(scenario, 'dead-air');
+
+  const after = await afterPromise;
+  expectTsAligned(after);
 });
 
-test('readPackets still throws naming the shortfall when the stream ends short', async ({
+test('readPackets throws by name when the stream ends short', async ({
+  upstream,
   streamClient,
-}, testInfo) => {
-  const upstream = await startStaticUpstream(UPSTREAM_BASE_PORT + 10 + testInfo.workerIndex, {
-    burstsAtMs: [0],
-    endAfterLastBurst: true,
+}) => {
+  const scenario = await upstream.scenario({ channels: 1, rate: 20 });
+  await streamClient.open(upstream.toControl(upstream.streamUrl(scenario, 1)));
+
+  // A clean EOF after a bounded number of bytes — the product logs this as
+  // "HTTP stream ended", a different reconnect branch from an abrupt close.
+  await upstream.fault(scenario, 'disconnect', {
+    clean: true,
+    afterBytes: 20 * TS_PACKET_SIZE,
   });
 
-  try {
-    await streamClient.open(`${upstream.url}/short.ts`);
-
-    const wanted = PACKETS_PER_BURST * 3;
-    await expect(
-      withDeadline(streamClient.readPackets(wanted), READ_DEADLINE_MS, 'readPackets')
-    ).rejects.toThrow(
-      `stream ended after ${PACKETS_PER_BURST * TS_PACKET_SIZE} bytes, wanted ${
-        wanted * TS_PACKET_SIZE
-      }`
-    );
-  } finally {
-    await streamClient.close();
-    await upstream.close();
-  }
+  await expect(
+    withDeadline(streamClient.readPackets(1000), READ_DEADLINE_MS, 'readPackets past the end')
+  ).rejects.toThrow(/stream ended after \d+ bytes/);
 });

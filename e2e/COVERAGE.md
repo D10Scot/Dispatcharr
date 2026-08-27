@@ -16,6 +16,10 @@ tests.** Status: `todo` / `done` / `known-bug` (asserted correct, marked
 | Harness | WebSocket queue semantics and event correlation | G1 | done |
 | Harness | Byte-level TS stream reading | G1 | done |
 | Harness | Source factories (stream profile, M3U, EPG) | G1 | done |
+| Upstream | Fake upstream provider: playlist, EPG, paced TS loop | G2 | done |
+| Upstream | Fault injection (eight faults, control API) | G2 | done |
+| Upstream | Plumbing proof: M3U ingest → declared channels appear | G2 | done |
+| Upstream | Plumbing proof: stream-through via `/proxy/ts/stream/<uuid>` | G2 | done |
 | Sources | M3U account create → refresh → streams appear | G3 | todo |
 | Sources | EPG source create → refresh → programme data | G3 | todo |
 | Sources | Channel creation from streams | G3 | todo |
@@ -67,5 +71,18 @@ share one file, as do the two principal rows):
 - `e2e/tests/streaming/stalled-stream.spec.ts` (regression: read ordering
   across `collectFor` → `readPackets` on a stalled stream)
 
-G2 (the fake upstream provider that replaces `e2e/support/static-upstream.ts`)
-adds no rows here — it is harness infrastructure, not a covered flow.
+The four G2 rows above are covered by `e2e-upstream`'s own vitest suite (the
+provider and its faults) plus:
+
+- `e2e/tests/seeded/upstream-ingest.spec.ts` (ingest plumbing proof)
+- `e2e/tests/streaming/upstream-through-proxy.spec.ts` (stream-through
+  plumbing proof)
+- `e2e/tests/streaming/upstream-to-control.spec.ts` (`toControl` conversion)
+- `e2e/tests/streaming/stream-client.spec.ts` and
+  `e2e/tests/streaming/stalled-stream.spec.ts`, both re-pointed at the
+  provider (`e2e/support/static-upstream.ts` is deleted)
+
+**G3 and G4 are now unblocked.** Both can seed a scenario, ingest a playlist
+or stream through the provider, and drive any of the eight faults, using only
+`e2e/fixtures/upstream.ts` and the fault catalogue documented in
+`e2e-upstream/README.md` — without reading `e2e-upstream/src/`.

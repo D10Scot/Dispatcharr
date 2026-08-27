@@ -32,9 +32,36 @@ PORT="${DISPATCHARR_E2E_PORT:-9191}"
 # raises it to keep the budget it had when it hand-rolled this loop.
 READY_ATTEMPTS="${DISPATCHARR_E2E_READY_ATTEMPTS:-60}"
 
+NETWORK="${DISPATCHARR_E2E_NETWORK:-dispatcharr-e2e-net}"
+# _CONTAINER and _PORT are honoured here, but nowhere past this script: the
+# provider's own UPSTREAM_INTERNAL_ORIGIN default, the fixture's `internal`/
+# `control` base URLs, and describeFetchFailure()'s hostname check all bake
+# in the literal `e2e-upstream` name and port 9402. Overriding either
+# variable here starts a working container under a different name or port
+# and then breaks every test that talks to it — so this is a known
+# limitation, documented rather than plumbed through further, not a bug.
+UPSTREAM_NAME="${DISPATCHARR_E2E_UPSTREAM_CONTAINER:-e2e-upstream}"
+UPSTREAM_IMAGE="${DISPATCHARR_E2E_UPSTREAM_IMAGE:-dispatcharr-e2e-upstream:local}"
+UPSTREAM_PORT="${DISPATCHARR_E2E_UPSTREAM_PORT:-9402}"
+
+# A container created before $NETWORK existed (or created with `--network`
+# pointed elsewhere) gets reused as-is by the branches below, and
+# container-name DNS then silently fails until someone runs `--down` — a
+# real hour-waster on a dev machine that already had a same-named container.
+# Attach it to the network on every start rather than only at `docker run`.
+ensure_on_network() {
+  local container="$1"
+  if ! docker inspect -f '{{json .NetworkSettings.Networks}}' "$container" 2>/dev/null \
+      | grep -q "\"${NETWORK}\""; then
+    docker network connect "$NETWORK" "$container" >/dev/null 2>&1 || true
+  fi
+}
+
 destroy() {
   docker rm -f "$NAME" >/dev/null 2>&1 || true
+  docker rm -f "$UPSTREAM_NAME" >/dev/null 2>&1 || true
   docker volume rm "$VOLUME" >/dev/null 2>&1 || true
+  docker network rm "$NETWORK" >/dev/null 2>&1 || true
 }
 
 # Every mode below is a whole-invocation choice, so a second argument is
@@ -57,6 +84,8 @@ case "${1:-}" in
   --stop)
     # Keeps the container and its data. `./scripts/e2e_up.sh` restarts it,
     # superuser and seeded rows intact.
+    docker stop "$UPSTREAM_NAME" >/dev/null 2>&1 && echo "Stopped $UPSTREAM_NAME." \
+      || echo "$UPSTREAM_NAME was not running."
     docker stop "$NAME" >/dev/null 2>&1 && echo "Stopped $NAME." \
       || echo "$NAME was not running."
     exit 0
@@ -80,6 +109,89 @@ if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
   docker build -f docker/Dockerfile -t "$IMAGE" .
 fi
 
+# Container-name DNS works only on a user-defined network. The default bridge
+# resolves nothing, which is the entire reason this network exists.
+docker network inspect "$NETWORK" >/dev/null 2>&1 || docker network create "$NETWORK" >/dev/null
+
+# Unlike the 3.6 GB AIO image above, this one is small and builds in
+# seconds, so it is rebuilt on every invocation rather than only when
+# absent. A build-if-absent provider image went stale silently — a routes
+# change in e2e-upstream/src/ never reached a container built from the
+# cached tag, surfacing as unexplained 404s with no indication the image
+# was the problem.
+#
+# CI opts out with DISPATCHARR_E2E_SKIP_UPSTREAM_BUILD: the `build` job
+# already built and saved this image alongside the AIO one specifically so
+# every consumer tests the same artifact (the same reason the AIO image
+# below is build-if-absent rather than always rebuilt here). Rebuilding it
+# again per test job would mean up to four different provider images in one
+# run — ffmpeg is deliberately unpinned, so those builds are not guaranteed
+# to produce the same asset — and the image under test would no longer be
+# the one the artifact carried.
+if [[ -n "${DISPATCHARR_E2E_SKIP_UPSTREAM_BUILD:-}" ]]; then
+  echo "Skipping $UPSTREAM_IMAGE build (DISPATCHARR_E2E_SKIP_UPSTREAM_BUILD set) — using the loaded artifact."
+else
+  echo "Building $UPSTREAM_IMAGE..."
+  # --provenance=false: buildx's default provenance attestation embeds a
+  # build timestamp, so two back-to-back builds with an entirely cache-hit
+  # Dockerfile still get different image ids — which would defeat the id
+  # comparison below on every single invocation, not just the ones that
+  # actually changed something. This is a disposable local dev image, not a
+  # distributed artifact, so there is nothing here for provenance to attest
+  # to.
+  docker build --provenance=false -f e2e-upstream/Dockerfile -t "$UPSTREAM_IMAGE" e2e-upstream
+fi
+
+# Rebuilding the tag above is not enough on its own: an already-created
+# container (running or stopped) keeps the image snapshot it was created
+# from, so `docker start`-ing it or leaving it running serves the old
+# image regardless of what the tag now points at. Recreate the container
+# whenever the tag has moved, so the rebuild actually reaches it — this is
+# the most common dev loop of all (edit provider code, re-run the script
+# with the stack already up). Only when the ids match is the running
+# container left alone, which keeps the fast path when nothing changed.
+# The provider has no volume, so recreating it costs nothing but a restart.
+UPSTREAM_IMAGE_ID="$(docker image inspect -f '{{.Id}}' "$UPSTREAM_IMAGE")"
+if EXISTING_IMAGE_ID="$(docker inspect -f '{{.Image}}' "$UPSTREAM_NAME" 2>/dev/null)" \
+    && [[ "$EXISTING_IMAGE_ID" != "$UPSTREAM_IMAGE_ID" ]]; then
+  echo "Recreating $UPSTREAM_NAME: the image moved."
+  docker rm -f "$UPSTREAM_NAME" >/dev/null
+fi
+
+if docker ps --format '{{.Names}}' | grep -qx "$UPSTREAM_NAME"; then
+  : # already running, same image
+elif docker ps -a --format '{{.Names}}' | grep -qx "$UPSTREAM_NAME"; then
+  docker start "$UPSTREAM_NAME" >/dev/null
+else
+  docker run -d --name "$UPSTREAM_NAME" \
+    --network "$NETWORK" \
+    -p "127.0.0.1:${UPSTREAM_PORT}:8080" \
+    "$UPSTREAM_IMAGE" >/dev/null
+fi
+ensure_on_network "$UPSTREAM_NAME"
+
+# Wait for the provider before starting Dispatcharr. Dispatcharr does not
+# contact it at boot, so the ordering is not strictly required — but it
+# removes the ordering hazard: without this, a test that fails because the
+# provider was still starting would be indistinguishable from one that fails
+# because the provider is broken. It does not, on its own, make a
+# crash-looping provider visible — that's what the exit below is for.
+echo -n "Waiting for the upstream provider"
+for _ in $(seq 1 30); do
+  if curl -sf -o /dev/null "http://127.0.0.1:${UPSTREAM_PORT}/scenarios"; then
+    echo " — ready"
+    break
+  fi
+  echo -n "."
+  sleep 1
+done
+
+if ! curl -sf -o /dev/null "http://127.0.0.1:${UPSTREAM_PORT}/scenarios"; then
+  echo " — never became ready. Container logs:"
+  docker logs "$UPSTREAM_NAME" || true
+  exit 1
+fi
+
 if docker ps --format '{{.Names}}' | grep -qx "$NAME"; then
   : # already running
 elif docker ps -a --format '{{.Names}}' | grep -qx "$NAME"; then
@@ -97,12 +209,14 @@ else
   #
   # 127.0.0.1 is load-bearing, not cosmetic — see the header.
   docker run -d --name "$NAME" \
+    --network "$NETWORK" \
     -p "127.0.0.1:${PORT}:9191" \
     -v "${VOLUME}:/data" \
     -e DISPATCHARR_ENV=aio \
     -e DISPATCHARR_LOG_LEVEL=info \
     "$IMAGE" >/dev/null
 fi
+ensure_on_network "$NAME"
 
 echo -n "Waiting for the app"
 for _ in $(seq 1 "$READY_ATTEMPTS"); do

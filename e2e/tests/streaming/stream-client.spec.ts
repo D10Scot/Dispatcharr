@@ -1,37 +1,27 @@
-import { test, expect, expectTsAligned } from '../../fixtures';
-import { startStaticUpstream } from '../../support/static-upstream';
+import { test, expect, expectTsAligned, TS_PACKET_SIZE } from '../../fixtures';
 
 // Exemplar: byte-level assertions against an endless stream. Playwright's
 // request fixture cannot do this — APIResponse.body() awaits full download
 // and a live stream never finishes.
 //
-// The upstream here is throwaway scaffolding, replaced by G2's fake provider.
-// Base port for the throwaway upstream. The worker index is added to it: this
-// project runs more than one worker, and a second spec copying this exemplar —
-// which is what an exemplar is for — would otherwise collide on the port about
-// half the time. startStaticUpstream fails fast on a conflict rather than
-// silently reading the other worker's stream, but a hard failure is still a
-// failure. Derive the port; never hardcode one.
-const UPSTREAM_BASE_PORT = 9401;
+// This test exercises streamClient's own semantics, not Dispatcharr's proxy,
+// so it hits the provider directly through `control` rather than routing
+// through the product.
 
 test('streamClient reads aligned TS packets from an endless stream', async ({
+  upstream,
   streamClient,
-}, testInfo) => {
-  const upstream = await startStaticUpstream(
-    UPSTREAM_BASE_PORT + testInfo.workerIndex
-  );
+}) => {
+  const scenario = await upstream.scenario({ channels: 1, rate: 20 });
 
-  try {
-    await streamClient.open(`${upstream.url}/loop.ts`);
+  // rate 20 so the test does not wait real time for real bitrate. Only a
+  // test asserting on ffmpeg's speed= needs rate 1.
+  await streamClient.open(upstream.toControl(upstream.streamUrl(scenario, 1)));
 
-    const packets = await streamClient.readPackets(20);
-    expect(packets.length).toBe(20 * 188);
-    expectTsAligned(packets);
+  const packets = await streamClient.readPackets(20);
+  expect(packets.byteLength).toBe(20 * TS_PACKET_SIZE);
+  expectTsAligned(packets);
 
-    const collected = await streamClient.collectFor(1_000);
-    expect(collected.byteLength).toBeGreaterThan(0);
-  } finally {
-    await streamClient.close();
-    await upstream.close();
-  }
+  const collected = await streamClient.collectFor(1_000);
+  expect(collected.byteLength).toBeGreaterThan(0);
 });
