@@ -242,3 +242,92 @@ export class StreamClient {
     this.bufferedBytes = 0;
   }
 }
+
+/** The null PID carries stuffing only and has no meaningful counter. */
+const TS_NULL_PID = 0x1fff;
+
+/** PID is 13 bits: the low 5 of byte 1 and all of byte 2. */
+function pidAt(buffer: Buffer, offset: number): number {
+  return ((buffer[offset + 1] & 0x1f) << 8) | buffer[offset + 2];
+}
+
+/**
+ * The busiest PID that is not the null PID. Which PID carries video is a
+ * property of the asset, not of Dispatcharr, so tests derive it rather than
+ * hard-coding it — a re-muxed asset would otherwise silently assert nothing.
+ */
+export function videoPidOf(buffer: Buffer): number {
+  const counts = new Map<number, number>();
+  for (let off = 0; off + TS_PACKET_SIZE <= buffer.byteLength; off += TS_PACKET_SIZE) {
+    const pid = pidAt(buffer, off);
+    if (pid === TS_NULL_PID) continue;
+    counts.set(pid, (counts.get(pid) ?? 0) + 1);
+  }
+  let best = -1;
+  let bestCount = 0;
+  for (const [pid, n] of counts) {
+    if (n > bestCount) {
+      best = pid;
+      bestCount = n;
+    }
+  }
+  expect(best, 'buffer contains no non-null PID').toBeGreaterThanOrEqual(0);
+  return best;
+}
+
+/**
+ * Assert the 4-bit continuity counter on `pid` increments by exactly one per
+ * payload-bearing packet, wrapping at 16.
+ *
+ * This is what proves nothing was lost or spliced. A byte count proves only
+ * that bytes arrived — and the defect this suite most needs to catch (two
+ * owners interleaving chunks at alternating indices) produces a stream whose
+ * length is perfectly correct.
+ *
+ * Packets with adaptation_field_control 0b00 or 0b10 carry no payload and do
+ * not advance the counter; skipping them is required by the TS spec, not an
+ * optimisation.
+ *
+ * This is not a general splice detector, and reports two spec-legal cases as
+ * gaps:
+ *
+ *   1. A single repeated (duplicate) continuity counter, which ISO 13818-1
+ *      permits for packet retransmission.
+ *   2. A packet whose adaptation field sets `discontinuity_indicator`, which
+ *      legitimately resets the counter — precisely what a remux may emit
+ *      across a stream switch.
+ *
+ * Every current call site reads packets from within a single, unswitched
+ * stream, so neither case arises in practice. A caller that points this at a
+ * buffer spanning a stream switch would get a false positive from case 2, and
+ * must not do so without first handling the discontinuity indicator — this
+ * function does not.
+ */
+export function expectContiguous(buffer: Buffer, pid: number): void {
+  let previous: number | null = null;
+  let checked = 0;
+
+  for (let off = 0; off + TS_PACKET_SIZE <= buffer.byteLength; off += TS_PACKET_SIZE) {
+    if (pidAt(buffer, off) !== pid) continue;
+
+    const afc = (buffer[off + 3] >> 4) & 0x03;
+    if (afc === 0b00 || afc === 0b10) continue; // no payload: counter does not advance
+
+    const cc = buffer[off + 3] & 0x0f;
+    if (previous !== null) {
+      const expected = (previous + 1) & 0x0f;
+      expect(
+        cc,
+        `continuity counter gap on PID 0x${pid.toString(16)} at byte ${off}: ` +
+          `expected ${expected}, saw ${cc}`
+      ).toBe(expected);
+    }
+    previous = cc;
+    checked++;
+  }
+
+  // >1, not >0: with checked === 1 the loop made zero comparisons —
+  // `previous` is null on the first packet — so a single payload-bearing
+  // packet would pass having asserted nothing about contiguity at all.
+  expect(checked, `too few payload-bearing packets on PID 0x${pid.toString(16)} to prove contiguity`).toBeGreaterThan(1);
+}

@@ -3,10 +3,12 @@
   "private": true,
   "version": "1.0.0",
   "scripts": {
-    "test": "echo 'Pick a population: npm run test:pristine | test:seeded | test:streaming — they need different container states and cannot share one invocation.' && exit 1",
+    "test": "echo 'Pick a population: npm run test:pristine | test:seeded | test:streaming | test:streaming-failover | test:streaming-greybox — they need different container states and cannot share one invocation.' && exit 1",
     "test:pristine": "playwright test --project=pristine",
     "test:seeded": "playwright test --project=seeded",
     "test:streaming": "playwright test --project=streaming",
+    "test:streaming-failover": "playwright test --project=streaming-failover",
+    "test:streaming-greybox": "playwright test --project=streaming-greybox",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
