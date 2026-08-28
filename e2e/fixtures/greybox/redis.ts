@@ -44,7 +44,6 @@
  */
 export const GREYBOX_ALLOWLIST = [
   'tests/streaming-greybox/output-profile-sharing.spec.ts',
-  'tests/streaming-greybox/ownership-lease.spec.ts',
 ];
 
 export interface GreyboxRedis {

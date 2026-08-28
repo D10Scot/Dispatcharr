@@ -35,6 +35,7 @@ tests.** Status: `todo` / `done` / `known-bug` (asserted correct, marked
 | Streaming | Client teardown releases the upstream | G4 | todo |
 | Streaming | Stream Profile: Redirect / Proxy / FFmpeg | G4 | todo |
 | Streaming | Output Profile shared per (channel, profile) | G4 | todo |
+| Streaming | Ownership lease is fenced against a second concurrent owner — attempted by deleting `live:channel:{uuid}:owner` under a running Proxy-profile stream and polling for a second worker to claim it; confirmed empirically unprovable from outside the container: the same owning worker's own `ProxyServer._start_cleanup_thread` cleanup loop notices the missing key and calls `extend_ownership()`, re-`SET NX`-ing the identical worker id well under a second later every run (measured at ≤500ms), because that loop is the only code path with a local `StreamManager` for the channel; a follower worker never contends because `stream_ts` only lets a worker attempt ownership when channel metadata is absent too, which a bare owner-key delete does not cause — so no black-box HTTP/Redis manipulation can land a second `SET NX` in the sub-second gap. See G4 task-12 report for the full trace. | G4 | todo |
 | Output | /output/m3u parses and every URL streams | G5 | todo |
 | Output | /output/epg is valid XMLTV | G5 | todo |
 | Output | HDHomeRun discovery and lineup | G5 | todo |
