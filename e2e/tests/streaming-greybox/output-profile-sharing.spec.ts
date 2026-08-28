@@ -43,7 +43,29 @@ test('two clients on one output profile share a single transcode', async ({
   upstream,
   seed,
   api,
+  baseURL,
 }) => {
+  // Self-healing pre-flight, before anything else in the test opens a
+  // client: `countFfmpegProcesses()` is container-wide, so a straggler left
+  // by a *previous* attempt is indistinguishable from the one this test is
+  // about to create. That straggler is a real possibility on a CI retry —
+  // if attempt 1 dies on the project timeout, its `finally` below (closing
+  // `clients`) never runs; the worker process that would have run it is
+  // torn down mid-test, sockets drop, but the owner only notices on its next
+  // main-loop iteration and the transcode keeps running for
+  // `channel_shutdown_delay` after that. With `retries: 1` in CI, attempt 2
+  // can start while attempt 1's ffmpeg is still being reaped, and the
+  // `toBe(1)` below would then see 2 and fail for a reason unrelated to what
+  // it's testing. Polling to 0 first turns that into a self-healing wait
+  // instead of a second, misleading failure.
+  //
+  // `channel_shutdown_delay` defaults to 0 (`apps/proxy/config.py`), so
+  // under default settings there should be nothing to wait out at all; 30s
+  // leaves comfortable headroom over that default, over any larger value a
+  // test run has configured through `proxy_settings`, and over the
+  // `docker exec`/`pgrep` round trip itself.
+  await expect.poll(countFfmpegProcesses, { timeout: 30_000 }).toBe(0);
+
   const scenario = await upstream.scenario({
     channels: [{ id: 1, name: 'G4 Output', tvgId: 'g4-output.e2e', logo: null }],
     rate: 20,
@@ -64,7 +86,7 @@ test('two clients on one output profile share a single transcode', async ({
     'output profile'
   );
 
-  const clients = [newStreamClient(), newStreamClient()];
+  const clients = [newStreamClient(baseURL!), newStreamClient(baseURL!)];
   try {
     for (const c of clients) {
       await c.open(`/proxy/ts/stream/${channel.uuid}?output_profile=${output.id}`);

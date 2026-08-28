@@ -5,6 +5,7 @@ test('three clients share exactly one upstream connection', async ({
   upstream,
   seed,
   api,
+  baseURL,
 }) => {
   const scenario = await upstream.scenario({
     channels: [{ id: 1, name: 'G4 Shared', tvgId: 'g4-shared.e2e', logo: null }],
@@ -16,7 +17,7 @@ test('three clients share exactly one upstream connection', async ({
     streamProfileId: proxy.id,
   });
 
-  const clients = [newStreamClient(), newStreamClient(), newStreamClient()];
+  const clients = [newStreamClient(baseURL!), newStreamClient(baseURL!), newStreamClient(baseURL!)];
   try {
     for (const c of clients) {
       await c.open(`/proxy/ts/stream/${channel.uuid}`);

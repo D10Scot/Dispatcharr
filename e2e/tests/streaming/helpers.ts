@@ -18,9 +18,18 @@ export async function lockedProfile(api: ApiClient, name: string): Promise<Strea
  * A second, third, ... StreamClient. The `streamClient` fixture provides
  * exactly one per test; rows that assert on upstream *sharing* need several.
  * The caller owns closing each one.
+ *
+ * Takes `baseURL` rather than resolving it itself: `playwright.config.ts`
+ * already resolves `E2E_BASE_URL` once (with `||`, defaulting on an empty
+ * string too) into the `baseURL` fixture every test receives, and the
+ * `streamClient`/`ws` fixtures in `fixtures/index.ts` consume that same
+ * value. Re-deriving it here with `??` would give an empty-string
+ * `E2E_BASE_URL` different behaviour depending on which of the two call sites
+ * ran, and would silently drift from the config's default if that ever
+ * changed. Pass the test's own `baseURL` fixture through.
  */
-export function newStreamClient(): StreamClient {
-  return new StreamClient(process.env.E2E_BASE_URL ?? 'http://localhost:9191');
+export function newStreamClient(baseURL: string): StreamClient {
+  return new StreamClient(baseURL);
 }
 
 /**

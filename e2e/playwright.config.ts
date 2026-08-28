@@ -84,7 +84,18 @@ export default defineConfig({
       // process's cumulative speed= to cross a threshold. 300s is the same
       // ceiling `streaming` uses and is not generous here.
       timeout: 300_000,
-      workers: 2,
+      // One worker, unlike its siblings: `failover-buffering.spec.ts`
+      // mutates the global `proxy_settings` row (raising `buffering_speed`)
+      // for the duration of its run. That is only safe because every other
+      // spec in this directory drives the locked Proxy stream profile, where
+      // the buffering detector is inert (it parses ffmpeg's stderr, which
+      // Proxy never produces) — nothing enforces that convention, so a
+      // future ffmpeg-profile spec added here without reading that test's
+      // header would race the raised threshold and fail silently. Serialising
+      // the project makes that race structurally impossible instead of
+      // merely documented, the same reasoning `streaming-greybox` applies to
+      // its own container-wide process count below.
+      workers: 1,
       use: { storageState: 'playwright/.auth/admin.json' },
     },
     {

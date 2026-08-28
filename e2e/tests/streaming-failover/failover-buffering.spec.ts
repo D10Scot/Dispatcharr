@@ -37,13 +37,15 @@ import type { ApiClient } from '../../fixtures';
  *   the cache window *before* starting the channel, not merely before
  *   arming the fault.
  *
- * This test mutates the **global** `proxy_settings` row while
- * `streaming-failover` runs at `workers: 2`. That is safe only because its
- * sibling specs in this directory drive the locked Proxy stream profile,
- * where the buffering detector is inert (it parses ffmpeg's stderr, which
- * Proxy never produces) — a concurrently running ffmpeg-profile spec in this
- * directory would race this test's raised `buffering_speed` and break
- * silently.
+ * This test mutates the **global** `proxy_settings` row for the duration of
+ * its run. `streaming-failover` runs at `workers: 1` (`playwright.config.ts`)
+ * specifically because of this: every sibling spec in this directory happens
+ * to drive the locked Proxy stream profile, where the buffering detector is
+ * inert (it parses ffmpeg's stderr, which Proxy never produces), but that
+ * convention alone enforces nothing — a future ffmpeg-profile spec added here
+ * without reading this comment would race this test's raised
+ * `buffering_speed` and break silently. The single worker is what actually
+ * rules that out; do not raise it back to 2 without addressing this.
  */
 
 const CORE_SETTINGS_PATH = '/api/core/settings/';

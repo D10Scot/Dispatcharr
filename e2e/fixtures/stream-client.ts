@@ -287,6 +287,21 @@ export function videoPidOf(buffer: Buffer): number {
  * Packets with adaptation_field_control 0b00 or 0b10 carry no payload and do
  * not advance the counter; skipping them is required by the TS spec, not an
  * optimisation.
+ *
+ * This is not a general splice detector, and reports two spec-legal cases as
+ * gaps:
+ *
+ *   1. A single repeated (duplicate) continuity counter, which ISO 13818-1
+ *      permits for packet retransmission.
+ *   2. A packet whose adaptation field sets `discontinuity_indicator`, which
+ *      legitimately resets the counter — precisely what a remux may emit
+ *      across a stream switch.
+ *
+ * Every current call site reads packets from within a single, unswitched
+ * stream, so neither case arises in practice. A caller that points this at a
+ * buffer spanning a stream switch would get a false positive from case 2, and
+ * must not do so without first handling the discontinuity indicator — this
+ * function does not.
  */
 export function expectContiguous(buffer: Buffer, pid: number): void {
   let previous: number | null = null;
