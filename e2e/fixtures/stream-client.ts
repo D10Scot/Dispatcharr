@@ -311,5 +311,8 @@ export function expectContiguous(buffer: Buffer, pid: number): void {
     checked++;
   }
 
-  expect(checked, `no payload-bearing packets on PID 0x${pid.toString(16)}`).toBeGreaterThan(0);
+  // >1, not >0: with checked === 1 the loop made zero comparisons —
+  // `previous` is null on the first packet — so a single payload-bearing
+  // packet would pass having asserted nothing about contiguity at all.
+  expect(checked, `too few payload-bearing packets on PID 0x${pid.toString(16)} to prove contiguity`).toBeGreaterThan(1);
 }

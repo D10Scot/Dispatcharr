@@ -74,6 +74,9 @@ test('two clients on one output profile share a single transcode', async ({
     // Both clients are attached to the same output profile...
     const status = await readChannelStatus(api, channel.uuid);
     expect(status.client_count).toBe(2);
+    // .every() on an empty array is vacuously true — pin the length first so
+    // a regression that drops `clients` entirely can't pass by omission.
+    expect(status.clients).toHaveLength(2);
     expect(status.clients.every((c) => c.output_profile_id === output.id)).toBe(true);
 
     // ...and there is exactly one ffmpeg transcode process for it, not two.

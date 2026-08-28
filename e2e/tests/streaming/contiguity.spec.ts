@@ -32,6 +32,11 @@ test('expectContiguous rejects a gap in the counter', () => {
 });
 
 test('videoPidOf picks the busiest non-null PID', () => {
-  const mixed = Buffer.concat([synth(0x0100, 30), synth(0x1fff, 5)]);
+  // The null PID is deliberately the busiest of the two here — if the
+  // `pid === TS_NULL_PID` exclusion in videoPidOf were ever deleted, this
+  // would start returning 0x1fff instead and the test would catch it. With
+  // the null PID as the minority count, the exclusion is never exercised:
+  // 0x0100 would win on raw frequency alone.
+  const mixed = Buffer.concat([synth(0x1fff, 40), synth(0x0100, 5)]);
   expect(videoPidOf(mixed)).toBe(0x0100);
 });

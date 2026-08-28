@@ -1,5 +1,10 @@
 import { test, expect, expectTsAligned, readChannelStatus } from '../../fixtures';
-import { lockedProfile } from '../streaming/helpers';
+import { lockedProfile, withDeadline } from '../streaming/helpers';
+
+// Comfortably under the project's 300s timeout: a post-failover read against
+// a channel that may have just vanished can hang forever rather than throw,
+// since readPackets only rejects on a clean stream end.
+const READ_DEADLINE_MS = 60_000;
 
 test('a dead upstream fails over to the next stream', async ({
   upstream,
@@ -23,6 +28,9 @@ test('a dead upstream fails over to the next stream', async ({
   await streamClient.open(`/proxy/ts/stream/${channel.uuid}`);
   expectTsAligned(await streamClient.readPackets(100));
 
+  const before = await readChannelStatus(api, channel.uuid);
+  expect(before.stream_id, 'should start on stream A').toBe(streams[0].id);
+
   // dead-air applies to live connections as well as new ones, so this reaches
   // the connection already open. The watchdog is >10s, sampled 3x at 5s — call
   // it ~25s before it fires, and allow generous headroom over that.
@@ -36,7 +44,11 @@ test('a dead upstream fails over to the next stream', async ({
     .toBe(streams[1].id);
 
   // The client survived the failover: it is still attached and still fed.
-  const after = await streamClient.readPackets(100);
+  const after = await withDeadline(
+    streamClient.readPackets(100),
+    READ_DEADLINE_MS,
+    'readPackets after the dead-air failover'
+  );
   expectTsAligned(after);
   expect((await readChannelStatus(api, channel.uuid)).client_count).toBe(1);
 });

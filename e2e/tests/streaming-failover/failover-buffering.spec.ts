@@ -36,6 +36,14 @@ import type { ApiClient } from '../../fixtures';
  *   and never re-reads them for a running channel. So this test waits out
  *   the cache window *before* starting the channel, not merely before
  *   arming the fault.
+ *
+ * This test mutates the **global** `proxy_settings` row while
+ * `streaming-failover` runs at `workers: 2`. That is safe only because its
+ * sibling specs in this directory drive the locked Proxy stream profile,
+ * where the buffering detector is inert (it parses ffmpeg's stderr, which
+ * Proxy never produces) — a concurrently running ffmpeg-profile spec in this
+ * directory would race this test's raised `buffering_speed` and break
+ * silently.
  */
 
 const CORE_SETTINGS_PATH = '/api/core/settings/';
@@ -86,6 +94,15 @@ test('a degraded but not dead upstream fails over on the buffering detector', as
   // (CLAUDE.md, D8) — so a 0.3x trickle reads as clearly degraded rather
   // than merely at parity with the threshold.
   const BUFFERING_SPEED = 3.0;
+
+  // A prior run that timed out before its `finally` block completed would
+  // leave `proxy_settings` dirty at BUFFERING_SPEED — and CI's retries: 1
+  // would then read that contaminated value as "original" and write it back
+  // permanently once this attempt's own finally runs. Catch that here rather
+  // than silently baking a bad value into every later test against this
+  // container.
+  expect(originalValue.buffering_speed, 'a previous run left proxy_settings dirty')
+    .not.toBe(BUFFERING_SPEED);
 
   await writeProxySettingsValue(api, settingsRow, {
     ...originalValue,

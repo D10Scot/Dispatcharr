@@ -22,3 +22,26 @@ export async function lockedProfile(api: ApiClient, name: string): Promise<Strea
 export function newStreamClient(): StreamClient {
   return new StreamClient(process.env.E2E_BASE_URL ?? 'http://localhost:9191');
 }
+
+/**
+ * Race `work` against a timeout so a hang reports a named cause in seconds
+ * instead of a project-level `Test timeout of 300000ms exceeded` minutes
+ * later. `readPackets` only throws when a stream *ends* — it hangs forever
+ * when the stream stays open but stops delivering, which is exactly what a
+ * vanished channel post-failover looks like. `ms` should sit comfortably
+ * under the calling project's own timeout.
+ */
+export async function withDeadline<T>(work: Promise<T>, ms: number, what: string): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  const guard = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(
+      () => reject(new Error(`${what} did not settle within ${ms}ms.`)),
+      ms
+    );
+  });
+  try {
+    return await Promise.race([work, guard]);
+  } finally {
+    clearTimeout(timer);
+  }
+}

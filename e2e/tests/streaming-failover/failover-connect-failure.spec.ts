@@ -1,5 +1,10 @@
 import { test, expect, expectTsAligned, readChannelStatus } from '../../fixtures';
-import { lockedProfile } from '../streaming/helpers';
+import { lockedProfile, withDeadline } from '../streaming/helpers';
+
+// Comfortably under the project's 300s timeout: a post-failover read against
+// a channel that may have just vanished can hang forever rather than throw,
+// since readPackets only rejects on a clean stream end.
+const READ_DEADLINE_MS = 60_000;
 
 test('an upstream that refuses the connection fails over before serving', async ({
   upstream,
@@ -27,7 +32,13 @@ test('an upstream that refuses the connection fails over before serving', async 
   expect(armed.appliedTo).toBe(0);
 
   await streamClient.open(`/proxy/ts/stream/${channel.uuid}`);
-  expectTsAligned(await streamClient.readPackets(100));
+  expectTsAligned(
+    await withDeadline(
+      streamClient.readPackets(100),
+      READ_DEADLINE_MS,
+      'readPackets after the connect-failure failover'
+    )
+  );
 
   const status = await readChannelStatus(api, channel.uuid);
   expect(status.stream_id, 'should never have settled on the 404 stream').toBe(
@@ -37,4 +48,13 @@ test('an upstream that refuses the connection fails over before serving', async 
   // The provider saw the refused attempt on 1 and the successful one on 2.
   const log = await upstream.log(scenario);
   expect(log.some((e) => e.kind === 'open' && e.channelId === 2)).toBe(true);
+  // The `request` log kind carries no channelId, only path and status — the
+  // 404 route logs before it knows a channel was ever admitted. Match on the
+  // path instead: `e2e-upstream/src/server.ts`'s stream route matches
+  // `/s/<scenarioId>/stream/<channelId>.ts`, and `logRequest` records
+  // `url.pathname` verbatim.
+  expect(
+    log.some((e) => e.kind === 'request' && e.status === 404 && e.path?.endsWith('/stream/1.ts')),
+    'the provider should have refused an attempt on channel 1'
+  ).toBe(true);
 });
