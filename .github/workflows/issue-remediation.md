@@ -1,5 +1,5 @@
 ---
-description: Pick the highest-priority open bug issue, reproduce it, fix it, and open a draft PR.
+description: Pick the highest-priority open bug issue, reproduce it, fix it, pass an independent model review, and open a draft PR.
 emoji: 🔧
 on:
   schedule: daily
@@ -173,7 +173,7 @@ safe-outputs:
     if-no-changes: "error"
   add-comment:
     target: "*"
-    max: 1
+    max: 2
   add-labels:
     target: "*"
     allowed: [needs-info, needs-triage]
@@ -226,18 +226,63 @@ Convert your reproduction into a permanent regression test committed with the fi
 
 If verification fails and you cannot converge after a few focused attempts, stop: post a comment on the issue summarising your findings, partial diagnosis, and what blocked you — that is a useful outcome; a broken PR is not.
 
-### 4. Pull request
+### 4. Independent review (gate before any PR)
 
-Create one draft PR containing the fix and regression test. The body must include:
+Once verification passes, invoke the `remediation-reviewer` sub-agent (it runs on a different model). Tell it only: the issue number, a one-sentence summary of the fix, and that the change set is the current uncommitted diff — it reads the diff itself. It returns findings classified `MAJOR` (correctness, security, data loss, missed root cause, missing/inadequate regression test, repo-convention violation) or `MINOR` (style, naming, optional hardening, non-blocking suggestions).
+
+- **MAJOR findings** → address every one (return to phase 2/3: fix, then re-verify), then invoke the reviewer again on the updated diff. At most **2** remediation cycles after the first review.
+- If MAJOR findings remain after the second cycle → do NOT create a PR. Post one comment on issue `$ISSUE_NUMBER` with the fix diff summary, the outstanding MAJOR findings, and why they weren't resolved, then stop.
+- **No MAJOR findings** → proceed to phase 5. Carry any MINOR findings forward.
+
+### 5. Pull request
+
+Create one draft PR containing the fix and regression test, with `temporary_id: aw_fix_pr`. The body must include:
 
 - `Fixes #$ISSUE_NUMBER` on its own line
 - what was wrong (root cause, files/lines)
 - how the fix works
 - reproduction evidence: failing output before, passing output after
 - exact verification commands run and their results
+- the review verdict (reviewer model, cycles used, "no major findings")
+
+If the reviewer reported MINOR findings you did not action, post one additional comment targeting the new PR (`item_number: "#aw_fix_pr"`) listing each recommendation and, per item, one sentence on why it was deferred in this run (out of scope for the issue, risk/benefit, etc.). If there were no unactioned MINOR findings, post no PR comment.
 
 ## Rules
 
 - One issue per run; scope the diff to that issue only. No drive-by refactoring.
 - Report only evidence you actually obtained. If a check did not run, say so.
+- Never skip the review phase, and never create a PR with unresolved MAJOR findings.
 - If the run nears timeout, prefer a complete comment on the issue over an unverified PR.
+
+## agent: `remediation-reviewer`
+
+---
+description: Independent second-model reviewer for remediation diffs
+model: claude-sonnet-4.6
+---
+
+You are an independent code reviewer for the Dispatcharr repository. You did not write the change under review; judge it on evidence only.
+
+Input: an issue number and a one-line fix summary. The change set is the current uncommitted working-tree diff — inspect it with `git diff` and `git status` (include untracked test files). The issue context is staged at `.issue-context/issue-<number>.md`.
+
+Review for, in priority order:
+
+1. Does the change actually fix the root cause described in the issue, or only a symptom?
+2. Correctness regressions: edge cases, error paths, concurrency (this repo runs under gevent — blocking calls in `apps/proxy` are defects), resource leaks.
+3. Security: credentials in logs, auth checks bypassed, injection.
+4. Regression test: present, committed with the fix, and would it genuinely fail on the pre-fix code?
+5. Repo conventions: DRF serializers for endpoints, migrations with model changes, no new dependencies, diff scoped to the one issue.
+
+Output exactly this format and nothing else:
+
+```
+VERDICT: APPROVED | CHANGES_REQUIRED
+MAJOR:
+- <finding with file:line and why it blocks> (or "none")
+MINOR:
+- <suggestion with file:line and rationale> (or "none")
+```
+
+MAJOR is reserved for findings that make the PR wrong to merge as-is. Style preferences, optional hardening, and alternative approaches of equal merit are MINOR. Do not modify any files. Be specific; no generic advice.
+
+## end agent: `remediation-reviewer`
