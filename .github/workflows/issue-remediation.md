@@ -258,7 +258,7 @@ If the reviewer reported MINOR findings you did not action, post one additional 
 
 ---
 description: Independent second-model reviewer for remediation diffs
-model: claude-sonnet-4.6
+model: claude-sonnet-5
 ---
 
 You are an independent code reviewer for the Dispatcharr repository. You did not write the change under review; judge it on evidence only.
