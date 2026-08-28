@@ -75,5 +75,28 @@ export default defineConfig({
       // time any test runs.
       use: { storageState: 'playwright/.auth/admin.json' },
     },
+    {
+      name: 'streaming-failover',
+      testDir: './tests/streaming-failover',
+      dependencies: ['bootstrap'],
+      // Each row here pays a product-defined wait: the dead-air watchdog is
+      // >10s sampled 3x at 5s, and the buffering detector needs the ffmpeg
+      // process's cumulative speed= to cross a threshold. 300s is the same
+      // ceiling `streaming` uses and is not generous here.
+      timeout: 300_000,
+      workers: 2,
+      use: { storageState: 'playwright/.auth/admin.json' },
+    },
+    {
+      name: 'streaming-greybox',
+      testDir: './tests/streaming-greybox',
+      dependencies: ['bootstrap'],
+      timeout: 300_000,
+      // One worker, unlike its siblings: these tests mutate shared Redis
+      // state (deleting an ownership lease), so parallel workers inside this
+      // project would race each other.
+      workers: 1,
+      use: { storageState: 'playwright/.auth/admin.json' },
+    },
   ],
 });

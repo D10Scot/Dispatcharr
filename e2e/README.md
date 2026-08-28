@@ -55,6 +55,8 @@ one up. CI binds the same way.
 | `pristine` | Needs an instance with **no superuser**: first-run setup, and global `CoreSettings` changes |
 | `seeded` | The default. Shared instance, parallel workers, API-seeded data |
 | `streaming` | Byte-level tests. Long timeouts, fewer workers |
+| `streaming-failover` | Failover behaviour: dead-air and buffering watchdogs. Long timeouts, fewer workers |
+| `streaming-greybox` | Tests that reach past the API into Redis (e.g. deleting an ownership lease). Long timeouts, one worker — **must be run alone locally**: in CI each matrix job gets its own container, but locally all projects can share one, and this project deletes ownership leases out from under whatever else is running |
 
 `pristine` deliberately has no `bootstrap` dependency — it needs the
 superuser *not* to exist yet, which is the entire point of that project, and
@@ -81,7 +83,7 @@ scenario-specific jobs, not `pristine` specs — see the G7 paragraph in
 the authority here.
 
 `npm test` (no suffix) deliberately fails with a message telling you to pick
-one of the three — there is no single invocation that is correct for all of
+one of the five — there is no single invocation that is correct for all of
 them, and a bare `npm test` in CI would silently run whichever config
 happened to be first.
 
