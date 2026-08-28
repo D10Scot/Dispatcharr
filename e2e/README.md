@@ -58,6 +58,31 @@ one up. CI binds the same way.
 | `streaming-failover` | Failover behaviour: dead-air and buffering watchdogs. Long timeouts, fewer workers |
 | `streaming-greybox` | Tests that reach past the API into Redis (e.g. deleting an ownership lease). Long timeouts, one worker — **must be run alone locally**: in CI each matrix job gets its own container, but locally all projects can share one, and this project deletes ownership leases out from under whatever else is running |
 
+`streaming` and `streaming-failover` both run at `workers: 2` — the byte-level
+reads and the failover watchdogs (dead-air, buffering) are slow but do not
+touch anything another test in the same project could observe. `streaming-greybox`
+is the one exception in the whole suite: `output-profile-sharing.spec.ts` calls
+`greyboxRedis()` to read and delete raw Redis keys directly, alongside the
+normal API surface. A second worker running any other grey-box test
+concurrently — or, worse, running the same channel's teardown mid-assertion —
+would race against those direct mutations in a way no other project risks, so
+this project pins `workers: 1` rather than trusting every future grey-box
+test to be independently safe at higher concurrency.
+
+**The set of specs allowed to reach for grey-box Redis access is a checked
+allowlist, not a comment asking politely.** `e2e/fixtures/greybox/redis.ts`
+exports `GREYBOX_ALLOWLIST`, and
+`e2e/tests/streaming-greybox/quarantine.spec.ts` walks every `.ts` file under
+`e2e/`, greps each for an import of `greybox/redis`, and asserts the set it
+finds matches the allowlist exactly — in either direction: a new grey-box
+import that isn't listed fails the meta-test, and a stale allowlist entry for
+a file that no longer imports it fails the same way. That is what happened
+when G4's ownership-lease flagship (`ownership-lease.spec.ts`) was deleted as
+an unprovable gap (see `COVERAGE.md`'s Streaming/G4 rows) — its allowlist
+entry had to go with it, or `quarantine.spec.ts` would fail on a name that no
+longer exists. A convention written down in this file would rot silently the
+same way; this one fails CI instead.
+
 `pristine` deliberately has no `bootstrap` dependency — it needs the
 superuser *not* to exist yet, which is the entire point of that project, and
 is why `pristine` and `seeded` cannot share a container. `bootstrap` consumes
