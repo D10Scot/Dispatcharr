@@ -92,9 +92,10 @@ or stream through the provider, and drive any of the eight faults, using only
 `e2e/fixtures/upstream.ts` and the fault catalogue documented in
 `e2e-upstream/README.md` — without reading `e2e-upstream/src/`.
 
-The ten `done` G4 rows above are covered by these specs (the three-way
-Stream Profile split and the two `shared-upstream.spec.ts` rows each share one
-file):
+The eleven `done` G4 rows above are covered by these specs (the two
+`shared-upstream.spec.ts` rows share one file; the three-way Stream Profile
+split is across two — Proxy in `single-client.spec.ts`, Redirect and FFmpeg
+together in `stream-profiles.spec.ts`):
 
 - `e2e/tests/streaming/single-client.spec.ts` — single client receives aligned
   TS, and Stream Profile: Proxy (the test drives the Proxy profile directly)
@@ -114,7 +115,7 @@ file):
   Profile shared per (channel, profile), verified both by the shared owner
   key and by counting live ffmpeg processes directly
 
-The eleventh G4 row, the ownership-lease fencing flagship, stays `todo`: it
+The twelfth G4 row, the ownership-lease fencing flagship, stays `todo`: it
 was built, shown to pass for a reason that says nothing about the defect
 (the true owner's own cleanup loop re-acquires the key faster than any
 black-box client can act), and deleted rather than kept as a false green. See

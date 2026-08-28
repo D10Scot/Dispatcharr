@@ -56,18 +56,23 @@ one up. CI binds the same way.
 | `seeded` | The default. Shared instance, parallel workers, API-seeded data |
 | `streaming` | Byte-level tests. Long timeouts, fewer workers |
 | `streaming-failover` | Failover behaviour: dead-air and buffering watchdogs. Long timeouts, fewer workers |
-| `streaming-greybox` | Tests that reach past the API into Redis (e.g. deleting an ownership lease). Long timeouts, one worker — **must be run alone locally**: in CI each matrix job gets its own container, but locally all projects can share one, and this project deletes ownership leases out from under whatever else is running |
+| `streaming-greybox` | Tests that reach past the API into Redis or the container directly (e.g. counting live `ffmpeg` processes). Long timeouts, one worker — **must be run alone locally**: in CI each matrix job gets its own container, but locally all projects can share one, and this project observes container-wide state that whatever else is running would disturb |
 
 `streaming` and `streaming-failover` both run at `workers: 2` — the byte-level
 reads and the failover watchdogs (dead-air, buffering) are slow but do not
 touch anything another test in the same project could observe. `streaming-greybox`
 is the one exception in the whole suite: `output-profile-sharing.spec.ts` calls
-`greyboxRedis()` to read and delete raw Redis keys directly, alongside the
-normal API surface. A second worker running any other grey-box test
-concurrently — or, worse, running the same channel's teardown mid-assertion —
-would race against those direct mutations in a way no other project risks, so
-this project pins `workers: 1` rather than trusting every future grey-box
-test to be independently safe at higher concurrency.
+`greyboxRedis()` to read raw Redis keys directly, alongside the normal API
+surface, and also counts every `ffmpeg` process running in the container
+(`pgrep -x ffmpeg`) — a container-wide observable, not one scoped to its own
+channel, the same class of shared-state hazard as
+`failover-buffering.spec.ts`'s global `proxy_settings` mutation in
+`streaming-failover`. A second worker running any spec here that starts its
+own transcode — or a future grey-box test that mutates Redis directly, the
+way the deleted ownership-lease flagship did (see `COVERAGE.md`) — would race
+against it in a way no other project risks, so this project pins
+`workers: 1` rather than trusting every future grey-box test to be
+independently safe at higher concurrency.
 
 **The set of specs allowed to reach for grey-box Redis access is a checked
 allowlist, not a comment asking politely.** `e2e/fixtures/greybox/redis.ts`

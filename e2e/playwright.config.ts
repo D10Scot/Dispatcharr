@@ -92,9 +92,15 @@ export default defineConfig({
       testDir: './tests/streaming-greybox',
       dependencies: ['bootstrap'],
       timeout: 300_000,
-      // One worker, unlike its siblings: these tests mutate shared Redis
-      // state (deleting an ownership lease), so parallel workers inside this
-      // project would race each other.
+      // One worker, unlike its siblings: `output-profile-sharing.spec.ts`
+      // counts every `ffmpeg` process running in the container (`pgrep -x
+      // ffmpeg`) — a container-wide observable, not one scoped to its own
+      // channel, the same class of shared-state hazard as
+      // `failover-buffering.spec.ts`'s global `proxy_settings` mutation in
+      // `streaming-failover`. A second worker running any spec here that
+      // starts its own transcode — or a future grey-box test that mutates
+      // Redis directly, the way the deleted ownership-lease flagship did —
+      // would race against it in a way no other project risks.
       workers: 1,
       use: { storageState: 'playwright/.auth/admin.json' },
     },
