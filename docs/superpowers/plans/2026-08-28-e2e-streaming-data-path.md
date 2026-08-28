@@ -600,7 +600,15 @@ test('one client receives aligned, contiguous TS through the Proxy profile', asy
 
   const status = await readChannelStatus(api, channel.id);
   expect(status.client_count).toBe(1);
-  expect(status.total_bytes).toBeGreaterThan(0);
+
+  // total_bytes is assigned only once the metadata field exists, so a status
+  // read taken moments after start can omit it entirely. Poll rather than read
+  // once — a bare read makes this a flake, not a detector.
+  await expect
+    .poll(async () => (await readChannelStatus(api, channel.id)).total_bytes ?? 0, {
+      timeout: 30_000,
+    })
+    .toBeGreaterThan(0);
 
   // The provider agrees it served exactly one connection for this channel.
   const opens = (await upstream.log(scenario)).filter(
@@ -1352,7 +1360,16 @@ test.fail('only one worker writes to a channel buffer at a time', async ({
   expectTsAligned(await streamClient.readPackets(100));
 
   const before = await readChannelStatus(api, channel.id);
-  expect(before.owner).toBeTruthy();
+  // NOT toBeTruthy(). channel_status.py falls back to the literal string
+  // 'unknown' when the owner metadata key is absent, and 'unknown' is truthy.
+  // Without this guard the final assertion below compares 'unknown' to
+  // 'unknown' and reports success while proving nothing about the lease —
+  // a vacuous pass on the most serious defect in the system, inside the very
+  // test written to catch it.
+  expect(
+    before.owner,
+    'no worker owns this channel yet; the test has nothing to observe'
+  ).not.toBe('unknown');
 
   // Drop the lease out from under the running owner. The owner does not hold
   // a fencing token, so it keeps writing; a second worker is free to claim
