@@ -1109,16 +1109,27 @@ Implements **D10**, **D12**, **D16** and inventory row 4.
 - `docker/entrypoint.sh` runs `manage.py migrate --noinput` on **every** boot, before uWSGI starts, and `uwsgi started with PID` — which `scripts/e2e_up.sh`'s readiness probe transitively waits for — is printed after it. There is no separate migrate step to drive: readiness implies migrations completed.
 - `showmigrations --list` prints an unindented app label followed by indented `[X] 0001_initial` lines. The applied set is `${app}.${name}` for the `[X]` rows.
 
-- [ ] **Step 1: Verify `migrate --check`'s exit semantics against the pinned Django**
+- [ ] **Step 1: Re-confirm `manage.py`'s exit semantics and output shape on a live container**
 
-The spec requires this be checked at implementation time rather than assumed:
+**Already verified once, during Task 3, against a running container.** The findings are recorded below so Step 2's parser is written against known facts rather than assumptions. Re-run to confirm nothing has moved, and paste the output into the report:
 
 ```bash
 ./scripts/e2e_up.sh
-docker exec dispatcharr-e2e su - dispatch -c 'cd /app && python manage.py migrate --check' ; echo "exit=$?"
+docker exec dispatcharr-e2e su - dispatch -c 'cd /app && python manage.py migrate --check' >/tmp/mc.out 2>/tmp/mc.err ; echo "exit=$?"
+cat /tmp/mc.out
+docker exec dispatcharr-e2e su - dispatch -c 'cd /app && python manage.py showmigrations --list' >/tmp/sm.out 2>/dev/null
+head -12 /tmp/sm.out
 ```
 
-Expected on a fully-migrated instance: `exit=0`. Record the actual output in the report. If it is non-zero on a healthy instance, stop and report — the assertion in Step 2 would be inverted.
+What was observed, and what each fact means for Step 2:
+
+- **`migrate --check` exits 0 on a fully-migrated instance.** Confirmed against the pinned Django. The assertion in Step 2 is the right way round.
+- **`manage.py` prints six banner lines to *stdout* before any command output**: `Celery using effective log level: INFO`, `Celery using log level from environment: INFO`, `Redis TLS: disabled`, `PostgreSQL TLS: disabled`, `Environment DISPATCHARR_LOG_LEVEL detected as: 'INFO'`, `Setting log level to: INFO`. They arrive on **stdout, not stderr** — stderr was empty — so `showmigrations --list` output carries a six-line preamble. **This is the single thing most likely to break the parser.** Every banner line contains a space, so none can match the app-header pattern `^(\S+)\s*$`; that is exactly the property the parser depends on, so its comment must say so. A future banner line that happened to be one bare word would be read as an app label and every migration after it misattributed.
+- **App labels can contain digits** — `m3u` is one. Match on `\S+`, never `[a-z_]+`.
+- **`(no migrations)` appears as an indented parenthesised line** for apps with none. It matches neither pattern, which is correct.
+- `showmigrations --list` is ~192 lines here, far inside the fixture's `maxBuffer`.
+
+If `migrate --check` is non-zero on a healthy instance, stop and report — the assertion in Step 2 would be inverted.
 
 - [ ] **Step 2: Create `e2e/tests/lifecycle/upgrade-migrations.spec.ts`**
 
@@ -1215,7 +1226,14 @@ async function appliedMigrations(instance: Instance): Promise<Set<string>> {
   const applied = new Set<string>();
   let app = '';
   for (const line of result.stdout.split('\n')) {
-    // An app label is the only unindented, single-token line in this output.
+    // An app label is the only unindented, single-token line in this output —
+    // and that is load-bearing, not merely descriptive. `manage.py` prints six
+    // banner lines to *stdout* before any command output ("Redis TLS:
+    // disabled", "Setting log level to: INFO", …), so this parser always sees
+    // a preamble. It survives only because every one of those lines contains a
+    // space. A future banner line that is a single bare word would be read as
+    // an app label here and every migration after it misattributed to it.
+    // `\S+` rather than `[a-z_]+`: `m3u` is a real app label.
     const header = /^(\S+)\s*$/.exec(line);
     if (header) {
       app = header[1];
