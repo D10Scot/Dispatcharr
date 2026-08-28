@@ -478,20 +478,13 @@ In `e2e/playwright.config.ts`, after the `streaming` project:
     },
 ```
 
-- [ ] **Step 2: Add both to the CI matrix**
+- [ ] **Step 2: Do NOT touch the CI workflow in this task**
 
-In `.github/workflows/e2e-tests.yml`, extend the `test` job's matrix to
-`[pristine, seeded, streaming, streaming-failover, streaming-greybox]`.
-
-Change nothing else in the file. Each matrix entry already gets its own runner
-and its own container via `scripts/e2e_up.sh`, which is what makes the greybox
-project's Redis mutation unable to reach the other projects.
-
-- [ ] **Step 3: Confirm the zizmor hook passes**
-
-The edit triggers the blocking zizmor hook on the whole file. If it reports a
-finding, it is a pre-existing one in a file now considered "edited" — fix it,
-do not suppress it. The workflows are at zero findings and that is a ratchet.
+The CI-matrix edit belongs to Task 13, not here. Playwright *errors* rather than
+reporting zero tests when a project's `testDir` does not exist, and these two
+directories are not created until Tasks 7 and 10 — so adding the projects to CI
+now would redden every intermediate commit on this branch for no benefit. The
+directories come into existence naturally as those tasks land.
 
 - [ ] **Step 4: Add npm scripts**
 
@@ -514,12 +507,15 @@ because each matrix job has its own container, but locally all projects can
 share one, and this project deletes ownership leases out from under whatever
 else is running.
 
-- [ ] **Step 6: Verify the projects resolve**
+- [ ] **Step 6: Verify the config still parses**
 
-Run: `cd e2e && npx playwright test --list --project=streaming-greybox`
-Expected: exits 0 reporting zero tests (the directory does not exist yet, which
-is fine — a project with no tests is not an error). If it reports "no such
-project", the config edit is wrong.
+Run: `cd e2e && npx playwright test --list --project=streaming`
+Expected: exits 0 and lists the existing streaming specs. This proves the config
+file still parses with the two new project entries in it.
+
+Do **not** try to `--list` the new projects yet: their `testDir` directories do
+not exist until Tasks 7 and 10, and Playwright errors on a missing `testDir`
+rather than reporting zero tests.
 
 - [ ] **Step 7: Commit**
 
@@ -537,11 +533,20 @@ Stage all four files and commit as `test(e2e): add streaming-failover and stream
 
 - [ ] **Step 1: Write the test**
 
-```ts
-import { test, expect, expectTsAligned, expectContiguous, videoPidOf, TS_PACKET_SIZE, readChannelStatus } from '../../fixtures';
-import type { StreamProfile } from '../../fixtures';
+**First create the shared helper module** `e2e/tests/streaming/helpers.ts`.
+Seven later tasks import from it; defining these inline would mean six
+copy-pasted duplicates of the same logic, which the task review treats as a
+defect. Playwright's default `testMatch` collects only `*.spec.ts`, so a
+`helpers.ts` sitting inside a `testDir` is not picked up as a suite.
 
-async function lockedProfile(api: import('../../fixtures').ApiClient, name: string) {
+```ts
+// e2e/tests/streaming/helpers.ts
+import { expect } from '@playwright/test';
+import { StreamClient } from '../../fixtures';
+import type { ApiClient, StreamProfile } from '../../fixtures';
+
+/** Find a locked built-in Stream Profile by name. Never assert on a count. */
+export async function lockedProfile(api: ApiClient, name: string): Promise<StreamProfile> {
   const page = await api.json<{ results?: StreamProfile[] } | StreamProfile[]>(
     await api.get('/api/core/streamprofiles/'),
     'stream profiles'
@@ -551,6 +556,22 @@ async function lockedProfile(api: import('../../fixtures').ApiClient, name: stri
   expect(found, `the locked "${name}" stream profile should ship`).toBeDefined();
   return found!;
 }
+
+/**
+ * A second, third, ... StreamClient. The `streamClient` fixture provides
+ * exactly one per test; rows that assert on upstream *sharing* need several.
+ * The caller owns closing each one.
+ */
+export function newStreamClient(): StreamClient {
+  return new StreamClient(process.env.E2E_BASE_URL ?? 'http://localhost:9191');
+}
+```
+
+Then the spec itself:
+
+```ts
+import { test, expect, expectTsAligned, expectContiguous, videoPidOf, TS_PACKET_SIZE, readChannelStatus } from '../../fixtures';
+import { lockedProfile } from './helpers';
 
 test('one client receives aligned, contiguous TS through the Proxy profile', async ({
   upstream,
@@ -662,9 +683,9 @@ test('three clients share exactly one upstream connection', async ({
 });
 ```
 
-`newStreamClient()` is a local helper constructing a `StreamClient` against
-`E2E_BASE_URL` — the `streamClient` fixture provides exactly one instance per
-test, and this row needs three.
+`newStreamClient()` lives in the shared helper module created in Task 4 — it
+constructs a `StreamClient` against `E2E_BASE_URL`, because the `streamClient`
+fixture provides exactly one instance per test and this row needs three.
 
 - [ ] **Step 2: Run it**
 
