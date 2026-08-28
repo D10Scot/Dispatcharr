@@ -1,0 +1,210 @@
+name: CodeQL alert ingest
+
+# Deterministic adapter between CodeQL and the agentic triage pipeline.
+#
+# codeql.yml reports alerts only to the Security tab, which nothing in the
+# label-driven pipeline (needs-triage -> issue-triage -> ready-for-agent ->
+# issue-remediation) ever looks at. This workflow converts open code-scanning
+# alerts into issues labelled needs-triage plus a *suggested* priority:p*
+# label for the triage agent to audit. No LLM here: plain gh api calls.
+#
+# Idempotency: every created issue embeds '<!-- codeql-alert: N -->' in its
+# body. Dedupe lists ALL issues (state=all, PRs excluded) and regex-scans
+# bodies for that marker, deliberately not the search API — GitHub search
+# does not reliably index HTML-comment text and its index lags new issues.
+# A CLOSED issue carrying the marker means a human already decided; the
+# alert is never re-filed.
+#
+# Flood control: at most 5 new issues per run, worst severity first, so the
+# initial backlog (150+ alerts at the time of writing) drains gradually at
+# the weekly cadence instead of burying the tracker. workflow_dispatch lets
+# a human drain faster deliberately; its dry_run input logs intended
+# creations without writing anything.
+#
+# Severity -> suggested priority: critical/high -> p1, medium -> p2,
+# low/none -> p3. Never p0: the rubric reserves p0 for *confirmed*
+# crash/data-loss/security in default config, and static analysis alone
+# confirms nothing.
+#
+# No checkout and no actions at all — the job is pure GitHub API work via
+# the preinstalled gh and python3, so there is nothing to SHA-pin.
+
+on:
+  schedule:
+    - cron: '0 10 * * 1' # weekly, Monday 10:00 UTC — 4h after codeql.yml's 06:00 sweep
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Log intended issue creations without creating anything'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: codeql-ingest
+  cancel-in-progress: false
+
+jobs:
+  ingest:
+    name: Ingest alerts as issues
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: read
+      issues: write
+    steps:
+      - name: Create issues for open alerts
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          DRY_RUN: ${{ inputs.dry_run == true && '1' || '' }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import re
+          import subprocess
+          import sys
+          import time
+
+          REPO = os.environ["REPO"]
+          DRY_RUN = bool(os.environ.get("DRY_RUN"))
+          MAX_ISSUES_PER_RUN = 5
+          MARKER_RE = re.compile(r"<!-- codeql-alert: (\d+) -->")
+          SEVERITY_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3, "none": 4}
+          PRIORITY_MAP = {"critical": "p1", "high": "p1", "medium": "p2", "low": "p3", "none": "p3"}
+
+          def gh_api(*args, input_data=None):
+              cmd = ["gh", "api", *args]
+              result = subprocess.run(
+                  cmd, input=input_data, capture_output=True, text=True
+              )
+              if result.returncode != 0:
+                  print(f"::error::gh api failed: {' '.join(args)}\n{result.stderr}")
+                  sys.exit(1)
+              return result.stdout
+
+          def gh_api_paginated(path):
+              # --slurp wraps each page's array into one top-level array of pages
+              out = gh_api("--paginate", "--slurp", path)
+              return [item for page in json.loads(out) for item in page]
+
+          def severity_of(alert):
+              level = (alert.get("rule") or {}).get("security_severity_level")
+              return level if level in SEVERITY_ORDER else "none"
+
+          # 1. Open CodeQL alerts (state=open already excludes dismissed/fixed;
+          #    filter again defensively). tool_name=CodeQL matters: the
+          #    code-scanning API also returns other SARIF uploads (e.g. OpenSSF
+          #    Scorecard's Branch-Protection findings), which are not code
+          #    defects and don't belong in this funnel.
+          alerts = gh_api_paginated(
+              f"/repos/{REPO}/code-scanning/alerts?state=open&tool_name=CodeQL&per_page=100"
+          )
+          alerts = [a for a in alerts if a.get("state") == "open" and not a.get("dismissed_at")]
+
+          # 2. Alerts already ingested: marker scan over every issue, open and
+          #    closed, PRs excluded.
+          issues = gh_api_paginated(f"/repos/{REPO}/issues?state=all&per_page=100")
+          ingested = set()
+          for issue in issues:
+              if issue.get("pull_request"):
+                  continue
+              for match in MARKER_RE.finditer(issue.get("body") or ""):
+                  ingested.add(int(match.group(1)))
+
+          candidates = sorted(
+              (a for a in alerts if a["number"] not in ingested),
+              key=lambda a: (SEVERITY_ORDER[severity_of(a)], a["number"]),
+          )
+          to_create = candidates[:MAX_ISSUES_PER_RUN]
+          remaining = len(candidates) - len(to_create)
+
+          created = []
+          for alert in to_create:
+              rule = alert.get("rule") or {}
+              loc = ((alert.get("most_recent_instance") or {}).get("location")) or {}
+              path = loc.get("path", "unknown")
+              line = loc.get("start_line", "?")
+              severity = severity_of(alert)
+              priority = PRIORITY_MAP[severity]
+              rule_id = rule.get("id", "unknown-rule")
+              short_desc = rule.get("description") or rule.get("name") or rule_id
+              title = f"[codeql] {rule_id}: {short_desc} ({path}:{line})"
+              if len(title) > 250:
+                  title = title[:247] + "..."
+              full_desc = rule.get("full_description") or short_desc
+              body = "\n".join([
+                  f"<!-- codeql-alert: {alert['number']} -->",
+                  f"CodeQL flagged an open [code-scanning alert #{alert['number']}]({alert['html_url']}).",
+                  "",
+                  f"- **Rule:** `{rule_id}`",
+                  f"- **Description:** {full_desc}",
+                  f"- **Severity:** {rule.get('severity', 'unknown')}"
+                  f" (security severity: {severity})",
+                  f"- **Location:** `{path}:{line}`",
+                  f"- **Alert:** {alert['html_url']}",
+                  "",
+                  f"**Suggested priority: `priority:{priority}`** — a mechanical mapping from the"
+                  " security severity (critical/high → p1, medium → p2, low/none → p3; never p0,"
+                  " because static analysis alone does not confirm impact). The triage agent"
+                  " should audit this against the rubric, not trust it.",
+                  "",
+                  "_Filed automatically by the CodeQL alert ingest workflow. The marker comment"
+                  " at the top makes this issue the canonical record for the alert; closing it"
+                  " prevents re-filing._",
+              ])
+              labels = ["needs-triage", f"priority:{priority}"]
+              if DRY_RUN:
+                  print(f"[dry-run] would create: {title}\n  labels: {labels}")
+              else:
+                  payload = json.dumps({"title": title, "body": body, "labels": labels})
+                  out = gh_api(
+                      "-X", "POST", f"/repos/{REPO}/issues",
+                      "--input", "-", input_data=payload,
+                  )
+                  issue_url = json.loads(out)["html_url"]
+                  print(f"created: {issue_url} — {title}")
+                  created.append((alert, title, issue_url))
+                  time.sleep(2)  # secondary rate limit courtesy
+
+          # 3. Step summary dashboard.
+          by_severity = {}
+          for a in alerts:
+              by_severity[severity_of(a)] = by_severity.get(severity_of(a), 0) + 1
+          lines = ["## CodeQL alert ingest", ""]
+          if DRY_RUN:
+              lines += ["**Dry run — nothing was created.**", ""]
+          lines += [
+              f"Open alerts: **{len(alerts)}**"
+              + (" — nothing to do." if not alerts else ""),
+              "",
+              "| Security severity | Open alerts |",
+              "| --- | --- |",
+          ]
+          for sev in ("critical", "high", "medium", "low", "none"):
+              if sev in by_severity:
+                  lines.append(f"| {sev} | {by_severity[sev]} |")
+          lines += [
+              "",
+              f"Already ingested (marker found in an issue): **{len(alerts) - len(candidates)}**",
+              f"Created this run: **{len(created)}** (cap {MAX_ISSUES_PER_RUN})",
+          ]
+          if remaining > 0:
+              lines.append(
+                  f"Remaining beyond the cap: **{remaining}** — the weekly schedule"
+                  " drains them; dispatch manually to go faster."
+              )
+          if created:
+              lines += ["", "| Issue | Alert | Severity |", "| --- | --- | --- |"]
+              for alert, title, url in created:
+                  lines.append(f"| [{title}]({url}) | [#{alert['number']}]({alert['html_url']}) | {severity_of(alert)} |")
+          summary = "\n".join(lines) + "\n"
+          summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
+          if summary_path:
+              with open(summary_path, "a") as fh:
+                  fh.write(summary)
+          print(summary)
+          PY
