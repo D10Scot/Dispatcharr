@@ -173,7 +173,7 @@ Ten spec files, eighteen tests, all under `e2e/tests/frontend/`.
 |---|---|---|---|---|
 | 1 | *(all nine)* | `render.spec.ts` | Nine tests from one table. Per surface: `goto(route)`, wait for the surface's page test id, assert the collector saw no `pageerror`, no `console.error` and no response ≥ 400 outside the allowlist | 9 × 5s |
 | 2 | Guide grid renders and navigates | `guide.spec.ts` | Seed a channel; land on `/channels`; click the sidebar's Guide link; assert the URL and that a row bearing the seeded channel's name is present inside `guide-grid` | 15s |
-| 3 | DVR: schedule, list, cancel a recording | `dvr.spec.ts` | Seed a channel; open the recording modal; pick it in the `Channel` select; advance both `DateTimePicker`s one month and pick the 15th (D7); submit; assert through `GET /api/channels/recordings/` that a recording exists for that channel with the expected window; assert it is listed under Scheduled; cancel it from the card; assert it is gone from the API | 45s |
+| 3 | DVR: schedule, list, cancel a recording | `dvr.spec.ts` | Seed a channel; open the recording modal; pick it in the `Channel` select; advance both `DateTimePicker`s one month and pick the 15th (D7); submit; assert through `GET /api/channels/recordings/` that a recording exists for that channel with the expected window; assert the card is rendered inside `dvr-page` under the "Upcoming Recordings" heading; cancel it from the card; assert it is gone from the API | 45s |
 | 4 | Users: create, edit, delete | `users.spec.ts` | Create a user through the Users table's modal under `seed.generatedName('user')`; assert through `GET /api/accounts/users/` filtered by that name; edit its `user_level` through the UI and re-assert; delete and assert 404/absence | 40s |
 | 5 | Settings: change and persist | `settings.spec.ts` | `goto('/settings#user-agents')`; create a User-Agent with a generated name; assert through `GET /api/core/useragents/` filtered by that name; reload the page and assert the row is still rendered — the "persist" half, proved by a second read from the server rather than from the store | 30s |
 | 6 | Plugins: list, enable, configure | `plugins.spec.ts` | Build an inert fixture plugin zip with a per-run key (D8); drop it on the Plugins dropzone; assert through `GET /api/plugins/plugins/` that the key is listed; toggle Enabled in the UI and assert `enabled: true` from the API; set the plugin's one settings field in the UI and assert it through the API; delete the plugin as cleanup | 60s |
@@ -229,20 +229,21 @@ to `seed.ts`.
 ## PR A — the nine files
 
 Additive attributes only. No behaviour change, no refactor, no restructuring, no reordering.
-Each file gets its page-root id; five also get one container id, in every case because the
-container is an unnamed Mantine or `react-window` construct that no role expresses (D1a).
+**Eleven attributes across nine files.** Each file gets its page-root id; three also get one
+container id, and each of those three earns it by removing a specific false positive that the
+page root cannot — D1a's rule applied, not a symmetry exercise.
 
-| # | File | Test ids |
-|---|---|---|
-| 1 | `frontend/src/pages/Guide.jsx` | `guide-page` (page root), `guide-grid` (the `VariableSizeList` wrapper) |
-| 2 | `frontend/src/pages/DVR.jsx` | `dvr-page`, `dvr-scheduled-list` (the Scheduled section's grid) |
-| 3 | `frontend/src/pages/Users.jsx` | `users-page` |
-| 4 | `frontend/src/pages/Settings.jsx` | `settings-page` |
-| 5 | `frontend/src/pages/Plugins.jsx` | `plugins-page`, `plugins-list` |
-| 6 | `frontend/src/pages/Stats.jsx` | `stats-page`, `stats-connections` (the connections grid) |
-| 7 | `frontend/src/pages/Connect.jsx` | `connect-page`, `connect-integrations` (the integrations grid) |
-| 8 | `frontend/src/pages/Logos.jsx` | `logos-page` |
-| 9 | `frontend/src/components/backups/BackupManager.jsx` | `backups-panel` |
+| # | File | Anchor | Test ids |
+|---|---|---|---|
+| 1 | `frontend/src/pages/Guide.jsx` | `<Box ref={tvGuideRef} className="tv-guide">`; the "Main scrollable container for program content" `<Box ref={guideContainerRef}>` | `guide-page`, **`guide-grid`** — the grid container holds both the virtualized rows and the "No channels match your filters" empty state, so it is what distinguishes *rendered with rows* from *rendered empty*. That distinction is the wiring signal |
+| 2 | `frontend/src/pages/DVR.jsx` | `<Box p={10}>` in `DVRPage`'s return | `dvr-page`. No container id: the section headings are real `<Title>` elements ("Currently Recording", "Upcoming Recordings"), and the recording is identified by its uniquely seeded channel name anyway |
+| 3 | `frontend/src/pages/Users.jsx` | `<Box p={10}>` in `PageContent` | `users-page` |
+| 4 | `frontend/src/pages/Settings.jsx` | `<Box p={10} maw={900} mx="auto">` | `settings-page` |
+| 5 | `frontend/src/pages/Plugins.jsx` | `<AppShellMain p={16}>` in `PluginsPage`'s return | `plugins-page`. No container id: the plugin key carries per-run entropy, so nothing else on the page can match it |
+| 6 | `frontend/src/pages/Stats.jsx` | `<Box style={{ overflowX: 'auto' }}>` (the page returns a fragment); the `<Box display="grid" p={10} pb={120}>` wrapping `<Connections>` | `stats-page`, **`stats-connections`** — the page also renders a fixed-position `<SystemEvents>` log at the bottom, which can print the same channel name. Scoping to the connections grid is what stops an event-log line passing for a live connection |
+| 7 | `frontend/src/pages/Connect.jsx` | `<Box p="md" pb={120}>` (the page returns a fragment); the `<Box display="grid" py={10}>` wrapping the integration cards | `connect-page`, **`connect-integrations`** — same hazard: `<ConnectLogsSection>` is fixed at the bottom and prints integration names |
+| 8 | `frontend/src/pages/Logos.jsx` | `<Box>` in `LogosPage`'s return | `logos-page` |
+| 9 | `frontend/src/components/backups/BackupManager.jsx` | `<Stack gap="md">` in the component's return | `backups-panel` — required, not optional: `Settings.jsx` renders the section inside `<Suspense>` with a `<Loader/>` fallback, so `settings-page` alone cannot tell "the Backup section mounted" from "the spinner is still up" |
 
 The ninth is not under `pages/` — the backups surface is a lazily-loaded Settings section, not a
 route (see the fact table). It is the ninth *surface*, which is what the COVERAGE inventory
