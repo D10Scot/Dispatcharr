@@ -1172,7 +1172,34 @@ Implements D4 and D5. **Step 1 is a gate: it decides the mechanism.**
 - Create: `e2e/fixtures/greybox/redis.ts`, `e2e/tests/streaming-greybox/quarantine.spec.ts`
 - Modify: `scripts/e2e_up.sh` — **only if Step 1 succeeds**
 
-- [ ] **Step 1: Probe whether a published Redis port is reachable at all**
+- [ ] **Step 1: The probe is already done — read this and skip to Step 2**
+
+**RESULT: `DENIED`. The published-port branch is dead; take the `docker exec` branch.**
+
+Verified empirically against the running container, not inferred:
+
+```
+$ docker exec dispatcharr-e2e redis-cli CONFIG GET protected-mode   -> protected-mode yes
+$ docker exec dispatcharr-e2e redis-cli CONFIG GET requirepass      -> (empty)
+$ docker run --rm --network dispatcharr-e2e-net redis:7-alpine \
+    redis-cli -h dispatcharr-e2e -p 6379 PING
+DENIED Redis is running in protected mode because protected mode is enabled and
+no password is set for the default user. In this mode connections are only
+accepted from the loopback interface.
+```
+
+`CONFIG GET bind` reports `* -::*`, which looks permissive and is not: protected
+mode only stands down when the bind was set *explicitly*, and that value is the
+built-in default from a bare `redis-server` with no config file. Reading the
+config alone cannot settle this — only a real non-loopback connection can, which
+is why the probe exists.
+
+**Consequences:** `scripts/e2e_up.sh` is NOT modified by this task or this goal,
+which also removes G4 from one of the six files G7 edits concurrently. Disabling
+protected mode is not an option — it would mean editing the shipped
+`docker/uwsgi.ini` and contaminating the image under test.
+
+- [ ] **Step 1b (skipped — retained for the record): the original probe instruction**
 
 The spec expects this to fail. `docker/uwsgi.ini` starts Redis as a bare
 `attach-daemon = redis-server` — no config file, no `--bind`, no `requirepass`
@@ -1189,16 +1216,15 @@ Expected: `DENIED Redis is running in protected mode...`, not `PONG`.
 
 - [ ] **Step 2: Take the branch the probe dictates**
 
-**If it answered `PONG`:** add `-p "127.0.0.1:${REDIS_PORT}:6379"` to
-`scripts/e2e_up.sh`'s app-container `docker run`, defaulting
-`REDIS_PORT="${DISPATCHARR_E2E_REDIS_PORT:-9403}"` alongside the existing
-`PORT` and `UPSTREAM_PORT`, and implement the helper over a real client.
+**Take the `DENIED` branch — this is settled, not a decision for you.** Do not
+touch `scripts/e2e_up.sh`. Implement the helper over
+`docker exec dispatcharr-e2e redis-cli --json <command>`, invoked through Node's
+`execFile`. `--json` gives typed output rather than a string to parse, which
+removes most of the original objection to this route.
 
-**If it answered `DENIED` (expected):** do not touch `scripts/e2e_up.sh` at
-all — that removes G4 from one of the six files G7 also edits. Implement the
-helper over `docker exec … redis-cli --json` instead. Do **not** disable
-protected mode: that means editing the shipped `docker/uwsgi.ini` and
-contaminating the image under test.
+Container name: `dispatcharr-e2e`, overridable via `DISPATCHARR_E2E_NAME` in
+`scripts/e2e_up.sh` — read the default from there rather than hard-coding it a
+second time.
 
 Record which branch was taken, and the probe output, in a comment at the top of
 `redis.ts`.
