@@ -14,6 +14,7 @@
 
 Copied verbatim from the spec and the programme rules. Every task's requirements implicitly include this section.
 
+- **Every `live_proxy` endpoint is keyed by the channel's UUID STRING, never its numeric id.** `urls.py` captures `<str:channel_id>` on all seven routes, `stream_ts` never reassigns it, and `channel_status` passes it straight to `ChannelStatus.get_detailed_channel_info`, which reads `RedisKeys.channel_metadata(channel_id)` with no DB lookup. `views.py`'s XC path calls `stream_ts(request._request, str(channel.uuid), ...)`, which settles which identifier is canonical. Passing `channel.id` to `/proxy/ts/status/`, `/change_stream/`, `/next_stream/` or `/stop/` returns 404 every time, for every channel. Use `channel.uuid` throughout.
 - **Never assert a global count or an unfiltered list.** Scope every assertion to the worker's own seeded rows. (Roadmap rule 4; `e2e/README.md`.)
 - **Find built-in Stream Profiles by name, never by count.** `Proxy` and `Redirect` come from `core/migrations/0007`, `VLC` from `0019`.
 - **Product defects are asserted correct, marked `test.fail()` with the defect named in a comment, and filed as issues — never patched.** Issues go to `gh issue create --repo D10Scot/Dispatcharr`; the explicit `--repo` flag is mandatory, because this checkout is a fork and `gh` without it resolves to upstream's public tracker.
@@ -271,7 +272,7 @@ Implements D6 and gives every later task its assertion surface.
 - Produces:
   - `expectContiguous(buffer: Buffer, pid: number): void`
   - `videoPidOf(buffer: Buffer): number`
-  - `readChannelStatus(api: ApiClient, channelId: number): Promise<ChannelStatus>`
+  - `readChannelStatus(api: ApiClient, channelUuid: string): Promise<ChannelStatus>`
   - `type ChannelStatus = { stream_id: number | null; stream_name: string | null; url: string | null; state: string; owner: string | null; client_count: number; buffer_index: number; total_bytes: number; avg_bitrate_kbps: number; clients: ChannelStatusClient[]; ffmpeg_speed?: number; video_codec?: string; resolution?: string }`
 
 - [ ] **Step 1: Write the failing test**
@@ -425,10 +426,10 @@ import type { ChannelStatus } from './types';
  */
 export async function readChannelStatus(
   api: ApiClient,
-  channelId: number
+  channelUuid: string
 ): Promise<ChannelStatus> {
-  const res = await api.get(`/proxy/ts/status/${channelId}`);
-  return api.json<ChannelStatus>(res, `channel status for ${channelId}`);
+  const res = await api.get(`/proxy/ts/status/${channelUuid}`);
+  return api.json<ChannelStatus>(res, `channel status for ${channelUuid}`);
 }
 ```
 
@@ -598,14 +599,14 @@ test('one client receives aligned, contiguous TS through the Proxy profile', asy
   // which is the property the whole relay extraction rests on.
   expectContiguous(packets, videoPidOf(packets));
 
-  const status = await readChannelStatus(api, channel.id);
+  const status = await readChannelStatus(api, channel.uuid);
   expect(status.client_count).toBe(1);
 
   // total_bytes is assigned only once the metadata field exists, so a status
   // read taken moments after start can omit it entirely. Poll rather than read
   // once — a bare read makes this a flake, not a detector.
   await expect
-    .poll(async () => (await readChannelStatus(api, channel.id)).total_bytes ?? 0, {
+    .poll(async () => (await readChannelStatus(api, channel.uuid)).total_bytes ?? 0, {
       timeout: 30_000,
     })
     .toBeGreaterThan(0);
@@ -677,7 +678,7 @@ test('three clients share exactly one upstream connection', async ({
     }
 
     await expect
-      .poll(async () => (await readChannelStatus(api, channel.id)).client_count, {
+      .poll(async () => (await readChannelStatus(api, channel.uuid)).client_count, {
         timeout: 20_000,
       })
       .toBe(3);
@@ -688,7 +689,7 @@ test('three clients share exactly one upstream connection', async ({
 
     await clients[0].close();
     await expect
-      .poll(async () => (await readChannelStatus(api, channel.id)).client_count, {
+      .poll(async () => (await readChannelStatus(api, channel.uuid)).client_count, {
         timeout: 20_000,
       })
       .toBe(2);
@@ -839,7 +840,7 @@ test('the FFmpeg profile spawns a subprocess and reports its progress', async ({
   await expect
     .poll(
       async () => {
-        const raw = (await readChannelStatus(api, channel.id)).ffmpeg_speed;
+        const raw = (await readChannelStatus(api, channel.uuid)).ffmpeg_speed;
         return raw === undefined ? 0 : Number.parseFloat(raw);
       },
       { timeout: 60_000 }
@@ -892,17 +893,17 @@ test('switching the upstream mid-stream does not disturb a reading client', asyn
   const before = await streamClient.readPackets(200);
   expectTsAligned(before);
 
-  const beforeStatus = await readChannelStatus(api, channel.id);
+  const beforeStatus = await readChannelStatus(api, channel.uuid);
   expect(beforeStatus.stream_id).toBe(streams[0].id);
 
   // change_stream names its target; next_stream would depend on ordering.
-  const res = await api.post(`/proxy/ts/change_stream/${channel.id}`, {
+  const res = await api.post(`/proxy/ts/change_stream/${channel.uuid}`, {
     stream_id: streams[1].id,
   });
   expect(res.status(), 'switch should be applied, not merely accepted').toBe(200);
 
   await expect
-    .poll(async () => (await readChannelStatus(api, channel.id)).stream_id, {
+    .poll(async () => (await readChannelStatus(api, channel.uuid)).stream_id, {
       timeout: 60_000,
     })
     .toBe(streams[1].id);
@@ -910,7 +911,7 @@ test('switching the upstream mid-stream does not disturb a reading client', asyn
   const after = await streamClient.readPackets(200);
   expectTsAligned(after);
 
-  const afterStatus = await readChannelStatus(api, channel.id);
+  const afterStatus = await readChannelStatus(api, channel.uuid);
   // The invariant that makes a switch invisible to clients: the chunk index is
   // monotonic for the channel's life and is never reset by a switch. Asserting
   // it directly tests the mechanism rather than its symptom.
@@ -976,7 +977,7 @@ test('a dead upstream fails over to the next stream', async ({
   await upstream.fault(scenario, 'dead-air', { channel: 1 });
 
   await expect
-    .poll(async () => (await readChannelStatus(api, channel.id)).stream_id, {
+    .poll(async () => (await readChannelStatus(api, channel.uuid)).stream_id, {
       timeout: 120_000,
       intervals: [2_000],
     })
@@ -985,7 +986,7 @@ test('a dead upstream fails over to the next stream', async ({
   // The client survived the failover: it is still attached and still fed.
   const after = await streamClient.readPackets(100);
   expectTsAligned(after);
-  expect((await readChannelStatus(api, channel.id)).client_count).toBe(1);
+  expect((await readChannelStatus(api, channel.uuid)).client_count).toBe(1);
 });
 ```
 
@@ -1027,7 +1028,7 @@ test('an upstream that refuses the connection fails over before serving', async 
   await streamClient.open(`/proxy/ts/stream/${channel.uuid}`);
   expectTsAligned(await streamClient.readPackets(100));
 
-  const status = await readChannelStatus(api, channel.id);
+  const status = await readChannelStatus(api, channel.uuid);
   expect(status.stream_id, 'should never have settled on the 404 stream').toBe(
     streams[1].id
   );
@@ -1103,7 +1104,7 @@ test('a degraded but not dead upstream fails over on the buffering detector', as
   await streamClient.open(`/proxy/ts/stream/${channel.uuid}`);
 
   await expect
-    .poll(async () => (await readChannelStatus(api, channel.id)).stream_id, {
+    .poll(async () => (await readChannelStatus(api, channel.uuid)).stream_id, {
       timeout: 180_000,
       intervals: [2_000],
     })
@@ -1300,7 +1301,7 @@ test('two clients on one output profile share a single transcode', async ({
     }
 
     // Both clients are attached to the same output profile...
-    const status = await readChannelStatus(api, channel.id);
+    const status = await readChannelStatus(api, channel.uuid);
     expect(status.client_count).toBe(2);
     expect(status.clients.every((c) => c.output_profile_id === output.id)).toBe(true);
 
@@ -1377,7 +1378,7 @@ test.fail('only one worker writes to a channel buffer at a time', async ({
   await streamClient.open(`/proxy/ts/stream/${channel.uuid}`);
   expectTsAligned(await streamClient.readPackets(100));
 
-  const before = await readChannelStatus(api, channel.id);
+  const before = await readChannelStatus(api, channel.uuid);
   // NOT toBeTruthy(). channel_status.py falls back to the literal string
   // 'unknown' when the owner metadata key is absent, and 'unknown' is truthy.
   // Without this guard the final assertion below compares 'unknown' to
@@ -1397,13 +1398,13 @@ test.fail('only one worker writes to a channel buffer at a time', async ({
 
   // Bytes are still flowing, so the original owner has not stopped...
   await expect
-    .poll(async () => (await readChannelStatus(api, channel.id)).total_bytes, {
+    .poll(async () => (await readChannelStatus(api, channel.uuid)).total_bytes, {
       timeout: 30_000,
     })
     .toBeGreaterThan(before.total_bytes);
 
   // ...and no second worker should have claimed ownership while that is true.
-  const after = await readChannelStatus(api, channel.id);
+  const after = await readChannelStatus(api, channel.uuid);
   expect(
     after.owner,
     'a second worker claimed the lease while the first was still writing'
