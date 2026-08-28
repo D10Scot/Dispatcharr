@@ -55,6 +55,8 @@ one up. CI binds the same way.
 | `pristine` | Needs an instance with **no superuser**: first-run setup, and global `CoreSettings` changes |
 | `seeded` | The default. Shared instance, parallel workers, API-seeded data |
 | `streaming` | Byte-level tests. Long timeouts, fewer workers |
+| `lifecycle` | Restarts the container mid-test. **Runs alone** — it destroys the container every other project shares. No `bootstrap` dependency: it provisions its own admin |
+| `lifecycle-upgrade` | Boots a published baseline image, seeds, then replaces the container with the local build on the same volume. **Runs alone.** Runs in `lifecycle-tests.yml`, not in `e2e-tests.yml`'s matrix |
 
 `pristine` deliberately has no `bootstrap` dependency — it needs the
 superuser *not* to exist yet, which is the entire point of that project, and
@@ -78,10 +80,30 @@ scenario; `test-tls-postgres.sh` stands up its own PostgreSQL and Redis with
 generated certificates on a dedicated network. Those are G7's
 scenario-specific jobs, not `pristine` specs — see the G7 paragraph in
 `docs/superpowers/specs/2026-08-23-e2e-coverage-roadmap-design.md`, which is
-the authority here.
+the authority here. Both suites leak a PostgreSQL volume per scenario on
+every run, tracked as
+[D10Scot/Dispatcharr#41](https://github.com/D10Scot/Dispatcharr/issues/41);
+neither suite is modified by this harness, so the cleanup lives with that
+issue, not here.
+
+`lifecycle` and `lifecycle-upgrade` go further than needing a differently
+configured instance: they **destroy** it. Both import
+`e2e/fixtures/instance.ts`, which stops, replaces or removes the shared
+container outright, and `scripts/e2e_up.sh`'s `destroy()` takes the shared
+Docker network and the `e2e-upstream` provider container down with it — see
+that file's header for the full reasoning. A lifecycle spec running beside
+any other project would not merely disturb it, it would delete the instance
+out from under it mid-assertion, with the failure surfacing in whichever
+project lost its container. That is why both run alone, in their own job and
+their own runner in CI, and neither shares a container with the other:
+
+```bash
+./scripts/e2e_up.sh --reset && npm run test:lifecycle
+npm run test:lifecycle-upgrade   # pulls a ~3.6 GB baseline; brings its own instance up and down
+```
 
 `npm test` (no suffix) deliberately fails with a message telling you to pick
-one of the three — there is no single invocation that is correct for all of
+one of the five — there is no single invocation that is correct for all of
 them, and a bare `npm test` in CI would silently run whichever config
 happened to be first.
 
@@ -365,17 +387,35 @@ early on the name.
 ## CI
 
 `.github/workflows/e2e-tests.yml` builds the AIO image once, then runs
-`pristine`, `seeded` and `streaming` as a hardcoded three-job matrix
-(`e2e-tests.yml:49-50`), each against its own fresh container, each gated on
-`npm run typecheck` before tests run. **If you add a fourth project to
-`playwright.config.ts`, add it to that matrix too** — nothing wires new
+`pristine`, `seeded`, `streaming` and `lifecycle` as a hardcoded four-job
+matrix (`e2e-tests.yml:163`), each against its own fresh container, each
+gated on `npm run typecheck` before tests run. **If you add another project
+to `playwright.config.ts`, add it to that matrix too** — nothing wires new
 projects in automatically, and a project missing from the matrix gets no CI
 coverage and no failure signal.
 
-These three jobs are **not** required checks on `main` — nobody has configured
+These four jobs are **not** required checks on `main` — nobody has configured
 branch protection on this fork, so a red E2E run does not block a merge today.
 Making them required is a one-time step in the repository settings, not
 something this workflow can do for itself.
+
+`lifecycle-upgrade` is the one project **deliberately not** in that matrix.
+It runs instead in `.github/workflows/lifecycle-tests.yml`, because it pulls
+a ~3.6 GB baseline image and takes roughly 9 minutes — adding that to every
+PR would roughly double E2E latency, where the longest existing job in
+`e2e-tests.yml` is 284s. That workflow also runs the two bash suites,
+`docker/tests/test-puid-pgid.sh` and `test-tls-postgres.sh`, which had no
+workflow at all before it. **`lifecycle-tests.yml` is path-filtered and must
+not be made a required check** — a required check on a workflow that never
+triggers for an unrelated PR blocks the merge forever, which is exactly why
+`e2e-tests.yml`'s own `pull_request` trigger carries no paths filter.
+
+Both bash suites need **bash 4.4+** to run. Stock macOS `/bin/bash` is
+3.2.57, where expanding an empty array under `set -u` is an unbound-variable
+error, so the suite dies on `CLEANUP_ITEMS[@]` before running a single
+scenario — CI runners ship bash 5.x, so this only bites locally, on the
+platform this repo is maintained from. Homebrew's `bash`, or a `docker:27-cli`
+container with bash installed, both work.
 
 ## Architecture note
 

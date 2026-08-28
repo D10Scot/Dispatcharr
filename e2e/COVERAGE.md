@@ -52,10 +52,10 @@ tests.** Status: `todo` / `done` / `known-bug` (asserted correct, marked
 | Frontend | Connect: webhook CRUD | G6 | todo |
 | Frontend | Logos: upload and browse | G6 | todo |
 | Frontend | Backups: create and restore | G6 | todo |
-| Lifecycle | Upgrade from previous release (migrations) | G7 | todo |
-| Lifecycle | Restart preserves channels and settings | G7 | todo |
-| Lifecycle | PUID/PGID honoured | G7 | todo |
-| Lifecycle | TLS Postgres connection | G7 | todo |
+| Lifecycle | Upgrade from previous release (migrations) | G7 | done |
+| Lifecycle | Restart preserves channels and settings | G7 | done |
+| Lifecycle | PUID/PGID honoured | G7 | done |
+| Lifecycle | TLS Postgres connection | G7 | done |
 
 The ten G1 rows above are covered by these specs (the two seeding rows
 share one file, as do the two principal rows):
@@ -86,3 +86,14 @@ provider and its faults) plus:
 or stream through the provider, and drive any of the eight faults, using only
 `e2e/fixtures/upstream.ts` and the fault catalogue documented in
 `e2e-upstream/README.md` — without reading `e2e-upstream/src/`.
+
+The four G7 rows above are covered by:
+
+- `e2e/tests/lifecycle/upgrade-migrations.spec.ts` (upgrade from previous
+  release)
+- `e2e/tests/lifecycle/restart-persistence.spec.ts` (restart preserves
+  channels and settings)
+- `docker/tests/test-puid-pgid.sh`, run by
+  `.github/workflows/lifecycle-tests.yml` (PUID/PGID honoured)
+- `docker/tests/test-tls-postgres.sh`, run by
+  `.github/workflows/lifecycle-tests.yml` (TLS Postgres connection)
