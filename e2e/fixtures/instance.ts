@@ -1,0 +1,262 @@
+/**
+ * Driving the Dispatcharr container's own lifecycle from inside a test.
+ *
+ * ---------------------------------------------------------------------------
+ * WHO MAY IMPORT THIS
+ * ---------------------------------------------------------------------------
+ * Only the two lifecycle projects — `e2e/tests/lifecycle/`. Nothing else.
+ *
+ * Every other project in this suite shares one container for the length of a
+ * run. This fixture stops, replaces and destroys that container, and
+ * `scripts/e2e_up.sh`'s `destroy()` also removes the shared Docker network and
+ * the `e2e-upstream` provider container along with it. A lifecycle spec
+ * running beside `seeded` would therefore not merely disturb it — it would
+ * delete the instance out from under it mid-assertion, and the failures would
+ * surface in the *other* project, naming nothing.
+ *
+ * That is survivable only because the lifecycle projects run alone: their own
+ * job and their own runner in CI (and, after D16, not even in the same
+ * workflow as each other), plus a documented rule locally, alongside the same
+ * rule that already applies to `pristine` and to `streaming-greybox`. See
+ * `e2e/README.md`.
+ *
+ * ---------------------------------------------------------------------------
+ * WHY IT SHELLS OUT
+ * ---------------------------------------------------------------------------
+ * `scripts/e2e_up.sh` is the single boot path — the same script a developer
+ * runs and the same one `e2e-tests.yml` calls. Re-implementing `docker run`
+ * with the right volume, network, port binding and readiness probe here would
+ * be a second boot path that drifts from the first; that drift is exactly what
+ * `e2e-tests.yml` stopped paying by calling the script instead of copying it.
+ */
+import { execFile } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import path from 'node:path';
+import { promisify } from 'node:util';
+
+const run = promisify(execFile);
+
+/**
+ * Playwright runs with the config directory (`e2e/`) as CWD, which is the
+ * assumption `setup/auth-files.ts`, `fixtures/api.ts` and `setup/principals.ts`
+ * already encode by using bare relative paths. The repo root is its parent.
+ */
+const REPO_ROOT = path.resolve(process.cwd(), '..');
+const SCRIPT = path.join(REPO_ROOT, 'scripts', 'e2e_up.sh');
+
+/** Matches `scripts/e2e_up.sh`'s own default, and CI never overrides it. */
+const CONTAINER =
+  process.env.DISPATCHARR_E2E_CONTAINER ?? 'dispatcharr-e2e';
+
+/**
+ * `docker/entrypoint.sh`: `POSTGRES_USER=${POSTGRES_USER:-dispatch}`, and every
+ * `manage.py` invocation in that file runs as `su - "$POSTGRES_USER"`. The
+ * login dash is not cosmetic — the same file notes that `su -` strips the
+ * environment and that it publishes PATH through the login profile precisely
+ * so this form works.
+ */
+const APP_USER = 'dispatch';
+
+/** A cold first boot on a CI runner has taken most of ten minutes. */
+const SCRIPT_TIMEOUT_MS = 900_000;
+
+/** `docker inspect` and `manage.py showmigrations` are fast and small. */
+const DOCKER_TIMEOUT_MS = 120_000;
+
+/** `docker pull` of a ~3.6 GB image. */
+const PULL_TIMEOUT_MS = 900_000;
+
+const MAX_BUFFER = 16 * 1024 * 1024;
+
+export type UpOptions = {
+  /** Sets `DISPATCHARR_E2E_IMAGE` for this invocation. */
+  image?: string;
+  /** Pass `--reset`: destroy the container *and* its volume first. */
+  reset?: boolean;
+};
+
+export type ManageResult = {
+  code: number;
+  stdout: string;
+  stderr: string;
+};
+
+type ExecError = Error & {
+  code?: number | string;
+  stdout?: string;
+  stderr?: string;
+};
+
+function isExecError(error: unknown): error is ExecError {
+  return error instanceof Error;
+}
+
+export class Instance {
+  constructor() {
+    if (!existsSync(SCRIPT)) {
+      throw new Error(
+        `scripts/e2e_up.sh not found at ${SCRIPT}. The instance fixture ` +
+          'resolves the repo root as the parent of the process CWD, which ' +
+          'assumes Playwright is running from `e2e/` — the same assumption ' +
+          '`setup/auth-files.ts` makes. Run Playwright from `e2e/`.'
+      );
+    }
+  }
+
+  /**
+   * Run `scripts/e2e_up.sh`, throwing an error that quotes its output.
+   *
+   * The script's own failure paths print container logs before exiting, so
+   * carrying stdout into the message is the difference between "the boot
+   * failed" and knowing why.
+   */
+  private async script(args: string[], env: NodeJS.ProcessEnv = {}): Promise<string> {
+    try {
+      const { stdout } = await run('bash', [SCRIPT, ...args], {
+        cwd: REPO_ROOT,
+        timeout: SCRIPT_TIMEOUT_MS,
+        maxBuffer: MAX_BUFFER,
+        env: {
+          ...process.env,
+          // The image is built once by CI and loaded from an artifact; letting
+          // the script rebuild it would discard that and, since
+          // e2e-upstream's ffmpeg is deliberately unpinned, is not guaranteed
+          // to produce the same asset.
+          DISPATCHARR_E2E_SKIP_UPSTREAM_BUILD: '1',
+          ...env,
+        },
+      });
+      return stdout;
+    } catch (error) {
+      const details = isExecError(error)
+        ? `${error.stdout ?? ''}${error.stderr ?? ''}`.trim() || error.message
+        : String(error);
+      throw new Error(
+        `scripts/e2e_up.sh ${args.join(' ') || '(start)'} failed:\n${details}`
+      );
+    }
+  }
+
+  private async docker(args: string[], timeout = DOCKER_TIMEOUT_MS): Promise<string> {
+    try {
+      const { stdout } = await run('docker', args, {
+        timeout,
+        maxBuffer: MAX_BUFFER,
+      });
+      return stdout.trim();
+    } catch (error) {
+      const details = isExecError(error)
+        ? `${error.stdout ?? ''}${error.stderr ?? ''}`.trim() || error.message
+        : String(error);
+      throw new Error(`docker ${args.join(' ')} failed:\n${details}`);
+    }
+  }
+
+  /** Start the instance, reusing an existing container unless `reset` is set. */
+  async up(options: UpOptions = {}): Promise<string> {
+    return this.script(
+      options.reset ? ['--reset'] : [],
+      options.image ? { DISPATCHARR_E2E_IMAGE: options.image } : {}
+    );
+  }
+
+  /**
+   * Stop and start the *same* container — an in-place restart.
+   *
+   * Two invocations rather than `docker restart` so the second one goes
+   * through the script's readiness probe: a restart that returns before
+   * migrations and uWSGI are up would have every assertion after it racing
+   * the boot.
+   */
+  async restart(): Promise<string> {
+    await this.script(['--stop']);
+    return this.script([]);
+  }
+
+  /** Replace the container, keep the volume — see `--recreate` in the script. */
+  async recreate(options: { image: string }): Promise<string> {
+    return this.script(['--recreate'], {
+      DISPATCHARR_E2E_IMAGE: options.image,
+    });
+  }
+
+  /** Destroy the container, its volume, the network and the provider. */
+  async down(): Promise<string> {
+    return this.script(['--down']);
+  }
+
+  /**
+   * Pull `ref` and return its repo digest.
+   *
+   * Called before `up({ image: ref })` and never skipped: `e2e_up.sh` builds
+   * from `docker/Dockerfile` when `docker image inspect` misses, so a
+   * forgotten pull produces a "baseline" that is the local code under a
+   * borrowed tag — a test comparing the image against itself, passing forever.
+   */
+  async pull(ref: string): Promise<string> {
+    await this.docker(['pull', ref], PULL_TIMEOUT_MS);
+    return this.docker([
+      'image',
+      'inspect',
+      '-f',
+      '{{index .RepoDigests 0}}',
+      ref,
+    ]);
+  }
+
+  /** The image id the running container was created from. */
+  async imageId(): Promise<string> {
+    return this.docker(['inspect', '-f', '{{.Image}}', CONTAINER]);
+  }
+
+  /** The image id a reference resolves to locally, for comparison with the above. */
+  async imageIdOf(ref: string): Promise<string> {
+    return this.docker(['image', 'inspect', '-f', '{{.Id}}', ref]);
+  }
+
+  /** The container's current start timestamp — proof a restart happened. */
+  async startedAt(): Promise<string> {
+    return this.docker(['inspect', '-f', '{{.State.StartedAt}}', CONTAINER]);
+  }
+
+  /**
+   * Run `manage.py` inside the container, returning the exit code rather than
+   * throwing — `migrate --check` exits non-zero *as its result*.
+   *
+   * `argv` is interpolated into a shell command, so it is restricted to plain
+   * tokens. Nothing this suite needs is more than that, and accepting more
+   * would make a fixture that shells into a container quietly able to run
+   * anything.
+   */
+  async manage(argv: string[]): Promise<ManageResult> {
+    for (const arg of argv) {
+      if (!/^[A-Za-z0-9._/=-]+$/.test(arg)) {
+        throw new Error(
+          `instance.manage() argument ${JSON.stringify(arg)} contains ` +
+            'characters that are not plain tokens. This runs through a shell ' +
+            'inside the container; quote-free arguments only.'
+        );
+      }
+    }
+    const command = `cd /app && python manage.py ${argv.join(' ')}`;
+    try {
+      const { stdout, stderr } = await run(
+        'docker',
+        ['exec', CONTAINER, 'su', '-', APP_USER, '-c', command],
+        { timeout: DOCKER_TIMEOUT_MS, maxBuffer: MAX_BUFFER }
+      );
+      return { code: 0, stdout, stderr };
+    } catch (error) {
+      if (isExecError(error) && typeof error.code === 'number') {
+        return {
+          code: error.code,
+          stdout: error.stdout ?? '',
+          stderr: error.stderr ?? '',
+        };
+      }
+      throw new Error(
+        `docker exec … manage.py ${argv.join(' ')} did not run: ${String(error)}`
+      );
+    }
+  }
+}
