@@ -75,5 +75,31 @@ export default defineConfig({
       // time any test runs.
       use: { storageState: 'playwright/.auth/admin.json' },
     },
+    {
+      // Owns its container's lifecycle: restarts it mid-test. Must run alone —
+      // `fixtures/instance.ts` has the reasoning, `e2e/README.md` has the rule.
+      name: 'lifecycle',
+      testDir: './tests/lifecycle',
+      // The split between the two lifecycle projects is structural, not a
+      // `--grep`: `--grep` matches test *titles*, so which spec ran would
+      // depend on wording, and nothing would give this project the
+      // complementary filter — it would run the ~9-minute upgrade spec too,
+      // on every PR, which is exactly what D16 exists to prevent.
+      testMatch: /restart-persistence\.spec\.ts$/,
+      workers: 1,
+      fullyParallel: false,
+      // Two container boots and a full readiness wait.
+      timeout: 600_000,
+      // Attempt 1 consumes the state attempt 2 would need — the same reason
+      // `pristine` sets this, and here also because a retry would re-run
+      // `provisionAdmin` against an instance that already has the superuser
+      // and spend a login it does not need.
+      retries: 0,
+      // No `dependencies` and no `storageState`, for the same reason
+      // `pristine` has neither: `bootstrap` targets whichever container is up
+      // before a project starts, and this spec replaces the container
+      // mid-run — a persisted token would point at an instance that no longer
+      // exists.
+    },
   ],
 });
