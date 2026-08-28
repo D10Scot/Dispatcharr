@@ -1125,23 +1125,35 @@ test('a degraded but not dead upstream fails over on the buffering detector', as
     })
     .toBe(streams[1].id);
 
-  // THE DISCRIMINATOR. slow-trickle keeps delivering bytes; dead air requires
-  // a >10s silence. If the provider never went silent for 10s, the dead-air
-  // watchdog cannot have fired, so the switch can only have come from the
-  // buffering detector. This is what makes a false pass structurally
-  // impossible rather than merely unlikely.
-  const log = await upstream.log(scenario);
-  const gaps = maxGapMs(log.filter((e) => e.channelId === 1));
-  expect(
-    gaps,
-    `provider went quiet for ${gaps}ms — dead air could have caused this switch, ` +
-      'so the test no longer proves the buffering detector fired'
-  ).toBeLessThan(10_000);
+  // THE DISCRIMINATOR. Dead air fires only when the provider stops sending;
+  // slow-trickle sends continuously at a reduced rate. If the connection
+  // actually delivered at approximately the armed trickle rate for its whole
+  // life, no >10s silence window existed, so the dead-air watchdog cannot have
+  // caused this switch — and dead air was never armed on this scenario anyway.
+  //
+  // Throughput-based, NOT gap-based, and that is deliberate: the provider's
+  // ScenarioLog records only `request | open | close | fault` — there is no
+  // per-chunk entry anywhere in e2e-upstream/src (four record() call sites in
+  // total). A gap computed over those timestamps measures the CONNECTION'S
+  // LIFETIME, which is equally long whether the provider trickled or fell
+  // silent, so it cannot discriminate. Do not "restore" a gap check.
+  const closed = (await upstream.log(scenario)).find(
+    (e) => e.kind === 'close' && e.channelId === 1
+  );
+  expect(closed, 'the provider should have logged the closed connection').toBeDefined();
+  const observedKbPerSec = (closed!.bytes! / 1024) / (closed!.durationMs! / 1000);
+
+  // Bracketed, not floored. A floor alone would pass a connection that stalled
+  // for 15s and then burst; requiring the rate to sit near the armed value
+  // means it must have been trickling steadily throughout.
+  expect(observedKbPerSec).toBeGreaterThan(EXPECTED_TRICKLE_KB_PER_SEC * 0.5);
+  expect(observedKbPerSec).toBeLessThan(EXPECTED_TRICKLE_KB_PER_SEC * 2);
 });
 ```
 
-`maxGapMs` is a local helper computing the largest interval between consecutive
-provider log timestamps for that channel.
+`EXPECTED_TRICKLE_KB_PER_SEC` is derived from the armed trickle rate and the
+asset's nominal throughput — at `rate: 0.3` against ~180 KB/s that is ~54 KB/s,
+and a measured run observed 54.8 KB/s. Put that arithmetic in a comment.
 
 - [ ] **Step 3: Run it**
 
