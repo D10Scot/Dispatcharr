@@ -1234,9 +1234,9 @@ touch `scripts/e2e_up.sh`. Implement the helper over
 `execFile`. `--json` gives typed output rather than a string to parse, which
 removes most of the original objection to this route.
 
-Container name: `dispatcharr-e2e`, overridable via `DISPATCHARR_E2E_NAME` in
-`scripts/e2e_up.sh` — read the default from there rather than hard-coding it a
-second time.
+Container name: `dispatcharr-e2e`, overridable via **`DISPATCHARR_E2E_CONTAINER`**
+(`scripts/e2e_up.sh`, the `NAME=` assignment) — read the default from there
+rather than hard-coding it a second time.
 
 Record which branch was taken, and the probe output, in a comment at the top of
 `redis.ts`.
@@ -1279,7 +1279,9 @@ import { readdir, readFile } from 'node:fs/promises';
 import { GREYBOX_ALLOWLIST } from '../../fixtures/greybox/redis';
 
 test('only allowlisted specs import the grey-box Redis helper', async () => {
-  const root = new URL('../..', import.meta.url).pathname;
+  // Not import.meta.url: e2e/package.json has no "type": "module", so Playwright
+  // transforms this to CommonJS and import.meta throws "require is not defined".
+  const root = path.resolve(__dirname, '../..');
   const importers: string[] = [];
 
   async function walk(dir: string, rel: string): Promise<void> {
@@ -1288,7 +1290,16 @@ test('only allowlisted specs import the grey-box Redis helper', async () => {
       const childRel = rel ? `${rel}/${entry.name}` : entry.name;
       if (entry.isDirectory()) {
         await walk(`${dir}/${entry.name}`, childRel);
-      } else if (entry.name.endsWith('.ts') && childRel !== 'fixtures/greybox/redis.ts') {
+      // BOTH exclusions are required. The fixture is obvious. The meta-test
+      // itself is not: this file imports GREYBOX_ALLOWLIST from the very module
+      // it polices, so its own source contains the matched substring and it
+      // would flag itself as an unauthorized importer on every run — failing
+      // unconditionally, forever, for a reason unrelated to what it guards.
+      } else if (
+        entry.name.endsWith('.ts') &&
+        childRel !== 'fixtures/greybox/redis.ts' &&
+        childRel !== 'tests/streaming-greybox/quarantine.spec.ts'
+      ) {
         const src = await readFile(`${root}${dir}/${entry.name}`, 'utf8');
         if (src.includes('greybox/redis')) importers.push(childRel);
       }
