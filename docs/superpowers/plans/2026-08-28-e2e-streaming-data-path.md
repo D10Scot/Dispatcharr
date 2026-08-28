@@ -796,12 +796,14 @@ test('the Redirect profile 302s the client at the provider and carries no bytes'
   await streamClient.open(`/proxy/ts/stream/${channel.uuid}`, { redirect: 'manual' });
 
   expect(streamClient.status).toBe(302);
-  const location = streamClient.headers['location'];
+  // `headers` is a fetch `Headers` object and is optional until open() resolves
+  // — it has no index signature, so `.get()` is the only way in.
+  const location = streamClient.headers?.get('location');
   expect(location, 'a Redirect profile must send a Location').toBeTruthy();
 
   // toControl throws on anything not under the internal origin — so this line
   // is itself the assertion that we were sent at the provider and nowhere else.
-  expect(() => upstream.toControl(location)).not.toThrow();
+  expect(() => upstream.toControl(location!)).not.toThrow();
   expect(location).toBe(streams[0].url);
 
   // No bytes traversed Dispatcharr: that is what "no failover after connect"
