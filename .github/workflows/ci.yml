@@ -3,10 +3,34 @@ name: CI Pipeline
 on:
   push:
     branches: [main]
-    paths-ignore:
-      - '**.md'
+    # Only paths that affect the built image. Workflow .md/.lock.yml files,
+    # docs, and repo meta merging to main should not publish an image.
+    paths:
+      - 'apps/**'
+      - 'core/**'
+      - 'dispatcharr/**'
+      - 'frontend/**'
+      - 'docker/**'
+      - 'scripts/**'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - 'version.py'
+      - 'manage.py'
+      - '.github/workflows/ci.yml'
   pull_request:
     branches: [main]
+    paths:
+      - 'apps/**'
+      - 'core/**'
+      - 'dispatcharr/**'
+      - 'frontend/**'
+      - 'docker/**'
+      - 'scripts/**'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - 'version.py'
+      - 'manage.py'
+      - '.github/workflows/ci.yml'
   workflow_dispatch:
   schedule:
     # Weekly rebuild against whatever base-image.yml published most
