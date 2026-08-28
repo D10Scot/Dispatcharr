@@ -48,6 +48,25 @@ const SCRIPT = path.join(REPO_ROOT, 'scripts', 'e2e_up.sh');
 const CONTAINER =
   process.env.DISPATCHARR_E2E_CONTAINER ?? 'dispatcharr-e2e';
 
+/** Ditto — the tag `scripts/e2e_up.sh` builds or expects for the fake provider. */
+const UPSTREAM_IMAGE =
+  process.env.DISPATCHARR_E2E_UPSTREAM_IMAGE ?? 'dispatcharr-e2e-upstream:local';
+
+/**
+ * Readiness budget for every boot this fixture drives.
+ *
+ * `scripts/e2e_up.sh` defaults to 60 polls at 5s = 300s. `e2e-tests.yml` raises
+ * its own boot step to 120 and says why: the default "suits a laptop with a warm
+ * volume rather than a cold runner". Every boot here is at least as cold —
+ * `up({ reset: true })` destroys the volume, so the upgrade spec pays `initdb`,
+ * 130 migrations and `collectstatic` on a CI runner, the same work `pristine`
+ * does with twice this budget.
+ *
+ * Set here rather than per-workflow-job so no future caller has to remember, and
+ * deferring to an explicit override so a workflow can still raise it further.
+ */
+const READY_ATTEMPTS = process.env.DISPATCHARR_E2E_READY_ATTEMPTS ?? '120';
+
 /**
  * `docker/entrypoint.sh`: `POSTGRES_USER=${POSTGRES_USER:-dispatch}`, and every
  * `manage.py` invocation in that file runs as `su - "$POSTGRES_USER"`. The
@@ -110,7 +129,32 @@ export class Instance {
    * carrying stdout into the message is the difference between "the boot
    * failed" and knowing why.
    */
+  /**
+   * Whether to tell the script to skip building the fake upstream provider.
+   *
+   * Only when the image is already here. In CI it always is — `build` saves it
+   * into the artifact alongside the AIO image and the job `docker load`s both —
+   * and skipping matters there, because rebuilding would discard the artifact
+   * every other consumer is testing, and `e2e-upstream`'s ffmpeg is deliberately
+   * unpinned so a second build is not guaranteed to carry the same asset.
+   *
+   * Setting it unconditionally was wrong locally and failed late and
+   * confusingly: `scripts/e2e_up.sh` skips the build and then reads the image id
+   * anyway under `set -e`, so a fresh clone died at `No such image` — after
+   * `test:lifecycle-upgrade` had already spent ten minutes pulling a 3.6 GB
+   * baseline, having just printed that it was "using the loaded artifact".
+   */
+  private async skipUpstreamBuild(): Promise<boolean> {
+    try {
+      await this.docker(['image', 'inspect', '-f', '{{.Id}}', UPSTREAM_IMAGE]);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   private async script(args: string[], env: NodeJS.ProcessEnv = {}): Promise<string> {
+    const skipUpstream = await this.skipUpstreamBuild();
     try {
       const { stdout } = await run('bash', [SCRIPT, ...args], {
         cwd: REPO_ROOT,
@@ -118,11 +162,10 @@ export class Instance {
         maxBuffer: MAX_BUFFER,
         env: {
           ...process.env,
-          // The image is built once by CI and loaded from an artifact; letting
-          // the script rebuild it would discard that and, since
-          // e2e-upstream's ffmpeg is deliberately unpinned, is not guaranteed
-          // to produce the same asset.
-          DISPATCHARR_E2E_SKIP_UPSTREAM_BUILD: '1',
+          DISPATCHARR_E2E_READY_ATTEMPTS: READY_ATTEMPTS,
+          ...(skipUpstream
+            ? { DISPATCHARR_E2E_SKIP_UPSTREAM_BUILD: '1' }
+            : {}),
           ...env,
         },
       });
