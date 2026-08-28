@@ -200,6 +200,8 @@ jobs:
             echo '```'
             echo
             echo "Do **not** add \`--keep-on-fail\`. The TLS suite reuses one set of container names across all eight scenarios, so keeping one failure's containers cascades into six fabricated ones; the puid suite's keep-branch is run-global and accumulates containers and PostgreSQL volumes."
+            echo
+            echo "**On macOS, run that under bash 4.4+** — Homebrew's \`bash\`, or a \`docker:27-cli\` container with bash installed. Stock \`/bin/bash\` is 3.2.57, where expanding an empty array under \`set -u\` is an unbound-variable error, so the suite dies on \`CLEANUP_ITEMS[@]\` before it runs anything. Runners ship bash 5.x, so it never reproduces here — only on the machine you are most likely to debug from."
           } >> "${GITHUB_STEP_SUMMARY}"
 
       - name: Upload the suite log
