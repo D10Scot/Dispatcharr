@@ -15,6 +15,19 @@
 Copied verbatim from the spec and the programme rules. Every task's requirements implicitly include this section.
 
 - **Every `live_proxy` endpoint is keyed by the channel's UUID STRING, never its numeric id.** `urls.py` captures `<str:channel_id>` on all seven routes, `stream_ts` never reassigns it, and `channel_status` passes it straight to `ChannelStatus.get_detailed_channel_info`, which reads `RedisKeys.channel_metadata(channel_id)` with no DB lookup. `views.py`'s XC path calls `stream_ts(request._request, str(channel.uuid), ...)`, which settles which identifier is canonical. Passing `channel.id` to `/proxy/ts/status/`, `/change_stream/`, `/next_stream/` or `/stop/` returns 404 every time, for every channel. Use `channel.uuid` throughout.
+- **Import map — every shared symbol comes from exactly one place. Never redefine one locally.**
+  Task code blocks below often omit the import lines; this table is authoritative.
+
+  | Symbol | From |
+  |---|---|
+  | `test`, `expect`, `expectTsAligned`, `expectContiguous`, `videoPidOf`, `readChannelStatus`, `TS_PACKET_SIZE` | `'../../fixtures'` |
+  | `lockedProfile`, `newStreamClient` | `'./helpers'` from a spec in `tests/streaming/`; **`'../streaming/helpers'`** from a spec in `tests/streaming-failover/` or `tests/streaming-greybox/` |
+  | `greyboxRedis`, `GREYBOX_ALLOWLIST` | `'../../fixtures/greybox/redis'` — importable ONLY from `tests/streaming-greybox/`, enforced by the allowlist meta-test |
+
+  The relative path to `helpers.ts` differs by which project directory the spec
+  lives in. It is one module in `tests/streaming/`, shared across all three
+  projects — not one copy per directory.
+
 - **Never assert a global count or an unfiltered list.** Scope every assertion to the worker's own seeded rows. (Roadmap rule 4; `e2e/README.md`.)
 - **Find built-in Stream Profiles by name, never by count.** `Proxy` and `Redirect` come from `core/migrations/0007`, `VLC` from `0019`.
 - **Product defects are asserted correct, marked `test.fail()` with the defect named in a comment, and filed as issues — never patched.** Issues go to `gh issue create --repo D10Scot/Dispatcharr`; the explicit `--repo` flag is mandatory, because this checkout is a fork and `gh` without it resolves to upstream's public tracker.
