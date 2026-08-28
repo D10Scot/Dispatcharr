@@ -69,7 +69,16 @@ test('switching the upstream mid-stream does not disturb a reading client', asyn
   const afterStatus = await readChannelStatus(api, channel.uuid);
   expect(afterStatus.client_count).toBe(1);
 
-  // The provider saw the handover: channel 1 closed, channel 2 opened.
-  const log = await upstream.log(scenario);
-  expect(log.some((e) => e.kind === 'open' && e.channelId === 2)).toBe(true);
+  // The provider saw the handover: channel 1 closed, channel 2 opened. The
+  // provider records that `open` entry asynchronously — Dispatcharr's own
+  // status confirming the switch (polled above) does not mean the provider
+  // has logged the new connection yet, so a single read here races it. Poll
+  // instead, like every other provider-log assertion in this suite.
+  await expect
+    .poll(
+      async () =>
+        (await upstream.log(scenario)).some((e) => e.kind === 'open' && e.channelId === 2),
+      { timeout: 30_000 }
+    )
+    .toBe(true);
 });
