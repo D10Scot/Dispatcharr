@@ -644,12 +644,20 @@ Commit as `test(e2e): single client receives aligned contiguous TS (G4 row 1)`.
 
 - [ ] **Step 1: Write the sharing test**
 
+Import the shared helpers Task 4 created — do not redefine them:
+
+```ts
+import { test, expect, expectTsAligned, readChannelStatus } from '../../fixtures';
+import { lockedProfile, newStreamClient } from './helpers';
+```
+
+Then:
+
 ```ts
 test('three clients share exactly one upstream connection', async ({
   upstream,
   seed,
   api,
-  browser,
 }) => {
   const scenario = await upstream.scenario({
     channels: [{ id: 1, name: 'G4 Shared', tvgId: 'g4-shared.e2e', logo: null }],
