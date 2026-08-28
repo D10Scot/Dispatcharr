@@ -75,5 +75,45 @@ export default defineConfig({
       // time any test runs.
       use: { storageState: 'playwright/.auth/admin.json' },
     },
+    {
+      name: 'streaming-failover',
+      testDir: './tests/streaming-failover',
+      dependencies: ['bootstrap'],
+      // Each row here pays a product-defined wait: the dead-air watchdog is
+      // >10s sampled 3x at 5s, and the buffering detector needs the ffmpeg
+      // process's cumulative speed= to cross a threshold. 300s is the same
+      // ceiling `streaming` uses and is not generous here.
+      timeout: 300_000,
+      // One worker, unlike its siblings: `failover-buffering.spec.ts`
+      // mutates the global `proxy_settings` row (raising `buffering_speed`)
+      // for the duration of its run. That is only safe because every other
+      // spec in this directory drives the locked Proxy stream profile, where
+      // the buffering detector is inert (it parses ffmpeg's stderr, which
+      // Proxy never produces) — nothing enforces that convention, so a
+      // future ffmpeg-profile spec added here without reading that test's
+      // header would race the raised threshold and fail silently. Serialising
+      // the project makes that race structurally impossible instead of
+      // merely documented, the same reasoning `streaming-greybox` applies to
+      // its own container-wide process count below.
+      workers: 1,
+      use: { storageState: 'playwright/.auth/admin.json' },
+    },
+    {
+      name: 'streaming-greybox',
+      testDir: './tests/streaming-greybox',
+      dependencies: ['bootstrap'],
+      timeout: 300_000,
+      // One worker, unlike its siblings: `output-profile-sharing.spec.ts`
+      // counts every `ffmpeg` process running in the container (`pgrep -x
+      // ffmpeg`) — a container-wide observable, not one scoped to its own
+      // channel, the same class of shared-state hazard as
+      // `failover-buffering.spec.ts`'s global `proxy_settings` mutation in
+      // `streaming-failover`. A second worker running any spec here that
+      // starts its own transcode — or a future grey-box test that mutates
+      // Redis directly, the way the deleted ownership-lease flagship did —
+      // would race against it in a way no other project risks.
+      workers: 1,
+      use: { storageState: 'playwright/.auth/admin.json' },
+    },
   ],
 });

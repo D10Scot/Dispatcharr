@@ -211,6 +211,9 @@ export class UpstreamClient {
     return `${scenario.internal}/epg.xml${scenario.credentialQuery}`;
   }
 
+  // Mirrored by Seeder.upstreamStreamUrl() (private, in seed.ts) — that
+  // duplicate exists only because importing UpstreamClient there would
+  // create a fixture cycle. Keep both in sync if this shape changes.
   streamUrl(scenario: UpstreamScenario, channelId: number): string {
     return `${scenario.internal}/stream/${channelId}.ts${scenario.credentialQuery}`;
   }

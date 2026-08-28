@@ -1,19 +1,21 @@
 #!/usr/bin/env bash
 # Claude Code PostToolUse hook — verify whatever file was just edited.
 #
-# Six checks, all scoped to the edited file:
+# Seven checks, all scoped to the edited file:
 #
 #   tests        *tests/test_*.py     run the whole package   (blocking)
 #                frontend/*.test.jsx  run that file           (blocking)
 #   migrations   */models.py          makemigrations --check  (blocking)
 #   boot         live_proxy leaves    manage.py check         (blocking)
+#   typecheck    e2e{,-upstream}/*.ts tsc --noEmit, that pkg  (blocking)
 #   lint         frontend/*.js(x)     eslint that file        (advisory)
 #   actions      workflows/action.yml zizmor, whole file      (blocking)
 #   secrets      any *.py             credential-logging grep (advisory)
 #
-# All but zizmor are deliberately independent of the repo's pre-existing
-# backlog. zizmor is the exception: it holds the whole edited workflow clean,
-# because that backlog is being actively worked off rather than tolerated.
+# All but zizmor and typecheck are deliberately independent of the repo's
+# pre-existing backlog. Those two are ratchets: they hold the whole edited
+# file (or package) clean, because there is nothing to tolerate — the
+# workflow backlog was worked off, and both e2e packages typecheck clean.
 #
 # Backend work happens in a warm local container (see start-test-container.sh).
 # Real PostgreSQL is required: a migration uses the PG-only `~` regex operator,
@@ -177,6 +179,32 @@ case "$REL" in
       esac
     else
       note "Did NOT lint ${REL} — zizmor is not installed. Install it with 'brew install zizmor'."
+    fi
+    ;;
+esac
+
+# --------------------------------------------------------------- typecheck ---
+# Blocking, unlike the eslint check above, and for the same reason zizmor
+# blocks: `tsc --noEmit` exits 0 in both e2e packages today, so this is a
+# ratchet rather than a punishment for touching legacy code.
+#
+# It matters more than its size suggests. Nothing else in this hook matches
+# *.ts, and the pre-commit gate routes only backend labels and frontend/ — so
+# without this, everything under e2e/ and e2e-upstream/ is edited with no
+# automated check of any kind. A full Playwright run is far too slow for a
+# hook; a typecheck is about a second and catches the class of mistake that
+# otherwise surfaces as a CI failure ten minutes later.
+case "$REL" in
+  e2e/*.ts|e2e-upstream/*.ts)
+    PKG_DIR="${REL%%/*}"
+    if [ -d "$PKG_DIR/node_modules" ]; then
+      OUT="$(cd "$PKG_DIR" && npm run --silent typecheck 2>&1)"
+      if [ $? -ne 0 ]; then
+        block "typecheck failed in ${PKG_DIR}/ after editing ${REL}" \
+              "$(printf '%s' "$OUT" | grep -E 'error TS' | head -20)"
+      fi
+    else
+      note "Did NOT typecheck ${REL} — ${PKG_DIR}/node_modules is missing. Run 'cd ${PKG_DIR} && npm ci'."
     fi
     ;;
 esac

@@ -1,4 +1,5 @@
 import { test, expect, expectTsAligned, TS_PACKET_SIZE } from '../../fixtures';
+import { withDeadline } from './helpers';
 
 // Regression: collectFor(ms) races pump() against a timer. When the timer
 // wins, that pump()'s reader.read() is left outstanding. Read requests queue
@@ -14,30 +15,12 @@ import { test, expect, expectTsAligned, TS_PACKET_SIZE } from '../../fixtures';
 
 // The streaming project has timeout: 300_000, so an unbounded await on a
 // regression is a five-minute test with a useless "Test timeout exceeded"
-// message. Bound the read ourselves so it fails in seconds, naming the cause.
+// message. Bound the read ourselves (via the shared `withDeadline` helper in
+// helpers.ts) so it fails in seconds, naming the cause: if this fires, the
+// stalled-stream deadlock is back — collectFor left a reader.read()
+// outstanding and the call below queued a second one behind it, so it is
+// waiting on a chunk that never arrives.
 const READ_DEADLINE_MS = 10_000;
-
-async function withDeadline<T>(work: Promise<T>, ms: number, what: string): Promise<T> {
-  let timer: NodeJS.Timeout | undefined;
-  const guard = new Promise<never>((_resolve, reject) => {
-    timer = setTimeout(
-      () =>
-        reject(
-          new Error(
-            `${what} did not settle within ${ms}ms. The stalled-stream deadlock is back: ` +
-              `collectFor left a reader.read() outstanding and this call queued a second ` +
-              `one behind it, so it is waiting on a chunk that never arrives.`
-          )
-        ),
-      ms
-    );
-  });
-  try {
-    return await Promise.race([work, guard]);
-  } finally {
-    clearTimeout(timer);
-  }
-}
 
 test('readPackets returns promptly when collectFor timed out mid-read', async ({
   upstream,

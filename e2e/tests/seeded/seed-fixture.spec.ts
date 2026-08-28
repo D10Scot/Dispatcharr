@@ -110,3 +110,44 @@ test('the source factories create rows with the shipped defaults', async ({
   expect(epgSource.id).toBeTruthy();
   expect(epgSource.name).toMatch(/^e2e-w\d+-/);
 });
+
+test('seed.stream creates a custom stream with a generated name', async ({ seed }) => {
+  const stream = await seed.stream({ url: 'http://127.0.0.1:9/x.ts' });
+
+  expect(stream.id).toBeGreaterThan(0);
+  expect(stream.is_custom).toBe(true);
+  expect(stream.url).toBe('http://127.0.0.1:9/x.ts');
+  expect(stream.name).toMatch(/^e2e-w\d+-/);
+});
+
+test('seed.stream ignores an attempt to override the generated name', async ({ seed }) => {
+  // The identity field is spread AFTER overrides. A cast is the only way to
+  // even attempt this, which is the point of the test: the type forbids it,
+  // and the ordering enforces it for bodies that dodge the type.
+  const stream = await seed.stream({ name: 'not-this' } as never);
+  expect(stream.name).not.toBe('not-this');
+});
+
+test('seed.upstreamChannel wires a channel to the provider in order', async ({
+  seed,
+  upstream,
+}) => {
+  const scenario = await upstream.scenario({
+    // tvgId/logo are required on UpstreamChannel; the brief's literal omitted
+    // them. Values are arbitrary — this test never asserts on either.
+    channels: [
+      { id: 1, name: 'Primary', tvgId: 'primary.e2e', logo: null },
+      { id: 2, name: 'Backup', tvgId: 'backup.e2e', logo: null },
+    ],
+  });
+
+  const { channel, streams } = await seed.upstreamChannel(scenario, {
+    channelIds: [1, 2],
+  });
+
+  expect(streams).toHaveLength(2);
+  expect(streams[0].url).toBe(upstream.streamUrl(scenario, 1));
+  expect(streams[1].url).toBe(upstream.streamUrl(scenario, 2));
+  expect(channel.streams).toEqual([streams[0].id, streams[1].id]);
+  expect(channel.uuid).toBeTruthy();
+});
