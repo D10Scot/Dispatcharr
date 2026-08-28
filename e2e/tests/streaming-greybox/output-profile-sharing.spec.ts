@@ -1,6 +1,43 @@
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { test, expect, expectTsAligned, readChannelStatus } from '../../fixtures';
 import { lockedProfile, newStreamClient } from '../streaming/helpers';
 import { greyboxRedis } from '../../fixtures/greybox/redis';
+
+const execFileAsync = promisify(execFile);
+
+// Mirrors the container-name resolution in fixtures/greybox/redis.ts, which
+// this file does not import — a process count isn't a Redis operation, and
+// that module's quarantine is specifically about the Redis coupling.
+const CONTAINER_NAME = process.env.DISPATCHARR_E2E_CONTAINER || 'dispatcharr-e2e';
+
+/**
+ * Count running `ffmpeg` processes inside the stack container.
+ *
+ * `-x` matches the process name exactly, not the command line — `pgrep -f
+ * ffmpeg` would match its own `docker exec ... pgrep -f ffmpeg` invocation
+ * and self-inflate the count by one, every time. `-x` returns 0 at rest with
+ * no false positive.
+ *
+ * `pgrep` exits 1 (not 0) when nothing matches, which execFile treats as a
+ * rejection rather than empty stdout — caught below and normalised to 0.
+ */
+async function countFfmpegProcesses(): Promise<number> {
+  try {
+    const { stdout } = await execFileAsync('docker', [
+      'exec',
+      CONTAINER_NAME,
+      'pgrep',
+      '-x',
+      'ffmpeg',
+    ]);
+    return stdout.split('\n').filter((line) => line.trim().length > 0).length;
+  } catch (err) {
+    const e = err as { code?: number };
+    if (e.code === 1) return 0;
+    throw err;
+  }
+}
 
 test('two clients on one output profile share a single transcode', async ({
   upstream,
@@ -39,10 +76,26 @@ test('two clients on one output profile share a single transcode', async ({
     expect(status.client_count).toBe(2);
     expect(status.clients.every((c) => c.output_profile_id === output.id)).toBe(true);
 
-    // ...and exactly one worker owns the transcode. The byte stream cannot
-    // show this: two ffmpegs would produce byte-identical output. Only the
-    // owner lock distinguishes "shared" from "duplicated", which is why this
-    // row is in the quarantine.
+    // ...and there is exactly one ffmpeg transcode process for it, not two.
+    // The byte stream cannot show this on its own — two ffmpegs transcoding
+    // the same input produce byte-identical output — which is why this row
+    // is in the quarantine and reaches into the container directly.
+    //
+    // This count is unambiguous only because `channel` uses the locked
+    // "Proxy" stream profile (see `lockedProfile(api, 'Proxy')` above), which
+    // spawns no input subprocess of its own — Proxy is a raw-HTTP-into-buffer
+    // stream profile, not a subprocess one (see CLAUDE.md's Stream Profile
+    // architectures). Any `ffmpeg` present in the container is therefore the
+    // output transcode this test cares about. If this row is ever changed to
+    // use an ffmpeg-based stream profile, that upstream-side ffmpeg would
+    // also match `pgrep -x ffmpeg` and this assertion's basis breaks silently
+    // — update this comment and the count if that happens.
+    expect(await countFfmpegProcesses()).toBe(1);
+
+    // The process count proves the row's literal claim; the owner lock below
+    // is complementary, not redundant — it proves the *lock* correctly
+    // tracks the (channel, profile) pair, and its key name is more useful in
+    // a failure message than a bare process count would be.
     //
     // `RedisKeys.output_owner(channel_id, fmt)` (apps/proxy/live_proxy/redis_keys.py)
     // builds `live:channel:{channel_id}:output:{fmt}:owner`. The output
