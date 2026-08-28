@@ -267,15 +267,20 @@
  *                             would pass on a stream two owners spliced
  *                             together at alternating chunk indices. Throws
  *                             (message matches `/continuity/i`) on a gap.
- *   readChannelStatus(api, channelId) → Promise<ChannelStatus>   reads
- *                             `GET /proxy/ts/status/<id>` (admin-only, hence
- *                             `api` rather than `streamClient`). G4's primary
- *                             assertion surface for owner, state, client
- *                             count and per-client detail. Never poll the
- *                             bare `/proxy/ts/status` collection endpoint
- *                             instead — it broadcasts a `channel_stats`
- *                             WebSocket event as a side effect of being
- *                             polled, which perturbs any test waiting on `ws`.
+ *   readChannelStatus(api, channelUuid) → Promise<ChannelStatus>   reads
+ *                             `GET /proxy/ts/status/<channel_id>` (admin-only,
+ *                             hence `api` rather than `streamClient`). Takes
+ *                             the channel's **uuid**, not its numeric id —
+ *                             every `live_proxy` endpoint, this one included,
+ *                             is keyed by the same UUID string used to open
+ *                             `/proxy/ts/stream/<channel_id>`; the numeric id
+ *                             404s. G4's primary assertion surface for owner,
+ *                             state, client count and per-client detail.
+ *                             Never poll the bare `/proxy/ts/status`
+ *                             collection endpoint instead — it broadcasts a
+ *                             `channel_stats` WebSocket event as a side
+ *                             effect of being polled, which perturbs any test
+ *                             waiting on `ws`.
  *   TS_PACKET_SIZE   188      TS_SYNC_BYTE   0x47
  *   SEEDED_USER_PASSWORD      the password `seed.user()` assigns; import it
  *                             rather than repeating the literal
