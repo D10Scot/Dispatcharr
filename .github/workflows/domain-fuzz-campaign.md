@@ -1,5 +1,5 @@
 ---
-description: Fuzz one application domain per run and raise typed, prioritized bug issues.
+description: Fuzz one application domain per run; contribute permanent property tests and raise typed, prioritized bug issues.
 emoji: 🧪
 on:
   schedule: every 12 hours
@@ -46,10 +46,17 @@ steps:
   - name: Install backend dependencies into .venv
     run: |
       set -euo pipefail
-      uv sync --locked --no-install-project --no-dev --python "$(command -v python)"
+      # Dev group included: Hypothesis (property-based testing) lives there.
+      uv sync --locked --no-install-project --python "$(command -v python)"
       # Smoke-check the venv boots Django with the test settings the agent will use.
       DJANGO_SECRET_KEY=fuzz-campaign TEST_USE_SQLITE=1 DJANGO_SETTINGS_MODULE=dispatcharr.settings_test \
         .venv/bin/python -c "import django; django.setup(); print('django', django.get_version(), 'ok')"
+      # Tolerant probe: absent until the Hypothesis dep PR lands, present after.
+      if .venv/bin/python -c "import hypothesis" 2>/dev/null; then
+        echo "HYPOTHESIS_AVAILABLE=1" >> "$GITHUB_ENV"
+      else
+        echo "HYPOTHESIS_AVAILABLE=0" >> "$GITHUB_ENV"
+      fi
   - name: Stage Redis binaries for the agent sandbox
     run: |
       set -euo pipefail
@@ -136,6 +143,11 @@ safe-outputs:
       - priority:p2
       - priority:p3
     max: 2
+  create-pull-request:
+    title-prefix: "[fuzz-hardening] "
+    draft: true
+    max: 1
+    if-no-changes: "ignore"
   noop:
     report-as-issue: false
 ---
@@ -167,9 +179,19 @@ Fuzz only this domain. Do not select a different one.
 
 ## Fuzzing approach
 
-Each round, vary inputs, ordering, boundary values, and malformed payloads relevant to the domain. Prioritize: parsing edge cases and malformed structures; concurrency/race behavior and state transitions; timeout/retry/failover paths; authorization/secret-handling regressions; data-loss or silent-corruption risks.
+`$HYPOTHESIS_AVAILABLE` tells you whether Hypothesis is installed in `.venv` (`1` = yes).
 
-Prefer real targeted Django tests (existing tests plus small throwaway test files driven by `manage.py test`) over standalone harness scripts. If infrastructure needed for a check is unavailable, do not claim the check was executed; report only evidence you actually obtained.
+**Preferred mode (Hypothesis available): contribute permanent property tests.** Pick the domain's parsing/state-transition surfaces (malformed payloads, boundary values, arbitrary byte strings, interleavings) and write Hypothesis property tests that encode invariants the implementation actually promises — read the code first; never invent guarantees. Place them in the domain's existing test package following its `test_*.py` naming, using `SimpleTestCase`/`unittest.TestCase` where the code under test allows, with modest example counts (~200) and a derandomized settings profile so CI stays fast and reproducible. Run them via `manage.py test`.
+
+- **Property holds** → it is permanent fuzzing infrastructure. Collect passing property tests into one draft PR at the end of the run (title: the domain and surfaces covered; body: each invariant and why the implementation promises it). Also run the domain's existing test labels to confirm nothing else broke before creating the PR.
+- **Property falsified** → that is a finding. Shrink is automatic; put the minimal counterexample and the property test in the issue (policy below). Do NOT include failing tests in the PR — the PR must be green.
+- Both outcomes in one run are normal: PR the survivors, file the failures.
+
+**Fallback mode (`$HYPOTHESIS_AVAILABLE` = 0): probe as before.** Vary inputs, ordering, boundary values, and malformed payloads with throwaway targeted Django tests. File issues for findings; skip the PR entirely.
+
+Either mode, prioritize: parsing edge cases and malformed structures; concurrency/race behavior and state transitions; timeout/retry/failover paths; authorization/secret-handling regressions; data-loss or silent-corruption risks. Check what property tests already exist in the domain's test package first and do not duplicate invariants already covered — go deeper (new surfaces) instead.
+
+If infrastructure needed for a check is unavailable, do not claim the check was executed; report only evidence you actually obtained.
 
 ## Issue policy
 
@@ -194,4 +216,4 @@ Labels: one `type:*` (`type:crash`, `type:correctness`, `type:performance`, `typ
 
 ## Completion
 
-If no novel findings, call `noop` with: selected domain, rounds executed, notable scenarios tested, and why no issue was created.
+If no novel findings and no property tests worth contributing, call `noop` with: selected domain, rounds executed, notable scenarios/invariants tested, and why nothing was created. A run that only produces the hardening PR (no issues) is a good run — summarize the invariants added.
