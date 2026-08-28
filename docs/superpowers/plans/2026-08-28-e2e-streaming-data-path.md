@@ -1369,14 +1369,32 @@ test('two clients on one output profile share a single transcode', async ({
     expect(status.client_count).toBe(2);
     expect(status.clients.every((c) => c.output_profile_id === output.id)).toBe(true);
 
-    // ...and exactly one worker owns the transcode. The byte stream cannot
-    // show this: two ffmpegs would produce byte-identical output. Only the
-    // owner lock distinguishes "shared" from "duplicated", which is why this
-    // row is in the quarantine.
-    const owners = await greyboxRedis().keys(
-      `*output*owner*${channel.id}*`
-    );
+    // ...and exactly one worker claims the pair. The byte stream cannot show
+    // this: two ffmpegs transcoding the same input produce byte-identical
+    // output, which is why this row lives in the quarantine.
+    //
+    // Read the exact key from RedisKeys.output_owner — do NOT use a wildcard.
+    // The real shape is UUID-keyed and format-namespaced:
+    //   live:channel:{channel.uuid}:output:mpegts:p{profileId}:owner
+    // A wildcard matching nothing fails loudly, which is survivable; one
+    // matching two unrelated keys passes for the wrong reason, which is not.
+    const owners = await greyboxRedis().keys(ownerKeyFor(channel.uuid, output.id));
     expect(owners).toHaveLength(1);
+
+    // The key alone does NOT prove the row's claim. output_owner is a single
+    // SET NX scalar per (channel, fmt), so KEYS on it structurally returns 0 or
+    // 1 and can never observe two processes — it is blind to a second start()
+    // reaching posix_spawn_proc while the existing-owner check still reads "I
+    // already hold this" (a manager-caching bug, or a missing running guard).
+    // Count the processes directly.
+    //
+    // -x matches the process name exactly; -f would match its own shell command
+    // and self-inflate the count. The channel uses the locked Proxy stream
+    // profile, which spawns NO input subprocess, so any ffmpeg present is the
+    // output transcode — that is what makes this number meaningful, and it
+    // stops being true if this row is ever switched to an ffmpeg profile.
+    const transcodes = await countProcesses('ffmpeg');
+    expect(transcodes, 'ten clients should cost one ffmpeg, not ten').toBe(1);
   } finally {
     await Promise.all(clients.map((c) => c.close().catch(() => {})));
   }
