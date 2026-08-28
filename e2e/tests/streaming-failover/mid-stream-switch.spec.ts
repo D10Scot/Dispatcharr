@@ -39,18 +39,27 @@ test('switching the upstream mid-stream does not disturb a reading client', asyn
     })
     .toBe(streams[1].id);
 
+  // Taken at the earliest observable moment after the switch. buffer_index is
+  // monotonic for the channel's life and is never reset by a switch — that is
+  // why a switch is invisible to clients. The poll below proves forward
+  // progress; only this proves the index did not regress, because a
+  // reset-to-zero climbs back past the old value in ~1.4s at this rate and the
+  // poll's 30s window would not notice.
+  const atSwitch = await readChannelStatus(api, channel.uuid);
+  expect(atSwitch.buffer_index).toBeGreaterThanOrEqual(beforeStatus.buffer_index);
+
   const after = await streamClient.readPackets(200);
   expectTsAligned(after);
 
   // The invariant that makes a switch invisible to clients: the chunk index is
-  // monotonic for the channel's life and is never reset by a switch. Asserting
-  // it directly tests the mechanism rather than its symptom.
-  //
-  // Polled rather than a single instant comparison: a chunk is ~256KB and the
-  // fake upstream at rate 20 can complete the whole switch-plus-200-packet-read
-  // above in under one chunk's worth of wall time, so `buffer_index` can still
-  // read equal to `beforeStatus.buffer_index` the instant we check — not
-  // because the invariant is false, but because no new chunk has rolled yet.
+  // monotonic for the channel's life and is never reset by a switch. The
+  // anti-reset check above is instant; this one proves forward progress —
+  // polled rather than a single instant comparison, because a chunk is
+  // ~1.06MB and the fake upstream at rate 20 can complete the whole
+  // switch-plus-200-packet-read above in under one chunk's worth of wall
+  // time, so `buffer_index` can still read equal to `beforeStatus.buffer_index`
+  // the instant we check — not because the invariant is false, but because no
+  // new chunk has rolled yet.
   await expect
     .poll(async () => (await readChannelStatus(api, channel.uuid)).buffer_index, {
       timeout: 30_000,
