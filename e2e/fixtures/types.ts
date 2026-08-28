@@ -226,6 +226,58 @@ export type EpgSource = {
   has_channels: boolean;
 };
 
+/**
+ * One entry of {@link ChannelStatus}'s `clients` array — one row per client
+ * currently reading the channel. Built by hand in
+ * `apps/proxy/live_proxy/channel_status.py`
+ * (`ChannelStatus.get_detailed_channel_info`), not a DRF serializer, so field
+ * names and optionality are read off that function directly rather than off
+ * `Meta.fields`: the six required fields are always assigned with a fallback
+ * default (`'unknown'`, `'0'`, `'mpegts'`); the rest are only set when the
+ * corresponding key exists in the client's Redis hash.
+ */
+export type ChannelStatusClient = {
+  client_id: string;
+  user_agent: string;
+  worker_id: string;
+  ip_address: string;
+  user_id: string;
+  output_format: string;
+  output_profile_id: number | null;
+  connected_at?: number;
+  last_active?: number;
+  last_active_ago?: number;
+  bytes_sent?: number;
+  avg_rate_KBps?: number;
+  current_rate_KBps?: number;
+};
+
+/**
+ * `GET /proxy/ts/status/<id>` (admin-only) — G4's primary assertion surface.
+ * Shape as specified by the G4 task-2 brief. Built by hand in
+ * `ChannelStatus.get_detailed_channel_info`, not a DRF serializer: the source
+ * defaults `owner` to the string `'unknown'` and `url` to `''` rather than
+ * `null` when the channel has never started, and both `total_bytes` and
+ * `avg_bitrate_kbps` are only assigned once `uptime` is known — so treat this
+ * type as the caller-facing contract, not a byte-for-byte transcription of
+ * the Python dict.
+ */
+export type ChannelStatus = {
+  stream_id: number | null;
+  stream_name: string | null;
+  url: string | null;
+  state: string;
+  owner: string | null;
+  client_count: number;
+  buffer_index: number;
+  total_bytes: number;
+  avg_bitrate_kbps: number;
+  clients: ChannelStatusClient[];
+  ffmpeg_speed?: number;
+  video_codec?: string;
+  resolution?: string;
+};
+
 /* ------------------------------------------------------------------------ *
  * Seed overrides
  * ------------------------------------------------------------------------ */
@@ -394,5 +446,9 @@ export type StreamOverrides = {
 export type UpstreamChannelOptions = {
   channelIds: number[];
   streamProfileId?: number | null;
-  channel?: ChannelOverrides;
+  // Narrowed: `upstreamChannel()` spreads `...channel` first and then
+  // unconditionally assigns its own `streams` and `stream_profile_id`
+  // afterwards, so a caller-supplied value for either would be silently
+  // discarded. Omitting them here turns that into a compile error instead.
+  channel?: Omit<ChannelOverrides, 'streams' | 'stream_profile_id'>;
 };

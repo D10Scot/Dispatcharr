@@ -53,6 +53,16 @@
  *                                is_active false
  *   epgSource(overrides?)        → EpgSource      /api/epg/sources/,
  *                                is_active false
+ *   stream(overrides?)           → Stream         /api/channels/streams/,
+ *                                is_custom true
+ *   upstreamChannel(scenario, opts) → { channel: Channel, streams: Stream[] }
+ *                                creates one `stream()` per `opts.channelIds`
+ *                                pointed at that fake-upstream channel (via
+ *                                `upstream`'s internal URL), then a `channel()`
+ *                                wired to try them in that order.
+ *                                `opts.channel` is `ChannelOverrides` minus
+ *                                `streams`/`stream_profile_id` — the factory
+ *                                owns both, so they are not writable here.
  *   generatedName(entity)        the naming scheme itself, for a row you
  *                                create by hand
  *   `overrides` is typed per entity — `ChannelOverrides`, `UserOverrides`, …
@@ -245,6 +255,27 @@
  *                             0x47 sync byte on every boundary. This is the
  *                             assertion that makes byte-level streaming tests
  *                             tractable — reach for it before hand-rolling one.
+ *   videoPidOf(buffer)        the busiest non-null PID in a TS buffer. Derives
+ *                             which PID carries video rather than hard-coding
+ *                             it — a re-muxed asset would otherwise silently
+ *                             assert nothing.
+ *   expectContiguous(buffer, pid)   asserts the 4-bit continuity counter on
+ *                             `pid` advances by exactly one per payload-
+ *                             bearing packet, wrapping at 16. This is what
+ *                             proves nothing was lost or spliced — a byte
+ *                             count alone proves only that bytes arrived, and
+ *                             would pass on a stream two owners spliced
+ *                             together at alternating chunk indices. Throws
+ *                             (message matches `/continuity/i`) on a gap.
+ *   readChannelStatus(api, channelId) → Promise<ChannelStatus>   reads
+ *                             `GET /proxy/ts/status/<id>` (admin-only, hence
+ *                             `api` rather than `streamClient`). G4's primary
+ *                             assertion surface for owner, state, client
+ *                             count and per-client detail. Never poll the
+ *                             bare `/proxy/ts/status` collection endpoint
+ *                             instead — it broadcasts a `channel_stats`
+ *                             WebSocket event as a side effect of being
+ *                             polled, which perturbs any test waiting on `ws`.
  *   TS_PACKET_SIZE   188      TS_SYNC_BYTE   0x47
  *   SEEDED_USER_PASSWORD      the password `seed.user()` assigns; import it
  *                             rather than repeating the literal
@@ -271,7 +302,14 @@ import { makePrincipalClient, makeUserClient } from './auth';
 import type { PrincipalName } from '../setup/principals';
 import { Waiter } from './wait';
 import { WsListener } from './ws';
-import { StreamClient, expectTsAligned, TS_PACKET_SIZE, TS_SYNC_BYTE } from './stream-client';
+import {
+  StreamClient,
+  expectTsAligned,
+  expectContiguous,
+  videoPidOf,
+  TS_PACKET_SIZE,
+  TS_SYNC_BYTE,
+} from './stream-client';
 import { UpstreamClient } from './upstream';
 
 export type Fixtures = {
@@ -364,8 +402,16 @@ export type {
   WsMessage,
   WsPayload,
 } from './ws';
-export { StreamClient, expectTsAligned, TS_PACKET_SIZE, TS_SYNC_BYTE } from './stream-client';
+export {
+  StreamClient,
+  expectTsAligned,
+  expectContiguous,
+  videoPidOf,
+  TS_PACKET_SIZE,
+  TS_SYNC_BYTE,
+} from './stream-client';
 export type { StreamOpenOptions } from './stream-client';
+export { readChannelStatus } from './channel-status';
 export { UpstreamClient, UPSTREAM_CONTROL_BASE, UPSTREAM_INTERNAL_BASE } from './upstream';
 export type {
   FaultName,
@@ -381,6 +427,8 @@ export type {
   ChannelOverrides,
   ChannelProfile,
   ChannelProfileOverrides,
+  ChannelStatus,
+  ChannelStatusClient,
   EpgSource,
   EpgSourceOverrides,
   EpgSourceStatus,
@@ -388,8 +436,11 @@ export type {
   M3uAccount,
   M3uAccountOverrides,
   M3uAccountStatus,
+  Stream,
+  StreamOverrides,
   StreamProfile,
   StreamProfileOverrides,
+  UpstreamChannelOptions,
   User,
   UserOverrides,
 } from './types';
