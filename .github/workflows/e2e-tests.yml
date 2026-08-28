@@ -3,6 +3,30 @@ name: E2E Tests
 on:
   push:
     branches: [main]
+    # Only paths baked into (or exercising) the AIO image — this is the
+    # heaviest workflow in the repo; a docs or workflow-file merge must not
+    # trigger an image build plus a Playwright matrix.
+    paths:
+      - 'apps/**'
+      - 'core/**'
+      - 'dispatcharr/**'
+      - 'frontend/**'
+      - 'docker/**'
+      - 'scripts/**'
+      - 'e2e/**'
+      - 'e2e-upstream/**'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - 'version.py'
+      - 'manage.py'
+      - '.github/workflows/e2e-tests.yml'
+  # No `paths:` filter here, deliberately. The Main ruleset requires the
+  # pristine/seeded/streaming checks on every PR; a path-filtered workflow
+  # that never triggers leaves them "Expected" forever and blocks the merge.
+  # A job that runs and *skips* satisfies a required check, so the workflow
+  # always triggers and the `changes` job below decides whether the heavy
+  # jobs actually run — a docs-only PR costs one ~10s job, not an image
+  # build plus a Playwright matrix.
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -15,9 +39,49 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Reimplements the push trigger's paths filter for pull requests, so the
+  # required checks always report (skipped counts as passing) without the
+  # suite always running. Keep the pattern below in lockstep with the push
+  # `paths:` list above.
+  changes:
+    name: Detect relevant changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      e2e: ${{ steps.filter.outputs.e2e }}
+    steps:
+      - name: Checkout code
+        if: github.event_name == 'pull_request'
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+          # pull_request checks out the merge commit, whose first parent is
+          # the base branch tip — depth 2 is enough to diff the whole PR.
+          fetch-depth: 2
+
+      - name: Decide whether the E2E suite needs to run
+        id: filter
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          if [ "$EVENT_NAME" != "pull_request" ]; then
+            echo "e2e=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          changed=$(git diff --name-only HEAD^1 HEAD)
+          printf 'Changed files:\n%s\n' "$changed"
+          pattern='^(apps/|core/|dispatcharr/|frontend/|docker/|scripts/|e2e/|e2e-upstream/|pyproject\.toml$|uv\.lock$|version\.py$|manage\.py$|\.github/workflows/e2e-tests\.yml$)'
+          if printf '%s\n' "$changed" | grep -qE "$pattern"; then
+            echo "e2e=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "e2e=false" >> "$GITHUB_OUTPUT"
+          fi
+
   build:
     name: Build AIO image
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.e2e == 'true'
     # A wedged docker build otherwise burns the 6-hour default.
     timeout-minutes: 45
     steps:
@@ -59,6 +123,8 @@ jobs:
   upstream:
     name: upstream
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.e2e == 'true'
     timeout-minutes: 10
     steps:
       - name: Checkout code
@@ -86,7 +152,8 @@ jobs:
   test:
     name: ${{ matrix.project }}
     runs-on: ubuntu-latest
-    needs: build
+    needs: [changes, build]
+    if: needs.changes.outputs.e2e == 'true'
     # Comfortably over the streaming project's 300s per-test timeout, and far
     # under the 6-hour default a container that never becomes ready would take.
     timeout-minutes: 30
@@ -189,3 +256,38 @@ jobs:
       - name: Stop the container
         if: always()
         run: docker rm -f dispatcharr-e2e || true
+
+  # The single check the Main ruleset requires. Matrix jobs can't be required
+  # directly: when `changes` gates the suite off, the matrix is skipped before
+  # expansion, so no check named pristine/seeded/streaming ever reports and a
+  # required check that never reports blocks the merge forever. This job runs
+  # unconditionally (`if: always()`), so it always reports, and it passes only
+  # when everything it depends on succeeded or was deliberately skipped.
+  e2e-result:
+    name: E2E result
+    runs-on: ubuntu-latest
+    needs: [changes, upstream, test]
+    if: always()
+    timeout-minutes: 5
+    steps:
+      - name: Verify the E2E outcome
+        env:
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          UPSTREAM_RESULT: ${{ needs.upstream.result }}
+          TEST_RESULT: ${{ needs.test.result }}
+          E2E_REQUIRED: ${{ needs.changes.outputs.e2e }}
+        run: |
+          echo "changes=$CHANGES_RESULT upstream=$UPSTREAM_RESULT test=$TEST_RESULT e2e-required=$E2E_REQUIRED"
+          if [ "$CHANGES_RESULT" != "success" ]; then
+            echo "Change detection itself failed — cannot prove the suite was unnecessary."
+            exit 1
+          fi
+          if [ "$E2E_REQUIRED" != "true" ]; then
+            echo "No E2E-relevant paths changed; suite deliberately skipped."
+            exit 0
+          fi
+          if [ "$UPSTREAM_RESULT" != "success" ] || [ "$TEST_RESULT" != "success" ]; then
+            echo "E2E suite was required and did not fully succeed."
+            exit 1
+          fi
+          echo "E2E suite passed."

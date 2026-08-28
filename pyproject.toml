@@ -37,6 +37,10 @@ dependencies = [
     "django-celery-beat>=2.9.0",
     "lxml==6.1.1",
     "packaging",
+    # Test-only (property-based testing). Lives in the main dependency list because
+    # the repo has no dev/test dependency group yet and CI installs with --no-dev;
+    # splitting out a [dependency-groups] dev group is a deliberate future refactor.
+    "hypothesis>=6.165.10",
 ]
 
 [build-system]

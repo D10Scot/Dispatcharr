@@ -1,9 +1,9 @@
-name: CodeQL (Actions)
+name: CodeQL
 
-# Static analysis of this repo's own GitHub Actions workflows, using CodeQL's
-# "actions" language pack — the same static-analysis discipline already
-# applied to Python/JS app code, extended to the CI definitions that can
-# push to production.
+# Static analysis of this repo's own code with CodeQL, three language packs:
+#   - actions: the GitHub Actions workflows that can push to production
+#   - python: the Django backend (apps/, core/, dispatcharr/, scripts/)
+#   - javascript-typescript: the React frontend and Playwright e2e suite
 #
 # No pull_request trigger, deliberately. The usual reason to avoid one
 # (SARIF upload needs security-events: write, which a fork PR's
@@ -13,10 +13,23 @@ name: CodeQL (Actions)
 # never gates a PR, findings only surface after landing on main via the
 # push/schedule/dispatch triggers below. Acceptable for a single-maintainer
 # fork; revisit if that changes.
+#
+# Push runs are path-filtered to the union of what the three packs scan;
+# the weekly schedule always analyzes everything regardless, so a filter
+# mistake costs at most a week of latency, never coverage.
 
 on:
   push:
     branches: [main]
+    paths:
+      - '.github/workflows/**'
+      - 'apps/**'
+      - 'core/**'
+      - 'dispatcharr/**'
+      - 'scripts/**'
+      - 'pyproject.toml'
+      - 'frontend/**'
+      - 'e2e/**'
   schedule:
     - cron: '0 6 * * 1' # weekly, Monday 06:00 UTC
   workflow_dispatch:
@@ -30,11 +43,15 @@ concurrency:
 
 jobs:
   analyze:
-    name: Analyze (actions)
+    name: Analyze (${{ matrix.language }})
     runs-on: ubuntu-latest
     permissions:
       contents: read
       security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [actions, python, javascript-typescript]
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
@@ -43,9 +60,9 @@ jobs:
       - name: Initialize CodeQL
         uses: github/codeql-action/init@db488ddef3bf6cb639b32c2e9a7c0a7ea8271d28 # v4.37.8
         with:
-          languages: actions
+          languages: ${{ matrix.language }}
 
       - name: Perform CodeQL analysis
         uses: github/codeql-action/analyze@db488ddef3bf6cb639b32c2e9a7c0a7ea8271d28 # v4.37.8
         with:
-          category: "/language:actions"
+          category: "/language:${{ matrix.language }}"
