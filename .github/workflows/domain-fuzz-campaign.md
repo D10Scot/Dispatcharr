@@ -16,7 +16,6 @@ permissions:
   contents: read
   issues: read
   pull-requests: read
-  copilot-requests: write
 model: gpt-5.6-sol
 timeout-minutes: 45
 features:
