@@ -22,7 +22,15 @@ on:
   push:
     branches:
       - main
+    # zizmor still scans the whole repo when it runs; these filters only
+    # skip runs for changes that cannot alter any Actions config.
+    paths:
+      - '.github/**'
+      - 'action.yml'
   pull_request:
+    paths:
+      - '.github/**'
+      - 'action.yml'
   workflow_dispatch:
 
 permissions:

@@ -4,6 +4,20 @@ on:
   push:
     branches:
       - main
+    # Only paths that change the published image; a workflow or docs merge
+    # must not push a new multi-arch image to GHCR.
+    paths:
+      - 'apps/**'
+      - 'core/**'
+      - 'dispatcharr/**'
+      - 'frontend/**'
+      - 'docker/**'
+      - 'scripts/**'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - 'version.py'
+      - 'manage.py'
+      - '.github/workflows/docker-build.yml'
 
 permissions:
   contents: read
