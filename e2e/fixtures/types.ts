@@ -261,10 +261,26 @@ export type ChannelStatusClient = {
  * `avg_bitrate_kbps` are only assigned once `uptime` is known — so treat this
  * type as the caller-facing contract, not a byte-for-byte transcription of
  * the Python dict.
+ *
+ * Two fields are optional rather than nullable, confirmed against the same
+ * function: `stream_id`/`stream_name` are assigned only inside
+ * `if stream_id_bytes:` (`channel_status.py:58-81`) — with no stream chosen
+ * yet, the key is simply absent from the JSON, never `null`.
+ *
+ * `ffmpeg_speed` is a `string`, not a `number`: `get_detailed_channel_info`
+ * assigns the raw Redis value with no numeric conversion
+ * (`channel_status.py:349-351`) — `decode_responses=True`
+ * (`live_proxy/server.py:201`) makes that a `str`, e.g. `"1.02"`, and the
+ * dict goes straight into `JsonResponse` with no serializer to coerce it.
+ * `get_basic_channel_info`, the function behind the *bare* `/proxy/ts/status`
+ * collection endpoint, does convert (`float(ffmpeg_speed)`,
+ * `channel_status.py:557-559`) — the two endpoints disagree about this
+ * field's type. That is a product inconsistency, not a harness bug; a caller
+ * against *this* type must parse the string itself.
  */
 export type ChannelStatus = {
-  stream_id: number | null;
-  stream_name: string | null;
+  stream_id?: number;
+  stream_name?: string;
   url: string | null;
   state: string;
   owner: string | null;
@@ -273,7 +289,7 @@ export type ChannelStatus = {
   total_bytes: number;
   avg_bitrate_kbps: number;
   clients: ChannelStatusClient[];
-  ffmpeg_speed?: number;
+  ffmpeg_speed?: string;
   video_codec?: string;
   resolution?: string;
 };
