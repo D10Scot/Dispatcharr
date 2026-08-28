@@ -101,5 +101,21 @@ export default defineConfig({
       // mid-run — a persisted token would point at an instance that no longer
       // exists.
     },
+    {
+      // Identical settings to `lifecycle` — the split is which spec runs, not
+      // how. Separate projects rather than one project plus `--grep` because
+      // `--grep` matches test *titles*: which spec ran would depend on wording
+      // nobody has written yet, and `lifecycle` would have no complementary
+      // filter, so it would run this ~9-minute spec on every PR (D16).
+      name: 'lifecycle-upgrade',
+      testDir: './tests/lifecycle',
+      testMatch: /upgrade-migrations\.spec\.ts$/,
+      workers: 1,
+      fullyParallel: false,
+      // A ~3.6 GB baseline pull, a fresh boot on an empty volume, a container
+      // replacement and a second boot.
+      timeout: 600_000,
+      retries: 0,
+    },
   ],
 });
