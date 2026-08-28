@@ -55,8 +55,40 @@ one up. CI binds the same way.
 | `pristine` | Needs an instance with **no superuser**: first-run setup, and global `CoreSettings` changes |
 | `seeded` | The default. Shared instance, parallel workers, API-seeded data |
 | `streaming` | Byte-level tests. Long timeouts, fewer workers |
+| `streaming-failover` | Failover behaviour: dead-air and buffering watchdogs. Long timeouts, fewer workers |
+| `streaming-greybox` | Tests that reach past the API into Redis or the container directly (e.g. counting live `ffmpeg` processes). Long timeouts, one worker — **must be run alone locally**: in CI each matrix job gets its own container, but locally all projects can share one, and this project observes container-wide state that whatever else is running would disturb |
 | `lifecycle` | Restarts the container mid-test. **Runs alone** — it destroys the container every other project shares. No `bootstrap` dependency: it provisions its own admin |
 | `lifecycle-upgrade` | Boots a published baseline image, seeds, then replaces the container with the local build on the same volume. **Runs alone.** Runs in `lifecycle-tests.yml`, not in `e2e-tests.yml`'s matrix |
+
+`streaming` and `streaming-failover` both run at `workers: 2` — the byte-level
+reads and the failover watchdogs (dead-air, buffering) are slow but do not
+touch anything another test in the same project could observe. `streaming-greybox`
+is the one exception in the whole suite: `output-profile-sharing.spec.ts` calls
+`greyboxRedis()` to read raw Redis keys directly, alongside the normal API
+surface, and also counts every `ffmpeg` process running in the container
+(`pgrep -x ffmpeg`) — a container-wide observable, not one scoped to its own
+channel, the same class of shared-state hazard as
+`failover-buffering.spec.ts`'s global `proxy_settings` mutation in
+`streaming-failover`. A second worker running any spec here that starts its
+own transcode — or a future grey-box test that mutates Redis directly, the
+way the deleted ownership-lease flagship did (see `COVERAGE.md`) — would race
+against it in a way no other project risks, so this project pins
+`workers: 1` rather than trusting every future grey-box test to be
+independently safe at higher concurrency.
+
+**The set of specs allowed to reach for grey-box Redis access is a checked
+allowlist, not a comment asking politely.** `e2e/fixtures/greybox/redis.ts`
+exports `GREYBOX_ALLOWLIST`, and
+`e2e/tests/streaming-greybox/quarantine.spec.ts` walks every `.ts` file under
+`e2e/`, greps each for an import of `greybox/redis`, and asserts the set it
+finds matches the allowlist exactly — in either direction: a new grey-box
+import that isn't listed fails the meta-test, and a stale allowlist entry for
+a file that no longer imports it fails the same way. That is what happened
+when G4's ownership-lease flagship (`ownership-lease.spec.ts`) was deleted as
+an unprovable gap (see `COVERAGE.md`'s Streaming/G4 rows) — its allowlist
+entry had to go with it, or `quarantine.spec.ts` would fail on a name that no
+longer exists. A convention written down in this file would rot silently the
+same way; this one fails CI instead.
 
 `pristine` deliberately has no `bootstrap` dependency — it needs the
 superuser *not* to exist yet, which is the entire point of that project, and
@@ -103,7 +135,7 @@ npm run test:lifecycle-upgrade   # pulls a ~3.6 GB baseline; brings its own inst
 ```
 
 `npm test` (no suffix) deliberately fails with a message telling you to pick
-one of the five — there is no single invocation that is correct for all of
+one of the seven — there is no single invocation that is correct for all of
 them, and a bare `npm test` in CI would silently run whichever config
 happened to be first.
 
@@ -387,17 +419,23 @@ early on the name.
 ## CI
 
 `.github/workflows/e2e-tests.yml` builds the AIO image once, then runs
-`pristine`, `seeded`, `streaming` and `lifecycle` as a hardcoded four-job
-matrix (`e2e-tests.yml:163`), each against its own fresh container, each
-gated on `npm run typecheck` before tests run. **If you add another project
-to `playwright.config.ts`, add it to that matrix too** — nothing wires new
-projects in automatically, and a project missing from the matrix gets no CI
-coverage and no failure signal.
+`pristine`, `seeded`, `streaming`, `streaming-failover`, `streaming-greybox`
+and `lifecycle` as a hardcoded six-job matrix (`e2e-tests.yml:163`), each
+against its own fresh container, each gated on `npm run typecheck` before
+tests run. **If you add another project to `playwright.config.ts`, add it to
+that matrix too** — nothing wires new projects in automatically, and a project
+missing from the matrix gets no CI coverage and no failure signal.
 
-These four jobs are **not** required checks on `main` — nobody has configured
-branch protection on this fork, so a red E2E run does not block a merge today.
-Making them required is a one-time step in the repository settings, not
-something this workflow can do for itself.
+A red E2E run **does** block a merge: the `Main` ruleset is active and
+requires one check, **`E2E result`**. That is the aggregate job at the bottom
+of `e2e-tests.yml`, not the matrix jobs themselves — and the distinction is
+load-bearing. A matrix job cannot be a required check here, because when the
+`changes` job decides the suite is unnecessary the matrix is skipped *before
+expansion*, so no check by that name ever reports, and a required check that
+never reports blocks the merge forever. `E2E result` runs with `if: always()`
+so it always reports, and passes only when everything it depends on either
+succeeded or was deliberately skipped. That is also why `e2e-tests.yml`'s
+`pull_request` trigger deliberately carries no `paths:` filter.
 
 `lifecycle-upgrade` is the one project **deliberately not** in that matrix.
 It runs instead in `.github/workflows/lifecycle-tests.yml`, because it pulls

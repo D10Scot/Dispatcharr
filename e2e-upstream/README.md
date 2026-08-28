@@ -74,7 +74,9 @@ not ones a test calls directly: `/s/<id>/playlist.m3u`, `/s/<id>/epg.xml`,
 
 G2 shipped exactly two plumbing proofs, and both cover the M3U/streaming path
 (`e2e/tests/seeded/upstream-ingest.spec.ts`,
-`e2e/tests/streaming/upstream-through-proxy.spec.ts`). **Nothing has yet proved `/s/<id>/epg.xml`
+`e2e/tests/streaming/single-client.spec.ts`, which superseded G2's original
+`upstream-through-proxy.spec.ts` when G4 asserted a strict superset of it).
+**Nothing has yet proved `/s/<id>/epg.xml`
 against a real Dispatcharr `EPGSource` refresh** — `renderXmltv`, `epgUrl()` and its
 `application/xml` content type are exercised only by this package's own vitest suite. If you're
 writing G3's "EPG source → refresh → programme data" row, expect to be the first person to point

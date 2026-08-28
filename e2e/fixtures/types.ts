@@ -138,6 +138,19 @@ export type StreamProfile = {
   locked: boolean;
 };
 
+/**
+ * A `Stream` row. Streams are what a `Channel` points at; the channel is what
+ * a client tunes. `is_custom: true` marks a row created by hand rather than
+ * ingested from an M3U account — which is what every G4 test wants, because
+ * ingesting would test the M3U path (G3) rather than the streaming path.
+ */
+export type Stream = {
+  id: number;
+  name: string;
+  url: string;
+  is_custom: boolean;
+};
+
 /** `M3UAccount.Status` (`apps/m3u/models.py`). Note `pending_setup`, which `EpgSourceStatus` has no equivalent of. */
 export type M3uAccountStatus =
   | 'idle'
@@ -211,6 +224,72 @@ export type EpgSource = {
   custom_properties: Record<string, unknown> | null;
   epg_data_count: number;
   has_channels: boolean;
+};
+
+/**
+ * One entry of {@link ChannelStatus}'s `clients` array — one row per client
+ * currently reading the channel. Built by hand in
+ * `apps/proxy/live_proxy/channel_status.py`
+ * (`ChannelStatus.get_detailed_channel_info`), not a DRF serializer, so field
+ * names and optionality are read off that function directly rather than off
+ * `Meta.fields`: the six required fields are always assigned with a fallback
+ * default (`'unknown'`, `'0'`, `'mpegts'`); the rest are only set when the
+ * corresponding key exists in the client's Redis hash.
+ */
+export type ChannelStatusClient = {
+  client_id: string;
+  user_agent: string;
+  worker_id: string;
+  ip_address: string;
+  user_id: string;
+  output_format: string;
+  output_profile_id: number | null;
+  connected_at?: number;
+  last_active?: number;
+  last_active_ago?: number;
+  bytes_sent?: number;
+  avg_rate_KBps?: number;
+  current_rate_KBps?: number;
+};
+
+/**
+ * `GET /proxy/ts/status/<id>` (admin-only) — G4's primary assertion surface.
+ * Shape as specified by the G4 task-2 brief. Built by hand in
+ * `ChannelStatus.get_detailed_channel_info`, not a DRF serializer: the source
+ * defaults `owner` to the string `'unknown'` and `url` to `''` rather than
+ * `null` when the channel has never started, and both `total_bytes` and
+ * `avg_bitrate_kbps` are only assigned once `uptime` is known — so treat this
+ * type as the caller-facing contract, not a byte-for-byte transcription of
+ * the Python dict.
+ *
+ * Two fields are optional rather than nullable, confirmed against the same
+ * function: `stream_id`/`stream_name` are assigned only inside the
+ * `if stream_id_bytes:` conditional within `get_detailed_channel_info` — with
+ * no stream chosen yet the key is simply absent from the JSON, never `null`.
+ *
+ * `ffmpeg_speed` is a `string`, not a `number`: `get_detailed_channel_info`
+ * assigns the raw Redis value with no numeric conversion; `decode_responses=True`
+ * on the Redis client makes that a `str` (e.g. `"1.02"`), and the dict goes
+ * straight into `JsonResponse` with no serializer to coerce it.
+ * `get_basic_channel_info`, the function behind the *bare* `/proxy/ts/status`
+ * collection endpoint, does convert via `float(ffmpeg_speed)` — the two
+ * functions disagree about this field's type. That is a product inconsistency,
+ * not a harness bug; a caller against *this* type must parse the string itself.
+ */
+export type ChannelStatus = {
+  stream_id?: number;
+  stream_name?: string;
+  url: string | null;
+  state: string;
+  owner: string | null;
+  client_count: number;
+  buffer_index: number;
+  total_bytes: number;
+  avg_bitrate_kbps: number;
+  clients: ChannelStatusClient[];
+  ffmpeg_speed?: string;
+  video_codec?: string;
+  resolution?: string;
 };
 
 /* ------------------------------------------------------------------------ *
@@ -363,4 +442,27 @@ export type EpgSourceOverrides = {
   cron_expression?: string;
   priority?: number;
   custom_properties?: Record<string, unknown>;
+};
+
+/** Omits `name`: the factory owns it. See the ordering note in seed.ts. */
+export type StreamOverrides = {
+  url?: string;
+  is_custom?: boolean;
+  channel_group?: number | null;
+};
+
+/**
+ * Options for {@link Seeder.upstreamChannel}. `channelIds` are the *fake
+ * provider's* channel ids, in the order the resulting Channel should try
+ * them — so `[1, 2]` makes provider channel 1 the primary and 2 the
+ * failover target.
+ */
+export type UpstreamChannelOptions = {
+  channelIds: number[];
+  streamProfileId?: number | null;
+  // Narrowed: `upstreamChannel()` spreads `...channel` first and then
+  // unconditionally assigns its own `streams` and `stream_profile_id`
+  // afterwards, so a caller-supplied value for either would be silently
+  // discarded. Omitting them here turns that into a compile error instead.
+  channel?: Omit<ChannelOverrides, 'streams' | 'stream_profile_id'>;
 };

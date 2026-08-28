@@ -9,11 +9,15 @@ import type {
   EpgSourceType,
   M3uAccount,
   M3uAccountOverrides,
+  Stream,
+  StreamOverrides,
   StreamProfile,
   StreamProfileOverrides,
+  UpstreamChannelOptions,
   User,
   UserOverrides,
 } from './types';
+import type { UpstreamScenario } from './upstream';
 
 /**
  * The password `seed.user()` assigns by default. Exported so `asUser`
@@ -131,6 +135,16 @@ export class Seeder {
     );
   }
 
+  stream(overrides: StreamOverrides = {}): Promise<Stream> {
+    const body: StreamOverrides & { name: string } = {
+      url: 'http://127.0.0.1:9/stream.ts',
+      is_custom: true,
+      ...overrides,
+      name: this.generatedName('stream'),
+    };
+    return this.create<Stream>('/api/channels/streams/', 'stream', body);
+  }
+
   m3uAccount(overrides: M3uAccountOverrides = {}): Promise<M3uAccount> {
     const body: M3uAccountOverrides & { name: string } = {
       server_url: 'http://127.0.0.1:9/playlist.m3u',
@@ -153,5 +167,40 @@ export class Seeder {
       name: this.generatedName('epgSource'),
     };
     return this.create<EpgSource>('/api/epg/sources/', 'epgSource', body);
+  }
+
+  /**
+   * The five-step wiring every streaming test needs, once: one Stream per
+   * provider channel id, then a Channel pointing at them in that order.
+   *
+   * Streams are created serially rather than with Promise.all. The order of
+   * `channel.streams` decides which upstream is primary and which is the
+   * failover target, and a concurrent create gives the API no reason to
+   * preserve it.
+   */
+  async upstreamChannel(
+    scenario: UpstreamScenario,
+    opts: UpstreamChannelOptions
+  ): Promise<{ channel: Channel; streams: Stream[] }> {
+    const streams: Stream[] = [];
+    for (const channelId of opts.channelIds) {
+      streams.push(await this.stream({ url: this.upstreamStreamUrl(scenario, channelId) }));
+    }
+
+    const channel = await this.channel({
+      ...opts.channel,
+      streams: streams.map((s) => s.id),
+      stream_profile_id: opts.streamProfileId ?? null,
+    });
+
+    return { channel, streams };
+  }
+
+  // Mirrors UpstreamClient.streamUrl() in upstream.ts exactly. Duplicated
+  // rather than imported: importing UpstreamClient here would create a
+  // fixture cycle (upstream.ts's fixture wiring would need seed.ts and
+  // vice versa). If the provider's URL shape changes, change both.
+  private upstreamStreamUrl(scenario: UpstreamScenario, channelId: number): string {
+    return `${scenario.internal}/stream/${channelId}.ts${scenario.credentialQuery}`;
   }
 }
