@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Build and run a local Dispatcharr AIO container for E2E tests.
-#   ./scripts/e2e_up.sh          start (reuse existing container if present)
-#   ./scripts/e2e_up.sh --reset  destroy container + volume, then start fresh
-#   ./scripts/e2e_up.sh --stop   stop the container, keep it and its data
-#   ./scripts/e2e_up.sh --down   destroy container + volume, start nothing
+#   ./scripts/e2e_up.sh             start (reuse existing container if present)
+#   ./scripts/e2e_up.sh --reset     destroy container + volume, then start fresh
+#   ./scripts/e2e_up.sh --recreate  destroy the container, keep the volume, start fresh
+#   ./scripts/e2e_up.sh --stop      stop the container, keep it and its data
+#   ./scripts/e2e_up.sh --down      destroy container + volume, start nothing
 #
 # The container is published on 127.0.0.1 only. Post-bootstrap it holds a
 # superuser whose password is committed to this repository in plain text
@@ -70,7 +71,7 @@ destroy() {
 # exists to prevent.
 if [[ $# -gt 1 ]]; then
   echo "Expected at most one argument, got $#: $*" >&2
-  sed -n '2,6p' "$SELF" >&2
+  sed -n '2,7p' "$SELF" >&2
   exit 2
 fi
 
@@ -80,6 +81,24 @@ case "${1:-}" in
   --reset)
     echo "Removing container and volume..."
     destroy
+    ;;
+  --recreate)
+    # New container, same volume. No other mode expresses an upgrade: --stop
+    # keeps the container and therefore the image snapshot it was created
+    # from, and --reset/--down destroy the volume the upgrade is meant to
+    # carry forward.
+    #
+    # The volume, the network and the provider container are deliberately
+    # left standing — none of them is what is being replaced, and destroy()
+    # would take the provider down with them.
+    #
+    # Load-bearing, and the reason this mode is not optional: the app-container
+    # reuse branches at the bottom of this script key on container *name*
+    # only, never on image id (unlike the provider, which is recreated when
+    # UPSTREAM_IMAGE_ID moves). Without this, setting DISPATCHARR_E2E_IMAGE
+    # and re-running silently keeps serving the old image.
+    echo "Removing container $NAME (keeping volume $VOLUME)..."
+    docker rm -f "$NAME" >/dev/null 2>&1 || true
     ;;
   --stop)
     # Keeps the container and its data. `./scripts/e2e_up.sh` restarts it,
@@ -99,7 +118,7 @@ case "${1:-}" in
   *)
     # Without this, a typo (`--rest`) silently starts a container instead.
     echo "Unknown argument: $1" >&2
-    sed -n '2,6p' "$SELF" >&2
+    sed -n '2,7p' "$SELF" >&2
     exit 2
     ;;
 esac
