@@ -138,6 +138,19 @@ export type StreamProfile = {
   locked: boolean;
 };
 
+/**
+ * A `Stream` row. Streams are what a `Channel` points at; the channel is what
+ * a client tunes. `is_custom: true` marks a row created by hand rather than
+ * ingested from an M3U account — which is what every G4 test wants, because
+ * ingesting would test the M3U path (G3) rather than the streaming path.
+ */
+export type Stream = {
+  id: number;
+  name: string;
+  url: string;
+  is_custom: boolean;
+};
+
 /** `M3UAccount.Status` (`apps/m3u/models.py`). Note `pending_setup`, which `EpgSourceStatus` has no equivalent of. */
 export type M3uAccountStatus =
   | 'idle'
@@ -363,4 +376,23 @@ export type EpgSourceOverrides = {
   cron_expression?: string;
   priority?: number;
   custom_properties?: Record<string, unknown>;
+};
+
+/** Omits `name`: the factory owns it. See the ordering note in seed.ts. */
+export type StreamOverrides = {
+  url?: string;
+  is_custom?: boolean;
+  channel_group?: number | null;
+};
+
+/**
+ * Options for {@link Seeder.upstreamChannel}. `channelIds` are the *fake
+ * provider's* channel ids, in the order the resulting Channel should try
+ * them — so `[1, 2]` makes provider channel 1 the primary and 2 the
+ * failover target.
+ */
+export type UpstreamChannelOptions = {
+  channelIds: number[];
+  streamProfileId?: number | null;
+  channel?: ChannelOverrides;
 };
