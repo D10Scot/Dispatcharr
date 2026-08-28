@@ -18,6 +18,7 @@ Copied verbatim from the spec and the programme rules. Every task's requirements
 - **Find built-in Stream Profiles by name, never by count.** `Proxy` and `Redirect` come from `core/migrations/0007`, `VLC` from `0019`.
 - **Product defects are asserted correct, marked `test.fail()` with the defect named in a comment, and filed as issues — never patched.** Issues go to `gh issue create --repo D10Scot/Dispatcharr`; the explicit `--repo` flag is mandatory, because this checkout is a fork and `gh` without it resolves to upstream's public tracker.
 - **Every read that could hang is bounded by the `withDeadline()` pattern** from `e2e/tests/streaming/stalled-stream.spec.ts`. The project timeout is 300 000 ms; an unbounded deadlocked read burns all of it and reports a timeout instead of a named failure.
+- **`UpstreamChannel` requires all four fields — `id`, `name`, `tvgId`, `logo`.** None are optional. A two-field literal does not compile, and the blocking typecheck hook refuses the edit. `tvgId` is a slug of the name; `logo` is `null` unless a test asserts on it.
 - **Scenarios declare explicit channel ids and names.** Channel 1 is always "Fake Channel 1" across all scenarios; an implicit catalogue is a cross-test collision with parallel workers.
 - **Five of the eight faults are "new connection only"** (`not-found`, `auth-failure`, `connection-limit`, `redirect-chain`, `non-ts-bytes`). They must be armed *before* the connection they affect, and `appliedTo: 0` is the correct response for them — not a failure.
 - **`upstream.toControl(url)` throws on any URL not under the internal origin.** That is a safety property. Never bypass it.
@@ -179,8 +180,8 @@ test('seed.upstreamChannel wires a channel to the provider in order', async ({
 }) => {
   const scenario = await upstream.scenario({
     channels: [
-      { id: 1, name: 'Primary' },
-      { id: 2, name: 'Backup' },
+      { id: 1, name: 'Primary', tvgId: 'primary.e2e', logo: null },
+      { id: 2, name: 'Backup', tvgId: 'backup.e2e', logo: null },
     ],
   });
 
@@ -558,7 +559,7 @@ test('one client receives aligned, contiguous TS through the Proxy profile', asy
   streamClient,
 }) => {
   const scenario = await upstream.scenario({
-    channels: [{ id: 1, name: 'G4 Single' }],
+    channels: [{ id: 1, name: 'G4 Single', tvgId: 'g4-single.e2e', logo: null }],
     rate: 20,
   });
   const proxy = await lockedProfile(api, 'Proxy');
@@ -622,7 +623,7 @@ test('three clients share exactly one upstream connection', async ({
   browser,
 }) => {
   const scenario = await upstream.scenario({
-    channels: [{ id: 1, name: 'G4 Shared' }],
+    channels: [{ id: 1, name: 'G4 Shared', tvgId: 'g4-shared.e2e', logo: null }],
     rate: 20,
   });
   const proxy = await lockedProfile(api, 'Proxy');
@@ -680,7 +681,7 @@ test('closing every client releases the upstream', async ({
   streamClient,
 }) => {
   const scenario = await upstream.scenario({
-    channels: [{ id: 1, name: 'G4 Teardown' }],
+    channels: [{ id: 1, name: 'G4 Teardown', tvgId: 'g4-teardown.e2e', logo: null }],
     rate: 20,
   });
   const proxy = await lockedProfile(api, 'Proxy');
@@ -730,7 +731,7 @@ test('the Redirect profile 302s the client at the provider and carries no bytes'
   api,
   streamClient,
 }) => {
-  const scenario = await upstream.scenario({ channels: [{ id: 1, name: 'G4 Redirect' }] });
+  const scenario = await upstream.scenario({ channels: [{ id: 1, name: 'G4 Redirect', tvgId: 'g4-redirect.e2e', logo: null }] });
   const redirect = await lockedProfile(api, 'Redirect');
   const { channel, streams } = await seed.upstreamChannel(scenario, {
     channelIds: [1],
@@ -773,7 +774,7 @@ test('the FFmpeg profile spawns a subprocess and reports its progress', async ({
   streamClient,
 }) => {
   const scenario = await upstream.scenario({
-    channels: [{ id: 1, name: 'G4 FFmpeg' }],
+    channels: [{ id: 1, name: 'G4 FFmpeg', tvgId: 'g4-ffmpeg.e2e', logo: null }],
     rate: 20,
   });
   // Any profile that is not Proxy or Redirect takes the subprocess branch by
@@ -829,8 +830,8 @@ test('switching the upstream mid-stream does not disturb a reading client', asyn
 }) => {
   const scenario = await upstream.scenario({
     channels: [
-      { id: 1, name: 'G4 Switch A' },
-      { id: 2, name: 'G4 Switch B' },
+      { id: 1, name: 'G4 Switch A', tvgId: 'g4-switch-a.e2e', logo: null },
+      { id: 2, name: 'G4 Switch B', tvgId: 'g4-switch-b.e2e', logo: null },
     ],
     rate: 20,
   });
@@ -908,8 +909,8 @@ test('a dead upstream fails over to the next stream', async ({
 }) => {
   const scenario = await upstream.scenario({
     channels: [
-      { id: 1, name: 'G4 DeadAir A' },
-      { id: 2, name: 'G4 DeadAir B' },
+      { id: 1, name: 'G4 DeadAir A', tvgId: 'g4-deadair-a.e2e', logo: null },
+      { id: 2, name: 'G4 DeadAir B', tvgId: 'g4-deadair-b.e2e', logo: null },
     ],
     rate: 20,
   });
@@ -959,8 +960,8 @@ test('an upstream that refuses the connection fails over before serving', async 
 }) => {
   const scenario = await upstream.scenario({
     channels: [
-      { id: 1, name: 'G4 Connect A' },
-      { id: 2, name: 'G4 Connect B' },
+      { id: 1, name: 'G4 Connect A', tvgId: 'g4-connect-a.e2e', logo: null },
+      { id: 2, name: 'G4 Connect B', tvgId: 'g4-connect-b.e2e', logo: null },
     ],
     rate: 20,
   });
@@ -1027,8 +1028,8 @@ test('a degraded but not dead upstream fails over on the buffering detector', as
 }) => {
   const scenario = await upstream.scenario({
     channels: [
-      { id: 1, name: 'G4 Buffering A' },
-      { id: 2, name: 'G4 Buffering B' },
+      { id: 1, name: 'G4 Buffering A', tvgId: 'g4-buffering-a.e2e', logo: null },
+      { id: 2, name: 'G4 Buffering B', tvgId: 'g4-buffering-b.e2e', logo: null },
     ],
     rate: 20,
   });
@@ -1225,7 +1226,7 @@ test('two clients on one output profile share a single transcode', async ({
   api,
 }) => {
   const scenario = await upstream.scenario({
-    channels: [{ id: 1, name: 'G4 Output' }],
+    channels: [{ id: 1, name: 'G4 Output', tvgId: 'g4-output.e2e', logo: null }],
     rate: 20,
   });
   const proxy = await lockedProfile(api, 'Proxy');
@@ -1317,7 +1318,7 @@ test.fail('only one worker writes to a channel buffer at a time', async ({
   streamClient,
 }) => {
   const scenario = await upstream.scenario({
-    channels: [{ id: 1, name: 'G4 Lease' }],
+    channels: [{ id: 1, name: 'G4 Lease', tvgId: 'g4-lease.e2e', logo: null }],
     rate: 20,
   });
   const proxy = await lockedProfile(api, 'Proxy');
