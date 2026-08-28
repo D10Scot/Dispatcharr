@@ -95,12 +95,16 @@ steps:
               names = {l["name"] for l in issue["labels"]}
               if names & excluded:
                   continue
+              # Only triaged issues: the triage workflow must have routed it
+              # to the agent (and removed needs-triage) before we pick it up.
+              if "ready-for-agent" not in names:
+                  continue
               prio = sorted(n for n in names if n.startswith("priority:p"))
               if not prio:
                   continue
               tiers.setdefault(prio[0], []).append(issue)
           if not tiers:
-              noop("No open issues carry a priority:p* label (excluding wontfix/needs-info)")
+              noop("No open ready-for-agent issues carry a priority:p* label (excluding wontfix/needs-info)")
 
           selected, priority = None, None
           for prio in sorted(tiers):  # p0 < p1 < p2 < p3 lexically
