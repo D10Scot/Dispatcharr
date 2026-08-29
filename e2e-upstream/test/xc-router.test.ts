@@ -15,6 +15,11 @@ let server: Awaited<ReturnType<typeof startServer>> | undefined;
 afterEach(async () => {
   await server?.close();
   server = undefined;
+  // The 'XC VOD playback' and 'XC VOD asset cache' blocks below point this at
+  // a fresh temp file per test. Left set, whichever value the last such test
+  // wrote would leak into every test appended after this file — silently, at
+  // module scope, with no server restart to make the wrong asset obvious.
+  delete process.env.UPSTREAM_VOD_ASSET;
 });
 
 async function xcScenario(overrides: Record<string, unknown> = {}) {
