@@ -22,6 +22,7 @@ test('a User-Agent created from Settings is stored server-side and survives a re
   adminPage,
   api,
   seed,
+  pageErrors,
 }) => {
   const name = seed.generatedName('userAgent');
 
@@ -55,34 +56,50 @@ test('a User-Agent created from Settings is stored server-side and survives a re
       .fill('Dispatcharr-E2E/1.0');
     await adminPage.getByRole('button', { name: 'Submit', exact: true }).click();
 
-    // The assertion is the server's state, not a toast (rule 6).
-    await expect.poll(find, { timeout: 30_000 }).toBeDefined();
-    expect((await find())!.user_agent).toBe('Dispatcharr-E2E/1.0');
+    // The assertion is the server's state, not a toast (rule 6). Captured
+    // from inside the poll itself rather than re-calling `find()` afterward
+    // — `expect.poll` already re-invokes the callback on every attempt, so a
+    // second, separate call after it settles would be a redundant extra
+    // round trip to read the same field.
+    let created: UserAgent | undefined;
+    await expect
+      .poll(
+        async () => {
+          created = await find();
+          return created;
+        },
+        { timeout: 30_000 }
+      )
+      .toBeDefined();
+    expect(created!.user_agent).toBe('Dispatcharr-E2E/1.0');
 
-    // The "persist" half. A reload discards every Zustand store (confirmed:
-    // `store/userAgents.jsx` has no `persist` middleware, and its data is
-    // populated only via `fetchUserAgents()`, called from `store/auth.jsx`
-    // during sign-in initialization — never from `UserAgentsTable` itself),
-    // so a row still visible afterwards was re-fetched from the server, not
-    // remembered client-side.
+    // The "persist" half. The store this row lives in client-side
+    // (`store/userAgents.jsx`) has no `persist` middleware and is populated
+    // only via `fetchUserAgents()`, called from `store/auth.jsx` during
+    // sign-in initialization — never from `UserAgentsTable` itself — so a
+    // row still visible after the client memory holding it is wiped can only
+    // have been re-fetched from the server.
     //
-    // `adminPage.reload()` is itself a fresh full page load, so it lands in
-    // exactly the same race `gotoSurface`'s own doc comment describes for
-    // #58: confirmed empirically — with a bare `reload()` +
-    // `getByTestId('settings-page')`, the run above landed on `/channels`
-    // (the hardcoded catch-all default), not back on
-    // `/settings#user-agents`, because the catch-all's `<Navigate replace>`
-    // fires before `isInitialized` resolves and destroys the URL the reload
-    // asked for. This is the same defect, not a new one — #58 is filed and
-    // is not re-filed here. The workaround is the same one `gotoSurface`
-    // already applies to every other surface: after the reload has done its
-    // job of wiping client memory, drive back to the section through the
-    // sidebar rather than trusting the URL to survive the reload by itself.
-    await adminPage.reload();
+    // `gotoSurface`'s own first act is `page.goto('/channels')`
+    // (`helpers.ts`) — itself a fresh full document load, which already
+    // wipes the store — so a separate, explicit `adminPage.reload()` before
+    // it would add nothing beyond what that navigation already does; doing
+    // so was tried and confirmed redundant. What *doesn't* work is a bare
+    // `reload()` (or any other fresh full-page load) followed by asserting
+    // `settings-page` directly with no further navigation: that lands on
+    // `/channels` (the hardcoded catch-all default), not back on
+    // `/settings#user-agents`, because `App.jsx`'s catch-all `<Navigate
+    // replace>` fires before `isInitialized` resolves on *every* fresh page
+    // load, reload included — the same #58 race `gotoSurface`'s own doc
+    // comment describes for an initial navigation, confirmed empirically
+    // here too. Not a new defect, not re-filed; `gotoSurface` is already the
+    // workaround this goal uses for it everywhere else, including here.
     await gotoSurface(adminPage, settingsSurface);
     await expect(adminPage.getByTestId('settings-page').getByText(name)).toBeVisible({
       timeout: 30_000,
     });
+
+    await pageErrors.expectClean();
   } finally {
     const leftover = await find();
     if (leftover) {
