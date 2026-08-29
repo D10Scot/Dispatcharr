@@ -34,7 +34,8 @@
  * unverified and nothing says so. So every `test()` call this file finds is
  * put into exactly one of three buckets: verified clean, verified missing
  * `pageErrors`, or **unverifiable** — and the last of those fails the check
- * too, naming the shape it couldn't read, rather than passing through it.
+ * too, naming the shape it couldn't read, rather than passing through it,
+ * unless the exact location is pinned in `KNOWN_UNVERIFIABLE` with a reason.
  */
 import { test, expect } from '@playwright/test';
 import { readdir, readFile } from 'node:fs/promises';
@@ -122,7 +123,9 @@ function judge(callArgs: readonly ts.Expression[]): CallVerdict {
       kind: 'unverifiable',
       reason:
         'test callback destructures no fixtures at all — if it never opens a page, ' +
-        'exclude this file from the scan explicitly (see SELF_FILE); if it does, name `pageErrors`',
+        'pin this location in KNOWN_UNVERIFIABLE with a reason (whole-file exclusion via ' +
+        'SELF_FILE is not available per-test, and a sibling test in the same file may still ' +
+        'open a page and need checking); if it does, name `pageErrors`',
     };
   }
 
