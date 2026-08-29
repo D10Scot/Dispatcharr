@@ -65,3 +65,28 @@ test('an M3U refresh ingests the declared catalogue faithfully', async ({
   );
   expect(groups.find((g) => g.id === groupId)?.name).toBe(UPSTREAM_GROUP_NAME);
 });
+
+// Pins `Seeder.waitForCreateTimeGroupRefreshToSettle()`'s own contract,
+// deterministically — no fault, no timing race. `seed.upstreamM3UAccount()`
+// relies on this method resolving on a genuine terminal write and timing out
+// loudly on anything else (see its doc comment in seed.ts, and
+// `upstreamM3UAccount()`'s, for the create-time-refresh race this closes).
+//
+// An account created `is_active: false` guarantees the account-lookup inside
+// `refresh_m3u_groups` (`apps/m3u/tasks.py:1552-1556`, which filters
+// `is_active=True`) raises `DoesNotExist` every time the create-time task
+// runs — it writes nothing and the row's status never leaves `idle`. So this
+// wait can only ever time out, never resolve, with zero dependence on
+// container speed or the fake provider's behaviour.
+test('waitForCreateTimeGroupRefreshToSettle times out rather than passing silently when the account never settles', async ({
+  seed,
+}) => {
+  const account = await seed.m3uAccount({ is_active: false });
+
+  await expect(
+    seed.waitForCreateTimeGroupRefreshToSettle(account.id, {
+      timeoutMs: 2_000,
+      intervalMs: 100,
+    })
+  ).rejects.toThrow(/timed out.*to settle/is);
+});

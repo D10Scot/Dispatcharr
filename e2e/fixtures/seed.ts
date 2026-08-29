@@ -18,7 +18,7 @@ import type {
   UserOverrides,
 } from './types';
 import type { UpstreamScenario } from './upstream';
-import type { Waiter } from './wait';
+import type { WaitOptions, Waiter } from './wait';
 
 /**
  * The password `seed.user()` assigns by default. Exported so `asUser`
@@ -230,13 +230,14 @@ export class Seeder {
    * queues `refresh_m3u_groups.delay(instance.id)` for every newly-created,
    * non-XC account, independent of `is_active` at signal time — it re-checks
    * `is_active` itself when the task actually runs. Since this factory
-   * creates the account active (required above), that task always proceeds:
-   * it fetches the same playlist, and — because it's a partial refresh
-   * (`full_refresh` defaults to `False`) — settles the account at
-   * `status: 'pending_setup'` on success (`apps/m3u/tasks.py:1799-1805`, a
-   * `.update()` that bypasses signals but still lands in the row) or
-   * `status: 'error'` on any fetch failure (every failure branch inside
-   * `fetch_m3u_lines` sets it before returning, `apps/m3u/tasks.py:177+`).
+   * creates the account active (required above), that task always proceeds
+   * down `refresh_m3u_groups`'s normal path: it fetches the same playlist,
+   * and — because it's a partial refresh (`full_refresh` defaults to
+   * `False`) — settles the account at `status: 'pending_setup'` on success
+   * (`apps/m3u/tasks.py:1799-1805`, a `.update()` that bypasses signals but
+   * still lands in the row) or `status: 'error'` on any fetch failure (every
+   * failure branch inside `fetch_m3u_lines` sets it before returning,
+   * `apps/m3u/tasks.py:177+`).
    *
    * That is a *second*, independent write path to the exact two fields
    * (`status`, `last_message`) `waitFor.m3uRefreshComplete()` diffs against
@@ -250,15 +251,11 @@ export class Seeder {
    * if it were the answer, and this method throws a spurious failure that has
    * nothing to do with the refresh it actually asked for.
    *
-   * Closed here by waiting for the create-time task's own terminal
-   * disposition — `error` or `pending_setup` — *before* calling
-   * `m3uRefreshComplete` at all. Every path through `refresh_m3u_groups`
-   * ends the account at one of those two statuses (given the account stays
-   * active throughout, which nothing here changes), and it runs exactly once
-   * per row (Django's `created` guard on the signal). So once status leaves
-   * the row's initial `idle` for either one, that task is done — it never
-   * writes `status`/`last_message` again — and the row is quiescent for
-   * `m3uRefreshComplete`'s baseline read to land on cleanly.
+   * Closed here by waiting, via `waitForCreateTimeGroupRefreshToSettle()`
+   * below, for the create-time task's own terminal disposition *before*
+   * calling `m3uRefreshComplete` at all — see that method's doc comment for
+   * exactly what this does and does not guarantee about `refresh_m3u_groups`
+   * always reaching one of those two statuses.
    *
    * Verified empirically against this worktree's container, outside this
    * method, by scripting the exact sequence `m3uRefreshComplete` performs
@@ -290,24 +287,7 @@ export class Seeder {
       is_active: true,
     });
 
-    await this.waitFor.condition(
-      async () => {
-        const res = await this.api.get(`/api/m3u/accounts/${account.id}/`);
-        const body = await this.api.json<M3uAccount>(
-          res,
-          `upstreamM3UAccount: polling account ${account.id} for the create-time group refresh to settle`
-        );
-        return body.status === 'error' || body.status === 'pending_setup';
-      },
-      {
-        timeoutMs: 20_000,
-        intervalMs: 250,
-        description:
-          `the create-time group refresh of M3U account ${account.id} to ` +
-          `settle (status 'error' or 'pending_setup') before triggering the ` +
-          `real refresh`,
-      }
-    );
+    await this.waitForCreateTimeGroupRefreshToSettle(account.id);
 
     const refreshed = await this.waitFor.m3uRefreshComplete(account.id);
     if (refreshed.status !== 'success') {
@@ -317,6 +297,89 @@ export class Seeder {
       );
     }
     return refreshed;
+  }
+
+  /**
+   * Waits for the create-time `refresh_m3u_groups` task (queued
+   * unconditionally by `post_save` for every newly-created, active, non-XC
+   * `M3UAccount` — see `upstreamM3UAccount()`'s doc comment for the full
+   * race this exists to close) to reach its own terminal disposition —
+   * `status: 'error'` or `'pending_setup'` — before the caller triggers a
+   * real refresh and reads the row as a baseline.
+   *
+   * ---------------------------------------------------------------------------
+   * The exact claim, and its limit
+   * ---------------------------------------------------------------------------
+   * This does **not** claim `{error, pending_setup}` is the exhaustive set of
+   * outcomes `refresh_m3u_groups` (`apps/m3u/tasks.py:1544`) can ever reach —
+   * it claims that set is what every path *reachable by this factory*
+   * reaches, and that anything else is treated as a hang, not a pass.
+   * `refresh_m3u_groups` has three paths that leave the row at a
+   * **non-terminal** status forever rather than settling at either one:
+   *
+   *  1. its own task lock (`"refresh_m3u_account_groups"`) already held by
+   *     another execution against the same account id (`:1544-1546`) —
+   *     returns immediately, writing nothing;
+   *  2. the account is not found, or **inactive at execution time**
+   *     (`:1552-1556`, the `M3UAccount.DoesNotExist` branch — the query
+   *     filters `is_active=True`) — same, no write;
+   *  3. an uncaught exception after `fetch_m3u_lines` succeeds but before
+   *     `process_groups`/the final `.update()` runs, in the non-XC branch,
+   *     which has no broad `except` around it — the row is left at whatever
+   *     `fetch_m3u_lines` set (`fetching`) with nothing left to move it on.
+   *
+   * None of these three is reachable through `upstreamM3UAccount()`'s normal
+   * path (a freshly-created, active account whose lock nothing else holds,
+   * fetching a well-formed fake playlist) — but this method makes no attempt
+   * to distinguish "genuinely stuck" from "just slow", and doesn't need to:
+   * either way it **fails loud**. `waitFor.condition` below throws a timeout
+   * naming the account and what it was waiting for, rather than silently
+   * returning early against a status that was never terminal — so hitting
+   * gap 1, 2 or 3 surfaces as an attributable timeout here, not as a
+   * mysterious failure three calls later inside `m3uRefreshComplete`.
+   *
+   * Gap 2 is exercised directly, deterministically, in
+   * `m3u-ingest.spec.ts`'s `waitForCreateTimeGroupRefreshToSettle times out
+   * rather than passing silently when the account never settles` test: an
+   * account created with `is_active: false` guarantees this exact
+   * `DoesNotExist` branch (no fault, no timing race — the create-time task's
+   * one-shot `is_active=True` check simply never passes), so the wait can
+   * only ever time out, never resolve. That test pins the *contract* this
+   * method must keep — resolve on a genuine terminal write, time out loudly
+   * otherwise — deterministically. It does not, on its own, prove
+   * `upstreamM3UAccount()` still calls this method; I looked for a
+   * comparably deterministic way to pin that specific call site and
+   * concluded there isn't one available at this layer — see the fix report
+   * for the reasoning.
+   */
+  // Not `private`: `m3u-ingest.spec.ts`'s regression test below calls this
+  // directly to pin its timeout contract deterministically — see the doc
+  // comment above for why that couldn't be done through `upstreamM3UAccount`
+  // itself. Primarily an internal helper; `upstreamM3UAccount` is still the
+  // one path a normal test should reach for.
+  async waitForCreateTimeGroupRefreshToSettle(
+    accountId: number,
+    options: WaitOptions = {}
+  ): Promise<void> {
+    await this.waitFor.condition(
+      async () => {
+        const res = await this.api.get(`/api/m3u/accounts/${accountId}/`);
+        const body = await this.api.json<M3uAccount>(
+          res,
+          `waitForCreateTimeGroupRefreshToSettle: polling account ${accountId}`
+        );
+        return body.status === 'error' || body.status === 'pending_setup';
+      },
+      {
+        timeoutMs: 20_000,
+        intervalMs: 250,
+        description:
+          `the create-time group refresh of M3U account ${accountId} to ` +
+          `settle (status 'error' or 'pending_setup') before triggering the ` +
+          `real refresh`,
+        ...options,
+      }
+    );
   }
 
   // Mirrors UpstreamClient.playlistUrl() in upstream.ts exactly, for the same
