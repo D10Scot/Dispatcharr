@@ -2333,6 +2333,12 @@ as a hardcoded three-job matrix (`e2e-tests.yml:49-50`)". Two things are wrong: 
 had five entries since G4 and now has six, and the line-number citation is exactly what this
 documentation series forbids. Replace with a count and a symbol reference:
 
+**Expect a conflict on this paragraph.** G3 independently decided to correct it too (its D11),
+so if G3 landed first the text will already read "five" rather than "three". **G6 is
+authoritative here** — G6 is the goal that adds the sixth job, so G3's five is outdated the
+moment this lands. Rebase through G3's version and rewrite the count to six; do not leave the
+already-corrected paragraph alone as someone else's edit.
+
 ```
 `.github/workflows/e2e-tests.yml` builds the AIO image once, then runs
 `pristine`, `seeded`, `streaming`, `streaming-failover`, `streaming-greybox`
