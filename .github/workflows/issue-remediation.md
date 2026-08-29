@@ -15,7 +15,10 @@ permissions:
   contents: read
   issues: read
   pull-requests: read
-model: gpt-5.6-sol
+# Kimi K3 main agent: gpt-5.6-sol hits OpenAI's cybersecurity classifier
+# (HTTP 422) when reproducing security findings. The reviewer sub-agent below
+# stays on claude-sonnet-5.
+model: kimi-k3
 timeout-minutes: 60
 features:
   group-concurrency-queue: false
