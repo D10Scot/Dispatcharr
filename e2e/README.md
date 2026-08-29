@@ -385,6 +385,12 @@ to `every=1`); any other value used from a parallel test must be **unique per
 test** — not reused, and not pre-warmed from a worker, which is itself the
 concurrent create that poisons the container (#7).
 
+**If you add a test that uses a new non-zero value, add it to the set above.**
+That list is an enumeration, so it is only as true as its last edit — and a
+stale "here is the full set" is worse than no list at all, because the next
+author picks a value they believe is unused. This section already had to be
+rewritten once for exactly that reason.
+
 That leaves one more thing to weigh before picking a non-zero value, not
 covered by either of those two sources:
 
