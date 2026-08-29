@@ -241,6 +241,21 @@ export class Waiter {
    * it's narrow enough (identical failure, twice, back to back) not to be
    * worth a bigger contract change for.
    *
+   * **A second, distinct gap this closes as of D10Scot/Dispatcharr#59**: a
+   * trigger that lands while `refresh_single_m3u_account`'s own task lock
+   * from an *immediately preceding* refresh on the same account is still
+   * held (`apps/m3u/tasks.py:3345` vs. the `finally`-scoped release at
+   * `:3374`, well after the terminal `status` write at `:3865`) is silently
+   * dropped — the task discovers the lock held and returns having written
+   * nothing, indistinguishable from "not picked up yet". Phase 1 re-fires
+   * the trigger every 5s it spends still waiting, which is what actually
+   * recovers: by the retry, the earlier refresh has almost always released
+   * its lock. This is orthogonal to the identical-back-to-back-failure gap
+   * above — that gap is a write that *does* happen but reads the same as the
+   * baseline; this one is a trigger that writes nothing at all, and retrying
+   * is exactly what a silent no-op needs and a byte-identical failure does
+   * not (retrying that just produces the same indistinguishable write again).
+   *
    * `timeoutMs` bounds phase 2; `startTimeoutMs` bounds phase 1 (including
    * the fallback above — both are checked on the same poll). The trade for
    * never passing early: a refresh that starts and finishes entirely within
@@ -261,9 +276,13 @@ export class Waiter {
       `m3uRefreshComplete baseline read for account ${accountId}`
     );
 
-    if (trigger) {
-      await trigger();
-    } else {
+    // Extracted so phase 1 below can call it again — see D10Scot/Dispatcharr#59
+    // just below.
+    const fire = async (): Promise<void> => {
+      if (trigger) {
+        await trigger();
+        return;
+      }
       // Checked rather than discarded. `RefreshSingleM3UAPIView` is an
       // unconditional 202 today, so this effectively cannot fire — but a
       // broker-down 500, or a future validation change, would otherwise be
@@ -279,9 +298,31 @@ export class Waiter {
             'queued, so there was nothing to wait for.'
         );
       }
-    }
+    };
+
+    await fire();
 
     let sawInFlight = false;
+    // D10Scot/Dispatcharr#59: `refresh_single_m3u_account` only releases its
+    // Redis task lock in a `finally` (`apps/m3u/tasks.py:3374`), well after
+    // `_refresh_single_m3u_account_impl` has already written a terminal
+    // `status` (`:3865`) — auto-sync, a system-event log, a WS push and cache
+    // cleanup all still run in between, `acquire_task_lock` at `:3345`. A
+    // trigger landing in that window finds the lock held, logs "Task already
+    // running" and returns having written nothing at all — but
+    // `POST /api/m3u/refresh/<id>/` already answered 202, so from here that
+    // is indistinguishable from "not picked up yet": the account just sits at
+    // its pre-trigger baseline forever and phase 1 below would otherwise burn
+    // its whole `startTimeoutMs` on a trigger that never had a chance to run.
+    // Re-firing periodically is what actually recovers: by the time a retry
+    // goes out, the earlier refresh's lock has almost always cleared (Task 3's
+    // own workaround for this same issue found ~2s enough in this container —
+    // `m3u-refresh-failure.spec.ts`). A refresh that is instead just slow to
+    // be picked up (no competing lock at all) receives a harmless duplicate
+    // POST — the resulting second queued run finds *its own* predecessor's
+    // lock held and is dropped the same cheap way.
+    const RETRIGGER_INTERVAL_MS = 5_000;
+    let lastFireAt = Date.now();
 
     const firstObserved = await this.resource<M3uAccount>(
       url,
@@ -290,16 +331,36 @@ export class Waiter {
           sawInFlight = true;
           return true;
         }
-        return (
+        if (
           M3U_TERMINAL_STATUSES.includes(body.status) &&
           (body.status !== baseline.status || body.last_message !== baseline.last_message)
-        );
+        ) {
+          return true;
+        }
+        if (Date.now() - lastFireAt >= RETRIGGER_INTERVAL_MS) {
+          lastFireAt = Date.now();
+          // Best-effort and logged immediately rather than folded into
+          // `description` (fixed at call time, before any retry has had a
+          // chance to run — a mutable value read from inside it would never
+          // actually appear) or `describeLast` (would replace, not augment,
+          // `resource()`'s own — more useful — last-observed-body default). A
+          // retry that itself fails to queue should not abort a wait that
+          // might still succeed from an earlier, successfully-queued attempt.
+          fire().catch((error) => {
+            console.warn(
+              `m3uRefreshComplete: re-trigger for account ${accountId} failed: ${String(error)}`
+            );
+          });
+        }
+        return false;
       },
       {
         description:
           `M3U account ${accountId} refresh to start ` +
           `(status ${M3U_IN_FLIGHT_STATUSES.join(' or ')}, or a terminal status ` +
-          `that differs from its pre-trigger baseline of '${baseline.status}')`,
+          `that differs from its pre-trigger baseline of '${baseline.status}'; ` +
+          `re-triggered every ${RETRIGGER_INTERVAL_MS}ms in case an earlier ` +
+          'attempt landed on a still-held refresh lock — D10Scot/Dispatcharr#59)',
         timeoutMs: startTimeoutMs,
         intervalMs: 250,
       }

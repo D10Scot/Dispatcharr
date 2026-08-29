@@ -93,6 +93,58 @@ test('waitForCreateTimeGroupRefreshToSettle times out rather than passing silent
   ).rejects.toThrow(/timed out.*to settle/is);
 });
 
+// Pins D10Scot/Dispatcharr#59's fix in `Waiter.m3uRefreshComplete()`,
+// deterministically. The real symptom — a trigger silently dropped because
+// `refresh_single_m3u_account`'s task lock from an immediately preceding
+// refresh is still held — is timing-dependent against a live container and
+// not reliably forceable from a test. So this pins the *mechanism* instead,
+// with a custom `trigger` standing in for "the first attempt was dropped":
+// it does nothing at all on its first call (exactly what a lock-contention
+// drop looks like from here — the account never moves off its baseline),
+// and only actually queues a refresh on its second call. If
+// `m3uRefreshComplete()` still resolves, it can only be because phase 1
+// re-invoked `trigger` on its own — `waitFor.resource()`'s poll alone would
+// otherwise sit on an account stuck at its baseline until `startTimeoutMs`.
+test("waitFor.m3uRefreshComplete re-fires its trigger when the account never moves off its baseline", async ({
+  seed,
+  waitFor,
+  api,
+}) => {
+  // Inactive: no create-time `refresh_m3u_groups` task competes for
+  // anything here, so the only thing that can move this account's status is
+  // whichever `trigger()` call this test lets through.
+  const account = await seed.m3uAccount({ is_active: false });
+  let attempts = 0;
+
+  const result = await waitFor.m3uRefreshComplete(account.id, {
+    // Comfortably more than one retry interval (hardcoded at 5s inside
+    // `m3uRefreshComplete`), so a single re-fire has room to land and
+    // resolve well before this budget is exhausted.
+    startTimeoutMs: 12_000,
+    trigger: async () => {
+      attempts += 1;
+      if (attempts === 1) {
+        return; // The dropped attempt.
+      }
+      // The account must be reactivated too: an inactive account's refresh
+      // is its own silent no-op (see this method's doc comment in
+      // wait.ts), so a bare POST here would prove nothing.
+      const activated = await api.patch(`/api/m3u/accounts/${account.id}/`, {
+        is_active: true,
+      });
+      expect(activated.ok()).toBeTruthy();
+      const triggered = await api.post(`/api/m3u/refresh/${account.id}/`, {});
+      expect(triggered.ok()).toBeTruthy();
+    },
+  });
+
+  // The default `server_url` (the discard port) refuses the connection fast
+  // — this test only needs a terminal status distinct from the idle
+  // baseline, not a working playlist.
+  expect(result.status).toBe('error');
+  expect(attempts).toBeGreaterThanOrEqual(2);
+});
+
 /**
  * Scans `seed.ts`'s source text for one method's body. `anchor` must be the
  * method's signature up to and including its opening `(` (e.g.

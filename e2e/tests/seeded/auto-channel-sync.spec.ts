@@ -44,15 +44,13 @@ test('enabling auto channel sync creates one channel per stream inside the decla
   // and the Streams. `process_groups` never sets `auto_channel_sync`, so it is
   // always false after the first refresh and no channel is created.
   //
-  // `startTimeoutMs` widened past the 30s default (phase 1: waiting for the
-  // refresh to *start*): under sustained heavy parallel load in this task's
-  // own repeated stress runs (--repeat-each=8 at 4 workers, well beyond what
-  // `seeded`'s normal 4-worker run does concurrently), this container's
-  // Celery pickup occasionally took longer than 30s to move an account past
-  // its pre-trigger baseline at all — a real, load-dependent hazard, not a
-  // logic bug (see the report for the reproduction). 150s of test.setTimeout
-  // budget comfortably absorbs a wider phase 1 here.
-  const first = await waitFor.m3uRefreshComplete(account.id, { startTimeoutMs: 60_000 });
+  // Default `startTimeoutMs` (30s): the review round on this task traced the
+  // original flake here to a dropped trigger (D10Scot/Dispatcharr#59, fixed
+  // in `waitFor.m3uRefreshComplete()` itself), not slow Celery pickup, and
+  // this refresh has no preceding refresh on the same account competing for
+  // its task lock — there is no standalone evidence a wider window is
+  // needed here, so it stays at the shared default.
+  const first = await waitFor.m3uRefreshComplete(account.id);
   expect(first.status).toBe('success');
 
   const noChannelsYet = await api.json<Channel[]>(
@@ -110,10 +108,13 @@ test('enabling auto channel sync creates one channel per stream inside the decla
   expect(updated?.auto_sync_channel_end).toBe(window.end);
 
   // Refresh 2: `sync_auto_channels` runs synchronously inside the refresh and
-  // now sees an enabled, auto-sync group. Same `startTimeoutMs` widening as
-  // refresh 1, for the same reason — this is the call that actually timed
-  // out in this task's own stress runs.
-  const second = await waitFor.m3uRefreshComplete(account.id, { startTimeoutMs: 60_000 });
+  // now sees an enabled, auto-sync group. This is the call that landed
+  // inside refresh 1's still-held task lock and timed out under stress
+  // before the fix — `waitFor.m3uRefreshComplete()` now re-triggers itself
+  // when that happens (D10Scot/Dispatcharr#59), so the 60s widening this
+  // call previously carried was a fix-round-1 workaround for the same root
+  // cause and is no longer needed at the default 30s.
+  const second = await waitFor.m3uRefreshComplete(account.id);
   expect(second.status).toBe('success');
 
   // No poll here — a direct read is not raced. `_refresh_single_m3u_account_impl`

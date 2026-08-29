@@ -30,6 +30,17 @@ test('a 404 from the playlist leaves the account in error with no catalogue', as
     is_active: true,
   });
 
+  // Was a false pass without this: creating the account active queues the
+  // create-time `refresh_m3u_groups` task unconditionally, and with
+  // `not-found` already armed, *that* task's own fetch fails and writes
+  // `status: 'error'` too — the exact value asserted below. Without waiting
+  // for it to settle first, `waitFor.m3uRefreshComplete`'s baseline-diff
+  // could resolve on the create-time task's write and never actually
+  // observe the *triggered* refresh this test names, passing regardless of
+  // whether the explicit trigger's own 404 handling works at all. See
+  // `upstreamM3UAccount()`'s doc comment in seed.ts for the full mechanism.
+  await seed.waitForCreateTimeGroupRefreshToSettle(account.id);
+
   const failed = await waitFor.m3uRefreshComplete(account.id);
   expect(failed.status).toBe('error');
   expect(failed.last_message).toBeTruthy();
