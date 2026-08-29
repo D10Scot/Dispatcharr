@@ -1,0 +1,88 @@
+name: Metrics
+
+# Collects deterministic engineering metrics (scripts/metrics/) and appends
+# one JSONL row per metric family to the orphan `metrics-data` branch, keyed
+# by {timestamp, commit_sha}. Appends are idempotent, so retries and
+# re-dispatches never duplicate history.
+
+on:
+  schedule:
+    - cron: '0 6 * * 1' # weekly, Monday 06:00 UTC
+  push:
+    branches:
+      - main
+    # Only paths the collectors measure (plus the collectors and this
+    # workflow); a docs-only merge does not produce a data point.
+    paths:
+      - 'apps/**'
+      - 'core/**'
+      - 'dispatcharr/**'
+      - 'frontend/**'
+      - 'e2e/**'
+      - 'scripts/**'
+      - '.github/workflows/metrics.yml'
+  workflow_dispatch:
+    inputs:
+      backfill:
+        description: >-
+          Run the backfill over every first-parent commit since fd413f0c
+          instead of a single collection at HEAD (idempotent; only missing
+          commits are added).
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: metrics-append
+  cancel-in-progress: false
+
+jobs:
+  collect-and-append:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # push to the metrics-data branch
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+          fetch-depth: 0 # backfill walks first-parent history
+
+      - name: Prepare metrics-data worktree
+        run: |
+          if git fetch origin metrics-data; then
+            git worktree add -B metrics-data metrics-data-wt FETCH_HEAD
+          else
+            git worktree add --orphan -b metrics-data metrics-data-wt
+          fi
+
+      - name: Run collectors
+        env:
+          BACKFILL: ${{ inputs.backfill && '1' || '' }}
+        run: |
+          if [ -n "$BACKFILL" ]; then
+            python3 scripts/metrics/backfill.py \
+              --repo-root . --out-dir metrics-data-wt --ref "$GITHUB_SHA"
+          else
+            python3 scripts/metrics/collect_all.py \
+              --repo-root . --out-dir metrics-data-wt
+          fi
+
+      - name: Commit and push
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cd metrics-data-wt
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No new rows; nothing to push."
+            exit 0
+          fi
+          git -c user.name="github-actions[bot]" \
+              -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+              commit -m "metrics: append rows for ${GITHUB_SHA}"
+          git push \
+            "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
+            HEAD:metrics-data
