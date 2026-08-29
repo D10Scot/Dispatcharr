@@ -28,6 +28,7 @@ done:
 | `./scripts/e2e_up.sh` | Start, reusing an existing container and its data |
 | `./scripts/e2e_up.sh --stop` | Stop it, keep the container and the volume. Start again to resume with the same superuser and seeded rows |
 | `./scripts/e2e_up.sh --reset` | Destroy container + volume, then start fresh |
+| `./scripts/e2e_up.sh --recreate` | Replace the container, keeping the volume, network and provider. The one mode that expresses an upgrade: honours `DISPATCHARR_E2E_IMAGE`, so setting it and re-running actually serves the new image, unlike every mode above |
 | `./scripts/e2e_up.sh --down` | Destroy container + volume, start nothing |
 
 `DISPATCHARR_E2E_PORT`, `_CONTAINER`, `_VOLUME` and `_IMAGE` override the
@@ -60,21 +61,20 @@ one up. CI binds the same way.
 | `lifecycle` | Restarts the container mid-test. **Runs alone** — it destroys the container every other project shares. No `bootstrap` dependency: it provisions its own admin |
 | `lifecycle-upgrade` | Boots a published baseline image, seeds, then replaces the container with the local build on the same volume. **Runs alone.** Runs in `lifecycle-tests.yml`, not in `e2e-tests.yml`'s matrix |
 
-`streaming` and `streaming-failover` both run at `workers: 2` — the byte-level
-reads and the failover watchdogs (dead-air, buffering) are slow but do not
-touch anything another test in the same project could observe. `streaming-greybox`
-is the one exception in the whole suite: `output-profile-sharing.spec.ts` calls
-`greyboxRedis()` to read raw Redis keys directly, alongside the normal API
-surface, and also counts every `ffmpeg` process running in the container
-(`pgrep -x ffmpeg`) — a container-wide observable, not one scoped to its own
-channel, the same class of shared-state hazard as
-`failover-buffering.spec.ts`'s global `proxy_settings` mutation in
-`streaming-failover`. A second worker running any spec here that starts its
-own transcode — or a future grey-box test that mutates Redis directly, the
-way the deleted ownership-lease flagship did (see `COVERAGE.md`) — would race
-against it in a way no other project risks, so this project pins
-`workers: 1` rather than trusting every future grey-box test to be
-independently safe at higher concurrency.
+`streaming` runs at `workers: 2` — its byte-level reads are slow but do not
+touch anything another test in the same project could observe.
+`streaming-failover` and `streaming-greybox` both pin `workers: 1` instead,
+each for its own container-wide hazard: `failover-buffering.spec.ts` mutates
+the global `proxy_settings` row for the duration of its run, and
+`output-profile-sharing.spec.ts` counts every `ffmpeg` process running in the
+container (`pgrep -x ffmpeg`) via `greyboxRedis()`. Neither observable is
+scoped to its own channel, so a second worker running anything else in the
+same project would race it — see each project's `workers` comment in
+`playwright.config.ts` for the full reasoning. A future grey-box test that
+mutates Redis directly, the way the deleted ownership-lease flagship did (see
+`COVERAGE.md`), would be the same class of risk in `streaming-greybox`, which
+is why that project doesn't trust every future test to be independently safe
+at higher concurrency either.
 
 **The set of specs allowed to reach for grey-box Redis access is a checked
 allowlist, not a comment asking politely.** `e2e/fixtures/greybox/redis.ts`
@@ -192,9 +192,10 @@ topology brought up by `scripts/e2e_up.sh`, not a bare `E2E_BASE_URL` run.
 ## The login throttle — read this before writing a multi-user test
 
 `POST /api/accounts/token/` is rate-limited to **3 requests per minute per
-client IP** (`dispatcharr/settings.py:309-310` sets `"login": "3/minute"`;
-enforced by `LoginRateThrottle` at `apps/accounts/throttling.py:20`, applied
-to the view at `apps/accounts/api_views.py:57`). The budget is shared with
+client IP** (`dispatcharr/settings.py`'s `REST_FRAMEWORK["DEFAULT_THROTTLE_RATES"]`
+sets `"login": "3/minute"`; enforced by `LoginRateThrottle` in
+`apps/accounts/throttling.py`, whose `scope` is `"login"`, applied to
+`TokenObtainPairView` in `apps/accounts/api_views.py`). The budget is shared with
 Django admin login and with `POST /api/accounts/auth/login/`, which delegates
 to the same view — all three go through one throttle scope.
 
@@ -235,7 +236,7 @@ its own.
 | Cold: first run after `--reset`, deleted auth files, or >1 day (`SIMPLE_JWT.REFRESH_TOKEN_LIFETIME`) | **3** = 1 admin + 1 per principal, exactly the per-minute cap |
 | Each `asUser()` call for a principal not in the roster | **+1**, per distinct `username:password`, *per worker* |
 
-`TokenRefreshView` is **not** throttled (`apps/accounts/api_views.py:133`
+`TokenRefreshView` is **not** throttled (its class in `apps/accounts/api_views.py`
 carries no `throttle_classes`, and `DEFAULT_THROTTLE_CLASSES` is `[]`), which
 is what makes the middle row free: an access token lives 30 minutes, a refresh
 token a day, so bootstrap and `ApiClient` both renew rather than re-login. One
@@ -333,7 +334,7 @@ The trailing space matters — it excludes `token/refresh/`, which is free.
 permanently. It is not test data and no test asserts on it. It exists to make
 a product bug unreachable.
 
-`core/scheduling.py:121` calls
+`core/scheduling.py` calls
 `IntervalSchedule.objects.get_or_create(every=…, period=HOURS)` from an
 `M3UAccount` `post_save` receiver, and `django_celery_beat.IntervalSchedule`
 has no unique constraint on `(every, period)`. Two concurrent creates both
@@ -420,7 +421,8 @@ early on the name.
 
 `.github/workflows/e2e-tests.yml` builds the AIO image once, then runs
 `pristine`, `seeded`, `streaming`, `streaming-failover`, `streaming-greybox`
-and `lifecycle` as a hardcoded six-job matrix (`e2e-tests.yml:163`), each
+and `lifecycle` as a hardcoded six-job matrix (the `test` job's
+`matrix.project` list in `e2e-tests.yml`), each
 against its own fresh container, each gated on `npm run typecheck` before
 tests run. **If you add another project to `playwright.config.ts`, add it to
 that matrix too** — nothing wires new projects in automatically, and a project

@@ -132,3 +132,11 @@ The four G7 rows above are covered by:
   `.github/workflows/lifecycle-tests.yml` (PUID/PGID honoured)
 - `docker/tests/test-tls-postgres.sh`, run by
   `.github/workflows/lifecycle-tests.yml` (TLS Postgres connection)
+
+The PUID/PGID and TLS Postgres rows are wired but have not yet executed a
+full run in CI: `lifecycle-tests.yml` is not on the default branch yet, so it
+has not run and could not have. One scenario (`test-puid-pgid.sh`'s
+`puid_test_fresh_def`) has been run by hand and passed, 13/13 assertions,
+exit 0; `test-tls-postgres.sh` has not been run at all. If the first
+post-merge run of `lifecycle-tests.yml` is red, these two rows come back to
+`todo`.
