@@ -86,6 +86,7 @@ tests.** Status: `todo` / `done` / `known-bug` (asserted correct, marked
 | Frontend | Connect: webhook CRUD | G6 | todo |
 | Frontend | Logos: upload and browse | G6 | todo |
 | Frontend | Backups: create and restore | G6 | todo |
+| Frontend | **Gap:** development-mode-only diagnostics — not just React's key-prop warning, but anything gated behind `__DEV__`/`import.meta.env.DEV` (Mantine's own dev checks, React Router's, etc.) — are invisible to the `pageErrors` fixture in this harness. `docker/Dockerfile:22`'s `npm run build`, which is what `scripts/e2e_up.sh:138` builds the e2e image from, is a Vite production build: it resolves the production `react/jsx-runtime` with `NODE_ENV="production"`, so dev-only checks (React's `validateChildKeys` among them) are compiled out of the bundle entirely, not merely suppressed at runtime. Production error reporting is unaffected — `pageerror` and `console.error` from real app/library code still reach the collector, so this is not a hole in error detection generally, only in this one class of dev-time-only diagnostic. A later task that needs to assert a dev-only diagnostic must verify it against a development build directly, or assert the underlying behaviour rather than the diagnostic message. First hit: G6 task 9 (`connect.spec.ts`), trying to reproduce [#62](https://github.com/D10Scot/Dispatcharr/issues/62) | G6 | todo |
 | Lifecycle | Upgrade from previous release (migrations) | G7 | done |
 | Lifecycle | Restart preserves channels and settings | G7 | done |
 | Lifecycle | PUID/PGID honoured | G7 | done |

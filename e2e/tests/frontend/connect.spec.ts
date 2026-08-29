@@ -1,5 +1,5 @@
 import { test, expect } from '../../fixtures';
-import type { ConnectIntegration } from '../../fixtures';
+import type { ApiClient, ConnectIntegration } from '../../fixtures';
 import { listRows } from '../../setup/http';
 import { SURFACES, gotoSurface } from './helpers';
 
@@ -10,12 +10,14 @@ if (!connectSurface) {
 
 const WEBHOOK_URL = 'http://e2e-upstream:9402/does-not-matter';
 
-/** The row this test created, by the name it generated. Never a count. */
+/**
+ * The row this test created, by the name it generated. Never a count.
+ * Typed against the real `ApiClient` (not an inline structural stand-in) so
+ * a future signature drift on the fixture is caught by `npm run typecheck`
+ * here, not silently ignored.
+ */
 async function findIntegration(
-  api: {
-    get: (url: string) => Promise<import('@playwright/test').APIResponse>;
-    json: <T>(res: import('@playwright/test').APIResponse, ctx: string) => Promise<T>;
-  },
+  api: ApiClient,
   name: string
 ): Promise<ConnectIntegration | undefined> {
   const body = await api.json<unknown>(
@@ -45,6 +47,15 @@ test('a webhook integration created through the Connect page round-trips to the 
   pageErrors,
 }) => {
   const name = seed.generatedName('integration');
+  // Captured rather than left to propagate straight out of the `try` below,
+  // so cleanup can run unconditionally afterward without a plain `finally`
+  // block's failure mode: if `findIntegration`'s own lookup throws (a
+  // transient network/auth hiccup, unrelated to the test's own
+  // correctness) while a real assertion failure is already in flight, a
+  // bare `finally` would let the lookup's opaque error silently replace the
+  // original one — the reader would see "could not reach the API" instead
+  // of the actual bug. See the rethrow at the bottom of this test.
+  let testError: unknown;
 
   try {
     // `page.goto('/connect')` cannot reach this surface on a fresh load
@@ -191,14 +202,50 @@ test('a webhook integration created through the Connect page round-trips to the 
     // (frontend/src/pages/Connect.jsx), so the click is the whole action.
     await card.getByRole('button', { name: 'Delete', exact: true }).click();
     await expect.poll(() => findIntegration(api, name), { timeout: 30_000 }).toBeUndefined();
-  } finally {
-    // Failure-path cleanup: looks the row up by the generated name (never a
-    // remembered id) so it works no matter how far the flow above got, and
-    // asserts the response rather than trusting a fire-and-forget DELETE.
-    const leftover = await findIntegration(api, name);
-    if (leftover) {
-      const cleanup = await api.delete(`/api/connect/integrations/${leftover.id}/`);
-      expect(cleanup.status()).toBe(204);
+  } catch (err) {
+    testError = err;
+  }
+
+  // Cleanup always runs, whether or not the flow above succeeded, and looks
+  // the row up by the generated name (never a remembered id) so it works no
+  // matter how far the flow got.
+  //
+  // Two different failure sources here get two different treatments. A
+  // failure to even *look up* the row is caught and, if a real test failure
+  // is already in flight, only logged — not allowed to overwrite it, per
+  // the comment above `testError`'s declaration. A failure in the *delete
+  // itself* (the row is found but the API doesn't return 204) is never
+  // swallowed, even when the flow above already failed: that is the signal
+  // Tasks 7 and 8 both established as load-bearing ("a teardown whose
+  // failure is invisible is worse than none"), and a broken cleanup leaking
+  // a row on the shared instance matters regardless of why the test itself
+  // failed — so `expect(cleanup.status()).toBe(204)` below is left
+  // deliberately unguarded and free to become the test's reported failure.
+  let leftover: ConnectIntegration | undefined;
+  try {
+    leftover = await findIntegration(api, name);
+  } catch (lookupError) {
+    if (testError) {
+      console.error(
+        'connect.spec.ts: cleanup lookup failed after an in-flight test failure — ' +
+          'not overwriting it. Lookup error:',
+        lookupError
+      );
+    } else {
+      testError = lookupError;
     }
   }
+  if (leftover) {
+    if (testError) {
+      console.error(
+        'connect.spec.ts: an in-flight test failure preceded cleanup (see below); ' +
+          'running cleanup regardless:',
+        testError
+      );
+    }
+    const cleanup = await api.delete(`/api/connect/integrations/${leftover.id}/`);
+    expect(cleanup.status()).toBe(204);
+  }
+
+  if (testError) throw testError;
 });
