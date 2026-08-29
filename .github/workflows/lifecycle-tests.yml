@@ -88,7 +88,12 @@ jobs:
       - name: Build the upstream provider image
         run: docker build -f e2e-upstream/Dockerfile -t dispatcharr-e2e-upstream:local e2e-upstream
 
+      # `shell: bash` for the pipe — see the long note on the suite step below.
+      # Without it a failed `docker save` still exits 0 (the status is gzip's),
+      # this step passes, and the truncated archive surfaces as a baffling
+      # `docker load` error in all three downstream jobs instead.
       - name: Export both images
+        shell: bash
         run: docker save dispatcharr-e2e:local dispatcharr-e2e-upstream:local | gzip > /tmp/dispatcharr-lifecycle.tar.gz
 
       - name: Upload the image
@@ -153,9 +158,17 @@ jobs:
 
       # Two things are load-bearing here and neither is obvious.
       #
-      # `pipefail`: GitHub's default `bash` shell sets `-eo pipefail`, so the
-      # suite's exit status survives the pipe into tee. Add a custom `shell:`
-      # to this step and the job goes GREEN ON FAILURE.
+      # `shell: bash` is what makes this step able to fail at all, and it is
+      # the opposite of what you might assume. GitHub's *default* `run:` shell
+      # on Linux is `bash -e {0}` — `-e`, but **no `-o pipefail`**. Only an
+      # explicit `shell: bash` gets `bash --noprofile --norc -eo pipefail {0}`.
+      # Without pipefail this pipeline's exit status is `tee`'s, which is
+      # always 0, so a suite that exits 1 reports GREEN. Both suites do exit
+      # non-zero on failure (`test-puid-pgid.sh` ends in `exit 1`;
+      # `test-tls-postgres.sh` ends in a bare `[ $FAIL -eq 0 ]`), and the pipe
+      # would throw that away. `backend-tests.yml` already does this correctly.
+      # Do not remove the `shell:` key to "use the default" — the default is
+      # the bug.
       #
       # No `--keep-on-fail`: it looks like the obvious diagnosability answer
       # and makes things strictly worse. All eight TLS scenarios reuse the same
@@ -166,6 +179,7 @@ jobs:
       # accumulating up to 20 containers and PostgreSQL data volumes on a
       # runner with single-digit gigabytes free.
       - name: Run the suite
+        shell: bash
         env:
           SUITE_SCRIPT: ${{ matrix.script }}
           SUITE_LOG: ${{ runner.temp }}/${{ matrix.name }}.log
