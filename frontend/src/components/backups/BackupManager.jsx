@@ -435,7 +435,7 @@ export default function BackupManager() {
   };
 
   return (
-    <Stack gap="md">
+    <Stack gap="md" data-testid="backups-panel">
       {/* Schedule Settings */}
       <Stack gap="sm">
         <Group justify="space-between">

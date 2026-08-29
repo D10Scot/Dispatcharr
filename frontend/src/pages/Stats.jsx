@@ -549,7 +549,7 @@ const StatsPage = () => {
 
   return (
     <>
-      <Box style={{ overflowX: 'auto' }}>
+      <Box style={{ overflowX: 'auto' }} data-testid="stats-page">
         <Box miw={520}>
           <Box p={10} style={{ borderBottom: '1px solid #444' }}>
             <Group justify="space-between" align="center">
@@ -611,6 +611,7 @@ const StatsPage = () => {
             p={10}
             pb={120}
             mih={'calc(100vh - 250px)'}
+            data-testid="stats-connections"
           >
             <Connections
               combinedConnections={combinedConnections}

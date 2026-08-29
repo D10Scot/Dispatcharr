@@ -394,7 +394,7 @@ export default function PluginsPage() {
   );
 
   return (
-    <AppShellMain p={16}>
+    <AppShellMain p={16} data-testid="plugins-page">
       <Group justify="space-between" mb="md">
         <Group gap="xs" align="center">
           <Text fw={700} size="lg">
