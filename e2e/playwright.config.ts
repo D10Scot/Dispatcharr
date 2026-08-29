@@ -120,12 +120,12 @@ export default defineConfig({
       testDir: './tests/frontend',
       dependencies: ['bootstrap'],
       // 120s, between `seeded`'s 30s and the streaming projects' 300s, and
-      // derived rather than picked: the slowest row here is the backups flow,
-      // which polls a Celery task through `waitFor` (60s default budget), and
-      // the Stats row, which opens a real upstream stream and then waits out
-      // the page's 5s stats poll. 30s cannot hold either. 300s would turn a
-      // page that never renders into a five-minute stall instead of a
-      // two-minute failure.
+      // derived rather than picked: the slowest row here is the backups flow
+      // (`backups.spec.ts`), which polls a Celery task through
+      // `expect.poll` on a 90s budget, and the Stats row, which opens a real
+      // upstream stream and then waits out the page's 5s stats poll. 30s
+      // cannot hold either. 300s would turn a page that never renders into a
+      // five-minute stall instead of a two-minute failure.
       timeout: 120_000,
       // Two workers, and `fullyParallel` deliberately left unset so it
       // inherits `false` — files run in parallel, tests within a file do not.
