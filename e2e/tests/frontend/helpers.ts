@@ -1,12 +1,19 @@
 /**
  * The nine surfaces G6 covers, and the one way to reach them.
  *
- * `route` is what a test navigates to. Two of them are hash routes rather than
- * router routes: `Settings.jsx` reads `useLocation().hash`, looks the id up in
- * `SETTINGS_GROUPS` (`frontend/src/config/settingsNav.js`) and renders that
- * section inside `<Suspense>`. So `/settings#backups` renders `BackupManager`
- * directly, with no sidebar click — and the Backups "surface" is a Settings
- * section, not a route of its own.
+ * `route` documents where a surface lives — it's what matches the
+ * `Frontend | …` row in `e2e/COVERAGE.md` — and, for the two hash-route
+ * entries, is what `gotoSurface` parses to know which settings section to
+ * click. It is **never** handed to `page.goto()` directly: see that
+ * function's own doc comment for why (#58).
+ *
+ * Two of the nine are hash routes rather than router routes: `Settings.jsx`
+ * reads `useLocation().hash`, looks the id up in `SETTINGS_GROUPS`
+ * (`frontend/src/config/settingsNav.js`) and renders that section inside
+ * `<Suspense>`. So `/settings#backups` is `BackupManager` rendered as a
+ * Settings section, not a route of its own — reached the same way every
+ * other surface here is, by clicking through the sidebar from `/channels`,
+ * never by a direct link.
  *
  * `testId` is the container PR A added. It is what a test waits on, and
  * nothing here selects by text: text selectors couple the suite to UI copy.
@@ -111,6 +118,23 @@ export async function gotoSurface(page: Page, surface: Surface): Promise<void> {
     }
     await page.getByRole('button', { name: 'Settings', exact: true }).click();
     await page.getByRole('button', { name: sectionLabel, exact: true }).click();
+
+    // `settings-page`'s data-testid sits on `Settings.jsx`'s outer `<Box>`
+    // (:30), *outside* the `ActiveComponent ? … : "Select a setting from the
+    // sidebar"` ternary at :31 — so it is visible whether or not a section
+    // ever actually loaded. `backups-panel` has no such hole (its testid is
+    // on `BackupManager`'s own root, the lazy-loaded component itself, so
+    // waiting on it already proves the chunk resolved) — this check is
+    // Settings-specific. The hash proves the click landed on the section the
+    // test asked for; the Suspense fallback's disappearance
+    // (`.mantine-Loader-root`, Mantine's stable per-component targeting
+    // class) proves the lazy section actually finished loading. Without
+    // both, a hung lazy chunk or a click that silently missed its target are
+    // both indistinguishable from success on the bare testid check below.
+    if (surface.testId === 'settings-page') {
+      await expect(page).toHaveURL(new RegExp(`#${hashMatch[1]}$`));
+      await expect(page.locator('.mantine-Loader-root')).toHaveCount(0);
+    }
   } else {
     const linkLabel = SIDEBAR_LINK_LABEL[surface.name] ?? surface.name;
     await page.getByRole('link', { name: linkLabel, exact: true }).click();

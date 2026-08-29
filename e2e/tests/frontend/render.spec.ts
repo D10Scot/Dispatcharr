@@ -1,4 +1,4 @@
-import { test, expect } from '../../fixtures';
+import { test } from '../../fixtures';
 import { SURFACES, gotoSurface } from './helpers';
 
 // Exemplar: the cheapest wiring proof in G6, and the reason the project
