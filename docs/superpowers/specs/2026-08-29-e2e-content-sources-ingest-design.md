@@ -307,6 +307,18 @@ Each of these is recorded as a row or a note in `e2e/COVERAGE.md`, never as sile
   caching the remote image is not.
 - **Reproducing #7** (the `IntervalSchedule` duplicate-create race). Provoking it poisons the
   shared container permanently for the rest of the run, with no API or UI able to repair it. D10.
+- **Refresh-interval scheduling — and this one is a cost D10 incurs, not a pre-existing gap.**
+  Declaring `refresh_interval: 0` for every G3 source means nothing in this programme exercises a
+  *non-zero* interval: not `create_or_update_periodic_task`'s
+  `should_be_enabled = enabled and (use_cron or interval_hours > 0)` branch, not the
+  `IntervalSchedule` row it creates for that interval, not `cron_expression`, and not
+  `_cleanup_orphaned_interval` on delete. The reason is exactly D10's second argument: a non-zero
+  interval leaves an **enabled** hourly beat task re-refreshing that account for the life of the
+  container, mutating rows under whatever test happens to be running an hour later — which a
+  shared `seeded` instance cannot tolerate. **Assigned to G7**, whose scenario-specific jobs each
+  stand up their own instance and can therefore afford an enabled beat task, and which is already
+  the home for everything that cannot share the ordinary `seeded` container. It also needs the
+  pre-warm extended to whichever intervals it picks, from `bootstrap` and never from a worker.
 - **`M3UFilterViewSet`**, Xtream/XC provider accounts (G5), DVR and recordings (G6), the
   `compact_numbering` opt-in repack path, `repack-group/`, and `Channel` preemption.
 - **Fixing any product defect.** Assert correct, `test.fail()`, reference or file the issue.

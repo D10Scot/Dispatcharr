@@ -71,7 +71,7 @@ npx playwright test --project=seeded tests/seeded/<file>.spec.ts
 | `e2e/fixtures/wait.ts` | Add `epgRefreshComplete()` |
 | `e2e/fixtures/api.ts` | Add `upload()` |
 | `e2e/fixtures/index.ts` | Wire `Seeder`'s new constructor argument; re-export new types; extend the header inventory |
-| `e2e/COVERAGE.md` | Six G3 rows → `done`; add four new rows |
+| `e2e/COVERAGE.md` | Six G3 rows → `done`; add five new rows (four G3, one **G7** — the refresh-interval scheduling gap D10 creates) |
 | `e2e/README.md` | Fixture-table rows; a `refresh_interval` section; the stale CI-matrix sentence (D11) |
 
 ---
@@ -1984,15 +1984,16 @@ In `e2e/COVERAGE.md`, change the `Status` cell of these six rows from `todo` to 
 | Sources | Logo upload and assignment | G3 | done |
 ```
 
-- [ ] **Step 2: Add the four new rows**
+- [ ] **Step 2: Add the five new rows**
 
-Immediately after the six rows above, replacing `<N>` with Task 4's issue number:
+Immediately after the six rows above, replacing `<N>` with Task 4's issue number. **The last row is a G7 row, not a G3 one** — it records what G3's `refresh_interval: 0` declaration costs, and it belongs on the worklist under the goal that can afford to pay it. Place it beside the other `Lifecycle | … | G7` rows rather than in the `Sources` block:
 
 ```
 | Sources | M3U refresh failure records the error and leaves no partial catalogue | G3 | done |
 | Sources | `M3UAccount.locked` is writable over the API — `read_only_fields` is declared on the serializer class instead of `Meta` ([#15](https://github.com/D10Scot/Dispatcharr/issues/15)); asserted correct and `test.fail()`ed | G3 | known-bug |
 | Sources | A failed M3U refresh discards the HTTP-status-specific message: `fetch_m3u_lines` writes "M3U file not found (404) at URL: …" and `_refresh_single_m3u_account_impl` overwrites it with a generic string, identically for 404, 401, 403, 500 and a connection refusal ([#<N>](https://github.com/D10Scot/Dispatcharr/issues/<N>)); asserted correct and `test.fail()`ed | G3 | known-bug |
 | Sources | Deliberate G3 gaps: EPG fuzzy auto-matching (`match-epg`, `set-names-from-epg`, `set-logos-from-epg`, `set-tvg-ids-from-epg`, `fetch_schedules_direct()`) and the permanently-broken `get_preferred_region_code()` are out of scope, not missed; auto-sync **rename-in-place** is not expressible because `ScenarioRegistry` has no update operation and `Stream.stream_hash` derives from a URL carrying the scenario id, so the mutation test proves create-and-delete instead; **multi-group catalogues** are not expressible because `renderPlaylist` hardcodes `group-title="E2E"`; logo *image fetching* is out because the provider's `tvg-logo` points at RFC 2606-reserved `example.invalid`, though row-level logo ingest is covered; and [#7](https://github.com/D10Scot/Dispatcharr/issues/7) (the `IntervalSchedule` duplicate-create race) is **deliberately not reproduced** — provoking it poisons the shared container permanently for every remaining test in the run, with no API or UI able to repair it, so every G3 source uses the pre-warmed `refresh_interval: 0`. The first three would be closed by a provider `PATCH /scenarios/<id>` and a `group` field on `ChannelSpec` — `e2e-upstream`'s scope, a later goal | G3 | todo |
+| Lifecycle | Refresh-interval scheduling: a **non-zero** `refresh_interval` on an `M3UAccount` or `EPGSource` — the enabled-`PeriodicTask` branch of `create_or_update_periodic_task` (`should_be_enabled = enabled and (use_cron or interval_hours > 0)`), the `IntervalSchedule` row it creates, `cron_expression`, and `_cleanup_orphaned_interval` on delete. **Uncovered as a direct cost of G3's D10**, which pins every source to `refresh_interval: 0`: a non-zero interval leaves an *enabled* hourly beat task re-refreshing that account for the life of the container, mutating rows under whatever test runs an hour later — which the shared `seeded` instance cannot tolerate. G7's scenario-specific jobs each stand up their own instance and can. Whoever takes it must also extend `bootstrap`'s pre-warm to the intervals it picks, from `bootstrap` and never from a worker ([#7](https://github.com/D10Scot/Dispatcharr/issues/7)) | G7 | todo |
 ```
 
 - [ ] **Step 3: List the G3 spec files**
@@ -2114,7 +2115,7 @@ git commit -m "docs(e2e): record G3 coverage, gaps and the refresh_interval rule
 
 Checked after writing, against the spec:
 
-- **Spec coverage.** All fifteen inventory rows map to a task: 1→T1, 2→T2, 3–4→T3, 5→T4, 6→T5, 7→T6, 8→T7, 9–10→T8, 11→T9, 12→T10, 13–14→T11, 15→T12. All six fixture additions map: `api.upload`→T12, `seed.logo`→T12, `seed.upstreamM3UAccount`→T1, `seed.upstreamEpgSource`→T5, `Seeder`'s `Waiter`→T1, `waitFor.epgRefreshComplete`→T5, every type→T1/T5/T9/T12. D10 (no pre-warm change) and D11 (the CI sentence) are both in T13. Every Non-goal is recorded in T13's gaps row.
+- **Spec coverage.** All fifteen inventory rows map to a task: 1→T1, 2→T2, 3–4→T3, 5→T4, 6→T5, 7→T6, 8→T7, 9–10→T8, 11→T9, 12→T10, 13–14→T11, 15→T12. All six fixture additions map: `api.upload`→T12, `seed.logo`→T12, `seed.upstreamM3UAccount`→T1, `seed.upstreamEpgSource`→T5, `Seeder`'s `Waiter`→T1, `waitFor.epgRefreshComplete`→T5, every type→T1/T5/T9/T12. D10 (no pre-warm change) and D11 (the CI sentence) are both in T13. Every Non-goal is recorded in T13 Step 2 — all but one in the G3 gaps row; refresh-interval scheduling gets its own row, assigned to **G7**, because it is a coverage cost D10 creates rather than a G3 scope boundary, and a gap that only exists inside a decision's rationale is invisible on the worklist.
 - **Type consistency.** `StreamPage` is defined in T1 and used in T1, T3, T8, T9. `EpgData` and `ProgramSearchPage` are defined in T5 and used in T5, T6, T7. `GroupSettingRow` and `M3uAccountChannelGroup` are defined in T9 and used in T9, T10 (T10 reuses T9's `AccountWithGroups` alias, declared once at the top of the shared file). `Logo`/`LogoOverrides`/`MultipartValue` are defined in T12 and used only there. `syncWindowFor` has one signature, used with `slot: 0` in T9 and `slot: 1` in T10.
 - **Placeholder scan.** No `TBD`/`TODO`, no "similar to Task N", no step that describes without showing. One value is genuinely unknown at planning time and is handled explicitly rather than left blank: `<N>`, the issue number, is *created* by Task 4 Step 1 and substituted in Task 4 Step 2 and Task 13.
 - **Timeouts.** Every test that pays for more than one Celery-backed wait raises its own budget with `test.setTimeout()` as its first statement (D9) — Tasks 3 (×2), 5, 6, 7, 8 (×2), 9 and 10. `test.describe.configure` is deliberately not used: a file-level timeout would hide which test actually needed it.
