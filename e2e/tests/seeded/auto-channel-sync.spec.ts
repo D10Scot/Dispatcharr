@@ -164,3 +164,157 @@ test('enabling auto channel sync creates one channel per stream inside the decla
   const ascending = [...inCatalogueOrder].sort((a, b) => a - b);
   expect(inCatalogueOrder).toEqual(ascending);
 });
+
+/**
+ * The catalogue change is made by re-pointing the account at a SECOND
+ * scenario, not by mutating the first.
+ *
+ * `ScenarioRegistry` has no update operation and the provider's control API
+ * has no route for one, so a scenario is immutable once created. And
+ * `Stream.stream_hash` is derived from the URL under the shipped default
+ * `m3u_hash_key` (`core/migrations/0009_m3u_hash_settings.py`), while every
+ * provider URL carries the scenario id — so a second scenario means an
+ * entirely new set of Streams.
+ *
+ * That is enough to exercise both halves of the reconciliation: the first
+ * scenario's streams stop being seen, so `sync_auto_channels` deletes their
+ * auto-created channels, and the second scenario's are new, so it creates
+ * fresh ones. What it cannot exercise is rename-in-place, which needs stream
+ * identity held constant across a catalogue change — recorded as a provider
+ * gap in COVERAGE.md rather than faked here.
+ *
+ * Both scenarios' channels carry the same hardcoded `group-title` ("E2E" —
+ * see `UPSTREAM_GROUP_NAME` in `m3u-ingest.spec.ts`), so they land in the
+ * same `ChannelGroup` row and the same `ChannelGroupM3UAccount` relation.
+ * That relation is enabled for auto-sync once, before the first reconcile
+ * pass, and is never touched again — the re-point in the middle of this
+ * test only changes `server_url`, which carries no signal of its own
+ * (`refresh_account_on_save`, `apps/m3u/signals.py:12-19`, only fires on
+ * `created`), so the third refresh is driven entirely by
+ * `waitFor.m3uRefreshComplete()`'s own default trigger.
+ */
+test('a changed catalogue deletes the departed channels and creates the new ones', async ({
+  upstream,
+  seed,
+  api,
+  waitFor,
+}, testInfo) => {
+  // Three full fetch-and-parse refreshes against the project's 30s default.
+  test.setTimeout(180_000);
+
+  const prefixA = seed.generatedName('mutateA');
+  const prefixB = seed.generatedName('mutateB');
+  const declaredA = [1, 2, 3].map((id) => ({
+    id,
+    name: `${prefixA}-ch${id}`,
+    tvgId: `${prefixA}-ch${id}.e2e`,
+    logo: null,
+  }));
+  const declaredB = [1, 2].map((id) => ({
+    id,
+    name: `${prefixB}-ch${id}`,
+    tvgId: `${prefixB}-ch${id}.e2e`,
+    logo: null,
+  }));
+
+  const scenarioA = await upstream.scenario({ channels: declaredA });
+  const scenarioB = await upstream.scenario({ channels: declaredB });
+
+  const account = await seed.m3uAccount({
+    server_url: upstream.playlistUrl(scenarioA),
+    is_active: true,
+  });
+
+  // Same guard as the first test in this file, for the same reason: creating
+  // the account active queues the create-time `refresh_m3u_groups` task
+  // unconditionally, a second writer of the exact fields
+  // `waitFor.m3uRefreshComplete()` diffs against its pre-trigger baseline.
+  await seed.waitForCreateTimeGroupRefreshToSettle(account.id);
+
+  expect((await waitFor.m3uRefreshComplete(account.id)).status).toBe('success');
+
+  const withGroups = await api.json<AccountWithGroups>(
+    await api.get(`/api/m3u/accounts/${account.id}/`),
+    'account read-back for its group relation'
+  );
+  // Picked by stream_count, not `[0]` — see the first test in this file for
+  // why: the create-time `refresh_m3u_groups` task always seeds a second,
+  // zero-stream relation to "Default Group" ahead of whatever the playlist
+  // actually declares, so indexing the array is order-dependent and wrong.
+  const relation = withGroups.channel_groups.find(
+    (g) => g.stream_count === declaredA.length
+  );
+  expect(
+    relation,
+    `no group relation with stream_count === ${declaredA.length} among ${JSON.stringify(withGroups.channel_groups)}`
+  ).toBeDefined();
+
+  const window = syncWindowFor(testInfo.workerIndex, 1);
+  const row: GroupSettingRow = {
+    channel_group: relation!.channel_group,
+    enabled: true,
+    auto_channel_sync: true,
+    auto_sync_channel_start: window.start,
+    auto_sync_channel_end: window.end,
+    custom_properties: {},
+  };
+  // Imported from ./helpers rather than inlining the PATCH block a second
+  // time in this goal — see helpers.ts's doc comment on `applyGroupSettings`.
+  // It also asserts the write actually landed, which a bare `.ok()` check
+  // would not: `update_group_settings` silently skips a row whose
+  // `channel_group` is falsy and still returns 200.
+  await applyGroupSettings(api, account.id, [row]);
+
+  expect((await waitFor.m3uRefreshComplete(account.id)).status).toBe('success');
+  await waitFor.resource<Channel[]>(
+    `/api/channels/channels/?name=${encodeURIComponent(prefixA)}`,
+    (rows) => rows.length === declaredA.length,
+    { description: `${declaredA.length} auto-created channels from scenario A` }
+  );
+
+  // Re-point at scenario B and refresh a third time.
+  expect(
+    (
+      await api.patch(`/api/m3u/accounts/${account.id}/`, {
+        server_url: upstream.playlistUrl(scenarioB),
+      })
+    ).ok()
+  ).toBeTruthy();
+  expect((await waitFor.m3uRefreshComplete(account.id)).status).toBe('success');
+
+  // Neither poll below is racing `sync_auto_channels()`: `_refresh_single_
+  // m3u_account_impl` calls it (`apps/m3u/tasks.py:3821`) and only sets the
+  // account's terminal `status` afterward (`:3865-3873`), with no
+  // `transaction.atomic()` anywhere in between — an ordinary sequence of
+  // autocommitting writes, durable the instant each one returns. That is
+  // true of the deletion half exactly as much as the creation half: within
+  // the same call, scenario A's now-stale streams fall out of
+  // `current_streams` (filtered on `last_seen__gte=scan_start_time`), so
+  // their channels land in `channels_to_delete` and are removed via
+  // `_delete_channels_stopping_streams()` — a plain, synchronous
+  // `Channel.objects.filter(...).delete()` (`apps/m3u/tasks.py:2891-2892`),
+  // not a task or a signal with its own timing. So by the time
+  // `m3uRefreshComplete()` above resolved `'success'`, both the deletes and
+  // the creates were already committed. The `waitFor.resource()` calls below
+  // are kept anyway, as a defensive/readable idiom consistent with the rest
+  // of this goal — not because either result is expected to need more than
+  // one poll.
+  const survivorsA = await waitFor.resource<Channel[]>(
+    `/api/channels/channels/?name=${encodeURIComponent(prefixA)}`,
+    (rows) => rows.length === 0,
+    { description: 'scenario A’s auto-created channels to be deleted' }
+  );
+  expect(survivorsA).toHaveLength(0);
+
+  const channelsB = await waitFor.resource<Channel[]>(
+    `/api/channels/channels/?name=${encodeURIComponent(prefixB)}`,
+    (rows) => rows.length === declaredB.length,
+    { description: `${declaredB.length} auto-created channels from scenario B` }
+  );
+  for (const channel of channelsB) {
+    expect(channel.auto_created).toBe(true);
+    expect(channel.channel_number!).toBeGreaterThanOrEqual(window.start);
+    expect(channel.channel_number!).toBeLessThanOrEqual(window.end);
+  }
+  expect(new Set(channelsB.map((c) => c.channel_number!)).size).toBe(declaredB.length);
+});
