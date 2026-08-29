@@ -314,7 +314,9 @@ export class Waiter {
   }
 
   /**
-   * Waits for an `EPGSource` refresh to finish.
+   * Waits for an `EPGSource` refresh to finish, and returns a row whose
+   * `updated_at` is genuinely settled — safe to pass straight back in as a
+   * later call's `options.baseline`.
    *
    * **This is deliberately not a copy of {@link m3uRefreshComplete}, and the
    * difference is the whole point.** An XMLTV refresh reaches `status:
@@ -324,16 +326,57 @@ export class Waiter {
    * `parsing`. A wait for a terminal status therefore resolves mid-refresh,
    * with `EPGData` rows present and zero `ProgramData`.
    *
-   * So this polls `updated_at` instead, which is a genuine completion marker:
-   * `EPGSource.updated_at` is `null=True` with no `auto_now`, is `null` on a
-   * fresh row, and is written only by `parse_programs_for_source`'s success
-   * path and by `_refresh_epg_data_impl`'s final `.update()` — reached only
-   * once both parse phases returned truthy. Every error path skips it.
+   * So this polls `updated_at` instead. `EPGSource.updated_at` is
+   * `null=True` with no `auto_now`, and `null` on a fresh row. On the paths
+   * this harness exercises it is written:
+   *  - **once**, by `_refresh_epg_data_impl`'s final unconditional
+   *    `.update()` (`apps/epg/tasks.py:523`) — when no channel is mapped to
+   *    the source yet, `parse_programs_for_source`'s early-return branch for
+   *    that case (`:2126-2129`) never touches `updated_at` at all, so `:523`
+   *    is the only write.
+   *  - **twice**, once a channel *is* mapped: `parse_programs_for_source`'s
+   *    own success path (`:2377-2378`) writes it the moment programmes are
+   *    actually swapped in, and then `_refresh_epg_data_impl`'s same final
+   *    `.update()` at `:523` writes it *again*, a few ms later, after the
+   *    file lock is released and any late-mapped per-channel parses are
+   *    queued (`_dispatch_late_mapped_epg_parses`).
    *
-   * `status === 'error'` also resolves the wait, but only when `status` or
-   * `last_message` differs from the baseline — the same guard
-   * {@link m3uRefreshComplete} uses, so a source already sitting in a stale
-   * error state cannot resolve this instantly.
+   * A version of this method that resolved on the first observed change
+   * would, on the mapped path, sometimes return the row from the `:2377`
+   * write — whose `updated_at` the still-pending `:523` write is about to
+   * advance past. A caller that took that row as a later call's `baseline`
+   * would then see `updated_at` differ on its very first poll, before any
+   * new refresh had even been triggered — the same "resolves on a stale
+   * write" hazard {@link m3uRefreshComplete}'s phase 2 has, one layer down.
+   * So this does not resolve the instant `updated_at` changes: once it has
+   * changed from the baseline, the method keeps polling and only resolves
+   * once **two consecutive reads report the same value** — i.e.
+   * `updated_at` has genuinely settled. That costs one extra poll
+   * (`intervalMs`, 250ms by default here) on every call, including the
+   * single-write path above, but it is what makes the returned row always
+   * safe to reuse as a later `baseline`, on either path.
+   *
+   * `status === 'error'` resolves the wait immediately, with no settling
+   * poll, whenever `status` or `last_message` differs from the baseline —
+   * the same guard {@link m3uRefreshComplete} uses, so a source already
+   * sitting in a stale error state cannot resolve this instantly. That
+   * needs no settling wait of its own: every error path reachable after an
+   * `updated_at` write is a terminal return with nothing left to write
+   * afterward (see the next paragraph for exactly which paths those are).
+   *
+   * **Not true that every error path skips `updated_at`** — two exceptions:
+   * `parse_programs_for_source`'s outer `except Exception` (`:2402`)
+   * catches anything raised *after* its own `:2377-2378` write (e.g. inside
+   * `log_system_event` or `_dispatch_late_mapped_epg_parses`) and returns
+   * `False` with `status: 'error'`; `updated_at` is left at the value that
+   * success write set, and `_refresh_epg_data_impl` never reaches its own
+   * `:523` write for this call (it returns as soon as
+   * `parse_programs_for_source` comes back falsy) — so no double-write and
+   * no settling hazard there either. And a `schedules_direct` source
+   * reaches the unconditional `:523` write regardless of
+   * `fetch_schedules_direct`'s outcome, since that return value is ignored
+   * (`:518`) — so a `schedules_direct` refresh that failed internally still
+   * bumps `updated_at` once.
    *
    * **The hazard this cannot see:** an *inactive* source. `_refresh_epg_data_impl`
    * returns on `if not source.is_active` before any status write, and
@@ -376,17 +419,39 @@ export class Waiter {
       }
     }
 
+    // See the doc comment above: `updated_at` can advance twice on the
+    // mapped-channel path, a few ms apart, so a single observed change is
+    // not enough to know it has settled. `settling` remembers the first
+    // changed value seen; the predicate only resolves once a later poll
+    // reports that exact same value again.
+    let settling: string | null | undefined;
+
     return this.resource<EpgSource>(
       url,
-      (body) =>
-        body.updated_at !== before.updated_at ||
-        (body.status === 'error' &&
-          (body.status !== before.status || body.last_message !== before.last_message)),
+      (body) => {
+        if (
+          body.status === 'error' &&
+          (body.status !== before.status || body.last_message !== before.last_message)
+        ) {
+          return true;
+        }
+        if (body.updated_at === before.updated_at) {
+          settling = undefined;
+          return false;
+        }
+        if (settling === body.updated_at) {
+          return true;
+        }
+        settling = body.updated_at;
+        return false;
+      },
       {
         description:
           `EPG source ${sourceId} refresh to finish ` +
-          `(updated_at to advance from '${before.updated_at}', or a changed error state)`,
+          `(updated_at to advance from '${before.updated_at}' and settle, or a ` +
+          'changed error state)',
         timeoutMs: 180_000,
+        intervalMs: 250,
         ...options,
       }
     );
