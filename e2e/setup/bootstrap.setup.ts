@@ -13,7 +13,7 @@ import {
 import type { TokenPair } from './login';
 import { listRows } from './http';
 import { provisionPrincipals } from './principals';
-import { assertMayCreateSuperuser } from './superuser-guard';
+import { ensureSuperuser } from './provision-admin';
 import { AUTH_DIR, ensureAuthDir, writeAuthFile } from './auth-files';
 
 const STATE_FILE = path.join(AUTH_DIR, 'admin.json');
@@ -257,27 +257,12 @@ setup('create the superuser and persist admin auth state', async ({
   request,
   baseURL,
 }) => {
-  const status = await request.get('/api/accounts/initialize-superuser/');
-  expect(
-    status.ok(),
-    `initialize-superuser probe failed: ${status.status()} ${await status.text()}`
-  ).toBeTruthy();
-
-  const setupState: { superuser_exists?: boolean } = await status.json();
-  if (!setupState.superuser_exists) {
-    assertMayCreateSuperuser(baseURL!);
-    // POST is IP-gated to private/loopback (dispatcharr/utils.py,
-    // setup_ip_allowed). Fine from CI and from localhost; a public
-    // E2E_BASE_URL needs DISPATCHARR_SETUP_ALLOWED_IP set on the instance —
-    // read superuser-guard.ts before you do that.
-    const created = await request.post('/api/accounts/initialize-superuser/', {
-      data: ADMIN,
-    });
-    expect(
-      created.ok(),
-      `superuser creation failed: ${created.status()} ${await created.text()}`
-    ).toBeTruthy();
-  }
+  // Probe, guard and create live in ./provision-admin.ts so the lifecycle
+  // specs share them — and share `assertMayCreateSuperuser` in particular.
+  // The login stays here: `reusableTokens` below is what keeps a warm run at
+  // zero logins, and folding it into the shared helper would spend one on
+  // every bootstrap.
+  await ensureSuperuser(request, baseURL!);
 
   // Through the same throttle-aware path as the principals. This is the first
   // login of a cold run and the one everything else depends on, so leaving it

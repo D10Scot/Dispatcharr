@@ -115,5 +115,61 @@ export default defineConfig({
       workers: 1,
       use: { storageState: 'playwright/.auth/admin.json' },
     },
+    {
+      // Owns its container's lifecycle: restarts it mid-test. Must run alone —
+      // `fixtures/instance.ts` has the reasoning, `e2e/README.md` has the rule.
+      name: 'lifecycle',
+      testDir: './tests/lifecycle',
+      // The split between the two lifecycle projects is structural, not a
+      // `--grep`: `--grep` matches test *titles*, so which spec ran would
+      // depend on wording, and nothing would give this project the
+      // complementary filter — it would run the ~9-minute upgrade spec too,
+      // on every PR, which is exactly what D16 exists to prevent.
+      testMatch: /restart-persistence\.spec\.ts$/,
+      workers: 1,
+      fullyParallel: false,
+      // Two container boots and a full readiness wait — ~15s in practice.
+      //
+      // Sized to sit *above* the subprocess timeouts in `fixtures/instance.ts`
+      // (720s per `e2e_up.sh` call), not below them. That ordering is the whole
+      // point: `e2e_up.sh` prints the container's logs before it gives up, and
+      // the fixture quotes that into its error, so whichever timeout fires
+      // first decides whether a failed boot arrives with a traceback or with a
+      // bare "Test timeout of 600000ms exceeded". It used to be below, so the
+      // informative error was unreachable.
+      timeout: 900_000,
+      // Attempt 1 consumes the state attempt 2 would need — the same reason
+      // `pristine` sets this, and here also because a retry would re-run
+      // `provisionAdmin` against an instance that already has the superuser
+      // and spend a login it does not need.
+      retries: 0,
+      // No `dependencies` and no `storageState`, for the same reason
+      // `pristine` has neither: `bootstrap` targets whichever container is up
+      // before a project starts, and this spec replaces the container
+      // mid-run — a persisted token would point at an instance that no longer
+      // exists.
+    },
+    {
+      // Identical settings to `lifecycle` — the split is which spec runs, not
+      // how. Separate projects rather than one project plus `--grep` because
+      // `--grep` matches test *titles*: which spec ran would depend on wording
+      // nobody has written yet, and `lifecycle` would have no complementary
+      // filter, so it would run this ~9-minute spec on every PR (D16).
+      name: 'lifecycle-upgrade',
+      testDir: './tests/lifecycle',
+      testMatch: /upgrade-migrations\.spec\.ts$/,
+      workers: 1,
+      fullyParallel: false,
+      // A ~3.6 GB baseline pull, a fresh boot on an empty volume, a container
+      // replacement and a second boot — ~20s in practice.
+      //
+      // Generous for the same reason as `lifecycle` above, and more so: this
+      // spec makes three subprocess calls that can each block (600s pull, then
+      // 720s per boot), so anything under ~30 minutes means Playwright's
+      // generic timeout wins over the fixture's own diagnosable failure. The
+      // job it runs in budgets 45 minutes.
+      timeout: 1_800_000,
+      retries: 0,
+    },
   ],
 });

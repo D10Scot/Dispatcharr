@@ -38,13 +38,17 @@ tests.** Status: `todo` / `done` / `known-bug` (asserted correct, marked
 | Streaming | Stream Profile: FFmpeg | G4 | done |
 | Streaming | Output Profile shared per (channel, profile) | G4 | done |
 | Streaming | Ownership lease is fenced against a second concurrent owner — attempted by deleting `live:channel:{uuid}:owner` under a running Proxy-profile stream and polling for a second worker to claim it; confirmed empirically unprovable from outside the container: the same owning worker's own `ProxyServer._start_cleanup_thread` cleanup loop notices the missing key and calls `extend_ownership()`, re-`SET NX`-ing the identical worker id well under a second later every run (measured at ≤500ms), because that loop is the only code path with a local `StreamManager` for the channel; a follower worker never contends because `stream_ts` only lets a worker attempt ownership when channel metadata is absent too, which a bare owner-key delete does not cause — so no black-box HTTP/Redis manipulation can land a second `SET NX` in the sub-second gap. The untried lever is co-expiring `live:channel:{uuid}:metadata` with the owner key, which is what would open the metadata-gated follower path in `stream_ts`; that is a larger provocation than this row's brief allowed and needs its own scoping. See G4 task-12 report for the full trace. | G4 | todo |
-| Output | /output/m3u parses and every URL streams | G5 | todo |
-| Output | /output/epg is valid XMLTV | G5 | todo |
-| Output | HDHomeRun discovery and lineup | G5 | todo |
-| Output | Xtream player_api actions | G5 | todo |
-| Output | Catch-up / timeshift URLs | G5 | todo |
-| Output | Authorization matrix by user_level | G5 | todo |
-| Output | hide_adult_content across all listing paths | G5 | todo |
+| Output | /output/m3u parses, every URL is well-formed, and one is streamed end to end | G5 | todo |
+| Output | /output/m3u/&lt;profile_name&gt; scopes to Channel Profile membership | G5 | todo |
+| Output | /output/epg is valid XMLTV and carries programmes for the seeded channels | G5 | todo |
+| Output | HDHomeRun discovery, device XML, lineup and lineup status | G5 | todo |
+| Output | Xtream authentication handshake (user_info / server_info envelope) | G5 | todo |
+| Output | Xtream live actions: get_live_categories, get_live_streams, get_short_epg, get_simple_data_table | G5 | todo |
+| Output | Xtream VOD and series actions answer an empty catalogue without erroring | G5 | todo |
+| Output | Xtream get.php and xmltv.php at the site root | G5 | todo |
+| Output | Authorization matrix by user_level — Xtream only, the one output surface with a principal | G5 | todo |
+| Output | hide_adult_content across the Xtream listing paths | G5 | todo |
+| Output | /output/m3u, /output/epg and the HDHR lineup are unauthenticated by design, gated only by the M3U_EPG network ACL | G5 | todo |
 | Accounts | Token refresh with a deleted user's token 500s instead of 401 ([#12](https://github.com/D10Scot/Dispatcharr/issues/12)); needs a `test.fail()`, and pinning it costs one login | G5 | known-bug |
 | Upstream | Fake provider speaks Xtream Codes: `player_api.php` auth envelope and the seven catalogue actions `core/xtream_codes.Client` calls | G8 | todo |
 | Upstream | Fake provider serves a finite VOD asset with `Content-Length`, `Accept-Ranges`, 206 + `Content-Range` and 416 | G8 | todo |
@@ -82,10 +86,10 @@ tests.** Status: `todo` / `done` / `known-bug` (asserted correct, marked
 | Frontend | Connect: webhook CRUD | G6 | todo |
 | Frontend | Logos: upload and browse | G6 | todo |
 | Frontend | Backups: create and restore | G6 | todo |
-| Lifecycle | Upgrade from previous release (migrations) | G7 | todo |
-| Lifecycle | Restart preserves channels and settings | G7 | todo |
-| Lifecycle | PUID/PGID honoured | G7 | todo |
-| Lifecycle | TLS Postgres connection | G7 | todo |
+| Lifecycle | Upgrade from previous release (migrations) | G7 | done |
+| Lifecycle | Restart preserves channels and settings | G7 | done |
+| Lifecycle | PUID/PGID honoured | G7 | done |
+| Lifecycle | TLS Postgres connection | G7 | done |
 
 The ten G1 rows above are covered by these specs (the two seeding rows
 share one file, as do the two principal rows):
@@ -148,3 +152,22 @@ was built, shown to pass for a reason that says nothing about the defect
 black-box client can act), and deleted rather than kept as a false green. See
 the row itself for the full trace and `e2e/tests/streaming-greybox/` history
 (commit `37edae89`) for the removed spec and allowlist entry.
+
+The four G7 rows above are covered by:
+
+- `e2e/tests/lifecycle/upgrade-migrations.spec.ts` (upgrade from previous
+  release)
+- `e2e/tests/lifecycle/restart-persistence.spec.ts` (restart preserves
+  channels and settings)
+- `docker/tests/test-puid-pgid.sh`, run by
+  `.github/workflows/lifecycle-tests.yml` (PUID/PGID honoured)
+- `docker/tests/test-tls-postgres.sh`, run by
+  `.github/workflows/lifecycle-tests.yml` (TLS Postgres connection)
+
+The PUID/PGID and TLS Postgres rows are wired but have not yet executed a
+full run in CI: `lifecycle-tests.yml` is not on the default branch yet, so it
+has not run and could not have. One scenario (`test-puid-pgid.sh`'s
+`puid_test_fresh_def`) has been run by hand and passed, 13/13 assertions,
+exit 0; `test-tls-postgres.sh` has not been run at all. If the first
+post-merge run of `lifecycle-tests.yml` is red, these two rows come back to
+`todo`.

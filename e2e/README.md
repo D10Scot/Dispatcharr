@@ -28,6 +28,7 @@ done:
 | `./scripts/e2e_up.sh` | Start, reusing an existing container and its data |
 | `./scripts/e2e_up.sh --stop` | Stop it, keep the container and the volume. Start again to resume with the same superuser and seeded rows |
 | `./scripts/e2e_up.sh --reset` | Destroy container + volume, then start fresh |
+| `./scripts/e2e_up.sh --recreate` | Replace the container, keeping the volume, network and provider. The one mode that expresses an upgrade: honours `DISPATCHARR_E2E_IMAGE`, so setting it and re-running actually serves the new image, unlike every mode above |
 | `./scripts/e2e_up.sh --down` | Destroy container + volume, start nothing |
 
 `DISPATCHARR_E2E_PORT`, `_CONTAINER`, `_VOLUME` and `_IMAGE` override the
@@ -51,28 +52,29 @@ one up. CI binds the same way.
 
 | Project | What it is for |
 |---|---|
-| `bootstrap` | Creates the superuser, pre-warms the `IntervalSchedule` row (see below) and writes auth state. Runs automatically as a dependency of `seeded` and `streaming` |
+| `bootstrap` | Creates the superuser, pre-warms the `IntervalSchedule` row (see below) and writes auth state. Runs automatically as a dependency of `seeded`, `streaming`, `streaming-failover` and `streaming-greybox` — every project except `pristine` and the two `lifecycle` ones, which each need an instance bootstrap has not touched |
 | `pristine` | Needs an instance with **no superuser**: first-run setup, and global `CoreSettings` changes |
 | `seeded` | The default. Shared instance, parallel workers, API-seeded data |
 | `streaming` | Byte-level tests. Long timeouts, fewer workers |
 | `streaming-failover` | Failover behaviour: dead-air and buffering watchdogs. Long timeouts, fewer workers |
 | `streaming-greybox` | Tests that reach past the API into Redis or the container directly (e.g. counting live `ffmpeg` processes). Long timeouts, one worker — **must be run alone locally**: in CI each matrix job gets its own container, but locally all projects can share one, and this project observes container-wide state that whatever else is running would disturb |
+| `lifecycle` | Restarts the container mid-test. **Runs alone** — it destroys the container every other project shares. No `bootstrap` dependency: it provisions its own admin |
+| `lifecycle-upgrade` | Boots a published baseline image, seeds, then replaces the container with the local build on the same volume. **Runs alone.** Runs in `lifecycle-tests.yml`, not in `e2e-tests.yml`'s matrix |
 
-`streaming` and `streaming-failover` both run at `workers: 2` — the byte-level
-reads and the failover watchdogs (dead-air, buffering) are slow but do not
-touch anything another test in the same project could observe. `streaming-greybox`
-is the one exception in the whole suite: `output-profile-sharing.spec.ts` calls
-`greyboxRedis()` to read raw Redis keys directly, alongside the normal API
-surface, and also counts every `ffmpeg` process running in the container
-(`pgrep -x ffmpeg`) — a container-wide observable, not one scoped to its own
-channel, the same class of shared-state hazard as
-`failover-buffering.spec.ts`'s global `proxy_settings` mutation in
-`streaming-failover`. A second worker running any spec here that starts its
-own transcode — or a future grey-box test that mutates Redis directly, the
-way the deleted ownership-lease flagship did (see `COVERAGE.md`) — would race
-against it in a way no other project risks, so this project pins
-`workers: 1` rather than trusting every future grey-box test to be
-independently safe at higher concurrency.
+`streaming` runs at `workers: 2` — its byte-level reads are slow but do not
+touch anything another test in the same project could observe.
+`streaming-failover` and `streaming-greybox` both pin `workers: 1` instead,
+each for its own container-wide hazard: `failover-buffering.spec.ts` mutates
+the global `proxy_settings` row for the duration of its run, and
+`output-profile-sharing.spec.ts` counts every `ffmpeg` process running in the
+container (`pgrep -x ffmpeg`) via `greyboxRedis()`. Neither observable is
+scoped to its own channel, so a second worker running anything else in the
+same project would race it — see each project's `workers` comment in
+`playwright.config.ts` for the full reasoning. A future grey-box test that
+mutates Redis directly, the way the deleted ownership-lease flagship did (see
+`COVERAGE.md`), would be the same class of risk in `streaming-greybox`, which
+is why that project doesn't trust every future test to be independently safe
+at higher concurrency either.
 
 **The set of specs allowed to reach for grey-box Redis access is a checked
 allowlist, not a comment asking politely.** `e2e/fixtures/greybox/redis.ts`
@@ -110,10 +112,30 @@ scenario; `test-tls-postgres.sh` stands up its own PostgreSQL and Redis with
 generated certificates on a dedicated network. Those are G7's
 scenario-specific jobs, not `pristine` specs — see the G7 paragraph in
 `docs/superpowers/specs/2026-08-23-e2e-coverage-roadmap-design.md`, which is
-the authority here.
+the authority here. Both suites leak a PostgreSQL volume per scenario on
+every run, tracked as
+[D10Scot/Dispatcharr#41](https://github.com/D10Scot/Dispatcharr/issues/41);
+neither suite is modified by this harness, so the cleanup lives with that
+issue, not here.
+
+`lifecycle` and `lifecycle-upgrade` go further than needing a differently
+configured instance: they **destroy** it. Both import
+`e2e/fixtures/instance.ts`, which stops, replaces or removes the shared
+container outright, and `scripts/e2e_up.sh`'s `destroy()` takes the shared
+Docker network and the `e2e-upstream` provider container down with it — see
+that file's header for the full reasoning. A lifecycle spec running beside
+any other project would not merely disturb it, it would delete the instance
+out from under it mid-assertion, with the failure surfacing in whichever
+project lost its container. That is why both run alone, in their own job and
+their own runner in CI, and neither shares a container with the other:
+
+```bash
+./scripts/e2e_up.sh --reset && npm run test:lifecycle
+npm run test:lifecycle-upgrade   # pulls a ~3.6 GB baseline; brings its own instance up and down
+```
 
 `npm test` (no suffix) deliberately fails with a message telling you to pick
-one of the five — there is no single invocation that is correct for all of
+one of the seven — there is no single invocation that is correct for all of
 them, and a bare `npm test` in CI would silently run whichever config
 happened to be first.
 
@@ -170,9 +192,10 @@ topology brought up by `scripts/e2e_up.sh`, not a bare `E2E_BASE_URL` run.
 ## The login throttle — read this before writing a multi-user test
 
 `POST /api/accounts/token/` is rate-limited to **3 requests per minute per
-client IP** (`dispatcharr/settings.py:309-310` sets `"login": "3/minute"`;
-enforced by `LoginRateThrottle` at `apps/accounts/throttling.py:20`, applied
-to the view at `apps/accounts/api_views.py:57`). The budget is shared with
+client IP** (`dispatcharr/settings.py`'s `REST_FRAMEWORK["DEFAULT_THROTTLE_RATES"]`
+sets `"login": "3/minute"`; enforced by `LoginRateThrottle` in
+`apps/accounts/throttling.py`, whose `scope` is `"login"`, applied to
+`TokenObtainPairView` in `apps/accounts/api_views.py`). The budget is shared with
 Django admin login and with `POST /api/accounts/auth/login/`, which delegates
 to the same view — all three go through one throttle scope.
 
@@ -213,7 +236,7 @@ its own.
 | Cold: first run after `--reset`, deleted auth files, or >1 day (`SIMPLE_JWT.REFRESH_TOKEN_LIFETIME`) | **3** = 1 admin + 1 per principal, exactly the per-minute cap |
 | Each `asUser()` call for a principal not in the roster | **+1**, per distinct `username:password`, *per worker* |
 
-`TokenRefreshView` is **not** throttled (`apps/accounts/api_views.py:133`
+`TokenRefreshView` is **not** throttled (its class in `apps/accounts/api_views.py`
 carries no `throttle_classes`, and `DEFAULT_THROTTLE_CLASSES` is `[]`), which
 is what makes the middle row free: an access token lives 30 minutes, a refresh
 token a day, so bootstrap and `ApiClient` both renew rather than re-login. One
@@ -311,7 +334,7 @@ The trailing space matters — it excludes `token/refresh/`, which is free.
 permanently. It is not test data and no test asserts on it. It exists to make
 a product bug unreachable.
 
-`core/scheduling.py:121` calls
+`core/scheduling.py` calls
 `IntervalSchedule.objects.get_or_create(every=…, period=HOURS)` from an
 `M3UAccount` `post_save` receiver, and `django_celery_beat.IntervalSchedule`
 has no unique constraint on `(every, period)`. Two concurrent creates both
@@ -397,17 +420,42 @@ early on the name.
 ## CI
 
 `.github/workflows/e2e-tests.yml` builds the AIO image once, then runs
-`pristine`, `seeded` and `streaming` as a hardcoded three-job matrix
-(`e2e-tests.yml:49-50`), each against its own fresh container, each gated on
-`npm run typecheck` before tests run. **If you add a fourth project to
-`playwright.config.ts`, add it to that matrix too** — nothing wires new
-projects in automatically, and a project missing from the matrix gets no CI
-coverage and no failure signal.
+`pristine`, `seeded`, `streaming`, `streaming-failover`, `streaming-greybox`
+and `lifecycle` as a hardcoded six-job matrix (the `test` job's
+`matrix.project` list in `e2e-tests.yml`), each
+against its own fresh container, each gated on `npm run typecheck` before
+tests run. **If you add another project to `playwright.config.ts`, add it to
+that matrix too** — nothing wires new projects in automatically, and a project
+missing from the matrix gets no CI coverage and no failure signal.
 
-These three jobs are **not** required checks on `main` — nobody has configured
-branch protection on this fork, so a red E2E run does not block a merge today.
-Making them required is a one-time step in the repository settings, not
-something this workflow can do for itself.
+A red E2E run **does** block a merge: the `Main` ruleset is active and
+requires one check, **`E2E result`**. That is the aggregate job at the bottom
+of `e2e-tests.yml`, not the matrix jobs themselves — and the distinction is
+load-bearing. A matrix job cannot be a required check here, because when the
+`changes` job decides the suite is unnecessary the matrix is skipped *before
+expansion*, so no check by that name ever reports, and a required check that
+never reports blocks the merge forever. `E2E result` runs with `if: always()`
+so it always reports, and passes only when everything it depends on either
+succeeded or was deliberately skipped. That is also why `e2e-tests.yml`'s
+`pull_request` trigger deliberately carries no `paths:` filter.
+
+`lifecycle-upgrade` is the one project **deliberately not** in that matrix.
+It runs instead in `.github/workflows/lifecycle-tests.yml`, because it pulls
+a ~3.6 GB baseline image and takes roughly 9 minutes — adding that to every
+PR would roughly double E2E latency, where the longest existing job in
+`e2e-tests.yml` is 284s. That workflow also runs the two bash suites,
+`docker/tests/test-puid-pgid.sh` and `test-tls-postgres.sh`, which had no
+workflow at all before it. **`lifecycle-tests.yml` is path-filtered and must
+not be made a required check** — a required check on a workflow that never
+triggers for an unrelated PR blocks the merge forever, which is exactly why
+`e2e-tests.yml`'s own `pull_request` trigger carries no paths filter.
+
+Both bash suites need **bash 4.4+** to run. Stock macOS `/bin/bash` is
+3.2.57, where expanding an empty array under `set -u` is an unbound-variable
+error, so the suite dies on `CLEANUP_ITEMS[@]` before running a single
+scenario — CI runners ship bash 5.x, so this only bites locally, on the
+platform this repo is maintained from. Homebrew's `bash`, or a `docker:27-cli`
+container with bash installed, both work.
 
 ## Architecture note
 

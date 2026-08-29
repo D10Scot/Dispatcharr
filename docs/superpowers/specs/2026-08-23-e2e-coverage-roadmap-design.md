@@ -25,9 +25,10 @@ in place *before* it moves the boundary.
 | **G2** | **Fake upstream provider** — M3U, XMLTV, real looping TS, fault injection, control API | — | 1 |
 | **G3** | **Content sources & ingest** — M3U/EPG refresh, channel creation, auto-sync, groups, Channel Profiles, logos | G1, G2 | 2 |
 | **G4** | **Live streaming data path** — byte-level proxy assertions, multi-client sharing, mid-stream switching, all three failover triggers, Stream Profiles, Output Profiles | G1, G2 | 2 |
-| **G5** | **Client output surfaces** — M3U/EPG output, HDHomeRun, Xtream (incl. building provider-side emulation), catch-up, authorization matrix | G1, G2 | 2 |
+| **G5** | **Client output surfaces** — `/output/m3u`, `/output/epg`, HDHomeRun, the Xtream listing and authentication surface, the authorization matrix | G1, G2 | 2 |
 | **G6** | **Frontend surfaces** — Guide, DVR, Users, Settings, Plugins, Stats, Connect, Logos, backups | G1 | 2 |
 | **G7** | **Deployment lifecycle** — first-run, upgrade-with-migrations, restart persistence, PUID/PGID, TLS Postgres | G1 | 2 |
+| **G8** | **Provider-side XC / VOD / catch-up emulation** — extend the G2 provider to speak Xtream Codes, serve a VOD and series catalogue, and answer catch-up URLs in the shapes `build_timeshift_candidate_urls` tries. Ships **plumbing proofs only**; the tests that need the provider are G9 and G10 | G2, G5 | 3 |
 | **G9** | **VOD and series end to end** — catalogue ingest into `Movie`/`Series`/`Episode`, the XC VOD and series actions against real content, and the `vod_proxy` streaming path including Range and seek | G8 | 4 |
 | **G10** | **Catch-up / timeshift end to end** — both provider URL layouts, the candidate cascade, redirect and proxy modes, and the ingest fields catch-up depends on | G8 | 4 |
 
@@ -55,15 +56,39 @@ mid-test, and a deterministic TS pattern (fixed PIDs, a counter burned into the 
 client can prove it received contiguous output. Expect it to take longest.
 
 **G2 deliberately excludes** Xtream Codes / VOD / catch-up provider emulation. That moves into
-**G5**, which builds it on G2's foundation. This keeps G2 shippable.
+**G8**, which builds it on G2's foundation. This keeps G2 shippable.
 
 **G4** is the highest-value goal and the reason the programme exists. It is also the only goal
 whose tests are not browser tests.
 
-**G5** will find real bugs — `output/views.py:593` uses `"channels__user_level": 0` instead of
-`__lte`, and `hide_adult_content` is not applied in `live_proxy/views.py`,
-`timeshift/views.py` or `hdhr/api_views.py`, so hidden channels are unlistable but still
-streamable. See "Finding product bugs" below.
+**G5 was originally given both a test goal and a build** — the server-side output surfaces *and*
+the provider emulation G2 had deliberately excluded. Those are different kinds of work, and only
+one row of G5's inventory actually needed the build: `catchup_proxy` in `apps/timeshift/views.py`
+constructs its upstream URL from the account's Xtream catch-up template
+(`get_transformed_credentials` → `build_timeshift_candidate_urls`), so it has nothing to point at
+until the fake provider speaks XC. Everything else G5 covers is Dispatcharr generating output
+from its own database and needs no upstream at all.
+
+So the two were split. G2 was the programme's longest goal *because* it was a build; folding a
+second build into G5 would have repeated that and blocked a dozen cheap server-side tests behind
+it. **G5 is now server-side output surfaces only, and G8 owns the provider emulation together
+with every test that depends on it.** G8 is defined here and specced when it is scheduled — G5's
+spec is responsible for drawing the line clearly enough that nothing falls between them.
+
+**G5** will find real bugs. Three, verified against the code rather than inferred:
+`xc_get_live_categories` in `apps/output/views.py` filters `"channels__user_level": 0` — an exact
+match — while the same function uses `channels__user_level__lte` immediately above and below it;
+`stream_xc` in `apps/proxy/live_proxy/views.py` applies `user_level` and Channel Profile
+membership but omits the `is_adult` filter every listing path applies for the same user, so a
+channel a user cannot list is still streamable; and the HDHomeRun endpoints are `AllowAny` with
+no principal at all, so `apps/hdhr/api_views.py` cannot apply *any* per-user filter — there is
+not one occurrence of `hide_adult_content` anywhere under `apps/hdhr/`. See "Finding product
+bugs" below.
+
+**G8** is a build first and a test goal second, exactly as G2 was. Expect it to be long, and
+expect its spec to say what the fake provider must serve — an XC `player_api.php`, a VOD and
+series catalogue, and catch-up URLs in the shapes `build_timeshift_candidate_urls` tries —
+before it says what to assert.
 
 **G7** is not optional. It is where every test that *cannot* share the ordinary `seeded`
 instance lives — but that is not one population, and G7 should not build it as one. First-run

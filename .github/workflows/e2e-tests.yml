@@ -21,12 +21,15 @@ on:
       - 'manage.py'
       - '.github/workflows/e2e-tests.yml'
   # No `paths:` filter here, deliberately. The Main ruleset requires the
-  # pristine/seeded/streaming checks on every PR; a path-filtered workflow
-  # that never triggers leaves them "Expected" forever and blocks the merge.
-  # A job that runs and *skips* satisfies a required check, so the workflow
-  # always triggers and the `changes` job below decides whether the heavy
-  # jobs actually run — a docs-only PR costs one ~10s job, not an image
-  # build plus a Playwright matrix.
+  # `E2E result` check on every PR — the aggregate job at the bottom of this
+  # file, not the matrix jobs themselves, which cannot be required: when
+  # `changes` gates the suite off the matrix is skipped *before expansion*, so
+  # no check named pristine/seeded/streaming ever reports at all. A
+  # path-filtered workflow that never triggers leaves the required check
+  # "Expected" forever and blocks the merge. A job that runs and *skips*
+  # satisfies it, so the workflow always triggers and the `changes` job below
+  # decides whether the heavy jobs actually run — a docs-only PR costs one
+  # ~10s job, not an image build plus a Playwright matrix.
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -107,7 +110,14 @@ jobs:
       # docker save accepts several image references and writes one archive,
       # so the artifact plumbing and the three test-job consumers below are
       # unchanged — docker load restores both tags.
+      #
+      # `shell: bash` is required for the pipe to be able to fail. The default
+      # `run:` shell is `bash -e {0}` — no `-o pipefail` — so without this the
+      # step's status is gzip's, a failed `docker save` passes here, and the
+      # truncated archive surfaces as a baffling `docker load` error in every
+      # downstream job. Only an explicit `shell: bash` gets `-eo pipefail`.
       - name: Export both images
+        shell: bash
         run: docker save dispatcharr-e2e:local dispatcharr-e2e-upstream:local | gzip > /tmp/dispatcharr-e2e.tar.gz
 
       - name: Upload the image
@@ -160,7 +170,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        project: [pristine, seeded, streaming, streaming-failover, streaming-greybox]
+        project: [pristine, seeded, streaming, streaming-failover, streaming-greybox, lifecycle]
     steps:
       - name: Checkout code
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0

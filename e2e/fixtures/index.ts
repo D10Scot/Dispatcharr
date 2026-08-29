@@ -248,6 +248,12 @@
  *   attachLogs(testInfo)   the fixture calls this itself on a failed test —
  *       you should not need to.
  *
+ * `instance: Instance` — **lifecycle projects only.** Drives the container's
+ * own lifecycle through `scripts/e2e_up.sh`: up/restart/recreate/down, plus
+ * the `docker inspect` reads that prove the event happened and
+ * `manage(argv)` for migration state. Destroys the container every other
+ * project shares — read `./instance.ts`'s header before importing it.
+ *
  * ---------------------------------------------------------------------------
  * HELPERS AND CONSTANTS
  * ---------------------------------------------------------------------------
@@ -316,6 +322,7 @@ import {
   TS_SYNC_BYTE,
 } from './stream-client';
 import { UpstreamClient } from './upstream';
+import { Instance } from './instance';
 
 export type Fixtures = {
   api: ApiClient;
@@ -327,6 +334,7 @@ export type Fixtures = {
   ws: WsListener;
   streamClient: StreamClient;
   upstream: UpstreamClient;
+  instance: Instance;
 };
 
 export const test = base.extend<Fixtures>({
@@ -384,6 +392,31 @@ export const test = base.extend<Fixtures>({
     // round trip per scenario.
     if (testInfo.status !== testInfo.expectedStatus) {
       await client.attachLogs(testInfo);
+    }
+  },
+  // Lifecycle projects only — `instance.ts`'s header says why, and it is not
+  // a style preference: this fixture destroys the container every other
+  // project is sharing. Lazy like every fixture here, so a spec that does not
+  // name it never constructs one.
+  instance: async ({}, use) => {
+    const inst = new Instance();
+    await use(inst);
+    // Teardown is a safety net, not the primary path — the upgrade spec still
+    // tears down in its own `finally`, where it can capture container logs
+    // first. This exists because a Playwright *timeout* abandons the test body
+    // without running its `finally`, which would otherwise leave a container, a
+    // volume, a network and the provider standing for the next run to trip
+    // over. Fixture teardown runs even then.
+    //
+    // Only when this test took ownership: `up()` without `reset` adopts a
+    // container that was already there — which is how the restart spec works,
+    // and why a developer's instance survives `npm run test:lifecycle`.
+    if (inst.owned) {
+      try {
+        await inst.down();
+      } catch (error) {
+        console.log(`instance teardown failed: ${String(error)}`);
+      }
     }
   },
 });
@@ -449,3 +482,5 @@ export type {
   User,
   UserOverrides,
 } from './types';
+export { Instance } from './instance';
+export type { UpOptions, ManageResult } from './instance';
