@@ -20,6 +20,18 @@ export interface ChannelSpec {
   categoryId?: number;
 }
 
+/**
+ * A `ChannelSpec` after category resolution. Every consumer of
+ * `Scenario.channels` — the playlist/XMLTV renderers and the XC route
+ * handlers built in later tasks — needs a concrete `categoryId`, never
+ * `undefined` silently widened to the string `"undefined"` at render time.
+ * `ChannelSpec.categoryId` stays optional because that field also types the
+ * *input* shape (`ScenarioRequest.channels`), where omitting it is the
+ * normal case; both `parseScenarioRequest` and `ScenarioRegistry.create`
+ * resolve it before it reaches a `Scenario`.
+ */
+export type ResolvedChannelSpec = ChannelSpec & { categoryId: number };
+
 export interface CategorySpec {
   id: number;
   name: string;
@@ -89,7 +101,7 @@ export interface ScenarioRequest {
 
 export interface Scenario {
   id: string;
-  channels: ChannelSpec[];
+  channels: ResolvedChannelSpec[];
   username?: string;
   password?: string;
   /** null = unlimited. 0 is a real limit meaning reject everything. */
@@ -117,7 +129,7 @@ const DEFAULT_SERIES_CATEGORY: CategorySpec = { id: 1, name: 'E2E Series' };
  */
 const DEFAULT_MOVIE_YEAR = 2020;
 
-function defaultChannels(count: number): ChannelSpec[] {
+function defaultChannels(count: number): ResolvedChannelSpec[] {
   return Array.from({ length: count }, (_unused, index) => {
     const n = index + 1;
     return {
@@ -214,6 +226,14 @@ function assertNoControlChars(value: string, field: string): void {
 function parseCategories(value: unknown, field: string): CategorySpec[] {
   if (!Array.isArray(value)) {
     throw new BadRequestError(`'${field}' must be an array of { id, name }`);
+  }
+  if (value.length === 0) {
+    // Every channel, movie and series that omits a categoryId defaults to
+    // `${field}[0].id` — an explicit empty array leaves nothing to default
+    // against. Without this check that indexes `[0]` on an empty array,
+    // which throws a bare TypeError that `server.ts` turns into an opaque
+    // 500, not a 400 naming this field.
+    throw new BadRequestError(`'${field}' must declare at least one category`);
   }
   const ids = new Set<number>();
   return value.map((entry) => {
@@ -449,7 +469,7 @@ export function parseScenarioRequest(body: Record<string, unknown>): ScenarioReq
       // scenario cannot express "fault one channel, leave its sibling
       // alone", which is what every failover test needs.
       const ids = new Set<number>();
-      const channels: ChannelSpec[] = [];
+      const channels: ResolvedChannelSpec[] = [];
       for (const channel of body.channels as ChannelSpec[]) {
         if (ids.has(channel.id)) {
           throw new BadRequestError(
@@ -573,8 +593,18 @@ export class ScenarioRegistry {
   private scenarios = new Map<string, Scenario>();
 
   create(request: ScenarioRequest): Scenario {
-    const channels = Array.isArray(request.channels)
-      ? request.channels
+    // Computed before `channels` below: a caller that bypasses
+    // `parseScenarioRequest` and passes an explicit `channels` array
+    // straight to `create` still needs every channel's `categoryId`
+    // resolved, on pain of `Scenario.channels[].categoryId` being
+    // `undefined` despite its type saying `number`.
+    const liveCategories = request.liveCategories ?? [DEFAULT_LIVE_CATEGORY];
+
+    const channels: ResolvedChannelSpec[] = Array.isArray(request.channels)
+      ? request.channels.map((channel) => ({
+          ...channel,
+          categoryId: channel.categoryId ?? liveCategories[0].id,
+        }))
       : defaultChannels(request.channels ?? 1);
 
     const xc = request.xc ?? false;
@@ -588,7 +618,7 @@ export class ScenarioRegistry {
       maxConnections: request.maxConnections ?? null,
       rate: request.rate ?? 1,
       xc,
-      liveCategories: request.liveCategories ?? [DEFAULT_LIVE_CATEGORY],
+      liveCategories,
       vodCategories: request.vodCategories ?? [DEFAULT_VOD_CATEGORY],
       seriesCategories: request.seriesCategories ?? [DEFAULT_SERIES_CATEGORY],
       // A non-XC scenario has no route that could serve a catalogue, so

@@ -29,15 +29,31 @@ describe('ScenarioRegistry', () => {
     expect(registry.create({ maxConnections: 0 }).maxConnections).toBe(0);
   });
 
-  it('accepts explicit channel specs verbatim', () => {
+  it('accepts explicit channel specs verbatim, defaulting a missing categoryId', () => {
+    // create() is a bypass of parseScenarioRequest — this pins that it does
+    // its own categoryId defaulting too, so Scenario.channels[].categoryId
+    // is never undefined regardless of which path built the scenario.
     const registry = new ScenarioRegistry();
     const scenario = registry.create({
       channels: [{ id: 7, name: 'Explicit', tvgId: 'explicit.tv', logo: null }],
     });
 
     expect(scenario.channels).toEqual([
-      { id: 7, name: 'Explicit', tvgId: 'explicit.tv', logo: null },
+      { id: 7, name: 'Explicit', tvgId: 'explicit.tv', logo: null, categoryId: 1 },
     ]);
+  });
+
+  it('defaults categoryId against a custom liveCategories list, and preserves an explicit categoryId, when create() is called directly', () => {
+    const registry = new ScenarioRegistry();
+    const scenario = registry.create({
+      liveCategories: [{ id: 9, name: 'Custom' }],
+      channels: [
+        { id: 1, name: 'Defaulted', tvgId: 'a.e2e', logo: null },
+        { id: 2, name: 'Explicit', tvgId: 'b.e2e', logo: null, categoryId: 5 },
+      ],
+    });
+
+    expect(scenario.channels.map((c) => c.categoryId)).toEqual([9, 5]);
   });
 
   it('gives every scenario a distinct id and does not evict', () => {
@@ -246,5 +262,111 @@ describe('XC scenario declaration', () => {
     expect(() => parseScenarioRequest({ vod: [{ id: 1, name: 'a\nb' }] })).toThrow(
       /control characters/
     );
+  });
+
+  // Ruling 1: a channels array through the *parser* (not create() called
+  // directly) must default a missing categoryId to the first declared live
+  // category — pinning the exact shape e2e/tests/seeded/upstream-ingest.spec.ts
+  // sends, which predates G8 and supplies no categoryId at all.
+  it('defaults a channel categoryId to the first declared live category via the parser', () => {
+    const request = parseScenarioRequest({
+      channels: [
+        { id: 1, name: 'a', tvgId: 'a.e2e', logo: null },
+        { id: 2, name: 'b', tvgId: 'b.e2e', logo: null },
+      ],
+    });
+    expect((request.channels as { categoryId: number }[]).map((c) => c.categoryId)).toEqual([1, 1]);
+  });
+
+  it('preserves an explicit channel categoryId when it names a declared live category', () => {
+    const request = parseScenarioRequest({
+      liveCategories: [{ id: 1, name: 'a' }, { id: 2, name: 'b' }],
+      channels: [{ id: 1, name: 'x', tvgId: 'x.e2e', logo: null, categoryId: 2 }],
+    });
+    expect((request.channels as { categoryId: number }[])[0].categoryId).toBe(2);
+  });
+
+  // Ruling 2: assertKnownCategory must also gate live channels, not only
+  // movies and series.
+  it('rejects a channel whose categoryId names no declared live category', () => {
+    expect(() =>
+      parseScenarioRequest({
+        liveCategories: [{ id: 1, name: 'a' }],
+        channels: [{ id: 1, name: 'x', tvgId: 'x.e2e', logo: null, categoryId: 9 }],
+      })
+    ).toThrow(/categoryId 9/);
+  });
+
+  // Ruling 3: the default categories must be reachable from the parser even
+  // when nothing declares them — these are the happy paths that never throw,
+  // so they exercise categoryId resolution and the year/containerExtension/
+  // tmdbId/imdbId defaults that every other vod/series test bypasses by
+  // throwing first.
+  it('parses a movie with defaults for year, categoryId, containerExtension, tmdbId and imdbId', () => {
+    const request = parseScenarioRequest({ vod: [{ id: 5, name: 'Solo Movie' }] });
+    expect(request.vod).toEqual([
+      { id: 5, name: 'Solo Movie', year: null, categoryId: 1, containerExtension: 'mp4', tmdbId: null, imdbId: null },
+    ]);
+  });
+
+  it('parses a movie with every field explicit, validated against a declared vodCategory', () => {
+    const request = parseScenarioRequest({
+      vodCategories: [{ id: 1, name: 'Action' }, { id: 2, name: 'Comedy' }],
+      vod: [
+        { id: 1, name: 'Full', year: 1999, categoryId: 2, containerExtension: 'mkv', tmdbId: 'tt1', imdbId: 'im1' },
+      ],
+    });
+    expect(request.vod).toEqual([
+      { id: 1, name: 'Full', year: 1999, categoryId: 2, containerExtension: 'mkv', tmdbId: 'tt1', imdbId: 'im1' },
+    ]);
+  });
+
+  it('parses a series with a default categoryId, one season and one episode', () => {
+    const request = parseScenarioRequest({
+      series: [
+        {
+          id: 1,
+          name: 'S',
+          seasons: [{ number: 1, episodes: [{ id: 1, title: 'E1', episodeNum: 1 }] }],
+        },
+      ],
+    });
+    expect(request.series).toEqual([
+      {
+        id: 1,
+        name: 'S',
+        categoryId: 1,
+        seasons: [{ number: 1, episodes: [{ id: 1, title: 'E1', episodeNum: 1, containerExtension: 'mp4' }] }],
+      },
+    ]);
+  });
+
+  it('accepts a well-formed account override and rejects a malformed one', () => {
+    expect(parseScenarioRequest({ account: { userInfo: { timezone: 'UTC' } } }).account).toEqual({
+      userInfo: { timezone: 'UTC' },
+    });
+    expect(() => parseScenarioRequest({ account: 'nope' })).toThrow(/account/);
+    expect(() => parseScenarioRequest({ account: { userInfo: 'nope' } })).toThrow(/account\.userInfo/);
+  });
+
+  it('rejects a non-boolean xc, naming the field', () => {
+    expect(() => parseScenarioRequest({ xc: 'yes' })).toThrow(/xc/);
+  });
+
+  it('rejects an empty category array rather than crashing when something defaults against it', () => {
+    // parseCategories used to accept [], and liveCategories[0]/categories[0]
+    // then threw a bare TypeError indexing an empty array — a 500, not a 400
+    // naming the field. Rejected unconditionally, whether or not anything
+    // ends up defaulting against it.
+    expect(() =>
+      parseScenarioRequest({
+        liveCategories: [],
+        channels: [{ id: 1, name: 'a', tvgId: 'a.e2e', logo: null }],
+      })
+    ).toThrow(/liveCategories/);
+    expect(() =>
+      parseScenarioRequest({ vodCategories: [], vod: [{ id: 1, name: 'm' }] })
+    ).toThrow(/vodCategories/);
+    expect(() => parseScenarioRequest({ seriesCategories: [] })).toThrow(/seriesCategories/);
   });
 });
