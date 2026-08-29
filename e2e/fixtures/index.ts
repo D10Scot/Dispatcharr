@@ -221,11 +221,27 @@
  *       than building the `M3UAccount` by hand.
  *       **The default catalogue is identical across every scenario** —
  *       channel `1` is always named `Fake Channel 1` with `tvg-id`
- *       `fake-1.e2e` — and `seeded` runs 4 workers in parallel. Asserting
- *       against those names, or filtering by them, will alias another
- *       test's data. Pass explicit channel/category/VOD names (e.g. via
- *       `seed.generatedName(...)`) whenever a test needs to look its own
- *       data up by name.
+ *       `fake-1.e2e`, movie `1` is always `Fake Movie 1` (year `2020`),
+ *       series `1` is always `Fake Series 1` — and `seeded` runs 4 workers
+ *       in parallel. For channels this means: asserting on those names, or
+ *       filtering by them, aliases another worker's data.
+ *       **For `vod`/`series` it is worse than aliasing — it is one shared
+ *       row.** Dispatcharr's VOD ingestion matches an incoming XC movie to
+ *       an existing `Movie` by TMDB id → IMDB id → **`(name, year)`**,
+ *       *globally across every `M3UAccount`*, not per-account (same for
+ *       `Series`, and `VODCategory` is unique on `(name, category_type)`
+ *       globally too). A bare `vod: 2`/`series: 2` count therefore does not
+ *       give two parallel workers two independent rows — both workers'
+ *       `xcAccount`s get matched onto the *same* `Movie`/`Series` database
+ *       row, because the default name+year pair is identical. This bites a
+ *       test that never looks anything up by name: asserting on that movie's
+ *       own category, count, or presence can observe a sibling worker's
+ *       concurrent write mid-run. Always pass an explicit `vod`/`series`
+ *       array with a `seed.generatedName(...)`-derived `name` — a unique
+ *       `name` alone is enough, since the `(name, year)` tuple only has to
+ *       differ in one half to name a different row; the year need not also
+ *       be unique. The same applies to `liveCategories`/`vodCategories`/
+ *       `seriesCategories` names, unique globally by `(name, category_type)`.
  *   fault(scenario, name, options?) / clearFault(scenario, name, options?)
  *       → Promise<FaultResult>   arms/disarms one of the twelve `FaultName`s.
  *       The original eight (`dead-air`, `slow-trickle`, `disconnect`,
@@ -483,9 +499,11 @@ export type {
   FaultOptions,
   FaultResult,
   LogEntry,
+  NonXcScenarioRequest,
   ScenarioRequest,
   UpstreamChannel,
   UpstreamScenario,
+  XcScenarioRequest,
 } from './upstream';
 export type {
   Channel,

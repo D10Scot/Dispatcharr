@@ -56,12 +56,17 @@ export interface FaultResult {
   fault: FaultName;
   active: boolean;
   /**
-   * How many *live* connections the fault reached. Five of the eight faults
-   * can only affect the next request — headers are already sent on an open
-   * response — so 0 is correct and expected for them. Arming `not-found` for
-   * a reconnect that has not happened yet is a normal test. Assert on this
-   * value when your test means to disrupt something already streaming; do
-   * not assume it is always positive.
+   * How many *live* connections the fault reached. Nine of the twelve
+   * faults can only affect the next request — headers are already sent on
+   * an open response — so 0 is correct and expected for them: the original
+   * five (`not-found`, `auth-failure`, `connection-limit`, `redirect-chain`,
+   * `non-ts-bytes`) plus all four G8 additions (`xc-auth-envelope`,
+   * `no-tv-archive`, `catchup-layout-404`, `range-unsupported`), none of
+   * which act on an open long-lived stream — `player_api.php`, catalogue
+   * listing, catch-up and VOD are all single-shot requests. Arming
+   * `not-found` for a reconnect that has not happened yet is a normal test.
+   * Assert on this value when your test means to disrupt something already
+   * streaming; do not assume it is always positive.
    */
   appliedTo: number;
 }
@@ -81,14 +86,44 @@ export interface UpstreamChannel {
   categoryId?: number;
 }
 
-export interface ScenarioRequest {
+/** Fields every scenario request carries, XC or not. */
+interface ScenarioRequestBase {
   channels?: number | UpstreamChannel[];
-  username?: string;
-  password?: string;
   maxConnections?: number;
   rate?: number;
-  /** Declares the scenario as an Xtream Codes provider (G8 task 1). */
-  xc?: boolean;
+}
+
+/**
+ * A plain scenario — no XC surface. Deliberately does **not** offer
+ * `liveCategories`/`vodCategories`/`seriesCategories`/`vod`/`series`/`account`:
+ * the provider serves none of them without `xc: true` (`server.ts`'s
+ * `!scenario.xc` guard 404s every `/s/<id>/…` XC route by name, naming the
+ * omission), so a request that could declare a full catalogue here would
+ * compile, echo that catalogue back on the created `UpstreamScenario`
+ * looking entirely correct, and only fail once a test actually drove the XC
+ * surface — the exact silent-no-op shape this fixture exists to prevent.
+ * Making the combination unrepresentable, rather than validating it at the
+ * door, closes it at compile time instead of at first use.
+ */
+export interface NonXcScenarioRequest extends ScenarioRequestBase {
+  xc?: false;
+  username?: string;
+  password?: string;
+}
+
+/**
+ * An Xtream Codes scenario (G8 task 1). `xc: true` is the discriminant that
+ * unlocks the catalogue fields below. `username`/`password` are **required**
+ * here, not optional — the provider's own door (`scenario.ts`) rejects
+ * `xc: true` with only one of the two, for the same reason `seed.xcAccount`
+ * throws rather than falling back to `null`/`''`: an XC provider with no
+ * credentials would authenticate every request vacuously, and an empty
+ * password can never match the `/live/` path form.
+ */
+export interface XcScenarioRequest extends ScenarioRequestBase {
+  xc: true;
+  username: string;
+  password: string;
   liveCategories?: UpstreamCategory[];
   vodCategories?: UpstreamCategory[];
   seriesCategories?: UpstreamCategory[];
@@ -103,6 +138,8 @@ export interface ScenarioRequest {
    */
   account?: { userInfo?: Record<string, unknown>; serverInfo?: Record<string, unknown> };
 }
+
+export type ScenarioRequest = NonXcScenarioRequest | XcScenarioRequest;
 
 export interface UpstreamScenario {
   id: string;
