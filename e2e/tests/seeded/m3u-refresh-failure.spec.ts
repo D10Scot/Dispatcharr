@@ -1,5 +1,5 @@
 import { test, expect } from '../../fixtures';
-import type { StreamPage } from '../../fixtures';
+import type { M3uAccount, StreamPage } from '../../fixtures';
 
 test('a 404 from the playlist leaves the account in error with no catalogue', async ({
   upstream,
@@ -33,9 +33,9 @@ test('a 404 from the playlist leaves the account in error with no catalogue', as
   const failed = await waitFor.m3uRefreshComplete(account.id);
   expect(failed.status).toBe('error');
   expect(failed.last_message).toBeTruthy();
-  // NOT asserted: that `last_message` names the 404. See the known-bug test in
-  // Task 4 — `_refresh_single_m3u_account_impl` overwrites `fetch_m3u_lines`'s
-  // status-specific message with a generic one.
+  // NOT asserted: that `last_message` names the 404. See the known-bug test
+  // below (D10Scot/Dispatcharr#60) — `_refresh_single_m3u_account_impl`
+  // overwrites `fetch_m3u_lines`'s status-specific message with a generic one.
 
   const empty = await api.json<StreamPage>(
     await api.get(`/api/channels/streams/?m3u_account=${account.id}`),
@@ -98,9 +98,9 @@ test('a 401 from the playlist does not disturb an already-ingested catalogue', a
   // proceed." and the task returns without writing anything) — reproduced
   // directly against this container's logs, which is what caused this test
   // to intermittently time out in `waitFor.m3uRefreshComplete` below before
-  // this wait was added. Not filed: no observable harm to a real caller
-  // beyond this test's own back-to-back triggering, and there is no
-  // API-visible signal to poll for "lock released" instead of a fixed delay.
+  // this wait was added. Filed as D10Scot/Dispatcharr#59: a request that did
+  // nothing is indistinguishable from one that worked. This delay is the
+  // test-side workaround; it does not fix #59.
   await new Promise((resolve) => setTimeout(resolve, 2_000));
 
   const armed = await upstream.fault(scenario, 'auth-failure');
@@ -121,4 +121,65 @@ test('a 401 from the playlist does not disturb an already-ingested catalogue', a
   expect(after.results.map((s) => s.name).sort()).toEqual(
     before.results.map((s) => s.name).sort()
   );
+});
+
+/**
+ * Known bug: D10Scot/Dispatcharr#60. `fetch_m3u_lines` writes a
+ * status-code-specific `last_message` ("M3U file not found (404) at URL: …"),
+ * and `_refresh_single_m3u_account_impl` then overwrites it with the generic
+ * "Failed to refresh M3U groups - download failed or other error", identically
+ * for 404, 401, 403, 500 and a connection refusal. The specific text reaches
+ * only the WebSocket and the log. Also referenced by #56, which tracks the
+ * shared `(message, None)` return-shape conflation behind all three related
+ * findings (#59, #60, #56 itself).
+ *
+ * Asserts the CORRECT behaviour and is expected to fail until #60 is fixed.
+ */
+test.fail('a failed refresh keeps the HTTP-status-specific message', async ({
+  upstream,
+  seed,
+  waitFor,
+  api,
+}) => {
+  const prefix = seed.generatedName('message');
+  const scenario = await upstream.scenario({
+    channels: [{ id: 1, name: `${prefix}-a`, tvgId: `${prefix}-a.e2e`, logo: null }],
+  });
+  await upstream.fault(scenario, 'not-found');
+
+  const account = await seed.m3uAccount({
+    server_url: upstream.playlistUrl(scenario),
+    is_active: true,
+  });
+
+  // Closes the same create-time-refresh race `upstreamM3UAccount()` closes
+  // (see its doc comment in seed.ts) — without this, `m3uRefreshComplete`'s
+  // baseline read can capture the create-time task's own terminal write
+  // instead of the triggered refresh's.
+  await seed.waitForCreateTimeGroupRefreshToSettle(account.id);
+  const failed = await waitFor.m3uRefreshComplete(account.id);
+
+  // A second, narrower race, internal to the *triggered* refresh itself:
+  // `_refresh_single_m3u_account_impl` writes the specific message (via
+  // `fetch_m3u_lines`, called synchronously) and then, milliseconds later,
+  // overwrites it with the generic one — that overwrite is #60 itself.
+  // `waitFor.m3uRefreshComplete`'s second phase returns on the *first*
+  // terminal status it observes once the refresh is confirmed in flight,
+  // with no check that a later write hasn't superseded it, so it can
+  // occasionally return that fleeting first write instead of the settled
+  // one. Verified empirically against this container: a 1s settle-read after
+  // `m3uRefreshComplete` resolves showed the generic (overwritten) message in
+  // 25/25 runs — including the runs where the immediate return above had
+  // already (incorrectly) surfaced the specific one. Re-reading here rather
+  // than changing `wait.ts`'s own polling semantics, which is shared with
+  // G5/G6 and outside this task.
+  await new Promise((resolve) => setTimeout(resolve, 1_000));
+  const settled = await api.json<M3uAccount>(
+    await api.get(`/api/m3u/accounts/${account.id}/`),
+    'settled account state after the refresh finished'
+  );
+
+  expect(failed.status).toBe('error');
+  expect(settled.status).toBe('error');
+  expect(settled.last_message).toContain('404');
 });
