@@ -433,3 +433,83 @@ describe('XC VOD asset cache', () => {
     expect(resB.headers.get('content-length')).toBe('500');
   });
 });
+
+describe('XC catch-up', () => {
+  const start = '2026-08-29:14-00';
+
+  it('serves TS on the PATH layout and records what it was asked for', async () => {
+    const { base, id } = await xcScenario();
+    const res = await fetch(`${base}/s/${id}/timeshift/user/pass/65/${start}/1.ts`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toBe('video/mp2t');
+    const reader = res.body!.getReader();
+    expect((await reader.read()).value![0]).toBe(0x47);
+    await reader.cancel();
+
+    const log = await readJson(await fetch(`${base}/s/${id}/log`));
+    // No new LogEntry kind: the PATH form's segments are already in `path`,
+    // and G4's readers of this log must keep working.
+    expect(log).toContainEqual(
+      expect.objectContaining({
+        kind: 'request',
+        status: 200,
+        path: `/s/${id}/timeshift/user/pass/65/${start}/1.ts`,
+      })
+    );
+  });
+
+  it('serves TS on the QUERY layout, recording the parameters in the logged path', async () => {
+    const { base, id } = await xcScenario();
+    const query = `username=user&password=pass&stream=1&start=${encodeURIComponent(start)}&duration=65`;
+    const res = await fetch(`${base}/s/${id}/streaming/timeshift.php?${query}`);
+    expect(res.status).toBe(200);
+    await res.body!.cancel();
+
+    const log = await readJson(await fetch(`${base}/s/${id}/log`));
+    const entry = log.find((e: { path?: string }) => e.path?.includes('timeshift.php'));
+    expect(entry.path).toContain('stream=1');
+    expect(entry.path).toContain('duration=65');
+  });
+
+  it('401s wrong catch-up credentials on both layouts', async () => {
+    const { base, id } = await xcScenario();
+    expect(
+      (await fetch(`${base}/s/${id}/timeshift/user/wrong/65/${start}/1.ts`)).status
+    ).toBe(401);
+    expect(
+      (await fetch(`${base}/s/${id}/streaming/timeshift.php?username=user&password=wrong&stream=1&start=${start}&duration=65`))
+        .status
+    ).toBe(401);
+  });
+
+  it('400s an unrecognised timestamp shape, naming the four it accepts', async () => {
+    const { base, id } = await xcScenario();
+    const res = await fetch(`${base}/s/${id}/timeshift/user/pass/65/yesterday/1.ts`);
+    expect(res.status).toBe(400);
+    expect((await readJson(res)).error).toMatch(/%Y-%m-%d/);
+  });
+
+  it('404s an unknown channel id on both layouts', async () => {
+    const { base, id } = await xcScenario();
+    expect(
+      (await fetch(`${base}/s/${id}/timeshift/user/pass/65/${start}/99.ts`)).status
+    ).toBe(404);
+    expect(
+      (
+        await fetch(
+          `${base}/s/${id}/streaming/timeshift.php?username=user&password=pass&stream=99&start=${start}&duration=65`
+        )
+      ).status
+    ).toBe(404);
+  });
+
+  it('400s a malformed percent-escape in a PATH segment, naming the field', async () => {
+    const { base, id } = await xcScenario();
+    const res = await fetch(`${base}/s/${id}/timeshift/%zz/pass/65/${start}/1.ts`);
+    expect(res.status).toBe(400);
+    expect((await readJson(res)).error).toContain("'username'");
+
+    const log = await readJson(await fetch(`${base}/s/${id}/log`));
+    expect(log).toContainEqual(expect.objectContaining({ kind: 'request', status: 400 }));
+  });
+});

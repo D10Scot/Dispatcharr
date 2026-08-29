@@ -12,6 +12,12 @@ import {
   renderVodInfo,
   renderVodStreams,
 } from './catalogue.js';
+import {
+  ACCEPTED_TIMESTAMP_SHAPES,
+  CatchupDecodeError,
+  parseCatchupPath,
+  parseCatchupQuery,
+} from './catchup.js';
 
 export interface XcContext {
   scenario: Scenario;
@@ -296,6 +302,59 @@ export async function handleXc(context: XcContext): Promise<boolean> {
       head: context.req.method === 'HEAD',
     });
     log(status);
+    return true;
+  }
+
+  // Both catch-up layouts share one tail from here, so the two cannot
+  // diverge in anything but how the request was parsed off the wire. The
+  // PATH form is tried first (it's the more specific match — QUERY only
+  // fires on the one fixed `/streaming/timeshift.php` path), and a
+  // malformed percent-escape in a PATH segment is caught here rather than
+  // in `parseCatchupPath` itself, the same split the `/live/` and
+  // `/movie|series/` routes above use: the parse function stays a pure
+  // "does this shape match", and the router owns turning a decode failure
+  // into a 400 naming the field.
+  let catchup;
+  try {
+    catchup =
+      parseCatchupPath(subPath) ??
+      (subPath === '/streaming/timeshift.php' ? parseCatchupQuery(url) : undefined);
+  } catch (error) {
+    if (error instanceof CatchupDecodeError) {
+      log(400);
+      sendJson(400, { error: error.message });
+      return true;
+    }
+    throw error;
+  }
+
+  if (catchup) {
+    if (!xcCredentialsMatch(scenario, catchup.username, catchup.password)) {
+      log(401);
+      sendJson(401, { error: 'bad credentials' });
+      return true;
+    }
+    if (catchup.startIso === null) {
+      // Named, because a bare 400 here is indistinguishable from a cascade
+      // step legitimately failing — and this provider must never be the
+      // reason a cascade test reports the wrong shape as unsupported.
+      log(400);
+      sendJson(400, {
+        error: `unrecognised catch-up timestamp '${catchup.start}'; this provider accepts ${ACCEPTED_TIMESTAMP_SHAPES}`,
+      });
+      return true;
+    }
+    if (!scenario.channels.some((channel) => channel.id === catchup.streamId)) {
+      log(404);
+      sendJson(404, { error: `scenario ${scenario.id} declares no channel ${catchup.streamId}` });
+      return true;
+    }
+    // The archive is not time-addressable: the same loop is served whatever
+    // `start` asked for. That is a stated, deliberate gap — G10 can prove
+    // Dispatcharr asked for the right moment, never that it received it.
+    await context.serveChannelStream(scenario, catchup.streamId, context.req, context.res, url, {
+      credentialsAlreadyVerified: true,
+    });
     return true;
   }
 
