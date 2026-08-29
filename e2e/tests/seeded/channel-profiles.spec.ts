@@ -11,9 +11,14 @@ import type { ChannelProfile } from '../../fixtures';
  * existing Channel the moment a profile is created, at
  * `ChannelProfileMembership.enabled`'s `True` default — so a fresh profile
  * already contains the whole instance, and `profile.channels` is a global
- * list. It is asserted with toContain / not.toContain and never on its length.
- * There is no receiver in the other direction: nothing on Channel creates
- * memberships, so a channel seeded AFTER a profile is not in it.
+ * list. Enrolment in the other direction is done by a view, not a receiver:
+ * `ChannelViewSet.create` (`apps/channels/api_views.py:873-880`) adds a new
+ * channel to EVERY existing profile when `channel_profile_ids` is omitted,
+ * which `seed.channel()` always omits. So a channel seeded after a profile
+ * is in it too, and other workers' channels keep arriving in this profile
+ * for the length of the run — which is the second reason nothing here may
+ * assert on a length; every membership assertion below is toContain /
+ * not.toContain.
  */
 test('toggling one channel’s membership flips its enabled flag', async ({
   seed,
@@ -23,6 +28,13 @@ test('toggling one channel’s membership flips its enabled flag', async ({
   const channel = await seed.channel();
   const profile = await seed.channelProfile();
   expect(profile.channels).toContain(channel.id);
+
+  // A second profile, created after `channel` exists, is enrolled by the
+  // same receiver. It must stay untouched by everything done to `profile`
+  // below — proving the toggle is scoped to the profile in the URL, not to
+  // the channel across every profile that contains it.
+  const otherProfile = await seed.channelProfile();
+  expect(otherProfile.channels).toContain(channel.id);
 
   const disabled = await api.patch(
     `/api/channels/profiles/${profile.id}/channels/${channel.id}/`,
@@ -44,6 +56,12 @@ test('toggling one channel’s membership flips its enabled flag', async ({
   );
   expect(afterDisable.channels).not.toContain(channel.id);
 
+  const otherAfterDisable = await api.json<ChannelProfile>(
+    await api.get(`/api/channels/profiles/${otherProfile.id}/`),
+    'other profile read-back after disabling'
+  );
+  expect(otherAfterDisable.channels).toContain(channel.id);
+
   const reEnabled = await api.patch(
     `/api/channels/profiles/${profile.id}/channels/${channel.id}/`,
     { enabled: true }
@@ -64,6 +82,14 @@ test('bulk-update sets several memberships in one call', async ({ seed, api }) =
   expect(profile.channels).toContain(stays.id);
   expect(profile.channels).toContain(goes.id);
 
+  // A second profile, enrolled in both channels by the same receiver, must
+  // stay untouched by the bulk-update below — proving the write is scoped
+  // to the profile in the URL, not to the channels across every profile
+  // that contains them.
+  const otherProfile = await seed.channelProfile();
+  expect(otherProfile.channels).toContain(stays.id);
+  expect(otherProfile.channels).toContain(goes.id);
+
   // PATCH, not POST, and the body is `{ channels: [...] }` — not a bare list.
   const res = await api.patch(
     `/api/channels/profiles/${profile.id}/channels/bulk-update/`,
@@ -83,7 +109,10 @@ test('bulk-update sets several memberships in one call', async ({ seed, api }) =
   }>(res, 'bulk-update response');
   expect(body.status).toBe('success');
   expect(body.invalid_channels).toEqual([]);
-  expect(body.updated + body.created).toBe(2);
+  // Split rather than summed: this proves the pre-enrolment the receiver
+  // guarantees — both memberships already existed, so nothing is created.
+  expect(body.updated).toBe(2);
+  expect(body.created).toBe(0);
 
   const readBack = await api.json<ChannelProfile>(
     await api.get(`/api/channels/profiles/${profile.id}/`),
@@ -91,4 +120,11 @@ test('bulk-update sets several memberships in one call', async ({ seed, api }) =
   );
   expect(readBack.channels).toContain(stays.id);
   expect(readBack.channels).not.toContain(goes.id);
+
+  const otherAfterBulkUpdate = await api.json<ChannelProfile>(
+    await api.get(`/api/channels/profiles/${otherProfile.id}/`),
+    'other profile read-back after bulk-update'
+  );
+  expect(otherAfterBulkUpdate.channels).toContain(stays.id);
+  expect(otherAfterBulkUpdate.channels).toContain(goes.id);
 });
