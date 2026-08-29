@@ -6,10 +6,11 @@ campaign -> issue-triage -> issue-remediation, see CLAUDE.md). Needs network
 access, so it is NOT run by `backfill.py` — the series starts at first
 collection (see ``_notes``).
 
-- issues_by_label: for each of the five triage labels plus ``fuzzing``,
-  ``{open, closed}`` issue counts (current state, any label they have ever
-  had is not tracked here — only the label the issue currently carries).
-  A label that doesn't exist on the repo yet, or has no issues, reports
+- issues_by_label: for each of the five triage labels, the four priority
+  labels (``priority:p0``..``priority:p3``), and ``fuzzing``, ``{open,
+  closed}`` issue counts (current state, any label they have ever had is
+  not tracked here — only the label the issue currently carries). A label
+  that doesn't exist on the repo yet, or has no issues, reports
   ``{"open": 0, "closed": 0}`` — this is a legitimate value, not an error.
 - median_time_to_triage_seconds: median seconds between an issue's creation
   and the timeline event where the ``needs-triage`` label was removed
@@ -30,12 +31,16 @@ import statistics
 from _gh import gh_api, run_gh, repo_arg
 import json
 
-TRIAGE_LABELS = (
+LABELS = (
     "needs-triage",
     "needs-info",
     "ready-for-agent",
     "ready-for-human",
     "wontfix",
+    "priority:p0",
+    "priority:p1",
+    "priority:p2",
+    "priority:p3",
     "fuzzing",
 )
 ISSUE_SCAN_LIMIT = 200
@@ -47,7 +52,7 @@ def _parse_ts(value: str) -> dt.datetime:
 
 def issues_by_label(repo: str) -> dict[str, dict[str, int]]:
     result: dict[str, dict[str, int]] = {}
-    for label in TRIAGE_LABELS:
+    for label in LABELS:
         counts = {"open": 0, "closed": 0}
         for state in ("open", "closed"):
             stdout = run_gh(

@@ -58,9 +58,10 @@ each one — every row still carries the `_notes` field explaining this.
 - **agentic** (`collect_agentic.py`):
   - `issues_by_label`: `{open, closed}` counts for each of the five triage
     labels (`needs-triage`, `needs-info`, `ready-for-agent`,
-    `ready-for-human`, `wontfix`) plus `fuzzing`. A label with zero issues
-    (or that doesn't exist yet) reports `{"open": 0, "closed": 0}`, not an
-    error.
+    `ready-for-human`, `wontfix`), the four priority labels (`priority:p0`,
+    `priority:p1`, `priority:p2`, `priority:p3`), and `fuzzing`. A label
+    with zero issues (or that doesn't exist yet) reports `{"open": 0,
+    "closed": 0}`, not an error.
   - `median_time_to_triage_seconds`: median seconds from issue creation to
     `needs-triage` label removal, scanned over the most recent 200 issues
     (see docstring for why it's capped). `null` if no issue has ever had the
