@@ -46,6 +46,17 @@ export type M3uRefreshWaitOptions = WaitOptions & {
   trigger?: () => Promise<unknown>;
 };
 
+/**
+ * How long `epgRefreshComplete()` requires `EPGSource.updated_at` to hold
+ * one value, once it has changed from the baseline, before treating it as
+ * settled. Chosen as a multiple of the ~165ms+ gap observed in this
+ * harness's own container (see that method's doc comment) — a deliberate
+ * margin over a measured floor, not a derived bound: the gap it is
+ * covering is not itself bounded. See the doc comment for what that means
+ * for this constant's reliability.
+ */
+const EPG_UPDATED_AT_SETTLE_MS = 1_000;
+
 export type EpgRefreshWaitOptions = WaitOptions & {
   /**
    * A read taken strictly *before* the refresh was triggered. Required for the
@@ -315,8 +326,10 @@ export class Waiter {
 
   /**
    * Waits for an `EPGSource` refresh to finish, and returns a row whose
-   * `updated_at` is genuinely settled — safe to pass straight back in as a
-   * later call's `options.baseline`.
+   * `updated_at` is settled to a high probability — usually safe to pass
+   * straight back in as a later call's `options.baseline`. Read
+   * "**Not a guarantee**" below before relying on that for anything where
+   * being wrong is expensive.
    *
    * **This is deliberately not a copy of {@link m3uRefreshComplete}, and the
    * difference is the whole point.** An XMLTV refresh reaches `status:
@@ -337,9 +350,8 @@ export class Waiter {
    *  - **twice**, once a channel *is* mapped: `parse_programs_for_source`'s
    *    own success path (`:2377-2378`) writes it the moment programmes are
    *    actually swapped in, and then `_refresh_epg_data_impl`'s same final
-   *    `.update()` at `:523` writes it *again*, a few ms later, after the
-   *    file lock is released and any late-mapped per-channel parses are
-   *    queued (`_dispatch_late_mapped_epg_parses`).
+   *    `.update()` at `:523` writes it *again* — after the file lock is
+   *    released — once execution gets back there.
    *
    * A version of this method that resolved on the first observed change
    * would, on the mapped path, sometimes return the row from the `:2377`
@@ -348,21 +360,46 @@ export class Waiter {
    * would then see `updated_at` differ on its very first poll, before any
    * new refresh had even been triggered — the same "resolves on a stale
    * write" hazard {@link m3uRefreshComplete}'s phase 2 has, one layer down.
-   * So this does not resolve the instant `updated_at` changes: once it has
-   * changed from the baseline, the method keeps polling and only resolves
-   * once **two consecutive reads report the same value** — i.e.
-   * `updated_at` has genuinely settled. That costs one extra poll
-   * (`intervalMs`, 250ms by default here) on every call, including the
-   * single-write path above, but it is what makes the returned row always
-   * safe to reuse as a later `baseline`, on either path.
+   *
+   * **Not a guarantee — read this before reusing a returned row.** Between
+   * the two writes, `parse_programs_for_source` runs: `log_system_event`
+   * (`:2381`), whose `_dispatch_system_event_integrations`
+   * (`core/utils.py:835-868`) runs **synchronously** on a Celery prefork
+   * worker — the kind of worker this refresh always runs on — meaning any
+   * Connect webhook or script a user has configured executes as *inline
+   * network I/O* right there; a channel-layer send (`:2391`); a DB query
+   * plus N Celery dispatches for late-mapped channels
+   * (`_dispatch_late_mapped_epg_parses`, `:2399`); two forced full GC passes
+   * and a psutil RSS read (`:2420-2430`); and, back in
+   * `_refresh_epg_data_impl`, a lock-renewer thread join with a 5s timeout
+   * (`:512-513`) before the unconditional `:523` write. **None of that is
+   * bounded** — a slow or hanging Connect webhook can stretch the gap
+   * arbitrarily far. So this method does not resolve the instant
+   * `updated_at` changes: once it has changed from the baseline, it keeps
+   * polling and only resolves once that value has held for
+   * {@link EPG_UPDATED_AT_SETTLE_MS} (1000ms) straight — a deliberate
+   * multiple of what mutation testing measured as the *typical* gap on this
+   * harness's own container (this method's pre-fix, no-settling shape
+   * resolved on the stale `:2377` value in 2 of 3 runs at a 250ms poll
+   * interval, putting the observed floor at roughly 165ms+), not a derived
+   * bound on the true one. On a source with no Connect integration
+   * configured — everything this test suite seeds — 1000ms comfortably
+   * covers what was measured. On a source that *does* have one, this can
+   * still return early relative to the true settle point, precisely because
+   * no fixed window can dominate an unbounded wait. A caller who needs
+   * certainty rather than a strong default should not reuse a returned
+   * row's `updated_at` as proof of finality; assert on the data the refresh
+   * was actually supposed to produce instead (e.g. poll
+   * `/api/epg/programs/search/?channel_id=` for a programme count, not
+   * `updated_at`).
    *
    * `status === 'error'` resolves the wait immediately, with no settling
-   * poll, whenever `status` or `last_message` differs from the baseline —
+   * wait, whenever `status` or `last_message` differs from the baseline —
    * the same guard {@link m3uRefreshComplete} uses, so a source already
-   * sitting in a stale error state cannot resolve this instantly. That
-   * needs no settling wait of its own: every error path reachable after an
-   * `updated_at` write is a terminal return with nothing left to write
-   * afterward (see the next paragraph for exactly which paths those are).
+   * sitting in a stale error state cannot resolve this instantly. This is
+   * safe for the error paths this harness's XMLTV-only scenario can reach
+   * (see the next paragraph) — it is **not** proven safe in general; see
+   * the `schedules_direct` case below.
    *
    * **Not true that every error path skips `updated_at`** — two exceptions:
    * `parse_programs_for_source`'s outer `except Exception` (`:2402`)
@@ -372,11 +409,19 @@ export class Waiter {
    * success write set, and `_refresh_epg_data_impl` never reaches its own
    * `:523` write for this call (it returns as soon as
    * `parse_programs_for_source` comes back falsy) — so no double-write and
-   * no settling hazard there either. And a `schedules_direct` source
-   * reaches the unconditional `:523` write regardless of
-   * `fetch_schedules_direct`'s outcome, since that return value is ignored
-   * (`:518`) — so a `schedules_direct` refresh that failed internally still
-   * bumps `updated_at` once.
+   * no settling hazard there either. The second exception is narrower than
+   * it first looks: a `schedules_direct` source reaches the unconditional
+   * `:523` write regardless of `fetch_schedules_direct`'s outcome, since
+   * that return value is ignored (`:521`) — so a `schedules_direct` refresh
+   * that fails internally still gets `updated_at` bumped once, *after* its
+   * own error write. That means the immediate-error resolve above **can**
+   * return a row for a `schedules_direct` source whose `updated_at` has not
+   * yet been bumped by that pending `:523` write — an unsettled row, by the
+   * same mechanism the settling wait exists to prevent, just reached
+   * through the error branch instead of the success one. This harness is
+   * XMLTV-only and never exercises `schedules_direct`, so it is not pinned
+   * here; a future `schedules_direct` caller should not assume an
+   * error-resolved row from this method is settled.
    *
    * **The hazard this cannot see:** an *inactive* source. `_refresh_epg_data_impl`
    * returns on `if not source.is_active` before any status write, and
@@ -419,12 +464,16 @@ export class Waiter {
       }
     }
 
-    // See the doc comment above: `updated_at` can advance twice on the
-    // mapped-channel path, a few ms apart, so a single observed change is
-    // not enough to know it has settled. `settling` remembers the first
-    // changed value seen; the predicate only resolves once a later poll
-    // reports that exact same value again.
-    let settling: string | null | undefined;
+    // See "Not a guarantee" in the doc comment above: `updated_at` can
+    // advance twice on the mapped-channel path, separated by an unbounded
+    // gap (it contains a synchronous, user-extensible webhook dispatch), so
+    // a single observed change is not enough to know it has settled.
+    // `settling` remembers the value first seen changed and *when* — the
+    // predicate only resolves once that same value has held continuously
+    // for `EPG_UPDATED_AT_SETTLE_MS`, checked by wall-clock time rather
+    // than poll count so the window means the same thing regardless of
+    // `intervalMs`.
+    let settling: { value: string | null; since: number } | undefined;
 
     return this.resource<EpgSource>(
       url,
@@ -439,17 +488,17 @@ export class Waiter {
           settling = undefined;
           return false;
         }
-        if (settling === body.updated_at) {
-          return true;
+        if (settling?.value !== body.updated_at) {
+          settling = { value: body.updated_at, since: Date.now() };
+          return false;
         }
-        settling = body.updated_at;
-        return false;
+        return Date.now() - settling.since >= EPG_UPDATED_AT_SETTLE_MS;
       },
       {
         description:
           `EPG source ${sourceId} refresh to finish ` +
-          `(updated_at to advance from '${before.updated_at}' and settle, or a ` +
-          'changed error state)',
+          `(updated_at to advance from '${before.updated_at}' and hold for ` +
+          `${EPG_UPDATED_AT_SETTLE_MS}ms, or a changed error state)`,
         timeoutMs: 180_000,
         intervalMs: 250,
         ...options,
