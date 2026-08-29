@@ -119,17 +119,33 @@ test('enabling auto channel sync creates one channel per stream inside the decla
 
   // Diagnostic, not an assertion: a review round on this file's sibling test
   // (Task 10) found this exact shape — `second.status === 'success'` with
-  // zero channels afterward — under full-suite load, and traced two
-  // surviving candidate mechanisms that read differently here.
-  // D10Scot/Dispatcharr#70 (`apps/m3u/tasks.py`'s outer `try`/`except` around
-  // the `sync_auto_channels()` call swallowing a failure and still writing a
-  // SUCCESS status) leaves `last_message` with no "Auto-sync:" segment at
-  // all. D10Scot/Dispatcharr#59's residual (`waitFor.m3uRefreshComplete()`
-  // resolving on a different refresh than the one this call triggered)
-  // leaves a normal "Auto-sync:" segment describing a *different* sync. On a
-  // recurrence, whichever of the two this is baked into the poll's timeout
-  // message below turns the failure into evidence instead of another
-  // from-scratch investigation.
+  // zero channels afterward — under full-suite load. `last_message`'s
+  // "Auto-sync:" segment (or lack of one) is baked into the poll's timeout
+  // message below so a recurrence is evidence, not another from-scratch
+  // investigation — but read it against what the segment can actually mean:
+  //
+  // `sync_auto_channels()` (apps/m3u/tasks.py:2018) wraps its whole body in
+  // a `try` (:2039) whose `except` (:3018-3028) returns
+  // `{"status": "error", ...}` instead of raising. So the *caller's* outer
+  // `try`/`except` (:3820, :3847) — the mechanism D10Scot/Dispatcharr#70
+  // describes — is unreachable through this path: a `sync_auto_channels()`
+  // failure surfaces as a returned status, not a raised exception.
+  // That returned `status: "error"` is rendered at :3843-3846 as a
+  // *present* `" Auto-sync error: {error}."` segment, not an absent one —
+  // the opposite of what #70 would predict here.
+  // An absent "Auto-sync:" segment is instead the benign, routine case: the
+  // all-zeros guard at :3832 (`if created or updated or deleted or failed:`)
+  // skips the message whenever nothing changed. Both plausible
+  // D10Scot/Dispatcharr#59 residuals land here — resolving on refresh 1
+  // before auto-sync was enabled (empty `auto_sync_groups`), and an
+  // idempotent duplicate refresh where `channels_updated` never increments
+  // (:2673-2680).
+  // A third shape exists that neither issue predicts: `" Auto-sync: N
+  // failed."` with no created/updated/deleted, from window exhaustion
+  // (RANGE_EXHAUSTED, :2696-2702 feeding the render at :3842) — see
+  // `syncWindowFor`'s doc comment in `./helpers.ts` on why a window is a
+  // budget, not an infinite resource. This fix round observed exactly that
+  // shape once.
   //
   // `_refresh_single_m3u_account_impl` calls `sync_auto_channels()`
   // (apps/m3u/tasks.py:3821), which creates every new Channel via a plain
