@@ -104,4 +104,31 @@ describe('parseCatchupQuery', () => {
   it('returns undefined when a required parameter is missing', () => {
     expect(parseCatchupQuery(new URL('http://h/x?username=user'))).toBeUndefined();
   });
+
+  it('resolves an empty stream id to NaN, not 0', () => {
+    // `Number('')` is `0` — an empty `?stream=` must not silently match a
+    // scenario channel declared with `id: 0`.
+    const url = new URL(
+      'http://h/x?username=user&password=pass&stream=&start=2026-08-29:14-00&duration=65'
+    );
+    expect(parseCatchupQuery(url)!.streamId).toBeNaN();
+  });
+
+  it('decodes the SQL timestamp when the space arrives as + rather than %20', () => {
+    // Candidate 4 exists because build_timeshift_url_format_a interpolates
+    // `start` raw, so the literal space in `%Y-%m-%d %H:%M:%S` survives
+    // whichever encoding carries it in transit: `requests` percent-encodes
+    // it to `%20`, but a client (or an intermediary) that form-encodes the
+    // query string instead sends `+` — WHATWG form-urlencoded's own space
+    // encoding, which URLSearchParams also decodes back to a space. Only
+    // covering `%20` (the case above) tests one of the two transports
+    // candidate 4 is meant to survive, not the thing that makes it a
+    // distinct candidate.
+    const url = new URL(
+      'http://h/s/x/streaming/timeshift.php?username=user&password=pass&stream=7&start=2026-08-29+14:00:00&duration=65'
+    );
+    expect(parseCatchupQuery(url)).toMatchObject({
+      startIso: '2026-08-29T14:00:00',
+    });
+  });
 });

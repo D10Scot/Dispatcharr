@@ -96,7 +96,15 @@ export function parseCatchupQuery(url: URL): CatchupRequest | undefined {
     layout: 'query',
     username,
     password,
-    streamId: Number(stream),
+    // `Number('')` is `0`, not `NaN` — an empty `?stream=` would otherwise
+    // match a scenario channel with `id: 0` instead of resolving to no
+    // channel at all. `router.ts`'s `parseRequiredId` guards the same
+    // hazard for `vod_id`/`series_id`; inlined here (not imported) because
+    // `router.ts` imports from this module, and the reverse import would be
+    // a cycle. Not reachable from Dispatcharr, which always interpolates a
+    // real `stream_id`, but the PATH layout's `(\d+)` already excludes it
+    // for free, so QUERY shouldn't be the odd one out.
+    streamId: /^\d+$/.test(stream) ? Number(stream) : NaN,
     start,
     startIso: parseCatchupTimestamp(start),
     durationMinutes: Number(url.searchParams.get('duration') ?? '0'),
