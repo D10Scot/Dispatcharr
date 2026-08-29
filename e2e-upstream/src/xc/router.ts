@@ -52,6 +52,16 @@ export function xcCredentialsMatch(
   return username === (scenario.username ?? '') && password === (scenario.password ?? '');
 }
 
+/**
+ * Missing or non-numeric resolves to `NaN`, never `Number(null) === 0` — a
+ * request that omits `vod_id`/`series_id` entirely must not accidentally
+ * match a scenario's id-0 movie or series (`id: 0` is a valid id everywhere
+ * else in this codebase, and `NaN` matches no real id via `===`).
+ */
+function parseRequiredId(raw: string | null): number {
+  return raw === null || !/^\d+$/.test(raw) ? NaN : Number(raw);
+}
+
 export async function handleXc(context: XcContext): Promise<boolean> {
   const { scenario, url, subPath, log, sendJson } = context;
 
@@ -90,15 +100,24 @@ export async function handleXc(context: XcContext): Promise<boolean> {
       get_series: () => renderSeries(scenario, categoryId),
     };
 
-    const list = listActions[action];
-    if (list) {
+    // `Object.hasOwn`, never `listActions[action]`'s truthiness: an object
+    // literal's bracket lookup also resolves `Object.prototype` members, so
+    // `?action=valueOf`/`hasOwnProperty` would return a truthy function that
+    // throws when invoked with no receiver (`TypeError`, surfacing as an
+    // opaque 500), and `?action=constructor`/`toString` would return a 200
+    // with a nonsense body instead of the intended 400.
+    if (Object.hasOwn(listActions, action)) {
+      // Computed before `log`/`sendJson`, not after: if this ever throws,
+      // the log must not already claim 200 for a request whose actual
+      // response was a 500.
+      const body = listActions[action]();
       log(200);
-      sendJson(200, list());
+      sendJson(200, body);
       return true;
     }
 
     if (action === 'get_vod_info') {
-      const info = renderVodInfo(scenario, Number(url.searchParams.get('vod_id')));
+      const info = renderVodInfo(scenario, parseRequiredId(url.searchParams.get('vod_id')));
       log(info ? 200 : 404);
       // `Client.get_vod_info` requires a dict, so a 404 body is a dict too —
       // the product surfaces the HTTPError, not a shape error.
@@ -107,7 +126,7 @@ export async function handleXc(context: XcContext): Promise<boolean> {
     }
 
     if (action === 'get_series_info') {
-      const info = renderSeriesInfo(scenario, Number(url.searchParams.get('series_id')));
+      const info = renderSeriesInfo(scenario, parseRequiredId(url.searchParams.get('series_id')));
       log(info ? 200 : 404);
       sendJson(info ? 200 : 404, info ?? { error: 'no such series_id' });
       return true;
