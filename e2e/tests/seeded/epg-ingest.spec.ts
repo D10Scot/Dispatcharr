@@ -108,3 +108,60 @@ test('a refresh with a mapped channel returns a baseline that a later wait canno
     })
   ).rejects.toThrow(/timed out/);
 });
+
+test('set-epg maps a channel and its programmes follow', async ({
+  upstream,
+  seed,
+  api,
+  waitFor,
+}) => {
+  // A refresh, then an asynchronous per-channel programme parse.
+  test.setTimeout(120_000);
+
+  const prefix = seed.generatedName('setepg');
+  const declared = {
+    id: 1,
+    name: `${prefix}-ch1`,
+    tvgId: `${prefix}-ch1.e2e`,
+    logo: null,
+  };
+  const scenario = await upstream.scenario({ channels: [declared] });
+
+  // Wait the refresh fully out before associating: `parse_programs_for_tvg_id`
+  // re-queues itself with a 15s countdown while `refresh_epg_data`'s lock is
+  // still held, so an eager set-epg pays that penalty silently.
+  const source = await seed.upstreamEpgSource(scenario);
+
+  const allEpgData = await api.json<EpgData[]>(
+    await api.get('/api/epg/epgdata/'),
+    'EPGData rows'
+  );
+  const epgData = allEpgData.find(
+    (d) => d.tvg_id === declared.tvgId && d.epg_source === source.id
+  );
+  expect(epgData, `no EPGData for ${declared.tvgId}`).toBeDefined();
+
+  const channel = await seed.channel();
+  const associated = await api.post(`/api/channels/channels/${channel.id}/set-epg/`, {
+    epg_data_id: epgData!.id,
+  });
+  expect(associated.status()).toBe(200);
+  const body = await api.json<{ task_status: string }>(associated, 'set-epg response');
+  expect(body.task_status).toBe('EPG refresh queued');
+
+  // `parse_programs_for_tvg_id` runs asynchronously off the `refresh_epg_programs`
+  // post_save receiver, and touches no status field — so the only signal is the
+  // rows themselves.
+  const programmes = await waitFor.resource<ProgramSearchPage>(
+    `/api/epg/programs/search/?channel_id=${channel.id}&page_size=5`,
+    (page) => page.count > 0,
+    { description: `programmes for channel ${channel.id}`, timeoutMs: 90_000 }
+  );
+
+  // The provider titles every programme `${name} — slot ${n}` (renderXmltv),
+  // and the name is worker- and test-scoped, so this cannot alias another
+  // worker's guide data.
+  expect(programmes.results[0].title.startsWith(declared.name)).toBeTruthy();
+  expect(programmes.results[0].tvg_id).toBe(declared.tvgId);
+  expect(programmes.results[0].channels.map((c) => c.id)).toContain(channel.id);
+});
