@@ -41,6 +41,7 @@ test('an active stream appears as a connection on the Stats page', async ({
   seed,
   upstream,
   streamClient,
+  pageErrors,
 }) => {
   const scenario = await upstream.scenario({
     channels: [{ id: 1, name: 'G6 Stats', tvgId: 'g6-stats.e2e', logo: null }],
@@ -81,4 +82,6 @@ test('an active stream appears as a connection on the Stats page', async ({
   await expect(
     adminPage.getByTestId('stats-connections').getByText(channel.name)
   ).toBeVisible({ timeout: 60_000 });
+
+  await pageErrors.expectClean();
 });

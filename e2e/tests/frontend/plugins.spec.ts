@@ -171,10 +171,11 @@ test('a plugin imported through the Plugins page lists, enables and configures',
   // (PluginCard.jsx:546-553), scoped by the generated key's display name so
   // it cannot be another plugin's. `.mantine-Card-root` is a Mantine-internal
   // class, not contract — a library upgrade could rename it silently — but
-  // there is no better handle today: PluginCard.jsx renders no per-plugin
-  // `data-testid` or other stable attribute on the card (checked; none of
-  // Plugins.jsx or PluginCard.jsx sets one), so text-scoping by display name
-  // is the only option.
+  // there is no better handle today: neither PluginCard.jsx nor Plugins.jsx
+  // sets a per-card `data-testid` or other stable attribute (checked).
+  // Plugins.jsx:397 does set `data-testid="plugins-page"` on the page itself
+  // — used above at :143 — but nothing scopes to an individual card, so
+  // text-scoping by display name is the only option here.
   const card = adminPage
     .getByTestId('plugins-page')
     .locator('.mantine-Card-root', { hasText: displayName });

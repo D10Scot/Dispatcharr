@@ -6,7 +6,8 @@ import { SURFACES, gotoSurface } from './helpers';
 const DVR_SURFACE = SURFACES.find((s) => s.name === 'DVR')!;
 
 /**
- * Move a Mantine DateTimePicker one month forward and pick the 15th.
+ * Move a Mantine DateTimePicker one month forward, pick the 15th, and set an
+ * explicit 24-hour `hour:minute`.
  *
  * Why not "today plus two days": `getSingleFormDefaults()`
  * (frontend/src/utils/forms/RecordingUtils.js) defaults start_time to a
@@ -18,7 +19,19 @@ const DVR_SURFACE = SURFACES.find((s) => s.name === 'DVR')!;
  *
  * Both pickers move, because the form validates end_time > start_time.
  *
- * Three locators diverge from the plan, all confirmed against the real DOM
+ * Why the time is set explicitly, not left at the picker's default (as an
+ * earlier version of this helper did). `getSingleFormDefaults()`'s end_time
+ * is `now + 60min`, which crosses into the next calendar day whenever `now`
+ * falls in the last hour before midnight. This helper moves each picker's
+ * *date* independently, so on that trigger Start's original time (e.g.
+ * 23:xx) and End's original time (already rolled to the next day, e.g. 00:xx)
+ * both land on the same target day-of-month, and the leftover 00:xx < 23:xx
+ * fails the form's own end-after-start validation — reproduced and confirmed
+ * live at 23:13 BST (Start "10:00 PM", End "12:00 AM" *same* date). Setting
+ * the time ourselves removes the dependency on the clock entirely: whatever
+ * `hour`/`minute` the caller passes is what lands, independent of `now`.
+ *
+ * Four locators diverge from the plan, all confirmed against the real DOM
  * (headed run, `[data-dates-dropdown]`'s `outerHTML`) rather than assumed:
  *  - The prev/next controls are icon-only `ActionIcon`s with **no accessible
  *    name at all** (no `aria-label`, no text) — `getByRole('button', {name:
@@ -32,13 +45,20 @@ const DVR_SURFACE = SURFACES.find((s) => s.name === 'DVR')!;
  *  - `DateTimePicker` (unlike a plain `DatePicker`) does not close on a day
  *    click: a time row stays under the calendar and the popover only closes
  *    on its own checkmark `.mantine-DateTimePicker-submitButton` (also
- *    unnamed). The pre-filled time from `getSingleFormDefaults()` is left
- *    untouched — only the date changes — so the submit click is the only
- *    additional step needed.
+ *    unnamed).
+ *  - The time row is a Mantine `TimePicker` in 24-hour mode (`role=spinbutton`
+ *    `<input>`s, `aria-valuemax` 23 and 59) despite `Recording.jsx` passing
+ *    `timeInputProps={{ format: '12', … }}` — no AM/PM segment renders at
+ *    all, confirmed against the live DOM. `.mantine-TimePicker-field`'s
+ *    first/second match are the hour/minute inputs respectively; `.fill()`
+ *    on each sets the segment directly (confirmed by re-reading the
+ *    popover's hidden `value="HH:MM"` input after filling).
  */
 async function scheduleNextMonth(
   page: import('@playwright/test').Page,
-  fieldLabel: string
+  fieldLabel: string,
+  hour: number,
+  minute: number
 ): Promise<void> {
   await page.getByLabel(fieldLabel, { exact: true }).click();
   const popover = page.locator('[data-dates-dropdown]');
@@ -50,6 +70,11 @@ async function scheduleNextMonth(
   await popover
     .locator('.mantine-DateTimePicker-day:not([data-outside])', { hasText: '15' })
     .click();
+  const timeFields = popover.locator('.mantine-TimePicker-field');
+  await timeFields.nth(0).click();
+  await timeFields.nth(0).fill(String(hour).padStart(2, '0'));
+  await timeFields.nth(1).click();
+  await timeFields.nth(1).fill(String(minute).padStart(2, '0'));
   await popover.locator('.mantine-DateTimePicker-submitButton').click();
   await popover.waitFor({ state: 'hidden' });
 }
@@ -97,8 +122,10 @@ test('a recording scheduled from the DVR page exists on the server and can be ca
     await adminPage.getByRole('textbox', { name: 'Channel', exact: true }).click();
     await adminPage.getByRole('option', { name: new RegExp(channel.name) }).click();
 
-    await scheduleNextMonth(adminPage, 'Start');
-    await scheduleNextMonth(adminPage, 'End');
+    // Fixed, chosen-by-the-test times on the same date — not the picker's
+    // clock-derived defaults. See scheduleNextMonth's doc comment for why.
+    await scheduleNextMonth(adminPage, 'Start', 10, 0);
+    await scheduleNextMonth(adminPage, 'End', 11, 0);
 
     await adminPage
       .getByRole('dialog')

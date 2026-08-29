@@ -46,6 +46,18 @@ import * as ts from 'typescript';
 // self-exclusion `quarantine.spec.ts` applies to its own `SELF_PATH`.
 const SELF_FILE = path.basename(__filename);
 
+// Lifecycle hooks share `test`'s namespace but declare a setup/teardown step,
+// not a test body — Playwright's automatic `pageErrors.expectClean()`
+// teardown fires once per *test*, keyed to that test's own fixture
+// instances, so a hook is never the thing it runs against and has no
+// obligation to destructure it (`test.afterEach(async ({ api }, testInfo) =>
+// …)` in backups.spec.ts and plugins.spec.ts is exactly this shape). Excluding
+// exactly these four names is deliberate and minimal, not a retreat from the
+// fail-closed rule above: every *other* `test.<prop>(...)` call — `.only`,
+// `.skip`, `.fixme`, `.fail`, `.describe`, anything not in this set — still
+// shares `test(...)`'s `(name, fn)` shape and is still judged below.
+const TEST_HOOK_NAMES = new Set(['beforeEach', 'afterEach', 'beforeAll', 'afterAll']);
+
 function isTestCallee(expr: ts.Expression): boolean {
   // `test(...)`
   if (ts.isIdentifier(expr) && expr.text === 'test') return true;
@@ -53,7 +65,8 @@ function isTestCallee(expr: ts.Expression): boolean {
   if (
     ts.isPropertyAccessExpression(expr) &&
     ts.isIdentifier(expr.expression) &&
-    expr.expression.text === 'test'
+    expr.expression.text === 'test' &&
+    !TEST_HOOK_NAMES.has(expr.name.text)
   ) {
     return true;
   }

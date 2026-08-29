@@ -438,13 +438,13 @@ early on the name.
 ## CI
 
 `.github/workflows/e2e-tests.yml` builds the AIO image once, then runs
-`pristine`, `seeded`, `streaming`, `streaming-failover`, `streaming-greybox`
-and `lifecycle` as a hardcoded six-job matrix (the `test` job's
-`matrix.project` list in `e2e-tests.yml`), each
-against its own fresh container, each gated on `npm run typecheck` before
-tests run. **If you add another project to `playwright.config.ts`, add it to
-that matrix too** — nothing wires new projects in automatically, and a project
-missing from the matrix gets no CI coverage and no failure signal.
+`pristine`, `seeded`, `streaming`, `streaming-failover`, `streaming-greybox`,
+`lifecycle` and `frontend` as a hardcoded seven-job matrix (the `test` job's
+`strategy.matrix.project`), each against its own fresh container, each gated
+on `npm run typecheck` before tests run. **If you add an eighth project to
+`playwright.config.ts`, add it to that matrix too** — nothing wires new
+projects in automatically, and a project missing from the matrix gets no CI
+coverage and no failure signal.
 
 A red E2E run **does** block a merge: the `Main` ruleset is active and
 requires one check, **`E2E result`**. That is the aggregate job at the bottom
