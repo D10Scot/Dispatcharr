@@ -506,6 +506,51 @@ export type M3uAccountOverrides = {
 };
 
 /**
+ * One entry of `M3UAccountSerializer.channel_groups`, which is
+ * `ChannelGroupM3UAccountSerializer(source="channel_group", many=True)`.
+ * `channel_group` is the `ChannelGroup`'s primary key. Reading it from
+ * `GET /api/m3u/accounts/<id>/` is account-scoped, which is why it is
+ * preferred over the global `/api/channels/groups/` list.
+ *
+ * `auto_sync_channel_start`/`_end` are `FloatField(null=True, blank=True)` on
+ * `ChannelGroupM3UAccount`.
+ */
+export type M3uAccountChannelGroup = {
+  channel_group: number;
+  enabled: boolean;
+  auto_channel_sync: boolean;
+  auto_sync_channel_start: number | null;
+  auto_sync_channel_end: number | null;
+  is_stale: boolean;
+  stream_count: number;
+};
+
+/**
+ * One row of the `group_settings` array in the body of
+ * `PATCH /api/m3u/accounts/<id>/group-settings/`
+ * (`M3UAccountViewSet.update_group_settings`).
+ *
+ * **Every field is required on every call.** That action does not use a
+ * serializer: it reads raw `request.data` and issues a
+ * `bulk_create(update_conflicts=True, update_fields=[...])`, so an omitted
+ * field is written as its zero value — omitting `custom_properties` writes
+ * `{}`, omitting `auto_channel_sync` writes `false`, omitting `enabled` writes
+ * `true`. This is also the ONLY route that writes `auto_channel_sync`:
+ * `M3UAccountSerializer.update` pops the nested `channel_groups` payload and
+ * applies `enabled` alone, silently discarding the rest.
+ */
+export type GroupSettingRow = {
+  /** The `ChannelGroup`'s id. Rows without it are silently skipped. */
+  channel_group: number;
+  enabled: boolean;
+  auto_channel_sync: boolean;
+  /** Validated `>= 1` by the view, and `end >= start`. */
+  auto_sync_channel_start: number;
+  auto_sync_channel_end: number;
+  custom_properties: Record<string, unknown>;
+};
+
+/**
  * The writable fields on `EPGSourceSerializer` this harness uses, minus the
  * generated `name`. A curated subset: `status` and `updated_at` are writable
  * there and are not here — `updated_at` only because of the same misplaced
