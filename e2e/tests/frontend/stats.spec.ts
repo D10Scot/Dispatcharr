@@ -1,5 +1,5 @@
 import { test, expect } from '../../fixtures';
-import { lockedProfile } from '../streaming/helpers';
+import { lockedProfile, withDeadline } from '../streaming/helpers';
 import { SURFACES, gotoSurface } from './helpers';
 
 const statsSurface = SURFACES.find((s) => s.name === 'Stats');
@@ -9,10 +9,14 @@ if (!statsSurface) {
 
 // The only G6 row that needs live data, and deliberately the only one: with no
 // active connections the Stats page renders an empty grid, which proves
-// nothing about the wiring. The upstream provider is already running in every
-// CI matrix job (scripts/e2e_up.sh brings up both containers), so this costs
-// nothing in topology — but it does mean this one spec needs the full local
-// two-container setup, not a bare E2E_BASE_URL run. See e2e/README.md.
+// nothing about the wiring. This spec needs the full local two-container
+// setup (scripts/e2e_up.sh), not a bare E2E_BASE_URL run — see e2e/README.md.
+// That is true today of the `frontend` project itself: it is not yet in
+// `.github/workflows/e2e-tests.yml`'s matrix (only `pristine, seeded,
+// streaming, streaming-failover, streaming-greybox, lifecycle` are), so this
+// spec does not run in CI yet. Wiring the `frontend` project into that matrix
+// is a separate task; when it lands, this spec inherits the same
+// `scripts/e2e_up.sh`-brought-up upstream every other CI job already gets.
 //
 // Teardown: no `test.afterEach` here, unlike plugins.spec.ts/backups.spec.ts.
 // Those clean up a resource (a plugin key, a backup archive) that has no
@@ -50,8 +54,11 @@ test('an active stream appears as a connection on the Stats page', async ({
 
   await streamClient.open(`/proxy/ts/stream/${channel.uuid}`);
   // Read a little so the channel is genuinely serving before the page loads;
-  // an opened-but-unread connection may not have registered yet.
-  await streamClient.readPackets(100);
+  // an opened-but-unread connection may not have registered yet. Bounded via
+  // withDeadline: readPackets() only throws when the stream *ends*, so a
+  // stalled upstream would otherwise hang silently to the 120s project
+  // timeout instead of failing here with a diagnostic cause.
+  await withDeadline(streamClient.readPackets(100), 30_000, 'readPackets(100)');
 
   // Not `adminPage.goto('/stats')`, which the brief's Step 1 draft used: a
   // direct load of any protected route other than `/channels` hits #58 (see
@@ -74,6 +81,4 @@ test('an active stream appears as a connection on the Stats page', async ({
   await expect(
     adminPage.getByTestId('stats-connections').getByText(channel.name)
   ).toBeVisible({ timeout: 60_000 });
-
-  await streamClient.close();
 });
