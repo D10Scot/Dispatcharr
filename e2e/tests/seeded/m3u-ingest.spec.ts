@@ -1,5 +1,7 @@
 import { test, expect } from '../../fixtures';
 import type { ChannelGroup, M3uAccount, StreamPage } from '../../fixtures';
+import { readFile } from 'node:fs/promises';
+import path from 'node:path';
 
 /**
  * The `group-title` every fake-provider channel carries, hardcoded in
@@ -89,4 +91,105 @@ test('waitForCreateTimeGroupRefreshToSettle times out rather than passing silent
       intervalMs: 100,
     })
   ).rejects.toThrow(/timed out.*to settle/is);
+});
+
+/**
+ * Scans `seed.ts`'s source text for one method's body. `anchor` must be the
+ * method's signature up to and including its opening `(` (e.g.
+ * `'async upstreamM3UAccount('`) — this first paren-counts from there to the
+ * matching `)` that closes the parameter list, *then* brace-counts from the
+ * next `{` to its match. Not a real parser — a plain-text scan is enough for
+ * one well-formed, already-typechecked function, in the same spirit as
+ * `streaming-greybox/quarantine.spec.ts`'s source scan (which enforces its
+ * own import-allowlist convention the same way: by reading files as text,
+ * not by parsing them).
+ *
+ * The paren-counting pass is load-bearing, not decorative: `upstreamM3UAccount`'s
+ * own parameter list has a default value of `{}` (`overrides:
+ * M3uAccountOverrides = {}`), so starting the brace scan at the *first* `{`
+ * after `anchor` finds that empty object literal — already balanced at
+ * depth zero — and returns it as the "body" instead of ever reaching the
+ * function's real one.
+ */
+function extractMethodBody(source: string, anchor: string): string {
+  if (!anchor.endsWith('(')) {
+    throw new Error(`extractMethodBody: anchor must end with '(': ${JSON.stringify(anchor)}`);
+  }
+  const anchorIndex = source.indexOf(anchor);
+  if (anchorIndex === -1) {
+    throw new Error(`extractMethodBody: anchor ${JSON.stringify(anchor)} not found in source`);
+  }
+
+  const parenStart = anchorIndex + anchor.length - 1;
+  let parenDepth = 0;
+  let parenEnd = -1;
+  for (let i = parenStart; i < source.length; i++) {
+    if (source[i] === '(') parenDepth++;
+    else if (source[i] === ')') {
+      parenDepth--;
+      if (parenDepth === 0) {
+        parenEnd = i;
+        break;
+      }
+    }
+  }
+  if (parenEnd === -1) {
+    throw new Error(`extractMethodBody: unbalanced parens after anchor ${JSON.stringify(anchor)}`);
+  }
+
+  const braceStart = source.indexOf('{', parenEnd);
+  if (braceStart === -1) {
+    throw new Error(`extractMethodBody: no '{' found after the parameter list of ${JSON.stringify(anchor)}`);
+  }
+  let braceDepth = 0;
+  for (let i = braceStart; i < source.length; i++) {
+    if (source[i] === '{') braceDepth++;
+    else if (source[i] === '}') {
+      braceDepth--;
+      if (braceDepth === 0) return source.slice(braceStart, i + 1);
+    }
+  }
+  throw new Error(`extractMethodBody: unbalanced braces after anchor ${JSON.stringify(anchor)}`);
+}
+
+// A convention plus a doc comment decays silently. This does not.
+//
+// `upstreamM3UAccount()`'s own doc comment and `waitForCreateTimeGroupRefresh
+// ToSettle()`'s doc comment (both in seed.ts) explain the race this call
+// defends against — the create-time `refresh_m3u_groups` task racing
+// `waitFor.m3uRefreshComplete()`'s baseline read — and the two behavioural
+// tests above this one in this file exercise the wait's own timeout contract
+// deterministically. Neither of those proves `upstreamM3UAccount()` still
+// *calls* the wait: it's one line in a function whose removal every
+// behavioural test in this suite passes straight through (confirmed by
+// deleting it and re-running the full seeded project — see
+// task-1-report.md's "Fix round 2" for the mutation check). That is exactly
+// the situation `quarantine.spec.ts` was written for — a hazard invisible to
+// every test that isn't specifically looking for it — so this checks the
+// source text directly, the same way.
+test("upstreamM3UAccount() still calls waitForCreateTimeGroupRefreshToSettle() before triggering the real refresh", async () => {
+  const seedPath = path.resolve(__dirname, '../../fixtures/seed.ts');
+  const source = await readFile(seedPath, 'utf8');
+
+  // Scoped to the method's own body, not the whole file: the identifier
+  // `waitForCreateTimeGroupRefreshToSettle` also appears in seed.ts's doc
+  // comments and in that method's own definition, so a file-wide search
+  // would still pass even if this specific call were deleted, or moved
+  // somewhere that no longer runs before the baseline read it exists to
+  // protect.
+  const body = extractMethodBody(source, 'async upstreamM3UAccount(');
+
+  expect(
+    /\bthis\.waitForCreateTimeGroupRefreshToSettle\s*\(/.test(body),
+    "upstreamM3UAccount()'s body no longer calls " +
+      'this.waitForCreateTimeGroupRefreshToSettle(...) before triggering the ' +
+      'real refresh. That call is the only defence against the create-time ' +
+      'refresh_m3u_groups race documented on both methods\' doc comments in ' +
+      'seed.ts: without it, m3uRefreshComplete()\'s baseline read can land on ' +
+      'a status the create-time task wrote, not the triggered refresh — an ' +
+      'intermittent false failure in every later G3 test built on ' +
+      'seed.upstreamM3UAccount(). Restore the call inside ' +
+      'upstreamM3UAccount(), immediately after the account is created and ' +
+      'before waitFor.m3uRefreshComplete() is invoked.'
+  ).toBe(true);
 });
