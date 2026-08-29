@@ -24,6 +24,7 @@ tests.** Status: `todo` / `done` / `known-bug` (asserted correct, marked
 | Sources | EPG source create → refresh → programme data | G3 | todo |
 | Sources | Channel creation from streams | G3 | todo |
 | Sources | Auto channel sync | G3 | todo |
+| Sources | **Gap:** auto channel sync's rename-in-place path is not exercised — `ScenarioRegistry` has no update operation and `Stream.stream_hash` is derived from the provider URL (which carries the scenario id), so every catalogue change this goal can drive is a full replace (an old scenario's streams disappear, a new scenario's appear), never a rename that holds one stream's identity constant across the change. See `auto-channel-sync.spec.ts`'s second test. Owned by whichever goal next touches provider mutation | G3 | todo |
 | Sources | Channel groups and Channel Profiles | G3 | todo |
 | Sources | Logo upload and assignment | G3 | todo |
 | Streaming | Single client receives aligned TS | G4 | done |

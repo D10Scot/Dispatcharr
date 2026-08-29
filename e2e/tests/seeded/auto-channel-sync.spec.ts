@@ -117,23 +117,41 @@ test('enabling auto channel sync creates one channel per stream inside the decla
   const second = await waitFor.m3uRefreshComplete(account.id);
   expect(second.status).toBe('success');
 
-  // No poll here — a direct read is not raced. `_refresh_single_m3u_account_impl`
-  // calls `sync_auto_channels()` (apps/m3u/tasks.py:3821), which creates every
-  // new Channel via a plain `Channel.objects.bulk_create()`
-  // (apps/m3u/tasks.py:2772) with no `transaction.atomic()` wrapping it — an
-  // ordinary autocommitting write, durable and visible to any other connection
-  // the instant it returns. Only *after* `sync_auto_channels()` returns does
-  // the same function set `account.status = SUCCESS` and save it
-  // (apps/m3u/tasks.py:3865-3873) — a second, independent autocommitting write,
-  // strictly later in the same worker process. `waitFor.m3uRefreshComplete()`
-  // above already polled until it observed that second write, so by the time
-  // `second.status === 'success'` resolves, the channel rows were committed
-  // before this test process ever asked. A `waitFor.resource()` retry loop
-  // here would only be re-proving something already true through a slower,
-  // flakier-looking path — worth avoiding on a 150s test.
-  const channels = await api.json<Channel[]>(
-    await api.get(`/api/channels/channels/?name=${encodeURIComponent(prefix)}`),
-    'auto-created channels'
+  // Diagnostic, not an assertion: a review round on this file's sibling test
+  // (Task 10) found this exact shape — `second.status === 'success'` with
+  // zero channels afterward — under full-suite load, and traced two
+  // surviving candidate mechanisms that read differently here.
+  // D10Scot/Dispatcharr#70 (`apps/m3u/tasks.py`'s outer `try`/`except` around
+  // the `sync_auto_channels()` call swallowing a failure and still writing a
+  // SUCCESS status) leaves `last_message` with no "Auto-sync:" segment at
+  // all. D10Scot/Dispatcharr#59's residual (`waitFor.m3uRefreshComplete()`
+  // resolving on a different refresh than the one this call triggered)
+  // leaves a normal "Auto-sync:" segment describing a *different* sync. On a
+  // recurrence, whichever of the two this is baked into the poll's timeout
+  // message below turns the failure into evidence instead of another
+  // from-scratch investigation.
+  //
+  // `_refresh_single_m3u_account_impl` calls `sync_auto_channels()`
+  // (apps/m3u/tasks.py:3821), which creates every new Channel via a plain
+  // `Channel.objects.bulk_create()` (apps/m3u/tasks.py:2772) with no
+  // `transaction.atomic()` wrapping it — an ordinary autocommitting write,
+  // durable and visible to any other connection the instant it returns.
+  // Only *after* `sync_auto_channels()` returns does the same function set
+  // `account.status = SUCCESS` and save it (apps/m3u/tasks.py:3865-3873) — a
+  // second, independent autocommitting write, strictly later in the same
+  // worker process. So on the happy path this poll is expected to match on
+  // its first iteration; it is kept as a bounded poll rather than a single
+  // read specifically for the full-suite-load case above, where
+  // `waitFor.m3uRefreshComplete()`'s own `status === 'success'` can resolve
+  // on a refresh other than the one it just drove.
+  const channels = await waitFor.resource<Channel[]>(
+    `/api/channels/channels/?name=${encodeURIComponent(prefix)}`,
+    (rows) => rows.length === declared.length,
+    {
+      description:
+        `${declared.length} auto-created channels ` +
+        `(refresh 2 last_message: ${JSON.stringify(second.last_message)})`,
+    }
   );
   expect(channels).toHaveLength(declared.length);
 
@@ -292,7 +310,7 @@ test('a changed catalogue deletes the departed channels and creates the new ones
   // `current_streams` (filtered on `last_seen__gte=scan_start_time`), so
   // their channels land in `channels_to_delete` and are removed via
   // `_delete_channels_stopping_streams()` — a plain, synchronous
-  // `Channel.objects.filter(...).delete()` (`apps/m3u/tasks.py:2891-2892`),
+  // `Channel.objects.filter(...).delete()` (`apps/m3u/tasks.py:2916-2917`),
   // not a task or a signal with its own timing. So by the time
   // `m3uRefreshComplete()` above resolved `'success'`, both the deletes and
   // the creates were already committed. The `waitFor.resource()` calls below
