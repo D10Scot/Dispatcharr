@@ -35,7 +35,7 @@ const LogosPage = () => {
   }, [loadChannelLogos]);
 
   return (
-    <Box>
+    <Box data-testid="logos-page">
       {/* Header with title and tabs */}
       <Box style={{ justifyContent: 'center' }} display={'flex'} p={'10px 0'}>
         <Flex

@@ -236,7 +236,7 @@ const DVRPage = () => {
     });
   };
   return (
-    <Box p={10}>
+    <Box p={10} data-testid="dvr-page">
       <Flex gap="md" align="center" wrap="wrap" mb={12}>
         <Button
           leftSection={<SquarePlus size={18} />}
