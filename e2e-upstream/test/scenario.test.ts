@@ -224,6 +224,16 @@ describe('XC scenario declaration', () => {
     expect(() => parseScenarioRequest({ xc: true })).toThrow(/username/);
   });
 
+  it('rejects xc: true with a username but no password', () => {
+    // xcCredentialsMatch compares the password against `scenario.password ??
+    // ''`, so an omitted password would be silently accepted at the door as
+    // "empty password" — but the /live/ route's path form (`[^/]+`) can never
+    // match an empty segment, so that scenario would be unservable the
+    // moment a real client tried to stream from it.
+    expect(() => parseScenarioRequest({ xc: true, username: 'u' })).toThrow(BadRequestError);
+    expect(() => parseScenarioRequest({ xc: true, username: 'u' })).toThrow(/password/);
+  });
+
   it('rejects a duplicate movie id, series id, episode id or category id by name', () => {
     const dupes: [Record<string, unknown>, RegExp][] = [
       [{ vod: [{ id: 1, name: 'a' }, { id: 1, name: 'b' }] }, /vod/],

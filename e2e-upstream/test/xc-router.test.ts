@@ -274,6 +274,46 @@ describe('XC live playback', () => {
     expect(res.headers.get('content-type')).toBe('video/mp2t');
     expect((await readJson(await fetch(`${base}/s/${id}/connections`))).live).toBe(0);
   });
+
+  it('400s a malformed percent-escape in the username segment, naming the field, rather than 500ing', async () => {
+    const { base, id } = await xcScenario();
+    const res = await fetch(`${base}/s/${id}/live/%ZZ/pass/1.ts`);
+    expect(res.status).toBe(400);
+    expect((await readJson(res)).error).toContain('username');
+  });
+
+  it('400s a malformed percent-escape in the password segment, naming the field, rather than 500ing', async () => {
+    const { base, id } = await xcScenario();
+    const res = await fetch(`${base}/s/${id}/live/user/%ZZ/1.ts`);
+    expect(res.status).toBe(400);
+    expect((await readJson(res)).error).toContain('password');
+  });
+
+  it('logs the 400 it actually sent for a malformed percent-escape, not a fabricated status', async () => {
+    // Guards the same class of bug Task 3 fixed for `action`: a route that
+    // computes its response before logging can't leave the ScenarioLog
+    // claiming a status the client never received.
+    const { base, id } = await xcScenario();
+    const res = await fetch(`${base}/s/${id}/live/%ZZ/pass/1.ts`);
+    expect(res.status).toBe(400);
+    const log = await (await fetch(`${base}/s/${id}/log`)).json();
+    expect(log).toContainEqual(expect.objectContaining({ kind: 'request', status: 400 }));
+  });
+
+  it("logs the request path the client actually sent, not one rewritten to carry the scenario's credentials", async () => {
+    // Pins the fix for a log-fidelity bug: serveChannelStream's credential
+    // bridge must not smuggle `?username=`/`?password=` into the URL object
+    // that logRequest records from, since XC's own credentials already live
+    // in the path segments — a client that never sent a query string must
+    // not have one fabricated into its log entry.
+    const { base, id } = await xcScenario();
+    await fetch(`${base}/s/${id}/live/user/pass/1.ts`, { method: 'HEAD' });
+    const log = (await (await fetch(`${base}/s/${id}/log`)).json()) as Record<string, unknown>[];
+    expect(log).toContainEqual(
+      expect.objectContaining({ kind: 'request', method: 'HEAD', status: 200, path: `/s/${id}/live/user/pass/1.ts` })
+    );
+    expect(log.some((e) => typeof e.path === 'string' && e.path.includes('username='))).toBe(false);
+  });
 });
 
 // A pre-flight scan flagged a credential-encoding disagreement between two
@@ -284,32 +324,19 @@ describe('XC live playback', () => {
 // percent-encodes both fields with `quote(str(x), safe='')`. This provider
 // places no character restriction on `username`/`password` beyond "string"
 // (scenario.ts), so a scenario can declare a credential containing '/' —
-// making the disagreement reachable, and this task's `/live/` route (which
-// decodeURIComponent()s each path segment, the encoded side's contract) is
-// where it becomes directly observable: a raw '/' shifts every path segment
-// after it, so the URL `collect_xc_streams` would build no longer matches
-// this provider's (or any XC server's) `/live/<user>/<pass>/<id>.ts` shape
-// at all.
+// making the disagreement reachable. Filed as
+// https://github.com/D10Scot/Dispatcharr/issues/61 and tracked in
+// e2e/COVERAGE.md rather than asserted here with a `test.fail()`: a request
+// built the way `collect_xc_streams` builds it (raw interpolation) is
+// genuinely a malformed URL — too many path segments to match
+// `/live/<user>/<pass>/<id>.ts` at all — so a test asserting it 404s would
+// pass whether or not the real defect exists, and one asserting it succeeds
+// can never flip red or green from anything this provider controls. Only
+// the encoded side (this provider's actual contract) is worth pinning here.
 describe('XC live playback — credential encoding (known Dispatcharr defect)', () => {
   it('serves the stream when a slash-bearing credential is percent-encoded into the path, as build_timeshift_url_format_b does', async () => {
     const { base, id } = await xcScenario({ username: 'a/b', password: 'pass' });
     const res = await fetch(`${base}/s/${id}/live/${encodeURIComponent('a/b')}/pass/1.ts`);
     expect(res.status).toBe(200);
   });
-
-  it.fails(
-    "BUG apps/m3u/tasks.py:933-936 (collect_xc_streams): builds the live URL with raw, unencoded " +
-      "credentials, unlike build_timeshift_url_format_b (apps/timeshift/helpers.py:424-433), which " +
-      "percent-encodes. A credential containing '/' therefore breaks live playback while the " +
-      "identical credential works for catch-up (see the encoded test above) — filed as a GitHub " +
-      "issue on the fork; this assertion documents the currently-broken behaviour rather than " +
-      "asserting it's correct.",
-    async () => {
-      const { base, id } = await xcScenario({ username: 'a/b', password: 'pass' });
-      // Mirrors collect_xc_streams's own construction verbatim: raw
-      // interpolation, no encodeURIComponent/quote.
-      const res = await fetch(`${base}/s/${id}/live/a/b/pass/1.ts`);
-      expect(res.status).toBe(200);
-    }
-  );
 });

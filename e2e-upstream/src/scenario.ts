@@ -582,8 +582,16 @@ export function parseScenarioRequest(body: Record<string, unknown>): ScenarioReq
   // `credentialsMatch` treats an undefined username as "accept anything", so
   // an XC scenario without credentials would authenticate every request and
   // make `auth-failure` and `xc-auth-envelope` pass vacuously against it.
-  if (request.xc && request.username === undefined) {
-    throw new BadRequestError("'xc' requires 'username'; an XC provider with no credentials cannot reject any");
+  // Both fields, not just `username`: `xcCredentialsMatch` compares the
+  // password against `scenario.password ?? ''`, so an omitted password is
+  // accepted at the door as "empty password" — but the `/live/` route's path
+  // form (`[^/]+`) can never match an empty segment, so that scenario would
+  // be unservable the moment a real client tried to stream from it. Validate
+  // both requirements at the door, not discover the second one at the route.
+  if (request.xc && (request.username === undefined || request.password === undefined)) {
+    throw new BadRequestError(
+      "'xc' requires both 'username' and 'password'; an XC provider with no credentials cannot reject any, and an empty password can never match the /live/ path form"
+    );
   }
 
   return request;

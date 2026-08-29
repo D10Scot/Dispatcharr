@@ -33,7 +33,8 @@ export interface XcContext {
     channelId: number,
     req: IncomingMessage,
     res: ServerResponse,
-    url: URL
+    url: URL,
+    options?: { credentialsAlreadyVerified?: boolean }
   ): Promise<void>;
 }
 
@@ -187,8 +188,32 @@ export async function handleXc(context: XcContext): Promise<boolean> {
 
   const liveMatch = /^\/live\/([^/]+)\/([^/]+)\/(\d+)\.ts$/.exec(subPath);
   if (liveMatch) {
-    const [, username, password, rawId] = liveMatch;
-    if (!xcCredentialsMatch(scenario, decodeURIComponent(username), decodeURIComponent(password))) {
+    const [, rawUsername, rawPassword, rawId] = liveMatch;
+
+    // `decodeURIComponent` throws `URIError` on a malformed percent-escape
+    // (e.g. a lone `%` or `%ZZ`) — a scenario author's typo in a hand-built
+    // test URL, not a server fault, so it gets a 400 naming the offending
+    // segment rather than falling through to the generic handler's 500.
+    // Decoded (and logged) individually so the error names exactly which
+    // segment is malformed.
+    let username: string;
+    try {
+      username = decodeURIComponent(rawUsername);
+    } catch {
+      log(400);
+      sendJson(400, { error: `'username' path segment '${rawUsername}' is not validly percent-encoded` });
+      return true;
+    }
+    let password: string;
+    try {
+      password = decodeURIComponent(rawPassword);
+    } catch {
+      log(400);
+      sendJson(400, { error: `'password' path segment '${rawPassword}' is not validly percent-encoded` });
+      return true;
+    }
+
+    if (!xcCredentialsMatch(scenario, username, password)) {
       log(401);
       sendJson(401, { error: 'bad credentials' });
       return true;
@@ -199,18 +224,16 @@ export async function handleXc(context: XcContext): Promise<boolean> {
       sendJson(404, { error: `scenario ${scenario.id} declares no channel ${channelId}` });
       return true;
     }
-    // `serveChannelStream`'s own credential check (its fault-pipeline step
-    // 3, unchanged by the extraction) reads `username`/`password` off the
-    // URL's query string — that's how the pre-existing `/stream/<id>.ts`
-    // route carries them. XC carries the same two `scenario` fields as path
-    // segments instead, already verified above via `xcCredentialsMatch`. A
-    // scenario with `xc: true` always has `username` set (`scenario.ts`
-    // enforces it), so without this bridge every `/live/` request would fail
-    // that query-string check and 401 despite already being authenticated.
-    const streamUrl = new URL(url.toString());
-    streamUrl.searchParams.set('username', scenario.username ?? '');
-    streamUrl.searchParams.set('password', scenario.password ?? '');
-    await context.serveChannelStream(scenario, channelId, context.req, context.res, streamUrl);
+    // `credentialsAlreadyVerified: true` — credentials are already checked
+    // above, via the path-segment form `xcCredentialsMatch` expects, not the
+    // query-string form `serveChannelStream`'s own step 3 reads. Passing the
+    // original `url` unmodified (rather than rewriting it to carry
+    // `?username=`/`?password=` just to satisfy that check) means
+    // `logRequest` inside `serveChannelStream` records the URL the client
+    // actually sent.
+    await context.serveChannelStream(scenario, channelId, context.req, context.res, url, {
+      credentialsAlreadyVerified: true,
+    });
     return true;
   }
 

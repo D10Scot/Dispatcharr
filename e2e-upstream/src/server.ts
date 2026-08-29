@@ -235,12 +235,28 @@ function credentialsMatch(scenario: Scenario, url: URL): boolean {
  * G4 tests rely on that. The XC routes check membership themselves, before
  * calling this.
  */
+export interface ServeChannelStreamOptions {
+  /**
+   * Set by a caller that has already authenticated the request through a
+   * different credential transport than step 3's query-string check below —
+   * the XC `/live/<user>/<pass>/<n>.ts` route carries `username`/`password`
+   * as path segments (via `xcCredentialsMatch`), not `?username=`. Without
+   * this, step 3 would 401 every XC live request (an `xc: true` scenario
+   * always has both fields set — `scenario.ts` enforces it — and a `/live/`
+   * URL never carries a query string), since `logRequest` must record the
+   * URL the client actually sent, not one rewritten to carry credentials in
+   * the query string just to satisfy this check.
+   */
+  credentialsAlreadyVerified?: boolean;
+}
+
 export async function serveChannelStream(
   scenario: Scenario,
   channelId: number,
   req: IncomingMessage,
   res: ServerResponse,
-  url: URL
+  url: URL,
+  options: ServeChannelStreamOptions = {}
 ): Promise<void> {
   // Fault checks run before tryAcquire and before the HEAD/GET branch
   // below, in the order a real provider's own failure modes would
@@ -264,8 +280,16 @@ export async function serveChannelStream(
     return;
   }
 
-  // 3. Real credential validation, when the scenario declares any.
-  if (!credentialsMatch(scenario, url)) {
+  // 3. Real credential validation, when the scenario declares any. Skipped
+  // when the caller already verified credentials through a different
+  // transport (see `ServeChannelStreamOptions`) — in that case this check
+  // would either be a tautology (fed the right answer just to pass it) or,
+  // for a query-string-free request like XC's `/live/`, wrongly reject an
+  // already-authenticated caller. A future divergence between the two
+  // credential predicates (this one and `xcCredentialsMatch`) would be
+  // silent under that bypass; both currently compare the same two
+  // `scenario` fields, so today they can't disagree.
+  if (!options.credentialsAlreadyVerified && !credentialsMatch(scenario, url)) {
     logRequest(scenario, req, url, 401);
     sendJson(res, 401, { error: 'bad credentials' });
     return;
