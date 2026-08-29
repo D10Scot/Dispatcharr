@@ -6,6 +6,70 @@ export interface ChannelSpec {
   name: string;
   tvgId: string;
   logo: string | null;
+  /**
+   * The XC live category this channel belongs to. Optional on input:
+   * `parseScenarioRequest` defaults it to the first declared live category's
+   * id (1 when `liveCategories` is not declared, which is `DEFAULT_LIVE_CATEGORY`
+   * — the same category the M3U playlist's existing `group-title="E2E"` names),
+   * so every pre-G8 scenario that supplies a `channels` array without a
+   * `categoryId` keeps working unchanged. A caller that bypasses the parser
+   * (constructs a `Scenario` via `ScenarioRegistry.create` directly with an
+   * explicit `channels` array) does not get this default — only
+   * `parseScenarioRequest` applies it.
+   */
+  categoryId?: number;
+}
+
+export interface CategorySpec {
+  id: number;
+  name: string;
+}
+
+export interface MovieSpec {
+  id: number;
+  name: string;
+  /**
+   * Always declared, never left to inference. With no TMDB or IMDB id,
+   * `apps/vod/tasks.py` identifies a movie across *all* accounts by
+   * `(name, year)` — so a null year both widens the cross-worker collision
+   * and makes the row's identity depend on the ingest side's title parsing.
+   */
+  year: number | null;
+  categoryId: number;
+  /** The extension in the playback URL, so it must match what we serve. */
+  containerExtension: string;
+  tmdbId: string | null;
+  imdbId: string | null;
+}
+
+export interface EpisodeSpec {
+  id: number;
+  title: string;
+  episodeNum: number;
+  containerExtension: string;
+}
+
+export interface SeasonSpec {
+  number: number;
+  episodes: EpisodeSpec[];
+}
+
+export interface SeriesSpec {
+  id: number;
+  name: string;
+  categoryId: number;
+  seasons: SeasonSpec[];
+}
+
+/**
+ * Per-scenario overrides merged over the defaults in `src/xc/envelope.ts`.
+ * Deliberately untyped beyond `Record<string, unknown>`: a test that wants
+ * to see what Dispatcharr does with a garbage `exp_date` or an unknown
+ * `timezone` must be able to send exactly that.
+ */
+export interface AccountOverrides {
+  userInfo?: Record<string, unknown>;
+  serverInfo?: Record<string, unknown>;
 }
 
 export interface ScenarioRequest {
@@ -14,6 +78,13 @@ export interface ScenarioRequest {
   password?: string;
   maxConnections?: number;
   rate?: number;
+  xc?: boolean;
+  liveCategories?: CategorySpec[];
+  vodCategories?: CategorySpec[];
+  seriesCategories?: CategorySpec[];
+  vod?: number | MovieSpec[];
+  series?: number | SeriesSpec[];
+  account?: AccountOverrides;
 }
 
 export interface Scenario {
@@ -24,7 +95,27 @@ export interface Scenario {
   /** null = unlimited. 0 is a real limit meaning reject everything. */
   maxConnections: number | null;
   rate: number;
+  /** When false, every XC route 404s for this scenario. */
+  xc: boolean;
+  liveCategories: CategorySpec[];
+  vodCategories: CategorySpec[];
+  seriesCategories: CategorySpec[];
+  vod: MovieSpec[];
+  series: SeriesSpec[];
+  account: AccountOverrides;
 }
+
+const DEFAULT_LIVE_CATEGORY: CategorySpec = { id: 1, name: 'E2E' };
+const DEFAULT_VOD_CATEGORY: CategorySpec = { id: 1, name: 'E2E Movies' };
+const DEFAULT_SERIES_CATEGORY: CategorySpec = { id: 1, name: 'E2E Series' };
+
+/**
+ * Fixed, not derived from the clock: a year that changed between two runs
+ * would change a movie's cross-account identity key and make a rerun against
+ * a non-reset container create a second Movie row instead of matching the
+ * first.
+ */
+const DEFAULT_MOVIE_YEAR = 2020;
 
 function defaultChannels(count: number): ChannelSpec[] {
   return Array.from({ length: count }, (_unused, index) => {
@@ -36,6 +127,46 @@ function defaultChannels(count: number): ChannelSpec[] {
       // example.invalid is reserved by RFC 2606 and can never resolve, so a
       // logo URL cannot accidentally make a real network request.
       logo: `https://example.invalid/logo-${n}.png`,
+      categoryId: DEFAULT_LIVE_CATEGORY.id,
+    };
+  });
+}
+
+function defaultMovies(count: number): MovieSpec[] {
+  return Array.from({ length: count }, (_unused, index) => {
+    const n = index + 1;
+    return {
+      id: n,
+      name: `Fake Movie ${n}`,
+      year: DEFAULT_MOVIE_YEAR,
+      categoryId: DEFAULT_VOD_CATEGORY.id,
+      containerExtension: 'mp4',
+      tmdbId: null,
+      imdbId: null,
+    };
+  });
+}
+
+function defaultSeries(count: number): SeriesSpec[] {
+  return Array.from({ length: count }, (_unused, index) => {
+    const n = index + 1;
+    return {
+      id: n,
+      name: `Fake Series ${n}`,
+      categoryId: DEFAULT_SERIES_CATEGORY.id,
+      seasons: [
+        {
+          number: 1,
+          episodes: [
+            {
+              id: n,
+              title: `Fake Series ${n} S01E01`,
+              episodeNum: 1,
+              containerExtension: 'mp4',
+            },
+          ],
+        },
+      ],
     };
   });
 }
@@ -56,7 +187,8 @@ function isChannelSpec(value: unknown): value is ChannelSpec {
     isNonNegativeInteger(v.id) &&
     typeof v.name === 'string' &&
     typeof v.tvgId === 'string' &&
-    (typeof v.logo === 'string' || v.logo === null)
+    (typeof v.logo === 'string' || v.logo === null) &&
+    (v.categoryId === undefined || isNonNegativeInteger(v.categoryId))
   );
 }
 
@@ -74,9 +206,199 @@ const CONTROL_CHARS = /[\x00-\x1F\x7F]/;
 function assertNoControlChars(value: string, field: string): void {
   if (CONTROL_CHARS.test(value)) {
     throw new BadRequestError(
-      `'channels' entry '${field}' must not contain control characters (e.g. newlines or NUL)`,
+      `'${field}' must not contain control characters (e.g. newlines or NUL)`,
     );
   }
+}
+
+function parseCategories(value: unknown, field: string): CategorySpec[] {
+  if (!Array.isArray(value)) {
+    throw new BadRequestError(`'${field}' must be an array of { id, name }`);
+  }
+  const ids = new Set<number>();
+  return value.map((entry) => {
+    if (typeof entry !== 'object' || entry === null) {
+      throw new BadRequestError(`'${field}' entries must be objects with an id and a name`);
+    }
+    const v = entry as Record<string, unknown>;
+    if (!isNonNegativeInteger(v.id) || typeof v.name !== 'string') {
+      throw new BadRequestError(
+        `'${field}' entries must each have a non-negative integer id and a string name`,
+      );
+    }
+    if (ids.has(v.id)) {
+      throw new BadRequestError(`'${field}' contains more than one entry with id ${v.id}`);
+    }
+    ids.add(v.id);
+    assertNoControlChars(v.name, `${field}.name`);
+    return { id: v.id, name: v.name };
+  });
+}
+
+/**
+ * Checked for every live channel as well as every movie and series: a
+ * channel naming an undeclared live category would otherwise be accepted
+ * and then silently unlistable in Dispatcharr, which is exactly the
+ * confusion this validate-at-the-door pass exists to prevent.
+ */
+function assertKnownCategory(categoryId: number, categories: CategorySpec[], field: string): void {
+  if (!categories.some((c) => c.id === categoryId)) {
+    // Falling through to Dispatcharr's "Uncategorized" bucket would make a
+    // typo here read as the product's category gating misbehaving — the
+    // exact confusion this validate-at-the-door pass exists to prevent.
+    throw new BadRequestError(
+      `'${field}' references categoryId ${categoryId}, which no declared category has`,
+    );
+  }
+}
+
+function parseSeasons(
+  value: unknown,
+  field: string,
+): SeasonSpec[] {
+  if (!Array.isArray(value)) {
+    throw new BadRequestError(`'${field}' must be an array of { number, episodes }`);
+  }
+  // Unique across the whole series (all seasons), not just within one
+  // season: two seasons reusing an episode id would make a later fault or
+  // fixture lookup by episode id ambiguous.
+  const episodeIds = new Set<number>();
+  return value.map((entry) => {
+    if (typeof entry !== 'object' || entry === null) {
+      throw new BadRequestError(`'${field}' entries must be objects with a number and episodes`);
+    }
+    const v = entry as Record<string, unknown>;
+    if (!isNonNegativeInteger(v.number)) {
+      throw new BadRequestError(`'${field}' entries must each have a non-negative integer number`);
+    }
+    if (!Array.isArray(v.episodes)) {
+      throw new BadRequestError(`'${field}[${v.number}].episodes' must be an array`);
+    }
+    const episodes = v.episodes.map((episodeEntry) => {
+      if (typeof episodeEntry !== 'object' || episodeEntry === null) {
+        throw new BadRequestError(`'${field}[${v.number}].episodes' entries must be objects`);
+      }
+      const e = episodeEntry as Record<string, unknown>;
+      if (!isNonNegativeInteger(e.id)) {
+        throw new BadRequestError(
+          `'${field}[${v.number}].episodes' entries must each have a non-negative integer id`,
+        );
+      }
+      if (episodeIds.has(e.id)) {
+        throw new BadRequestError(
+          `'${field}' contains more than one episode with id ${e.id}; episode ids must be unique within a series`,
+        );
+      }
+      episodeIds.add(e.id);
+      if (typeof e.title !== 'string') {
+        throw new BadRequestError(`'${field}[${v.number}].episodes' entries must each have a string title`);
+      }
+      assertNoControlChars(e.title, `${field}.episode.title`);
+      if (!Number.isInteger(e.episodeNum)) {
+        throw new BadRequestError(
+          `'${field}[${v.number}].episodes' entries must each have an integer episodeNum`,
+        );
+      }
+      if (e.containerExtension !== undefined && typeof e.containerExtension !== 'string') {
+        throw new BadRequestError(
+          `'${field}[${v.number}].episodes' containerExtension must be a string`,
+        );
+      }
+      return {
+        id: e.id,
+        title: e.title,
+        episodeNum: e.episodeNum as number,
+        containerExtension: (e.containerExtension as string | undefined) ?? 'mp4',
+      };
+    });
+    return { number: v.number, episodes };
+  });
+}
+
+function parseMovies(value: unknown, categories: CategorySpec[], field: string): MovieSpec[] {
+  if (!Array.isArray(value)) {
+    throw new BadRequestError(`'${field}' must be an array of movie specs`);
+  }
+  const ids = new Set<number>();
+  return value.map((entry) => {
+    if (typeof entry !== 'object' || entry === null) {
+      throw new BadRequestError(`'${field}' entries must be objects`);
+    }
+    const v = entry as Record<string, unknown>;
+    if (!isNonNegativeInteger(v.id)) {
+      throw new BadRequestError(`'${field}' entries must each have a non-negative integer id`);
+    }
+    if (ids.has(v.id)) {
+      throw new BadRequestError(`'${field}' contains more than one entry with id ${v.id}; ids must be unique`);
+    }
+    ids.add(v.id);
+    if (typeof v.name !== 'string') {
+      throw new BadRequestError(`'${field}' entries must each have a string name`);
+    }
+    assertNoControlChars(v.name, `${field}.name`);
+
+    if (v.year !== undefined && v.year !== null && !Number.isInteger(v.year)) {
+      throw new BadRequestError(`'${field}' entry '${v.name}' year must be a number or null`);
+    }
+    const year = v.year === undefined ? null : (v.year as number | null);
+
+    const categoryId = v.categoryId === undefined ? categories[0].id : v.categoryId;
+    if (!isNonNegativeInteger(categoryId)) {
+      throw new BadRequestError(`'${field}' entry '${v.name}' categoryId must be a non-negative integer`);
+    }
+    assertKnownCategory(categoryId, categories, `${field}.categoryId`);
+
+    if (v.containerExtension !== undefined && typeof v.containerExtension !== 'string') {
+      throw new BadRequestError(`'${field}' entry '${v.name}' containerExtension must be a string`);
+    }
+    const containerExtension = (v.containerExtension as string | undefined) ?? 'mp4';
+
+    if (v.tmdbId !== undefined && v.tmdbId !== null && typeof v.tmdbId !== 'string') {
+      throw new BadRequestError(`'${field}' entry '${v.name}' tmdbId must be a string or null`);
+    }
+    const tmdbId = v.tmdbId === undefined ? null : (v.tmdbId as string | null);
+
+    if (v.imdbId !== undefined && v.imdbId !== null && typeof v.imdbId !== 'string') {
+      throw new BadRequestError(`'${field}' entry '${v.name}' imdbId must be a string or null`);
+    }
+    const imdbId = v.imdbId === undefined ? null : (v.imdbId as string | null);
+
+    return { id: v.id, name: v.name, year, categoryId, containerExtension, tmdbId, imdbId };
+  });
+}
+
+function parseSeries(value: unknown, categories: CategorySpec[], field: string): SeriesSpec[] {
+  if (!Array.isArray(value)) {
+    throw new BadRequestError(`'${field}' must be an array of series specs`);
+  }
+  const ids = new Set<number>();
+  return value.map((entry) => {
+    if (typeof entry !== 'object' || entry === null) {
+      throw new BadRequestError(`'${field}' entries must be objects`);
+    }
+    const v = entry as Record<string, unknown>;
+    if (!isNonNegativeInteger(v.id)) {
+      throw new BadRequestError(`'${field}' entries must each have a non-negative integer id`);
+    }
+    if (ids.has(v.id)) {
+      throw new BadRequestError(`'${field}' contains more than one entry with id ${v.id}; ids must be unique`);
+    }
+    ids.add(v.id);
+    if (typeof v.name !== 'string') {
+      throw new BadRequestError(`'${field}' entries must each have a string name`);
+    }
+    assertNoControlChars(v.name, `${field}.name`);
+
+    const categoryId = v.categoryId === undefined ? categories[0].id : v.categoryId;
+    if (!isNonNegativeInteger(categoryId)) {
+      throw new BadRequestError(`'${field}' entry '${v.name}' categoryId must be a non-negative integer`);
+    }
+    assertKnownCategory(categoryId, categories, `${field}.categoryId`);
+
+    const seasons = parseSeasons(v.seasons, `${field}[${v.id}].seasons`);
+
+    return { id: v.id, name: v.name, categoryId, seasons };
+  });
 }
 
 /**
@@ -91,11 +413,35 @@ function assertNoControlChars(value: string, field: string): void {
 export function parseScenarioRequest(body: Record<string, unknown>): ScenarioRequest {
   const request: ScenarioRequest = {};
 
+  // Categories are parsed first: channels, movies and series below all
+  // validate their `categoryId` against these, and default to the first
+  // declared category when they don't supply one. Falling back to the
+  // module defaults keeps that default reachable even when the caller
+  // declares no categories at all — `ScenarioRegistry.create` applies the
+  // same fallback for callers that bypass the parser entirely.
+  const liveCategories =
+    body.liveCategories !== undefined
+      ? parseCategories(body.liveCategories, 'liveCategories')
+      : [DEFAULT_LIVE_CATEGORY];
+  if (body.liveCategories !== undefined) request.liveCategories = liveCategories;
+
+  const vodCategories =
+    body.vodCategories !== undefined
+      ? parseCategories(body.vodCategories, 'vodCategories')
+      : [DEFAULT_VOD_CATEGORY];
+  if (body.vodCategories !== undefined) request.vodCategories = vodCategories;
+
+  const seriesCategories =
+    body.seriesCategories !== undefined
+      ? parseCategories(body.seriesCategories, 'seriesCategories')
+      : [DEFAULT_SERIES_CATEGORY];
+  if (body.seriesCategories !== undefined) request.seriesCategories = seriesCategories;
+
   if (body.channels !== undefined) {
     if (Array.isArray(body.channels)) {
       if (!body.channels.every(isChannelSpec)) {
         throw new BadRequestError(
-          "'channels' array entries must each have a non-negative integer id, string name, string tvgId, and a logo that is a string or null",
+          "'channels' array entries must each have a non-negative integer id, string name, string tvgId, a logo that is a string or null, and (if present) a non-negative integer categoryId",
         );
       }
       // Duplicate ids emit two #EXTINF entries pointing at one stream URL,
@@ -103,17 +449,24 @@ export function parseScenarioRequest(body: Record<string, unknown>): ScenarioReq
       // scenario cannot express "fault one channel, leave its sibling
       // alone", which is what every failover test needs.
       const ids = new Set<number>();
-      for (const channel of body.channels) {
+      const channels: ChannelSpec[] = [];
+      for (const channel of body.channels as ChannelSpec[]) {
         if (ids.has(channel.id)) {
           throw new BadRequestError(
             `'channels' contains more than one entry with id ${channel.id}; ids must be unique`,
           );
         }
         ids.add(channel.id);
-        assertNoControlChars(channel.name, 'name');
-        assertNoControlChars(channel.tvgId, 'tvgId');
+        assertNoControlChars(channel.name, 'channels.name');
+        assertNoControlChars(channel.tvgId, 'channels.tvgId');
+        // Every pre-G8 scenario supplies channels without a categoryId; it
+        // defaults to the first declared live category (1, unmodified) so
+        // the M3U's `group-title="E2E"` stays what it always was.
+        const categoryId = channel.categoryId ?? liveCategories[0].id;
+        assertKnownCategory(categoryId, liveCategories, 'channels.categoryId');
+        channels.push({ ...channel, categoryId });
       }
-      request.channels = body.channels as ChannelSpec[];
+      request.channels = channels;
     } else if (isNonNegativeInteger(body.channels)) {
       request.channels = body.channels;
     } else {
@@ -159,6 +512,60 @@ export function parseScenarioRequest(body: Record<string, unknown>): ScenarioReq
     throw new BadRequestError("'password' requires 'username'; a password alone is never used");
   }
 
+  if (body.vod !== undefined) {
+    if (isNonNegativeInteger(body.vod)) {
+      request.vod = body.vod;
+    } else if (Array.isArray(body.vod)) {
+      request.vod = parseMovies(body.vod, vodCategories, 'vod');
+    } else {
+      throw new BadRequestError("'vod' must be a non-negative integer or an array of movie specs");
+    }
+  }
+
+  if (body.series !== undefined) {
+    if (isNonNegativeInteger(body.series)) {
+      request.series = body.series;
+    } else if (Array.isArray(body.series)) {
+      request.series = parseSeries(body.series, seriesCategories, 'series');
+    } else {
+      throw new BadRequestError("'series' must be a non-negative integer or an array of series specs");
+    }
+  }
+
+  if (body.account !== undefined) {
+    if (typeof body.account !== 'object' || body.account === null || Array.isArray(body.account)) {
+      throw new BadRequestError("'account' must be an object with optional userInfo and serverInfo");
+    }
+    const account = body.account as Record<string, unknown>;
+    if (
+      account.userInfo !== undefined &&
+      (typeof account.userInfo !== 'object' || account.userInfo === null || Array.isArray(account.userInfo))
+    ) {
+      throw new BadRequestError("'account.userInfo' must be an object");
+    }
+    if (
+      account.serverInfo !== undefined &&
+      (typeof account.serverInfo !== 'object' || account.serverInfo === null || Array.isArray(account.serverInfo))
+    ) {
+      throw new BadRequestError("'account.serverInfo' must be an object");
+    }
+    request.account = account as AccountOverrides;
+  }
+
+  if (body.xc !== undefined) {
+    if (typeof body.xc !== 'boolean') {
+      throw new BadRequestError("'xc' must be a boolean");
+    }
+    request.xc = body.xc;
+  }
+
+  // `credentialsMatch` treats an undefined username as "accept anything", so
+  // an XC scenario without credentials would authenticate every request and
+  // make `auth-failure` and `xc-auth-envelope` pass vacuously against it.
+  if (request.xc && request.username === undefined) {
+    throw new BadRequestError("'xc' requires 'username'; an XC provider with no credentials cannot reject any");
+  }
+
   return request;
 }
 
@@ -170,6 +577,8 @@ export class ScenarioRegistry {
       ? request.channels
       : defaultChannels(request.channels ?? 1);
 
+    const xc = request.xc ?? false;
+
     const scenario: Scenario = {
       id: randomUUID(),
       channels,
@@ -178,6 +587,18 @@ export class ScenarioRegistry {
       // `?? null`, never `|| null`: 0 is a real limit and must survive.
       maxConnections: request.maxConnections ?? null,
       rate: request.rate ?? 1,
+      xc,
+      liveCategories: request.liveCategories ?? [DEFAULT_LIVE_CATEGORY],
+      vodCategories: request.vodCategories ?? [DEFAULT_VOD_CATEGORY],
+      seriesCategories: request.seriesCategories ?? [DEFAULT_SERIES_CATEGORY],
+      // A non-XC scenario has no route that could serve a catalogue, so
+      // materialising one by default would only be a way to trip over it
+      // later.
+      vod: Array.isArray(request.vod) ? request.vod : defaultMovies(request.vod ?? (xc ? 1 : 0)),
+      series: Array.isArray(request.series)
+        ? request.series
+        : defaultSeries(request.series ?? (xc ? 1 : 0)),
+      account: request.account ?? {},
     };
 
     this.scenarios.set(scenario.id, scenario);

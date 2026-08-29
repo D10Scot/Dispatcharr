@@ -154,3 +154,97 @@ describe('parseScenarioRequest — channel id and credential validation', () => 
     expect(parseScenarioRequest({ username: 'u' }).username).toBe('u');
   });
 });
+
+describe('XC scenario declaration', () => {
+  it('defaults to a non-XC scenario with no VOD or series catalogue', () => {
+    const scenario = new ScenarioRegistry().create({});
+    expect(scenario.xc).toBe(false);
+    expect(scenario.vod).toEqual([]);
+    expect(scenario.series).toEqual([]);
+  });
+
+  it('gives an XC scenario one movie, one series with one episode, and one category of each kind', () => {
+    const scenario = new ScenarioRegistry().create({
+      xc: true,
+      username: 'u',
+      password: 'p',
+    });
+
+    expect(scenario.liveCategories).toEqual([{ id: 1, name: 'E2E' }]);
+    expect(scenario.vodCategories).toEqual([{ id: 1, name: 'E2E Movies' }]);
+    expect(scenario.seriesCategories).toEqual([{ id: 1, name: 'E2E Series' }]);
+    expect(scenario.vod).toHaveLength(1);
+    expect(scenario.vod[0]).toMatchObject({ id: 1, name: 'Fake Movie 1', containerExtension: 'mp4' });
+    expect(scenario.series).toHaveLength(1);
+    expect(scenario.series[0].seasons).toEqual([
+      {
+        number: 1,
+        episodes: [
+          { id: 1, title: 'Fake Series 1 S01E01', episodeNum: 1, containerExtension: 'mp4' },
+        ],
+      },
+    ]);
+  });
+
+  it('gives every default movie an explicit year', () => {
+    // Movie identity across accounts falls back to (name, year) when there is
+    // no TMDB or IMDB id, so a null year would make two workers' default
+    // movies collide on (name, None) *and* would make the collision depend on
+    // ingest-side year inference from the title. Declared, not inferred.
+    const scenario = new ScenarioRegistry().create({ xc: true, username: 'u', password: 'p' });
+    expect(scenario.vod[0].year).toEqual(expect.any(Number));
+  });
+
+  it('places every default channel in live category 1', () => {
+    const scenario = new ScenarioRegistry().create({ channels: 2 });
+    expect(scenario.channels.map((c) => c.categoryId)).toEqual([1, 1]);
+  });
+
+  it('rejects xc: true without a username', () => {
+    // credentialsMatch() returns true whenever username is undefined, so an
+    // XC scenario with no credentials accepts anything — and every auth fault
+    // written against it passes vacuously.
+    expect(() => parseScenarioRequest({ xc: true })).toThrow(BadRequestError);
+    expect(() => parseScenarioRequest({ xc: true })).toThrow(/username/);
+  });
+
+  it('rejects a duplicate movie id, series id, episode id or category id by name', () => {
+    const dupes: [Record<string, unknown>, RegExp][] = [
+      [{ vod: [{ id: 1, name: 'a' }, { id: 1, name: 'b' }] }, /vod/],
+      [{ series: [{ id: 2, name: 'a', seasons: [] }, { id: 2, name: 'b', seasons: [] }] }, /series/],
+      [{ vodCategories: [{ id: 3, name: 'a' }, { id: 3, name: 'b' }] }, /vodCategories/],
+      [
+        {
+          series: [
+            {
+              id: 1,
+              name: 'a',
+              seasons: [
+                { number: 1, episodes: [{ id: 9, title: 'x', episodeNum: 1 }] },
+                { number: 2, episodes: [{ id: 9, title: 'y', episodeNum: 1 }] },
+              ],
+            },
+          ],
+        },
+        /episode/,
+      ],
+    ];
+    for (const [body, pattern] of dupes) {
+      expect(() => parseScenarioRequest(body)).toThrow(pattern);
+    }
+  });
+
+  it('rejects a movie or series whose categoryId names no declared category', () => {
+    // Silently falling through to Uncategorized would make a typo'd
+    // categoryId look like Dispatcharr's category gating misbehaving.
+    expect(() =>
+      parseScenarioRequest({ vodCategories: [{ id: 1, name: 'a' }], vod: [{ id: 1, name: 'm', categoryId: 7 }] })
+    ).toThrow(/categoryId 7/);
+  });
+
+  it('rejects control characters in a movie, series, episode or category name', () => {
+    expect(() => parseScenarioRequest({ vod: [{ id: 1, name: 'a\nb' }] })).toThrow(
+      /control characters/
+    );
+  });
+});
