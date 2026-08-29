@@ -51,6 +51,17 @@
  *   streamProfile(overrides?)    → StreamProfile  /api/core/streamprofiles/
  *   m3uAccount(overrides?)       → M3uAccount     /api/m3u/accounts/,
  *                                is_active false
+ *   xcAccount(scenario, overrides?) → M3uAccount  an `account_type: 'XC'`
+ *                                m3uAccount pointed at an XC `upstream`
+ *                                scenario: `server_url` is the scenario's
+ *                                bare `internal` base (no `credentialQuery`
+ *                                — `normalize_server_url` strips a query),
+ *                                credentials go on `username`/`password`,
+ *                                `is_active` true. Throws if the scenario was
+ *                                not created with both `username` and
+ *                                `password` (i.e. `{ xc: true, username,
+ *                                password }`) rather than silently sending a
+ *                                blank credential.
  *   epgSource(overrides?)        → EpgSource      /api/epg/sources/,
  *                                is_active false
  *   stream(overrides?)           → Stream         /api/channels/streams/,
@@ -194,32 +205,48 @@
  *   scenario(request?) → Promise<UpstreamScenario>
  *       Creates a scenario (default: one channel, no auth, no connection
  *       limit). `request.channels` is a count or an explicit array of
- *       `{ id, name, tvgId, logo }`. Every scenario made this way is tracked
- *       on `upstream.created` for `attachLogs`; there is **no cleanup** —
- *       scenarios live for the provider process's life, scoped only by the
- *       test that made them never reusing another test's id.
+ *       `{ id, name, tvgId, logo, categoryId? }`. Every scenario made this
+ *       way is tracked on `upstream.created` for `attachLogs`; there is
+ *       **no cleanup** — scenarios live for the provider process's life,
+ *       scoped only by the test that made them never reusing another test's
+ *       id.
+ *       `request.xc: true` (G8) declares an Xtream Codes scenario and
+ *       **requires both `request.username` and `request.password`** — the
+ *       provider rejects one without the other at the door. Its catalogue —
+ *       `request.liveCategories`/`vodCategories`/`seriesCategories`
+ *       (`{ id, name }[]`) and `request.vod`/`request.series` (a count or an
+ *       explicit array) — is echoed back on the returned `UpstreamScenario`
+ *       as `liveCategories`/`vodCategories`/`seriesCategories`/`vod`/`series`.
+ *       Feed an XC scenario straight to `seed.xcAccount(scenario)` rather
+ *       than building the `M3UAccount` by hand.
  *       **The default catalogue is identical across every scenario** —
  *       channel `1` is always named `Fake Channel 1` with `tvg-id`
  *       `fake-1.e2e` — and `seeded` runs 4 workers in parallel. Asserting
  *       against those names, or filtering by them, will alias another
- *       test's data. Pass explicit channel names (e.g. via
+ *       test's data. Pass explicit channel/category/VOD names (e.g. via
  *       `seed.generatedName(...)`) whenever a test needs to look its own
- *       channel up by name.
+ *       data up by name.
  *   fault(scenario, name, options?) / clearFault(scenario, name, options?)
- *       → Promise<FaultResult>   arms/disarms one of the eight `FaultName`s
- *       (`dead-air`, `slow-trickle`, `disconnect`, `not-found`,
- *       `auth-failure`, `connection-limit`, `redirect-chain`,
- *       `non-ts-bytes`) against a live stream. `options.channel` scopes it to
- *       one channel id; omitted, it applies scenario-wide. `FaultResult`'s
- *       `appliedTo` counts only *live* connections actually reached —
- *       **`not-found`, `auth-failure`, `connection-limit`, `redirect-chain`
- *       and `non-ts-bytes` can only affect the next request**, because
- *       headers are already sent on any response that is already open, so
- *       `appliedTo: 0` from those five is correct and expected, not a sign
- *       the call did nothing. "Arm `not-found` so the next reconnect fails"
- *       is a normal test with `appliedTo: 0`. Check `appliedTo` yourself when
- *       your test means to disrupt something already streaming; nothing here
- *       asserts or warns on your behalf.
+ *       → Promise<FaultResult>   arms/disarms one of the twelve `FaultName`s.
+ *       The original eight (`dead-air`, `slow-trickle`, `disconnect`,
+ *       `not-found`, `auth-failure`, `connection-limit`, `redirect-chain`,
+ *       `non-ts-bytes`) act on a live stream; `options.channel` scopes one to
+ *       a channel id, omitted applies scenario-wide. The four G8 additions
+ *       (`xc-auth-envelope`, `no-tv-archive`, `catchup-layout-404`,
+ *       `range-unsupported`) act on the XC surface and are documented on
+ *       `FaultName` and `FaultOptions.layout` in `upstream.ts` — two of the
+ *       four (`xc-auth-envelope`, `range-unsupported`) are scenario-wide
+ *       *only* and **reject** an `options.channel` with a 400, and arming
+ *       `catchup-layout-404` requires `options.layout: 'path' | 'query'`.
+ *       `FaultResult`'s `appliedTo` counts only *live* connections actually
+ *       reached — **`not-found`, `auth-failure`, `connection-limit`,
+ *       `redirect-chain` and `non-ts-bytes` can only affect the next
+ *       request**, because headers are already sent on any response that is
+ *       already open, so `appliedTo: 0` from those five is correct and
+ *       expected, not a sign the call did nothing. "Arm `not-found` so the
+ *       next reconnect fails" is a normal test with `appliedTo: 0`. Check
+ *       `appliedTo` yourself when your test means to disrupt something
+ *       already streaming; nothing here asserts or warns on your behalf.
  *   rate(scenario, rate) → Promise<{ rate }>   sets the scenario's own
  *       playback-speed multiplier: the provider paces each chunk against
  *       `asset.byteRate * rate`, so 1 is real-time, 2 is double speed. Has
@@ -473,12 +500,18 @@ export type {
   EpgSourceType,
   M3uAccount,
   M3uAccountOverrides,
+  M3uAccountProfile,
   M3uAccountStatus,
   Stream,
   StreamOverrides,
   StreamProfile,
   StreamProfileOverrides,
+  UpstreamCategory,
   UpstreamChannelOptions,
+  UpstreamEpisode,
+  UpstreamMovie,
+  UpstreamSeason,
+  UpstreamSeries,
   User,
   UserOverrides,
 } from './types';

@@ -155,6 +155,54 @@ export class Seeder {
     return this.create<M3uAccount>('/api/m3u/accounts/', 'm3uAccount', body);
   }
 
+  /**
+   * An Xtream Codes `M3UAccount` pointed at an XC scenario.
+   *
+   * Not `m3uAccount({ account_type: 'XC' })`, because two things are the
+   * inverse of the standard-M3U path and both are easy to get wrong:
+   *
+   * 1. `server_url` is the scenario's **bare** internal base. No
+   *    `credentialQuery`: `normalize_server_url` strips the query before use,
+   *    so appending one deletes the credentials.
+   * 2. The credentials go on the model's `username`/`password` fields, which
+   *    the XC client actually reads — unlike a standard M3U refresh, which
+   *    reads neither and needs them embedded in the URL.
+   *
+   * `is_active: true` is required for the same reason as `m3uAccount`: an
+   * inactive account never starts a refresh. Unlike a standard account,
+   * creating this one starts **no** background refresh —
+   * `refresh_account_on_save` skips XC — so `waitFor.m3uRefreshComplete`'s own
+   * trigger is the only one, and there is nothing to race.
+   *
+   * Throws rather than falling back to `null`/`''` when `scenario.username`
+   * or `scenario.password` is missing. `refresh_m3u_account_groups` hard-fails
+   * an account missing either with "Missing username or password for
+   * Xtream Codes account" — a failure that would point at the *account*, not
+   * at the scenario that omitted them, obscuring the actual mistake. Create
+   * the scenario with `{ xc: true, username, password }`; the provider itself
+   * already requires both together at that door.
+   */
+  xcAccount(
+    scenario: UpstreamScenario,
+    overrides: M3uAccountOverrides = {}
+  ): Promise<M3uAccount> {
+    if (!scenario.username || !scenario.password) {
+      throw new Error(
+        `seed.xcAccount: scenario ${scenario.id} is missing ` +
+          `${!scenario.username ? 'a username' : 'a password'} — create it with ` +
+          `upstream.scenario({ xc: true, username, password }) before seeding an XC account.`
+      );
+    }
+    return this.m3uAccount({
+      account_type: 'XC',
+      username: scenario.username,
+      password: scenario.password,
+      is_active: true,
+      ...overrides,
+      server_url: scenario.internal,
+    });
+  }
+
   epgSource(overrides: EpgSourceOverrides = {}): Promise<EpgSource> {
     const body: EpgSourceOverrides & {
       name: string;

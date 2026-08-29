@@ -1,4 +1,5 @@
 import type { TestInfo } from '@playwright/test';
+import type { UpstreamCategory, UpstreamMovie, UpstreamSeries } from './types';
 
 export const UPSTREAM_CONTROL_BASE =
   process.env.E2E_UPSTREAM_CONTROL_URL ?? 'http://127.0.0.1:9402';
@@ -6,6 +7,22 @@ export const UPSTREAM_CONTROL_BASE =
 export const UPSTREAM_INTERNAL_BASE =
   process.env.E2E_UPSTREAM_INTERNAL_URL ?? 'http://e2e-upstream:8080';
 
+/**
+ * The original eight (`dead-air` … `non-ts-bytes`) are documented on
+ * `upstream.fault()` in `index.ts`. The four G8 additions each carry a
+ * scoping quirk worth knowing before arming one:
+ *  - `xc-auth-envelope` — scenario-wide only; a `channel` in
+ *    {@link FaultOptions} is **rejected** (400). Armed, `player_api.php`'s
+ *    no-`action` handshake answers 200 with `user_info.auth: 0,
+ *    status: 'Disabled'` — never a 401.
+ *  - `no-tv-archive` — channel-scoped, like the original eight. Armed,
+ *    `get_live_streams` omits `tv_archive`/`tv_archive_duration` for the
+ *    reached channel(s).
+ *  - `catchup-layout-404` — channel-scoped; see {@link FaultOptions.layout}.
+ *  - `range-unsupported` — scenario-wide only; a `channel` is **rejected**
+ *    (400) — a VOD id isn't a channel id. Armed, `/movie|series/` answers 200
+ *    with the whole asset, no `Accept-Ranges`, and `Range` is ignored.
+ */
 export type FaultName =
   | 'dead-air'
   | 'slow-trickle'
@@ -14,13 +31,24 @@ export type FaultName =
   | 'auth-failure'
   | 'connection-limit'
   | 'redirect-chain'
-  | 'non-ts-bytes';
+  | 'non-ts-bytes'
+  | 'xc-auth-envelope'
+  | 'no-tv-archive'
+  | 'catchup-layout-404'
+  | 'range-unsupported';
 
 export interface FaultOptions {
   channel?: number;
   rate?: number;
   clean?: boolean;
   afterBytes?: number;
+  /**
+   * Required to arm `catchup-layout-404` — rejected with a 400 naming
+   * `'layout'` if missing or not `'path'`/`'query'`. Not required to clear
+   * it (a value given to clear must still be valid). Rejected on every
+   * other fault.
+   */
+  layout?: 'path' | 'query';
   depth?: number;
 }
 
@@ -43,6 +71,14 @@ export interface UpstreamChannel {
   name: string;
   tvgId: string;
   logo: string | null;
+  /**
+   * Optional — mirrors the provider's `ChannelSpec.categoryId` (G8 task 1).
+   * When omitted, the provider defaults it to the scenario's first declared
+   * live category. Kept optional rather than required: making it required
+   * would break the channel literals already committed in
+   * `e2e/tests/seeded/upstream-ingest.spec.ts`, which predate categories.
+   */
+  categoryId?: number;
 }
 
 export interface ScenarioRequest {
@@ -51,6 +87,21 @@ export interface ScenarioRequest {
   password?: string;
   maxConnections?: number;
   rate?: number;
+  /** Declares the scenario as an Xtream Codes provider (G8 task 1). */
+  xc?: boolean;
+  liveCategories?: UpstreamCategory[];
+  vodCategories?: UpstreamCategory[];
+  seriesCategories?: UpstreamCategory[];
+  vod?: number | UpstreamMovie[];
+  series?: number | UpstreamSeries[];
+  /**
+   * Raw overrides merged into the XC `player_api.php` handshake's
+   * `user_info`/`server_info` objects (G8 task 1). No fixture reads this —
+   * it exists only to let a test declare a garbage `exp_date`/`timezone` on
+   * the account envelope. Left as a pass-through `Record`, not a named
+   * type, for the same reason: nothing here has a use for its contents yet.
+   */
+  account?: { userInfo?: Record<string, unknown>; serverInfo?: Record<string, unknown> };
 }
 
 export interface UpstreamScenario {
@@ -61,6 +112,23 @@ export interface UpstreamScenario {
   control: string;
   credentialQuery: string;
   channels: UpstreamChannel[];
+  /**
+   * Echoed by the provider and typed here because an XC account needs the two
+   * values *separately*: `credentialQuery` is the pre-formatted query string,
+   * which is exactly what an XC `server_url` must not carry (the product's
+   * `normalize_server_url` strips the query, so they would silently vanish).
+   *
+   * As `e2e-upstream/README.md` already warns for `credentialQuery`, these are
+   * not secret from the control API or from an attached test report. They are
+   * per-test throwaways; do not reuse a meaningful credential here.
+   */
+  username?: string;
+  password?: string;
+  liveCategories: UpstreamCategory[];
+  vodCategories: UpstreamCategory[];
+  seriesCategories: UpstreamCategory[];
+  vod: UpstreamMovie[];
+  series: UpstreamSeries[];
 }
 
 export interface LogEntry {
