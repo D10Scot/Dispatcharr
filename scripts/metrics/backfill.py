@@ -6,6 +6,12 @@ point) and every first-parent commit after it up to --ref (default: main),
 using a temporary detached git worktree per commit. Rows land in --out-dir
 via collect_all.py, timestamped with each commit's author date; appends are
 idempotent, so re-running after new merges only adds the new commits.
+
+Deliberately excludes the GitHub-API-backed families (security, delivery,
+agentic — see collect_all.py's API_FAMILIES): those collectors report live
+repo/API state, not a fact about a specific historical commit, so attributing
+today's CodeQL alert count to a commit from three months ago would be
+misleading. Their series starts at first collection instead.
 """
 
 from __future__ import annotations
@@ -58,6 +64,8 @@ def main() -> int:
                         str(worktree),
                         "--out-dir",
                         str(args.out_dir),
+                        "--skip-families",
+                        "security,delivery,agentic",
                         "--commit-sha",
                         sha,
                         "--commit-date",

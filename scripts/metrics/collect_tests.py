@@ -12,11 +12,15 @@ Counts of tests as written (not as run — no suite execution here):
 - e2e_greybox_test_count: the subset under ``tests/streaming-greybox/``.
 - hypothesis_property_test_count: ``@given``-decorated tests anywhere in
   backend test files.
-
-- coverage: null — deliberately deferred. Coverage %s require a full
-  backend matrix run plus a frontend vitest coverage run per data point,
-  which is neither cheap per-collection nor backfillable against historical
-  commits without executing their suites. Wire into M2 from CI artifacts.
+- frontend_coverage_pct: NOT set by this script. On schedule runs only, the
+  metrics workflow runs `vitest run --coverage` separately and merges the
+  number in afterwards via `collect_all.py --extra-metrics tests=<path>`
+  (see metrics.yml) — keeping this collector itself cheap/backfillable per
+  the reasoning below. Absent on push-triggered runs.
+- coverage: null — deliberately deferred (backend only). Backend coverage
+  requires a full test-matrix run against Postgres, which is neither cheap
+  per-collection nor backfillable against historical commits without
+  executing their suites; still out of scope as of M2.
 """
 
 from __future__ import annotations
@@ -86,7 +90,9 @@ def main() -> None:
             "e2e_greybox_test_count": e2e_greybox,
             "hypothesis_property_test_count": hypothesis_tests,
             "coverage": None,
-            "_notes": "coverage deferred to M2 (requires suite execution; see docstring)",
+            "_notes": "backend coverage deferred (needs Postgres matrix; see docstring). "
+            "frontend_coverage_pct is merged in separately by the metrics "
+            "workflow on schedule runs only, not present on push runs.",
         }
     )
 
