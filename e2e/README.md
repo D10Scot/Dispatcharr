@@ -469,6 +469,7 @@ Local builds are native-architecture; CI is amd64. If you need parity,
 | `api` | Authed HTTP; retries once through a token refresh on 401 |
 | `seed` | `channel`, `user`, `channelProfile`, `streamProfile`, `m3uAccount`, `epgSource` |
 | `adminPage` | A `Page` authenticated as the bootstrap admin |
+| `pageErrors` | `PageErrorCollector`: `consoleErrors`, `pageErrors`, `failedResponses` and `expectClean()`, which fails naming every offender not covered by `EXPECTED_PAGE_NOISE` (`fixtures/page-errors.ts`). Attached at fixture setup, so it sees the initial document load |
 | `asPrincipal` | An `ApiClient` for a fixed principal, `'streamer'` (level 0) or `'standard'` (level 1). Free |
 | `asUser` | An `ApiClient` for an arbitrary principal. Costs a login — see the throttle section |
 | `waitFor` | `condition`, `resource`, `m3uRefreshComplete` |

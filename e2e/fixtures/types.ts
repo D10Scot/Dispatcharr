@@ -466,3 +466,58 @@ export type UpstreamChannelOptions = {
   // discarded. Omitting them here turns that into a compile error instead.
   channel?: Omit<ChannelOverrides, 'streams' | 'stream_profile_id'>;
 };
+
+/** `core.UserAgent` via `UserAgentViewSet` (`core/api_urls.py`, `useragents`). */
+export type UserAgent = {
+  id: number;
+  name: string;
+  user_agent: string;
+  description: string | null;
+  is_active: boolean;
+};
+
+/** `apps.connect.Integration` via `IntegrationViewSet` (`apps/connect/api_urls.py`). */
+export type ConnectIntegration = {
+  id: number;
+  name: string;
+  type: string;
+  enabled: boolean;
+  config: Record<string, unknown>;
+  subscriptions: { event: string; enabled: boolean }[];
+};
+
+/** `apps.channels.Recording` via `RecordingViewSet` (`apps/channels/api_urls.py`). */
+export type Recording = {
+  id: number;
+  channel: number;
+  start_time: string;
+  end_time: string;
+  custom_properties: Record<string, unknown> | null;
+};
+
+/** `apps.channels.Logo` via `LogoViewSet` (`apps/channels/api_urls.py`, `logos`). */
+export type Logo = {
+  id: number;
+  name: string;
+  url: string;
+};
+
+/**
+ * One entry of `{"plugins": [...]}` from `GET /api/plugins/plugins/`
+ * (`PluginsListAPIView`, whose body is `PluginManager.list_plugins()`).
+ */
+export type PluginListEntry = {
+  key: string;
+  name: string;
+  version: string;
+  enabled: boolean;
+  ever_enabled: boolean;
+  settings: Record<string, unknown>;
+};
+
+/** One row of `GET /api/backups/` (`apps/backups/services.py`, `list_backups`). */
+export type BackupEntry = {
+  name: string;
+  size: number;
+  created: string;
+};

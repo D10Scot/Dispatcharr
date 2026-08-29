@@ -98,6 +98,13 @@
  * drives, and importing `page` from `@playwright/test` is how a spec ends up
  * bypassing this module entirely.
  *
+ * `pageErrors: PageErrorCollector` — everything the browser reported while the
+ *   test ran: `consoleErrors`, `pageErrors`, `failedResponses`, and
+ *   `expectClean()`, which fails naming every offender not covered by
+ *   `EXPECTED_PAGE_NOISE`. Attached at fixture setup, so it sees the initial
+ *   document load. The allowlist rule is at the top of `page-errors.ts`: a
+ *   product defect is filed, never allowlisted.
+ *
  * `waitFor: Waiter` — polling. The default way to wait for Celery-backed work.
  *   condition(predicate, options?) → Promise<void>
  *       predicate: () => Promise<boolean>
@@ -323,6 +330,7 @@ import {
 } from './stream-client';
 import { UpstreamClient } from './upstream';
 import { Instance } from './instance';
+import { PageErrorCollector } from './page-errors';
 
 export type Fixtures = {
   api: ApiClient;
@@ -330,6 +338,7 @@ export type Fixtures = {
   asPrincipal: (name: PrincipalName) => Promise<ApiClient>;
   asUser: (username: string, password: string) => Promise<ApiClient>;
   adminPage: Page;
+  pageErrors: PageErrorCollector;
   waitFor: Waiter;
   ws: WsListener;
   streamClient: StreamClient;
@@ -358,6 +367,13 @@ export const test = base.extend<Fixtures>({
   // could hand `page` a different principal without touching the tests.
   adminPage: async ({ page }, use) => {
     await use(page);
+  },
+  // Depends on `page`, not `adminPage`: they are the same object, and the
+  // listeners must be attached at fixture setup, before the test body runs
+  // its first `goto`. Anything attached inside the test misses the initial
+  // document load, which is where a bad bundle fails.
+  pageErrors: async ({ page }, use) => {
+    await use(new PageErrorCollector(page));
   },
   waitFor: async ({ api }, use) => {
     await use(new Waiter(api));
@@ -461,26 +477,34 @@ export type {
   UpstreamScenario,
 } from './upstream';
 export type {
+  BackupEntry,
   Channel,
   ChannelOverrides,
   ChannelProfile,
   ChannelProfileOverrides,
   ChannelStatus,
   ChannelStatusClient,
+  ConnectIntegration,
   EpgSource,
   EpgSourceOverrides,
   EpgSourceStatus,
   EpgSourceType,
+  Logo,
   M3uAccount,
   M3uAccountOverrides,
   M3uAccountStatus,
+  PluginListEntry,
+  Recording,
   Stream,
   StreamOverrides,
   StreamProfile,
   StreamProfileOverrides,
   UpstreamChannelOptions,
   User,
+  UserAgent,
   UserOverrides,
 } from './types';
 export { Instance } from './instance';
 export type { UpOptions, ManageResult } from './instance';
+export { PageErrorCollector, EXPECTED_PAGE_NOISE } from './page-errors';
+export type { PageNoiseEntry } from './page-errors';
