@@ -11,6 +11,13 @@ const TOKENS_FILE = path.join(AUTH_DIR, 'tokens.json');
 /**
  * A Playwright `multipart` value: a plain form field, or a file part built
  * from an in-memory buffer (no fixture file on disk is required).
+ *
+ * Narrower than Playwright's own multipart value type, which also accepts
+ * `number`, `boolean` and `fs.ReadStream`. Deliberate, not an oversight: every
+ * caller here is a small in-memory field or file, the product caps uploads at
+ * 5MB (`dispatcharr/utils.py:56-57`) so a `Buffer` is always cheap enough, and
+ * a numeric field costs nothing more than `String()` at the call site. Widen
+ * this if a later goal needs a stream, or a native number/boolean part.
  */
 export type MultipartValue =
   | string
@@ -138,17 +145,19 @@ export class ApiClient {
     this.persistTokens();
   }
 
-  private async send(
-    method: 'GET' | 'POST' | 'PATCH' | 'DELETE',
+  /**
+   * Issue a request built by `options`, refreshing and retrying once on 401.
+   * `options` is a factory rather than a value because it is called again
+   * after `refresh()` picks up a new access token — a plain value would
+   * retry with the same stale header. Shared by `send()` and `upload()` so
+   * the two request shapes cannot drift on refresh semantics; each builds
+   * its own options because a JSON body (`data`) and a multipart body
+   * (`multipart`) are different, mutually exclusive `fetch()` options.
+   */
+  private async fetchWithRefresh(
     url: string,
-    data?: unknown
+    options: () => Parameters<APIRequestContext['fetch']>[1]
   ): Promise<APIResponse> {
-    const options = () => ({
-      method,
-      headers: { Authorization: `Bearer ${this.tokens.access}` },
-      ...(data === undefined ? {} : { data }),
-    });
-
     let res = await this.ctx.fetch(url, options());
     if (res.status() === 401) {
       await this.refresh();
@@ -157,31 +166,41 @@ export class ApiClient {
     return res;
   }
 
+  private async send(
+    method: 'GET' | 'POST' | 'PATCH' | 'DELETE',
+    url: string,
+    data?: unknown
+  ): Promise<APIResponse> {
+    return this.fetchWithRefresh(url, () => ({
+      method,
+      headers: { Authorization: `Bearer ${this.tokens.access}` },
+      ...(data === undefined ? {} : { data }),
+    }));
+  }
+
   /**
-   * A `multipart/form-data` POST. The harness's only non-JSON write path —
-   * `LogoViewSet` is the one viewset that declares `MultiPartParser`.
+   * A `multipart/form-data` POST. `LogoViewSet` is the only *viewset* that
+   * declares `MultiPartParser`; the product has two other multipart write
+   * paths, both non-viewset — `ComskipConfigAPIView`
+   * (`apps/channels/api_views.py:3949`) and `upload_backup`
+   * (`apps/backups/api_views.py:259`) — so this helper already has two more
+   * potential callers, not zero.
    *
-   * Playwright's `multipart` is a distinct request option from `data`, so this
-   * cannot go through `send()`; it repeats the 401-refresh-and-retry rather
-   * than skipping it, because a suite that outlives its 30-minute access token
-   * must not have one call path that breaks where every other one recovers.
+   * A separate method from `send()`, not a special case inside it: Playwright's
+   * `multipart` is a distinct `fetch()` option from `data`, mutually exclusive
+   * with it, so the two need their own options factories. Both factories go
+   * through the same `fetchWithRefresh()`, so this still gets the 401 retry
+   * every other call path gets.
    */
   async upload(
     url: string,
     multipart: Record<string, MultipartValue>
   ): Promise<APIResponse> {
-    const options = () => ({
+    return this.fetchWithRefresh(url, () => ({
       method: 'POST' as const,
       headers: { Authorization: `Bearer ${this.tokens.access}` },
       multipart,
-    });
-
-    let res = await this.ctx.fetch(url, options());
-    if (res.status() === 401) {
-      await this.refresh();
-      res = await this.ctx.fetch(url, options());
-    }
-    return res;
+    }));
   }
 
   get(url: string) {

@@ -203,7 +203,9 @@ export type ChannelGroup = {
  *
  * G6 also declares `export type Logo` on its own branch (four fields, no
  * `channel_count`/`is_used`, with fuller documentation). On merge, keep G6's
- * comment and this file's wider field set, and delete the duplicate
+ * comment — fixing its opening sentence to say only `channel_names` is
+ * untyped, since this file's wider field set also carries `channel_count`
+ * and `is_used` — and this file's wider field set, and delete the duplicate
  * declaration.
  *
  * Not typed here: `channel_names`, a cosmetic capped list nothing asserts on.

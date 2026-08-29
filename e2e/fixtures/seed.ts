@@ -441,6 +441,16 @@ export class Seeder {
    * The payload is a few bytes in memory rather than a file on disk:
    * `validate_logo_file` checks only the declared `content_type` and the size,
    * never the magic bytes.
+   *
+   * This helper deliberately does not delete the uploaded file, and no caller
+   * of it should delete the `Logo` row without also deleting the file
+   * (`?delete_file=true` on the delete endpoint). A file left behind with its
+   * row is inert — the row keeps it out of `scan-files`'s way. A row deleted
+   * *without* the file is the one bad state: the `scan-files` beat walks
+   * `/data/logos` every 20s and, once the upload's Redis `processed_file:`
+   * key expires (3-day TTL, or sooner on a flush), resurrects the orphan as a
+   * new `Logo` row under the bare filename (`core/tasks.py:344-355`) and
+   * fires a websocket broadcast for it. Keep both, or delete both.
    */
   async logo(overrides: LogoOverrides = {}): Promise<Logo> {
     const { mimeType = 'image/png', extension = 'png' } = overrides;

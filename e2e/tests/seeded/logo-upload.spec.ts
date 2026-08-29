@@ -12,7 +12,11 @@ test('a logo uploads, assigns to a channel and serves its bytes back', async ({
   // `url` is the on-disk path, not an HTTP URL — `Logo` has no FileField.
   expect(logo.url.startsWith('/data/logos/')).toBeTruthy();
   expect(logo.url.endsWith('.png')).toBeTruthy();
-  expect(logo.url).toContain(logo.name);
+  // Exact form, not `toContain`: the fallback path (`os.path.basename` when
+  // the `name` form field is ignored, `api_views.py:2843-2844`) would produce
+  // `.../<name>.png.png`, which still *contains* `logo.name` — so only the
+  // exact match proves the plain form field was honoured.
+  expect(logo.url).toBe(`/data/logos/${logo.name}.png`);
   expect(logo.cache_url).toContain(`/api/channels/logos/${logo.id}/cache/`);
 
   const channel = await seed.channel();
@@ -35,5 +39,10 @@ test('a logo uploads, assigns to a channel and serves its bytes back', async ({
   // `request` context is the honest way to say so.
   const served = await request.get(logo.cache_url);
   expect(served.status()).toBe(200);
-  expect((await served.body()).length).toBeGreaterThan(0);
+  // `serve_local_or_remote_image` streams the file verbatim for a local
+  // `/data` path (`core/image_proxy.py:193-209`), so the exact byte count of
+  // the 8-byte PNG signature `seed.logo()` uploads is both correct and free —
+  // a placeholder-image mutation would pass `> 0` but fail this.
+  expect((await served.body()).length).toBe(8);
+  expect(served.headers()['content-type']).toContain('image');
 });
