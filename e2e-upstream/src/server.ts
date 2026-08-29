@@ -13,6 +13,7 @@ import type { LiveConnection } from './connections.js';
 import { streamLoop, STREAM_CONTENT_TYPE } from './stream.js';
 import { FaultStore, DEFAULT_REDIRECT_DEPTH, parseFaultRequest } from './faults.js';
 import { ScenarioLog } from './log.js';
+import { handleXc, looksLikeXcRoute } from './xc/router.js';
 
 export interface RunningServer {
   close(): Promise<void>;
@@ -191,12 +192,17 @@ function scenarioUrls(scenario: Scenario, req: IncomingMessage) {
  * scenario's response status. Never called before a scenario is found — an
  * unresolved scenario id has nowhere to log to — so the bare "no scenario"
  * 404s above are deliberately not logged here.
+ *
+ * `path` carries the search string as well as the pathname: the XC routes
+ * (G8) put everything that identifies a request — `stream=1`, `duration=65`,
+ * `username=...` — in query parameters rather than PATH segments, so a log
+ * entry that dropped the query would be unable to name what was asked for.
  */
 function logRequest(scenario: Scenario, req: IncomingMessage, url: URL, status: number): void {
   scenarioLog.record(scenario.id, {
     kind: 'request',
     method: req.method,
-    path: url.pathname,
+    path: url.pathname + url.search,
     status,
   });
 }
@@ -556,6 +562,36 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       channels: connections.matching(scenario.id).map((connection) => connection.channelId),
     });
     return;
+  }
+
+  // The XC surface (G8). Deliberately last: every pre-existing `/s/<id>/*`
+  // route above — including the four control routes — must match before this
+  // sees the path, or a scenario id containing an unlucky segment would have
+  // its control calls answered by the XC router.
+  const xcMatch = /^\/s\/([^/]+)(\/.*)$/.exec(url.pathname);
+  if (xcMatch) {
+    const scenario = registry.get(xcMatch[1]);
+    if (scenario && looksLikeXcRoute(xcMatch[2])) {
+      if (!scenario.xc) {
+        // Named, not bare: without this a G9 author who forgot `xc: true`
+        // reads a 404 and starts debugging Dispatcharr's XC client.
+        logRequest(scenario, req, url, 404);
+        sendJson(res, 404, {
+          error: `scenario ${scenario.id} was not created with xc: true, so ${xcMatch[2]} is not served`,
+        });
+        return;
+      }
+      const handled = await handleXc({
+        scenario,
+        req,
+        res,
+        url,
+        subPath: xcMatch[2],
+        log: (status) => logRequest(scenario, req, url, status),
+        sendJson: (status, body) => sendJson(res, status, body),
+      });
+      if (handled) return;
+    }
   }
 
   sendJson(res, 404, { error: `no route for ${req.method} ${url.pathname}` });
