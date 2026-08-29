@@ -165,3 +165,62 @@ test('set-epg maps a channel and its programmes follow', async ({
   expect(programmes.results[0].tvg_id).toBe(declared.tvgId);
   expect(programmes.results[0].channels.map((c) => c.id)).toContain(channel.id);
 });
+
+test('batch-set-epg maps several channels in one call', async ({
+  upstream,
+  seed,
+  api,
+  waitFor,
+}) => {
+  test.setTimeout(120_000);
+
+  const prefix = seed.generatedName('batchepg');
+  const declared = [1, 2].map((id) => ({
+    id,
+    name: `${prefix}-ch${id}`,
+    tvgId: `${prefix}-ch${id}.e2e`,
+    logo: null,
+  }));
+  const scenario = await upstream.scenario({ channels: declared });
+  const source = await seed.upstreamEpgSource(scenario);
+
+  const allEpgData = await api.json<EpgData[]>(
+    await api.get('/api/epg/epgdata/'),
+    'EPGData rows'
+  );
+  const associations = [];
+  for (const spec of declared) {
+    const epgData = allEpgData.find(
+      (d) => d.tvg_id === spec.tvgId && d.epg_source === source.id
+    );
+    expect(epgData, `no EPGData for ${spec.tvgId}`).toBeDefined();
+    const channel = await seed.channel();
+    associations.push({ channel_id: channel.id, epg_data_id: epgData!.id, spec });
+  }
+
+  const res = await api.post('/api/channels/channels/batch-set-epg/', {
+    associations: associations.map(({ channel_id, epg_data_id }) => ({
+      channel_id,
+      epg_data_id,
+    })),
+  });
+  expect(res.status()).toBe(200);
+  const body = await api.json<{ success: boolean; channels_updated: number }>(
+    res,
+    'batch-set-epg response'
+  );
+  expect(body.success).toBe(true);
+  expect(body.channels_updated).toBe(2);
+
+  // `batch_set_epg` uses bulk_update, which bypasses the post_save receiver, so
+  // it calls `dispatch_program_refresh_for_epg_ids` itself. This proves that
+  // explicit dispatch actually happened.
+  for (const { channel_id, spec } of associations) {
+    const programmes = await waitFor.resource<ProgramSearchPage>(
+      `/api/epg/programs/search/?channel_id=${channel_id}&page_size=5`,
+      (page) => page.count > 0,
+      { description: `programmes for channel ${channel_id}`, timeoutMs: 90_000 }
+    );
+    expect(programmes.results[0].title.startsWith(spec.name)).toBeTruthy();
+  }
+});
