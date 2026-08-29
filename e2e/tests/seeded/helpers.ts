@@ -25,6 +25,17 @@ import type { ApiClient, GroupSettingRow, M3uAccountChannelGroup } from '../../f
  * function exists to guarantee. Guarded rather than documented alone, since
  * a silent collision here is exactly the kind of cross-worker flake this
  * whole scheme is meant to rule out.
+ *
+ * **Nothing reclaims a number once assigned, so a 100-wide window is a
+ * budget, not an infinite resource.** `sync_auto_channels` reports
+ * `channels_failed` (surfaced in the refresh's `last_message` as
+ * `"Auto-sync: N failed"`) once a window is full, and from the outside that
+ * looks exactly like an ordinary test timeout with no obvious cause — this
+ * bit Task 10's own verification after a dozen-odd repeated local runs of
+ * this file in one session against a container that was never reset. CI is
+ * unaffected (each matrix job gets a fresh container), but running this
+ * file repeatedly during local development eventually exhausts a window;
+ * the remedy is `./scripts/e2e_up.sh --reset`, not a wider window here.
  */
 export function syncWindowFor(
   workerIndex: number,
