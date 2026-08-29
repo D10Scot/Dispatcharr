@@ -67,18 +67,21 @@ describe('ScenarioRegistry', () => {
     // count form (a number, not an explicit array) throughout, which is
     // exactly the combination the previous behaviour got wrong.
     const registry = new ScenarioRegistry();
+    // Three DIFFERENT ids, deliberately: with one shared id a generator wired
+    // to the wrong list — defaultMovies(..., liveCategories[0].id) — would
+    // still produce the asserted value and pass.
     const scenario = registry.create({
       liveCategories: [{ id: 5, name: 'Live Five' }],
-      vodCategories: [{ id: 5, name: 'VOD Five' }],
-      seriesCategories: [{ id: 5, name: 'Series Five' }],
+      vodCategories: [{ id: 6, name: 'VOD Six' }],
+      seriesCategories: [{ id: 7, name: 'Series Seven' }],
       channels: 1,
       vod: 1,
       series: 1,
     });
 
     expect(scenario.channels.map((c) => c.categoryId)).toEqual([5]);
-    expect(scenario.vod.map((m) => m.categoryId)).toEqual([5]);
-    expect(scenario.series.map((s) => s.categoryId)).toEqual([5]);
+    expect(scenario.vod.map((m) => m.categoryId)).toEqual([6]);
+    expect(scenario.series.map((s) => s.categoryId)).toEqual([7]);
   });
 
   it('gives every scenario a distinct id and does not evict', () => {

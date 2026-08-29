@@ -112,8 +112,14 @@ in `COVERAGE.md`. `seed.xcAccount` is deliberately stricter than this door and t
 bypasses `seed.xcAccount` is not.
 
 - `liveCategories` / `vodCategories` / `seriesCategories` — arrays of `{ id, name }`. Each defaults
-  to one entry (`{ id: 1, name: 'E2E' }`, `'E2E Movies'`, `'E2E Series'`) when omitted. A `channels[]`
-  entry's own `categoryId` defaults to `liveCategories[0].id` when omitted (`scenario.ts:612-616`).
+  to one entry (`{ id: 1, name: 'E2E' }`, `'E2E Movies'`, `'E2E Series'`) when omitted. An empty
+  array is rejected with a 400, never silently defaulted.
+  **Whatever does not name its own category gets `categories[0].id` — the first entry of the
+  matching list** (`scenario.ts:627-632`). That covers both a `channels[]`/`vod[]`/`series[]` entry
+  omitting `categoryId` *and* every item the **count** form generates. So if you declare several
+  categories and use a count, **all** the generated items land in the first one; declare an explicit
+  array if you want them spread. The resolved ids come back in the `POST /scenarios` response, so
+  you never have to infer which category an item ended up in.
 - `vod` / `series` — a count (materialising that many default-named entries) or an explicit array
   of movie/series specs. Default to 1 of each when `xc: true` and neither is declared, and to 0 for
   a non-XC scenario — there's no route that could serve a catalogue. The `MovieSpec`/`SeriesSpec`
