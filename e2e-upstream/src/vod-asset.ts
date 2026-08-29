@@ -52,7 +52,7 @@ export function loadFiniteAsset(path: string, contentType: string): FiniteAsset 
 
 export interface ServeOptions {
   rangeHeader?: string;
-  /** A future `range-unsupported` fault: answer 200 with the whole body, no Accept-Ranges. */
+  /** Set by the `range-unsupported` fault: answer 200 with the whole body, no Accept-Ranges. */
   ignoreRange?: boolean;
   head?: boolean;
 }

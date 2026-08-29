@@ -34,6 +34,21 @@ function isFaultName(value: unknown): value is FaultName {
   return typeof value === 'string' && (FAULT_NAMES as readonly string[]).includes(value);
 }
 
+/**
+ * `xc-auth-envelope` changes the `player_api.php` handshake, which has no
+ * channel to narrow to; `range-unsupported` acts on a VOD id, which is not a
+ * channel id. Without this, `{ fault: 'range-unsupported', active: true,
+ * channel: 7 }` would validate, store under scope `7` (see `scopeOf`), and
+ * the router — which only ever calls `isActive`/`configOf` for these two
+ * faults with no channel argument — would never read that scope back. The
+ * response would still be `200` with `appliedTo: 0`, byte-identical to a
+ * correctly armed fault that simply hasn't reached a live connection yet,
+ * and the fault would silently do nothing. `connection-limit` is the only
+ * other fault that could plausibly be "scenario-wide" and it genuinely is
+ * channel-scopable, so there is no precedent for a loose door here.
+ */
+const SCENARIO_WIDE_ONLY_FAULTS: readonly FaultName[] = ['xc-auth-envelope', 'range-unsupported'];
+
 export interface FaultRequest {
   fault: FaultName;
   active: boolean;
@@ -87,6 +102,11 @@ export function parseFaultRequest(body: Record<string, unknown>): FaultRequest {
   if (body.channel !== undefined) {
     if (typeof body.channel !== 'number' || !Number.isInteger(body.channel)) {
       throw new BadRequestError("'channel' must be an integer");
+    }
+    if ((SCENARIO_WIDE_ONLY_FAULTS as readonly string[]).includes(request.fault)) {
+      throw new BadRequestError(
+        `'channel' is not meaningful on '${request.fault}', which is scenario-wide only`,
+      );
     }
     request.channel = body.channel;
   }

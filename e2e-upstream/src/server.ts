@@ -711,9 +711,19 @@ export function startServer(port: number): Promise<RunningServer> {
       resolve({
         port: (server.address() as AddressInfo).port,
         close: () =>
-          new Promise<void>((done, fail) =>
-            server.close((err) => (err ? fail(err) : done()))
-          ),
+          new Promise<void>((done, fail) => {
+            server.close((err) => (err ? fail(err) : done()));
+            // server.close() alone only stops accepting new connections —
+            // it waits for every already-open one to end on its own before
+            // its callback fires. A test that leaves a streaming response
+            // undrained (never reads it to completion or cancels its body)
+            // left this promise waiting indefinitely, surfacing as a vitest
+            // `afterEach` hook timeout with nothing pointing back here.
+            // Force-closing every open socket immediately, the same as a
+            // real client's connection dropping mid-stream, is what makes
+            // close() actually close.
+            server.closeAllConnections();
+          }),
       });
     });
   });

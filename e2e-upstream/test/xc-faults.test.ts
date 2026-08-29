@@ -105,6 +105,19 @@ describe('xc-auth-envelope', () => {
     expect(body.user_info.auth).toBe(1);
     expect(body.user_info.status).toBe('Active');
   });
+
+  it('400s a channel filter over the wire, naming the field (fix round 1)', async () => {
+    // xc-auth-envelope has no channel to narrow to — arming it with one
+    // would previously store under that channel's scope, which the router
+    // never reads, and come back 200/appliedTo:0: byte-identical to a
+    // correctly armed fault that just hasn't reached a live connection yet.
+    // Proven at the actual /fault route, not just parseFaultRequest, since
+    // this is the door a real test author calls through.
+    const { base, id } = await xcScenario();
+    const res = await arm(base, id, { fault: 'xc-auth-envelope', active: true, channel: 1 });
+    expect(res.status).toBe(400);
+    expect((await readJson(res)).error).toMatch(/channel/);
+  });
 });
 
 describe('auth-failure on the XC surface', () => {
@@ -209,6 +222,17 @@ describe('range-unsupported', () => {
     });
     expect(res.status).toBe(206);
     expect(res.headers.get('accept-ranges')).toBe('bytes');
+  });
+
+  it('400s a channel filter over the wire, naming the field (fix round 1)', async () => {
+    // A VOD id is not a channel id — same door check as xc-auth-envelope
+    // above, and the same silent-no-op this closes: without it, `{ channel:
+    // 1 }` would validate and store under a scope the router never reads
+    // for this fault.
+    const { base, id } = await xcScenario();
+    const res = await arm(base, id, { fault: 'range-unsupported', active: true, channel: 1 });
+    expect(res.status).toBe(400);
+    expect((await readJson(res)).error).toMatch(/channel/);
   });
 });
 

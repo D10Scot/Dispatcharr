@@ -75,6 +75,48 @@ describe('server', () => {
   });
 });
 
+describe('startServer close()', () => {
+  // A real, loadable asset: the streaming route this exercises calls
+  // getAsset(), same requirement as the redirect-chain and stream-loop
+  // describe blocks elsewhere in this file.
+  beforeAll(() => {
+    const dir = mkdtempSync(join(tmpdir(), 'e2e-upstream-asset-'));
+    const path = join(dir, 'loop.ts');
+    writeFileSync(path, makeSyntheticTs({ packets: 40, pid: 0x0100, step: 3600n }));
+    process.env.UPSTREAM_ASSET = path;
+  });
+
+  it(
+    'resolves promptly even with a live, undrained streaming response open (fix round 1)',
+    async () => {
+      server = await startServer(0);
+      const created = await readJson(
+        await fetch(`http://127.0.0.1:${server.port}/scenarios`, { method: 'POST', body: '{}' })
+      );
+      const res = await fetch(`http://127.0.0.1:${server.port}/s/${created.id}/stream/1.ts`);
+      expect(res.status).toBe(200);
+      // Deliberately never read or cancel res.body: the loop asset streams
+      // forever until the client disconnects, so this is exactly the
+      // undrained-response shape that left close() waiting on
+      // server.close()'s callback indefinitely before closeAllConnections()
+      // was added — surfacing in a real run as a vitest afterEach hook
+      // timeout with nothing pointing back at this being the cause.
+
+      const start = Date.now();
+      await server.close();
+      // Closed here, not left for afterEach: server.close() throws "Server
+      // is not running" on a second call, and afterEach unconditionally
+      // calls server?.close() on whatever this variable still points to.
+      server = undefined;
+      expect(Date.now() - start).toBeLessThan(2000);
+    },
+    // Short and explicit, not the file's 30s default: without the fix this
+    // hangs until the timeout fires, and a 30s red run is a slow way to
+    // confirm what a 5s one shows just as clearly.
+    5000
+  );
+});
+
 describe('scenario routes', () => {
   it('creates a default scenario from an empty POST body', async () => {
     server = await startServer(0);

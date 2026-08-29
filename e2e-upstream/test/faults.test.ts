@@ -331,6 +331,34 @@ describe('the G8 faults', () => {
     );
   });
 
+  it('rejects a channel on the two scenario-wide-only faults', () => {
+    // Without this, `{ fault: 'range-unsupported', active: true, channel: 7 }`
+    // would validate, store under scope 7, and the router — which calls
+    // isActive/configOf for these two faults with no channel argument — would
+    // never read that scope back. The response would be 200/appliedTo:0,
+    // byte-identical to a correctly armed fault, and it would silently do
+    // nothing. Fix-round-1 finding.
+    expect(() =>
+      parseFaultRequest({ fault: 'xc-auth-envelope', active: true, channel: 1 })
+    ).toThrow(/channel.*scenario-wide/);
+    expect(() =>
+      parseFaultRequest({ fault: 'range-unsupported', active: true, channel: 1 })
+    ).toThrow(/channel.*scenario-wide/);
+  });
+
+  it('still accepts a channel on no-tv-archive and catchup-layout-404', () => {
+    // The other two G8 faults ARE channel-scopable — this is not a blanket
+    // ban on `channel` for the new fault set, only the two that have no
+    // channel to narrow to.
+    expect(
+      parseFaultRequest({ fault: 'no-tv-archive', active: true, channel: 2 }).channel
+    ).toBe(2);
+    expect(
+      parseFaultRequest({ fault: 'catchup-layout-404', active: true, layout: 'path', channel: 2 })
+        .channel
+    ).toBe(2);
+  });
+
   it('reports appliedTo 0 for all four, even with a live connection open', () => {
     // All four can only affect the next request: a live response has already
     // sent its headers. Zero is correct here, not a partial failure — proven
