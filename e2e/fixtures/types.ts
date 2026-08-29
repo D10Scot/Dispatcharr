@@ -141,14 +141,56 @@ export type StreamProfile = {
 /**
  * A `Stream` row. Streams are what a `Channel` points at; the channel is what
  * a client tunes. `is_custom: true` marks a row created by hand rather than
- * ingested from an M3U account — which is what every G4 test wants, because
- * ingesting would test the M3U path (G3) rather than the streaming path.
+ * ingested from an M3U account.
+ *
+ * Fields from `StreamSerializer.Meta.fields`; nullability from
+ * `apps/channels/models.py` (`Stream`). Not typed here: `local_file`,
+ * `current_viewers`, `updated_at`, `is_adult`, `stream_profile_id`,
+ * `stream_hash`, `stream_stats`, `stream_stats_updated_at`, `stream_id`,
+ * `is_catchup`, `catchup_days` — writable or readable, but nothing needs them.
  */
 export type Stream = {
   id: number;
   name: string;
   url: string;
   is_custom: boolean;
+  /** FK `CASCADE`, `null=True` — null on a hand-created (`is_custom`) row. */
+  m3u_account: number | null;
+  /** The playlist's `tvg-logo`. `TextField(blank=True, null=True)`. */
+  logo_url: string | null;
+  /** The playlist's `tvg-id`. `CharField(blank=True, null=True)`. */
+  tvg_id: string | null;
+  /** FK `SET_NULL` to `ChannelGroup`, set from `group-title` on refresh. */
+  channel_group: number | null;
+  /** `DateTimeField(default=timezone.now)` — never null. */
+  last_seen: string;
+  is_stale: boolean;
+  /** The playlist's `tvg-chno`. `FloatField(null=True)`; the fake provider declares none. */
+  stream_chno: number | null;
+};
+
+/**
+ * `GET /api/channels/streams/`. `StreamPagination` is unconditional on this
+ * endpoint (page_size 50, `page_size` query param, max 10000), so the list
+ * form is always this envelope and never a bare array.
+ */
+export type StreamPage = {
+  count: number;
+  next: string | null;
+  previous: string | null;
+  results: Stream[];
+};
+
+/**
+ * `/api/channels/groups/`. `ChannelGroup` has exactly one model field, `name`
+ * (`TextField(unique=True)`). `ChannelGroupSerializer` adds three read-only
+ * mirrors (`channel_count`, `m3u_account_count`, `m3u_accounts`) that nothing
+ * here reads. The endpoint has no filterset and no pagination, so it returns a
+ * bare array of every group in the instance — assert membership, never length.
+ */
+export type ChannelGroup = {
+  id: number;
+  name: string;
 };
 
 /** `M3UAccount.Status` (`apps/m3u/models.py`). Note `pending_setup`, which `EpgSourceStatus` has no equivalent of. */

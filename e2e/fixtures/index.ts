@@ -63,6 +63,11 @@
  *                                `opts.channel` is `ChannelOverrides` minus
  *                                `streams`/`stream_profile_id` — the factory
  *                                owns both, so they are not writable here.
+ *   upstreamM3UAccount(scenario, overrides?) → M3uAccount
+ *                                creates an active account pointed at that
+ *                                scenario's playlist, refreshes it, waits, and
+ *                                asserts `status === 'success'`. Not for a
+ *                                test that wants the refresh to fail.
  *   generatedName(entity)        the naming scheme itself, for a row you
  *                                create by hand
  *   `overrides` is typed per entity — `ChannelOverrides`, `UserOverrides`, …
@@ -341,8 +346,8 @@ export const test = base.extend<Fixtures>({
   api: async ({ request }, use) => {
     await use(new ApiClient(request));
   },
-  seed: async ({ api }, use, testInfo) => {
-    await use(new Seeder(api, testInfo.workerIndex, testInfo.testId));
+  seed: async ({ api, waitFor }, use, testInfo) => {
+    await use(new Seeder(api, testInfo.workerIndex, testInfo.testId, waitFor));
   },
   asPrincipal: async ({ request }, use) => {
     await use((name: PrincipalName) => makePrincipalClient(request, name));
@@ -462,6 +467,7 @@ export type {
 } from './upstream';
 export type {
   Channel,
+  ChannelGroup,
   ChannelOverrides,
   ChannelProfile,
   ChannelProfileOverrides,
@@ -476,6 +482,7 @@ export type {
   M3uAccountStatus,
   Stream,
   StreamOverrides,
+  StreamPage,
   StreamProfile,
   StreamProfileOverrides,
   UpstreamChannelOptions,

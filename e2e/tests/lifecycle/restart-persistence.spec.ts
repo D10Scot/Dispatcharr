@@ -6,7 +6,7 @@
  * Runs alone. `instance` destroys and replaces the container every other
  * project shares; see `e2e/fixtures/instance.ts`'s header.
  */
-import { test, expect, ApiClient, Seeder } from '../../fixtures';
+import { test, expect, ApiClient, Seeder, Waiter } from '../../fixtures';
 import { provisionAdmin } from '../../setup/provision-admin';
 import {
   assertAdminTokenStillValid,
@@ -26,7 +26,10 @@ test('durable state and the signing key survive a container restart', async ({
   // persisted pair describes an instance this spec is about to restart.
   const tokens = await provisionAdmin(request, baseURL!);
   const api = new ApiClient(request, tokens);
-  const seed = new Seeder(api, testInfo.workerIndex, testInfo.testId);
+  // Not the `waitFor` fixture: that Waiter wraps the fixture `api` (the
+  // pre-restart bootstrap admin), which this spec must not touch either —
+  // same reasoning as the `api`/`seed` fixtures above.
+  const seed = new Seeder(api, testInfo.workerIndex, testInfo.testId, new Waiter(api));
   const state = await seedDurableState(api, seed);
 
   const startedBefore = await instance.startedAt();

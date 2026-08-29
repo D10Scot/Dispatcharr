@@ -19,7 +19,7 @@
  * from day one — it becomes meaningful the moment Phase 1 starts changing
  * models, and building it then is strictly harder than building it now.
  */
-import { test, expect, ApiClient, Seeder } from '../../fixtures';
+import { test, expect, ApiClient, Seeder, Waiter } from '../../fixtures';
 import type { Instance } from '../../fixtures';
 import { provisionAdmin } from '../../setup/provision-admin';
 import {
@@ -216,7 +216,10 @@ test('an upgrade onto an existing volume applies migrations and keeps the data',
 
     const tokens = await provisionAdmin(request, baseURL!);
     const api = new ApiClient(request, tokens);
-    const seed = new Seeder(api, testInfo.workerIndex, testInfo.testId);
+    // Not the `waitFor` fixture: that Waiter wraps the fixture `api` (the
+    // pre-upgrade bootstrap admin), which this spec must not touch either —
+    // same reasoning as the `api`/`seed` fixtures.
+    const seed = new Seeder(api, testInfo.workerIndex, testInfo.testId, new Waiter(api));
 
     const migrationsBefore = await appliedMigrations(instance);
     const state = await seedDurableState(api, seed);
