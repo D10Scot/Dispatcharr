@@ -372,6 +372,32 @@ INSERT, and `ATOMIC_REQUESTS` is off), so the account exists with a null
 the account it finds — the same receiver runs on update — instead of returning
 early on the name.
 
+### The set of `refresh_interval` values this suite uses is **{0}**
+
+`bootstrap` pre-warms exactly one `IntervalSchedule` row, `(every=1, HOURS)`,
+which is what `refresh_interval: 0` maps to for both `M3UAccount` and
+`EPGSource`. Every account and source the suite creates uses that default, so
+the race above is unreachable and the pre-warm needs no extension.
+
+Two things follow, and both are reasons not to reach for another value
+casually:
+
+- **A non-zero interval races an unwarmed row.** Pre-warm it the same way
+  `prewarmIntervalSchedule` does, from `bootstrap`, and add the value to this
+  section — not from a worker, which is exactly the concurrent create that
+  poisons the container.
+- **A non-zero interval also leaves an *enabled* beat task.**
+  `create_or_update_periodic_task` (`core/scheduling.py`) computes
+  `should_be_enabled = enabled and (use_cron or interval_hours > 0)`, so
+  `refresh_interval: 0` yields a *disabled* `PeriodicTask` and anything else
+  yields one that keeps re-refreshing that account for the life of the
+  container — mutating rows under whatever test is running an hour later.
+
+G3 also deliberately does **not** reproduce
+[#7](https://github.com/D10Scot/Dispatcharr/issues/7): provoking it poisons the
+shared container permanently for every remaining test in the run, and no
+assertion is worth that. `COVERAGE.md` records that as a decision, not a gap.
+
 ## Writing a test
 
 1. Read the root `CONTEXT.md`. Three different things are called "profile".
@@ -466,12 +492,12 @@ Local builds are native-architecture; CI is amd64. If you need parity,
 
 | Fixture | Provides |
 |---|---|
-| `api` | Authed HTTP; retries once through a token refresh on 401 |
-| `seed` | `channel`, `user`, `channelProfile`, `streamProfile`, `m3uAccount`, `epgSource` |
+| `api` | Authenticated HTTP; retries once through a token refresh on 401. `upload()` is the one multipart path |
+| `seed` | `channel`, `user`, `channelProfile`, `streamProfile`, `m3uAccount`, `epgSource`, `stream`, `upstreamChannel`, `upstreamM3UAccount`, `upstreamEpgSource`, `logo` |
 | `adminPage` | A `Page` authenticated as the bootstrap admin |
 | `asPrincipal` | An `ApiClient` for a fixed principal, `'streamer'` (level 0) or `'standard'` (level 1). Free |
 | `asUser` | An `ApiClient` for an arbitrary principal. Costs a login — see the throttle section |
-| `waitFor` | `condition`, `resource`, `m3uRefreshComplete` |
+| `waitFor` | `condition`, `resource`, `m3uRefreshComplete`, `epgRefreshComplete` |
 | `ws` | `/ws/` subscription; `waitForMessage(type, { where, timeoutMs })` |
 | `streamClient` | `open`, `readPackets`, `collectFor`, `close` |
 | `upstream` | The fake upstream provider: `scenario`, `fault`, `rate`, `clearFault`, `log`, `toControl`. Test-scoped, not worker-scoped — `attachLogs` needs `testInfo` to attach a failing scenario's log to the Playwright report, which a worker fixture cannot obtain. See `e2e-upstream/README.md` and the section above on the two-container topology |
