@@ -86,12 +86,19 @@ export class PageErrorCollector {
     // invisible to `expectClean()`.
     page.on('requestfailed', (request) => {
       const failure = request.failure();
-      // `net::ERR_ABORTED` fires for any in-flight request cancelled by a
-      // navigation (including this fixture's own goto()s) or by the page
-      // closing. That is a normal browser artifact, not a product signal —
-      // every other reason (refused connection, DNS failure, blocked
-      // request) is real and gets recorded.
-      if (failure?.errorText === 'net::ERR_ABORTED') return;
+      // `net::ERR_ABORTED` fires both for a routine browser artifact — an
+      // in-flight *navigation* superseded by another (including this
+      // fixture's own goto()s) or by the page closing — and for application
+      // code cancelling a subresource request (an `AbortController`, a race
+      // that aborts the wrong fetch, a component unmount cancelling one that
+      // should have completed). Those are opposite cases: the first is
+      // never a product signal, the second always is. `isNavigationRequest()`
+      // is what tells them apart — filter only the former, so a wrongly
+      // aborted subresource request still gets recorded.
+      const isRoutineNavigationAbort =
+        failure?.errorText === 'net::ERR_ABORTED' &&
+        request.isNavigationRequest();
+      if (isRoutineNavigationAbort) return;
       this.failedResponses.push({
         url: new URL(request.url()).pathname,
         status: 0,
