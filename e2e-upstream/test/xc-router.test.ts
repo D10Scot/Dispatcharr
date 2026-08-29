@@ -1,5 +1,9 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, beforeAll } from 'vitest';
+import { writeFileSync, mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { startServer, registry } from '../src/server.js';
+import { makeSyntheticTs } from './helpers/synthetic-ts.js';
 
 // Node's fetch typings return `Promise<unknown>` from `Response.json()`; see
 // the identical helper in test/server.test.ts.
@@ -224,4 +228,88 @@ describe('catalogue action dispatch', () => {
       expect.objectContaining({ kind: 'request', status: 400, path: expect.stringContaining('action=nonsense') })
     );
   });
+});
+
+describe('XC live playback', () => {
+  // Only the GET test below actually reads streamed bytes and needs a real,
+  // loadable asset — same pattern as `test/server.test.ts`'s
+  // "the redirect-chain fault, using the real streamed asset" block.
+  beforeAll(() => {
+    const dir = mkdtempSync(join(tmpdir(), 'e2e-upstream-asset-'));
+    const path = join(dir, 'loop.ts');
+    writeFileSync(path, makeSyntheticTs({ packets: 40, pid: 0x0100, step: 3600n }));
+    process.env.UPSTREAM_ASSET = path;
+  });
+
+  it('serves TS on /live/<user>/<pass>/<id>.ts', async () => {
+    const { base, id } = await xcScenario();
+    const res = await fetch(`${base}/s/${id}/live/user/pass/1.ts`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toBe('video/mp2t');
+    const reader = res.body!.getReader();
+    const { value } = await reader.read();
+    expect(value![0]).toBe(0x47);
+    await reader.cancel();
+  });
+
+  it('rejects wrong path credentials with 401 and consumes no connection slot', async () => {
+    const { base, id } = await xcScenario({ maxConnections: 1 });
+    expect((await fetch(`${base}/s/${id}/live/user/wrong/1.ts`)).status).toBe(401);
+    // A rejected request that had taken the slot would make every later
+    // connection-limit assertion wrong for a reason that looks like broken
+    // accounting.
+    const live = await readJson(await fetch(`${base}/s/${id}/connections`));
+    expect(live.live).toBe(0);
+  });
+
+  it('404s an unknown channel id', async () => {
+    const { base, id } = await xcScenario();
+    expect((await fetch(`${base}/s/${id}/live/user/pass/99.ts`)).status).toBe(404);
+  });
+
+  it('answers HEAD with 200 and no body, without consuming a slot', async () => {
+    const { base, id } = await xcScenario({ maxConnections: 1 });
+    const res = await fetch(`${base}/s/${id}/live/user/pass/1.ts`, { method: 'HEAD' });
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toBe('video/mp2t');
+    expect((await readJson(await fetch(`${base}/s/${id}/connections`))).live).toBe(0);
+  });
+});
+
+// A pre-flight scan flagged a credential-encoding disagreement between two
+// Dispatcharr call sites that both build XC playback URLs from the same
+// account fields: `collect_xc_streams` (apps/m3u/tasks.py:933-936) builds
+// the live URL with raw, unencoded credentials, while
+// `build_timeshift_url_format_b` (apps/timeshift/helpers.py:424-433)
+// percent-encodes both fields with `quote(str(x), safe='')`. This provider
+// places no character restriction on `username`/`password` beyond "string"
+// (scenario.ts), so a scenario can declare a credential containing '/' —
+// making the disagreement reachable, and this task's `/live/` route (which
+// decodeURIComponent()s each path segment, the encoded side's contract) is
+// where it becomes directly observable: a raw '/' shifts every path segment
+// after it, so the URL `collect_xc_streams` would build no longer matches
+// this provider's (or any XC server's) `/live/<user>/<pass>/<id>.ts` shape
+// at all.
+describe('XC live playback — credential encoding (known Dispatcharr defect)', () => {
+  it('serves the stream when a slash-bearing credential is percent-encoded into the path, as build_timeshift_url_format_b does', async () => {
+    const { base, id } = await xcScenario({ username: 'a/b', password: 'pass' });
+    const res = await fetch(`${base}/s/${id}/live/${encodeURIComponent('a/b')}/pass/1.ts`);
+    expect(res.status).toBe(200);
+  });
+
+  it.fails(
+    "BUG apps/m3u/tasks.py:933-936 (collect_xc_streams): builds the live URL with raw, unencoded " +
+      "credentials, unlike build_timeshift_url_format_b (apps/timeshift/helpers.py:424-433), which " +
+      "percent-encodes. A credential containing '/' therefore breaks live playback while the " +
+      "identical credential works for catch-up (see the encoded test above) — filed as a GitHub " +
+      "issue on the fork; this assertion documents the currently-broken behaviour rather than " +
+      "asserting it's correct.",
+    async () => {
+      const { base, id } = await xcScenario({ username: 'a/b', password: 'pass' });
+      // Mirrors collect_xc_streams's own construction verbatim: raw
+      // interpolation, no encodeURIComponent/quote.
+      const res = await fetch(`${base}/s/${id}/live/a/b/pass/1.ts`);
+      expect(res.status).toBe(200);
+    }
+  );
 });

@@ -223,6 +223,166 @@ function credentialsMatch(scenario: Scenario, url: URL): boolean {
   return givenUser === scenario.username && givenPass === (scenario.password ?? '');
 }
 
+/**
+ * Serves one channel's paced TS loop, with the full fault and admission
+ * pipeline. Extracted from the `/s/<id>/stream/<n>.ts` route so the XC
+ * `/live/<user>/<pass>/<n>.ts` route and the two catch-up routes serve
+ * byte-identical streams through byte-identical fault handling. Three copies
+ * of this pipeline would drift, and the drift would look like a product bug.
+ *
+ * Does NOT check that the channel id is one the scenario declared: the
+ * pre-existing `/stream/<n>.ts` route deliberately serves any numeric id, and
+ * G4 tests rely on that. The XC routes check membership themselves, before
+ * calling this.
+ */
+export async function serveChannelStream(
+  scenario: Scenario,
+  channelId: number,
+  req: IncomingMessage,
+  res: ServerResponse,
+  url: URL
+): Promise<void> {
+  // Fault checks run before tryAcquire and before the HEAD/GET branch
+  // below, in the order a real provider's own failure modes would
+  // actually short-circuit a request. A request rejected by a fault must
+  // not consume a connection slot — a maxConnections: 1 scenario with
+  // `not-found` armed would otherwise leak its one slot on the first
+  // rejected attempt, and every later assertion about the limit would be
+  // wrong for a reason that looks like broken accounting.
+
+  // 1. not-found: nothing else can happen if the URL 404s.
+  if (faults.isActive(scenario.id, 'not-found', channelId)) {
+    logRequest(scenario, req, url, 404);
+    sendJson(res, 404, { error: 'fault: not-found' });
+    return;
+  }
+
+  // 2. auth-failure: credentials that were valid stop being accepted.
+  if (faults.isActive(scenario.id, 'auth-failure', channelId)) {
+    logRequest(scenario, req, url, 401);
+    sendJson(res, 401, { error: 'fault: auth-failure' });
+    return;
+  }
+
+  // 3. Real credential validation, when the scenario declares any.
+  if (!credentialsMatch(scenario, url)) {
+    logRequest(scenario, req, url, 401);
+    sendJson(res, 401, { error: 'bad credentials' });
+    return;
+  }
+
+  // 4. redirect-chain: a chain of 302s that finally lands on this same
+  //    URL with ?chain=0, so the payload stays reachable by following it.
+  //    The chain param is layered onto the existing query string, so the
+  //    credential query above survives every hop.
+  const chainConfig = faults.configOf(scenario.id, 'redirect-chain', channelId);
+  if (chainConfig && faults.isActive(scenario.id, 'redirect-chain', channelId)) {
+    const remaining = Number(
+      url.searchParams.get('chain') ?? (chainConfig.depth ?? DEFAULT_REDIRECT_DEPTH)
+    );
+    if (remaining > 0) {
+      const next = new URL(url.pathname + url.search, INTERNAL_ORIGIN);
+      next.searchParams.set('chain', String(remaining - 1));
+      logRequest(scenario, req, url, 302);
+      res.writeHead(302, { Location: next.toString() });
+      res.end();
+      return;
+    }
+    // remaining <= 0: the chain is exhausted, so fall through and serve
+    // the real thing instead of redirecting again.
+  }
+
+  // 5. non-ts-bytes: 200 with an HTML error page, which is what a
+  //    provider actually sends when it is unhappy. buffer.py's
+  //    realignment is the code this exercises.
+  if (faults.isActive(scenario.id, 'non-ts-bytes', channelId)) {
+    const body = '<html><body><h1>502 Bad Gateway</h1></body></html>';
+    logRequest(scenario, req, url, 200);
+    res.writeHead(200, {
+      'Content-Type': 'text/html',
+      'Content-Length': Buffer.byteLength(body),
+    });
+    res.end(body);
+    return;
+  }
+
+  // 6. connection-limit as a fault forces rejection regardless of the
+  //    real count — armed so a client hits the limit without needing to
+  //    actually saturate it.
+  if (faults.isActive(scenario.id, 'connection-limit', channelId)) {
+    logRequest(scenario, req, url, 429);
+    sendJson(res, 429, { error: 'fault: connection-limit' });
+    return;
+  }
+
+  // validate_stream_url() probes with HEAD before streaming. It must
+  // succeed, and it must not consume a connection slot — a
+  // maxConnections:1 scenario would otherwise reject the real client that
+  // follows. Logged with its method so this probe never reads as a real
+  // viewer connecting (see ScenarioLog).
+  if (req.method === 'HEAD') {
+    logRequest(scenario, req, url, 200);
+    res.writeHead(200, { 'Content-Type': STREAM_CONTENT_TYPE });
+    res.end();
+    return;
+  }
+
+  if (req.method !== 'GET') {
+    logRequest(scenario, req, url, 405);
+    sendJson(res, 405, { error: `${req.method} not allowed on a stream` });
+    return;
+  }
+
+  // Resolved before tryAcquire, deliberately: admission doesn't depend on
+  // the asset, and acquiring the slot first would leak it if getAsset()
+  // throws (missing or corrupt UPSTREAM_ASSET) — the slot would never be
+  // released, and since a failed load isn't cached, every retry leaks
+  // another one until maxConnections is permanently exhausted.
+  const asset = getAsset();
+
+  // Admission is decided, and must be decided, before streamLoop writes
+  // any header — a rejected client must never see a 200 first. The
+  // connection object is built here with placeholder methods and handed
+  // to streamLoop, which replaces them with the real ones once admitted;
+  // the identity tryAcquire recorded is the identity a fault handler
+  // later calls back into.
+  const connection: LiveConnection = {
+    scenarioId: scenario.id,
+    channelId,
+    setDeadAir: () => {},
+    setRate: () => {},
+    disconnect: () => {},
+    refreshRate: () => {},
+  };
+
+  if (!connections.tryAcquire(scenario, connection)) {
+    logRequest(scenario, req, url, 429);
+    sendJson(res, 429, { error: 'connection limit reached' });
+    return;
+  }
+
+  logRequest(scenario, req, url, 200);
+  // dead-air and slow-trickle apply to "live + new" connections; `apply`
+  // only reaches connections that are already open at the moment a fault
+  // is armed, so a connection opened afterward needs to start already in
+  // that state rather than clean — see FaultStore.initialStateFor.
+  const initialState = faults.initialStateFor(scenario.id, channelId);
+  await streamLoop(
+    res,
+    asset,
+    {
+      scenarioRate: () => scenario.rate,
+      onConnection: () => scenarioLog.record(scenario.id, { kind: 'open', channelId }),
+      onClosed: (stats) => {
+        connections.release(connection);
+        scenarioLog.record(scenario.id, { kind: 'close', channelId, ...stats });
+      },
+    },
+    connection,
+    initialState
+  );
+}
+
 async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const url = new URL(req.url ?? '/', 'http://placeholder');
 
@@ -342,146 +502,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       return;
     }
     const channelId = Number(streamMatch[2]);
-
-    // Fault checks run before tryAcquire and before the HEAD/GET branch
-    // below, in the order a real provider's own failure modes would
-    // actually short-circuit a request. A request rejected by a fault must
-    // not consume a connection slot — a maxConnections: 1 scenario with
-    // `not-found` armed would otherwise leak its one slot on the first
-    // rejected attempt, and every later assertion about the limit would be
-    // wrong for a reason that looks like broken accounting.
-
-    // 1. not-found: nothing else can happen if the URL 404s.
-    if (faults.isActive(scenario.id, 'not-found', channelId)) {
-      logRequest(scenario, req, url, 404);
-      sendJson(res, 404, { error: 'fault: not-found' });
-      return;
-    }
-
-    // 2. auth-failure: credentials that were valid stop being accepted.
-    if (faults.isActive(scenario.id, 'auth-failure', channelId)) {
-      logRequest(scenario, req, url, 401);
-      sendJson(res, 401, { error: 'fault: auth-failure' });
-      return;
-    }
-
-    // 3. Real credential validation, when the scenario declares any.
-    if (!credentialsMatch(scenario, url)) {
-      logRequest(scenario, req, url, 401);
-      sendJson(res, 401, { error: 'bad credentials' });
-      return;
-    }
-
-    // 4. redirect-chain: a chain of 302s that finally lands on this same
-    //    URL with ?chain=0, so the payload stays reachable by following it.
-    //    The chain param is layered onto the existing query string, so the
-    //    credential query above survives every hop.
-    const chainConfig = faults.configOf(scenario.id, 'redirect-chain', channelId);
-    if (chainConfig && faults.isActive(scenario.id, 'redirect-chain', channelId)) {
-      const remaining = Number(
-        url.searchParams.get('chain') ?? (chainConfig.depth ?? DEFAULT_REDIRECT_DEPTH)
-      );
-      if (remaining > 0) {
-        const next = new URL(url.pathname + url.search, INTERNAL_ORIGIN);
-        next.searchParams.set('chain', String(remaining - 1));
-        logRequest(scenario, req, url, 302);
-        res.writeHead(302, { Location: next.toString() });
-        res.end();
-        return;
-      }
-      // remaining <= 0: the chain is exhausted, so fall through and serve
-      // the real thing instead of redirecting again.
-    }
-
-    // 5. non-ts-bytes: 200 with an HTML error page, which is what a
-    //    provider actually sends when it is unhappy. buffer.py's
-    //    realignment is the code this exercises.
-    if (faults.isActive(scenario.id, 'non-ts-bytes', channelId)) {
-      const body = '<html><body><h1>502 Bad Gateway</h1></body></html>';
-      logRequest(scenario, req, url, 200);
-      res.writeHead(200, {
-        'Content-Type': 'text/html',
-        'Content-Length': Buffer.byteLength(body),
-      });
-      res.end(body);
-      return;
-    }
-
-    // 6. connection-limit as a fault forces rejection regardless of the
-    //    real count — armed so a client hits the limit without needing to
-    //    actually saturate it.
-    if (faults.isActive(scenario.id, 'connection-limit', channelId)) {
-      logRequest(scenario, req, url, 429);
-      sendJson(res, 429, { error: 'fault: connection-limit' });
-      return;
-    }
-
-    // validate_stream_url() probes with HEAD before streaming. It must
-    // succeed, and it must not consume a connection slot — a
-    // maxConnections:1 scenario would otherwise reject the real client that
-    // follows. Logged with its method so this probe never reads as a real
-    // viewer connecting (see ScenarioLog).
-    if (req.method === 'HEAD') {
-      logRequest(scenario, req, url, 200);
-      res.writeHead(200, { 'Content-Type': STREAM_CONTENT_TYPE });
-      res.end();
-      return;
-    }
-
-    if (req.method !== 'GET') {
-      logRequest(scenario, req, url, 405);
-      sendJson(res, 405, { error: `${req.method} not allowed on a stream` });
-      return;
-    }
-
-    // Resolved before tryAcquire, deliberately: admission doesn't depend on
-    // the asset, and acquiring the slot first would leak it if getAsset()
-    // throws (missing or corrupt UPSTREAM_ASSET) — the slot would never be
-    // released, and since a failed load isn't cached, every retry leaks
-    // another one until maxConnections is permanently exhausted.
-    const asset = getAsset();
-
-    // Admission is decided, and must be decided, before streamLoop writes
-    // any header — a rejected client must never see a 200 first. The
-    // connection object is built here with placeholder methods and handed
-    // to streamLoop, which replaces them with the real ones once admitted;
-    // the identity tryAcquire recorded is the identity a fault handler
-    // later calls back into.
-    const connection: LiveConnection = {
-      scenarioId: scenario.id,
-      channelId,
-      setDeadAir: () => {},
-      setRate: () => {},
-      disconnect: () => {},
-      refreshRate: () => {},
-    };
-
-    if (!connections.tryAcquire(scenario, connection)) {
-      logRequest(scenario, req, url, 429);
-      sendJson(res, 429, { error: 'connection limit reached' });
-      return;
-    }
-
-    logRequest(scenario, req, url, 200);
-    // dead-air and slow-trickle apply to "live + new" connections; `apply`
-    // only reaches connections that are already open at the moment a fault
-    // is armed, so a connection opened afterward needs to start already in
-    // that state rather than clean — see FaultStore.initialStateFor.
-    const initialState = faults.initialStateFor(scenario.id, channelId);
-    await streamLoop(
-      res,
-      asset,
-      {
-        scenarioRate: () => scenario.rate,
-        onConnection: () => scenarioLog.record(scenario.id, { kind: 'open', channelId }),
-        onClosed: (stats) => {
-          connections.release(connection);
-          scenarioLog.record(scenario.id, { kind: 'close', channelId, ...stats });
-        },
-      },
-      connection,
-      initialState
-    );
+    await serveChannelStream(scenario, channelId, req, res, url);
     return;
   }
 
@@ -589,6 +610,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
         subPath: xcMatch[2],
         log: (status) => logRequest(scenario, req, url, status),
         sendJson: (status, body) => sendJson(res, status, body),
+        serveChannelStream,
       });
       if (handled) return;
     }

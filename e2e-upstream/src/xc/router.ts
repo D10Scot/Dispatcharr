@@ -22,6 +22,19 @@ export interface XcContext {
   /** Records a `request` entry against this scenario. */
   log(status: number): void;
   sendJson(status: number, body: unknown): void;
+  /**
+   * Passed in rather than imported: `src/server.ts` already imports
+   * `src/xc/router.ts` (for `handleXc`/`looksLikeXcRoute`), so importing
+   * `serveChannelStream` back from `server.ts` here would be a cycle — the
+   * same reasoning that put `BadRequestError` in its own leaf module.
+   */
+  serveChannelStream(
+    scenario: Scenario,
+    channelId: number,
+    req: IncomingMessage,
+    res: ServerResponse,
+    url: URL
+  ): Promise<void>;
 }
 
 /**
@@ -169,6 +182,35 @@ export async function handleXc(context: XcContext): Promise<boolean> {
         .concat('get_vod_info', 'get_series_info')
         .join(', ')} and the no-action handshake`,
     });
+    return true;
+  }
+
+  const liveMatch = /^\/live\/([^/]+)\/([^/]+)\/(\d+)\.ts$/.exec(subPath);
+  if (liveMatch) {
+    const [, username, password, rawId] = liveMatch;
+    if (!xcCredentialsMatch(scenario, decodeURIComponent(username), decodeURIComponent(password))) {
+      log(401);
+      sendJson(401, { error: 'bad credentials' });
+      return true;
+    }
+    const channelId = Number(rawId);
+    if (!scenario.channels.some((channel) => channel.id === channelId)) {
+      log(404);
+      sendJson(404, { error: `scenario ${scenario.id} declares no channel ${channelId}` });
+      return true;
+    }
+    // `serveChannelStream`'s own credential check (its fault-pipeline step
+    // 3, unchanged by the extraction) reads `username`/`password` off the
+    // URL's query string — that's how the pre-existing `/stream/<id>.ts`
+    // route carries them. XC carries the same two `scenario` fields as path
+    // segments instead, already verified above via `xcCredentialsMatch`. A
+    // scenario with `xc: true` always has `username` set (`scenario.ts`
+    // enforces it), so without this bridge every `/live/` request would fail
+    // that query-string check and 401 despite already being authenticated.
+    const streamUrl = new URL(url.toString());
+    streamUrl.searchParams.set('username', scenario.username ?? '');
+    streamUrl.searchParams.set('password', scenario.password ?? '');
+    await context.serveChannelStream(scenario, channelId, context.req, context.res, streamUrl);
     return true;
   }
 
