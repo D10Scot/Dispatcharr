@@ -1,0 +1,103 @@
+name: Pages
+
+# Assembles the static engineering-metrics dashboard (dashboard/) plus the
+# append-only metrics history (metrics-data branch) into a site artifact and
+# publishes it to GitHub Pages. metrics-data stays pure data; this workflow
+# is the only place dashboard code and metrics history are combined.
+#
+# Deliberately does not use `workflow_run` to chain off the Metrics workflow:
+# zizmor's dangerous-triggers audit flags workflow_run as fundamentally
+# insecure (the run defaults to base-repo permissions regardless of what
+# triggered it), and this repo keeps that audit at zero findings. A short
+# schedule plus manual dispatch achieves the same "publish shortly after a
+# metrics append" outcome without the trigger-confusion risk.
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'dashboard/**'
+      - '.github/workflows/pages.yml'
+  schedule:
+    - cron: '15 6 * * 1' # weekly, shortly after Metrics' Monday 06:00 UTC run
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+          path: main
+
+      - name: Checkout metrics-data
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+          ref: metrics-data
+          path: metrics-data
+
+      - name: Assemble site
+        id: assemble
+        run: |
+          set -euo pipefail
+          site="$RUNNER_TEMP/site"
+          mkdir -p "$site/data"
+
+          # Dashboard code (HTML/CSS/JS + vendored chart lib) - dashboard/
+          # contains only servable assets, so a plain recursive copy is safe.
+          cp -r main/dashboard/. "$site/"
+
+          # Metrics history: every *.jsonl file present on metrics-data,
+          # whatever families exist at build time (dynamic discovery, no
+          # hard-coded family list).
+          manifest="[]"
+          shopt -s nullglob
+          families=()
+          for f in metrics-data/*.jsonl; do
+            name="$(basename "$f" .jsonl)"
+            cp "$f" "$site/data/$name.jsonl"
+            families+=("\"$name\"")
+          done
+          if [ "${#families[@]}" -gt 0 ]; then
+            manifest="[$(IFS=,; echo "${families[*]}")]"
+          fi
+          printf '%s' "$manifest" > "$site/data/manifest.json"
+
+          {
+            echo "site_dir<<SITE_DIR_EOF"
+            echo "$site"
+            echo "SITE_DIR_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: ${{ steps.assemble.outputs.site_dir }}
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Configure Pages
+        uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5.0.0
