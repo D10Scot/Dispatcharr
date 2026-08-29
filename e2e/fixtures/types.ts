@@ -193,6 +193,42 @@ export type ChannelGroup = {
   name: string;
 };
 
+/**
+ * `/api/channels/logos/`. `Logo` has exactly two model fields, `name` and
+ * `url` (`TextField(unique=True)`) — there is no FileField. An upload writes
+ * the bytes to `/data/logos/<basename>` and stores that **filesystem path** in
+ * `url`; `cache_url` is the servable one, built by `LogoSerializer` as
+ * `…/api/channels/logos/<id>/cache/?v=<hash>` and made absolute when the
+ * serializer has a request in context.
+ *
+ * G6 also declares `export type Logo` on its own branch (four fields, no
+ * `channel_count`/`is_used`, with fuller documentation). On merge, keep G6's
+ * comment and this file's wider field set, and delete the duplicate
+ * declaration.
+ *
+ * Not typed here: `channel_names`, a cosmetic capped list nothing asserts on.
+ */
+export type Logo = {
+  id: number;
+  name: string;
+  url: string;
+  cache_url: string;
+  channel_count: number;
+  is_used: boolean;
+};
+
+/**
+ * Options for {@link Seeder.logo}. There is no `name` here for the usual
+ * reason — the factory generates it — and no `url` either: an upload derives
+ * `url` from the filename it wrote, so passing one would do nothing.
+ */
+export type LogoOverrides = {
+  /** Must be one of `validate_logo_file`'s allowed types. Default `image/png`. */
+  mimeType?: string;
+  /** The generated filename's extension, without the dot. Default `png`. */
+  extension?: string;
+};
+
 /** `M3UAccount.Status` (`apps/m3u/models.py`). Note `pending_setup`, which `EpgSourceStatus` has no equivalent of. */
 export type M3uAccountStatus =
   | 'idle'

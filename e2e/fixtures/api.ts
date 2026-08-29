@@ -9,6 +9,14 @@ import { AUTH_DIR, writeAuthFileAtomically } from '../setup/auth-files';
 const TOKENS_FILE = path.join(AUTH_DIR, 'tokens.json');
 
 /**
+ * A Playwright `multipart` value: a plain form field, or a file part built
+ * from an in-memory buffer (no fixture file on disk is required).
+ */
+export type MultipartValue =
+  | string
+  | { name: string; mimeType: string; buffer: Buffer };
+
+/**
  * What `bootstrap` writes to `tokens.json`: the admin's pair, beside the
  * credentials that minted it (`{ access, refresh, ...ADMIN }`).
  *
@@ -139,6 +147,33 @@ export class ApiClient {
       method,
       headers: { Authorization: `Bearer ${this.tokens.access}` },
       ...(data === undefined ? {} : { data }),
+    });
+
+    let res = await this.ctx.fetch(url, options());
+    if (res.status() === 401) {
+      await this.refresh();
+      res = await this.ctx.fetch(url, options());
+    }
+    return res;
+  }
+
+  /**
+   * A `multipart/form-data` POST. The harness's only non-JSON write path —
+   * `LogoViewSet` is the one viewset that declares `MultiPartParser`.
+   *
+   * Playwright's `multipart` is a distinct request option from `data`, so this
+   * cannot go through `send()`; it repeats the 401-refresh-and-retry rather
+   * than skipping it, because a suite that outlives its 30-minute access token
+   * must not have one call path that breaks where every other one recovers.
+   */
+  async upload(
+    url: string,
+    multipart: Record<string, MultipartValue>
+  ): Promise<APIResponse> {
+    const options = () => ({
+      method: 'POST' as const,
+      headers: { Authorization: `Bearer ${this.tokens.access}` },
+      multipart,
     });
 
     let res = await this.ctx.fetch(url, options());

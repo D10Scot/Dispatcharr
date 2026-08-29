@@ -35,6 +35,10 @@
  *   useTokens({ access, refresh })       re-point at another principal
  *   freshAccessToken() → Promise<string> a token with life left in it
  *   expireAccessTokenForTest()           corrupt the token, to drive the 401 path
+ *   upload(url, multipart) → Promise<APIResponse>
+ *                                        multipart/form-data POST, same 401
+ *                                        refresh-and-retry as the verbs above.
+ *                                        The one non-JSON write path here.
  * The verbs return a raw `APIResponse` — nothing is asserted for you. Assert
  * the status yourself, or hand it to `json()` when only the body matters.
  *
@@ -73,6 +77,10 @@
  *                                scenario's EPG and waits for its refresh. The
  *                                result has EPGData rows and ZERO ProgramData —
  *                                programmes need a channel association first.
+ *   logo(overrides?)             → Logo           /api/channels/logos/upload/,
+ *                                multipart, generated filename (the upload is
+ *                                get_or_create'd on the path, so a fixed name
+ *                                is shared across workers)
  *   generatedName(entity)        the naming scheme itself, for a row you
  *                                create by hand
  *   `overrides` is typed per entity — `ChannelOverrides`, `UserOverrides`, …
@@ -439,6 +447,7 @@ export const test = base.extend<Fixtures>({
 
 export { expect } from '@playwright/test';
 export { ApiClient } from './api';
+export type { MultipartValue } from './api';
 export { Seeder, SEEDED_USER_PASSWORD } from './seed';
 export {
   loginsSpentByThisWorker,
@@ -490,6 +499,8 @@ export type {
   EpgSourceStatus,
   EpgSourceType,
   GroupSettingRow,
+  Logo,
+  LogoOverrides,
   M3uAccount,
   M3uAccountChannelGroup,
   M3uAccountOverrides,

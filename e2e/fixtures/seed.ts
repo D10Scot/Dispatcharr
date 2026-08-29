@@ -7,6 +7,8 @@ import type {
   EpgSource,
   EpgSourceOverrides,
   EpgSourceType,
+  Logo,
+  LogoOverrides,
   M3uAccount,
   M3uAccountOverrides,
   Stream,
@@ -425,5 +427,32 @@ export class Seeder {
   // Mirrors UpstreamClient.epgUrl(); see the note on upstreamStreamUrl.
   private upstreamEpgUrl(scenario: UpstreamScenario): string {
     return `${scenario.internal}/epg.xml${scenario.credentialQuery}`;
+  }
+
+  /**
+   * A `Logo` uploaded through the multipart endpoint.
+   *
+   * The generated filename is load-bearing, not cosmetic:
+   * `LogoViewSet.upload` writes to `/data/logos/<basename>` (directory
+   * components stripped by `safe_upload_path`) and then does
+   * `Logo.objects.get_or_create(url=<that path>)`, so two workers uploading
+   * `logo.png` share one row and race each other's assertions.
+   *
+   * The payload is a few bytes in memory rather than a file on disk:
+   * `validate_logo_file` checks only the declared `content_type` and the size,
+   * never the magic bytes.
+   */
+  async logo(overrides: LogoOverrides = {}): Promise<Logo> {
+    const { mimeType = 'image/png', extension = 'png' } = overrides;
+    const name = this.generatedName('logo');
+    const res = await this.api.upload('/api/channels/logos/upload/', {
+      name,
+      file: {
+        name: `${name}.${extension}`,
+        mimeType,
+        buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+      },
+    });
+    return this.api.json<Logo>(res, 'seed.logo');
   }
 }
