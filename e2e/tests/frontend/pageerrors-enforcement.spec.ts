@@ -58,23 +58,6 @@ const SELF_FILE = path.basename(__filename);
 // shares `test(...)`'s `(name, fn)` shape and is still judged below.
 const TEST_HOOK_NAMES = new Set(['beforeEach', 'afterEach', 'beforeAll', 'afterAll']);
 
-// Known, pinned UNVERIFIABLE entries — the check below asserts the found set
-// equals exactly this one, in *both* directions. This is not a per-test
-// exclusion (that would mean skipping the check for these call sites); it
-// pins the current set so any *change* to it is loud. A new entry here means
-// a shape this checker can't read was added elsewhere and genuinely opens no
-// page — add it only with the same justification the existing entry carries,
-// never just to make the suite green. If `plugins.spec.ts:15` is ever fixed
-// (given fixtures so `judge()` can read it) or removed, this list must be
-// updated in the same change — a stale pin here is a false pass, exactly the
-// blind spot this file exists to close.
-const EXPECTED_UNVERIFIABLE = new Set([
-  // The zip-builder unit test (`buildPluginZip`'s own archive-shape
-  // assertions): synchronous, destructures no fixtures, opens no page — there
-  // is nothing here for `pageErrors` to watch.
-  'plugins.spec.ts:15',
-]);
-
 function isTestCallee(expr: ts.Expression): boolean {
   // `test(...)`
   if (ts.isIdentifier(expr) && expr.text === 'test') return true;
