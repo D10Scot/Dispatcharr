@@ -356,9 +356,9 @@ Two things follow:
 - **Deleting that account re-opens the window.** Deletion runs
   `_cleanup_orphaned_interval`, which removes the row again once nothing
   references it. Its `refresh_task` is what pins it.
-- **A non-default `refresh_interval` is not covered.** If you write a test
-  that creates accounts with, say, `refresh_interval: 6` from parallel
-  workers, they race for the `(6, HOURS)` row. Pre-warm it the same way.
+- **A non-default `refresh_interval` needs the same care.** See the next
+  section for the values this suite actually uses and the rule that keeps
+  them from colliding.
 
 `bootstrap` fails immediately, on **every** run, if the container is already
 poisoned — saying so by name and giving `./scripts/e2e_up.sh --reset`. That
@@ -372,20 +372,22 @@ INSERT, and `ATOMIC_REQUESTS` is off), so the account exists with a null
 the account it finds — the same receiver runs on update — instead of returning
 early on the name.
 
-### The set of `refresh_interval` values this suite uses is **{0}**
+### Non-zero `refresh_interval` values, and what they cost
 
-`bootstrap` pre-warms exactly one `IntervalSchedule` row, `(every=1, HOURS)`,
-which is what `refresh_interval: 0` maps to for both `M3UAccount` and
-`EPGSource`. Every account and source the suite creates uses that default, so
-the race above is unreachable and the pre-warm needs no extension.
+The set in use on this branch is **{0, 2, 3, 4, 8531, 8532}**, not just the
+pre-warmed default: `e2e/tests/seeded/ws-fixture.spec.ts:50,51,109,121,122`
+uses 2, 3 and 4, and `e2e/tests/seeded/async-wait.spec.ts:41,72` uses 8531 and
+8532. The rule that keeps those from colliding with each other or with
+`bootstrap`'s pre-warmed row is already stated in full at
+`e2e/fixtures/types.ts:517-522` and at length in the header of
+`ws-fixture.spec.ts:22-39`: `bootstrap` pre-warms the default (`0`, which maps
+to `every=1`); any other value used from a parallel test must be **unique per
+test** — not reused, and not pre-warmed from a worker, which is itself the
+concurrent create that poisons the container (#7).
 
-Two things follow, and both are reasons not to reach for another value
-casually:
+That leaves one more thing to weigh before picking a non-zero value, not
+covered by either of those two sources:
 
-- **A non-zero interval races an unwarmed row.** Pre-warm it the same way
-  `prewarmIntervalSchedule` does, from `bootstrap`, and add the value to this
-  section — not from a worker, which is exactly the concurrent create that
-  poisons the container.
 - **A non-zero interval also leaves an *enabled* beat task.**
   `create_or_update_periodic_task` (`core/scheduling.py`) computes
   `should_be_enabled = enabled and (use_cron or interval_hours > 0)`, so
