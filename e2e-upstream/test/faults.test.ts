@@ -287,3 +287,68 @@ describe('parseFaultRequest', () => {
     ).toThrow(BadRequestError);
   });
 });
+
+describe('the G8 faults', () => {
+  it('accepts the four new names', () => {
+    for (const fault of ['xc-auth-envelope', 'no-tv-archive', 'range-unsupported'] as const) {
+      expect(parseFaultRequest({ fault, active: true }).fault).toBe(fault);
+    }
+    expect(parseFaultRequest({ fault: 'catchup-layout-404', active: true, layout: 'path' }).layout).toBe(
+      'path'
+    );
+  });
+
+  it('requires a layout on catchup-layout-404 when arming', () => {
+    // Without a layout this is indistinguishable from `not-found`, and the
+    // cascade — the part of catch-up most likely to be wrong — becomes
+    // unobservable. Rejected at the door rather than defaulted.
+    expect(() => parseFaultRequest({ fault: 'catchup-layout-404', active: true })).toThrow(/layout/);
+    expect(() =>
+      parseFaultRequest({ fault: 'catchup-layout-404', active: true, layout: 'both' })
+    ).toThrow(/path.*query/);
+  });
+
+  it('does not require a layout on catchup-layout-404 when clearing', () => {
+    // clearFault(scenario, 'catchup-layout-404') sends no `layout` — there is
+    // nothing left to disambiguate once the fault is off, since `isActive`
+    // alone decides. Requiring one here would make clearing impossible from
+    // the same call shape every other fault clears with.
+    expect(parseFaultRequest({ fault: 'catchup-layout-404', active: false })).toEqual({
+      fault: 'catchup-layout-404',
+      active: false,
+    });
+  });
+
+  it('still rejects a garbage layout on clear', () => {
+    expect(() =>
+      parseFaultRequest({ fault: 'catchup-layout-404', active: false, layout: 'both' })
+    ).toThrow(/path.*query/);
+  });
+
+  it('rejects layout on any fault other than catchup-layout-404', () => {
+    expect(() => parseFaultRequest({ fault: 'not-found', active: true, layout: 'path' })).toThrow(
+      /layout/
+    );
+  });
+
+  it('reports appliedTo 0 for all four, even with a live connection open', () => {
+    // All four can only affect the next request: a live response has already
+    // sent its headers. Zero is correct here, not a partial failure — proven
+    // by opening a real connection first, so a bug that made one of these
+    // faults reach a live connection would flip this test, not just leave it
+    // vacuously true.
+    const scenario = new ScenarioRegistry().create({ channels: 1 });
+    const store = new FaultStore();
+    const connections = new ConnectionRegistry();
+    const { connection } = fakeConnection(scenario.id, 1);
+    connections.tryAcquire(scenario, connection);
+
+    for (const fault of ['xc-auth-envelope', 'no-tv-archive', 'range-unsupported'] as const) {
+      expect(store.apply(scenario.id, { fault, active: true }, connections).appliedTo).toBe(0);
+    }
+    expect(
+      store.apply(scenario.id, { fault: 'catchup-layout-404', active: true, layout: 'path' }, connections)
+        .appliedTo
+    ).toBe(0);
+  });
+});

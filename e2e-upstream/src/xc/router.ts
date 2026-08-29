@@ -1,7 +1,8 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { CategorySpec, Scenario } from '../scenario.js';
 import type { ServeOptions } from '../vod-asset.js';
-import { renderAccountEnvelope } from './envelope.js';
+import type { FaultStore } from '../faults.js';
+import { renderAccountEnvelope, renderDisabledAccountEnvelope } from './envelope.js';
 import {
   renderLiveCategories,
   renderLiveStreams,
@@ -29,6 +30,13 @@ export interface XcContext {
   /** Records a `request` entry against this scenario. */
   log(status: number): void;
   sendJson(status: number, body: unknown): void;
+  /**
+   * The same module-level `FaultStore` `server.ts` already threads through
+   * `serveChannelStream` — passed in, not imported, for the same reason as
+   * `serveChannelStream`/`serveVodAsset` below: `server.ts` already imports
+   * this module, so an import back would be a cycle.
+   */
+  faults: FaultStore;
   /**
    * Passed in rather than imported: `src/server.ts` already imports
    * `src/xc/router.ts` (for `handleXc`/`looksLikeXcRoute`), so importing
@@ -94,6 +102,17 @@ export async function handleXc(context: XcContext): Promise<boolean> {
   const { scenario, url, subPath, log, sendJson } = context;
 
   if (subPath === '/player_api.php') {
+    // Checked before the credential check, exactly as the playlist and
+    // stream routes do (server.ts's `/s/<id>/playlist.m3u` and
+    // `serveChannelStream`'s own step 2): auth-failure models valid
+    // credentials that stop being accepted, which must win over a 401 that
+    // would otherwise read as "the credentials were always wrong".
+    if (context.faults.isActive(scenario.id, 'auth-failure')) {
+      log(401);
+      sendJson(401, { error: 'fault: auth-failure' });
+      return true;
+    }
+
     if (
       !xcCredentialsMatch(
         scenario,
@@ -112,16 +131,23 @@ export async function handleXc(context: XcContext): Promise<boolean> {
     if (action === null) {
       const host = context.req.headers.host ?? 'e2e-upstream:8080';
       log(200);
-      sendJson(200, renderAccountEnvelope(scenario, new Date(), host));
+      // xc-auth-envelope: a 200 whose user_info describes a disabled
+      // account, deliberately not a 401 — see renderDisabledAccountEnvelope.
+      sendJson(
+        200,
+        context.faults.isActive(scenario.id, 'xc-auth-envelope')
+          ? renderDisabledAccountEnvelope(scenario, new Date(), host)
+          : renderAccountEnvelope(scenario, new Date(), host)
+      );
       return true;
     }
 
-    // The tvArchive predicate is a function, not a boolean, because the
-    // `no-tv-archive` fault is channel-scopable — Task 7 replaces this
-    // always-true stub with a FaultStore lookup.
     const listActions: Record<string, () => unknown[]> = {
       get_live_categories: () => renderLiveCategories(scenario),
-      get_live_streams: () => renderLiveStreams(scenario, categoryId, { tvArchive: () => true }),
+      get_live_streams: () =>
+        renderLiveStreams(scenario, categoryId, {
+          tvArchive: (channelId) => !context.faults.isActive(scenario.id, 'no-tv-archive', channelId),
+        }),
       get_vod_categories: () => renderVodCategories(scenario),
       get_vod_streams: () => renderVodStreams(scenario, categoryId),
       get_series_categories: () => renderSeriesCategories(scenario),
@@ -297,9 +323,12 @@ export async function handleXc(context: XcContext): Promise<boolean> {
       return true;
     }
 
+    // Scenario-wide only: a VOD id is not a channel id, so `range-unsupported`
+    // has no `channel` scope to narrow to — see the README's fault table.
     const status = context.serveVodAsset(context.res, {
       rangeHeader: context.req.headers.range,
       head: context.req.method === 'HEAD',
+      ignoreRange: context.faults.isActive(scenario.id, 'range-unsupported'),
     });
     log(status);
     return true;
@@ -332,6 +361,19 @@ export async function handleXc(context: XcContext): Promise<boolean> {
     if (!xcCredentialsMatch(scenario, catchup.username, catchup.password)) {
       log(401);
       sendJson(401, { error: 'bad credentials' });
+      return true;
+    }
+    // catchup-layout-404: 404s only the named layout, so a cascade test can
+    // watch a client that tries both layouts fall through candidate by
+    // candidate rather than dying on the first one. `configOf`'s `layout`
+    // check (not just `isActive`) is what makes this layout-specific — an
+    // active fault armed for the *other* layout must not block this one.
+    if (
+      context.faults.isActive(scenario.id, 'catchup-layout-404', catchup.streamId) &&
+      context.faults.configOf(scenario.id, 'catchup-layout-404', catchup.streamId)?.layout === catchup.layout
+    ) {
+      log(404);
+      sendJson(404, { error: `fault: catchup-layout-404 (${catchup.layout})` });
       return true;
     }
     if (catchup.startIso === null) {

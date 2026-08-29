@@ -68,3 +68,35 @@ export function renderAccountEnvelope(
     },
   };
 }
+
+/**
+ * The `xc-auth-envelope` fault's rendering: a 200 whose `user_info` describes
+ * a disabled account (`auth: 0`, `status: 'Disabled'`) instead of a 401 —
+ * deliberately, since `Client.authenticate()` checks only that `user_info`
+ * is truthy, so this is the shape the product actually mistakes for a
+ * successful login. That's the whole point of the fault.
+ *
+ * Built by rendering the normal envelope — `scenario.account.userInfo`
+ * overrides included — and then applying `auth`/`status` on top of the
+ * *result*, not by spreading them into the object literal `renderAccountEnvelope`
+ * builds. `renderAccountEnvelope` spreads `scenario.account.userInfo` last,
+ * so a scenario that itself sets `user_info.auth` would otherwise silently
+ * defeat the fault: whichever key was spread most recently would win, and a
+ * scenario-level override is spread after any fixed default. Applying the
+ * fault's override strictly after the full render — including that spread —
+ * makes it win unconditionally, regardless of what the scenario declares. See
+ * `test/xc-faults.test.ts`'s precedence test, which arms this fault on a
+ * scenario whose `account.userInfo` also sets `auth`/`status`.
+ */
+export function renderDisabledAccountEnvelope(
+  scenario: Scenario,
+  now: Date,
+  host: string
+): Record<string, unknown> {
+  const envelope = renderAccountEnvelope(scenario, now, host);
+  const userInfo = envelope.user_info as Record<string, unknown>;
+  return {
+    ...envelope,
+    user_info: { ...userInfo, auth: 0, status: 'Disabled' },
+  };
+}

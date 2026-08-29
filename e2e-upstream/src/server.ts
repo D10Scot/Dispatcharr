@@ -655,6 +655,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
         subPath: xcMatch[2],
         log: (status) => logRequest(scenario, req, url, status),
         sendJson: (status, body) => sendJson(res, status, body),
+        faults,
         serveChannelStream,
         serveVodAsset: (vodRes, options) => serveFiniteAsset(vodRes, getVodAsset(), options),
       });

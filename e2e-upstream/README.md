@@ -1,7 +1,7 @@
 # e2e-upstream
 
 A controllable fake IPTV provider for the E2E suite: an M3U playlist, an XMLTV EPG, a paced
-looping MPEG-TS stream, and a control API that flips eight fault modes mid-test.
+looping MPEG-TS stream, and a control API that flips twelve fault modes mid-test.
 
 **This is test infrastructure.** It is never built into the product image, never shipped, and has
 no code path a released Dispatcharr instance can reach. It exists so `e2e/` tests can say "the
@@ -120,7 +120,7 @@ to every profile — it is Redirect-specific.
 ## Fault catalogue
 
 `appliedTo` in the response is how many *live* connections the fault reached — not whether the
-fault is now armed. Five of the eight faults can only affect the **next** request, because a live
+fault is now armed. Nine of the twelve faults can only affect the **next** request, because a live
 response has already sent its headers by the time the fault is applied; `appliedTo: 0` is the
 correct, expected result for those, not a sign nothing happened. "Arm `not-found` for the next
 reconnect" is a normal test.
@@ -135,10 +135,44 @@ reconnect" is a normal test.
 | `connection-limit` | new only (`appliedTo: 0`) | Real per-scenario accounting; N+1th rejected, readmitted on close | Provider-slot semantics; `max_streams` disagreement |
 | `redirect-chain` | new only (`appliedTo: 0`) | 302 chain of declared depth before the payload | The Redirect stream profile |
 | `non-ts-bytes` | new only (`appliedTo: 0`) | 200 with an HTML error page instead of TS | `buffer.py`'s realignment defence |
+| `xc-auth-envelope` | new only (`appliedTo: 0`) | `player_api.php`'s no-`action` handshake answers 200 with `user_info.auth: 0`, `status: 'Disabled'`, instead of a 401 | `Client.authenticate()` only checks `user_info` is truthy — never reads `auth` — so this is the shape the product mistakes for a successful login |
+| `no-tv-archive` | new only (`appliedTo: 0`) | `get_live_streams` omits `tv_archive`/`tv_archive_duration` for the channel(s) it reaches | Whether Dispatcharr offers catch-up for a channel at all |
+| `catchup-layout-404` | new only (`appliedTo: 0`) | 404s catch-up requests on one named layout (`{ layout: 'path' \| 'query' }`) while leaving the other layout serving | The seven-candidate `build_timeshift_candidate_urls` cascade — the layout most likely to be wrong |
+| `range-unsupported` | new only (`appliedTo: 0`) | VOD (`/movie\|series/`) answers 200 with the whole asset and no `Accept-Ranges`, ignoring any `Range` header | `multi_worker_connection_manager`'s no-seek-metadata fallback path |
 
-`appliedTo: 0` is correct for the five "new only" rows above — they can only take effect on the
+`appliedTo: 0` is correct for the nine "new only" rows above — they can only take effect on the
 next connection attempt, never on one already streaming. This is not a partial failure of the
 control API; it's the whole of what those faults can do.
+
+**The four XC faults above are not scoped like the pre-existing eight.** `xc-auth-envelope` is
+always scenario-wide — the handshake it changes has no channel or VOD id to narrow to.
+`no-tv-archive` and `catchup-layout-404` accept the usual `channel` filter (`catchup-layout-404`'s
+channel is the catch-up stream id). `range-unsupported` is **scenario-wide only**: a `channel`
+filter is silently ignored by the router, because a VOD id is not a channel id and there is nothing
+for it to mean.
+
+**`catchup-layout-404` requires `{ layout: 'path' | 'query' }` when arming, but not when clearing.**
+A layout-less arm would be indistinguishable from `not-found` and would block both catch-up layouts
+at once, making the seven-candidate cascade unobservable — so arming without a valid `layout` is a
+400. Clearing (`{ fault: 'catchup-layout-404', active: false }`) needs no `layout`: `isActive` alone
+decides once the fault is off, so `clearFault(scenario, 'catchup-layout-404')`'s normal no-`layout`
+call shape works.
+
+**`xc-auth-envelope` always wins over a scenario's own `account.userInfo.auth`/`status` override.**
+`renderAccountEnvelope` spreads `scenario.account.userInfo` last, so without special handling a
+scenario declaring its own `auth` could silently defeat the fault. The fault's rendering applies
+`auth: 0`/`status: 'Disabled'` strictly after the full envelope (scenario override included) is
+built, not by racing it into the same object literal — see `renderDisabledAccountEnvelope` in
+`src/xc/envelope.ts`.
+
+**`auth-failure` and `xc-auth-envelope` compose on `player_api.php` only.** `auth-failure` is
+checked first, ahead of the credential check, the same order the playlist and stream routes use;
+`xc-auth-envelope` is checked only after a successful credential check, and only on the no-`action`
+handshake. The `/live/`, `/timeshift/` and `/streaming/timeshift.php` routes already inherit
+`not-found`/`auth-failure` for free, through the same `serveChannelStream` pipeline the plain
+`/stream/<n>.ts` route uses. The `/movie/` and `/series/` VOD routes do **not** — they never reach
+`serveChannelStream` — so `not-found`/`auth-failure` have no effect there, unchanged from before
+this fault set existed.
 
 An armed **`slow-trickle`** overrides the scenario's own rate for the connections it reaches.
 Only `clearFault('slow-trickle')` hands control back to the scenario rate — a plain `rate()` call

@@ -9,7 +9,11 @@ export type FaultName =
   | 'auth-failure'
   | 'connection-limit'
   | 'redirect-chain'
-  | 'non-ts-bytes';
+  | 'non-ts-bytes'
+  | 'xc-auth-envelope'
+  | 'no-tv-archive'
+  | 'catchup-layout-404'
+  | 'range-unsupported';
 
 export const FAULT_NAMES: readonly FaultName[] = [
   'dead-air',
@@ -20,6 +24,10 @@ export const FAULT_NAMES: readonly FaultName[] = [
   'connection-limit',
   'redirect-chain',
   'non-ts-bytes',
+  'xc-auth-envelope',
+  'no-tv-archive',
+  'catchup-layout-404',
+  'range-unsupported',
 ];
 
 function isFaultName(value: unknown): value is FaultName {
@@ -38,6 +46,8 @@ export interface FaultRequest {
   afterBytes?: number;
   /** redirect-chain, default DEFAULT_REDIRECT_DEPTH. */
   depth?: number;
+  /** catchup-layout-404. Required when arming; optional when clearing. */
+  layout?: 'path' | 'query';
 }
 
 export interface FaultResult {
@@ -116,6 +126,31 @@ export function parseFaultRequest(body: Record<string, unknown>): FaultRequest {
     request.depth = body.depth;
   }
 
+  if (request.fault === 'catchup-layout-404' && request.active) {
+    // Required only when arming, not clearing: a layout-less variant is
+    // exactly `not-found`, and blocking both layouts makes the
+    // seven-candidate cascade — the part of catch-up most likely to be
+    // wrong — unobservable. `clearFault('catchup-layout-404')` sends no
+    // `layout` (there's nothing to disambiguate when turning it off; `isActive`
+    // alone decides), so this check must not fire on `active: false`.
+    if (body.layout !== 'path' && body.layout !== 'query') {
+      throw new BadRequestError(
+        "'catchup-layout-404' requires 'layout' to be 'path' or 'query'",
+      );
+    }
+    request.layout = body.layout;
+  } else if (body.layout !== undefined) {
+    if (request.fault !== 'catchup-layout-404') {
+      throw new BadRequestError(`'layout' is only meaningful on 'catchup-layout-404'`);
+    }
+    // Clearing with an explicit layout is accepted, but still must name a
+    // real one — garbage is still garbage on the way out.
+    if (body.layout !== 'path' && body.layout !== 'query') {
+      throw new BadRequestError("'layout' must be 'path' or 'query'");
+    }
+    request.layout = body.layout;
+  }
+
   return request;
 }
 
@@ -154,12 +189,13 @@ const scopeOf = (channel: number | undefined): Scope => channel ?? '*';
  * scenario-wide, then arm one channel differently" both behave as
  * independent per-scope state rather than one clobbering the other.
  *
- * `appliedTo` counts only connections a fault actually reached. Five of the
- * eight faults (`not-found`, `auth-failure`, `connection-limit`,
- * `redirect-chain`, `non-ts-bytes`) can only affect the *next* request,
- * because a live response has already sent its headers — for those,
- * `appliedTo: 0` is correct and expected, not a sign nothing happened.
- * "Arm not-found so the next reconnect fails" is a normal test.
+ * `appliedTo` counts only connections a fault actually reached. Nine of the
+ * twelve faults (`not-found`, `auth-failure`, `connection-limit`,
+ * `redirect-chain`, `non-ts-bytes`, `xc-auth-envelope`, `no-tv-archive`,
+ * `catchup-layout-404`, `range-unsupported`) can only affect the *next*
+ * request, because a live response has already sent its headers — for
+ * those, `appliedTo: 0` is correct and expected, not a sign nothing
+ * happened. "Arm not-found so the next reconnect fails" is a normal test.
  */
 export class FaultStore {
   private byScenario = new Map<string, Map<FaultName, Map<Scope, FaultRequest>>>();
@@ -201,8 +237,10 @@ export class FaultStore {
           break;
         default:
           // not-found, auth-failure, connection-limit, redirect-chain,
-          // non-ts-bytes: headers are already sent on a live response, so
-          // these can only affect the next request. appliedTo stays 0.
+          // non-ts-bytes, xc-auth-envelope, no-tv-archive,
+          // catchup-layout-404, range-unsupported: headers are already sent
+          // on a live response, so these can only affect the next request.
+          // appliedTo stays 0.
           break;
       }
     }
