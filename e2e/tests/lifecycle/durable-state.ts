@@ -87,6 +87,15 @@ export async function seedDurableState(
   seed: Seeder
 ): Promise<DurableState> {
   const channel = await seed.channel({ channel_number: CHANNEL_NUMBER });
+  // The later read-back compares against whatever the create returned, so
+  // without this the "explicit channel_number" the design calls for would be
+  // unverified: an API that ignored or re-assigned the override would still
+  // produce a passing test, comparing a value to itself.
+  expect(
+    channel.channel_number,
+    'the seeded channel did not take the explicit channel_number'
+  ).toBe(CHANNEL_NUMBER);
+
   const channelProfile = await seed.channelProfile();
   const streamProfile = await seed.streamProfile();
   const m3uAccount = await seed.m3uAccount();

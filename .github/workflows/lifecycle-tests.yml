@@ -26,16 +26,30 @@ on:
       - 'e2e/setup/**'
       - 'e2e/playwright.config.ts'
       - '.github/workflows/lifecycle-tests.yml'
-  # Narrow on purpose (D16): only the upgrade job runs here, gating the class
-  # of change it exists to catch. `**/models.py` is not padding — a model
-  # change is what *necessitates* a migration, and a PR that alters one without
-  # shipping the migration is exactly the case filtering on migrations alone
-  # would miss.
+  # Narrow on purpose (D16): only the `upgrade-migrations` job runs on a pull
+  # request — the two bash-suite jobs are gated off below — so this gates the
+  # class of change that job exists to catch without putting an hour on every
+  # PR. `**/models.py` is not padding: a model change is what *necessitates* a
+  # migration, and a PR that alters one without shipping the migration is
+  # exactly the case filtering on migrations alone would miss.
+  #
+  # The four `e2e`/`scripts` entries are this workflow's own machinery, and
+  # they are here because the alternative was demonstrated: the PR that
+  # introduced this file could not trigger it, so nothing in it — neither the
+  # upgrade job nor either bash suite — had executed in CI even once before
+  # merge, and `workflow_dispatch` cannot help because a workflow must be on
+  # the default branch to be dispatchable. These paths change rarely, so the
+  # build cost lands only on PRs that edit the guard itself, which is when you
+  # most want it.
   pull_request:
     branches: [main]
     paths:
       - '**/migrations/**'
       - '**/models.py'
+      - '.github/workflows/lifecycle-tests.yml'
+      - 'e2e/tests/lifecycle/**'
+      - 'e2e/fixtures/instance.ts'
+      - 'scripts/e2e_up.sh'
   # Earns its place: these suites pull postgres:16, postgres:17, redis:latest
   # and upstream's :latest — four floating tags whose contents change under
   # this repository, and which no path filter can ever notice.
@@ -243,6 +257,9 @@ jobs:
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           persist-credentials: false
+          # Deep enough for the baseline search below to walk back past a run
+          # of merges that published no image.
+          fetch-depth: 50
 
       - name: Download the image
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
@@ -274,24 +291,89 @@ jobs:
         working-directory: ./e2e
         run: npm run typecheck
 
-      # The baseline is resolved from the CI event, never `:latest`: two
-      # workflows push `:latest` on every push to main, so `:latest` can be the
-      # commit under test and the upgrade would upgrade from itself, passing
-      # vacuously while looking perfectly green. Both fields below name a
-      # commit that is on main, is an ancestor of the code under test, and is
-      # never that code — and docker-build.yml publishes a full-40-char SHA tag
-      # for every push to main.
+      # Resolve the baseline by SEARCHING history, not by trusting one SHA.
       #
-      # Neither field exists on a schedule or workflow_dispatch run, so the
-      # variable is set-but-invalid there rather than unset. The spec handles
-      # that, along with the all-zeroes SHA of a branch creation or force-push,
-      # and a tag that does not resolve in the registry — announcing which
-      # fallback it took and attaching the resolved digest either way.
+      # The obvious version — take `github.event.before` (or the PR base) and
+      # use `ghcr.io/d10scot/dispatcharr:<that sha>` — is wrong, because
+      # `docker-build.yml` is **path-filtered** (`apps/**`, `core/**`,
+      # `dispatcharr/**`, `frontend/**`, `docker/**`, `scripts/**`,
+      # `pyproject.toml`, `uv.lock`, `version.py`, `manage.py`, and its own
+      # file). A docs-only or workflow-only merge publishes no image at all, so
+      # that SHA frequently has no manifest. Measured on `main` at the time of
+      # writing: two of the three most recent commits had none.
+      #
+      # That matters because of what happens next. A missing tag used to fall
+      # back to `:latest` — and on a push to main, `docker-build.yml` fires on
+      # the *same* push and publishes `:latest` within a few minutes, while the
+      # `build` job above takes longer than that. So `:latest` could BE the
+      # commit under test, the upgrade would upgrade from itself, and it would
+      # pass: the image-id inequality assertion cannot catch it, because two
+      # builds of one commit have different ids anyway.
+      #
+      # So: walk back from the event's starting commit and take the first
+      # ancestor that actually has a manifest, and **fail the job** if none of
+      # the last 50 do. A baseline that cannot be resolved is not a reason to
+      # test something weaker; it is a reason to stop and say so.
+      #
+      # `docker manifest inspect` needs no credentials here — the fork's GHCR
+      # packages are public — which is why this job still grants no `packages:`
+      # scope.
+      - name: Resolve the upgrade baseline
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+          IMAGE_REPO: ghcr.io/d10scot/dispatcharr
+        run: |
+          set -euo pipefail
+
+          case "$EVENT_NAME" in
+            pull_request) start="$PR_BASE_SHA" ;;
+            push)         start="$PUSH_BEFORE" ;;
+            *)            start="" ;;
+          esac
+
+          # schedule and workflow_dispatch carry neither field; an all-zeroes
+          # SHA is a branch creation or force-push. Both mean "no event-supplied
+          # starting point", so start from the parent of what we checked out —
+          # never HEAD itself, which is the code under test.
+          if [ -z "$start" ] || [ "$start" = "0000000000000000000000000000000000000000" ]; then
+            start="HEAD~1"
+            echo "No usable starting commit from the $EVENT_NAME event; searching from HEAD~1."
+          fi
+
+          if ! git rev-parse --verify --quiet "${start}^{commit}" >/dev/null; then
+            echo "::error::Starting commit '$start' is not in this checkout (fetch-depth too shallow?)."
+            exit 1
+          fi
+
+          resolved=""
+          checked=0
+          for sha in $(git rev-list --max-count=50 "$start"); do
+            checked=$((checked + 1))
+            if docker manifest inspect "${IMAGE_REPO}:${sha}" >/dev/null 2>&1; then
+              resolved="$sha"
+              break
+            fi
+          done
+
+          if [ -z "$resolved" ]; then
+            echo "::error::No published image found in the $checked commits before ${start}. docker-build.yml is path-filtered, so a long run of docs-only merges can produce this — widen fetch-depth, or investigate whether docker-build.yml is failing. Refusing to fall back to :latest, which on a push to main can be the commit under test."
+            exit 1
+          fi
+
+          echo "Baseline resolved to ${IMAGE_REPO}:${resolved} after checking ${checked} commit(s) back from ${start}."
+          echo "DISPATCHARR_E2E_BASELINE_IMAGE=${IMAGE_REPO}:${resolved}" >> "$GITHUB_ENV"
+
+      # DISPATCHARR_E2E_BASELINE_IMAGE comes from the step above via $GITHUB_ENV.
+      # The spec additionally refuses to fall back to `:latest` when CI is set,
+      # so the two guards are independent: if this step ever regressed to
+      # exporting nothing, the spec would fail rather than silently self-upgrade.
       - name: Run the upgrade spec
         working-directory: ./e2e
         env:
           E2E_BASE_URL: http://localhost:9191
-          DISPATCHARR_E2E_BASELINE_IMAGE: ghcr.io/d10scot/dispatcharr:${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
         run: npx playwright test --project=lifecycle-upgrade
 
       - name: Container logs (on failure)

@@ -399,7 +399,25 @@ export const test = base.extend<Fixtures>({
   // project is sharing. Lazy like every fixture here, so a spec that does not
   // name it never constructs one.
   instance: async ({}, use) => {
-    await use(new Instance());
+    const inst = new Instance();
+    await use(inst);
+    // Teardown is a safety net, not the primary path — the upgrade spec still
+    // tears down in its own `finally`, where it can capture container logs
+    // first. This exists because a Playwright *timeout* abandons the test body
+    // without running its `finally`, which would otherwise leave a container, a
+    // volume, a network and the provider standing for the next run to trip
+    // over. Fixture teardown runs even then.
+    //
+    // Only when this test took ownership: `up()` without `reset` adopts a
+    // container that was already there — which is how the restart spec works,
+    // and why a developer's instance survives `npm run test:lifecycle`.
+    if (inst.owned) {
+      try {
+        await inst.down();
+      } catch (error) {
+        console.log(`instance teardown failed: ${String(error)}`);
+      }
+    }
   },
 });
 

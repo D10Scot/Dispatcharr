@@ -97,7 +97,17 @@ case "${1:-}" in
     # only, never on image id (unlike the provider, which is recreated when
     # UPSTREAM_IMAGE_ID moves). Without this, setting DISPATCHARR_E2E_IMAGE
     # and re-running silently keeps serving the old image.
+    #
+    # `docker stop` before `rm -f`, not `rm -f` alone. `rm -f` is SIGKILL, so
+    # none of `entrypoint.sh`'s TERM/INT trap runs — no `pg_ctl stop -m
+    # immediate`, no cleanup — and the "upgrade" would then start from a
+    # crash-recovered volume. PostgreSQL is crash-safe, so this is about the
+    # test being representative of a real upgrade rather than about
+    # corruption; `--stop` above already goes through SIGTERM, and the two
+    # modes disagreeing on how a container goes down is the kind of difference
+    # that later explains an unreproducible result.
     echo "Removing container $NAME (keeping volume $VOLUME)..."
+    docker stop "$NAME" >/dev/null 2>&1 || true
     docker rm -f "$NAME" >/dev/null 2>&1 || true
     ;;
   --stop)
@@ -201,6 +211,13 @@ for _ in $(seq 1 30); do
     echo " — ready"
     break
   fi
+  # Same reasoning as the app loop below: a container that has exited will
+  # never answer, so say so now rather than after the full budget.
+  if [[ "$(docker inspect -f '{{.State.Running}}' "$UPSTREAM_NAME" 2>/dev/null)" != "true" ]]; then
+    echo " — container exited. Logs:"
+    docker logs "$UPSTREAM_NAME" 2>&1 | tail -n 100 || true
+    exit 1
+  fi
   echo -n "."
   sleep 1
 done
@@ -242,6 +259,19 @@ for _ in $(seq 1 "$READY_ATTEMPTS"); do
   if curl -sf -o /dev/null "http://127.0.0.1:${PORT}/api/accounts/initialize-superuser/"; then
     echo " — ready at http://localhost:${PORT}"
     exit 0
+  fi
+  # A crashed container never answers, and polling it for the full budget is
+  # the difference between a 5-second failure with a traceback and a silent
+  # ten-minute wall of dots. `docker/entrypoint.sh` runs under `set -e` and
+  # does `manage.py migrate --noinput` before uWSGI starts, so a migration that
+  # fails on a carried-forward volume exits the container immediately — and
+  # there is no `--restart` policy, so it stays exited. That is exactly the
+  # failure `--recreate` exists to surface, so noticing it fast matters most
+  # here.
+  if [[ "$(docker inspect -f '{{.State.Running}}' "$NAME" 2>/dev/null)" != "true" ]]; then
+    echo " — container exited. Logs:"
+    docker logs "$NAME" 2>&1 | tail -n 100 || true
+    exit 1
   fi
   echo -n "."
   sleep 5

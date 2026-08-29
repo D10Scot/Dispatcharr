@@ -39,20 +39,48 @@ const ALL_ZEROES = /^0{40}$/;
 type Baseline = { ref: string; reason: string };
 
 /**
+ * Refuse a `:latest` fallback in CI.
+ *
+ * `:latest` is written by two workflows on every push to main, and
+ * `docker-build.yml` fires on the *same* push that triggers this workflow and
+ * finishes sooner than our own image build — so in CI `:latest` can be the
+ * commit under test. Upgrading from yourself passes every assertion in this
+ * file, including the image-id inequality, because two builds of one commit
+ * have different ids anyway.
+ *
+ * So the fallback exists for local runs only. In CI the workflow's
+ * "Resolve the upgrade baseline" step searches history for a commit that
+ * actually has a published image and fails the job when none does; if that
+ * step ever regressed to exporting nothing, this is the second, independent
+ * guard that stops the silent self-upgrade.
+ */
+function refuseFallbackInCI(reason: string): never {
+  throw new Error(
+    `Refusing to fall back to ${FALLBACK_BASELINE} in CI: ${reason}.\n\n` +
+      'In CI the baseline must be an ancestor commit that genuinely has a ' +
+      'published image — the workflow\'s "Resolve the upgrade baseline" step ' +
+      'searches history for one and fails the job when none is found. ' +
+      '`:latest` is unsafe here: docker-build.yml publishes it from the same ' +
+      'push this workflow runs on, so it can be the commit under test, and ' +
+      'the upgrade would silently upgrade from itself and pass.'
+  );
+}
+
+/**
  * Resolve the baseline from the CI event, with D10's fallbacks.
  *
  * Three of the four conditions are decided here; the fourth — the tag not
  * resolving in the registry — can only be discovered by trying to pull it.
+ * Every fallback is refused outright when `CI` is set (see above).
  */
 function candidateBaseline(): Baseline {
   const configured = process.env.DISPATCHARR_E2E_BASELINE_IMAGE;
   if (!configured) {
-    return {
-      ref: FALLBACK_BASELINE,
-      reason:
-        'DISPATCHARR_E2E_BASELINE_IMAGE is unset — a local run, or a workflow ' +
-        'that forgot to set it',
-    };
+    const reason =
+      'DISPATCHARR_E2E_BASELINE_IMAGE is unset — a local run, or a workflow ' +
+      'that forgot to set it';
+    if (process.env.CI) refuseFallbackInCI(reason);
+    return { ref: FALLBACK_BASELINE, reason };
   }
 
   const lastColon = configured.lastIndexOf(':');
@@ -60,23 +88,37 @@ function candidateBaseline(): Baseline {
   const tag = lastColon > lastSlash ? configured.slice(lastColon + 1) : null;
 
   if (tag === '') {
-    return {
-      ref: FALLBACK_BASELINE,
-      reason:
-        `${configured} has an empty tag — neither github.event.before nor ` +
-        'github.event.pull_request.base.sha exists on a schedule or ' +
-        'workflow_dispatch run, so the variable arrives set but invalid',
-    };
+    const reason =
+      `${configured} has an empty tag — neither github.event.before nor ` +
+      'github.event.pull_request.base.sha exists on a schedule or ' +
+      'workflow_dispatch run, so the variable arrives set but invalid';
+    if (process.env.CI) refuseFallbackInCI(reason);
+    return { ref: FALLBACK_BASELINE, reason };
   }
   if (tag !== null && ALL_ZEROES.test(tag)) {
-    return {
-      ref: FALLBACK_BASELINE,
-      reason:
-        `${configured} names the all-zeroes SHA — branch creation or a ` +
-        'force-push, so there is no previous commit to upgrade from',
-    };
+    const reason =
+      `${configured} names the all-zeroes SHA — branch creation or a ` +
+      'force-push, so there is no previous commit to upgrade from';
+    if (process.env.CI) refuseFallbackInCI(reason);
+    return { ref: FALLBACK_BASELINE, reason };
   }
   return { ref: configured, reason: 'resolved from the CI event' };
+}
+
+/**
+ * Is this `docker pull` failure "the tag is not there", as opposed to anything
+ * else?
+ *
+ * Matters because the fallback below is only a correct response to a missing
+ * tag. A daemon that is down, a pull that hit the 15-minute timeout, or a full
+ * disk are not reasons to test something weaker — relabelling them as "the tag
+ * does not resolve" would hide a broken runner behind a passing test.
+ */
+function isMissingManifest(error: unknown): boolean {
+  const text = String(error);
+  return /manifest unknown|not found|manifest for .* not found|denied/i.test(
+    text
+  );
 }
 
 /** The set of applied migrations, as `app.name`. */
@@ -125,13 +167,17 @@ test('an upgrade onto an existing volume applies migrations and keeps the data',
     digest = await instance.pull(baseline.ref);
   } catch (error) {
     if (baseline.ref === FALLBACK_BASELINE) throw error;
-    baseline = {
-      ref: FALLBACK_BASELINE,
-      reason:
-        `${baseline.ref} does not resolve in the registry — docker-build.yml ` +
-        'publishes the SHA tag only when its own run succeeded ' +
-        `(${String(error)})`,
-    };
+    // Only a genuinely missing manifest may downgrade to the fallback. A dead
+    // daemon, a timed-out pull or a full disk reaching this branch would be
+    // relabelled "the tag does not resolve" and hide a broken runner behind a
+    // passing test.
+    if (!isMissingManifest(error)) throw error;
+    const reason =
+      `${baseline.ref} does not resolve in the registry — docker-build.yml is ` +
+      'path-filtered, so a docs-only or workflow-only commit publishes no ' +
+      `image at all (${String(error)})`;
+    if (process.env.CI) refuseFallbackInCI(reason);
+    baseline = { ref: FALLBACK_BASELINE, reason };
     digest = await instance.pull(baseline.ref);
   }
 
@@ -149,6 +195,24 @@ test('an upgrade onto an existing volume applies migrations and keeps the data',
     // reset: true — the baseline must boot onto a volume with no schema, or
     // it is not the older release creating the data this test carries forward.
     await instance.up({ image: baseline.ref, reset: true });
+
+    // Prove the volume really was fresh, rather than assuming `--reset`
+    // succeeded. `scripts/e2e_up.sh`'s `destroy()` swallows a failed
+    // `docker volume rm` with `|| true`, so a volume still mounted by some
+    // other container (a stale run under a different
+    // DISPATCHARR_E2E_CONTAINER name, say) survives silently — and
+    // `provisionAdmin` is idempotent, so nothing downstream would notice. The
+    // whole test would then "upgrade" data the *local* build had created.
+    const firstRun: { superuser_exists?: boolean } = await (
+      await request.get('/api/accounts/initialize-superuser/')
+    ).json();
+    expect(
+      firstRun.superuser_exists,
+      'the baseline booted onto a volume that already had a superuser, so ' +
+        '`--reset` did not destroy it — this run would carry forward data ' +
+        'the baseline image never created. Check for a stray container ' +
+        'holding the dispatcharr-e2e-data volume.'
+    ).toBe(false);
 
     const tokens = await provisionAdmin(request, baseURL!);
     const api = new ApiClient(request, tokens);
@@ -201,8 +265,36 @@ test('an upgrade onto an existing volume applies migrations and keeps the data',
     await assertAdminTokenStillValid(request, tokens.access);
     await assertDurableState(api, state);
   } finally {
+    // Capture the container's logs BEFORE tearing it down.
+    //
+    // The workflow has a `failure()` step that runs `docker logs
+    // dispatcharr-e2e`, but `down()` below has already removed the container
+    // by then, so it printed "No such container" and the `|| true` hid that
+    // the capture itself had failed. Every upgrade failure arrived with no
+    // container logs at all — for a test whose failures are most often
+    // *inside* the container (a migration that did not apply, an entrypoint
+    // that died), that is the one artifact worth having.
+    if (testInfo.status !== testInfo.expectedStatus) {
+      try {
+        await testInfo.attach('container.log', {
+          body: await instance.logs(300),
+          contentType: 'text/plain',
+        });
+      } catch (error) {
+        // Never let diagnostics replace the real failure.
+        console.log(`could not capture container logs: ${String(error)}`);
+      }
+    }
+
     // `--down` also removes the shared network and the provider container,
     // which is survivable exactly because this project runs alone.
-    await instance.down();
+    //
+    // Swallowed deliberately: a throw from `finally` would replace the
+    // assertion error that actually explains the run.
+    try {
+      await instance.down();
+    } catch (error) {
+      console.log(`teardown failed: ${String(error)}`);
+    }
   }
 });

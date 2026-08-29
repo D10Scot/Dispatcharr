@@ -76,19 +76,44 @@ const READY_ATTEMPTS = process.env.DISPATCHARR_E2E_READY_ATTEMPTS ?? '120';
  */
 const APP_USER = 'dispatch';
 
-/** A cold first boot on a CI runner has taken most of ten minutes. */
-const SCRIPT_TIMEOUT_MS = 900_000;
+/**
+ * These three must stay *below* the calling project's Playwright timeout, or
+ * they are unreachable and the generic "Test timeout of Ns exceeded" wins.
+ *
+ * That matters more than it sounds. `scripts/e2e_up.sh` prints the container's
+ * logs before giving up, and this fixture quotes that output into its error —
+ * so whichever of the two timeouts fires first decides whether a failed boot
+ * arrives with a traceback or with nothing at all. See the timeouts on the two
+ * lifecycle projects in `playwright.config.ts`, which are sized against these.
+ */
+
+/**
+ * The script's own budget dominates this: its readiness loop is
+ * `DISPATCHARR_E2E_READY_ATTEMPTS` (120) × 5s = 600s, plus a 30s provider wait.
+ * 720s leaves the script room to fail on its own terms — with logs — rather
+ * than being killed mid-poll.
+ */
+const SCRIPT_TIMEOUT_MS = 720_000;
 
 /** `docker inspect` and `manage.py showmigrations` are fast and small. */
 const DOCKER_TIMEOUT_MS = 120_000;
 
-/** `docker pull` of a ~3.6 GB image. */
-const PULL_TIMEOUT_MS = 900_000;
+/** `docker pull` of a ~3.6 GB image; minutes on a cold runner, not tens of them. */
+const PULL_TIMEOUT_MS = 600_000;
 
 const MAX_BUFFER = 16 * 1024 * 1024;
 
 export type UpOptions = {
-  /** Sets `DISPATCHARR_E2E_IMAGE` for this invocation. */
+  /**
+   * Sets `DISPATCHARR_E2E_IMAGE` for this invocation.
+   *
+   * **Only meaningful together with `reset: true`.** `scripts/e2e_up.sh` reuses
+   * an existing container by *name* and never compares its image id, so
+   * `up({ image })` against a container that is already there keeps serving the
+   * old one. Passing `image` without `reset` throws rather than quietly doing
+   * nothing — use {@link Instance.recreate} to swap the image while keeping the
+   * volume.
+   */
   image?: string;
   /** Pass `--reset`: destroy the container *and* its volume first. */
   reset?: boolean;
@@ -123,12 +148,16 @@ export class Instance {
   }
 
   /**
-   * Run `scripts/e2e_up.sh`, throwing an error that quotes its output.
+   * True once this test has created or replaced the container, so teardown
+   * knows whether the instance is ours to destroy.
    *
-   * The script's own failure paths print container logs before exiting, so
-   * carrying stdout into the message is the difference between "the boot
-   * failed" and knowing why.
+   * `up()` without `reset` *adopts* whatever is already running — that is how
+   * the restart spec works, and how a developer's container survives
+   * `npm run test:lifecycle`. Only `up({ reset: true })` and `recreate()` take
+   * ownership.
    */
+  owned = false;
+
   /**
    * Whether to tell the script to skip building the fake upstream provider.
    *
@@ -143,16 +172,33 @@ export class Instance {
    * anyway under `set -e`, so a fresh clone died at `No such image` — after
    * `test:lifecycle-upgrade` had already spent ten minutes pulling a 3.6 GB
    * baseline, having just printed that it was "using the loaded artifact".
+   *
+   * Only a genuinely absent image answers "build it". A daemon hiccup or a
+   * timeout here would otherwise rebuild `e2e-upstream` from source in CI,
+   * silently replacing the loaded artifact — the exact drift this flag exists
+   * to prevent — so anything else is rethrown.
    */
   private async skipUpstreamBuild(): Promise<boolean> {
     try {
       await this.docker(['image', 'inspect', '-f', '{{.Id}}', UPSTREAM_IMAGE]);
       return true;
-    } catch {
-      return false;
+    } catch (error) {
+      if (/no such image|No such object/i.test(String(error))) return false;
+      throw new Error(
+        `could not determine whether ${UPSTREAM_IMAGE} exists, so refusing to ` +
+          'guess whether to rebuild it (rebuilding in CI would discard the ' +
+          `loaded artifact): ${String(error)}`
+      );
     }
   }
 
+  /**
+   * Run `scripts/e2e_up.sh`, throwing an error that quotes its output.
+   *
+   * The script's own failure paths print container logs before exiting, so
+   * carrying stdout into the message is the difference between "the boot
+   * failed" and knowing why.
+   */
   private async script(args: string[], env: NodeJS.ProcessEnv = {}): Promise<string> {
     const skipUpstream = await this.skipUpstreamBuild();
     try {
@@ -197,6 +243,17 @@ export class Instance {
 
   /** Start the instance, reusing an existing container unless `reset` is set. */
   async up(options: UpOptions = {}): Promise<string> {
+    if (options.image && !options.reset) {
+      throw new Error(
+        'up({ image }) without `reset: true` does nothing: scripts/e2e_up.sh ' +
+          'reuses an existing container by name and never compares its image ' +
+          'id, so it would keep serving the old image while this call looked ' +
+          'like it had switched. Use `up({ image, reset: true })` to start ' +
+          'fresh on that image, or `recreate({ image })` to swap it while ' +
+          'keeping the volume.'
+      );
+    }
+    if (options.reset) this.owned = true;
     return this.script(
       options.reset ? ['--reset'] : [],
       options.image ? { DISPATCHARR_E2E_IMAGE: options.image } : {}
@@ -218,14 +275,38 @@ export class Instance {
 
   /** Replace the container, keep the volume — see `--recreate` in the script. */
   async recreate(options: { image: string }): Promise<string> {
+    this.owned = true;
     return this.script(['--recreate'], {
       DISPATCHARR_E2E_IMAGE: options.image,
     });
   }
 
+  /**
+   * The container's recent log output, for attaching to a failed test.
+   *
+   * Read this *before* `down()`. The workflow's `failure()` step runs
+   * `docker logs` too, but by then teardown has removed the container, so it
+   * printed "No such container" behind a `|| true` — every upgrade failure
+   * arrived with no container logs, for a test whose failures are usually
+   * inside the container.
+   */
+  async logs(tail = 300): Promise<string> {
+    // Not via `docker()`, which returns stdout only: a container's stderr is
+    // where the interesting half lives (the entrypoint's tracebacks, Django's
+    // migration errors), and `docker logs` keeps the two streams separate.
+    const { stdout, stderr } = await run(
+      'docker',
+      ['logs', '--tail', String(tail), CONTAINER],
+      { timeout: DOCKER_TIMEOUT_MS, maxBuffer: MAX_BUFFER }
+    );
+    return `${stdout}${stderr}`;
+  }
+
   /** Destroy the container, its volume, the network and the provider. */
   async down(): Promise<string> {
-    return this.script(['--down']);
+    const output = await this.script(['--down']);
+    this.owned = false;
+    return output;
   }
 
   /**

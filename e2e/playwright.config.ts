@@ -128,8 +128,16 @@ export default defineConfig({
       testMatch: /restart-persistence\.spec\.ts$/,
       workers: 1,
       fullyParallel: false,
-      // Two container boots and a full readiness wait.
-      timeout: 600_000,
+      // Two container boots and a full readiness wait — ~15s in practice.
+      //
+      // Sized to sit *above* the subprocess timeouts in `fixtures/instance.ts`
+      // (720s per `e2e_up.sh` call), not below them. That ordering is the whole
+      // point: `e2e_up.sh` prints the container's logs before it gives up, and
+      // the fixture quotes that into its error, so whichever timeout fires
+      // first decides whether a failed boot arrives with a traceback or with a
+      // bare "Test timeout of 600000ms exceeded". It used to be below, so the
+      // informative error was unreachable.
+      timeout: 900_000,
       // Attempt 1 consumes the state attempt 2 would need — the same reason
       // `pristine` sets this, and here also because a retry would re-run
       // `provisionAdmin` against an instance that already has the superuser
@@ -153,8 +161,14 @@ export default defineConfig({
       workers: 1,
       fullyParallel: false,
       // A ~3.6 GB baseline pull, a fresh boot on an empty volume, a container
-      // replacement and a second boot.
-      timeout: 600_000,
+      // replacement and a second boot — ~20s in practice.
+      //
+      // Generous for the same reason as `lifecycle` above, and more so: this
+      // spec makes three subprocess calls that can each block (600s pull, then
+      // 720s per boot), so anything under ~30 minutes means Playwright's
+      // generic timeout wins over the fixture's own diagnosable failure. The
+      // job it runs in budgets 45 minutes.
+      timeout: 1_800_000,
       retries: 0,
     },
   ],
