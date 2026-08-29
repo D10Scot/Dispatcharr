@@ -50,15 +50,15 @@ tests.** Status: `todo` / `done` / `known-bug` (asserted correct, marked
 | Output | hide_adult_content across the Xtream listing paths | G5 | todo |
 | Output | /output/m3u, /output/epg and the HDHR lineup are unauthenticated by design, gated only by the M3U_EPG network ACL | G5 | todo |
 | Accounts | Token refresh with a deleted user's token 500s instead of 401 ([#12](https://github.com/D10Scot/Dispatcharr/issues/12)); needs a `test.fail()`, and pinning it costs one login | G5 | known-bug |
-| Upstream | Fake provider speaks Xtream Codes: `player_api.php` auth envelope and the seven catalogue actions `core/xtream_codes.Client` calls | G8 | todo |
-| Upstream | Fake provider serves a finite VOD asset with `Content-Length`, `Accept-Ranges`, 206 + `Content-Range` and 416 | G8 | todo |
-| Upstream | Fake provider answers both catch-up layouts and records the credentials, stream id, start timestamp and duration it was asked for | G8 | todo |
-| Upstream | Four new faults: `xc-auth-envelope`, `no-tv-archive`, `catchup-layout-404`, `range-unsupported` | G8 | todo |
-| Upstream | Plumbing proof: XC account ingest → declared live streams appear | G8 | todo |
-| Upstream | Plumbing proof: VOD catalogue ingest → `Movie`, `Series` and `Episode` rows appear | G8 | todo |
-| Upstream | Plumbing proof: one VOD byte read through `/proxy/vod/` | G8 | todo |
-| Upstream | Plumbing proof: a catch-up URL reaches the provider in each layout | G8 | todo |
-| Upstream | Plumbing proof: the candidate cascade falls back when one layout 404s | G8 | todo |
+| Upstream | Fake provider speaks Xtream Codes: `player_api.php` auth envelope and the seven catalogue actions `core/xtream_codes.Client` calls | G8 | done |
+| Upstream | Fake provider serves a finite VOD asset with `Content-Length`, `Accept-Ranges`, 206 + `Content-Range` and 416 | G8 | done |
+| Upstream | Fake provider answers both catch-up layouts and records the credentials, stream id, start timestamp and duration it was asked for | G8 | done |
+| Upstream | Four new faults: `xc-auth-envelope`, `no-tv-archive`, `catchup-layout-404`, `range-unsupported` | G8 | done |
+| Upstream | Plumbing proof: XC account ingest → declared live streams appear | G8 | done |
+| Upstream | Plumbing proof: VOD catalogue ingest → `Movie`, `Series` and `Episode` rows appear | G8 | done |
+| Upstream | Plumbing proof: one VOD byte read through `/proxy/vod/` | G8 | done |
+| Upstream | Plumbing proof: a catch-up URL reaches the provider in each layout | G8 | done |
+| Upstream | Plumbing proof: the candidate cascade falls back when one layout 404s | G8 | done |
 | Upstream | **Gap:** the fake archive is not time-addressable — it serves the same looping TS whatever `start` it is asked for. Nothing proves Dispatcharr seeks to the right moment, only that it asks for the right one. Owned by G10, which must say so in every row it writes | G8 | todo |
 | Upstream | **Gap:** the catch-up timestamp parser (`parseCatchupTimestamp`, `e2e-upstream/src/xc/catchup.ts`) over-accepts. Its regex is `[:_ ]…[-:]…(?:[-:]\d{2})?`, built to admit the four shapes `build_timeshift_candidate_urls` (`apps/timeshift/helpers.py:466-498`) actually emits, but it also matches shapes no candidate ever produces (e.g. `2026-08-29 14-00`, mixing the SQL separator with the PATH minute separator; `2026-08-29:14:00`, missing the required minute-second separator pair) and performs no calendar validation — `2026-13-45:99-99` yields a non-null `startIso` and is served with a `200`. Safe for this provider: over-acceptance can only ever widen what's served, never produce a false cascade rejection, so it cannot make a G8 test lie. But it means **this provider can prove a candidate URL was *parseable*, never that it was *correct*** — it cannot fail a request for using the wrong strftime shape, wrong separator, or an invalid calendar date. G10's premise includes verifying the seven-candidate cascade constructs the *right* URLs in the *right* order; this provider cannot be the thing that proves that. If G10 needs shape-correctness (not just "the provider accepted something"), assert on the request as logged — `ScenarioLog`'s `request` entries carry the exact `path`/`search` Dispatcharr sent (`logRequest`, `e2e-upstream/src/server.ts`) — and check it against the literal strftime output, rather than inferring correctness from a `200` | G8 | todo |
 | Upstream | **Known defect:** `collect_xc_streams` (`apps/m3u/tasks.py:933-936`) builds the live stream URL with raw, unencoded account credentials, unlike `build_timeshift_url_format_b` (`apps/timeshift/helpers.py:424-433`), which percent-encodes both fields with `quote(str(x), safe='')`. A credential containing `/` (or any other character `quote` would escape) therefore breaks live playback while the identical credential works for catch-up. Filed as [#61](https://github.com/D10Scot/Dispatcharr/issues/61) per spec D25 (the tracker entry costs nothing and the defect is real and verified), but per this goal's own Global Constraints — a build hands findings to the goal that will actually assert them — no `test.fail()` exists in `e2e-upstream` for it: this provider's seed helpers only generate sanitised credentials, and a hand-built unsanitised-credential request against `/live/` is a malformed URL by construction (too many path segments), so a test asserting either outcome would be vacuous. Verified reachable and demonstrated with a passing control test in `e2e-upstream/test/xc-router.test.ts` (`XC live playback — credential encoding`): the same slash-bearing credential succeeds when percent-encoded into the path, as `build_timeshift_url_format_b` does. Owned by whichever of G9/G10 first ingests a real XC account with an unsanitised (slash- or percent-bearing) credential — that task should add the seed support and the `test.fail()` this build could not | G8 | todo |
@@ -80,6 +80,7 @@ tests.** Status: `todo` / `done` / `known-bug` (asserted correct, marked
 | VOD | **Known defect, elaborating the `range-unsupported` row above:** arming `range-unsupported` and requesting a mid-file `Range` through `/proxy/vod/movie/<uuid>` (G8 Task 10) produces a `206` with a `Content-Range` naming exactly the range the *client* asked for and a matching `Content-Length` — but the **bytes are wrong**. Verified byte-for-byte, not just by length: with a 125,585-byte asset and `Range: bytes=100-199`, the 100-byte body received was byte-identical to the file's bytes **0-99**, not 100-199, while the response claimed `Content-Range: bytes 100-199/125585`. Mechanism, confirmed in source: `multi_worker_connection_manager.py:1303` sets `response.status_code = 206 if range_header else 200` and `:1315-1332` fabricates `Content-Range`/`Content-Length` **purely from the client's requested range and the previously-known full size** — neither checks what the upstream response's own status or `Content-Range` actually was. `stream_generator()` (`:1152`) is a pure passthrough of `upstream_response.iter_content()` with no offset-skipping or truncation to match the declared length. So when the upstream ignores `Range` and answers `200` with the whole asset from byte 0, the client is handed the head of the file under headers describing the requested slice — internally consistent, spec-shaped, and silently wrong. This is not a harness limitation; it's a real defect in the product's Range handling, reachable by any real provider that doesn't honor `Range` (RFC 9110 permits ignoring it and returning `200`). Filed as [#66](https://github.com/D10Scot/Dispatcharr/issues/66). G9 should add a byte-equality assertion (not just status/length) to whatever `range-unsupported` test it writes, and decide whether to pin this with `test.fail()` before the fix lands | G9 | todo |
 | Catch-up | XC live ingest fields catch-up depends on: `tv_archive`/`tv_archive_duration` → `Stream.is_catchup`/`catchup_days` → `Channel.is_catchup` via `rollup_channel_catchup_fields`, including its self-heal pass | G10 | todo |
 | Catch-up | **Gap:** the provider stream id catch-up actually keys off is not observable through the REST API. `_prepare_catchup_stream_attempt` (`apps/timeshift/views.py:1641`) reads `(catchup_stream.custom_properties or {}).get("stream_id")` — and `apps/m3u/tasks.py:1179` does populate `custom_properties` with the whole raw XC catalogue dict for that stream, `stream_id` included. But `StreamSerializer` (`apps/channels/serializers.py:123-147`) never lists `custom_properties` among its `fields`, so no `GET` response can see it. The distinct top-level `Stream.stream_id` column (`apps/channels/models.py:112`, populated separately at `apps/m3u/tasks.py:1143`) is what the API *does* expose, and G8's `xc-ingest.spec.ts` asserts that one — it carries the same upstream value today, since both are parsed from the identical `stream["stream_id"]`, but it is a different field read by different code, and nothing enforces that they stay in sync. G10 cannot verify the id catch-up actually keys off by reading the stream back over the API; it needs another way in (e.g. `ScenarioLog`'s recorded catch-up request, or a DB-level check) if that id's correctness is part of what it means to prove | G10 | todo |
+| Catch-up | **Gap:** the recommended `POST /api/catchup/sessions/` branch of `_serve_catchup` is unexercised. Both G8 catch-up plumbing proofs (`catchup-path-layout.spec.ts`, `catchup-cascade.spec.ts`) drive `/proxy/catchup/<uuid>?start=&duration=` directly — the session-less, direct-auth shape that `catchup_proxy` (`apps/timeshift/views.py`) redirects to mint its own `session_id` on first play — and the root XC `/timeshift/...`/`/streaming/timeshift.php` route (`_timeshift_proxy_impl`) has no session concept at all. Neither reaches `catchup_proxy`'s `session_id` branch, which resolves a session minted by `CatchupSessionCreateAPIView` (`POST /api/catchup/sessions/`, `apps/timeshift/api_views.py`) via `resolve_catchup_playback` (`apps/timeshift/sessions.py`) — the path the endpoint's own OpenAPI description calls **recommended** for native apps. Both routes converge on the same `_serve_catchup` (`apps/timeshift/views.py:344`), so the fault/streaming behaviour it exercises is shared, but the mint-a-session-then-play flow itself has never been driven end to end. G10 should add a proof that calls `POST /api/catchup/sessions/` and plays back with the returned `session_id` | G10 | todo |
 | Catch-up | Redirect mode: `/timeshift/...` and `/streaming/timeshift.php` each 302 in the layout the client used; `/proxy/catchup/<uuid>` defaults to PATH | G10 | todo |
 | Catch-up | Proxy mode end to end: bytes reach the client and the provider recorded the credentials, stream id, converted start timestamp and padded duration | G10 | todo |
 | Catch-up | The seven-candidate cascade: PATH shapes first, QUERY last, and the winning index cached per account (`_get_cached_format_index`) reorders the next attempt | G10 | todo |
@@ -180,3 +181,35 @@ has not run and could not have. One scenario (`test-puid-pgid.sh`'s
 exit 0; `test-tls-postgres.sh` has not been run at all. If the first
 post-merge run of `lifecycle-tests.yml` is red, these two rows come back to
 `todo`.
+
+The nine `done` G8 rows above are covered across two layers: `e2e-upstream`'s own vitest suite
+proves the provider's XC/VOD/catch-up behaviour in isolation, and `e2e/tests/{seeded,streaming}`
+proves each surface's plumbing against the real product.
+
+`e2e-upstream` vitest (provider correctness):
+
+- `test/xc-envelope.test.ts`, `test/xc-catalogue.test.ts` and `test/xc-router.test.ts` — the
+  `player_api.php` auth envelope and the catalogue actions
+- `test/vod-asset.test.ts` and `test/xc-router.test.ts`'s VOD-playback describes — the finite VOD
+  asset (`Content-Length`, `Accept-Ranges`, 206, 416)
+- `test/xc-catchup.test.ts` and `test/xc-router.test.ts`'s catch-up describe — both catch-up
+  layouts and all four timestamp shapes
+- `test/xc-faults.test.ts` — the four new faults (`xc-auth-envelope`, `no-tv-archive`,
+  `catchup-layout-404`, `range-unsupported`)
+
+Plumbing proofs against the real product:
+
+- `e2e/tests/seeded/xc-ingest.spec.ts` — XC account ingest → declared live streams appear
+- `e2e/tests/seeded/vod-catalogue-ingest.spec.ts` — VOD catalogue ingest → `Movie`/`Series`/
+  `Episode` rows appear
+- `e2e/tests/streaming/vod-byte-read.spec.ts` — one VOD byte read through `/proxy/vod/`
+- `e2e/tests/streaming/catchup-path-layout.spec.ts` — a catch-up URL reaches the provider in each
+  layout
+- `e2e/tests/streaming/catchup-cascade.spec.ts` — the candidate cascade falls back when one layout
+  404s
+
+**G9 and G10 are now unblocked the same way G3/G4 were for G2**: both can declare an XC scenario,
+seed a VOD catalogue or an `M3UAccount`, and drive any of the twelve faults using only
+`e2e-upstream/README.md` and `e2e/fixtures/upstream.ts`/`seed.ts` — without reading
+`e2e-upstream/src/`. The time-addressability gap and the Upstream/VOD/Catch-up gap-and-defect rows
+this build filed while implementing it stay `todo`, each naming the goal that owns picking it up.

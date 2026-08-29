@@ -189,6 +189,35 @@ remote Dispatcharr instance has no route to a provider container running on
 your laptop. Any test that uses the `upstream` fixture needs the full local
 topology brought up by `scripts/e2e_up.sh`, not a bare `E2E_BASE_URL` run.
 
+**XC scenarios (G8).** `upstream.scenario({ xc: true, username, password, ... })` declares an
+Xtream Codes catalogue — categories, movies, series — on top of the same live-channel scenario
+every other test uses; `e2e-upstream/README.md` documents the full field set and the fault
+catalogue. `seed.xcAccount(scenario)` is the paired fixture step: it creates an `M3UAccount` with
+`account_type: 'XC'`, the scenario's credentials on the model's own `username`/`password` fields
+(not embedded in the URL, unlike a standard M3U account), and `server_url` set to the scenario's
+**bare** `internal` origin — never `scenario.internal + scenario.credentialQuery`, because
+`normalize_server_url` strips the query before the XC client ever sees it, silently discarding any
+credentials appended that way. There is no separate URL-building helper for XC beyond that: the
+scenario's own `internal`/`control` origins are what a test needs, exactly as for a non-XC
+scenario.
+
+Two asynchrony facts a test will otherwise be bitten by, both because XC ingest fires more
+background tasks than a standard M3U refresh:
+
+- **VOD ingest is a separate task, fired only after the M3U refresh completes.** A standard M3U
+  refresh finishes once; an XC refresh that has VOD enabled additionally queues
+  `apps.vod.tasks.refresh_vod_content` (`.delay()`'d from inside `apps/m3u/tasks.py`'s main refresh
+  task, immediately after it record its own completion) — so `waitFor.m3uRefreshComplete` returning
+  does **not** mean movies or series have landed yet. A test asserting on `Movie`/`Series` rows
+  needs its own wait on that outcome, not a reuse of the M3U-refresh wait.
+- **`server_info.timezone` reaches an `M3UAccountProfile` through a second, nested `.delay()`'d
+  task.** The main refresh task queues `refresh_account_profiles.delay(account.id)`
+  (`apps/m3u/tasks.py`) for every XC account, which — asynchronously, with a rate-limiting sleep
+  between profiles — re-authenticates each active profile and merges `get_account_info()`'s
+  `server_info` (timezone included) into `M3UAccountProfile.custom_properties`. That value is not
+  present right after account creation or even right after the main refresh; it lands on its own
+  schedule, later.
+
 ## The login throttle — read this before writing a multi-user test
 
 `POST /api/accounts/token/` is rate-limited to **3 requests per minute per

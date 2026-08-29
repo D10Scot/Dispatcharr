@@ -72,6 +72,42 @@ Provider-facing endpoints — the ones a Dispatcharr `M3UAccount`/`EPGSource`/`S
 not ones a test calls directly: `/s/<id>/playlist.m3u`, `/s/<id>/epg.xml`,
 `/s/<id>/stream/<channelId>.ts`.
 
+**The six XC routes (G8) are provider-facing the same way, each built by a specific product
+symbol** — none of the six is a URL a test constructs by hand:
+
+| XC route | Built by |
+|---|---|
+| `/player_api.php` (no-`action` handshake, plus the `action=get_live_categories`\|`get_live_streams`\|`get_vod_categories`\|`get_vod_streams`\|`get_series_categories`\|`get_series`\|`get_vod_info`\|`get_series_info` actions) | `core.xtream_codes.Client.authenticate()` and its matching `get_*` methods |
+| `/live/<user>/<pass>/<id>.ts` | `Client.get_stream_url(stream_id)` |
+| `/movie/<user>/<pass>/<id>.<ext>` | `M3UMovieRelation.get_stream_url()` (`apps/vod/models.py`) |
+| `/series/<user>/<pass>/<id>.<ext>` | `M3UEpisodeRelation.get_stream_url()` (`apps/vod/models.py`) |
+| `/timeshift/<user>/<pass>/<duration>/<start>/<id>.ts` (PATH layout) | `apps.timeshift.helpers.build_timeshift_url_format_b()` |
+| `/streaming/timeshift.php?...` (QUERY layout) | `apps.timeshift.helpers.build_timeshift_url_format_a()` |
+
+### XC scenario fields
+
+`POST /scenarios` also takes (G8): `xc`, `liveCategories`, `vodCategories`, `seriesCategories`,
+`vod`, `series`, `account`.
+
+`xc: true` is the discriminant that unlocks the six routes above — a scenario that doesn't set it
+404s any of them, naming the missing `xc: true`. It **requires both `username` and `password`**,
+not just `username`: omitting `username` would let the non-XC routes' own `credentialsMatch`
+(`server.ts`) treat "no username declared" as "accept any credentials", which would make
+`auth-failure`/`xc-auth-envelope` pass vacuously; omitting `password` is separately dangerous
+because `xcCredentialsMatch` compares it against `scenario.password ?? ''`, so an empty string is
+accepted at the scenario-creation door but can never match the `/live/` route's `[^/]+` path
+segment (which cannot match an empty string) — the scenario would be created successfully and then
+be unservable the moment a real client tried it.
+
+- `liveCategories` / `vodCategories` / `seriesCategories` — arrays of `{ id, name }`. Each defaults
+  to one entry (`{ id: 1, name: 'E2E' }`, `'E2E Movies'`, `'E2E Series'`) when omitted.
+- `vod` / `series` — a count (materialising that many default-named entries) or an explicit array
+  of movie/series specs. Default to 1 of each when `xc: true` and neither is declared, and to 0 for
+  a non-XC scenario — there's no route that could serve a catalogue.
+- `account` — `{ userInfo?, serverInfo? }`, raw overrides merged last into the `player_api.php`
+  handshake's envelope. Untyped beyond `Record<string, unknown>` on purpose: a test that wants a
+  garbage `exp_date` or `timezone` on the envelope needs to be able to send exactly that.
+
 G2 shipped exactly two plumbing proofs, and both cover the M3U/streaming path
 (`e2e/tests/seeded/upstream-ingest.spec.ts`,
 `e2e/tests/streaming/single-client.spec.ts`, which superseded G2's original
@@ -89,6 +125,19 @@ channel `1` is always `Fake Channel 1` / `fake-1.e2e`. `seeded` runs 4 workers i
 asserting on or filtering by those default names will alias another test's scenario. Pass explicit
 channel names — `seed.generatedName(...)` is what the ingest proof uses — whenever a test needs to
 find its own channel rather than someone else's.
+
+**The same hazard applies to movie titles, series names and category names (G8), and it is worse
+there than for channels.** With no `vod`/`series` override, movie `1` is always `Fake Movie 1` and
+series `1` is always `Fake Series 1`; with no category override, the default live/VOD/series
+categories are always named `E2E` / `E2E Movies` / `E2E Series`. For a channel, aliasing only risks
+confusing one test's assertions with another's — every scenario's channels are that scenario's own,
+never shared. VOD and category rows are not scenario-scoped in the product: `VODCategory` is
+`unique_together = [('name', 'category_type')]` **globally**, not per account
+(`apps/vod/models.py`), and `apps/vod/tasks.py` matches an incoming `Movie`/`Series` across **every
+account** by TMDB id first, then IMDB id, then `(name, year)` — so two workers ingesting the
+default catalogue at once don't just alias each other's assertions, they ingest into the *same*
+`VODCategory`/`Movie`/`Series` row. Pass explicit names — and, for a movie without a TMDB/IMDB id, a
+distinguishing `year` — whenever a test needs a row of its own.
 
 **Scenario credentials are not secret from the control API or the test report.** `POST`/`GET
 /scenarios` echo `password` back in the response, and every `UpstreamScenario` carries
@@ -185,6 +234,41 @@ when it dies mid-write. When the client is behind and the socket is backpressure
 queued before the cutoff is honored in full before the connection closes, so the client may see a
 few more bytes than requested. Don't assert byte-exact cutoff under backpressure.
 
+## Catch-up
+
+Both catch-up routes serve the same paced TS loop as `/live/`, through the same
+`serveChannelStream` pipeline (see `auth-failure`/`xc-auth-envelope` above) — they differ only in
+how the request arrives:
+
+- **PATH layout**: `GET /timeshift/<user>/<pass>/<durationMinutes>/<start>/<streamId>.ts`
+- **QUERY layout**: `GET /streaming/timeshift.php?username=<user>&password=<pass>&stream=<streamId>&start=<start>&duration=<durationMinutes>`
+
+`start` is accepted in the four timestamp shapes `build_timeshift_candidate_urls`
+(`apps/timeshift/helpers.py`) actually emits across its seven candidates — one regex
+(`e2e-upstream/src/xc/catchup.ts`) covers all four:
+
+| Shape | Example |
+|---|---|
+| `%Y-%m-%d:%H-%M` | `2026-08-29:14-00` |
+| `%Y-%m-%d_%H-%M` | `2026-08-29_14-00` |
+| `%Y-%m-%d:%H:%M:%S` | `2026-08-29:14:00:00` |
+| `%Y-%m-%d %H:%M:%S` (SQL) | `2026-08-29 14:00:00` |
+
+A `start` that matches none of the four gets a 400 naming the accepted shapes; a `start` in one of
+the four shapes but a channel id the scenario never declared gets a 404. Every request the provider
+accepts or rejects is recorded in `GET /s/<id>/log`: `logRequest` writes `path` as
+`url.pathname + url.search`, so a PATH-layout request's log entry carries the full
+`/timeshift/<user>/<pass>/<duration>/<start>/<id>.ts` path, and a QUERY-layout request's carries
+`/streaming/timeshift.php?username=...&password=...&stream=...&start=...&duration=...` — everything
+that identifies what was asked for is there to assert on, including credentials, stream id, start
+timestamp (exactly as sent, not just the parsed ISO form) and duration.
+
+**The archive is not time-addressable: the same loop is served whatever `start` asked for.** This
+provider can prove Dispatcharr *asked* for the right moment — the exact `start`/`stream`/`duration`
+it sent is right there in the log — but it can never prove Dispatcharr *received* the right moment,
+because there is only one archive and it plays the same regardless of `start`. Nothing built on top
+of this provider can turn that into a seek-accuracy proof.
+
 ## Pacing
 
 The stream is served at the asset's own nominal bitrate (~2 Mbit — around 180 KB/s for this
@@ -222,6 +306,36 @@ the builder stage.
 A frame counter is burned into the video. It is a **human debugging aid only**, for eyeballing a
 captured TS artifact in a video player after a test failure — nothing in this suite decodes video
 or asserts on it.
+
+## The VOD asset
+
+`/movie/<user>/<pass>/<id>.<ext>` and `/series/<user>/<pass>/<id>.<ext>` (G8) serve a **second,
+distinct asset** — a finite MP4 — not another mode of the TS loop above. The two exist for opposite
+reasons: the loop has no end and deliberately sends no `Content-Length`, because there is nothing to
+report; this asset exists specifically to have an end, a `Content-Length`, and byte offsets a client
+can seek to.
+
+Generated at Docker image build time by `scripts/make-vod-asset.sh` (same builder stage as
+`make-asset.sh`, same "runtime image carries the asset, not ffmpeg" split): 5 seconds of `testsrc`
+video at 320x180/25fps plus a 440 Hz sine tone, H.264/AAC, muxed to MP4 with `+faststart`. Not
+runnable outside the Docker build for the same reason as `make-asset.sh`. The script asserts its own
+output (at least 1 KB, and starts with an `ftyp` box) rather than pinning a byte-reproducible
+artifact, for the same unpinned-ffmpeg reason as the TS loop.
+
+Serving honours `Range` (`serveFiniteAsset`, `e2e-upstream/src/vod-asset.ts`):
+
+- No `Range`, or one this provider doesn't understand (a non-`bytes` unit, a multi-range request, a
+  bare `bytes=-`): `200` with `Content-Type`, `Content-Length` and `Accept-Ranges: bytes`.
+- A satisfiable `bytes=` range: `206` with `Content-Range` and a `Content-Length` matching the sliced
+  body.
+- An unsatisfiable range (e.g. a start at or past the asset's length, or the degenerate `bytes=-0`):
+  `416` with `Content-Range: bytes */<length>` and no `Content-Type` — this provider models faults
+  explicitly (`range-unsupported`), so answering 416 to something it *can* parse but can't satisfy is
+  correct, not an oversight.
+
+The `range-unsupported` fault (see the fault table above) makes this route ignore any `Range` header
+and answer `200` with the whole asset and no `Accept-Ranges` — a provider that will not serve `206`
+does not advertise that it will.
 
 ## Development
 

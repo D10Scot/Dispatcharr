@@ -84,6 +84,24 @@ A deliberate misbehaviour the upstream provider is switched into to drive a
 Dispatcharr failure path. Distinct from a bug: a fault is expected, and the
 product is expected to survive it.
 
+## Category
+
+An Xtream Codes grouping, ingested from an XC provider's `get_live_categories`/
+`get_vod_categories`/`get_series_categories`. Never a "profile" — see Profiles, above, for the three
+things that word already means in this codebase. A live category becomes a **Channel Group**; a VOD
+or series category becomes a **VOD Category** (`VODCategory`, `apps/vod/models.py`, unique on
+`(name, category_type)` **globally**, not per account — two accounts declaring the same category
+name share one row).
+
+## Catch-up / timeshift
+
+One feature, two names, used interchangeably by the product itself: `apps/timeshift/` is the app
+that serves `/proxy/catchup/`. Prefer **catch-up** when naming the feature in prose, test names and
+issue titles; use **timeshift** only when naming a symbol that already spells it that way
+(`apps/timeshift/`, `TimeshiftRedisKeys`, `client_timeshift_url_layout`, and so on) — don't rename
+those, and don't introduce a new symbol spelled "catchup"/"catch_up" where an existing convention
+already says "timeshift".
+
 ## User levels
 
 Streamer (0), Standard User (1), Admin (10) — model labels, verbatim
