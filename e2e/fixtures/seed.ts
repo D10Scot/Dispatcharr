@@ -469,7 +469,30 @@ export class Seeder {
         buffer: logoPayload(name),
       },
     });
-    return this.api.json<Logo>(res, 'seed.logo');
+    const logo = await this.api.json<Logo>(res, 'seed.logo');
+    // Own the identity check rather than borrowing it. Every field a caller
+    // can see — `id`, `name`, `url`, `cache_url` — comes from this response,
+    // and `get_cache_url` (`apps/channels/serializers.py:60-72`) builds the
+    // URL from the same object, so they are self-consistent whichever row
+    // came back. Today a *wrong* row is impossible for a product reason, not
+    // a test one: `upload` does `get_or_create(url=file_path)`
+    // (`apps/channels/api_views.py:2845-2850`), `Logo.url` is `unique=True`
+    // (`apps/channels/models.py:1154`), and `file_path` derives from this
+    // per-run-unique name. Key the row on anything else — content-hash
+    // de-duplication is the plausible change — and that guarantee vanishes
+    // silently, with every byte assertion downstream still passing because
+    // it would compute the *other* logo's payload from the *other* logo's
+    // name. `name` is the one value this function knows independently, so
+    // this is the only place the check can be made.
+    if (logo.name !== name) {
+      throw new Error(
+        `seed.logo: uploaded "${name}" but the server returned the row ` +
+          `named "${logo.name}" (id ${logo.id}). Every other field is ` +
+          `self-consistent with whichever row this is, so nothing further ` +
+          `downstream can detect the substitution.`
+      );
+    }
+    return logo;
   }
 }
 
