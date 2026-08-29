@@ -60,7 +60,7 @@ immediately, never a 300s timeout.
 
 | Method | Path | Purpose |
 |---|---|---|
-| `POST` | `/scenarios` | Create. Body declares catalogue, optional credentials, `maxConnections` (default unlimited), `rate` (default 1). Returns `{ id, internal, control, channels }` |
+| `POST` | `/scenarios` | Create. Body declares catalogue, optional credentials, `maxConnections` (default unlimited), `rate` (default 1). Returns **201** with the whole resolved scenario, not just the four keys you sent: `{ id, internal, control, channels }` plus the **resolved catalogue** — `vod`, `series`, the category lists, and any defaults the parser filled in. That echo is what makes the count form usable: declare `series: 2` and the response carries the generated series and **episode** ids, which you need for `/series/.../<id>.<ext>` and cannot construct yourself. `UpstreamScenario` (`e2e/fixtures/upstream.ts`) types those fields, so they are reachable without opening `src/` |
 | `GET` | `/scenarios` | List live scenarios. Also the readiness endpoint `e2e_up.sh` waits on |
 | `DELETE` | `/scenarios/<id>` | Optional explicit close |
 | `POST` | `/s/<id>/fault` | Apply or clear a fault. Body takes an optional `channel` filter and per-fault parameters. Returns `{ fault, active, appliedTo }` |
