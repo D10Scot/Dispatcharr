@@ -441,10 +441,11 @@ early on the name.
 `pristine`, `seeded`, `streaming`, `streaming-failover`, `streaming-greybox`,
 `lifecycle` and `frontend` as a hardcoded seven-job matrix (the `test` job's
 `strategy.matrix.project`), each against its own fresh container, each gated
-on `npm run typecheck` before tests run. **If you add an eighth project to
-`playwright.config.ts`, add it to that matrix too** — nothing wires new
-projects in automatically, and a project missing from the matrix gets no CI
-coverage and no failure signal.
+on `npm run typecheck` before tests run. **If you add another project to
+`playwright.config.ts`, add it to that matrix too** (unless it belongs in
+`lifecycle-tests.yml` instead — see `lifecycle-upgrade` below) — nothing
+wires new projects in automatically, and a project missing from both
+matrices gets no CI coverage and no failure signal.
 
 A red E2E run **does** block a merge: the `Main` ruleset is active and
 requires one check, **`E2E result`**. That is the aggregate job at the bottom

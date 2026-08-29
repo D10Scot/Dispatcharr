@@ -54,8 +54,17 @@ const SELF_FILE = path.basename(__filename);
 // …)` in backups.spec.ts and plugins.spec.ts is exactly this shape). Excluding
 // exactly these four names is deliberate and minimal, not a retreat from the
 // fail-closed rule above: every *other* `test.<prop>(...)` call — `.only`,
-// `.skip`, `.fixme`, `.fail`, `.describe`, anything not in this set — still
-// shares `test(...)`'s `(name, fn)` shape and is still judged below.
+// `.skip`, `.fixme`, `.fail`, anything not in this set — is still judged
+// below by `isTestCallee()`. That does NOT mean every such call shares
+// `test(...)`'s `(name, fn)` shape: `test.use({...})`, `test.setTimeout(n)`,
+// `test.slow()`, `test.step(name, fn)` and the two-argument
+// `test.skip(cond, 'reason')` form don't take an inline test callback at
+// all, and `test.describe(name, fn)`'s callback takes no fixture parameter
+// to destructure — `judge()` reads none of these as `'ok'`. None of these
+// forms are used under `tests/frontend/` today, so this is latent, but it
+// fails *loud*: being judged (not exempted) means the checker reports such
+// a call as `'unverifiable'` rather than silently passing it, the same
+// fail-closed outcome as any other shape it can't read.
 const TEST_HOOK_NAMES = new Set(['beforeEach', 'afterEach', 'beforeAll', 'afterAll']);
 
 function isTestCallee(expr: ts.Expression): boolean {
@@ -190,6 +199,14 @@ test('every test() under tests/frontend/ destructures pageErrors', async () => {
     offenses.push(...findOffenses(src, file));
   }
 
+  // Partition on the structured `verdict` field, not on the rendered English
+  // below — `summary` (all offenses, for the failure messages) and the two
+  // per-verdict arrays used in the assertions are both built from `offenses`
+  // directly, so a `missing` template that happened to contain the word
+  // "UNVERIFIABLE" could never misbucket into the wrong list.
+  const missingOffenses = offenses.filter((o) => o.verdict === 'missing');
+  const unverifiableOffenses = offenses.filter((o) => o.verdict === 'unverifiable');
+
   const summary = offenses.map((o) =>
     o.verdict === 'missing'
       ? `${o.file}:${o.line} — does not destructure pageErrors`
@@ -215,18 +232,23 @@ test('every test() under tests/frontend/ destructures pageErrors', async () => {
   // and still fails. Removing a fixed entry also fails, which is correct — the
   // list is only as true as its last edit. **Add an entry deliberately, with a
   // reason, and never merely to make the suite green.**
+  //
+  // Pinned by `file:line` only, not the rendered reason text — the reason
+  // string duplicates judge()'s literal (`:114-117`) verbatim, so pinning the
+  // full message would break this list on a wording-only change to that
+  // literal, or on an unrelated import shifting plugins.spec.ts's line
+  // numbers. The point of the pin is that a change to the *set* of
+  // unverifiable locations is loud, not that a change to the *wording* is.
   const KNOWN_UNVERIFIABLE = [
     // plugins.spec.ts's first test is the synchronous zip-builder unit test.
     // It takes no fixtures because it opens no page and does no I/O — it calls
     // buildPluginZip() and asserts on the returned Buffer — so `pageErrors`
     // would have nothing to observe.
-    'plugins.spec.ts:15 — UNVERIFIABLE: test callback destructures no fixtures ' +
-      'at all — if it never opens a page, exclude this file from the scan ' +
-      'explicitly (see SELF_FILE); if it does, name `pageErrors`',
+    'plugins.spec.ts:15',
   ];
 
   expect(
-    summary.filter((line) => !line.includes('UNVERIFIABLE')),
+    missingOffenses.map((o) => `${o.file}:${o.line}`),
     'A test() call under e2e/tests/frontend/ opens a page without naming the ' +
       '`pageErrors` fixture, so no error check runs for it. Playwright only ' +
       'constructs the fixture (and its automatic expectClean() teardown — no ' +
@@ -237,7 +259,7 @@ test('every test() under tests/frontend/ destructures pageErrors', async () => {
   ).toEqual([]);
 
   expect(
-    summary.filter((line) => line.includes('UNVERIFIABLE')),
+    unverifiableOffenses.map((o) => `${o.file}:${o.line}`),
     'One or more test() calls under e2e/tests/frontend/ failed the pageErrors ' +
       'check. Playwright only constructs the `pageErrors` fixture (and runs its ' +
       "automatic expectClean() teardown — no `auto: true`, see fixtures/index.ts) " +
@@ -248,7 +270,7 @@ test('every test() under tests/frontend/ destructures pageErrors', async () => {
       "at all — inline the test callback as a plain async arrow function " +
       'destructuring `{ …, pageErrors }`, or extend `judge()` in ' +
       'pageerrors-enforcement.spec.ts to understand the new shape explicitly. ' +
-      'If it is genuinely unreadable and genuinely safe, add it to ' +
+      'If it is genuinely unreadable and genuinely safe, add its `file:line` to ' +
       'KNOWN_UNVERIFIABLE above with a reason. ' +
       `Details — ${summary.join(' | ')}`
   ).toEqual(KNOWN_UNVERIFIABLE);

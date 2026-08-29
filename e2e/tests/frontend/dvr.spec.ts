@@ -27,9 +27,14 @@ const DVR_SURFACE = SURFACES.find((s) => s.name === 'DVR')!;
  * 23:xx) and End's original time (already rolled to the next day, e.g. 00:xx)
  * both land on the same target day-of-month, and the leftover 00:xx < 23:xx
  * fails the form's own end-after-start validation — reproduced and confirmed
- * live at 23:13 BST (Start "10:00 PM", End "12:00 AM" *same* date). Setting
- * the time ourselves removes the dependency on the clock entirely: whatever
- * `hour`/`minute` the caller passes is what lands, independent of `now`.
+ * live at 23:13 BST (Start "11:00 PM", End "12:00 AM" *same* date). Setting
+ * the time ourselves removes the *time's* dependency on the clock: whatever
+ * `hour`/`minute` the caller passes is what lands, independent of `now`. The
+ * *month* is still clock-derived, independently per picker (each call moves
+ * one month forward from that picker's own rendered default) — benign here
+ * because both assertions below only compare Start/End to each other and to
+ * `now`, not to a specific month, but on the last day of a month at 23:xx
+ * Start and End can still land in different months.
  *
  * Four locators diverge from the plan, all confirmed against the real DOM
  * (headed run, `[data-dates-dropdown]`'s `outerHTML`) rather than assumed:

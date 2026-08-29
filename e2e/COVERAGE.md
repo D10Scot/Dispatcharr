@@ -2,7 +2,13 @@
 
 The shared worklist for all ten goals. **Update this in the same PR as the
 tests.** Status: `todo` / `done` / `known-bug` (asserted correct, marked
-`test.fail()`, issue filed).
+`test.fail()`, issue filed) — for a Flow row, meaning the test itself.
+
+A **Gap**/**Observation** row isn't a flow under test, so its Status tracks
+the finding instead: `done` once the note is written and, where relevant,
+confirmed against the code or a live run, with no further action expected
+here; `todo` when the row is a live open question left for a later goal to
+resolve (see the G8/G10 Gap rows).
 
 | Area | Flow | Goal | Status |
 |---|---|---|---|
@@ -89,8 +95,8 @@ tests.** Status: `todo` / `done` / `known-bug` (asserted correct, marked
 | Frontend | Logos: upload and browse | G6 | done |
 | Frontend | **Gap:** `apps.channels.Logo.url` is a discriminator-free polymorphic field — a remote URL or, for a local upload, a raw server-side filesystem path (`/data/logos/<name>`) — and every consumer tells the two apart with its own copy-pasted `startsWith('http')`/`startsWith(('http://', 'https://'))` check: `apps/output/views.py:290` (`tvg-logo`), the XC `stream_icon` field, `LogosTable.jsx`'s URL column. All four agree today, so this is not filed as a defect — but it is the same shape as the eight-site channel-authorization filter in the root `CLAUDE.md`'s defect list, where the eighth copy was wrong. A fifth site that forgets the check would not fail cleanly either: a bare `url` handed to an HTTP client collides with the XC live-stream route (`<str:username>/<str:password>/<str:channel_id>`, three path segments matches `/data/logos/<file>` exactly) and 404s from an unrelated "no such user" lookup, which sends whoever debugs it looking in the wrong subsystem entirely. Confirmed empirically, not assumed, by G6 task 10 (`logos.spec.ts`) | G6 | done |
 | Frontend | Backups: create and validate the archive | G6 | done |
-| Lifecycle | Backups: restore — split out of G6's Backups row. Restoring on a shared instance replaces the database under every parallel worker mid-run and under every other project sharing the container locally, so it needs an instance of its own; G7 already stands one up per scenario | G7 | todo |
 | Frontend | **Gap:** development-mode-only diagnostics — not just React's key-prop warning, but anything gated behind `__DEV__`/`import.meta.env.DEV` (Mantine's own dev checks, React Router's, etc.) — are invisible to the `pageErrors` fixture in this harness. `docker/Dockerfile:22`'s `npm run build`, which is what `scripts/e2e_up.sh:138` builds the e2e image from, is a Vite production build: it resolves the production `react/jsx-runtime` with `NODE_ENV="production"`, so dev-only checks (React's `validateChildKeys` among them) are compiled out of the bundle entirely, not merely suppressed at runtime. Production error reporting is unaffected — `pageerror` and `console.error` from real app/library code still reach the collector, so this is not a hole in error detection generally, only in this one class of dev-time-only diagnostic. A later task that needs to assert a dev-only diagnostic must verify it against a development build directly, or assert the underlying behaviour rather than the diagnostic message. First hit: G6 task 9 (`connect.spec.ts`), trying to reproduce [#62](https://github.com/D10Scot/Dispatcharr/issues/62) | G6 | done |
+| Lifecycle | Backups: restore — split out of G6's Backups row. Restoring on a shared instance replaces the database under every parallel worker mid-run and under every other project sharing the container locally, so it needs an instance of its own; G7 already stands one up per scenario | G7 | todo |
 | Lifecycle | Upgrade from previous release (migrations) | G7 | done |
 | Lifecycle | Restart preserves channels and settings | G7 | done |
 | Lifecycle | PUID/PGID honoured | G7 | done |
@@ -158,7 +164,8 @@ black-box client can act), and deleted rather than kept as a false green. See
 the row itself for the full trace and `e2e/tests/streaming-greybox/` history
 (commit `37edae89`) for the removed spec and allowlist entry.
 
-The nine `done` G6 rows above are covered by these specs. The nine render
+The nine G6 flow rows above are covered by these specs (the Gap/Observation
+annotation rows carry no spec of their own). The nine render
 checks live in one file, generated from the surface table in
 `e2e/tests/frontend/helpers.ts`; each surface's write or read proof is its own
 file, and **that one-file-per-surface split is load-bearing** — the `frontend`
