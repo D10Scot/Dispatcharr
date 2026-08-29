@@ -99,11 +99,18 @@
  * bypassing this module entirely.
  *
  * `pageErrors: PageErrorCollector` — everything the browser reported while the
- *   test ran: `consoleErrors`, `pageErrors`, `failedResponses`, and
- *   `expectClean()`, which fails naming every offender not covered by
- *   `EXPECTED_PAGE_NOISE`. Attached at fixture setup, so it sees the initial
- *   document load. The allowlist rule is at the top of `page-errors.ts`: a
- *   product defect is filed, never allowlisted.
+ *   test ran: `consoleErrors`, `pageErrors`, `failedResponses` (including
+ *   network-level failures — connection refused, DNS, blocked — at
+ *   `status: 0`), and `expectClean()` (`async`, so `await` it), which fails
+ *   naming every offender not covered by `EXPECTED_PAGE_NOISE`. Attached at
+ *   fixture setup, so it sees the initial document load. **This fixture calls
+ *   `expectClean()` itself at teardown, for every test that uses it** — a
+ *   spec never has to remember to. A test that deliberately provokes an
+ *   error to exercise the product's own handling of it should call
+ *   `pageErrors.waiveAutomaticCheck('<reason>')` to skip that one check; the
+ *   reason is mandatory and shows up at the call site. The allowlist rule is
+ *   at the top of `page-errors.ts`: a product defect is filed, never
+ *   allowlisted.
  *
  * `waitFor: Waiter` — polling. The default way to wait for Celery-backed work.
  *   condition(predicate, options?) → Promise<void>
@@ -372,8 +379,18 @@ export const test = base.extend<Fixtures>({
   // listeners must be attached at fixture setup, before the test body runs
   // its first `goto`. Anything attached inside the test misses the initial
   // document load, which is where a bad bundle fails.
+  //
+  // Teardown calls `expectClean()` itself — opt-out via `waiveAutomaticCheck`,
+  // not opt-in — so a spec that destructures `pageErrors` and never calls it
+  // cannot pass green with a page full of errors. A failure here is
+  // attributed to whichever test was running when teardown ran, same as any
+  // other fixture teardown assertion.
   pageErrors: async ({ page }, use) => {
-    await use(new PageErrorCollector(page));
+    const collector = new PageErrorCollector(page);
+    await use(collector);
+    if (!collector.isWaived) {
+      await collector.expectClean();
+    }
   },
   waitFor: async ({ api }, use) => {
     await use(new Waiter(api));

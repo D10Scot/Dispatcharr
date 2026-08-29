@@ -53,9 +53,19 @@ function isAllowed(kind: PageNoiseEntry['kind'], value: string): boolean {
 export class PageErrorCollector {
   readonly consoleErrors: string[] = [];
   readonly pageErrors: string[] = [];
-  readonly failedResponses: { url: string; status: number }[] = [];
+  readonly failedResponses: { url: string; status: number; failureText?: string }[] = [];
+
+  private readonly page: Page;
+
+  /**
+   * Set by {@link waiveAutomaticCheck}. `fixtures/index.ts`'s `pageErrors`
+   * fixture calls `expectClean()` for every test at teardown unless this is
+   * set — see that fixture for why the check is opt-out, not opt-in.
+   */
+  private waivedReason: string | null = null;
 
   constructor(page: Page) {
+    this.page = page;
     page.on('console', (message) => {
       if (message.type() === 'error') this.consoleErrors.push(message.text());
     });
@@ -70,13 +80,69 @@ export class PageErrorCollector {
         });
       }
     });
+    // `response` only fires for a request that got an HTTP response at all.
+    // A network-level failure — connection refused, DNS failure, blocked by
+    // the page — never does, so without this handler those are structurally
+    // invisible to `expectClean()`.
+    page.on('requestfailed', (request) => {
+      const failure = request.failure();
+      // `net::ERR_ABORTED` fires for any in-flight request cancelled by a
+      // navigation (including this fixture's own goto()s) or by the page
+      // closing. That is a normal browser artifact, not a product signal —
+      // every other reason (refused connection, DNS failure, blocked
+      // request) is real and gets recorded.
+      if (failure?.errorText === 'net::ERR_ABORTED') return;
+      this.failedResponses.push({
+        url: new URL(request.url()).pathname,
+        status: 0,
+        failureText: failure?.errorText,
+      });
+    });
+  }
+
+  /**
+   * Opt out of the automatic `expectClean()` teardown check that
+   * `fixtures/index.ts`'s `pageErrors` fixture runs for every test. For a
+   * test that deliberately provokes an error to exercise the product's own
+   * handling of it (a defect this fixture would otherwise fail on before the
+   * test gets to make its own assertion). `reason` is mandatory and sits at
+   * the call site, so a reader scanning the spec sees which tests waive the
+   * check and why — never a bare boolean that reads as "trust me."
+   */
+  waiveAutomaticCheck(reason: string): void {
+    this.waivedReason = reason;
+  }
+
+  /** Read by the `pageErrors` fixture's teardown. Not for spec use. */
+  get isWaived(): boolean {
+    return this.waivedReason !== null;
   }
 
   /**
    * Fail naming every offender, not counting them. A render check that says
    * "expected 0, got 3" costs the reader a re-run with `--debug`.
+   *
+   * `console`, `pageerror` and `response`/`requestfailed` are delivered over
+   * CDP asynchronously, so an error triggered by the test's last action may
+   * not have reached these listeners yet at the instant this is called — the
+   * `setTimeout`-deferred throw in this fixture's own scaffold test needed
+   * `expect.poll` for exactly that reason. Awaiting a matching macrotask
+   * round-trip through the page below flushes anything already queued ahead
+   * of it, including a same-tick `setTimeout(fn, 0)`. It cannot wait for an
+   * error that has not happened yet — e.g. one raised by a network request
+   * the caller never awaited. Call this after the page has reached the state
+   * the test is actually asserting (its own `toBeVisible()` etc.), not
+   * immediately after firing an action, and it needs nothing further.
    */
-  expectClean(): void {
+  async expectClean(): Promise<void> {
+    await this.page
+      .evaluate(() => new Promise((resolve) => setTimeout(resolve, 0)))
+      .catch(() => {
+        // The page navigated away or closed between the caller's last
+        // action and this call — nothing left to flush, and the arrays
+        // already hold everything that was observed before that happened.
+      });
+
     const offenders = [
       ...this.pageErrors.map((e) => `pageerror: ${e}`),
       ...this.consoleErrors
@@ -84,7 +150,11 @@ export class PageErrorCollector {
         .map((e) => `console.error: ${e}`),
       ...this.failedResponses
         .filter((r) => !isAllowed('response', r.url))
-        .map((r) => `HTTP ${r.status} ${r.url}`),
+        .map((r) =>
+          r.status === 0
+            ? `network failure: ${r.url}${r.failureText ? ` (${r.failureText})` : ''}`
+            : `HTTP ${r.status} ${r.url}`
+        ),
     ];
     expect(
       offenders,

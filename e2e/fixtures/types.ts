@@ -472,7 +472,8 @@ export type UserAgent = {
   id: number;
   name: string;
   user_agent: string;
-  description: string | null;
+  /** `CharField(max_length=255, blank=True)` — no `null=True` (`core/models.py:29`), so DRF emits `""`, never `null`. */
+  description: string;
   is_active: boolean;
 };
 
