@@ -124,12 +124,16 @@ test('enabling auto channel sync creates one channel per stream inside the decla
   // message below so a recurrence is evidence, not another from-scratch
   // investigation — but read it against what the segment can actually mean:
   //
-  // `sync_auto_channels()` (apps/m3u/tasks.py:2018) wraps its whole body in
-  // a `try` (:2039) whose `except` (:3018-3028) returns
+  // `sync_auto_channels()` (apps/m3u/tasks.py:2018) opens with three local
+  // imports and two assignments (:2024-2038), then wraps everything after
+  // them in a `try` (:2039) whose `except` (:3018-3028) returns
   // `{"status": "error", ...}` instead of raising. So the *caller's* outer
   // `try`/`except` (:3820, :3847) — the mechanism D10Scot/Dispatcharr#70
-  // describes — is unreachable through this path: a `sync_auto_channels()`
-  // failure surfaces as a returned status, not a raised exception.
+  // describes — is unreachable in practice through this path: a
+  // `sync_auto_channels()` failure surfaces as a returned status, not a
+  // raised exception. (A raise from those first five statements would reach
+  // the caller's handler and produce an absent segment, but they are three
+  // imports, a `_meta` field lookup and a float literal.)
   // That returned `status: "error"` is rendered at :3843-3846 as a
   // *present* `" Auto-sync error: {error}."` segment, not an absent one —
   // the opposite of what #70 would predict here.
@@ -144,8 +148,8 @@ test('enabling auto channel sync creates one channel per stream inside the decla
   // failed."` with no created/updated/deleted, from window exhaustion
   // (RANGE_EXHAUSTED, :2696-2702 feeding the render at :3842) — see
   // `syncWindowFor`'s doc comment in `./helpers.ts` on why a window is a
-  // budget, not an infinite resource. This fix round observed exactly that
-  // shape once.
+  // budget, not an infinite resource. Observed exactly once, during Task
+  // 10's verification against a container that had not been reset.
   //
   // `_refresh_single_m3u_account_impl` calls `sync_auto_channels()`
   // (apps/m3u/tasks.py:3821), which creates every new Channel via a plain
