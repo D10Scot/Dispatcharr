@@ -1,5 +1,5 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import type { Scenario } from '../scenario.js';
+import type { CategorySpec, Scenario } from '../scenario.js';
 import { renderAccountEnvelope } from './envelope.js';
 import {
   renderLiveCategories,
@@ -100,6 +100,17 @@ export async function handleXc(context: XcContext): Promise<boolean> {
       get_series: () => renderSeries(scenario, categoryId),
     };
 
+    // Only the three actions that accept `category_id` need it validated;
+    // the category-*listing* actions ignore the parameter entirely. Fixed
+    // key set, not a `[action]` lookup keyed by the same untrusted `action`
+    // string that motivated `Object.hasOwn` below — this table is only ever
+    // indexed by one of `listActions`' own six literal keys.
+    const categoriesByAction: Partial<Record<string, CategorySpec[]>> = {
+      get_live_streams: scenario.liveCategories,
+      get_vod_streams: scenario.vodCategories,
+      get_series: scenario.seriesCategories,
+    };
+
     // `Object.hasOwn`, never `listActions[action]`'s truthiness: an object
     // literal's bracket lookup also resolves `Object.prototype` members, so
     // `?action=valueOf`/`hasOwnProperty` would return a truthy function that
@@ -107,6 +118,24 @@ export async function handleXc(context: XcContext): Promise<boolean> {
     // opaque 500), and `?action=constructor`/`toString` would return a 200
     // with a nonsense body instead of the intended 400.
     if (Object.hasOwn(listActions, action)) {
+      const categories = categoriesByAction[action];
+      // A `category_id` naming no declared category can only be a
+      // hand-written typo — Dispatcharr's own category-filtered calls
+      // always reuse an id this same provider listed via
+      // get_*_categories — and it fails *quietly*: `200 []` reads exactly
+      // like the symptom of a real product bug (an empty category), not a
+      // scenario mistake. A `category_id` naming a declared category still
+      // legitimately empties to `200 []` when nothing in it matches.
+      if (categoryId !== null && categories !== undefined && !categories.some((c) => String(c.id) === categoryId)) {
+        log(400);
+        sendJson(400, {
+          error: `'category_id' ${categoryId} names no declared category; known ids are ${categories
+            .map((c) => c.id)
+            .join(', ')}`,
+        });
+        return true;
+      }
+
       // Computed before `log`/`sendJson`, not after: if this ever throws,
       // the log must not already claim 200 for a request whose actual
       // response was a 500.

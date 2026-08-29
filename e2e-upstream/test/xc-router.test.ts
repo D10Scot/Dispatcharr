@@ -114,6 +114,51 @@ describe('catalogue action dispatch', () => {
     expect(streams[0].stream_id).toBe(2);
   });
 
+  it('400s get_live_streams for a category_id naming no declared live category', async () => {
+    // Unlike vod_id/series_id, an unknown category_id fails quietly (200
+    // []) — the exact symptom of a real product bug, not a scenario
+    // mistake — so it gets a 400 rather than the 404 those two use.
+    const { base, id } = await xcScenario({ liveCategories: [{ id: 1, name: 'A' }] });
+    const res = await fetch(`${base}/s/${id}/player_api.php${auth}&action=get_live_streams&category_id=999`);
+    expect(res.status).toBe(400);
+    const body = await readJson(res);
+    expect(body.error).toMatch(/category_id/);
+    expect(body.error).toContain('999');
+    expect(body.error).toContain('1');
+  });
+
+  it('400s get_vod_streams for a category_id naming no declared VOD category', async () => {
+    const { base, id } = await xcScenario({ vodCategories: [{ id: 1, name: 'A' }] });
+    const res = await fetch(`${base}/s/${id}/player_api.php${auth}&action=get_vod_streams&category_id=999`);
+    expect(res.status).toBe(400);
+    expect((await readJson(res)).error).toMatch(/category_id/);
+  });
+
+  it('400s get_series for a category_id naming no declared series category', async () => {
+    const { base, id } = await xcScenario({ seriesCategories: [{ id: 1, name: 'A' }] });
+    const res = await fetch(`${base}/s/${id}/player_api.php${auth}&action=get_series&category_id=999`);
+    expect(res.status).toBe(400);
+    expect((await readJson(res)).error).toMatch(/category_id/);
+  });
+
+  it('still 200s an empty list for a category_id that names a real, empty category', async () => {
+    // A known category with nothing in it is a legitimate 200 [], not a
+    // scenario mistake — only an *unknown* category_id gets the 400 above.
+    const { base, id } = await xcScenario({
+      liveCategories: [{ id: 1, name: 'A' }, { id: 2, name: 'Empty' }],
+      channels: [{ id: 1, name: 'one', tvgId: 'one.e2e', logo: null, categoryId: 1 }],
+    });
+    const res = await fetch(`${base}/s/${id}/player_api.php${auth}&action=get_live_streams&category_id=2`);
+    expect(res.status).toBe(200);
+    expect(await readJson(res)).toEqual([]);
+  });
+
+  it('does not validate category_id for the category-listing actions, which ignore it', async () => {
+    const { base, id } = await xcScenario({ liveCategories: [{ id: 1, name: 'A' }] });
+    const res = await fetch(`${base}/s/${id}/player_api.php${auth}&action=get_live_categories&category_id=999`);
+    expect(res.status).toBe(200);
+  });
+
   it('404s get_vod_info for an unknown vod_id, with a JSON body naming the field', async () => {
     const { base, id } = await xcScenario();
     const res = await fetch(`${base}/s/${id}/player_api.php${auth}&action=get_vod_info&vod_id=999`);
