@@ -43,6 +43,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write # push to the metrics-data branch
+      security-events: read # collect_security.py reads CodeQL code-scanning alerts
     steps:
       - name: Checkout
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
@@ -58,16 +59,53 @@ jobs:
             git worktree add --orphan -b metrics-data metrics-data-wt
           fi
 
+      # Weekly only: a frontend suite run under coverage instrumentation is
+      # too slow to run on every push-to-main (would make merges wait on it),
+      # so this field is only ever fresh as of the last Monday run — see
+      # collect_tests.py's docstring. The number is folded into the `tests`
+      # family row afterwards via --extra-metrics, not computed by
+      # collect_tests.py itself (which stays stdlib-only/backfillable).
+      - name: Setup Node.js
+        if: github.event_name == 'schedule'
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '24'
+          cache: 'npm'
+          cache-dependency-path: './frontend/package-lock.json'
+
+      - name: Install frontend dependencies
+        if: github.event_name == 'schedule'
+        working-directory: frontend
+        run: npm ci
+
+      - name: Run frontend coverage
+        if: github.event_name == 'schedule'
+        working-directory: frontend
+        run: npx vitest run --coverage --coverage.reporter=json-summary
+
+      - name: Extract frontend coverage percentage
+        if: github.event_name == 'schedule'
+        run: |
+          python3 -c "
+          import json
+          summary = json.load(open('frontend/coverage/coverage-summary.json'))
+          pct = summary['total']['lines']['pct']
+          json.dump({'frontend_coverage_pct': pct}, open('/tmp/frontend-coverage.json', 'w'))
+          "
+
       - name: Run collectors
         env:
           BACKFILL: ${{ inputs.backfill && '1' || '' }}
+          EXTRA_METRICS_ARGS: ${{ github.event_name == 'schedule' && '--extra-metrics tests=/tmp/frontend-coverage.json' || '' }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }} # collect_security/delivery/agentic.py use `gh`
         run: |
           if [ -n "$BACKFILL" ]; then
             python3 scripts/metrics/backfill.py \
               --repo-root . --out-dir metrics-data-wt --ref "$GITHUB_SHA"
           else
             python3 scripts/metrics/collect_all.py \
-              --repo-root . --out-dir metrics-data-wt
+              --repo-root . --out-dir metrics-data-wt --repo "$GITHUB_REPOSITORY" \
+              $EXTRA_METRICS_ARGS
           fi
 
       - name: Commit and push
