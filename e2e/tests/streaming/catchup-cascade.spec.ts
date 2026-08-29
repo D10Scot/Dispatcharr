@@ -85,6 +85,12 @@ test('the candidate cascade falls through to the QUERY layout when PATH 404s', a
   expect(attempts.slice(0, 3)).toEqual(pathAttempts);
   expect(attempts[3]).toEqual(queryAttempts[0]);
 
+  // And the cascade STOPS at the winner. Without this, a cascade that kept
+  // walking candidates 4-6 after its 200, or that retried the whole list,
+  // would be invisible: every assertion above is satisfied by a prefix of
+  // the log. Four is the whole of it — three PATH 404s then one QUERY 200.
+  expect(attempts).toHaveLength(4);
+
   // Identity: each PATH attempt carries a distinct strftime shape, in the
   // exact order build_timeshift_candidate_urls emits them — colon-dash,
   // underscore, then colon-seconds — and the winning QUERY attempt is
