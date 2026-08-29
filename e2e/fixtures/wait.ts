@@ -25,6 +25,27 @@ const M3U_IN_FLIGHT_STATUSES: readonly M3uAccountStatus[] = ['fetching', 'parsin
 /** `M3UAccount.Status` values a finished refresh comes to rest in. */
 const M3U_TERMINAL_STATUSES: readonly M3uAccountStatus[] = ['success', 'error'];
 
+/**
+ * How often `m3uRefreshComplete()`'s phase 1 re-fires its trigger while the
+ * account is still sitting on its pre-trigger baseline — see that method's
+ * doc comment for the D10Scot/Dispatcharr#59 mechanism this recovers from,
+ * and the residual risk it trades for that recovery. Exported so a
+ * regression test can reference this value directly rather than hardcode a
+ * duplicate of it, which would silently stop proving anything the moment
+ * this constant changed.
+ */
+export const M3U_RETRIGGER_INTERVAL_MS = 5_000;
+
+/**
+ * Hard cap on how many extra triggers phase 1 will fire beyond the first.
+ * Bounds the blast radius of the retry above: every re-fire risks queuing a
+ * genuine *second* refresh if a stall was actually queue backlog rather
+ * than a held lock (see `m3uRefreshComplete()`'s doc comment) — capping it
+ * bounds how many such duplicates one wait can create, though it does not
+ * eliminate the possibility of one.
+ */
+export const M3U_MAX_RETRIGGERS = 3;
+
 export type M3uRefreshWaitOptions = WaitOptions & {
   /**
    * Budget for the refresh to *engage* — either observed in flight, or
@@ -248,13 +269,36 @@ export class Waiter {
    * `:3374`, well after the terminal `status` write at `:3865`) is silently
    * dropped — the task discovers the lock held and returns having written
    * nothing, indistinguishable from "not picked up yet". Phase 1 re-fires
-   * the trigger every 5s it spends still waiting, which is what actually
-   * recovers: by the retry, the earlier refresh has almost always released
-   * its lock. This is orthogonal to the identical-back-to-back-failure gap
-   * above — that gap is a write that *does* happen but reads the same as the
-   * baseline; this one is a trigger that writes nothing at all, and retrying
-   * is exactly what a silent no-op needs and a byte-identical failure does
-   * not (retrying that just produces the same indistinguishable write again).
+   * the trigger every `M3U_RETRIGGER_INTERVAL_MS` it spends still waiting,
+   * up to `M3U_MAX_RETRIGGERS` times, which is what actually recovers: by
+   * the time a retry goes out, the earlier refresh has almost always
+   * released its lock. This is orthogonal to the identical-back-to-back-
+   * failure gap above — that gap is a write that *does* happen but reads the
+   * same as the baseline; this one is a trigger that writes nothing at all,
+   * and retrying is exactly what a silent no-op needs and a byte-identical
+   * failure does not (retrying that just produces the same indistinguishable
+   * write again).
+   *
+   * **The residual risk this trades for that recovery — stated plainly,
+   * not just bounded away.** `RefreshSingleM3UAPIView.post` has no
+   * queue-time dedupe: a duplicate is dropped only if it *executes* while
+   * an earlier one still holds the lock. This method has no way to tell
+   * "dropped because the lock was held" from "genuinely slow to be picked
+   * up" — the REST surface exposes neither a task id nor a lock-status
+   * endpoint to check either against, so every retry is a guess, not a
+   * diagnosis. If the true cause was backlog rather than a held lock, a
+   * retry queues a **second, real refresh** that can still be sitting in
+   * Celery after the *first* one finishes and this wait resolves on it —
+   * that second refresh keeps running after `m3uRefreshComplete()` has
+   * already returned, and can mutate the account's streams, channels and
+   * status underneath any assertion a caller makes right after this call: a
+   * silent, load-dependent state change in place of the loud timeout this
+   * method used to produce instead. `M3U_MAX_RETRIGGERS` bounds how many
+   * such duplicates a single wait can create; it does not eliminate the
+   * possibility of one. This is reachable only when phase 1 genuinely
+   * stalls past `M3U_RETRIGGER_INTERVAL_MS` — the common case, resolving
+   * well inside that window, never fires a retry at all, and this risk
+   * does not apply to it.
    *
    * `timeoutMs` bounds phase 2; `startTimeoutMs` bounds phase 1 (including
    * the fallback above — both are checked on the same poll). The trade for
@@ -317,12 +361,17 @@ export class Waiter {
     // Re-firing periodically is what actually recovers: by the time a retry
     // goes out, the earlier refresh's lock has almost always cleared (Task 3's
     // own workaround for this same issue found ~2s enough in this container —
-    // `m3u-refresh-failure.spec.ts`). A refresh that is instead just slow to
-    // be picked up (no competing lock at all) receives a harmless duplicate
-    // POST — the resulting second queued run finds *its own* predecessor's
-    // lock held and is dropped the same cheap way.
-    const RETRIGGER_INTERVAL_MS = 5_000;
+    // `m3u-refresh-failure.spec.ts`).
+    //
+    // Bounded at `M3U_MAX_RETRIGGERS`, deliberately — NOT "harmless" when a
+    // stall turns out to be backlog rather than a held lock. There is no
+    // queue-time dedupe on the product side, so a retry queues a genuine
+    // second refresh that can still be running after the first one finishes
+    // and this wait returns. See the residual-risk paragraph on this
+    // method's own doc comment for what that means for a caller's later
+    // assertions — this cap limits it, it does not remove it.
     let lastFireAt = Date.now();
+    let retriggerCount = 0;
 
     const firstObserved = await this.resource<M3uAccount>(
       url,
@@ -337,8 +386,12 @@ export class Waiter {
         ) {
           return true;
         }
-        if (Date.now() - lastFireAt >= RETRIGGER_INTERVAL_MS) {
+        if (
+          retriggerCount < M3U_MAX_RETRIGGERS &&
+          Date.now() - lastFireAt >= M3U_RETRIGGER_INTERVAL_MS
+        ) {
           lastFireAt = Date.now();
+          retriggerCount += 1;
           // Best-effort and logged immediately rather than folded into
           // `description` (fixed at call time, before any retry has had a
           // chance to run — a mutable value read from inside it would never
@@ -359,8 +412,9 @@ export class Waiter {
           `M3U account ${accountId} refresh to start ` +
           `(status ${M3U_IN_FLIGHT_STATUSES.join(' or ')}, or a terminal status ` +
           `that differs from its pre-trigger baseline of '${baseline.status}'; ` +
-          `re-triggered every ${RETRIGGER_INTERVAL_MS}ms in case an earlier ` +
-          'attempt landed on a still-held refresh lock — D10Scot/Dispatcharr#59)',
+          `re-triggered every ${M3U_RETRIGGER_INTERVAL_MS}ms, up to ` +
+          `${M3U_MAX_RETRIGGERS} times, in case an earlier attempt landed on a ` +
+          'still-held refresh lock — D10Scot/Dispatcharr#59)',
         timeoutMs: startTimeoutMs,
         intervalMs: 250,
       }

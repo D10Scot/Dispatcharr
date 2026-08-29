@@ -2,6 +2,13 @@ import { test, expect } from '../../fixtures';
 import type { ChannelGroup, M3uAccount, StreamPage } from '../../fixtures';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
+// Reaches past the `fixtures` barrel deliberately, mirroring
+// `quarantine.spec.ts`'s precedent: this is a meta/regression test of the
+// fixture's own internal tuning, not part of the public harness contract
+// ordinary specs should import. Read directly from `Waiter.m3uRefreshComplete`
+// so a future change to either constant cannot silently invalidate this test
+// by making its hardcoded timing assumptions wrong without anyone noticing.
+import { M3U_MAX_RETRIGGERS, M3U_RETRIGGER_INTERVAL_MS } from '../../fixtures/wait';
 
 /**
  * The `group-title` every fake-provider channel carries, hardcoded in
@@ -110,17 +117,22 @@ test("waitFor.m3uRefreshComplete re-fires its trigger when the account never mov
   waitFor,
   api,
 }) => {
-  // Inactive: no create-time `refresh_m3u_groups` task competes for
-  // anything here, so the only thing that can move this account's status is
-  // whichever `trigger()` call this test lets through.
+  // Inactive: `refresh_account_on_save` (`apps/m3u/signals.py:12-19`) still
+  // dispatches the create-time `refresh_m3u_groups` task unconditionally on
+  // `created` — `is_active` plays no part in whether it's queued. It just
+  // can't *write* anything once it runs: the task's own account lookup
+  // filters `is_active=True` (`apps/m3u/tasks.py:1552-1556`) and raises
+  // `DoesNotExist`, so it returns having touched nothing. So the only thing
+  // that can move this account's status is whichever `trigger()` call this
+  // test lets through — not because nothing else runs, but because nothing
+  // else is *able* to write.
   const account = await seed.m3uAccount({ is_active: false });
   let attempts = 0;
 
   const result = await waitFor.m3uRefreshComplete(account.id, {
-    // Comfortably more than one retry interval (hardcoded at 5s inside
-    // `m3uRefreshComplete`), so a single re-fire has room to land and
-    // resolve well before this budget is exhausted.
-    startTimeoutMs: 12_000,
+    // Comfortably more than one retry interval, so a single re-fire has
+    // room to land and resolve well before this budget is exhausted.
+    startTimeoutMs: M3U_RETRIGGER_INTERVAL_MS + 7_000,
     trigger: async () => {
       attempts += 1;
       if (attempts === 1) {
@@ -143,6 +155,49 @@ test("waitFor.m3uRefreshComplete re-fires its trigger when the account never mov
   // baseline, not a working playlist.
   expect(result.status).toBe('error');
   expect(attempts).toBeGreaterThanOrEqual(2);
+});
+
+// Pins the OTHER half of the same fix: `M3U_MAX_RETRIGGERS` actually bounds
+// how many extra triggers phase 1 will fire, rather than retrying forever at
+// `M3U_RETRIGGER_INTERVAL_MS` for the whole `startTimeoutMs` budget. That cap
+// is what keeps a genuinely-backlogged (not lock-held) refresh from
+// accumulating an unbounded pile of duplicate, real refreshes queued behind
+// it — see the residual-risk paragraph on `m3uRefreshComplete()`'s doc
+// comment. A `trigger` that never succeeds, ever, forces phase 1 to keep
+// retrying for its *entire* budget with nothing to stop it early, so the
+// only thing that can cap `attempts` is the production code's own limit.
+test('waitFor.m3uRefreshComplete stops re-firing its trigger after M3U_MAX_RETRIGGERS', async ({
+  seed,
+  waitFor,
+}) => {
+  // This test's own wait budget alone runs close to the project's 30s
+  // default; give it headroom over fixture/setup overhead on top of that.
+  test.setTimeout(60_000);
+
+  const account = await seed.m3uAccount({ is_active: false });
+  let attempts = 0;
+
+  // Long enough to run *past* the point where an UNCAPPED implementation's
+  // next retry would fire — retry N lands at N * M3U_RETRIGGER_INTERVAL_MS,
+  // so the (M3U_MAX_RETRIGGERS + 1)-th retry (the one the cap exists to
+  // prevent) would land at M3U_RETRIGGER_INTERVAL_MS * (M3U_MAX_RETRIGGERS + 1).
+  // Budgeting only up to *that* point (an earlier version of this test did)
+  // is wrong: the capped and uncapped implementations are indistinguishable
+  // until a would-be-extra retry has actually had the chance to fire, so a
+  // too-short budget can't tell "the cap held" from "there wasn't time for
+  // the next retry regardless" — it would pass either way, proving nothing.
+  const startTimeoutMs = M3U_RETRIGGER_INTERVAL_MS * (M3U_MAX_RETRIGGERS + 2) - 1_000;
+
+  await expect(
+    waitFor.m3uRefreshComplete(account.id, {
+      startTimeoutMs,
+      trigger: async () => {
+        attempts += 1; // Never activates the account — always a no-op.
+      },
+    })
+  ).rejects.toThrow(/timed out/);
+
+  expect(attempts).toBe(1 + M3U_MAX_RETRIGGERS);
 });
 
 /**
