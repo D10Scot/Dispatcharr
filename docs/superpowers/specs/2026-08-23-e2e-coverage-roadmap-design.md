@@ -17,7 +17,7 @@ E2E tests are not a nicer unit test. They are the only place these things can be
 all — and the relay extraction (Phase 1 of this fork's stated direction) needs that safety net
 in place *before* it moves the boundary.
 
-## The eight goals
+## The ten goals
 
 | | Goal | Depends on | Wave |
 |---|---|---|---|
@@ -28,19 +28,22 @@ in place *before* it moves the boundary.
 | **G5** | **Client output surfaces** — `/output/m3u`, `/output/epg`, HDHomeRun, the Xtream listing and authentication surface, the authorization matrix | G1, G2 | 2 |
 | **G6** | **Frontend surfaces** — Guide, DVR, Users, Settings, Plugins, Stats, Connect, Logos, backups | G1 | 2 |
 | **G7** | **Deployment lifecycle** — first-run, upgrade-with-migrations, restart persistence, PUID/PGID, TLS Postgres | G1 | 2 |
-| **G8** | **Provider-side XC / VOD / catch-up emulation** — extend the G2 provider to speak Xtream Codes, serve a VOD and series catalogue, and answer catch-up URLs; then the tests that need one: catch-up/timeshift end to end, the XC VOD and series actions against real content, XC-sourced M3U ingest | G2, G5 | 3 |
+| **G8** | **Provider-side XC / VOD / catch-up emulation** — extend the G2 provider to speak Xtream Codes, serve a VOD and series catalogue, and answer catch-up URLs in the shapes `build_timeshift_candidate_urls` tries. Ships **plumbing proofs only**; the tests that need the provider are G9 and G10 | G2, G5 | 3 |
+| **G9** | **VOD and series end to end** — catalogue ingest into `Movie`/`Series`/`Episode`, the XC VOD and series actions against real content, and the `vod_proxy` streaming path including Range and seek | G8 | 4 |
+| **G10** | **Catch-up / timeshift end to end** — both provider URL layouts, the candidate cascade, redirect and proxy modes, and the ingest fields catch-up depends on | G8 | 4 |
 
 ```
 G1 ─┐
 G2 ─┴─→ G3 ─→ ┌ G4
-              ├ G5 ─→ G8
-G1 ──────────→├ G6
+              ├ G5 ─→ G8 ─→ ┌ G9
+G1 ──────────→├ G6          └ G10
 G1 ──────────→└ G7
 ```
 
 Wave 1 is two agents in two worktrees, working disjoint files. Wave 2 is five, dispatched only
 once G1 and G2 have merged to `main`. Wave 3 is G8 alone, dispatched once G5 has landed the
-server-side surfaces it deepens.
+server-side surfaces it deepens. Wave 4 is G9 and G10, dispatched once G8's provider build has
+landed; they are disjoint in subject and can run in parallel.
 
 ## Goal notes
 
@@ -98,6 +101,44 @@ up the container it needs; only the first-run case is `pristine`. It also wires 
 `docker/tests/test-puid-pgid.sh` and `test-tls-postgres.sh`, which are currently attached to no
 workflow at all.
 
+**G8 was itself split**, for the same reason G5 was. As first defined it carried the provider
+build *and* every test that needs it — the pattern that made G5 unshippable. G2 is the evidence
+that a build is shippable when it stops at **plumbing proofs**: enough Dispatcharr-facing tests
+to prove the wiring works, and not one test of the product's behaviour. So **G8 is now the build
+alone**, and the two consumer goals below own the coverage. Nothing about the split changes what
+gets tested; it changes which PR tests it. See
+`2026-08-29-e2e-xc-provider-emulation-design.md`.
+
+**G9** owns everything VOD. Catalogue ingest is the first half: `refresh_vod_content` walks
+`get_vod_categories` → `get_vod_streams` → `get_series_categories` → `get_series`, and the
+per-series episode fetch (`get_series_info`) is a *separate, on-demand* call reached through
+`GET /api/vod/series/<pk>/provider-info/`, not part of the refresh. Category gating
+(`M3UVODCategoryRelation.enabled`, and `auto_enable_new_groups_vod`/`_series`), the
+`Uncategorized` fallback, and the `get_vod_info` advanced-data path all belong here. The second
+half is the `vod_proxy` streaming path, which is a different architecture from live streaming —
+`iter_content` passthrough, one upstream per session, session id in the URL path, and Range/seek
+driven by the provider's `Content-Length`. G9 also deepens the four XC VOD/series actions G5
+could only assert as well-formed-and-empty, and the two (`get_vod_info`, `get_series_info`) that
+G5 could only assert as `404`. **G9 must not touch the four Lua scripts in `vod_proxy`'s stream
+counter**: they bypass the metadata lock deliberately, as a real bug fix, pinned by
+`apps/proxy/vod_proxy/tests/test_vod_lock_contention.py`.
+
+**G10** owns everything catch-up. Three client entry points reach the same code
+(`/proxy/catchup/<uuid>`, the root `timeshift/<user>/<pass>/<dur>/<start>/<id>.ts`, and
+`streaming/timeshift.php`), and which one was used decides the provider URL layout in redirect
+mode (`client_timeshift_url_layout`). Proxy mode does not use that choice at all: it walks
+`build_timeshift_candidate_urls`'s seven ordered candidates — three PATH timestamp shapes, then
+four QUERY shapes — until one answers with MPEG-TS, and caches the winning index per account.
+That cascade is the part most likely to be wrong and the part nothing observes today. G10 also
+owns the XC live-ingest fields catch-up depends on (`tv_archive`/`tv_archive_duration` →
+`Stream.is_catchup`/`catchup_days` → `rollup_channel_catchup_fields` → `Channel.is_catchup`, and
+`server_info.timezone` on the account profile, which drives `convert_timestamp_to_provider_tz`),
+because those are its preconditions and it is the goal that breaks when they are wrong. One
+inherited decision lands here too: the generated M3U emits no `catchup=` attribute, so an
+M3U-only client can never discover catch-up — G10 decides whether that is a defect to file.
+**G10 cannot prove Dispatcharr seeks to the right moment**: G8's archive is not time-addressable
+(see its Non-goals). G10 proves the right moment was *asked for*, and says so in every row.
+
 ## Rules binding every goal
 
 1. **Own worktree, own branch off `main`, own PR.** Per `CLAUDE.md`.
@@ -106,7 +147,7 @@ workflow at all.
    both a `Stream` model row and the act of streaming. Getting this wrong once, in a fixture
    name, propagates permanently. The glossary lives at the repo root, not under `e2e/` — it is
    product vocabulary, not E2E vocabulary. See `docs/agents/domain.md`.
-3. **Update `e2e/COVERAGE.md` in the same PR as the tests.** The inventory is how eight agents
+3. **Update `e2e/COVERAGE.md` in the same PR as the tests.** The inventory is how ten agents
    avoid duplicating each other and avoid leaving silent gaps.
 4. **Never assume the instance is empty.** No assertion on a global count or an unfiltered list.
 5. **Test agents file product bugs; they do not fix them.** See below.
