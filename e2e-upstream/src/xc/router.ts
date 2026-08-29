@@ -1,5 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { CategorySpec, Scenario } from '../scenario.js';
+import type { ServeOptions } from '../vod-asset.js';
 import { renderAccountEnvelope } from './envelope.js';
 import {
   renderLiveCategories,
@@ -36,6 +37,13 @@ export interface XcContext {
     url: URL,
     options?: { credentialsAlreadyVerified?: boolean }
   ): Promise<void>;
+  /**
+   * `serveFiniteAsset` with the VOD asset already bound — passed in for the
+   * same reason as `serveChannelStream`: the router never sees a file path,
+   * and `server.ts` stays the only module that resolves `UPSTREAM_VOD_ASSET`.
+   * Returns the status sent, for `log()`.
+   */
+  serveVodAsset(res: ServerResponse, options: ServeOptions): number;
 }
 
 /**
@@ -234,6 +242,60 @@ export async function handleXc(context: XcContext): Promise<boolean> {
     await context.serveChannelStream(scenario, channelId, context.req, context.res, url, {
       credentialsAlreadyVerified: true,
     });
+    return true;
+  }
+
+  // One handler for both `/movie/` and `/series/`: they differ only in which
+  // catalogue the id is looked up against, and both serve the same finite
+  // asset once membership is established.
+  const vodMatch = /^\/(movie|series)\/([^/]+)\/([^/]+)\/(\d+)\.[A-Za-z0-9]+$/.exec(subPath);
+  if (vodMatch) {
+    const [, kind, rawUsername, rawPassword, rawId] = vodMatch;
+
+    // Same per-field decode guard as the `/live/` route above, and for the
+    // same reason: a malformed percent-escape here must 400 naming the
+    // field, not fall through to the generic handler's 500.
+    let username: string;
+    try {
+      username = decodeURIComponent(rawUsername);
+    } catch {
+      log(400);
+      sendJson(400, { error: `'username' path segment '${rawUsername}' is not validly percent-encoded` });
+      return true;
+    }
+    let password: string;
+    try {
+      password = decodeURIComponent(rawPassword);
+    } catch {
+      log(400);
+      sendJson(400, { error: `'password' path segment '${rawPassword}' is not validly percent-encoded` });
+      return true;
+    }
+
+    if (!xcCredentialsMatch(scenario, username, password)) {
+      log(401);
+      sendJson(401, { error: 'bad credentials' });
+      return true;
+    }
+
+    const wanted = Number(rawId);
+    const known =
+      kind === 'movie'
+        ? scenario.vod.some((movie) => movie.id === wanted)
+        : scenario.series.some((series) =>
+            series.seasons.some((season) => season.episodes.some((episode) => episode.id === wanted))
+          );
+    if (!known) {
+      log(404);
+      sendJson(404, { error: `scenario ${scenario.id} declares no ${kind} with id ${wanted}` });
+      return true;
+    }
+
+    const status = context.serveVodAsset(context.res, {
+      rangeHeader: context.req.headers.range,
+      head: context.req.method === 'HEAD',
+    });
+    log(status);
     return true;
   }
 

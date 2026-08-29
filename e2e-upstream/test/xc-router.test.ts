@@ -340,3 +340,91 @@ describe('XC live playback — credential encoding (known Dispatcharr defect)', 
     expect(res.status).toBe(200);
   });
 });
+
+/**
+ * The vitest suite never sees the real assets — `assets/` is gitignored and
+ * produced by the Docker builder stage. A recognisable byte pattern is all
+ * the Range assertions need, and using one keeps this suite runnable with
+ * `npm test` alone, no Docker.
+ */
+function syntheticVodAsset(): string {
+  const dir = mkdtempSync(join(tmpdir(), 'e2e-upstream-vod-'));
+  const path = join(dir, 'vod.mp4');
+  writeFileSync(path, Buffer.from(Array.from({ length: 1000 }, (_u, i) => i % 251)));
+  return path;
+}
+
+describe('XC VOD playback', () => {
+  it('serves the whole asset with Content-Length and Accept-Ranges', async () => {
+    process.env.UPSTREAM_VOD_ASSET = syntheticVodAsset();
+    const { base, id } = await xcScenario();
+    const res = await fetch(`${base}/s/${id}/movie/user/pass/1.mp4`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-length')).toBe('1000');
+    expect(res.headers.get('accept-ranges')).toBe('bytes');
+    expect(res.headers.get('content-type')).toBe('video/mp4');
+    expect((await res.arrayBuffer()).byteLength).toBe(1000);
+  });
+
+  it('answers a Range with 206 and a Content-Range naming the full size', async () => {
+    process.env.UPSTREAM_VOD_ASSET = syntheticVodAsset();
+    const { base, id } = await xcScenario();
+    const res = await fetch(`${base}/s/${id}/movie/user/pass/1.mp4`, {
+      headers: { Range: 'bytes=100-199' },
+    });
+    expect(res.status).toBe(206);
+    expect(res.headers.get('content-range')).toBe('bytes 100-199/1000');
+    expect(res.headers.get('content-length')).toBe('100');
+    const body = Buffer.from(await res.arrayBuffer());
+    expect(body).toHaveLength(100);
+    expect(body[0]).toBe(100 % 251);
+  });
+
+  it('answers an unsatisfiable Range with 416 and a Content-Range naming the size', async () => {
+    process.env.UPSTREAM_VOD_ASSET = syntheticVodAsset();
+    const { base, id } = await xcScenario();
+    const res = await fetch(`${base}/s/${id}/movie/user/pass/1.mp4`, {
+      headers: { Range: 'bytes=5000-' },
+    });
+    expect(res.status).toBe(416);
+    expect(res.headers.get('content-range')).toBe('bytes */1000');
+  });
+
+  it('serves an episode on /series/<user>/<pass>/<id>.<ext>', async () => {
+    process.env.UPSTREAM_VOD_ASSET = syntheticVodAsset();
+    const { base, id } = await xcScenario();
+    expect((await fetch(`${base}/s/${id}/series/user/pass/1.mp4`)).status).toBe(200);
+  });
+
+  it('404s an unknown movie or episode id, and 401s wrong credentials', async () => {
+    process.env.UPSTREAM_VOD_ASSET = syntheticVodAsset();
+    const { base, id } = await xcScenario();
+    expect((await fetch(`${base}/s/${id}/movie/user/pass/99.mp4`)).status).toBe(404);
+    expect((await fetch(`${base}/s/${id}/movie/user/wrong/1.mp4`)).status).toBe(401);
+  });
+});
+
+describe('XC VOD asset cache', () => {
+  // Every case above uses byte-identical synthetic assets (same length, same
+  // pattern), which can't distinguish a cache keyed on the resolved path
+  // from a bare "have we loaded one yet" flag — the two behave identically
+  // whenever every test happens to reuse the same bytes. This test uses two
+  // deliberately different-length assets to pin the real contract: a
+  // changed UPSTREAM_VOD_ASSET must invalidate the cache, not be silently
+  // ignored by whichever file loaded first in this module instance.
+  it('serves the newly set asset, not one cached from an earlier UPSTREAM_VOD_ASSET', async () => {
+    const dirA = mkdtempSync(join(tmpdir(), 'e2e-upstream-vod-cachecheck-'));
+    process.env.UPSTREAM_VOD_ASSET = join(dirA, 'a.mp4');
+    writeFileSync(process.env.UPSTREAM_VOD_ASSET, Buffer.alloc(1000, 1));
+    const first = await xcScenario();
+    const resA = await fetch(`${first.base}/s/${first.id}/movie/user/pass/1.mp4`);
+    expect(resA.headers.get('content-length')).toBe('1000');
+
+    const dirB = mkdtempSync(join(tmpdir(), 'e2e-upstream-vod-cachecheck-'));
+    process.env.UPSTREAM_VOD_ASSET = join(dirB, 'b.mp4');
+    writeFileSync(process.env.UPSTREAM_VOD_ASSET, Buffer.alloc(500, 2));
+    const second = await xcScenario();
+    const resB = await fetch(`${second.base}/s/${second.id}/movie/user/pass/1.mp4`);
+    expect(resB.headers.get('content-length')).toBe('500');
+  });
+});

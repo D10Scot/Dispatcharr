@@ -14,6 +14,8 @@ import { streamLoop, STREAM_CONTENT_TYPE } from './stream.js';
 import { FaultStore, DEFAULT_REDIRECT_DEPTH, parseFaultRequest } from './faults.js';
 import { ScenarioLog } from './log.js';
 import { handleXc, looksLikeXcRoute } from './xc/router.js';
+import { loadFiniteAsset, serveFiniteAsset } from './vod-asset.js';
+import type { FiniteAsset } from './vod-asset.js';
 
 export interface RunningServer {
   close(): Promise<void>;
@@ -49,6 +51,25 @@ function getAsset(): LoadedAsset {
     asset = loadAsset(process.env.UPSTREAM_ASSET ?? '/app/assets/loop.ts');
   }
   return asset;
+}
+
+/**
+ * Same lazy-load reasoning as `getAsset()` above, plus one more: the cache
+ * key is the resolved path, not a bare "have we loaded one yet" flag. The
+ * vitest suite sets `UPSTREAM_VOD_ASSET` to a fresh temp path before each
+ * test that needs one, all within this one module instance — a flag-only
+ * cache would serve the first test's file to every test after it (harmless
+ * today only because those files happen to be byte-identical, and actively
+ * misleading to the next author). Keying on the path makes a changed env var
+ * invalidate the cache instead of being silently ignored.
+ */
+let vodAsset: { path: string; asset: FiniteAsset } | undefined;
+function getVodAsset(): FiniteAsset {
+  const path = process.env.UPSTREAM_VOD_ASSET ?? '/app/assets/vod.mp4';
+  if (!vodAsset || vodAsset.path !== path) {
+    vodAsset = { path, asset: loadFiniteAsset(path, 'video/mp4') };
+  }
+  return vodAsset.asset;
 }
 
 // A 5,000-channel scenario body is genuinely large; 1 MB is comfortable
@@ -635,6 +656,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
         log: (status) => logRequest(scenario, req, url, status),
         sendJson: (status, body) => sendJson(res, status, body),
         serveChannelStream,
+        serveVodAsset: (vodRes, options) => serveFiniteAsset(vodRes, getVodAsset(), options),
       });
       if (handled) return;
     }
