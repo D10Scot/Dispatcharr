@@ -55,10 +55,10 @@ tests.** Status: `todo` / `done` / `known-bug` (asserted correct, marked
 | Frontend | Connect: webhook CRUD | G6 | todo |
 | Frontend | Logos: upload and browse | G6 | todo |
 | Frontend | Backups: create and restore | G6 | todo |
-| Lifecycle | Upgrade from previous release (migrations) | G7 | todo |
-| Lifecycle | Restart preserves channels and settings | G7 | todo |
-| Lifecycle | PUID/PGID honoured | G7 | todo |
-| Lifecycle | TLS Postgres connection | G7 | todo |
+| Lifecycle | Upgrade from previous release (migrations) | G7 | done |
+| Lifecycle | Restart preserves channels and settings | G7 | done |
+| Lifecycle | PUID/PGID honoured | G7 | done |
+| Lifecycle | TLS Postgres connection | G7 | done |
 
 The ten G1 rows above are covered by these specs (the two seeding rows
 share one file, as do the two principal rows):
@@ -121,3 +121,22 @@ was built, shown to pass for a reason that says nothing about the defect
 black-box client can act), and deleted rather than kept as a false green. See
 the row itself for the full trace and `e2e/tests/streaming-greybox/` history
 (commit `37edae89`) for the removed spec and allowlist entry.
+
+The four G7 rows above are covered by:
+
+- `e2e/tests/lifecycle/upgrade-migrations.spec.ts` (upgrade from previous
+  release)
+- `e2e/tests/lifecycle/restart-persistence.spec.ts` (restart preserves
+  channels and settings)
+- `docker/tests/test-puid-pgid.sh`, run by
+  `.github/workflows/lifecycle-tests.yml` (PUID/PGID honoured)
+- `docker/tests/test-tls-postgres.sh`, run by
+  `.github/workflows/lifecycle-tests.yml` (TLS Postgres connection)
+
+The PUID/PGID and TLS Postgres rows are wired but have not yet executed a
+full run in CI: `lifecycle-tests.yml` is not on the default branch yet, so it
+has not run and could not have. One scenario (`test-puid-pgid.sh`'s
+`puid_test_fresh_def`) has been run by hand and passed, 13/13 assertions,
+exit 0; `test-tls-postgres.sh` has not been run at all. If the first
+post-merge run of `lifecycle-tests.yml` is red, these two rows come back to
+`todo`.
