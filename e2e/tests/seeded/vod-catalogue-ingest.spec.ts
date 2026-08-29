@@ -91,6 +91,10 @@ test('Dispatcharr ingests a VOD and series catalogue from an Xtream Codes accoun
     await api.get(`/api/vod/episodes/?search=${encodeURIComponent(prefix)}`),
     'episodes created by the series-info fetch'
   );
+  // Matches the movie and series steps above: assert the row exists before
+  // indexing into it, so a broken provider-info fetch fails here naming the
+  // count rather than as an opaque toMatchObject against undefined.
+  expect(episodes.count, `episode named ${prefix}-ep created by the series-info fetch`).toBe(1);
   expect(episodes.results[0]).toMatchObject({
     name: `${prefix}-ep`,
     season_number: 1,

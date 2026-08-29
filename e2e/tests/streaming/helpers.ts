@@ -256,7 +256,7 @@ export async function seedCatchupChannel(
   if (!refreshedChannel.is_catchup) {
     throw new Error(
       `seedCatchupChannel: channel ${channel.id} (${refreshedChannel.name}) is ` +
-        'not is_catchup after two refreshes. Before suspecting the candidate ' +
+        'not is_catchup after the account refresh. Before suspecting the candidate ' +
         "cascade, check the five preconditions: the provider channel's own " +
         'tv_archive flag, CoreSettings.get_catchup_enabled(), and the caller ' +
         "user's own custom_properties.catchup_enabled — a bare 400 from the " +

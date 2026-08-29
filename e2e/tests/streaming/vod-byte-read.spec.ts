@@ -73,7 +73,9 @@ test('a VOD stream is delivered through /proxy/vod/ with seek metadata', async (
   // requests above (not that Dispatcharr synthesized a response without
   // ever contacting it), and that neither leaked an unexpected status.
   const log = await upstream.log(scenario);
-  const movieRequests = log.filter((entry) => entry.path?.includes('/movie/'));
+  const movieRequests = log.filter(
+    (entry) => entry.kind === 'request' && entry.path?.includes('/movie/')
+  );
   expect(movieRequests.length).toBeGreaterThan(0);
   expect(movieRequests.every((entry) => entry.status === 200 || entry.status === 206)).toBe(true);
 });

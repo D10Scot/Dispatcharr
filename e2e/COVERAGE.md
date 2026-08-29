@@ -129,7 +129,7 @@ provider and its faults) plus:
   provider (`e2e/support/static-upstream.ts` is deleted)
 
 **G3 and G4 are now unblocked.** Both can seed a scenario, ingest a playlist
-or stream through the provider, and drive any of the eight faults, using only
+or stream through the provider, and drive any of the twelve faults, using only
 `e2e/fixtures/upstream.ts` and the fault catalogue documented in
 `e2e-upstream/README.md` — without reading `e2e-upstream/src/`.
 

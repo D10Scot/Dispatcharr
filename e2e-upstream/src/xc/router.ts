@@ -357,6 +357,24 @@ export async function handleXc(context: XcContext): Promise<boolean> {
     throw error;
   }
 
+  // The QUERY layout's fixed path matched, but `parseCatchupQuery` came
+  // back `undefined` because one of the four required parameters is
+  // missing — not reachable from Dispatcharr (`build_timeshift_url_format_a`
+  // always emits all four), only from a hand-built G10 URL. Without this,
+  // that request falls through to the generic handler's `no route for …`
+  // 404 with no `log()` call at all — the exact shape Task 4 fixed on
+  // `/live/`, reappearing here on a different route and a different status.
+  if (!catchup && subPath === '/streaming/timeshift.php') {
+    const missing = ['username', 'password', 'stream', 'start'].filter(
+      (param) => url.searchParams.get(param) === null
+    );
+    log(400);
+    sendJson(400, {
+      error: `'/streaming/timeshift.php' request is missing required parameter(s): ${missing.join(', ')}`,
+    });
+    return true;
+  }
+
   if (catchup) {
     if (!xcCredentialsMatch(scenario, catchup.username, catchup.password)) {
       log(401);
