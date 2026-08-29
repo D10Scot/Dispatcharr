@@ -81,9 +81,10 @@ test('a recording scheduled from the DVR page exists on the server and can be ca
   // failure silently replace a real assertion failure already in flight —
   // same shape as logos.spec.ts / connect.spec.ts.
   let testError: unknown;
-  let created: Recording | undefined;
 
   try {
+    let created: Recording | undefined;
+
     await gotoSurface(adminPage, DVR_SURFACE);
     await expect(adminPage.getByTestId('dvr-page')).toBeVisible();
 
@@ -99,7 +100,10 @@ test('a recording scheduled from the DVR page exists on the server and can be ca
     await scheduleNextMonth(adminPage, 'Start');
     await scheduleNextMonth(adminPage, 'End');
 
-    await adminPage.getByRole('button', { name: /save|create|schedule|submit/i }).click();
+    await adminPage
+      .getByRole('dialog')
+      .getByRole('button', { name: /save|create|schedule|submit/i })
+      .click();
 
     // The point of this row is the scheduling round-trip, not the recording:
     // `run_recording` never fires for a window this far out.
@@ -142,10 +146,13 @@ test('a recording scheduled from the DVR page exists on the server and can be ca
       .locator('.mantine-Card-root', { hasText: channel.name });
     await card.locator('button:has(svg.lucide-square-x)').click();
 
-    // `handleDeleteClick` skips the confirmation dialog only for a recurring
-    // rule or a series group (`RecordingCard.jsx` ~line 188) — this
-    // recording is neither, so `deleteConfirmOpen` always opens one. Its
-    // confirm button reads "Cancel" for an upcoming recording ("Delete" or
+    // `handleDeleteClick` (`RecordingCard.jsx:187-198`) branches three ways:
+    // a recurring rule opens the recurring-rule editor, a series group opens
+    // a separate "Cancel Series" modal (`RecordingCard.jsx:616-639`, its own
+    // "Only this upcoming" / "Entire series + rule" buttons), and everything
+    // else — this recording, which is neither — sets `deleteConfirmOpen`,
+    // opening the confirmation dialog asserted below. Its confirm button
+    // reads "Cancel" for an upcoming recording ("Delete" or
     // "Cancel & Delete" are the past-recording/in-progress labels, ~line
     // 592-598). Excluding "Go Back" (the modal's other named button) is not
     // enough on its own: the modal also has an unnamed top-right close
