@@ -1,6 +1,6 @@
 # E2E Coverage Inventory
 
-The shared worklist for all seven goals. **Update this in the same PR as the
+The shared worklist for all ten goals. **Update this in the same PR as the
 tests.** Status: `todo` / `done` / `known-bug` (asserted correct, marked
 `test.fail()`, issue filed).
 
@@ -46,6 +46,33 @@ tests.** Status: `todo` / `done` / `known-bug` (asserted correct, marked
 | Output | Authorization matrix by user_level | G5 | todo |
 | Output | hide_adult_content across all listing paths | G5 | todo |
 | Accounts | Token refresh with a deleted user's token 500s instead of 401 ([#12](https://github.com/D10Scot/Dispatcharr/issues/12)); needs a `test.fail()`, and pinning it costs one login | G5 | known-bug |
+| Upstream | Fake provider speaks Xtream Codes: `player_api.php` auth envelope and the seven catalogue actions `core/xtream_codes.Client` calls | G8 | todo |
+| Upstream | Fake provider serves a finite VOD asset with `Content-Length`, `Accept-Ranges`, 206 + `Content-Range` and 416 | G8 | todo |
+| Upstream | Fake provider answers both catch-up layouts and records the credentials, stream id, start timestamp and duration it was asked for | G8 | todo |
+| Upstream | Four new faults: `xc-auth-envelope`, `no-tv-archive`, `catchup-layout-404`, `range-unsupported` | G8 | todo |
+| Upstream | Plumbing proof: XC account ingest → declared live streams appear | G8 | todo |
+| Upstream | Plumbing proof: VOD catalogue ingest → `Movie`, `Series` and `Episode` rows appear | G8 | todo |
+| Upstream | Plumbing proof: one VOD byte read through `/proxy/vod/` | G8 | todo |
+| Upstream | Plumbing proof: a catch-up URL reaches the provider in each layout | G8 | todo |
+| Upstream | Plumbing proof: the candidate cascade falls back when one layout 404s | G8 | todo |
+| Upstream | **Gap:** the fake archive is not time-addressable — it serves the same looping TS whatever `start` it is asked for. Nothing proves Dispatcharr seeks to the right moment, only that it asks for the right one. Owned by G10, which must say so in every row it writes | G8 | todo |
+| VOD | Catalogue ingest: categories, movies and series land as `VODCategory`, `Movie`, `Series` and their `M3U*Relation` rows | G9 | todo |
+| VOD | Category gating: `M3UVODCategoryRelation.enabled`, `auto_enable_new_groups_vod`/`_series`, and the `Uncategorized` fallback | G9 | todo |
+| VOD | Episode ingest on demand via `GET /api/vod/series/<pk>/provider-info/`, for both the object-keyed and array-keyed `episodes` shapes | G9 | todo |
+| VOD | Advanced movie data: `get_vod_info` merges into `Movie` and `M3UMovieRelation.custom_properties` without clobbering list-sync fields | G9 | todo |
+| VOD | XC VOD and series actions against a real catalogue (G5 covers only the empty-catalogue shape, and `get_vod_info`/`get_series_info` only as `404`) | G9 | todo |
+| VOD | `vod_proxy` streaming path: session mint, path redirect, byte delivery, `Content-Length` and `Accept-Ranges` | G9 | todo |
+| VOD | `vod_proxy` Range and seek: a mid-file Range yields 206 with the correct `Content-Range` against the full file size | G9 | todo |
+| VOD | `vod_proxy` against a provider that will not serve 206 (`range-unsupported` fault) | G9 | todo |
+| VOD | Root XC playback routes `/movie/<user>/<pass>/<id>.<ext>` and `/series/<user>/<pass>/<id>.<ext>` | G9 | todo |
+| VOD | **Characterization:** `Client.authenticate()` checks only that `user_info` is present — never `auth` or `status` — so a provider answering `200` with `auth: 0` is treated as authenticated (`xc-auth-envelope` fault). G9 decides whether to file it | G9 | todo |
+| Catch-up | XC live ingest fields catch-up depends on: `tv_archive`/`tv_archive_duration` → `Stream.is_catchup`/`catchup_days` → `Channel.is_catchup` via `rollup_channel_catchup_fields`, including its self-heal pass | G10 | todo |
+| Catch-up | Redirect mode: `/timeshift/...` and `/streaming/timeshift.php` each 302 in the layout the client used; `/proxy/catchup/<uuid>` defaults to PATH | G10 | todo |
+| Catch-up | Proxy mode end to end: bytes reach the client and the provider recorded the credentials, stream id, converted start timestamp and padded duration | G10 | todo |
+| Catch-up | The seven-candidate cascade: PATH shapes first, QUERY last, and the winning index cached per account (`_get_cached_format_index`) reorders the next attempt | G10 | todo |
+| Catch-up | Decisive failures (401/403/406) stop the cascade for that account; a soft 404 or a 200 with no TS sync does not | G10 | todo |
+| Catch-up | `server_info.timezone` from the account profile drives `convert_timestamp_to_provider_tz` | G10 | todo |
+| Catch-up | **Gap:** the generated M3U emits no `catchup=`/`catchup-source=` attribute. `#EXTINF` carries `tvg-id`, `tvg-name`, `tvg-logo`, `tvg-chno`, optionally `tvc-guide-stationid`, and `group-title` — nothing else. Catch-up is advertised only through the XC `tv_archive`/`tv_archive_duration` fields, so an M3U-only client can never discover it. G10 decides whether that is a defect to file or intended | G10 | todo |
 | Frontend | Guide grid renders and navigates | G6 | todo |
 | Frontend | DVR: schedule, list, cancel a recording | G6 | todo |
 | Frontend | Users: create, edit, delete | G6 | todo |
