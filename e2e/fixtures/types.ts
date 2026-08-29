@@ -496,11 +496,29 @@ export type Recording = {
   custom_properties: Record<string, unknown> | null;
 };
 
-/** `apps.channels.Logo` via `LogoViewSet` (`apps/channels/api_urls.py`, `logos`). */
+/**
+ * `apps.channels.Logo` via `LogoViewSet` (`apps/channels/api_urls.py`,
+ * `logos`). `LogoSerializer.Meta.fields` also has `channel_count`,
+ * `is_used` and `channel_names`; not typed here because nothing reads them
+ * yet.
+ *
+ * `url` is **not** necessarily an HTTP-fetchable location: for a logo
+ * created through `LogoViewSet.upload` it is the raw server-side filesystem
+ * path (`/data/logos/<name>`, from `core.utils.safe_upload_path`), which no
+ * URL pattern in `dispatcharr/urls.py` serves — a `GET` against it resolves
+ * to the SPA's catch-all route and returns 200 with `index.html`, not the
+ * image, so a bare status check against `url` is a false positive. `cache_url`
+ * is the field that is always fetchable: `LogoSerializer.get_cache_url`
+ * builds an absolute URL to `LogoViewSet.cache` (`AllowAny`, streams the
+ * real file via `core.image_proxy.serve_local_or_remote_image`) off the
+ * *request's own host*, so it resolves against this harness's `baseURL`
+ * whether the logo is a local upload or a remote URL.
+ */
 export type Logo = {
   id: number;
   name: string;
   url: string;
+  cache_url: string;
 };
 
 /**
