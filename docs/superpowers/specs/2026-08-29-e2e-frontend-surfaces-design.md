@@ -20,6 +20,16 @@
   row at a different level: G3 proves ingest and assignment through the API, G6 proves the
   Logos *page* reaches the API at all. G3 edits `e2e/fixtures/seed.ts`; **G6 deliberately does
   not** (D6), so the two do not collide there.
+
+  They **do** collide textually on one paragraph of `e2e/README.md`. Both goals independently
+  decided to correct its stale CI section — the one still describing a "hardcoded three-job
+  matrix" and citing a line number — on the same grounds, that each is editing that file
+  anyway (G3's D11; G6's D3 and "Current state" below). **G6 owns the final state of that
+  paragraph**, because G6 is the goal that actually changes the matrix: it adds a sixth job,
+  so G3's correction to five entries is outdated the moment G6 lands. Either merge order works
+  and neither loses information — if G3 lands first, G6 rebases through it and rewrites the
+  count to six; if G6 lands first, G3 drops the correction as already done. The conflict is
+  foreseen; this note exists so whoever hits it knows which side is authoritative.
 - **G5** (client output surfaces), and the **G8** goal being split out of it, own the VOD
   surface. The `/vods` page is a G6 non-goal for that reason.
 
