@@ -1,6 +1,16 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Scenario } from '../scenario.js';
 import { renderAccountEnvelope } from './envelope.js';
+import {
+  renderLiveCategories,
+  renderLiveStreams,
+  renderSeries,
+  renderSeriesCategories,
+  renderSeriesInfo,
+  renderVodCategories,
+  renderVodInfo,
+  renderVodStreams,
+} from './catalogue.js';
 
 export interface XcContext {
   scenario: Scenario;
@@ -57,9 +67,60 @@ export async function handleXc(context: XcContext): Promise<boolean> {
       sendJson(401, { error: 'bad credentials' });
       return true;
     }
-    const host = context.req.headers.host ?? 'e2e-upstream:8080';
-    log(200);
-    sendJson(200, renderAccountEnvelope(scenario, new Date(), host));
+
+    const action = url.searchParams.get('action');
+    const categoryId = url.searchParams.get('category_id');
+
+    if (action === null) {
+      const host = context.req.headers.host ?? 'e2e-upstream:8080';
+      log(200);
+      sendJson(200, renderAccountEnvelope(scenario, new Date(), host));
+      return true;
+    }
+
+    // The tvArchive predicate is a function, not a boolean, because the
+    // `no-tv-archive` fault is channel-scopable — Task 7 replaces this
+    // always-true stub with a FaultStore lookup.
+    const listActions: Record<string, () => unknown[]> = {
+      get_live_categories: () => renderLiveCategories(scenario),
+      get_live_streams: () => renderLiveStreams(scenario, categoryId, { tvArchive: () => true }),
+      get_vod_categories: () => renderVodCategories(scenario),
+      get_vod_streams: () => renderVodStreams(scenario, categoryId),
+      get_series_categories: () => renderSeriesCategories(scenario),
+      get_series: () => renderSeries(scenario, categoryId),
+    };
+
+    const list = listActions[action];
+    if (list) {
+      log(200);
+      sendJson(200, list());
+      return true;
+    }
+
+    if (action === 'get_vod_info') {
+      const info = renderVodInfo(scenario, Number(url.searchParams.get('vod_id')));
+      log(info ? 200 : 404);
+      // `Client.get_vod_info` requires a dict, so a 404 body is a dict too —
+      // the product surfaces the HTTPError, not a shape error.
+      sendJson(info ? 200 : 404, info ?? { error: 'no such vod_id' });
+      return true;
+    }
+
+    if (action === 'get_series_info') {
+      const info = renderSeriesInfo(scenario, Number(url.searchParams.get('series_id')));
+      log(info ? 200 : 404);
+      sendJson(info ? 200 : 404, info ?? { error: 'no such series_id' });
+      return true;
+    }
+
+    // An unrecognised action is a test author's typo, not a provider state.
+    // Naming the valid set is the same courtesy parseFaultRequest extends.
+    log(400);
+    sendJson(400, {
+      error: `unknown action '${action}'; this provider serves ${Object.keys(listActions)
+        .concat('get_vod_info', 'get_series_info')
+        .join(', ')} and the no-action handshake`,
+    });
     return true;
   }
 
