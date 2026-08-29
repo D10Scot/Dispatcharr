@@ -40,7 +40,7 @@ function localHeader(member: Member, crc: number): Buffer {
   head.writeUInt16LE(0, 6); // flags
   head.writeUInt16LE(0, 8); // method: stored
   head.writeUInt16LE(0, 10); // mod time
-  head.writeUInt16LE(0x21, 12); // mod date (1996-01-01; arbitrary and fixed)
+  head.writeUInt16LE(0x21, 12); // mod date (1980-01-01; arbitrary and fixed — the DOS date's year field is an offset from 1980, and it's zero here)
   head.writeUInt32LE(crc, 14);
   head.writeUInt32LE(member.data.length, 18);
   head.writeUInt32LE(member.data.length, 22);
@@ -58,7 +58,7 @@ function centralHeader(member: Member, crc: number, offset: number): Buffer {
   head.writeUInt16LE(0, 8);
   head.writeUInt16LE(0, 10); // stored
   head.writeUInt16LE(0, 12);
-  head.writeUInt16LE(0x21, 14);
+  head.writeUInt16LE(0x21, 14); // mod date, same value and rationale as the local header
   head.writeUInt32LE(crc, 16);
   head.writeUInt32LE(member.data.length, 20);
   head.writeUInt32LE(member.data.length, 24);

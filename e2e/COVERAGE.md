@@ -83,6 +83,7 @@ tests.** Status: `todo` / `done` / `known-bug` (asserted correct, marked
 | Frontend | Users: create, edit, delete | G6 | todo |
 | Frontend | Settings: change and persist | G6 | todo |
 | Frontend | Plugins: list, enable, configure | G6 | todo |
+| Frontend | **Observation:** `plugins.spec.ts`'s comment on the plugin-visibility mechanism (`.reload_token` mtime, no restart needed) is a claim the assertions alone don't prove — a uWSGI respawn would satisfy them identically. Out-of-band check during a mutation run: `docker logs` showed no uWSGI respawn across the import, only `apps.plugins.loader` discovery lines | G6 | done |
 | Frontend | Stats page renders live data | G6 | todo |
 | Frontend | Connect: webhook CRUD | G6 | todo |
 | Frontend | Logos: upload and browse | G6 | todo |
