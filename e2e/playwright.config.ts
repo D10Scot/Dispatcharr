@@ -116,6 +116,38 @@ export default defineConfig({
       use: { storageState: 'playwright/.auth/admin.json' },
     },
     {
+      name: 'frontend',
+      testDir: './tests/frontend',
+      dependencies: ['bootstrap'],
+      // 120s, between `seeded`'s 30s and the streaming projects' 300s, and
+      // derived rather than picked: the slowest row here is the backups flow,
+      // which polls a Celery task through `waitFor` (60s default budget), and
+      // the Stats row, which opens a real upstream stream and then waits out
+      // the page's 5s stats poll. 30s cannot hold either. 300s would turn a
+      // page that never renders into a five-minute stall instead of a
+      // two-minute failure.
+      timeout: 120_000,
+      // Two workers, and `fullyParallel` deliberately left unset so it
+      // inherits `false` — files run in parallel, tests within a file do not.
+      // That is not a style choice: `apps/backups/services.py`'s
+      // `create_backup` derives the archive name from the clock at SECOND
+      // granularity and `list_backups` globs the directory, so two concurrent
+      // creates overwrite one archive with another and no name identifies
+      // either. Confining backup creation to one file, and one file to one
+      // worker, makes that race structurally impossible. `plugins.spec.ts`
+      // gets the same protection for the plugin directory and its shared
+      // `.reload_token`. `streaming` already runs exactly this shape.
+      //
+      // ONE SPEC FILE PER SURFACE, for the same reason. Splitting
+      // `backups.spec.ts` in two would put two backup-creating files on two
+      // workers and reopen the collision.
+      workers: 2,
+      // Required. `adminPage` is an alias of `page`; the admin identity comes
+      // from this line, not from the fixture. Without it every test here runs
+      // unauthenticated and lands on /login.
+      use: { storageState: 'playwright/.auth/admin.json' },
+    },
+    {
       // Owns its container's lifecycle: restarts it mid-test. Must run alone —
       // `fixtures/instance.ts` has the reasoning, `e2e/README.md` has the rule.
       name: 'lifecycle',

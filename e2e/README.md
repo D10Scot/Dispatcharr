@@ -58,8 +58,26 @@ one up. CI binds the same way.
 | `streaming` | Byte-level tests. Long timeouts, fewer workers |
 | `streaming-failover` | Failover behaviour: dead-air and buffering watchdogs. Long timeouts, fewer workers |
 | `streaming-greybox` | Tests that reach past the API into Redis or the container directly (e.g. counting live `ffmpeg` processes). Long timeouts, one worker — **must be run alone locally**: in CI each matrix job gets its own container, but locally all projects can share one, and this project observes container-wide state that whatever else is running would disturb |
+| `frontend` | The nine product surfaces in a browser: does the page mount, and does a write driven through its UI reach the server. Two workers, file-level parallelism, 120s |
 | `lifecycle` | Restarts the container mid-test. **Runs alone** — it destroys the container every other project shares. No `bootstrap` dependency: it provisions its own admin |
 | `lifecycle-upgrade` | Boots a published baseline image, seeds, then replaces the container with the local build on the same volume. **Runs alone.** Runs in `lifecycle-tests.yml`, not in `e2e-tests.yml`'s matrix |
+
+`frontend` depends on two rules that are not obvious from the config alone:
+
+- **One spec file per surface.** `backups.spec.ts` and `plugins.spec.ts` each
+  mutate container-wide state — the backup archive directory, whose filenames
+  are second-granularity and caller-unnameable
+  (`apps/backups/services.py`'s `create_backup`/`list_backups`), and the
+  plugin directory plus its shared `.reload_token`. File-level parallelism
+  (`workers: 2`, `fullyParallel` left at its default `false`) is what confines
+  each hazard to one worker; splitting either file back into two would put two
+  backup-creating (or two plugin-installing) files on two different workers
+  and reopen the race.
+- **After a change to any `frontend/` source file, rebuild the image before
+  running this project.** `./scripts/e2e_up.sh --reset` reuses an existing
+  `dispatcharr-e2e:local`, so a stale image serves the old bundle and every
+  `getByTestId(...)` locator fails in a way that looks like a broken test, not
+  a stale build. `docker rmi dispatcharr-e2e:local` first.
 
 `streaming` runs at `workers: 2` — its byte-level reads are slow but do not
 touch anything another test in the same project could observe.
@@ -135,7 +153,7 @@ npm run test:lifecycle-upgrade   # pulls a ~3.6 GB baseline; brings its own inst
 ```
 
 `npm test` (no suffix) deliberately fails with a message telling you to pick
-one of the seven — there is no single invocation that is correct for all of
+one of the eight — there is no single invocation that is correct for all of
 them, and a bare `npm test` in CI would silently run whichever config
 happened to be first.
 

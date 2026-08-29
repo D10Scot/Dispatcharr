@@ -3,12 +3,13 @@
   "private": true,
   "version": "1.0.0",
   "scripts": {
-    "test": "echo 'Pick a population: npm run test:pristine | test:seeded | test:streaming | test:streaming-failover | test:streaming-greybox | test:lifecycle | test:lifecycle-upgrade — they need different container states and cannot share one invocation. The two lifecycle populations drive the container themselves and must run alone.' && exit 1",
+    "test": "echo 'Pick a population: npm run test:pristine | test:seeded | test:streaming | test:streaming-failover | test:streaming-greybox | test:frontend | test:lifecycle | test:lifecycle-upgrade — they need different container states and cannot share one invocation. The two lifecycle populations drive the container themselves and must run alone.' && exit 1",
     "test:pristine": "playwright test --project=pristine",
     "test:seeded": "playwright test --project=seeded",
     "test:streaming": "playwright test --project=streaming",
     "test:streaming-failover": "playwright test --project=streaming-failover",
     "test:streaming-greybox": "playwright test --project=streaming-greybox",
+    "test:frontend": "playwright test --project=frontend",
     "test:lifecycle": "playwright test --project=lifecycle",
     "test:lifecycle-upgrade": "playwright test --project=lifecycle-upgrade",
     "typecheck": "tsc --noEmit"
