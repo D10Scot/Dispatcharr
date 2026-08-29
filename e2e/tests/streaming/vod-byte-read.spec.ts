@@ -6,7 +6,6 @@ interface MovieRow { id: number; uuid: string; name: string }
 test('a VOD stream is delivered through /proxy/vod/ with seek metadata', async ({
   upstream,
   seed,
-  api,
   waitFor,
   request,
 }) => {
@@ -70,8 +69,9 @@ test('a VOD stream is delivered through /proxy/vod/ with seek metadata', async (
   expect(slice.byteLength).toBe(100);
   expect(slice).toEqual(body.subarray(100, 200));
 
-  // One upstream connection per session, not per byte range: this is the
-  // architecture that distinguishes VOD from the live ring buffer.
+  // Proves the provider itself was reached and answered cleanly for both
+  // requests above (not that Dispatcharr synthesized a response without
+  // ever contacting it), and that neither leaked an unexpected status.
   const log = await upstream.log(scenario);
   const movieRequests = log.filter((entry) => entry.path?.includes('/movie/'));
   expect(movieRequests.length).toBeGreaterThan(0);
