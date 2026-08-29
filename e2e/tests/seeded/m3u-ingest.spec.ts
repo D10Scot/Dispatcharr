@@ -193,3 +193,28 @@ test("upstreamM3UAccount() still calls waitForCreateTimeGroupRefreshToSettle() b
       'before waitFor.m3uRefreshComplete() is invoked.'
   ).toBe(true);
 });
+
+/**
+ * Known bug: D10Scot/Dispatcharr#15. `M3UAccountSerializer` declares
+ * `read_only_fields = ["locked", "created_at", "updated_at"]` in its **class
+ * body** instead of inside `Meta`, so DRF never reads it and `locked` is
+ * writable over the API. `locked` marks the built-in custom account
+ * (`M3UAccount.get_custom_account`), and nothing else in `apps/` or `core/`
+ * checks it — so a client can both set and clear it at will.
+ *
+ * Asserts the CORRECT behaviour and is expected to fail until #15 is fixed.
+ * Do not patch the product from this harness; do not file a duplicate issue.
+ */
+test.fail('M3UAccount.locked is not writable over the API', async ({ seed, api }) => {
+  const account = await seed.m3uAccount();
+  expect(account.locked).toBe(false);
+
+  const patched = await api.patch(`/api/m3u/accounts/${account.id}/`, { locked: true });
+  expect(patched.ok()).toBeTruthy();
+
+  const readBack = await api.json<M3uAccount>(
+    await api.get(`/api/m3u/accounts/${account.id}/`),
+    'account read-back after attempting to set locked'
+  );
+  expect(readBack.locked).toBe(false);
+});
