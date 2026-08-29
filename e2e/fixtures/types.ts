@@ -504,15 +504,34 @@ export type Recording = {
  *
  * `url` is **not** necessarily an HTTP-fetchable location: for a logo
  * created through `LogoViewSet.upload` it is the raw server-side filesystem
- * path (`/data/logos/<name>`, from `core.utils.safe_upload_path`), which no
- * URL pattern in `dispatcharr/urls.py` serves — a `GET` against it resolves
- * to the SPA's catch-all route and returns 200 with `index.html`, not the
- * image, so a bare status check against `url` is a false positive. `cache_url`
- * is the field that is always fetchable: `LogoSerializer.get_cache_url`
- * builds an absolute URL to `LogoViewSet.cache` (`AllowAny`, streams the
- * real file via `core.image_proxy.serve_local_or_remote_image`) off the
- * *request's own host*, so it resolves against this harness's `baseURL`
- * whether the logo is a local upload or a remote URL.
+ * path (`/data/logos/<name>`, from `core.utils.safe_upload_path`). No URL
+ * pattern in `dispatcharr/urls.py` actually serves `/data/logos/*` — but a
+ * `GET` against it does not 404 cleanly either. `dispatcharr/urls.py`
+ * registers the XC live-stream route,
+ * `<str:username>/<str:password>/<str:channel_id>`, ahead of the SPA
+ * catch-all, and `/data/logos/<file>` happens to have exactly three path
+ * segments, so it parses as `username="data", password="logos",
+ * channel_id="<file>"` and 404s from `stream_xc`'s own "no such user"
+ * lookup (`{"detail":"No User matches the given query."}`) — confirmed
+ * empirically against a running container by `logos.spec.ts`, not assumed.
+ * A bare status check against `url` proves nothing either way about whether
+ * the upload actually landed; `cache_url` is the field that is always
+ * fetchable: `LogoSerializer.get_cache_url` builds an absolute URL to
+ * `LogoViewSet.cache` (`AllowAny`, streams the real file via
+ * `core.image_proxy.serve_local_or_remote_image`) off the *request's own
+ * host*, so it resolves against this harness's `baseURL` whether the logo
+ * is a local upload or a remote URL.
+ *
+ * `url`'s local-path/remote-URL duality also has no discriminator field —
+ * every consumer (`apps/output/views.py:290`'s `tvg-logo`, the XC
+ * `stream_icon` field, `LogosTable.jsx`'s URL column) tells them apart with
+ * its own copy-pasted `startsWith('http')`/`startsWith(('http://',
+ * 'https://'))` check. All four currently agree, so this is not a filed
+ * defect, but it is the same shape as the eight-site channel-authorization
+ * filter in the root `CLAUDE.md`'s defect list, where one of the eight
+ * copies was wrong — and a fifth site that forgets the check here would not
+ * fail cleanly, it would land in the XC-route 404 above and send whoever
+ * debugs it looking in the wrong subsystem entirely.
  */
 export type Logo = {
   id: number;

@@ -56,17 +56,34 @@ test('a logo uploaded through the Logos page is stored server-side and listed', 
     // Mantine's Dropzone renders a real <input type="file">, hidden. Setting
     // files on it directly is how Playwright drives a dropzone; there is no
     // need to synthesise a drag event.
+    //
+    // The uploaded filename is derived from the worker-scoped generated
+    // `name`, not a constant. `LogoViewSet.upload` writes to a fully
+    // deterministic path (`core.utils.safe_upload_path` does no
+    // uniquification) and `get_or_create(url=file_path)`s the row against
+    // it — a constant filename is therefore a shared, permanent key across
+    // every run this test has ever made. If a row under that path ever
+    // leaks (a killed process, an aborted run), the *next* run's upload
+    // returns that same old row, still carrying the *previous* run's name:
+    // `findLogo(name)` never matches it, the poll below burns its full
+    // timeout, and cleanup — which only deletes rows matching its own
+    // generated name — can never reach it either, since it is looking for
+    // the wrong name on the very row it needs to delete. A per-run filename
+    // turns a leaked row into an ordinary, independently-cleanable one
+    // instead of a permanently wedged path.
+    const uploadFilename = `${name}.png`;
     await adminPage.locator('input[type="file"]').setInputFiles({
-      name: 'e2e-logo.png',
+      name: uploadFilename,
       mimeType: 'image/png',
       buffer: TINY_PNG,
     });
 
-    // Logo.jsx's handleFileSelect auto-fills Name from the filename only
-    // when the field is still empty; filling it explicitly here overwrites
-    // that, so the row is findable under the worker-scoped generated name
-    // rather than the literal "e2e-logo" the auto-fill would have produced
-    // (which every worker's run would collide on).
+    // Logo.jsx's handleFileSelect auto-fills Name from the filename (minus
+    // extension) only when the field is still empty — which, since the
+    // filename above already *is* the generated name, would already land on
+    // the right value. Filled explicitly anyway rather than relied upon: the
+    // row's identity is what the rest of this test depends on, and an
+    // explicit fill keeps that true even if the auto-fill behaviour changes.
     await adminPage.getByLabel('Name', { exact: true }).fill(name);
 
     // Logo.jsx's submit button reads "Create" for a new logo ("Update" only
@@ -90,34 +107,15 @@ test('a logo uploaded through the Logos page is stored server-side and listed', 
     expect(created!.url, 'an uploaded logo should record a server-side location').toBeTruthy();
 
     // `created.url` is deliberately NOT what gets fetched to prove
-    // retrievability. For a file uploaded through `LogoViewSet.upload`,
-    // `url` is the raw server-side filesystem path (`/data/logos/<name>`,
-    // from `core.utils.safe_upload_path`) — no route in
-    // `dispatcharr/urls.py` actually serves `/data/logos/*`. What DOES match
-    // it, confirmed empirically against this container (not assumed from
-    // reading source alone — the read led to a wrong first guess of a 200
-    // SPA-shell fallback, corrected here): `dispatcharr/urls.py`'s
-    // `xc_stream_endpoint` route, `<str:username>/<str:password>/<str:channel_id>`,
-    // registered ahead of the catch-all. `/data/logos/<file>` has exactly
-    // three path segments, so it parses as username="data",
-    // password="logos", channel_id="<file>" and 404s from `stream_xc`'s own
-    // "no such user" lookup — `{"detail":"No User matches the given
-    // query."}`, nothing image-shaped, and not the 200 a naive
-    // `expect(status).toBe(200)` might have been tempted to assert. Neither
-    // guess was filed as a defect: `created.url` is never meant to be
-    // dereferenced directly by a client (`LogosTable.jsx`'s URL column only
-    // renders a clickable link when the value `startsWith('http')`, so the
-    // UI itself already knows a local path isn't one) — `cache_url`
-    // (`LogoSerializer.get_cache_url`, an absolute URL to the AllowAny
-    // `LogoViewSet.cache` action, which streams the real file via
-    // `serve_local_or_remote_image`) is the field the product actually
-    // exposes for retrieval, and is what the assertions below use.
-    const rawUrlFetch = await api.get(created!.url);
-    expect(
-      rawUrlFetch.status(),
-      'created.url collides with the XC live-stream route (3 path segments) and 404s there, rather than serving the image — see the comment above'
-    ).toBe(404);
-
+    // retrievability — it is a raw server-side filesystem path, not a route
+    // this app serves, and (per the `Logo` type's own doc comment in
+    // `fixtures/types.ts`) it doesn't even fail *cleanly*: it happens to
+    // collide with the XC live-stream route and 404s from an unrelated
+    // "no such user" lookup. Asserting that specific accidental status here
+    // would pin this one-surface test to another route's routing order for
+    // no benefit to what this test is actually proving. `cache_url` is what
+    // the product exposes for retrieval, and is what the assertions below
+    // use.
     expect(created!.cache_url, 'a stored logo should have a cache URL to serve it from').toBeTruthy();
     const fetched = await api.get(created!.cache_url);
     expect(fetched.status()).toBe(200);
@@ -126,8 +124,14 @@ test('a logo uploaded through the Logos page is stored server-side and listed', 
     expect(body.length).toBe(TINY_PNG.length);
 
     // The browse half of the row: it is rendered in the table, scoped to the
-    // logos-page container.
-    await expect(adminPage.getByTestId('logos-page').getByText(name)).toBeVisible({
+    // logos-page container. Exact match is required, not incidental: the
+    // Name column cell reads exactly `name`, but since the upload filename
+    // is now also derived from `name` (see the fix above), the row's URL
+    // column cell reads `/data/logos/<name>.png` — a substring match on
+    // `name` resolves both and violates Playwright's strict mode.
+    await expect(
+      adminPage.getByTestId('logos-page').getByText(name, { exact: true })
+    ).toBeVisible({
       timeout: 30_000,
     });
 
