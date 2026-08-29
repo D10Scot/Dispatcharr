@@ -388,4 +388,42 @@ export class Seeder {
   private upstreamPlaylistUrl(scenario: UpstreamScenario): string {
     return `${scenario.internal}/playlist.m3u${scenario.credentialQuery}`;
   }
+
+  /**
+   * An `EPGSource` pointed at a fake-provider scenario, refreshed and waited
+   * out. The create-and-wait dance, once.
+   *
+   * No explicit trigger: `trigger_refresh_on_new_epg_source` fires
+   * `refresh_epg_data.delay()` on the `post_save` of an active non-dummy
+   * source, so the refresh is already running by the time this returns from
+   * the create. The create response is the baseline (its `updated_at` is
+   * guaranteed `null`), which is what closes the race a later baseline read
+   * would open.
+   *
+   * The returned source has `EPGData` rows and **zero `ProgramData`**: the
+   * mapping gate in `parse_programs_for_source` means programmes only arrive
+   * once a Channel points at an `EPGData` row. Associate with
+   * `POST /api/channels/channels/<id>/set-epg/` and poll
+   * `/api/epg/programs/search/?channel_id=` for them.
+   */
+  async upstreamEpgSource(
+    scenario: UpstreamScenario,
+    overrides: EpgSourceOverrides = {}
+  ): Promise<EpgSource> {
+    const source = await this.epgSource({
+      ...overrides,
+      source_type: 'xmltv',
+      url: this.upstreamEpgUrl(scenario),
+      is_active: true,
+    });
+    return this.waitFor.epgRefreshComplete(source.id, {
+      baseline: source,
+      trigger: async () => {},
+    });
+  }
+
+  // Mirrors UpstreamClient.epgUrl(); see the note on upstreamStreamUrl.
+  private upstreamEpgUrl(scenario: UpstreamScenario): string {
+    return `${scenario.internal}/epg.xml${scenario.credentialQuery}`;
+  }
 }

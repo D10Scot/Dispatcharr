@@ -68,6 +68,11 @@
  *                                scenario's playlist, refreshes it, waits, and
  *                                asserts `status === 'success'`. Not for a
  *                                test that wants the refresh to fail.
+ *   upstreamEpgSource(scenario, overrides?) → EpgSource
+ *                                creates an active XMLTV source pointed at that
+ *                                scenario's EPG and waits for its refresh. The
+ *                                result has EPGData rows and ZERO ProgramData —
+ *                                programmes need a channel association first.
  *   generatedName(entity)        the naming scheme itself, for a row you
  *                                create by hand
  *   `overrides` is typed per entity — `ChannelOverrides`, `UserOverrides`, …
@@ -131,6 +136,12 @@
  *       (identical back-to-back terminal failures on the same account).
  *   options: { timeoutMs?, intervalMs?, description?, describeLast? }
  *       plus startTimeoutMs and trigger on m3uRefreshComplete.
+ *   epgRefreshComplete(sourceId, options?) → Promise<EpgSource>
+ *       Polls `updated_at`, NOT a terminal status: an XMLTV refresh reaches
+ *       `success` twice and the first one is premature. Triggers via
+ *       `POST /api/epg/import/` with the id in the BODY; pass
+ *       `trigger: async () => {}` when creation already started the refresh,
+ *       and `baseline:` the create response so the wait cannot miss it.
  *
  * `ws: WsListener` — subscription to the single `updates` group on `/ws/`.
  * For state the REST API does not expose; prefer `waitFor` otherwise — the
@@ -473,6 +484,7 @@ export type {
   ChannelProfileOverrides,
   ChannelStatus,
   ChannelStatusClient,
+  EpgData,
   EpgSource,
   EpgSourceOverrides,
   EpgSourceStatus,
@@ -480,6 +492,8 @@ export type {
   M3uAccount,
   M3uAccountOverrides,
   M3uAccountStatus,
+  ProgramSearchPage,
+  ProgramSearchResult,
   Stream,
   StreamOverrides,
   StreamPage,

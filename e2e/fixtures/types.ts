@@ -269,6 +269,48 @@ export type EpgSource = {
 };
 
 /**
+ * `/api/epg/epgdata/` — one row per `<channel>` in an XMLTV document, created
+ * by `parse_channels_only`. Fields from `EPGDataSerializer.Meta.fields`;
+ * nullability from `apps/epg/models.py` (`EPGData`), whose `epg_source` is a
+ * `null=True` FK and whose `icon_url` is `blank=True, null=True`.
+ *
+ * `EPGDataViewSet` declares no filterset and no pagination, so a GET returns
+ * a bare array of **every** row in the instance. Filter it client-side on
+ * `tvg_id`, and never assert its length.
+ */
+export type EpgData = {
+  id: number;
+  tvg_id: string;
+  name: string;
+  icon_url: string | null;
+  epg_source: number | null;
+};
+
+/** One row of {@link ProgramSearchPage}, from `ProgramSearchResultSerializer`. */
+export type ProgramSearchResult = {
+  id: number;
+  title: string;
+  start_time: string;
+  end_time: string;
+  tvg_id: string | null;
+  /** The Channels reached through `EPGData.channels` (the reverse of `Channel.epg_data`). */
+  channels: { id: number; name: string; channel_number: number | null; tvg_id: string | null }[];
+};
+
+/**
+ * `GET /api/epg/programs/search/`. Paginated by `ProgramSearchPagination`
+ * (page_size 50, `page_size` param, max 500). With `?channel_id=<id>` the
+ * filter is `Q(epg__channels__id=<id>)`, so `count` is scoped to one channel
+ * and is a legitimate thing to assert on.
+ */
+export type ProgramSearchPage = {
+  count: number;
+  next: string | null;
+  previous: string | null;
+  results: ProgramSearchResult[];
+};
+
+/**
  * One entry of {@link ChannelStatus}'s `clients` array — one row per client
  * currently reading the channel. Built by hand in
  * `apps/proxy/live_proxy/channel_status.py`

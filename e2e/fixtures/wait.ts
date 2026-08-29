@@ -1,5 +1,5 @@
 import type { ApiClient } from './api';
-import type { M3uAccount, M3uAccountStatus } from './types';
+import type { EpgSource, M3uAccount, M3uAccountStatus } from './types';
 
 export type WaitOptions = {
   timeoutMs?: number;
@@ -42,6 +42,26 @@ export type M3uRefreshWaitOptions = WaitOptions & {
    * what closes the race the method doc comment describes — the baseline
    * must happen-before the trigger, and only this method can guarantee
    * that ordering.
+   */
+  trigger?: () => Promise<unknown>;
+};
+
+export type EpgRefreshWaitOptions = WaitOptions & {
+  /**
+   * A read taken strictly *before* the refresh was triggered. Required for the
+   * create path: `trigger_refresh_on_new_epg_source` (a `post_save` receiver)
+   * fires `refresh_epg_data.delay()` the moment an active non-dummy source is
+   * created, so by the time this method could take its own baseline the
+   * refresh may already have finished. Pass the create response.
+   */
+  baseline?: EpgSource;
+  /**
+   * How the refresh is triggered. Defaults to `POST /api/epg/import/` with
+   * `{ id }` — note the id travels in the **body**; there is no
+   * `/api/epg/sources/<id>/refresh/` route. Pass `async () => {}` when the
+   * refresh has already been started for you (the create path above): a second
+   * `/api/epg/import/` finds `refresh_epg_data`'s lock held, returns without
+   * touching a single field, and would leave this wait with nothing to see.
    */
   trigger?: () => Promise<unknown>;
 };
@@ -287,6 +307,85 @@ export class Waiter {
         description:
           `M3U account ${accountId} refresh to finish ` +
           `(status ${M3U_TERMINAL_STATUSES.join(' or ')})`,
+        timeoutMs: 180_000,
+        ...options,
+      }
+    );
+  }
+
+  /**
+   * Waits for an `EPGSource` refresh to finish.
+   *
+   * **This is deliberately not a copy of {@link m3uRefreshComplete}, and the
+   * difference is the whole point.** An XMLTV refresh reaches `status:
+   * 'success'` **twice**: `parse_channels_only` sets it — with
+   * `last_message = "Successfully parsed N channels"` — before
+   * `parse_programs_for_source` has even started, and nothing sets it back to
+   * `parsing`. A wait for a terminal status therefore resolves mid-refresh,
+   * with `EPGData` rows present and zero `ProgramData`.
+   *
+   * So this polls `updated_at` instead, which is a genuine completion marker:
+   * `EPGSource.updated_at` is `null=True` with no `auto_now`, is `null` on a
+   * fresh row, and is written only by `parse_programs_for_source`'s success
+   * path and by `_refresh_epg_data_impl`'s final `.update()` — reached only
+   * once both parse phases returned truthy. Every error path skips it.
+   *
+   * `status === 'error'` also resolves the wait, but only when `status` or
+   * `last_message` differs from the baseline — the same guard
+   * {@link m3uRefreshComplete} uses, so a source already sitting in a stale
+   * error state cannot resolve this instantly.
+   *
+   * **The hazard this cannot see:** an *inactive* source. `_refresh_epg_data_impl`
+   * returns on `if not source.is_active` before any status write, and
+   * `_ensure_epg_refresh_terminal_status` only forces `error` from
+   * `fetching`/`parsing`. So an inactive source's refresh changes nothing at
+   * all and this times out saying so. `seed.epgSource()` defaults to
+   * `is_active: false` — pass `{ is_active: true }` for a source you intend to
+   * refresh.
+   *
+   * **What this does NOT wait for:** programmes. `parse_programs_for_source`
+   * only parses `<programme>` elements whose channel is already mapped to a
+   * `Channel` (`epg_ids_mapped_to_channels`), so a freshly refreshed source
+   * with no associations has zero `ProgramData` and says so in `last_message`.
+   * Programmes arrive after `set-epg`; poll
+   * `/api/epg/programs/search/?channel_id=` for those.
+   */
+  async epgRefreshComplete(
+    sourceId: number,
+    { baseline, trigger, ...options }: EpgRefreshWaitOptions = {}
+  ): Promise<EpgSource> {
+    const url = `/api/epg/sources/${sourceId}/`;
+
+    const before =
+      baseline ??
+      (await this.api.json<EpgSource>(
+        await this.api.get(url),
+        `epgRefreshComplete baseline read for source ${sourceId}`
+      ));
+
+    if (trigger) {
+      await trigger();
+    } else {
+      const triggered = await this.api.post('/api/epg/import/', { id: sourceId });
+      if (!triggered.ok()) {
+        throw new Error(
+          `triggering the refresh of EPG source ${sourceId} failed: ` +
+            `${triggered.status()} ${await triggered.text()}. No refresh was ` +
+            'queued, so there was nothing to wait for.'
+        );
+      }
+    }
+
+    return this.resource<EpgSource>(
+      url,
+      (body) =>
+        body.updated_at !== before.updated_at ||
+        (body.status === 'error' &&
+          (body.status !== before.status || body.last_message !== before.last_message)),
+      {
+        description:
+          `EPG source ${sourceId} refresh to finish ` +
+          `(updated_at to advance from '${before.updated_at}', or a changed error state)`,
         timeoutMs: 180_000,
         ...options,
       }
