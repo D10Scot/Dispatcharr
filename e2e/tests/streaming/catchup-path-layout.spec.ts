@@ -1,6 +1,5 @@
 import { test, expect } from '../../fixtures';
-import { catchupTimestamp, seedCatchupChannel } from './helpers';
-import { seedXcUser } from '../seeded/helpers';
+import { catchupTimestamp, seedCatchupChannel, seedXcUser } from './helpers';
 
 /**
  * Drives the root XC PATH catch-up route — `/timeshift/<user>/<pass>/
@@ -46,7 +45,9 @@ test('a catch-up request reaches the provider in the PATH layout with the right 
   await streamClient.close();
 
   const log = await upstream.log(scenario);
-  const asked = log.filter((entry) => entry.path?.includes('/timeshift/'));
+  const asked = log.filter(
+    (entry) => entry.kind === 'request' && entry.path?.includes('/timeshift/')
+  );
   expect(asked.length).toBeGreaterThan(0);
   const path = asked[0].path!;
 
