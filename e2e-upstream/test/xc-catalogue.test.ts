@@ -14,6 +14,25 @@ import {
 const xc = (overrides = {}) =>
   new ScenarioRegistry().create({ xc: true, username: 'u', password: 'p', ...overrides });
 
+describe('category actions', () => {
+  it('renders live, VOD and series categories from their own scenario field, not each other\'s', () => {
+    // A mutation swapping renderVodCategories' and renderSeriesCategories'
+    // bodies (or either for renderLiveCategories') must fail this: each
+    // category list is asserted against a name unique to its own field, so
+    // a movie category rendered as a series category (or vice versa) is
+    // caught here rather than surfacing as a G9 ingest test putting movies
+    // in a series's Channel Group.
+    const scenario = xc({
+      liveCategories: [{ id: 1, name: 'Live Cat' }],
+      vodCategories: [{ id: 2, name: 'Vod Cat' }],
+      seriesCategories: [{ id: 3, name: 'Series Cat' }],
+    });
+    expect(renderLiveCategories(scenario)).toEqual([{ category_id: '1', category_name: 'Live Cat' }]);
+    expect(renderVodCategories(scenario)).toEqual([{ category_id: '2', category_name: 'Vod Cat' }]);
+    expect(renderSeriesCategories(scenario)).toEqual([{ category_id: '3', category_name: 'Series Cat' }]);
+  });
+});
+
 describe('live actions', () => {
   it('renders categories as { category_id, category_name }', () => {
     // apps/m3u/tasks.py, refresh_m3u_account_groups: category_id becomes
@@ -88,6 +107,46 @@ describe('VOD actions', () => {
     expect(movie).not.toHaveProperty('is_adult');
   });
 
+  it('omits tmdb_id/imdb_id when null and includes them when the scenario declares them', () => {
+    // The one field the pre-flight scan flagged as an IntegrityError risk:
+    // Movie.tmdb_id/imdb_id are unique=True globally, so a shared default
+    // across parallel workers would collide. A mutation dropping the
+    // conditional spread (always omitting, or always emitting '') must fail
+    // this test in both directions.
+    const [sparse] = renderVodStreams(xc(), null) as Record<string, unknown>[];
+    expect(sparse).not.toHaveProperty('tmdb_id');
+    expect(sparse).not.toHaveProperty('imdb_id');
+
+    const tagged = xc({
+      vod: [
+        {
+          id: 1,
+          name: 'Tagged Movie',
+          year: 2021,
+          categoryId: 1,
+          containerExtension: 'mp4',
+          tmdbId: 'tt123',
+          imdbId: 'im456',
+        },
+      ],
+    });
+    const [movie] = renderVodStreams(tagged, null) as Record<string, unknown>[];
+    expect(movie).toMatchObject({ tmdb_id: 'tt123', imdb_id: 'im456' });
+  });
+
+  it('filters vod streams by category_id when one is given', () => {
+    const scenario = xc({
+      vodCategories: [{ id: 1, name: 'A' }, { id: 2, name: 'B' }],
+      vod: [
+        { id: 1, name: 'one', year: 2020, categoryId: 1, containerExtension: 'mp4', tmdbId: null, imdbId: null },
+        { id: 2, name: 'two', year: 2020, categoryId: 2, containerExtension: 'mp4', tmdbId: null, imdbId: null },
+      ],
+    });
+    const movies = renderVodStreams(scenario, '2') as Record<string, unknown>[];
+    expect(movies).toHaveLength(1);
+    expect(movies[0].stream_id).toBe(2);
+  });
+
   it('renders vod_info with both info and movie_data', () => {
     // refresh_movie_advanced_data requires `'info' in vod_info` and reads
     // movie_data separately. A bare info dict is silently ignored.
@@ -113,6 +172,19 @@ describe('series actions', () => {
     expect(series).toHaveProperty('plot');
     expect(series).toHaveProperty('releaseDate');
     expect(series).not.toHaveProperty('stream_icon');
+  });
+
+  it('filters series by category_id when one is given', () => {
+    const scenario = xc({
+      seriesCategories: [{ id: 1, name: 'A' }, { id: 2, name: 'B' }],
+      series: [
+        { id: 1, name: 'one', categoryId: 1, seasons: [] },
+        { id: 2, name: 'two', categoryId: 2, seasons: [] },
+      ],
+    });
+    const series = renderSeries(scenario, '2') as Record<string, unknown>[];
+    expect(series).toHaveLength(1);
+    expect(series[0].series_id).toBe(2);
   });
 
   it('renders series_info with info and an object keyed by season number', () => {
