@@ -207,7 +207,7 @@ background tasks than a standard M3U refresh:
 - **VOD ingest is a separate task, fired only after the M3U refresh completes.** A standard M3U
   refresh finishes once; an XC refresh that has VOD enabled additionally queues
   `apps.vod.tasks.refresh_vod_content` (`.delay()`'d from inside `apps/m3u/tasks.py`'s main refresh
-  task, immediately after it record its own completion) — so `waitFor.m3uRefreshComplete` returning
+  task, immediately after it records its own completion) — so `waitFor.m3uRefreshComplete` returning
   does **not** mean movies or series have landed yet. A test asserting on `Movie`/`Series` rows
   needs its own wait on that outcome, not a reuse of the M3U-refresh wait.
 - **`server_info.timezone` reaches an `M3UAccountProfile` through a second, nested `.delay()`'d

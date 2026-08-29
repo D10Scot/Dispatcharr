@@ -50,7 +50,7 @@ tests.** Status: `todo` / `done` / `known-bug` (asserted correct, marked
 | Output | hide_adult_content across the Xtream listing paths | G5 | todo |
 | Output | /output/m3u, /output/epg and the HDHR lineup are unauthenticated by design, gated only by the M3U_EPG network ACL | G5 | todo |
 | Accounts | Token refresh with a deleted user's token 500s instead of 401 ([#12](https://github.com/D10Scot/Dispatcharr/issues/12)); needs a `test.fail()`, and pinning it costs one login | G5 | known-bug |
-| Upstream | Fake provider speaks Xtream Codes: `player_api.php` auth envelope and the seven catalogue actions `core/xtream_codes.Client` calls | G8 | done |
+| Upstream | Fake provider speaks Xtream Codes: `player_api.php` auth envelope and the eight catalogue actions `core/xtream_codes.Client` calls | G8 | done |
 | Upstream | Fake provider serves a finite VOD asset with `Content-Length`, `Accept-Ranges`, 206 + `Content-Range` and 416 | G8 | done |
 | Upstream | Fake provider answers both catch-up layouts and records the credentials, stream id, start timestamp and duration it was asked for | G8 | done |
 | Upstream | Four new faults: `xc-auth-envelope`, `no-tv-archive`, `catchup-layout-404`, `range-unsupported` | G8 | done |

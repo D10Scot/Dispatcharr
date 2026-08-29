@@ -80,9 +80,16 @@ symbol** — none of the six is a URL a test constructs by hand:
 | `/player_api.php` (no-`action` handshake, plus the `action=get_live_categories`\|`get_live_streams`\|`get_vod_categories`\|`get_vod_streams`\|`get_series_categories`\|`get_series`\|`get_vod_info`\|`get_series_info` actions) | `core.xtream_codes.Client.authenticate()` and its matching `get_*` methods |
 | `/live/<user>/<pass>/<id>.ts` | `Client.get_stream_url(stream_id)` |
 | `/movie/<user>/<pass>/<id>.<ext>` | `M3UMovieRelation.get_stream_url()` (`apps/vod/models.py`) |
-| `/series/<user>/<pass>/<id>.<ext>` | `M3UEpisodeRelation.get_stream_url()` (`apps/vod/models.py`) |
+| `/series/<user>/<pass>/<id>.<ext>` — `<id>` is an **episode** id (`series[].seasons[].episodes[].id`), never the series id `get_series_info` uses | `M3UEpisodeRelation.get_stream_url()` (`apps/vod/models.py`) |
 | `/timeshift/<user>/<pass>/<duration>/<start>/<id>.ts` (PATH layout) | `apps.timeshift.helpers.build_timeshift_url_format_b()` |
 | `/streaming/timeshift.php?...` (QUERY layout) | `apps.timeshift.helpers.build_timeshift_url_format_a()` |
+
+**`get_vod_info`/`get_series_info` and unknown actions.** `get_vod_info`/`get_series_info` answer
+`200` with a rendered payload for a `vod_id`/`series_id` the scenario declared, and `404` with a
+`{ error }` body otherwise — the same door as the `/movie/`/`/series/` streaming routes, not a
+shape error, since `Client.get_vod_info`/`get_series_info` require a dict either way. An
+unrecognised `action` on `player_api.php` gets a `400` naming the full set of valid actions plus the
+no-`action` handshake (`src/xc/router.ts:202-226`).
 
 ### XC scenario fields
 
@@ -93,17 +100,27 @@ symbol** — none of the six is a URL a test constructs by hand:
 404s any of them, naming the missing `xc: true`. It **requires both `username` and `password`**,
 not just `username`: omitting `username` would let the non-XC routes' own `credentialsMatch`
 (`server.ts`) treat "no username declared" as "accept any credentials", which would make
-`auth-failure`/`xc-auth-envelope` pass vacuously; omitting `password` is separately dangerous
-because `xcCredentialsMatch` compares it against `scenario.password ?? ''`, so an empty string is
-accepted at the scenario-creation door but can never match the `/live/` route's `[^/]+` path
-segment (which cannot match an empty string) — the scenario would be created successfully and then
-be unservable the moment a real client tried it.
+`auth-failure`/`xc-auth-envelope` pass vacuously. **Omitting** `password` is caught the same way —
+`parseScenarioRequest`'s door check (`scenario.ts:591`) throws on `request.password === undefined`
+— but that check only guards omission, not falsiness: an explicit **empty-string** `password: ''`
+is not `undefined`, so it passes the door and the scenario is created successfully, then is
+unservable the moment a real client streams from it, because `xcCredentialsMatch` compares it
+against `scenario.password ?? ''` while the `/live/` route's `[^/]+` path segment can never match
+an empty string. This is a known provider defect, not intended behaviour — see the known-defect row
+in `COVERAGE.md`. `seed.xcAccount` is deliberately stricter than this door and throws on any falsy
+`password`, empty string included, so a test built on it is protected in practice; a test that
+bypasses `seed.xcAccount` is not.
 
 - `liveCategories` / `vodCategories` / `seriesCategories` — arrays of `{ id, name }`. Each defaults
-  to one entry (`{ id: 1, name: 'E2E' }`, `'E2E Movies'`, `'E2E Series'`) when omitted.
+  to one entry (`{ id: 1, name: 'E2E' }`, `'E2E Movies'`, `'E2E Series'`) when omitted. A `channels[]`
+  entry's own `categoryId` defaults to `liveCategories[0].id` when omitted (`scenario.ts:612-616`).
 - `vod` / `series` — a count (materialising that many default-named entries) or an explicit array
   of movie/series specs. Default to 1 of each when `xc: true` and neither is declared, and to 0 for
-  a non-XC scenario — there's no route that could serve a catalogue.
+  a non-XC scenario — there's no route that could serve a catalogue. The `MovieSpec`/`SeriesSpec`
+  field sets (`id`, `name`, `year`, `categoryId`, `containerExtension`, `tmdbId`, `imdbId` for a
+  movie; `id`, `name`, `categoryId`, `seasons[].number`, `seasons[].episodes[]` for a series) are
+  mirrored with docstrings as `UpstreamMovie`/`UpstreamSeries` in `e2e/fixtures/types.ts:349-380` —
+  read them there rather than `src/scenario.ts` when a test needs an explicit spec.
 - `account` — `{ userInfo?, serverInfo? }`, raw overrides merged last into the `player_api.php`
   handshake's envelope. Untyped beyond `Record<string, unknown>` on purpose: a test that wants a
   garbage `exp_date` or `timezone` on the envelope needs to be able to send exactly that.
@@ -196,9 +213,11 @@ control API; it's the whole of what those faults can do.
 **The four XC faults above are not scoped like the pre-existing eight.** `xc-auth-envelope` is
 always scenario-wide — the handshake it changes has no channel or VOD id to narrow to.
 `no-tv-archive` and `catchup-layout-404` accept the usual `channel` filter (`catchup-layout-404`'s
-channel is the catch-up stream id). `range-unsupported` is **scenario-wide only**: a `channel`
-filter is silently ignored by the router, because a VOD id is not a channel id and there is nothing
-for it to mean.
+channel is the catch-up stream id). `range-unsupported` is **scenario-wide only**: arming it with a
+`channel` filter is rejected with a `400` at the control API (`parseFaultRequest`,
+`src/faults.ts:107-111`, pinned by `test/faults.test.ts:344-346` and
+`test/xc-faults.test.ts:233-235`), because a VOD id is not a channel id and there is nothing for it
+to mean. `xc-auth-envelope` is rejected the same way, for the same reason.
 
 **`catchup-layout-404` requires `{ layout: 'path' | 'query' }` when arming, but not when clearing.**
 A layout-less arm would be indistinguishable from `not-found` and would block both catch-up layouts
@@ -257,11 +276,15 @@ how the request arrives:
 A `start` that matches none of the four gets a 400 naming the accepted shapes; a `start` in one of
 the four shapes but a channel id the scenario never declared gets a 404. Every request the provider
 accepts or rejects is recorded in `GET /s/<id>/log`: `logRequest` writes `path` as
-`url.pathname + url.search`, so a PATH-layout request's log entry carries the full
-`/timeshift/<user>/<pass>/<duration>/<start>/<id>.ts` path, and a QUERY-layout request's carries
-`/streaming/timeshift.php?username=...&password=...&stream=...&start=...&duration=...` — everything
-that identifies what was asked for is there to assert on, including credentials, stream id, start
-timestamp (exactly as sent, not just the parsed ISO form) and duration.
+`url.pathname + url.search` (`src/server.ts:226`), which is the request's **whole** pathname,
+including the `/s/<scenarioId>` prefix the router strips before matching — so a PATH-layout
+request's log entry carries `/s/<scenarioId>/timeshift/<user>/<pass>/<duration>/<start>/<id>.ts`,
+not just the suffix after it, and a QUERY-layout request's carries
+`/s/<scenarioId>/streaming/timeshift.php?username=...&password=...&stream=...&start=...&duration=...`.
+Assert with `toContain` against the suffix you care about, not equality against the bare route —
+this goal's own spec does the same (`e2e/tests/streaming/catchup-path-layout.spec.ts:49-64`).
+Everything that identifies what was asked for is there either way, including credentials, stream
+id, start timestamp (exactly as sent, not just the parsed ISO form) and duration.
 
 **The archive is not time-addressable: the same loop is served whatever `start` asked for.** This
 provider can prove Dispatcharr *asked* for the right moment — the exact `start`/`stream`/`duration`
