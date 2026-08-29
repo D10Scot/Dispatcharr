@@ -449,8 +449,14 @@ export class Seeder {
    * *without* the file is the one bad state: the `scan-files` beat walks
    * `/data/logos` every 20s and, once the upload's Redis `processed_file:`
    * key expires (3-day TTL, or sooner on a flush), resurrects the orphan as a
-   * new `Logo` row under the bare filename (`core/tasks.py:344-355`) and
-   * fires a websocket broadcast for it. Keep both, or delete both.
+   * new `Logo` row under the filename's stem (`core/tasks.py:350`) — for a
+   * seeded logo that stem is identical to the name the upload originally gave
+   * it, which is the whole reason the row is indistinguishable from the one
+   * that was deleted. Keep both, or delete both.
+   *
+   * The payload is unique per logo, not a fixed constant: see
+   * {@link logoPayload}. That is what lets a test assert it read back *this*
+   * logo's bytes, not merely *a* seeded logo's bytes.
    */
   async logo(overrides: LogoOverrides = {}): Promise<Logo> {
     const { mimeType = 'image/png', extension = 'png' } = overrides;
@@ -460,9 +466,35 @@ export class Seeder {
       file: {
         name: `${name}.${extension}`,
         mimeType,
-        buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+        buffer: logoPayload(name),
       },
     });
     return this.api.json<Logo>(res, 'seed.logo');
   }
+}
+
+/**
+ * The fixed 8-byte PNG signature every `seed.logo()` upload begins with.
+ * Exported alongside {@link logoPayload} as the one source of truth for it.
+ */
+export const PNG_SIGNATURE = Buffer.from([
+  0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+]);
+
+/**
+ * The exact bytes `seed.logo()` uploads for a logo named `name`: the PNG
+ * signature followed by the name itself. Every seeded logo therefore carries
+ * a different payload — `validate_logo_file` checks only the declared
+ * `content_type` and size, never the magic bytes past what `mimetypes`
+ * needs to guess a type, so trailing bytes are free
+ * (`dispatcharr/utils.py:51-57`). That uniqueness is what a test needs to
+ * assert the serving path returned *this* logo's file rather than any
+ * seeded logo's file, which a byte *count* (or a comparison against one
+ * shared constant) cannot distinguish. Exported so a spec derives the
+ * expected bytes from the name it gets back (`logoPayload(logo.name)`)
+ * instead of transcribing a length that could drift from this function
+ * independently.
+ */
+export function logoPayload(name: string): Buffer {
+  return Buffer.concat([PNG_SIGNATURE, Buffer.from(name, 'utf8')]);
 }

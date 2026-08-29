@@ -1,4 +1,4 @@
-import { test, expect } from '../../fixtures';
+import { test, expect, logoPayload } from '../../fixtures';
 import type { Channel } from '../../fixtures';
 
 test('a logo uploads, assigns to a channel and serves its bytes back', async ({
@@ -40,9 +40,12 @@ test('a logo uploads, assigns to a channel and serves its bytes back', async ({
   const served = await request.get(logo.cache_url);
   expect(served.status()).toBe(200);
   // `serve_local_or_remote_image` streams the file verbatim for a local
-  // `/data` path (`core/image_proxy.py:193-209`), so the exact byte count of
-  // the 8-byte PNG signature `seed.logo()` uploads is both correct and free —
-  // a placeholder-image mutation would pass `> 0` but fail this.
-  expect((await served.body()).length).toBe(8);
+  // `/data` path (`core/image_proxy.py:193-209`). Every seeded logo's payload
+  // is unique (`logoPayload`, keyed on its name), so comparing the served
+  // bytes against exactly *this* logo's payload proves the endpoint served
+  // this logo's file, not merely a same-length or same-shared-bytes file —
+  // a wrong-row bug (`cache_url` resolving to another logo's `url`) would
+  // pass a byte-count check but fail this.
+  expect((await served.body()).equals(logoPayload(logo.name))).toBeTruthy();
   expect(served.headers()['content-type']).toContain('image');
 });

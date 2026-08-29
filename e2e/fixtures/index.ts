@@ -80,7 +80,11 @@
  *   logo(overrides?)             → Logo           /api/channels/logos/upload/,
  *                                multipart, generated filename (the upload is
  *                                get_or_create'd on the path, so a fixed name
- *                                is shared across workers)
+ *                                is shared across workers). The payload is
+ *                                `logoPayload(name)`, unique per logo — see
+ *                                `logoPayload`, also exported here, to derive
+ *                                the expected served bytes for a given logo
+ *                                instead of transcribing a byte count.
  *   generatedName(entity)        the naming scheme itself, for a row you
  *                                create by hand
  *   `overrides` is typed per entity — `ChannelOverrides`, `UserOverrides`, …
@@ -448,7 +452,7 @@ export const test = base.extend<Fixtures>({
 export { expect } from '@playwright/test';
 export { ApiClient } from './api';
 export type { MultipartValue } from './api';
-export { Seeder, SEEDED_USER_PASSWORD } from './seed';
+export { Seeder, SEEDED_USER_PASSWORD, logoPayload } from './seed';
 export {
   loginsSpentByThisWorker,
   makePrincipalClient,

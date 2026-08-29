@@ -17,7 +17,10 @@ const TOKENS_FILE = path.join(AUTH_DIR, 'tokens.json');
  * caller here is a small in-memory field or file, the product caps uploads at
  * 5MB (`dispatcharr/utils.py:56-57`) so a `Buffer` is always cheap enough, and
  * a numeric field costs nothing more than `String()` at the call site. Widen
- * this if a later goal needs a stream, or a native number/boolean part.
+ * this for a native number/boolean part, but not for a stream:
+ * `fetchWithRefresh()` replays the request by calling the options factory
+ * again on a 401, and a once-consumed `fs.ReadStream` would replay as an
+ * empty part — a stream needs a re-openable factory, not a handle.
  */
 export type MultipartValue =
   | string
