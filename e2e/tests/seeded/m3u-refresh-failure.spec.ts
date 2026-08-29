@@ -102,17 +102,20 @@ test('a 401 from the playlist does not disturb an already-ingested catalogue', a
   // releases its own Redis task lock (`apps/m3u/tasks.py:3374`) — auto-sync,
   // catch-up rollup, a system-event log, a WS push and cache-file cleanup all
   // run in between. `upstreamM3UAccount()` returns the instant it observes
-  // `success`, which can be well inside that window. Triggering another
-  // refresh for the same account while the lock is still held is silently
-  // dropped (`core.utils.acquire_task_lock` just logs "Lock for
+  // `success`, which can be well inside that window, so the explicit trigger
+  // below could land on a still-held lock and be silently dropped
+  // (`core.utils.acquire_task_lock` just logs "Lock for
   // refresh_single_m3u_account and id=<n> already acquired. Task will not
-  // proceed." and the task returns without writing anything) — reproduced
-  // directly against this container's logs, which is what caused this test
-  // to intermittently time out in `waitFor.m3uRefreshComplete` below before
-  // this wait was added. Filed as D10Scot/Dispatcharr#59: a request that did
-  // nothing is indistinguishable from one that worked. This delay is the
-  // test-side workaround; it does not fix #59.
-  await new Promise((resolve) => setTimeout(resolve, 2_000));
+  // proceed." and the task returns without writing anything). Filed as
+  // D10Scot/Dispatcharr#59: a request that did nothing is indistinguishable
+  // from one that worked.
+  //
+  // No test-side workaround is needed here any more: `m3uRefreshComplete()`
+  // (`wait.ts:351-405`) now re-fires its own trigger every
+  // `M3U_RETRIGGER_INTERVAL_MS` (5s), up to `M3U_MAX_RETRIGGERS` (3) times,
+  // which recovers exactly this drop. This file used to sleep 2s here as a
+  // test-side workaround before that fix existed (`9eb958fa`); the sleep is
+  // now redundant and has been removed.
 
   const armed = await upstream.fault(scenario, 'auth-failure');
   expect(armed.active).toBe(true);
@@ -152,6 +155,10 @@ test.fail('a failed refresh keeps the HTTP-status-specific message', async ({
   waitFor,
   api,
 }) => {
+  // A create-time settle plus a triggered refresh against the `seeded`
+  // project's 30s default.
+  test.setTimeout(90_000);
+
   const prefix = seed.generatedName('message');
   const scenario = await upstream.scenario({
     channels: [{ id: 1, name: `${prefix}-a`, tvgId: `${prefix}-a.e2e`, logo: null }],

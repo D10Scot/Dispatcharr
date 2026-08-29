@@ -85,7 +85,9 @@ test('a refresh with a mapped channel returns a baseline that a later wait canno
   const mapped = await waitFor.epgRefreshComplete(unmapped.id, { baseline: unmapped });
 
   expect(mapped.updated_at).not.toBe(unmapped.updated_at);
-  expect(mapped.last_message).toMatch(/^Parsed \d+ programs? for 1 channels?/);
+  // `[\d,]+`, not `\d+`: the product formats the count with a thousands
+  // separator once it reaches 1000 (`apps/epg/tasks.py:2373`).
+  expect(mapped.last_message).toMatch(/^Parsed [\d,]+ programs? for 1 channels?/);
 
   const programmes = await api.json<ProgramSearchPage>(
     await api.get(`/api/epg/programs/search/?channel_id=${channel.id}&page_size=1`),

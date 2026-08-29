@@ -60,6 +60,13 @@ export class Seeder {
     // Held so the `upstream*` factories below can own the whole create-and-wait
     // dance, the way `upstreamChannel()` owns the wiring dance. `Waiter` takes
     // only `api`, so this introduces no fixture cycle.
+    //
+    // Required, deliberately, not defaulted: an optional `Waiter` would fail
+    // at runtime, inside `upstreamM3UAccount()`, the first time a caller that
+    // omitted it reached a wait — instead of at compile time, here. If adding
+    // this parameter breaks a `new Seeder(...)` call site elsewhere in the
+    // tree, pass the `Waiter` that call site already has rather than making
+    // this optional.
     private waitFor: Waiter
   ) {}
 
@@ -228,7 +235,7 @@ export class Seeder {
    * ---------------------------------------------------------------------------
    * The create-time group refresh, and why this waits it out first
    * ---------------------------------------------------------------------------
-   * `post_save` on `M3UAccount` (`apps/m3u/signals.py:12-15`) unconditionally
+   * `post_save` on `M3UAccount` (`apps/m3u/signals.py:12-20`) unconditionally
    * queues `refresh_m3u_groups.delay(instance.id)` for every newly-created,
    * non-XC account, independent of `is_active` at signal time — it re-checks
    * `is_active` itself when the task actually runs. Since this factory
@@ -236,7 +243,7 @@ export class Seeder {
    * down `refresh_m3u_groups`'s normal path: it fetches the same playlist,
    * and — because it's a partial refresh (`full_refresh` defaults to
    * `False`) — settles the account at `status: 'pending_setup'` on success
-   * (`apps/m3u/tasks.py:1799-1805`, a `.update()` that bypasses signals but
+   * (`apps/m3u/tasks.py:1808-1811`, a `.update()` that bypasses signals but
    * still lands in the row) or `status: 'error'` on any fetch failure (every
    * failure branch inside `fetch_m3u_lines` sets it before returning,
    * `apps/m3u/tasks.py:177+`).
@@ -313,7 +320,7 @@ export class Seeder {
    * The exact claim, and its limit
    * ---------------------------------------------------------------------------
    * This does **not** claim `{error, pending_setup}` is the exhaustive set of
-   * outcomes `refresh_m3u_groups` (`apps/m3u/tasks.py:1544`) can ever reach —
+   * outcomes `refresh_m3u_groups` (`apps/m3u/tasks.py:1536`) can ever reach —
    * it claims that set is what every path *reachable by this factory*
    * reaches, and that anything else is treated as a hang, not a pass.
    * `refresh_m3u_groups` has three paths that leave the row at a

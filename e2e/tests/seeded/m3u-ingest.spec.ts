@@ -23,6 +23,10 @@ test('an M3U refresh ingests the declared catalogue faithfully', async ({
   seed,
   api,
 }) => {
+  // A full create → settle → fetch-and-parse cycle against the `seeded`
+  // project's 30s default.
+  test.setTimeout(90_000);
+
   const prefix = seed.generatedName('catalogue');
   const declared = [1, 2, 3].map((id) => ({
     id,
@@ -117,7 +121,7 @@ test("waitFor.m3uRefreshComplete re-fires its trigger when the account never mov
   waitFor,
   api,
 }) => {
-  // Inactive: `refresh_account_on_save` (`apps/m3u/signals.py:12-19`) still
+  // Inactive: `refresh_account_on_save` (`apps/m3u/signals.py:12-20`) still
   // dispatches the create-time `refresh_m3u_groups` task unconditionally on
   // `created` — `is_active` plays no part in whether it's queued. It just
   // can't *write* anything once it runs: the task's own account lookup
