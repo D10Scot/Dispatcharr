@@ -76,7 +76,13 @@ test('Dispatcharr ingests a VOD and series catalogue from an Xtream Codes accoun
 
   // Episodes are NOT part of the refresh. get_series_info is a separate,
   // on-demand call, and this endpoint is what reaches it — synchronously.
-  await api.get(`/api/vod/series/${series.results[0].id}/provider-info/`);
+  // Routed through api.json rather than a bare api.get: api.get does not
+  // assert res.ok() on its own, so a 5xx here would otherwise surface as an
+  // opaque `toMatchObject` failure against `undefined` two calls later.
+  await api.json(
+    await api.get(`/api/vod/series/${series.results[0].id}/provider-info/`),
+    'series provider-info refresh'
+  );
 
   // EpisodeViewSet declares `search_fields = ['name', 'description']`
   // (apps/vod/api_views.py), so `/api/vod/episodes/?search=` is supported —
