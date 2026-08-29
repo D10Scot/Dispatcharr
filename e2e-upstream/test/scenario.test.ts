@@ -56,6 +56,31 @@ describe('ScenarioRegistry', () => {
     expect(scenario.channels.map((c) => c.categoryId)).toEqual([9, 5]);
   });
 
+  it('tags count-form channels, movies and series with the declared category, not the module default', () => {
+    // F1 regression: defaultChannels/defaultMovies/defaultSeries used to
+    // hardcode the module's id-1 default category regardless of what the
+    // scenario declared, so get_live_streams/get_vod_streams/get_series
+    // answered a category_id collect_xc_streams never resolved from
+    // get_live_categories/get_vod_categories/get_series_categories — the
+    // streams were silently dropped on ingest. This scenario declares a
+    // non-default (id 5) category for all three catalogues and uses the
+    // count form (a number, not an explicit array) throughout, which is
+    // exactly the combination the previous behaviour got wrong.
+    const registry = new ScenarioRegistry();
+    const scenario = registry.create({
+      liveCategories: [{ id: 5, name: 'Live Five' }],
+      vodCategories: [{ id: 5, name: 'VOD Five' }],
+      seriesCategories: [{ id: 5, name: 'Series Five' }],
+      channels: 1,
+      vod: 1,
+      series: 1,
+    });
+
+    expect(scenario.channels.map((c) => c.categoryId)).toEqual([5]);
+    expect(scenario.vod.map((m) => m.categoryId)).toEqual([5]);
+    expect(scenario.series.map((s) => s.categoryId)).toEqual([5]);
+  });
+
   it('gives every scenario a distinct id and does not evict', () => {
     const registry = new ScenarioRegistry();
     const a = registry.create({});

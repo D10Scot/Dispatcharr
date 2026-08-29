@@ -129,7 +129,15 @@ const DEFAULT_SERIES_CATEGORY: CategorySpec = { id: 1, name: 'E2E Series' };
  */
 const DEFAULT_MOVIE_YEAR = 2020;
 
-function defaultChannels(count: number): ResolvedChannelSpec[] {
+// `categoryId` is always the caller's resolved `categories[0].id` — never
+// the module default constants directly — so a scenario that declares its
+// own `liveCategories`/`vodCategories`/`seriesCategories` and uses the count
+// form (`channels: 2`, not an explicit array) still gets streams tagged with
+// a category `get_live_categories`/`get_vod_categories`/`get_series_categories`
+// actually advertised. Passing the module constant here silently emptied
+// `collect_xc_streams`'s ingest whenever the declared categories didn't
+// happen to be id 1 (see the F1 fix note in the final review).
+function defaultChannels(count: number, categoryId: number): ResolvedChannelSpec[] {
   return Array.from({ length: count }, (_unused, index) => {
     const n = index + 1;
     return {
@@ -139,19 +147,19 @@ function defaultChannels(count: number): ResolvedChannelSpec[] {
       // example.invalid is reserved by RFC 2606 and can never resolve, so a
       // logo URL cannot accidentally make a real network request.
       logo: `https://example.invalid/logo-${n}.png`,
-      categoryId: DEFAULT_LIVE_CATEGORY.id,
+      categoryId,
     };
   });
 }
 
-function defaultMovies(count: number): MovieSpec[] {
+function defaultMovies(count: number, categoryId: number): MovieSpec[] {
   return Array.from({ length: count }, (_unused, index) => {
     const n = index + 1;
     return {
       id: n,
       name: `Fake Movie ${n}`,
       year: DEFAULT_MOVIE_YEAR,
-      categoryId: DEFAULT_VOD_CATEGORY.id,
+      categoryId,
       containerExtension: 'mp4',
       tmdbId: null,
       imdbId: null,
@@ -159,13 +167,13 @@ function defaultMovies(count: number): MovieSpec[] {
   });
 }
 
-function defaultSeries(count: number): SeriesSpec[] {
+function defaultSeries(count: number, categoryId: number): SeriesSpec[] {
   return Array.from({ length: count }, (_unused, index) => {
     const n = index + 1;
     return {
       id: n,
       name: `Fake Series ${n}`,
-      categoryId: DEFAULT_SERIES_CATEGORY.id,
+      categoryId,
       seasons: [
         {
           number: 1,
@@ -601,19 +609,27 @@ export class ScenarioRegistry {
   private scenarios = new Map<string, Scenario>();
 
   create(request: ScenarioRequest): Scenario {
-    // Computed before `channels` below: a caller that bypasses
-    // `parseScenarioRequest` and passes an explicit `channels` array
-    // straight to `create` still needs every channel's `categoryId`
+    // Computed before `channels`/`vod`/`series` below: a caller that
+    // bypasses `parseScenarioRequest` and passes an explicit `channels`
+    // array straight to `create` still needs every channel's `categoryId`
     // resolved, on pain of `Scenario.channels[].categoryId` being
-    // `undefined` despite its type saying `number`.
+    // `undefined` despite its type saying `number`. The count form
+    // (`defaultChannels`/`defaultMovies`/`defaultSeries` below) needs the
+    // same resolved list, for the same reason `parseScenarioRequest`
+    // resolves `categoryId` against declared categories rather than the
+    // module defaults — `categories[0].id` is by construction a member of
+    // `categories`, so no `assertKnownCategory` call is needed for these
+    // generated entries the way it is for caller-supplied ones.
     const liveCategories = request.liveCategories ?? [DEFAULT_LIVE_CATEGORY];
+    const vodCategories = request.vodCategories ?? [DEFAULT_VOD_CATEGORY];
+    const seriesCategories = request.seriesCategories ?? [DEFAULT_SERIES_CATEGORY];
 
     const channels: ResolvedChannelSpec[] = Array.isArray(request.channels)
       ? request.channels.map((channel) => ({
           ...channel,
           categoryId: channel.categoryId ?? liveCategories[0].id,
         }))
-      : defaultChannels(request.channels ?? 1);
+      : defaultChannels(request.channels ?? 1, liveCategories[0].id);
 
     const xc = request.xc ?? false;
 
@@ -627,15 +643,17 @@ export class ScenarioRegistry {
       rate: request.rate ?? 1,
       xc,
       liveCategories,
-      vodCategories: request.vodCategories ?? [DEFAULT_VOD_CATEGORY],
-      seriesCategories: request.seriesCategories ?? [DEFAULT_SERIES_CATEGORY],
+      vodCategories,
+      seriesCategories,
       // A non-XC scenario has no route that could serve a catalogue, so
       // materialising one by default would only be a way to trip over it
       // later.
-      vod: Array.isArray(request.vod) ? request.vod : defaultMovies(request.vod ?? (xc ? 1 : 0)),
+      vod: Array.isArray(request.vod)
+        ? request.vod
+        : defaultMovies(request.vod ?? (xc ? 1 : 0), vodCategories[0].id),
       series: Array.isArray(request.series)
         ? request.series
-        : defaultSeries(request.series ?? (xc ? 1 : 0)),
+        : defaultSeries(request.series ?? (xc ? 1 : 0), seriesCategories[0].id),
       account: request.account ?? {},
     };
 
