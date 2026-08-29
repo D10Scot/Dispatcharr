@@ -485,9 +485,11 @@ export const PNG_SIGNATURE = Buffer.from([
  * The exact bytes `seed.logo()` uploads for a logo named `name`: the PNG
  * signature followed by the name itself. Every seeded logo therefore carries
  * a different payload — `validate_logo_file` checks only the declared
- * `content_type` and size, never the magic bytes past what `mimetypes`
- * needs to guess a type, so trailing bytes are free
- * (`dispatcharr/utils.py:51-57`). That uniqueness is what a test needs to
+ * `content_type` and size, never the magic bytes
+ * (`dispatcharr/utils.py:51-57`), so the trailing bytes are free. Nothing
+ * downstream parses them either: the serving path guesses a type from the
+ * file *extension* (`mimetypes.guess_type` reads no bytes) and then streams
+ * the file verbatim. That uniqueness is what a test needs to
  * assert the serving path returned *this* logo's file rather than any
  * seeded logo's file, which a byte *count* (or a comparison against one
  * shared constant) cannot distinguish. Exported so a spec derives the
