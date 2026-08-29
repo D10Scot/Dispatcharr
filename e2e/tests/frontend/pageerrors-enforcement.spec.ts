@@ -58,6 +58,23 @@ const SELF_FILE = path.basename(__filename);
 // shares `test(...)`'s `(name, fn)` shape and is still judged below.
 const TEST_HOOK_NAMES = new Set(['beforeEach', 'afterEach', 'beforeAll', 'afterAll']);
 
+// Known, pinned UNVERIFIABLE entries — the check below asserts the found set
+// equals exactly this one, in *both* directions. This is not a per-test
+// exclusion (that would mean skipping the check for these call sites); it
+// pins the current set so any *change* to it is loud. A new entry here means
+// a shape this checker can't read was added elsewhere and genuinely opens no
+// page — add it only with the same justification the existing entry carries,
+// never just to make the suite green. If `plugins.spec.ts:15` is ever fixed
+// (given fixtures so `judge()` can read it) or removed, this list must be
+// updated in the same change — a stale pin here is a false pass, exactly the
+// blind spot this file exists to close.
+const EXPECTED_UNVERIFIABLE = new Set([
+  // The zip-builder unit test (`buildPluginZip`'s own archive-shape
+  // assertions): synchronous, destructures no fixtures, opens no page — there
+  // is nothing here for `pageErrors` to watch.
+  'plugins.spec.ts:15',
+]);
+
 function isTestCallee(expr: ts.Expression): boolean {
   // `test(...)`
   if (ts.isIdentifier(expr) && expr.text === 'test') return true;
@@ -196,8 +213,48 @@ test('every test() under tests/frontend/ destructures pageErrors', async () => {
       : `${o.file}:${o.line} — UNVERIFIABLE: ${o.reason}`
   );
 
+  // Two assertions, not one, because `missing` and `unverifiable` mean
+  // different things and must fail differently.
+  //
+  // `missing` is the real enforcement and is absolute: a test that opens a
+  // page without naming `pageErrors` gets no teardown check, and no list may
+  // ever excuse one.
+  //
+  // `unverifiable` means the checker could not read the test's shape. That is
+  // deliberately not silent — an unreadable shape is a hole until someone
+  // looks at it — but one entry is genuinely unreadable *and* genuinely fine,
+  // so it is pinned here rather than excused by widening `judge()` (which
+  // would blind the checker to that whole shape) or by excluding the file
+  // (`SELF_FILE` is whole-file, and plugins.spec.ts's other test does open a
+  // page and must stay checked).
+  //
+  // Pinning keeps this fail-closed: a NEW unreadable shape is not in the list
+  // and still fails. Removing a fixed entry also fails, which is correct — the
+  // list is only as true as its last edit. **Add an entry deliberately, with a
+  // reason, and never merely to make the suite green.**
+  const KNOWN_UNVERIFIABLE = [
+    // plugins.spec.ts's first test is the synchronous zip-builder unit test.
+    // It takes no fixtures because it opens no page and does no I/O — it calls
+    // buildPluginZip() and asserts on the returned Buffer — so `pageErrors`
+    // would have nothing to observe.
+    'plugins.spec.ts:15 — UNVERIFIABLE: test callback destructures no fixtures ' +
+      'at all — if it never opens a page, exclude this file from the scan ' +
+      'explicitly (see SELF_FILE); if it does, name `pageErrors`',
+  ];
+
   expect(
-    summary,
+    summary.filter((line) => !line.includes('UNVERIFIABLE')),
+    'A test() call under e2e/tests/frontend/ opens a page without naming the ' +
+      '`pageErrors` fixture, so no error check runs for it. Playwright only ' +
+      'constructs the fixture (and its automatic expectClean() teardown — no ' +
+      '`auto: true`, see fixtures/index.ts) for a test that names it. Add ' +
+      '`pageErrors` to the destructured fixture parameter; see render.spec.ts, ' +
+      'guide.spec.ts, users.spec.ts or settings.spec.ts for the pattern. ' +
+      `Details — ${summary.join(' | ')}`
+  ).toEqual([]);
+
+  expect(
+    summary.filter((line) => line.includes('UNVERIFIABLE')),
     'One or more test() calls under e2e/tests/frontend/ failed the pageErrors ' +
       'check. Playwright only constructs the `pageErrors` fixture (and runs its ' +
       "automatic expectClean() teardown — no `auto: true`, see fixtures/index.ts) " +
@@ -208,6 +265,8 @@ test('every test() under tests/frontend/ destructures pageErrors', async () => {
       "at all — inline the test callback as a plain async arrow function " +
       'destructuring `{ …, pageErrors }`, or extend `judge()` in ' +
       'pageerrors-enforcement.spec.ts to understand the new shape explicitly. ' +
+      'If it is genuinely unreadable and genuinely safe, add it to ' +
+      'KNOWN_UNVERIFIABLE above with a reason. ' +
       `Details — ${summary.join(' | ')}`
-  ).toEqual([]);
+  ).toEqual(KNOWN_UNVERIFIABLE);
 });
