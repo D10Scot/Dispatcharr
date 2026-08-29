@@ -1,0 +1,401 @@
+name: Lifecycle Tests
+
+# Deliberately path-filtered, unlike its sibling e2e-tests.yml.
+#
+# e2e-tests.yml always triggers on pull requests because the Main ruleset
+# requires its checks, and a path-filtered workflow leaves a required check
+# "Expected" forever — blocking the merge permanently. Nothing here is a
+# required check, and nothing here should become one: this workflow builds the
+# AIO image and pulls four more, so making it unconditional would put roughly
+# an hour on every pull request. If a check from this file is ever added to the
+# ruleset, the filters below must come off in the same change.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docker/**'
+      - '**/migrations/**'
+      - 'scripts/e2e_up.sh'
+      - 'scripts/wait_for_redis.py'
+      - 'dispatcharr/settings.py'
+      - 'e2e/tests/lifecycle/**'
+      # The lifecycle projects depend on the shared fixtures, on the config,
+      # and on `provisionAdmin` in e2e/setup — a change to any of them can
+      # break these specs while touching nothing else the filter would see.
+      - 'e2e/fixtures/**'
+      - 'e2e/setup/**'
+      - 'e2e/playwright.config.ts'
+      - '.github/workflows/lifecycle-tests.yml'
+  # Narrow on purpose (D16): only the `upgrade-migrations` job runs on a pull
+  # request — the two bash-suite jobs are gated off below — so this gates the
+  # class of change that job exists to catch without putting an hour on every
+  # PR. `**/models.py` is not padding: a model change is what *necessitates* a
+  # migration, and a PR that alters one without shipping the migration is
+  # exactly the case filtering on migrations alone would miss.
+  #
+  # The four `e2e`/`scripts` entries are this workflow's own machinery, and
+  # they are here because the alternative was demonstrated: the PR that
+  # introduced this file could not trigger it, so nothing in it — neither the
+  # upgrade job nor either bash suite — had executed in CI even once before
+  # merge, and `workflow_dispatch` cannot help because a workflow must be on
+  # the default branch to be dispatchable. These paths change rarely, so the
+  # build cost lands only on PRs that edit the guard itself, which is when you
+  # most want it.
+  pull_request:
+    branches: [main]
+    paths:
+      - '**/migrations/**'
+      - '**/models.py'
+      - '.github/workflows/lifecycle-tests.yml'
+      - 'e2e/tests/lifecycle/**'
+      - 'e2e/fixtures/instance.ts'
+      - 'scripts/e2e_up.sh'
+  # Earns its place: these suites pull postgres:16, postgres:17, redis:latest
+  # and upstream's :latest — four floating tags whose contents change under
+  # this repository, and which no path filter can ever notice.
+  schedule:
+    - cron: '17 4 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: lifecycle-tests-${{ github.workflow }}-${{ github.ref }}
+  # Conditional because this workflow is two things. Cancelling a post-merge
+  # run drops lifecycle signal for every commit but the last in a run of
+  # merges, and those commits are already on main. On a pull request the
+  # ordinary latency argument applies: without this, three pushes to a
+  # migration-touching PR queue three serialised runs, each carrying a
+  # 45-minute-budget AIO build.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  # Deliberately NOT gated off on pull requests. The upgrade job needs it, and
+  # a skipped dependency skips the dependent — which would make every PR run a
+  # silent no-op that reports green.
+  build:
+    name: Build AIO image
+    runs-on: ubuntu-latest
+    # A wedged docker build otherwise burns the 6-hour default.
+    timeout-minutes: 45
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      # Tagged exactly as e2e-tests.yml tags it, and as scripts/e2e_up.sh
+      # defaults to, so the upgrade job needs no retagging step. One build for
+      # every consumer: docker/Dockerfile:14 uses `npm install` with no
+      # lockfile, so N builds can produce N different frontend bundles.
+      - name: Build the image
+        run: docker build -f docker/Dockerfile -t dispatcharr-e2e:local .
+
+      # Neither lifecycle spec uses the provider, but scripts/e2e_up.sh starts
+      # it unconditionally and waits for /scenarios before starting
+      # Dispatcharr, and the instance fixture sets
+      # DISPATCHARR_E2E_SKIP_UPSTREAM_BUILD — so without this image in the
+      # artifact the script dies at a `docker image inspect` of a tag nothing
+      # built. It is a hard startup dependency of the boot path, not a test
+      # dependency, which is exactly why it is easy to omit.
+      - name: Build the upstream provider image
+        run: docker build -f e2e-upstream/Dockerfile -t dispatcharr-e2e-upstream:local e2e-upstream
+
+      # `shell: bash` for the pipe — see the long note on the suite step below.
+      # Without it a failed `docker save` still exits 0 (the status is gzip's),
+      # this step passes, and the truncated archive surfaces as a baffling
+      # `docker load` error in all three downstream jobs instead.
+      - name: Export both images
+        shell: bash
+        run: docker save dispatcharr-e2e:local dispatcharr-e2e-upstream:local | gzip > /tmp/dispatcharr-lifecycle.tar.gz
+
+      - name: Upload the image
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: dispatcharr-lifecycle-image
+          path: /tmp/dispatcharr-lifecycle.tar.gz
+          retention-days: 1
+
+  # Two parallel jobs rather than one sequential one: serial would put 20-30
+  # minutes on the critical path after an already-long build, and parallel
+  # halves peak disk — each job pulls its own subset onto a runner with
+  # single-digit gigabytes free after a 3.6 GB image load, and the puid suite
+  # creates a PostgreSQL data volume per scenario. `fail-fast: false` so one
+  # red suite names itself while the other still reports.
+  #
+  # Skipped on pull requests: the pull_request trigger exists for the upgrade
+  # job alone (D16), and these two pull four-plus images and take 10-15 minutes
+  # each.
+  suites:
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    needs: build
+    if: github.event_name != 'pull_request'
+    # The suites document 10-15 minutes. The headroom is for the two
+    # pg_upgrade scenarios, which `apt install` a PostgreSQL major version
+    # inside the container at runtime and raise their own readiness budget to
+    # 300s each.
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: puid-pgid
+            script: docker/tests/test-puid-pgid.sh
+            tag: puid-test
+          - name: tls-postgres
+            script: docker/tests/test-tls-postgres.sh
+            tag: tls-test
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: Download the image
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: dispatcharr-lifecycle-image
+          path: /tmp
+
+      - name: Load the image
+        run: docker load < /tmp/dispatcharr-lifecycle.tar.gz
+
+      # The tag adapts to the script, not the other way round: both suites
+      # hard-code their own IMAGE_NAME and take --skip-build, so one shared
+      # build reaches both without either suite being edited.
+      - name: Tag the image as the suite expects
+        env:
+          SUITE_TAG: ${{ matrix.tag }}
+        run: docker tag dispatcharr-e2e:local "dispatcharr:${SUITE_TAG}"
+
+      # Two things are load-bearing here and neither is obvious.
+      #
+      # `shell: bash` is what makes this step able to fail at all, and it is
+      # the opposite of what you might assume. GitHub's *default* `run:` shell
+      # on Linux is `bash -e {0}` — `-e`, but **no `-o pipefail`**. Only an
+      # explicit `shell: bash` gets `bash --noprofile --norc -eo pipefail {0}`.
+      # Without pipefail this pipeline's exit status is `tee`'s, which is
+      # always 0, so a suite that exits 1 reports GREEN. Both suites do exit
+      # non-zero on failure (`test-puid-pgid.sh` ends in `exit 1`;
+      # `test-tls-postgres.sh` ends in a bare `[ $FAIL -eq 0 ]`), and the pipe
+      # would throw that away. `backend-tests.yml` already does this correctly.
+      # Do not remove the `shell:` key to "use the default" — the default is
+      # the bug.
+      #
+      # No `--keep-on-fail`: it looks like the obvious diagnosability answer
+      # and makes things strictly worse. All eight TLS scenarios reuse the same
+      # container names, so keeping one failure's containers makes the next
+      # `docker run --name` collide — turning one real failure into six
+      # fabricated ones. The puid suite's keep-branch tests a run-global error
+      # counter, so after the first failure it stops cleaning up everything,
+      # accumulating up to 20 containers and PostgreSQL data volumes on a
+      # runner with single-digit gigabytes free.
+      - name: Run the suite
+        shell: bash
+        env:
+          SUITE_SCRIPT: ${{ matrix.script }}
+          SUITE_LOG: ${{ runner.temp }}/${{ matrix.name }}.log
+        run: bash "${SUITE_SCRIPT}" --skip-build 2>&1 | tee "${SUITE_LOG}"
+
+      # Every assertion in both suites is `docker logs | grep`, `docker exec
+      # stat` or `docker exec psql`, so a bare red X carries no information.
+      # The suites clean up on failure by default, so this finds whatever is
+      # still standing rather than everything — the tee'd log above is the
+      # durable record.
+      - name: Container state (on failure)
+        if: failure()
+        run: |
+          docker ps -a
+          for container in $(docker ps -aq); do
+            echo "=== ${container} ==="
+            docker logs "${container}" 2>&1 | tail -n 100 || true
+          done
+
+      - name: Name the one-scenario re-run command
+        if: failure()
+        env:
+          SUITE_SCRIPT: ${{ matrix.script }}
+        run: |
+          {
+            echo "### ${SUITE_SCRIPT} failed"
+            echo
+            echo "Reproduce one scenario locally — both suites take a single positional scenario name:"
+            echo
+            echo '```'
+            echo "bash ${SUITE_SCRIPT} --skip-build <scenario_name>"
+            echo '```'
+            echo
+            echo "Do **not** add \`--keep-on-fail\`. The TLS suite reuses one set of container names across all eight scenarios, so keeping one failure's containers cascades into six fabricated ones; the puid suite's keep-branch is run-global and accumulates containers and PostgreSQL volumes."
+            echo
+            echo "**On macOS, run that under bash 4.4+** — Homebrew's \`bash\`, or a \`docker:27-cli\` container with bash installed. Stock \`/bin/bash\` is 3.2.57, where expanding an empty array under \`set -u\` is an unbound-variable error, so the suite dies on \`CLEANUP_ITEMS[@]\` before it runs anything. Runners ship bash 5.x, so it never reproduces here — only on the machine you are most likely to debug from."
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Upload the suite log
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: lifecycle-suite-log-${{ matrix.name }}
+          path: ${{ runner.temp }}/${{ matrix.name }}.log
+          retention-days: 7
+          if-no-files-found: warn
+
+  # The one job in this workflow that runs Playwright (D16). It lives here
+  # rather than in e2e-tests.yml's matrix because ~9 minutes on every PR would
+  # roughly double E2E latency, where the longest existing job is 284s — and it
+  # is free here, because `build` above already produced the image.
+  upgrade-migrations:
+    name: upgrade-migrations
+    runs-on: ubuntu-latest
+    needs: build
+    # Matches the suite jobs: this one loads the 3.6 GB artifact and then pulls
+    # a baseline of comparable size.
+    timeout-minutes: 45
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+          # Deep enough for the baseline search below to walk back past a run
+          # of merges that published no image.
+          fetch-depth: 50
+
+      - name: Download the image
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: dispatcharr-lifecycle-image
+          path: /tmp
+
+      # Restores both dispatcharr-e2e:local and dispatcharr-e2e-upstream:local
+      # — the tags scripts/e2e_up.sh defaults to, so nothing needs retagging.
+      - name: Load the image
+        run: docker load < /tmp/dispatcharr-lifecycle.tar.gz
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '24'
+
+      - name: Install E2E dependencies
+        working-directory: ./e2e
+        run: npm ci
+
+      - name: Install Playwright browsers
+        working-directory: ./e2e
+        run: npx playwright install --with-deps chromium
+
+      # Every e2e job in e2e-tests.yml is gated on this, and a project that
+      # does not typecheck cannot be trusted to have driven Docker correctly.
+      - name: Typecheck
+        working-directory: ./e2e
+        run: npm run typecheck
+
+      # Resolve the baseline by SEARCHING history, not by trusting one SHA.
+      #
+      # The obvious version — take `github.event.before` (or the PR base) and
+      # use `ghcr.io/d10scot/dispatcharr:<that sha>` — is wrong, because
+      # `docker-build.yml` is **path-filtered** (`apps/**`, `core/**`,
+      # `dispatcharr/**`, `frontend/**`, `docker/**`, `scripts/**`,
+      # `pyproject.toml`, `uv.lock`, `version.py`, `manage.py`, and its own
+      # file). A docs-only or workflow-only merge publishes no image at all, so
+      # that SHA frequently has no manifest. Measured on `main` at the time of
+      # writing: two of the three most recent commits had none.
+      #
+      # That matters because of what happens next. A missing tag used to fall
+      # back to `:latest` — and on a push to main, `docker-build.yml` fires on
+      # the *same* push and publishes `:latest` within a few minutes, while the
+      # `build` job above takes longer than that. So `:latest` could BE the
+      # commit under test, the upgrade would upgrade from itself, and it would
+      # pass: the image-id inequality assertion cannot catch it, because two
+      # builds of one commit have different ids anyway.
+      #
+      # So: walk back from the event's starting commit and take the first
+      # ancestor that actually has a manifest, and **fail the job** if none of
+      # the last 50 do. A baseline that cannot be resolved is not a reason to
+      # test something weaker; it is a reason to stop and say so.
+      #
+      # `docker manifest inspect` needs no credentials here — the fork's GHCR
+      # packages are public — which is why this job still grants no `packages:`
+      # scope.
+      - name: Resolve the upgrade baseline
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+          IMAGE_REPO: ghcr.io/d10scot/dispatcharr
+        run: |
+          set -euo pipefail
+
+          case "$EVENT_NAME" in
+            pull_request) start="$PR_BASE_SHA" ;;
+            push)         start="$PUSH_BEFORE" ;;
+            *)            start="" ;;
+          esac
+
+          # schedule and workflow_dispatch carry neither field; an all-zeroes
+          # SHA is a branch creation or force-push. Both mean "no event-supplied
+          # starting point", so start from the parent of what we checked out —
+          # never HEAD itself, which is the code under test.
+          if [ -z "$start" ] || [ "$start" = "0000000000000000000000000000000000000000" ]; then
+            start="HEAD~1"
+            echo "No usable starting commit from the $EVENT_NAME event; searching from HEAD~1."
+          fi
+
+          if ! git rev-parse --verify --quiet "${start}^{commit}" >/dev/null; then
+            echo "::error::Starting commit '$start' is not in this checkout (fetch-depth too shallow?)."
+            exit 1
+          fi
+
+          resolved=""
+          checked=0
+          for sha in $(git rev-list --max-count=50 "$start"); do
+            checked=$((checked + 1))
+            if docker manifest inspect "${IMAGE_REPO}:${sha}" >/dev/null 2>&1; then
+              resolved="$sha"
+              break
+            fi
+          done
+
+          if [ -z "$resolved" ]; then
+            echo "::error::No published image found in the $checked commits before ${start}. docker-build.yml is path-filtered, so a long run of docs-only merges can produce this — widen fetch-depth, or investigate whether docker-build.yml is failing. Refusing to fall back to :latest, which on a push to main can be the commit under test."
+            exit 1
+          fi
+
+          echo "Baseline resolved to ${IMAGE_REPO}:${resolved} after checking ${checked} commit(s) back from ${start}."
+          echo "DISPATCHARR_E2E_BASELINE_IMAGE=${IMAGE_REPO}:${resolved}" >> "$GITHUB_ENV"
+
+      # DISPATCHARR_E2E_BASELINE_IMAGE comes from the step above via $GITHUB_ENV.
+      # The spec additionally refuses to fall back to `:latest` when CI is set,
+      # so the two guards are independent: if this step ever regressed to
+      # exporting nothing, the spec would fail rather than silently self-upgrade.
+      - name: Run the upgrade spec
+        working-directory: ./e2e
+        env:
+          E2E_BASE_URL: http://localhost:9191
+        run: npx playwright test --project=lifecycle-upgrade
+
+      - name: Container logs (on failure)
+        if: failure()
+        run: |
+          docker ps -a
+          docker logs dispatcharr-e2e 2>&1 | tail -n 200 || true
+          docker logs e2e-upstream 2>&1 | tail -n 100 || true
+
+      # playwright.config.ts sets trace: 'retain-on-failure' and screenshot:
+      # 'only-on-failure', so these exist on a failure and would otherwise be
+      # discarded with the runner. The tee'd logs above cover the bash suites
+      # and nothing else covers this job.
+      - name: Upload Playwright report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: playwright-report-lifecycle-upgrade
+          path: e2e/playwright-report/
+          retention-days: 7
+          if-no-files-found: ignore
+
+      - name: Stop the container
+        if: always()
+        run: docker rm -f dispatcharr-e2e || true
