@@ -244,7 +244,7 @@ export type M3uAccountStatus =
 /**
  * `/api/m3u/accounts/`.
  *
- * Not typed here: `profiles`, `channel_groups`, `filters` and the
+ * Not typed here: `channel_groups`, `filters` and the
  * `earliest_expiration`/`all_expirations` pair — nested shapes no fixture
  * reads. `password` is `write_only=True` but the serializer's
  * `to_representation` re-adds it for `user_level >= 10`, so an admin *does*
@@ -272,6 +272,42 @@ export type M3uAccount = {
   /** Only bumped on a *successful* refresh — see `Waiter.m3uRefreshComplete`. */
   updated_at: string | null;
   custom_properties: Record<string, unknown> | null;
+  /**
+   * `M3UAccountProfileSerializer(many=True, read_only=True)` on
+   * `M3UAccountSerializer` — nested and read-only, never created directly by
+   * this harness. See {@link M3uAccountProfile}.
+   */
+  profiles: M3uAccountProfile[];
+};
+
+/**
+ * One entry of {@link M3uAccount.profiles} — `M3UAccountProfileSerializer`
+ * (`apps/m3u/serializers.py`), nested read-only on `M3UAccountSerializer`.
+ * `id` and `account` are `read_only_fields`; the rest are writable on the
+ * profile's own (untyped here) endpoint, not through this nested view.
+ * Nullability: `custom_properties` and `exp_date` from
+ * `apps/m3u/models.py`'s `M3UAccountProfile` (`JSONField(null=True)`,
+ * `DateTimeField(null=True)`); the rest are non-null model fields with
+ * defaults.
+ */
+export type M3uAccountProfile = {
+  id: number;
+  name: string;
+  max_streams: number;
+  is_active: boolean;
+  is_default: boolean;
+  current_viewers: number;
+  search_pattern: string;
+  replace_pattern: string;
+  custom_properties: Record<string, unknown> | null;
+  exp_date: string | null;
+  /** `SerializerMethodField` — a fixed-shape summary of the parent account. */
+  account: {
+    id: number;
+    name: string;
+    account_type: string;
+    is_xtream_codes: boolean;
+  };
 };
 
 /** `EPGSource.STATUS_CHOICES` (`apps/epg/models.py`). Deliberately not the same set as {@link M3uAccountStatus}. */
@@ -412,6 +448,57 @@ export type ChannelStatus = {
   ffmpeg_speed?: string;
   video_codec?: string;
   resolution?: string;
+};
+
+/* ------------------------------------------------------------------------ *
+ * Fake upstream provider — XC catalogue
+ * ------------------------------------------------------------------------ *
+ * The five types below are not derived from a Dispatcharr serializer — their
+ * consumer is the fake upstream provider itself. Each mirrors the
+ * like-named `*Spec` type declared and validated in `e2e-upstream/src/
+ * scenario.ts` (G8 task 1), field for field, so an `UpstreamScenario`'s
+ * catalogue echo and a `ScenarioRequest`'s catalogue declaration can share
+ * one shape. Consult that file, not a Dispatcharr model, if a field here
+ * looks wrong.
+ * ------------------------------------------------------------------------ */
+
+/** Mirrors `CategorySpec`. A live channel group, VOD category or series category declared on a scenario — never call it a "profile" (CONTEXT.md). */
+export type UpstreamCategory = {
+  id: number;
+  name: string;
+};
+
+/** Mirrors `MovieSpec`. One VOD movie declared on an XC scenario. */
+export type UpstreamMovie = {
+  id: number;
+  name: string;
+  year: number | null;
+  categoryId: number;
+  containerExtension: string;
+  tmdbId: string | null;
+  imdbId: string | null;
+};
+
+/** Mirrors `EpisodeSpec`. One episode within an {@link UpstreamSeason}. */
+export type UpstreamEpisode = {
+  id: number;
+  title: string;
+  episodeNum: number;
+  containerExtension: string;
+};
+
+/** Mirrors `SeasonSpec`. One season within an {@link UpstreamSeries}. */
+export type UpstreamSeason = {
+  number: number;
+  episodes: UpstreamEpisode[];
+};
+
+/** Mirrors `SeriesSpec`. One VOD series declared on an XC scenario. */
+export type UpstreamSeries = {
+  id: number;
+  name: string;
+  categoryId: number;
+  seasons: UpstreamSeason[];
 };
 
 /* ------------------------------------------------------------------------ *
