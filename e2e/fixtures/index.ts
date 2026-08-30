@@ -52,6 +52,19 @@
  *   channelProfile(overrides?)   → ChannelProfile /api/channels/profiles/
  *                                (see CONTEXT.md: three different things are
  *                                called "profile")
+ *   channelGroup(overrides?)     → ChannelGroup   /api/channels/groups/ —
+ *                                the Xtream *category* / M3U `group-title`,
+ *                                not a Channel Profile. `overrides` has
+ *                                nothing to contribute (`ChannelGroupOverrides`
+ *                                is empty) — the only writable field is the
+ *                                generated `name`.
+ *   xcUser(overrides?)           → XcUser         a `User` (user_level 1)
+ *                                plus `xcPassword`, a throwaway credential
+ *                                written to `custom_properties.xc_password`
+ *                                for the Xtream Codes surface. Pair with
+ *                                `xcQuery(user, extra?)`, also exported here,
+ *                                to build the credential query string every
+ *                                XC endpoint takes.
  *   streamProfile(overrides?)    → StreamProfile  /api/core/streamprofiles/
  *   m3uAccount(overrides?)       → M3uAccount     /api/m3u/accounts/,
  *                                is_active false
@@ -361,6 +374,11 @@
  *   TS_PACKET_SIZE   188      TS_SYNC_BYTE   0x47
  *   SEEDED_USER_PASSWORD      the password `seed.user()` assigns; import it
  *                             rather than repeating the literal
+ *   xcQuery(user, extra?)     → string   the credential query string every
+ *                             Xtream endpoint takes (`?username=…&password=…`,
+ *                             plus `extra`'s keys). Build it from a
+ *                             `seed.xcUser()` result rather than hand-rolling
+ *                             the encoding at each call site.
  *   expect                    re-exported from @playwright/test
  *
  * ---------------------------------------------------------------------------
@@ -537,6 +555,7 @@ export type {
 export type {
   Channel,
   ChannelGroup,
+  ChannelGroupOverrides,
   ChannelOverrides,
   ChannelProfile,
   ChannelProfileOverrides,
@@ -570,6 +589,8 @@ export type {
   UpstreamSeries,
   User,
   UserOverrides,
+  XcUser,
 } from './types';
+export { xcQuery } from './parse';
 export { Instance } from './instance';
 export type { UpOptions, ManageResult } from './instance';

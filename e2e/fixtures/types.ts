@@ -125,6 +125,22 @@ export type ChannelProfile = {
   channels: number[];
 };
 
+/**
+ * A user who can authenticate against the Xtream Codes surface.
+ *
+ * **The XC username is the Django username.** There is no `xc_username`
+ * custom property anywhere in the product: `xc_get_user`
+ * (`apps/output/views.py`), `stream_xc` (`apps/proxy/live_proxy/views.py`)
+ * and `_authenticate_user` (`apps/timeshift/views.py`) all look the user up
+ * by `username` and then compare `custom_properties["xc_password"]` with
+ * `!=`. The `xc_username` locals in `apps/timeshift/views.py` are *provider*
+ * credentials from `get_transformed_credentials` and are unrelated.
+ *
+ * `xcPassword` is carried here rather than read back from the API because
+ * `UserSerializer` does not return `custom_properties`.
+ */
+export type XcUser = User & { xcPassword: string };
+
 /** `/api/core/streamprofiles/` — how we talk *upstream*, not the output transcode. */
 export type StreamProfile = {
   id: number;
@@ -578,6 +594,15 @@ export type UserOverrides = {
  * is not assignable to type 'never'"); this comment is what it points at.
  */
 export type ChannelProfileOverrides = Record<string, never>;
+
+/**
+ * `ChannelGroupSerializer` exposes `id`, `name` and two method fields, so
+ * once the generated `name` is removed there is nothing left to override —
+ * exactly the shape {@link ChannelProfileOverrides} has, and
+ * `Record<string, never>` for the same reason: TypeScript applies no
+ * excess-property check against a bare `{}`.
+ */
+export type ChannelGroupOverrides = Record<string, never>;
 
 /**
  * The writable fields on `StreamProfileSerializer` this harness uses, minus

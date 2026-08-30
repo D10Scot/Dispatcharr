@@ -1,4 +1,11 @@
-import { test, expect, Seeder, Waiter } from '../../fixtures';
+import {
+  test,
+  expect,
+  Seeder,
+  Waiter,
+  SEEDED_USER_PASSWORD,
+  xcQuery,
+} from '../../fixtures';
 import type { Channel } from '../../fixtures';
 
 test('seeded channel is retrievable and namespaced', async ({ api, seed }) => {
@@ -153,4 +160,42 @@ test('seed.upstreamChannel wires a channel to the provider in order', async ({
   expect(streams[1].url).toBe(upstream.streamUrl(scenario, 2));
   expect(channel.streams).toEqual([streams[0].id, streams[1].id]);
   expect(channel.uuid).toBeTruthy();
+});
+
+test('seed.channelGroup creates a group with a generated name', async ({ seed }) => {
+  const group = await seed.channelGroup();
+
+  expect(group.id).toBeGreaterThan(0);
+  expect(group.name).toMatch(/^e2e-w\d+-/);
+});
+
+test('seed.xcUser carries an xc_password the XC surface accepts', async ({
+  seed,
+  request,
+}) => {
+  const user = await seed.xcUser();
+
+  expect(user.username).toMatch(/^e2e-w\d+-/);
+  expect(user.xcPassword).toMatch(/^e2e-w\d+-/);
+  // Not SEEDED_USER_PASSWORD: the XC password is a *separate* credential
+  // living in custom_properties, and reusing the login password would make a
+  // test that confused the two pass by accident.
+  expect(user.xcPassword).not.toBe(SEEDED_USER_PASSWORD);
+
+  // The product agrees the credential works. This is the whole point of the
+  // factory, and it is asserted here rather than in every XC spec.
+  const res = await request.get(`/player_api.php${xcQuery(user)}`);
+  expect(res.status()).toBe(200);
+});
+
+test('seed.xcUser ignores an attempt to override xc_password', async ({ seed }) => {
+  // xc_password is spread AFTER the caller's custom_properties, the same
+  // ordering rule the generated identity fields use. UserOverrides types
+  // custom_properties as Record<string, unknown>, so this compiles with no
+  // cast — unlike seed.stream's identity field above, which is typed away
+  // entirely and genuinely needs one.
+  const user = await seed.xcUser({
+    custom_properties: { xc_password: 'not-this' },
+  });
+  expect(user.xcPassword).not.toBe('not-this');
 });
