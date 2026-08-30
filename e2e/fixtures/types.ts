@@ -194,21 +194,40 @@ export type ChannelGroup = {
 };
 
 /**
- * `/api/channels/logos/`. `Logo` has exactly two model fields, `name` and
- * `url` (`TextField(unique=True)`) — there is no FileField. An upload writes
- * the bytes to `/data/logos/<basename>` and stores that **filesystem path** in
- * `url`; `cache_url` is the servable one, built by `LogoSerializer` as
- * `…/api/channels/logos/<id>/cache/?v=<hash>` and made absolute when the
- * serializer has a request in context.
+ * `apps.channels.Logo` via `LogoViewSet` (`apps/channels/api_urls.py`,
+ * `logos`). `LogoSerializer.Meta.fields` also has `channel_names`; not typed
+ * here because nothing reads it yet.
  *
- * G6 also declares `export type Logo` on its own branch (four fields, no
- * `channel_count`/`is_used`, with fuller documentation). On merge, keep G6's
- * comment — fixing its opening sentence to say only `channel_names` is
- * untyped, since this file's wider field set also carries `channel_count`
- * and `is_used` — and this file's wider field set, and delete the duplicate
- * declaration.
+ * `url` is **not** necessarily an HTTP-fetchable location: for a logo
+ * created through `LogoViewSet.upload` it is the raw server-side filesystem
+ * path (`/data/logos/<name>`, from `core.utils.safe_upload_path`). No URL
+ * pattern in `dispatcharr/urls.py` actually serves `/data/logos/*` — but a
+ * `GET` against it does not 404 cleanly either. `dispatcharr/urls.py`
+ * registers the XC live-stream route,
+ * `<str:username>/<str:password>/<str:channel_id>`, ahead of the SPA
+ * catch-all, and `/data/logos/<file>` happens to have exactly three path
+ * segments, so it parses as `username="data", password="logos",
+ * channel_id="<file>"` and 404s from `stream_xc`'s own "no such user"
+ * lookup (`{"detail":"No User matches the given query."}`) — confirmed
+ * empirically against a running container by `logos.spec.ts`, not assumed.
+ * A bare status check against `url` proves nothing either way about whether
+ * the upload actually landed; `cache_url` is the field that is always
+ * fetchable: `LogoSerializer.get_cache_url` builds an absolute URL to
+ * `LogoViewSet.cache` (`AllowAny`, streams the real file via
+ * `core.image_proxy.serve_local_or_remote_image`) off the *request's own
+ * host*, so it resolves against this harness's `baseURL` whether the logo
+ * is a local upload or a remote URL.
  *
- * Not typed here: `channel_names`, a cosmetic capped list nothing asserts on.
+ * `url`'s local-path/remote-URL duality also has no discriminator field —
+ * every consumer (`apps/output/views.py:290`'s `tvg-logo`, the XC
+ * `stream_icon` field, `LogosTable.jsx`'s URL column) tells them apart with
+ * its own copy-pasted `startsWith('http')`/`startsWith(('http://',
+ * 'https://'))` check. All four currently agree, so this is not a filed
+ * defect, but it is the same shape as the eight-site channel-authorization
+ * filter in the root `CLAUDE.md`'s defect list, where one of the eight
+ * copies was wrong — and a fifth site that forgets the check here would not
+ * fail cleanly, it would land in the XC-route 404 above and send whoever
+ * debugs it looking in the wrong subsystem entirely.
  */
 export type Logo = {
   id: number;
@@ -244,7 +263,7 @@ export type M3uAccountStatus =
 /**
  * `/api/m3u/accounts/`.
  *
- * Not typed here: `profiles`, `channel_groups`, `filters` and the
+ * Not typed here: `channel_groups`, `filters` and the
  * `earliest_expiration`/`all_expirations` pair — nested shapes no fixture
  * reads. `password` is `write_only=True` but the serializer's
  * `to_representation` re-adds it for `user_level >= 10`, so an admin *does*
@@ -272,6 +291,42 @@ export type M3uAccount = {
   /** Only bumped on a *successful* refresh — see `Waiter.m3uRefreshComplete`. */
   updated_at: string | null;
   custom_properties: Record<string, unknown> | null;
+  /**
+   * `M3UAccountProfileSerializer(many=True, read_only=True)` on
+   * `M3UAccountSerializer` — nested and read-only, never created directly by
+   * this harness. See {@link M3uAccountProfile}.
+   */
+  profiles: M3uAccountProfile[];
+};
+
+/**
+ * One entry of {@link M3uAccount.profiles} — `M3UAccountProfileSerializer`
+ * (`apps/m3u/serializers.py`), nested read-only on `M3UAccountSerializer`.
+ * `id` and `account` are `read_only_fields`; the rest are writable on the
+ * profile's own (untyped here) endpoint, not through this nested view.
+ * Nullability: `custom_properties` and `exp_date` from
+ * `apps/m3u/models.py`'s `M3UAccountProfile` (`JSONField(null=True)`,
+ * `DateTimeField(null=True)`); the rest are non-null model fields with
+ * defaults.
+ */
+export type M3uAccountProfile = {
+  id: number;
+  name: string;
+  max_streams: number;
+  is_active: boolean;
+  is_default: boolean;
+  current_viewers: number;
+  search_pattern: string;
+  replace_pattern: string;
+  custom_properties: Record<string, unknown> | null;
+  exp_date: string | null;
+  /** `SerializerMethodField` — a fixed-shape summary of the parent account. */
+  account: {
+    id: number;
+    name: string;
+    account_type: string;
+    is_xtream_codes: boolean;
+  };
 };
 
 /** `EPGSource.STATUS_CHOICES` (`apps/epg/models.py`). Deliberately not the same set as {@link M3uAccountStatus}. */
@@ -412,6 +467,57 @@ export type ChannelStatus = {
   ffmpeg_speed?: string;
   video_codec?: string;
   resolution?: string;
+};
+
+/* ------------------------------------------------------------------------ *
+ * Fake upstream provider — XC catalogue
+ * ------------------------------------------------------------------------ *
+ * The five types below are not derived from a Dispatcharr serializer — their
+ * consumer is the fake upstream provider itself. Each mirrors the
+ * like-named `*Spec` type declared and validated in `e2e-upstream/src/
+ * scenario.ts` (G8 task 1), field for field, so an `UpstreamScenario`'s
+ * catalogue echo and a `ScenarioRequest`'s catalogue declaration can share
+ * one shape. Consult that file, not a Dispatcharr model, if a field here
+ * looks wrong.
+ * ------------------------------------------------------------------------ */
+
+/** Mirrors `CategorySpec`. A live channel group, VOD category or series category declared on a scenario — never call it a "profile" (CONTEXT.md). */
+export type UpstreamCategory = {
+  id: number;
+  name: string;
+};
+
+/** Mirrors `MovieSpec`. One VOD movie declared on an XC scenario. */
+export type UpstreamMovie = {
+  id: number;
+  name: string;
+  year: number | null;
+  categoryId: number;
+  containerExtension: string;
+  tmdbId: string | null;
+  imdbId: string | null;
+};
+
+/** Mirrors `EpisodeSpec`. One episode within an {@link UpstreamSeason}. */
+export type UpstreamEpisode = {
+  id: number;
+  title: string;
+  episodeNum: number;
+  containerExtension: string;
+};
+
+/** Mirrors `SeasonSpec`. One season within an {@link UpstreamSeries}. */
+export type UpstreamSeason = {
+  number: number;
+  episodes: UpstreamEpisode[];
+};
+
+/** Mirrors `SeriesSpec`. One VOD series declared on an XC scenario. */
+export type UpstreamSeries = {
+  id: number;
+  name: string;
+  categoryId: number;
+  seasons: UpstreamSeason[];
 };
 
 /* ------------------------------------------------------------------------ *
@@ -632,4 +738,53 @@ export type UpstreamChannelOptions = {
   // afterwards, so a caller-supplied value for either would be silently
   // discarded. Omitting them here turns that into a compile error instead.
   channel?: Omit<ChannelOverrides, 'streams' | 'stream_profile_id'>;
+};
+
+/** `core.UserAgent` via `UserAgentViewSet` (`core/api_urls.py`, `useragents`). */
+export type UserAgent = {
+  id: number;
+  name: string;
+  user_agent: string;
+  /** `CharField(max_length=255, blank=True)` — no `null=True` (`core/models.py:29`), so DRF emits `""`, never `null`. */
+  description: string;
+  is_active: boolean;
+};
+
+/** `apps.connect.Integration` via `IntegrationViewSet` (`apps/connect/api_urls.py`). */
+export type ConnectIntegration = {
+  id: number;
+  name: string;
+  type: string;
+  enabled: boolean;
+  config: Record<string, unknown>;
+  subscriptions: { event: string; enabled: boolean }[];
+};
+
+/** `apps.channels.Recording` via `RecordingViewSet` (`apps/channels/api_urls.py`). */
+export type Recording = {
+  id: number;
+  channel: number;
+  start_time: string;
+  end_time: string;
+  custom_properties: Record<string, unknown> | null;
+};
+
+/**
+ * One entry of `{"plugins": [...]}` from `GET /api/plugins/plugins/`
+ * (`PluginsListAPIView`, whose body is `PluginManager.list_plugins()`).
+ */
+export type PluginListEntry = {
+  key: string;
+  name: string;
+  version: string;
+  enabled: boolean;
+  ever_enabled: boolean;
+  settings: Record<string, unknown>;
+};
+
+/** One row of `GET /api/backups/` (`apps/backups/services.py`, `list_backups`). */
+export type BackupEntry = {
+  name: string;
+  size: number;
+  created: string;
 };

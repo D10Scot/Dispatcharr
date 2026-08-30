@@ -52,14 +52,32 @@ one up. CI binds the same way.
 
 | Project | What it is for |
 |---|---|
-| `bootstrap` | Creates the superuser, pre-warms the `IntervalSchedule` row (see below) and writes auth state. Runs automatically as a dependency of `seeded`, `streaming`, `streaming-failover` and `streaming-greybox` — every project except `pristine` and the two `lifecycle` ones, which each need an instance bootstrap has not touched |
+| `bootstrap` | Creates the superuser, pre-warms the `IntervalSchedule` row (see below) and writes auth state. Runs automatically as a dependency of `seeded`, `streaming`, `streaming-failover`, `streaming-greybox` and `frontend` — every project except `pristine` and the two `lifecycle` ones, which each need an instance bootstrap has not touched |
 | `pristine` | Needs an instance with **no superuser**: first-run setup, and global `CoreSettings` changes |
 | `seeded` | The default. Shared instance, parallel workers, API-seeded data |
 | `streaming` | Byte-level tests. Long timeouts, fewer workers |
 | `streaming-failover` | Failover behaviour: dead-air and buffering watchdogs. Long timeouts, fewer workers |
 | `streaming-greybox` | Tests that reach past the API into Redis or the container directly (e.g. counting live `ffmpeg` processes). Long timeouts, one worker — **must be run alone locally**: in CI each matrix job gets its own container, but locally all projects can share one, and this project observes container-wide state that whatever else is running would disturb |
+| `frontend` | The nine product surfaces in a browser: does the page mount, and does a write driven through its UI reach the server. Two workers, file-level parallelism, 120s |
 | `lifecycle` | Restarts the container mid-test. **Runs alone** — it destroys the container every other project shares. No `bootstrap` dependency: it provisions its own admin |
 | `lifecycle-upgrade` | Boots a published baseline image, seeds, then replaces the container with the local build on the same volume. **Runs alone.** Runs in `lifecycle-tests.yml`, not in `e2e-tests.yml`'s matrix |
+
+`frontend` depends on two rules that are not obvious from the config alone:
+
+- **One spec file per surface.** `backups.spec.ts` and `plugins.spec.ts` each
+  mutate container-wide state — the backup archive directory, whose filenames
+  are second-granularity and caller-unnameable
+  (`apps/backups/services.py`'s `create_backup`/`list_backups`), and the
+  plugin directory plus its shared `.reload_token`. File-level parallelism
+  (`workers: 2`, `fullyParallel` left at its default `false`) is what confines
+  each hazard to one worker; splitting either file back into two would put two
+  backup-creating (or two plugin-installing) files on two different workers
+  and reopen the race.
+- **After a change to any `frontend/` source file, rebuild the image before
+  running this project.** `./scripts/e2e_up.sh --reset` reuses an existing
+  `dispatcharr-e2e:local`, so a stale image serves the old bundle and every
+  `getByTestId(...)` locator fails in a way that looks like a broken test, not
+  a stale build. `docker rmi dispatcharr-e2e:local` first.
 
 `streaming` runs at `workers: 2` — its byte-level reads are slow but do not
 touch anything another test in the same project could observe.
@@ -135,7 +153,7 @@ npm run test:lifecycle-upgrade   # pulls a ~3.6 GB baseline; brings its own inst
 ```
 
 `npm test` (no suffix) deliberately fails with a message telling you to pick
-one of the seven — there is no single invocation that is correct for all of
+one of the eight — there is no single invocation that is correct for all of
 them, and a bare `npm test` in CI would silently run whichever config
 happened to be first.
 
@@ -188,6 +206,35 @@ only replaces *that* container — it does nothing for the provider, and a
 remote Dispatcharr instance has no route to a provider container running on
 your laptop. Any test that uses the `upstream` fixture needs the full local
 topology brought up by `scripts/e2e_up.sh`, not a bare `E2E_BASE_URL` run.
+
+**XC scenarios (G8).** `upstream.scenario({ xc: true, username, password, ... })` declares an
+Xtream Codes catalogue — categories, movies, series — on top of the same live-channel scenario
+every other test uses; `e2e-upstream/README.md` documents the full field set and the fault
+catalogue. `seed.xcAccount(scenario)` is the paired fixture step: it creates an `M3UAccount` with
+`account_type: 'XC'`, the scenario's credentials on the model's own `username`/`password` fields
+(not embedded in the URL, unlike a standard M3U account), and `server_url` set to the scenario's
+**bare** `internal` origin — never `scenario.internal + scenario.credentialQuery`, because
+`normalize_server_url` strips the query before the XC client ever sees it, silently discarding any
+credentials appended that way. There is no separate URL-building helper for XC beyond that: the
+scenario's own `internal`/`control` origins are what a test needs, exactly as for a non-XC
+scenario.
+
+Two asynchrony facts a test will otherwise be bitten by, both because XC ingest fires more
+background tasks than a standard M3U refresh:
+
+- **VOD ingest is a separate task, fired only after the M3U refresh completes.** A standard M3U
+  refresh finishes once; an XC refresh that has VOD enabled additionally queues
+  `apps.vod.tasks.refresh_vod_content` (`.delay()`'d from inside `apps/m3u/tasks.py`'s main refresh
+  task, immediately after it records its own completion) — so `waitFor.m3uRefreshComplete` returning
+  does **not** mean movies or series have landed yet. A test asserting on `Movie`/`Series` rows
+  needs its own wait on that outcome, not a reuse of the M3U-refresh wait.
+- **`server_info.timezone` reaches an `M3UAccountProfile` through a second, nested `.delay()`'d
+  task.** The main refresh task queues `refresh_account_profiles.delay(account.id)`
+  (`apps/m3u/tasks.py`) for every XC account, which — asynchronously, with a rate-limiting sleep
+  between profiles — re-authenticates each active profile and merges `get_account_info()`'s
+  `server_info` (timezone included) into `M3UAccountProfile.custom_properties`. That value is not
+  present right after account creation or even right after the main refresh; it lands on its own
+  schedule, later.
 
 ## The login throttle — read this before writing a multi-user test
 
@@ -454,13 +501,14 @@ assertion is worth that. `COVERAGE.md` records that as a decision, not a gap.
 ## CI
 
 `.github/workflows/e2e-tests.yml` builds the AIO image once, then runs
-`pristine`, `seeded`, `streaming`, `streaming-failover`, `streaming-greybox`
-and `lifecycle` as a hardcoded six-job matrix (the `test` job's
-`matrix.project` list in `e2e-tests.yml`), each
-against its own fresh container, each gated on `npm run typecheck` before
-tests run. **If you add another project to `playwright.config.ts`, add it to
-that matrix too** — nothing wires new projects in automatically, and a project
-missing from the matrix gets no CI coverage and no failure signal.
+`pristine`, `seeded`, `streaming`, `streaming-failover`, `streaming-greybox`,
+`lifecycle` and `frontend` as a hardcoded seven-job matrix (the `test` job's
+`strategy.matrix.project`), each against its own fresh container, each gated
+on `npm run typecheck` before tests run. **If you add another project to
+`playwright.config.ts`, add it to that matrix too** (unless it belongs in
+`lifecycle-tests.yml` instead — see `lifecycle-upgrade` below) — nothing
+wires new projects in automatically, and a project missing from both
+matrices gets no CI coverage and no failure signal.
 
 A red E2E run **does** block a merge: the `Main` ruleset is active and
 requires one check, **`E2E result`**. That is the aggregate job at the bottom
@@ -503,6 +551,7 @@ Local builds are native-architecture; CI is amd64. If you need parity,
 | `api` | Authenticated HTTP; retries once through a token refresh on 401. `upload()` is the one multipart path |
 | `seed` | `channel`, `user`, `channelProfile`, `streamProfile`, `m3uAccount`, `epgSource`, `stream`, `upstreamChannel`, `upstreamM3UAccount`, `upstreamEpgSource`, `logo` |
 | `adminPage` | A `Page` authenticated as the bootstrap admin |
+| `pageErrors` | `PageErrorCollector`: `consoleErrors`, `pageErrors`, `failedResponses` and `expectClean()`, which fails naming every offender not covered by `EXPECTED_PAGE_NOISE` (`fixtures/page-errors.ts`). Attached at fixture setup, so it sees the initial document load |
 | `asPrincipal` | An `ApiClient` for a fixed principal, `'streamer'` (level 0) or `'standard'` (level 1). Free |
 | `asUser` | An `ApiClient` for an arbitrary principal. Costs a login — see the throttle section |
 | `waitFor` | `condition`, `resource`, `m3uRefreshComplete`, `epgRefreshComplete` |

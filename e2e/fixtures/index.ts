@@ -55,6 +55,17 @@
  *   streamProfile(overrides?)    → StreamProfile  /api/core/streamprofiles/
  *   m3uAccount(overrides?)       → M3uAccount     /api/m3u/accounts/,
  *                                is_active false
+ *   xcAccount(scenario, overrides?) → M3uAccount  an `account_type: 'XC'`
+ *                                m3uAccount pointed at an XC `upstream`
+ *                                scenario: `server_url` is the scenario's
+ *                                bare `internal` base (no `credentialQuery`
+ *                                — `normalize_server_url` strips a query),
+ *                                credentials go on `username`/`password`,
+ *                                `is_active` true. Throws if the scenario was
+ *                                not created with both `username` and
+ *                                `password` (i.e. `{ xc: true, username,
+ *                                password }`) rather than silently sending a
+ *                                blank credential.
  *   epgSource(overrides?)        → EpgSource      /api/epg/sources/,
  *                                is_active false
  *   stream(overrides?)           → Stream         /api/channels/streams/,
@@ -119,6 +130,20 @@
  * bootstrap admin. Use it, not `page`: it states which principal the test
  * drives, and importing `page` from `@playwright/test` is how a spec ends up
  * bypassing this module entirely.
+ *
+ * `pageErrors: PageErrorCollector` — everything the browser reported while the
+ *   test ran: `consoleErrors`, `pageErrors`, `failedResponses` (including
+ *   network-level failures — connection refused, DNS, blocked — at
+ *   `status: 0`), and `expectClean()` (`async`, so `await` it), which fails
+ *   naming every offender not covered by `EXPECTED_PAGE_NOISE`. Attached at
+ *   fixture setup, so it sees the initial document load. **This fixture calls
+ *   `expectClean()` itself at teardown, for every test that uses it** — a
+ *   spec never has to remember to. A test that deliberately provokes an
+ *   error to exercise the product's own handling of it should call
+ *   `pageErrors.waiveAutomaticCheck('<reason>')` to skip that one check; the
+ *   reason is mandatory and shows up at the call site. The allowlist rule is
+ *   at the top of `page-errors.ts`: a product defect is filed, never
+ *   allowlisted.
  *
  * `waitFor: Waiter` — polling. The default way to wait for Celery-backed work.
  *   condition(predicate, options?) → Promise<void>
@@ -222,32 +247,64 @@
  *   scenario(request?) → Promise<UpstreamScenario>
  *       Creates a scenario (default: one channel, no auth, no connection
  *       limit). `request.channels` is a count or an explicit array of
- *       `{ id, name, tvgId, logo }`. Every scenario made this way is tracked
- *       on `upstream.created` for `attachLogs`; there is **no cleanup** —
- *       scenarios live for the provider process's life, scoped only by the
- *       test that made them never reusing another test's id.
+ *       `{ id, name, tvgId, logo, categoryId? }`. Every scenario made this
+ *       way is tracked on `upstream.created` for `attachLogs`; there is
+ *       **no cleanup** — scenarios live for the provider process's life,
+ *       scoped only by the test that made them never reusing another test's
+ *       id.
+ *       `request.xc: true` (G8) declares an Xtream Codes scenario and
+ *       **requires both `request.username` and `request.password`** — the
+ *       provider rejects one without the other at the door. Its catalogue —
+ *       `request.liveCategories`/`vodCategories`/`seriesCategories`
+ *       (`{ id, name }[]`) and `request.vod`/`request.series` (a count or an
+ *       explicit array) — is echoed back on the returned `UpstreamScenario`
+ *       as `liveCategories`/`vodCategories`/`seriesCategories`/`vod`/`series`.
+ *       Feed an XC scenario straight to `seed.xcAccount(scenario)` rather
+ *       than building the `M3UAccount` by hand.
  *       **The default catalogue is identical across every scenario** —
  *       channel `1` is always named `Fake Channel 1` with `tvg-id`
- *       `fake-1.e2e` — and `seeded` runs 4 workers in parallel. Asserting
- *       against those names, or filtering by them, will alias another
- *       test's data. Pass explicit channel names (e.g. via
- *       `seed.generatedName(...)`) whenever a test needs to look its own
- *       channel up by name.
+ *       `fake-1.e2e`, movie `1` is always `Fake Movie 1` (year `2020`),
+ *       series `1` is always `Fake Series 1` — and `seeded` runs 4 workers
+ *       in parallel. For channels this means: asserting on those names, or
+ *       filtering by them, aliases another worker's data.
+ *       **For `vod`/`series` it is worse than aliasing — it is one shared
+ *       row.** Dispatcharr's VOD ingestion matches an incoming XC movie to
+ *       an existing `Movie` by TMDB id → IMDB id → **`(name, year)`**,
+ *       *globally across every `M3UAccount`*, not per-account (same for
+ *       `Series`, and `VODCategory` is unique on `(name, category_type)`
+ *       globally too). A bare `vod: 2`/`series: 2` count therefore does not
+ *       give two parallel workers two independent rows — both workers'
+ *       `xcAccount`s get matched onto the *same* `Movie`/`Series` database
+ *       row, because the default name+year pair is identical. This bites a
+ *       test that never looks anything up by name: asserting on that movie's
+ *       own category, count, or presence can observe a sibling worker's
+ *       concurrent write mid-run. Always pass an explicit `vod`/`series`
+ *       array with a `seed.generatedName(...)`-derived `name` — a unique
+ *       `name` alone is enough, since the `(name, year)` tuple only has to
+ *       differ in one half to name a different row; the year need not also
+ *       be unique. The same applies to `liveCategories`/`vodCategories`/
+ *       `seriesCategories` names, unique globally by `(name, category_type)`.
  *   fault(scenario, name, options?) / clearFault(scenario, name, options?)
- *       → Promise<FaultResult>   arms/disarms one of the eight `FaultName`s
- *       (`dead-air`, `slow-trickle`, `disconnect`, `not-found`,
- *       `auth-failure`, `connection-limit`, `redirect-chain`,
- *       `non-ts-bytes`) against a live stream. `options.channel` scopes it to
- *       one channel id; omitted, it applies scenario-wide. `FaultResult`'s
- *       `appliedTo` counts only *live* connections actually reached —
- *       **`not-found`, `auth-failure`, `connection-limit`, `redirect-chain`
- *       and `non-ts-bytes` can only affect the next request**, because
- *       headers are already sent on any response that is already open, so
- *       `appliedTo: 0` from those five is correct and expected, not a sign
- *       the call did nothing. "Arm `not-found` so the next reconnect fails"
- *       is a normal test with `appliedTo: 0`. Check `appliedTo` yourself when
- *       your test means to disrupt something already streaming; nothing here
- *       asserts or warns on your behalf.
+ *       → Promise<FaultResult>   arms/disarms one of the twelve `FaultName`s.
+ *       The original eight (`dead-air`, `slow-trickle`, `disconnect`,
+ *       `not-found`, `auth-failure`, `connection-limit`, `redirect-chain`,
+ *       `non-ts-bytes`) act on a live stream; `options.channel` scopes one to
+ *       a channel id, omitted applies scenario-wide. The four G8 additions
+ *       (`xc-auth-envelope`, `no-tv-archive`, `catchup-layout-404`,
+ *       `range-unsupported`) act on the XC surface and are documented on
+ *       `FaultName` and `FaultOptions.layout` in `upstream.ts` — two of the
+ *       four (`xc-auth-envelope`, `range-unsupported`) are scenario-wide
+ *       *only* and **reject** an `options.channel` with a 400, and arming
+ *       `catchup-layout-404` requires `options.layout: 'path' | 'query'`.
+ *       `FaultResult`'s `appliedTo` counts only *live* connections actually
+ *       reached — **`not-found`, `auth-failure`, `connection-limit`,
+ *       `redirect-chain` and `non-ts-bytes` can only affect the next
+ *       request**, because headers are already sent on any response that is
+ *       already open, so `appliedTo: 0` from those five is correct and
+ *       expected, not a sign the call did nothing. "Arm `not-found` so the
+ *       next reconnect fails" is a normal test with `appliedTo: 0`. Check
+ *       `appliedTo` yourself when your test means to disrupt something
+ *       already streaming; nothing here asserts or warns on your behalf.
  *   rate(scenario, rate) → Promise<{ rate }>   sets the scenario's own
  *       playback-speed multiplier: the provider paces each chunk against
  *       `asset.byteRate * rate`, so 1 is real-time, 2 is double speed. Has
@@ -351,6 +408,7 @@ import {
 } from './stream-client';
 import { UpstreamClient } from './upstream';
 import { Instance } from './instance';
+import { PageErrorCollector } from './page-errors';
 
 export type Fixtures = {
   api: ApiClient;
@@ -358,6 +416,7 @@ export type Fixtures = {
   asPrincipal: (name: PrincipalName) => Promise<ApiClient>;
   asUser: (username: string, password: string) => Promise<ApiClient>;
   adminPage: Page;
+  pageErrors: PageErrorCollector;
   waitFor: Waiter;
   ws: WsListener;
   streamClient: StreamClient;
@@ -386,6 +445,23 @@ export const test = base.extend<Fixtures>({
   // could hand `page` a different principal without touching the tests.
   adminPage: async ({ page }, use) => {
     await use(page);
+  },
+  // Depends on `page`, not `adminPage`: they are the same object, and the
+  // listeners must be attached at fixture setup, before the test body runs
+  // its first `goto`. Anything attached inside the test misses the initial
+  // document load, which is where a bad bundle fails.
+  //
+  // Teardown calls `expectClean()` itself — opt-out via `waiveAutomaticCheck`,
+  // not opt-in — so a spec that destructures `pageErrors` and never calls it
+  // cannot pass green with a page full of errors. A failure here is
+  // attributed to whichever test was running when teardown ran, same as any
+  // other fixture teardown assertion.
+  pageErrors: async ({ page }, use) => {
+    const collector = new PageErrorCollector(page);
+    await use(collector);
+    if (!collector.isWaived) {
+      await collector.expectClean();
+    }
   },
   waitFor: async ({ api }, use) => {
     await use(new Waiter(api));
@@ -485,11 +561,14 @@ export type {
   FaultOptions,
   FaultResult,
   LogEntry,
+  NonXcScenarioRequest,
   ScenarioRequest,
   UpstreamChannel,
   UpstreamScenario,
+  XcScenarioRequest,
 } from './upstream';
 export type {
+  BackupEntry,
   Channel,
   ChannelGroup,
   ChannelOverrides,
@@ -497,6 +576,7 @@ export type {
   ChannelProfileOverrides,
   ChannelStatus,
   ChannelStatusClient,
+  ConnectIntegration,
   EpgData,
   EpgSource,
   EpgSourceOverrides,
@@ -508,17 +588,28 @@ export type {
   M3uAccount,
   M3uAccountChannelGroup,
   M3uAccountOverrides,
+  M3uAccountProfile,
   M3uAccountStatus,
+  PluginListEntry,
   ProgramSearchPage,
   ProgramSearchResult,
+  Recording,
   Stream,
   StreamOverrides,
   StreamPage,
   StreamProfile,
   StreamProfileOverrides,
+  UpstreamCategory,
   UpstreamChannelOptions,
+  UpstreamEpisode,
+  UpstreamMovie,
+  UpstreamSeason,
+  UpstreamSeries,
   User,
+  UserAgent,
   UserOverrides,
 } from './types';
 export { Instance } from './instance';
 export type { UpOptions, ManageResult } from './instance';
+export { PageErrorCollector, EXPECTED_PAGE_NOISE } from './page-errors';
+export type { PageNoiseEntry } from './page-errors';

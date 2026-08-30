@@ -3,8 +3,10 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends ffmpeg ca-certificates \
  && rm -rf /var/lib/apt/lists/*
 WORKDIR /build
-COPY scripts/make-asset.sh ./
-RUN chmod +x make-asset.sh && ./make-asset.sh /build/loop.ts
+COPY scripts/make-asset.sh scripts/make-vod-asset.sh ./
+RUN chmod +x make-asset.sh make-vod-asset.sh \
+ && ./make-asset.sh /build/loop.ts \
+ && ./make-vod-asset.sh /build/vod.mp4
 
 FROM node:24-slim@sha256:a9f5f7c91a432850b2a8a7797adf5eadb6c733ceed61167806cee7ea7fbc29df AS build
 WORKDIR /app
@@ -21,6 +23,8 @@ FROM node:24-slim@sha256:a9f5f7c91a432850b2a8a7797adf5eadb6c733ceed61167806cee7e
 WORKDIR /app
 COPY --from=build /app/dist ./dist
 COPY --from=asset /build/loop.ts /app/assets/loop.ts
+COPY --from=asset /build/vod.mp4 /app/assets/vod.mp4
 ENV UPSTREAM_ASSET=/app/assets/loop.ts
+ENV UPSTREAM_VOD_ASSET=/app/assets/vod.mp4
 EXPOSE 8080
 CMD ["node", "dist/index.js"]
