@@ -55,7 +55,7 @@ resolve (see the G8/G10 Gap rows).
 | Output | Xtream authentication handshake (user_info / server_info envelope) | G5 | todo |
 | Output | Xtream live actions: get_live_categories, get_live_streams, get_short_epg, get_simple_data_table | G5 | todo |
 | Output | Xtream VOD and series actions answer an empty catalogue without erroring | G5 | todo |
-| Output | Xtream get.php and xmltv.php at the site root — playlist/guide shape and the 401 half of bad-credential rejection; the 403 (blocked-network) half is untested (see R10, task-9-report.md — proving it needs mutating the shared `XC_API` network ACL, which is out of scope and shared by four workers) | G5 | done |
+| Output | Xtream get.php and xmltv.php at the site root — playlist/guide shape and the 401 half of bad-credential rejection; the 403 (blocked-network) half is untested — proving it needs mutating the shared `XC_API` network ACL, which is out of scope and shared by four workers | G5 | done |
 | Output | Authorization matrix by user_level — Xtream only, the one output surface with a principal | G5 | todo |
 | Output | hide_adult_content across the Xtream listing paths | G5 | todo |
 | Output | /output/m3u, /output/epg and the HDHR lineup are unauthenticated by design, gated only by the M3U_EPG network ACL | G5 | todo |

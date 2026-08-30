@@ -41,6 +41,15 @@ test('get.php renders an XC-flavoured playlist for its user', async ({
   // XC-style stream URL: /live/<username>/<password>/<numeric channel id>.
   // Note the numeric id here against the UUID /output/m3u emits — the same
   // channel, addressed two different ways by two different surfaces.
+  //
+  // The username/password segments are echoes — generate_m3u
+  // (apps/output/views.py:200-201) reads xc_username/xc_password straight
+  // back out of request.GET, so matching them proves nothing on its own.
+  // What actually discriminates here is the `/live/` prefix (the
+  // is_xc_request branch, unreachable unless `user` resolved, versus
+  // `/proxy/ts/stream/` for a non-XC request) and the real `channel.id`.
+  // Not a defect, just worth being explicit about so a later pass doesn't
+  // "strengthen" this by adding more echo comparisons.
   expect(mine!.url).toBe(
     `${baseURL}/live/${user.username}/${user.xcPassword}/${channel.id}`
   );
@@ -72,12 +81,17 @@ test('both reject bad credentials with 401', async ({ seed, request }) => {
   // it can only ever land on the password comparison
   // (custom_properties["xc_password"] != password) — but that guarantee is
   // only as good as seed.xcUser() actually producing a user the server can
-  // find. Proving get.php returns 200 for these exact credentials first is
-  // what rules out a broken seed silently turning "wrong password" into
-  // "unknown user" and still going green.
+  // find. Proving both endpoints return 200 for these exact credentials
+  // first is what rules out a broken seed silently turning "wrong password"
+  // into "unknown user" and still going green. Each endpoint gets its own
+  // control — a control run against the other endpoint doesn't make this
+  // one self-contained (Task 8's ruling: every rejection assertion on this
+  // surface needs its own positive control).
   const good = xcQuery(user);
-  const control = await request.get(`/get.php${good}`);
-  expect(control.status(), 'positive control: get.php for this user').toBe(200);
+  const getControl = await request.get(`/get.php${good}`);
+  expect(getControl.status(), 'positive control: get.php for this user').toBe(200);
+  const xmltvControl = await request.get(`/xmltv.php${good}`);
+  expect(xmltvControl.status(), 'positive control: xmltv.php for this user').toBe(200);
 
   const bad = `?username=${encodeURIComponent(user.username)}&password=wrong`;
 
