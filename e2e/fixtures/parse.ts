@@ -82,6 +82,13 @@ export function parseM3u(text: string): M3uPlaylist {
     // attribute. Searching from the last quote rather than from the end of
     // the line is what keeps a comma inside a channel name intact —
     // group-title="World",News, Live must yield "News, Live", not "Live".
+    //
+    // KNOWN LIMITATION, not a bug here: a channel or group name containing a
+    // `"` truncates, because `apps/output/views.py:304-306` interpolates
+    // `tvg-name="{tvg_name}"` and `group-title="{group_title}"` with no
+    // quote-escaping — the product's own output is malformed for such a
+    // name, and this parser has no well-formed input to recover from. Filed
+    // as D10Scot/Dispatcharr#80; do not "fix" this parser to compensate.
     const lastQuote = line.lastIndexOf('"');
     const comma = line.indexOf(',', lastQuote === -1 ? line.indexOf(':') : lastQuote);
 
@@ -100,6 +107,18 @@ export function parseM3u(text: string): M3uPlaylist {
  * `html.escape(..., quote=True)` is what Dispatcharr writes with, so these
  * five are the whole set it can emit. `&amp;` is decoded last, or a body
  * containing the literal text `&amp;lt;` would decode twice.
+ *
+ * Deliberately not decoded: the decimal forms `&#39;`/`&apos;`. `html.escape`
+ * never emits either — it always writes `&#x27;` — so adding them would widen
+ * this function past what it needs to handle for no reason. If a future
+ * Dispatcharr change starts emitting one, that is new evidence to add here,
+ * not something to pre-empt.
+ *
+ * Note for callers: this function only ever returns a `string`. A field that
+ * is genuinely *absent* from the source (no `stop=` attribute, no
+ * `<title>` element) is `undefined`/`''` upstream of this call, not something
+ * this function invents — empty-vs-absent stays distinguishable at the call
+ * site, this just never introduces a third state.
  */
 function decodeXmlEntities(value: string): string {
   return value
@@ -111,12 +130,26 @@ function decodeXmlEntities(value: string): string {
 }
 
 export function parseXmltv(text: string): XmltvDocument {
+  // Without this guard, an HTML error page, an empty body or a JSON payload
+  // all match zero `<channel>`/`<programme>` elements and return
+  // `{channels: [], programmes: []}` — indistinguishable from a real, empty
+  // guide. Every downstream absence assertion ("my channel is not in this
+  // guide") would then pass trivially against a broken endpoint. `parseM3u`
+  // already guards its input the same way; this brings XMLTV in line.
+  if (!/<tv[\s>]/.test(text)) {
+    throw new Error(
+      `not an XMLTV document: no <tv> root element. Body started with ${JSON.stringify(
+        text.slice(0, 120)
+      )}`
+    );
+  }
+
   const channels: XmltvChannel[] = [];
-  for (const match of text.matchAll(/<channel id="([^"]*)">([\s\S]*?)<\/channel>/g)) {
+  for (const match of text.matchAll(/<channel\b([^>]*)>([\s\S]*?)<\/channel>/g)) {
     channels.push({
-      id: decodeXmlEntities(match[1]),
+      id: decodeXmlEntities(attributesOf(match[1]).id ?? ''),
       displayNames: [
-        ...match[2].matchAll(/<display-name>([\s\S]*?)<\/display-name>/g),
+        ...match[2].matchAll(/<display-name\b[^>]*>([\s\S]*?)<\/display-name>/g),
       ].map((name) => decodeXmlEntities(name[1])),
     });
   }

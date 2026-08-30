@@ -68,7 +68,46 @@ test('parseXmltv reads programmes with their channel and title', () => {
   expect(guide.programmes).toHaveLength(1);
   expect(guide.programmes[0].channel).toBe('42');
   expect(guide.programmes[0].start).toBe('20260829120000 +0000');
+  // `stop` is on the interface but was previously unasserted: a reviewer
+  // proved that by hardcoding `stop: ''` in the parser and watching every
+  // test still pass. Assert it exactly the way `start` is, so a future
+  // regression there is caught the same way.
+  expect(guide.programmes[0].stop).toBe('20260829160000 +0000');
   expect(guide.programmes[0].title).toBe('Morning <Show>');
+});
+
+test('parseXmltv tolerates extra attributes on <channel> and <display-name>', () => {
+  // Dispatcharr does not currently emit either form (apps/output/epg.py
+  // writes bare `<channel id="...">` and `<display-name>`), so this is not
+  // reachable against a real guide today. It is still asserted: a regex that
+  // silently yields [] on a shape it should tolerate is the same failure mode
+  // as an unguarded parse of garbage — it just fails quietly instead of
+  // loudly. The GUIDE fixture above pins the bare form; this pins the
+  // attributed form so neither regresses.
+  const attributed = [
+    '<?xml version="1.0" encoding="UTF-8"?>',
+    '<tv generator-info-name="Dispatcharr">',
+    '  <channel id="99" some-other-attr="x">',
+    '    <display-name lang="en">Attributed Channel</display-name>',
+    '  </channel>',
+    '</tv>',
+  ].join('\n');
+
+  const guide = parseXmltv(attributed);
+  expect(guide.channels).toHaveLength(1);
+  expect(guide.channels[0].id).toBe('99');
+  expect(guide.channels[0].displayNames).toEqual(['Attributed Channel']);
+});
+
+test('parseXmltv rejects a body that is not an XMLTV document', () => {
+  // Without a root-element guard, an HTML error page or a JSON body matches
+  // zero <channel>/<programme> elements and returns an empty-but-valid-
+  // looking document — indistinguishable from a real, empty guide. That
+  // would make every downstream "my channel is absent from this guide"
+  // assertion pass trivially against a broken /output/epg response.
+  expect(() => parseXmltv('<html><body>500 Internal Server Error</body></html>')).toThrow(
+    /not an XMLTV document/
+  );
 });
 
 test('expectWellFormedXml accepts valid XML', async ({ adminPage }) => {
