@@ -449,10 +449,61 @@ describe('XC scenario declaration', () => {
     );
   });
 
+  // F3: the door tests above only assert throws; nothing pinned that a
+  // *valid* isAdult/vodInfo actually survives parseMovies' return, so a
+  // deletion of either conditional spread in the return object stayed green.
+  it('parses a movie with isAdult and vodInfo declared, and echoes both verbatim', () => {
+    const vodInfo = { bitrate: 5000 };
+    const request = parseScenarioRequest({
+      vod: [{ id: 1, name: 'm', isAdult: true, vodInfo }],
+    });
+    expect(request.vod).toEqual([
+      {
+        id: 1,
+        name: 'm',
+        year: null,
+        categoryId: 1,
+        containerExtension: 'mp4',
+        tmdbId: null,
+        imdbId: null,
+        isAdult: true,
+        vodInfo,
+      },
+    ]);
+  });
+
   it('rejects a non-object vodInfo', () => {
     expect(() => parseScenarioRequest({ vod: [{ id: 1, name: 'm', vodInfo: [] }] })).toThrow(
       /vodInfo must be an object/,
     );
+  });
+
+  // F4: the case above only exercises the Array.isArray branch of the
+  // vodInfo guard; null and a non-object primitive exercise the other two.
+  it('rejects a null or non-object, non-array vodInfo', () => {
+    expect(() => parseScenarioRequest({ vod: [{ id: 1, name: 'm', vodInfo: null }] })).toThrow(
+      /vodInfo must be an object/,
+    );
+    expect(() => parseScenarioRequest({ vod: [{ id: 1, name: 'm', vodInfo: 'nope' }] })).toThrow(
+      /vodInfo must be an object/,
+    );
+  });
+
+  // F4: every seasonsAsArray case so far declares it `true`; nothing exercised
+  // the type guard that rejects a non-boolean value.
+  it('rejects a non-boolean seasonsAsArray', () => {
+    expect(() =>
+      parseScenarioRequest({
+        series: [
+          {
+            id: 1,
+            name: 's',
+            seasonsAsArray: 'yes',
+            seasons: [{ number: 0, episodes: [] }],
+          },
+        ],
+      })
+    ).toThrow(/seasonsAsArray must be a boolean/);
   });
 
   it('rejects seasonsAsArray when a season number does not match its index', () => {

@@ -94,10 +94,10 @@ function movieEntry(movie: MovieSpec): Record<string, unknown> {
     year: movie.year,
     ...(movie.tmdbId === null ? {} : { tmdb_id: movie.tmdbId }),
     ...(movie.imdbId === null ? {} : { imdb_id: movie.imdbId }),
-    // `is_adult` is deliberately absent unless a scenario declares it:
-    // process_movie_batch only writes Movie.is_adult when the key is present,
-    // so that a sparse provider cannot clear a flag another provider set,
-    // unless the scenario declares `isAdult`.
+    // `is_adult` is deliberately absent unless the scenario declares
+    // `isAdult`: process_movie_batch only writes Movie.is_adult when the key
+    // is present, so that a sparse provider cannot clear a flag another
+    // provider set.
     ...(movie.isAdult === undefined ? {} : { is_adult: movie.isAdult ? 1 : 0 }),
   };
 }

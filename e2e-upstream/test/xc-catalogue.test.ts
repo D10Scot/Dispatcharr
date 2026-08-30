@@ -144,6 +144,11 @@ describe('VOD actions', () => {
     });
     expect(renderVodStreams(scenario, '1')).toHaveLength(0);
     expect(renderVodStreams(scenario, null)).toHaveLength(1);
+    // The distinguishing case: String(null) === 'null', so a filter that
+    // merely compared String(movie.categoryId) === categoryId (the pre-fix
+    // behaviour) would match this movie against the literal string 'null'.
+    // Only the explicit `movie.categoryId !== null` guard excludes it here.
+    expect(renderVodStreams(scenario, 'null')).toHaveLength(0);
   });
 
   it('omits tmdb_id/imdb_id when null and includes them when the scenario declares them', () => {

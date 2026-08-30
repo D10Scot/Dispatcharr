@@ -125,9 +125,10 @@ bypasses `seed.xcAccount` is not.
   a non-XC scenario — there's no route that could serve a catalogue. The `MovieSpec`/`SeriesSpec`
   field sets (`id`, `name`, `year`, `categoryId`, `containerExtension`, `tmdbId`, `imdbId`,
   `isAdult?`, `vodInfo?` for a movie; `id`, `name`, `categoryId`, `seasons[].number`,
-  `seasons[].episodes[]`, `seasonsAsArray?` for a series) are mirrored with docstrings as
-  `UpstreamMovie`/`UpstreamSeries` in `e2e/fixtures/types.ts:349-380` — read them there rather than
-  `src/scenario.ts` when a test needs an explicit spec.
+  `seasons[].episodes[]`, `seasonsAsArray?` for a series) are declared here, in `src/scenario.ts` —
+  the source of truth. `e2e/fixtures/types.ts:507-537` carries a Playwright-side mirror
+  (`UpstreamMovie`/`UpstreamSeries`) that can lag this file; check it against `src/scenario.ts`
+  rather than assuming it's current before relying on it for an explicit spec.
   - `categoryId: null` (movies only) emits no `category_id` key at all on `get_vod_streams`, and the
     movie is excluded from a `category_id=` filter — the only way to route a movie into
     Dispatcharr's own `Uncategorized` bucket, since `process_movie_batch` falls through to
