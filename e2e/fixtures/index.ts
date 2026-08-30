@@ -379,6 +379,17 @@
  *                             plus `extra`'s keys). Build it from a
  *                             `seed.xcUser()` result rather than hand-rolling
  *                             the encoding at each call site.
+ *   parseM3u(text)            → M3uPlaylist   a shallow M3U reader — header
+ *                             attributes plus each `#EXTINF`/URL pair. Not a
+ *                             validator; see its doc comment in `parse.ts`.
+ *   parseXmltv(text)          → XmltvDocument   a shallow XMLTV reader —
+ *                             `<channel>`/`<display-name>` and `<programme>`/
+ *                             `<title>`, with entities decoded. Also not a
+ *                             validator.
+ *   expectWellFormedXml(page, xml) → Promise<void>   the actual validity
+ *                             check, via the browser's own DOMParser. Use this
+ *                             when a test needs to assert well-formedness
+ *                             rather than just read fields.
  *   expect                    re-exported from @playwright/test
  *
  * ---------------------------------------------------------------------------
@@ -574,6 +585,8 @@ export type {
   M3uAccountOverrides,
   M3uAccountProfile,
   M3uAccountStatus,
+  M3uEntry,
+  M3uPlaylist,
   ProgramSearchPage,
   ProgramSearchResult,
   Stream,
@@ -590,7 +603,10 @@ export type {
   User,
   UserOverrides,
   XcUser,
+  XmltvChannel,
+  XmltvDocument,
+  XmltvProgramme,
 } from './types';
-export { xcQuery } from './parse';
+export { xcQuery, parseM3u, parseXmltv, expectWellFormedXml } from './parse';
 export { Instance } from './instance';
 export type { UpOptions, ManageResult } from './instance';

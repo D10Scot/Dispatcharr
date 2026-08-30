@@ -747,3 +747,43 @@ export type UpstreamChannelOptions = {
   // discarded. Omitting them here turns that into a compile error instead.
   channel?: Omit<ChannelOverrides, 'streams' | 'stream_profile_id'>;
 };
+
+/* ------------------------------------------------------------------------ *
+ * Parsed client-output surfaces (M3U playlist, XMLTV guide)
+ * ------------------------------------------------------------------------ */
+
+/** One `#EXTINF` line plus the URL beneath it. */
+export type M3uEntry = {
+  /**
+   * The quoted `key="value"` attributes on the `#EXTINF` line. Dispatcharr
+   * emits `tvg-id`, `tvg-name`, `tvg-logo`, `tvg-chno`, optionally
+   * `tvc-guide-stationid`, and `group-title` — and nothing else. There is
+   * deliberately no `catchup=`; catch-up is advertised only through the XC
+   * `tv_archive` field. See the G8 gap row in COVERAGE.md.
+   */
+  attributes: Record<string, string>;
+  /** Everything after the comma that ends the attribute list. */
+  title: string;
+  url: string;
+};
+
+export type M3uPlaylist = {
+  /** Attributes on the `#EXTM3U` line: `x-tvg-url` and `url-tvg`. */
+  header: Record<string, string>;
+  entries: M3uEntry[];
+};
+
+export type XmltvChannel = { id: string; displayNames: string[] };
+
+/** `start`/`stop` are XMLTV timestamps, e.g. `20260829120000 +0000`. */
+export type XmltvProgramme = {
+  channel: string;
+  start: string;
+  stop: string;
+  title: string;
+};
+
+export type XmltvDocument = {
+  channels: XmltvChannel[];
+  programmes: XmltvProgramme[];
+};
