@@ -194,21 +194,40 @@ export type ChannelGroup = {
 };
 
 /**
- * `/api/channels/logos/`. `Logo` has exactly two model fields, `name` and
- * `url` (`TextField(unique=True)`) — there is no FileField. An upload writes
- * the bytes to `/data/logos/<basename>` and stores that **filesystem path** in
- * `url`; `cache_url` is the servable one, built by `LogoSerializer` as
- * `…/api/channels/logos/<id>/cache/?v=<hash>` and made absolute when the
- * serializer has a request in context.
+ * `apps.channels.Logo` via `LogoViewSet` (`apps/channels/api_urls.py`,
+ * `logos`). `LogoSerializer.Meta.fields` also has `channel_names`; not typed
+ * here because nothing reads it yet.
  *
- * G6 also declares `export type Logo` on its own branch (four fields, no
- * `channel_count`/`is_used`, with fuller documentation). On merge, keep G6's
- * comment — fixing its opening sentence to say only `channel_names` is
- * untyped, since this file's wider field set also carries `channel_count`
- * and `is_used` — and this file's wider field set, and delete the duplicate
- * declaration.
+ * `url` is **not** necessarily an HTTP-fetchable location: for a logo
+ * created through `LogoViewSet.upload` it is the raw server-side filesystem
+ * path (`/data/logos/<name>`, from `core.utils.safe_upload_path`). No URL
+ * pattern in `dispatcharr/urls.py` actually serves `/data/logos/*` — but a
+ * `GET` against it does not 404 cleanly either. `dispatcharr/urls.py`
+ * registers the XC live-stream route,
+ * `<str:username>/<str:password>/<str:channel_id>`, ahead of the SPA
+ * catch-all, and `/data/logos/<file>` happens to have exactly three path
+ * segments, so it parses as `username="data", password="logos",
+ * channel_id="<file>"` and 404s from `stream_xc`'s own "no such user"
+ * lookup (`{"detail":"No User matches the given query."}`) — confirmed
+ * empirically against a running container by `logos.spec.ts`, not assumed.
+ * A bare status check against `url` proves nothing either way about whether
+ * the upload actually landed; `cache_url` is the field that is always
+ * fetchable: `LogoSerializer.get_cache_url` builds an absolute URL to
+ * `LogoViewSet.cache` (`AllowAny`, streams the real file via
+ * `core.image_proxy.serve_local_or_remote_image`) off the *request's own
+ * host*, so it resolves against this harness's `baseURL` whether the logo
+ * is a local upload or a remote URL.
  *
- * Not typed here: `channel_names`, a cosmetic capped list nothing asserts on.
+ * `url`'s local-path/remote-URL duality also has no discriminator field —
+ * every consumer (`apps/output/views.py:290`'s `tvg-logo`, the XC
+ * `stream_icon` field, `LogosTable.jsx`'s URL column) tells them apart with
+ * its own copy-pasted `startsWith('http')`/`startsWith(('http://',
+ * 'https://'))` check. All four currently agree, so this is not a filed
+ * defect, but it is the same shape as the eight-site channel-authorization
+ * filter in the root `CLAUDE.md`'s defect list, where one of the eight
+ * copies was wrong — and a fifth site that forgets the check here would not
+ * fail cleanly, it would land in the XC-route 404 above and send whoever
+ * debugs it looking in the wrong subsystem entirely.
  */
 export type Logo = {
   id: number;
@@ -719,4 +738,53 @@ export type UpstreamChannelOptions = {
   // afterwards, so a caller-supplied value for either would be silently
   // discarded. Omitting them here turns that into a compile error instead.
   channel?: Omit<ChannelOverrides, 'streams' | 'stream_profile_id'>;
+};
+
+/** `core.UserAgent` via `UserAgentViewSet` (`core/api_urls.py`, `useragents`). */
+export type UserAgent = {
+  id: number;
+  name: string;
+  user_agent: string;
+  /** `CharField(max_length=255, blank=True)` — no `null=True` (`core/models.py:29`), so DRF emits `""`, never `null`. */
+  description: string;
+  is_active: boolean;
+};
+
+/** `apps.connect.Integration` via `IntegrationViewSet` (`apps/connect/api_urls.py`). */
+export type ConnectIntegration = {
+  id: number;
+  name: string;
+  type: string;
+  enabled: boolean;
+  config: Record<string, unknown>;
+  subscriptions: { event: string; enabled: boolean }[];
+};
+
+/** `apps.channels.Recording` via `RecordingViewSet` (`apps/channels/api_urls.py`). */
+export type Recording = {
+  id: number;
+  channel: number;
+  start_time: string;
+  end_time: string;
+  custom_properties: Record<string, unknown> | null;
+};
+
+/**
+ * One entry of `{"plugins": [...]}` from `GET /api/plugins/plugins/`
+ * (`PluginsListAPIView`, whose body is `PluginManager.list_plugins()`).
+ */
+export type PluginListEntry = {
+  key: string;
+  name: string;
+  version: string;
+  enabled: boolean;
+  ever_enabled: boolean;
+  settings: Record<string, unknown>;
+};
+
+/** One row of `GET /api/backups/` (`apps/backups/services.py`, `list_backups`). */
+export type BackupEntry = {
+  name: string;
+  size: number;
+  created: string;
 };

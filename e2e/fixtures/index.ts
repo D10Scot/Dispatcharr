@@ -131,6 +131,20 @@
  * drives, and importing `page` from `@playwright/test` is how a spec ends up
  * bypassing this module entirely.
  *
+ * `pageErrors: PageErrorCollector` — everything the browser reported while the
+ *   test ran: `consoleErrors`, `pageErrors`, `failedResponses` (including
+ *   network-level failures — connection refused, DNS, blocked — at
+ *   `status: 0`), and `expectClean()` (`async`, so `await` it), which fails
+ *   naming every offender not covered by `EXPECTED_PAGE_NOISE`. Attached at
+ *   fixture setup, so it sees the initial document load. **This fixture calls
+ *   `expectClean()` itself at teardown, for every test that uses it** — a
+ *   spec never has to remember to. A test that deliberately provokes an
+ *   error to exercise the product's own handling of it should call
+ *   `pageErrors.waiveAutomaticCheck('<reason>')` to skip that one check; the
+ *   reason is mandatory and shows up at the call site. The allowlist rule is
+ *   at the top of `page-errors.ts`: a product defect is filed, never
+ *   allowlisted.
+ *
  * `waitFor: Waiter` — polling. The default way to wait for Celery-backed work.
  *   condition(predicate, options?) → Promise<void>
  *       predicate: () => Promise<boolean>
@@ -394,6 +408,7 @@ import {
 } from './stream-client';
 import { UpstreamClient } from './upstream';
 import { Instance } from './instance';
+import { PageErrorCollector } from './page-errors';
 
 export type Fixtures = {
   api: ApiClient;
@@ -401,6 +416,7 @@ export type Fixtures = {
   asPrincipal: (name: PrincipalName) => Promise<ApiClient>;
   asUser: (username: string, password: string) => Promise<ApiClient>;
   adminPage: Page;
+  pageErrors: PageErrorCollector;
   waitFor: Waiter;
   ws: WsListener;
   streamClient: StreamClient;
@@ -429,6 +445,23 @@ export const test = base.extend<Fixtures>({
   // could hand `page` a different principal without touching the tests.
   adminPage: async ({ page }, use) => {
     await use(page);
+  },
+  // Depends on `page`, not `adminPage`: they are the same object, and the
+  // listeners must be attached at fixture setup, before the test body runs
+  // its first `goto`. Anything attached inside the test misses the initial
+  // document load, which is where a bad bundle fails.
+  //
+  // Teardown calls `expectClean()` itself — opt-out via `waiveAutomaticCheck`,
+  // not opt-in — so a spec that destructures `pageErrors` and never calls it
+  // cannot pass green with a page full of errors. A failure here is
+  // attributed to whichever test was running when teardown ran, same as any
+  // other fixture teardown assertion.
+  pageErrors: async ({ page }, use) => {
+    const collector = new PageErrorCollector(page);
+    await use(collector);
+    if (!collector.isWaived) {
+      await collector.expectClean();
+    }
   },
   waitFor: async ({ api }, use) => {
     await use(new Waiter(api));
@@ -535,6 +568,7 @@ export type {
   XcScenarioRequest,
 } from './upstream';
 export type {
+  BackupEntry,
   Channel,
   ChannelGroup,
   ChannelOverrides,
@@ -542,6 +576,7 @@ export type {
   ChannelProfileOverrides,
   ChannelStatus,
   ChannelStatusClient,
+  ConnectIntegration,
   EpgData,
   EpgSource,
   EpgSourceOverrides,
@@ -555,8 +590,10 @@ export type {
   M3uAccountOverrides,
   M3uAccountProfile,
   M3uAccountStatus,
+  PluginListEntry,
   ProgramSearchPage,
   ProgramSearchResult,
+  Recording,
   Stream,
   StreamOverrides,
   StreamPage,
@@ -569,7 +606,10 @@ export type {
   UpstreamSeason,
   UpstreamSeries,
   User,
+  UserAgent,
   UserOverrides,
 } from './types';
 export { Instance } from './instance';
 export type { UpOptions, ManageResult } from './instance';
+export { PageErrorCollector, EXPECTED_PAGE_NOISE } from './page-errors';
+export type { PageNoiseEntry } from './page-errors';

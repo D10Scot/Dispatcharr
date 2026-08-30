@@ -170,7 +170,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        project: [pristine, seeded, streaming, streaming-failover, streaming-greybox, lifecycle]
+        project: [pristine, seeded, streaming, streaming-failover, streaming-greybox, lifecycle, frontend]
     steps:
       - name: Checkout code
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0

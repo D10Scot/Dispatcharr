@@ -2,7 +2,13 @@
 
 The shared worklist for all ten goals. **Update this in the same PR as the
 tests.** Status: `todo` / `done` / `known-bug` (asserted correct, marked
-`test.fail()`, issue filed).
+`test.fail()`, issue filed) — for a Flow row, meaning the test itself.
+
+A **Gap**/**Observation** row isn't a flow under test, so its Status tracks
+the finding instead: `done` once the note is written and, where relevant,
+confirmed against the code or a live run, with no further action expected
+here; `todo` when the row is a live open question left for a later goal to
+resolve (see the G8/G10 Gap rows).
 
 | Area | Flow | Goal | Status |
 |---|---|---|---|
@@ -91,15 +97,20 @@ tests.** Status: `todo` / `done` / `known-bug` (asserted correct, marked
 | Catch-up | Decisive failures (401/403/406) stop the cascade for that account; a soft 404 or a 200 with no TS sync does not | G10 | todo |
 | Catch-up | `server_info.timezone` from the account profile drives `convert_timestamp_to_provider_tz` | G10 | todo |
 | Catch-up | **Gap:** the generated M3U emits no `catchup=`/`catchup-source=` attribute. `#EXTINF` carries `tvg-id`, `tvg-name`, `tvg-logo`, `tvg-chno`, optionally `tvc-guide-stationid`, and `group-title` — nothing else. Catch-up is advertised only through the XC `tv_archive`/`tv_archive_duration` fields, so an M3U-only client can never discover it. G10 decides whether that is a defect to file or intended | G10 | todo |
-| Frontend | Guide grid renders and navigates | G6 | todo |
-| Frontend | DVR: schedule, list, cancel a recording | G6 | todo |
-| Frontend | Users: create, edit, delete | G6 | todo |
-| Frontend | Settings: change and persist | G6 | todo |
-| Frontend | Plugins: list, enable, configure | G6 | todo |
-| Frontend | Stats page renders live data | G6 | todo |
-| Frontend | Connect: webhook CRUD | G6 | todo |
-| Frontend | Logos: upload and browse | G6 | todo |
-| Frontend | Backups: create and restore | G6 | todo |
+| Frontend | Guide grid renders and navigates | G6 | done |
+| Frontend | DVR: schedule, list, cancel a recording | G6 | done |
+| Frontend | **Gap:** scheduling a recording creates three objects — the `Recording` row, a django-celery-beat `PeriodicTask` named `dvr-recording-<id>`, and a `ClockedSchedule` — with no DB cascade between them; `PeriodicTask` is linked to `Recording` only by that name string, written into `Recording.task_id` by `schedule_task_on_save` (`apps/channels/signals.py:361-363`/`367-369`). The sole teardown mechanism is the `post_delete` receiver `revoke_task_on_delete` (`apps/channels/signals.py:388-390`) calling `revoke_task()` (`apps/channels/signals.py:289-310`), and it hinges on `task_id` having been populated. `RecordingViewSet.destroy` (`apps/channels/api_views.py:3776`) **does** override `destroy`, and reaches the signal through its `super().destroy()` call (`:3846`) — so the teardown fires for both the UI cancel and `dvr.spec.ts`'s cleanup DELETE, but by a longer route than a default `ModelViewSet`. That override also does three further things the test never observes: it deletes the recording's file(s) from disk, emits a `recording_cancelled` WebSocket event, and backgrounds the DVR-client teardown in a thread. The gap: the test can only assert the `Recording` row is gone, because neither `PeriodicTask` nor `ClockedSchedule` has a REST surface, and none of the three side effects above has one either. If the `task_id` write were ever lost, the `PeriodicTask` would orphan invisibly — no API any test polls would show it — and eventually fire against a deleted recording | G6 | done |
+| Frontend | Users: create, edit, delete | G6 | done |
+| Frontend | Settings: change and persist | G6 | done |
+| Frontend | Plugins: list, enable, configure | G6 | done |
+| Frontend | **Observation:** `plugins.spec.ts`'s comment on the plugin-visibility mechanism (`.reload_token` mtime, no restart needed) is a claim the assertions alone don't prove — a uWSGI respawn would satisfy them identically. Out-of-band check during a mutation run: `docker logs` showed no uWSGI respawn across the import, only `apps.plugins.loader` discovery lines | G6 | done |
+| Frontend | Stats page renders live data | G6 | done |
+| Frontend | Connect: webhook CRUD | G6 | done |
+| Frontend | Logos: upload and browse | G6 | done |
+| Frontend | **Gap:** `apps.channels.Logo.url` is a discriminator-free polymorphic field — a remote URL or, for a local upload, a raw server-side filesystem path (`/data/logos/<name>`) — and every consumer tells the two apart with its own copy-pasted `startsWith('http')`/`startsWith(('http://', 'https://'))` check: `apps/output/views.py:290` (`tvg-logo`), the XC `stream_icon` field, `LogosTable.jsx`'s URL column. All four agree today, so this is not filed as a defect — but it is the same shape as the eight-site channel-authorization filter in the root `CLAUDE.md`'s defect list, where the eighth copy was wrong. A fifth site that forgets the check would not fail cleanly either: a bare `url` handed to an HTTP client collides with the XC live-stream route (`<str:username>/<str:password>/<str:channel_id>`, three path segments matches `/data/logos/<file>` exactly) and 404s from an unrelated "no such user" lookup, which sends whoever debugs it looking in the wrong subsystem entirely. Confirmed empirically, not assumed, by G6 task 10 (`logos.spec.ts`) | G6 | done |
+| Frontend | Backups: create and validate the archive | G6 | done |
+| Frontend | **Gap:** development-mode-only diagnostics — not just React's key-prop warning, but anything gated behind `__DEV__`/`import.meta.env.DEV` (Mantine's own dev checks, React Router's, etc.) — are invisible to the `pageErrors` fixture in this harness. `docker/Dockerfile:22`'s `npm run build`, which is what `scripts/e2e_up.sh:138` builds the e2e image from, is a Vite production build: it resolves the production `react/jsx-runtime` with `NODE_ENV="production"`, so dev-only checks (React's `validateChildKeys` among them) are compiled out of the bundle entirely, not merely suppressed at runtime. Production error reporting is unaffected — `pageerror` and `console.error` from real app/library code still reach the collector, so this is not a hole in error detection generally, only in this one class of dev-time-only diagnostic. A later task that needs to assert a dev-only diagnostic must verify it against a development build directly, or assert the underlying behaviour rather than the diagnostic message. First hit: G6 task 9 (`connect.spec.ts`), trying to reproduce [#62](https://github.com/D10Scot/Dispatcharr/issues/62) | G6 | done |
+| Lifecycle | Backups: restore — split out of G6's Backups row. Restoring on a shared instance replaces the database under every parallel worker mid-run and under every other project sharing the container locally, so it needs an instance of its own; G7 already stands one up per scenario | G7 | todo |
 | Lifecycle | Upgrade from previous release (migrations) | G7 | done |
 | Lifecycle | Restart preserves channels and settings | G7 | done |
 | Lifecycle | PUID/PGID honoured | G7 | done |
@@ -187,6 +198,42 @@ file; the two known-bug rows live beside the tests they qualify):
 
 `e2e/tests/seeded/upstream-ingest.spec.ts` is untouched: it is G2's plumbing
 proof and the G2 row still means what it meant.
+
+The nine G6 flow rows above are covered by these specs (the Gap/Observation
+annotation rows carry no spec of their own). The nine render
+checks live in one file, generated from the surface table in
+`e2e/tests/frontend/helpers.ts`; each surface's write or read proof is its own
+file, and **that one-file-per-surface split is load-bearing** — the `frontend`
+project runs two workers with file-level parallelism, which is what confines
+backup creation and plugin installation to one worker each:
+
+- `e2e/tests/frontend/render.spec.ts` — all nine surfaces mount, throw
+  nothing, log no error and issue no request the server refuses
+- `e2e/tests/frontend/guide.spec.ts` — Guide grid populated from the channel
+  API, reached by clicking the sidebar
+- `e2e/tests/frontend/dvr.spec.ts` — DVR schedule, list, cancel
+- `e2e/tests/frontend/users.spec.ts` — Users create, edit, delete
+- `e2e/tests/frontend/settings.spec.ts` — Settings change and persist, via a
+  User-Agent row (a global `CoreSettings` change belongs to `pristine`)
+- `e2e/tests/frontend/plugins.spec.ts` — Plugins import, enable, configure
+- `e2e/tests/frontend/stats.spec.ts` — Stats renders a live connection
+- `e2e/tests/frontend/connect.spec.ts` — Connect webhook CRUD
+- `e2e/tests/frontend/logos.spec.ts` — Logos upload and browse
+- `e2e/tests/frontend/backups.spec.ts` — Backups create and validate
+
+Two further files in the same directory run but are not tied to a coverage
+row above, the same way `streaming-greybox/quarantine.spec.ts` isn't tied to
+a G4 row: `e2e/tests/frontend/pageerrors-enforcement.spec.ts` is a meta-test
+that source-scans every `test()` under `tests/frontend/` for a destructured
+`pageErrors` parameter, and the zip-builder unit test at the top of
+`plugins.spec.ts` checks `buildPluginZip`'s output is a readable archive
+before any test relies on it.
+
+Gap: the Guide row proves the grid is populated from
+`/api/channels/channels/`, not from real EPG programme data. Asserting a
+programme in the grid needs an ingested XMLTV source, which is G3's path;
+recording a programme from the Guide needs the same. Deferred rather than
+attempted here.
 
 The four `done` G7 rows above are covered by (the fifth, refresh-interval
 scheduling, stays `todo` — see the row itself):
