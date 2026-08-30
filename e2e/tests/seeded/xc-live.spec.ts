@@ -8,6 +8,8 @@ type XcStream = {
   stream_id: number;
   stream_type: string;
   category_id: string;
+  category_ids: number[];
+  epg_channel_id: string;
   is_adult: number;
   tv_archive: number;
 };
@@ -18,12 +20,16 @@ type XcStream = {
  * is valid JSON, but it arrives incrementally — read it whole before parsing.
  */
 async function liveStreams(
-  request: { get: (url: string) => Promise<{ text(): Promise<string> }> },
+  request: { get: (url: string) => Promise<{ status(): number; text(): Promise<string> }> },
   user: XcUser
 ): Promise<XcStream[]> {
   const res = await request.get(
     `/player_api.php${xcQuery(user, { action: 'get_live_streams' })}`
   );
+  // A non-200 that still happens to parse (e.g. an HTML error page won't,
+  // but a JSON error envelope would) must not slip through as an empty or
+  // malformed stream list.
+  expect(res.status(), 'get_live_streams').toBe(200);
   return JSON.parse(await res.text());
 }
 
@@ -44,6 +50,13 @@ test('the XC live catalogue lists a seeded channel under its own category', asyn
   const profile = await seed.channelProfile();
   const user = await seed.xcUser({ user_level: 1, channel_profiles: [profile.id] });
 
+  // ChannelSerializer.create always assigns channel_number via
+  // get_next_available_channel_number() (apps/channels/models.py); a
+  // creation without an explicit override never leaves it null. Asserted
+  // before use so the assertions below fail here, not with a confusing
+  // `null !== 834` further down. Same premise hdhr.spec.ts:161 relies on.
+  expect(channel.channel_number, 'create should have assigned a number').not.toBeNull();
+
   const categories: XcCategory[] = await (
     await request.get(`/player_api.php${xcQuery(user, { action: 'get_live_categories' })}`)
   ).json();
@@ -57,6 +70,15 @@ test('the XC live catalogue lists a seeded channel under its own category', asyn
   expect(mine!.category_id).toBe(String(group.id));
   expect(mine!.is_adult).toBe(0);
   expect(mine!.tv_archive).toBe(0);
+  // `num`/`epg_channel_id` are a collision-free integer built from every
+  // channel's effective_channel_number (_xc_live_streams_setup), not a
+  // straight passthrough of channel_number — but with an unshared,
+  // freshly-created channel_number there is nothing for it to collide with,
+  // so it resolves to channel_number itself. category_ids is the numeric
+  // (not stringified) sibling of category_id.
+  expect(mine!.num).toBe(channel.channel_number);
+  expect(mine!.epg_channel_id).toBe(String(channel.channel_number));
+  expect(mine!.category_ids).toEqual([group.id]);
 });
 
 test('panel_api.php returns the same catalogue in one envelope', async ({
@@ -93,13 +115,29 @@ test('get_short_epg returns programmes for a channel with no EPG source', async 
   ).json();
 
   // A channel with no epg_data still yields listings: xc_get_epg falls
-  // through to generate_dummy_programs.
-  expect(body.epg_listings.length).toBeGreaterThan(0);
+  // through to generate_dummy_programs(channel_id, effective_name,
+  // epg_source=None) (apps/output/views.py) with no num_days/
+  // program_length_hours passed, so both take their defaults (num_days=1,
+  // program_length_hours=4 — apps/output/epg.py:134-135) and that branch
+  // does not apply `short`'s limit/end_time slicing at all, unlike the
+  // stored-programs branches above it. One day at a 4-hour cadence is
+  // exactly 24 / 4 = 6 programs (range(0, 24, 4)).
+  expect(body.epg_listings.length).toBe(6);
 
   const first = body.epg_listings[0];
-  // title and description are base64-encoded on this surface. A plain string
-  // compare would silently pass against the encoded form of anything.
-  expect(Buffer.from(first.title, 'base64').toString('utf8')).not.toBe('');
+  // `stream_id` (asserted below) is `f"{channel_id}"` — request.GET's own
+  // `stream_id` parameter echoed straight back (apps/output/views.py:788,
+  // :982). It proves the server received our query string, not that this
+  // listing belongs to our channel. `title` is the field that actually ties
+  // the response to the seeded channel: generate_dummy_programs sets
+  // `"title": channel_name` verbatim (apps/output/epg.py:251), and
+  // `channel_name` here is `channel.effective_name`, which falls back to
+  // `channel.name` with no per-user override in play
+  // (ChannelSerializer.get_effective_name). title and description are
+  // base64-encoded on this surface, so decode before comparing — a plain
+  // string compare would silently pass against the encoded form of
+  // anything.
+  expect(Buffer.from(first.title, 'base64').toString('utf8')).toBe(channel.name);
   expect(first.start).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
   expect(first.stream_id).toBe(String(channel.id));
   expect(first).not.toHaveProperty('now_playing');
@@ -121,9 +159,15 @@ test('get_simple_data_table adds now_playing to the same listing shape', async (
     )
   ).json();
 
-  expect(body.epg_listings.length).toBeGreaterThan(0);
-  // The one field that distinguishes the two actions: short=False adds it.
-  expect(body.epg_listings[0]).toHaveProperty('now_playing');
+  // Same generator, same defaults as the get_short_epg test above: 6.
+  expect(body.epg_listings.length).toBe(6);
+  // The first dummy program starts at "now" rounded down to the hour and
+  // runs `program_length_hours` (4h) from there (apps/output/epg.py:157-159,
+  // 227-230), so at request time it always straddles `now`:
+  // start <= now <= end. now_playing = 1 is therefore deterministic here,
+  // not merely present — asserting the value, not just the key, is what
+  // distinguishes this action from get_short_epg beyond the key's existence.
+  expect(body.epg_listings[0].now_playing).toBe(1);
 });
 
 test('the EPG actions 404 without a stream_id', async ({ seed, request }) => {
