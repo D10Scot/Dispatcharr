@@ -1,5 +1,4 @@
-import { test, expect, xcQuery } from '../../fixtures';
-import type { XcUser } from '../../fixtures';
+import { test, expect, epgQuery, m3uQuery, xcLiveStreams, xcQuery } from '../../fixtures';
 
 /**
  * G5 rows 11-13 (D5, D6, D14): the XC authorization matrix, the
@@ -14,18 +13,6 @@ import type { XcUser } from '../../fixtures';
  * Never done through the shared bootstrap admin: that identity is read-only
  * and shared across four workers.
  */
-
-type XcStream = { stream_id: number; name: string };
-
-async function liveStreams(
-  request: { get: (url: string) => Promise<{ text(): Promise<string> }> },
-  user: XcUser
-): Promise<XcStream[]> {
-  const res = await request.get(
-    `/player_api.php${xcQuery(user, { action: 'get_live_streams' })}`
-  );
-  return JSON.parse(await res.text());
-}
 
 test('the XC catalogue is scoped to the requesting principal user_level', async ({
   seed,
@@ -49,7 +36,11 @@ test('the XC catalogue is scoped to the requesting principal user_level', async 
   // a nine-cell matrix free here where a JWT matrix would not be.
   for (const level of levels) {
     const user = await seed.xcUser({ user_level: level });
-    const visible = new Set((await liveStreams(request, user)).map((s) => s.stream_id));
+    const visible = new Set(
+      (await xcLiveStreams(request, user, `get_live_streams as user_level ${level}`)).map(
+        (s) => s.stream_id
+      )
+    );
 
     // Restricted to OUR three channels. The catalogue also contains every
     // other worker's, so a set comparison against the whole response would
@@ -109,7 +100,11 @@ test('hide_adult_content removes an adult channel from every XC listing path', a
     custom_properties: { hide_adult_content: true },
   });
 
-  const visible = new Set((await liveStreams(request, user)).map((s) => s.stream_id));
+  const visible = new Set(
+    (await xcLiveStreams(request, user, 'get_live_streams for a hide_adult_content user')).map(
+      (s) => s.stream_id
+    )
+  );
   expect(visible.has(clean.id), 'the non-adult channel should still be listed').toBe(true);
   expect(visible.has(adult.id), 'get_live_streams').toBe(false);
 
@@ -170,55 +165,18 @@ test('hide_adult_content removes an adult channel from every XC listing path', a
 test('the anonymous output surfaces apply no user_level filter at all', async ({
   seed,
   request,
-}, testInfo) => {
+}) => {
   const restricted = await seed.channel({ user_level: 10 });
 
-  // Cache-busting for the same reason as the `?days=` below, but a different
-  // mechanism: generate_m3u (apps/output/views.py:109-136) keys its own
-  // Redis cache on `f"{profile}:{user}:{request.GET.urlencode()}:origin=..."`
-  // with NO per-channel invalidation, so a bare, unparameterized
-  // `/output/m3u` is the SAME cache key for every anonymous caller on the
-  // instance — including output-m3u.spec.ts's own unparameterized request.
-  // Its TTL is only 2 seconds, not 300, but under this project's
-  // `fullyParallel: true, workers: 4` that is still enough real contention to
-  // fail intermittently: reproduced twice in a row against this stack before
-  // this param was added (this test's own anonymous GET primed the cache
-  // moments before output-m3u.spec.ts's channel existed, or vice versa), and
-  // zero times in three repeats after. `e2e` is not one of the params
-  // generate_m3u reads (`cachedlogos`, `direct`, `output_profile`,
-  // `output_format`/`output`, `tvg_id_source`) so it changes the cache key
-  // without changing the rendered content.
-  const bust = Math.random().toString(36).slice(2);
-  const playlist = await (await request.get(`/output/m3u?e2e=${bust}`)).text();
+  // Both fetches below go through the shared cache busters rather than a
+  // bare URL. `/output/m3u` and `/output/epg` each cache anonymous bodies
+  // under a key this test cannot otherwise vary, so a parallel worker's
+  // fetch can serve a body rendered before `restricted` existed. The two
+  // surfaces need different mechanisms, for reasons the helpers document.
+  const playlist = await (await request.get(`/output/m3u${m3uQuery()}`)).text();
   expect(playlist, '/output/m3u').toContain(restricted.name);
 
-  // A ?days= nothing else will reuse, for the same reason output-epg.spec.ts
-  // has one: /output/epg is served from a 300-second Redis chunk cache whose
-  // key contains `days` but NOT the raw query string, and creating a channel
-  // does not invalidate it. A value fixed per worker would collide with this
-  // same test's previous run inside that window. See D7 in the design doc.
-  //
-  // Deliberately 1-30, not the wider 1-365 the `days` clamp alone would
-  // allow — matching output-epg.spec.ts's uniqueDays(), for the same reason
-  // documented there: generate_epg gives every EPG-less channel on the
-  // instance 6 programmes/day, for every channel any seeded test has ever
-  // left behind, not just this one's. Confirmed against this stack: a
-  // `?days=365` fetch here threw `Cannot create a string longer than
-  // 0x1fffffe8 characters` — a real overflow, not just slow — before this
-  // was narrowed to match.
-  //
-  // Accepted risk, shared with output-epg.spec.ts's own uniqueDays(): both
-  // draw from the same 30 buckets against the same anonymous EPG cache key
-  // (no username segment for a request with no XC credentials) inside the
-  // same 300-second TTL, so a same-bucket collision between this test and
-  // that one — or two runs of this file inside the window — is possible.
-  // Fail-safe, not silent: a collision serves a body from before THIS
-  // channel existed, so it fails this assertion (never a false pass). If
-  // this test goes red on `/output/epg` alone with no obvious cause, a
-  // bucket collision is the first thing to check before suspecting the
-  // product.
-  const days = 1 + ((testInfo.workerIndex * 89 + Math.floor(Math.random() * 300)) % 30);
-  const guide = await (await request.get(`/output/epg?days=${days}`)).text();
+  const guide = await (await request.get(`/output/epg${epgQuery()}`)).text();
   expect(guide, '/output/epg').toContain(restricted.name);
 
   const lineup = await (await request.get('/hdhr/lineup.json')).json();

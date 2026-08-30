@@ -1,7 +1,5 @@
-import { test, expect, xcQuery } from '../../fixtures';
+import { test, expect, StreamStatusError, xcLiveStreams } from '../../fixtures';
 import { lockedProfile } from './helpers';
-
-type XcStream = { stream_id: number };
 
 // Asserts the behaviour Dispatcharr SHOULD have. `stream_xc`
 // (apps/proxy/live_proxy/views.py) applies `user_level__lte` and Channel
@@ -52,28 +50,44 @@ test.fail('a channel a user cannot list is not streamable by that user', async (
   // The premise: this user genuinely cannot list the channel. Without it a
   // refusal below could mean anything.
   //
-  // Positive control: assert the listing call itself succeeded (200) before
-  // parsing it. Without this, an unresolvable user (issue #84 —
-  // get_object_or_404 on username) would 404 with a JSON error body;
-  // JSON.parse would accept it, and `.map` on the non-array result would
-  // throw a TypeError — which test.fail() also treats as an expected
-  // failure. A bare parse-and-check here could pass for a reason that has
+  // xcLiveStreams asserts the listing call itself returned 200 before parsing
+  // it — the positive control this premise needs. Without it, an unresolvable
+  // user (issue #84 — get_object_or_404 on username) would 404 with a JSON
+  // error body; JSON.parse would accept it, and `.map` on the non-array
+  // result would throw a TypeError, which test.fail() also treats as an
+  // expected failure. A bare parse-and-check could pass for a reason that has
   // nothing to do with is_adult filtering.
-  const listResponse = await request.get(
-    `/player_api.php${xcQuery(user, { action: 'get_live_streams' })}`
-  );
-  expect(listResponse.status(), 'get_live_streams for a resolvable user').toBe(200);
-  const listed: XcStream[] = JSON.parse(await listResponse.text());
+  const listed = await xcLiveStreams(request, user, 'get_live_streams for a resolvable user');
   expect(listed.map((s) => s.stream_id)).not.toContain(channel.id);
 
   // streamClient, not request.get(): APIResponse.body() awaits the full
   // download and would never resolve against an endless TS stream if the
   // product does serve it — which today it does. `open()` throws on a
   // non-2xx, so resolving means the bytes started flowing.
-  const served = await streamClient
-    .open(`/live/${user.username}/${user.xcPassword}/${channel.id}`)
-    .then(() => true)
-    .catch(() => false);
+  //
+  // Only a REFUSAL may set `served = false`. A bare `.catch(() => false)`
+  // would collapse a connection reset, a DNS failure, an upstream that never
+  // came up, a 500 or a timeout into "the product refused the stream" — and
+  // under test.fail() a false `served` makes the body PASS, which Playwright
+  // reports as an unexpected pass, i.e. "#87 is fixed". That is the loud
+  // failure mode here, louder than a hollow red, because it claims a security
+  // defect is closed. So anything that is not a refusal status rethrows,
+  // failing the body and leaving the pin held — the safe direction.
+  //
+  // 404 first because that is what the fix produces: adding is_adult /
+  // hidden_from_output to stream_xc's `filters` dict makes the lookup return
+  // no channel, and that path already answers `{"error": "Not found"}` with
+  // 404 (apps/proxy/live_proxy/views.py:815-816). 403 is accepted too, in
+  // case the fix rejects before the lookup as the network-ACL branch does.
+  let served = true;
+  try {
+    await streamClient.open(`/live/${user.username}/${user.xcPassword}/${channel.id}`);
+  } catch (error) {
+    if (!(error instanceof StreamStatusError) || ![403, 404].includes(error.status)) {
+      throw error;
+    }
+    served = false;
+  }
 
   try {
     expect(

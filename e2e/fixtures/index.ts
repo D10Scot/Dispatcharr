@@ -242,7 +242,16 @@
  *                          `upstream` below), since this process cannot
  *                          resolve it. After `open()` resolves, `status` and
  *                          `headers` hold the response's status and Headers,
- *                          so a redirect test can read `Location`.
+ *                          so a redirect test can read `Location`. On a
+ *                          status it will not stream from it throws
+ *                          `StreamStatusError` (exported), carrying `status`
+ *                          — everything else throws a plain Error. A test
+ *                          asserting that the product REFUSED a stream must
+ *                          narrow its catch to that type and status, and let
+ *                          the rest propagate: a bare `catch` reads a reset,
+ *                          a DNS failure or a timeout as a refusal, which
+ *                          under `test.fail()` turns a transient fault into a
+ *                          claim that the pinned defect is fixed.
  *   readPackets(count) → Promise<Buffer>   exactly count * 188 bytes
  *   collectFor(ms) → Promise<Buffer>       everything arriving within ms
  *   close() → Promise<void>                the fixture does this at teardown
@@ -393,9 +402,32 @@
  *                             plus `extra`'s keys). Build it from a
  *                             `seed.xcUser()` result rather than hand-rolling
  *                             the encoding at each call site.
+ *   xcLiveStreams(request, user, label?) → Promise<XcStream[]>
+ *                             `player_api.php?action=get_live_streams` for one
+ *                             XC principal, with the 200 assertion that action
+ *                             needs — a JSON error envelope parses fine, so a
+ *                             bare `JSON.parse` turns an auth failure into a
+ *                             `TypeError` two frames later. Use this rather
+ *                             than a per-file copy.
+ *   m3uQuery()                → string   `?e2e=<token>` for `/output/m3u`.
+ *   epgQuery(days = 1)        → string   `?days=…&tvg_id_source=<token>` for
+ *                             `/output/epg`.
+ *                             **Every anonymous fetch of those two surfaces
+ *                             must go through these.** Both cache rendered
+ *                             bodies under a key that does not vary per test,
+ *                             so an un-busted fetch on 4 parallel workers can
+ *                             be served a body rendered before the calling
+ *                             test's channel existed. The two need different
+ *                             mechanisms; see `output.ts` for which and why.
  *   parseM3u(text)            → M3uPlaylist   a shallow M3U reader — header
- *                             attributes plus each `#EXTINF`/URL pair. Not a
- *                             validator; see its doc comment in `parse.ts`.
+ *                             attributes plus each `#EXTINF`/URL pair, and
+ *                             `wellFormed` per entry. Not a validator; see its
+ *                             doc comment in `parse.ts`.
+ *   splitExtinf(line)         → the attributes/title/wellFormed split
+ *                             `parseM3u` is built on, for a test that has one
+ *                             `#EXTINF` line rather than a playlist.
+ *   decodeXmlEntities(value)  → string   the five entities
+ *                             `html.escape(quote=True)` emits, decoded.
  *   parseXmltv(text)          → XmltvDocument   a shallow XMLTV reader —
  *                             `<channel>`/`<display-name>` and `<programme>`/
  *                             `<title>`, with entities decoded. Also not a
@@ -576,6 +608,7 @@ export type {
 } from './ws';
 export {
   StreamClient,
+  StreamStatusError,
   expectTsAligned,
   expectContiguous,
   videoPidOf,
@@ -645,7 +678,16 @@ export type {
   XmltvDocument,
   XmltvProgramme,
 } from './types';
-export { xcQuery, parseM3u, parseXmltv, expectWellFormedXml } from './parse';
+export {
+  xcQuery,
+  parseM3u,
+  parseXmltv,
+  splitExtinf,
+  decodeXmlEntities,
+  expectWellFormedXml,
+} from './parse';
+export { m3uQuery, epgQuery, xcLiveStreams } from './output';
+export type { XcStream } from './output';
 export { Instance } from './instance';
 export type { UpOptions, ManageResult } from './instance';
 export { PageErrorCollector, EXPECTED_PAGE_NOISE } from './page-errors';

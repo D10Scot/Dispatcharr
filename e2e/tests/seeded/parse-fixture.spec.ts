@@ -32,6 +32,40 @@ test('parseM3u keeps a comma inside the title', () => {
   expect(parseM3u(PLAYLIST).entries[0].title).toBe('News, Live');
 });
 
+test('parseM3u does not read attributes out of the title', () => {
+  // The title is not part of the attribute region. Scanning the whole line
+  // for `key="value"` used to lift `a="b"` out of this title as a phantom
+  // attribute AND leave the title empty, because the backwards search for the
+  // title comma anchored on the title's own last quote and found no comma
+  // after it. Both call sites that read this playlist key their `find()` on
+  // `attributes['tvg-name']`, so a phantom attribute is not cosmetic.
+  const entry = parseM3u(
+    '#EXTM3U\n#EXTINF:-1 tvg-name="Ch" group-title="G",Ch a="b"\nhttp://h/1'
+  ).entries[0];
+  expect(entry.attributes).toEqual({ 'tvg-name': 'Ch', 'group-title': 'G' });
+  expect(entry.title).toBe('Ch a="b"');
+  expect(entry.wellFormed).toBe(true);
+});
+
+test('parseM3u flags an EXTINF line whose attribute value was not closed', () => {
+  // What D10Scot/Dispatcharr#80 emits: an unescaped `"` inside tvg-name ends
+  // the value early and the rest spills out as unquoted text. The parser must
+  // report that rather than invent a well-formed reading of it — that report
+  // is what output-m3u.spec.ts's pin on #80 asserts on.
+  const entry = parseM3u(
+    '#EXTM3U\n#EXTINF:-1 tvg-name="Ch-"quoted"" group-title="G",Ch-"quoted"\nhttp://h/1'
+  ).entries[0];
+  expect(entry.wellFormed).toBe(false);
+  expect(entry.url).toBe('http://h/1');
+});
+
+test('parseM3u reads an EXTINF line that carries no attributes', () => {
+  const entry = parseM3u('#EXTM3U\n#EXTINF:-1,Bare Title\nhttp://h/1').entries[0];
+  expect(entry.attributes).toEqual({});
+  expect(entry.title).toBe('Bare Title');
+  expect(entry.wellFormed).toBe(true);
+});
+
 test('parseM3u rejects a body that is not a playlist', () => {
   expect(() => parseM3u('<html>nope</html>')).toThrow(/not an M3U playlist/);
 });

@@ -54,6 +54,30 @@ function describeFetchFailure(url: string, cause: unknown): string {
 }
 
 /**
+ * Thrown by {@link StreamClient.open} when the server answered with a status
+ * it will not stream from — and ONLY then.
+ *
+ * A distinct type because "the product refused this request" and "the request
+ * never got an answer" are opposite outcomes that a bare `catch` collapses
+ * into one. A caller asserting a refusal must be able to tell a 403 apart
+ * from a DNS failure, a connection reset, an upstream that never came up, or
+ * a timeout; under a `test.fail()` pin, collapsing them turns any transient
+ * network fault into a claim that the defect has been fixed.
+ *
+ * The message is unchanged from the plain Error it replaced, so anything
+ * matching on the text still matches.
+ */
+export class StreamStatusError extends Error {
+  constructor(
+    readonly status: number,
+    readonly statusText: string
+  ) {
+    super(`stream open failed: ${status} ${statusText}`);
+    this.name = 'StreamStatusError';
+  }
+}
+
+/**
  * Reads endless HTTP byte streams. Node fetch, not Playwright's request
  * fixture: APIResponse.body() returns Promise<Buffer> and internally awaits
  * the full download, so it never resolves against /proxy/ts/stream/<uuid>.
@@ -116,7 +140,7 @@ export class StreamClient {
       !response.ok &&
       !(options.redirect === 'manual' && response.status >= 300 && response.status < 400)
     ) {
-      throw new Error(`stream open failed: ${response.status} ${response.statusText}`);
+      throw new StreamStatusError(response.status, response.statusText);
     }
     this.status = response.status;
     this.headers = response.headers;

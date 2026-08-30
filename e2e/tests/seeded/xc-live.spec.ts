@@ -1,37 +1,6 @@
-import { test, expect, xcQuery } from '../../fixtures';
-import type { XcUser } from '../../fixtures';
+import { test, expect, xcLiveStreams, xcQuery } from '../../fixtures';
 
 type XcCategory = { category_id: string; category_name: string };
-type XcStream = {
-  num: number;
-  name: string;
-  stream_id: number;
-  stream_type: string;
-  category_id: string;
-  category_ids: number[];
-  epg_channel_id: string;
-  is_adult: number;
-  tv_archive: number;
-};
-
-/**
- * `get_live_streams` is the one action served as a StreamingHttpResponse
- * (`_xc_stream_live_streams` yields the array element by element). The body
- * is valid JSON, but it arrives incrementally — read it whole before parsing.
- */
-async function liveStreams(
-  request: { get: (url: string) => Promise<{ status(): number; text(): Promise<string> }> },
-  user: XcUser
-): Promise<XcStream[]> {
-  const res = await request.get(
-    `/player_api.php${xcQuery(user, { action: 'get_live_streams' })}`
-  );
-  // A non-200 that still happens to parse (e.g. an HTML error page won't,
-  // but a JSON error envelope would) must not slip through as an empty or
-  // malformed stream list.
-  expect(res.status(), 'get_live_streams').toBe(200);
-  return JSON.parse(await res.text());
-}
 
 test('the XC live catalogue lists a seeded channel under its own category', async ({
   seed,
@@ -62,7 +31,7 @@ test('the XC live catalogue lists a seeded channel under its own category', asyn
   ).json();
   expect(categories.map((c) => c.category_id)).toContain(String(group.id));
 
-  const streams = await liveStreams(request, user);
+  const streams = await xcLiveStreams(request, user);
   const mine = streams.find((s) => s.stream_id === channel.id);
   expect(mine, `channel ${channel.id} should be in get_live_streams`).toBeDefined();
   expect(mine!.name).toBe(channel.name);
@@ -209,7 +178,7 @@ test.fail('a profiled user sees the category of every channel it can list', asyn
   // visible to this user. Without this, a missing category could equally mean
   // the channel was filtered out for an unrelated reason, and the test would
   // indict the wrong line.
-  const streams = await liveStreams(request, user);
+  const streams = await xcLiveStreams(request, user);
   expect(streams.map((s) => s.stream_id)).toContain(channel.id);
 
   const categories: XcCategory[] = await (

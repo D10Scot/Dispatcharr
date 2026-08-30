@@ -784,6 +784,19 @@ export type M3uEntry = {
   /** Everything after the comma that ends the attribute list. */
   title: string;
   url: string;
+  /**
+   * False when the `#EXTINF` line's attribute region did not end cleanly at
+   * the title comma — i.e. the reader stopped on something that is neither
+   * another `key="value"` pair nor the comma, so text spilled out of a
+   * quoted value.
+   *
+   * The one thing that produces this against Dispatcharr today is a channel
+   * or group name containing a `"`, which `apps/output/views.py:306-308`
+   * interpolates unescaped (D10Scot/Dispatcharr#80). `attributes` and
+   * `title` are then both unreliable for that entry, and this flag is how a
+   * test says so rather than asserting on the wreckage.
+   */
+  wellFormed: boolean;
 };
 
 export type M3uPlaylist = {

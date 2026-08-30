@@ -49,27 +49,50 @@ test('hdhr discover.json describes a tuner and points at its own lineup', async 
   expect(device.FriendlyName).toBe('Dispatcharr HDHomeRun');
   expect(device.DeviceID).toBe('12345678');
 
-  // calculate_tuner_count(minimum=1, unlimited_default=10) sums active M3U
-  // profiles' max_streams plus a COUNT of every is_custom Stream on the
-  // WHOLE instance (apps/m3u/utils.py:85-141) — not scoped to this test,
-  // this worker, or even this run: it accumulates over the container's
-  // whole session (verified empirically: 102 at rest before this test ran)
-  // and nothing in this harness ever deletes a seeded Stream. No absolute
-  // value can be pinned, but the RELATIONSHIP can: adding one custom stream
-  // must raise the reported count by AT LEAST 1, whether or not an unlimited
-  // profile is active elsewhere (both branches add custom_stream_count
-  // linearly, uncapped by unlimited_default). Deliberately `>=`, not `===`:
-  // the `seeded` project runs fullyParallel with 4 workers, and another
-  // worker's seed.stream() call landing in the same window would make an
-  // exact +1 an occasional false-failure flake. `>=` still fails if seeding
-  // a custom stream does NOT increment the count at all — the wiring this
-  // assertion actually exists to test — while tolerating a concurrent seed.
-  // Do not tighten this to `===`; that reintroduces the flake.
-  const before = device.TunerCount;
-  expect(before).toBeGreaterThanOrEqual(1); // the function's own documented floor
+  // calculate_tuner_count(minimum=1, unlimited_default=10) adds a COUNT of
+  // every is_custom Stream on the WHOLE instance (apps/m3u/utils.py:85-141)
+  // to a base — not scoped to this test, this worker, or even this run: the
+  // count accumulates over the container's whole session (verified
+  // empirically: 102 at rest before this test ran) and nothing in this
+  // harness ever deletes a seeded Stream. No absolute value can be pinned,
+  // but the RELATIONSHIP can: adding one custom stream must raise the
+  // reported count by at least 1.
+  //
+  // That relationship only holds while the BASE is stable, and it is not
+  // stable by default. `has_unlimited` is an instance-wide predicate — "does
+  // any active profile on any active M3U account have max_streams=0" — and
+  // it selects between two entirely different bases:
+  //
+  //     tuner_count = (10 + custom) if has_unlimited else (limited_sum + custom)
+  //
+  // Several other `seeded` specs create and deactivate M3U accounts
+  // concurrently. If the last active one goes away between the two reads
+  // below, the base drops from 10 to limited_sum (0 on this instance), and
+  // `after` comes back around nine BELOW `before` — a red test with the
+  // product behaving perfectly.
+  //
+  // So pin the predicate rather than hope: an active account of our own,
+  // whose default profile post_save creates synchronously with
+  // max_streams = M3UAccount.max_streams = 0, is_active=True
+  // (apps/m3u/models.py:391-400). While it exists and stays active,
+  // has_unlimited cannot go false, and the base is fixed at 10 for the whole
+  // window. The default bogus server_url is deliberate — the create-time
+  // refresh task fails against an unroutable address and ingests nothing,
+  // the same pattern m3u-refresh-failure.spec.ts and async-wait.spec.ts use.
+  await seed.m3uAccount({ is_active: true, max_streams: 0 });
+
+  // Re-read AFTER pinning the predicate: `device` above was fetched before
+  // the account existed, so its TunerCount may sit on the other branch.
+  const before: Discover = await (await request.get('/hdhr/discover.json')).json();
+  expect(before.TunerCount).toBeGreaterThanOrEqual(1); // the function's own floor
   await seed.stream();
   const after: Discover = await (await request.get('/hdhr/discover.json')).json();
-  expect(after.TunerCount).toBeGreaterThanOrEqual(before + 1);
+  // Deliberately `>=`, not `===`: 4 workers run fullyParallel and another
+  // worker's seed.stream() landing in this window would make an exact +1 an
+  // occasional false failure. `>=` still fails if seeding a custom stream
+  // does not increment the count at all — the wiring this assertion exists
+  // to test. Do not tighten to `===`; that reintroduces the flake.
+  expect(after.TunerCount).toBeGreaterThanOrEqual(before.TunerCount + 1);
 
   // R14 was withdrawn: this deployment has no working X-Forwarded-Host path,
   // so the origin Dispatcharr emits is exactly the client's own Host header

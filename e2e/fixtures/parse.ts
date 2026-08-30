@@ -48,12 +48,72 @@ export function xcQuery(
 
 const ATTRIBUTE = /([A-Za-z0-9_-]+)="([^"]*)"/g;
 
+/**
+ * Used for the `#EXTM3U` header line only, which is attributes and nothing
+ * else. An `#EXTINF` line must go through {@link splitExtinf} instead: it has
+ * a title after the attributes, and scanning the whole line would pick up
+ * anything in that title shaped like `key="value"` as a phantom attribute.
+ */
 function attributesOf(line: string): Record<string, string> {
   const out: Record<string, string> = {};
   for (const match of line.matchAll(ATTRIBUTE)) {
     out[match[1]] = match[2];
   }
   return out;
+}
+
+/** Anchored, so the walk in `splitExtinf` can only consume from the cursor. */
+const LEADING_ATTRIBUTE = /^[ \t]*([A-Za-z0-9_-]+)="([^"]*)"/;
+
+/**
+ * Splits an `#EXTINF` line into its attributes and its title by walking the
+ * attribute region left to right, rather than by searching backwards from the
+ * last `"` on the line.
+ *
+ * The direction is the whole point. A backwards search cannot tell an
+ * attribute's closing quote from a quote inside the title, so a title
+ * containing `"` moves the search anchor into the title and the comma lookup
+ * from it lands past the real boundary — or fails entirely, yielding an empty
+ * title. Worse, scanning the entire line for attributes picks up anything in
+ * the title shaped like `key="value"`, so a channel named `Ch a="b"` used to
+ * parse as an entry with an empty title and a phantom `a` attribute, with no
+ * error. Both callers of this parser key their `find()` on
+ * `attributes['tvg-name']`, so a phantom attribute is not a cosmetic problem.
+ *
+ * Walking forwards has neither failure. It also yields `wellFormed` for free:
+ * a line whose attribute region ends anywhere other than the title comma had
+ * text spill out of a quoted value, which is precisely the shape
+ * D10Scot/Dispatcharr#80 produces. Reported rather than repaired — this
+ * parser must not invent a well-formed reading of a malformed line, or
+ * `output-m3u.spec.ts`'s pin on that defect would have nothing to see.
+ */
+export function splitExtinf(line: string): {
+  attributes: Record<string, string>;
+  title: string;
+  wellFormed: boolean;
+} {
+  // Skip `#EXTINF:` and the duration field, which runs to the first
+  // whitespace or comma (`#EXTINF:-1,Title` has no attributes at all).
+  let cursor = line.indexOf(':') + 1;
+  while (cursor < line.length && !' \t,'.includes(line[cursor])) cursor++;
+
+  const attributes: Record<string, string> = {};
+  for (;;) {
+    const match = LEADING_ATTRIBUTE.exec(line.slice(cursor));
+    if (!match) break;
+    attributes[match[1]] = match[2];
+    cursor += match[0].length;
+  }
+
+  const rest = line.slice(cursor);
+  const comma = rest.indexOf(',');
+  return {
+    attributes,
+    title: comma === -1 ? '' : rest.slice(comma + 1),
+    // `=== 0`, not `!== -1`: the attribute walk stops at the first thing it
+    // cannot read, so anything between there and the comma is spilled text.
+    wellFormed: comma === 0,
+  };
 }
 
 export function parseM3u(text: string): M3uPlaylist {
@@ -78,25 +138,20 @@ export function parseM3u(text: string): M3uPlaylist {
       throw new Error(`#EXTINF is not followed by a URL: ${line}`);
     }
 
-    // The title starts after the comma that follows the LAST quoted
-    // attribute. Searching from the last quote rather than from the end of
-    // the line is what keeps a comma inside a channel name intact —
-    // group-title="World",News, Live must yield "News, Live", not "Live".
+    // Attributes and title come from one forward walk (see splitExtinf), so
+    // a comma inside a channel name survives — group-title="World",News,
+    // Live yields "News, Live", not "Live" — and nothing in the title can be
+    // mistaken for an attribute.
     //
     // KNOWN LIMITATION, not a bug here: a channel or group name containing a
-    // `"` truncates, because `apps/output/views.py:304-306` interpolates
-    // `tvg-name="{tvg_name}"` and `group-title="{group_title}"` with no
-    // quote-escaping — the product's own output is malformed for such a
-    // name, and this parser has no well-formed input to recover from. Filed
-    // as D10Scot/Dispatcharr#80; do not "fix" this parser to compensate.
-    const lastQuote = line.lastIndexOf('"');
-    const comma = line.indexOf(',', lastQuote === -1 ? line.indexOf(':') : lastQuote);
-
-    entries.push({
-      attributes: attributesOf(line),
-      title: comma === -1 ? '' : line.slice(comma + 1),
-      url,
-    });
+    // `"` still does not round-trip, because `apps/output/views.py:306-308`
+    // interpolates `tvg-name="{tvg_name}"` and `group-title="{group_title}"`
+    // with no quote-escaping — the product's own output is malformed for such
+    // a name, and this parser has no well-formed input to recover from.
+    // Filed as D10Scot/Dispatcharr#80; do not "fix" this parser to
+    // compensate. It reports the malformation as `wellFormed: false` instead,
+    // which is what that defect's pin asserts on.
+    entries.push({ ...splitExtinf(line), url });
     i++; // consume the URL line
   }
 
@@ -120,7 +175,7 @@ export function parseM3u(text: string): M3uPlaylist {
  * this function invents — empty-vs-absent stays distinguishable at the call
  * site, this just never introduces a third state.
  */
-function decodeXmlEntities(value: string): string {
+export function decodeXmlEntities(value: string): string {
   return value
     .replace(/&lt;/g, '<')
     .replace(/&gt;/g, '>')
