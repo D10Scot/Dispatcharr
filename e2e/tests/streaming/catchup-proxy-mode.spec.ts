@@ -104,18 +104,19 @@ test('both root XC entry points reach the same cascade, whatever layout the clie
   // across every worker and project.
   const xcUser = await seed.xcUser();
 
-  // TWO DIFFERENT MOMENTS, and this is a correctness requirement rather than
-  // variety. With no `session_id`, `_serve_catchup` looks for a pooled
-  // session to adopt (views.py:387-405) with `include_busy: true`, scoring
+  // TWO DIFFERENT MOMENTS. With no `session_id`, `_serve_catchup` can adopt a
+  // pooled session (views.py:387-405, `include_busy: true`, scoring
   // client_ip (5) + client_user_agent (3) against _MATCH_SCORE_THRESHOLD = 8
-  // (views.py:95) on a key of `programme_media_id(channel.id, safe_ts)`. Two
-  // drives from one test share a host and a user agent, so they score 8 and
-  // the SECOND WOULD ADOPT THE FIRST — reusing its upstream and making no
-  // provider request at all, which is a log of length 1 against an assertion
-  // of 2. A distinct `start` per drive changes `safe_ts`, changes the
-  // media_id, and rules adoption out. It also strengthens the row: each entry
-  // point is proved to have asked for ITS OWN moment, rather than the pair
-  // having asked twice for one.
+  // at views.py:95, keyed on `programme_media_id(channel.id, safe_ts)`) —
+  // but only while that pool entry still exists. `_discard_pool_session`
+  // (views.py:2423-2438) deletes it outright on client disconnect, and each
+  // drive below is closed before the next opens, so there is no overlap in
+  // which adoption could fire here regardless of `start` (verified live:
+  // giving both drives the same `start` still produced two independent
+  // provider requests). Distinct starts are kept anyway, for the reason that
+  // does hold: each entry point is proved to have asked for ITS OWN moment,
+  // rather than the pair asking twice for one — a strictly stronger
+  // assertion than two drives sharing a timestamp.
   const pathStart = catchupTimestamp(new Date(Date.now() - 2 * 60 * 60 * 1000));
   const queryStart = catchupTimestamp(new Date(Date.now() - 3 * 60 * 60 * 1000));
 
