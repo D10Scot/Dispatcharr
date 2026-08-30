@@ -5,6 +5,7 @@ import {
   catchupTimestamp,
   newStreamClient,
   seedCatchupChannel,
+  withDeadline,
 } from '../streaming/helpers';
 
 /**
@@ -40,6 +41,16 @@ import {
  * whole response before resolving and hangs the test timeout out trying,
  * so this uses `StreamClient`, the same incremental reader the streaming
  * rows use, and closes it the moment a few packets are confirmed flowing.
+ * That open+read is wrapped in `withDeadline`, so a stalled second hop
+ * surfaces as a named 10s timeout rather than the 300s project timeout.
+ *
+ * Only true on a *fresh* scenario. `_find_matching_pool_session` is called
+ * with `include_busy=True` (`views.py:390-397`), so a scenario that already
+ * has a pool entry for this media — a second test reusing it, or a retried
+ * run — could route the first request straight into the proxy branch
+ * instead of minting a new session, changing which hop actually contacts
+ * the provider. `seedCatchupChannel` here always builds a brand-new
+ * scenario, so that never happens in this test as written.
  */
 test('positive control: a satisfied request reaches the provider and is logged', async ({
   upstream,
@@ -72,12 +83,21 @@ test('positive control: a satisfied request reaches the provider and is logged',
   // packets and close rather than waiting for the (never-ending) stream.
   const client = newStreamClient(baseURL!);
   try {
-    await client.open(sessionLocation, { headers: auth });
-    expect(
-      client.status,
-      'the session-bearing replay must reach the provider, not bounce again'
-    ).toBeLessThan(400);
-    await client.readPackets(1);
+    await withDeadline(
+      (async () => {
+        await client.open(sessionLocation, { headers: auth });
+        // 200, not merely "not an error": a second 3xx would also satisfy
+        // < 400 while actually being another bounce rather than proxied
+        // bytes, which is exactly the failure this hop exists to rule out.
+        expect(
+          client.status,
+          'the session-bearing replay must return 200 (proxied bytes), not another redirect'
+        ).toBe(200);
+        await client.readPackets(1);
+      })(),
+      10_000,
+      'positive control: second-hop open + readPackets'
+    );
   } finally {
     await client.close();
   }
