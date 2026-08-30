@@ -125,6 +125,22 @@ export type ChannelProfile = {
   channels: number[];
 };
 
+/**
+ * A user who can authenticate against the Xtream Codes surface.
+ *
+ * **The XC username is the Django username.** There is no `xc_username`
+ * custom property anywhere in the product: `xc_get_user`
+ * (`apps/output/views.py`), `stream_xc` (`apps/proxy/live_proxy/views.py`)
+ * and `_authenticate_user` (`apps/timeshift/views.py`) all look the user up
+ * by `username` and then compare `custom_properties["xc_password"]` with
+ * `!=`. The `xc_username` locals in `apps/timeshift/views.py` are *provider*
+ * credentials from `get_transformed_credentials` and are unrelated.
+ *
+ * `xcPassword` is carried here rather than read back from the API because
+ * `UserSerializer` does not return `custom_properties`.
+ */
+export type XcUser = User & { xcPassword: string };
+
 /** `/api/core/streamprofiles/` — how we talk *upstream*, not the output transcode. */
 export type StreamProfile = {
   id: number;
@@ -599,6 +615,17 @@ export type UserOverrides = {
 export type ChannelProfileOverrides = Record<string, never>;
 
 /**
+ * `ChannelGroupSerializer` exposes `id`, `name` and three read-only fields
+ * (`channel_count`, `m3u_account_count`, `m3u_accounts` — see
+ * {@link ChannelGroup}'s doc comment), so once the generated `name` is
+ * removed there is nothing left to override — exactly the shape
+ * {@link ChannelProfileOverrides} has, and `Record<string, never>` for the
+ * same reason: TypeScript applies no excess-property check against a bare
+ * `{}`.
+ */
+export type ChannelGroupOverrides = Record<string, never>;
+
+/**
  * The writable fields on `StreamProfileSerializer` this harness uses, minus
  * the generated `name`. `locked` is writable there too and is omitted on
  * purpose: it marks the three built-in profiles, and a seeded profile has no
@@ -738,6 +765,59 @@ export type UpstreamChannelOptions = {
   // afterwards, so a caller-supplied value for either would be silently
   // discarded. Omitting them here turns that into a compile error instead.
   channel?: Omit<ChannelOverrides, 'streams' | 'stream_profile_id'>;
+};
+
+/* ------------------------------------------------------------------------ *
+ * Parsed client-output surfaces (M3U playlist, XMLTV guide)
+ * ------------------------------------------------------------------------ */
+
+/** One `#EXTINF` line plus the URL beneath it. */
+export type M3uEntry = {
+  /**
+   * The quoted `key="value"` attributes on the `#EXTINF` line. Dispatcharr
+   * emits `tvg-id`, `tvg-name`, `tvg-logo`, `tvg-chno`, optionally
+   * `tvc-guide-stationid`, and `group-title` — and nothing else. There is
+   * deliberately no `catchup=`; catch-up is advertised only through the XC
+   * `tv_archive` field. See the G8 gap row in COVERAGE.md.
+   */
+  attributes: Record<string, string>;
+  /** Everything after the comma that ends the attribute list. */
+  title: string;
+  url: string;
+  /**
+   * False when the `#EXTINF` line's attribute region did not end cleanly at
+   * the title comma — i.e. the reader stopped on something that is neither
+   * another `key="value"` pair nor the comma, so text spilled out of a
+   * quoted value.
+   *
+   * The one thing that produces this against Dispatcharr today is a channel
+   * or group name containing a `"`, which `apps/output/views.py:306-308`
+   * interpolates unescaped (D10Scot/Dispatcharr#80). `attributes` and
+   * `title` are then both unreliable for that entry, and this flag is how a
+   * test says so rather than asserting on the wreckage.
+   */
+  wellFormed: boolean;
+};
+
+export type M3uPlaylist = {
+  /** Attributes on the `#EXTM3U` line: `x-tvg-url` and `url-tvg`. */
+  header: Record<string, string>;
+  entries: M3uEntry[];
+};
+
+export type XmltvChannel = { id: string; displayNames: string[] };
+
+/** `start`/`stop` are XMLTV timestamps, e.g. `20260829120000 +0000`. */
+export type XmltvProgramme = {
+  channel: string;
+  start: string;
+  stop: string;
+  title: string;
+};
+
+export type XmltvDocument = {
+  channels: XmltvChannel[];
+  programmes: XmltvProgramme[];
 };
 
 /** `core.UserAgent` via `UserAgentViewSet` (`core/api_urls.py`, `useragents`). */

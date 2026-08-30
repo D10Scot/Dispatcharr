@@ -1,5 +1,5 @@
 import { test, expect } from '../../fixtures';
-import { catchupTimestamp, seedCatchupChannel, seedXcUser } from './helpers';
+import { catchupTimestamp, seedCatchupChannel } from './helpers';
 
 /**
  * Drives the root XC PATH catch-up route — `/timeshift/<user>/<pass>/
@@ -22,7 +22,12 @@ test('a catch-up request reaches the provider in the PATH layout with the right 
     api,
     waitFor,
   });
-  const xcUser = await seedXcUser(seed);
+  // user_level: 10 (admin), passed explicitly: _user_can_access_channel
+  // grants an admin every channel unconditionally, which is what this test
+  // relies on to skip a profile-membership concern it isn't exercising.
+  // seed.xcUser() defaults to user_level 1 (Standard) like seed.user() does,
+  // so this must be requested here rather than assumed.
+  const xcUser = await seed.xcUser({ user_level: 10 });
 
   // Two hours ago, on a whole minute — the archive is not time-addressable,
   // so the instant is arbitrary; what matters is that the provider records
