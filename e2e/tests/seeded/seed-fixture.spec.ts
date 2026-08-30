@@ -188,7 +188,10 @@ test('seed.xcUser carries an xc_password the XC surface accepts', async ({
   expect(res.status()).toBe(200);
 });
 
-test('seed.xcUser ignores an attempt to override xc_password', async ({ seed }) => {
+test('seed.xcUser ignores an attempt to override xc_password', async ({
+  seed,
+  request,
+}) => {
   // xc_password is spread AFTER the caller's custom_properties, the same
   // ordering rule the generated identity fields use. UserOverrides types
   // custom_properties as Record<string, unknown>, so this compiles with no
@@ -197,5 +200,23 @@ test('seed.xcUser ignores an attempt to override xc_password', async ({ seed }) 
   const user = await seed.xcUser({
     custom_properties: { xc_password: 'not-this' },
   });
-  expect(user.xcPassword).not.toBe('not-this');
+
+  // Not `expect(user.xcPassword).not.toBe('not-this')`: xcPassword is a
+  // *local* string this factory generates before the request and returns
+  // unconditionally — UserSerializer never returns custom_properties, so it
+  // is never read back from the server. That assertion would stay green even
+  // if the spread order above were reversed and the server really did store
+  // 'not-this', which is exactly the bug this test exists to catch. Assert
+  // against the product instead: the generated password the factory
+  // returned must work, and the caller's rejected value must not.
+  const withGenerated = await request.get(`/player_api.php${xcQuery(user)}`);
+  expect(withGenerated.status()).toBe(200);
+
+  // xcQuery's `extra` is applied after username/password, so passing
+  // `password` here overrides the generated one for this one request only —
+  // no need to hand-build the query string or widen xcQuery's signature.
+  const withRejected = await request.get(
+    `/player_api.php${xcQuery(user, { password: 'not-this' })}`
+  );
+  expect(withRejected.status()).toBe(401);
 });

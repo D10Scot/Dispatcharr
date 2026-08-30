@@ -153,7 +153,11 @@ export class Seeder {
       ...overrides,
       name: this.generatedName('channelGroup'),
     };
-    return this.create<ChannelGroup>('/api/channels/groups/', 'channelGroup', body);
+    return this.create<ChannelGroup>(
+      '/api/channels/groups/',
+      'channelGroup',
+      body
+    );
   }
 
   /**
@@ -172,6 +176,12 @@ export class Seeder {
    * caller cannot substitute one — the same ordering rule the generated
    * identity fields use. Other custom properties (`hide_adult_content`,
    * `epg_days`) pass through untouched.
+   *
+   * `generatedName` sanitises to `^[A-Za-z0-9._@-]+$`, which is exactly what
+   * `SAFE_CREDENTIAL_RE` (`apps/accounts/serializers.py:16`) requires of
+   * `xc_password` (`:110-113`) — swap the generator for something that
+   * produces other characters and this factory starts failing with a 400
+   * from `UserSerializer`, not from here.
    */
   async xcUser(overrides: UserOverrides = {}): Promise<XcUser> {
     const xcPassword = this.generatedName('xc-secret');

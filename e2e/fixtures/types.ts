@@ -596,11 +596,13 @@ export type UserOverrides = {
 export type ChannelProfileOverrides = Record<string, never>;
 
 /**
- * `ChannelGroupSerializer` exposes `id`, `name` and two method fields, so
- * once the generated `name` is removed there is nothing left to override —
- * exactly the shape {@link ChannelProfileOverrides} has, and
- * `Record<string, never>` for the same reason: TypeScript applies no
- * excess-property check against a bare `{}`.
+ * `ChannelGroupSerializer` exposes `id`, `name` and three read-only fields
+ * (`channel_count`, `m3u_account_count`, `m3u_accounts` — see
+ * {@link ChannelGroup}'s doc comment), so once the generated `name` is
+ * removed there is nothing left to override — exactly the shape
+ * {@link ChannelProfileOverrides} has, and `Record<string, never>` for the
+ * same reason: TypeScript applies no excess-property check against a bare
+ * `{}`.
  */
 export type ChannelGroupOverrides = Record<string, never>;
 
