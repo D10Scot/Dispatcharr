@@ -107,6 +107,45 @@ describe('VOD actions', () => {
     expect(movie).not.toHaveProperty('is_adult');
   });
 
+  it('emits is_adult as 1/0 when the scenario declares it, and no key at all when it does not', () => {
+    const scenario = xc({
+      vod: [
+        { id: 1, name: 'adult', year: 2020, categoryId: 1, containerExtension: 'mp4', tmdbId: null, imdbId: null, isAdult: true },
+        { id: 2, name: 'clean', year: 2020, categoryId: 1, containerExtension: 'mp4', tmdbId: null, imdbId: null, isAdult: false },
+        { id: 3, name: 'sparse', year: 2020, categoryId: 1, containerExtension: 'mp4', tmdbId: null, imdbId: null },
+      ],
+    });
+    const [adult, clean, sparse] = renderVodStreams(scenario, null) as Record<string, unknown>[];
+    expect(adult.is_adult).toBe(1);
+    expect(clean.is_adult).toBe(0);
+    // Not toBeUndefined(): that passes on both an absent key and a
+    // present-but-undefined one, and only the former is what
+    // process_movie_batch's "key is present" check cares about.
+    expect(sparse).not.toHaveProperty('is_adult');
+  });
+
+  it('omits category_id for a categoryId: null movie, and emits it as a string otherwise', () => {
+    const scenario = xc({
+      vod: [
+        { id: 1, name: 'uncategorized', year: 2020, categoryId: null, containerExtension: 'mp4', tmdbId: null, imdbId: null },
+        { id: 2, name: 'categorized', year: 2020, categoryId: 1, containerExtension: 'mp4', tmdbId: null, imdbId: null },
+      ],
+    });
+    const [uncategorized, categorized] = renderVodStreams(scenario, null) as Record<string, unknown>[];
+    expect(uncategorized).not.toHaveProperty('category_id');
+    expect(categorized.category_id).toBe('1');
+  });
+
+  it('excludes a categoryId: null movie from a category_id filter, but includes it when no filter is given', () => {
+    const scenario = xc({
+      vod: [
+        { id: 1, name: 'uncategorized', year: 2020, categoryId: null, containerExtension: 'mp4', tmdbId: null, imdbId: null },
+      ],
+    });
+    expect(renderVodStreams(scenario, '1')).toHaveLength(0);
+    expect(renderVodStreams(scenario, null)).toHaveLength(1);
+  });
+
   it('omits tmdb_id/imdb_id when null and includes them when the scenario declares them', () => {
     // The one field the pre-flight scan flagged as an IntegrityError risk:
     // Movie.tmdb_id/imdb_id are unique=True globally, so a shared default
@@ -159,6 +198,18 @@ describe('VOD actions', () => {
   it('returns undefined for an unknown vod id', () => {
     expect(renderVodInfo(xc(), 999)).toBeUndefined();
   });
+
+  it("replaces the whole default info object with a declared vodInfo, and still renders movie_data", () => {
+    const vodInfo = { bitrate: 5000, video: { codec: 'h264' }, audio: { codec: 'aac' } };
+    const scenario = xc({
+      vod: [
+        { id: 1, name: 'advanced', year: 2020, categoryId: 1, containerExtension: 'mp4', tmdbId: null, imdbId: null, vodInfo },
+      ],
+    });
+    const info = renderVodInfo(scenario, 1)!;
+    expect(info.info).toEqual(vodInfo);
+    expect((info.movie_data as Record<string, unknown>).stream_id).toBe(1);
+  });
 });
 
 describe('series actions', () => {
@@ -205,5 +256,33 @@ describe('series actions', () => {
 
   it('returns undefined for an unknown series id', () => {
     expect(renderSeriesInfo(xc(), 999)).toBeUndefined();
+  });
+
+  it('renders episodes as a positional array when seasonsAsArray is set, and as a keyed object otherwise', () => {
+    const scenario = xc({
+      series: [
+        {
+          id: 1,
+          name: 'Array Series',
+          categoryId: 1,
+          seasonsAsArray: true,
+          seasons: [
+            { number: 0, episodes: [{ id: 1, title: 'S0E1', episodeNum: 1, containerExtension: 'mp4' }] },
+            { number: 1, episodes: [{ id: 2, title: 'S1E1', episodeNum: 1, containerExtension: 'mp4' }] },
+          ],
+        },
+      ],
+    });
+    const info = renderSeriesInfo(scenario, 1)!;
+    // Array.isArray, not a shallow toEqual against a JSON round trip — a
+    // JSON round trip would turn a contiguous-from-0 keyed object into
+    // something that looks like an array too and hide the difference.
+    expect(Array.isArray(info.episodes)).toBe(true);
+    const episodes = info.episodes as unknown[];
+    expect((episodes[0] as Record<string, unknown>[])[0]).toMatchObject({ title: 'S0E1' });
+    expect((episodes[1] as Record<string, unknown>[])[0]).toMatchObject({ title: 'S1E1' });
+
+    const keyed = renderSeriesInfo(xc(), 1)!;
+    expect(Array.isArray(keyed.episodes)).toBe(false);
   });
 });

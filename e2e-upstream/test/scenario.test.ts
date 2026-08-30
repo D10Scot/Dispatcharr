@@ -422,6 +422,82 @@ describe('XC scenario declaration', () => {
     ]);
   });
 
+  // G9 addendum: `categoryId: null` is the only way to route a movie into
+  // Dispatcharr's Uncategorized bucket through the product's real path.
+  it('accepts a movie with categoryId: null and resolves it verbatim', () => {
+    const request = parseScenarioRequest({
+      xc: true,
+      username: 'u',
+      password: 'p',
+      vod: [{ id: 1, name: 'm', categoryId: null }],
+    });
+    expect((request.vod as { categoryId: number | null }[])[0].categoryId).toBeNull();
+  });
+
+  it('rejects a movie whose categoryId names no declared category, even non-null', () => {
+    expect(() =>
+      parseScenarioRequest({
+        vodCategories: [{ id: 1, name: 'c' }],
+        vod: [{ id: 1, name: 'm', categoryId: 99 }],
+      })
+    ).toThrow(/references categoryId 99/);
+  });
+
+  it('rejects a non-boolean isAdult', () => {
+    expect(() => parseScenarioRequest({ vod: [{ id: 1, name: 'm', isAdult: 'yes' }] })).toThrow(
+      /isAdult must be a boolean/,
+    );
+  });
+
+  it('rejects a non-object vodInfo', () => {
+    expect(() => parseScenarioRequest({ vod: [{ id: 1, name: 'm', vodInfo: [] }] })).toThrow(
+      /vodInfo must be an object/,
+    );
+  });
+
+  it('rejects seasonsAsArray when a season number does not match its index', () => {
+    expect(() =>
+      parseScenarioRequest({
+        series: [
+          {
+            id: 1,
+            name: 's',
+            seasonsAsArray: true,
+            seasons: [{ number: 1, episodes: [] }],
+          },
+        ],
+      })
+    ).toThrow(/seasons\[0\]\.number is 1/);
+  });
+
+  it('accepts seasonsAsArray when season numbers match their indices', () => {
+    const request = parseScenarioRequest({
+      series: [
+        {
+          id: 1,
+          name: 's',
+          seasonsAsArray: true,
+          seasons: [
+            { number: 0, episodes: [] },
+            { number: 1, episodes: [] },
+          ],
+        },
+      ],
+    });
+    expect(request.series).toEqual([
+      {
+        id: 1,
+        name: 's',
+        categoryId: 1,
+        seasons: [
+          { number: 0, episodes: [] },
+          { number: 1, episodes: [] },
+        ],
+        seasonsAsArray: true,
+      },
+    ]);
+  });
+
   it('accepts a well-formed account override and rejects a malformed one', () => {
     expect(parseScenarioRequest({ account: { userInfo: { timezone: 'UTC' } } }).account).toEqual({
       userInfo: { timezone: 'UTC' },

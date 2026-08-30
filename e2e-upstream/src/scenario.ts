@@ -47,11 +47,43 @@ export interface MovieSpec {
    * and makes the row's identity depend on the ingest side's title parsing.
    */
   year: number | null;
-  categoryId: number;
+  /**
+   * `null` means "emit no `category_id` key at all" — the only way to route a
+   * movie into Dispatcharr's own `Uncategorized` bucket through the product's
+   * real path. `process_movie_batch` (`apps/vod/tasks.py`) looks the provider's
+   * `category_id` up in a string-keyed map and falls through to
+   * `categories['__uncategorized__']` when it is absent or unknown; there is no
+   * other way in.
+   *
+   * Undefined still defaults to the first declared VOD category, exactly as
+   * before — `null` is a deliberate declaration, not an omission.
+   */
+  categoryId: number | null;
   /** The extension in the playback URL, so it must match what we serve. */
   containerExtension: string;
   tmdbId: string | null;
   imdbId: string | null;
+  /**
+   * Emitted as `is_adult: 1`/`0` on the `get_vod_streams` entry, and **only
+   * when declared**. `process_movie_batch` writes `Movie.is_adult` only when
+   * the key is present (`apps/vod/tasks.py:534`, via
+   * `parse_is_adult` in `apps/m3u/utils.py:25`), deliberately, so that a sparse
+   * provider cannot clear a flag another provider set. Leaving this undefined
+   * therefore reproduces a sparse provider; setting it reproduces one that
+   * reports.
+   */
+  isAdult?: boolean;
+  /**
+   * **Replaces** — never merges with — the default `info` object
+   * `renderVodInfo` builds for this movie. A merge could only ever *add* keys,
+   * and the shape a test needs here is defined by what it *omits*: an advanced
+   * payload carrying `bitrate`/`video`/`audio` and none of
+   * `director`/`actors`/`youtube_trailer`/`backdrop_path` is what leaves
+   * `Movie.custom_properties` at `None` after a successful advanced refresh
+   * (`clean_custom_properties({})` returns `None`, `apps/vod/tasks.py:2132`).
+   * `movie_data` is unaffected and still rendered from the movie entry.
+   */
+  vodInfo?: Record<string, unknown>;
 }
 
 export interface EpisodeSpec {
@@ -71,6 +103,19 @@ export interface SeriesSpec {
   name: string;
   categoryId: number;
   seasons: SeasonSpec[];
+  /**
+   * When true, `get_series_info` emits `episodes` as a **JSON array** indexed
+   * by position rather than an object keyed by season number — what a PHP
+   * panel's `json_encode` produces when the season keys happen to be
+   * contiguous from 0. `batch_process_episodes` (`apps/vod/tasks.py:1387`)
+   * accepts both and uses the key *or the index* as the season number, so
+   * season `0` is real under this shape and unreachable under the other.
+   *
+   * The door requires `seasons[i].number === i` when this is set, so the
+   * declared season number and the index a client will infer can never
+   * disagree.
+   */
+  seasonsAsArray?: boolean;
 }
 
 /**
@@ -369,10 +414,14 @@ function parseMovies(value: unknown, categories: CategorySpec[], field: string):
     const year = v.year === undefined ? null : (v.year as number | null);
 
     const categoryId = v.categoryId === undefined ? categories[0].id : v.categoryId;
-    if (!isNonNegativeInteger(categoryId)) {
-      throw new BadRequestError(`'${field}' entry '${v.name}' categoryId must be a non-negative integer`);
+    if (categoryId !== null) {
+      if (!isNonNegativeInteger(categoryId)) {
+        throw new BadRequestError(
+          `'${field}' entry '${v.name}' categoryId must be a non-negative integer or null`,
+        );
+      }
+      assertKnownCategory(categoryId, categories, `${field}.categoryId`);
     }
-    assertKnownCategory(categoryId, categories, `${field}.categoryId`);
 
     if (v.containerExtension !== undefined && typeof v.containerExtension !== 'string') {
       throw new BadRequestError(`'${field}' entry '${v.name}' containerExtension must be a string`);
@@ -389,7 +438,32 @@ function parseMovies(value: unknown, categories: CategorySpec[], field: string):
     }
     const imdbId = v.imdbId === undefined ? null : (v.imdbId as string | null);
 
-    return { id: v.id, name: v.name, year, categoryId, containerExtension, tmdbId, imdbId };
+    if (v.isAdult !== undefined && typeof v.isAdult !== 'boolean') {
+      throw new BadRequestError(`'${field}' entry '${v.name}' isAdult must be a boolean`);
+    }
+    const isAdult = v.isAdult as boolean | undefined;
+
+    if (
+      v.vodInfo !== undefined &&
+      (typeof v.vodInfo !== 'object' || v.vodInfo === null || Array.isArray(v.vodInfo))
+    ) {
+      throw new BadRequestError(
+        `'${field}' entry '${v.name}' vodInfo must be an object; it replaces the whole 'info' payload of get_vod_info`,
+      );
+    }
+    const vodInfo = v.vodInfo as Record<string, unknown> | undefined;
+
+    return {
+      id: v.id,
+      name: v.name,
+      year,
+      categoryId,
+      containerExtension,
+      tmdbId,
+      imdbId,
+      ...(isAdult === undefined ? {} : { isAdult }),
+      ...(vodInfo === undefined ? {} : { vodInfo }),
+    };
   });
 }
 
@@ -437,7 +511,30 @@ function parseSeries(value: unknown, categories: CategorySpec[], field: string):
     const seriesField = `${field}[${v.id}]`;
     const seasons = parseSeasons(v.seasons, `${seriesField}.seasons`, seriesField, episodeIds);
 
-    return { id: v.id, name: v.name, categoryId, seasons };
+    if (v.seasonsAsArray !== undefined && typeof v.seasonsAsArray !== 'boolean') {
+      throw new BadRequestError(`'${field}' entry '${v.name}' seasonsAsArray must be a boolean`);
+    }
+    if (v.seasonsAsArray === true) {
+      seasons.forEach((season, index) => {
+        if (season.number !== index) {
+          // Under the array shape the *index* is the season number the client
+          // infers. Accepting a mismatch would produce a scenario whose
+          // declared season numbers and ingested season numbers differ for a
+          // reason no failure message could explain.
+          throw new BadRequestError(
+            `'${field}' entry '${v.name}' declares seasonsAsArray but seasons[${index}].number is ${season.number}; under the array shape the position IS the season number, so they must match`,
+          );
+        }
+      });
+    }
+
+    return {
+      id: v.id,
+      name: v.name,
+      categoryId,
+      seasons,
+      ...(v.seasonsAsArray === undefined ? {} : { seasonsAsArray: v.seasonsAsArray as boolean }),
+    };
   });
 }
 

@@ -123,10 +123,32 @@ bypasses `seed.xcAccount` is not.
 - `vod` / `series` — a count (materialising that many default-named entries) or an explicit array
   of movie/series specs. Default to 1 of each when `xc: true` and neither is declared, and to 0 for
   a non-XC scenario — there's no route that could serve a catalogue. The `MovieSpec`/`SeriesSpec`
-  field sets (`id`, `name`, `year`, `categoryId`, `containerExtension`, `tmdbId`, `imdbId` for a
-  movie; `id`, `name`, `categoryId`, `seasons[].number`, `seasons[].episodes[]` for a series) are
-  mirrored with docstrings as `UpstreamMovie`/`UpstreamSeries` in `e2e/fixtures/types.ts:349-380` —
-  read them there rather than `src/scenario.ts` when a test needs an explicit spec.
+  field sets (`id`, `name`, `year`, `categoryId`, `containerExtension`, `tmdbId`, `imdbId`,
+  `isAdult?`, `vodInfo?` for a movie; `id`, `name`, `categoryId`, `seasons[].number`,
+  `seasons[].episodes[]`, `seasonsAsArray?` for a series) are mirrored with docstrings as
+  `UpstreamMovie`/`UpstreamSeries` in `e2e/fixtures/types.ts:349-380` — read them there rather than
+  `src/scenario.ts` when a test needs an explicit spec.
+  - `categoryId: null` (movies only) emits no `category_id` key at all on `get_vod_streams`, and the
+    movie is excluded from a `category_id=` filter — the only way to route a movie into
+    Dispatcharr's own `Uncategorized` bucket, since `process_movie_batch` falls through to
+    `categories['__uncategorized__']` when the key is absent or unknown (`apps/vod/tasks.py`).
+    Omitting `categoryId` still defaults to the first declared VOD category, exactly as before;
+    `null` is a deliberate declaration, not an omission.
+  - `isAdult` (movies only) is emitted as `is_adult: 1`/`0` on `get_vod_streams`, and only when
+    declared. `process_movie_batch` writes `Movie.is_adult` only when the key is present, so leaving
+    this undefined reproduces a sparse provider and setting it reproduces one that reports.
+  - `vodInfo` (movies only) **replaces**, rather than merges with, the default `info` object
+    `get_vod_info` returns. Use it to build a payload that carries `bitrate`/`video`/`audio` and
+    none of `director`/`actors`/`youtube_trailer`/`backdrop_path` — the shape that leaves
+    `Movie.custom_properties` at `None` after a successful advanced refresh
+    (`clean_custom_properties({})` returns `None`, `apps/vod/tasks.py:2132`). `movie_data` is
+    unaffected and still rendered from the movie entry.
+  - `seasonsAsArray` (series only) makes `get_series_info` emit `episodes` as a JSON array indexed
+    by position instead of an object keyed by season number — what a PHP panel's `json_encode`
+    produces when the season keys happen to be contiguous from 0. `batch_process_episodes`
+    (`apps/vod/tasks.py:1387`) accepts both and uses the key or the index as the season number, so
+    season `0` is real under this shape and unreachable under the other. The door requires
+    `seasons[i].number === i` when this is set.
 - `account` — `{ userInfo?, serverInfo? }`, raw overrides merged last into the `player_api.php`
   handshake's envelope. Untyped beyond `Record<string, unknown>` on purpose: a test that wants a
   garbage `exp_date` or `timezone` on the envelope needs to be able to send exactly that.
@@ -350,6 +372,9 @@ video at 320x180/25fps plus a 440 Hz sine tone, H.264/AAC, muxed to MP4 with `+f
 runnable outside the Docker build for the same reason as `make-asset.sh`. The script asserts its own
 output (at least 1 KB, and starts with an `ftyp` box) rather than pinning a byte-reproducible
 artifact, for the same unpinned-ffmpeg reason as the TS loop.
+
+Served with `Content-Type: video/mp4` — `getVodAsset()` calls `loadFiniteAsset(path, 'video/mp4')`
+(`e2e-upstream/src/server.ts:70`).
 
 Serving honours `Range` (`serveFiniteAsset`, `e2e-upstream/src/vod-asset.ts`):
 
