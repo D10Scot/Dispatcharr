@@ -237,17 +237,19 @@ test('the winning candidate index is cached per account and promoted on the next
   const { scenario, channel } = await seedCatchupChannel({ upstream, seed, api, waitFor });
   await upstream.fault(scenario, 'catchup-layout-404', { layout: 'path' });
 
-  // THREE DIFFERENT INSTANTS, one per drive, and this is a correctness
-  // requirement rather than variety. With no `session_id`, `_serve_catchup`
-  // adopts a matching pooled session (views.py:387-405, `include_busy: true`)
-  // scoring client_ip (5) + client_user_agent (3) against
-  // _MATCH_SCORE_THRESHOLD = 8 (views.py:95), keyed on
-  // `programme_media_id(channel.id, safe_ts)`. Three drives from one test
-  // share a host and a user agent, so a repeated (channel, start) pair would
-  // be ADOPTED: the later drive would reuse the earlier upstream, stream
-  // correctly, and contact the provider zero times — a green stream against a
-  // short log. A distinct `start` per drive changes safe_ts and rules that
-  // out. It costs the cache proof nothing: `timeshift:format_idx:<account_id>`
+  // THREE DIFFERENT INSTANTS, one per drive. With no `session_id`,
+  // `_serve_catchup` can adopt a matching pooled session (views.py:387-405,
+  // `include_busy: true`), scoring client_ip (5) + client_user_agent (3)
+  // against _MATCH_SCORE_THRESHOLD = 8 (views.py:95), keyed on
+  // `programme_media_id(channel.id, safe_ts)`. Adoption needs *concurrent*
+  // overlap, though: `_discard_pool_session` (views.py:2437) deletes the
+  // pool entry on close, so a strictly sequential open -> close -> open like
+  // every drive below leaves nothing adoptable behind, even when two drives
+  // repeat the same (channel, start) pair. Distinct `start` values per drive
+  // are kept anyway, not to dodge adoption, but because they prove each walk
+  // asked for its *own* moment rather than several walks repeating one — a
+  // stronger property than reusing a single `start` would give this test.
+  // It costs the cache proof nothing: `timeshift:format_idx:<account_id>`
   // (apps/timeshift/redis_keys.py:64-65) has no timestamp in the key.
   const firstInstant = new Date(Date.now() - 2 * 60 * 60 * 1000);
   const secondInstant = new Date(Date.now() - 3 * 60 * 60 * 1000);
