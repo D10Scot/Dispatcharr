@@ -27,7 +27,7 @@ const SettingsPage = () => {
   const ActiveComponent = activeSectionConfig?.Component ?? null;
 
   return (
-    <Box p={10} maw={900} mx="auto">
+    <Box p={10} maw={900} mx="auto" data-testid="settings-page">
       {ActiveComponent ? (
         <Paper withBorder p="md" radius="md">
           <Text size="lg" fw={600} mb={6}>

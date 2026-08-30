@@ -54,7 +54,7 @@ export default function ConnectPage() {
 
   return (
     <>
-      <Box p="md" pb={120}>
+      <Box p="md" pb={120} data-testid="connect-page">
         <Button
           leftSection={<SquarePlus size={18} />}
           variant="light"
@@ -80,6 +80,7 @@ export default function ConnectPage() {
             }}
             display="grid"
             py={10}
+            data-testid="connect-integrations"
           >
             {integrations.map((i) => (
               <IntegrationRow
