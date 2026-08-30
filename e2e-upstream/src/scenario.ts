@@ -407,8 +407,9 @@ function parseSeries(value: unknown, categories: CategorySpec[], field: string):
   // series' episodes, so a cross-series duplicate would make the route's
   // answer depend on array order. Accepting one at the door would produce a
   // scenario that reads as a Dispatcharr ingest bug once refreshed, rather
-  // than the fixture typo it actually is. Hoisted here (one series' worth of
-  // `parseSeasons` calls sharing it) rather than reset per series.
+  // than the fixture typo it actually is. Declared here so every series'
+  // `parseSeasons` call shares one Map, rather than inside `parseSeasons`
+  // where it was reset per series.
   const episodeIds = new Map<number, string>();
   return value.map((entry) => {
     if (typeof entry !== 'object' || entry === null) {
