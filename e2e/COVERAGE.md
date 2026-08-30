@@ -47,19 +47,23 @@ resolve (see the G8/G10 Gap rows).
 | Streaming | Stream Profile: Proxy | G4 | done |
 | Streaming | Stream Profile: FFmpeg | G4 | done |
 | Streaming | Output Profile shared per (channel, profile) | G4 | done |
-| Streaming | Ownership lease is fenced against a second concurrent owner — attempted by deleting `live:channel:{uuid}:owner` under a running Proxy-profile stream and polling for a second worker to claim it; confirmed empirically unprovable from outside the container: the same owning worker's own `ProxyServer._start_cleanup_thread` cleanup loop notices the missing key and calls `extend_ownership()`, re-`SET NX`-ing the identical worker id well under a second later every run (measured at ≤500ms), because that loop is the only code path with a local `StreamManager` for the channel; a follower worker never contends because `stream_ts` only lets a worker attempt ownership when channel metadata is absent too, which a bare owner-key delete does not cause — so no black-box HTTP/Redis manipulation can land a second `SET NX` in the sub-second gap. The untried lever is co-expiring `live:channel:{uuid}:metadata` with the owner key, which is what would open the metadata-gated follower path in `stream_ts`; that is a larger provocation than this row's brief allowed and needs its own scoping. See G4 task-12 report for the full trace. | G4 | todo |
-| Output | /output/m3u parses, every URL is well-formed, and one is streamed end to end | G5 | todo |
-| Output | /output/m3u/&lt;profile_name&gt; scopes to Channel Profile membership | G5 | todo |
-| Output | /output/epg is valid XMLTV and carries programmes for the seeded channels | G5 | todo |
-| Output | HDHomeRun discovery, device XML, lineup and lineup status | G5 | todo |
-| Output | Xtream authentication handshake (user_info / server_info envelope) | G5 | todo |
-| Output | Xtream live actions: get_live_categories, get_live_streams, get_short_epg, get_simple_data_table | G5 | todo |
-| Output | Xtream VOD and series actions answer an empty catalogue without erroring | G5 | todo |
+| Streaming | Ownership lease is fenced against a second concurrent owner — attempted by deleting `live:channel:{uuid}:owner` under a running Proxy-profile stream and polling for a second worker to claim it; confirmed empirically unprovable from outside the container: the same owning worker's own `ProxyServer._start_cleanup_thread` cleanup loop notices the missing key and calls `extend_ownership()`, re-`SET NX`-ing the identical worker id well under a second later every run (measured at ≤500ms), because that loop is the only code path with a local `StreamManager` for the channel; a follower worker never contends because `stream_ts` only lets a worker attempt ownership when channel metadata is absent too, which a bare owner-key delete does not cause — so no black-box HTTP/Redis manipulation can land a second `SET NX` in the sub-second gap. The untried lever is co-expiring `live:channel:{uuid}:metadata` with the owner key, which is what would open the metadata-gated follower path in `stream_ts`; that is a larger provocation than this row's brief allowed and needs its own scoping. | G4 | todo |
+| Output | /output/m3u parses, every URL is well-formed, and one is streamed end to end; also pins that a channel name containing a double quote breaks the emitted `tvg-name`/`group-title` attributes ([#80](https://github.com/D10Scot/Dispatcharr/issues/80)), asserted correct and `test.fail()`ed in the same file | G5 | done |
+| Output | /output/m3u/&lt;profile_name&gt; scopes to Channel Profile membership, and 404s on a profile name that does not exist | G5 | done |
+| Output | /output/epg is valid XMLTV and carries programmes for the seeded channels | G5 | done |
+| Output | HDHomeRun discovery, device XML, lineup and lineup status. [#83](https://github.com/D10Scot/Dispatcharr/issues/83) (`HDHRDevice` row vs `discover.json`) is filed but deliberately not pinned here: `HDHRDevice.objects.first()` is an unnamespaced singleton, and creating it — even transiently — would corrupt every concurrent test on the shared `seeded` instance, including this file's own exact-literal assertions; see `hdhr.spec.ts`'s comment for the full reasoning | G5 | done |
+| Output | Xtream authentication handshake (user_info / server_info envelope) | G5 | done |
+| Output | Xtream live actions: get_live_categories, get_live_streams, get_short_epg, get_simple_data_table | G5 | done |
+| Output | Xtream VOD and series list actions (get_vod_categories, get_vod_streams, get_series_categories, get_series) answer 200 with a well-formed array — shape only, checked against however many rows the shared instance happens to hold at run time now that G8 seeds a real catalogue in the same project; catalogue *content* is G9's row — and the two detail actions (get_vod_info, get_series_info) 404 on an unknown id without erroring | G5 | done |
 | Output | Xtream get.php and xmltv.php at the site root — playlist/guide shape and the 401 half of bad-credential rejection; the 403 (blocked-network) half is untested — proving it needs mutating the shared `XC_API` network ACL, which is out of scope and shared by four workers | G5 | done |
-| Output | Authorization matrix by user_level — Xtream only, the one output surface with a principal | G5 | todo |
-| Output | hide_adult_content across the Xtream listing paths | G5 | todo |
-| Output | /output/m3u, /output/epg and the HDHR lineup are unauthenticated by design, gated only by the M3U_EPG network ACL | G5 | todo |
-| Accounts | Token refresh with a deleted user's token 500s instead of 401 ([#12](https://github.com/D10Scot/Dispatcharr/issues/12)); needs a `test.fail()`, and pinning it costs one login | G5 | known-bug |
+| Output | Authorization matrix by user_level — Xtream only, the one output surface with a principal. Landed at all three levels (0, 1, 10): `POST /api/accounts/users/` was proven, before the matrix was written, to accept `user_level: 10` through the normal create path | G5 | done |
+| Output | hide_adult_content across the Xtream listing paths (get_live_streams, get.php, xmltv.php) — the filter itself is correct on every listing path; the same channel is nonetheless still streamable through stream_xc once unlisted (see the known-bug row below, [#87](https://github.com/D10Scot/Dispatcharr/issues/87)) | G5 | done |
+| Output | /output/m3u, /output/epg and the HDHR lineup are unauthenticated by design, gated only by the M3U_EPG network ACL. The `/hdhr/lineup.json` half of this assertion is the positive-behaviour mirror of the HDHomeRun-authorization known-bug row below ([#82](https://github.com/D10Scot/Dispatcharr/issues/82)) — both describe today's behaviour correctly; the day #82 is fixed, that row's pin flips green as expected and this assertion flips red as an intended false alarm; see the reciprocal comments in both spec files | G5 | done |
+| Output | `xc_get_live_categories` filters `user_level` exactly rather than `__lte` for a user with at least one Channel Profile, so a channel that user can list via get_live_streams can belong to no category at all ([#85](https://github.com/D10Scot/Dispatcharr/issues/85)); asserted correct and `test.fail()`ed | G5 | known-bug |
+| Output | A channel hidden from a user by hide_adult_content is unlisted everywhere but still streamable through stream_xc, which applies user_level and Channel Profile membership but no adult filter ([#87](https://github.com/D10Scot/Dispatcharr/issues/87)); asserted correct and `test.fail()`ed | G5 | known-bug |
+| Output | The HDHomeRun endpoints apply no authorization at all — all four views are AllowAny with no principal to filter by, so hide_adult_content and user_level are both unenforceable there by construction ([#82](https://github.com/D10Scot/Dispatcharr/issues/82)); asserted correct and `test.fail()`ed | G5 | known-bug |
+| Output | player_api.php distinguishes an unknown username (404, via get_object_or_404) from a wrong password (401) on an unauthenticated, credentials-in-the-URL endpoint — an account-enumeration oracle ([#84](https://github.com/D10Scot/Dispatcharr/issues/84)); asserted correct and `test.fail()`ed | G5 | known-bug |
+| Accounts | Token refresh with a deleted user's token 500s instead of 401 ([#12](https://github.com/D10Scot/Dispatcharr/issues/12)); asserted correct and `test.fail()`ed, at the cost of one login | G5 | known-bug |
 | Upstream | Fake provider speaks Xtream Codes: `player_api.php` auth envelope and the eight catalogue actions `core/xtream_codes.Client` calls | G8 | done |
 | Upstream | Fake provider serves a finite VOD asset with `Content-Length`, `Accept-Ranges`, 206 + `Content-Range` and 416 | G8 | done |
 | Upstream | Fake provider answers both catch-up layouts and records the credentials, stream id, start timestamp and duration it was asked for | G8 | done |
@@ -286,3 +290,30 @@ seed a VOD catalogue or an `M3UAccount`, and drive any of the twelve faults usin
 `e2e-upstream/README.md` and `e2e/fixtures/upstream.ts`/`seed.ts` — without reading
 `e2e-upstream/src/`. The time-addressability gap and the Upstream/VOD/Catch-up gap-and-defect rows
 this build filed while implementing it stay `todo`, each naming the goal that owns picking it up.
+
+The eleven G5 rows above are covered by these specs (several rows share a file, and the four
+known-bug rows live beside the tests they qualify, following the same convention G3's
+`m3u-ingest.spec.ts` and `m3u-refresh-failure.spec.ts` set):
+
+- `e2e/tests/seeded/output-m3u.spec.ts` — `/output/m3u` parses and streams end to end and
+  `/output/m3u/<profile>` scopes to Channel Profile membership, plus the standalone `#80`
+  quote-escaping pin
+- `e2e/tests/seeded/output-epg.spec.ts` — `/output/epg` is valid XMLTV with programmes
+- `e2e/tests/seeded/hdhr.spec.ts` — HDHomeRun discovery, device XML, lineup and lineup status,
+  plus the HDHR-has-no-authorization known bug (`#82`)
+- `e2e/tests/seeded/xc-auth.spec.ts` — the `player_api.php` authentication handshake, plus the
+  unknown-user-vs-wrong-password enumeration known bug (`#84`)
+- `e2e/tests/seeded/xc-live.spec.ts` — `get_live_categories`, `get_live_streams`,
+  `get_short_epg` and `get_simple_data_table`, plus the profiled-user category known bug (`#85`)
+- `e2e/tests/seeded/xc-vod-catalogue-shape.spec.ts` — the four XC VOD/series list actions
+  (shape, not content) and the two detail actions' 404s
+- `e2e/tests/seeded/xc-output.spec.ts` — `get.php` and `xmltv.php` at the site root
+- `e2e/tests/seeded/output-authorization.spec.ts` — the user_level authorization matrix,
+  `hide_adult_content` across the Xtream listing paths, and the anonymous/unauthenticated output
+  surfaces
+- `e2e/tests/streaming/output-m3u-stream.spec.ts` — one URL taken verbatim from `/output/m3u`
+  delivers bytes end to end
+- `e2e/tests/streaming/hidden-channel-streamable.spec.ts` — the `stream_xc`
+  `hide_adult_content` known bug (`#87`)
+- `e2e/tests/seeded/token-refresh-deleted-user.spec.ts` — the pre-existing `#12` known bug
+  (refreshing a deleted user's token 500s instead of 401)

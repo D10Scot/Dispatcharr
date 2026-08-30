@@ -497,6 +497,13 @@ assertion is worth that. `COVERAGE.md` records that as a decision, not a gap.
    `gh issue create --repo D10Scot/Dispatcharr`. The `--repo` flag is
    mandatory here — this checkout is a fork, and `gh` without it resolves to
    upstream's public tracker, not this fork's.
+11. Testing a client-facing output surface — `/output/m3u`, `/output/epg`,
+   the HDHR endpoints, `player_api.php`/`get.php`/`xmltv.php`? Drive it with
+   the built-in `request` fixture, not `api`. No real client on this surface
+   carries a bearer token, and `ApiClient` retries once through a token
+   refresh on *any* 401 — exactly the status the XC rejection tests assert
+   on, so a request made through `api` can silently retry away the very
+   rejection the test exists to observe.
 
 ## CI
 
@@ -549,7 +556,7 @@ Local builds are native-architecture; CI is amd64. If you need parity,
 | Fixture | Provides |
 |---|---|
 | `api` | Authenticated HTTP; retries once through a token refresh on 401. `upload()` is the one multipart path |
-| `seed` | `channel`, `user`, `channelProfile`, `streamProfile`, `m3uAccount`, `epgSource`, `stream`, `upstreamChannel`, `upstreamM3UAccount`, `upstreamEpgSource`, `logo` |
+| `seed` | `channel`, `user`, `channelProfile`, `channelGroup`, `xcUser`, `streamProfile`, `m3uAccount`, `xcAccount`, `epgSource`, `stream`, `upstreamChannel`, `upstreamM3UAccount`, `upstreamEpgSource`, `logo` |
 | `adminPage` | A `Page` authenticated as the bootstrap admin |
 | `pageErrors` | `PageErrorCollector`: `consoleErrors`, `pageErrors`, `failedResponses` and `expectClean()`, which fails naming every offender not covered by `EXPECTED_PAGE_NOISE` (`fixtures/page-errors.ts`). Attached at fixture setup, so it sees the initial document load |
 | `asPrincipal` | An `ApiClient` for a fixed principal, `'streamer'` (level 0) or `'standard'` (level 1). Free |
@@ -559,13 +566,32 @@ Local builds are native-architecture; CI is amd64. If you need parity,
 | `streamClient` | `open`, `readPackets`, `collectFor`, `close` |
 | `upstream` | The fake upstream provider: `scenario`, `fault`, `rate`, `clearFault`, `log`, `toControl`. Test-scoped, not worker-scoped — `attachLogs` needs `testInfo` to attach a failing scenario's log to the Playwright report, which a worker fixture cannot obtain. See `e2e-upstream/README.md` and the section above on the two-container topology |
 
-Plus three exports that are not fixtures, from the same `../../fixtures` module:
+Plus seventeen exports that are not fixtures, from the same `../../fixtures` module. This table is
+recounted directly from `e2e/fixtures/index.ts`'s export statements each time it drifts — it is not
+exhaustive of everything `index.ts` re-exports (the class backing each fixture above — `ApiClient`,
+`Seeder`, `Waiter`, `WsListener`, `StreamClient`, `UpstreamClient`, `Instance`, `PageErrorCollector`
+— and every type are left out, since those are documented by the fixture they back or by "Types"
+below):
 
 | Export | Provides |
 |---|---|
 | `expectTsAligned(buffer)` | Asserts a buffer is 188-byte-aligned MPEG-TS — whole packets, `0x47` on every boundary. The assertion byte-level streaming tests are built on; reach for it before hand-rolling one |
 | `TS_PACKET_SIZE` / `TS_SYNC_BYTE` | `188` and `0x47`, for tests doing their own arithmetic |
 | `SEEDED_USER_PASSWORD` | The password `seed.user()` assigns — import it rather than repeating the literal |
+| `xcQuery(user, extra?)` | Builds the `?username=&password=…` query string every Xtream Codes endpoint takes, from an `XcUser`'s credentials plus any extra params |
+| `parseM3u(text)` | Parses an M3U playlist body into `M3uPlaylist`/`M3uEntry[]`; throws rather than returning a partial result on garbage input |
+| `parseXmltv(text)` | Parses an XMLTV guide body into `XmltvDocument`; throws on a body that isn't XMLTV rather than silently returning empty arrays |
+| `expectWellFormedXml(page, xml)` | Asserts a string parses as well-formed XML, via the browser's own `DOMParser` through `page.evaluate` |
+| `logoPayload(name)` | Deterministic PNG bytes for a given logo name, so a test can assert it read back *this* logo's bytes rather than merely *a* logo's |
+| `PRINCIPALS` | The fixed roster `asPrincipal` draws from — `{ streamer, standard }`, each carrying `username`/`password`/`user_level`. Assert against it rather than repeating literals |
+| `loginsSpentByThisWorker()` | The worker-scoped login counter behind `asUser`'s cost warning; `authorization.spec.ts` asserts it as a delta to prove driving a fixed principal spends nothing |
+| `makePrincipalClient(ctx, name)` | What the `asPrincipal` fixture calls internally to build an `ApiClient` from a roster entry. Reach for `asPrincipal` itself unless you need one outside a `test.extend` fixture context |
+| `makeUserClient(ctx, username, password)` | What the `asUser` fixture calls internally to build an `ApiClient` for an arbitrary principal, at the same login cost. Reach for `asUser` itself unless you need one outside a fixture context |
+| `expectContiguous(buffer, pid)` | Asserts a TS buffer's continuity counter for one PID increments with no gap |
+| `videoPidOf(buffer)` | Finds a TS buffer's video PID by counting packets per PID, for a test that needs one without hardcoding it |
+| `readChannelStatus(api, channelUuid)` | Reads `/proxy/ts/status/<uuid>` and returns it as `ChannelStatus` |
+| `UPSTREAM_CONTROL_BASE` / `UPSTREAM_INTERNAL_BASE` | Default origins the `upstream` fixture's `UpstreamClient` uses when a scenario doesn't override them — the fake provider's control API and its Docker-network-internal base, respectively |
+| `EXPECTED_PAGE_NOISE` | The allowlist `pageErrors.expectClean()` checks unmatched console/page noise against. Starts empty; append to it only under the rule at the top of `fixtures/page-errors.ts`, never to silence a real error |
 
 ### Types — the contract is enforced, not just described
 
