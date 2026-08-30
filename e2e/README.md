@@ -52,14 +52,32 @@ one up. CI binds the same way.
 
 | Project | What it is for |
 |---|---|
-| `bootstrap` | Creates the superuser, pre-warms the `IntervalSchedule` row (see below) and writes auth state. Runs automatically as a dependency of `seeded`, `streaming`, `streaming-failover` and `streaming-greybox` — every project except `pristine` and the two `lifecycle` ones, which each need an instance bootstrap has not touched |
+| `bootstrap` | Creates the superuser, pre-warms the `IntervalSchedule` row (see below) and writes auth state. Runs automatically as a dependency of `seeded`, `streaming`, `streaming-failover`, `streaming-greybox` and `frontend` — every project except `pristine` and the two `lifecycle` ones, which each need an instance bootstrap has not touched |
 | `pristine` | Needs an instance with **no superuser**: first-run setup, and global `CoreSettings` changes |
 | `seeded` | The default. Shared instance, parallel workers, API-seeded data |
 | `streaming` | Byte-level tests. Long timeouts, fewer workers |
 | `streaming-failover` | Failover behaviour: dead-air and buffering watchdogs. Long timeouts, fewer workers |
 | `streaming-greybox` | Tests that reach past the API into Redis or the container directly (e.g. counting live `ffmpeg` processes). Long timeouts, one worker — **must be run alone locally**: in CI each matrix job gets its own container, but locally all projects can share one, and this project observes container-wide state that whatever else is running would disturb |
+| `frontend` | The nine product surfaces in a browser: does the page mount, and does a write driven through its UI reach the server. Two workers, file-level parallelism, 120s |
 | `lifecycle` | Restarts the container mid-test. **Runs alone** — it destroys the container every other project shares. No `bootstrap` dependency: it provisions its own admin |
 | `lifecycle-upgrade` | Boots a published baseline image, seeds, then replaces the container with the local build on the same volume. **Runs alone.** Runs in `lifecycle-tests.yml`, not in `e2e-tests.yml`'s matrix |
+
+`frontend` depends on two rules that are not obvious from the config alone:
+
+- **One spec file per surface.** `backups.spec.ts` and `plugins.spec.ts` each
+  mutate container-wide state — the backup archive directory, whose filenames
+  are second-granularity and caller-unnameable
+  (`apps/backups/services.py`'s `create_backup`/`list_backups`), and the
+  plugin directory plus its shared `.reload_token`. File-level parallelism
+  (`workers: 2`, `fullyParallel` left at its default `false`) is what confines
+  each hazard to one worker; splitting either file back into two would put two
+  backup-creating (or two plugin-installing) files on two different workers
+  and reopen the race.
+- **After a change to any `frontend/` source file, rebuild the image before
+  running this project.** `./scripts/e2e_up.sh --reset` reuses an existing
+  `dispatcharr-e2e:local`, so a stale image serves the old bundle and every
+  `getByTestId(...)` locator fails in a way that looks like a broken test, not
+  a stale build. `docker rmi dispatcharr-e2e:local` first.
 
 `streaming` runs at `workers: 2` — its byte-level reads are slow but do not
 touch anything another test in the same project could observe.
@@ -135,7 +153,7 @@ npm run test:lifecycle-upgrade   # pulls a ~3.6 GB baseline; brings its own inst
 ```
 
 `npm test` (no suffix) deliberately fails with a message telling you to pick
-one of the seven — there is no single invocation that is correct for all of
+one of the eight — there is no single invocation that is correct for all of
 them, and a bare `npm test` in CI would silently run whichever config
 happened to be first.
 
@@ -483,13 +501,14 @@ assertion is worth that. `COVERAGE.md` records that as a decision, not a gap.
 ## CI
 
 `.github/workflows/e2e-tests.yml` builds the AIO image once, then runs
-`pristine`, `seeded`, `streaming`, `streaming-failover`, `streaming-greybox`
-and `lifecycle` as a hardcoded six-job matrix (the `test` job's
-`matrix.project` list in `e2e-tests.yml`), each
-against its own fresh container, each gated on `npm run typecheck` before
-tests run. **If you add another project to `playwright.config.ts`, add it to
-that matrix too** — nothing wires new projects in automatically, and a project
-missing from the matrix gets no CI coverage and no failure signal.
+`pristine`, `seeded`, `streaming`, `streaming-failover`, `streaming-greybox`,
+`lifecycle` and `frontend` as a hardcoded seven-job matrix (the `test` job's
+`strategy.matrix.project`), each against its own fresh container, each gated
+on `npm run typecheck` before tests run. **If you add another project to
+`playwright.config.ts`, add it to that matrix too** (unless it belongs in
+`lifecycle-tests.yml` instead — see `lifecycle-upgrade` below) — nothing
+wires new projects in automatically, and a project missing from both
+matrices gets no CI coverage and no failure signal.
 
 A red E2E run **does** block a merge: the `Main` ruleset is active and
 requires one check, **`E2E result`**. That is the aggregate job at the bottom
@@ -532,6 +551,7 @@ Local builds are native-architecture; CI is amd64. If you need parity,
 | `api` | Authenticated HTTP; retries once through a token refresh on 401. `upload()` is the one multipart path |
 | `seed` | `channel`, `user`, `channelProfile`, `streamProfile`, `m3uAccount`, `epgSource`, `stream`, `upstreamChannel`, `upstreamM3UAccount`, `upstreamEpgSource`, `logo` |
 | `adminPage` | A `Page` authenticated as the bootstrap admin |
+| `pageErrors` | `PageErrorCollector`: `consoleErrors`, `pageErrors`, `failedResponses` and `expectClean()`, which fails naming every offender not covered by `EXPECTED_PAGE_NOISE` (`fixtures/page-errors.ts`). Attached at fixture setup, so it sees the initial document load |
 | `asPrincipal` | An `ApiClient` for a fixed principal, `'streamer'` (level 0) or `'standard'` (level 1). Free |
 | `asUser` | An `ApiClient` for an arbitrary principal. Costs a login — see the throttle section |
 | `waitFor` | `condition`, `resource`, `m3uRefreshComplete`, `epgRefreshComplete` |
