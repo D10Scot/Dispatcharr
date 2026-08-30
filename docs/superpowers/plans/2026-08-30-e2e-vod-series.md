@@ -126,9 +126,41 @@ Implements the spec's "What G9 needs from G8 that G8 does not have", plus the ar
 - `MovieSpec.vodInfo?: Record<string, unknown>`
 - `SeriesSpec.seasonsAsArray?: boolean`
 
-- [ ] **Step 1: The gate**
+- [ ] **Step 1: The gate — AGREED, 2026-08-30. Do not re-ask; read the conditions below.**
 
-Ask the controller whether the addendum is agreed **before writing any code**. It is a change to another goal's shipped component, and the spec lists it as an open dependency.
+**Controller ruling: the addendum is agreed in full** — all three `MovieSpec` fields and
+`SeriesSpec.seasonsAsArray`. The gate is discharged; proceed to Step 2.
+
+Why it was agreed rather than declined:
+
+- Three of the four changes are **purely additive optionals** and cannot break an existing caller.
+- `SeriesSpec.seasonsAsArray` is not an imposition on G8 at all: G8's own renderer comment defers
+  the array-shaped `episodes` decision to G9, so this is G9 exercising a choice G8 left it.
+- Declining costs **row 16 and the positive half of row 10 outright**. There is no other route to
+  `Movie.is_adult`: `MovieViewSet` is a `ReadOnlyModelViewSet`, and `process_movie_batch` writes
+  the field only when the provider's entry carries an `is_adult` key (`apps/vod/tasks.py:534`).
+  Losing the only VOD authorization property in the goal to avoid a four-field fixture change is
+  the wrong trade.
+
+**Conditions, all binding:**
+
+1. `MovieSpec.categoryId: number` → `number | null` is the **only non-additive change**. Widening
+   an input type is safe for producers but not for consumers: every existing read of `categoryId`
+   under `e2e-upstream/` must be found and made null-safe. `tsc --noEmit` is the gate and the
+   PostToolUse hook blocks on it, so this fails loudly rather than silently — but check the reads
+   deliberately rather than relying on the compiler to find them all for you.
+2. The door validators are **not optional**. G8's provider exists to reject bad fixture input at
+   the door with a message naming the offending field; a new field that accepts anything defeats
+   that. Step 5's validator work is part of the agreed scope, not a follow-up.
+3. **G8's own vitest suite must stay green** — it was 251/251 when G8 merged. Report the number.
+   You are editing another goal's shipped component; a regression there is a regression in merged
+   code, not in yours.
+4. Keep the change to exactly these four fields. If a fifth turns out to be needed, stop and ask
+   rather than widening the agreed scope — the reason this had a gate is that it edits merged work.
+
+The **Declined** and **Partially agreed** branches below are now dead. They are left in place only
+so the dependent tasks' fallbacks stay readable if this ruling is ever revisited; no task should
+take a fallback.
 
 - **Agreed** → do the whole task.
 - **Declined** → do nothing here; record the decision; Tasks 3, 5, 6, 8 and 11 each take the fallback named in their own Step 1. Note in the report that declining costs **row 16 and the positive half of row 10 entirely** — "adult VOD filtering is unobservable end to end" is the only VOD authorization property in the goal, and there is no other way to set `Movie.is_adult` (`MovieViewSet` is a `ReadOnlyModelViewSet`, and `process_movie_batch` writes the field only when the provider's entry carries an `is_adult` key: `apps/vod/tasks.py:534`).
