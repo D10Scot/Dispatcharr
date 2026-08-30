@@ -283,14 +283,12 @@ function assertKnownCategory(categoryId: number, categories: CategorySpec[], fie
 function parseSeasons(
   value: unknown,
   field: string,
+  seriesField: string,
+  episodeIds: Map<number, string>,
 ): SeasonSpec[] {
   if (!Array.isArray(value)) {
     throw new BadRequestError(`'${field}' must be an array of { number, episodes }`);
   }
-  // Unique across the whole series (all seasons), not just within one
-  // season: two seasons reusing an episode id would make a later fault or
-  // fixture lookup by episode id ambiguous.
-  const episodeIds = new Set<number>();
   return value.map((entry) => {
     if (typeof entry !== 'object' || entry === null) {
       throw new BadRequestError(`'${field}' entries must be objects with a number and episodes`);
@@ -314,10 +312,10 @@ function parseSeasons(
       }
       if (episodeIds.has(e.id)) {
         throw new BadRequestError(
-          `'${field}' contains more than one episode with id ${e.id}; episode ids must be unique within a series`,
+          `episode id ${e.id} in '${seriesField}' is already used by '${episodeIds.get(e.id)}'; episode ids must be unique across the whole scenario, not just within one series`,
         );
       }
-      episodeIds.add(e.id);
+      episodeIds.set(e.id, seriesField);
       if (typeof e.title !== 'string') {
         throw new BadRequestError(`'${field}[${v.number}].episodes' entries must each have a string title`);
       }
@@ -400,6 +398,18 @@ function parseSeries(value: unknown, categories: CategorySpec[], field: string):
     throw new BadRequestError(`'${field}' must be an array of series specs`);
   }
   const ids = new Set<number>();
+  // Episode-id uniqueness is enforced across the *whole scenario*, not per
+  // series: `apps/vod/models.py:294`'s `unique_together` on
+  // `M3UEpisodeRelation` is `('m3u_account', 'stream_id')` — an episode
+  // stream id is unique per account, not per series — and the fake
+  // provider's own `/series/<u>/<p>/<id>.<ext>` playback route
+  // (`xc/router.ts`) resolves an episode id with a flat scan across every
+  // series' episodes, so a cross-series duplicate would make the route's
+  // answer depend on array order. Accepting one at the door would produce a
+  // scenario that reads as a Dispatcharr ingest bug once refreshed, rather
+  // than the fixture typo it actually is. Hoisted here (one series' worth of
+  // `parseSeasons` calls sharing it) rather than reset per series.
+  const episodeIds = new Map<number, string>();
   return value.map((entry) => {
     if (typeof entry !== 'object' || entry === null) {
       throw new BadRequestError(`'${field}' entries must be objects`);
@@ -423,7 +433,8 @@ function parseSeries(value: unknown, categories: CategorySpec[], field: string):
     }
     assertKnownCategory(categoryId, categories, `${field}.categoryId`);
 
-    const seasons = parseSeasons(v.seasons, `${field}[${v.id}].seasons`);
+    const seriesField = `${field}[${v.id}]`;
+    const seasons = parseSeasons(v.seasons, `${seriesField}.seasons`, seriesField, episodeIds);
 
     return { id: v.id, name: v.name, categoryId, seasons };
   });

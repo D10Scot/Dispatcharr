@@ -288,6 +288,49 @@ describe('XC scenario declaration', () => {
     }
   });
 
+  it('rejects a duplicate episode id within one series, naming the series', () => {
+    // Pins the existing within-a-series case (previously only covered by
+    // the generic /episode/ pattern above) with an exact message, since the
+    // message naming the collision is the point of this validation pass.
+    expect(() =>
+      parseScenarioRequest({
+        series: [
+          {
+            id: 1,
+            name: 'a',
+            seasons: [
+              { number: 1, episodes: [{ id: 9, title: 'x', episodeNum: 1 }] },
+              { number: 2, episodes: [{ id: 9, title: 'y', episodeNum: 1 }] },
+            ],
+          },
+        ],
+      })
+    ).toThrow("episode id 9 in 'series[1]' is already used by 'series[1]'");
+  });
+
+  it('rejects a duplicate episode id across two different series, naming both', () => {
+    // apps/vod/models.py:294's unique_together on M3UEpisodeRelation is
+    // ('m3u_account', 'stream_id') — unique per account, not per series —
+    // and router.ts resolves playback with a flat scan across every
+    // series' episodes, so a cross-series duplicate must be rejected too.
+    expect(() =>
+      parseScenarioRequest({
+        series: [
+          {
+            id: 1,
+            name: 'a',
+            seasons: [{ number: 1, episodes: [{ id: 9, title: 'x', episodeNum: 1 }] }],
+          },
+          {
+            id: 2,
+            name: 'b',
+            seasons: [{ number: 1, episodes: [{ id: 9, title: 'y', episodeNum: 1 }] }],
+          },
+        ],
+      })
+    ).toThrow("episode id 9 in 'series[2]' is already used by 'series[1]'");
+  });
+
   it('rejects a movie or series whose categoryId names no declared category', () => {
     // Silently falling through to Uncategorized would make a typo'd
     // categoryId look like Dispatcharr's category gating misbehaving.
