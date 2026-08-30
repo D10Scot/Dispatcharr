@@ -136,6 +136,15 @@ export function parseXmltv(text: string): XmltvDocument {
   // guide. Every downstream absence assertion ("my channel is not in this
   // guide") would then pass trivially against a broken endpoint. `parseM3u`
   // already guards its input the same way; this brings XMLTV in line.
+  //
+  // Deliberately a substring test, not an anchored root check: a body whose
+  // *content* mentions `<tv>` would pass. Anchoring would mean tolerating an
+  // XML declaration, a doctype and leading comments, and a version of that
+  // which is even slightly too strict rejects a valid guide — which fails in
+  // the dangerous direction, since every downstream EPG test would then error
+  // rather than assert. The failure modes this exists to catch (an HTML error
+  // page, a JSON body, an empty response) do not contain the string. Do not
+  // "tighten" this without a test proving real Dispatcharr output still parses.
   if (!/<tv[\s>]/.test(text)) {
     throw new Error(
       `not an XMLTV document: no <tv> root element. Body started with ${JSON.stringify(
