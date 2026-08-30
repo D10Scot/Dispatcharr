@@ -51,7 +51,7 @@ resolve (see the G8/G10 Gap rows).
 | Output | /output/m3u parses, every URL is well-formed, and one is streamed end to end; also pins that a channel name containing a double quote breaks the emitted `tvg-name`/`group-title` attributes ([#80](https://github.com/D10Scot/Dispatcharr/issues/80)), asserted correct and `test.fail()`ed in the same file | G5 | done |
 | Output | /output/m3u/&lt;profile_name&gt; scopes to Channel Profile membership, and 404s on a profile name that does not exist | G5 | done |
 | Output | /output/epg is valid XMLTV and carries programmes for the seeded channels | G5 | done |
-| Output | HDHomeRun discovery, device XML, lineup and lineup status. [#83](https://github.com/D10Scot/Dispatcharr/issues/83) (`HDHRDevice` row vs `discover.json`) is filed but deliberately not pinned here: `HDHRDevice.objects.first()` is an unnamespaced singleton, and creating it — even transiently — would corrupt every concurrent test on the shared `seeded` instance, including this file's own exact-literal assertions; see `hdhr.spec.ts`'s comment for the full reasoning | G5 | done |
+| Output | HDHomeRun discovery, device XML, lineup and lineup status. [#83](https://github.com/D10Scot/Dispatcharr/issues/83) (`device.xml` never reflects a configured `HDHRDevice` row, unlike `discover.json`) is filed but deliberately not pinned here: `HDHRDevice.objects.first()` is an unnamespaced singleton, and creating it — even transiently — would corrupt every concurrent test on the shared `seeded` instance, including this file's own exact-literal assertions; see `hdhr.spec.ts`'s comment for the full reasoning | G5 | done |
 | Output | Xtream authentication handshake (user_info / server_info envelope) | G5 | done |
 | Output | Xtream live actions: get_live_categories, get_live_streams, get_short_epg, get_simple_data_table | G5 | done |
 | Output | Xtream VOD and series list actions (get_vod_categories, get_vod_streams, get_series_categories, get_series) answer 200 with a well-formed array — shape only, checked against however many rows the shared instance happens to hold at run time now that G8 seeds a real catalogue in the same project; catalogue *content* is G9's row — and the two detail actions (get_vod_info, get_series_info) 404 on an unknown id without erroring | G5 | done |
@@ -63,6 +63,7 @@ resolve (see the G8/G10 Gap rows).
 | Output | A channel hidden from a user by hide_adult_content is unlisted everywhere but still streamable through stream_xc, which applies user_level and Channel Profile membership but no adult filter ([#87](https://github.com/D10Scot/Dispatcharr/issues/87)); asserted correct and `test.fail()`ed | G5 | known-bug |
 | Output | The HDHomeRun endpoints apply no authorization at all — all four views are AllowAny with no principal to filter by, so hide_adult_content and user_level are both unenforceable there by construction ([#82](https://github.com/D10Scot/Dispatcharr/issues/82)); asserted correct and `test.fail()`ed | G5 | known-bug |
 | Output | player_api.php distinguishes an unknown username (404, via get_object_or_404) from a wrong password (401) on an unauthenticated, credentials-in-the-URL endpoint — an account-enumeration oracle ([#84](https://github.com/D10Scot/Dispatcharr/issues/84)); asserted correct and `test.fail()`ed | G5 | known-bug |
+| Output | A channel name containing a double quote breaks the emitted `tvg-name`/`group-title` attributes in `/output/m3u`'s `#EXTINF` line — `apps/output/views.py:304-306` interpolates the raw name unescaped ([#80](https://github.com/D10Scot/Dispatcharr/issues/80)); asserted correct and `test.fail()`ed | G5 | known-bug |
 | Accounts | Token refresh with a deleted user's token 500s instead of 401 ([#12](https://github.com/D10Scot/Dispatcharr/issues/12)); asserted correct and `test.fail()`ed, at the cost of one login | G5 | known-bug |
 | Upstream | Fake provider speaks Xtream Codes: `player_api.php` auth envelope and the eight catalogue actions `core/xtream_codes.Client` calls | G8 | done |
 | Upstream | Fake provider serves a finite VOD asset with `Content-Length`, `Accept-Ranges`, 206 + `Content-Range` and 416 | G8 | done |
@@ -291,13 +292,13 @@ seed a VOD catalogue or an `M3UAccount`, and drive any of the twelve faults usin
 `e2e-upstream/src/`. The time-addressability gap and the Upstream/VOD/Catch-up gap-and-defect rows
 this build filed while implementing it stay `todo`, each naming the goal that owns picking it up.
 
-The eleven G5 rows above are covered by these specs (several rows share a file, and the four
-known-bug rows live beside the tests they qualify, following the same convention G3's
-`m3u-ingest.spec.ts` and `m3u-refresh-failure.spec.ts` set):
+The seventeen G5 rows above — eleven `done` and six `known-bug` — are covered by these eleven
+specs (several rows share a file, and each known-bug row lives beside the test that qualifies it,
+following the same convention G3's `m3u-ingest.spec.ts` and `m3u-refresh-failure.spec.ts` set):
 
 - `e2e/tests/seeded/output-m3u.spec.ts` — `/output/m3u` parses and streams end to end and
-  `/output/m3u/<profile>` scopes to Channel Profile membership, plus the standalone `#80`
-  quote-escaping pin
+  `/output/m3u/<profile>` scopes to Channel Profile membership, plus the quote-escaping known bug
+  (`#80`)
 - `e2e/tests/seeded/output-epg.spec.ts` — `/output/epg` is valid XMLTV with programmes
 - `e2e/tests/seeded/hdhr.spec.ts` — HDHomeRun discovery, device XML, lineup and lineup status,
   plus the HDHR-has-no-authorization known bug (`#82`)

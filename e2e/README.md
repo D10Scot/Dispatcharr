@@ -566,12 +566,14 @@ Local builds are native-architecture; CI is amd64. If you need parity,
 | `streamClient` | `open`, `readPackets`, `collectFor`, `close` |
 | `upstream` | The fake upstream provider: `scenario`, `fault`, `rate`, `clearFault`, `log`, `toControl`. Test-scoped, not worker-scoped — `attachLogs` needs `testInfo` to attach a failing scenario's log to the Playwright report, which a worker fixture cannot obtain. See `e2e-upstream/README.md` and the section above on the two-container topology |
 
-Plus seventeen exports that are not fixtures, from the same `../../fixtures` module. This table is
-recounted directly from `e2e/fixtures/index.ts`'s export statements each time it drifts — it is not
-exhaustive of everything `index.ts` re-exports (the class backing each fixture above — `ApiClient`,
-`Seeder`, `Waiter`, `WsListener`, `StreamClient`, `UpstreamClient`, `Instance`, `PageErrorCollector`
-— and every type are left out, since those are documented by the fixture they back or by "Types"
-below):
+Plus nineteen exports that are not fixtures, in the seventeen rows below (two of them pair two
+tightly related symbols each: `TS_PACKET_SIZE`/`TS_SYNC_BYTE` and `UPSTREAM_CONTROL_BASE`/
+`UPSTREAM_INTERNAL_BASE`), from the same `../../fixtures` module. This table is recounted directly
+from `e2e/fixtures/index.ts`'s export statements each time it drifts — it deliberately excludes
+`test` and `expect` (plain re-exports from `@playwright/test`), the class backing each fixture
+above (`ApiClient`, `Seeder`, `Waiter`, `WsListener`, `StreamClient`, `UpstreamClient`, `Instance`,
+`PageErrorCollector`), and every type — those are documented by the fixture they back or by "Types"
+below, not here:
 
 | Export | Provides |
 |---|---|
