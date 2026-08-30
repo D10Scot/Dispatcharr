@@ -385,9 +385,9 @@ Two things follow:
 - **Deleting that account re-opens the window.** Deletion runs
   `_cleanup_orphaned_interval`, which removes the row again once nothing
   references it. Its `refresh_task` is what pins it.
-- **A non-default `refresh_interval` is not covered.** If you write a test
-  that creates accounts with, say, `refresh_interval: 6` from parallel
-  workers, they race for the `(6, HOURS)` row. Pre-warm it the same way.
+- **A non-default `refresh_interval` needs the same care.** See the next
+  section for the values this suite actually uses and the rule that keeps
+  them from colliding.
 
 `bootstrap` fails immediately, on **every** run, if the container is already
 poisoned — saying so by name and giving `./scripts/e2e_up.sh --reset`. That
@@ -400,6 +400,40 @@ INSERT, and `ATOMIC_REQUESTS` is off), so the account exists with a null
 `refresh_task` and its presence proves nothing. `bootstrap` therefore PATCHes
 the account it finds — the same receiver runs on update — instead of returning
 early on the name.
+
+### Non-zero `refresh_interval` values, and what they cost
+
+The set in use on this branch is **{0, 2, 3, 4, 8531, 8532}**, not just the
+pre-warmed default: `e2e/tests/seeded/ws-fixture.spec.ts:50,51,109,121,122`
+uses 2, 3 and 4, and `e2e/tests/seeded/async-wait.spec.ts:41,72` uses 8531 and
+8532. The rule that keeps those from colliding with each other or with
+`bootstrap`'s pre-warmed row is already stated in full at
+`e2e/fixtures/types.ts:517-522` and at length in the header of
+`ws-fixture.spec.ts:22-39`: `bootstrap` pre-warms the default (`0`, which maps
+to `every=1`); any other value used from a parallel test must be **unique per
+test** — not reused, and not pre-warmed from a worker, which is itself the
+concurrent create that poisons the container (#7).
+
+**If you add a test that uses a new non-zero value, add it to the set above.**
+That list is an enumeration, so it is only as true as its last edit — and a
+stale "here is the full set" is worse than no list at all, because the next
+author picks a value they believe is unused. This section already had to be
+rewritten once for exactly that reason.
+
+That leaves one more thing to weigh before picking a non-zero value, not
+covered by either of those two sources:
+
+- **A non-zero interval also leaves an *enabled* beat task.**
+  `create_or_update_periodic_task` (`core/scheduling.py`) computes
+  `should_be_enabled = enabled and (use_cron or interval_hours > 0)`, so
+  `refresh_interval: 0` yields a *disabled* `PeriodicTask` and anything else
+  yields one that keeps re-refreshing that account for the life of the
+  container — mutating rows under whatever test is running an hour later.
+
+G3 also deliberately does **not** reproduce
+[#7](https://github.com/D10Scot/Dispatcharr/issues/7): provoking it poisons the
+shared container permanently for every remaining test in the run, and no
+assertion is worth that. `COVERAGE.md` records that as a decision, not a gap.
 
 ## Writing a test
 
@@ -495,12 +529,12 @@ Local builds are native-architecture; CI is amd64. If you need parity,
 
 | Fixture | Provides |
 |---|---|
-| `api` | Authed HTTP; retries once through a token refresh on 401 |
-| `seed` | `channel`, `user`, `channelProfile`, `streamProfile`, `m3uAccount`, `epgSource` |
+| `api` | Authenticated HTTP; retries once through a token refresh on 401. `upload()` is the one multipart path |
+| `seed` | `channel`, `user`, `channelProfile`, `streamProfile`, `m3uAccount`, `epgSource`, `stream`, `upstreamChannel`, `upstreamM3UAccount`, `upstreamEpgSource`, `logo` |
 | `adminPage` | A `Page` authenticated as the bootstrap admin |
 | `asPrincipal` | An `ApiClient` for a fixed principal, `'streamer'` (level 0) or `'standard'` (level 1). Free |
 | `asUser` | An `ApiClient` for an arbitrary principal. Costs a login — see the throttle section |
-| `waitFor` | `condition`, `resource`, `m3uRefreshComplete` |
+| `waitFor` | `condition`, `resource`, `m3uRefreshComplete`, `epgRefreshComplete` |
 | `ws` | `/ws/` subscription; `waitForMessage(type, { where, timeoutMs })` |
 | `streamClient` | `open`, `readPackets`, `collectFor`, `close` |
 | `upstream` | The fake upstream provider: `scenario`, `fault`, `rate`, `clearFault`, `log`, `toControl`. Test-scoped, not worker-scoped — `attachLogs` needs `testInfo` to attach a failing scenario's log to the Playwright report, which a worker fixture cannot obtain. See `e2e-upstream/README.md` and the section above on the two-container topology |

@@ -20,12 +20,16 @@ tests.** Status: `todo` / `done` / `known-bug` (asserted correct, marked
 | Upstream | Fault injection (eight faults, control API) | G2 | done |
 | Upstream | Plumbing proof: M3U ingest → declared channels appear | G2 | done |
 | Upstream | Plumbing proof: stream-through via `/proxy/ts/stream/<uuid>` | G2 | done |
-| Sources | M3U account create → refresh → streams appear | G3 | todo |
-| Sources | EPG source create → refresh → programme data | G3 | todo |
-| Sources | Channel creation from streams | G3 | todo |
-| Sources | Auto channel sync | G3 | todo |
-| Sources | Channel groups and Channel Profiles | G3 | todo |
-| Sources | Logo upload and assignment | G3 | todo |
+| Sources | M3U account create → refresh → streams appear | G3 | done |
+| Sources | EPG source create → refresh → programme data | G3 | done |
+| Sources | Channel creation from streams | G3 | done |
+| Sources | Auto channel sync | G3 | done |
+| Sources | Channel groups and Channel Profiles | G3 | done |
+| Sources | Logo upload and assignment | G3 | done |
+| Sources | M3U refresh failure records the error and leaves no partial catalogue | G3 | done |
+| Sources | `M3UAccount.locked` is writable over the API — `read_only_fields` is declared on the serializer class instead of `Meta` ([#15](https://github.com/D10Scot/Dispatcharr/issues/15)); asserted correct and `test.fail()`ed | G3 | known-bug |
+| Sources | A failed M3U refresh discards the HTTP-status-specific message: `fetch_m3u_lines` writes "M3U file not found (404) at URL: …" and `_refresh_single_m3u_account_impl` overwrites it with a generic string, identically for 404, 401, 403, 500 and a connection refusal ([#60](https://github.com/D10Scot/Dispatcharr/issues/60)); asserted correct and `test.fail()`ed | G3 | known-bug |
+| Sources | Deliberate G3 gaps: EPG fuzzy auto-matching (`match-epg`, `set-names-from-epg`, `set-logos-from-epg`, `set-tvg-ids-from-epg`, `fetch_schedules_direct()`) and the permanently-broken `get_preferred_region_code()` are out of scope, not missed; auto-sync **rename-in-place** is not expressible because `ScenarioRegistry` has no update operation and `Stream.stream_hash` derives from a URL carrying the scenario id, so the mutation test proves create-and-delete instead (see `auto-channel-sync.spec.ts`'s second test); **multi-group catalogues** are not expressible because `renderPlaylist` hardcodes `group-title="E2E"`; logo *image fetching* is out because the provider's `tvg-logo` points at RFC 2606-reserved `example.invalid`, though row-level logo ingest is covered; and [#7](https://github.com/D10Scot/Dispatcharr/issues/7) (the `IntervalSchedule` duplicate-create race) is **deliberately not reproduced** — provoking it poisons the shared container permanently for every remaining test in the run, with no API or UI able to repair it, so every G3 source uses the pre-warmed `refresh_interval: 0`. The first three would be closed by a provider `PATCH /scenarios/<id>` and a `group` field on `ChannelSpec` — `e2e-upstream`'s scope, a later goal | G3 | todo |
 | Streaming | Single client receives aligned TS | G4 | done |
 | Streaming | N clients share one upstream | G4 | done |
 | Streaming | Mid-stream switch does not disturb clients | G4 | done |
@@ -100,6 +104,7 @@ tests.** Status: `todo` / `done` / `known-bug` (asserted correct, marked
 | Lifecycle | Restart preserves channels and settings | G7 | done |
 | Lifecycle | PUID/PGID honoured | G7 | done |
 | Lifecycle | TLS Postgres connection | G7 | done |
+| Lifecycle | Refresh-interval scheduling: a **non-zero** `refresh_interval` on an `M3UAccount` or `EPGSource` — the enabled-`PeriodicTask` branch of `create_or_update_periodic_task` (`should_be_enabled = enabled and (use_cron or interval_hours > 0)`), the `IntervalSchedule` row it creates, `cron_expression`, and `_cleanup_orphaned_interval` on delete. **Uncovered as a direct cost of G3's D10**, which pins every source to `refresh_interval: 0`: a non-zero interval leaves an *enabled* hourly beat task re-refreshing that account for the life of the container, mutating rows under whatever test runs an hour later — which the shared `seeded` instance cannot tolerate. G7's scenario-specific jobs each stand up their own instance and can. Whoever takes it must also extend `bootstrap`'s pre-warm to the intervals it picks, from `bootstrap` and never from a worker ([#7](https://github.com/D10Scot/Dispatcharr/issues/7)) | G7 | todo |
 
 The ten G1 rows above are covered by these specs (the two seeding rows
 share one file, as do the two principal rows):
@@ -163,7 +168,28 @@ black-box client can act), and deleted rather than kept as a false green. See
 the row itself for the full trace and `e2e/tests/streaming-greybox/` history
 (commit `37edae89`) for the removed spec and allowlist entry.
 
-The four G7 rows above are covered by:
+The `done` G3 rows above are covered by these specs (several rows share a
+file; the two known-bug rows live beside the tests they qualify):
+
+- `e2e/tests/seeded/m3u-ingest.spec.ts` — catalogue fidelity and group wiring,
+  plus the `M3UAccount.locked` known bug (#15)
+- `e2e/tests/seeded/m3u-refresh-failure.spec.ts` — `not-found` and
+  `auth-failure`, plus the discarded-message known bug (#60)
+- `e2e/tests/seeded/epg-ingest.spec.ts` — refresh → `EPGData` with zero
+  `ProgramData`, a mapped-channel refresh whose baseline a later wait cannot
+  resolve on instantly, then `set-epg` and `batch-set-epg`
+- `e2e/tests/seeded/channel-from-stream.spec.ts` — `from-stream/` and the
+  asynchronous `from-stream/bulk/`
+- `e2e/tests/seeded/auto-channel-sync.spec.ts` — enable and create; a changed
+  catalogue deletes and creates
+- `e2e/tests/seeded/channel-profiles.spec.ts` — single and bulk membership
+- `e2e/tests/seeded/logo-upload.spec.ts` — multipart upload and assignment
+
+`e2e/tests/seeded/upstream-ingest.spec.ts` is untouched: it is G2's plumbing
+proof and the G2 row still means what it meant.
+
+The four `done` G7 rows above are covered by (the fifth, refresh-interval
+scheduling, stays `todo` — see the row itself):
 
 - `e2e/tests/lifecycle/upgrade-migrations.spec.ts` (upgrade from previous
   release)
