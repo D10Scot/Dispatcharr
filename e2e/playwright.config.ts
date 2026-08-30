@@ -95,6 +95,24 @@ export default defineConfig({
       // the project makes that race structurally impossible instead of
       // merely documented, the same reasoning `streaming-greybox` applies to
       // its own container-wide process count below.
+      //
+      // SECOND GLOBAL, added by G10: `catchup-redirect.spec.ts`
+      // read-modify-writes `stream_settings.default_stream_profile` to the
+      // locked Redirect profile for the duration of its run
+      // (`CoreSettings.is_default_stream_profile_redirect`,
+      // `core/models.py:549-564`), because Redirect mode has no per-channel
+      // override — it is a container-wide setting. Same shape as
+      // `proxy_settings` above, wider blast radius: while it is flipped,
+      // *every* channel in the container answers a session-less catch-up or
+      // live request with a 302 to the provider instead of proxying it. The
+      // single worker is what makes that safe. Two specs in this directory
+      // now depend on it; do not raise it back to 2.
+      //
+      // Note what the single worker does NOT protect: a run that dies
+      // between the write and the `finally` leaves the container on
+      // Redirect for every later project too. `catchup-redirect.spec.ts`
+      // guards its own next run with an up-front assertion, and that guard
+      // protects that test — not the specs that would run before it.
       workers: 1,
       use: { storageState: 'playwright/.auth/admin.json' },
     },

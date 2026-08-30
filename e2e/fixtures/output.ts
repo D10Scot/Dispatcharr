@@ -89,6 +89,8 @@ export type XcStream = {
   epg_channel_id: string;
   is_adult: number;
   tv_archive: number;
+  /** The provider's `tv_archive_duration`, reaching `Stream.catchup_days` via `int(... or 0)` (`apps/m3u/tasks.py:1167`). */
+  tv_archive_duration: number;
 };
 
 /**
