@@ -1,4 +1,5 @@
 import type { TestInfo } from '@playwright/test';
+import type { UpstreamCategory, UpstreamMovie, UpstreamSeries } from './types';
 
 export const UPSTREAM_CONTROL_BASE =
   process.env.E2E_UPSTREAM_CONTROL_URL ?? 'http://127.0.0.1:9402';
@@ -6,6 +7,22 @@ export const UPSTREAM_CONTROL_BASE =
 export const UPSTREAM_INTERNAL_BASE =
   process.env.E2E_UPSTREAM_INTERNAL_URL ?? 'http://e2e-upstream:8080';
 
+/**
+ * The original eight (`dead-air` … `non-ts-bytes`) are documented on
+ * `upstream.fault()` in `index.ts`. The four G8 additions each carry a
+ * scoping quirk worth knowing before arming one:
+ *  - `xc-auth-envelope` — scenario-wide only; a `channel` in
+ *    {@link FaultOptions} is **rejected** (400). Armed, `player_api.php`'s
+ *    no-`action` handshake answers 200 with `user_info.auth: 0,
+ *    status: 'Disabled'` — never a 401.
+ *  - `no-tv-archive` — channel-scoped, like the original eight. Armed,
+ *    `get_live_streams` omits `tv_archive`/`tv_archive_duration` for the
+ *    reached channel(s).
+ *  - `catchup-layout-404` — channel-scoped; see {@link FaultOptions.layout}.
+ *  - `range-unsupported` — scenario-wide only; a `channel` is **rejected**
+ *    (400) — a VOD id isn't a channel id. Armed, `/movie|series/` answers 200
+ *    with the whole asset, no `Accept-Ranges`, and `Range` is ignored.
+ */
 export type FaultName =
   | 'dead-air'
   | 'slow-trickle'
@@ -14,13 +31,24 @@ export type FaultName =
   | 'auth-failure'
   | 'connection-limit'
   | 'redirect-chain'
-  | 'non-ts-bytes';
+  | 'non-ts-bytes'
+  | 'xc-auth-envelope'
+  | 'no-tv-archive'
+  | 'catchup-layout-404'
+  | 'range-unsupported';
 
 export interface FaultOptions {
   channel?: number;
   rate?: number;
   clean?: boolean;
   afterBytes?: number;
+  /**
+   * Required to arm `catchup-layout-404` — rejected with a 400 naming
+   * `'layout'` if missing or not `'path'`/`'query'`. Not required to clear
+   * it (a value given to clear must still be valid). Rejected on every
+   * other fault.
+   */
+  layout?: 'path' | 'query';
   depth?: number;
 }
 
@@ -28,12 +56,17 @@ export interface FaultResult {
   fault: FaultName;
   active: boolean;
   /**
-   * How many *live* connections the fault reached. Five of the eight faults
-   * can only affect the next request — headers are already sent on an open
-   * response — so 0 is correct and expected for them. Arming `not-found` for
-   * a reconnect that has not happened yet is a normal test. Assert on this
-   * value when your test means to disrupt something already streaming; do
-   * not assume it is always positive.
+   * How many *live* connections the fault reached. Nine of the twelve
+   * faults can only affect the next request — headers are already sent on
+   * an open response — so 0 is correct and expected for them: the original
+   * five (`not-found`, `auth-failure`, `connection-limit`, `redirect-chain`,
+   * `non-ts-bytes`) plus all four G8 additions (`xc-auth-envelope`,
+   * `no-tv-archive`, `catchup-layout-404`, `range-unsupported`), none of
+   * which act on an open long-lived stream — `player_api.php`, catalogue
+   * listing, catch-up and VOD are all single-shot requests. Arming
+   * `not-found` for a reconnect that has not happened yet is a normal test.
+   * Assert on this value when your test means to disrupt something already
+   * streaming; do not assume it is always positive.
    */
   appliedTo: number;
 }
@@ -43,15 +76,70 @@ export interface UpstreamChannel {
   name: string;
   tvgId: string;
   logo: string | null;
+  /**
+   * Optional — mirrors the provider's `ChannelSpec.categoryId` (G8 task 1).
+   * When omitted, the provider defaults it to the scenario's first declared
+   * live category. Kept optional rather than required: making it required
+   * would break the channel literals already committed in
+   * `e2e/tests/seeded/upstream-ingest.spec.ts`, which predate categories.
+   */
+  categoryId?: number;
 }
 
-export interface ScenarioRequest {
+/** Fields every scenario request carries, XC or not. */
+interface ScenarioRequestBase {
   channels?: number | UpstreamChannel[];
-  username?: string;
-  password?: string;
   maxConnections?: number;
   rate?: number;
 }
+
+/**
+ * A plain scenario — no XC surface. Deliberately does **not** offer
+ * `liveCategories`/`vodCategories`/`seriesCategories`/`vod`/`series`/`account`:
+ * the provider serves none of them without `xc: true` (`server.ts`'s
+ * `!scenario.xc` guard 404s every `/s/<id>/…` XC route by name, naming the
+ * omission), so a request that could declare a full catalogue here would
+ * compile, echo that catalogue back on the created `UpstreamScenario`
+ * looking entirely correct, and only fail once a test actually drove the XC
+ * surface — the exact silent-no-op shape this fixture exists to prevent.
+ * Making the combination unrepresentable, rather than validating it at the
+ * door, closes it at compile time instead of at first use.
+ */
+export interface NonXcScenarioRequest extends ScenarioRequestBase {
+  xc?: false;
+  username?: string;
+  password?: string;
+}
+
+/**
+ * An Xtream Codes scenario (G8 task 1). `xc: true` is the discriminant that
+ * unlocks the catalogue fields below. `username`/`password` are **required**
+ * here, not optional — the provider's own door (`scenario.ts`) rejects
+ * `xc: true` with only one of the two, for the same reason `seed.xcAccount`
+ * throws rather than falling back to `null`/`''`: an XC provider with no
+ * credentials would authenticate every request vacuously, and an empty
+ * password can never match the `/live/` path form.
+ */
+export interface XcScenarioRequest extends ScenarioRequestBase {
+  xc: true;
+  username: string;
+  password: string;
+  liveCategories?: UpstreamCategory[];
+  vodCategories?: UpstreamCategory[];
+  seriesCategories?: UpstreamCategory[];
+  vod?: number | UpstreamMovie[];
+  series?: number | UpstreamSeries[];
+  /**
+   * Raw overrides merged into the XC `player_api.php` handshake's
+   * `user_info`/`server_info` objects (G8 task 1). No fixture reads this —
+   * it exists only to let a test declare a garbage `exp_date`/`timezone` on
+   * the account envelope. Left as a pass-through `Record`, not a named
+   * type, for the same reason: nothing here has a use for its contents yet.
+   */
+  account?: { userInfo?: Record<string, unknown>; serverInfo?: Record<string, unknown> };
+}
+
+export type ScenarioRequest = NonXcScenarioRequest | XcScenarioRequest;
 
 export interface UpstreamScenario {
   id: string;
@@ -61,6 +149,23 @@ export interface UpstreamScenario {
   control: string;
   credentialQuery: string;
   channels: UpstreamChannel[];
+  /**
+   * Echoed by the provider and typed here because an XC account needs the two
+   * values *separately*: `credentialQuery` is the pre-formatted query string,
+   * which is exactly what an XC `server_url` must not carry (the product's
+   * `normalize_server_url` strips the query, so they would silently vanish).
+   *
+   * As `e2e-upstream/README.md` already warns for `credentialQuery`, these are
+   * not secret from the control API or from an attached test report. They are
+   * per-test throwaways; do not reuse a meaningful credential here.
+   */
+  username?: string;
+  password?: string;
+  liveCategories: UpstreamCategory[];
+  vodCategories: UpstreamCategory[];
+  seriesCategories: UpstreamCategory[];
+  vod: UpstreamMovie[];
+  series: UpstreamSeries[];
 }
 
 export interface LogEntry {

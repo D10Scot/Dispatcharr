@@ -52,9 +52,14 @@ test('an upstream that refuses the connection fails over before serving', async 
   // 404 route logs before it knows a channel was ever admitted. Match on the
   // path instead: `e2e-upstream/src/server.ts`'s stream route matches
   // `/s/<scenarioId>/stream/<channelId>.ts`, and `logRequest` records
-  // `url.pathname` verbatim.
+  // `url.pathname + url.search` — so this anchors on the route ending in
+  // `/stream/1.ts`, optionally followed by a query string, rather than a
+  // bare `endsWith` that would break the moment this scenario declared
+  // credentials or a `redirect-chain` fault appended `?chain=`.
   expect(
-    log.some((e) => e.kind === 'request' && e.status === 404 && e.path?.endsWith('/stream/1.ts')),
+    log.some(
+      (e) => e.kind === 'request' && e.status === 404 && /\/stream\/1\.ts(\?.*)?$/.test(e.path ?? '')
+    ),
     'the provider should have refused an attempt on channel 1'
   ).toBe(true);
 });

@@ -207,6 +207,35 @@ remote Dispatcharr instance has no route to a provider container running on
 your laptop. Any test that uses the `upstream` fixture needs the full local
 topology brought up by `scripts/e2e_up.sh`, not a bare `E2E_BASE_URL` run.
 
+**XC scenarios (G8).** `upstream.scenario({ xc: true, username, password, ... })` declares an
+Xtream Codes catalogue — categories, movies, series — on top of the same live-channel scenario
+every other test uses; `e2e-upstream/README.md` documents the full field set and the fault
+catalogue. `seed.xcAccount(scenario)` is the paired fixture step: it creates an `M3UAccount` with
+`account_type: 'XC'`, the scenario's credentials on the model's own `username`/`password` fields
+(not embedded in the URL, unlike a standard M3U account), and `server_url` set to the scenario's
+**bare** `internal` origin — never `scenario.internal + scenario.credentialQuery`, because
+`normalize_server_url` strips the query before the XC client ever sees it, silently discarding any
+credentials appended that way. There is no separate URL-building helper for XC beyond that: the
+scenario's own `internal`/`control` origins are what a test needs, exactly as for a non-XC
+scenario.
+
+Two asynchrony facts a test will otherwise be bitten by, both because XC ingest fires more
+background tasks than a standard M3U refresh:
+
+- **VOD ingest is a separate task, fired only after the M3U refresh completes.** A standard M3U
+  refresh finishes once; an XC refresh that has VOD enabled additionally queues
+  `apps.vod.tasks.refresh_vod_content` (`.delay()`'d from inside `apps/m3u/tasks.py`'s main refresh
+  task, immediately after it records its own completion) — so `waitFor.m3uRefreshComplete` returning
+  does **not** mean movies or series have landed yet. A test asserting on `Movie`/`Series` rows
+  needs its own wait on that outcome, not a reuse of the M3U-refresh wait.
+- **`server_info.timezone` reaches an `M3UAccountProfile` through a second, nested `.delay()`'d
+  task.** The main refresh task queues `refresh_account_profiles.delay(account.id)`
+  (`apps/m3u/tasks.py`) for every XC account, which — asynchronously, with a rate-limiting sleep
+  between profiles — re-authenticates each active profile and merges `get_account_info()`'s
+  `server_info` (timezone included) into `M3UAccountProfile.custom_properties`. That value is not
+  present right after account creation or even right after the main refresh; it lands on its own
+  schedule, later.
+
 ## The login throttle — read this before writing a multi-user test
 
 `POST /api/accounts/token/` is rate-limited to **3 requests per minute per
@@ -374,9 +403,9 @@ Two things follow:
 - **Deleting that account re-opens the window.** Deletion runs
   `_cleanup_orphaned_interval`, which removes the row again once nothing
   references it. Its `refresh_task` is what pins it.
-- **A non-default `refresh_interval` is not covered.** If you write a test
-  that creates accounts with, say, `refresh_interval: 6` from parallel
-  workers, they race for the `(6, HOURS)` row. Pre-warm it the same way.
+- **A non-default `refresh_interval` needs the same care.** See the next
+  section for the values this suite actually uses and the rule that keeps
+  them from colliding.
 
 `bootstrap` fails immediately, on **every** run, if the container is already
 poisoned — saying so by name and giving `./scripts/e2e_up.sh --reset`. That
@@ -389,6 +418,40 @@ INSERT, and `ATOMIC_REQUESTS` is off), so the account exists with a null
 `refresh_task` and its presence proves nothing. `bootstrap` therefore PATCHes
 the account it finds — the same receiver runs on update — instead of returning
 early on the name.
+
+### Non-zero `refresh_interval` values, and what they cost
+
+The set in use on this branch is **{0, 2, 3, 4, 8531, 8532}**, not just the
+pre-warmed default: `e2e/tests/seeded/ws-fixture.spec.ts:50,51,109,121,122`
+uses 2, 3 and 4, and `e2e/tests/seeded/async-wait.spec.ts:41,72` uses 8531 and
+8532. The rule that keeps those from colliding with each other or with
+`bootstrap`'s pre-warmed row is already stated in full at
+`e2e/fixtures/types.ts:517-522` and at length in the header of
+`ws-fixture.spec.ts:22-39`: `bootstrap` pre-warms the default (`0`, which maps
+to `every=1`); any other value used from a parallel test must be **unique per
+test** — not reused, and not pre-warmed from a worker, which is itself the
+concurrent create that poisons the container (#7).
+
+**If you add a test that uses a new non-zero value, add it to the set above.**
+That list is an enumeration, so it is only as true as its last edit — and a
+stale "here is the full set" is worse than no list at all, because the next
+author picks a value they believe is unused. This section already had to be
+rewritten once for exactly that reason.
+
+That leaves one more thing to weigh before picking a non-zero value, not
+covered by either of those two sources:
+
+- **A non-zero interval also leaves an *enabled* beat task.**
+  `create_or_update_periodic_task` (`core/scheduling.py`) computes
+  `should_be_enabled = enabled and (use_cron or interval_hours > 0)`, so
+  `refresh_interval: 0` yields a *disabled* `PeriodicTask` and anything else
+  yields one that keeps re-refreshing that account for the life of the
+  container — mutating rows under whatever test is running an hour later.
+
+G3 also deliberately does **not** reproduce
+[#7](https://github.com/D10Scot/Dispatcharr/issues/7): provoking it poisons the
+shared container permanently for every remaining test in the run, and no
+assertion is worth that. `COVERAGE.md` records that as a decision, not a gap.
 
 ## Writing a test
 
@@ -485,13 +548,13 @@ Local builds are native-architecture; CI is amd64. If you need parity,
 
 | Fixture | Provides |
 |---|---|
-| `api` | Authed HTTP; retries once through a token refresh on 401 |
-| `seed` | `channel`, `user`, `channelProfile`, `streamProfile`, `m3uAccount`, `epgSource` |
+| `api` | Authenticated HTTP; retries once through a token refresh on 401. `upload()` is the one multipart path |
+| `seed` | `channel`, `user`, `channelProfile`, `streamProfile`, `m3uAccount`, `epgSource`, `stream`, `upstreamChannel`, `upstreamM3UAccount`, `upstreamEpgSource`, `logo` |
 | `adminPage` | A `Page` authenticated as the bootstrap admin |
 | `pageErrors` | `PageErrorCollector`: `consoleErrors`, `pageErrors`, `failedResponses` and `expectClean()`, which fails naming every offender not covered by `EXPECTED_PAGE_NOISE` (`fixtures/page-errors.ts`). Attached at fixture setup, so it sees the initial document load |
 | `asPrincipal` | An `ApiClient` for a fixed principal, `'streamer'` (level 0) or `'standard'` (level 1). Free |
 | `asUser` | An `ApiClient` for an arbitrary principal. Costs a login — see the throttle section |
-| `waitFor` | `condition`, `resource`, `m3uRefreshComplete` |
+| `waitFor` | `condition`, `resource`, `m3uRefreshComplete`, `epgRefreshComplete` |
 | `ws` | `/ws/` subscription; `waitForMessage(type, { where, timeoutMs })` |
 | `streamClient` | `open`, `readPackets`, `collectFor`, `close` |
 | `upstream` | The fake upstream provider: `scenario`, `fault`, `rate`, `clearFault`, `log`, `toControl`. Test-scoped, not worker-scoped — `attachLogs` needs `testInfo` to attach a failing scenario's log to the Playwright report, which a worker fixture cannot obtain. See `e2e-upstream/README.md` and the section above on the two-container topology |

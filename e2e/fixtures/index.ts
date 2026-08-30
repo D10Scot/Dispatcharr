@@ -35,6 +35,10 @@
  *   useTokens({ access, refresh })       re-point at another principal
  *   freshAccessToken() → Promise<string> a token with life left in it
  *   expireAccessTokenForTest()           corrupt the token, to drive the 401 path
+ *   upload(url, multipart) → Promise<APIResponse>
+ *                                        multipart/form-data POST, same 401
+ *                                        refresh-and-retry as the verbs above.
+ *                                        The one non-JSON write path here.
  * The verbs return a raw `APIResponse` — nothing is asserted for you. Assert
  * the status yourself, or hand it to `json()` when only the body matters.
  *
@@ -51,6 +55,17 @@
  *   streamProfile(overrides?)    → StreamProfile  /api/core/streamprofiles/
  *   m3uAccount(overrides?)       → M3uAccount     /api/m3u/accounts/,
  *                                is_active false
+ *   xcAccount(scenario, overrides?) → M3uAccount  an `account_type: 'XC'`
+ *                                m3uAccount pointed at an XC `upstream`
+ *                                scenario: `server_url` is the scenario's
+ *                                bare `internal` base (no `credentialQuery`
+ *                                — `normalize_server_url` strips a query),
+ *                                credentials go on `username`/`password`,
+ *                                `is_active` true. Throws if the scenario was
+ *                                not created with both `username` and
+ *                                `password` (i.e. `{ xc: true, username,
+ *                                password }`) rather than silently sending a
+ *                                blank credential.
  *   epgSource(overrides?)        → EpgSource      /api/epg/sources/,
  *                                is_active false
  *   stream(overrides?)           → Stream         /api/channels/streams/,
@@ -63,6 +78,24 @@
  *                                `opts.channel` is `ChannelOverrides` minus
  *                                `streams`/`stream_profile_id` — the factory
  *                                owns both, so they are not writable here.
+ *   upstreamM3UAccount(scenario, overrides?) → M3uAccount
+ *                                creates an active account pointed at that
+ *                                scenario's playlist, refreshes it, waits, and
+ *                                asserts `status === 'success'`. Not for a
+ *                                test that wants the refresh to fail.
+ *   upstreamEpgSource(scenario, overrides?) → EpgSource
+ *                                creates an active XMLTV source pointed at that
+ *                                scenario's EPG and waits for its refresh. The
+ *                                result has EPGData rows and ZERO ProgramData —
+ *                                programmes need a channel association first.
+ *   logo(overrides?)             → Logo           /api/channels/logos/upload/,
+ *                                multipart, generated filename (the upload is
+ *                                get_or_create'd on the path, so a fixed name
+ *                                is shared across workers). The payload is
+ *                                `logoPayload(name)`, unique per logo — see
+ *                                `logoPayload`, also exported here, to derive
+ *                                the expected served bytes for a given logo
+ *                                instead of transcribing a byte count.
  *   generatedName(entity)        the naming scheme itself, for a row you
  *                                create by hand
  *   `overrides` is typed per entity — `ChannelOverrides`, `UserOverrides`, …
@@ -140,6 +173,12 @@
  *       (identical back-to-back terminal failures on the same account).
  *   options: { timeoutMs?, intervalMs?, description?, describeLast? }
  *       plus startTimeoutMs and trigger on m3uRefreshComplete.
+ *   epgRefreshComplete(sourceId, options?) → Promise<EpgSource>
+ *       Polls `updated_at`, NOT a terminal status: an XMLTV refresh reaches
+ *       `success` twice and the first one is premature. Triggers via
+ *       `POST /api/epg/import/` with the id in the BODY; pass
+ *       `trigger: async () => {}` when creation already started the refresh,
+ *       and `baseline:` the create response so the wait cannot miss it.
  *
  * `ws: WsListener` — subscription to the single `updates` group on `/ws/`.
  * For state the REST API does not expose; prefer `waitFor` otherwise — the
@@ -208,32 +247,64 @@
  *   scenario(request?) → Promise<UpstreamScenario>
  *       Creates a scenario (default: one channel, no auth, no connection
  *       limit). `request.channels` is a count or an explicit array of
- *       `{ id, name, tvgId, logo }`. Every scenario made this way is tracked
- *       on `upstream.created` for `attachLogs`; there is **no cleanup** —
- *       scenarios live for the provider process's life, scoped only by the
- *       test that made them never reusing another test's id.
+ *       `{ id, name, tvgId, logo, categoryId? }`. Every scenario made this
+ *       way is tracked on `upstream.created` for `attachLogs`; there is
+ *       **no cleanup** — scenarios live for the provider process's life,
+ *       scoped only by the test that made them never reusing another test's
+ *       id.
+ *       `request.xc: true` (G8) declares an Xtream Codes scenario and
+ *       **requires both `request.username` and `request.password`** — the
+ *       provider rejects one without the other at the door. Its catalogue —
+ *       `request.liveCategories`/`vodCategories`/`seriesCategories`
+ *       (`{ id, name }[]`) and `request.vod`/`request.series` (a count or an
+ *       explicit array) — is echoed back on the returned `UpstreamScenario`
+ *       as `liveCategories`/`vodCategories`/`seriesCategories`/`vod`/`series`.
+ *       Feed an XC scenario straight to `seed.xcAccount(scenario)` rather
+ *       than building the `M3UAccount` by hand.
  *       **The default catalogue is identical across every scenario** —
  *       channel `1` is always named `Fake Channel 1` with `tvg-id`
- *       `fake-1.e2e` — and `seeded` runs 4 workers in parallel. Asserting
- *       against those names, or filtering by them, will alias another
- *       test's data. Pass explicit channel names (e.g. via
- *       `seed.generatedName(...)`) whenever a test needs to look its own
- *       channel up by name.
+ *       `fake-1.e2e`, movie `1` is always `Fake Movie 1` (year `2020`),
+ *       series `1` is always `Fake Series 1` — and `seeded` runs 4 workers
+ *       in parallel. For channels this means: asserting on those names, or
+ *       filtering by them, aliases another worker's data.
+ *       **For `vod`/`series` it is worse than aliasing — it is one shared
+ *       row.** Dispatcharr's VOD ingestion matches an incoming XC movie to
+ *       an existing `Movie` by TMDB id → IMDB id → **`(name, year)`**,
+ *       *globally across every `M3UAccount`*, not per-account (same for
+ *       `Series`, and `VODCategory` is unique on `(name, category_type)`
+ *       globally too). A bare `vod: 2`/`series: 2` count therefore does not
+ *       give two parallel workers two independent rows — both workers'
+ *       `xcAccount`s get matched onto the *same* `Movie`/`Series` database
+ *       row, because the default name+year pair is identical. This bites a
+ *       test that never looks anything up by name: asserting on that movie's
+ *       own category, count, or presence can observe a sibling worker's
+ *       concurrent write mid-run. Always pass an explicit `vod`/`series`
+ *       array with a `seed.generatedName(...)`-derived `name` — a unique
+ *       `name` alone is enough, since the `(name, year)` tuple only has to
+ *       differ in one half to name a different row; the year need not also
+ *       be unique. The same applies to `liveCategories`/`vodCategories`/
+ *       `seriesCategories` names, unique globally by `(name, category_type)`.
  *   fault(scenario, name, options?) / clearFault(scenario, name, options?)
- *       → Promise<FaultResult>   arms/disarms one of the eight `FaultName`s
- *       (`dead-air`, `slow-trickle`, `disconnect`, `not-found`,
- *       `auth-failure`, `connection-limit`, `redirect-chain`,
- *       `non-ts-bytes`) against a live stream. `options.channel` scopes it to
- *       one channel id; omitted, it applies scenario-wide. `FaultResult`'s
- *       `appliedTo` counts only *live* connections actually reached —
- *       **`not-found`, `auth-failure`, `connection-limit`, `redirect-chain`
- *       and `non-ts-bytes` can only affect the next request**, because
- *       headers are already sent on any response that is already open, so
- *       `appliedTo: 0` from those five is correct and expected, not a sign
- *       the call did nothing. "Arm `not-found` so the next reconnect fails"
- *       is a normal test with `appliedTo: 0`. Check `appliedTo` yourself when
- *       your test means to disrupt something already streaming; nothing here
- *       asserts or warns on your behalf.
+ *       → Promise<FaultResult>   arms/disarms one of the twelve `FaultName`s.
+ *       The original eight (`dead-air`, `slow-trickle`, `disconnect`,
+ *       `not-found`, `auth-failure`, `connection-limit`, `redirect-chain`,
+ *       `non-ts-bytes`) act on a live stream; `options.channel` scopes one to
+ *       a channel id, omitted applies scenario-wide. The four G8 additions
+ *       (`xc-auth-envelope`, `no-tv-archive`, `catchup-layout-404`,
+ *       `range-unsupported`) act on the XC surface and are documented on
+ *       `FaultName` and `FaultOptions.layout` in `upstream.ts` — two of the
+ *       four (`xc-auth-envelope`, `range-unsupported`) are scenario-wide
+ *       *only* and **reject** an `options.channel` with a 400, and arming
+ *       `catchup-layout-404` requires `options.layout: 'path' | 'query'`.
+ *       `FaultResult`'s `appliedTo` counts only *live* connections actually
+ *       reached — **`not-found`, `auth-failure`, `connection-limit`,
+ *       `redirect-chain` and `non-ts-bytes` can only affect the next
+ *       request**, because headers are already sent on any response that is
+ *       already open, so `appliedTo: 0` from those five is correct and
+ *       expected, not a sign the call did nothing. "Arm `not-found` so the
+ *       next reconnect fails" is a normal test with `appliedTo: 0`. Check
+ *       `appliedTo` yourself when your test means to disrupt something
+ *       already streaming; nothing here asserts or warns on your behalf.
  *   rate(scenario, rate) → Promise<{ rate }>   sets the scenario's own
  *       playback-speed multiplier: the provider paces each chunk against
  *       `asset.byteRate * rate`, so 1 is real-time, 2 is double speed. Has
@@ -357,8 +428,8 @@ export const test = base.extend<Fixtures>({
   api: async ({ request }, use) => {
     await use(new ApiClient(request));
   },
-  seed: async ({ api }, use, testInfo) => {
-    await use(new Seeder(api, testInfo.workerIndex, testInfo.testId));
+  seed: async ({ api, waitFor }, use, testInfo) => {
+    await use(new Seeder(api, testInfo.workerIndex, testInfo.testId, waitFor));
   },
   asPrincipal: async ({ request }, use) => {
     await use((name: PrincipalName) => makePrincipalClient(request, name));
@@ -456,7 +527,8 @@ export const test = base.extend<Fixtures>({
 
 export { expect } from '@playwright/test';
 export { ApiClient } from './api';
-export { Seeder, SEEDED_USER_PASSWORD } from './seed';
+export type { MultipartValue } from './api';
+export { Seeder, SEEDED_USER_PASSWORD, logoPayload } from './seed';
 export {
   loginsSpentByThisWorker,
   makePrincipalClient,
@@ -489,34 +561,50 @@ export type {
   FaultOptions,
   FaultResult,
   LogEntry,
+  NonXcScenarioRequest,
   ScenarioRequest,
   UpstreamChannel,
   UpstreamScenario,
+  XcScenarioRequest,
 } from './upstream';
 export type {
   BackupEntry,
   Channel,
+  ChannelGroup,
   ChannelOverrides,
   ChannelProfile,
   ChannelProfileOverrides,
   ChannelStatus,
   ChannelStatusClient,
   ConnectIntegration,
+  EpgData,
   EpgSource,
   EpgSourceOverrides,
   EpgSourceStatus,
   EpgSourceType,
+  GroupSettingRow,
   Logo,
+  LogoOverrides,
   M3uAccount,
+  M3uAccountChannelGroup,
   M3uAccountOverrides,
+  M3uAccountProfile,
   M3uAccountStatus,
   PluginListEntry,
+  ProgramSearchPage,
+  ProgramSearchResult,
   Recording,
   Stream,
   StreamOverrides,
+  StreamPage,
   StreamProfile,
   StreamProfileOverrides,
+  UpstreamCategory,
   UpstreamChannelOptions,
+  UpstreamEpisode,
+  UpstreamMovie,
+  UpstreamSeason,
+  UpstreamSeries,
   User,
   UserAgent,
   UserOverrides,

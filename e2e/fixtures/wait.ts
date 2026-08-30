@@ -1,5 +1,5 @@
 import type { ApiClient } from './api';
-import type { M3uAccount, M3uAccountStatus } from './types';
+import type { EpgSource, M3uAccount, M3uAccountStatus } from './types';
 
 export type WaitOptions = {
   timeoutMs?: number;
@@ -25,6 +25,27 @@ const M3U_IN_FLIGHT_STATUSES: readonly M3uAccountStatus[] = ['fetching', 'parsin
 /** `M3UAccount.Status` values a finished refresh comes to rest in. */
 const M3U_TERMINAL_STATUSES: readonly M3uAccountStatus[] = ['success', 'error'];
 
+/**
+ * How often `m3uRefreshComplete()`'s phase 1 re-fires its trigger while the
+ * account is still sitting on its pre-trigger baseline — see that method's
+ * doc comment for the D10Scot/Dispatcharr#59 mechanism this recovers from,
+ * and the residual risk it trades for that recovery. Exported so a
+ * regression test can reference this value directly rather than hardcode a
+ * duplicate of it, which would silently stop proving anything the moment
+ * this constant changed.
+ */
+export const M3U_RETRIGGER_INTERVAL_MS = 5_000;
+
+/**
+ * Hard cap on how many extra triggers phase 1 will fire beyond the first.
+ * Bounds the blast radius of the retry above: every re-fire risks queuing a
+ * genuine *second* refresh if a stall was actually queue backlog rather
+ * than a held lock (see `m3uRefreshComplete()`'s doc comment) — capping it
+ * bounds how many such duplicates one wait can create, though it does not
+ * eliminate the possibility of one.
+ */
+export const M3U_MAX_RETRIGGERS = 3;
+
 export type M3uRefreshWaitOptions = WaitOptions & {
   /**
    * Budget for the refresh to *engage* — either observed in flight, or
@@ -42,6 +63,37 @@ export type M3uRefreshWaitOptions = WaitOptions & {
    * what closes the race the method doc comment describes — the baseline
    * must happen-before the trigger, and only this method can guarantee
    * that ordering.
+   */
+  trigger?: () => Promise<unknown>;
+};
+
+/**
+ * How long `epgRefreshComplete()` requires `EPGSource.updated_at` to hold
+ * one value, once it has changed from the baseline, before treating it as
+ * settled. Chosen as a multiple of the ~165ms+ gap observed in this
+ * harness's own container (see that method's doc comment) — a deliberate
+ * margin over a measured floor, not a derived bound: the gap it is
+ * covering is not itself bounded. See the doc comment for what that means
+ * for this constant's reliability.
+ */
+const EPG_UPDATED_AT_SETTLE_MS = 1_000;
+
+export type EpgRefreshWaitOptions = WaitOptions & {
+  /**
+   * A read taken strictly *before* the refresh was triggered. Required for the
+   * create path: `trigger_refresh_on_new_epg_source` (a `post_save` receiver)
+   * fires `refresh_epg_data.delay()` the moment an active non-dummy source is
+   * created, so by the time this method could take its own baseline the
+   * refresh may already have finished. Pass the create response.
+   */
+  baseline?: EpgSource;
+  /**
+   * How the refresh is triggered. Defaults to `POST /api/epg/import/` with
+   * `{ id }` — note the id travels in the **body**; there is no
+   * `/api/epg/sources/<id>/refresh/` route. Pass `async () => {}` when the
+   * refresh has already been started for you (the create path above): a second
+   * `/api/epg/import/` finds `refresh_epg_data`'s lock held, returns without
+   * touching a single field, and would leave this wait with nothing to see.
    */
   trigger?: () => Promise<unknown>;
 };
@@ -210,6 +262,44 @@ export class Waiter {
    * it's narrow enough (identical failure, twice, back to back) not to be
    * worth a bigger contract change for.
    *
+   * **A second, distinct gap this closes as of D10Scot/Dispatcharr#59**: a
+   * trigger that lands while `refresh_single_m3u_account`'s own task lock
+   * from an *immediately preceding* refresh on the same account is still
+   * held (`apps/m3u/tasks.py:3345` vs. the `finally`-scoped release at
+   * `:3374`, well after the terminal `status` write at `:3865`) is silently
+   * dropped — the task discovers the lock held and returns having written
+   * nothing, indistinguishable from "not picked up yet". Phase 1 re-fires
+   * the trigger every `M3U_RETRIGGER_INTERVAL_MS` it spends still waiting,
+   * up to `M3U_MAX_RETRIGGERS` times, which is what actually recovers: by
+   * the time a retry goes out, the earlier refresh has almost always
+   * released its lock. This is orthogonal to the identical-back-to-back-
+   * failure gap above — that gap is a write that *does* happen but reads the
+   * same as the baseline; this one is a trigger that writes nothing at all,
+   * and retrying is exactly what a silent no-op needs and a byte-identical
+   * failure does not (retrying that just produces the same indistinguishable
+   * write again).
+   *
+   * **The residual risk this trades for that recovery — stated plainly,
+   * not just bounded away.** `RefreshSingleM3UAPIView.post` has no
+   * queue-time dedupe: a duplicate is dropped only if it *executes* while
+   * an earlier one still holds the lock. This method has no way to tell
+   * "dropped because the lock was held" from "genuinely slow to be picked
+   * up" — the REST surface exposes neither a task id nor a lock-status
+   * endpoint to check either against, so every retry is a guess, not a
+   * diagnosis. If the true cause was backlog rather than a held lock, a
+   * retry queues a **second, real refresh** that can still be sitting in
+   * Celery after the *first* one finishes and this wait resolves on it —
+   * that second refresh keeps running after `m3uRefreshComplete()` has
+   * already returned, and can mutate the account's streams, channels and
+   * status underneath any assertion a caller makes right after this call: a
+   * silent, load-dependent state change in place of the loud timeout this
+   * method used to produce instead. `M3U_MAX_RETRIGGERS` bounds how many
+   * such duplicates a single wait can create; it does not eliminate the
+   * possibility of one. This is reachable only when phase 1 genuinely
+   * stalls past `M3U_RETRIGGER_INTERVAL_MS` — the common case, resolving
+   * well inside that window, never fires a retry at all, and this risk
+   * does not apply to it.
+   *
    * `timeoutMs` bounds phase 2; `startTimeoutMs` bounds phase 1 (including
    * the fallback above — both are checked on the same poll). The trade for
    * never passing early: a refresh that starts and finishes entirely within
@@ -230,9 +320,13 @@ export class Waiter {
       `m3uRefreshComplete baseline read for account ${accountId}`
     );
 
-    if (trigger) {
-      await trigger();
-    } else {
+    // Extracted so phase 1 below can call it again — see D10Scot/Dispatcharr#59
+    // just below.
+    const fire = async (): Promise<void> => {
+      if (trigger) {
+        await trigger();
+        return;
+      }
       // Checked rather than discarded. `RefreshSingleM3UAPIView` is an
       // unconditional 202 today, so this effectively cannot fire — but a
       // broker-down 500, or a future validation change, would otherwise be
@@ -248,9 +342,36 @@ export class Waiter {
             'queued, so there was nothing to wait for.'
         );
       }
-    }
+    };
+
+    await fire();
 
     let sawInFlight = false;
+    // D10Scot/Dispatcharr#59: `refresh_single_m3u_account` only releases its
+    // Redis task lock in a `finally` (`apps/m3u/tasks.py:3374`), well after
+    // `_refresh_single_m3u_account_impl` has already written a terminal
+    // `status` (`:3865`) — auto-sync, a system-event log, a WS push and cache
+    // cleanup all still run in between, `acquire_task_lock` at `:3345`. A
+    // trigger landing in that window finds the lock held, logs "Task already
+    // running" and returns having written nothing at all — but
+    // `POST /api/m3u/refresh/<id>/` already answered 202, so from here that
+    // is indistinguishable from "not picked up yet": the account just sits at
+    // its pre-trigger baseline forever and phase 1 below would otherwise burn
+    // its whole `startTimeoutMs` on a trigger that never had a chance to run.
+    // Re-firing periodically is what actually recovers: by the time a retry
+    // goes out, the earlier refresh's lock has almost always cleared (Task 3's
+    // own workaround for this same issue found ~2s enough in this container —
+    // `m3u-refresh-failure.spec.ts`).
+    //
+    // Bounded at `M3U_MAX_RETRIGGERS`, deliberately — NOT "harmless" when a
+    // stall turns out to be backlog rather than a held lock. There is no
+    // queue-time dedupe on the product side, so a retry queues a genuine
+    // second refresh that can still be running after the first one finishes
+    // and this wait returns. See the residual-risk paragraph on this
+    // method's own doc comment for what that means for a caller's later
+    // assertions — this cap limits it, it does not remove it.
+    let lastFireAt = Date.now();
+    let retriggerCount = 0;
 
     const firstObserved = await this.resource<M3uAccount>(
       url,
@@ -259,16 +380,41 @@ export class Waiter {
           sawInFlight = true;
           return true;
         }
-        return (
+        if (
           M3U_TERMINAL_STATUSES.includes(body.status) &&
           (body.status !== baseline.status || body.last_message !== baseline.last_message)
-        );
+        ) {
+          return true;
+        }
+        if (
+          retriggerCount < M3U_MAX_RETRIGGERS &&
+          Date.now() - lastFireAt >= M3U_RETRIGGER_INTERVAL_MS
+        ) {
+          lastFireAt = Date.now();
+          retriggerCount += 1;
+          // Best-effort and logged immediately rather than folded into
+          // `description` (fixed at call time, before any retry has had a
+          // chance to run — a mutable value read from inside it would never
+          // actually appear) or `describeLast` (would replace, not augment,
+          // `resource()`'s own — more useful — last-observed-body default). A
+          // retry that itself fails to queue should not abort a wait that
+          // might still succeed from an earlier, successfully-queued attempt.
+          fire().catch((error) => {
+            console.warn(
+              `m3uRefreshComplete: re-trigger for account ${accountId} failed: ${String(error)}`
+            );
+          });
+        }
+        return false;
       },
       {
         description:
           `M3U account ${accountId} refresh to start ` +
           `(status ${M3U_IN_FLIGHT_STATUSES.join(' or ')}, or a terminal status ` +
-          `that differs from its pre-trigger baseline of '${baseline.status}')`,
+          `that differs from its pre-trigger baseline of '${baseline.status}'; ` +
+          `re-triggered every ${M3U_RETRIGGER_INTERVAL_MS}ms, up to ` +
+          `${M3U_MAX_RETRIGGERS} times, in case an earlier attempt landed on a ` +
+          'still-held refresh lock — D10Scot/Dispatcharr#59)',
         timeoutMs: startTimeoutMs,
         intervalMs: 250,
       }
@@ -288,6 +434,188 @@ export class Waiter {
           `M3U account ${accountId} refresh to finish ` +
           `(status ${M3U_TERMINAL_STATUSES.join(' or ')})`,
         timeoutMs: 180_000,
+        ...options,
+      }
+    );
+  }
+
+  /**
+   * Waits for an `EPGSource` refresh to finish, and returns a row whose
+   * `updated_at` is settled to a high probability — usually safe to pass
+   * straight back in as a later call's `options.baseline`. Read
+   * "**Not a guarantee**" below before relying on that for anything where
+   * being wrong is expensive.
+   *
+   * **This is deliberately not a copy of {@link m3uRefreshComplete}, and the
+   * difference is the whole point.** An XMLTV refresh reaches `status:
+   * 'success'` **twice**: `parse_channels_only` sets it — with
+   * `last_message = "Successfully parsed N channels"` — before
+   * `parse_programs_for_source` has even started, and nothing sets it back to
+   * `parsing`. A wait for a terminal status therefore resolves mid-refresh,
+   * with `EPGData` rows present and zero `ProgramData`.
+   *
+   * So this polls `updated_at` instead. `EPGSource.updated_at` is
+   * `null=True` with no `auto_now`, and `null` on a fresh row. On the paths
+   * this harness exercises it is written:
+   *  - **once**, by `_refresh_epg_data_impl`'s final unconditional
+   *    `.update()` (`apps/epg/tasks.py:523`) — when no channel is mapped to
+   *    the source yet, `parse_programs_for_source`'s early-return branch for
+   *    that case (`:2126-2129`) never touches `updated_at` at all, so `:523`
+   *    is the only write.
+   *  - **twice**, once a channel *is* mapped: `parse_programs_for_source`'s
+   *    own success path (`:2377-2378`) writes it the moment programmes are
+   *    actually swapped in, and then `_refresh_epg_data_impl`'s same final
+   *    `.update()` at `:523` writes it *again* — after the file lock is
+   *    released — once execution gets back there.
+   *
+   * A version of this method that resolved on the first observed change
+   * would, on the mapped path, sometimes return the row from the `:2377`
+   * write — whose `updated_at` the still-pending `:523` write is about to
+   * advance past. A caller that took that row as a later call's `baseline`
+   * would then see `updated_at` differ on its very first poll, before any
+   * new refresh had even been triggered — the same "resolves on a stale
+   * write" hazard {@link m3uRefreshComplete}'s phase 2 has, one layer down.
+   *
+   * **Not a guarantee — read this before reusing a returned row.** Between
+   * the two writes, `parse_programs_for_source` runs: `log_system_event`
+   * (`:2381`), whose `_dispatch_system_event_integrations`
+   * (`core/utils.py:835-868`) runs **synchronously** on a Celery prefork
+   * worker — the kind of worker this refresh always runs on — meaning any
+   * Connect webhook or script a user has configured executes as *inline
+   * network I/O* right there; a channel-layer send (`:2391`); a DB query
+   * plus N Celery dispatches for late-mapped channels
+   * (`_dispatch_late_mapped_epg_parses`, `:2399`); two forced full GC passes
+   * and a psutil RSS read (`:2420-2430`); and, back in
+   * `_refresh_epg_data_impl`, a lock-renewer thread join with a 5s timeout
+   * (`:512-513`) before the unconditional `:523` write. **None of that is
+   * bounded** — a slow or hanging Connect webhook can stretch the gap
+   * arbitrarily far. So this method does not resolve the instant
+   * `updated_at` changes: once it has changed from the baseline, it keeps
+   * polling and only resolves once that value has held for
+   * {@link EPG_UPDATED_AT_SETTLE_MS} (1000ms) straight — a deliberate
+   * multiple of what mutation testing measured as the *typical* gap on this
+   * harness's own container (this method's pre-fix, no-settling shape
+   * resolved on the stale `:2377` value in 2 of 3 runs at a 250ms poll
+   * interval, putting the observed floor at roughly 165ms+), not a derived
+   * bound on the true one. On a source with no Connect integration
+   * configured — everything this test suite seeds — 1000ms comfortably
+   * covers what was measured. On a source that *does* have one, this can
+   * still return early relative to the true settle point, precisely because
+   * no fixed window can dominate an unbounded wait. A caller who needs
+   * certainty rather than a strong default should not reuse a returned
+   * row's `updated_at` as proof of finality; assert on the data the refresh
+   * was actually supposed to produce instead (e.g. poll
+   * `/api/epg/programs/search/?channel_id=` for a programme count, not
+   * `updated_at`).
+   *
+   * `status === 'error'` resolves the wait immediately, with no settling
+   * wait, whenever `status` or `last_message` differs from the baseline —
+   * the same guard {@link m3uRefreshComplete} uses, so a source already
+   * sitting in a stale error state cannot resolve this instantly. This is
+   * safe for the error paths this harness's XMLTV-only scenario can reach
+   * (see the next paragraph) — it is **not** proven safe in general; see
+   * the `schedules_direct` case below.
+   *
+   * **Not true that every error path skips `updated_at`** — two exceptions:
+   * `parse_programs_for_source`'s outer `except Exception` (`:2402`)
+   * catches anything raised *after* its own `:2377-2378` write (e.g. inside
+   * `log_system_event` or `_dispatch_late_mapped_epg_parses`) and returns
+   * `False` with `status: 'error'`; `updated_at` is left at the value that
+   * success write set, and `_refresh_epg_data_impl` never reaches its own
+   * `:523` write for this call (it returns as soon as
+   * `parse_programs_for_source` comes back falsy) — so no double-write and
+   * no settling hazard there either. The second exception is narrower than
+   * it first looks: a `schedules_direct` source reaches the unconditional
+   * `:523` write regardless of `fetch_schedules_direct`'s outcome, since
+   * that return value is ignored (`:521`) — so a `schedules_direct` refresh
+   * that fails internally still gets `updated_at` bumped once, *after* its
+   * own error write. That means the immediate-error resolve above **can**
+   * return a row for a `schedules_direct` source whose `updated_at` has not
+   * yet been bumped by that pending `:523` write — an unsettled row, by the
+   * same mechanism the settling wait exists to prevent, just reached
+   * through the error branch instead of the success one. This harness is
+   * XMLTV-only and never exercises `schedules_direct`, so it is not pinned
+   * here; a future `schedules_direct` caller should not assume an
+   * error-resolved row from this method is settled.
+   *
+   * **The hazard this cannot see:** an *inactive* source. `_refresh_epg_data_impl`
+   * returns on `if not source.is_active` before any status write, and
+   * `_ensure_epg_refresh_terminal_status` only forces `error` from
+   * `fetching`/`parsing`. So an inactive source's refresh changes nothing at
+   * all and this times out saying so. `seed.epgSource()` defaults to
+   * `is_active: false` — pass `{ is_active: true }` for a source you intend to
+   * refresh.
+   *
+   * **What this does NOT wait for:** programmes. `parse_programs_for_source`
+   * only parses `<programme>` elements whose channel is already mapped to a
+   * `Channel` (`epg_ids_mapped_to_channels`), so a freshly refreshed source
+   * with no associations has zero `ProgramData` and says so in `last_message`.
+   * Programmes arrive after `set-epg`; poll
+   * `/api/epg/programs/search/?channel_id=` for those.
+   */
+  async epgRefreshComplete(
+    sourceId: number,
+    { baseline, trigger, ...options }: EpgRefreshWaitOptions = {}
+  ): Promise<EpgSource> {
+    const url = `/api/epg/sources/${sourceId}/`;
+
+    const before =
+      baseline ??
+      (await this.api.json<EpgSource>(
+        await this.api.get(url),
+        `epgRefreshComplete baseline read for source ${sourceId}`
+      ));
+
+    if (trigger) {
+      await trigger();
+    } else {
+      const triggered = await this.api.post('/api/epg/import/', { id: sourceId });
+      if (!triggered.ok()) {
+        throw new Error(
+          `triggering the refresh of EPG source ${sourceId} failed: ` +
+            `${triggered.status()} ${await triggered.text()}. No refresh was ` +
+            'queued, so there was nothing to wait for.'
+        );
+      }
+    }
+
+    // See "Not a guarantee" in the doc comment above: `updated_at` can
+    // advance twice on the mapped-channel path, separated by an unbounded
+    // gap (it contains a synchronous, user-extensible webhook dispatch), so
+    // a single observed change is not enough to know it has settled.
+    // `settling` remembers the value first seen changed and *when* — the
+    // predicate only resolves once that same value has held continuously
+    // for `EPG_UPDATED_AT_SETTLE_MS`, checked by wall-clock time rather
+    // than poll count so the window means the same thing regardless of
+    // `intervalMs`.
+    let settling: { value: string | null; since: number } | undefined;
+
+    return this.resource<EpgSource>(
+      url,
+      (body) => {
+        if (
+          body.status === 'error' &&
+          (body.status !== before.status || body.last_message !== before.last_message)
+        ) {
+          return true;
+        }
+        if (body.updated_at === before.updated_at) {
+          settling = undefined;
+          return false;
+        }
+        if (settling?.value !== body.updated_at) {
+          settling = { value: body.updated_at, since: Date.now() };
+          return false;
+        }
+        return Date.now() - settling.since >= EPG_UPDATED_AT_SETTLE_MS;
+      },
+      {
+        description:
+          `EPG source ${sourceId} refresh to finish ` +
+          `(updated_at to advance from '${before.updated_at}' and hold for ` +
+          `${EPG_UPDATED_AT_SETTLE_MS}ms, or a changed error state)`,
+        timeoutMs: 180_000,
+        intervalMs: 250,
         ...options,
       }
     );
