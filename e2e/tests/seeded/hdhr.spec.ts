@@ -225,12 +225,13 @@ test('hdhr lineup scopes to a Channel Profile, and answers [] for an unknown one
 // principal, so its fix is a design decision about how HDHR authenticates.
 // One issue would not be closed by either change alone.
 //
-// Paired with output-authorization.spec.ts's "lineup.json exposes a
-// user_level: 10 channel to an unauthenticated caller" test, which asserts
-// the SAME behaviour as passing (today's actual, unauthorized-by-design
-// output). Both are correct descriptions of today; the day this is fixed,
-// this test flips green as expected and that one flips red as an intended
-// false alarm — see the comment there for the reciprocal note.
+// Paired with output-authorization.spec.ts's "the anonymous output surfaces
+// apply no user_level filter at all" test, whose /hdhr/lineup.json assertion
+// asserts the SAME behaviour as passing (today's actual, unauthorized-by-
+// design output). Both are correct descriptions of today; the day this is
+// fixed, this test flips green as expected and that one's /hdhr/lineup.json
+// assertion flips red as an intended false alarm — see the comment there for
+// the reciprocal note.
 //
 // Issue: https://github.com/D10Scot/Dispatcharr/issues/82
 test.fail('hdhr lineup does not expose adult or above-level channels', async ({

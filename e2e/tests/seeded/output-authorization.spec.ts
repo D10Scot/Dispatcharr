@@ -118,10 +118,24 @@ test('hide_adult_content removes an adult channel from every XC listing path', a
   expect(playlist, 'get.php').not.toContain(adult.name);
 
   const guide = await (await request.get(`/xmltv.php${xcQuery(user)}`)).text();
+  // Paired: without the presence half, a 401, an error body or an empty
+  // guide would all satisfy the absence half too.
+  expect(guide, 'xmltv.php').toContain(clean.name);
   expect(guide, 'xmltv.php').not.toContain(adult.name);
 
   // The per-channel EPG action applies the same filter, so it 404s rather
   // than leaking the programme titles of a channel the user cannot list.
+  //
+  // Positive control on THIS endpoint (Task 8's ruling is per assertion, not
+  // per file — the 200 proven in "cannot read the EPG of a channel above its
+  // level" above is a different principal and a different channel, and
+  // doesn't cover this test's assertion): same user, the clean channel it IS
+  // allowed to list, before asserting 404 on the adult one.
+  const cleanEpg = await request.get(
+    `/player_api.php${xcQuery(user, { action: 'get_short_epg', stream_id: clean.id })}`
+  );
+  expect(cleanEpg.status(), 'positive control: get_short_epg for the clean channel').toBe(200);
+
   const epg = await request.get(
     `/player_api.php${xcQuery(user, { action: 'get_short_epg', stream_id: adult.id })}`
   );
@@ -192,6 +206,17 @@ test('the anonymous output surfaces apply no user_level filter at all', async ({
   // `?days=365` fetch here threw `Cannot create a string longer than
   // 0x1fffffe8 characters` — a real overflow, not just slow — before this
   // was narrowed to match.
+  //
+  // Accepted risk, shared with output-epg.spec.ts's own uniqueDays(): both
+  // draw from the same 30 buckets against the same anonymous EPG cache key
+  // (no username segment for a request with no XC credentials) inside the
+  // same 300-second TTL, so a same-bucket collision between this test and
+  // that one — or two runs of this file inside the window — is possible.
+  // Fail-safe, not silent: a collision serves a body from before THIS
+  // channel existed, so it fails this assertion (never a false pass). If
+  // this test goes red on `/output/epg` alone with no obvious cause, a
+  // bucket collision is the first thing to check before suspecting the
+  // product.
   const days = 1 + ((testInfo.workerIndex * 89 + Math.floor(Math.random() * 300)) % 30);
   const guide = await (await request.get(`/output/epg?days=${days}`)).text();
   expect(guide, '/output/epg').toContain(restricted.name);
