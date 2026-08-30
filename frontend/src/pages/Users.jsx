@@ -8,7 +8,7 @@ const PageContent = () => {
   if (!authUser.id) throw new Error();
 
   return (
-    <Box p={10}>
+    <Box p={10} data-testid="users-page">
       <UsersTable />
     </Box>
   );

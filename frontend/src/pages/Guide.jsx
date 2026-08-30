@@ -1211,6 +1211,7 @@ export default function TVChannelGuide({ startDate, endDate }) {
     <Box
       ref={tvGuideRef}
       className="tv-guide"
+      data-testid="guide-page"
       style={{
         overflow: 'hidden',
       }}
@@ -1395,6 +1396,7 @@ export default function TVChannelGuide({ startDate, endDate }) {
         {/* Main scrollable container for program content */}
         <Box
           ref={guideContainerRef}
+          data-testid="guide-grid"
           style={{
             flex: 1,
             overflow: 'hidden',
