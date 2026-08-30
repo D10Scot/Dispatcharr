@@ -796,9 +796,13 @@ export type M3uEntry = {
   /**
    * The quoted `key="value"` attributes on the `#EXTINF` line. Dispatcharr
    * emits `tvg-id`, `tvg-name`, `tvg-logo`, `tvg-chno`, optionally
-   * `tvc-guide-stationid`, and `group-title` — and nothing else. There is
-   * deliberately no `catchup=`; catch-up is advertised only through the XC
-   * `tv_archive` field. See the G8 gap row in COVERAGE.md.
+   * `tvc-guide-stationid`, and `group-title` — and nothing else. No `catchup=`
+   * family attribute is emitted, so the XC `tv_archive` field is currently the
+   * only surface on which Dispatcharr advertises catch-up. Whether that is
+   * intended or an omission is open: it reads the same attributes on ingest
+   * (`apps/m3u/tasks.py:1383-1388`) but never writes them, and there are three
+   * incompatible M3U conventions to choose between. Filed as #94 and pinned by
+   * `e2e/tests/seeded/catchup-m3u-advertisement.spec.ts`.
    */
   attributes: Record<string, string>;
   /** Everything after the comma that ends the attribute list. */
