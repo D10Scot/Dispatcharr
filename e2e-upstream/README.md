@@ -225,8 +225,8 @@ reconnect" is a normal test.
 | `dead-air` | live + new | Connection stays open, no bytes written | Dead-air failover (>10 s, 3× at 5 s) |
 | `slow-trickle` | live + new | Pacing multiplier < 1 | Buffering detector — **ffmpeg profiles only**, and only arms if the rate is set *before* ffmpeg starts: `speed=` is cumulative since process start, so a trickle applied mid-stream takes ~55 s to arm and dead-air wins at ~25 s |
 | `disconnect` | live | `{ clean, afterBytes? }`; default abrupt | Both reconnect branches (`RequestException` vs `"HTTP stream ended"`) |
-| `not-found` | new only (`appliedTo: 0`) | 404 on the requested endpoint | Connect-failure trigger; refresh error handling |
-| `auth-failure` | new only (`appliedTo: 0`) | Credentials that were valid start being rejected | Mid-refresh credential expiry |
+| `not-found` | new only (`appliedTo: 0`) | 404 on the requested endpoint; also, when armed scenario-wide, on the `/movie/` and `/series/` VOD routes | Connect-failure trigger; refresh error handling |
+| `auth-failure` | new only (`appliedTo: 0`) | Credentials that were valid start being rejected; also, when armed scenario-wide, on the `/movie/` and `/series/` VOD routes | Mid-refresh credential expiry |
 | `connection-limit` | new only (`appliedTo: 0`) | Real per-scenario accounting; N+1th rejected, readmitted on close | Provider-slot semantics; `max_streams` disagreement |
 | `redirect-chain` | new only (`appliedTo: 0`) | 302 chain of declared depth before the payload | The Redirect stream profile |
 | `non-ts-bytes` | new only (`appliedTo: 0`) | 200 with an HTML error page instead of TS | `buffer.py`'s realignment defence |
@@ -267,9 +267,12 @@ checked first, ahead of the credential check, the same order the playlist and st
 `xc-auth-envelope` is checked only after a successful credential check, and only on the no-`action`
 handshake. The `/live/`, `/timeshift/` and `/streaming/timeshift.php` routes already inherit
 `not-found`/`auth-failure` for free, through the same `serveChannelStream` pipeline the plain
-`/stream/<n>.ts` route uses. The `/movie/` and `/series/` VOD routes do **not** — they never reach
-`serveChannelStream` — so `not-found`/`auth-failure` have no effect there, unchanged from before
-this fault set existed.
+`/stream/<n>.ts` route uses. The `/movie/` and `/series/` VOD routes honour both too, but checked
+directly in `handleXc` rather than inherited from `serveChannelStream` — `auth-failure` ahead of
+the credential comparison, `not-found` after the movie/episode membership check, the same ordering
+`player_api.php` and `serveChannelStream` use — and **only when armed scenario-wide**: a VOD id is
+not a channel id, so a `{ channel: n }` arm stores under a scope neither check ever reads, and does
+not reach these routes.
 
 An armed **`slow-trickle`** overrides the scenario's own rate for the connections it reaches.
 Only `clearFault('slow-trickle')` hands control back to the scenario rate — a plain `rate()` call
