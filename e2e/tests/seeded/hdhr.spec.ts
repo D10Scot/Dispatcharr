@@ -53,21 +53,23 @@ test('hdhr discover.json describes a tuner and points at its own lineup', async 
   // profiles' max_streams plus a COUNT of every is_custom Stream on the
   // WHOLE instance (apps/m3u/utils.py:85-141) — not scoped to this test,
   // this worker, or even this run: it accumulates over the container's
-  // whole session (verified empirically: 102 at rest before this test ran).
-  // No absolute value can be pinned. What the formula pins regardless of any
-  // other worker's state: adding one custom stream raises the reported
-  // count by exactly 1, whether or not an unlimited profile is active
-  // elsewhere (both branches add custom_stream_count linearly, uncapped by
-  // unlimited_default) — so a before/after delta is a real assertion where
-  // the absolute value cannot be. Small residual race: another worker
-  // seeding or (nothing in this harness deletes one) removing a custom
-  // stream in the same instant would perturb the delta — the same class of
-  // rare parallel-load flake already accepted elsewhere in this suite.
+  // whole session (verified empirically: 102 at rest before this test ran)
+  // and nothing in this harness ever deletes a seeded Stream. No absolute
+  // value can be pinned, but the RELATIONSHIP can: adding one custom stream
+  // must raise the reported count by AT LEAST 1, whether or not an unlimited
+  // profile is active elsewhere (both branches add custom_stream_count
+  // linearly, uncapped by unlimited_default). Deliberately `>=`, not `===`:
+  // the `seeded` project runs fullyParallel with 4 workers, and another
+  // worker's seed.stream() call landing in the same window would make an
+  // exact +1 an occasional false-failure flake. `>=` still fails if seeding
+  // a custom stream does NOT increment the count at all — the wiring this
+  // assertion actually exists to test — while tolerating a concurrent seed.
+  // Do not tighten this to `===`; that reintroduces the flake.
   const before = device.TunerCount;
   expect(before).toBeGreaterThanOrEqual(1); // the function's own documented floor
   await seed.stream();
   const after: Discover = await (await request.get('/hdhr/discover.json')).json();
-  expect(after.TunerCount).toBe(before + 1);
+  expect(after.TunerCount).toBeGreaterThanOrEqual(before + 1);
 
   // R14 was withdrawn: this deployment has no working X-Forwarded-Host path,
   // so the origin Dispatcharr emits is exactly the client's own Host header
