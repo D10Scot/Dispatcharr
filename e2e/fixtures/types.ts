@@ -508,10 +508,15 @@ export type UpstreamMovie = {
   id: number;
   name: string;
   year: number | null;
-  categoryId: number;
+  /** Mirrors `MovieSpec.categoryId` — `null` emits no `category_id` key at all. */
+  categoryId: number | null;
   containerExtension: string;
   tmdbId: string | null;
   imdbId: string | null;
+  /** Mirrors `MovieSpec.isAdult`. */
+  isAdult?: boolean;
+  /** Mirrors `MovieSpec.vodInfo`. */
+  vodInfo?: Record<string, unknown>;
 };
 
 /** Mirrors `EpisodeSpec`. One episode within an {@link UpstreamSeason}. */
@@ -534,6 +539,8 @@ export type UpstreamSeries = {
   name: string;
   categoryId: number;
   seasons: UpstreamSeason[];
+  /** Mirrors `SeriesSpec.seasonsAsArray`. */
+  seasonsAsArray?: boolean;
 };
 
 /* ------------------------------------------------------------------------ *
@@ -868,3 +875,204 @@ export type BackupEntry = {
   size: number;
   created: string;
 };
+
+/**
+ * `VODLogoSerializer`; the model is `apps/vod/models.py` `VODLogo` (`name`,
+ * unique `url`). `Meta.fields` is all eight below — the five after `url` are
+ * `SerializerMethodField`s, so they are read-only and always present.
+ * `item_names` is capped at ten movies plus ten series.
+ */
+export type VodLogo = {
+  id: number;
+  name: string;
+  url: string;
+  cache_url: string | null;
+  movie_count: number;
+  series_count: number;
+  is_used: boolean;
+  item_names: string[];
+};
+
+/**
+ * The `quality_info` method field on both `M3UMovieRelationSerializer` and
+ * `M3UEpisodeRelationSerializer`. It returns `None` — hence `null` — when it
+ * can derive nothing, and otherwise a dict carrying **one** of `quality`,
+ * `resolution` or `bitrate`, never a fixed set.
+ */
+export type QualityInfo = {
+  quality?: string;
+  resolution?: string;
+  bitrate?: string;
+} | null;
+
+/**
+ * `/api/vod/movies/` — `MovieSerializer`, `fields = '__all__'` plus a nested
+ * read-only `logo`. Nullability is the model's (`apps/vod/models.py` `Movie`).
+ *
+ * `custom_properties` is `None` far more often than it looks: ingest sets it
+ * to `custom_props or None` and only ever populates
+ * `youtube_trailer`/`director`/`actors`/`release_date`
+ * (`apps/vod/tasks.py`, `process_movie_batch`), and
+ * `clean_custom_properties({})` returns `None`. A provider entry carrying none
+ * of those four leaves it null — which is the precondition of the
+ * `get_vod_info` defect pinned in `xc-vod-catalogue.spec.ts`.
+ *
+ * `rating` is a `CharField`, not a number.
+ */
+export type Movie = {
+  id: number;
+  uuid: string;
+  name: string;
+  description: string | null;
+  year: number | null;
+  rating: string | null;
+  genre: string | null;
+  duration_secs: number | null;
+  logo: VodLogo | null;
+  tmdb_id: string | null;
+  imdb_id: string | null;
+  is_adult: boolean;
+  custom_properties: Record<string, unknown> | null;
+  created_at: string;
+  updated_at: string;
+};
+
+/** `/api/vod/series/` — `SeriesSerializer`, `fields = '__all__'` plus nested `logo` and the `episode_count` method field. `Series` has no `is_adult` and no `duration_secs`. */
+export type Series = {
+  id: number;
+  uuid: string;
+  name: string;
+  description: string | null;
+  year: number | null;
+  rating: string | null;
+  genre: string | null;
+  logo: VodLogo | null;
+  tmdb_id: string | null;
+  imdb_id: string | null;
+  custom_properties: Record<string, unknown> | null;
+  episode_count: number;
+  created_at: string;
+  updated_at: string;
+};
+
+/**
+ * `/api/vod/episodes/` — `EpisodeSerializer`, `fields = '__all__'` with a
+ * nested read-only `series`. `season_number` and `episode_number` are both
+ * `IntegerField(null=True)` and both participate in
+ * `unique_together ('series', 'season_number', 'episode_number')`.
+ */
+export type Episode = {
+  id: number;
+  uuid: string;
+  name: string;
+  description: string | null;
+  air_date: string | null;
+  rating: string | null;
+  duration_secs: number | null;
+  series: Series;
+  season_number: number | null;
+  episode_number: number | null;
+  tmdb_id: string | null;
+  imdb_id: string | null;
+  custom_properties: Record<string, unknown> | null;
+  created_at: string;
+  updated_at: string;
+};
+
+/**
+ * `/api/vod/categories/` — `VODCategorySerializer`. **Unpaginated**: no
+ * `pagination_class` on `VODCategoryViewSet` and no
+ * `DEFAULT_PAGINATION_CLASS` in `dispatcharr/settings.py`, so the list
+ * endpoint returns a bare array of every category on the instance. Locate
+ * yours with `find`, never a length or an index.
+ *
+ * `m3u_accounts` is `M3UVODCategoryRelationSerializer(source='m3u_relations')`,
+ * whose three fields are exactly `category` (the id), `m3u_account` (the id)
+ * and `enabled` — not nested objects.
+ */
+export type VodCategoryRelation = {
+  category: number;
+  m3u_account: number;
+  enabled: boolean;
+};
+export type VodCategory = {
+  id: number;
+  name: string;
+  category_type: 'movie' | 'series';
+  category_type_display: string;
+  m3u_accounts: VodCategoryRelation[];
+};
+
+/**
+ * `/api/vod/movies/<pk>/providers/` — `M3UMovieRelationSerializer`,
+ * `fields = '__all__'` with `movie`, `category` and `m3u_account` all nested
+ * as full objects, plus a `quality_info` method field.
+ *
+ * `custom_properties` is the read-back surface for "what did the provider
+ * actually say": `basic_data` is the whole `get_vod_streams` entry,
+ * `detailed_info`/`movie_data` arrive from `refresh_movie_advanced_data`, and
+ * `detailed_fetched` gates the 24-hour throttle.
+ */
+export type M3uMovieRelation = {
+  id: number;
+  movie: Movie;
+  category: VodCategory | null;
+  m3u_account: M3uAccount;
+  quality_info: QualityInfo;
+  stream_id: string;
+  container_extension: string | null;
+  custom_properties: Record<string, unknown> | null;
+  last_advanced_refresh: string | null;
+  last_seen: string;
+  created_at: string;
+  updated_at: string;
+};
+
+/** `/api/vod/series/<pk>/providers/` — `M3USeriesRelationSerializer`, `fields = '__all__'`. **`id` is what XC's `get_series` emits as `series_id`** — not `Series.id`. */
+export type M3uSeriesRelation = {
+  id: number;
+  series: Series;
+  category: VodCategory | null;
+  m3u_account: M3uAccount;
+  external_series_id: string;
+  custom_properties: Record<string, unknown> | null;
+  last_episode_refresh: string | null;
+  last_seen: string;
+  created_at: string;
+  updated_at: string;
+};
+
+/** `M3UEpisodeRelationSerializer`, `fields = '__all__'` plus the `quality_info` method field. `unique_together` is `('m3u_account', 'stream_id')`, so several relations may point at one `Episode`. */
+export type M3uEpisodeRelation = {
+  id: number;
+  episode: Episode;
+  series_relation: number | null;
+  m3u_account: M3uAccount;
+  quality_info: QualityInfo;
+  stream_id: string;
+  container_extension: string | null;
+  custom_properties: Record<string, unknown> | null;
+  last_seen: string;
+  created_at: string;
+  updated_at: string;
+};
+
+/**
+ * One row of the `category_settings` array in the body of
+ * `PATCH /api/m3u/accounts/<id>/group-settings/`
+ * (`M3UAccountViewSet.update_group_settings`, `apps/m3u/api_views.py`).
+ *
+ * **The key is `id` — the `VODCategory` primary key — not `category`.** Rows
+ * without it are silently skipped. Like {@link GroupSettingRow}, this action
+ * uses no serializer and issues a `bulk_create(update_conflicts=True,
+ * update_fields=['enabled', 'custom_properties'])`, so an omitted field is
+ * written as its zero value: omitting `custom_properties` writes `{}`.
+ */
+export type CategorySettingRow = {
+  id: number;
+  enabled: boolean;
+  custom_properties: Record<string, unknown>;
+};
+
+/** `VODPagination` — `page_size` 20, `page_size` query param up to 100. Movies, series and episodes all paginate; categories do not. */
+export type VodPage<T> = { count: number; next: string | null; previous: string | null; results: T[] };

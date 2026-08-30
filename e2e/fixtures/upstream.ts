@@ -22,6 +22,10 @@ export const UPSTREAM_INTERNAL_BASE =
  *  - `range-unsupported` — scenario-wide only; a `channel` is **rejected**
  *    (400) — a VOD id isn't a channel id. Armed, `/movie|series/` answers 200
  *    with the whole asset, no `Accept-Ranges`, and `Range` is ignored.
+ *  - `not-found` and `auth-failure`, though channel-scopable in general,
+ *    reach `/movie/` and `/series/` only when armed scenario-wide — a VOD id
+ *    is not a channel id, and the VOD branch of `handleXc` resolves them
+ *    with no channel argument.
  */
 export type FaultName =
   | 'dead-air'
