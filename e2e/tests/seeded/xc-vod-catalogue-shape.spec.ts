@@ -19,11 +19,13 @@ import { test, expect, xcQuery } from '../../fixtures';
  * connect — all answer, none of them 500, and the four list payloads are
  * well-formed. That's still real: an untested code path on a fresh instance
  * most often fails by 500ing, not by returning the wrong shape, and a
- * `[].every(...)` key check is vacuously true against zero rows, so it costs
- * nothing when the catalogue happens to be empty and catches a broken row
- * shape when it isn't. G9 owns the assertions that the *content* of a seeded
- * catalogue is correct (see `COVERAGE.md`'s G9 row: "G5 covers only the
- * shape").
+ * per-element key check over `body.entries()` is vacuously true against zero
+ * rows, so it costs nothing when the catalogue happens to be empty and
+ * catches a broken row shape when it isn't. G9 owns the assertions that the
+ * *content* of a seeded catalogue is correct (see `COVERAGE.md`'s G9 row:
+ * "G5 covers only the shape"). Because "vacuously true against zero rows" is
+ * silent about which happened, the row count actually checked is recorded
+ * as a test annotation rather than left for the reader to guess.
  *
  * Expected key sets below are read directly off the dict literals each view
  * function builds — these are hand-built dicts, not DRF serializers, so
@@ -38,6 +40,18 @@ import { test, expect, xcQuery } from '../../fixtures';
  * regardless of what else is in the catalogue (apps/output/views.py:1619,
  * :1630, :1356, :1365) — and are asserted exactly as the original brief
  * specified.
+ *
+ * That 404 is ambiguous on this instance, though (issue #84):
+ * `xc_get_user` (apps/output/views.py:364) resolves the account with
+ * `get_object_or_404(User, username=...)` *before* any action-specific code
+ * runs, so an unrecognised username 404s from every action, list actions
+ * included, not just the two detail ones. A test that only ever asserts 404
+ * here cannot tell "no such vod/series id" from "no such user" — if
+ * `seed.xcUser` ever produced a user the server couldn't find, every case
+ * below would go green without `xc_get_vod_info`/`xc_get_series_info` having
+ * run at all. The detail-action test below asserts a positive control with
+ * the same credentials first, precisely to rule that out. Any future test
+ * asserting 404 on this surface needs the same disambiguation.
  */
 
 const CATEGORY_KEYS = ['category_id', 'category_name', 'parent_id'];
@@ -67,7 +81,7 @@ const LIST_ACTIONS: Array<[action: string, expectedKeys: string[]]> = [
 test('the four XC list actions answer 200 with a well-formed array', async ({
   seed,
   request,
-}) => {
+}, testInfo) => {
   const user = await seed.xcUser({ user_level: 1 });
 
   for (const [action, expectedKeys] of LIST_ACTIONS) {
@@ -76,6 +90,16 @@ test('the four XC list actions answer 200 with a well-formed array', async ({
 
     const body = await res.json();
     expect(Array.isArray(body), `${action} body`).toBe(true);
+
+    // Recorded rather than left implicit: "0 rows, key check never ran" and
+    // "36 rows, key check ran 36 times" both make this assertion pass, and
+    // look identical in a green run without this. Not an assertion — an
+    // assertion that the array is non-empty would reintroduce the ordering
+    // race against G8 that R1 removed toEqual([]) to avoid.
+    testInfo.annotations.push({
+      type: 'info',
+      description: `${action}: checked ${body.length} row(s)`,
+    });
 
     // Not optional: Array.isArray alone passes against [] AND against
     // garbage rows. Checking every present element's key set is what makes
@@ -92,6 +116,18 @@ test('the four XC list actions answer 200 with a well-formed array', async ({
 
 test('the two XC detail actions 404 rather than erroring', async ({ seed, request }) => {
   const user = await seed.xcUser({ user_level: 1 });
+
+  // Positive control (issue #84): `xc_get_user` resolves the username with
+  // get_object_or_404 before any action runs, so an unrecognised username
+  // 404s from every action — list actions included. Without this, a broken
+  // `seed.xcUser` producing a user the server can't find would make every
+  // case below pass while never reaching xc_get_vod_info/xc_get_series_info.
+  // Proving this exact user gets a 200 from a list action first is what
+  // turns "these 404" into "these 404 while this user resolves".
+  const control = await request.get(
+    `/player_api.php${xcQuery(user, { action: 'get_vod_categories' })}`
+  );
+  expect(control.status(), 'positive control: get_vod_categories for this user').toBe(200);
 
   const cases: Array<[string, Record<string, string | number>]> = [
     ['get_vod_info', {}],
