@@ -1,4 +1,4 @@
-import { test, expect, Seeder } from '../../fixtures';
+import { test, expect, Seeder, Waiter } from '../../fixtures';
 import type { Channel } from '../../fixtures';
 
 test('seeded channel is retrievable and namespaced', async ({ api, seed }) => {
@@ -82,8 +82,11 @@ test('a passed username cannot override the generated user username', async ({
 test('runToken makes names differ across Seeder instances with identical arguments', ({
   api,
 }) => {
-  const a = new Seeder(api, 0, 'x').generatedName('channel');
-  const b = new Seeder(api, 0, 'x').generatedName('channel');
+  // `generatedName` never touches `waitFor` — this Waiter exists only to
+  // satisfy the constructor.
+  const waitFor = new Waiter(api);
+  const a = new Seeder(api, 0, 'x', waitFor).generatedName('channel');
+  const b = new Seeder(api, 0, 'x', waitFor).generatedName('channel');
 
   expect(a).not.toBe(b);
   expect(a).toMatch(/^e2e-w0-/);

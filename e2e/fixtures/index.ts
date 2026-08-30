@@ -35,6 +35,10 @@
  *   useTokens({ access, refresh })       re-point at another principal
  *   freshAccessToken() → Promise<string> a token with life left in it
  *   expireAccessTokenForTest()           corrupt the token, to drive the 401 path
+ *   upload(url, multipart) → Promise<APIResponse>
+ *                                        multipart/form-data POST, same 401
+ *                                        refresh-and-retry as the verbs above.
+ *                                        The one non-JSON write path here.
  * The verbs return a raw `APIResponse` — nothing is asserted for you. Assert
  * the status yourself, or hand it to `json()` when only the body matters.
  *
@@ -63,6 +67,24 @@
  *                                `opts.channel` is `ChannelOverrides` minus
  *                                `streams`/`stream_profile_id` — the factory
  *                                owns both, so they are not writable here.
+ *   upstreamM3UAccount(scenario, overrides?) → M3uAccount
+ *                                creates an active account pointed at that
+ *                                scenario's playlist, refreshes it, waits, and
+ *                                asserts `status === 'success'`. Not for a
+ *                                test that wants the refresh to fail.
+ *   upstreamEpgSource(scenario, overrides?) → EpgSource
+ *                                creates an active XMLTV source pointed at that
+ *                                scenario's EPG and waits for its refresh. The
+ *                                result has EPGData rows and ZERO ProgramData —
+ *                                programmes need a channel association first.
+ *   logo(overrides?)             → Logo           /api/channels/logos/upload/,
+ *                                multipart, generated filename (the upload is
+ *                                get_or_create'd on the path, so a fixed name
+ *                                is shared across workers). The payload is
+ *                                `logoPayload(name)`, unique per logo — see
+ *                                `logoPayload`, also exported here, to derive
+ *                                the expected served bytes for a given logo
+ *                                instead of transcribing a byte count.
  *   generatedName(entity)        the naming scheme itself, for a row you
  *                                create by hand
  *   `overrides` is typed per entity — `ChannelOverrides`, `UserOverrides`, …
@@ -126,6 +148,12 @@
  *       (identical back-to-back terminal failures on the same account).
  *   options: { timeoutMs?, intervalMs?, description?, describeLast? }
  *       plus startTimeoutMs and trigger on m3uRefreshComplete.
+ *   epgRefreshComplete(sourceId, options?) → Promise<EpgSource>
+ *       Polls `updated_at`, NOT a terminal status: an XMLTV refresh reaches
+ *       `success` twice and the first one is premature. Triggers via
+ *       `POST /api/epg/import/` with the id in the BODY; pass
+ *       `trigger: async () => {}` when creation already started the refresh,
+ *       and `baseline:` the create response so the wait cannot miss it.
  *
  * `ws: WsListener` — subscription to the single `updates` group on `/ws/`.
  * For state the REST API does not expose; prefer `waitFor` otherwise — the
@@ -341,8 +369,8 @@ export const test = base.extend<Fixtures>({
   api: async ({ request }, use) => {
     await use(new ApiClient(request));
   },
-  seed: async ({ api }, use, testInfo) => {
-    await use(new Seeder(api, testInfo.workerIndex, testInfo.testId));
+  seed: async ({ api, waitFor }, use, testInfo) => {
+    await use(new Seeder(api, testInfo.workerIndex, testInfo.testId, waitFor));
   },
   asPrincipal: async ({ request }, use) => {
     await use((name: PrincipalName) => makePrincipalClient(request, name));
@@ -423,7 +451,8 @@ export const test = base.extend<Fixtures>({
 
 export { expect } from '@playwright/test';
 export { ApiClient } from './api';
-export { Seeder, SEEDED_USER_PASSWORD } from './seed';
+export type { MultipartValue } from './api';
+export { Seeder, SEEDED_USER_PASSWORD, logoPayload } from './seed';
 export {
   loginsSpentByThisWorker,
   makePrincipalClient,
@@ -462,20 +491,29 @@ export type {
 } from './upstream';
 export type {
   Channel,
+  ChannelGroup,
   ChannelOverrides,
   ChannelProfile,
   ChannelProfileOverrides,
   ChannelStatus,
   ChannelStatusClient,
+  EpgData,
   EpgSource,
   EpgSourceOverrides,
   EpgSourceStatus,
   EpgSourceType,
+  GroupSettingRow,
+  Logo,
+  LogoOverrides,
   M3uAccount,
+  M3uAccountChannelGroup,
   M3uAccountOverrides,
   M3uAccountStatus,
+  ProgramSearchPage,
+  ProgramSearchResult,
   Stream,
   StreamOverrides,
+  StreamPage,
   StreamProfile,
   StreamProfileOverrides,
   UpstreamChannelOptions,

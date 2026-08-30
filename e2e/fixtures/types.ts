@@ -141,14 +141,94 @@ export type StreamProfile = {
 /**
  * A `Stream` row. Streams are what a `Channel` points at; the channel is what
  * a client tunes. `is_custom: true` marks a row created by hand rather than
- * ingested from an M3U account — which is what every G4 test wants, because
- * ingesting would test the M3U path (G3) rather than the streaming path.
+ * ingested from an M3U account.
+ *
+ * Fields from `StreamSerializer.Meta.fields`; nullability from
+ * `apps/channels/models.py` (`Stream`). Not typed here: `local_file`,
+ * `current_viewers`, `updated_at`, `is_adult`, `stream_profile_id`,
+ * `stream_hash`, `stream_stats`, `stream_stats_updated_at`, `stream_id`,
+ * `is_catchup`, `catchup_days` — writable or readable, but nothing needs them.
  */
 export type Stream = {
   id: number;
   name: string;
   url: string;
   is_custom: boolean;
+  /** FK `CASCADE`, `null=True` — null on a hand-created (`is_custom`) row. */
+  m3u_account: number | null;
+  /** The playlist's `tvg-logo`. `TextField(blank=True, null=True)`. */
+  logo_url: string | null;
+  /** The playlist's `tvg-id`. `CharField(blank=True, null=True)`. */
+  tvg_id: string | null;
+  /** FK `SET_NULL` to `ChannelGroup`, set from `group-title` on refresh. */
+  channel_group: number | null;
+  /** `DateTimeField(default=timezone.now)` — never null. */
+  last_seen: string;
+  is_stale: boolean;
+  /** The playlist's `tvg-chno`. `FloatField(null=True)`; the fake provider declares none. */
+  stream_chno: number | null;
+};
+
+/**
+ * `GET /api/channels/streams/`. `StreamPagination` is unconditional on this
+ * endpoint (page_size 50, `page_size` query param, max 10000), so the list
+ * form is always this envelope and never a bare array.
+ */
+export type StreamPage = {
+  count: number;
+  next: string | null;
+  previous: string | null;
+  results: Stream[];
+};
+
+/**
+ * `/api/channels/groups/`. `ChannelGroup` has exactly one model field, `name`
+ * (`TextField(unique=True)`). `ChannelGroupSerializer` adds three read-only
+ * mirrors (`channel_count`, `m3u_account_count`, `m3u_accounts`) that nothing
+ * here reads. The endpoint has no filterset and no pagination, so it returns a
+ * bare array of every group in the instance — assert membership, never length.
+ */
+export type ChannelGroup = {
+  id: number;
+  name: string;
+};
+
+/**
+ * `/api/channels/logos/`. `Logo` has exactly two model fields, `name` and
+ * `url` (`TextField(unique=True)`) — there is no FileField. An upload writes
+ * the bytes to `/data/logos/<basename>` and stores that **filesystem path** in
+ * `url`; `cache_url` is the servable one, built by `LogoSerializer` as
+ * `…/api/channels/logos/<id>/cache/?v=<hash>` and made absolute when the
+ * serializer has a request in context.
+ *
+ * G6 also declares `export type Logo` on its own branch (four fields, no
+ * `channel_count`/`is_used`, with fuller documentation). On merge, keep G6's
+ * comment — fixing its opening sentence to say only `channel_names` is
+ * untyped, since this file's wider field set also carries `channel_count`
+ * and `is_used` — and this file's wider field set, and delete the duplicate
+ * declaration.
+ *
+ * Not typed here: `channel_names`, a cosmetic capped list nothing asserts on.
+ */
+export type Logo = {
+  id: number;
+  name: string;
+  url: string;
+  cache_url: string;
+  channel_count: number;
+  is_used: boolean;
+};
+
+/**
+ * Options for {@link Seeder.logo}. There is no `name` here for the usual
+ * reason — the factory generates it — and no `url` either: an upload derives
+ * `url` from the filename it wrote, so passing one would do nothing.
+ */
+export type LogoOverrides = {
+  /** Must be one of `validate_logo_file`'s allowed types. Default `image/png`. */
+  mimeType?: string;
+  /** The generated filename's extension, without the dot. Default `png`. */
+  extension?: string;
 };
 
 /** `M3UAccount.Status` (`apps/m3u/models.py`). Note `pending_setup`, which `EpgSourceStatus` has no equivalent of. */
@@ -224,6 +304,48 @@ export type EpgSource = {
   custom_properties: Record<string, unknown> | null;
   epg_data_count: number;
   has_channels: boolean;
+};
+
+/**
+ * `/api/epg/epgdata/` — one row per `<channel>` in an XMLTV document, created
+ * by `parse_channels_only`. Fields from `EPGDataSerializer.Meta.fields`;
+ * nullability from `apps/epg/models.py` (`EPGData`), whose `epg_source` is a
+ * `null=True` FK and whose `icon_url` is `blank=True, null=True`.
+ *
+ * `EPGDataViewSet` declares no filterset and no pagination, so a GET returns
+ * a bare array of **every** row in the instance. Filter it client-side on
+ * `tvg_id`, and never assert its length.
+ */
+export type EpgData = {
+  id: number;
+  tvg_id: string;
+  name: string;
+  icon_url: string | null;
+  epg_source: number | null;
+};
+
+/** One row of {@link ProgramSearchPage}, from `ProgramSearchResultSerializer`. */
+export type ProgramSearchResult = {
+  id: number;
+  title: string;
+  start_time: string;
+  end_time: string;
+  tvg_id: string | null;
+  /** The Channels reached through `EPGData.channels` (the reverse of `Channel.epg_data`). */
+  channels: { id: number; name: string; channel_number: number | null; tvg_id: string | null }[];
+};
+
+/**
+ * `GET /api/epg/programs/search/`. Paginated by `ProgramSearchPagination`
+ * (page_size 50, `page_size` param, max 500). With `?channel_id=<id>` the
+ * filter is `Q(epg__channels__id=<id>)`, so `count` is scoped to one channel
+ * and is a legitimate thing to assert on.
+ */
+export type ProgramSearchPage = {
+  count: number;
+  next: string | null;
+  previous: string | null;
+  results: ProgramSearchResult[];
 };
 
 /**
@@ -419,6 +541,51 @@ export type M3uAccountOverrides = {
   auto_enable_new_groups_live?: boolean;
   auto_enable_new_groups_vod?: boolean;
   auto_enable_new_groups_series?: boolean;
+};
+
+/**
+ * One entry of `M3UAccountSerializer.channel_groups`, which is
+ * `ChannelGroupM3UAccountSerializer(source="channel_group", many=True)`.
+ * `channel_group` is the `ChannelGroup`'s primary key. Reading it from
+ * `GET /api/m3u/accounts/<id>/` is account-scoped, which is why it is
+ * preferred over the global `/api/channels/groups/` list.
+ *
+ * `auto_sync_channel_start`/`_end` are `FloatField(null=True, blank=True)` on
+ * `ChannelGroupM3UAccount`.
+ */
+export type M3uAccountChannelGroup = {
+  channel_group: number;
+  enabled: boolean;
+  auto_channel_sync: boolean;
+  auto_sync_channel_start: number | null;
+  auto_sync_channel_end: number | null;
+  is_stale: boolean;
+  stream_count: number;
+};
+
+/**
+ * One row of the `group_settings` array in the body of
+ * `PATCH /api/m3u/accounts/<id>/group-settings/`
+ * (`M3UAccountViewSet.update_group_settings`).
+ *
+ * **Every field is required on every call.** That action does not use a
+ * serializer: it reads raw `request.data` and issues a
+ * `bulk_create(update_conflicts=True, update_fields=[...])`, so an omitted
+ * field is written as its zero value — omitting `custom_properties` writes
+ * `{}`, omitting `auto_channel_sync` writes `false`, omitting `enabled` writes
+ * `true`. This is also the ONLY route that writes `auto_channel_sync`:
+ * `M3UAccountSerializer.update` pops the nested `channel_groups` payload and
+ * applies `enabled` alone, silently discarding the rest.
+ */
+export type GroupSettingRow = {
+  /** The `ChannelGroup`'s id. Rows without it are silently skipped. */
+  channel_group: number;
+  enabled: boolean;
+  auto_channel_sync: boolean;
+  /** Validated `>= 1` by the view, and `end >= start`. */
+  auto_sync_channel_start: number;
+  auto_sync_channel_end: number;
+  custom_properties: Record<string, unknown>;
 };
 
 /**
