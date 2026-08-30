@@ -19,6 +19,13 @@ type XcStream = { stream_id: number };
 // has no principal at all. Neither change closes the other.
 //
 // Issue: https://github.com/D10Scot/Dispatcharr/issues/87
+//
+// test.fail() caveat: it is satisfied by ANY failure in the body, guards
+// included — so a broken premise, not just the intended assertion, would
+// also read as "expected failure" and this test would go green while
+// proving nothing. Verified with `--reporter=json` that this pin fails at
+// the `toBe(false)` below, with the premise assertions above it passing —
+// re-verify the same way after any edit here.
 test.fail('a channel a user cannot list is not streamable by that user', async ({
   upstream,
   seed,
@@ -44,13 +51,19 @@ test.fail('a channel a user cannot list is not streamable by that user', async (
 
   // The premise: this user genuinely cannot list the channel. Without it a
   // refusal below could mean anything.
-  const listed: XcStream[] = JSON.parse(
-    await (
-      await request.get(
-        `/player_api.php${xcQuery(user, { action: 'get_live_streams' })}`
-      )
-    ).text()
+  //
+  // Positive control: assert the listing call itself succeeded (200) before
+  // parsing it. Without this, an unresolvable user (issue #84 —
+  // get_object_or_404 on username) would 404 with a JSON error body;
+  // JSON.parse would accept it, and `.map` on the non-array result would
+  // throw a TypeError — which test.fail() also treats as an expected
+  // failure. A bare parse-and-check here could pass for a reason that has
+  // nothing to do with is_adult filtering.
+  const listResponse = await request.get(
+    `/player_api.php${xcQuery(user, { action: 'get_live_streams' })}`
   );
+  expect(listResponse.status(), 'get_live_streams for a resolvable user').toBe(200);
+  const listed: XcStream[] = JSON.parse(await listResponse.text());
   expect(listed.map((s) => s.stream_id)).not.toContain(channel.id);
 
   // streamClient, not request.get(): APIResponse.body() awaits the full

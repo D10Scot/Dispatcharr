@@ -13,6 +13,14 @@ import { test, expect, SEEDED_USER_PASSWORD } from '../../fixtures';
 // budget in bootstrap, and a worker cannot wait out a throttle window the way
 // bootstrap can, so an occasional 429 here on a cold rerun is a harness cost,
 // not a product failure. See "The login throttle" in e2e/README.md.
+//
+// test.fail() caveat: it is satisfied by ANY failure in the body, guards
+// included — so that cold-run 429 from `asUser` would also read as
+// "expected failure" without ever reaching the refresh call this test
+// exists to exercise, and an apparently healthy pin could be hollow.
+// Verified with `--reporter=json` that this pin fails at the `toBe(401)`
+// below, with the premise `toBe(204)` passing — re-verify the same way
+// after any edit here.
 test.fail('refreshing a deleted user\'s token returns 401, not 500', async ({
   seed,
   api,
