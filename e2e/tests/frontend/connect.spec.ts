@@ -46,12 +46,14 @@ async function findIntegration(
 // `APIRequestContext` independent of `page`, so it still works after a
 // page-side timeout.
 //
-// This module-level binding is safe only because the `frontend` project pins
-// `fullyParallel: false` (playwright.config.ts) — tests within one file
-// never run concurrently, so one test's write here can never be read by
-// another test's `afterEach`. A module-level binding under `fullyParallel:
-// true` would be a cross-test race; this file relies on the pinned setting,
-// not on it happening to be the default.
+// This module-level binding is safe only because the `frontend` project's
+// block in playwright.config.ts leaves `fullyParallel` unset, and its own
+// comment there says so deliberately — it inherits Playwright's default of
+// `false`, not a project-level override, so tests within one file never run
+// concurrently and one test's write here can never be read by another
+// test's `afterEach`. A module-level binding under `fullyParallel: true`
+// would be a cross-test race; this file relies on that inherited default
+// holding, not on it happening to be pinned some other way.
 let nameToCleanup: string | undefined;
 
 test.afterEach(async ({ api }, testInfo) => {

@@ -11,11 +11,11 @@ if (!statsSurface) {
 // active connections the Stats page renders an empty grid, which proves
 // nothing about the wiring. This spec needs the full local two-container
 // setup (scripts/e2e_up.sh), not a bare E2E_BASE_URL run — see e2e/README.md.
-// The `frontend` project is wired into `.github/workflows/e2e-tests.yml`'s
-// matrix (`:173`, alongside `pristine, seeded, streaming, streaming-failover,
-// streaming-greybox, lifecycle`), so this spec runs in CI like every other
-// row in this directory, and gets the same `scripts/e2e_up.sh`-brought-up
-// upstream every other CI job does.
+// The `frontend` project is wired into the matrix job's `project` list in
+// `.github/workflows/e2e-tests.yml`, alongside `pristine, seeded, streaming,
+// streaming-failover, streaming-greybox, lifecycle`, so this spec runs in CI
+// like every other row in this directory, and gets the same
+// `scripts/e2e_up.sh`-brought-up upstream every other CI job does.
 //
 // Teardown: no `test.afterEach` here, unlike plugins.spec.ts/backups.spec.ts.
 // Those clean up a resource (a plugin key, a backup archive) that has no

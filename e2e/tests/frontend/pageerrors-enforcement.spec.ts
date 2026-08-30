@@ -52,12 +52,14 @@ const SELF_FILE = path.basename(__filename);
 // teardown fires once per *test*, keyed to that test's own fixture
 // instances, so a hook is never the thing it runs against and has no
 // obligation to destructure it (`test.afterEach(async ({ api }, testInfo) =>
-// …)` in backups.spec.ts and plugins.spec.ts is exactly this shape). Excluding
-// exactly these four names is deliberate and minimal, not a retreat from the
-// fail-closed rule above: every *other* `test.<prop>(...)` call — `.only`,
-// `.skip`, `.fixme`, `.fail`, anything not in this set — is still judged
-// below by `isTestCallee()`. That does NOT mean every such call shares
-// `test(...)`'s `(name, fn)` shape: `test.use({...})`, `test.setTimeout(n)`,
+// …)` is exactly this shape, and every cleanup-owning spec in this
+// directory now uses it: backups, plugins, users, settings, dvr, connect,
+// logos). Excluding exactly these four names is deliberate and minimal, not
+// a retreat from the fail-closed rule above: every *other*
+// `test.<prop>(...)` call — `.only`, `.skip`, `.fixme`, `.fail`, anything
+// not in this set — is still judged below by `isTestCallee()`. That does
+// NOT mean every such call shares `test(...)`'s `(name, fn)` shape:
+// `test.use({...})`, `test.setTimeout(n)`,
 // `test.slow()`, `test.step(name, fn)` and the two-argument
 // `test.skip(cond, 'reason')` form don't take an inline test callback at
 // all, and `test.describe(name, fn)`'s callback takes no fixture parameter
