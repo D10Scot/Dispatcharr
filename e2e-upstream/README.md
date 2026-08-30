@@ -268,11 +268,20 @@ checked first, ahead of the credential check, the same order the playlist and st
 handshake. The `/live/`, `/timeshift/` and `/streaming/timeshift.php` routes already inherit
 `not-found`/`auth-failure` for free, through the same `serveChannelStream` pipeline the plain
 `/stream/<n>.ts` route uses. The `/movie/` and `/series/` VOD routes honour both too, but checked
-directly in `handleXc` rather than inherited from `serveChannelStream` — `auth-failure` ahead of
-the credential comparison, `not-found` after the movie/episode membership check, the same ordering
-`player_api.php` and `serveChannelStream` use — and **only when armed scenario-wide**: a VOD id is
-not a channel id, so a `{ channel: n }` arm stores under a scope neither check ever reads, and does
-not reach these routes.
+directly in `handleXc` rather than inherited from `serveChannelStream`, and **only when armed
+scenario-wide**: a VOD id is not a channel id, so a `{ channel: n }` arm stores under a scope
+neither check ever reads, and does not reach these routes. The two faults don't share one ordering
+story here — each matches a different existing route:
+
+- `auth-failure` is checked ahead of the credential comparison, the same position `player_api.php`
+  and `serveChannelStream` both use it in.
+- `not-found` is checked after the movie/episode membership check, immediately before the asset is
+  served. `player_api.php` has no `not-found` check at all — nothing there can 404 that way. And
+  this is the *opposite* end of `serveChannelStream`'s order, which checks `not-found` **first**,
+  ahead of even `auth-failure` and the credential check (`server.ts`, step 1) — a channel id can
+  404 before anything else is known about the request, but a VOD id's existence is only established
+  by the membership check the router already had to run, so `not-found` piggybacks on that result
+  rather than duplicating it earlier.
 
 An armed **`slow-trickle`** overrides the scenario's own rate for the connections it reaches.
 Only `clearFault('slow-trickle')` hands control back to the scenario rate — a plain `rate()` call

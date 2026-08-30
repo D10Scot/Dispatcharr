@@ -276,11 +276,24 @@ describe('not-found and auth-failure on the VOD playback routes', () => {
     // explicitly rather than left implicit: it's the one surprising
     // consequence of the scoping, and a test author arming it this way
     // would otherwise see a silent no-op.
+    //
+    // The arm's own response is asserted first (fix round 1, F1): without
+    // it, a world where `not-found` gets added to SCENARIO_WIDE_ONLY_FAULTS
+    // — so `{ channel: 1 }` is rejected with a 400, same as the
+    // range-unsupported case above — would leave nothing armed at all, and
+    // /movie/ would 200 for a completely different reason. A bare 200 from
+    // /movie/ can't tell "stored under a scope the check ignores" apart
+    // from "never stored". Asserting 200 here (not 400) is what pins the
+    // former.
     process.env.UPSTREAM_VOD_ASSET = syntheticVodAsset();
     const { base, id } = await xcScenario();
-    await arm(base, id, { fault: 'not-found', active: true, channel: 1 });
+    const armRes = await arm(base, id, { fault: 'not-found', active: true, channel: 1 });
+    expect(armRes.status).toBe(200);
+    expect(await readJson(armRes)).toEqual({ fault: 'not-found', active: true, appliedTo: 0 });
+
     const res = await fetch(`${base}/s/${id}/movie/user/pass/1.mp4`);
     expect(res.status).toBe(200);
+    expect((await res.arrayBuffer()).byteLength).toBe(1000);
   });
 });
 
