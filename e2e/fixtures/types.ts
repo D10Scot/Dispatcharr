@@ -886,7 +886,8 @@ export type VodLogo = {
   id: number;
   name: string;
   url: string;
-  cache_url: string | null;
+  /** `vodlogo_cache_url()` (`apps/vod/image_proxy.py`) returns `-> str`, falling back to `""` for a falsy logo — never `null`. */
+  cache_url: string;
   movie_count: number;
   series_count: number;
   is_used: boolean;
@@ -896,8 +897,10 @@ export type VodLogo = {
 /**
  * The `quality_info` method field on both `M3UMovieRelationSerializer` and
  * `M3UEpisodeRelationSerializer`. It returns `None` — hence `null` — when it
- * can derive nothing, and otherwise a dict carrying **one** of `quality`,
- * `resolution` or `bitrate`, never a fixed set.
+ * can derive nothing, and otherwise a dict carrying one or more of `quality`,
+ * `resolution` and `bitrate` — the video-dimensions branch of
+ * `get_quality_info` sets both `resolution` and `quality` together — never a
+ * fixed set.
  */
 export type QualityInfo = {
   quality?: string;
