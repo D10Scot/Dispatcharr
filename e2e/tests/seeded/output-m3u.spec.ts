@@ -55,7 +55,15 @@ test('/output/m3u renders a parseable playlist with a well-formed proxy URL', as
   // where X-Forwarded-Host does take effect.
   expect(mine!.url).toBe(`${baseURL}/proxy/ts/stream/${channel.uuid}`);
   expect(mine!.title).toBe(channel.name);
-  expect(mine!.attributes['group-title']).toBeTruthy();
+  // `toBe`, not `toBeTruthy`: the emitter has two different defaults and only
+  // one of them is correct here. `ChannelSerializer.create` auto-assigns a
+  // group literally named "Default Group" when none is given
+  // (apps/channels/serializers.py:578), and the emitter renders
+  // `effective_group.name` — but falls back to the *different* string
+  // "Default" when a channel has no group at all (apps/output/views.py:269).
+  // A truthiness check passes for either, so it cannot see the case that
+  // matters: a channel whose auto-assignment silently did not happen.
+  expect(mine!.attributes['group-title']).toBe('Default Group');
 });
 
 test('/output/m3u/<profile> renders only the channels enabled in that profile', async ({
