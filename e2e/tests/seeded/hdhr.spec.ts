@@ -27,21 +27,75 @@ type LineupEntry = {
 };
 
 test('hdhr discover.json describes a tuner and points at its own lineup', async ({
+  seed,
   request,
+  baseURL,
 }) => {
+  const channel = await seed.channel();
+
   const res = await request.get('/hdhr/discover.json');
   expect(res.status()).toBe(200);
 
   const device: Discover = await res.json();
-  expect(device.FriendlyName).toBeTruthy();
-  expect(device.DeviceID).toBeTruthy();
-  expect(device.TunerCount).toBeGreaterThan(0);
+
+  // The bare endpoint (no <channel_profile>/<output_profile_id> segment) has
+  // no HDHRDevice row to fall back on in this container (verified: no
+  // fixture creates one, and none of these views' CRUD route is exercised
+  // elsewhere), so DiscoverAPIView takes its `if not device:` branch
+  // (apps/hdhr/api_views.py:79-89), which hardcodes both literals. They only
+  // become slug-derived (`dispatcharr-hdhr-<slug>` /
+  // `Dispatcharr HDHomeRun - <slug>`) when a channel_profile or
+  // output_profile segment is present — neither is, here.
+  expect(device.FriendlyName).toBe('Dispatcharr HDHomeRun');
+  expect(device.DeviceID).toBe('12345678');
+
+  // calculate_tuner_count(minimum=1, unlimited_default=10) sums active M3U
+  // profiles' max_streams plus a COUNT of every is_custom Stream on the
+  // WHOLE instance (apps/m3u/utils.py:85-141) — not scoped to this test,
+  // this worker, or even this run: it accumulates over the container's
+  // whole session (verified empirically: 102 at rest before this test ran).
+  // No absolute value can be pinned. What the formula pins regardless of any
+  // other worker's state: adding one custom stream raises the reported
+  // count by exactly 1, whether or not an unlimited profile is active
+  // elsewhere (both branches add custom_stream_count linearly, uncapped by
+  // unlimited_default) — so a before/after delta is a real assertion where
+  // the absolute value cannot be. Small residual race: another worker
+  // seeding or (nothing in this harness deletes one) removing a custom
+  // stream in the same instant would perturb the delta — the same class of
+  // rare parallel-load flake already accepted elsewhere in this suite.
+  const before = device.TunerCount;
+  expect(before).toBeGreaterThanOrEqual(1); // the function's own documented floor
+  await seed.stream();
+  const after: Discover = await (await request.get('/hdhr/discover.json')).json();
+  expect(after.TunerCount).toBe(before + 1);
+
+  // R14 was withdrawn: this deployment has no working X-Forwarded-Host path,
+  // so the origin Dispatcharr emits is exactly the client's own Host header
+  // — baseURL, for a request.get() call. Exact, not just a shared prefix:
+  // build_absolute_uri_with_port joins uri_parts=["hdhr"] (bare call, no
+  // path params) into "/hdhr/" and rstrips the trailing slash, so BaseURL is
+  // the origin with literally "/hdhr" appended and nothing else.
+  expect(device.BaseURL).toBe(`${baseURL}/hdhr`);
+  // Was previously a tautology: BaseURL and LineupURL are built from the
+  // same base_url variable in the same dict literal (api_views.py:83-84), so
+  // this equality holds by construction. It's meaningful now only because
+  // BaseURL itself is pinned above to something external.
   expect(device.LineupURL).toBe(`${device.BaseURL}/lineup.json`);
 
-  // The URL it advertises actually resolves. A discovery document naming a
-  // 404 is the failure mode that makes a tuner "not work in Plex".
-  const lineup = await request.get(device.LineupURL);
-  expect(lineup.status()).toBe(200);
+  // The URL it advertises actually resolves to the lineup document, not the
+  // SPA catch-all: dispatcharr/urls.py mounts the SPA index under the same
+  // host, and ANY unmatched /hdhr/*.json path 200s with it too (verified:
+  // GET /hdhr/BOGUS.json → 200 text/html, same as the real endpoint's status
+  // alone would have let through). Content-type and shape are what a
+  // status-only check can't tell apart from that page; finding the channel
+  // seeded above proves the body is the real lineup, not just JSON shaped
+  // like one.
+  const lineupRes = await request.get(device.LineupURL);
+  expect(lineupRes.status()).toBe(200);
+  expect(lineupRes.headers()['content-type']).toContain('application/json');
+  const lineup: LineupEntry[] = await lineupRes.json();
+  expect(Array.isArray(lineup)).toBe(true);
+  expect(lineup.some((entry) => entry.GuideName === channel.name)).toBe(true);
 });
 
 test('hdhr device.xml is well-formed and agrees with discover.json', async ({
@@ -59,6 +113,23 @@ test('hdhr device.xml is well-formed and agrees with discover.json', async ({
   const discover: Discover = await (await request.get('/hdhr/discover.json')).json();
   expect(lineupUrl).toBe(discover.LineupURL);
 });
+
+// Investigated, not pinned: HDHRDeviceXMLAPIView (api_views.py:210-233)
+// hardcodes FriendlyName/DeviceID unconditionally and never reads
+// HDHRDevice at all, while DiscoverAPIView (api_views.py:66-67) reads
+// HDHRDevice.objects.first() and prefers its fields when a row exists. So a
+// configured HDHRDevice row would make these two endpoints permanently
+// disagree — a real, source-provable defect, independent of any test state.
+//
+// Deliberately not pinned with a live test.fail() here: HDHRDevice has no
+// seed fixture, and `.objects.first()` is a single unnamespaced row with no
+// per-test scoping — creating one, even transiently, would leak into every
+// OTHER concurrent /hdhr/discover.json call under this project's
+// `fullyParallel: true, workers: 4` (playwright.config.ts), including the
+// two exact-literal assertions a few lines above in this same file. Filed
+// without a live repro — https://github.com/D10Scot/Dispatcharr/issues/83 —
+// on the source citations alone.
+
 
 test('hdhr lineup_status.json reports a scannable cable source', async ({ request }) => {
   const res = await request.get('/hdhr/lineup_status.json');
