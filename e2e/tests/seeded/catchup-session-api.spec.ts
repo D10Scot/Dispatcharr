@@ -176,3 +176,36 @@ test('DELETE /api/catchup/sessions/{id}/ round-trips against a minted session', 
   expect(fabricatedDelete.status()).toBe(404);
   expect(await fabricatedDelete.text()).toContain('Session not found');
 });
+
+/**
+ * Isolates the ownership check (`user_owns_catchup_session`,
+ * `apps/timeshift/api_views.py:200`) from the permission-class check above
+ * it. `api` (the bootstrap admin) clears `IsStandardUser` just as easily as
+ * `standard` does — level 10 vs level 1, both well above the floor of 1 —
+ * so if this 404 came from the permission class rather than ownership, this
+ * test would be indistinguishable from a duplicate of the Standard-user
+ * test. It isn't: the admin is authorized to mint its own sessions and
+ * still gets refused here, which is only explained by the session being
+ * owned by `standard`, not by the admin.
+ */
+test('DELETE /api/catchup/sessions/{id}/ refuses a session minted by a different user', async ({
+  upstream,
+  seed,
+  api,
+  waitFor,
+  asPrincipal,
+}) => {
+  const { channel } = await seedCatchupChannel({ upstream, seed, api, waitFor });
+  const standard = await asPrincipal('standard');
+
+  const mint = await standard.post('/api/catchup/sessions/', {
+    channel_uuid: channel.uuid,
+    start: catchupTimestamp(new Date(Date.now() - 2 * 60 * 60 * 1000)),
+  });
+  expect(mint.status()).toBe(201);
+  const { session_id } = await standard.json<{ session_id: string }>(mint, 'catch-up session');
+
+  const crossUserDelete = await api.delete(`/api/catchup/sessions/${session_id}/`);
+  expect(crossUserDelete.status()).toBe(404);
+  expect(await crossUserDelete.text()).toContain('Session not found');
+});
