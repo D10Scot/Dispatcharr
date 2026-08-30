@@ -10,11 +10,14 @@ if (!backupsSurface) {
 // CREATE ONLY. Restoring a backup replaces the database under every parallel
 // worker mid-run, and under every other project sharing this container
 // locally. Restore is G7's, which stands up its own instance per scenario —
-// per the global constraints (spec D9). COVERAGE.md:91 still carries a
-// single "Backups: create and restore" row assigned to G6 as `todo`; that
-// row predates the G6/G7 split and does not yet have a G7 restore row to
-// point at. This comment states the intended ownership, not a citation to
-// something COVERAGE.md currently shows.
+// per the global constraints (spec D9). COVERAGE.md carries this split as
+// two rows: a Frontend "Backups: create and validate the archive" row,
+// `done` and assigned to G6 (the row this spec satisfies), and a separate
+// Lifecycle "Backups: restore" row, `todo` and assigned to G7, whose own
+// text explains the split this paragraph describes. Deliberately not cited
+// by line number — COVERAGE.md is a shared table other goals' rows also
+// land in and reorder, so a pinned line number here would be wrong again the
+// next time it does.
 //
 // This spec is the reason the `frontend` project runs file-level parallelism:
 // `apps/backups/services.py`'s `create_backup` derives the archive name from
@@ -90,7 +93,15 @@ test.afterEach(async ({ api }, testInfo) => {
     );
     return;
   }
-  throw failures[0];
+  // `AggregateError`, not `throw failures[0]`: this branch is reached only
+  // on the `passed` path, where the `console.error` branch above has
+  // already returned — so if more than one archive's cleanup failed here
+  // (the whole reason `namesToDeleteAfterEach` is a `Set` and not a single
+  // name, see its own comment), throwing just the first would silently drop
+  // every failure after it, with nothing thrown and nothing logged. Rare in
+  // practice (the loop above almost always has one name), but silent when
+  // it happens, so worth the one-line fix.
+  throw new AggregateError(failures, 'backup cleanup failed');
 });
 
 test('a backup created from the Backups panel produces a complete archive', async ({

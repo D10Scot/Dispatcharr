@@ -192,9 +192,16 @@ function findOffenses(src: string, fileName: string): Offense[] {
 
 test('every test() under tests/frontend/ destructures pageErrors', async () => {
   const dir = path.resolve(__dirname);
-  const specFiles = (await readdir(dir)).filter(
-    (name) => name.endsWith('.spec.ts') && name !== SELF_FILE
-  );
+  // Sorted, not just filtered: `readdir` returns filesystem order, which is
+  // not alphabetical on every platform/filesystem and is not guaranteed
+  // stable across runs. `KNOWN_UNVERIFIABLE` below is a hand-written,
+  // alphabetically-sorted list compared against this with `.toEqual` — an
+  // unsorted `specFiles` would make that comparison order-dependent the
+  // moment it holds more than one entry, flaking on directory order rather
+  // than on an actual change to the unverifiable set.
+  const specFiles = (await readdir(dir))
+    .filter((name) => name.endsWith('.spec.ts') && name !== SELF_FILE)
+    .sort();
 
   const offenses: Offense[] = [];
   for (const file of specFiles) {
@@ -237,10 +244,18 @@ test('every test() under tests/frontend/ destructures pageErrors', async () => {
   // reason, and never merely to make the suite green.**
   //
   // Pinned by `file:line` only, not the rendered reason text — the reason
-  // string duplicates judge()'s literal (`:114-117`) verbatim, so pinning the
-  // full message would break this list on a wording-only change to that
-  // literal, or on an unrelated import shifting plugins.spec.ts's line
-  // numbers. The point of the pin is that a change to the *set* of
+  // string duplicates, verbatim, the `reason:` literal in judge()'s
+  // zero-parameter branch (`if (!param) { … }` above, the "Zero fixtures
+  // named at all" case), so pinning the full message would break this list
+  // on a wording-only change to that literal, or on an unrelated import
+  // shifting plugins.spec.ts's line numbers. (An earlier version of this
+  // comment cited that literal by line number — `:114-117` — which was
+  // already wrong when written: at the commit that introduced it, those
+  // lines were a closing brace, a blank line and the two statements that
+  // now read `const param = fn.parameters[0]; if (!param) {`, not the
+  // reason string. Named by symbol here instead, per this repo's own
+  // citation rule, so a future line shift can't repeat that mistake.) The
+  // point of the pin is that a change to the *set* of
   // unverifiable locations is loud, not that a change to the *wording* is.
   const KNOWN_UNVERIFIABLE = [
     // plugins.spec.ts's first test is the synchronous zip-builder unit test.
