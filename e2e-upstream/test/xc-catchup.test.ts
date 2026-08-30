@@ -26,6 +26,40 @@ describe('parseCatchupTimestamp', () => {
     expect(parseCatchupTimestamp('yesterday')).toBeNull();
     expect(parseCatchupTimestamp('1756476000')).toBeNull();
   });
+
+  it('accepts exactly the four shapes among all 12 separator/seconds combinations', () => {
+    // The date separator (`:`/`_`/space), time separator (`-`/`:`) and
+    // presence of seconds look like three independent choices, giving 12
+    // combinations — but `build_timeshift_candidate_urls` only ever pairs
+    // them into these four. Built programmatically from the separator sets
+    // (rather than hand-listing 12 strings) so this test can't drift out of
+    // sync with the table if a separator set ever changes, and it asserts
+    // both directions in one pass — a version that only checked the eight
+    // rejections would still pass if a regression accepted all 12.
+    const dateSeps = [':', '_', ' '];
+    const timeSeps = ['-', ':'];
+    const accepted = new Set([
+      ':|-|false', // %Y-%m-%d:%H-%M
+      '_|-|false', // %Y-%m-%d_%H-%M
+      ':|:|true', // %Y-%m-%d:%H:%M:%S
+      ' |:|true', // %Y-%m-%d %H:%M:%S
+    ]);
+
+    for (const dateSep of dateSeps) {
+      for (const timeSep of timeSeps) {
+        for (const withSeconds of [false, true]) {
+          const value = `2026-08-29${dateSep}14${timeSep}00${withSeconds ? `${timeSep}00` : ''}`;
+          const key = `${dateSep}|${timeSep}|${withSeconds}`;
+          const result = parseCatchupTimestamp(value);
+          if (accepted.has(key)) {
+            expect(result, `expected ${JSON.stringify(value)} to parse`).toBe('2026-08-29T14:00:00');
+          } else {
+            expect(result, `expected ${JSON.stringify(value)} to be rejected`).toBeNull();
+          }
+        }
+      }
+    }
+  });
 });
 
 describe('parseCatchupPath', () => {

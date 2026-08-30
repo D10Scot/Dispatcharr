@@ -14,26 +14,43 @@ export interface CatchupRequest {
 
 /**
  * The four timestamp shapes `build_timeshift_candidate_urls` emits across its
- * seven candidates:
+ * seven candidates (verified at `apps/timeshift/helpers.py:485-488`):
  *
  *   %Y-%m-%d:%H-%M      PATH candidate 0, QUERY candidate 5
  *   %Y-%m-%d_%H-%M      PATH candidate 1, QUERY candidate 3
  *   %Y-%m-%d:%H:%M:%S   PATH candidate 2, QUERY candidate 6
  *   %Y-%m-%d %H:%M:%S   QUERY candidate 4 (SQL)
  *
- * One regex covers all four: the date, then `:`/`_`/space, then the hour, then
- * `-`/`:`, then the minute, then optionally the same separator and seconds.
+ * The date separator, the time separator, and whether seconds are present
+ * look like three independent choices, but they are not — only these four
+ * combinations occur. A single regex that varied all three independently
+ * would accept 12 shapes, eight of which no candidate builder ever emits
+ * (e.g. `2026-08-29_14:00` or `2026-08-29 14-00`). That laxity would be a
+ * silent regression: a future change to `build_timeshift_candidate_urls`
+ * that emitted one of those hybrid shapes would be accepted here and the
+ * test built on this parser would keep passing instead of catching it. So
+ * each shape gets its own regex, tried in order, rather than one permissive
+ * pattern.
  */
-const CATCHUP_TIMESTAMP = /^(\d{4}-\d{2}-\d{2})[:_ ](\d{2})[-:](\d{2})(?:[-:](\d{2}))?$/;
+const CATCHUP_TIMESTAMP_SHAPES: RegExp[] = [
+  /^(\d{4}-\d{2}-\d{2}):(\d{2})-(\d{2})$/, // %Y-%m-%d:%H-%M
+  /^(\d{4}-\d{2}-\d{2})_(\d{2})-(\d{2})$/, // %Y-%m-%d_%H-%M
+  /^(\d{4}-\d{2}-\d{2}):(\d{2}):(\d{2}):(\d{2})$/, // %Y-%m-%d:%H:%M:%S
+  /^(\d{4}-\d{2}-\d{2}) (\d{2}):(\d{2}):(\d{2})$/, // %Y-%m-%d %H:%M:%S
+];
 
 export const ACCEPTED_TIMESTAMP_SHAPES =
   '%Y-%m-%d:%H-%M, %Y-%m-%d_%H-%M, %Y-%m-%d:%H:%M:%S, %Y-%m-%d %H:%M:%S';
 
 export function parseCatchupTimestamp(value: string): string | null {
-  const match = CATCHUP_TIMESTAMP.exec(value.trim());
-  if (!match) return null;
-  const [, date, hour, minute, second] = match;
-  return `${date}T${hour}:${minute}:${second ?? '00'}`;
+  const trimmed = value.trim();
+  for (const shape of CATCHUP_TIMESTAMP_SHAPES) {
+    const match = shape.exec(trimmed);
+    if (!match) continue;
+    const [, date, hour, minute, second] = match;
+    return `${date}T${hour}:${minute}:${second ?? '00'}`;
+  }
+  return null;
 }
 
 const CATCHUP_PATH = /^\/timeshift\/([^/]+)\/([^/]+)\/([^/]+)\/([^/]+)\/(\d+)\.ts$/;
