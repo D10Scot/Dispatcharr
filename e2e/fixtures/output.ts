@@ -89,7 +89,13 @@ export type XcStream = {
   epg_channel_id: string;
   is_adult: number;
   tv_archive: number;
-  /** The provider's `tv_archive_duration`, reaching `Stream.catchup_days` via `int(... or 0)` (`apps/m3u/tasks.py:1167`). */
+  /**
+   * `Channel.catchup_days` when `catchup_allowed and channel.is_catchup`,
+   * else `0` (`apps/output/views.py:727-732`) — gated on the *channel*, not
+   * copied straight from `Stream.catchup_days`. The two sources coincide at
+   * `7` in the happy path and diverge exactly in the cases G10 exists to
+   * test, so do not read this as a re-export of the ingest-time field.
+   */
   tv_archive_duration: number;
 };
 

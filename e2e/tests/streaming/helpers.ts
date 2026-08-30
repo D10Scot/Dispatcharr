@@ -222,6 +222,31 @@ export async function seedCatchupChannel(
 }
 
 /**
+ * One catch-up request Dispatcharr made, parsed into the parameters a test
+ * actually asserts on. See `catchupRequests`, which produces these, for how
+ * the parse works and — importantly — what it can and cannot prove.
+ */
+export interface CatchupRequestRecord {
+  /** Which builder produced it: `format_b` (PATH) or `format_a` (QUERY). */
+  layout: 'path' | 'query';
+  /** The raw logged path, including the query string. For diagnostics. */
+  path: string;
+  status: number | undefined;
+  username: string;
+  password: string;
+  /** The **provider's** stream id, not `Stream.id`. Kept as a string: the PATH form carries it as a path segment and the QUERY form as a param. */
+  streamId: string;
+  /** Decoded, exactly as Dispatcharr formatted it. Compare against a literal `strftime` output. */
+  start: string;
+  /** Minutes, as sent. The client's hint plus `DURATION_BUFFER_MINUTES` (5). */
+  duration: string;
+}
+
+const CATCHUP_PATH_RE =
+  /^\/s\/[^/]+\/timeshift\/([^/]+)\/([^/]+)\/([^/]+)\/([^/]+)\/(\d+)\.ts$/;
+const CATCHUP_QUERY_PATHNAME_RE = /^\/s\/[^/]+\/streaming\/timeshift\.php$/;
+
+/**
  * Every catch-up request Dispatcharr made against this scenario, in arrival
  * order, parsed into the parameters a test actually asserts on.
  *
@@ -246,26 +271,6 @@ export async function seedCatchupChannel(
  * transit — `URLSearchParams` gives the space back, which is the value a
  * test's expected `strftime` output will match.
  */
-export interface CatchupRequestRecord {
-  /** Which builder produced it: `format_b` (PATH) or `format_a` (QUERY). */
-  layout: 'path' | 'query';
-  /** The raw logged path, including the query string. For diagnostics. */
-  path: string;
-  status: number | undefined;
-  username: string;
-  password: string;
-  /** The **provider's** stream id, not `Stream.id`. Kept as a string: the PATH form carries it as a path segment and the QUERY form as a param. */
-  streamId: string;
-  /** Decoded, exactly as Dispatcharr formatted it. Compare against a literal `strftime` output. */
-  start: string;
-  /** Minutes, as sent. The client's hint plus `DURATION_BUFFER_MINUTES` (5). */
-  duration: string;
-}
-
-const CATCHUP_PATH_RE =
-  /^\/s\/[^/]+\/timeshift\/([^/]+)\/([^/]+)\/([^/]+)\/([^/]+)\/(\d+)\.ts$/;
-const CATCHUP_QUERY_PATHNAME_RE = /^\/s\/[^/]+\/streaming\/timeshift\.php$/;
-
 export function catchupRequests(log: LogEntry[]): CatchupRequestRecord[] {
   const out: CatchupRequestRecord[] = [];
 

@@ -96,17 +96,19 @@ export default defineConfig({
       // merely documented, the same reasoning `streaming-greybox` applies to
       // its own container-wide process count below.
       //
-      // SECOND GLOBAL, added by G10: `catchup-redirect.spec.ts`
-      // read-modify-writes `stream_settings.default_stream_profile` to the
-      // locked Redirect profile for the duration of its run
+      // SECOND GLOBAL, planned for G10: `catchup-redirect.spec.ts` (not
+      // landed as of this comment — see the G10 catch-up/timeshift plan)
+      // will read-modify-write `stream_settings.default_stream_profile` to
+      // the locked Redirect profile for the duration of its run
       // (`CoreSettings.is_default_stream_profile_redirect`,
       // `core/models.py:549-564`), because Redirect mode has no per-channel
       // override — it is a container-wide setting. Same shape as
       // `proxy_settings` above, wider blast radius: while it is flipped,
       // *every* channel in the container answers a session-less catch-up or
       // live request with a 302 to the provider instead of proxying it. The
-      // single worker is what makes that safe. Two specs in this directory
-      // now depend on it; do not raise it back to 2.
+      // single worker is what makes that safe. Once that spec lands, two
+      // specs in this directory will depend on it; do not raise `workers`
+      // back to 2 without confirming it no longer needs serialising.
       //
       // Note what the single worker does NOT protect: a run that dies
       // between the write and the `finally` leaves the container on
