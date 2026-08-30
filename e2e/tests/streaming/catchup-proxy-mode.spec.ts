@@ -167,6 +167,35 @@ test('both root XC entry points reach the same cascade, whatever layout the clie
   // given, and it served the same loop for both of these.
 });
 
+test('row 8 premise: a Standard viewer with hide_adult_content cannot list an adult channel', async ({
+  upstream,
+  seed,
+  api,
+  waitFor,
+  request,
+}) => {
+  // Guards the premise the test.fail() below depends on, from OUTSIDE the
+  // inverted block — a test.fail() body is satisfied by any failure inside
+  // it, so no assertion in that body can guard its own premise. This is the
+  // SAME shape of check the test.fail() below relies on (is_adult channel,
+  // Standard viewer, hide_adult_content on), kept in this file rather than
+  // only in `tests/seeded/output-authorization.spec.ts:92` ("hide_adult_content
+  // removes an adult channel from every XC listing path"), so a change to
+  // either file that unguards the pin signals here rather than only there.
+  const { channel } = await seedCatchupChannel({ upstream, seed, api, waitFor });
+  await api.patch(`/api/channels/channels/${channel.id}/`, { is_adult: true });
+  const viewer = await seed.xcUser({
+    user_level: 1,
+    custom_properties: { hide_adult_content: true },
+  });
+
+  const listed = await xcLiveStreams(request, viewer, 'the hide_adult_content listing');
+  expect(
+    listed.some((s) => s.stream_id === channel.id),
+    'an adult channel must not appear in a hide_adult_content listing'
+  ).toBe(false);
+});
+
 test.fail(
   'an adult channel a user cannot list is also refused on the catch-up path',
   async ({ upstream, seed, api, waitFor, request }) => {
