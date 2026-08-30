@@ -1,5 +1,5 @@
 import { test, expect } from '../../fixtures';
-import type { Channel, M3uAccount, StreamPage } from '../../fixtures';
+import type { Channel, StreamPage } from '../../fixtures';
 
 /**
  * `Channel.is_catchup` through the **ingest rollup**, in both directions.
@@ -75,9 +75,11 @@ test('a provider turning tv_archive on sets Channel.is_catchup through the inges
   });
 
   // Both channels start WITHOUT tv_archive. Channel 2 stays that way for the
-  // whole test as a negative control: if the rollup ever wrote is_catchup
-  // from something other than the provider's advertisement, channel 2 would
-  // move too.
+  // whole test, but its stream is never wired to a Channel row below — so it
+  // is a negative control on the fault's channel-scoping and the
+  // stream-level ingest path (that `no-tv-archive` on channel 1 doesn't leak
+  // onto channel 2's stream), not on the rollup. The rollup only ever
+  // touches channels a Stream is wired to.
   await upstream.fault(scenario, 'no-tv-archive', { channel: 1 });
   await upstream.fault(scenario, 'no-tv-archive', { channel: 2 });
 
@@ -98,10 +100,12 @@ test('a provider turning tv_archive on sets Channel.is_catchup through the inges
   // and "the field defaults to false" look like, and nothing here can tell
   // them apart. Its job is to establish that the channel is not already
   // catch-up before the flip, so the `true` at the end of this test is a
-  // change rather than a starting state. The load-bearing negative control is
-  // channel 2 below, which never advertises an archive and must still be
-  // `false` after the rollup has run and moved channel 1.
-  const created = await seed.channel({ streams: [before.get(`${prefix}-arch`)!.id] });
+  // change rather than a starting state. `after.get(`${prefix}-never`)`
+  // below is the fault-scoping / stream-level control described above, not
+  // a control on the rollup itself — channel 2's stream is never wired to a
+  // channel, so the rollup has nothing of channel 2's to touch either way.
+  const streamId = before.get(`${prefix}-arch`)!.id;
+  const created = await seed.channel({ streams: [streamId] });
   const wired = await readChannel(api, created.id);
   expect(wired.is_catchup, 'the channel starts not-catch-up, before the flip').toBe(false);
 
@@ -151,7 +155,8 @@ test('a provider turning tv_archive off clears Channel.is_catchup on the next re
   expect(before.get(`${prefix}-arch`)!.is_catchup).toBe(true);
   expect(before.get(`${prefix}-arch`)!.catchup_days).toBe(ARCHIVE_DAYS);
 
-  const created = await seed.channel({ streams: [before.get(`${prefix}-arch`)!.id] });
+  const streamId = before.get(`${prefix}-arch`)!.id;
+  const created = await seed.channel({ streams: [streamId] });
   const wired = await readChannel(api, created.id);
   expect(wired.is_catchup, 'the signal set it at wiring time').toBe(true);
   expect(wired.catchup_days).toBe(ARCHIVE_DAYS);
@@ -174,4 +179,18 @@ test('a provider turning tv_archive off clears Channel.is_catchup on the next re
   const rolled = await readChannel(api, created.id);
   expect(rolled.is_catchup).toBe(false);
   expect(rolled.catchup_days).toBe(0);
+
+  // Rule out the channel having lost its wiring instead of the rollup
+  // clearing it. The rollup's UPDATE is scoped through ChannelStream
+  // (apps/m3u/tasks.py:1978-1997 joins channels_channelstream) — a channel
+  // with zero streams falls outside it entirely, and a `false` produced that
+  // way would actually come from update_channel_catchup_fields's
+  // post_delete branch (apps/channels/signals.py:393-407), not the rollup.
+  // Assert the SAME Stream row survived the refresh (ruling out a
+  // delete-and-recreate that cascades to ChannelStream) and is still on the
+  // channel.
+  expect(after.get(`${prefix}-arch`)!.id, 'the refresh reused the same Stream row').toBe(
+    streamId
+  );
+  expect(rolled.streams, 'the channel is still wired to that stream').toContain(streamId);
 });
