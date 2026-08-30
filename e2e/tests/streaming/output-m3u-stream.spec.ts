@@ -55,10 +55,12 @@ test('a URL taken verbatim from /output/m3u delivers aligned TS', async ({
   expect(packets.byteLength).toBe(200 * TS_PACKET_SIZE);
   expectTsAligned(packets);
 
-  // Always close what was opened — even on a failure path above, the
-  // `streamClient` fixture's own teardown closes it, but closing explicitly
-  // here keeps the upstream connection from lingering into the log check
-  // below.
+  // Close before reading the log. Not because the log check needs it — it
+  // filters `kind === 'open'`, which a still-open connection would not
+  // affect — but because leaving a live upstream open past the end of the
+  // assertions holds a provider slot for no reason. The `streamClient`
+  // fixture's teardown closes unconditionally, so a forced abort above
+  // cannot leak it either; this is tidiness, not correctness.
   await streamClient.close();
 
   const opens = (await upstream.log(scenario)).filter(
