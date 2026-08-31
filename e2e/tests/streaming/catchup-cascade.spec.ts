@@ -191,6 +191,9 @@ test('an all-404 provider draws out all seven candidates, in order, over exactly
   expect(await res.text()).toContain('Catch-up not available yet');
 
   const asked = catchupRequests(await upstream.log(scenario));
+  // Subsumed by the seven-element `toEqual` below; kept anyway so a wrong
+  // count fails with "seven candidates, all attempted" instead of a diff
+  // against a seven-element array.
   expect(asked, 'seven candidates, all attempted').toHaveLength(7);
 
   // THE FOUR SHAPES, in the exact candidate order
@@ -237,7 +240,7 @@ test('the winning candidate index is cached per account and promoted on the next
   const { scenario, channel } = await seedCatchupChannel({ upstream, seed, api, waitFor });
   await upstream.fault(scenario, 'catchup-layout-404', { layout: 'path' });
 
-  // THREE DIFFERENT INSTANTS, one per drive. With no `session_id`,
+  // FOUR DIFFERENT INSTANTS, one per drive. With no `session_id`,
   // `_serve_catchup` can adopt a matching pooled session (views.py:387-405,
   // `include_busy: true`), scoring client_ip (5) + client_user_agent (3)
   // against _MATCH_SCORE_THRESHOLD = 8 (views.py:95), keyed on
@@ -254,6 +257,7 @@ test('the winning candidate index is cached per account and promoted on the next
   const firstInstant = new Date(Date.now() - 2 * 60 * 60 * 1000);
   const secondInstant = new Date(Date.now() - 3 * 60 * 60 * 1000);
   const thirdInstant = new Date(Date.now() - 4 * 60 * 60 * 1000);
+  const fourthInstant = new Date(Date.now() - 5 * 60 * 60 * 1000);
   const secondShapes = candidateShapes(secondInstant);
   const thirdShapes = candidateShapes(thirdInstant);
   const token = await api.freshAccessToken();
@@ -293,11 +297,46 @@ test('the winning candidate index is cached per account and promoted on the next
   // seeks to it: the fake archive serves the same loop whatever `start` it is
   // given.
 
-  // PER ACCOUNT, not per scenario or per channel. A second XC account
-  // against the SAME provider scenario must start its own walk at candidate
-  // 0 — the cache key is the account id and nothing else
-  // (apps/timeshift/redis_keys.py:64-65). Without this, a cache that was
-  // accidentally global would still satisfy every assertion above.
+  // A DIFFERENT Channel, but the SAME account, driven with its own instant.
+  // Walk 3 below changes the account AND the channel together, so on its
+  // own it can only rule out a GLOBAL cache — it cannot tell "keyed per
+  // account" apart from "keyed per channel", since both predict the same
+  // outcome there. Wiring a second Channel to the same ingested Stream
+  // isolates the channel variable: same account, same underlying Stream, a
+  // fresh Channel row and uuid. `format_cache` keys solely on `account_id`
+  // (apps/timeshift/redis_keys.py:64-65) with no channel in the key, so
+  // this drive should hit the cache exactly like walk 2 did.
+  const createdSameAccount = await seed.channel({ streams: [channel.streams[0]] });
+  const sameAccountChannel = await api.json<Channel>(
+    await api.get(`/api/channels/channels/${createdSameAccount.id}/`),
+    `channel ${createdSameAccount.id} after wiring the first account's stream a second time`
+  );
+  expect(
+    sameAccountChannel.is_catchup,
+    'a second channel on the same account is catch-up before it is driven'
+  ).toBe(true);
+
+  const sameAccountDrive = newStreamClient(baseURL!);
+  await sameAccountDrive.open(urlFor(sameAccountChannel.uuid, fourthInstant), {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  expectTsAligned(await sameAccountDrive.readPackets(20));
+  await sameAccountDrive.close();
+
+  const sameAccountWalk = catchupRequests(await upstream.log(scenario)).slice(5);
+  expect(
+    sameAccountWalk,
+    'a different channel on the same account still hits the cached winner'
+  ).toHaveLength(1);
+  expect(sameAccountWalk[0].layout).toBe('query');
+  // As everywhere in this goal: this drive asked for its own moment. It
+  // does not prove Dispatcharr seeks to it — the fake archive serves the
+  // same loop whatever `start` it is given.
+
+  // NOT GLOBAL, either. A second XC account against the SAME provider
+  // scenario must start its own walk at candidate 0 — together with the
+  // drive above, this pins the cache key as account-scoped and nothing
+  // coarser (not global) or finer (not tied to a particular Channel row).
   const secondAccount = await seed.xcAccount(scenario);
   expect((await waitFor.m3uRefreshComplete(secondAccount.id)).status).toBe('success');
 
@@ -331,7 +370,7 @@ test('the winning candidate index is cached per account and promoted on the next
   expectTsAligned(await third.readPackets(20));
   await third.close();
 
-  const thirdWalk = catchupRequests(await upstream.log(scenario)).slice(5);
+  const thirdWalk = catchupRequests(await upstream.log(scenario)).slice(6);
   // FOUR, asserted before anything is indexed. The second account has no
   // cached index, so it restarts at candidate 0 and walks the full
   // PATH-blocked route — three 404s then the QUERY winner, exactly as walk 1
