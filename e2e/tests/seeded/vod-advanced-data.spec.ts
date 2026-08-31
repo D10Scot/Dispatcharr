@@ -118,6 +118,21 @@ test('advanced movie data is fetched, throttled for 24h, and survives a list syn
   ).find((r) => r.m3u_account.id === account.id)!;
   expect(afterSecondCall.last_advanced_refresh).toBe(afterFirstFetch.last_advanced_refresh);
 
+  // The unmoved timestamp above cannot tell "the refresh was suppressed"
+  // from "the refresh ran and its result happened to be identical" — two
+  // redundant gates (the view's needs_refresh check and the task's own
+  // throttle guard) would both produce that same observable if either one,
+  // alone, were broken. Only the fake provider's own request log can
+  // distinguish them: across the initial fetch and this second, unforced
+  // call, exactly one get_vod_info request should have reached it.
+  const vodInfoRequests = (await upstream.log(scenario)).filter(
+    (entry) => entry.kind === 'request' && entry.path?.includes('action=get_vod_info')
+  );
+  expect(
+    vodInfoRequests,
+    'get_vod_info requests reaching the provider across the initial and second unforced calls'
+  ).toHaveLength(1);
+
   // Proves the throttle is actually gating a fetch that *can* still happen —
   // not merely that no fetch happened, which a broken "never refreshes"
   // implementation would also produce. `force_refresh=true` (the literal
