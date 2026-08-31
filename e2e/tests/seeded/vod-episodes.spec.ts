@@ -110,6 +110,24 @@ test('Dispatcharr fetches episodes on demand for an array-keyed provider series,
 }) => {
   test.setTimeout(150_000);
 
+  // This test proves shape-acceptance, not shape-discrimination: that
+  // Dispatcharr ingests the array-shaped `episodes` payload correctly, not
+  // that it behaves differently from the season-keyed object shape, which it
+  // provably does not. parseSeries (e2e-upstream/src/scenario.ts:517-527)
+  // rejects seasonsAsArray unless seasons[i].number === i, so the array
+  // shape can only ever carry the same season numbers the object shape
+  // would; series_info (apps/vod/api_views.py:549-554) rebuilds its response
+  // from the database, never echoing the provider's raw shape. So the two
+  // shapes are byte-identical downstream by construction — that is by
+  // design, not a gap this test failed to close.
+  //
+  // What it does protect is batch_process_episodes's array branch
+  // (apps/vod/tasks.py, int(season_num) around :1407-1410): drop that
+  // branch and control falls to `else: warning; return`, yielding zero
+  // rows, while refresh_series_episodes still sets episodes_fetched: true
+  // unconditionally (tasks.py:1376) — so this test fails at both the
+  // season-1 row-count assertion and the season-0 membership assertion
+  // below, which is the evidence that it is load-bearing.
   const prefix = seed.generatedName('vod-ep-arr');
   const scenario = await upstream.scenario({
     xc: true,
