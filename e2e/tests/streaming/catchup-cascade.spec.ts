@@ -1,5 +1,12 @@
-import { test, expect } from '../../fixtures';
-import { catchupTimestamp, seedCatchupChannel } from './helpers';
+import { test, expect, expectTsAligned, StreamStatusError } from '../../fixtures';
+import type { Channel, StreamPage } from '../../fixtures';
+import {
+  catchupRequests,
+  catchupTimestamp,
+  newStreamClient,
+  seedCatchupChannel,
+  withDeadline,
+} from './helpers';
 
 /**
  * Drives `/proxy/catchup/<Channel.uuid>` — the **native** catch-up surface
@@ -119,4 +126,370 @@ test('the candidate cascade falls through to the QUERY layout when PATH 404s', a
   expect(queryAttempts[0].path).toContain(`username=${scenario.username}`);
   expect(queryAttempts[0].path).toContain('duration=65');
   expect(queryAttempts[0].path).toContain(`start=${underscoreTs}`);
+});
+
+/**
+ * The four `strftime` outputs `build_timeshift_candidate_urls` emits across
+ * its seven candidates (`apps/timeshift/helpers.py:466-498`), derived here
+ * from the same instant the request itself used — not re-parsed from a
+ * response — so a product change that reorders or collapses the candidate
+ * list fails these tests instead of quietly passing them.
+ *
+ * Seconds are always "00": `catchupTimestamp` emits the colon-dash shape
+ * with no seconds, and `normalize_catchup_timestamp_input` defaults an
+ * absent second to "00" (`helpers.py:94`) before any shape is derived.
+ * `catchup-provider-timezone.spec.ts` is where a non-zero second is driven.
+ */
+function candidateShapes(instant: Date) {
+  const pad = (n: number): string => String(n).padStart(2, '0');
+  const d = `${instant.getUTCFullYear()}-${pad(instant.getUTCMonth() + 1)}-${pad(instant.getUTCDate())}`;
+  const h = pad(instant.getUTCHours());
+  const mi = pad(instant.getUTCMinutes());
+  return {
+    colonDash: `${d}:${h}-${mi}`, // %Y-%m-%d:%H-%M
+    underscore: `${d}_${h}-${mi}`, // %Y-%m-%d_%H-%M
+    colonSeconds: `${d}:${h}:${mi}:00`, // %Y-%m-%d:%H:%M:%S
+    sql: `${d} ${h}:${mi}:00`, // %Y-%m-%d %H:%M:%S — a LITERAL SPACE
+  };
+}
+
+test('an all-404 provider draws out all seven candidates, in order, over exactly four shapes', async ({
+  upstream,
+  seed,
+  api,
+  waitFor,
+  request,
+}) => {
+  // A FRESH account, and this is load-bearing rather than hygiene:
+  // `_set_cached_format_index` writes `timeshift:format_idx:<account_id>`
+  // into the Django cache (Redis, DB 0) with a 3600s TTL
+  // (views.py:3145-3148). A reused account would start the walk at whatever
+  // last worked and this test would observe a rotation, not the canonical
+  // order.
+  const { scenario, channel } = await seedCatchupChannel({ upstream, seed, api, waitFor });
+
+  // `not-found`, not `catchup-layout-404`: the layout fault lets QUERY
+  // candidate 3 win, so the walk stops there and candidates 4-6 are never
+  // sent. `catchup-cascade`'s G8 test above covers that shape of walk. This
+  // one needs every candidate on the wire, and only an all-404 provider
+  // produces that — the layout fault deliberately refuses to block both
+  // layouts (`parseFaultRequest`, e2e-upstream/src/faults.ts).
+  await upstream.fault(scenario, 'not-found');
+
+  const instant = new Date(Date.now() - 2 * 60 * 60 * 1000);
+  const start = catchupTimestamp(instant);
+  const shapes = candidateShapes(instant);
+  const token = await api.freshAccessToken();
+
+  const res = await request.get(
+    `/proxy/catchup/${channel.uuid}?start=${encodeURIComponent(start)}&duration=60`,
+    { headers: { Authorization: `Bearer ${token}` } }
+  );
+
+  // Exhaustion with `last_status == 404` maps to a client 404
+  // (views.py:3335-3337).
+  expect(res.status()).toBe(404);
+  expect(await res.text()).toContain('Catch-up not available yet');
+
+  const asked = catchupRequests(await upstream.log(scenario));
+  // Subsumed by the seven-element `toEqual` below; kept anyway so a wrong
+  // count fails with "seven candidates, all attempted" instead of a diff
+  // against a seven-element array.
+  expect(asked, 'seven candidates, all attempted').toHaveLength(7);
+
+  // THE FOUR SHAPES, in the exact candidate order
+  // `build_timeshift_candidate_urls` emits them
+  // (apps/timeshift/helpers.py:490-498). This is the assertion G8's
+  // plumbing proof structurally could not make: it stops at candidate 3, so
+  // candidate 4 — the SQL shape, the only one carrying a literal space — has
+  // never been observed on the wire by anything in this repo.
+  expect(asked.map((a) => [a.layout, a.start])).toEqual([
+    ['path', shapes.colonDash],
+    ['path', shapes.underscore],
+    ['path', shapes.colonSeconds],
+    ['query', shapes.underscore],
+    ['query', shapes.sql],
+    ['query', shapes.colonDash],
+    ['query', shapes.colonSeconds],
+  ]);
+
+  // ALL 404 — and that is a second, independent assertion, not a
+  // restatement. The provider validates the timestamp shape in `handleXc`
+  // BEFORE `serveChannelStream` ever sees the `not-found` fault
+  // (e2e-upstream/src/xc/router.ts), answering an unrecognised shape with a
+  // 400 that names it. G8's parser accepts exactly these four and rejects
+  // the eight hybrid separator/seconds combinations, so a Dispatcharr
+  // regression that emitted e.g. `2026-08-30 14-00` would show up here as a
+  // 400 in this list rather than as a silent pass.
+  expect(asked.map((a) => a.status)).toEqual([404, 404, 404, 404, 404, 404, 404]);
+
+  // Every candidate carried the same requested instant, in four
+  // spellings. This proves the right moment was asked for, seven times over.
+  // It does not prove Dispatcharr seeks to it: the fake archive serves the
+  // same loop whatever `start` it is given — and here it served nothing at
+  // all.
+});
+
+test('the winning candidate index is cached per account and promoted on the next walk', async ({
+  upstream,
+  seed,
+  api,
+  waitFor,
+  streamClient,
+  baseURL,
+}) => {
+  const { scenario, channel } = await seedCatchupChannel({ upstream, seed, api, waitFor });
+  await upstream.fault(scenario, 'catchup-layout-404', { layout: 'path' });
+
+  // FOUR DIFFERENT INSTANTS, one per drive — kept distinct for the one
+  // reason that survives scrutiny, not to dodge pool adoption. Disconnect
+  // does NOT delete the pool entry: it runs release_cb ->
+  // _make_release_once._release() -> _release_pool_session
+  // (views.py:2342-2381), which with mark_pool_idle=True sets "busy": "0"
+  // and re-arms the TTL — the entry survives, merely marked idle.
+  // `_discard_pool_session` (views.py:2423-2440) is a different path, not
+  // the one disconnect takes. Nor did distinct `start` values ever defeat
+  // adoption: `_find_matching_pool_session` matches on the
+  // `{channel_id}_` prefix, and Node's fetch sends `user-agent: node`, so
+  // the fingerprint scores the full 8 against _MATCH_SCORE_THRESHOLD = 8
+  // (views.py:95) regardless of `start`. The decisive fact is that adopting
+  // an idle pooled session still calls `_attempt_timeshift_stream`
+  // (views.py:2878) — it contacts the provider either way, so a
+  // provider-request count cannot discriminate adoption from a fresh walk
+  // at all, and no assertion in this test infers adoption from one. Distinct
+  // `start` values are kept anyway, for the reason that never depended on
+  // any of this: they prove each walk asked for its *own* moment rather than
+  // several walks repeating one — a stronger property than reusing a single
+  // `start` would give this test. It costs the cache proof nothing:
+  // `timeshift:format_idx:<account_id>` (apps/timeshift/redis_keys.py:64-65)
+  // has no timestamp in the key.
+  const firstInstant = new Date(Date.now() - 2 * 60 * 60 * 1000);
+  const secondInstant = new Date(Date.now() - 3 * 60 * 60 * 1000);
+  const thirdInstant = new Date(Date.now() - 4 * 60 * 60 * 1000);
+  const fourthInstant = new Date(Date.now() - 5 * 60 * 60 * 1000);
+  const secondShapes = candidateShapes(secondInstant);
+  const thirdShapes = candidateShapes(thirdInstant);
+  const token = await api.freshAccessToken();
+  const urlFor = (uuid: string, instant: Date): string =>
+    `/proxy/catchup/${uuid}?start=${encodeURIComponent(catchupTimestamp(instant))}&duration=60`;
+
+  // Walk 1: three PATH 404s, then QUERY candidate 3 wins and is cached.
+  await streamClient.open(urlFor(channel.uuid, firstInstant), {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  expectTsAligned(await streamClient.readPackets(20));
+  await streamClient.close();
+
+  const afterFirst = catchupRequests(await upstream.log(scenario));
+  expect(afterFirst).toHaveLength(4);
+
+  // Walk 2: the SAME account, deliberately — the one place in this goal
+  // where reusing an account is the assertion rather than the hazard.
+  // `_set_cached_format_index(account_id, winning_index)` (views.py:3330)
+  // stored 3 under `timeshift:format_idx:<account_id>`, and
+  // `_stream_from_provider` reorders the walk to put it first
+  // (views.py:3218-3229).
+  const again = newStreamClient(baseURL!);
+  await again.open(urlFor(channel.uuid, secondInstant), {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  expectTsAligned(await again.readPackets(20));
+  await again.close();
+
+  const secondWalk = catchupRequests(await upstream.log(scenario)).slice(4);
+  expect(secondWalk, 'the cached winner is tried first and wins immediately').toHaveLength(1);
+  expect(secondWalk[0].layout).toBe('query');
+  expect(secondWalk[0].start).toBe(secondShapes.underscore);
+  expect(secondWalk[0].status).toBe(200);
+  // The second walk asked for its own moment, in the cached shape. This
+  // proves the right moment was asked for. It does not prove Dispatcharr
+  // seeks to it: the fake archive serves the same loop whatever `start` it is
+  // given.
+
+  // A DIFFERENT Channel, but the SAME account, driven with its own instant.
+  // Walk 3 below changes the account AND the channel together, so on its
+  // own it can only rule out a GLOBAL cache — it cannot tell "keyed per
+  // account" apart from "keyed per channel", since both predict the same
+  // outcome there. Wiring a second Channel to the same ingested Stream
+  // isolates the channel variable: same account, same underlying Stream, a
+  // fresh Channel row and uuid. `format_cache` keys solely on `account_id`
+  // (apps/timeshift/redis_keys.py:64-65) with no channel in the key, so
+  // this drive should hit the cache exactly like walk 2 did.
+  const createdSameAccount = await seed.channel({ streams: [channel.streams[0]] });
+  const sameAccountChannel = await api.json<Channel>(
+    await api.get(`/api/channels/channels/${createdSameAccount.id}/`),
+    `channel ${createdSameAccount.id} after wiring the first account's stream a second time`
+  );
+  expect(
+    sameAccountChannel.is_catchup,
+    'a second channel on the same account is catch-up before it is driven'
+  ).toBe(true);
+
+  const sameAccountDrive = newStreamClient(baseURL!);
+  await sameAccountDrive.open(urlFor(sameAccountChannel.uuid, fourthInstant), {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  expectTsAligned(await sameAccountDrive.readPackets(20));
+  await sameAccountDrive.close();
+
+  const sameAccountWalk = catchupRequests(await upstream.log(scenario)).slice(5);
+  expect(
+    sameAccountWalk,
+    'a different channel on the same account still hits the cached winner'
+  ).toHaveLength(1);
+  expect(sameAccountWalk[0].layout).toBe('query');
+  // As everywhere in this goal: this drive asked for its own moment. It
+  // does not prove Dispatcharr seeks to it — the fake archive serves the
+  // same loop whatever `start` it is given.
+
+  // NOT GLOBAL, either. A second XC account against the SAME provider
+  // scenario must start its own walk at candidate 0 — together with the
+  // drive above, this pins the cache key as account-scoped and nothing
+  // coarser (not global) or finer (not tied to a particular Channel row).
+  const secondAccount = await seed.xcAccount(scenario);
+  expect((await waitFor.m3uRefreshComplete(secondAccount.id)).status).toBe('success');
+
+  const page = await api.json<StreamPage>(
+    await api.get(`/api/channels/streams/?search=${encodeURIComponent(scenario.username!.replace(/-user$/, ''))}`),
+    'streams from both accounts'
+  );
+  const mine = page.results.find((s) => s.m3u_account === secondAccount.id);
+  expect(mine, 'a Stream belonging to the second account').toBeDefined();
+
+  // Re-read, do not trust the POST response. The `ChannelStream` signal
+  // (`update_channel_catchup_fields`, apps/channels/signals.py:393-407)
+  // writes with `Channel.objects.filter(pk=...).update(...)`, which never
+  // touches the in-memory instance the serializer rendered. Skip this and a
+  // false flag surfaces below as `400 "Timeshift not supported for this
+  // channel"`, which reads as a cascade bug and is not one.
+  const createdSecond = await seed.channel({ streams: [mine!.id] });
+  const secondChannel = await api.json<Channel>(
+    await api.get(`/api/channels/channels/${createdSecond.id}/`),
+    `channel ${createdSecond.id} after wiring the second account's stream`
+  );
+  expect(
+    secondChannel.is_catchup,
+    'the second account\'s channel is catch-up before it is driven'
+  ).toBe(true);
+
+  const third = newStreamClient(baseURL!);
+  await third.open(urlFor(secondChannel.uuid, thirdInstant), {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  expectTsAligned(await third.readPackets(20));
+  await third.close();
+
+  const thirdWalk = catchupRequests(await upstream.log(scenario)).slice(6);
+  // FOUR, asserted before anything is indexed. The second account has no
+  // cached index, so it restarts at candidate 0 and walks the full
+  // PATH-blocked route — three 404s then the QUERY winner, exactly as walk 1
+  // did. Asserting the length first is what turns an empty walk into a named
+  // failure instead of `TypeError: Cannot read properties of undefined`.
+  expect(thirdWalk, 'a fresh account restarts the walk at candidate 0').toHaveLength(4);
+  expect(thirdWalk[0].layout).toBe('path');
+  expect(thirdWalk[0].start).toBe(thirdShapes.colonDash);
+  // As everywhere in this goal: the third walk asked for its own moment in
+  // the canonical first shape. It does not prove Dispatcharr seeks to it —
+  // the fake archive serves the same loop whatever `start` it is given.
+});
+
+test('a provider 401 is decisive: one attempt, and the client gets 400, not 401', async ({
+  upstream,
+  seed,
+  api,
+  waitFor,
+  request,
+}) => {
+  const { scenario, channel } = await seedCatchupChannel({ upstream, seed, api, waitFor });
+  await upstream.fault(scenario, 'auth-failure');
+
+  const start = catchupTimestamp(new Date(Date.now() - 2 * 60 * 60 * 1000));
+  const token = await api.freshAccessToken();
+
+  const res = await request.get(
+    `/proxy/catchup/${channel.uuid}?start=${encodeURIComponent(start)}&duration=60`,
+    { headers: { Authorization: `Bearer ${token}` } }
+  );
+
+  // 400, NOT 401. `_stream_from_provider` maps exhaustion by `last_status`:
+  // 404 → 404, 403 → 403, and EVERYTHING ELSE → 400 "Provider error"
+  // (views.py:3335-3341). A provider 401 therefore reaches the client as a
+  // 400. That is deliberate per the code's own comment, not a defect — but
+  // it is exactly the kind of thing a test that asserted the "obvious" 401
+  // would have got wrong.
+  expect(res.status()).toBe(400);
+  expect(await res.text()).toContain('Provider error');
+
+  const asked = catchupRequests(await upstream.log(scenario));
+  // ONE. `code in (401, 403, 406)` sets `decisive_failure` and breaks
+  // (views.py:3323-3326) — the remaining six candidates are not tried,
+  // because an account whose credentials are refused will refuse them in
+  // every URL shape too.
+  expect(asked).toHaveLength(1);
+  expect(asked[0].status).toBe(401);
+});
+
+test('a 200 carrying no TS sync is downgraded to a soft 404 and the whole walk continues', async ({
+  upstream,
+  seed,
+  api,
+  waitFor,
+  streamClient,
+}) => {
+  const { scenario, channel } = await seedCatchupChannel({ upstream, seed, api, waitFor });
+  // `non-ts-bytes` answers 200 with an HTML error page
+  // (e2e-upstream/src/server.ts's serveChannelStream, fault 5) — which is
+  // what a real provider's PHP actually sends when it is unhappy, and the
+  // single most useful failure mode in this file.
+  await upstream.fault(scenario, 'non-ts-bytes');
+
+  const start = catchupTimestamp(new Date(Date.now() - 2 * 60 * 60 * 1000));
+  const token = await api.freshAccessToken();
+
+  // `request` (Playwright's APIRequestContext), not `streamClient`, is what
+  // this test used to drive: `APIResponse.body()` — and therefore the
+  // `await request.get(...)` call itself — internally buffers the *entire*
+  // response before resolving (see StreamClient's own comment on why it
+  // uses Node fetch instead). That is fatal to this test's premise: an
+  // eager-accept regression (any 200 taken as a winner, skipping
+  // `find_ts_sync`) makes Dispatcharr commit to the FIRST candidate and
+  // stream the fault's finite HTML body to the client as if it were live
+  // TS. Once that finite body is exhausted the connection is held open
+  // rather than closed — the video path expects a continuous upstream, not
+  // an EOF — so `request.get()` hangs forever waiting for a body that will
+  // never finish, and the mutation is "killed" by a transport abort before
+  // any assertion below ever runs. `streamClient.open()` resolves as soon as
+  // headers arrive (it never awaits the body), so it cannot hang the same
+  // way, and lets execution reach the assertions that actually cover this
+  // row regardless of which regression shape is present.
+  let status: number;
+  try {
+    await streamClient.open(
+      `/proxy/catchup/${channel.uuid}?start=${encodeURIComponent(start)}&duration=60`,
+      { headers: { Authorization: `Bearer ${token}` } }
+    );
+    // Reached only under a regression: the correct 404 throws below instead.
+    status = streamClient.status!;
+  } catch (err) {
+    if (!(err instanceof StreamStatusError)) throw err;
+    status = err.status;
+  }
+  // open()'s own fetch never hangs (headers-only), but close() awaits any
+  // outstanding read; there is none here since readPackets was never called,
+  // so this resolves immediately — withDeadline is defensive, not load-bearing.
+  await withDeadline(streamClient.close(), 10_000, 'closing the catch-up stream client');
+
+  expect(status).toBe(404);
+
+  const asked = catchupRequests(await upstream.log(scenario));
+  // Seven attempts, every one answered 200. `find_ts_sync` finds no sync
+  // byte in the first 1024, so `last_status` is forced to 404 and the loop
+  // CONTINUES (views.py:3301-3312) — a 200 is not evidence of success on
+  // this path. Asserting the statuses as well as the count is what
+  // distinguishes this from the all-404 row: same count, opposite provider
+  // behaviour, same client outcome. Under an eager-accept regression the walk
+  // stops at the first 200, so this is where that mutation shape actually
+  // gets caught: `asked` comes back with length 1, not 7.
+  expect(asked).toHaveLength(7);
+  expect(asked.every((a) => a.status === 200)).toBe(true);
 });

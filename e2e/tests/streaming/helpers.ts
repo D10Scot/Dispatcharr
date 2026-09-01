@@ -3,6 +3,7 @@ import { StreamClient } from '../../fixtures';
 import type {
   ApiClient,
   Channel,
+  LogEntry,
   M3uAccount,
   Seeder,
   StreamProfile,
@@ -218,4 +219,114 @@ export async function seedCatchupChannel(
   }
 
   return { scenario, channel: refreshedChannel, providerStreamId };
+}
+
+/**
+ * One catch-up request Dispatcharr made, parsed into the parameters a test
+ * actually asserts on. See `catchupRequests`, which produces these, for how
+ * the parse works and — importantly — what it can and cannot prove.
+ */
+export interface CatchupRequestRecord {
+  /** Which builder produced it: `format_b` (PATH) or `format_a` (QUERY). */
+  layout: 'path' | 'query';
+  /** The raw logged path, including the query string. For diagnostics. */
+  path: string;
+  status: number | undefined;
+  username: string;
+  password: string;
+  /** The **provider's** stream id, not `Stream.id`. Kept as a string: the PATH form carries it as a path segment and the QUERY form as a param. */
+  streamId: string;
+  /** Decoded, exactly as Dispatcharr formatted it. Compare against a literal `strftime` output. */
+  start: string;
+  /** Minutes, as sent. The client's hint plus `DURATION_BUFFER_MINUTES` (5). */
+  duration: string;
+}
+
+const CATCHUP_PATH_RE =
+  /^\/s\/[^/]+\/timeshift\/([^/]+)\/([^/]+)\/([^/]+)\/([^/]+)\/(\d+)\.ts$/;
+const CATCHUP_QUERY_PATHNAME_RE = /^\/s\/[^/]+\/streaming\/timeshift\.php$/;
+
+/**
+ * Every catch-up request Dispatcharr made against this scenario, in arrival
+ * order, parsed into the parameters a test actually asserts on.
+ *
+ * Five G10 rows read the provider log the same way, so the parse lives here
+ * once. `ScenarioLog.record` appends and never reorders
+ * (`e2e-upstream/src/log.ts`), and `logRequest` records
+ * `url.pathname + url.search` (`e2e-upstream/src/server.ts:222-229`), so the
+ * returned array is arrival-ordered and carries the query string.
+ *
+ * **What this can and cannot prove.** It reports what Dispatcharr *asked
+ * for*. G8's archive is not time-addressable — the catch-up routes serve the
+ * same looping TS whatever `start` they are given — so no assertion built on
+ * this function is evidence that Dispatcharr seeks to the requested moment.
+ * Do not write one that reads as if it were.
+ *
+ * Both layouts are parsed into one shape because both end in the same
+ * `_serve_catchup` (`apps/timeshift/views.py:344`) and a test asserting on
+ * "the third candidate" should not care which builder produced it. `start`
+ * and the credential fields are decoded: `build_timeshift_url_format_a`
+ * interpolates `start` raw (`apps/timeshift/helpers.py:412-421`), so the SQL
+ * candidate carries a literal space that `requests` requotes to `%20` in
+ * transit — `URLSearchParams` gives the space back, which is the value a
+ * test's expected `strftime` output will match.
+ */
+export function catchupRequests(log: LogEntry[]): CatchupRequestRecord[] {
+  const out: CatchupRequestRecord[] = [];
+
+  for (const entry of log) {
+    if (entry.kind !== 'request' || !entry.path) continue;
+
+    // A base is required only because `entry.path` is origin-relative; the
+    // host is never read.
+    const url = new URL(entry.path, 'http://provider.invalid');
+
+    const pathMatch = CATCHUP_PATH_RE.exec(url.pathname);
+    if (pathMatch) {
+      const [, username, password, duration, start, streamId] = pathMatch;
+      out.push({
+        layout: 'path',
+        path: entry.path,
+        status: entry.status,
+        username: decodeURIComponent(username),
+        password: decodeURIComponent(password),
+        streamId,
+        start: decodeURIComponent(start),
+        duration,
+      });
+      continue;
+    }
+
+    if (CATCHUP_QUERY_PATHNAME_RE.test(url.pathname)) {
+      out.push({
+        layout: 'query',
+        path: entry.path,
+        status: entry.status,
+        username: url.searchParams.get('username') ?? '',
+        password: url.searchParams.get('password') ?? '',
+        streamId: url.searchParams.get('stream') ?? '',
+        start: url.searchParams.get('start') ?? '',
+        duration: url.searchParams.get('duration') ?? '',
+      });
+    }
+  }
+
+  return out;
+}
+
+/**
+ * `%Y-%m-%d:%H-%M-%S` (UTC) — the colon-dash shape *with* seconds.
+ * `normalize_catchup_timestamp_input` accepts it
+ * (`_CATCHUP_WALL_CLOCK_RE`, `apps/timeshift/helpers.py:31-44`, whose
+ * minute/second separator may be `-` or `:`), and it is the only client
+ * shape that lets a test observe whether the requested seconds survive into
+ * the colon-seconds candidate. `catchupTimestamp` deliberately omits
+ * seconds; this is its sibling, not its replacement.
+ */
+export function catchupTimestampWithSeconds(date: Date): string {
+  const pad = (n: number): string => String(n).padStart(2, '0');
+  return (
+    `${date.getUTCFullYear()}-${pad(date.getUTCMonth() + 1)}-${pad(date.getUTCDate())}` +
+    `:${pad(date.getUTCHours())}-${pad(date.getUTCMinutes())}-${pad(date.getUTCSeconds())}`
+  );
 }
