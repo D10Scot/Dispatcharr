@@ -236,6 +236,33 @@ background tasks than a standard M3U refresh:
   present right after account creation or even right after the main refresh; it lands on its own
   schedule, later.
 
+## VOD
+
+`POST /api/m3u/accounts/<id>/refresh-vod/` is the trigger for VOD ingest — `202` on success, `400`
+for a non-XC account or one without `enable_vod` set. `waitFor.m3uRefreshComplete` says nothing
+about VOD: it resolves once the standard M3U refresh task finishes, and that task only queues the
+VOD refresh (see the two asynchrony facts above); an M3U refresh reaching `success` does not mean
+any `Movie` exists yet.
+
+**Movie, series *and* category names must be generated**, not just account names. `VODCategory` is
+unique on `(name, category_type)` **globally**, and `Movie`/`Series` are matched across *all*
+accounts on the instance by TMDB id → IMDB id → `(name, year)` — the same aliasing hazard that
+applies to channels elsewhere in this harness. Scope every assertion by both `?m3u_account=` and a
+generated name; a fixed literal name will collide with another worker's or another test's catalogue
+on a shared instance.
+
+**`GET /api/vod/categories/` is unpaginated, and it writes rows on every call.** Its `list()`
+`get_or_create`s the two `Uncategorized` categories (movie and series) and their
+`M3UVODCategoryRelation` rows for *every* active `enable_vod` XC account on the instance — including
+other workers'. Locate your category with `find`, never a length or an index, and never assert that
+an account *lacks* an `Uncategorized` relation — another test's `GET` may have created it moments
+before yours ran.
+
+**The four Lua scripts in `vod_proxy`'s stream counter are off limits.** They bypass the session
+metadata lock deliberately, as a real bug fix pinned by
+`apps/proxy/vod_proxy/tests/test_vod_lock_contention.py`. A failing VOD test is never fixed by
+editing them.
+
 ## The login throttle — read this before writing a multi-user test
 
 `POST /api/accounts/token/` is rate-limited to **3 requests per minute per
@@ -563,7 +590,7 @@ Local builds are native-architecture; CI is amd64. If you need parity,
 | `asUser` | An `ApiClient` for an arbitrary principal. Costs a login — see the throttle section |
 | `waitFor` | `condition`, `resource`, `m3uRefreshComplete`, `epgRefreshComplete` |
 | `ws` | `/ws/` subscription; `waitForMessage(type, { where, timeoutMs })` |
-| `streamClient` | `open`, `readPackets`, `collectFor`, `close` |
+| `streamClient` | `open`, `readPackets`, `readBytes`, `collectFor`, `close` |
 | `upstream` | The fake upstream provider: `scenario`, `fault`, `rate`, `clearFault`, `log`, `toControl`. Test-scoped, not worker-scoped — `attachLogs` needs `testInfo` to attach a failing scenario's log to the Playwright report, which a worker fixture cannot obtain. See `e2e-upstream/README.md` and the section above on the two-container topology |
 
 Plus nineteen exports that are not fixtures, in the seventeen rows below (two of them pair two
@@ -617,6 +644,12 @@ Three things about them are worth knowing before you use them:
   excess-property-checks a fresh object literal, and nothing type-checks a body
   that arrived from `JSON.parse` or through an `as`. The runtime spread order
   in `seed.ts` is what actually holds; `seed-fixture.spec.ts` pins both halves.
+
+`fixtures/types.ts` also covers VOD: the seven entity types `Movie`, `Series`, `Episode`,
+`VodCategory`, `M3uMovieRelation`, `M3uSeriesRelation` and `M3uEpisodeRelation`, plus `VodPage<T>`
+(the pagination envelope movies/series/episodes share — categories are unpaginated), the
+`group-settings` request row `CategorySettingRow`, the nested `VodLogo`, and `M3UMovieRelation`/
+`M3UEpisodeRelation`'s `quality_info` method field, `QualityInfo`.
 
 `waitFor.resource<T>` has no default for `T`, and `ws.waitForMessage` returns a
 `WsMessage` whose `type` and `data` are **both optional** — the product really
