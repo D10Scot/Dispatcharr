@@ -63,6 +63,23 @@ test('Dispatcharr fetches episodes on demand for an object-keyed provider series
   );
   const series = seriesPage.results[0];
 
+  // --- Before state: "on demand" means not fetched until asked ------------
+  // Reading episodes_fetched only after the triggering call below cannot
+  // distinguish "fetched on demand" from "was already there" — assert the
+  // zero state first, through both instruments the after-state uses.
+  const episodesBefore = await api.json<VodPage<Episode>>(
+    await api.get(`/api/vod/episodes/?series=${series.id}`),
+    'episodes by series (before the on-demand fetch)'
+  );
+  expect(episodesBefore.count, 'no Episode rows exist before provider-info is called').toBe(0);
+  const seriesInfoRequestsBefore = (await upstream.log(scenario)).filter(
+    (entry) => entry.kind === 'request' && entry.path?.includes('action=get_series_info')
+  );
+  expect(
+    seriesInfoRequestsBefore,
+    'get_series_info requests reaching the provider before provider-info is called'
+  ).toHaveLength(0);
+
   // Episodes are NOT part of the refresh: refresh_vod_content makes exactly
   // four provider calls (get_vod_categories, get_series_categories,
   // get_vod_streams, get_series) and get_series_info is not among them. This
@@ -72,6 +89,14 @@ test('Dispatcharr fetches episodes on demand for an object-keyed provider series
     await api.get(`/api/vod/series/${series.id}/provider-info/`),
     'series provider-info'
   );
+
+  const seriesInfoRequestsAfter = (await upstream.log(scenario)).filter(
+    (entry) => entry.kind === 'request' && entry.path?.includes('action=get_series_info')
+  );
+  expect(
+    seriesInfoRequestsAfter,
+    'get_series_info requests reaching the provider after provider-info is called'
+  ).toHaveLength(1);
 
   expect(info.episodes_fetched).toBe(true);
   expect(info.detailed_fetched).toBe(true);
