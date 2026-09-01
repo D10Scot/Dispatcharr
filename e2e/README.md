@@ -263,6 +263,42 @@ metadata lock deliberately, as a real bug fix pinned by
 `apps/proxy/vod_proxy/tests/test_vod_lock_contention.py`. A failing VOD test is never fixed by
 editing them.
 
+## Catch-up (G10) — five things that shape every test in this area
+
+**The archive is not time-addressable.** The catch-up routes serve the same looping TS whatever
+`start` they are given. So every catch-up assertion about time reads the provider's scenario log
+(`upstream.log(scenario)` → `catchupRequests`, `e2e/tests/streaming/helpers.ts`) and never the
+bytes. **A catch-up test can prove the right moment was asked for. It cannot prove Dispatcharr
+seeks to it.** Say this in the test, next to the assertion — not only in a file header — because
+that is where the next reader will be when they draw the wrong conclusion.
+
+**The format cache outlives your test.** `_set_cached_format_index` writes
+`timeshift:format_idx:<account_id>` into the Django cache (Redis, DB 0) with a 3600s TTL. **Every
+cascade observation needs its own XC account.** A test reusing another's inherits its cascade
+winner and passes for the wrong reason. `streaming/catchup-cascade.spec.ts` turns that hazard into
+an assertion; everything else avoids it by construction.
+
+**The provider timezone lands late, and its absence looks identical to `"UTC"`.**
+`refresh_account_profiles` is a separate `.delay()`'d task, and `convert_timestamp_to_provider_tz`
+returns its input unchanged for both a missing value and exactly `"UTC"`. Poll
+`M3UAccountProfile.custom_properties.server_info.timezone` for the value you declared **before**
+asserting on any converted timestamp; `seedCatchupChannel` does this for `'UTC'`, and
+`catchup-provider-timezone.spec.ts` shows the parameterised form.
+
+**Redirect mode is a global.** It is reachable only through `stream_settings.default_stream_profile`,
+so `streaming-failover/catchup-redirect.spec.ts` read-modify-writes that row and restores it in a
+`finally` — the second global that project now hosts, and the reason it stays at `workers: 1`.
+Unlike `proxy_settings`, `stream_settings` needs no cache-settling wait. The same row is also
+read-modify-written by `streaming-greybox/vod-redirect-profile.spec.ts` (G9); a new spec anywhere
+that depends on the default stream profile has to account for both, not just this one.
+
+**Where the catch-up helpers live.** All four are in `e2e/tests/streaming/helpers.ts`, not in the
+`fixtures` module: `seedCatchupChannel(fx)` and `catchupTimestamp(date)` from G8, and
+`catchupRequests(log)` and `catchupTimestampWithSeconds(date)` from G10. Seeded and
+`streaming-failover` specs import them across the project directory as `'../streaming/helpers'` —
+legal, because Playwright's `testMatch` never collects `helpers.ts`, and the alternative is a
+second copy that drifts.
+
 ## The login throttle — read this before writing a multi-user test
 
 `POST /api/accounts/token/` is rate-limited to **3 requests per minute per
