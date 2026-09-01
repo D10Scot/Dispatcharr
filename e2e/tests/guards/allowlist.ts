@@ -80,16 +80,46 @@ export const CONTAINER_INTROSPECTION: Capability = {
 };
 
 /**
- * Six files match a plain text search for these markers and are NOT here,
- * because every one of their matches is a *comment*:
- * `tests/seeded/output-m3u.spec.ts`, `tests/frontend/plugins.spec.ts`,
- * `tests/frontend/connect.spec.ts`, `fixtures/index.ts`, `fixtures/seed.ts`,
- * `fixtures/greybox/redis.ts` (which documents its `docker exec` command
- * lines in prose and assembles them from argument arrays), and
- * `tests/lifecycle/upgrade-migrations.spec.ts` (which drives the container
- * through the `instance` fixture and only *discusses* docker).
+ * Eight files match `grep -rln "pgrep\|manage\.py\|docker "`. Exactly two —
+ * the two listed above — use a marker in code. **The other six match only in
+ * comments** and are deliberately absent:
  *
- * Five of the eight files a grep flags are prose. That ratio is why
- * `capabilities.spec.ts` parses instead of scanning text: a guard that fires
- * on comments gets loosened until it catches nothing.
+ * - `fixtures/greybox/redis.ts` — documents its `docker exec … redis-cli`
+ *   command lines in a header comment; assembles the real ones from argument
+ *   arrays.
+ * - `tests/lifecycle/upgrade-migrations.spec.ts` — drives the container
+ *   through the `instance` fixture and only *discusses* docker and
+ *   `manage.py`. Its capability is `CONTAINER_LIFECYCLE`, above.
+ * - `fixtures/index.ts`, `fixtures/seed.ts`, `tests/seeded/output-m3u.spec.ts`,
+ *   `tests/frontend/plugins.spec.ts` — all prose.
+ *
+ * Six of eight is why `capabilities.spec.ts` parses instead of scanning text.
+ * A guard that fires on prose gets loosened until it catches nothing, and the
+ * loosening would have to be three-quarters of the rule.
  */
+
+/**
+ * Writes to `/api/core/settings/` — every one of which is instance-wide.
+ *
+ * See `capabilities.spec.ts`'s sibling, `global-mutation.spec.ts`, for why the
+ * rule is the endpoint rather than a list of keys, and why serialising a
+ * project does not substitute for this list.
+ */
+export const GLOBAL_SETTINGS_WRITE: Capability = {
+  name: 'a write to /api/core/settings/ (instance-wide)',
+  why: 'Every CoreSettings row is a settings group affecting the whole instance, and two of them are read through caches that outlive the test that wrote them.',
+  allow: [
+    // Reads every group and PATCHes `system_settings` to prove durable state
+    // survives a restart and an upgrade. Runs in the `lifecycle` projects,
+    // which own the container and share it with nothing.
+    'tests/lifecycle/durable-state.ts',
+    // Raises `proxy_settings.buffering_speed` for its run. `streaming-failover`
+    // is `workers: 1` for exactly this reason.
+    'tests/streaming-failover/failover-buffering.spec.ts',
+    // Sets the catch-up stream profile to Redirect for its run.
+    'tests/streaming-failover/catchup-redirect.spec.ts',
+    // Sets `stream_settings.default_stream_profile` to Redirect for its run.
+    // `streaming-greybox` is `workers: 1` partly for this reason.
+    'tests/streaming-greybox/vod-redirect-profile.spec.ts',
+  ],
+};
