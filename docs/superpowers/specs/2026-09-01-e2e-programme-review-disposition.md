@@ -1,7 +1,10 @@
 # E2E Programme Review — Disposition and Goals G11–G15
 
 **Date:** 2026-09-01
-**Status:** Draft, ready for review
+**Status:** Accepted. All five goals specced — see "Goal status" below.
+**Corrected:** 2026-09-01, after G12–G15's specs verified its claims against the tree. Every
+change is marked **[corrected]** with the evidence, alongside the original claim, so a reader
+who remembers the first version can see what moved and why.
 **Parent:** `2026-08-23-e2e-coverage-roadmap-design.md`
 **Verified at:** `origin/main` `5679a143`, plus the two open PRs
 [#112](https://github.com/D10Scot/Dispatcharr/pull/112) (G9, `test/e2e-vod-series`) and
@@ -34,13 +37,22 @@ and *specced* when dispatched.
 | Backup restore, non-zero refresh intervals, ACL 403 negatives, EPG fuzzy matching, plugin run lifecycle, bulk ops, M3U profiles, product WS events | Correct, and all but the WS events were already ledgered as owned todos (`COVERAGE.md` rows for restore and refresh-interval name G7; the G3 row names fuzzy matching a deliberate gap) | G12 / G14 |
 | Older `test.fail()` pins can stay red for the wrong reason | Correct. `m3u-ingest.spec.ts`'s #15 pin and `hdhr.spec.ts`'s #82 pin sit entirely inside the inverted block: a failed seed or a 500 satisfies `test.fail()` as convincingly as the real defect. G9/G10 already ship the fix pattern (premise guarded *outside* the inverted block — `8386825c`, `c1858c42`); it needs backporting | G15 |
 | `render.spec.ts` is smoke-only | True and by design — it is the wiring proof over `api.js`/`WebSocket.jsx`, and eight of the nine surfaces have their own interaction specs (`users` 16 interactions, `dvr` 15, `connect` 12, `plugins` 8, `settings` 4). The real residue: `stats` (0 interactions), `guide` (1), `backups` (1) | G15 |
-| `xc-output.spec.ts` XMLTV check lacks well-formedness | Correct as far as it goes: `parseXmltv` is deliberately shallow (documented in `fixtures/parse.ts`), and the suite already owns the right tool — `expectWellFormedXml` (browser `DOMParser`), used by `output-epg.spec.ts` and `hdhr.spec.ts` but not `xc-output.spec.ts`. One-line fix | G15 |
-| Failover tests should assert stream identity post-switch | Partially. `failover-dead-air.spec.ts` *does* assert identity — `stream_id` flips to `streams[1].id` via channel status — but at the control plane; the bytes read afterwards are asserted aligned, not attributed to stream B. Whether G2's TS pattern can carry a per-stream marker is a G15 spec question | G15 |
+| `xc-output.spec.ts` XMLTV check lacks well-formedness | Correct as far as it goes: `parseXmltv` is deliberately shallow (documented in `fixtures/parse.ts`), and the suite already owns the right tool — `expectWellFormedXml` (browser `DOMParser`), used by `output-epg.spec.ts` and `hdhr.spec.ts` but not `xc-output.spec.ts`. **[corrected]**:
+a two-line fix, not one — the target test destructures only `seed` and `request`, so it needs
+`adminPage` added, giving a request-only test a browser context | G15 |
+| Failover tests should assert stream identity post-switch | Partially. `failover-dead-air.spec.ts` *does* assert identity — `stream_id` flips to `streams[1].id` via channel status — but at the control plane; the bytes read afterwards are asserted aligned, not attributed to stream B. **[corrected]**, now answered by G15's spec and measured rather than assumed: a marker PID
+injected in `LoopRewriter.rewrite` survives the locked **Proxy** profile byte-for-byte and does
+**not** survive the FFmpeg profile (13 injected packets in, 0 out; PIDs remapped, PAT/PMT
+rewritten). All three specs that would carry the assertion run Proxy, so it is feasible — but
+it is `e2e-upstream/src/` work outside G15's fixed file list, so it is recorded as a COVERAGE
+gap rather than built | G15 |
 | Status-only assertions in `api-fixture`/`authorization` specs; the fake provider's contract is unversioned (`e2e-upstream` sits at `1.0.0` with no contract doc); the frontend `data-testid` contract and shared-state mutation rules live in prose | Accepted for audit/enforcement respectively | G15 / G11 |
 
 ### Already resolved — the review predates the fix
 
-- **"G9 (VOD) and G10 (catch-up) are spec'd but unbuilt."** Stale. Both are built and open as
+- **"G9 (VOD) and G10 (catch-up) are spec'd but unbuilt."** Stale — and now doubly so: both
+  have merged (#112 as `25bf3484`, #113 as `76db0332`), discharging the wave-5 ordering
+  constraint they created. Both are built and open as
   PRs #112 (3,642 insertions; Range/seek, XC actions against a real catalogue, three pinned
   range defects incl. #64) and #113 (2,157 insertions; the seven-candidate cascade with shapes
   asserted on the provider's *logged requests*, per-account format cache, provider timezone,
@@ -67,11 +79,21 @@ and *specced* when dispatched.
   *demonstrated by mutation* to pass every behavioural test in the seeded project. That is the
   exact situation `quarantine.spec.ts` exists for, and the test's own comment records the
   mutation check. A behavioural replacement was tried and shown vacuous; the source-scan stays.
-- **"`lifecycle-tests.yml` has never actually run in CI."** Wrong, and the truth is worse: it
-  runs on every qualifying push and on schedule, and every run is red — 8 of 126 puid-pgid
-  scenarios and 7 of 12 tls-postgres scenarios fail (ownership-migration and
-  container-start/cert-permission failures respectively, per the run-33384550684 artifacts).
-  A permanently red workflow provides no signal at all; triaging it to green is G12's first task.
+- **"`lifecycle-tests.yml` has never actually run in CI."** Half wrong, and **[corrected]**
+  twice by G12's spec. It runs on every qualifying push and on schedule, and every such run is
+  red — but the reviewer was right about pull requests, for a reason neither side had found:
+  the `suites` job carries `if: github.event_name != 'pull_request'` (`lifecycle-tests.yml:134`),
+  a gate independent of the path filter. **The two bash suites have therefore never run in CI
+  on a pull request at all**, so the green runs on G7's own PR skipped both.
+
+  The failure figures were wrong too: "8 of 126" and "7 of 12" are *assertion* counts. The
+  scenario counts are **8 failed assertions across 4 of 20** puid-pgid scenarios and **7 of 8**
+  tls-postgres scenarios. So are the causes: the puid failures are **three distinct causes,
+  none of them a live ownership bug** (a dead premise — `:latest` is no longer a pre-PUID
+  image; a suite still testing a feature `7e221720` deliberately removed; and an intermittent
+  timeout), and the TLS failures are **one cause seven times** — `mktemp -d` creates 0700 and
+  the container reads `/certs` as UID 1000, invisible on Docker Desktop. A permanently red
+  workflow provides no signal at all; triaging it to green is G12's first task.
 - **"The suite isn't black-box enough to survive a migration"** — overstated as a general claim.
   Redis key shapes and `docker exec`/`pgrep` are confined to the one allowlisted
   `streaming-greybox` spec and its guard; `manage.py showmigrations` and docker control are
@@ -122,13 +144,27 @@ must say which, in writing.
 **G14 — Coverage completions.** The remaining accepted gaps, scoped tightly: EPG fuzzy
 matching / `set-names-from-epg` characterization against the fake XMLTV (Schedules Direct stays
 out — a live external service, per the roadmap's non-goals); blocked-network ACL 403 negatives
-on an isolated instance (the shared `XC_API` ACL is why G5 could only test the 401 half);
+(**[corrected]**: specified here "on an isolated instance"; G14's spec showed none is needed —
+`get_client_ip` honours a client-supplied `X-Real-IP`, the peer being the Docker bridge inside
+the default trusted set, and nginx neither sets nor strips it on the `uwsgi_pass` routes, so a
+403 is reachable on the shared `seeded` project with zero settings writes, deleting an
+isolated-instance project and a CI job from wave 6. The shared `XC_API` ACL is still why G5
+could only test the 401 half);
 settings with behavioural effect beyond User-Agent persistence; plugin install-from-zip → run →
 task-fires lifecycle; channel bulk operations and reordering; M3U filters, profiles and server
-groups; product WebSocket events beyond the harness's own `ws-fixture`.
+groups; product WebSocket events beyond the harness's own `ws-fixture` — **[corrected]**, and
+this one bites: `core/utils.py:log_system_event` sends **no** WebSocket message at all. It
+writes a `SystemEvent` row and fans out to Connect. So `apps/connect/models.py:SUPPORTED_EVENTS`
+is the wrong map for this sub-area, and a spec written from it would wait on events the product
+never sends; the WebSocket vocabulary is a separate, larger set sent via
+`core/utils.py:send_websocket_update`.
 
 **G15 — Test-quality remediation.** One PR of small verified fixes: premise guards backported
-to every pre-G9 `test.fail()` site (audit all of them; #15 and #82 are confirmed instances);
+to every pre-G9 `test.fail()` site (audit all of them; #15 and #82 are confirmed instances) — **[corrected]** with the audit's
+result: **20** `test.fail()` pins exist on `main` at `76db0332`, of which **9 need a guard and
+11 are already safe**. All three pins G10 shipped are already guarded, two by siblings titled
+"row 8 premise:" / "row 13 premise:", so the pattern is already house standard for new work and
+the debt is entirely pre-G9;
 real interactions for `stats`, `guide` and `backups`; `expectWellFormedXml` in
 `xc-output.spec.ts`; the two residual first-byte-only TS assertions (the `catchup-cascade` one
 lands after #113 merges); post-switch byte attribution in the failover specs if the TS pattern
@@ -136,6 +172,29 @@ can carry a per-stream marker (spec decides, and says so either way); an audit o
 assertions in `api-fixture`/`authorization` specs; a versioned contract doc for `e2e-upstream`
 recording its known quirks (no calendar validation, no time-addressable archive) so consumer
 goals cite a version, not a memory.
+
+## Goal status
+
+All five are specced. Each spec verified this document's claims against the tree and corrected
+what it found; those corrections are folded in above.
+
+| Goal | Spec and plan | PR |
+|---|---|---|
+| G11 | `2026-09-01-e2e-migration-gate-design.md` | — (wave 5, lands first) |
+| G12 | `2026-09-01-e2e-lifecycle-depth-design.md` | #116 |
+| G13 | `2026-09-01-e2e-dvr-execution-design.md` | #115 |
+| G14 | `2026-09-01-e2e-coverage-completions-design.md` | #118 |
+| G15 | `2026-09-01-e2e-test-quality-remediation-design.md` | #117 |
+
+Two goal-level questions this document left to a spec are now decided, in writing:
+
+- **G13, comskip:** characterized-and-deferred. Detection is not constructible against G2's
+  asset — `docker/comskip.ini` sets `detect_method=127`, and a `testsrc` pattern with a 440 Hz
+  sine has no logo, no black frames, no silence and no commercial structure, so only the
+  short-circuit paths are reachable. G13 tests the dispatch chain instead and asserts nothing
+  about commercials.
+- **G15, per-stream TS markers:** feasible under Proxy, impossible under FFmpeg, deliberately
+  not built. See the corrected entry above.
 
 ## Sequencing
 
