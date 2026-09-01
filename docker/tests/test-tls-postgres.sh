@@ -197,6 +197,37 @@ check_log_contains() {
     rm -f "$tmplog"
 }
 
+# check_log_contains, but waits for the pattern instead of reading once.
+#
+# entrypoint.celery.sh prints "Migrations complete, starting Celery..." and
+# only THEN execs the workers, whose Django settings import emits the TLS
+# banners. The wait loop returns on the former, so a bare check_log_contains
+# reads the log before the latter has been written. The app container has no
+# such gap: its banners come from the entrypoint's own `manage.py` calls,
+# which run before uwsgi starts, while the celery entrypoint sends its
+# equivalent (`migrate --check`) to /dev/null.
+#
+# The race was invisible until the pipefail/SIGPIPE fix in log_matches. While
+# that bug held, this scenario's wait loop always ran its FULL budget — which
+# handed the workers 90-240s of unintended grace to finish printing before
+# anything read the log. Fixing the loop is what made these assertions early
+# enough to be honest, and honest enough to fail.
+wait_log_contains() {
+    local container="$1" pattern="$2" description="$3"
+    local timeout="${4:-120}"
+    local elapsed=0
+    while [ $elapsed -lt $timeout ]; do
+        if log_matches "$container" "$pattern"; then
+            log_pass "$description"
+            return 0
+        fi
+        sleep 3
+        elapsed=$((elapsed + 3))
+    done
+    log_fail "$description (pattern not found after ${timeout}s: $pattern)"
+    return 1
+}
+
 check_log_absent() {
     local container="$1" pattern="$2" description="$3"
     local tmplog; tmplog=$(mktemp)
@@ -922,9 +953,9 @@ test_modular_full_tls_celery() {
         log_pass "Celery container started with PG mTLS + Redis TLS"
         check_log_contains "$celery_name" "Migrations complete" \
             "Celery confirmed migrations complete via TLS"
-        check_log_contains "$celery_name" "PostgreSQL TLS: enabled" \
+        wait_log_contains "$celery_name" "PostgreSQL TLS: enabled" \
             "Celery sees PostgreSQL TLS enabled"
-        check_log_contains "$celery_name" "Redis TLS: enabled" \
+        wait_log_contains "$celery_name" "Redis TLS: enabled" \
             "Celery sees Redis TLS enabled"
     else
         log_fail "Celery container failed to start with full TLS"
