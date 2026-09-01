@@ -4,13 +4,13 @@
 **Status:** Draft, ready for review
 **Parent:** `2026-09-01-e2e-programme-review-disposition.md` (goal definition),
 `2026-08-23-e2e-coverage-roadmap-design.md` (programme rules)
-**Verified at:** `origin/main` `cf95410e`. Line numbers drift; symbol names are the
+**Verified at:** `origin/main` `76db0332` (G10 / PR #113 merged). Line numbers drift; symbol names are the
 durable half of every citation.
 
 ## Why this exists
 
 `CLAUDE.md` states the fork's direction: extract the streaming relay from the Django web
-workers into its own process. The E2E suite — 70 spec files across eight Playwright
+workers into its own process. The E2E suite — 77 spec files across eight Playwright
 projects — exists to be the safety net that extraction is done against.
 
 It cannot do that job yet, for one reason: **a test failure on a migration branch is
@@ -52,9 +52,9 @@ appear in the JSON reporter, and they cannot be broken by rewording a title. No 
 suite uses tags today, so there is nothing to migrate off.
 
 `test.describe()` accepts the same option and its tag is inherited by every test in the block —
-but that is barely usable here: only **2** of the 70 spec files use `test.describe` at all. The
-work is therefore **164 per-test tags**, one per test declaration. G11 will not introduce
-`describe` wrappers purely to hoist a tag: restructuring 68 files to save keystrokes changes
+but that is barely usable here: only **2** of the 77 spec files use `test.describe` at all. The
+work is therefore **190 per-test tags**, one per test declaration. G11 will not introduce
+`describe` wrappers purely to hoist a tag: restructuring 75 files to save keystrokes changes
 what runs in parallel and buries the tags it was meant to surface.
 
 ### What each tag promises
@@ -113,12 +113,12 @@ unchanged and its comments preserved. That refactor is a G6-owned file edited by
 called out in the PR description, and it is the one place G11 touches test logic rather than
 adding a tag.
 
-`test.fail()` is included in the list deliberately: the suite has 16 files containing
-`test.fail()` pins, and a pinned bug is exactly as much a contract statement as a passing test.
+`test.fail()` is included in the list deliberately: the suite has **20** `test.fail()` pins
+across 17 files, and a pinned bug is exactly as much a contract statement as a passing test.
 
 ### Applying it
 
-164 test declarations across 70 spec files. The default is `@contract`, so the bulk of the work
+190 test declarations across 77 spec files. The default is `@contract`, so the bulk of the work
 is mechanical; the judgement is confined to the files that are genuinely
 implementation-coupled:
 
@@ -302,10 +302,12 @@ the two goals ship in different waves and the ordering is not otherwise obvious.
 
 ## Merge-order constraints
 
-- **PR #113 (G10, `test/e2e-catchup-timeshift`) is open and conflicting.** It adds roughly
-  eight spec files. If it merges *after* G11's retag, those files land untagged and the tag
-  guard goes red on `main`. Either #113 merges first, or it must add tags before merging. This
-  is a hard ordering constraint, not a preference.
+- **PR #113 (G10) — resolved.** It merged as `76db0332` while this spec was being written, so
+  the constraint it created is discharged: its eight new spec files are in the retag's scope
+  rather than arriving after it. This spec is rebased onto that tip and every count above is
+  measured there. The general form of the constraint stands for anything still in flight —
+  **a test PR that merges after the retag lands untagged and turns the tag guard red on
+  `main`** — which is the whole argument for wave 5 running alone.
 - **G12–G15 all touch spec files G11 retags.** The disposition's sequencing — wave 5 is G11
   alone — follows from this. Wave 6 tags its own new tests per ADR-0002.
 - **Outbound, to G13:** G13's spec (PR #115) adds a new `dvr` Playwright project with its own
