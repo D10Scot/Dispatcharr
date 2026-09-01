@@ -152,6 +152,17 @@ test('advanced movie data is fetched, throttled for 24h, and survives a list syn
     new Date(afterForcedRefresh.last_advanced_refresh!).getTime(),
     'forced refresh must move last_advanced_refresh strictly forward'
   ).toBeGreaterThan(new Date(afterSecondCall.last_advanced_refresh!).getTime());
+  // The timestamp moving is not proof the provider was actually contacted —
+  // something that merely bumped last_advanced_refresh without fetching
+  // would satisfy the assertion above too. force_refresh=true must add
+  // exactly one more get_vod_info request on top of the one from Step 2.
+  const vodInfoRequestsAfterForce = (await upstream.log(scenario)).filter(
+    (entry) => entry.kind === 'request' && entry.path?.includes('action=get_vod_info')
+  );
+  expect(
+    vodInfoRequestsAfterForce,
+    'get_vod_info requests reaching the provider across the initial, second unforced, and forced calls'
+  ).toHaveLength(2);
 
   // --- Step 4: the merge survives a list sync -------------------------------
 
