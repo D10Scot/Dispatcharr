@@ -41,6 +41,22 @@ export default defineConfig({
       // Bootstrap consumes nothing — it is idempotent by construction.
     },
     {
+      // Static analysis over this repository's own source. No container, no
+      // browser, no fixtures, no `dependencies` — the only project here that
+      // needs no running instance, which is why it gets its own CI job rather
+      // than a matrix row that would download a 3 GB image to read text files.
+      //
+      // Everything here enforces a rule that would otherwise live in a README
+      // and rot. `docs/adr/0002-e2e-test-taxonomy.md` and
+      // `docs/adr/0003-e2e-frontend-and-shared-state-contract.md` say what
+      // they promise.
+      name: 'guards',
+      testDir: './tests/guards',
+      // Sub-second in practice; the global 30s is already generous.
+      workers: 1,
+      fullyParallel: false,
+    },
+    {
       name: 'pristine',
       testDir: './tests/pristine',
       workers: 1,

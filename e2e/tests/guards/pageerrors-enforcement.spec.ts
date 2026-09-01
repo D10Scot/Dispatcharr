@@ -36,54 +36,44 @@
  * `pageErrors`, or **unverifiable** — and the last of those fails the check
  * too, naming the shape it couldn't read, rather than passing through it,
  * unless the exact location is pinned in `KNOWN_UNVERIFIABLE` with a reason.
+ *
+ * Moved here from `tests/frontend/` and refactored onto `./ast`, which now
+ * owns the walker this file originated. Verified by mutation after the move:
+ * adding an untagged `test('…', async ({ page }) => …)` to
+ * `tests/frontend/stats.spec.ts` failed the check naming that file and line;
+ * reverting it passed again. The rule and its verdicts are unchanged — only
+ * where the walker lives.
  */
 import { test, expect } from '@playwright/test';
-import { readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import * as ts from 'typescript';
+import { E2E_ROOT, findTestCalls, listSpecFiles, readSpec } from './ast';
 
-// This file's own basename, excluded from the scan below: it has no `page`
-// to watch and no business destructuring `pageErrors` itself — the same
-// self-exclusion `quarantine.spec.ts` applies to its own `SELF_PATH`.
-const SELF_FILE = path.basename(__filename);
+// The directory whose rule this file enforces. It is no longer the directory
+// this file lives in — the checker moved to `tests/guards/` (no page, no
+// container, so it belongs with the other static-analysis specs) while the
+// rule it enforces stayed put.
+const TARGET_DIR = 'tests/frontend';
 
-// Lifecycle hooks share `test`'s namespace but declare a setup/teardown step,
-// not a test body — Playwright's automatic `pageErrors.expectClean()`
-// teardown fires once per *test*, keyed to that test's own fixture
-// instances, so a hook is never the thing it runs against and has no
-// obligation to destructure it (`test.afterEach(async ({ api }, testInfo) =>
-// …)` is exactly this shape, and every cleanup-owning spec in this
-// directory now uses it: backups, plugins, users, settings, dvr, connect,
-// logos). Excluding exactly these four names is deliberate and minimal, not
-// a retreat from the fail-closed rule above: every *other*
-// `test.<prop>(...)` call — `.only`, `.skip`, `.fixme`, `.fail`, anything
-// not in this set — is still judged below by `isTestCallee()`. That does
-// NOT mean every such call shares `test(...)`'s `(name, fn)` shape:
-// `test.use({...})`, `test.setTimeout(n)`,
-// `test.slow()`, `test.step(name, fn)` and the two-argument
-// `test.skip(cond, 'reason')` form don't take an inline test callback at
-// all, and `test.describe(name, fn)`'s callback takes no fixture parameter
-// to destructure — `judge()` reads none of these as `'ok'`. None of these
-// forms are used under `tests/frontend/` today, so this is latent, but it
-// fails *loud*: being judged (not exempted) means the checker reports such
-// a call as `'unverifiable'` rather than silently passing it, the same
-// fail-closed outcome as any other shape it can't read.
-const TEST_HOOK_NAMES = new Set(['beforeEach', 'afterEach', 'beforeAll', 'afterAll']);
+// No self-exclusion any more: this checker used to live in the directory it
+// scans and had to skip its own file. Moving it to `tests/guards/` removed
+// the need — the scanned directory and the scanning file are now disjoint.
 
-function isTestCallee(expr: ts.Expression): boolean {
-  // `test(...)`
-  if (ts.isIdentifier(expr) && expr.text === 'test') return true;
-  // `test.only(...)`, `test.skip(...)`, etc. — same `(name, fn)` shape.
-  if (
-    ts.isPropertyAccessExpression(expr) &&
-    ts.isIdentifier(expr.expression) &&
-    expr.expression.text === 'test' &&
-    !TEST_HOOK_NAMES.has(expr.name.text)
-  ) {
-    return true;
-  }
-  return false;
-}
+// `isTestCallee` and the lifecycle-hook exclusions moved to `./ast`, shared
+// with the other guards in this directory — three of them were about to
+// re-derive "what is a test declaration" and drift from each other and from
+// this file, which got there first.
+//
+// What stays here is `judge()`, which is specific to this rule. Note that
+// being *judged* rather than exempted does not mean every `test.<prop>(...)`
+// shares `test(...)`'s `(name, fn)` shape: `test.use({...})`,
+// `test.setTimeout(n)`, `test.slow()`, `test.step(name, fn)` and the
+// two-argument `test.skip(cond, 'reason')` form take no inline test callback,
+// and `test.describe(name, fn)`'s callback takes no fixture parameter to
+// destructure — `judge()` reads none of these as `'ok'`. None are used under
+// `tests/frontend/` today, so this is latent, but it fails *loud*: such a call
+// is reported `'unverifiable'` rather than silently passed, the same
+// fail-closed outcome as any other unreadable shape.
 
 type CallVerdict =
   | { kind: 'ok' }
@@ -125,8 +115,8 @@ function judge(callArgs: readonly ts.Expression[]): CallVerdict {
       kind: 'unverifiable',
       reason:
         'test callback destructures no fixtures at all — if it never opens a page, ' +
-        'pin this location in KNOWN_UNVERIFIABLE with a reason (whole-file exclusion via ' +
-        'SELF_FILE is not available per-test, and a sibling test in the same file may still ' +
+        'pin this location in KNOWN_UNVERIFIABLE with a reason (a whole-file exclusion is ' +
+        'not available per-test, and a sibling test in the same file may still ' +
         'open a page and need checking); if it does, name `pageErrors`',
     };
   }
@@ -170,45 +160,37 @@ function judge(callArgs: readonly ts.Expression[]): CallVerdict {
 type Offense = { file: string; line: number; verdict: 'missing' | 'unverifiable'; reason?: string };
 
 function findOffenses(src: string, fileName: string): Offense[] {
-  const sourceFile = ts.createSourceFile(fileName, src, ts.ScriptTarget.Latest, true);
   const offenses: Offense[] = [];
-
-  function visit(node: ts.Node): void {
-    if (ts.isCallExpression(node) && isTestCallee(node.expression)) {
-      const verdict = judge(node.arguments);
-      if (verdict.kind !== 'ok') {
-        const { line } = sourceFile.getLineAndCharacterOfPosition(node.getStart());
-        offenses.push({
-          file: fileName,
-          line: line + 1,
-          verdict: verdict.kind,
-          reason: verdict.kind === 'unverifiable' ? verdict.reason : undefined,
-        });
-      }
+  for (const call of findTestCalls(src, fileName)) {
+    const verdict = judge(call.args);
+    if (verdict.kind !== 'ok') {
+      offenses.push({
+        file: fileName,
+        line: call.line,
+        verdict: verdict.kind,
+        reason: verdict.kind === 'unverifiable' ? verdict.reason : undefined,
+      });
     }
-    ts.forEachChild(node, visit);
   }
-  visit(sourceFile);
   return offenses;
 }
 
 test('every test() under tests/frontend/ destructures pageErrors', async () => {
-  const dir = path.resolve(__dirname);
-  // Sorted, not just filtered: `readdir` returns filesystem order, which is
-  // not alphabetical on every platform/filesystem and is not guaranteed
-  // stable across runs. `KNOWN_UNVERIFIABLE` below is a hand-written,
-  // alphabetically-sorted list compared against this with `.toEqual` — an
-  // unsorted `specFiles` would make that comparison order-dependent the
-  // moment it holds more than one entry, flaking on directory order rather
-  // than on an actual change to the unverifiable set.
-  const specFiles = (await readdir(dir))
-    .filter((name) => name.endsWith('.spec.ts') && name !== SELF_FILE)
-    .sort();
+  // `listSpecFiles` sorts, and that matters: `readdir` returns filesystem
+  // order, which is not alphabetical on every platform and is not stable
+  // across runs. `KNOWN_UNVERIFIABLE` below is a hand-written,
+  // alphabetically-sorted list compared with `.toEqual` — an unsorted listing
+  // would flake on directory order rather than on a real change to the
+  // unverifiable set.
+  //
+  // Relative paths are trimmed back to basenames so `KNOWN_UNVERIFIABLE`
+  // keeps naming files the way it always has, unaffected by this checker
+  // moving directories.
+  const specFiles = await listSpecFiles(path.join(E2E_ROOT, TARGET_DIR), TARGET_DIR);
 
   const offenses: Offense[] = [];
-  for (const file of specFiles) {
-    const src = await readFile(path.join(dir, file), 'utf8');
-    offenses.push(...findOffenses(src, file));
+  for (const rel of specFiles) {
+    offenses.push(...findOffenses(await readSpec(rel), path.basename(rel)));
   }
 
   // Partition on the structured `verdict` field, not on the rendered English

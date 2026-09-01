@@ -3,7 +3,8 @@
   "private": true,
   "version": "1.0.0",
   "scripts": {
-    "test": "echo 'Pick a population: npm run test:pristine | test:seeded | test:streaming | test:streaming-failover | test:streaming-greybox | test:frontend | test:lifecycle | test:lifecycle-upgrade — they need different container states and cannot share one invocation. The two lifecycle populations drive the container themselves and must run alone.' && exit 1",
+    "test": "echo 'Pick a population: npm run test:guards | test:pristine | test:seeded | test:streaming | test:streaming-failover | test:streaming-greybox | test:frontend | test:lifecycle | test:lifecycle-upgrade — they need different container states and cannot share one invocation. The two lifecycle populations drive the container themselves and must run alone.' && exit 1",
+    "test:guards": "playwright test --project=guards",
     "test:pristine": "playwright test --project=pristine",
     "test:seeded": "playwright test --project=seeded",
     "test:streaming": "playwright test --project=streaming",

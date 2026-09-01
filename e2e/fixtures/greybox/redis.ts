@@ -38,13 +38,15 @@
  * coupling in one file, imported only from `e2e/tests/streaming-greybox/`,
  * makes that blast radius a single grep instead of an archaeology exercise.
  *
- * The allowlist below is enforced by `quarantine.spec.ts`, not by convention.
- * If you are adding an import from outside that directory, you are doing
- * something the extraction will have to undo. Reconsider.
+ * Who may import this is enforced, not left to convention — see
+ * `GREYBOX_REDIS` in `tests/guards/allowlist.ts`, checked by
+ * `tests/guards/capabilities.spec.ts`. (The allowlist used to live here and be
+ * checked by `quarantine.spec.ts`; it moved when that guard was generalised to
+ * cover subprocess execution and container introspection too, which were
+ * unpoliced.) If you are adding an import from outside
+ * `tests/streaming-greybox/`, you are doing something the extraction will have
+ * to undo. Reconsider.
  */
-export const GREYBOX_ALLOWLIST = [
-  'tests/streaming-greybox/output-profile-sharing.spec.ts',
-];
 
 export interface GreyboxRedis {
   get(key: string): Promise<string | null>;
