@@ -57,7 +57,6 @@ jobs:
     timeout-minutes: 5
     outputs:
       e2e: ${{ steps.filter.outputs.e2e }}
-      full: ${{ steps.filter.outputs.full }}
       projects: ${{ steps.filter.outputs.projects }}
     steps:
       - name: Checkout code
@@ -88,7 +87,6 @@ jobs:
           if [ "$DISPATCH_FULL" = "true" ]; then
             full=true
           fi
-          echo "full=$full" >> "$GITHUB_OUTPUT"
 
           # The matrix lives here rather than in the `test` job so that full
           # mode can extend it. A NEW PROJECT MUST BE ADDED TO BOTH LINES.

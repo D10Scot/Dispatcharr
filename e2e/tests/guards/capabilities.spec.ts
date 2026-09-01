@@ -16,6 +16,13 @@
  * `tests/seeded/hdhr.spec.ts` must PASS, while `const c = 'pgrep -x ffmpeg';`
  * as code must FAIL. Three specs mention `docker` in prose today and none is
  * an escape.
+ *
+ * `usesInstanceFixture` also verified by mutation: adding
+ * `test.beforeAll(async ({ instance }) => { await instance.restart(); });` to
+ * `tests/seeded/hdhr.spec.ts` failed the container-lifecycle check, naming
+ * that file — `findTestCalls` is called with `{ includeHooks: true }` here
+ * specifically so a hook, not just a test, can be caught destructuring
+ * `instance`.
  */
 import { test, expect } from '@playwright/test';
 import path from 'node:path';
@@ -27,16 +34,9 @@ import {
   SUBPROCESS,
   type Capability,
 } from './allowlist';
-import { E2E_ROOT, findTestCalls, listTsFiles, readSpec } from './ast';
+import { E2E_ROOT, findTestCalls, listTsFiles, readSpec, ROOTS } from './ast';
 
 const INTROSPECTION_MARKERS = ['pgrep', 'docker ', 'manage.py'];
-
-/** Directories scanned, and the prefix each contributes to a reported path. */
-const ROOTS: readonly (readonly [string, string])[] = [
-  ['tests', 'tests'],
-  ['fixtures', 'fixtures'],
-  ['setup', 'setup'],
-];
 
 function importsModule(sf: ts.SourceFile, pred: (spec: string) => boolean): boolean {
   return sf.statements.some(
@@ -76,9 +76,15 @@ function hasStringLiteralContaining(sf: ts.SourceFile, markers: readonly string[
   return found;
 }
 
-/** A test that names `instance` in its destructured fixture parameter. */
+/**
+ * A test — or a lifecycle hook — that names `instance` in its destructured
+ * fixture parameter. Hooks are included here (unlike the tag guards) because
+ * this is the only detector that reads fixture parameters, and
+ * `test.beforeAll(async ({ instance }) => instance.restart())` is exactly the
+ * kind of container-lifecycle escape this guard exists to catch.
+ */
 function usesInstanceFixture(src: string, rel: string): boolean {
-  return findTestCalls(src, rel).some((call) => {
+  return findTestCalls(src, rel, { includeHooks: true }).some((call) => {
     const body = call.args[call.args.length - 1];
     if (!body || (!ts.isArrowFunction(body) && !ts.isFunctionExpression(body))) return false;
     const param = body.parameters[0];

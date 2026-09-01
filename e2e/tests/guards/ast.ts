@@ -30,6 +30,18 @@ export const E2E_ROOT = path.resolve(__dirname, '../..');
 export const REPO_ROOT = path.resolve(E2E_ROOT, '..');
 
 /**
+ * Directories scanned by guards that police the whole suite, and the prefix
+ * each contributes to a reported path. Not just `tests/`: a helper added to
+ * `fixtures/` or `setup/` runs on every test that imports it and must be
+ * policed the same as a spec.
+ */
+export const ROOTS: readonly (readonly [string, string])[] = [
+  ['tests', 'tests'],
+  ['fixtures', 'fixtures'],
+  ['setup', 'setup'],
+];
+
+/**
  * Lifecycle hooks share `test`'s namespace but declare a setup/teardown step,
  * not a test. Excluding exactly these four is deliberate and minimal: every
  * other `test.<prop>(…)` — `.only`, `.skip`, `.fixme`, `.fail` — is still a
@@ -137,23 +149,21 @@ export function classifyTestCall(node: ts.CallExpression): Classification {
   };
 }
 
-/** `test.describe(...)` and its variants (`.serial`, `.parallel`, `.only`). */
+/**
+ * `test.describe(...)` and any chain built on it — `.serial`, `.parallel`,
+ * `.only`, and combinations of any depth (`test.describe.serial.only(...)` is
+ * real Playwright API). Peels property accesses off the callee until it
+ * bottoms out at an identifier, so the chain's length doesn't matter: the
+ * base must be `test` and the first property after it must be `describe`.
+ */
 export function isDescribeCallee(expr: ts.Expression): boolean {
-  if (
-    ts.isPropertyAccessExpression(expr) &&
-    ts.isIdentifier(expr.expression) &&
-    expr.expression.text === 'test' &&
-    expr.name.text === 'describe'
-  ) {
-    return true;
+  const names: string[] = [];
+  let current: ts.Expression = expr;
+  while (ts.isPropertyAccessExpression(current)) {
+    names.unshift(current.name.text);
+    current = current.expression;
   }
-  return (
-    ts.isPropertyAccessExpression(expr) &&
-    ts.isPropertyAccessExpression(expr.expression) &&
-    ts.isIdentifier(expr.expression.expression) &&
-    expr.expression.expression.text === 'test' &&
-    expr.expression.name.text === 'describe'
-  );
+  return ts.isIdentifier(current) && current.text === 'test' && names[0] === 'describe';
 }
 
 export type TestCall = {
@@ -197,16 +207,67 @@ export function readTags(args: readonly ts.Expression[]): string[] | undefined {
   return undefined;
 }
 
-export function findTestCalls(src: string, fileName: string): TestCall[] {
+/** `test.<hook>(...)`, e.g. `test.beforeAll(fn)` or `test.beforeAll('title', fn)`. */
+function isHookCallee(expr: ts.Expression): boolean {
+  return (
+    ts.isPropertyAccessExpression(expr) &&
+    ts.isIdentifier(expr.expression) &&
+    expr.expression.text === 'test' &&
+    TEST_HOOK_NAMES.has(expr.name.text)
+  );
+}
+
+export type FindTestCallsOptions = {
+  /**
+   * Also yield `test.beforeAll`/`afterAll`/`beforeEach`/`afterEach` calls as
+   * `TestCall`s. Off by default because a hook is not a declaration — it has
+   * no title to tag and `tags.spec.ts` must not demand one — so `tags.spec.ts`
+   * and `pageerrors-enforcement.spec.ts` both want hooks excluded. Only a
+   * detector that reads fixture parameters (`usesInstanceFixture`, which a
+   * hook can carry just as validly as a test) needs to see them.
+   */
+  includeHooks?: boolean;
+};
+
+export function findTestCalls(
+  src: string,
+  fileName: string,
+  options: FindTestCallsOptions = {},
+): TestCall[] {
+  const { includeHooks = false } = options;
   const sourceFile = ts.createSourceFile(fileName, src, ts.ScriptTarget.Latest, true);
   const calls: TestCall[] = [];
-  const describeStack: string[][] = [];
+  // A describe's tags, or 'unreadable' when its details object was passed by
+  // reference (`test.describe(title, sharedDetails, fn)`) rather than as an
+  // inline object literal — the same shape `isUnreadableDetails` in
+  // `tags.spec.ts` already fails closed on for a *test*. A describe in that
+  // shape must fail closed the same way, not silently contribute no tags.
+  const describeStack: (string[] | 'unreadable')[] = [];
+  const flatTags = () => describeStack.flatMap((d) => (d === 'unreadable' ? [] : d));
+  const enclosingUnreadable = () => describeStack.includes('unreadable');
+  const DESCRIBE_UNREADABLE_REASON =
+    'an enclosing test.describe passes a details object this checker cannot read — inline the object literal';
 
   function visit(node: ts.Node): void {
     if (ts.isCallExpression(node) && isDescribeCallee(node.expression)) {
-      describeStack.push(readTags(node.arguments) ?? []);
+      const args = node.arguments;
+      const byRefDetails = args.length >= 3 && !ts.isObjectLiteralExpression(args[1]);
+      describeStack.push(byRefDetails ? 'unreadable' : (readTags(args) ?? []));
       ts.forEachChild(node, visit);
       describeStack.pop();
+      return;
+    }
+    if (includeHooks && ts.isCallExpression(node) && isHookCallee(node.expression)) {
+      // Not a declaration: no classification, no title requirement, and
+      // `test.beforeAll(fn)` / `test.beforeAll('title', fn)` are both valid.
+      const { line } = sourceFile.getLineAndCharacterOfPosition(node.getStart());
+      calls.push({
+        node,
+        args: node.arguments,
+        line: line + 1,
+        describeTags: flatTags(),
+      });
+      ts.forEachChild(node, visit);
       return;
     }
     if (ts.isCallExpression(node) && isTestCallee(node.expression)) {
@@ -217,9 +278,13 @@ export function findTestCalls(src: string, fileName: string): TestCall[] {
           node,
           args: node.arguments,
           line: line + 1,
-          describeTags: describeStack.flat(),
+          describeTags: flatTags(),
           unverifiableReason:
-            classification.kind === 'unverifiable' ? classification.reason : undefined,
+            classification.kind === 'unverifiable'
+              ? classification.reason
+              : enclosingUnreadable()
+                ? DESCRIBE_UNREADABLE_REASON
+                : undefined,
         });
       }
     }

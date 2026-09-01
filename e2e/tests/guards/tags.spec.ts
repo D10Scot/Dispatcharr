@@ -112,9 +112,9 @@ test('every test declares @contract or @characterization', async () => {
   // checker, not a retag task, so it must never wait on the flip.
   expect(
     unverifiable.sort(),
-    'A test declaration passes a details argument this checker cannot read, so its tags ' +
-      'cannot be verified. Inline the object literal, or pin the location in ' +
-      'KNOWN_UNVERIFIABLE with a reason.',
+    'A test declaration, or an enclosing describe, passes a details argument this checker ' +
+      'cannot read, so its tags cannot be verified. Inline the object literal, or pin the ' +
+      'location in KNOWN_UNVERIFIABLE with a reason.',
   ).toEqual(KNOWN_UNVERIFIABLE);
 
   const report = findings.map((f) => `  ${f.location} — ${f.detail}`).join('\n');

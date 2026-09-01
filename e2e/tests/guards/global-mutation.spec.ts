@@ -29,12 +29,17 @@
  * Verified by mutation: adding an `api.patch('/api/core/settings/1/', …)` call
  * to `tests/seeded/hdhr.spec.ts` failed; putting the same route in a comment
  * passed.
+ *
+ * Scans `ROOTS` (`tests/`, `fixtures/`, `setup/`), the same as
+ * `capabilities.spec.ts`, for the same reason that guard gives: a write
+ * hidden inside a fixture or setup helper runs on every test that imports it
+ * and is invisible to a scan of `tests/` alone.
  */
 import { test, expect } from '@playwright/test';
 import path from 'node:path';
 import * as ts from 'typescript';
 import { GLOBAL_SETTINGS_WRITE } from './allowlist';
-import { E2E_ROOT, listTsFiles, readSpec } from './ast';
+import { E2E_ROOT, listTsFiles, readSpec, ROOTS } from './ast';
 
 const WRITE_METHODS = new Set(['post', 'patch', 'put', 'delete']);
 const SETTINGS_PATH = 'core/settings';
@@ -104,11 +109,13 @@ function writesGlobalSettings(sf: ts.SourceFile): boolean {
 
 test('instance-wide settings writes are confined to their allowlist', async () => {
   const hits: string[] = [];
-  for (const rel of await listTsFiles(path.join(E2E_ROOT, 'tests'), 'tests')) {
-    if (rel.startsWith('tests/guards/')) continue;
-    const src = await readSpec(rel);
-    if (writesGlobalSettings(ts.createSourceFile(rel, src, ts.ScriptTarget.Latest, true))) {
-      hits.push(rel);
+  for (const [dir, prefix] of ROOTS) {
+    for (const rel of await listTsFiles(path.join(E2E_ROOT, dir), prefix)) {
+      if (rel.startsWith('tests/guards/')) continue;
+      const src = await readSpec(rel);
+      if (writesGlobalSettings(ts.createSourceFile(rel, src, ts.ScriptTarget.Latest, true))) {
+        hits.push(rel);
+      }
     }
   }
 
