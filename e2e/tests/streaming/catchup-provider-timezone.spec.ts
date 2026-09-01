@@ -181,7 +181,7 @@ test('row 13 premise: under UTC, the colon-seconds PATH candidate preserves the 
 test.fail(
   'a requested start keeps its seconds whatever the provider timezone is',
   async ({ upstream, seed, api, waitFor, streamClient }) => {
-    // KNOWN BUG — defect C3 (issue filed by this task, see report). Under a
+    // KNOWN BUG — defect C3, filed as #111. Under a
     // non-UTC provider timezone, `convert_timestamp_to_provider_tz`
     // reformats through `strftime("%Y-%m-%d:%H-%M")` (helpers.py:160) and
     // drops the seconds, BEFORE `build_timeshift_candidate_urls`

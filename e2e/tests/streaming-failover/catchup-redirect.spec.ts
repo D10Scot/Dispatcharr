@@ -145,6 +145,16 @@ test('redirect mode hands the client a provider URL in the layout it arrived in,
     // URL and fetches NOTHING — the capacity check runs with reserve=False
     // (`_prepare_catchup_stream_attempt`, views.py:1618-1652) and no HTTP
     // request is made at all. Three redirects issued, zero upstream requests.
+    //
+    // WHY THIS ISN'T A VACUOUS EMPTY-LOG CHECK: the three 302 assertions just
+    // above already prove the setup drove something real — each Location
+    // header was checked against `scenario.username`, `scenario.password`,
+    // `providerStreamId` and `start`, values this test generated itself. A
+    // setup that drove nothing (a broken seed, a channel never wired, a
+    // credential mismatch) would have failed red at one of THOSE assertions,
+    // before this one is ever reached. So an empty log here is evidence of
+    // Redirect mode's own behaviour, not an accident of a test that never
+    // triggered a request in the first place.
     expect(
       catchupRequests(await upstream.log(scenario)),
       'redirect mode must make no upstream request of its own'
