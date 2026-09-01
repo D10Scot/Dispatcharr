@@ -304,6 +304,17 @@ export async function handleXc(context: XcContext): Promise<boolean> {
       return true;
     }
 
+    // Checked ahead of the credential comparison, exactly as `/player_api.php`
+    // and `serveChannelStream` do. Scenario-wide only: a VOD id is not a
+    // channel id, so there is no channel scope to resolve against — a
+    // `{ channel: n }` arm stores under scope `n` (see `scopeOf` in
+    // `faults.ts`) and this check, which passes no channel, will not see it.
+    if (context.faults.isActive(scenario.id, 'auth-failure')) {
+      log(401);
+      sendJson(401, { error: 'fault: auth-failure' });
+      return true;
+    }
+
     if (!xcCredentialsMatch(scenario, username, password)) {
       log(401);
       sendJson(401, { error: 'bad credentials' });
@@ -320,6 +331,12 @@ export async function handleXc(context: XcContext): Promise<boolean> {
     if (!known) {
       log(404);
       sendJson(404, { error: `scenario ${scenario.id} declares no ${kind} with id ${wanted}` });
+      return true;
+    }
+
+    if (context.faults.isActive(scenario.id, 'not-found')) {
+      log(404);
+      sendJson(404, { error: 'fault: not-found' });
       return true;
     }
 

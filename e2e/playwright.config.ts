@@ -111,7 +111,11 @@ export default defineConfig({
       // `streaming-failover`. A second worker running any spec here that
       // starts its own transcode — or a future grey-box test that mutates
       // Redis directly, the way the deleted ownership-lease flagship did —
-      // would race against it in a way no other project risks.
+      // would race against it in a way no other project risks. A second
+      // reason lives here too: `vod-redirect-profile.spec.ts` mutates the
+      // global `stream_settings` row's `default_stream_profile` for the
+      // duration of its run, and a second worker running any streaming test
+      // concurrently would take the Redirect path unexpectedly.
       workers: 1,
       use: { storageState: 'playwright/.auth/admin.json' },
     },
