@@ -84,9 +84,12 @@ export default defineConfig({
       // process's cumulative speed= to cross a threshold. 300s is the same
       // ceiling `streaming` uses and is not generous here.
       timeout: 300_000,
-      // One worker, unlike its siblings: `failover-buffering.spec.ts`
-      // mutates the global `proxy_settings` row (raising `buffering_speed`)
-      // for the duration of its run. That is only safe because every other
+      // One worker, unlike its siblings: two specs in this directory mutate
+      // container-global state for the duration of their run, and this
+      // project's serialisation is what keeps both safe.
+      //
+      // `failover-buffering.spec.ts` mutates the global `proxy_settings` row
+      // (raising `buffering_speed`). That is only safe because every other
       // spec in this directory drives the locked Proxy stream profile, where
       // the buffering detector is inert (it parses ffmpeg's stderr, which
       // Proxy never produces) — nothing enforces that convention, so a
@@ -95,6 +98,34 @@ export default defineConfig({
       // the project makes that race structurally impossible instead of
       // merely documented, the same reasoning `streaming-greybox` applies to
       // its own container-wide process count below.
+      //
+      // `catchup-redirect.spec.ts` mutates the second global:
+      // `stream_settings.default_stream_profile`, pointed at the locked
+      // Redirect profile for the duration of its run
+      // (`CoreSettings.is_default_stream_profile_redirect`,
+      // `core/models.py:549-564`), because Redirect mode has no per-channel
+      // override — it is a container-wide setting. Same shape as
+      // `proxy_settings` above, wider blast radius: while it is flipped,
+      // *every* channel in the container answers a session-less catch-up or
+      // live request with a 302 to the provider instead of proxying it. The
+      // single worker is what makes that safe. Two specs in this directory
+      // now depend on it; do not raise `workers` back to 2 without
+      // confirming neither still needs serialising.
+      //
+      // The same row is also mutated by
+      // `streaming-greybox/vod-redirect-profile.spec.ts` — a different
+      // project. CI never lets the two race: each project gets its own
+      // container (`.github/workflows/e2e-tests.yml`). A local run with no
+      // `--project`, sharing one container across both, has no such
+      // guarantee. This project's single worker protects only against
+      // overlap *within* streaming-failover; it says nothing about
+      // streaming-greybox.
+      //
+      // Note what the single worker does NOT protect: a run that dies
+      // between either spec's write and its `finally` leaves the container
+      // mutated for every later project too. Both specs guard their own
+      // next run with an up-front assertion, and that guard protects the
+      // test itself — not the specs that would run before it.
       workers: 1,
       use: { storageState: 'playwright/.auth/admin.json' },
     },
@@ -116,6 +147,14 @@ export default defineConfig({
       // global `stream_settings` row's `default_stream_profile` for the
       // duration of its run, and a second worker running any streaming test
       // concurrently would take the Redirect path unexpectedly.
+      //
+      // That row is not unique to this project either:
+      // `streaming-failover/catchup-redirect.spec.ts` mutates the same one.
+      // CI keeps the two projects apart with one container each
+      // (`.github/workflows/e2e-tests.yml`); a local run with no
+      // `--project` shares a container across both and has no such
+      // guarantee. This project's single worker rules out overlap only
+      // within streaming-greybox.
       workers: 1,
       use: { storageState: 'playwright/.auth/admin.json' },
     },
