@@ -601,6 +601,13 @@ test_modular_tls_key_permission() {
     # Create a copy of certs with 0777 key permissions
     local bad_perms_dir
     bad_perms_dir=$(mktemp -d)
+    # 0755 on the directory, for exactly the reason generate_test_certs does
+    # it: this is a second mktemp -d, so it is 0700 owned by the suite user
+    # and the app cannot traverse it as `dispatch`. The scenario's subject is
+    # the 0777 KEY below, not the directory — leaving this at 0700 reproduces
+    # the very PermissionError on /certs/ca.crt that the cert-directory fix
+    # exists to remove, and the scenario never reaches the key it is about.
+    chmod 755 "$bad_perms_dir"
     cp "$CERT_DIR"/ca.crt "$CERT_DIR"/client.crt "$CERT_DIR"/client.key "$bad_perms_dir/"
     chmod 777 "$bad_perms_dir/client.key"
 
