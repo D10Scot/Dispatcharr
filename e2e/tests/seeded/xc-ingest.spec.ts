@@ -13,7 +13,7 @@ interface StreamPage {
   }[];
 }
 
-test('Dispatcharr ingests live streams from an Xtream Codes account', async ({
+test('Dispatcharr ingests live streams from an Xtream Codes account', { tag: '@contract' }, async ({
   upstream,
   seed,
   api,

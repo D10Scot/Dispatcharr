@@ -34,7 +34,7 @@ if (!statsSurface) {
 // scenarios are documented to live for the provider process's life with no
 // cleanup path, and a leftover channel row is inert without a live connection
 // to it — it cannot appear in `stats-connections` on its own.
-test('an active stream appears as a connection on the Stats page', async ({
+test('an active stream appears as a connection on the Stats page', { tag: '@contract' }, async ({
   adminPage,
   api,
   seed,

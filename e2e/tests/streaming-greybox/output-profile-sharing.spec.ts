@@ -39,7 +39,12 @@ async function countFfmpegProcesses(): Promise<number> {
   }
 }
 
-test('two clients on one output profile share a single transcode', async ({
+// @characterization: pins the process table. It proves Output Profile sharing
+// by counting `ffmpeg` processes with `pgrep -x` inside the container — a
+// container-wide observable with no client-facing equivalent. After the
+// extraction the transcode may not be in this container, or may not be a
+// process named `ffmpeg`; the sharing behaviour would still be correct.
+test('two clients on one output profile share a single transcode', { tag: '@characterization' }, async ({
   upstream,
   seed,
   api,

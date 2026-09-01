@@ -24,7 +24,7 @@ interface ProviderInfo {
   container_extension: string;
 }
 
-test('advanced movie data is fetched, throttled for 24h, and survives a list sync', async ({
+test('advanced movie data is fetched, throttled for 24h, and survives a list sync', { tag: '@contract' }, async ({
   upstream,
   seed,
   api,

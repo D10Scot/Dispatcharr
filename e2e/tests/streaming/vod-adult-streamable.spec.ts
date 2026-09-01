@@ -26,7 +26,7 @@ import type { Movie, VodPage } from '../../fixtures';
 // `--reporter=json` that this pin fails at the `not.toBe(200)` below, with
 // both premise assertions passing — re-verify the same way after any edit
 // here.
-test.fail('an adult movie a user cannot list is not streamable by that user', async ({
+test.fail('an adult movie a user cannot list is not streamable by that user', { tag: '@contract' }, async ({
   upstream,
   seed,
   api,

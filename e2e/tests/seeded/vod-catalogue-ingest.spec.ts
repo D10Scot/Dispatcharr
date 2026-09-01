@@ -8,7 +8,7 @@ interface MovieRow { id: number; uuid: string; name: string; year: number | null
 interface SeriesRow { id: number; uuid: string; name: string }
 interface EpisodeRow { id: number; name: string; season_number: number; episode_number: number }
 
-test('Dispatcharr ingests a VOD and series catalogue from an Xtream Codes account', async ({
+test('Dispatcharr ingests a VOD and series catalogue from an Xtream Codes account', { tag: '@contract' }, async ({
   upstream,
   seed,
   api,

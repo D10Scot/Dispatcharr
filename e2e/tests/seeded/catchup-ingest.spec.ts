@@ -56,7 +56,7 @@ async function readChannel(
   );
 }
 
-test('a provider turning tv_archive on sets Channel.is_catchup through the ingest rollup', async ({
+test('a provider turning tv_archive on sets Channel.is_catchup through the ingest rollup', { tag: '@contract' }, async ({
   upstream,
   seed,
   api,
@@ -131,7 +131,7 @@ test('a provider turning tv_archive on sets Channel.is_catchup through the inges
   expect(rolled.catchup_days).toBe(ARCHIVE_DAYS);
 });
 
-test('a provider turning tv_archive off clears Channel.is_catchup on the next refresh', async ({
+test('a provider turning tv_archive off clears Channel.is_catchup on the next refresh', { tag: '@contract' }, async ({
   upstream,
   seed,
   api,

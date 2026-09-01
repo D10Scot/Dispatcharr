@@ -83,7 +83,7 @@ async function seedVodContent(
 //
 // request.get() throughout: streamClient.open() throws on any non-2xx, and
 // these rows are mostly about non-2xx statuses.
-test('the root XC movie and series routes authenticate and deliver bytes by Dispatcharr primary key (G9 row 14)', async ({
+test('the root XC movie and series routes authenticate and deliver bytes by Dispatcharr primary key (G9 row 14)', { tag: '@contract' }, async ({
   upstream,
   seed,
   api,
@@ -178,7 +178,7 @@ test('the root XC movie and series routes authenticate and deliver bytes by Disp
 // re-guard it. Verified with --reporter=json that this pin fails at the
 // `toBe(401)` assertion below, not before it — re-verify the same way after
 // any edit here.
-test.fail('wrong XC credentials against the movie route are a 401, not a 500', async ({
+test.fail('wrong XC credentials against the movie route are a 401, not a 500', { tag: '@contract' }, async ({
   upstream,
   seed,
   api,
@@ -220,7 +220,7 @@ test.fail('wrong XC credentials against the movie route are a 401, not a 500', a
 // so nothing here needs to re-guard it. Verified with --reporter=json that
 // this pin fails at the `toBe(404)` assertion below, not before it —
 // re-verify the same way after any edit here.
-test.fail('an unknown episode id on the XC series route is a 404, not a 500', async ({
+test.fail('an unknown episode id on the XC series route is a 404, not a 500', { tag: '@contract' }, async ({
   upstream,
   seed,
   api,

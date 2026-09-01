@@ -1,7 +1,7 @@
 import { test, expect, expectTsAligned, expectContiguous, videoPidOf, readChannelStatus } from '../../fixtures';
 import { lockedProfile } from './helpers';
 
-test('the Redirect profile 302s the client at the provider and carries no bytes', async ({
+test('the Redirect profile 302s the client at the provider and carries no bytes', { tag: '@contract' }, async ({
   upstream,
   seed,
   api,
@@ -34,7 +34,7 @@ test('the Redirect profile 302s the client at the provider and carries no bytes'
   expect((await upstream.connections(scenario)).live).toBe(0);
 });
 
-test('the FFmpeg profile spawns a subprocess and reports its progress', async ({
+test('the FFmpeg profile spawns a subprocess and reports its progress', { tag: '@contract' }, async ({
   upstream,
   seed,
   api,

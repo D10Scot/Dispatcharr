@@ -36,7 +36,7 @@ async function seedVodMovie(
   return { prefix, scenario, account, movie: movies.results[0] };
 }
 
-test('Range and seek on the VOD proxy match the provider byte-for-byte', async ({
+test('Range and seek on the VOD proxy match the provider byte-for-byte', { tag: '@contract' }, async ({
   upstream,
   seed,
   api,
@@ -124,7 +124,7 @@ test('Range and seek on the VOD proxy match the provider byte-for-byte', async (
 // provider byte-for-byte') proves.
 //
 // Issue: https://github.com/D10Scot/Dispatcharr/issues/98
-test.fail('an unsatisfiable Range on a fresh session is 416, not 500', async ({
+test.fail('an unsatisfiable Range on a fresh session is 416, not 500', { tag: '@contract' }, async ({
   upstream,
   seed,
   api,
@@ -165,7 +165,7 @@ test.fail('an unsatisfiable Range on a fresh session is 416, not 500', async ({
 //
 // Filed as https://github.com/D10Scot/Dispatcharr/issues/66. Do not file a
 // second issue for this.
-test.fail('a provider that ignores Range still yields the requested bytes', async ({
+test.fail('a provider that ignores Range still yields the requested bytes', { tag: '@contract' }, async ({
   upstream,
   seed,
   api,
@@ -230,7 +230,7 @@ test.fail('a provider that ignores Range still yields the requested bytes', asyn
 //
 // Filed as https://github.com/D10Scot/Dispatcharr/issues/64. Do not file a
 // second issue for this.
-test.fail('a suffix Range returns the tail of the file', async ({
+test.fail('a suffix Range returns the tail of the file', { tag: '@contract' }, async ({
   upstream,
   seed,
   api,

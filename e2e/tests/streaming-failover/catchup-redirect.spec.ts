@@ -56,7 +56,7 @@ async function readStreamSettingsRow(api: ApiClient): Promise<CoreSettingsRow> {
   return row!;
 }
 
-test('redirect mode hands the client a provider URL in the layout it arrived in, and fetches nothing', async ({
+test('redirect mode hands the client a provider URL in the layout it arrived in, and fetches nothing', { tag: '@contract' }, async ({
   upstream,
   seed,
   api,

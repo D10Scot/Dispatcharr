@@ -14,7 +14,7 @@ import { test, expect, decodeXmlEntities, m3uQuery, parseM3u } from '../../fixtu
  * row(s) this test seeded by the generated name and checks only those.
  */
 
-test('/output/m3u renders a parseable playlist with a well-formed proxy URL', async ({
+test('/output/m3u renders a parseable playlist with a well-formed proxy URL', { tag: '@contract' }, async ({
   seed,
   request,
   baseURL,
@@ -71,7 +71,7 @@ test('/output/m3u renders a parseable playlist with a well-formed proxy URL', as
   expect(mine!.attributes['group-title']).toBe('Default Group');
 });
 
-test('/output/m3u/<profile> renders only the channels enabled in that profile', async ({
+test('/output/m3u/<profile> renders only the channels enabled in that profile', { tag: '@contract' }, async ({
   seed,
   api,
   request,
@@ -102,7 +102,7 @@ test('/output/m3u/<profile> renders only the channels enabled in that profile', 
   expect(names).not.toContain(excluded.name);
 });
 
-test('/output/m3u/<profile> 404s on a profile that does not exist', async ({
+test('/output/m3u/<profile> 404s on a profile that does not exist', { tag: '@contract' }, async ({
   seed,
   request,
 }) => {
@@ -162,7 +162,7 @@ test('/output/m3u/<profile> 404s on a profile that does not exist', async ({
  * way after any edit here.
  */
 test.fail(
-  'a channel name containing a double quote still produces a well-formed EXTINF line (#80)',
+  'a channel name containing a double quote still produces a well-formed EXTINF line (#80)', { tag: '@contract' },
   async ({ seed, api, request }) => {
     const channel = await seed.channel();
     const quotedName = `${channel.name}-"quoted"`;

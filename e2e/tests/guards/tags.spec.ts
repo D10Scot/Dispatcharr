@@ -11,11 +11,10 @@
  * `docs/adr/0002-e2e-test-taxonomy.md` states what each tag promises and what
  * a `@characterization` test owes in its comment.
  *
- * MODE: warning. PR A ships this reporting-only so the retag can land as its
- * own reviewable diff; PR B flips `MODE` to 'blocking' in one line once every
- * test carries a tag. A guard that lands red is a guard someone disables.
- *
- * The unverifiable check below does NOT wait on that flip — see its comment.
+ * Blocking. Every test declaration in the suite carries a tag; an untagged one
+ * fails this check. It shipped in warning mode for exactly one pull request so
+ * the 196-tag retag could land as its own reviewable diff — a guard that lands
+ * red is a guard someone disables — and flipped when the retag landed.
  *
  * Verified by mutation. Setting MODE to 'blocking' failed listing all 191
  * declarations; tagging one dropped it to 190; tagging one with both tags
@@ -35,8 +34,6 @@ export const TAGS = {
 } as const;
 
 const VALID = new Set<string>([TAGS.contract, TAGS.characterization]);
-
-const MODE: 'warning' | 'blocking' = 'warning';
 
 /**
  * Locations this checker cannot read, each pinned with a reason.
@@ -64,7 +61,11 @@ function isUnreadableDetails(args: readonly ts.Expression[]): boolean {
   return args.length >= 3 && !ts.isObjectLiteralExpression(args[1]);
 }
 
-test('every test declares @contract or @characterization', async () => {
+// @characterization: every test in this file asserts facts about this
+// repository's own source tree — file paths, import specifiers, allowlist
+// membership. None of it is client-observable behaviour, and all of it changes
+// shape when the suite is restructured. See docs/adr/0002-e2e-test-taxonomy.md.
+test('every test declares @contract or @characterization', { tag: '@characterization' }, async () => {
   const files = await listSpecFiles(path.join(E2E_ROOT, 'tests'), 'tests');
   const findings: Finding[] = [];
   const unverifiable: string[] = [];
@@ -107,9 +108,10 @@ test('every test declares @contract or @characterization', async () => {
     }
   }
 
-  // Fails closed, and does so in BOTH modes — unlike the untagged findings
-  // below, which are warnings until PR B. An unreadable shape is a hole in the
-  // checker, not a retag task, so it must never wait on the flip.
+  // Fails closed on a shape the checker cannot read, separately from the
+  // untagged findings below. This assertion was live even while the guard was
+  // in warning mode: an unreadable shape is a hole in the checker, not a retag
+  // task, and never waited on the flip.
   expect(
     unverifiable.sort(),
     'A test declaration, or an enclosing describe, passes a details argument this checker ' +
@@ -119,16 +121,13 @@ test('every test declares @contract or @characterization', async () => {
 
   const report = findings.map((f) => `  ${f.location} — ${f.detail}`).join('\n');
 
-  if (MODE === 'warning') {
-    if (findings.length > 0) {
-      console.warn(
-        `[tags] ${tagged} tagged, ${findings.length} not yet tagged. ` +
-          `This guard is in warning mode until PR B's retag lands.\n${report}`,
-      );
-    }
-    expect(tagged + findings.length).toBeGreaterThan(0);
-    return;
-  }
+  // Guards the guard: a walker that silently found nothing would pass this
+  // test while enforcing nothing at all.
+  expect(
+    tagged + findings.length,
+    'No test declarations found anywhere under tests/. That is this guard being ' +
+      'broken, not the suite being untagged — check listSpecFiles and findTestCalls.',
+  ).toBeGreaterThan(150);
 
   expect(
     findings,

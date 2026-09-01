@@ -2,7 +2,7 @@ import { test, expect } from '../../fixtures';
 import { StreamClient } from '../../fixtures';
 import type { VodCategory } from '../../fixtures';
 
-test('readBytes returns exactly the requested byte count', async ({ upstream, seed, streamClient }) => {
+test('readBytes returns exactly the requested byte count', { tag: '@contract' }, async ({ upstream, seed, streamClient }) => {
   test.setTimeout(60_000);
   // The provider's own control origin, not the product: this asserts the
   // fixture, not Dispatcharr. A scenario with one movie is the cheapest way
@@ -39,7 +39,7 @@ test('readBytes returns exactly the requested byte count', async ({ upstream, se
   expect(second.equals(reference)).toBe(true);
 });
 
-test('readBytes throws if the stream ends before count bytes arrive', async ({ upstream, seed }) => {
+test('readBytes throws if the stream ends before count bytes arrive', { tag: '@contract' }, async ({ upstream, seed }) => {
   test.setTimeout(60_000);
   // Own scenario and own StreamClient: the other test's connection must stay
   // open for its own assertions, so ending a stream early needs a second one.
@@ -63,7 +63,7 @@ test('readBytes throws if the stream ends before count bytes arrive', async ({ u
   await client.close();
 });
 
-test('the VOD category list is an unpaginated array', async ({ upstream, seed, waitFor }) => {
+test('the VOD category list is an unpaginated array', { tag: '@contract' }, async ({ upstream, seed, waitFor }) => {
   test.setTimeout(60_000);
   // Not just "an array": locates a category THIS test ingested and checks
   // its fields, so swapping the URL for any other array-returning endpoint

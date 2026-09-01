@@ -17,21 +17,21 @@ function synth(pid: number, count: number, startCc = 0, skipAt = -1): Buffer {
   return out;
 }
 
-test('expectContiguous accepts an unbroken counter run', () => {
+test('expectContiguous accepts an unbroken counter run', { tag: '@contract' }, () => {
   expect(() => expectContiguous(synth(0x0100, 40), 0x0100)).not.toThrow();
 });
 
-test('expectContiguous accepts a counter that wraps past 15', () => {
+test('expectContiguous accepts a counter that wraps past 15', { tag: '@contract' }, () => {
   expect(() => expectContiguous(synth(0x0100, 40, 13), 0x0100)).not.toThrow();
 });
 
-test('expectContiguous rejects a gap in the counter', () => {
+test('expectContiguous rejects a gap in the counter', { tag: '@contract' }, () => {
   expect(() => expectContiguous(synth(0x0100, 40, 0, 20), 0x0100)).toThrow(
     /continuity/i
   );
 });
 
-test('videoPidOf picks the busiest non-null PID', () => {
+test('videoPidOf picks the busiest non-null PID', { tag: '@contract' }, () => {
   // The null PID is deliberately the busiest of the two here — if the
   // `pid === TS_NULL_PID` exclusion in videoPidOf were ever deleted, this
   // would start returning 0x1fff instead and the test would catch it. With

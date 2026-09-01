@@ -1,7 +1,7 @@
 import { test, expect, expectTsAligned, readChannelStatus } from '../../fixtures';
 import { lockedProfile } from '../streaming/helpers';
 
-test('switching the upstream mid-stream does not disturb a reading client', async ({
+test('switching the upstream mid-stream does not disturb a reading client', { tag: '@contract' }, async ({
   upstream,
   seed,
   api,

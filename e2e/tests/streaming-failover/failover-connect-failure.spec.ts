@@ -6,7 +6,7 @@ import { lockedProfile, withDeadline } from '../streaming/helpers';
 // since readPackets only rejects on a clean stream end.
 const READ_DEADLINE_MS = 60_000;
 
-test('an upstream that refuses the connection fails over before serving', async ({
+test('an upstream that refuses the connection fails over before serving', { tag: '@contract' }, async ({
   upstream,
   seed,
   api,

@@ -94,7 +94,7 @@ async function seedCatchupChannelInZone(
 const WINTER_START_UTC = '2026-01-15:12-00';
 const WINTER_START_BRUSSELS = '2026-01-15:13-00';
 
-test('the provider server_info.timezone converts the requested start before it is sent', async ({
+test('the provider server_info.timezone converts the requested start before it is sent', { tag: '@contract' }, async ({
   upstream,
   seed,
   api,
@@ -139,7 +139,7 @@ test('the provider server_info.timezone converts the requested start before it i
 // silently breaks the four-candidate walk, or the colon-seconds candidate's
 // second-preservation under UTC, signals here rather than only inside the
 // inverted test where it would just read as "the pin still fails".
-test('row 13 premise: under UTC, the colon-seconds PATH candidate preserves the requested seconds', async ({
+test('row 13 premise: under UTC, the colon-seconds PATH candidate preserves the requested seconds', { tag: '@contract' }, async ({
   upstream,
   seed,
   api,
@@ -179,7 +179,7 @@ test('row 13 premise: under UTC, the colon-seconds PATH candidate preserves the 
 });
 
 test.fail(
-  'a requested start keeps its seconds whatever the provider timezone is',
+  'a requested start keeps its seconds whatever the provider timezone is', { tag: '@contract' },
   async ({ upstream, seed, api, waitFor, streamClient }) => {
     // KNOWN BUG — defect C3, filed as #111. Under a
     // non-UTC provider timezone, `convert_timestamp_to_provider_tz`

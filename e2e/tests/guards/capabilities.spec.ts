@@ -124,23 +124,27 @@ async function expectConfined(cap: Capability, detect: Detector): Promise<void> 
   ).toEqual([...cap.allow].sort());
 }
 
-test('the container-lifecycle fixture is confined to the lifecycle projects', async () => {
+// @characterization: every test in this file asserts facts about this
+// repository's own source tree — file paths, import specifiers, allowlist
+// membership. None of it is client-observable behaviour, and all of it changes
+// shape when the suite is restructured. See docs/adr/0002-e2e-test-taxonomy.md.
+test('the container-lifecycle fixture is confined to the lifecycle projects', { tag: '@characterization' }, async () => {
   await expectConfined(CONTAINER_LIFECYCLE, (_sf, src, rel) => usesInstanceFixture(src, rel));
 });
 
-test('direct subprocess execution is confined to its allowlist', async () => {
+test('direct subprocess execution is confined to its allowlist', { tag: '@characterization' }, async () => {
   await expectConfined(SUBPROCESS, (sf) =>
     importsModule(sf, (s) => s === 'node:child_process' || s === 'child_process'),
   );
 });
 
-test('only allowlisted specs import the grey-box Redis helper', async () => {
+test('only allowlisted specs import the grey-box Redis helper', { tag: '@characterization' }, async () => {
   await expectConfined(GREYBOX_REDIS, (sf) =>
     importsModule(sf, (s) => s.endsWith('greybox/redis')),
   );
 });
 
-test('container-introspection commands are confined to their allowlist', async () => {
+test('container-introspection commands are confined to their allowlist', { tag: '@characterization' }, async () => {
   await expectConfined(CONTAINER_INTROSPECTION, (sf) =>
     hasStringLiteralContaining(sf, INTROSPECTION_MARKERS),
   );

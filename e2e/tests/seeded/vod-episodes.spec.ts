@@ -21,7 +21,7 @@ type SeriesInfo = {
 
 type EpisodeWithProviders = Episode & { providers: M3uEpisodeRelation[] };
 
-test('Dispatcharr fetches episodes on demand for an object-keyed provider series', async ({
+test('Dispatcharr fetches episodes on demand for an object-keyed provider series', { tag: '@contract' }, async ({
   upstream,
   seed,
   api,
@@ -127,7 +127,7 @@ test('Dispatcharr fetches episodes on demand for an object-keyed provider series
   expect(pairs).toEqual([[1, 1], [2, 1]]);
 });
 
-test('Dispatcharr fetches episodes on demand for an array-keyed provider series, season 0 included', async ({
+test('Dispatcharr fetches episodes on demand for an array-keyed provider series, season 0 included', { tag: '@contract' }, async ({
   upstream,
   seed,
   api,

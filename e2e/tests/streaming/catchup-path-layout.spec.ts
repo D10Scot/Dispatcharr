@@ -9,7 +9,7 @@ import { catchupTimestamp, seedCatchupChannel } from './helpers';
  * catch-up entry point, `/proxy/catchup/<uuid>`, so that surface is not left
  * completely unexercised by this goal either — see that file's header.
  */
-test('a catch-up request reaches the provider in the PATH layout with the right parameters', async ({
+test('a catch-up request reaches the provider in the PATH layout with the right parameters', { tag: '@contract' }, async ({
   upstream,
   seed,
   api,

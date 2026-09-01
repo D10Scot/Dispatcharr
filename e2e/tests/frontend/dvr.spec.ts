@@ -193,7 +193,7 @@ async function scheduleNextMonth(
   await popover.waitFor({ state: 'hidden' });
 }
 
-test('a recording scheduled from the DVR page exists on the server and can be cancelled', async ({
+test('a recording scheduled from the DVR page exists on the server and can be cancelled', { tag: '@contract' }, async ({
   adminPage,
   api,
   seed,

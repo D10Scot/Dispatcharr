@@ -15,7 +15,7 @@ import { test, expect, xcQuery } from '../../fixtures';
  * `custom_properties["xc_password"]`.
  */
 
-test('player_api.php returns a user_info / server_info envelope for valid credentials', async ({
+test('player_api.php returns a user_info / server_info envelope for valid credentials', { tag: '@contract' }, async ({
   seed,
   request,
   baseURL,
@@ -81,7 +81,7 @@ test('player_api.php returns a user_info / server_info envelope for valid creden
   expect(body.server_info.timestamp_now).toBeLessThan(nowSeconds + 300);
 });
 
-test('player_api.php answers an unknown action with the same envelope', async ({
+test('player_api.php answers an unknown action with the same envelope', { tag: '@contract' }, async ({
   seed,
   request,
 }) => {
@@ -103,7 +103,7 @@ test('player_api.php answers an unknown action with the same envelope', async ({
   expect(body.server_info.timezone).toBe('UTC');
 });
 
-test('player_api.php rejects a wrong password', async ({ seed, request }) => {
+test('player_api.php rejects a wrong password', { tag: '@contract' }, async ({ seed, request }) => {
   const user = await seed.xcUser();
 
   // Driven through `request`, not `api`: ApiClient retries once through a
@@ -115,7 +115,7 @@ test('player_api.php rejects a wrong password', async ({ seed, request }) => {
   expect(res.status()).toBe(401);
 });
 
-test('player_api.php rejects a user with no xc_password at all', async ({
+test('player_api.php rejects a user with no xc_password at all', { tag: '@contract' }, async ({
   seed,
   request,
 }) => {
@@ -142,7 +142,7 @@ test('player_api.php rejects a user with no xc_password at all', async ({
 // design doc.
 //
 // Issue: https://github.com/D10Scot/Dispatcharr/issues/84
-test.fail('player_api.php does not distinguish an unknown user from a wrong password', async ({
+test.fail('player_api.php does not distinguish an unknown user from a wrong password', { tag: '@contract' }, async ({
   seed,
   request,
 }) => {
