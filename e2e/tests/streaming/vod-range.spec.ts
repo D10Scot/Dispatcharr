@@ -95,6 +95,19 @@ test('Range and seek on the VOD proxy match the provider byte-for-byte', async (
   });
   expect(open.status()).toBe(206);
   expect(open.headers()['content-range']).toBe(`bytes ${start}-${total - 1}/${total}`);
+
+  // The non-inverted control for the test.fail() below ('an unsatisfiable
+  // Range on a fresh session is 416, not 500'): on an ESTABLISHED session
+  // (content_length already known — `full`, above, made this one), an
+  // unsatisfiable Range answers 416. This used to live only inside that
+  // test.fail() body, where test.fail() is satisfied by ANY failure, so a
+  // regression in the control itself would have been swallowed as
+  // "expected failure" and never surfaced. Asserting it here, in a passing
+  // test, is what actually guards it.
+  const outOfRange = await request.get(`/proxy/vod/movie/${movie.uuid}`, {
+    headers: { Range: `bytes=99999999-` },
+  });
+  expect(outOfRange.status()).toBe(416);
 });
 
 // Asserts the behaviour Dispatcharr SHOULD have. On a session's FIRST
@@ -106,8 +119,9 @@ test('Range and seek on the VOD proxy match the provider byte-for-byte', async (
 // `response.raise_for_status()` (:509) and becomes
 // `HttpResponse("Streaming error: ...", status=500)` (:1405). The SAME
 // request on an established session returns a correct 416
-// ("Requested Range Not Satisfiable", :1114), which the control assertion
-// below proves.
+// ("Requested Range Not Satisfiable", :1114), which the non-inverted control
+// assertion in the test above ('Range and seek on the VOD proxy match the
+// provider byte-for-byte') proves.
 //
 // Issue: https://github.com/D10Scot/Dispatcharr/issues/98
 test.fail('an unsatisfiable Range on a fresh session is 416, not 500', async ({
@@ -119,23 +133,17 @@ test.fail('an unsatisfiable Range on a fresh session is 416, not 500', async ({
 }) => {
   test.setTimeout(180_000);
 
-  // Control: an ESTABLISHED session (one full request first, so
-  // content_length is known) answers 416 correctly today. Put this first —
-  // if it fails, the failure message says so before the subject is touched,
-  // distinguishing "Dispatcharr never answers 416" (false, and a bigger
-  // claim) from "Dispatcharr answers 416 only once it knows the size" (the
-  // actual defect).
-  const control = await seedVodMovie(upstream, seed, api, waitFor);
-  const controlFull = await request.get(`/proxy/vod/movie/${control.movie.uuid}`);
-  expect(controlFull.status()).toBe(200);
-  const controlRes = await request.get(`/proxy/vod/movie/${control.movie.uuid}`, {
-    headers: { Range: `bytes=99999999-` },
-  });
-  expect(controlRes.status()).toBe(416);
-
+  // The control this test used to run inline — an ESTABLISHED session
+  // answering 416 correctly — sat inside this test.fail() body, where
+  // test.fail() is satisfied by ANY failure in the body: a regression in
+  // the control itself would have been swallowed as "expected failure" and
+  // never surfaced. It now lives as a non-inverted assertion in the test
+  // above ('Range and seek on the VOD proxy match the provider
+  // byte-for-byte'), which actually guards it.
+  //
   // Subject: a FRESH session (own scenario/account/movie — no earlier
-  // request in this test has opened it) gets the same unsatisfiable Range
-  // as its very first request.
+  // request in this test has opened it) gets an unsatisfiable Range as its
+  // very first request.
   const subject = await seedVodMovie(upstream, seed, api, waitFor);
   const res = await request.get(`/proxy/vod/movie/${subject.movie.uuid}`, {
     headers: { Range: `bytes=99999999-` },

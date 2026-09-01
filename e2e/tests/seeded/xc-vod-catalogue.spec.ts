@@ -50,6 +50,10 @@ test('the XC VOD actions answer a real catalogue with Dispatcharr identities, no
         containerExtension: 'mp4',
         tmdbId: null,
         imdbId: null,
+        // Feeds the provider-info guard below, which exists to cover the
+        // premise of the row-20 test.fail() at the bottom of this file: that
+        // /api/vod/movies/<pk>/provider-info/ actually reports bitrate.
+        vodInfo: { bitrate: 4321 },
       },
       {
         id: 102,
@@ -191,6 +195,21 @@ test('the XC VOD actions answer a real catalogue with Dispatcharr identities, no
   // movie_id=vod_id.
   expect(info.movie_data.stream_id).toBe(alpha!.id);
   expect(info.movie_data.container_extension).toBe('mp4');
+
+  // --- provider-info: the advanced-data half of the fidelity check --------
+  //
+  // The row-20 test.fail() below rests on the premise that
+  // /api/vod/movies/<pk>/provider-info/ reports the bitrate the provider's
+  // get_vod_info fetched. Nothing non-inverted asserted that anywhere in the
+  // suite — the sibling vod-advanced-data.spec.ts guards the advanced fetch
+  // via director/actors, not bitrate/video/audio — so a regression in the
+  // bitrate half of that endpoint would leave the inverted pin silently
+  // green instead of red. This assertion is what would catch it.
+  const alphaProviderInfo = await api.json<{ bitrate: number }>(
+    await api.get(`/api/vod/movies/${alpha!.id}/provider-info/`),
+    'alpha provider-info (advanced data fetch)'
+  );
+  expect(alphaProviderInfo.bitrate).toBe(4321);
 });
 
 test('the XC series actions, and the series_id/Movie.pk asymmetry, and adult filtering on get_vod_streams (G9 row 10)', async ({
@@ -295,10 +314,27 @@ test('the XC series actions, and the series_id/Movie.pk asymmetry, and adult fil
   // pk. Assert both halves of that asymmetry explicitly: it is exactly the
   // kind of thing a refactor unifies and breaks.
   expect(seriesEntry.series_id, 'series_id equals the M3USeriesRelation pk').toBe(relation!.id);
-  expect(
-    seriesEntry.series_id,
-    'series_id must NOT be the Series pk (the asymmetry this row exists to pin)'
-  ).not.toBe(series.id);
+  // series_id (the M3USeriesRelation pk) and Series.pk are independent
+  // Postgres sequences sharing the test database with every other suite's
+  // rows, so it is possible — rare, but not impossible — for relation!.id
+  // and series.id to collide by chance on a given run. When they do, the
+  // negative assertion below is undecidable: relation!.id === series.id
+  // would hold for both a correct implementation (which the positive
+  // assertion above already proved) and the exact bug this row exists to
+  // pin, so asserting inequality would fail on entirely conforming
+  // behaviour. Skip only that coincidence, and record why, rather than
+  // letting the run go spuriously red.
+  if (relation!.id === series.id) {
+    test.info().annotations.push({
+      type: 'skip-reason',
+      description: `relation pk (${relation!.id}) coincidentally equals series pk (${series.id}) this run; the negative series_id !== series.id check is undecidable here and was skipped`,
+    });
+  } else {
+    expect(
+      seriesEntry.series_id,
+      'series_id must NOT be the Series pk (the asymmetry this row exists to pin)'
+    ).not.toBe(series.id);
+  }
 
   // --- get_series_info: episodes grouped by season, keyed by Episode.pk ---
 

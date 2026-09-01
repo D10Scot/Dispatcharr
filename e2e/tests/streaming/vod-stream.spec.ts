@@ -105,17 +105,22 @@ test('a VOD movie URL mints a session, redirects, and delivers bytes matching th
   // e2e-upstream/src/server.ts), not just "some content-type present".
   expect(headers['content-type']).toBe('video/mp4');
 
-  // Compare the first bytes against the provider directly. toControl rewrites
-  // the container-internal origin to one this process can reach, and throws
-  // on anything outside it — which is what stops this from making a real
-  // outbound request by accident.
+  // Compare the WHOLE asset against the provider directly, not a prefix.
+  // toControl rewrites the container-internal origin to one this process can
+  // reach, and throws on anything outside it — which is what stops this from
+  // making a real outbound request by accident.
   const direct = await fetch(
     upstream.toControl(`${scenario.internal}/movie/${scenario.username}/${scenario.password}/501.mp4`)
   );
   const assetBytes = Buffer.from(await direct.arrayBuffer());
   const served = await res.body();
-  expect(served.byteLength).toBe(Number(headers['content-length']));
-  expect(served.subarray(0, 1024)).toEqual(assetBytes.subarray(0, 1024));
+  // The length is checked against the provider's own asset, not the
+  // response's own Content-Length header — a truncated body carrying a
+  // matching header would satisfy a self-referential comparison just as
+  // well and prove nothing.
+  expect(Number(headers['content-length'])).toBe(assetBytes.byteLength);
+  expect(served.byteLength).toBe(assetBytes.byteLength);
+  expect(served).toEqual(assetBytes);
 
   // Correlate with the provider log: the movie was actually fetched from the
   // provider, and every hit answered cleanly. Not asserting an exact count —
