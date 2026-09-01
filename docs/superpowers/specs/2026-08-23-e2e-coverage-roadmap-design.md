@@ -31,6 +31,11 @@ in place *before* it moves the boundary.
 | **G8** | **Provider-side XC / VOD / catch-up emulation** — extend the G2 provider to speak Xtream Codes, serve a VOD and series catalogue, and answer catch-up URLs in the shapes `build_timeshift_candidate_urls` tries. Ships **plumbing proofs only**; the tests that need the provider are G9 and G10 | G2, G5 | 3 |
 | **G9** | **VOD and series end to end** — catalogue ingest into `Movie`/`Series`/`Episode`, the XC VOD and series actions against real content, and the `vod_proxy` streaming path including Range and seek | G8 | 4 |
 | **G10** | **Catch-up / timeshift end to end** — both provider URL layouts, the candidate cascade, redirect and proxy modes, and the ingest fields catch-up depends on | G8 | 4 |
+| **G11** | **Migration-gate contract** — `@contract`/`@characterization` tag taxonomy with ADR, the quarantine guard generalised beyond `greybox/redis`, a run-everything CI mode required on migration branches, `data-testid` and shared-state rules promoted to enforced guards | G1–G10 | 5 |
+| **G12** | **Lifecycle depth** — triage the red PUID/PGID and TLS bash suites to green, extend `durable-state.ts` to relations, backup restore, non-zero refresh intervals on an isolated instance | G7, G9 | 6 |
+| **G13** | **DVR execution** — a recording that actually fires: `run_recording`, the file on disk, playback, recurring rules, the DVR WebSocket events | G2, G6 | 6 |
+| **G14** | **Coverage completions** — EPG fuzzy-match characterization, ACL 403 negatives, behavioural settings, plugin run lifecycle, bulk ops, M3U profiles, product WS events | G2, G6, G7 | 6 |
+| **G15** | **Test-quality remediation** — `test.fail()` premise guards backported, thin frontend specs deepened, residual assertion fixes, `e2e-upstream` contract versioning | G9, G10 | 6 |
 
 ```
 G1 ─┐
@@ -44,6 +49,12 @@ Wave 1 is two agents in two worktrees, working disjoint files. Wave 2 is five, d
 once G1 and G2 have merged to `main`. Wave 3 is G8 alone, dispatched once G5 has landed the
 server-side surfaces it deepens. Wave 4 is G9 and G10, dispatched once G8's provider build has
 landed; they are disjoint in subject and can run in parallel.
+
+Waves 5 and 6 (G11–G15) were added 2026-09-01, after an external review of the completed
+programme; their origin, the review's full disposition, and each goal's definition live in
+`2026-09-01-e2e-programme-review-disposition.md`. Wave 5 is G11 alone — it rewrites annotations
+in every spec file, so nothing else is in flight. Wave 6 is G12–G15 in parallel, on disjoint
+subjects and deliberately disjoint files.
 
 ## Goal notes
 
@@ -138,6 +149,15 @@ inherited decision lands here too: the generated M3U emits no `catchup=` attribu
 M3U-only client can never discover catch-up — G10 decides whether that is a defect to file.
 **G10 cannot prove Dispatcharr seeks to the right moment**: G8's archive is not time-addressable
 (see its Non-goals). G10 proves the right moment was *asked for*, and says so in every row.
+
+**G11–G15** answer the 2026-09-01 external review. G11 is the migration-gate contract itself —
+until it lands, "this suite gates the extraction" is a claim with no enforcement behind it. G12
+is the most migration-critical of the five: `durable-state.ts` today asserts seven scalar rows,
+and a migration that lost every channel↔stream link would pass it; meanwhile `lifecycle-tests.yml`
+is red on every run, which is no signal at all. G13, G14 and G15 close the accepted coverage and
+quality residue. The review's full disposition — including the items verified as already resolved
+or refuted, which no goal should re-chase — is in
+`2026-09-01-e2e-programme-review-disposition.md`.
 
 ## Rules binding every goal
 

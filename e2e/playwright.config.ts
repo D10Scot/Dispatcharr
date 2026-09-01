@@ -112,6 +112,15 @@ export default defineConfig({
       // now depend on it; do not raise `workers` back to 2 without
       // confirming neither still needs serialising.
       //
+      // The same row is also mutated by
+      // `streaming-greybox/vod-redirect-profile.spec.ts` — a different
+      // project. CI never lets the two race: each project gets its own
+      // container (`.github/workflows/e2e-tests.yml`). A local run with no
+      // `--project`, sharing one container across both, has no such
+      // guarantee. This project's single worker protects only against
+      // overlap *within* streaming-failover; it says nothing about
+      // streaming-greybox.
+      //
       // Note what the single worker does NOT protect: a run that dies
       // between either spec's write and its `finally` leaves the container
       // mutated for every later project too. Both specs guard their own
@@ -133,7 +142,19 @@ export default defineConfig({
       // `streaming-failover`. A second worker running any spec here that
       // starts its own transcode — or a future grey-box test that mutates
       // Redis directly, the way the deleted ownership-lease flagship did —
-      // would race against it in a way no other project risks.
+      // would race against it in a way no other project risks. A second
+      // reason lives here too: `vod-redirect-profile.spec.ts` mutates the
+      // global `stream_settings` row's `default_stream_profile` for the
+      // duration of its run, and a second worker running any streaming test
+      // concurrently would take the Redirect path unexpectedly.
+      //
+      // That row is not unique to this project either:
+      // `streaming-failover/catchup-redirect.spec.ts` mutates the same one.
+      // CI keeps the two projects apart with one container each
+      // (`.github/workflows/e2e-tests.yml`); a local run with no
+      // `--project` shares a container across both and has no such
+      // guarantee. This project's single worker rules out overlap only
+      // within streaming-greybox.
       workers: 1,
       use: { storageState: 'playwright/.auth/admin.json' },
     },

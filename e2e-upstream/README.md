@@ -123,10 +123,33 @@ bypasses `seed.xcAccount` is not.
 - `vod` / `series` — a count (materialising that many default-named entries) or an explicit array
   of movie/series specs. Default to 1 of each when `xc: true` and neither is declared, and to 0 for
   a non-XC scenario — there's no route that could serve a catalogue. The `MovieSpec`/`SeriesSpec`
-  field sets (`id`, `name`, `year`, `categoryId`, `containerExtension`, `tmdbId`, `imdbId` for a
-  movie; `id`, `name`, `categoryId`, `seasons[].number`, `seasons[].episodes[]` for a series) are
-  mirrored with docstrings as `UpstreamMovie`/`UpstreamSeries` in `e2e/fixtures/types.ts:349-380` —
-  read them there rather than `src/scenario.ts` when a test needs an explicit spec.
+  field sets (`id`, `name`, `year`, `categoryId`, `containerExtension`, `tmdbId`, `imdbId`,
+  `isAdult?`, `vodInfo?` for a movie; `id`, `name`, `categoryId`, `seasons[].number`,
+  `seasons[].episodes[]`, `seasonsAsArray?` for a series) are declared here, in `src/scenario.ts` —
+  the source of truth. `e2e/fixtures/types.ts:507-537` carries a Playwright-side mirror
+  (`UpstreamMovie`/`UpstreamSeries`) that can lag this file; check it against `src/scenario.ts`
+  rather than assuming it's current before relying on it for an explicit spec.
+  - `categoryId: null` (movies only) emits no `category_id` key at all on `get_vod_streams`, and the
+    movie is excluded from a `category_id=` filter — the only way to route a movie into
+    Dispatcharr's own `Uncategorized` bucket, since `process_movie_batch` falls through to
+    `categories['__uncategorized__']` when the key is absent or unknown (`apps/vod/tasks.py`).
+    Omitting `categoryId` still defaults to the first declared VOD category, exactly as before;
+    `null` is a deliberate declaration, not an omission.
+  - `isAdult` (movies only) is emitted as `is_adult: 1`/`0` on `get_vod_streams`, and only when
+    declared. `process_movie_batch` writes `Movie.is_adult` only when the key is present, so leaving
+    this undefined reproduces a sparse provider and setting it reproduces one that reports.
+  - `vodInfo` (movies only) **replaces**, rather than merges with, the default `info` object
+    `get_vod_info` returns. Use it to build a payload that carries `bitrate`/`video`/`audio` and
+    none of `director`/`actors`/`youtube_trailer`/`backdrop_path` — the shape that leaves
+    `Movie.custom_properties` at `None` after a successful advanced refresh
+    (`clean_custom_properties({})` returns `None`, `apps/vod/tasks.py:2132`). `movie_data` is
+    unaffected and still rendered from the movie entry.
+  - `seasonsAsArray` (series only) makes `get_series_info` emit `episodes` as a JSON array indexed
+    by position instead of an object keyed by season number — what a PHP panel's `json_encode`
+    produces when the season keys happen to be contiguous from 0. `batch_process_episodes`
+    (`apps/vod/tasks.py:1387`) accepts both and uses the key or the index as the season number, so
+    season `0` is real under this shape and unreachable under the other. The door requires
+    `seasons[i].number === i` when this is set.
 - `account` — `{ userInfo?, serverInfo? }`, raw overrides merged last into the `player_api.php`
   handshake's envelope. Untyped beyond `Record<string, unknown>` on purpose: a test that wants a
   garbage `exp_date` or `timezone` on the envelope needs to be able to send exactly that.
@@ -202,8 +225,8 @@ reconnect" is a normal test.
 | `dead-air` | live + new | Connection stays open, no bytes written | Dead-air failover (>10 s, 3× at 5 s) |
 | `slow-trickle` | live + new | Pacing multiplier < 1 | Buffering detector — **ffmpeg profiles only**, and only arms if the rate is set *before* ffmpeg starts: `speed=` is cumulative since process start, so a trickle applied mid-stream takes ~55 s to arm and dead-air wins at ~25 s |
 | `disconnect` | live | `{ clean, afterBytes? }`; default abrupt | Both reconnect branches (`RequestException` vs `"HTTP stream ended"`) |
-| `not-found` | new only (`appliedTo: 0`) | 404 on the requested endpoint | Connect-failure trigger; refresh error handling |
-| `auth-failure` | new only (`appliedTo: 0`) | Credentials that were valid start being rejected | Mid-refresh credential expiry |
+| `not-found` | new only (`appliedTo: 0`) | 404 on the requested endpoint; also, when armed scenario-wide, on the `/movie/` and `/series/` VOD routes | Connect-failure trigger; refresh error handling |
+| `auth-failure` | new only (`appliedTo: 0`) | Credentials that were valid start being rejected; also, when armed scenario-wide, on the `/movie/` and `/series/` VOD routes | Mid-refresh credential expiry |
 | `connection-limit` | new only (`appliedTo: 0`) | Real per-scenario accounting; N+1th rejected, readmitted on close | Provider-slot semantics; `max_streams` disagreement |
 | `redirect-chain` | new only (`appliedTo: 0`) | 302 chain of declared depth before the payload | The Redirect stream profile |
 | `non-ts-bytes` | new only (`appliedTo: 0`) | 200 with an HTML error page instead of TS | `buffer.py`'s realignment defence |
@@ -244,9 +267,21 @@ checked first, ahead of the credential check, the same order the playlist and st
 `xc-auth-envelope` is checked only after a successful credential check, and only on the no-`action`
 handshake. The `/live/`, `/timeshift/` and `/streaming/timeshift.php` routes already inherit
 `not-found`/`auth-failure` for free, through the same `serveChannelStream` pipeline the plain
-`/stream/<n>.ts` route uses. The `/movie/` and `/series/` VOD routes do **not** — they never reach
-`serveChannelStream` — so `not-found`/`auth-failure` have no effect there, unchanged from before
-this fault set existed.
+`/stream/<n>.ts` route uses. The `/movie/` and `/series/` VOD routes honour both too, but checked
+directly in `handleXc` rather than inherited from `serveChannelStream`, and **only when armed
+scenario-wide**: a VOD id is not a channel id, so a `{ channel: n }` arm stores under a scope
+neither check ever reads, and does not reach these routes. The two faults don't share one ordering
+story here — each matches a different existing route:
+
+- `auth-failure` is checked ahead of the credential comparison, the same position `player_api.php`
+  and `serveChannelStream` both use it in.
+- `not-found` is checked after the movie/episode membership check, immediately before the asset is
+  served. `player_api.php` has no `not-found` check at all — nothing there can 404 that way. And
+  this is the *opposite* end of `serveChannelStream`'s order, which checks `not-found` **first**,
+  ahead of even `auth-failure` and the credential check (`server.ts`, step 1) — a channel id can
+  404 before anything else is known about the request, but a VOD id's existence is only established
+  by the membership check the router already had to run, so `not-found` piggybacks on that result
+  rather than duplicating it earlier.
 
 An armed **`slow-trickle`** overrides the scenario's own rate for the connections it reaches.
 Only `clearFault('slow-trickle')` hands control back to the scenario rate — a plain `rate()` call
@@ -350,6 +385,9 @@ video at 320x180/25fps plus a 440 Hz sine tone, H.264/AAC, muxed to MP4 with `+f
 runnable outside the Docker build for the same reason as `make-asset.sh`. The script asserts its own
 output (at least 1 KB, and starts with an `ftyp` box) rather than pinning a byte-reproducible
 artifact, for the same unpinned-ffmpeg reason as the TS loop.
+
+Served with `Content-Type: video/mp4` — `getVodAsset()` calls `loadFiniteAsset(path, 'video/mp4')`
+(`e2e-upstream/src/server.ts:70`).
 
 Serving honours `Range` (`serveFiniteAsset`, `e2e-upstream/src/vod-asset.ts`):
 

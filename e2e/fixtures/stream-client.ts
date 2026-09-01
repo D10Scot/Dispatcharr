@@ -216,6 +216,26 @@ export class StreamClient {
     return this.takeBytes(wanted);
   }
 
+  /**
+   * Exactly `count` bytes, with no 188-byte multiplier.
+   *
+   * `readPackets` is the MPEG-TS reader and is the wrong tool for VOD: a VOD
+   * body is an MP4, has no packet structure, and its interesting reads are
+   * byte offsets ("the 8 192 bytes starting at 40 000"), not packet counts.
+   * Same pump, same private `takeBytes`, same "throws if the stream ends
+   * first" contract.
+   */
+  async readBytes(count: number): Promise<Buffer> {
+    while (this.bufferedBytes < count) {
+      if (!(await this.pump())) {
+        throw new Error(
+          `stream ended after ${this.bufferedBytes} bytes, wanted ${count}`
+        );
+      }
+    }
+    return this.takeBytes(count);
+  }
+
   /** Everything that arrives within `ms`. */
   async collectFor(ms: number): Promise<Buffer> {
     const deadline = Date.now() + ms;

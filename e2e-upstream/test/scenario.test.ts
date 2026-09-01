@@ -422,6 +422,133 @@ describe('XC scenario declaration', () => {
     ]);
   });
 
+  // G9 addendum: `categoryId: null` is the only way to route a movie into
+  // Dispatcharr's Uncategorized bucket through the product's real path.
+  it('accepts a movie with categoryId: null and resolves it verbatim', () => {
+    const request = parseScenarioRequest({
+      xc: true,
+      username: 'u',
+      password: 'p',
+      vod: [{ id: 1, name: 'm', categoryId: null }],
+    });
+    expect((request.vod as { categoryId: number | null }[])[0].categoryId).toBeNull();
+  });
+
+  it('rejects a movie whose categoryId names no declared category, even non-null', () => {
+    expect(() =>
+      parseScenarioRequest({
+        vodCategories: [{ id: 1, name: 'c' }],
+        vod: [{ id: 1, name: 'm', categoryId: 99 }],
+      })
+    ).toThrow(/references categoryId 99/);
+  });
+
+  it('rejects a non-boolean isAdult', () => {
+    expect(() => parseScenarioRequest({ vod: [{ id: 1, name: 'm', isAdult: 'yes' }] })).toThrow(
+      /isAdult must be a boolean/,
+    );
+  });
+
+  // F3: the door tests above only assert throws; nothing pinned that a
+  // *valid* isAdult/vodInfo actually survives parseMovies' return, so a
+  // deletion of either conditional spread in the return object stayed green.
+  it('parses a movie with isAdult and vodInfo declared, and echoes both verbatim', () => {
+    const vodInfo = { bitrate: 5000 };
+    const request = parseScenarioRequest({
+      vod: [{ id: 1, name: 'm', isAdult: true, vodInfo }],
+    });
+    expect(request.vod).toEqual([
+      {
+        id: 1,
+        name: 'm',
+        year: null,
+        categoryId: 1,
+        containerExtension: 'mp4',
+        tmdbId: null,
+        imdbId: null,
+        isAdult: true,
+        vodInfo,
+      },
+    ]);
+  });
+
+  it('rejects a non-object vodInfo', () => {
+    expect(() => parseScenarioRequest({ vod: [{ id: 1, name: 'm', vodInfo: [] }] })).toThrow(
+      /vodInfo must be an object/,
+    );
+  });
+
+  // F4: the case above only exercises the Array.isArray branch of the
+  // vodInfo guard; null and a non-object primitive exercise the other two.
+  it('rejects a null or non-object, non-array vodInfo', () => {
+    expect(() => parseScenarioRequest({ vod: [{ id: 1, name: 'm', vodInfo: null }] })).toThrow(
+      /vodInfo must be an object/,
+    );
+    expect(() => parseScenarioRequest({ vod: [{ id: 1, name: 'm', vodInfo: 'nope' }] })).toThrow(
+      /vodInfo must be an object/,
+    );
+  });
+
+  // F4: every seasonsAsArray case so far declares it `true`; nothing exercised
+  // the type guard that rejects a non-boolean value.
+  it('rejects a non-boolean seasonsAsArray', () => {
+    expect(() =>
+      parseScenarioRequest({
+        series: [
+          {
+            id: 1,
+            name: 's',
+            seasonsAsArray: 'yes',
+            seasons: [{ number: 0, episodes: [] }],
+          },
+        ],
+      })
+    ).toThrow(/seasonsAsArray must be a boolean/);
+  });
+
+  it('rejects seasonsAsArray when a season number does not match its index', () => {
+    expect(() =>
+      parseScenarioRequest({
+        series: [
+          {
+            id: 1,
+            name: 's',
+            seasonsAsArray: true,
+            seasons: [{ number: 1, episodes: [] }],
+          },
+        ],
+      })
+    ).toThrow(/seasons\[0\]\.number is 1/);
+  });
+
+  it('accepts seasonsAsArray when season numbers match their indices', () => {
+    const request = parseScenarioRequest({
+      series: [
+        {
+          id: 1,
+          name: 's',
+          seasonsAsArray: true,
+          seasons: [
+            { number: 0, episodes: [] },
+            { number: 1, episodes: [] },
+          ],
+        },
+      ],
+    });
+    expect(request.series).toEqual([
+      {
+        id: 1,
+        name: 's',
+        categoryId: 1,
+        seasons: [
+          { number: 0, episodes: [] },
+          { number: 1, episodes: [] },
+        ],
+        seasonsAsArray: true,
+      },
+    ]);
+  });
+
   it('accepts a well-formed account override and rejects a malformed one', () => {
     expect(parseScenarioRequest({ account: { userInfo: { timezone: 'UTC' } } }).account).toEqual({
       userInfo: { timezone: 'UTC' },
