@@ -156,7 +156,11 @@ async function appliedMigrations(instance: Instance): Promise<Set<string>> {
   return applied;
 }
 
-test('an upgrade onto an existing volume applies migrations and keeps the data', async ({
+// @characterization: pins Django's migration state and the AIO image layout.
+// It reads `manage.py showmigrations` output and replaces one container image
+// with another on the same volume. Both are facts about how this deployment is
+// built, and a correct reimplementation is free to change either.
+test('an upgrade onto an existing volume applies migrations and keeps the data', { tag: '@characterization' }, async ({
   instance,
   request,
   baseURL,

@@ -107,7 +107,11 @@ function writesGlobalSettings(sf: ts.SourceFile): boolean {
   return found;
 }
 
-test('instance-wide settings writes are confined to their allowlist', async () => {
+// @characterization: every test in this file asserts facts about this
+// repository's own source tree — file paths, import specifiers, allowlist
+// membership. None of it is client-observable behaviour, and all of it changes
+// shape when the suite is restructured. See docs/adr/0002-e2e-test-taxonomy.md.
+test('instance-wide settings writes are confined to their allowlist', { tag: '@characterization' }, async () => {
   const hits: string[] = [];
   for (const [dir, prefix] of ROOTS) {
     for (const rel of await listTsFiles(path.join(E2E_ROOT, dir), prefix)) {

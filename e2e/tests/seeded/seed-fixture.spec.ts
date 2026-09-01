@@ -8,7 +8,7 @@ import {
 } from '../../fixtures';
 import type { Channel } from '../../fixtures';
 
-test('seeded channel is retrievable and namespaced', async ({ api, seed }) => {
+test('seeded channel is retrievable and namespaced', { tag: '@contract' }, async ({ api, seed }) => {
   const channel = await seed.channel();
 
   expect(channel.id).toBeTruthy();
@@ -23,13 +23,13 @@ test('seeded channel is retrievable and namespaced', async ({ api, seed }) => {
   expect(fetched.name).toBe(channel.name);
 });
 
-test('seeded names are unique within a test', async ({ seed }) => {
+test('seeded names are unique within a test', { tag: '@contract' }, async ({ seed }) => {
   const a = await seed.channel();
   const b = await seed.channel();
   expect(a.name).not.toBe(b.name);
 });
 
-test('overrides are applied', async ({ seed }) => {
+test('overrides are applied', { tag: '@contract' }, async ({ seed }) => {
   // Never a bare `profile` — CONTEXT.md's first rule. Three different things
   // in this product are called one.
   const channelProfile = await seed.channelProfile();
@@ -63,7 +63,7 @@ test('overrides are applied', async ({ seed }) => {
 // the compiler without noticing if the type were later widened to accept the
 // field, and the type would then be advertising a knob that does nothing.
 
-test('a passed name cannot override the generated channel name', async ({
+test('a passed name cannot override the generated channel name', { tag: '@contract' }, async ({
   seed,
 }) => {
   // @ts-expect-error `name` is deliberately not in ChannelOverrides — see above.
@@ -72,7 +72,7 @@ test('a passed name cannot override the generated channel name', async ({
   expect(channel.name).toMatch(/^e2e-w\d+-/);
 });
 
-test('a passed username cannot override the generated user username', async ({
+test('a passed username cannot override the generated user username', { tag: '@contract' }, async ({
   seed,
 }) => {
   // @ts-expect-error `username` is deliberately not in UserOverrides — see above.
@@ -86,7 +86,7 @@ test('a passed username cannot override the generated user username', async ({
 // keeps two Seeder instances constructed with identical arguments from
 // producing identical names, which is what let a second `npm run
 // test:seeded` against a live container collide with its own previous run.
-test('runToken makes names differ across Seeder instances with identical arguments', ({
+test('runToken makes names differ across Seeder instances with identical arguments', { tag: '@contract' }, ({
   api,
 }) => {
   // `generatedName` never touches `waitFor` — this Waiter exists only to
@@ -105,7 +105,7 @@ test('runToken makes names differ across Seeder instances with identical argumen
 // gaining a required field is the failure this catches, and it would
 // otherwise surface as a mystery 400 inside whichever wave-2 test first
 // reached for the factory.
-test('the source factories create rows with the shipped defaults', async ({
+test('the source factories create rows with the shipped defaults', { tag: '@contract' }, async ({
   seed,
 }) => {
   const streamProfile = await seed.streamProfile();
@@ -121,7 +121,7 @@ test('the source factories create rows with the shipped defaults', async ({
   expect(epgSource.name).toMatch(/^e2e-w\d+-/);
 });
 
-test('seed.stream creates a custom stream with a generated name', async ({ seed }) => {
+test('seed.stream creates a custom stream with a generated name', { tag: '@contract' }, async ({ seed }) => {
   const stream = await seed.stream({ url: 'http://127.0.0.1:9/x.ts' });
 
   expect(stream.id).toBeGreaterThan(0);
@@ -130,7 +130,7 @@ test('seed.stream creates a custom stream with a generated name', async ({ seed 
   expect(stream.name).toMatch(/^e2e-w\d+-/);
 });
 
-test('seed.stream ignores an attempt to override the generated name', async ({ seed }) => {
+test('seed.stream ignores an attempt to override the generated name', { tag: '@contract' }, async ({ seed }) => {
   // The identity field is spread AFTER overrides. A cast is the only way to
   // even attempt this, which is the point of the test: the type forbids it,
   // and the ordering enforces it for bodies that dodge the type.
@@ -138,7 +138,7 @@ test('seed.stream ignores an attempt to override the generated name', async ({ s
   expect(stream.name).not.toBe('not-this');
 });
 
-test('seed.upstreamChannel wires a channel to the provider in order', async ({
+test('seed.upstreamChannel wires a channel to the provider in order', { tag: '@contract' }, async ({
   seed,
   upstream,
 }) => {
@@ -162,14 +162,14 @@ test('seed.upstreamChannel wires a channel to the provider in order', async ({
   expect(channel.uuid).toBeTruthy();
 });
 
-test('seed.channelGroup creates a group with a generated name', async ({ seed }) => {
+test('seed.channelGroup creates a group with a generated name', { tag: '@contract' }, async ({ seed }) => {
   const group = await seed.channelGroup();
 
   expect(group.id).toBeGreaterThan(0);
   expect(group.name).toMatch(/^e2e-w\d+-/);
 });
 
-test('seed.xcUser carries an xc_password the XC surface accepts', async ({
+test('seed.xcUser carries an xc_password the XC surface accepts', { tag: '@contract' }, async ({
   seed,
   request,
 }) => {
@@ -188,7 +188,7 @@ test('seed.xcUser carries an xc_password the XC surface accepts', async ({
   expect(res.status()).toBe(200);
 });
 
-test('seed.xcUser ignores an attempt to override xc_password', async ({
+test('seed.xcUser ignores an attempt to override xc_password', { tag: '@contract' }, async ({
   seed,
   request,
 }) => {

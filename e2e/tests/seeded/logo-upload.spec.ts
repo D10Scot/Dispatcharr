@@ -1,7 +1,7 @@
 import { test, expect, logoPayload } from '../../fixtures';
 import type { Channel } from '../../fixtures';
 
-test('a logo uploads, assigns to a channel and serves its bytes back', async ({
+test('a logo uploads, assigns to a channel and serves its bytes back', { tag: '@contract' }, async ({
   seed,
   api,
   request,

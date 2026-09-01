@@ -4,7 +4,7 @@ import { applyGroupSettings, syncWindowFor } from './helpers';
 
 type AccountWithGroups = M3uAccount & { channel_groups: M3uAccountChannelGroup[] };
 
-test('enabling auto channel sync creates one channel per stream inside the declared window', async ({
+test('enabling auto channel sync creates one channel per stream inside the declared window', { tag: '@contract' }, async ({
   upstream,
   seed,
   api,
@@ -231,7 +231,7 @@ test('enabling auto channel sync creates one channel per stream inside the decla
  * `created`), so the third refresh is driven entirely by
  * `waitFor.m3uRefreshComplete()`'s own default trigger.
  */
-test('a changed catalogue deletes the departed channels and creates the new ones', async ({
+test('a changed catalogue deletes the departed channels and creates the new ones', { tag: '@contract' }, async ({
   upstream,
   seed,
   api,

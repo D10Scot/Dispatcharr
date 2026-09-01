@@ -1,7 +1,7 @@
 import { test, expect, expectTsAligned, readChannelStatus } from '../../fixtures';
 import { lockedProfile, newStreamClient } from './helpers';
 
-test('three clients share exactly one upstream connection', async ({
+test('three clients share exactly one upstream connection', { tag: '@contract' }, async ({
   upstream,
   seed,
   api,
@@ -46,7 +46,7 @@ test('three clients share exactly one upstream connection', async ({
   }
 });
 
-test('closing every client releases the upstream', async ({
+test('closing every client releases the upstream', { tag: '@contract' }, async ({
   upstream,
   seed,
   api,

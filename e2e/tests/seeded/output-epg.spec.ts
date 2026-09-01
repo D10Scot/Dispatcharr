@@ -12,7 +12,7 @@ import { test, expect, epgQuery, parseXmltv, expectWellFormedXml } from '../../f
  * entropy lives on `tvg_id_source` rather than on `days`.
  */
 
-test('/output/epg is well-formed XMLTV carrying programmes for a seeded channel', async ({
+test('/output/epg is well-formed XMLTV carrying programmes for a seeded channel', { tag: '@contract' }, async ({
   seed,
   request,
   adminPage,

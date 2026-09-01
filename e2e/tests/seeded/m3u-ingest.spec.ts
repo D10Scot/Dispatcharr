@@ -18,7 +18,7 @@ import { M3U_MAX_RETRIGGERS, M3U_RETRIGGER_INTERVAL_MS } from '../../fixtures/wa
  */
 const UPSTREAM_GROUP_NAME = 'E2E';
 
-test('an M3U refresh ingests the declared catalogue faithfully', async ({
+test('an M3U refresh ingests the declared catalogue faithfully', { tag: '@contract' }, async ({
   upstream,
   seed,
   api,
@@ -91,7 +91,7 @@ test('an M3U refresh ingests the declared catalogue faithfully', async ({
 // runs — it writes nothing and the row's status never leaves `idle`. So this
 // wait can only ever time out, never resolve, with zero dependence on
 // container speed or the fake provider's behaviour.
-test('waitForCreateTimeGroupRefreshToSettle times out rather than passing silently when the account never settles', async ({
+test('waitForCreateTimeGroupRefreshToSettle times out rather than passing silently when the account never settles', { tag: '@contract' }, async ({
   seed,
 }) => {
   const account = await seed.m3uAccount({ is_active: false });
@@ -116,7 +116,7 @@ test('waitForCreateTimeGroupRefreshToSettle times out rather than passing silent
 // `m3uRefreshComplete()` still resolves, it can only be because phase 1
 // re-invoked `trigger` on its own — `waitFor.resource()`'s poll alone would
 // otherwise sit on an account stuck at its baseline until `startTimeoutMs`.
-test("waitFor.m3uRefreshComplete re-fires its trigger when the account never moves off its baseline", async ({
+test("waitFor.m3uRefreshComplete re-fires its trigger when the account never moves off its baseline", { tag: '@contract' }, async ({
   seed,
   waitFor,
   api,
@@ -170,7 +170,7 @@ test("waitFor.m3uRefreshComplete re-fires its trigger when the account never mov
 // comment. A `trigger` that never succeeds, ever, forces phase 1 to keep
 // retrying for its *entire* budget with nothing to stop it early, so the
 // only thing that can cap `attempts` is the production code's own limit.
-test('waitFor.m3uRefreshComplete stops re-firing its trigger after M3U_MAX_RETRIGGERS', async ({
+test('waitFor.m3uRefreshComplete stops re-firing its trigger after M3U_MAX_RETRIGGERS', { tag: '@contract' }, async ({
   seed,
   waitFor,
 }) => {
@@ -278,7 +278,7 @@ function extractMethodBody(source: string, anchor: string): string {
 // the situation `quarantine.spec.ts` was written for — a hazard invisible to
 // every test that isn't specifically looking for it — so this checks the
 // source text directly, the same way.
-test("upstreamM3UAccount() still calls waitForCreateTimeGroupRefreshToSettle() before triggering the real refresh", async () => {
+test("upstreamM3UAccount() still calls waitForCreateTimeGroupRefreshToSettle() before triggering the real refresh", { tag: '@contract' }, async () => {
   const seedPath = path.resolve(__dirname, '../../fixtures/seed.ts');
   const source = await readFile(seedPath, 'utf8');
 
@@ -316,7 +316,7 @@ test("upstreamM3UAccount() still calls waitForCreateTimeGroupRefreshToSettle() b
  * Asserts the CORRECT behaviour and is expected to fail until #15 is fixed.
  * Do not patch the product from this harness; do not file a duplicate issue.
  */
-test.fail('M3UAccount.locked is not writable over the API', async ({ seed, api }) => {
+test.fail('M3UAccount.locked is not writable over the API', { tag: '@contract' }, async ({ seed, api }) => {
   const account = await seed.m3uAccount();
   expect(account.locked).toBe(false);
 

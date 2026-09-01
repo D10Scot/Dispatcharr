@@ -8,7 +8,7 @@ import { test, expect, expectTsAligned, TS_PACKET_SIZE } from '../../fixtures';
 // so it hits the provider directly through `control` rather than routing
 // through the product.
 
-test('streamClient reads aligned TS packets from an endless stream', async ({
+test('streamClient reads aligned TS packets from an endless stream', { tag: '@contract' }, async ({
   upstream,
   streamClient,
 }) => {

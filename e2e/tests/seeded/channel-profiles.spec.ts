@@ -20,7 +20,7 @@ import type { ChannelProfile } from '../../fixtures';
  * assert on a length; every membership assertion below is toContain /
  * not.toContain.
  */
-test('toggling one channel’s membership flips its enabled flag', async ({
+test('toggling one channel’s membership flips its enabled flag', { tag: '@contract' }, async ({
   seed,
   api,
 }) => {
@@ -75,7 +75,7 @@ test('toggling one channel’s membership flips its enabled flag', async ({
   expect(afterEnable.channels).toContain(channel.id);
 });
 
-test('bulk-update sets several memberships in one call', async ({ seed, api }) => {
+test('bulk-update sets several memberships in one call', { tag: '@contract' }, async ({ seed, api }) => {
   const stays = await seed.channel();
   const goes = await seed.channel();
   const profile = await seed.channelProfile();

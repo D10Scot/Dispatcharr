@@ -1,7 +1,7 @@
 import { test, expect } from '../../fixtures';
 import type { EpgData, ProgramSearchPage } from '../../fixtures';
 
-test('an EPG refresh creates EPGData rows and no programmes until a channel is mapped', async ({
+test('an EPG refresh creates EPGData rows and no programmes until a channel is mapped', { tag: '@contract' }, async ({
   upstream,
   seed,
   api,
@@ -50,7 +50,7 @@ test('an EPG refresh creates EPGData rows and no programmes until a channel is m
   }
 });
 
-test('a refresh with a mapped channel returns a baseline that a later wait cannot resolve on instantly', async ({
+test('a refresh with a mapped channel returns a baseline that a later wait cannot resolve on instantly', { tag: '@contract' }, async ({
   upstream,
   seed,
   api,
@@ -111,7 +111,7 @@ test('a refresh with a mapped channel returns a baseline that a later wait canno
   ).rejects.toThrow(/timed out/);
 });
 
-test('set-epg maps a channel and its programmes follow', async ({
+test('set-epg maps a channel and its programmes follow', { tag: '@contract' }, async ({
   upstream,
   seed,
   api,
@@ -168,7 +168,7 @@ test('set-epg maps a channel and its programmes follow', async ({
   expect(programmes.results[0].channels.map((c) => c.id)).toContain(channel.id);
 });
 
-test('batch-set-epg maps several channels in one call', async ({
+test('batch-set-epg maps several channels in one call', { tag: '@contract' }, async ({
   upstream,
   seed,
   api,

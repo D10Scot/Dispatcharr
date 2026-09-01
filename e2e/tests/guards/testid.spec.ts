@@ -51,7 +51,11 @@ async function collectTestIds(dir: string): Promise<Set<string>> {
   return found;
 }
 
-test('every surface testId the suite drives exists in frontend/src', async () => {
+// @characterization: every test in this file asserts facts about this
+// repository's own source tree — file paths, import specifiers, allowlist
+// membership. None of it is client-observable behaviour, and all of it changes
+// shape when the suite is restructured. See docs/adr/0002-e2e-test-taxonomy.md.
+test('every surface testId the suite drives exists in frontend/src', { tag: '@characterization' }, async () => {
   const inFrontend = await collectTestIds(FRONTEND_SRC);
 
   // Guards the guard: if the scan ever returns nothing — a moved directory, a

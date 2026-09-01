@@ -175,7 +175,11 @@ function findOffenses(src: string, fileName: string): Offense[] {
   return offenses;
 }
 
-test('every test() under tests/frontend/ destructures pageErrors', async () => {
+// @characterization: every test in this file asserts facts about this
+// repository's own source tree — file paths, import specifiers, allowlist
+// membership. None of it is client-observable behaviour, and all of it changes
+// shape when the suite is restructured. See docs/adr/0002-e2e-test-taxonomy.md.
+test('every test() under tests/frontend/ destructures pageErrors', { tag: '@characterization' }, async () => {
   // `listSpecFiles` sorts, and that matters: `readdir` returns filesystem
   // order, which is not alphabetical on every platform and is not stable
   // across runs. `KNOWN_UNVERIFIABLE` below is a hand-written,

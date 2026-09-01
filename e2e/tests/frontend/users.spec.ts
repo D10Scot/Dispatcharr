@@ -96,7 +96,7 @@ test.afterEach(async ({ api }, testInfo) => {
   }
 });
 
-test('a user created through the Users page exists on the server, and survives edit and delete', async ({
+test('a user created through the Users page exists on the server, and survives edit and delete', { tag: '@contract' }, async ({
   adminPage,
   api,
   seed,

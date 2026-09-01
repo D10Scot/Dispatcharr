@@ -10,7 +10,7 @@ import { SURFACES, gotoSurface } from './helpers';
 //
 // They deliberately do NOT assert on content: that is each surface's own spec.
 for (const surface of SURFACES) {
-  test(`${surface.name} renders clean at ${surface.route}`, async ({
+  test(`${surface.name} renders clean at ${surface.route}`, { tag: '@contract' }, async ({
     adminPage,
     pageErrors,
   }) => {

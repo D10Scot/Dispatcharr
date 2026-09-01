@@ -12,7 +12,7 @@ if (!pluginsSurface) {
 // key can carry per-run entropy. A committed zip has a fixed key, which
 // collides with itself on a second run against a non-reset container:
 // PluginImportAPIView defaults to non-overwrite and returns 400.
-test('the plugin archive builder produces a readable zip', () => {
+test('the plugin archive builder produces a readable zip', { tag: '@contract' }, () => {
   const zip = buildPluginZip({ key: 'e2e_probe', name: 'E2E Probe' });
 
   // Local file header, and an end-of-central-directory record.
@@ -119,7 +119,7 @@ test.afterEach(async ({ api }, testInfo) => {
   }
 });
 
-test('a plugin imported through the Plugins page lists, enables and configures', async ({
+test('a plugin imported through the Plugins page lists, enables and configures', { tag: '@contract' }, async ({
   adminPage,
   api,
   seed,

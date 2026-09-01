@@ -104,7 +104,7 @@ test.afterEach(async ({ api }, testInfo) => {
   throw new AggregateError(failures, 'backup cleanup failed');
 });
 
-test('a backup created from the Backups panel produces a complete archive', async ({
+test('a backup created from the Backups panel produces a complete archive', { tag: '@contract' }, async ({
   adminPage,
   api,
   pageErrors,

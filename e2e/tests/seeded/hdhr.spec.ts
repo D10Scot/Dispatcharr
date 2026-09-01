@@ -26,7 +26,7 @@ type LineupEntry = {
   URL: string;
 };
 
-test('hdhr discover.json describes a tuner and points at its own lineup', async ({
+test('hdhr discover.json describes a tuner and points at its own lineup', { tag: '@contract' }, async ({
   seed,
   request,
   baseURL,
@@ -123,7 +123,7 @@ test('hdhr discover.json describes a tuner and points at its own lineup', async 
   expect(lineup.some((entry) => entry.GuideName === channel.name)).toBe(true);
 });
 
-test('hdhr device.xml is well-formed and agrees with discover.json', async ({
+test('hdhr device.xml is well-formed and agrees with discover.json', { tag: '@contract' }, async ({
   request,
   adminPage,
 }) => {
@@ -156,7 +156,7 @@ test('hdhr device.xml is well-formed and agrees with discover.json', async ({
 // on the source citations alone.
 
 
-test('hdhr lineup_status.json reports a scannable cable source', async ({ request }) => {
+test('hdhr lineup_status.json reports a scannable cable source', { tag: '@contract' }, async ({ request }) => {
   const res = await request.get('/hdhr/lineup_status.json');
   expect(res.status()).toBe(200);
 
@@ -169,7 +169,7 @@ test('hdhr lineup_status.json reports a scannable cable source', async ({ reques
   });
 });
 
-test('hdhr lineup.json carries a seeded channel with a proxy URL', async ({
+test('hdhr lineup.json carries a seeded channel with a proxy URL', { tag: '@contract' }, async ({
   seed,
   request,
   baseURL,
@@ -197,7 +197,7 @@ test('hdhr lineup.json carries a seeded channel with a proxy URL', async ({
   expect(mine!.URL).toBe(`${baseURL}/proxy/ts/stream/${channel.uuid}`);
 });
 
-test('hdhr lineup scopes to a Channel Profile, and answers [] for an unknown one', async ({
+test('hdhr lineup scopes to a Channel Profile, and answers [] for an unknown one', { tag: '@contract' }, async ({
   seed,
   api,
   request,
@@ -257,7 +257,7 @@ test('hdhr lineup scopes to a Channel Profile, and answers [] for an unknown one
 // the reciprocal note.
 //
 // Issue: https://github.com/D10Scot/Dispatcharr/issues/82
-test.fail('hdhr lineup does not expose adult or above-level channels', async ({
+test.fail('hdhr lineup does not expose adult or above-level channels', { tag: '@contract' }, async ({
   seed,
   request,
 }) => {

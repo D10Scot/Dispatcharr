@@ -2,7 +2,7 @@ import { test, expect, xcLiveStreams, xcQuery } from '../../fixtures';
 
 type XcCategory = { category_id: string; category_name: string };
 
-test('the XC live catalogue lists a seeded channel under its own category', async ({
+test('the XC live catalogue lists a seeded channel under its own category', { tag: '@contract' }, async ({
   seed,
   request,
 }) => {
@@ -50,7 +50,7 @@ test('the XC live catalogue lists a seeded channel under its own category', asyn
   expect(mine!.category_ids).toEqual([group.id]);
 });
 
-test('panel_api.php returns the same catalogue in one envelope', async ({
+test('panel_api.php returns the same catalogue in one envelope', { tag: '@contract' }, async ({
   seed,
   request,
 }) => {
@@ -68,7 +68,7 @@ test('panel_api.php returns the same catalogue in one envelope', async ({
   expect(body.available_channels[String(channel.id)]?.name).toBe(channel.name);
 });
 
-test('get_short_epg returns programmes for a channel with no EPG source', async ({
+test('get_short_epg returns programmes for a channel with no EPG source', { tag: '@contract' }, async ({
   seed,
   request,
 }) => {
@@ -112,7 +112,7 @@ test('get_short_epg returns programmes for a channel with no EPG source', async 
   expect(first).not.toHaveProperty('now_playing');
 });
 
-test('get_simple_data_table adds now_playing to the same listing shape', async ({
+test('get_simple_data_table adds now_playing to the same listing shape', { tag: '@contract' }, async ({
   seed,
   request,
 }) => {
@@ -139,7 +139,7 @@ test('get_simple_data_table adds now_playing to the same listing shape', async (
   expect(body.epg_listings[0].now_playing).toBe(1);
 });
 
-test('the EPG actions 404 without a stream_id', async ({ seed, request }) => {
+test('the EPG actions 404 without a stream_id', { tag: '@contract' }, async ({ seed, request }) => {
   const user = await seed.xcUser({ user_level: 1 });
 
   for (const action of ['get_short_epg', 'get_simple_data_table']) {
@@ -165,7 +165,7 @@ test('the EPG actions 404 without a stream_id', async ({ seed, request }) => {
 // located defect rather than a guess.
 //
 // Issue: https://github.com/D10Scot/Dispatcharr/issues/85
-test.fail('a profiled user sees the category of every channel it can list', async ({
+test.fail('a profiled user sees the category of every channel it can list', { tag: '@contract' }, async ({
   seed,
   request,
 }) => {

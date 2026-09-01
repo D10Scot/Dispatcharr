@@ -24,7 +24,7 @@ import { lockedProfile } from './helpers';
 // proving nothing. Verified with `--reporter=json` that this pin fails at
 // the `toBe(false)` below, with the premise assertions above it passing —
 // re-verify the same way after any edit here.
-test.fail('a channel a user cannot list is not streamable by that user', async ({
+test.fail('a channel a user cannot list is not streamable by that user', { tag: '@contract' }, async ({
   upstream,
   seed,
   api,

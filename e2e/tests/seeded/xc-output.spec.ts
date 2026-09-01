@@ -19,7 +19,7 @@ import { test, expect, parseM3u, parseXmltv, xcQuery } from '../../fixtures';
  * (apps/output/views.py:496-508, :531-543) is untested by this suite.
  */
 
-test('get.php renders an XC-flavoured playlist for its user', async ({
+test('get.php renders an XC-flavoured playlist for its user', { tag: '@contract' }, async ({
   seed,
   request,
   baseURL,
@@ -55,7 +55,7 @@ test('get.php renders an XC-flavoured playlist for its user', async ({
   );
 });
 
-test('xmltv.php renders a guide for its user', async ({ seed, request }) => {
+test('xmltv.php renders a guide for its user', { tag: '@contract' }, async ({ seed, request }) => {
   const channel = await seed.channel({ user_level: 0 });
   const user = await seed.xcUser({ user_level: 1 });
 
@@ -70,7 +70,7 @@ test('xmltv.php renders a guide for its user', async ({ seed, request }) => {
   ).toBe(true);
 });
 
-test('both reject bad credentials with 401', async ({ seed, request }) => {
+test('both reject bad credentials with 401', { tag: '@contract' }, async ({ seed, request }) => {
   const user = await seed.xcUser();
 
   // Positive control (issue #84, same disambiguation as

@@ -14,7 +14,7 @@ import { test, expect, epgQuery, m3uQuery, xcLiveStreams, xcQuery } from '../../
  * and shared across four workers.
  */
 
-test('the XC catalogue is scoped to the requesting principal user_level', async ({
+test('the XC catalogue is scoped to the requesting principal user_level', { tag: '@contract' }, async ({
   seed,
   request,
 }) => {
@@ -52,7 +52,7 @@ test('the XC catalogue is scoped to the requesting principal user_level', async 
   }
 });
 
-test('a principal cannot read the EPG of a channel above its level', async ({
+test('a principal cannot read the EPG of a channel above its level', { tag: '@contract' }, async ({
   seed,
   request,
 }) => {
@@ -89,7 +89,7 @@ test('a principal cannot read the EPG of a channel above its level', async ({
   expect(res.status()).toBe(404);
 });
 
-test('hide_adult_content removes an adult channel from every XC listing path', async ({
+test('hide_adult_content removes an adult channel from every XC listing path', { tag: '@contract' }, async ({
   seed,
   request,
 }) => {
@@ -162,7 +162,7 @@ test('hide_adult_content removes an adult channel from every XC listing path', a
  * flips red as an intended false alarm — a matched pair, not one
  * unexplained failure.
  */
-test('the anonymous output surfaces apply no user_level filter at all', async ({
+test('the anonymous output surfaces apply no user_level filter at all', { tag: '@contract' }, async ({
   seed,
   request,
 }) => {

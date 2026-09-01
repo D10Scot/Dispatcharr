@@ -21,7 +21,7 @@ import { test, expect, SEEDED_USER_PASSWORD } from '../../fixtures';
 // Verified with `--reporter=json` that this pin fails at the `toBe(401)`
 // below, with the premise `toBe(204)` passing — re-verify the same way
 // after any edit here.
-test.fail('refreshing a deleted user\'s token returns 401, not 500', async ({
+test.fail('refreshing a deleted user\'s token returns 401, not 500', { tag: '@contract' }, async ({
   seed,
   api,
   asUser,

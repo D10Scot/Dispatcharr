@@ -1,7 +1,7 @@
 import { test, expect } from '../../fixtures';
 import type { Channel, StreamPage } from '../../fixtures';
 
-test('from-stream creates a channel carrying the stream’s identity', async ({
+test('from-stream creates a channel carrying the stream’s identity', { tag: '@contract' }, async ({
   upstream,
   seed,
   api,
@@ -44,7 +44,7 @@ test('from-stream creates a channel carrying the stream’s identity', async ({
   expect(channel.logo_id).not.toBeNull();
 });
 
-test('from-stream/bulk creates a channel per stream, asynchronously', async ({
+test('from-stream/bulk creates a channel per stream, asynchronously', { tag: '@contract' }, async ({
   upstream,
   seed,
   api,

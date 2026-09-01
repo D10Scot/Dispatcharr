@@ -45,7 +45,7 @@ async function readStreamSettingsRow(api: ApiClient): Promise<SettingsRow> {
   return row!;
 }
 
-test('VOD Redirect mode sends the client at the provider and carries no bytes (G9 row 21)', async ({
+test('VOD Redirect mode sends the client at the provider and carries no bytes (G9 row 21)', { tag: '@contract' }, async ({
   upstream,
   seed,
   api,

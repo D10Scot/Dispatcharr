@@ -1,7 +1,7 @@
 import { test, expect } from '../../fixtures';
 import type { Movie, VodCategory, VodPage } from '../../fixtures';
 
-test('gating on: a disabled category starts empty, an explicit enable admits its movies, and a later refresh does not re-disable it (G9 row 3)', async ({
+test('gating on: a disabled category starts empty, an explicit enable admits its movies, and a later refresh does not re-disable it (G9 row 3)', { tag: '@contract' }, async ({
   upstream,
   seed,
   api,
@@ -151,7 +151,7 @@ test('gating on: a disabled category starts empty, an explicit enable admits its
   );
 });
 
-test('gating off removes the category\'s content via cleanup, not a read-time filter (G9 row 4)', async ({
+test('gating off removes the category\'s content via cleanup, not a read-time filter (G9 row 4)', { tag: '@contract' }, async ({
   upstream,
   seed,
   api,
@@ -236,7 +236,7 @@ test('gating off removes the category\'s content via cleanup, not a read-time fi
   expect(movieAGlobally.count).toBe(0);
 });
 
-test('an uncategorised movie or series falls back to the Uncategorized category, gated by its own account flag (G9 row 5)', async ({
+test('an uncategorised movie or series falls back to the Uncategorized category, gated by its own account flag (G9 row 5)', { tag: '@contract' }, async ({
   upstream,
   seed,
   api,

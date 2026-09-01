@@ -22,7 +22,7 @@ import { assertMayCreateSuperuser } from '../../setup/superuser-guard';
 // and a divergence would show up much later as a mystery 401.
 const { username: USERNAME, password: PASSWORD, email: EMAIL } = ADMIN;
 
-test('first run: create the superuser, log in, land on Channels', async ({
+test('first run: create the superuser, log in, land on Channels', { tag: '@contract' }, async ({
   page,
   baseURL,
 }) => {

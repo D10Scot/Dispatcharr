@@ -17,7 +17,7 @@ import type { User } from '../../fixtures';
 // login throttle" in e2e/README.md.
 
 for (const [name, principal] of Object.entries(PRINCIPALS)) {
-  test(`a ${name} (user_level ${principal.user_level}) cannot list users`, async ({
+  test(`a ${name} (user_level ${principal.user_level}) cannot list users`, { tag: '@contract' }, async ({
     asPrincipal,
   }) => {
     const client = await asPrincipal(name as keyof typeof PRINCIPALS);
@@ -62,7 +62,7 @@ for (const [name, principal] of Object.entries(PRINCIPALS)) {
 // and will 429 as soon as a matrix grows.
 //
 // The assertion is a delta, not an absolute: other tests share this worker.
-test('driving a fixed principal spends no login', async ({
+test('driving a fixed principal spends no login', { tag: '@contract' }, async ({
   asPrincipal,
   asUser,
 }) => {
@@ -85,7 +85,7 @@ test('driving a fixed principal spends no login', async ({
   }
 });
 
-test('an admin can list users', async ({ api }) => {
+test('an admin can list users', { tag: '@contract' }, async ({ api }) => {
   const res = await api.get('/api/accounts/users/');
   expect(res.status()).toBe(200);
 });

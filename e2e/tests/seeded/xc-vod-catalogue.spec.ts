@@ -22,7 +22,7 @@ import type {
  * setup/verification calls that have nothing to do with the XC surface.
  */
 
-test('the XC VOD actions answer a real catalogue with Dispatcharr identities, not the provider\'s (G9 row 9)', async ({
+test('the XC VOD actions answer a real catalogue with Dispatcharr identities, not the provider\'s (G9 row 9)', { tag: '@contract' }, async ({
   upstream,
   seed,
   api,
@@ -212,7 +212,7 @@ test('the XC VOD actions answer a real catalogue with Dispatcharr identities, no
   expect(alphaProviderInfo.bitrate).toBe(4321);
 });
 
-test('the XC series actions, and the series_id/Movie.pk asymmetry, and adult filtering on get_vod_streams (G9 row 10)', async ({
+test('the XC series actions, and the series_id/Movie.pk asymmetry, and adult filtering on get_vod_streams (G9 row 10)', { tag: '@contract' }, async ({
   upstream,
   seed,
   api,
@@ -424,7 +424,7 @@ test('the XC series actions, and the series_id/Movie.pk asymmetry, and adult fil
 // disagree.
 //
 // Issue: https://github.com/D10Scot/Dispatcharr/issues/97
-test.fail('XC get_vod_info returns the advanced data the REST API returns (G9 row 20, defect)', async ({
+test.fail('XC get_vod_info returns the advanced data the REST API returns (G9 row 20, defect)', { tag: '@contract' }, async ({
   upstream,
   seed,
   api,

@@ -83,7 +83,7 @@ test.afterEach(async ({ api }, testInfo) => {
   }
 });
 
-test('a User-Agent created from Settings is stored server-side and survives a reload', async ({
+test('a User-Agent created from Settings is stored server-side and survives a reload', { tag: '@contract' }, async ({
   adminPage,
   api,
   seed,

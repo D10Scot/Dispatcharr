@@ -7,14 +7,14 @@ import { test, expect, UpstreamClient } from '../../fixtures';
 // UpstreamClient directly rather than going through the `upstream` fixture.
 
 test.describe('UpstreamClient.toControl', () => {
-  test('rewrites a URL under the internal origin to the control origin', () => {
+  test('rewrites a URL under the internal origin to the control origin', { tag: '@contract' }, () => {
     const client = new UpstreamClient('http://127.0.0.1:9402', 'http://e2e-upstream:8080');
     expect(client.toControl('http://e2e-upstream:8080/s/abc/stream/1.ts?chain=1')).toBe(
       'http://127.0.0.1:9402/s/abc/stream/1.ts?chain=1'
     );
   });
 
-  test('throws on a URL that is a string prefix of the internal base but a different origin', () => {
+  test('throws on a URL that is a string prefix of the internal base but a different origin', { tag: '@contract' }, () => {
     const client = new UpstreamClient('http://127.0.0.1:9402', 'http://e2e-upstream:8080');
     // `startsWith('http://e2e-upstream:8080')` would accept this — the
     // credentials-looking prefix reads as userinfo, so the actual origin is
@@ -24,7 +24,7 @@ test.describe('UpstreamClient.toControl', () => {
     );
   });
 
-  test('is unaffected by a trailing slash on the configured internal base', () => {
+  test('is unaffected by a trailing slash on the configured internal base', { tag: '@contract' }, () => {
     // A base with a trailing slash must not eat the leading '/' of the
     // rewritten path — a bug a string-slice implementation is prone to but
     // origin-based parsing (extracting pathname/search/hash from the parsed
@@ -35,12 +35,12 @@ test.describe('UpstreamClient.toControl', () => {
     );
   });
 
-  test('throws on a URL under a different host entirely', () => {
+  test('throws on a URL under a different host entirely', { tag: '@contract' }, () => {
     const client = new UpstreamClient('http://127.0.0.1:9402', 'http://e2e-upstream:8080');
     expect(() => client.toControl('http://example.com/foo')).toThrow(/expected a URL under/);
   });
 
-  test('is unaffected by a trailing slash on the configured control base', () => {
+  test('is unaffected by a trailing slash on the configured control base', { tag: '@contract' }, () => {
     // The control base is the one that bites hardest: `call()` builds
     // `${controlBase}${path}`, so a trailing slash makes every control
     // request '//scenarios' — a *scheme-relative* URL, which the provider

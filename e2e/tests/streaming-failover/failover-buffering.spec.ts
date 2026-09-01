@@ -83,7 +83,7 @@ const TRICKLE_RATE = 0.3;
 const ASSET_NOMINAL_KB_PER_SEC = 180;
 const EXPECTED_TRICKLE_KB_PER_SEC = TRICKLE_RATE * ASSET_NOMINAL_KB_PER_SEC; // ~54 KB/s
 
-test('a degraded but not dead upstream fails over on the buffering detector', async ({
+test('a degraded but not dead upstream fails over on the buffering detector', { tag: '@contract' }, async ({
   upstream,
   seed,
   api,

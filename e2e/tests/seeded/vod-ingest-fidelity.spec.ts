@@ -96,7 +96,7 @@ async function seedCatalogue(
   return { prefix, scenario, account };
 }
 
-test('a VOD refresh records what the provider actually declared, per movie and per series', async ({
+test('a VOD refresh records what the provider actually declared, per movie and per series', { tag: '@contract' }, async ({
   upstream,
   seed,
   api,
@@ -207,7 +207,7 @@ test('a VOD refresh records what the provider actually declared, per movie and p
   expect(seriesRelation!.category?.name).toBe(`${prefix}-shows`);
 });
 
-test('a VOD refresh creates one category row per declared category, enabled for that account', async ({
+test('a VOD refresh creates one category row per declared category, enabled for that account', { tag: '@contract' }, async ({
   upstream,
   seed,
   api,
@@ -282,7 +282,7 @@ test('a VOD refresh creates one category row per declared category, enabled for 
 // directly, without inversion, in the category-rows test above.
 //
 // Issue: https://github.com/D10Scot/Dispatcharr/issues/96
-test.fail('GET /api/vod/categories/ accepts an m3u_account filter', async ({
+test.fail('GET /api/vod/categories/ accepts an m3u_account filter', { tag: '@contract' }, async ({
   upstream,
   seed,
   api,
