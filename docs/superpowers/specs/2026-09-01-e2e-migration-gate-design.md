@@ -83,14 +83,35 @@ compiler API (`ts.createSourceFile`), finds every `test()`, `test.describe()`, `
 `test.skip()` and `test.only()` call expression, and asserts each carries exactly one of the two
 tags — directly, or inherited from an enclosing `describe`.
 
-**AST, not regex, and the reason is demonstrable.** A source scan for the string `docker`
-across `e2e/tests/**` today returns `tests/seeded/output-m3u.spec.ts:51`,
+**AST, not regex — and the decision is already made in this tree, not by this spec.**
+`e2e/tests/frontend/pageerrors-enforcement.spec.ts` enforces that every test under
+`tests/frontend/` destructures `pageErrors`, and it does so by importing `typescript` and
+walking the AST. Its header states the reasoning G11 inherits wholesale: *"a checker that
+silently skips a shape it cannot read has the same blind spot with the same consequence."*
+
+The independent evidence points the same way. A source scan for the string `docker` across
+`e2e/tests/**` today returns `tests/seeded/output-m3u.spec.ts:51`,
 `tests/frontend/plugins.spec.ts:73` and `tests/frontend/connect.spec.ts:249` — all three of
-them **comments**, none of them a grey-box escape. A guard that cannot tell code from prose
-either fails on prose or is loosened until it stops catching anything. The compiler API
-distinguishes them for free: comments are trivia, and a walk that visits only expressions and
-string literals never sees them. `typescript` 5.7.2 is already a devDependency
-(`e2e/package.json`), so this costs no new dependency.
+them **comments**, none a grey-box escape. A guard that cannot tell code from prose either
+fails on prose or is loosened until it catches nothing. `typescript` 5.7.2 is already a
+devDependency, so this costs no new dependency.
+
+**Fail-closed, inherited from the same precedent.** Every test declaration the walker finds
+lands in one of three buckets — tagged, untagged, or **unverifiable** — and unverifiable fails,
+naming the shape it could not read, unless pinned with a reason in a `KNOWN_UNVERIFIABLE`
+constant. `pageerrors-enforcement.spec.ts` records why: its own first version recognised only
+`test('name', async ({ … }) => { … })` and silently skipped named helpers and non-destructured
+parameters, which is the defect it exists to close, one level up.
+
+**One walker, not three.** `pageerrors-enforcement.spec.ts` already contains `isTestCallee()`
+and the lifecycle-hook exclusion set (`beforeAll`/`beforeEach`/`afterEach`/`afterAll` declare
+setup, not tests). G11's tag guard needs exactly the same predicate, and a third copy would
+drift from both. The shared walker is extracted to **`e2e/tests/guards/ast.ts`** — the test
+declaration finder, the callee predicate, the hook exclusions, and the three-bucket
+fail-closed result — and `pageerrors-enforcement.spec.ts` is refactored onto it, its behaviour
+unchanged and its comments preserved. That refactor is a G6-owned file edited by G11; it is
+called out in the PR description, and it is the one place G11 touches test logic rather than
+adding a tag.
 
 `test.fail()` is included in the list deliberately: the suite has 16 files containing
 `test.fail()` pins, and a pinned bug is exactly as much a contract statement as a passing test.
@@ -167,7 +188,10 @@ gets a new **`guards` job** in `e2e-tests.yml` — checkout, Node, `npm ci`, `np
 download a 3 GB image and boot a container to read text files.
 
 `quarantine.spec.ts` moves here from `streaming-greybox`, and its `SELF_PATH` constant follows
-it. `e2e/README.md`'s CI section — *"If you add another project to `playwright.config.ts`, add
+it. `pageerrors-enforcement.spec.ts` moves here too, from `tests/frontend/`: it opens no page
+and needs no container, and its scope statement is directory-based (*"every `test()` under
+`e2e/tests/frontend/`"*), so the rule it enforces and the blast-radius argument in its header
+both survive the move unchanged. `e2e/README.md`'s CI section — *"If you add another project to `playwright.config.ts`, add
 it to that matrix too"* — is amended to name the guards job as the one deliberate exception,
 with the reason.
 
