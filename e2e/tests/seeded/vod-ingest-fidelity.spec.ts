@@ -211,19 +211,26 @@ test('a VOD refresh creates one category row per declared category, enabled for 
   upstream,
   seed,
   api,
+  waitFor,
 }) => {
   test.setTimeout(150_000);
 
   const { prefix, account } = await seedCatalogue(upstream, seed, api);
 
-  // Unpaginated and instance-global (no pagination_class on
-  // VODCategoryViewSet) — every other active XC account's rows are in this
-  // same array, including other workers'. Locate ours with find, never a
+  // refresh_vod_content is a separate Celery task queued by the 202 above,
+  // not completed by it — poll rather than reading once. Unpaginated and
+  // instance-global (no pagination_class on VODCategoryViewSet), so the read
+  // must be scoped: VODCategoryFilter.m3u_account is broken (pinned by the
+  // test.fail() below, which is why it cannot be used here either), so
+  // `name` (icontains, scoped by the generated prefix no other worker's
+  // fixture can share) is the only usable filter. Wait for exactly the three
+  // categories this test declared, then locate each with find rather than a
   // length or an index, and assert nothing about a category this test did
   // not declare.
-  const categories = await api.json<VodCategory[]>(
-    await api.get('/api/vod/categories/'),
-    'vod categories'
+  const categories = await waitFor.resource<VodCategory[]>(
+    `/api/vod/categories/?name=${encodeURIComponent(prefix)}`,
+    (body) => body.length === 3,
+    { description: `all 3 ${prefix} categories to be created`, timeoutMs: 120_000 }
   );
 
   const moviesA = categories.find(
@@ -283,9 +290,13 @@ test.fail('GET /api/vod/categories/ accepts an m3u_account filter', async ({
   test.setTimeout(150_000);
 
   // refresh-vod does not need to complete — the filter raises before any row
-  // is read — but seeding it anyway means the post-fix assertion (every
-  // returned category actually relates to this account) is meaningful rather
-  // than vacuously true against zero categories.
+  // is read — so this does NOT make the post-fix assertion (every returned
+  // category actually relates to this account) meaningful: seedCatalogue()
+  // fires the refresh and returns on its 202 with no wait for the
+  // categories to actually exist, the same unsynchronised gap fixed in the
+  // category-rows test above. Once VODCategoryFilter is fixed, this body
+  // races the same Celery task and can just as easily run the loop below
+  // over zero rows as over three.
   const { account } = await seedCatalogue(upstream, seed, api);
 
   const res = await api.get(`/api/vod/categories/?m3u_account=${account.id}`);
