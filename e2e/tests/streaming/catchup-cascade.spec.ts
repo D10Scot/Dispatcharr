@@ -240,20 +240,28 @@ test('the winning candidate index is cached per account and promoted on the next
   const { scenario, channel } = await seedCatchupChannel({ upstream, seed, api, waitFor });
   await upstream.fault(scenario, 'catchup-layout-404', { layout: 'path' });
 
-  // FOUR DIFFERENT INSTANTS, one per drive. With no `session_id`,
-  // `_serve_catchup` can adopt a matching pooled session (views.py:387-405,
-  // `include_busy: true`), scoring client_ip (5) + client_user_agent (3)
-  // against _MATCH_SCORE_THRESHOLD = 8 (views.py:95), keyed on
-  // `programme_media_id(channel.id, safe_ts)`. Adoption needs *concurrent*
-  // overlap, though: `_discard_pool_session` (views.py:2437) deletes the
-  // pool entry on close, so a strictly sequential open -> close -> open like
-  // every drive below leaves nothing adoptable behind, even when two drives
-  // repeat the same (channel, start) pair. Distinct `start` values per drive
-  // are kept anyway, not to dodge adoption, but because they prove each walk
-  // asked for its *own* moment rather than several walks repeating one — a
-  // stronger property than reusing a single `start` would give this test.
-  // It costs the cache proof nothing: `timeshift:format_idx:<account_id>`
-  // (apps/timeshift/redis_keys.py:64-65) has no timestamp in the key.
+  // FOUR DIFFERENT INSTANTS, one per drive — kept distinct for the one
+  // reason that survives scrutiny, not to dodge pool adoption. Disconnect
+  // does NOT delete the pool entry: it runs release_cb ->
+  // _make_release_once._release() -> _release_pool_session
+  // (views.py:2342-2381), which with mark_pool_idle=True sets "busy": "0"
+  // and re-arms the TTL — the entry survives, merely marked idle.
+  // `_discard_pool_session` (views.py:2423-2440) is a different path, not
+  // the one disconnect takes. Nor did distinct `start` values ever defeat
+  // adoption: `_find_matching_pool_session` matches on the
+  // `{channel_id}_` prefix, and Node's fetch sends `user-agent: node`, so
+  // the fingerprint scores the full 8 against _MATCH_SCORE_THRESHOLD = 8
+  // (views.py:95) regardless of `start`. The decisive fact is that adopting
+  // an idle pooled session still calls `_attempt_timeshift_stream`
+  // (views.py:2878) — it contacts the provider either way, so a
+  // provider-request count cannot discriminate adoption from a fresh walk
+  // at all, and no assertion in this test infers adoption from one. Distinct
+  // `start` values are kept anyway, for the reason that never depended on
+  // any of this: they prove each walk asked for its *own* moment rather than
+  // several walks repeating one — a stronger property than reusing a single
+  // `start` would give this test. It costs the cache proof nothing:
+  // `timeshift:format_idx:<account_id>` (apps/timeshift/redis_keys.py:64-65)
+  // has no timestamp in the key.
   const firstInstant = new Date(Date.now() - 2 * 60 * 60 * 1000);
   const secondInstant = new Date(Date.now() - 3 * 60 * 60 * 1000);
   const thirdInstant = new Date(Date.now() - 4 * 60 * 60 * 1000);

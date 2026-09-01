@@ -1,9 +1,10 @@
-import { test, expect, expectTsAligned, xcLiveStreams } from '../../fixtures';
+import { test, expect, expectTsAligned, xcLiveStreams, StreamStatusError } from '../../fixtures';
 import {
   catchupRequests,
   catchupTimestamp,
   newStreamClient,
   seedCatchupChannel,
+  withDeadline,
 } from './helpers';
 
 /**
@@ -104,19 +105,26 @@ test('both root XC entry points reach the same cascade, whatever layout the clie
   // across every worker and project.
   const xcUser = await seed.xcUser();
 
-  // TWO DIFFERENT MOMENTS. With no `session_id`, `_serve_catchup` can adopt a
-  // pooled session (views.py:387-405, `include_busy: true`, scoring
-  // client_ip (5) + client_user_agent (3) against _MATCH_SCORE_THRESHOLD = 8
-  // at views.py:95, keyed on `programme_media_id(channel.id, safe_ts)`) —
-  // but only while that pool entry still exists. `_discard_pool_session`
-  // (views.py:2423-2438) deletes it outright on client disconnect, and each
-  // drive below is closed before the next opens, so there is no overlap in
-  // which adoption could fire here regardless of `start` (verified live:
-  // giving both drives the same `start` still produced two independent
-  // provider requests). Distinct starts are kept anyway, for the reason that
-  // does hold: each entry point is proved to have asked for ITS OWN moment,
-  // rather than the pair asking twice for one — a strictly stronger
-  // assertion than two drives sharing a timestamp.
+  // TWO DIFFERENT MOMENTS — kept distinct for the one reason that survives
+  // scrutiny, spelled out here because two others were tried and both were
+  // wrong. Disconnect does NOT delete the pool entry: it runs release_cb ->
+  // _make_release_once._release() -> _release_pool_session
+  // (views.py:2342-2381), which with mark_pool_idle=True sets "busy": "0"
+  // and re-arms the TTL — the entry survives, merely marked idle.
+  // `_discard_pool_session` (views.py:2423-2440) is a different path
+  // entirely, not the one disconnect takes. Nor did distinct `start` values
+  // ever defeat adoption: `_find_matching_pool_session` matches on the
+  // `{channel_id}_` prefix, and Node's fetch sends `user-agent: node`, so
+  // the fingerprint scores the full 8 against _MATCH_SCORE_THRESHOLD
+  // regardless of `start`. The decisive fact is that adopting an idle
+  // pooled session still calls `_attempt_timeshift_stream`
+  // (views.py:2878) — it contacts the provider either way. So a
+  // provider-request COUNT cannot discriminate adoption from a fresh walk
+  // at all, and no assertion in this goal infers adoption from one.
+  // Distinct starts are kept anyway, for the reason that never depended on
+  // any of this: each entry point is proved to have asked for ITS OWN
+  // moment, rather than the pair asking twice for one — a strictly
+  // stronger assertion than two drives sharing a timestamp.
   const pathStart = catchupTimestamp(new Date(Date.now() - 2 * 60 * 60 * 1000));
   const queryStart = catchupTimestamp(new Date(Date.now() - 3 * 60 * 60 * 1000));
 
@@ -139,9 +147,11 @@ test('both root XC entry points reach the same cascade, whatever layout the clie
   await second.close();
 
   const asked = catchupRequests(await upstream.log(scenario));
-  // Exactly two, in the order they were driven. A length of 0 or 1 here means
-  // pool adoption fired — check the two `start` values are actually distinct
-  // before suspecting the routes.
+  // Exactly two, in the order they were driven. Not evidence either way about
+  // pool adoption — see the comment above: adopting an idle pooled session
+  // still calls _attempt_timeshift_stream, so this count would read the same
+  // whether or not adoption fired. A length of 0 or 1 here would point at the
+  // routes themselves, not at adoption.
   expect(asked).toHaveLength(2);
   const expectedStarts = [pathStart, queryStart];
 
@@ -191,6 +201,12 @@ test('row 8 premise: a Standard viewer with hide_adult_content cannot list an ad
   });
 
   const listed = await xcLiveStreams(request, viewer, 'the hide_adult_content listing');
+  // Guards the guard: `.some(...) === false` passes vacuously on an EMPTY
+  // listing too, which would unguard the premise below without ever
+  // exercising it. 278 entries were measured live at seed time; assert
+  // non-empty before asserting absence so a listing that came back empty for
+  // any reason fails loudly here instead of silently greenlighting the pin.
+  expect(listed.length, 'the XC listing must not come back empty').toBeGreaterThan(0);
   expect(
     listed.some((s) => s.stream_id === channel.id),
     'an adult channel must not appear in a hide_adult_content listing'
@@ -199,13 +215,18 @@ test('row 8 premise: a Standard viewer with hide_adult_content cannot list an ad
 
 test.fail(
   'an adult channel a user cannot list is also refused on the catch-up path',
-  async ({ upstream, seed, api, waitFor, request }) => {
-    // KNOWN BUG — issue #95. `hide_adult_content` is applied at twelve sites
+  async ({ upstream, seed, api, waitFor, request, streamClient }) => {
+    // KNOWN BUG — issue #95. `hide_adult_content` is applied at 14 sites
     // across apps/output/, apps/epg/, apps/channels/ and apps/vod/, and at
-    // NONE under apps/timeshift/. `_user_can_access_channel`
+    // ZERO under apps/timeshift/. `_user_can_access_channel`
     // (views.py:771-786) checks user_level and Channel Profile membership
     // only. So a Standard user who cannot see an adult channel in any
-    // listing can still stream its archive.
+    // listing can still stream its archive — and this is the STRONG form of
+    // the bug, not merely "not refused": following the session-minting
+    // redirect all the way through gets a 200, TS-aligned packets, and one
+    // provider request. A pin on the 301 alone would be one hop too early —
+    // it would also go green for a fix applied AFTER session establishment,
+    // which would close the hole while leaving the redirect unchanged.
     //
     // The assertion below is the CORRECT behaviour and fails today. It is
     // deliberately status-agnostic above 400: whether the fix answers 403
@@ -235,17 +256,45 @@ test.fail(
       'an adult channel must not appear in a hide_adult_content listing'
     ).toBe(false);
 
-    // FAILS TODAY: the same channel streams. `maxRedirects: 0` so the
-    // session-minting 301 is observed rather than followed — today's answer
-    // is that 301, which is < 400 and therefore not a refusal.
-    const play = await request.get(
-      `/timeshift/${viewer.username}/${viewer.xcPassword}/60/${start}/${channel.id}.ts`,
-      { maxRedirects: 0 }
-    );
-    expect(
-      play.status(),
-      'a channel hidden from this user must not be streamable by them'
-    ).toBeGreaterThanOrEqual(400);
+    // FAILS TODAY: follow the redirect through to the served stream, rather
+    // than stopping at the 301 that mints the session — that 301 decides
+    // nothing, `_serve_catchup` does. `request.get()` would hang here: the
+    // archive is an unbounded live stream and Playwright's request fixture
+    // awaits the full body before resolving. StreamClient reads it
+    // incrementally instead, and `open()`'s default is to follow redirects.
+    let refusedAtOpen = false;
+    try {
+      await streamClient.open(
+        `/timeshift/${viewer.username}/${viewer.xcPassword}/60/${start}/${channel.id}.ts`
+      );
+    } catch (err) {
+      // A >=400 here IS the correct behaviour — StreamClient.open() throws
+      // StreamStatusError for exactly that, so catching it is not swallowing
+      // a failure, it is recognising a pass. Anything else (a DNS failure, a
+      // reset, StreamStatusError below 400) is not evidence of a fix and must
+      // still fail this test.
+      if (!(err instanceof StreamStatusError) || err.status < 400) throw err;
+      refusedAtOpen = true;
+    }
+
+    if (!refusedAtOpen) {
+      // withDeadline so a stall reads as a named cause instead of the
+      // project's 300s timeout.
+      const packets = await withDeadline(
+        streamClient.readPackets(20),
+        30_000,
+        'the archive read a hide_adult_content viewer should have been refused'
+      );
+      // CORRECT behaviour: no playable TS packets ever reach this viewer.
+      // TODAY they do — expectTsAligned passes on them, which is the bug —
+      // so this assertion fails now and stops failing only once the archive
+      // is actually withheld.
+      expect(
+        () => expectTsAligned(packets),
+        'a channel hidden from this user must not receive playable archive bytes'
+      ).toThrow();
+      await streamClient.close();
+    }
   }
 );
 
