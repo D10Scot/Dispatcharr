@@ -4,7 +4,9 @@
 
 **Goal:** Close the seven accepted coverage gaps from the 2026-09-01 programme review — blocked-network ACL 403 negatives, EPG matching and the `set-*-from-epg` family, row-scoped behavioural settings, plugin `run`, channel bulk operations and reordering, M3U filters, and product WebSocket events — **without adding a Playwright project, a CI job, or an isolated instance.**
 
-**Architecture:** One pull request, one branch. Twenty-four tests across six new spec files in the existing `seeded` project, plus one test appended to `e2e/tests/frontend/plugins.spec.ts`. Every write is row-scoped; the one global `CoreSettings` write in the goal is a single named exception whose blast radius is argued to zero. No `playwright.config.ts` change, no workflow change, no `seed.ts` change.
+**Architecture:** One pull request, one branch. Twenty-three tests across six new spec files in the existing `seeded` project, plus one test appended to `e2e/tests/frontend/plugins.spec.ts`. Every write is row-scoped; the one global `CoreSettings` write in the goal is a single named exception whose blast radius is argued to zero, and it requires one entry on `GLOBAL_SETTINGS_WRITE` in `e2e/tests/guards/allowlist.ts`. No `playwright.config.ts` change, no workflow change, no `seed.ts` change.
+
+**Revised 2026-09-01, after G11 landed (`45a33a4a`).** Test 9 is removed (it violated the ML-band rule by construction), every hedge about G11's tag mechanism is replaced with the mechanism as it shipped, and the guards G14 must satisfy are named.
 
 **Tech Stack:** TypeScript, Playwright 1.62.x, Node 24, the G1 fixture set (`api`, `seed`, `waitFor`, `ws`, `asPrincipal`, `upstream`), the G2 fake upstream provider, Docker.
 
@@ -17,7 +19,7 @@ Copied from the spec and the programme rules. Every task's requirements implicit
 - **Never assert a global count or an unfiltered list.** Roadmap rule 4. Every assertion is scoped to a name, an id or a filtered query this test owns.
 - **Never mutate a global `CoreSettings` row**, with exactly one exception: `network_access["XC_API"]` in test 3, restored in `afterEach`. **`network_access["UI"]` is never written under any circumstance** — `apps/accounts/permissions.py:Authenticated` gates every DRF endpoint on it, including the one that would undo the change, and recovery would be `manage.py reset_network_access` over `docker exec`. (Spec D2.)
 - **`match-epg` is called with a *non-empty* `channel_ids` list, or in its detail form.** `ChannelViewSet.match_epg` branches on `if channel_ids:`, so an omitted **or empty** list matches every EPG-less channel on the instance. (Spec D7.)
-- **No EPG-matching test may land in the ML score band.** `try_epg_name_match` calls `get_sentence_transformer()` — which downloads `sentence-transformers/all-MiniLM-L6-v2` into `/data/models` — only when the fuzzy score is in `[FUZZY_MEDIUM_CONFIDENCE, FUZZY_SKIP_ML)` or `[FUZZY_LAST_RESORT_MIN, FUZZY_MEDIUM_CONFIDENCE)`. Every score must land **at or above `FUZZY_SKIP_ML`** or **below `FUZZY_LAST_RESORT_MIN`**. Task 0 measures the real scores before any test is written. (Spec D6, D6a.)
+- **No EPG-matching test may land in the ML score band.** `try_epg_name_match` calls `get_sentence_transformer()` — which downloads `sentence-transformers/all-MiniLM-L6-v2` into `/data/models` — whenever the fuzzy score is at or above `FUZZY_MEDIUM_CONFIDENCE` and below `FUZZY_SKIP_ML`, and again in `[FUZZY_LAST_RESORT_MIN, FUZZY_MEDIUM_CONFIDENCE)`. Concretely: **on the bulk path the only ML-free outcomes are a score at or above 80 (match) and below 50 (no match); on the single path, at or above 75 and below 20.** Every score must land in one of those. Task 0 measures the real scores before any test is written. This rule is what removed test 9. (Spec D6, D6a.)
 - **Never assert on a `SystemEvent` row.** `core/utils.py:log_system_event` truncates the table to `max_system_events` (default 100) instance-wide on every call. (Spec D12c.)
 - **Never wait on a bare WebSocket type.** Predicate order: a Celery `task_id`; then an id in the payload this test owns; then do not wait on it at all. `epg_matching_progress` carries no id and is throttled — never a terminal predicate. (Spec D12a.)
 - **`refresh_interval: 0` on every source and account.** G3's D10 is still binding, and G14 adds nothing to the `{0, 2, 3, 4, 8531, 8532}` set documented in `e2e/README.md`.
@@ -27,8 +29,9 @@ Copied from the spec and the programme rules. Every task's requirements implicit
 - **The typecheck hook is blocking.** Any edit to `e2e/**/*.ts` runs `tsc --noEmit` for that package. Run `cd e2e && npm ci` first or it degrades to a loud note.
 - **Product defects are asserted correct, marked `test.fail()` naming the defect, and filed** — `gh issue create --repo D10Scot/Dispatcharr`. **The explicit `--repo` flag is mandatory**: this checkout is a fork and `gh` without it resolves to upstream's public tracker.
 - **Premise guards go outside the inverted block.** A `test.fail()` whose setup can also fail is satisfied by a broken seed as convincingly as by the defect. Assert the premise and a positive control normally *first*, then invert only the defective assertion. (The G9/G10 pattern G15 is backporting.)
-- **G12, G13 and G15 are in flight on five shared files** — `e2e/COVERAGE.md`, `e2e/README.md`, `e2e/fixtures/types.ts`, `e2e/fixtures/index.ts`, `e2e/fixtures/api.ts`. Every G14 edit is **appended at the end of the existing list**; no reordering, no reflowing a neighbouring paragraph. **G14 does not open `e2e/tests/seeded/xc-output.spec.ts`, anything under `e2e/tests/lifecycle/`, `e2e/tests/frontend/dvr.spec.ts`, `e2e/fixtures/seed.ts`, `e2e/playwright.config.ts`, `e2e/package.json`, `scripts/e2e_up.sh`, or any workflow.**
-- **Apply G11's tag taxonomy.** Default `@contract`; the four `@characterization` tests are 1, 7, 8, 9 and 23, each with a comment justifying itself. If G11's ADR names the tags differently, follow G11.
+- **G12, G13 and G15 are in flight on six shared files** — `e2e/COVERAGE.md`, `e2e/README.md`, `e2e/fixtures/types.ts`, `e2e/fixtures/index.ts`, `e2e/fixtures/api.ts`, `e2e/tests/guards/allowlist.ts`. Every G14 edit is **appended at the end of the existing list**; no reordering, no reflowing a neighbouring paragraph. **G14 does not open `e2e/tests/seeded/xc-output.spec.ts`, anything under `e2e/tests/lifecycle/`, `e2e/tests/frontend/dvr.spec.ts`, `e2e/fixtures/seed.ts`, `e2e/playwright.config.ts`, `e2e/package.json`, `scripts/e2e_up.sh`, or any workflow.**
+- **Every test declares a tag, inline, as the second argument.** `test('title', { tag: '@contract' }, async ({ … }) => { … })`, and `test.fail('title', { tag: '@contract' }, async …)` for test 5. Default `@contract`; the four `@characterization` tests are **1, 7, 8 and 23**, each carrying a `// @characterization: <fact it pins>` comment immediately above its `test(` call. `e2e/tests/guards/tags.spec.ts` is blocking and **fails closed**: a details object passed **by reference** makes every enclosed test `unverifiable` and fails, so the tag goes on each `test(` call and never through a shared const. A `test.describe` may carry the tag only with an inline object literal — and `network-acl.spec.ts` has none to carry it, because `test.describe.configure({ mode: 'serial' })` takes no tag. `KNOWN_UNVERIFIABLE` is empty and G14 adds nothing to it. (`docs/adr/0002-e2e-test-taxonomy.md`; spec D13.)
+- **`network-acl.spec.ts` must be added to `GLOBAL_SETTINGS_WRITE.allow` in `e2e/tests/guards/allowlist.ts`,** or `e2e/tests/guards/global-mutation.spec.ts` fails: test 3 PATCHes `/api/core/settings/<id>/`. The list is compared with `toEqual`, so the entry is mandatory. ADR-0003 requires the diff to say which group it writes, why nothing else reads it, and how teardown restores it — Task 3 Step 1a writes all three. **No G14 file trips `CONTAINER_LIFECYCLE`, `SUBPROCESS`, `GREYBOX_REDIS` or `CONTAINER_INTROSPECTION`**: nothing destructures the `instance` fixture, nothing imports `node:child_process`, and no spec contains `pgrep`, `docker ` or `manage.py` in a **string literal** — the `docker exec` probes below are shell commands in this plan's prose, which the guard parses past because it reads literals rather than scanning text. (Spec D13a.)
 - **Import map — every shared symbol comes from exactly one place.**
 
   | Symbol | From |
@@ -48,7 +51,7 @@ Copied from the spec and the programme rules. Every task's requirements implicit
 | Path | Responsibility |
 |---|---|
 | `e2e/tests/seeded/network-acl.spec.ts` | Tests 1–5: the header-trust premise guard, the `M3U_EPG` default 403, the global `XC_API` 403, the per-user `allowed_networks` refusal, and the 401-should-be-403 known bug |
-| `e2e/tests/seeded/epg-matching.spec.ts` | Tests 6–10: exact `tvg_id`, fuzzy match, fuzzy no-match, the one-id threshold asymmetry, and `epg_match`'s associations |
+| `e2e/tests/seeded/epg-matching.spec.ts` | Tests 6, 7, 8 and 10: exact `tvg_id`, fuzzy match, fuzzy no-match, and `epg_match`'s associations. **Test 9 is removed** — see the spec's inventory row |
 | `e2e/tests/seeded/epg-field-copy.spec.ts` | Tests 11–13: `set-names-from-epg`, the silent skip of an unassociated channel, and `set-tvg-ids-from-epg` with its `task_id`-correlated WebSocket event |
 | `e2e/tests/seeded/ws-product-events.spec.ts` | Tests 14–15: `epg_data_created` correlated on `source_id`, and the `ADMIN_ONLY_UPDATE_TYPES` filter |
 | `e2e/tests/seeded/m3u-filters.spec.ts` | Tests 16–18: exclude, include-only, and first-match-wins by `order` |
@@ -61,10 +64,11 @@ Copied from the spec and the programme rules. Every task's requirements implicit
 | `e2e/fixtures/api.ts` | `delete(url, data?)` — forward the optional body to the existing private `send()` |
 | `e2e/fixtures/types.ts` | Append `M3uFilter`, `M3uFilterOverrides`, `CoreSetting`, `NetworkAccessCheck`, `PluginRunResponse`, `EpgMatchAssociation`, `EpgFieldCopyResponse`; extend `User`/`UserOverrides` with `custom_properties` **only if Task 0 shows it is not already there** |
 | `e2e/fixtures/index.ts` | Re-export the new types; extend the header inventory for `api.delete`'s new argument |
+| `e2e/tests/guards/allowlist.ts` | One entry appended to `GLOBAL_SETTINGS_WRITE.allow`: `tests/seeded/network-acl.spec.ts`, with ADR-0003's three-part justification in the comment above it (Task 3 Step 1a) |
 | `e2e/tests/frontend/plugin-zip.ts` | `buildPluginZip({ key, name, actions? })` — optional actions, written into both `plugin.json` and the generated `plugin.py`; `run` returns a value derived from `params` |
 | `e2e/tests/frontend/plugins.spec.ts` | Test 24 appended: run an action, and the three negatives |
 | `e2e/README.md` | A network-ACL section (the three scope defaults, the `X-Real-IP` mechanism, **`UI` is never written**); the ML-band rule; a note that `seeded` is `fullyParallel` so a file confines nothing; one fixture-table line |
-| `e2e/COVERAGE.md` | Eleven new flow rows, one known-bug row, one characterized-defect row, six observation rows, four gap rows |
+| `e2e/COVERAGE.md` | Eleven new flow rows, one known-bug row, one characterized-defect row, seven observation rows, five gap rows |
 
 ---
 
@@ -84,6 +88,9 @@ Implements spec D3a, D6a, and the `types.ts` conditional above.
 
 ```bash
 git fetch origin
+# origin/main must be at or after 45a33a4a — G11's merge state. The tag guard,
+# the capability guards and the two ADRs this plan depends on land there.
+git log --oneline -1 origin/main
 git checkout -b test/e2e-coverage-completions-g14 origin/main
 ./scripts/e2e_up.sh --reset
 cd e2e && npm ci && npx playwright install --with-deps chromium && npm run typecheck
@@ -146,13 +153,15 @@ for a, b in pairs:
 "'
 ```
 
-Iterate until you have three pairs, and record them verbatim for Task 5:
+Iterate until you have two pairs, and record them verbatim for Task 5. There is no third pair:
+the `[75, 80)` pair the removed test 9 needed is unbuildable, because on the bulk path that range
+sits inside `[FUZZY_MEDIUM_CONFIDENCE, FUZZY_SKIP_ML)` = `[70, 80)` and calls
+`get_sentence_transformer()`. Do not reinstate it.
 
 | Needed for | Requirement | Threshold that applies |
 |---|---|---|
 | Test 7 (fuzzy match, single path) | score **≥ 75** | `FUZZY_SKIP_ML` = 75 on the single-channel path |
 | Test 8 (no match, bulk path) | score **< 50** against *every* row in the catalogue | `FUZZY_LAST_RESORT_MIN` = 50 on the bulk path |
-| Test 9 (threshold asymmetry) | score in **[75, 80)** | matches with one id (single thresholds), not with two (bulk `FUZZY_SKIP_ML` = 80) |
 
 Note `region_code` is always `None` (the three-site defect), so the score is exactly
 `fuzz.ratio(chan_norm, epg_norm)` with no bonus term. Names must avoid every stop-word above, or
@@ -173,14 +182,14 @@ nothing there.
 
 - [ ] **Step 5: Record the answers**
 
-Write all three into the PR description under "Preflight". Probe B's three pairs are quoted
+Write all three into the PR description under "Preflight". Probe B's two pairs are quoted
 verbatim into the comments Task 5 writes, so a later edit to a name is visibly a threshold
 decision and not a cosmetic rename.
 
 ### Verification
 
 - [ ] Probe A produced `203.0.113.5` and a `403`, **or** the re-scope above has been applied and written down.
-- [ ] Probe B produced three pairs with measured scores in the three required bands, recorded verbatim.
+- [ ] Probe B produced two pairs with measured scores in the two required bands, recorded verbatim.
 - [ ] Probe C answered whether `types.ts` needs a `custom_properties` addition.
 - [ ] `cd e2e && npm run typecheck` is clean (nothing has changed yet; this establishes the baseline).
 
@@ -308,13 +317,14 @@ check that file before assuming, and reuse whatever it does rather than inventin
 
 ## Task 3: `network-acl.spec.ts` — tests 3, 4 and 5, and the defect
 
-Implements spec D2, D4, D5, D17. **Read D2's exception argument before writing test 3.**
+Implements spec D2, D4, D5, D13a, D17. **Read D2's exception argument before writing test 3.**
 
 **Files:**
-- Modify: `e2e/tests/seeded/network-acl.spec.ts`.
+- Modify: `e2e/tests/seeded/network-acl.spec.ts`, `e2e/tests/guards/allowlist.ts`.
 
 **Interfaces:**
-- Produces: an `afterEach` that restores `network_access["XC_API"]`, and one filed issue.
+- Produces: an `afterEach` that restores `network_access["XC_API"]`, one `GLOBAL_SETTINGS_WRITE`
+  entry, and one filed issue.
 
 - [ ] **Step 1: Test 3 — the global `XC_API` 403 on `get.php` and `xmltv.php`** — tag `@contract`
 
@@ -342,6 +352,32 @@ The comment above the test must carry D2's blast-radius argument in full: narrow
 the local CIDRs denies only requests carrying a spoofed non-local `X-Real-IP`, nothing else in the
 suite sends one, and therefore even a leaked value costs the container nothing. A reader who does
 not find that argument convincing should be able to delete this one test and lose nothing else.
+
+- [ ] **Step 1a: Add the file to `GLOBAL_SETTINGS_WRITE`**
+
+Test 3 PATCHes `/api/core/settings/<id>/`, so `e2e/tests/guards/global-mutation.spec.ts` fails
+until `tests/seeded/network-acl.spec.ts` is on `GLOBAL_SETTINGS_WRITE.allow` in
+`e2e/tests/guards/allowlist.ts`. Append it at the end of the list — G12 may be appending to the
+same file this wave — and write ADR-0003's three required sentences into the comment above it,
+because the diff *is* the review:
+
+- **which group it writes** — `network_access`, and the key `XC_API` only; `UI` never, for the
+  reason in the file header;
+- **why nothing else reads it** — D2's blast-radius argument: narrowing `XC_API` from `0.0.0.0/0`
+  to the local CIDRs refuses only a request carrying a spoofed non-local `X-Real-IP`, and this test
+  is the only client in the suite that sends one;
+- **how teardown restores it** — the `afterEach` in Step 1, which writes back the value captured
+  before the PATCH and logs rather than masks a cleanup failure.
+
+The list is compared with `toEqual`, so a missing entry and a stale entry both fail; if test 3 is
+dropped at review (D2 says that costs exactly one test), this entry is dropped with it.
+
+Note the tag: test 3 stays **`@contract`**. ADR-0002's text says a file on a capability allowlist
+is `@characterization` by construction, but the tree does not apply that —
+`tests/streaming-failover/failover-buffering.spec.ts` is on this same list and is `@contract` — and
+test 3's assertion (a blocked network gets 403 from `get.php` and `xmltv.php`) is client-observable
+behaviour any reimplementation must preserve. The settings write is setup, not the subject. **Do
+not edit the ADR**; the wording is a follow-up for G11's owner, and Task 12 records it.
 
 - [ ] **Step 2: Test 4 — the per-user refusal** — tag `@contract`
 
@@ -404,6 +440,7 @@ Record the issue number; Task 12 cites it in `COVERAGE.md` and the test comment 
 ### Verification
 
 - [ ] All five tests in the file green (test 5 as an expected `test.fail()`).
+- [ ] `cd e2e && npx playwright test --project=guards` green — in particular `global-mutation.spec.ts`, which fails without Step 1a's entry, and `tags.spec.ts`, which fails on any untagged declaration.
 - [ ] Run the file twice back to back. The second run must pass — proving the `afterEach` restore worked.
 - [ ] After the run, `network_access` contains no `XC_API` key (or its original value), and **no `UI` key**.
 - [ ] Mutation check on test 5's premise guard: break the seed (use a wrong `xc_password`) and confirm the test reports the *premise* failing, not a satisfied inversion.
@@ -427,9 +464,11 @@ Implements spec D7a. The safest shape in the file: an ID-matched channel never r
 
 It must state:
 
-- **The ML band rule** (D6) with the six threshold numbers from
-  `apps/channels/epg_matching.py:_get_epg_match_thresholds`, both branches, and the rule that
-  every score in this file lands at or above `FUZZY_SKIP_ML` or below `FUZZY_LAST_RESORT_MIN`.
+- **The ML band rule** (D6) with the threshold numbers from
+  `apps/channels/epg_matching.py:_get_epg_match_thresholds` — six per branch, twelve in all — and
+  the rule that every score in this file lands at or above `FUZZY_SKIP_ML` or below
+  `FUZZY_LAST_RESORT_MIN`. Spelt out: bulk needs 80 or more, or under 50; single needs 75 or more,
+  or under 20.
   Name `get_sentence_transformer()` and the model it downloads, so the cost of getting this wrong
   is on the page.
 - **The cross-worker aliasing hazard**: `_active_epg_fuzzy_queryset` filters on
@@ -483,8 +522,9 @@ from Probe B's ≥ 75 pair. Drive the **detail** endpoint so `is_bulk_matching` 
 `matched === true` and `epg_id` is my row.
 
 The comment quotes: the raw pair, both normalised strings, the measured `fuzz.ratio`, the
-threshold that applies and why it is above it. Tagged `@characterization` because it pins two of
-the six hardcoded numbers.
+threshold that applies and why it is above it. Tagged `@characterization` because it pins one of
+the twelve hardcoded numbers in `_get_epg_match_thresholds` — the single path's `FUZZY_SKIP_ML` of
+75 — so its `// @characterization:` comment names that number and that branch.
 
 - [ ] **Step 2: Test 8 — a distant name matches nothing, ML never reached** — tag `@characterization`
 
@@ -515,31 +555,24 @@ its limits.
 
 ---
 
-## Task 6: `epg-matching.spec.ts` — tests 9 and 10
+## Task 6: `epg-matching.spec.ts` — test 10
 
-Implements spec D6, D12a. Test 9 is fifth on the cut list; ship it only if Tasks 2–5 are green.
+Implements spec D6, D12a.
 
 **Files:**
 - Modify: `e2e/tests/seeded/epg-matching.spec.ts`.
 
-- [ ] **Step 1: Test 9 — a one-id collection call runs the single-channel thresholds** — tag `@characterization`
+**Test 9 was specified and is removed. Do not write it, and do not put it back on the cut list.**
+It was to prove that a collection `match-epg` carrying exactly one id runs the single-channel
+thresholds — `match_channels_to_epg` derives `is_bulk_matching = len(channels_data) > 1`, so that
+part is true. But the only scores the two branches disagree about are in `[75, 80)`, and that pair
+had to go through the **bulk** path to show the disagreement. On the bulk path
+`FUZZY_MEDIUM_CONFIDENCE` is 70, so `try_epg_name_match` reaches `get_sentence_transformer()` for
+every score in `[70, 80)` — the test downloaded the model by construction and violated the goal's
+own ML-band rule. The asymmetry is recorded as a `COVERAGE.md` observation in Task 12 Step 3
+instead. Test numbers are otherwise unchanged; 10 stays 10.
 
-`is_bulk_matching = len(channels_data) > 1`, so one id takes the aggressive branch. Using Probe B's
-`[75, 80)` pair:
-
-- `POST channels/match-epg/ {channel_ids: [a]}` → the channel matches (75 ≤ score, single
-  `FUZZY_SKIP_ML`);
-- a second channel with the same name, `POST channels/match-epg/ {channel_ids: [b, c]}` → `b`
-  does **not** match (score < 80, bulk `FUZZY_SKIP_ML`), where `c` is a filler channel whose only
-  job is to make the list length 2.
-
-Both waits correlate on `epg_match`'s `associations` containing the relevant id. Assert on the
-channel rows as well, for the same reason test 8 does.
-
-The comment states plainly that this pins implementation, not contract, and that if G11's ADR
-treats `@characterization` as something to minimise, this is the test to drop.
-
-- [ ] **Step 2: Test 10 — `epg_match` names this test's associations, and counts changes only** — tag `@contract`
+- [ ] **Step 1: Test 10 — `epg_match` names this test's associations, and counts changes only** — tag `@contract`
 
 Two channels matched by exact `tvg_id` (so no score is involved), in one collection call.
 
@@ -553,7 +586,7 @@ Two channels matched by exact `tvg_id` (so no score is involved), in one collect
 
 ### Verification
 
-- [ ] Both tests green; `/data/models` still empty.
+- [ ] Test 10 green; `/data/models` still empty.
 - [ ] Mutation check on test 10: assert `matches_count === 2` on the *second* run; it must fail.
 - [ ] Run `epg-matching.spec.ts` twice back to back — no state carries between runs (each test seeds its own scenario and channels).
 
@@ -678,7 +711,19 @@ waits rather than two counts.
 ### Verification
 
 - [ ] Both tests green.
-- [ ] Test 15's premise guard demonstrably works: stop the beat process (`docker exec dispatcharr-e2e supervisorctl stop celerybeat` or equivalent), re-run, and confirm the test fails naming the missing traffic rather than passing. **Restart it afterwards** and re-run to green.
+- [ ] Test 15's premise guard demonstrably works: **pause** the beat process, re-run, and confirm the test fails naming the missing traffic rather than passing. **Resume it afterwards** and re-run to green.
+
+```bash
+docker exec dispatcharr-e2e sh -c 'kill -STOP $(pgrep -f "celery -A dispatcharr beat")'
+# … re-run test 15, expect a failure naming "no channel_stats traffic in the window" …
+docker exec dispatcharr-e2e sh -c 'kill -CONT $(pgrep -f "celery -A dispatcharr beat")'
+```
+
+SIGSTOP, not a service stop: **there is no supervisord in the AIO image.** Beat is a uWSGI
+`attach-daemon` (`docker/uwsgi.ini:16`, `nice -n $(CELERY_NICE_LEVEL) celery -A dispatcharr beat`),
+and uWSGI respawns an attached daemon that exits — so killing it restarts it within seconds and the
+window never goes quiet. `supervisorctl` does not exist in the image at all. SIGSTOP leaves the
+process alive, so uWSGI sees nothing to respawn, and SIGCONT puts it back exactly as it was.
 - [ ] Mutation check on test 15: swap the Streamer token for the admin token; the test must fail.
 - [ ] No `WsListener` leaks — the run exits promptly rather than hanging on an open socket.
 
@@ -932,23 +977,42 @@ cross-reference them instead.
 - [ ] **Step 3: `COVERAGE.md` — the annotation rows**
 
 One `known-bug` row (Task 3's XC 401/403 defect, with its issue number). One characterized-defect
-row (Task 12 Step 1's region code, with its issue number and D8's two reasons). Six observations:
+row (Task 12 Step 1's region code, with its issue number and D8's two reasons). Seven observations:
 `reorder`'s instance-wide shift; the unguarded `network_access` global loop (a list- or
 empty-string-valued scope is a 500 on every gated request, deliberately not provoked); the
 plugin web/Celery discovery asymmetry; `match-epg`'s empty-list foot-gun; the four dead WebSocket
 handler/sender pairs (`epg_file`, `epg_channels`, `epg_sources_changed` have no sender;
-`epg_tvg_id_setting_progress` has no handler); and that
-`apps/channels/tests/test_epg_matching.py` does not test `epg_matching.py`. One "not reproduced"
-row for [#72](https://github.com/D10Scot/Dispatcharr/issues/72), cross-referencing
-[#86](https://github.com/D10Scot/Dispatcharr/issues/86).
+`epg_tvg_id_setting_progress` has no handler); that
+`apps/channels/tests/test_epg_matching.py` does not test `epg_matching.py`; and **the threshold
+asymmetry** — `match_channels_to_epg` derives `is_bulk_matching = len(channels_data) > 1`, so a
+one-element collection call runs the single-channel thresholds while
+`run_single_channel_epg_match` hardcodes `False`. Record that it is **not testable without the ML
+band**: any bulk-path score below 80 and at or above 50 reaches `get_sentence_transformer()`, so
+the disagreement between the two branches cannot be shown without downloading the model. Say that
+a test for it was specified (9) and cut for that reason.
 
-Four gap rows, each naming the mechanism so the next owner starts from the observable:
+One "not reproduced" row for [#72](https://github.com/D10Scot/Dispatcharr/issues/72),
+cross-referencing [#86](https://github.com/D10Scot/Dispatcharr/issues/86).
 
-- **→ G12**: every global `CoreSettings` group with behavioural effect —
+Five gap rows, each naming the mechanism so the next owner starts from the observable:
+
+- **Unowned, post-wave-6**: every global `CoreSettings` group with behavioural effect —
   `epg_settings.epg_match_mode` advanced normalisation, `stream_settings.default_user_agent`,
   `system_settings.preferred_region`, the `network_access` scopes beyond G14's one exception —
   with the reason (instance-wide state four workers share) and the precedent (`proxy_settings` and
-  `default_stream_profile` are already exercised from single-worker projects).
+  `default_stream_profile` are already exercised from single-worker projects). **This row was
+  handed to G12 in the original spec and G12 declined it**, so it is unowned rather than assigned;
+  do not write "→ G12". Name the migration-relevant member explicitly:
+  `network_access["STREAMS"]` is the only ACL on `/proxy/ts/stream/<uuid>`, because
+  `apps/proxy/live_proxy/views.py:stream_ts` calls `network_access_allowed(request, "STREAMS")`
+  with no user — that is the endpoint the relay extraction moves, and the one `CLAUDE.md` says
+  becomes a Django-minted HMAC-signed URL.
+- The per-user `allowed_networks["STREAMS"]` branch, as a **cheaper observable for the same
+  scope needing no global write**: `apps/proxy/live_proxy/views.py:stream_xc` passes `user` to
+  `network_access_allowed`, so pointing one seeded user's
+  `custom_properties.allowed_networks.STREAMS` at a CIDR no client can match makes the XC live
+  route refuse, row-scoped and reversible. It is a `streaming`-project test, so the row is for
+  whichever goal next owns those projects.
 - `M3UAccountProfile.search_pattern`/`replace_pattern`, naming
   `apps/proxy/live_proxy/url_utils.py:transform_url` and the provider's `ScenarioLog` as the
   observable.
@@ -967,8 +1031,11 @@ Three additions, appended, nothing reflowed:
   constant enumerates them; the canonical list is `frontend/src/constants.js:NETWORK_ACCESS_OPTIONS`),
   their defaults, the `X-Real-IP` mechanism and its premise guard, and the standing rule in bold:
   **never write `network_access["UI"]`**, with the reason and the out-of-band recovery.
-- The **ML band rule**: the six thresholds, and that an EPG-matching test whose score lands in the
-  middle downloads a ~90 MB model at test time.
+- The **ML band rule**: the twelve thresholds (six per branch), the two ML-free bands each branch
+  leaves (bulk: 80 and up, or under 50; single: 75 and up, or under 20), and that an EPG-matching
+  test whose score lands between them downloads a ~90 MB model at test time. Include the worked
+  example that removed test 9: a `[75, 80)` pair looks safe against the single thresholds and is
+  squarely inside the bulk path's ML band.
 - One line under "Writing a test": **`seeded` is `fullyParallel`, so a spec file is not a
   confinement boundary** — a hazard confined to one file in `frontend` needs
   `test.describe.configure({ mode: 'serial' })` here.
@@ -979,7 +1046,8 @@ Three additions, appended, nothing reflowed:
 - [ ] Both issues exist on **`D10Scot/Dispatcharr`**: `gh issue list --repo D10Scot/Dispatcharr --limit 5` shows them.
 - [ ] `git diff e2e/COVERAGE.md e2e/README.md` shows appended rows and sections only — no G5, G6 or G7 row rewritten, no paragraph reflowed.
 - [ ] Every gap row names a symbol, not a description.
-- [ ] The row count matches: eleven flow rows plus one known-bug, one characterized-defect, six observations, one not-reproduced and four gaps.
+- [ ] The row count matches: eleven flow rows plus one known-bug, one characterized-defect, seven observations, one not-reproduced and five gaps.
+- [ ] The ADR-0002 follow-up is recorded (its allowlist-implies-`@characterization` sentence versus `failover-buffering.spec.ts` being `@contract` on the same list), and **no ADR file is edited**.
 
 ---
 
@@ -991,11 +1059,14 @@ Three additions, appended, nothing reflowed:
 ./scripts/e2e_up.sh --reset
 cd e2e
 npm run typecheck
+npx playwright test --project=guards
 npx playwright test --project=seeded
 npx playwright test --project=frontend
 ```
 
-Both green. Run `--project=seeded` a **second** time immediately: a leaked `network_access`
+All three green — `guards` needs no container and takes about a second, so run it first: it is
+where a missing tag or a missing `allowlist.ts` entry surfaces. Run `--project=seeded` a **second**
+time immediately: a leaked `network_access`
 value, a leftover plugin, a leftover EPG source or a renumbered channel outside the band would
 show up here and nowhere else.
 
@@ -1026,10 +1097,14 @@ curl -s http://localhost:9191/api/plugins/plugins/ -H "Authorization: Bearer $TO
 
 ```bash
 grep -rn "@characterization" e2e/tests/seeded/network-acl.spec.ts e2e/tests/seeded/epg-matching.spec.ts e2e/tests/seeded/channel-bulk-ops.spec.ts
+cd e2e && npx playwright test --project=guards
 ```
 
-Exactly five: tests 1, 7, 8, 9 and 23. Every one carries a comment justifying itself. Everything
-else is `@contract`. If G11 has landed by now, re-read its ADR and reconcile.
+Exactly **four**: tests 1, 7, 8 and 23. Each carries a `// @characterization: <fact it pins>`
+comment immediately above its `test(` call, per `docs/adr/0002-e2e-test-taxonomy.md`. Everything
+else is `@contract`, declared inline as the second argument. The `guards` project must be green —
+`tags.spec.ts` fails closed on any untagged or unparseable declaration, and `global-mutation.spec.ts`
+fails without Task 3 Step 1a's `allowlist.ts` entry.
 
 - [ ] **Step 5: The disjointness audit**
 
@@ -1039,8 +1114,14 @@ git diff --name-only origin/main
 
 Must not contain: `e2e/tests/seeded/xc-output.spec.ts`, anything under `e2e/tests/lifecycle/`,
 `e2e/tests/frontend/dvr.spec.ts`, `e2e/fixtures/seed.ts`, `e2e/playwright.config.ts`,
-`e2e/package.json`, `scripts/e2e_up.sh`, or anything under `.github/`. If any appears, the goal has
-drifted into a sibling's territory — remove it and say so.
+`e2e/package.json`, `scripts/e2e_up.sh`, anything under `.github/`, and **nothing under
+`docs/adr/`**. If any appears, the goal has drifted into a sibling's territory — remove it and say
+so.
+
+Under `e2e/tests/guards/`, exactly one file may appear: `allowlist.ts`, and its diff must be the
+single appended `GLOBAL_SETTINGS_WRITE` entry from Task 3 Step 1a. A change to any other guard
+file, or to `ast.ts`, means G14 has started editing G11's mechanism rather than complying with
+it.
 
 - [ ] **Step 6: Commit and open the PR**
 
@@ -1059,7 +1140,15 @@ The PR body must carry:
 - the two issue numbers filed, and the explicit statement that both went to
   `--repo D10Scot/Dispatcharr`;
 - **D2's exception, called out for review by name**: test 3 narrows `network_access["XC_API"]` and
-  restores it, the blast-radius argument, and the note that declining it costs exactly one test;
+  restores it, the blast-radius argument, the `GLOBAL_SETTINGS_WRITE` entry it required in
+  `e2e/tests/guards/allowlist.ts` with ADR-0003's three sentences, and the note that declining it
+  costs exactly one test and one allowlist line;
+- **the ADR-0002 follow-up, flagged for G11's owner and deliberately not acted on**: the ADR says
+  anything on a capability allowlist is `@characterization` by construction, but
+  `tests/streaming-failover/failover-buffering.spec.ts` is on `GLOBAL_SETTINGS_WRITE` and tagged
+  `@contract`; G14 followed the tree and kept test 3 `@contract`;
+- **that test 9 was removed rather than cut** — it required a `[75, 80)` pair on the bulk path,
+  which is inside that path's ML band, so it violated the goal's own rule by construction;
 - the cut list and which items were actually cut;
 - the disjointness audit's output;
 - confirmation that `/data/models` is empty after a full run.
@@ -1070,5 +1159,5 @@ The PR body must carry:
 - [ ] The second consecutive `seeded` run was green (Step 1).
 - [ ] `/data/models` empty (Step 2).
 - [ ] `network_access` restored with no `UI` key (Step 3).
-- [ ] Five `@characterization` tags, each justified (Step 4).
+- [ ] Four `@characterization` tags, each justified (Step 4), and the `guards` project green.
 - [ ] The disjointness audit is clean (Step 5).

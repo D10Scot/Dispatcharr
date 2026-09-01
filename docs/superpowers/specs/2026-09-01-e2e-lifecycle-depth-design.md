@@ -6,9 +6,19 @@
 **Parent:** `2026-08-23-e2e-coverage-roadmap-design.md`
 **Goal definition:** `2026-09-01-e2e-programme-review-disposition.md`, "G12 — Lifecycle depth"
 **Direct predecessor:** `2026-08-28-e2e-deployment-lifecycle-design.md` (G7) and its plan
-**Verified at:** `origin/main` `cf95410e0c49a144d6935fbaa4d903a722ea25ed`
-("docs(e2e): disposition the external programme review, define G11–G15 (#114)").
+**Revised:** 2026-09-01, after G11 landed (`45a33a4a`)
+**Verified at:** `origin/main` `45a33a4a` ("docs: record two traps that cost time this
+session (#126)"), which carries G11's two PRs — `4211cbb7` (guards, ADRs, full-run CI) and
+`7a408c2b` (every test tagged, the tag guard blocking).
 Line numbers drift; symbol names are the durable half of every citation.
+
+**What the revision changed.** This spec was written before G11 merged and hedged on
+mechanisms G11 has now decided: the tag syntax, the guard that enforces it, and the CI gating.
+Those hedges are replaced with the mechanism that exists (D19, D20, D22, § Tags, § Non-goals),
+and a § Migration relevance was added to say which of the four pieces the relay extraction
+actually depends on. The triage itself is unchanged and still holds: **nothing under
+`docker/tests/` has been touched since the original verification** (`git log cf95410e..45a33a4a
+-- docker/tests/` is empty), so C1–C4, F1–F6 and T1–T6 stand as written.
 
 ## Goal
 
@@ -32,6 +42,48 @@ G12 makes the suite say something true, in four parts:
 
 Everything else stays out. See Non-goals.
 
+## Migration relevance
+
+The programme exists to make this suite a trustworthy gate for the relay extraction
+(`CLAUDE.md`, "extract the streaming relay from the Django web workers into its own process").
+The four pieces are not equally load-bearing for that, and saying so plainly is what lets wave 6
+be cut if it runs long.
+
+**Gate-critical — these must land, and they must land first.**
+
+- **Piece A, a green `lifecycle-tests.yml`.** `Lifecycle result` is the one check in that
+  workflow that may ever be required, and its own header says it "must not be added to the Main
+  ruleset until G12 leaves both bash suites green". A `migration/*` branch turns on full mode
+  (`changes` sets `full=true` for a head branch matching `migration/*`), which is what makes
+  `suites` run on a pull request at all. Until Piece A is done, the extraction's own branches
+  either run a red gate or no gate. Nothing else in G12 unblocks that.
+- **Piece B, relations survive a restart and an upgrade.** This is the durable-state contract
+  the extraction must not break, and one relation in it is directly about the relay: the
+  `Channel → Streams` **order** decides which upstream is primary and which is the failover
+  target (D12). A relay in its own process reads that ordering to fail over; an extraction that
+  preserved every row and lost the ordering would pass today's `durable-state.ts` untouched.
+
+**Not gate-critical.**
+
+- **Piece C, restore.** Deployment safety. It proves an operator can get their instance back,
+  which matters most on the day an extraction goes wrong — but it exercises `apps/backups`,
+  which the extraction does not move, and a red restore spec says nothing about the relay.
+- **Piece D, scheduling.** Closes G3's D10 debt and touches nothing the extraction moves:
+  django-celery-beat rows behind `M3UAccount`/`EPGSource` refreshes. Worth doing, last in line.
+
+**If wave 6 runs long, D is the piece to defer** — its `COVERAGE.md` row stays `todo`,
+attributed forward, and nothing else in the goal depends on it. A and B are not deferrable.
+
+One caution specific to Piece B's `Recording` relation: `recover_recordings_on_startup` runs on
+**every boot** (`dispatcharr/celery.py:on_worker_ready` fires it on `worker_ready`), and for a
+recording whose `start_time` is still in the future it re-resolves the beat task and writes
+`rec.save(update_fields=["task_id"])` (`apps/channels/tasks.py`, the "Ensure future recordings
+are scheduled" block). Were the window to open mid-test, the in-window branch rewrites
+`custom_properties["status"]` as well. So the assertion is **by id and `channel` only** — not
+`task_id`, not `custom_properties`. Those two fields are the product correctly repairing itself
+across the very event under test, and asserting on them would make a working recovery look like
+a lost row.
+
 ## Current state
 
 | | |
@@ -39,9 +91,9 @@ Everything else stays out. See Non-goals.
 | `docker/tests/test-puid-pgid.sh` | 20 scenarios, 1,517 lines. 8 failed assertions across **4** scenarios on run 33384550684 |
 | `docker/tests/test-tls-postgres.sh` | 8 scenarios, 892 lines. 7 failed scenarios on the same run — all one root cause |
 | `e2e/tests/lifecycle/durable-state.ts` | `seedDurableState` creates 7 rows; `assertDurableState` reads 7 back by id. No relation is asserted anywhere |
-| `e2e/tests/lifecycle/restart-persistence.spec.ts` | 1 test, project `lifecycle`, in `e2e-tests.yml`'s matrix |
-| `e2e/tests/lifecycle/upgrade-migrations.spec.ts` | 1 test, project `lifecycle-upgrade`, in `lifecycle-tests.yml` only |
-| `e2e/COVERAGE.md` | Two `todo` rows attributed to G7 and never built: **Backups: restore** (line 134) and **Refresh-interval scheduling** (line 139) |
+| `e2e/tests/lifecycle/restart-persistence.spec.ts` | 1 test, `@characterization`, project `lifecycle`, in `e2e-tests.yml`'s normal project list |
+| `e2e/tests/lifecycle/upgrade-migrations.spec.ts` | 1 test, `@characterization`, project `lifecycle-upgrade`, in `lifecycle-tests.yml` and in `e2e-tests.yml`'s **full** list only |
+| `e2e/COVERAGE.md` | Two `todo` rows attributed to G7 and never built, both under `Lifecycle`: the row beginning *"Backups: restore — split out of G6's Backups row"* and the row beginning *"Refresh-interval scheduling: a **non-zero** `refresh_interval`"*. Cite them by that text — the earlier draft of this spec gave line numbers, and G11's edits moved both |
 
 Both `todo` rows already prescribe the isolation this goal needs. The restore row: *"Restoring on
 a shared instance replaces the database under every parallel worker mid-run … so it needs an
@@ -78,10 +130,14 @@ passes. That is not two classes; it is a controlled experiment the suite ran on 
 
 **C4 — "every run is red" understates it: the bash suites have never been green in CI, not
 once.** The disposition cites run 33245032230 as a comparison point without noticing that
-`lifecycle-tests.yml`'s `suites` job carries `if: github.event_name != 'pull_request'` — so on
-the G7 pull request the two bash jobs were **skipped**, and the green tick was `build` plus
-`upgrade-migrations`. The first execution of either suite anywhere was the post-merge run
-33247491371, which was red (9 failures), and every run since has been red. G7's own D2
+`lifecycle-tests.yml`'s `suites` job carried, at the time, `if: github.event_name !=
+'pull_request'` — so on the G7 pull request the two bash jobs were **skipped**, and the green
+tick was `build` plus `upgrade-migrations`. The first execution of either suite anywhere was the
+post-merge run 33247491371, which was red (9 failures), and every run since has been red. G11
+has since widened that condition to `if: github.event_name != 'pull_request' ||
+needs.changes.outputs.full == 'true'`, so a `migration/*` head branch or a `workflow_dispatch`
+with `full: true` now does run both suites on a pull request — which changes how G12 verifies
+itself (§ Non-goals, and the plan's Tasks 6 and 10) but not one word of the diagnosis. G7's own D2
 ("**The bash suites are not modified. Not one line.** … known-good and have never run") rested
 on an assumption that the first run would tell us whether they were good. It did. They are not.
 **G12 explicitly supersedes D2.**
@@ -358,19 +414,33 @@ so waiting for a tick is an hour. What is observable in seconds is the whole of 
 COVERAGE row asks for: the enabled-task branch, the `IntervalSchedule` row, `cron_expression`,
 and `_cleanup_orphaned_interval` on delete.
 
-**D19 — the scheduling spec splits along G11's taxonomy, and that split is its second purpose.**
-Per F11, `refresh_interval` and `cron_expression` round-trip through the REST API and
-`cron_expression` is derived from the linked `PeriodicTask.crontab` — so interval↔cron
-switching is provable black-box. `PeriodicTask.enabled`, `IntervalSchedule.every` and orphan
-cleanup on delete have no REST surface and need `instance.manage(['dumpdata', …])` (F7). The
-first is `@contract`, the second `@characterization`. Putting both in one file, adjacent, makes
-the tag mean something at the point where it is easiest to see why.
+**D19 — every test G12 adds is `@characterization`, and the assertion-portability split is
+recorded in the comment rather than in the tag.** An earlier draft of this decision split the
+scheduling spec `@contract`/`@characterization` down the middle. That is not available: ADR 0002
+says "anything on a `tests/guards/allowlist.ts` capability list is `@characterization` by
+construction", both new specs destructure the `instance` fixture to own their container, and the
+`instance` fixture **is** the `CONTAINER_LIFECYCLE` capability. The tag is a property of the
+file, not of the assertion. The split is still real and still worth writing down, so it goes
+where G11 already requires prose — the `// @characterization: <fact it pins>` comment — which
+must say which assertions would survive a behaviour-preserving rewrite and which are coupled to
+django-celery-beat's tables or the AIO layout. Per F11, `refresh_interval` and `cron_expression`
+round-trip through the REST API and `cron_expression` is derived from the linked
+`PeriodicTask.crontab`, so the interval↔cron half is portable in substance; `PeriodicTask.enabled`,
+`IntervalSchedule.every` and orphan cleanup on delete have no REST surface at all (F7) and are
+not. Recording that inside the comment is strictly more useful than a tag would have been: a
+migration branch reads the sentence, not the label.
 
-**D20 — G11 lands first; G12 rebases onto it and adopts its tags rather than inventing them.**
-G11 is wave 5 and rewrites annotations across every spec file. G12 does not define the taxonomy,
-does not name what `@contract` promises, and adds no tag semantics of its own. What it does
-commit to is which of its own tests fall on which side (§ Tags), and to telling G11's
-run-everything mode about the two new projects.
+**D20 — G11 has landed; G12 uses its mechanism verbatim and invents nothing.** The taxonomy is
+`docs/adr/0002-e2e-test-taxonomy.md`: exactly two tags, `@contract` (the default, no
+justification needed) and `@characterization` (must carry a `// @characterization: <fact>`
+comment immediately above the declaration). They are applied through Playwright's native tag
+option as an **inline object literal second argument** —
+`test('title', { tag: '@characterization' }, async ({ … }) => { … })` — and the same form works
+for `test.fail(...)` and for an enclosing `test.describe(...)`. A details object passed *by
+reference* makes the declaration unverifiable and the guard fails. `e2e/tests/guards/tags.spec.ts`
+fails closed on every declaration it cannot read, and `KNOWN_UNVERIFIABLE` is empty. **Every new
+`test(` G12 writes must carry a tag or CI fails** — there is no warning mode left to fall back
+on.
 
 **D21 — `#7`'s pre-warm rule is satisfied structurally, and the README's enumeration is
 updated anyway.** The rule (`e2e/README.md`, "Non-zero `refresh_interval` values, and what they
@@ -388,9 +458,18 @@ G7's D16, re-checked against the actual costs. Restore is a `pg_dump`, a `DROP S
 a `pg_restore` and a `migrate`; scheduling is a container boot plus a handful of writes and two
 `dumpdata` calls. The longest job in `e2e-tests.yml`'s matrix is 284s, and `lifecycle-tests.yml`
 already builds and loads the image both need. One new job runs both projects sequentially — one
-image load, two projects — rather than two jobs each paying a 3.6 GB `docker load`. The stated
-trade, as with the upgrade spec, is that neither gates a pull request; the compensating control
-is G11's run-everything mode, which must list them.
+image load, two projects — rather than two jobs each paying a 3.6 GB `docker load`.
+
+The gating is now concrete rather than a request to a future goal. The new job carries **the
+same `if:` as `upgrade-migrations`** — `if: needs.changes.outputs.lifecycle == 'true' ||
+needs.changes.outputs.full == 'true'` — so it runs on an ordinary pull request that touches
+lifecycle paths, and always on a `migration/*` branch or a `workflow_dispatch` with `full:
+true`. There is **no separate project list in this workflow** to add the two names to: the
+JSON-matrix arrangement with its "A NEW PROJECT MUST BE ADDED TO BOTH LINES" comment lives in
+`e2e-tests.yml`, and these two projects do not go there (that is the whole of this decision).
+The one list that does need editing is `lifecycle-result`'s `needs:`, which currently reads
+`[changes, build, suites, upgrade-migrations]`; a job absent from it can fail while the
+aggregate reports green, which is the exact failure mode that check exists to prevent.
 
 ## Triage — the fifteen scenarios, classified
 
@@ -421,7 +500,9 @@ its `log_skip` message names the issue number.
 `seedDurableState` and `assertDurableState` keep their signatures' shape and grow. The seven
 existing scalar rows are untouched; the seven relations of D11 are added to the same
 `DurableState` record and the same assertion function, so **both** the restart spec and the
-upgrade spec get them with no change to either spec file beyond the tag G11 adds.
+upgrade spec get them with no change to either spec file beyond their call-site arguments. Both
+are already tagged `@characterization` at HEAD (D19), so neither needs a retag; each one's
+existing `@characterization:` comment gains a sentence about the relations, per § Tags.
 
 Three properties of the existing file are load-bearing and survive:
 
@@ -467,7 +548,11 @@ The instance is torn down in a `finally` that captures `instance.logs()` first, 
 
 One file, two tests, one project (`lifecycle-scheduling`), on an instance it owns.
 
-**Test 1 — `@contract`.** Through the REST API only:
+Both tests are `@characterization` (D19): the file owns its container. What differs is how
+portable the assertions are, and that difference belongs in each test's `@characterization:`
+comment.
+
+**Test 1 — portable assertions.** Through the REST API only:
 
 - Create an `M3UAccount` with a non-zero `refresh_interval`; read it back and confirm the value
   persisted rather than being coerced to the default.
@@ -478,8 +563,8 @@ One file, two tests, one project (`lifecycle-scheduling`), on an instance it own
   was cleared.
 - The same three steps for an `EPGSource`, whose serializer has the identical shape.
 
-**Test 2 — `@characterization`.** Through `instance.manage(['dumpdata', …, '--format=json'])`
-(F7), justified in a comment as coupling to django-celery-beat's tables because the product
+**Test 2 — coupled assertions.** Through `instance.manage(['dumpdata', …, '--format=json'])`
+(F7), justified in its comment as coupling to django-celery-beat's tables because the product
 exposes no other view of them:
 
 - The `PeriodicTask` named for the account exists, `enabled` is `true`, and its `interval`
@@ -496,22 +581,45 @@ isolation exemption spelled out.
 
 ## Tags
 
-G11 owns the taxonomy; G12 declares its own side of it. Expected assignment for every test G12
-adds or touches:
+G11 owns the taxonomy (D20). Every test G12 adds or touches is `@characterization`, and the
+reason is the same in all four cases and is a property of the **file**, not of the assertion:
+each of these specs destructures the `instance` fixture, `instance` is the `CONTAINER_LIFECYCLE`
+capability in `e2e/tests/guards/allowlist.ts`, and ADR 0002 makes anything on a capability list
+`@characterization` by construction. Both existing lifecycle specs already carry the tag at
+HEAD — `restart-persistence.spec.ts:23` and `upgrade-migrations.spec.ts:163` — so the two files
+G12 deepens need no retag at all.
 
-| Test | Tag | Why |
+| Test | Tag | The `@characterization:` comment must say |
 |---|---|---|
-| `restart-persistence.spec.ts` (touched — assertions deepened) | `@contract` | Rows and relations surviving a restart is behaviour any rewrite must preserve |
-| `upgrade-migrations.spec.ts` (touched — same) | `@characterization` **in part** | Its `showmigrations`/`migrate --check` assertions are coupled to Django's migration machinery and to `manage.py`'s stdout format; G11 decides whether that makes the whole file `@characterization` or whether it splits. G12 flags it and does not pre-empt |
-| `backup-restore.spec.ts` | `@contract` | Every step is a documented REST endpoint |
-| `refresh-scheduling.spec.ts` test 1 | `@contract` | REST round-trips only |
-| `refresh-scheduling.spec.ts` test 2 | `@characterization` | `manage.py dumpdata` against `django_celery_beat` tables — coupled to a third-party schema and to the AIO container layout, with the justification comment G11 requires |
+| `restart-persistence.spec.ts` (touched — assertions deepened) | `@characterization` (already) | Its existing comment pins the AIO container as the unit of restart, and stands. The added relations do not change it: extend it to say the relations themselves are portable — rows and orderings surviving a restart is behaviour any rewrite must preserve — and that only the *unit* being one container is not |
+| `upgrade-migrations.spec.ts` (touched — same) | `@characterization` (already) | Its existing comment pins Django's migration state and the AIO image layout, and stands unedited. The `showmigrations` and `migrate --check` assertions are the coupled half; the relations added here are the portable half |
+| `backup-restore.spec.ts` | `@characterization` | Every step is a documented REST endpoint and would survive any rewrite that kept `apps/backups` — but the test owns and resets a container, so it is on `CONTAINER_LIFECYCLE`. Say exactly that: the assertions are portable, the container ownership is not |
+| `refresh-scheduling.spec.ts` test 1 | `@characterization` | Same shape. `refresh_interval` and `cron_expression` round-trip through the REST API (F11), so the assertions themselves are portable; the container ownership is what fixes the tag |
+| `refresh-scheduling.spec.ts` test 2 | `@characterization` | Genuinely coupled on both counts: `manage.py dumpdata` against `django_celery_beat`'s tables, read through the AIO container layout, because the product exposes no other view of `PeriodicTask.enabled`. A rewrite that preserved behaviour but changed scheduler is expected to change this test |
 
-Note for G11: `instance.manage()` is new usage of `manage.py` from a **spec** rather than from
-`fixtures/instance.ts`, which is the allowlisted machinery. G11's generalised quarantine guard
-must either allowlist `refresh-scheduling.spec.ts` or (better) allow `instance.manage` calls
-while still policing raw `child_process`/`docker`/`pgrep`. G12 states the requirement; G11
-decides the mechanism.
+**The concrete guard requirement.** `allowlist.ts` compares each capability's `allow` array with
+`toEqual`, so a missing entry fails and a stale entry fails too. G12 must add both new spec
+paths to `CONTAINER_LIFECYCLE.allow`:
+
+```ts
+    'tests/lifecycle/backup-restore.spec.ts',
+    'tests/lifecycle/refresh-scheduling.spec.ts',
+```
+
+`e2e/tests/guards/allowlist.ts` therefore joins this goal's file list. Nothing else on the five
+lists needs touching, and in particular `instance.manage(['dumpdata', …])` does **not** trip
+`CONTAINER_INTROSPECTION`: that detector matches the literals `pgrep`, `docker ` and `manage.py`
+in string and template literals only, and none of those tokens appears in a `dumpdata` argument
+array. The `instance` fixture use is what is policed, through `CONTAINER_LIFECYCLE`.
+`GLOBAL_SETTINGS_WRITE` already carries `tests/lifecycle/durable-state.ts`, for the
+`system_settings` PATCH it has always made; **the seven relations of D11 add no `core/settings`
+write of any kind** — they are channels, streams, profiles, EPG, XC, VOD, a recording and a logo
+— so that list is correct as it stands and must not grow.
+
+This also retires the open question in
+[#42](https://github.com/D10Scot/Dispatcharr/issues/42) ("the `instance` fixture is guarded only
+by a comment"): `CONTAINER_LIFECYCLE` is that guard. G12 touches the list and may say so in the
+diff, but **closing #42 is G11's business, not this goal's** — the mechanism landed there.
 
 ## Bug policy, restated for this goal's findings
 
@@ -554,7 +662,9 @@ existing tests mean roughly seven times more.
 | `pg_upgrade` proves to be a real product defect (F12b), and the scenario must be quarantined to reach green | D8's decision rule allows exactly that, and requires the `log_skip` message to name the issue. A quarantine that does not name its issue is not green |
 | Fixing #41 changes the disk profile enough to mask, rather than fix, T4 | The plan re-runs and records the outcome either way; D8's rule is about *where the entrypoint blocks*, not about whether the run happened to pass |
 | Restore leaves pooled connections pointing at dropped tables and the instance never recovers | D15: poll, and if in-place recovery genuinely does not work, that is a finding — file it and `test.fail()` the assertion, do not add a restart to get green |
-| The two new projects collide with G11's edits to `playwright.config.ts` and `lifecycle-tests.yml` | G11 is wave 5 and lands first (roadmap sequencing). G12 branches after it and rebases through what remains; both edits are additive |
+| The two new projects collide with G11's edits to `playwright.config.ts` and `lifecycle-tests.yml` | Retired: G11 merged as `4211cbb7`/`7a408c2b`, and G12 branches from `origin/main` at or after `45a33a4a`. Both edits are additive to what is now on `main` |
+| A new spec is written without a tag, or with the details object hoisted to a const | `e2e/tests/guards/tags.spec.ts` fails closed on both, in the `guards` job, in about a second. The failure names the declaration. This is the cheapest guard in the suite to satisfy and the easiest to forget (D20) |
+| The new spec paths are added to `playwright.config.ts` but not to `CONTAINER_LIFECYCLE.allow` | `capabilities.spec.ts` compares with `toEqual`, so the omission fails rather than passing silently — and so would a stale entry left behind if a spec were renamed (§ Tags) |
 | The scheduling spec's enabled beat task fires during the run and mutates rows | Its instance is its own, nothing else asserts on it, and the smallest interval is one hour against a test that finishes in seconds |
 
 ## Non-goals — deliberately out of scope
@@ -575,13 +685,30 @@ existing tests mean roughly seven times more.
 - **Backporting `test.fail()` premise guards, deepening thin frontend specs, `expectWellFormedXml`,
   the residual first-byte-only TS assertions.** All G15, whose file list is fixed and disjoint
   from this one.
-- **Defining the `@contract`/`@characterization` taxonomy, generalising the quarantine guard, or
-  building the run-everything CI mode.** All G11. G12 applies the tags and states what its two
-  new projects need from the run-everything mode; it builds neither.
-- **Making any `lifecycle-tests.yml` check a required merge check.** The workflow's own header
-  comment explains why that would wedge the merge gate, and the path filters would have to come
-  off in the same change. Out of scope even though this goal is what finally makes the checks
-  trustworthy.
+- **Defining the `@contract`/`@characterization` taxonomy, generalising the capability guard, or
+  building the full-run CI mode.** All G11, and all landed. G12 applies the tags, adds its two
+  spec paths to `CONTAINER_LIFECYCLE.allow`, and gives its new job the same `if:` as
+  `upgrade-migrations`. It changes no guard's logic and adds no capability.
+- **Adding `Lifecycle result` to the Main ruleset.** G12 is what makes that possible — the
+  workflow's header says the check "must not be added to the Main ruleset until G12 leaves both
+  bash suites green" — but the ruleset itself is a repository setting, not a file in this diff,
+  and turning it on is a judgement about merge policy the maintainer makes once the green run
+  exists. **G12's Definition of done is a green run, not a changed ruleset**; the plan says so,
+  and the follow-up is the maintainer's.
+- **Absorbing G14's `CoreSettings` handoff.** G14's D10 hands G12 one new `COVERAGE.md` row for
+  "every global `CoreSettings` group with behavioural effect", on the reasoning that G12 is
+  already standing up isolated instances so one more row costs it a fixture call. **Declined.**
+  G12 is the largest goal in wave 6 — four pieces, two bash suites, three new Playwright tests
+  and a workflow job — and that row is a different subject: it is about instance-wide settings
+  affecting matching, streaming and proxying, not about what survives a container event. Taking
+  it would widen the goal that can least afford it, and it would arrive with no owner for the
+  streaming-side assertions it implies. **G14 records the gap as unowned** rather than
+  attributing it here. Worth naming for whoever picks it up: the migration-relevant member of
+  that set is `network_access["STREAMS"]`, the ACL on `/proxy/ts/stream/` — the endpoint the
+  relay extraction moves, gated by `network_access_allowed(request, "STREAMS")` in
+  `apps/proxy/live_proxy/views.py:stream_ts` with no user, and by the same call **with** a user
+  in `:stream_xc`. A later goal should own it, on an isolated instance, and should own it before
+  the extraction rather than after.
 - **Re-litigating anything in the disposition's "Refuted" section** — the logo byte-length claim,
   the `m3u-ingest.spec.ts` source-text assertion, "`lifecycle-tests.yml` has never run", "the
   suite isn't black-box enough". C1–C4 above correct the disposition where re-checking showed it

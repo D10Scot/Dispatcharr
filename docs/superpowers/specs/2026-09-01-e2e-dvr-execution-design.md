@@ -1,24 +1,37 @@
 # G13 — DVR Execution
 
 **Date:** 2026-09-01
+**Revised:** 2026-09-01, after G11 landed (`45a33a4a`)
 **Status:** Draft, ready for review
 **Wave:** 6 (parallel with G12, G14, G15; after G11)
 **Parent:** `2026-08-23-e2e-coverage-roadmap-design.md`
 **Goal definition:** `2026-09-01-e2e-programme-review-disposition.md`, "G13 — DVR execution"
-**Verified at:** `origin/main` `cf95410e0c49a144d6935fbaa4d903a722ea25ed`
-(`docs(e2e): disposition the external programme review, define G11–G15`, #114). Line numbers
-drift; symbol names are the durable half of every citation, and every claim below was read out of
-the tree — or out of the running `dispatcharr-e2e` container — this session.
+**Verified at:** `origin/main` `45a33a4a` (`docs: record two traps that cost time this session`,
+#126). Line numbers drift; symbol names are the durable half of every citation, and every claim
+below was read out of the tree — or out of the running `dispatcharr-e2e` container — this session.
 
-**Depends on G11.** G11 defines the `@contract` / `@characterization` tag taxonomy and its ADR.
-G13 *applies* that taxonomy and does not define it. Which of G13's tests carry which tag, and
-why, is stated under "Tags" below; if G11 has not landed when G13 is implemented, G13 applies the
-tags as the disposition document words them and G11's ADR reconciles the wording.
+**G11 has landed**, as [#123](https://github.com/D10Scot/Dispatcharr/pull/123) (guards, ADRs,
+full-run CI) and [#124](https://github.com/D10Scot/Dispatcharr/pull/124) (every test tagged, the
+tag guard flipped to blocking). Three of its decisions are now facts G13 obeys rather than
+anticipates:
 
-**Siblings in flight.** G12, G14 and G15 run in parallel. G13 collides with them on five shared
+- The taxonomy is exactly two tags, `@contract` and `@characterization`, recorded in
+  `docs/adr/0002-e2e-test-taxonomy.md` and applied through Playwright's native tag option.
+  `@contract` is the default and needs no justification; `@characterization` must carry a comment
+  naming the implementation fact it pins.
+- `e2e/tests/guards/tags.spec.ts` enforces it, fails closed, and its `KNOWN_UNVERIFIABLE` list is
+  empty. Every `test(` and `test.fail(` G13 writes must carry a tag or the `guards` project goes
+  red.
+- Instance-wide settings writes are allowlisted by `e2e/tests/guards/global-mutation.spec.ts`
+  against `e2e/tests/guards/allowlist.ts`, under `docs/adr/0003-e2e-frontend-and-shared-state-contract.md`.
+  G13's comskip row writes `dvr_settings`, so G13 adds a file to that list. See D9 and "The
+  comskip decision".
+
+**Siblings in flight.** G12, G14 and G15 run in parallel. G13 collides with them on six shared
 files, all additively: `e2e/playwright.config.ts` (G13 adds one project),
-`.github/workflows/e2e-tests.yml` (its matrix), `e2e/package.json` (one script),
-`e2e/COVERAGE.md` and `e2e/README.md`. Whoever lands second rebases through them, and the
+`.github/workflows/e2e-tests.yml` (the two JSON project lists in its `changes` job),
+`e2e/tests/guards/allowlist.ts` (one entry on `GLOBAL_SETTINGS_WRITE`), `e2e/package.json` (one
+script), `e2e/COVERAGE.md` and `e2e/README.md`. Whoever lands second rebases through them, and the
 workflow edit re-runs the zizmor hook, which blocks on **every** finding in the edited file — the
 workflows are at zero findings and must stay there. G13 deliberately touches **neither
 `e2e/fixtures/seed.ts` nor `e2e/tests/frontend/`** (see D7 and D12), which removes it from the two
@@ -37,6 +50,53 @@ spawns ffmpeg, records Dispatcharr's *own* live proxy output back into itself ov
 HLS segments to a container filesystem, concatenates them to an MKV, and serves that MKV back
 over a Range-capable endpoint. Every one of those steps is unobserved today. That is the point of
 the goal: not DVR CRUD — G6 already proved that — but the execution path.
+
+## Migration relevance
+
+The programme exists to make this suite a trustworthy gate for the relay extraction `CLAUDE.md`
+describes. G13's particular contribution is that **DVR is a client of the relay**, and the only
+one in the product that is not a person's media player.
+
+`run_recording` records `f"{base}/proxy/ts/stream/{channel.uuid}"`, where `base` comes from
+`get_dvr_stream_base_url()` (`apps/channels/tasks.py`). That function resolves in three steps:
+`DISPATCHARR_INTERNAL_TS_BASE_URL` as an explicit override, then modular mode's
+`http://{DISPATCHARR_WEB_HOST}:{DISPATCHARR_PORT}`, then AIO's `http://127.0.0.1:5656` — the
+uWSGI socket, reached directly so no nginx layer is in the path.
+
+**That function is precisely the seam the extraction moves.** Once the relay leaves the Django
+process, `127.0.0.1:5656` is no longer where the stream lives, and the third branch — the one the
+AIO image and this whole E2E suite run on — is wrong by construction. Worse, `CLAUDE.md` states
+the intended replacement for the stream endpoint's `AllowAny` posture: *a Django-minted
+short-lived HMAC-signed URL the relay validates statelessly*. DVR mints its URL from a channel
+UUID and nothing else. If that lands without DVR being taught to obtain a signed URL, a recording
+does not error at the API — it is dispatched, `run_recording` starts, ffmpeg gets a 403 or a
+connection refusal on `pipe`, and the task dies at `_first_segment_timeout` fifteen seconds later
+with `custom_properties.status == 'interrupted'`. Silent from every surface except the recording
+row itself.
+
+Row 1's `upstream.connections().live === 1` assertion, plus the HLS-segment `expectTsAligned`, are
+therefore the **primary gate that DVR still records through the relay**. The connection count
+proves the bytes originated at the fake provider; the TS alignment proves they arrived as video.
+Neither is reachable by any cheaper assertion, and neither exists today.
+
+Which rows are what, for a migration branch reading a red run:
+
+- **Gate-critical — rows 1, 3, 4 and 6.** Each depends on bytes actually flowing provider →
+  `live_proxy` → ffmpeg → disk. Row 1 proves the path works; row 3 proves a stop reaches a
+  running capture and keeps its partial file; row 4 proves the main loop re-reads its deadline
+  while the capture is live; row 6 proves cancelling an in-flight recording releases the upstream
+  (`live === 0`). A red row here on a `migration/*` branch means the relay's DVR client is broken,
+  and the first thing to read is `interrupted_reason`.
+- **Regression coverage — rows 5 and 7.** `recording_cancelled` on an upcoming recording, and
+  recurring-rule materialisation. Both are pure control-plane: no relay involvement, no bytes.
+  They stay green through the extraction, and a red one means something unrelated broke.
+- **Image characterization — rows 2 and 8.** The `/data/recordings` layout and comskip's presence
+  on `PATH`. Both are tagged `@characterization` and both are *expected* to need rewriting if the
+  image or the deployment topology changes. Under ADR-0002 a migration branch reads these rather
+  than fixing them.
+
+G13 adds no test for the extraction itself. The point of this section is to label what the rows
+already prove, so the branch that moves the relay knows which four to watch.
 
 ## Current state
 
@@ -71,7 +131,7 @@ site-packages rather than the repo, and say so.
 | Beat's tick is **5 seconds**: `DatabaseScheduler.__init__` sets `max_interval = kwargs.get('max_interval') or self.app.conf.beat_max_loop_interval or DEFAULT_MAX_INTERVAL`, and `DEFAULT_MAX_INTERVAL = 5  # seconds`. Nothing in `dispatcharr/settings.py` or `dispatcharr/celery.py` sets `beat_max_loop_interval` | `django_celery_beat/schedulers.py`, read inside the running `dispatcharr-e2e` container (`django-celery-beat` 2.9.0, pinned in `uv.lock`); grep for `beat_max_loop_interval` across `dispatcharr/` returns nothing | **Worst-case dispatch latency is ~5 s plus one DB sync.** That is what makes a bounded-time firing test possible at all, and it is the number every wait budget below is derived from. See D3 |
 | `run_recording` is routed to the **`dvr`** queue by `app.conf.task_routes`; `docker/uwsgi.ini` runs that queue as `celery -A dispatcharr worker -Q dvr -n dvr@%%h --pool=threads --concurrency=20`, separate from the prefork `celery` worker (`--autoscale=6,1`) | `dispatcharr/celery.py`, `task_routes`; `docker/uwsgi.ini` | A recording cannot be starved by M3U/EPG work, and twenty can run at once. G13 never runs more than one, but the isolation is why a single-worker project is not a throughput problem |
 | **`comskip_process_recording` is *not* routed to `dvr`.** `task_routes` names only `run_recording` | `dispatcharr/celery.py`, `task_routes` | Comskip runs on the shared prefork `celery` worker alongside M3U refreshes. That is one of the two reasons the comskip row is bounded and ordered last. See D9 |
-| DVR records **Dispatcharr's own live proxy**, not the provider directly: `stream_url = f"{base}/proxy/ts/stream/{channel.uuid}"`, where `base` is `get_dvr_stream_base_url()` → `http://127.0.0.1:5656` in AIO | `apps/channels/tasks.py`, `run_recording`, `get_dvr_stream_base_url` | A firing recording is a **live-proxy client**. `upstream.connections()` therefore proves the bytes originated at the fake provider and traversed `live_proxy` — G13 gets a free end-to-end assertion G4 had to construct |
+| DVR records **Dispatcharr's own live proxy**, not the provider directly: `stream_url = f"{base}/proxy/ts/stream/{channel.uuid}"`, where `base` is `get_dvr_stream_base_url()` — `DISPATCHARR_INTERNAL_TS_BASE_URL` if set, else modular mode's `http://{DISPATCHARR_WEB_HOST}:{DISPATCHARR_PORT}`, else `http://127.0.0.1:5656` in AIO | `apps/channels/tasks.py`, `run_recording`, `get_dvr_stream_base_url` | A firing recording is a **live-proxy client**. `upstream.connections()` therefore proves the bytes originated at the fake provider and traversed `live_proxy` — G13 gets a free end-to-end assertion G4 had to construct. This function is also the seam the relay extraction moves; see "Migration relevance" |
 | ffmpeg is spawned with plain `subprocess.Popen`, `-c copy`, `-f hls`, `-hls_time 4`, `-hls_list_size 0`, writing `seg_%05d.ts` plus `index.m3u8` into a hidden `.dvr_<id>_hls` directory | `apps/channels/tasks.py`, `_dvr_build_ffmpeg_cmd`, `run_recording`, `_build_output_paths` | A segment lands roughly every 4 media-seconds. This is a real subprocess — the second place in the suite that spawns one, after G4's ffmpeg Stream Profile row |
 | `_first_segment_timeout = 15.0` and `_stall_timeout = 60.0` are local constants in `run_recording`'s HLS loop | `apps/channels/tasks.py`, `run_recording` | A recording shorter than ~15 s cannot distinguish "worked" from "the stream never arrived". The floor on a firing test's duration is set here. See D3 |
 | At end of stream the segments are concatenated to the final container: `_dvr_build_hls_concat_cmd` builds an `ffmpeg -f concat -c copy` command, with an HLS→MP4→MKV fallback path | `apps/channels/tasks.py`, `_dvr_build_hls_concat_cmd`, `run_recording` | The MKV is materialised only at the end. `custom_properties.remux_success` records which path won |
@@ -90,8 +150,8 @@ site-packages rather than the repo, and say so.
 | `CoreSettings._get_group` caches in **Redis**, invalidated by `CoreSettings` `post_save`/`post_delete` signals — not process-locally | `core/models.py`, `_get_group`, `_update_group`, `group_cache_key` | Unlike `proxy_settings` (G4's risk note: a 10 s process-local cache across four uWSGI workers), a DVR settings write is visible to the `dvr` and `celery` workers immediately. The comskip row needs no settling delay |
 | The DVR settings row is written through `CoreSettingsViewSet`, a plain `ModelViewSet` over `CoreSettings` rows with **no `lookup_field` override**, so it is addressed by numeric pk and found by `key`. Its `value` is a JSONField that a `PATCH` **replaces wholesale, not merges**. On a booted E2E instance the `dvr_settings` row exists and its `value` is `{tv_template, series_rules, movie_template, comskip_enabled, tv_fallback_dir, pre_offset_minutes, comskip_custom_path, post_offset_minutes, tv_fallback_template, movie_fallback_template}` — note that **`comskip_mode` and `comskip_hw_accel` are absent**, supplied only by `_get_group`'s defaults | `core/api_views.py`, `CoreSettingsViewSet`; `core/models.py`, `get_dvr_settings`; read live from `dispatcharr-e2e` this session | The comskip row must read the row, merge its two keys into a copy of `value`, PATCH the **whole** dict, and restore the original verbatim. Dropping keys is not benign: `CoreSettingsViewSet.update` compares `pre_offset_minutes`/`post_offset_minutes` old-vs-new and **reschedules every upcoming recording** when they differ — and an omitted key reads back as `None`, which differs from `0` |
 | `schedule_recording_task` calls `ClockedSchedule.objects.get_or_create(clocked_time=eta)`, and `ClockedSchedule.clocked_time` is a bare `DateTimeField` with `unique=False`; the model's `Meta` declares no `constraints` and no `unique_together` | `apps/channels/signals.py`, `schedule_recording_task`; `django_celery_beat/models.py`, `ClockedSchedule`, read inside the running container | **This is the `IntervalSchedule` land mine (#7) in a second location.** Two concurrent creates with an identical `start_time` both INSERT; every later `get_or_create` for that timestamp raises `MultipleObjectsReturned`, and unlike `ClockedSchedule.from_schedule` — which catches it — `schedule_recording_task` does not. See D10 |
-| `e2e/fixtures/instance.ts` is quarantined to the two `lifecycle` projects and nothing else: it stops, replaces and destroys the shared container, and `e2e_up.sh`'s `destroy()` takes the shared network and the provider container with it | `e2e/fixtures/instance.ts`, header; `e2e/README.md` | G13 may not use it. Isolation must come from the project/CI-job topology instead. See D1 |
-| Every Playwright project gets **its own container** in CI: `e2e-tests.yml`'s matrix runs one job per project and each calls `scripts/e2e_up.sh` — the workflow says so in a comment ("Each project gets its own container") | `.github/workflows/e2e-tests.yml` | A new project *is* the isolation mechanism this suite already has. Adding one costs a matrix entry, not a new mechanism |
+| `e2e/fixtures/instance.ts` is quarantined to the two `lifecycle` projects and nothing else: it stops, replaces and destroys the shared container, and `e2e_up.sh`'s `destroy()` takes the shared network and the provider container with it. Since G11 this is **enforced**, not documented: `CONTAINER_LIFECYCLE` in `e2e/tests/guards/allowlist.ts` lists exactly `tests/lifecycle/restart-persistence.spec.ts` and `tests/lifecycle/upgrade-migrations.spec.ts`, and `capabilities.spec.ts` compares the detected set with `toEqual` — so an unlisted file using the fixture fails, and a stale entry fails too | `e2e/fixtures/instance.ts`, header; `e2e/tests/guards/allowlist.ts`, `CONTAINER_LIFECYCLE`; `e2e/README.md` | G13 may not use it, and no longer *could* without a reviewable allowlist edit. Isolation must come from the project/CI-job topology instead. See D1 |
+| Every Playwright project in the matrix gets **its own container** in CI: `e2e-tests.yml`'s `test` job runs one job per project and each calls `scripts/e2e_up.sh` — the workflow says so in a comment ("Each project gets its own container"). Since G11 the matrix is no longer a literal list on that job: the `changes` job builds two JSON strings and the job consumes `fromJSON(needs.changes.outputs.projects)` | `.github/workflows/e2e-tests.yml`, the `changes` and `test` jobs | A new project *is* the isolation mechanism this suite already has. Adding one costs an entry in **both** JSON lists, not a new mechanism. `guards` is deliberately absent from both — it needs no container and has its own job |
 | `run_recording` has never been executed by a test: `test_recording_scheduling.py` asserts its early returns, `test_recording_pipeline.py` **inspects its source** for a recovery skip list, `test_recording_stop_cancel.py` asserts the race guard and the `recording_cancelled` payload shape, `test_recording_metadata.py` asserts a `recording_updated` payload | `apps/channels/tests/test_recording_*.py` | Confirms the disposition's claim. Everything below row 1 is genuinely first contact |
 | A leaked ad-hoc recording is actively hazardous to the `frontend` project: `categorizeRecordings()` keys "Upcoming Recordings" on `${program.tvg_id}|${program.title}`, which is `'\|'` for every recording with no EPG programme, so leaked rows collapse into one card and hide each other | `frontend/src/utils/pages/DVRUtils.js`, `categorizeRecordings`; filed as [#71](https://github.com/D10Scot/Dispatcharr/issues/71); `e2e/tests/frontend/dvr.spec.ts` header | G13 creates ad-hoc recordings by the handful. Cleanup is not hygiene here, it is a cross-project obligation. See D8 |
 
@@ -116,10 +176,10 @@ The dispatch brief names both as "existing DVR issues". Checked against the trac
 | # | Decision | Rationale |
 |---|---|---|
 | D1 | **One new Playwright project, `dvr`: `workers: 1`, `fullyParallel: false`, `timeout: 300_000`, `dependencies: ['bootstrap']`, `storageState: admin.json`, and one new CI matrix job** | Three independent reasons, each of which alone is the house standard for a serialised project. (a) **Wall clock**: a firing recording costs ~60–90 s. `frontend`'s 120 s budget is already derived — its comment says so — from the backups poll and the Stats page, and would not hold; `seeded`'s is 30 s. (b) **Shared filesystem**: every recording writes under `/data/recordings`, and the finalisation step concatenates and remuxes there. (c) **A global `CoreSettings` mutation**: the comskip row flips `dvr_settings.comskip_enabled`, which is exactly the hazard `streaming-failover` serialises for (`proxy_settings.buffering_speed`) and `streaming-greybox` serialises for (`stream_settings.default_stream_profile`). Both of those projects' config comments argue that serialising makes the race *structurally impossible instead of merely documented*; that argument applies here unchanged. The CI matrix gives the project its own container for free, which is what makes (b) and (c) safe rather than merely serialised |
-| D2 | **`e2e/fixtures/instance.ts` is not used, and G13 does not need an isolated instance beyond its own CI job** | `instance.ts` is quarantined to the `lifecycle` projects by its own header, and using it would put a container-destroying fixture in a fourth project. G13's isolation requirement is "nothing else is writing `/data/recordings` or the DVR settings row at the same time", which one matrix job plus `workers: 1` delivers exactly. Locally the project must be run alone, the same rule `pristine`, `streaming-greybox` and `lifecycle` already carry in `e2e/README.md` |
+| D2 | **`e2e/fixtures/instance.ts` is not used, and G13 does not need an isolated instance beyond its own CI job** | `instance.ts` is quarantined to the `lifecycle` projects by its own header, and using it would put a container-destroying fixture in a fourth project. G13's isolation requirement is "nothing else is writing `/data/recordings` or the DVR settings row at the same time", which one matrix job plus `workers: 1` delivers exactly. Locally the project must be run alone, the same rule `streaming-greybox` and the two `lifecycle` projects already carry in `e2e/README.md`. Since G11 the *enforced* half of this — that G13 cannot reach for `instance.ts` by accident — is `CONTAINER_LIFECYCLE` in `e2e/tests/guards/allowlist.ts`, not the fixture's header comment |
 | D3 | **A recording fires in bounded time by being scheduled a few seconds out and running for 30 s of real time. No clock manipulation of any kind** | Every number is derived, not picked. Beat's tick is 5 s (verified in-image), so `start_time = now + 5 s` is dispatched by `now + ~10 s` worst case. `_first_segment_timeout` is 15 s and `hls_time` is 4 s, so a 30 s window clears the first-segment gate with 2× margin and yields several segments plus a concat. Nothing is faked: there is no `libfaketime` in the image, no clock fixture in the suite, and `run_recording` reads `time.time()` in a dozen places — a faked clock would be a second product under test. A test that waits 45 real seconds inside a 300 s budget is cheaper than any mechanism that avoids waiting |
 | D4 | **The `start_time` of every recording G13 creates is unique to the test, derived from the run token, and never a rounded clock value** | D10's defect makes an identical `start_time` across two concurrent creates a container-poisoning race. G13 must not provoke it — the same call G3 made on #7, for the same reason: no assertion is worth poisoning the shared instance for every remaining test. Uniqueness is cheap and the helper enforces it in one place |
-| D5 | **The output file is observed over HTTP, through `GET /api/channels/recordings/<id>/file/`. There is no `docker exec` anywhere in this goal** | `RecordingViewSet.file` already serves the finished MKV with `Content-Type`, `Content-Length`, `Accept-Ranges` and real `206`/`Content-Range` handling, 302s to the HLS playlist while the recording is in progress, and 404s when there is nothing. That is a complete observation surface: existence, size, container format (the EBML magic `1A 45 DF A3` in the first four bytes), seekability, and the in-progress/finished distinction — all black box, all portable across the relay extraction. Shelling into the container would buy only the directory listing, at the cost of a `@characterization` tag on the goal's flagship row and a new entry in the allowlist G11 is building. **The one thing HTTP cannot reach is the `PeriodicTask`/`ClockedSchedule` pair**, which has no REST surface; G13 does not close that gap and `COVERAGE.md`'s existing G6 row continues to record it |
+| D5 | **The output file is observed over HTTP, through `GET /api/channels/recordings/<id>/file/`. There is no `docker exec` anywhere in this goal** | `RecordingViewSet.file` already serves the finished MKV with `Content-Type`, `Content-Length`, `Accept-Ranges` and real `206`/`Content-Range` handling, 302s to the HLS playlist while the recording is in progress, and 404s when there is nothing. That is a complete observation surface: existence, size, container format (the EBML magic `1A 45 DF A3` in the first four bytes), seekability, and the in-progress/finished distinction — all black box, all portable across the relay extraction. Shelling into the container would buy only the directory listing, at the cost of a `@characterization` tag on the goal's flagship row and a new entry on `CONTAINER_INTROSPECTION` in `e2e/tests/guards/allowlist.ts` — which G11 has landed and which `capabilities.spec.ts` compares with `toEqual`, so the addition is a reviewable diff, not an oversight. **The one thing HTTP cannot reach is the `PeriodicTask`/`ClockedSchedule` pair**, which has no REST surface; G13 does not close that gap and `COVERAGE.md`'s existing G6 row continues to record it |
 | D6 | **The firing flagship is one test covering one recording's whole lifecycle, not three tests covering three facts** | Start, in-progress playback and completion are phases of one behaviour and cannot be observed independently without paying for three recordings. G4's multi-client row establishes the shape: drive one subject, assert at each transition. Splitting would triple the project's wall clock to prove nothing more |
 | D7 | **The recording factory lives in `e2e/tests/dvr/helpers.ts`, not in `e2e/fixtures/seed.ts`** | It is DVR-project-specific, and it must carry D4's start-time rule in its own header where the next author will read it. Keeping it out of `seed.ts` also keeps G13 off the one fixture file G12 and G14 are most likely to be editing in the same wave. G6 made the opposite-direction version of this call (D6: no `seed.ts` changes at all) for a related reason |
 | D8 | **Every test deletes its recordings and its channel in an `afterEach`, not at the end of the body** | Playwright does not raise a catchable exception on timeout — it tears the test function down mid-`await`, so a body-level cleanup does not reliably run. `dvr.spec.ts` and `plugins.spec.ts` both document this and both moved to `afterEach`. Here it matters more than usual: a leaked ad-hoc recording poisons the *`frontend` project's* DVR test through #71, and a leaked recording with a future `start_time` also leaves a live `PeriodicTask` that will fire against the container hours later |
@@ -129,6 +189,27 @@ The dispatch brief names both as "existing DVR issues". Checked against the trac
 | D12 | **G13 owns `e2e/tests/frontend/dvr.spec.ts` and does not modify it** | Ownership in wave 6 is a lock, not an obligation. The file's job is the DVR *page's* wiring, which it already proves; the `recording_cancelled` event belongs in the `dvr` project, where both the `was_in_progress: true` and `false` branches are reachable and neither costs a browser. Declaring the no-op explicitly is what keeps G14 and G15 out of the file and keeps G13's rebase surface at five files |
 | D13 | **Product defects are asserted correct, marked `test.fail()` with the defect named in a comment, and filed — never patched.** Issues go to `gh issue create --repo D10Scot/Dispatcharr`, with the explicit `--repo` flag, always | Roadmap rule 5. This checkout is a fork whose `gh` resolves to upstream's public tracker without the flag. G13 expects to find more than the two defects named above — 1,139 lines with 47 `try` blocks running for the first time is the highest-yield surface in the programme — and the plan reserves a task for triaging whatever the first green run turns up |
 | D14 | **No test asserts a global count or an unfiltered list** | Roadmap rule 4. Every recording is looked up by its own id or by its own channel id; the recurring-rule row counts only rows carrying its own `rule.id` |
+
+## Guards G13 must satisfy
+
+G11 replaced `streaming-greybox/quarantine.spec.ts` — **that file no longer exists** — with the
+`guards` Playwright project: static analysis over this suite's own source, no container, no
+browser, about a second. Three of its specs bear on G13 — `tags.spec.ts`, `global-mutation.spec.ts`
+and `capabilities.spec.ts`, the last across four capability lists. The other two do not:
+`testid.spec.ts` and `pageerrors-enforcement.spec.ts` both police `tests/frontend/`, which D12
+puts out of scope.
+
+| Guard | What it does to G13 | Verdict |
+|---|---|---|
+| `tags.spec.ts` | Requires exactly one recognised tag on every `test` / `test.fail` / `test.skip` declaration, parsed from the details object. Fails closed: a details object passed **by reference** is reported `unverifiable` and fails, and `KNOWN_UNVERIFIABLE` is empty | Every one of G13's eight rows carries an inline `{ tag: … }`. See "Tags" |
+| `global-mutation.spec.ts` | Any `api.post/patch/put/delete` whose URL text resolves to contain `core/settings` — including through a module-level `const` and a template literal — from a file not on `GLOBAL_SETTINGS_WRITE` fails | **G13 trips this.** `comskip.spec.ts` PATCHes `/api/core/settings/<id>/`, so `tests/dvr/comskip.spec.ts` must be added to `GLOBAL_SETTINGS_WRITE.allow` with ADR-0003's three-part justification in the diff. See D9 |
+| `capabilities.spec.ts` / `CONTAINER_LIFECYCLE` | Fires on a test destructuring the `instance` fixture, hooks included | **Not tripped.** D2 forbids `instance.ts` outright |
+| `capabilities.spec.ts` / `SUBPROCESS`, `GREYBOX_REDIS` | Fire on an import of `node:child_process` / `child_process`, and on the grey-box Redis helper | **Not tripped.** No G13 file imports either. D5 is the reason there is nothing to shell out for |
+| `capabilities.spec.ts` / `CONTAINER_INTROSPECTION` | Fires on the string-literal markers `pgrep`, `docker ` and `manage.py` — **in string and template literals only, never in comments** | **Not tripped.** G13's files discuss none of these in code. The `grep` in the plan's Task 9 verification is a shell command run by a human, not a literal in a spec file |
+
+The allowlists are compared with `toEqual`, so a **stale** entry fails as loudly as a missing one:
+if the comskip row is ever deleted under D9's escape hatch, its allowlist entry goes with it in
+the same commit.
 
 ## The comskip decision
 
@@ -170,7 +251,18 @@ What that test does, precisely. It PATCHes the DVR settings group to `comskip_en
 `{completed, error, skipped}`. `mark` is chosen deliberately over the `cut` default as
 belt-and-braces: if the synthetic asset ever *did* trip a false-positive detection, `mark` leaves
 the MKV untouched, so the sibling rows' file assertions cannot be disturbed by it. An `afterEach`
-restores `comskip_enabled: false`.
+restores the captured settings dict verbatim.
+
+**That PATCH is an allowlisted act.** `tests/dvr/comskip.spec.ts` must be added to
+`GLOBAL_SETTINGS_WRITE` in `e2e/tests/guards/allowlist.ts`, or `global-mutation.spec.ts` fails and
+takes the `guards` job with it. ADR-0003 requires three things in the diff, and all three are
+already established above: **which group it writes** — `dvr_settings`, and only that row;
+**why nothing else reads it during the run** — the `dvr` project owns its container in CI and is
+`workers: 1`, so no other test is executing while the flag is on, and unlike `proxy_settings` the
+group cache is invalidated by `CoreSettings`' `post_save` rather than expiring on a timer, so
+nothing outlives the restore; and **how teardown restores it** — the `afterEach` PATCHes the
+captured `value` dict back verbatim, every key of it, because `value` is a JSONField that PATCH
+replaces wholesale and an omitted `pre_offset_minutes` reads back as `None` rather than `0`.
 
 Its two risks, and the escape hatch. Comskip's runtime on a 30 s synthetic MKV is not known ahead
 of time, and it runs on the **shared prefork `celery` worker**, not the `dvr` queue — so a
@@ -191,10 +283,19 @@ for the three reasons in D1. `timeout: 300_000` matches the three streaming proj
 is expected to approach it, and the headroom is what turns a wedged `run_recording` into a named
 wait failure rather than a bare project timeout.
 
+`e2e/playwright.config.ts` currently declares ten projects — `bootstrap`, `guards`, `pristine`,
+`seeded`, `streaming`, `streaming-failover`, `streaming-greybox`, `frontend`, `lifecycle`,
+`lifecycle-upgrade`, in that order. `dvr` becomes the eleventh, placed **after `frontend` and
+before `lifecycle`**: it depends on `bootstrap` and shares the container, so it belongs with the
+ordinary projects rather than after the two that destroy it.
+
 Locally the project must be run alone — it mutates the DVR settings row and `/data/recordings`
-container-wide — the same rule `e2e/README.md` already states for `pristine`,
-`streaming-greybox` and the two `lifecycle` projects. The implementation plan adds `dvr` to that
-list.
+container-wide — the same rule `e2e/README.md` already states for `streaming-greybox` ("**must be
+run alone locally**") and for `lifecycle` and `lifecycle-upgrade` ("**Runs alone**", for the
+stronger reason that they destroy the container). `pristine` is *not* on that list, despite an
+earlier draft of this spec saying so: its Projects-table row states only that it needs an instance
+with no superuser. The implementation plan gives `dvr` its own row in the same table, worded like
+`streaming-greybox`'s.
 
 ## Test inventory
 
@@ -213,9 +314,15 @@ Estimates are wall clock for the row, including its recording. Project total ≈
 
 Rows 1–2 share one recording; rows 3, 4, 6 and 8 each pay for their own. Row 5 pays for none.
 
-**None of these rows exists in `COVERAGE.md` today.** All eight are added in the same PR as the
-tests, per roadmap rule 3, together with two new gap rows: comskip detection (D9) and the
-recurring-rule recording that cannot be made to fire (Non-goals).
+**None of these rows exists in `COVERAGE.md` today**, and no row there mentions G13 — re-checked
+at `45a33a4a`. The inventory's only DVR entries are still G6's two, both under `Frontend`: the
+schedule/list/cancel flow, and the long **Gap** row about the `Recording` / `PeriodicTask` /
+`ClockedSchedule` trio and `RecordingViewSet.destroy`'s three unobserved side effects. Both stay
+where they are; G13 adds a `DVR` section beneath.
+
+All eight rows are added in the same PR as the tests, per roadmap rule 3, together with three new
+gap rows: comskip detection (D9), the recurring-rule recording that cannot be made to fire, and
+series rules (both under Non-goals).
 
 ## Files created and touched
 
@@ -234,12 +341,13 @@ recurring-rule recording that cannot be made to fire (Non-goals).
 
 | Path | Change |
 |---|---|
-| `e2e/playwright.config.ts` | Add the `dvr` project, with D1's three reasons in the comment |
-| `.github/workflows/e2e-tests.yml` | Add `dvr` to the matrix. Zizmor must stay at zero findings |
-| `e2e/package.json` | Add `test:dvr` |
+| `e2e/playwright.config.ts` | Add the `dvr` project after `frontend` and before `lifecycle`, with D1's three reasons in the comment |
+| `.github/workflows/e2e-tests.yml` | Add `"dvr"` to **both** JSON `projects` lists in the `changes` job — the normal list and the full-mode one. The file's own comment says "A NEW PROJECT MUST BE ADDED TO BOTH LINES." Nothing in the `test` job changes: it consumes `fromJSON(needs.changes.outputs.projects)` and passes the name through the `PLAYWRIGHT_PROJECT` env var. Zizmor must stay at zero findings |
+| `e2e/tests/guards/allowlist.ts` | Add `tests/dvr/comskip.spec.ts` to `GLOBAL_SETTINGS_WRITE.allow`, with the ADR-0003 justification in the diff |
+| `e2e/package.json` | Add `test:dvr`, and add it to the bare-`test` script's "pick a population" message |
 | `e2e/fixtures/types.ts` | Add `RecurringRule`; extend nothing else. Additive, at the end |
-| `e2e/COVERAGE.md` | Eight new rows plus two gap rows |
-| `e2e/README.md` | Document the `dvr` project and add it to the "run it alone" list |
+| `e2e/COVERAGE.md` | Eight new rows plus three gap rows |
+| `e2e/README.md` | A `dvr` row in the Projects table, worded like `streaming-greybox`'s run-alone rule, and `dvr` added to the `## CI` section's account of the two `projects` lists |
 
 **Explicitly not touched:** `e2e/fixtures/seed.ts` (D7), `e2e/tests/frontend/dvr.spec.ts` (D12),
 anything under `e2e/tests/lifecycle/`, `e2e/tests/settings*`, `e2e/tests/plugins*` — G12's, G14's
@@ -247,7 +355,27 @@ and G15's files.
 
 ## Tags
 
-G13 applies G11's taxonomy; it does not define it.
+G13 applies G11's taxonomy; it does not define it. `docs/adr/0002-e2e-test-taxonomy.md` is the
+record, and `e2e/tests/guards/tags.spec.ts` is the enforcement.
+
+**The mechanism is Playwright's native tag option, as the second argument**, written as an inline
+object literal:
+
+```ts
+test('a scheduled recording fires, plays back in progress, and completes', { tag: '@contract' }, async ({ api, seed, upstream, waitFor, ws }) => {
+```
+
+and, for a row asserting behaviour the product gets wrong,
+`test.fail('…', { tag: '@contract' }, async … )`. The tag may also be inherited from an enclosing
+`test.describe('…', { tag: '@contract' }, …)`. **The details object must be written inline.**
+Hoisting it to a `const` and passing it by reference makes the declaration `unverifiable` to the
+guard, which fails closed with an empty `KNOWN_UNVERIFIABLE` list — so the shortcut does not
+produce a warning, it produces a red `guards` job.
+
+Both `@characterization` rows — 2 and 8 — additionally carry a `// @characterization: <fact>`
+comment immediately above the `test(` call, naming the implementation fact pinned. The guard does
+not check for that comment; ADR-0002 does, and it is the entire point of the tag: a migration
+branch reads the sentence instead of re-deriving why the test is red.
 
 **`@contract` — rows 1, 3, 4, 5, 6, 7.** Every assertion in these rows is an HTTP status, an HTTP
 header, a JSON field on a documented REST endpoint, a WebSocket event payload, or MPEG-TS packet
@@ -261,7 +389,15 @@ in `_build_output_paths`, not a setting — and the shape of the shipped default
 Row 8 asserts that a binary compiled in `docker/DispatcharrBase` is on `PATH` inside this image
 and that an ini exists at one of three AIO paths. Both are deliberately coupled to *this*
 deployment, both would be legitimately rewritten by a change to the image or the settings
-defaults, and both justify themselves in a comment at the top of the test, as G11 requires.
+defaults, and both justify themselves in a `// @characterization:` comment above the `test(` call,
+as ADR-0002 requires.
+
+Row 8 is also the one G13 file on a capability allowlist, which ADR-0002's consequences say is
+`@characterization` "by construction". The two agree here. They do not agree everywhere — G11
+left `tests/streaming-failover/failover-buffering.spec.ts` on `GLOBAL_SETTINGS_WRITE` and tagged
+`@contract`, on the reasoning that a raised `buffering_speed` is a precondition rather than the
+assertion — so G13 states its own reason rather than leaning on the rule: row 8's *assertions* are
+about this image's contents, not only its setup.
 
 ## Non-goals
 
@@ -310,9 +446,17 @@ defaults, and both justify themselves in a comment at the top of the test, as G1
   `streaming` (~4) and `streaming-failover` (~7) and inside the workflow's 30-minute job timeout.
   A future goal adding DVR rows should split the project rather than let one job drift toward the
   ceiling, the way G4 split `streaming` into three.
-- **Five shared files collide with G12, G14 and G15.** Every edit is additive and small. The
-  workflow edit re-runs the blocking zizmor hook on the whole file; the workflows are at zero
-  findings and G13 must leave them there.
-- **G11 is a hard dependency for the tag taxonomy only.** If G11 slips, G13's tests still run —
-  the tags are text in test titles — but the ADR that gives them meaning would not exist yet. G13
-  should land after G11, and says so; it should not block on it if the wave reorders.
+- **Six shared files collide with G12, G14 and G15.** Every edit is additive and small. Two carry
+  their own enforcement: the workflow edit re-runs the blocking zizmor hook on the whole file (the
+  workflows are at zero findings and G13 must leave them there), and the `allowlist.ts` edit is
+  compared with `toEqual`, so a rebase that drops G13's entry fails the `guards` job rather than
+  silently un-allowlisting the comskip row.
+- **After the extraction, the flagship's failure mode is a timeout, not an error.** DVR builds its
+  URL from `get_dvr_stream_base_url()` and a channel UUID. If the relay moves and that base URL
+  goes stale — or if the stream endpoint becomes an HMAC-signed URL DVR does not know how to mint —
+  nothing rejects the recording. It is scheduled, dispatched and started; ffmpeg gets a refusal it
+  reports only on stderr; `run_recording` gives up at `_first_segment_timeout` (15 s) and writes
+  `status: 'interrupted'` with an `interrupted_reason`. **That is why Task 4 Step 5 requires the
+  completion assertion to surface `interrupted_reason` in its message.** Without it the single
+  most informative failure in the whole goal reads as a bare wait timeout, and the migration branch
+  learns nothing from the gate that exists for it.

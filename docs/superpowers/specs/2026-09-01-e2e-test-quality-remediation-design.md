@@ -5,21 +5,41 @@
 **Wave:** 6 (parallel with G12, G13, G14; after G11)
 **Parent:** `2026-08-23-e2e-coverage-roadmap-design.md`
 **Goal definition:** `2026-09-01-e2e-programme-review-disposition.md`, "G15 — Test-quality remediation"
-**Verified at:** `origin/main` **`76db0332`** ("test(e2e): catch-up and timeshift, end to end (G10)
-(#113)"). An earlier draft was verified at `cf95410e` against PR #113's then-open head; **#113 has
-since merged**, this document is rebased onto its tip, and every count below is re-measured there.
-Line numbers drift; symbol names and test titles are the durable half of every citation.
+**Revised:** 2026-09-01, after G11 landed (`45a33a4a`).
+**Verified at:** `origin/main` **`45a33a4a`**. G11 has merged, as `4211cbb7` (PR #123 — the guards,
+ADR 0002, ADR 0003 and the full-run CI mode) and `7a408c2b` (PR #124 — every test tagged, the tag
+guard flipped to blocking). Earlier drafts were verified at `cf95410e` and at `76db0332`; every
+count below is re-measured at `45a33a4a`, and the `test.fail()` audit's twenty rows were re-derived
+there rather than carried forward. Line numbers drift; symbol names and test titles are the durable
+half of every citation.
 
-**Depends on, in merge order:**
+**Depends on, in merge order — both discharged:**
 
-| Dependency | Why | If it slips |
+| Dependency | Why | State |
 |---|---|---|
-| ~~**PR #113 (G10)**~~ | **Discharged — merged as `76db0332`.** It added five tests to `catchup-cascade.spec.ts` and the `expectTsAligned` import that makes item 4's change there a one-liner, and brought three further `test.fail()` pins that this audit now covers as rows 18–20 | — |
-| **G11 (wave 5)** | G11 applies a per-test `@contract` / `@characterization` tag taxonomy across all 144+ tests, touching **every file G15 touches**. G11 defines the taxonomy; G15 does not | G15 waits. Landing G15 first guarantees a conflict in ten spec files for no benefit |
+| ~~**PR #113 (G10)**~~ | It added five tests to `catchup-cascade.spec.ts` and the `expectTsAligned` import that makes item 4's change there a one-liner, and brought three further `test.fail()` pins that this audit covers as rows 18–20 | **Discharged — merged as `76db0332`** |
+| ~~**G11 (wave 5)**~~ | G11 applied the `@contract` / `@characterization` taxonomy to every test in the suite, touching every file G15 touches, and added the `guards` Playwright project. G11 defines the taxonomy; G15 does not | **Discharged — merged as `4211cbb7` (#123) and `7a408c2b` (#124)**. G15 branches off `main` at or after `45a33a4a` |
 
-**G15 must not define the tag taxonomy.** It applies G11's, to every test it adds or touches,
-exactly as the disposition requires of G12–G15. Where this spec's inventory names a new test, the
-tag column is deliberately left as "per G11" rather than guessed.
+**G15 must not define the tag taxonomy — it applies G11's, which is now concrete.** The mechanism,
+from `docs/adr/0002-e2e-test-taxonomy.md` and `e2e/tests/guards/tags.spec.ts`:
+
+- The tag is Playwright's native details option, an **inline object literal** as the second
+  argument: `test('title', { tag: '@contract' }, async ({ … }) => { … })`, and identically
+  `test.fail('title', { tag: '@contract' }, async ({ … }) => { … })`. A tag may be inherited from an
+  enclosing `test.describe('…', { tag: … }, …)`, but the details object must be a literal — a
+  by-reference object is reported `unverifiable` and **fails**.
+- `@contract` is the default and needs no justification. `@characterization` additionally requires a
+  `// @characterization: <the implementation fact it pins>` comment immediately above the
+  declaration — the house style every guard in `tests/guards/` uses.
+- `e2e/tests/guards/tags.spec.ts` is blocking and fails closed: any declaration carrying no
+  recognised tag, both tags, or an unreadable details object fails the `guards` project.
+  `KNOWN_UNVERIFIABLE` is empty and stays empty.
+
+**Every test G15 adds is `@contract`** — a guard control, a frontend interaction and a body
+assertion all assert client-observable behaviour — **except the contract-version guard (item 16),
+which is `@characterization`**, because like every test in `tests/guards/` it asserts a fact about
+this repository's own source tree rather than about a running product. The inventory's tag column
+below carries these, not a placeholder.
 
 ## Goal
 
@@ -33,6 +53,46 @@ document, and that every item was verified against the tree before being written
 seven briefed items came back partly or wholly different from the claim, and this spec says so
 rather than implementing the claim.
 
+## What this buys the migration gate
+
+The programme exists for one thing: to make this suite a trustworthy gate for extracting the
+streaming relay out of the Django workers (`CLAUDE.md`, and `docs/adr/0002-e2e-test-taxonomy.md`'s
+Context, which states it in the same words). G15 adds no coverage of a new flow. What it adds is
+**confidence that the coverage already claimed is real**, which is a different and, at this point in
+the programme, scarcer thing.
+
+Four contributions, in descending weight:
+
+1. **The nine guards make nine pins usable as gate signal.** A `test.fail()` whose premise sits
+   inside the inversion is green whenever *anything* in its body throws. On a migration branch that
+   is the worst possible shape: the extraction breaks a seeding path, an ingest, a route — the pin
+   greens, and a regression in a pinned path is **invisible**. Nine of the twenty pins are in that
+   state today, and three of them are the only test in their file, so nothing else in the file
+   would catch the breakage either. Guarding them converts nine silent passes into nine assertions
+   that mean what they say. Row 7's is worth naming twice: it pins a *non-disclosure* property
+   (issue [#89](https://github.com/D10Scot/Dispatcharr/issues/89)), and a hollow green there claims
+   a security property nobody tested.
+2. **The body assertions make the harness's own proofs discriminating.** `api-fixture.spec.ts` and
+   `authorization.spec.ts` prove that authentication and the user-level matrix work — the two
+   things every other test in the suite silently assumes. Both currently assert a status and
+   nothing else. A relay extraction that moved a route under the SPA catch-all would answer 200
+   with `index.html` and both would stay green, and every downstream test's failure would then be
+   blamed on the feature rather than the harness. The assertions in D11 close that.
+3. **`CONTRACT.md` gives the provider a citable behaviour set.** The extraction's own tests will
+   lean on `e2e-upstream` exactly as G4–G10 do, and the non-guarantees — no calendar validation, no
+   time-addressable archive — are the ones a new goal will otherwise rediscover by writing a test
+   that passes for the wrong reason. A version a spec can cite is cheaper than a memory a reviewer
+   has to hold.
+4. **The three frontend interactions are regression coverage only.** Stats, Guide and Backups are
+   client surfaces that the extraction does not move. They are worth having, and they are the part
+   of G15 the migration gate would least miss.
+
+**If the wave runs long, land in this order:** the guards first (Tasks 2–10), because they are the
+whole migration argument; then Task 13, the body assertions; then Task 15, the contract and
+`COVERAGE.md`. Tasks 11 and 12 are two-line assertion strengthenings and can ride with any of them.
+**The three frontend interactions (Task 14) go last** and are the only part of this goal that can be
+dropped to a follow-up without weakening the gate.
+
 ## What changed against the brief
 
 Verification first, implementation second. Three corrections and one refutation:
@@ -40,18 +100,20 @@ Verification first, implementation second. Three corrections and one refutation:
 | Briefed item | Verified as |
 |---|---|
 | "`expectWellFormedXml` in `xc-output.spec.ts` — the one-line fix the disposition claims" | **Two lines, not one.** `expectWellFormedXml(page, xml)` needs a `Page`; the target test declares `async ({ seed, request })` and has no browser context. The change is the call *plus* adding `adminPage` to the fixture destructuring. Cheap, but not a one-liner — and the difference matters, because it is what makes a request-only test open a browser context (D4) |
-| "The two residual first-byte-only TS assertions … `catchup-path-layout.spec.ts` and one site in `catchup-cascade.spec.ts`" | **Exactly right, and both survived #113.** Re-verified at `76db0332`: `catchup-path-layout.spec.ts` still carries `expect(bytes[0]).toBe(0x47)` and does **not** import `expectTsAligned` (a two-line change); `catchup-cascade.spec.ts` still carries `expect((await streamClient.readPackets(20))[0]).toBe(0x47)` inside G8's original test, which #113 did not modify, but the file now **does** import `expectTsAligned` for #113's own tests (a one-line change). `grep -rn "0x47" e2e/tests` returns only these two assertions plus `contiguity.spec.ts`'s synthetic-packet *writer*, which is not an assertion |
+| "The two residual first-byte-only TS assertions … `catchup-path-layout.spec.ts` and one site in `catchup-cascade.spec.ts`" | **Exactly right, and both survived #113 and G11.** Re-verified at `45a33a4a`: `catchup-path-layout.spec.ts` still carries `expect(bytes[0]).toBe(0x47)` and does **not** import `expectTsAligned` (a two-line change); `catchup-cascade.spec.ts` still carries `expect((await streamClient.readPackets(20))[0]).toBe(0x47)` inside G8's original test, which #113 did not modify, but the file now **does** import `expectTsAligned` for #113's own tests (a one-line change). `grep -rn "0x47" e2e/tests` returns only these two assertions plus `contiguity.spec.ts`'s synthetic-packet *writer*, which is not an assertion |
 | "Post-switch byte attribution … if the TS pattern can carry a per-stream marker" | **Yes, under the Proxy stream profile; no, under FFmpeg.** All three specs that would use it run Proxy. The full ruling, with the blocker for FFmpeg, is below |
 | "`stats` 0 interactions, `guide` 1, `backups` 1, `users` 16, `dvr` 15, `connect` 12, `plugins` 8" | **Verified, one off by one.** Counting direct `.click(` / `.fill(` / `setInputFiles(` / `.selectOption(` / `.press(` calls in each spec file: `users` 16, `dvr` 15, `connect` 12, **`plugins` 9** (not 8), `logos` 4, `settings` 4, `guide` 1, `backups` 1, `stats` 0, `render` 0, `pageerrors-enforcement` 0. The metric excludes clicks inside `gotoSurface`, which every frontend spec performs; that is the right exclusion, since a sidebar click is navigation, not the surface's own behaviour |
-| "Audit **every** `test.fail()`; #15 and #82 are confirmed instances" | **Both confirmed.** **Twenty sites, all on `main`** at `76db0332` (seventeen at `cf95410e`, plus three that #113 brought). **Nine need a guard, eleven are already safe.** Full table below, one row per site |
+| "Audit **every** `test.fail()`; #15 and #82 are confirmed instances" | **Both confirmed.** **Twenty sites, all on `main`** — seventeen at `cf95410e`, plus three that #113 brought, and **still exactly twenty at `45a33a4a`** after G11 re-tagged every declaration in the suite. **Nine need a guard, eleven are already safe.** Full table below, one row per site |
 | "Status-only assertions in `api-fixture` / `authorization`" | Four tests, four status-only assertions. **Two are worth a body assertion, two are legitimately status-only.** Table below |
 | "`e2e-upstream` sits at `1.0.0` with no contract document" | Correct, and the version is **purely documentary today** — the provider image is rebuilt from source in the same commit on every CI run and every local `scripts/e2e_up.sh`, tagged `:local`. Nothing pins a version, so a version can never be *stale*, only *uncited*. That changes what the contract doc is for (D9) |
 
 ## Verified facts this design rests on
 
-Every row re-read at `76db0332`. Rows first established at `cf95410e` were re-checked against the
-merged tip rather than carried forward on trust; `git diff cf95410e 76db0332 -- apps/ core/ dispatcharr/ frontend/`
-is empty, so every product-code citation holds at both commits.
+Every row re-read at `45a33a4a`. Rows first established at `cf95410e` and re-checked at `76db0332`
+were re-checked again against G11's tip rather than carried forward on trust. G11 changed no product
+code, so every `apps/`, `core/`, `dispatcharr/` and `frontend/` citation holds at all three commits;
+what G11 did change is the shape of every test declaration in `e2e/tests/`, which is why the pin
+count and the audit table were re-derived rather than trusted.
 
 | Fact | Source | Consequence |
 |---|---|---|
@@ -70,7 +132,9 @@ is empty, so every product-code citation holds at both commits.
 | `failover-dead-air.spec.ts` already asserts control-plane identity — `before.stream_id === streams[0].id`, then polls to `streams[1].id` | `e2e/tests/streaming-failover/failover-dead-air.spec.ts` | The gap is narrow and specific: the *bytes* read after the switch are asserted aligned and are never attributed |
 | `e2e-upstream/package.json` declares `"version": "1.0.0"`. The image is built from source on every run (`docker build -f e2e-upstream/Dockerfile -t dispatcharr-e2e-upstream:local e2e-upstream`) in `e2e-tests.yml`, `lifecycle-tests.yml` and `scripts/e2e_up.sh`; the server exposes no `/version`, `/health` or info route | `e2e-upstream/package.json`; `.github/workflows/e2e-tests.yml`; `scripts/e2e_up.sh`; `e2e-upstream/src/server.ts` route table | Provider and consumers always ship from one commit. The version cannot drift — so it is a **citable name for a behaviour set**, not a compatibility negotiation. D9 |
 | `e2e-upstream/README.md` already documents the control API, XC scenario fields, the fault catalogue, catch-up, pacing, the TS asset and the VOD asset | `e2e-upstream/README.md`, section headings | The contract doc must not restate the README. It states *guarantees, non-guarantees and a version*, and links | 
-| `quarantine.spec.ts` reads repo source from a Playwright test with `readdir`/`readFile` rooted at `path.resolve(__dirname, '../..')` | `e2e/tests/streaming-greybox/quarantine.spec.ts` | A version claim can be **enforced** from a test without touching the provider's runtime. D10 |
+| G11 deleted `quarantine.spec.ts` and replaced its role with the `guards` Playwright project: `e2e/tests/guards/capabilities.spec.ts` and its four siblings, sharing `e2e/tests/guards/ast.ts` (which exports `E2E_ROOT`, `REPO_ROOT`, `ROOTS`, `findTestCalls`, `listSpecFiles`, `readSpec`, `readTags`) and `allowlist.ts` | `e2e/tests/guards/`; `e2e/playwright.config.ts`, project `guards` | A version claim can be **enforced** from a test that runs with no container, no browser and no fixtures, in ~1s. This is where item 16's guard goes. D10 |
+| The `guards` project runs `testDir: './tests/guards'` with `workers: 1`, `fullyParallel: false`, no `dependencies` and no fixtures, and has **its own CI job** rather than a matrix row — "the only project here that needs no running instance" | `e2e/playwright.config.ts`, the `guards` project comment; `.github/workflows/e2e-tests.yml` | Adding a test to `tests/guards/` adds no project and no workflow change, so **D12 still holds**. Its imports come from `@playwright/test` and `./ast`, not from `'../../fixtures'` |
+| `capabilities.spec.ts` scans `tests/`, `fixtures/` and `setup/` and **skips `tests/guards/`** — "this directory's own source names every marker it polices" | `e2e/tests/guards/capabilities.spec.ts:usersOf` | A guard reading `e2e-upstream/` paths from disk cannot trip `CONTAINER_INTROSPECTION` by naming one |
 | The `frontend` project's Stats page exposes: a "Refresh Now" `Button`, a "Refresh Interval (seconds)" `NumberInput`, and per-connection card actions | `frontend/src/pages/Stats.jsx:StatsPage`, `:Connections`; `frontend/src/components/cards/StreamConnectionCard.jsx` | Real interactions exist. Their addressability does not — see D7 |
 | Every Stats card action is a `Tooltip`-wrapped icon-only `ActionIcon`: "Stop Channel", "Disconnect client", "Switch to another stream source", "Preview Channel" | `StreamConnectionCard.jsx` | Mantine's `Tooltip` contributes `aria-describedby`, which does **not** compute an accessible name. Same class as [#73](https://github.com/D10Scot/Dispatcharr/issues/73) |
 | Every Backups **row** action is likewise an unlabelled `Tooltip`+`ActionIcon`, and the three are adjacent: Download, **Restore**, Delete | `frontend/src/components/backups/BackupManager.jsx:RowActions` | A positional locator that drifts by one clicks **Restore**, which replaces the database under every parallel worker. D8 |
@@ -108,27 +172,39 @@ rubric is otherwise satisfied the comment stays and the site is marked safe; whe
 **The total, stated so it cannot be re-litigated:**
 
 ```
-grep -rnE "^\s*test\.fail\(" e2e/tests | wc -l     # 20 at 76db0332 (was 17 at cf95410e)
+grep -rnE "^\s*test\.fail\(" e2e/tests | wc -l     # 20 at 45a33a4a (20 at 76db0332, 17 at cf95410e)
 ```
+
+**The grep still holds after G11.** PR #124 re-tagged every declaration in the suite, and the tag is
+an inline object literal inserted as the second argument — `test.fail('title', { tag: '@contract' },
+async …)` — so every site still *begins* with `test.fail(` on its own line and the anchored pattern
+matches all twenty. Four of the twenty are the multi-line form, where `test.fail(` sits alone on the
+line and the title and tag follow on the next: `catchup-provider-timezone.spec.ts:181`,
+`catchup-proxy-mode.spec.ts:216`, `output-m3u.spec.ts:164` and
+`catchup-m3u-advertisement.spec.ts:55`. The pattern is line-anchored, not title-anchored, so both
+shapes count.
 
 Twenty sites across seventeen files — three in `vod-range.spec.ts`, two in `xc-vod-playback.spec.ts`,
 and one each in fifteen further files. **The table below carries all twenty, numbered 1–20, every one
-of them on `main`.** Rows 18–20 are the three #113 brought; rows 1–17 were measured at `cf95410e` and
-are unchanged by the merge.
+of them on `main`.** Rows 18–20 are the three #113 brought; rows 1–17 were measured at `cf95410e`.
+Re-derived at `45a33a4a`, the per-file breakdown is byte-for-byte the one the table encodes: **no row
+was added, removed or reassigned by G11.**
 
 **Nine need a guard. Eleven are already safe.**
 
-**Cross-checked against G11's independent measurement at the same tip**, since G11 is the goal that
-tags all of these and a disagreement would mean one of us was counting a different tree. All three
-figures agree: **77 spec files** (`find e2e/tests -name '*.spec.ts' | wc -l`), **190 test
-declarations** (170 plain `test(` plus these 20 `test.fail(`), **20 pins**. No discrepancy to
-reconcile.
+The suite-wide figures G11 was cross-checked against have moved, because G11 itself moved them.
+At `45a33a4a`: **80 spec files** (75 outside `tests/guards/`, plus five guards — four new, and
+`pageerrors-enforcement.spec.ts` moved in from `tests/frontend/`; `quarantine.spec.ts` deleted), and
+**196 test declarations** (176 plain `test(` plus these 20 `test.fail(`) — the same 196 named in
+`tags.spec.ts`'s own header. The pin count is the only one of the three this audit depends on, and
+it did not move.
 
 Rows 8, 9 and 10 are `vod-range.spec.ts`'s three; rows 11 and 12 are `xc-vod-playback.spec.ts`'s two.
 Every other row is the sole pin in its file. Cross-check the table against the `grep` above before
-treating this audit as complete — a twenty-first site would mean a pin landed after `76db0332`, which
+treating this audit as complete — a twenty-first site would mean a pin landed after `45a33a4a`, which
 has no verdict and no guard here. The plan's Task 1 Step 2 re-derives this count and stops if it
-exceeds the table; that is not ceremony, it is how this drift was caught the first time.
+exceeds the table; that is not ceremony, it is how this drift was caught the first time, and it is
+why the count was re-derived a third time after G11.
 
 **The debt is entirely pre-G9, and rows 18–20 are the evidence.** All three pins #113 shipped are
 already guarded to this document's rubric, and two of them carry a standalone non-inverted sibling
@@ -144,7 +220,7 @@ is already the house standard for new work; what needs backporting is everything
 | 4 | `seeded/token-refresh-deleted-user.spec.ts` · *refreshing a deleted user's token returns 401, not 500* (#12) | G5 (#88) | `seed.user()`, `asUser(...)` (**one login out of three per minute**), `freshRefreshTokenForTest()`, and `DELETE /api/accounts/users/<id>/ === 204` | **None — this is the only test in the file.** The comment names the exact hazard: a cold-run 429 from `asUser` reads as an expected failure and the pin is hollow, "verified with `--reporter=json`" | **NEEDS A GUARD.** Add a non-inverted control that posts a **live** principal's refresh token to `/api/accounts/token/refresh/` and asserts 200 — zero login, via `PRINCIPALS`. That covers the route premise. The `asUser` 429 hazard is a harness cost and stays named in the comment (D2) |
 | 5 | `streaming/hidden-channel-streamable.spec.ts` · *a channel a user cannot list is not streamable by that user* (#87) | G5 (#88) | `upstream.scenario`, `lockedProfile`, `seed.upstreamChannel({ channel: { user_level: 0, is_adult: true } })`, `seed.xcUser({ hide_adult_content: true })`, and the listing-absence premise | **None — the only test in the file.** It reasons carefully about `xcLiveStreams` asserting 200 before parsing, and about only a refusal setting `served = false`; both are good, and neither is a guard against the setup failing | **NEEDS A GUARD.** Add a non-inverted sibling with the same setup asserting the listing half: absent for the `hide_adult_content` user, present for an admin. Costs one more upstream scenario (~60s in the `streaming` project) |
 | 6 | `streaming/vod-adult-streamable.spec.ts` · *an adult movie a user cannot list is not streamable by that user* (#110) | G9 (#112) | Whole VOD catalogue seed and the listing-absence premise. It **does** carry an in-body positive control (`toContain(controlMovie.id)`), and the comment's claim for it is correct as far as it goes: the absence assertion cannot pass on a listing that never worked | **None — the only test in the file** | **NEEDS A GUARD — the weakest of the nine, and the one verdict this audit had to adjudicate (see below).** The in-body positive control makes the *absence* assertion non-vacuous; it does nothing about the seed-and-ingest premise, because a throw anywhere in the body still greens the pin. The control is scoped to **seed plus listing only**, no streaming, and its cost (a second ~120s ingest) is the honest price of a single-test file |
-| 7 | `streaming/vod-upstream-error.spec.ts` · *an upstream failure on the VOD stream route does not return the provider credential* | G9 (#112) | The local `seedVodMovie` helper (scenario → `seed.xcAccount` → `refresh-vod` → a 120s `waitFor.resource` on the ingest), the fault arm, and the error-response fetch | **None — the only test in the file** | **NEEDS A GUARD, and it is the one worth most.** The assertion is that a credential is *not* disclosed, so a hollow green claims a security property that was never tested. Its comment additionally makes a claim that does not hold: *"The fault is armed only after ingest completes, so a failure here can only be the streaming-error path."* An ingest that never completes fails `waitFor.resource` inside the inverted body, which greens the pin — the ordering does not help. Add a non-inverted sibling asserting the **happy** path on the same route, then arm the fault in the pin. **Note: this defect is deliberately unfiled** (a disclosure decision for the repo owner, recorded in the G9 task report) — do not open an issue from it |
+| 7 | `streaming/vod-upstream-error.spec.ts` · *an upstream failure on the VOD stream route does not return the provider credential* | G9 (#112) | The local `seedVodMovie` helper (scenario → `seed.xcAccount` → `refresh-vod` → a 120s `waitFor.resource` on the ingest), the fault arm, and the error-response fetch | **None — the only test in the file** | **NEEDS A GUARD, and it is the one worth most.** The assertion is that a credential is *not* disclosed, so a hollow green claims a security property that was never tested. Its comment additionally makes a claim that does not hold: *"The fault is armed only after ingest completes, so a failure here can only be the streaming-error path."* An ingest that never completes fails `waitFor.resource` inside the inverted body, which greens the pin — the ordering does not help. Add a non-inverted sibling asserting the **happy** path on the same route, then arm the fault in the pin. **The defect is filed: [#89](https://github.com/D10Scot/Dispatcharr/issues/89)**, *"Provider credentials can reach an unauthenticated client in a 500 response body from the VOD proxy"*, opened 2026-08-30 after checking with the repository owner and labelled `ready-for-agent`. It supersedes the pin's "deliberately not filed" comment, which was written before the decision and is now wrong. **Do not open a second issue** — cite #89 |
 | 8 | `streaming/vod-range.spec.ts` · *a provider that ignores Range still yields the requested bytes* (#66) | G9 (#112) | `seedVodMovie`, full-GET session establishment, a direct provider 206 read, **and `upstream.fault(scenario, 'range-unsupported')`** — which throws on a non-2xx control response | `Range and seek on the VOD proxy match the provider byte-for-byte` covers `seedVodMovie`, the full GET and a 206 range read on the same route. It does **not** arm `range-unsupported` | **NEEDS A GUARD**, narrowly. Add a non-inverted sibling that arms `range-unsupported` and asserts the **provider itself** ignores Range (direct fetch through `toControl`, 200 with the whole asset). Fast, no Dispatcharr involved, and it pins exactly the unguarded link |
 | 9 | `streaming/vod-range.spec.ts` · *an unsatisfiable Range on a fresh session is 416, not 500* (#98) | G9 (#112), fixed by `8386825c` | `seedVodMovie` and the fresh-session GET | `Range and seek …` carries the established-session 416 control, moved there by `8386825c` **for this pin** | **ALREADY SAFE.** The exemplar. Its comment names the sibling and the reason |
 | 10 | `streaming/vod-range.spec.ts` · *a suffix Range returns the tail of the file* (#64) | G9 (#112) | `seedVodMovie`, the full GET, a direct provider 200 read and a length equality | `Range and seek …` exercises `seedVodMovie`, the full GET, a 206 range read and a direct-provider byte comparison — the same shapes | **ALREADY SAFE.** Rubrics 1–3 hold. The residual (`direct.status === 200` on a plain fetch) is the same call the sibling makes with a Range and is accepted |
@@ -155,7 +231,7 @@ is already the house standard for new work; what needs backporting is everything
 | 15 | `seeded/output-m3u.spec.ts` · *a channel name containing a double quote still produces a well-formed EXTINF line* (#80) | G5 (#88) | `seed.channel()`, `PATCH /api/channels/channels/<id>/ { name }` → 200, the `/output/m3u` GET, and `parseM3u` finding the entry | `/output/m3u renders a parseable playlist with a well-formed proxy URL` covers seed, route, parse and `wellFormed`. **No sibling PATCHes a channel name** | **NEEDS A GUARD**, minimal. Add the rename round-trip (PATCH `name`, read back) to the existing non-inverted first test. One `expect`, no new test |
 | 16 | `seeded/vod-ingest-fidelity.spec.ts` · *GET /api/vod/categories/ accepts an m3u_account filter* (#96) | G9 (#112) | `seedCatalogue`, and the unfiltered-list premise | `a VOD refresh creates one category row per declared category, enabled for that account` — named explicitly in the pin's own comment as the non-inverted guard | **ALREADY SAFE** |
 | 17 | `seeded/xc-vod-catalogue.spec.ts` · *XC get_vod_info returns the advanced data the REST API returns (G9 row 20, defect)* (#97) | G9 (#112), guarded by `8386825c` | Catalogue seed and the provider-info premise | `the XC VOD actions answer a real catalogue with Dispatcharr identities, not the provider's (G9 row 9)` — `8386825c` added the non-inverted provider-info bitrate assertion **for this pin** | **ALREADY SAFE** |
-| 18 | `streaming/catchup-proxy-mode.spec.ts` · *a catch-up channel a viewer cannot list is not streamable by that viewer* (the row-8 `hide_adult_content` pin) | G10 (#113), guarded in-PR by `c1858c42` | The catch-up seed and the listing-absence premise | `row 8 premise: a Standard viewer with hide_adult_content cannot list an adult channel` — a standalone non-inverted test added by `c1858c42` for exactly this | **ALREADY SAFE.** The commit message states the standard this audit codified: *"Add a standalone, non-inverted test in this file (not just the pre-existing corroboration at `tests/seeded/output-authorization.spec.ts`)"* |
+| 18 | `streaming/catchup-proxy-mode.spec.ts` · *an adult channel a user cannot list is also refused on the catch-up path* (#95 — the row-8 `hide_adult_content` pin) | G10 (#113), guarded in-PR by `c1858c42` | The catch-up seed and the listing-absence premise | `row 8 premise: a Standard viewer with hide_adult_content cannot list an adult channel` — a standalone non-inverted test added by `c1858c42` for exactly this | **ALREADY SAFE.** The commit message states the standard this audit codified: *"Add a standalone, non-inverted test in this file (not just the pre-existing corroboration at `tests/seeded/output-authorization.spec.ts`)"* |
 | 19 | `streaming/catchup-provider-timezone.spec.ts` · *a requested start keeps its seconds whatever the provider timezone is* (#111) | G10 (#113) | `seedCatchupChannelInZone(..., 'UTC')` and `(..., 'Europe/Brussels')`, the `catchup-layout-404 { layout: 'path' }` fault arm, the four-candidate walk, and the UTC control half | **Two**, both non-inverted, both in this file: `row 13 premise: under UTC, the colon-seconds PATH candidate preserves the requested seconds` (same helper, same fault, same fixed instant, same candidate index `[2]`, same `toHaveLength(4)`) covers the UTC half; `the provider server_info.timezone converts the requested start before it is sent` seeds `'Europe/Brussels'` non-inverted and covers the other zone | **ALREADY SAFE**, and the strongest guard in the suite. Both zones' seeds and the fault arm are exercised un-inverted, and the premise test's own comment states the rubric: *"no assertion in that body — including the 'UTC control' — can guard its own premise"* |
 | 20 | `seeded/catchup-m3u-advertisement.spec.ts` · *the generated M3U advertises catch-up for a catch-up channel* (#94) | G10 (#113) | `seed.channel({ is_catchup: true, catchup_days: 7 })`, the `/output/m3u` fetch and the uuid lookup | `a catch-up channel appears in the generated M3U (premise guard for the pin below)` — identical seed shape, identical route including the `m3uQuery()` cache-buster, identical uuid-based locator, asserting 200 and the entry defined. Plus `the XC catalogue does advertise the same channel as catch-up` for the asymmetry | **ALREADY SAFE.** Rubrics 1–3 all hold; the guard even avoids a title-based locator because #80's quote-escaping defect can corrupt `title`, which would let "channel not found" read as the catch-up omission |
 
@@ -268,14 +344,14 @@ defect. It is recorded as a `COVERAGE.md` **Gap** row (D6) so it is not re-deriv
 | **D2** | **Rejected: converting pins to `test('…')` plus an in-body `test.fail()`.** Playwright supports `test.fail()` with no arguments inside a body, and it would make the premise structurally un-invertible with no sibling and no extra seed — but the docs **recommend against it** and **do not state** whether an error thrown before the call is reported as a real failure. A guard mechanism whose central property is undocumented is not a guard | The whole goal is removing tests that are green for reasons nobody verified. Adopting an unverified mechanism to do it would be self-refuting. Task 1 spikes it anyway and records the result in the plan; if the spike is positive, a **later** goal may adopt it — G15 does not, whatever the spike says. That keeps this PR's outcome independent of an experiment |
 | **D3** | **A `--reporter=json` comment is not a guard, and is not deleted either** | Four sites carry one. Where the rubric is satisfied it is useful documentation of *which* assertion the pin fails at; where it is not, the sibling test replaces its load-bearing role and the comment is rewritten to point at the sibling |
 | **D4** | **`xc-output.spec.ts`'s XMLTV test gains the `adminPage` fixture and one `expectWellFormedXml` call.** `parseXmltv` is not touched | Two lines, and the second one is the point: this is what makes a request-only test open a browser context. `output-epg.spec.ts` and `hdhr.spec.ts` already pay the same cost for the same check, and `adminPage` reuses `storageState` so it spends no login. `parseXmltv`'s own comment forbids tightening it |
-| **D5** | **The two residual first-byte TS assertions are replaced with `expectTsAligned`** | Both reads are `readPackets(20)`, which returns whole packets, so `expectTsAligned` is a drop-in that additionally checks the sync byte at every 188-byte boundary. At `76db0332` the import already exists in `catchup-cascade.spec.ts` (a one-line change) and does not in `catchup-path-layout.spec.ts` (two). The former merge-order dependency on #113 is **discharged** |
+| **D5** | **The two residual first-byte TS assertions are replaced with `expectTsAligned`** | Both reads are `readPackets(20)`, which returns whole packets, so `expectTsAligned` is a drop-in that additionally checks the sync byte at every 188-byte boundary. At `45a33a4a` the import already exists in `catchup-cascade.spec.ts` (a one-line change) and does not in `catchup-path-layout.spec.ts` (two). The former merge-order dependency on #113 is **discharged** |
 | **D6** | **The per-stream marker is ruled feasible-under-Proxy, not built, and recorded as a `COVERAGE.md` Gap row** | See the ruling. A Gap row is how this programme records a resolved finding with no further action here — the convention `COVERAGE.md`'s own header states |
 | **D7** | **The Stats interaction test drives "Refresh Now", not "Stop Channel"** | "Refresh Now" is a `Button` with visible text and is addressable today. Every per-connection action is a `Tooltip`-wrapped icon-only `ActionIcon` with no accessible name — the same defect as [#73](https://github.com/D10Scot/Dispatcharr/issues/73), on a different surface. G15 **files that** (candidate defect **C1**) and does not write a test that depends on a brittle positional locator |
 | **D8** | **No backups test clicks a row action, and no backups test restores.** The backups interaction is **Upload**, via the text-labelled toolbar button | Download / **Restore** / Delete are three adjacent unlabelled icon buttons. A positional locator that drifts by one clicks Restore, which replaces the database under every parallel worker in the container. That is not a risk worth taking for a delete test, and restore is **G12's** on an isolated instance regardless (the `COVERAGE.md` Lifecycle row already says so). C1 covers the addressability |
 | **D9** | **`e2e-upstream/CONTRACT.md`, at the provider's root, versioned `1.1.0` on landing** | The README is already the how-to (nine sections, control API through VOD asset) and the contract must not restate it. A sibling file is greppable from the package a consumer is reading, unlike a `docs/` path, and it keeps the provider's own documentation together. `1.1.0` because writing the contract down adds no behaviour and breaks nothing, and because bumping *something* on landing proves the bump procedure works |
-| **D10** | **The version is made enforceable by a source-scan test in the `quarantine.spec.ts` mould, not by a `/version` endpoint** | An endpoint is a provider runtime change — out of G15's file list, and unnecessary: provider and consumers always ship from one commit, so there is nothing to negotiate at run time. What can actually rot is `CONTRACT.md` disagreeing with `package.json`. One test reading both files closes that, costs no container, and needs no `e2e-upstream/src/` edit |
+| **D10** | **The version is made enforceable by a source-scan guard, not by a `/version` endpoint — and it goes in `e2e/tests/guards/upstream-contract.spec.ts`, not `tests/seeded/`.** It imports `REPO_ROOT` from `./ast` rather than hand-rolling a `path.resolve(__dirname, '../..')`, is tagged **`@characterization`** with the guards' shared comment style, and is listed in `COVERAGE.md`'s `## Guards (G11)` table with the mutation that proved it fails | An endpoint is a provider runtime change — out of G15's file list, and unnecessary: provider and consumers always ship from one commit, so there is nothing to negotiate at run time. What can actually rot is `CONTRACT.md` disagreeing with `package.json`. **G11 deleted `quarantine.spec.ts` and generalised its role into the `guards` project**, which is exactly this shape of test: repository source read from disk, no container, no browser, no fixtures, ~1s, its own CI job. Putting it in `tests/seeded/` instead would make a text-file comparison wait on a booted instance and four shared workers, for nothing. `@characterization` because it asserts a fact about this repository's own source tree, like every other test in that directory |
 | **D11** | **Body assertions are added to two of the four status-only tests, and the other two stay status-only with a comment saying why** | A 403 whose body is DRF's stock `{"detail": …}` carries no signal. A 200 that could be an SPA `index.html`, or a list that could be empty, carries a lot. See the table |
-| **D12** | **G15 edits no `.github/workflows/**` file and no `playwright.config.ts` project** | It adds no project and no CI job. Every new test lands in an existing project. This keeps G15 clear of the zizmor ratchet entirely and of G11's and G12's CI work |
+| **D12** | **G15 edits no `.github/workflows/**` file and no `playwright.config.ts` project** — and this **still holds after D10 moved the contract guard into `tests/guards/`**, because G11 already created the `guards` project and its CI job. A new file under `testDir: './tests/guards'` is picked up by both with no edit to either | It adds no project and no CI job. Every new test lands in an existing project. This keeps G15 clear of the zizmor ratchet entirely and of G11's and G12's CI work. The one thing to check on landing is that the `guards` job is green, since it now runs one more test than G11 left it running |
 
 ## Real interactions for `stats`, `guide` and `backups`
 
@@ -317,18 +393,19 @@ parses."* The strict check goes beside it, never inside it. This is the same div
 
 ## The two residual TS assertions, and the merge order
 
-| File | Site | State at `76db0332` | Change |
-|---|---|---|---|---|
+| File | Site | State at `45a33a4a` | Change |
+|---|---|---|---|
 | `streaming/catchup-path-layout.spec.ts` | `expect(bytes[0]).toBe(0x47)`, in *the root XC PATH route streams and records the layout it was asked for* | Present, untouched by #113. The file imports only `test, expect` from `'../../fixtures'` | `expectTsAligned(bytes)`, plus the import — **2 lines** |
 | `streaming/catchup-cascade.spec.ts` | `expect((await streamClient.readPackets(20))[0]).toBe(0x47)`, in G8's *the candidate cascade falls through to the QUERY layout when PATH 404s* | Present and unmodified by #113, but the file now imports `expectTsAligned` for #113's own five tests | `expectTsAligned(await streamClient.readPackets(20))` — **1 line** |
 
-**The merge-order dependency is discharged.** #113 has merged as `76db0332`. It added five tests to
-`catchup-cascade.spec.ts` and left G8's test — the one carrying the residual assertion — untouched,
-so both changes are now written against `main` directly, and #113 is what established
-`expectTsAligned` as that file's convention. Both replacements are verified as drop-ins:
-`readPackets(N)` returns whole 188-byte packets, which is what `expectTsAligned` requires. The only
-other `0x47` in `e2e/tests` is `contiguity.spec.ts`'s synthetic-packet *writer*, which is not an
-assertion and is not touched.
+**Both merge-order dependencies are discharged.** #113 merged as `76db0332` and G11 as `4211cbb7` /
+`7a408c2b`; the two sites survive both, at `catchup-cascade.spec.ts:62` and
+`catchup-path-layout.spec.ts:49`. #113 added five tests to `catchup-cascade.spec.ts` and left G8's
+test — the one carrying the residual assertion — untouched, and G11 only added a tag to it, so both
+changes are written against `main` directly and #113 is what established `expectTsAligned` as that
+file's convention. Both replacements are verified as drop-ins: `readPackets(N)` returns whole
+188-byte packets, which is what `expectTsAligned` requires. The only other `0x47` in `e2e/tests` is
+`contiguity.spec.ts`'s synthetic-packet *writer*, which is not an assertion and is not touched.
 
 ## The status-only assertion audit
 
@@ -382,9 +459,16 @@ for every mechanism rather than restating one.
    is what the per-stream marker of D6 would be). Because provider and consumers ship from one
    commit, a bump never breaks a build — it exists so a spec can cite a version and a reviewer can
    see, in one number, whether a consumer's assumptions moved.
-6. **Enforcement.** One test asserts `CONTRACT.md`'s declared version equals
-   `e2e-upstream/package.json`'s (D10). A convention plus a README decays silently; this does not
-   — the same sentence `quarantine.spec.ts` justifies itself with.
+6. **Enforcement.** One guard, `e2e/tests/guards/upstream-contract.spec.ts`, asserts that
+   `CONTRACT.md`'s declared version equals `e2e-upstream/package.json`'s (D10). It resolves both
+   paths from `REPO_ROOT`, imported from `./ast` — the guards' shared root constant, defined as
+   `path.resolve(E2E_ROOT, '..')` — rather than repeating a `path.resolve(__dirname, …)` walk, so a
+   directory move breaks one definition instead of six. It imports `test` and `expect` from
+   `@playwright/test`, not from `'../../fixtures'`: the `guards` project runs with no fixtures. It
+   is tagged `@characterization` under a `// @characterization: …` comment naming the fact it pins,
+   in the same words its five siblings use. *A convention plus a README decays silently. This does
+   not* — the sentence the deleted `quarantine.spec.ts` justified itself with, and which
+   `allowlist.ts` now carries forward.
 
 ## File ownership in wave 6 — confirmed disjoint
 
@@ -395,12 +479,36 @@ Checked file by file against the disposition's assignments:
 | **G13** | `e2e/tests/frontend/dvr.spec.ts` | **No.** Its only `test.fail()` mention is a comment, not a call site (audit note above). No Guide→record test (D-note under interactions) |
 | **G12** | `e2e/tests/lifecycle/**`, `durable-state.ts`, backup **restore**, `lifecycle-tests.yml` | **No.** D8 keeps restore out of G15 explicitly |
 | **G14** | `settings.spec.ts`, `plugins.spec.ts`, EPG matching, bulk ops, M3U filters/profiles, product WS events | **No.** G15's frontend work is `stats.spec.ts`, `guide.spec.ts`, `backups.spec.ts` only. `m3u-ingest.spec.ts` and `m3u-refresh-failure.spec.ts` appear in G15's audit, but for `test.fail()` guards — not M3U filters or profiles, which are G14's subject in different files |
-| **G11** | The tag taxonomy, the generalised quarantine guard, the run-everything CI mode, the `data-testid` ADR | **No, and G15 depends on it.** G15 applies G11's tags; it defines none, and D12 keeps it out of every workflow file |
-| **G15** | `stats.spec.ts`, `guide.spec.ts`, `backups.spec.ts`; the nine `test.fail()` guard sites; `xc-output.spec.ts`; `catchup-path-layout.spec.ts`, `catchup-cascade.spec.ts`; `api-fixture.spec.ts`, `authorization.spec.ts`; `e2e-upstream/CONTRACT.md` + one enforcing test; `COVERAGE.md`, `README.md` | — |
+| **G11** | ~~The tag taxonomy, the generalised quarantine guard, the run-everything CI mode, the `data-testid` ADR~~ — **landed** as `4211cbb7` and `7a408c2b` | **No.** G15 applies G11's tags and adds one file to the `guards` directory G11 created; it edits none of G11's own guards, `ast.ts`, `allowlist.ts`, the ADRs or the workflows, and D12 keeps it out of every workflow file |
+| **G15** | `stats.spec.ts`, `guide.spec.ts`, `backups.spec.ts`; the nine `test.fail()` guard sites; `xc-output.spec.ts`; `catchup-path-layout.spec.ts`, `catchup-cascade.spec.ts`; `api-fixture.spec.ts`, `authorization.spec.ts`; `e2e-upstream/CONTRACT.md` + `e2e/tests/guards/upstream-contract.spec.ts`; `COVERAGE.md`, `README.md` | — |
 
 The one shared-file collision risk is `e2e/COVERAGE.md`, which G12–G15 all append to. G15 edits
 **only its own rows** and appends its new ones — the same discipline every prior goal in this
-programme has followed.
+programme has followed. G15's Guards-table row is an append to a table G11 owns; the heading stays
+`## Guards (G11)`, because it names the goal that built the project, not the goal that last added a
+row.
+
+**One exception, and it is a factual correction rather than a re-scoping.** `COVERAGE.md`'s G9 VOD
+row for the credential-disclosure defect still says *"deliberately unfiled … no public issue exists,
+pending a disclosure decision by the repo owner."* The decision was taken and the issue is
+[#89](https://github.com/D10Scot/Dispatcharr/issues/89). G15 corrects that row to cite it, keeping
+its `known-bug` status and its G9 assignment, and says so in the commit message. Leaving a row that
+tells the next reader not to file an issue that already exists is worse than the ownership rule it
+would honour.
+
+## Guards G15 must satisfy — checked, all clear
+
+Five blocking guards run in the `guards` project. Every one was checked against G15's file list, and
+G15 trips none of them:
+
+| Guard | Rule | G15 |
+|---|---|---|
+| `capabilities.spec.ts` · `CONTAINER_LIFECYCLE` | A test or hook destructuring the `instance` fixture must be one of the two `tests/lifecycle/` specs | **Clear.** G15 touches no lifecycle spec and destructures `instance` nowhere. The container is never restarted, replaced or upgraded by anything here |
+| `capabilities.spec.ts` · `SUBPROCESS` | A direct `node:child_process` / `child_process` import must be `fixtures/instance.ts`, `fixtures/greybox/redis.ts` or `output-profile-sharing.spec.ts` | **Clear.** No task shells out. Item 16's guard reads two files with `node:fs/promises`, which is not on any list |
+| `capabilities.spec.ts` · `CONTAINER_INTROSPECTION` | The markers `pgrep`, `docker ` and `manage.py` must not appear **in a string or template literal** outside `fixtures/instance.ts` and `output-profile-sharing.spec.ts` | **Clear, and the one worth stating explicitly.** The detector reads literals only, never comments — so the prose in these documents and in the specs' own header comments is invisible to it. Nothing G15 adds builds a command line. Item 16's guard also lives under `tests/guards/`, which `usersOf` skips outright |
+| `global-mutation.spec.ts` · `GLOBAL_SETTINGS_WRITE` | Any `api.post/patch/put/delete` whose URL text resolves to contain `core/settings` must be on a four-file allowlist | **Clear, including the one case that looks like an exception.** Task 14's Stats test may set the **"Refresh Interval (seconds)"** `NumberInput` to `0` to remove the poll. That is a page control backed by `localStorage`, not a settings row — `stats.spec.ts`'s existing comment names the key, `stats-refresh-interval`, and locates it in `localStorage`. No G15 test writes `/api/core/settings/`; `lockedProfile(api, 'Proxy')` reads the locked profile rather than setting a default, and `grep -n "core/settings"` over the three frontend specs returns nothing today |
+| `pageerrors-enforcement.spec.ts` | Every `test()` under `tests/frontend/` must destructure `pageErrors` | **Binding on Task 14, and already stated there.** All three new interaction tests take `pageErrors` and end with `await pageErrors.expectClean()`, as every test in that directory does. `KNOWN_UNVERIFIABLE` holds one entry (`plugins.spec.ts:15`) and G15 adds none |
+| `tags.spec.ts` | Every declaration carries exactly one recognised tag, in an inline details literal | **Binding on every item.** The inventory's tag column is the answer, and `testid.spec.ts` is unaffected because G15 adds no `SURFACES` entry |
 
 ## Test inventory
 
@@ -409,28 +517,40 @@ frontend interactions, one contract guard. **Six edit an existing test** — inc
 guard (audit row 15), which folds one assertion into a control that already exists rather than
 adding a test.
 
-| # | Change | File | Kind |
-|---|---|---|---|
-| 1 | Non-inverted control: seed an M3U account and PATCH a writable field | `seeded/m3u-ingest.spec.ts` | new test |
-| 2 | Non-inverted control: the restricted channel shape round-trips | `seeded/hdhr.spec.ts` | new test |
-| 3 | Non-inverted control: a profiled level-1 user lists a level-1 channel | `seeded/xc-live.spec.ts` | new test |
-| 4 | Non-inverted control: a live principal's refresh token is accepted (zero login) | `seeded/token-refresh-deleted-user.spec.ts` | new test |
-| 5 | Non-inverted control: the adult channel is unlistable for the filtered user, listable for an admin | `streaming/hidden-channel-streamable.spec.ts` | new test |
-| 6 | Non-inverted control: the adult movie is unlistable for the filtered user | `streaming/vod-adult-streamable.spec.ts` | new test |
-| 7 | Non-inverted control: the VOD stream route serves bytes with no fault armed | `streaming/vod-upstream-error.spec.ts` | new test |
-| 8 | Non-inverted control: `range-unsupported` makes the **provider** ignore Range (direct, via `toControl`) | `streaming/vod-range.spec.ts` | new test |
-| 9 | Fold a channel-rename round-trip into the existing non-inverted playlist test | `seeded/output-m3u.spec.ts` | edit |
-| 10 | `expectWellFormedXml` on the XMLTV body; add `adminPage` | `seeded/xc-output.spec.ts` | edit |
-| 11 | `expectTsAligned` replaces the first-byte check | `streaming/catchup-path-layout.spec.ts` | edit |
-| 12 | `expectTsAligned` replaces the first-byte check (1 line — the import is already there) | `streaming/catchup-cascade.spec.ts` | edit |
-| 13 | JSON-shape body assertions on both fixture proofs; an unauthenticated-401 assertion on the refresh proof | `seeded/api-fixture.spec.ts` | edit |
-| 14 | Containment body assertion on the admin list; comment on the deliberate status-only 403 | `seeded/authorization.spec.ts` | edit |
-| 15 | One interaction test each | `frontend/stats.spec.ts`, `frontend/guide.spec.ts`, `frontend/backups.spec.ts` | 3 new tests |
-| 16 | `CONTRACT.md` + the version-agreement guard test | `e2e-upstream/CONTRACT.md`, `e2e/tests/seeded/upstream-contract.spec.ts` | new file + new test |
+| # | Change | File | Kind | Tag |
+|---|---|---|---|---|
+| 1 | Non-inverted control: seed an M3U account and PATCH a writable field | `seeded/m3u-ingest.spec.ts` | new test | `@contract` |
+| 2 | Non-inverted control: the restricted channel shape round-trips | `seeded/hdhr.spec.ts` | new test | `@contract` |
+| 3 | Non-inverted control: a profiled level-1 user lists a level-1 channel | `seeded/xc-live.spec.ts` | new test | `@contract` |
+| 4 | Non-inverted control: a live principal's refresh token is accepted (zero login) | `seeded/token-refresh-deleted-user.spec.ts` | new test | `@contract` |
+| 5 | Non-inverted control: the adult channel is unlistable for the filtered user, listable for an admin | `streaming/hidden-channel-streamable.spec.ts` | new test | `@contract` |
+| 6 | Non-inverted control: the adult movie is unlistable for the filtered user | `streaming/vod-adult-streamable.spec.ts` | new test | `@contract` |
+| 7 | Non-inverted control: the VOD stream route serves bytes with no fault armed | `streaming/vod-upstream-error.spec.ts` | new test | `@contract` |
+| 8 | Non-inverted control: `range-unsupported` makes the **provider** ignore Range (direct, via `toControl`) | `streaming/vod-range.spec.ts` | new test | `@contract` |
+| 9 | Fold a channel-rename round-trip into the existing non-inverted playlist test | `seeded/output-m3u.spec.ts` | edit | unchanged (`@contract`) |
+| 10 | `expectWellFormedXml` on the XMLTV body; add `adminPage` | `seeded/xc-output.spec.ts` | edit | unchanged (`@contract`) |
+| 11 | `expectTsAligned` replaces the first-byte check | `streaming/catchup-path-layout.spec.ts` | edit | unchanged (`@contract`) |
+| 12 | `expectTsAligned` replaces the first-byte check (1 line — the import is already there) | `streaming/catchup-cascade.spec.ts` | edit | unchanged (`@contract`) |
+| 13 | JSON-shape body assertions on both fixture proofs; an unauthenticated-401 assertion on the refresh proof | `seeded/api-fixture.spec.ts` | edit | unchanged (`@contract`) |
+| 14 | Containment body assertion on the admin list; comment on the deliberate status-only 403 | `seeded/authorization.spec.ts` | edit | unchanged (`@contract`) |
+| 15 | One interaction test each | `frontend/stats.spec.ts`, `frontend/guide.spec.ts`, `frontend/backups.spec.ts` | 3 new tests | `@contract` ×3 |
+| 16 | `CONTRACT.md` + the version-agreement guard test | `e2e-upstream/CONTRACT.md`, `e2e/tests/guards/upstream-contract.spec.ts` | new file + new test | **`@characterization`** |
+
+**Why the tags fall the way they do.** Items 1–8 and 15 assert client-observable behaviour — a row
+read back through the REST API, a listing, bytes on the wire, a rendered page reacting to a click —
+which is `@contract` by ADR 0002's default, and `@contract` needs no justification. Items 9–14 edit
+existing tests without changing what they are, so their tags stay as G11 set them; every one is
+`@contract` today, and none of G15's edits changes that. **Item 16 is the exception**: it reads
+`e2e-upstream/package.json` and `e2e-upstream/CONTRACT.md` off disk and compares two strings in this
+repository's own source. Nothing about it survives into a world where the relay is a separate
+process except this repository's layout, which is exactly what `@characterization` means — and it is
+why it belongs in `tests/guards/`, where all eight existing tests carry the same tag for the same
+reason. It gets the directory's `// @characterization: <fact>` comment, which ADR 0002 requires and
+the guard does not check.
 
 Plus `COVERAGE.md` (three new Frontend rows, one Streaming Gap row for D6, one Upstream row for the
-contract) and one `README.md` section pointing at `CONTRACT.md`. Tags on every added or touched test
-per G11.
+contract, **and one row in the `## Guards (G11)` table** for item 16's guard, carrying the mutation
+that proved it fails) and one `README.md` section pointing at `CONTRACT.md`.
 
 ## Candidate product defects
 
@@ -475,10 +595,21 @@ the expected shape of a good outcome here, not an exception to the plan.
 
 ## Risks
 
-- **G11 lands late and G15 has to be re-tagged.** G15 touches ten spec files G11 also rewrites.
-  Mitigation: G15 does not start until G11 merges. If that becomes untenable, the fallback is to
-  land G15's non-frontend half (the guards, which touch files G11 tags but does not restructure)
-  and hold the frontend tests — but the default is to wait.
+- ~~**G11 lands late and G15 has to be re-tagged.**~~ **Discharged.** G11 merged as `4211cbb7` and
+  `7a408c2b`; every file G15 touches is already tagged, and the retag conflict this risk anticipated
+  cannot happen. What replaces it is smaller and mechanical: **a new test with no tag fails the
+  `guards` job**, which is blocking. Every item in the inventory carries its tag above, so the
+  failure mode is forgetting, not choosing.
+- **A hollow pin surfaces as a red `@contract` control, which by ADR 0002 blocks.** This is the same
+  event as the risk below, seen through the taxonomy: every guard control G15 adds is non-inverted
+  and `@contract`, so if the premise it exercises is genuinely broken, the control lands red and
+  `docs/adr/0002-e2e-test-taxonomy.md` is unambiguous — *"a red `@contract` test blocks. Behaviour
+  changed; either fix the implementation or argue the test was wrong."* There is no
+  read-it-and-move-on disposition available, because that is `@characterization`'s and these are not
+  characterization tests. **So the PR must either fix the premise or state in its body why the red
+  is correct and what it means, before merge.** Retagging the control `@characterization` to quieten
+  it is the one response that is out of bounds: it would make the exact class of failure this goal
+  exists to expose invisible on a migration branch, which is the asymmetry ADR 0002 chose against.
 - **Row 5, 6 and 7's sibling controls are expensive.** Each is a `streaming`-project test that
   stands up its own scenario, so each roughly doubles its file's runtime (~60s apiece, ~3 minutes
   total). That is the honest price of guarding three single-test files. It is paid, not optimised:
@@ -486,7 +617,9 @@ the expected shape of a good outcome here, not an exception to the plan.
 - **A guard can turn a green pin red — and that is the point.** If any of rows 1–8 was passing
   *because* its premise was broken, adding the sibling makes the suite red on landing. The PR body
   must say so and the finding is triaged, not suppressed. This is the most likely way G15 grows,
-  and the plan's Task 10 exists to absorb exactly one such finding.
+  and the plan's **Task 16 Step 4** exists to absorb exactly one such finding. (An earlier draft
+  said Task 10; Task 10 is the row-15 guard, and the step that reads the whole-suite result against
+  Task 1's baseline is Task 16 Step 4.) See the ADR bullet above for why such a red blocks.
 - **The Backups upload test adds an archive to a shared directory.** The file's module comment
   already explains why `backups.spec.ts` is pinned to file-level parallelism and why its before/
   after set difference is sound; the new test inherits that and registers its archive in the
