@@ -52,6 +52,91 @@ export function isTestCallee(expr: ts.Expression): boolean {
   );
 }
 
+/**
+ * Modifiers that DECLARE a test when given a title: `test.fail('…', fn)`.
+ *
+ * Each also has an in-body form that declares nothing — `test.fail()` marks
+ * the enclosing test, `test.skip(cond, 'reason')` skips it conditionally. The
+ * two are told apart by the first argument being a string literal, not by the
+ * modifier name, because the name is identical in both.
+ */
+const DECLARATION_MODIFIERS: ReadonlySet<string> = new Set([
+  'only',
+  'skip',
+  'fail',
+  'fixme',
+]);
+
+/**
+ * `test.*` calls that are never declarations, whatever their arguments.
+ *
+ * Counted because getting this wrong is not academic: the suite makes 41
+ * `test.setTimeout(…)` calls and one each of `use`, `step`, `slow`, `info`.
+ * A walker that treats those as declarations reports 232 tests where there
+ * are 190, and would demand a tag on a call that has nowhere to put one.
+ */
+const NON_DECLARATION_NAMES: ReadonlySet<string> = new Set([
+  'use',
+  'setTimeout',
+  'slow',
+  'step',
+  'info',
+  'extend',
+  'describe',
+  'configure',
+]);
+
+export type Classification =
+  | { kind: 'declaration' }
+  | { kind: 'not-a-declaration' }
+  | { kind: 'unverifiable'; reason: string };
+
+/**
+ * Decides whether a `test.*` call declares a test.
+ *
+ * Fails closed, in the same discipline as `pageerrors-enforcement.spec.ts`: a
+ * shape this function does not recognise is `unverifiable`, never silently
+ * dropped. Silently dropping is how a test escapes every guard here at once.
+ */
+export function classifyTestCall(node: ts.CallExpression): Classification {
+  const first = node.arguments[0];
+  // A title is any string-shaped expression, not only a plain literal.
+  // Parameterised suites are a normal pattern here — `render.spec.ts` and
+  // `authorization.spec.ts` both loop and build titles with a template — and
+  // treating those as unreadable would report two real declarations as holes
+  // in the checker.
+  const titled =
+    first !== undefined && (ts.isStringLiteralLike(first) || ts.isTemplateExpression(first));
+
+  if (ts.isIdentifier(node.expression)) {
+    // Bare `test(...)`.
+    if (titled) return { kind: 'declaration' };
+    return {
+      kind: 'unverifiable',
+      reason: `test(...) whose first argument is not a string-shaped title (found ${
+        first ? ts.SyntaxKind[first.kind] : 'no arguments'
+      }) — inline the title, or pin this location with a reason`,
+    };
+  }
+
+  if (!ts.isPropertyAccessExpression(node.expression)) {
+    return { kind: 'unverifiable', reason: 'unreadable callee shape' };
+  }
+
+  const name = node.expression.name.text;
+  if (NON_DECLARATION_NAMES.has(name)) return { kind: 'not-a-declaration' };
+  if (DECLARATION_MODIFIERS.has(name)) {
+    // `test.fail('title', fn)` declares; `test.fail()` and
+    // `test.skip(cond, 'reason')` modify the enclosing test.
+    return titled ? { kind: 'declaration' } : { kind: 'not-a-declaration' };
+  }
+
+  return {
+    kind: 'unverifiable',
+    reason: `unrecognised test.${name}(...) — add it to DECLARATION_MODIFIERS or NON_DECLARATION_NAMES in tests/guards/ast.ts`,
+  };
+}
+
 /** `test.describe(...)` and its variants (`.serial`, `.parallel`, `.only`). */
 export function isDescribeCallee(expr: ts.Expression): boolean {
   if (
@@ -77,6 +162,8 @@ export type TestCall = {
   line: number;
   /** Tags on enclosing `test.describe` blocks, outermost first. */
   describeTags: readonly string[];
+  /** Why this call is unreadable, when `findTestCalls` could not classify it. */
+  unverifiableReason?: string;
 };
 
 /**
@@ -123,13 +210,18 @@ export function findTestCalls(src: string, fileName: string): TestCall[] {
       return;
     }
     if (ts.isCallExpression(node) && isTestCallee(node.expression)) {
-      const { line } = sourceFile.getLineAndCharacterOfPosition(node.getStart());
-      calls.push({
-        node,
-        args: node.arguments,
-        line: line + 1,
-        describeTags: describeStack.flat(),
-      });
+      const classification = classifyTestCall(node);
+      if (classification.kind !== 'not-a-declaration') {
+        const { line } = sourceFile.getLineAndCharacterOfPosition(node.getStart());
+        calls.push({
+          node,
+          args: node.arguments,
+          line: line + 1,
+          describeTags: describeStack.flat(),
+          unverifiableReason:
+            classification.kind === 'unverifiable' ? classification.reason : undefined,
+        });
+      }
     }
     ts.forEachChild(node, visit);
   }
