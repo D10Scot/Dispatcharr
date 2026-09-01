@@ -228,6 +228,13 @@ guards, both cheap and both catching something real:
   cannot be defeated by a group nobody thought of — including `epg_settings`, which has no
   seeding migration and must be `POST`ed into existence before it can be `PATCH`ed.
 
+  **The allowlist's first wave-6 entry is already known.** G14's spec (PR #118) needs exactly
+  one global write — narrowing `network_access["XC_API"]` — and argues it is admissible because
+  it denies nothing that exists. It never writes the `UI` scope, which gates the endpoint that
+  would undo the change. That is the shape an allowlist entry should have: one group, one
+  file, and a written argument for why the blast radius is nil. Wave 6 adds it; G11 ships the
+  allowlist with the grey-box entries only.
+
   **Serialising a project is not a substitute for the allowlist**, which is worth stating
   because `playwright.config.ts` reaches for `workers: 1` twice. Two of these groups are read
   through caches that outlive the test that wrote them: `CoreSettings._get_group` caches each
