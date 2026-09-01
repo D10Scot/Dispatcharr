@@ -1,10 +1,11 @@
-import { test, expect, expectTsAligned } from '../../fixtures';
+import { test, expect, expectTsAligned, StreamStatusError } from '../../fixtures';
 import type { Channel, StreamPage } from '../../fixtures';
 import {
   catchupRequests,
   catchupTimestamp,
   newStreamClient,
   seedCatchupChannel,
+  withDeadline,
 } from './helpers';
 
 /**
@@ -433,7 +434,7 @@ test('a 200 carrying no TS sync is downgraded to a soft 404 and the whole walk c
   seed,
   api,
   waitFor,
-  request,
+  streamClient,
 }) => {
   const { scenario, channel } = await seedCatchupChannel({ upstream, seed, api, waitFor });
   // `non-ts-bytes` answers 200 with an HTML error page
@@ -445,12 +446,40 @@ test('a 200 carrying no TS sync is downgraded to a soft 404 and the whole walk c
   const start = catchupTimestamp(new Date(Date.now() - 2 * 60 * 60 * 1000));
   const token = await api.freshAccessToken();
 
-  const res = await request.get(
-    `/proxy/catchup/${channel.uuid}?start=${encodeURIComponent(start)}&duration=60`,
-    { headers: { Authorization: `Bearer ${token}` } }
-  );
-  expect(res.status()).toBe(404);
-  expect(await res.text()).toContain('Catch-up not available yet');
+  // `request` (Playwright's APIRequestContext), not `streamClient`, is what
+  // this test used to drive: `APIResponse.body()` — and therefore the
+  // `await request.get(...)` call itself — internally buffers the *entire*
+  // response before resolving (see StreamClient's own comment on why it
+  // uses Node fetch instead). That is fatal to this test's premise: an
+  // eager-accept regression (any 200 taken as a winner, skipping
+  // `find_ts_sync`) makes Dispatcharr commit to the FIRST candidate and
+  // stream the fault's finite HTML body to the client as if it were live
+  // TS. Once that finite body is exhausted the connection is held open
+  // rather than closed — the video path expects a continuous upstream, not
+  // an EOF — so `request.get()` hangs forever waiting for a body that will
+  // never finish, and the mutation is "killed" by a transport abort before
+  // any assertion below ever runs. `streamClient.open()` resolves as soon as
+  // headers arrive (it never awaits the body), so it cannot hang the same
+  // way, and lets execution reach the assertions that actually cover this
+  // row regardless of which regression shape is present.
+  let status: number;
+  try {
+    await streamClient.open(
+      `/proxy/catchup/${channel.uuid}?start=${encodeURIComponent(start)}&duration=60`,
+      { headers: { Authorization: `Bearer ${token}` } }
+    );
+    // Reached only under a regression: the correct 404 throws below instead.
+    status = streamClient.status!;
+  } catch (err) {
+    if (!(err instanceof StreamStatusError)) throw err;
+    status = err.status;
+  }
+  // open()'s own fetch never hangs (headers-only), but close() awaits any
+  // outstanding read; there is none here since readPackets was never called,
+  // so this resolves immediately — withDeadline is defensive, not load-bearing.
+  await withDeadline(streamClient.close(), 10_000, 'closing the catch-up stream client');
+
+  expect(status).toBe(404);
 
   const asked = catchupRequests(await upstream.log(scenario));
   // Seven attempts, every one answered 200. `find_ts_sync` finds no sync
@@ -458,7 +487,9 @@ test('a 200 carrying no TS sync is downgraded to a soft 404 and the whole walk c
   // CONTINUES (views.py:3301-3312) — a 200 is not evidence of success on
   // this path. Asserting the statuses as well as the count is what
   // distinguishes this from the all-404 row: same count, opposite provider
-  // behaviour, same client outcome.
+  // behaviour, same client outcome. Under an eager-accept regression the walk
+  // stops at the first 200, so this is where that mutation shape actually
+  // gets caught: `asked` comes back with length 1, not 7.
   expect(asked).toHaveLength(7);
   expect(asked.every((a) => a.status === 200)).toBe(true);
 });
