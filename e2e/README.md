@@ -53,6 +53,7 @@ one up. CI binds the same way.
 | Project | What it is for |
 |---|---|
 | `bootstrap` | Creates the superuser, pre-warms the `IntervalSchedule` row (see below) and writes auth state. Runs automatically as a dependency of `seeded`, `streaming`, `streaming-failover`, `streaming-greybox` and `frontend` — every project except `pristine` and the two `lifecycle` ones, which each need an instance bootstrap has not touched |
+| `guards` | Static analysis over this suite's own source. **No container, no browser, no fixtures** — it runs in about a second and needs nothing running. Home for every enforcement spec: the tag taxonomy, the grey-box capability allowlists, the `data-testid` contract, the instance-wide settings-write allowlist and the `pageErrors` check (which moved here from `tests/frontend/`) |
 | `pristine` | Needs an instance with **no superuser**: first-run setup, and global `CoreSettings` changes |
 | `seeded` | The default. Shared instance, parallel workers, API-seeded data |
 | `streaming` | Byte-level tests. Long timeouts, fewer workers |
@@ -554,13 +555,23 @@ assertion is worth that. `COVERAGE.md` records that as a decision, not a gap.
    `async-wait.spec.ts` (two exemplars in one file) and `stream-client.spec.ts`
    (under `tests/seeded` and `tests/streaming`) each carry an "Exemplar:"
    comment for exactly this — read the one closest to what you're writing.
-9. Update `COVERAGE.md` in the same PR as the test.
-10. Found a product bug? Don't patch the product from this harness. Assert
+9. **Pick a tag.** Every test declares `{ tag: '@contract' }` or
+   `{ tag: '@characterization' }` as its second argument. `@contract` is the
+   default and needs no justification — it means the assertion is at a
+   client-facing surface and must survive the relay extraction.
+   `@characterization` means the test is deliberately pinned to *this*
+   implementation (Redis key shapes, process names, `manage.py showmigrations`,
+   the AIO filesystem layout) and **must carry a comment naming the fact it
+   pins**. When in doubt, `@contract`. See
+   `docs/adr/0002-e2e-test-taxonomy.md`; enforced by
+   `tests/guards/tags.spec.ts`.
+10. Update `COVERAGE.md` in the same PR as the test.
+11. Found a product bug? Don't patch the product from this harness. Assert
    the *correct* behaviour, mark the test `test.fail()`, and file it:
    `gh issue create --repo D10Scot/Dispatcharr`. The `--repo` flag is
    mandatory here — this checkout is a fork, and `gh` without it resolves to
    upstream's public tracker, not this fork's.
-11. Testing a client-facing output surface — `/output/m3u`, `/output/epg`,
+12. Testing a client-facing output surface — `/output/m3u`, `/output/epg`,
    the HDHR endpoints, `player_api.php`/`get.php`/`xmltv.php`? Drive it with
    the built-in `request` fixture, not `api`. No real client on this surface
    carries a bearer token, and `ApiClient` retries once through a token
@@ -572,13 +583,28 @@ assertion is worth that. `COVERAGE.md` records that as a decision, not a gap.
 
 `.github/workflows/e2e-tests.yml` builds the AIO image once, then runs
 `pristine`, `seeded`, `streaming`, `streaming-failover`, `streaming-greybox`,
-`lifecycle` and `frontend` as a hardcoded seven-job matrix (the `test` job's
-`strategy.matrix.project`), each against its own fresh container, each gated
-on `npm run typecheck` before tests run. **If you add another project to
-`playwright.config.ts`, add it to that matrix too** (unless it belongs in
-`lifecycle-tests.yml` instead — see `lifecycle-upgrade` below) — nothing
-wires new projects in automatically, and a project missing from both
-matrices gets no CI coverage and no failure signal.
+`lifecycle` and `frontend` as a matrix, each against its own fresh container,
+each gated on `npm run typecheck` before tests run.
+
+**That project list is no longer hardcoded in the `test` job** — it is built by
+the `changes` job and consumed as `fromJSON(needs.changes.outputs.projects)`,
+so full mode can extend it. **If you add another project to
+`playwright.config.ts`, add it to both `projects` lists in that job** (unless
+it belongs in `lifecycle-tests.yml` instead — see `lifecycle-upgrade` below).
+Nothing wires new projects in automatically, and a project in neither place
+gets no CI coverage and no failure signal.
+
+`guards` is the one project deliberately **not** in that matrix: it needs no
+container, so it has its own job that skips the image download and the
+container boot entirely. It joins `E2E result`'s dependencies like everything
+else.
+
+**Full-run mode.** A pull request whose head branch matches `migration/**` — or
+a `workflow_dispatch` with `full: true` — runs every project including
+`lifecycle-upgrade`, ignores the path filter, and runs `lifecycle-tests.yml`'s
+jobs including both bash suites. Name the relay-extraction branches
+`migration/…` so the gate applies. See
+`docs/superpowers/specs/2026-09-01-e2e-migration-gate-design.md`.
 
 A red E2E run **does** block a merge: the `Main` ruleset is active and
 requires one check, **`E2E result`**. That is the aggregate job at the bottom
@@ -597,10 +623,21 @@ a ~3.6 GB baseline image and takes roughly 9 minutes — adding that to every
 PR would roughly double E2E latency, where the longest existing job in
 `e2e-tests.yml` is 284s. That workflow also runs the two bash suites,
 `docker/tests/test-puid-pgid.sh` and `test-tls-postgres.sh`, which had no
-workflow at all before it. **`lifecycle-tests.yml` is path-filtered and must
-not be made a required check** — a required check on a workflow that never
-triggers for an unrelated PR blocks the merge forever, which is exactly why
-`e2e-tests.yml`'s own `pull_request` trigger carries no paths filter.
+workflow at all before it.
+
+**`lifecycle-tests.yml` no longer carries a `paths:` filter on pull requests,
+and its `Lifecycle result` aggregate *can* be a required check.** This reverses
+what this section used to say. The filter moved into a cheap `changes` job and
+the aggregate always reports, for the same reason `e2e-tests.yml` works that
+way: a workflow that does not trigger reports nothing, and a required check
+that never reports blocks the merge forever. The heavy work stays gated on an
+ordinary PR; a `migration/**` branch runs all of it.
+
+`Lifecycle result` is **not** in the Main ruleset yet, and must not be added
+until G12 lands. Both bash suites are currently red, and — because the `suites`
+job carried its own `if: github.event_name != 'pull_request'` on top of the
+path filter — they had never run on a pull request at all. Requiring the check
+now would block every migration branch on a pre-existing failure.
 
 Both bash suites need **bash 4.4+** to run. Stock macOS `/bin/bash` is
 3.2.57, where expanding an empty array under `set -u` is an unbound-variable

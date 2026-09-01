@@ -412,3 +412,27 @@ fallback) stays attributed to G8's row further up this table:
 `e2e/tests/streaming/catchup-path-layout.spec.ts` (G8) and `catchup-cascade.spec.ts`'s original
 PATH-then-QUERY test remain the plumbing proofs this goal builds on rather than replaces — neither
 is touched by any G10 task.
+
+## Guards (G11)
+
+Static analysis in the `guards` project. No container, no browser — each of
+these enforces a rule that previously lived in prose and decayed silently.
+Every one is verified by mutation, recorded in its own header comment.
+
+| Guard | Enforces | Proved by |
+|---|---|---|
+| `tests/guards/tags.spec.ts` | Every test declaration carries exactly one of `@contract` / `@characterization`, directly or inherited from a `describe`. Fails closed on a details object it cannot read — and that check does not wait on the warning→blocking flip | Blocking mode listed all 191 declarations; tagging one dropped it to 190; both tags reported as a conflict; a details object passed by reference failed *in warning mode* |
+| `tests/guards/capabilities.spec.ts` | Four grey-box capabilities confined to `tests/guards/allowlist.ts`: the `instance` fixture, `node:child_process`, the grey-box Redis helper, and `pgrep`/`docker `/`manage.py` in string literals. Scans `tests/`, `fixtures/` and `setup/` | A real `child_process` import failed; `pgrep` in a **comment** passed; `pgrep` in a string literal failed; `instance` destructured outside the lifecycle specs failed |
+| `tests/guards/testid.spec.ts` | Every `SURFACES` testId exists as a `data-testid` under `frontend/src/`. One-directional; carries a self-check so a broken scan blames itself | Renaming `stats-page` in `frontend/src/` failed naming the Stats surface |
+| `tests/guards/global-mutation.spec.ts` | Any write to `/api/core/settings/` confined to an allowlist. Resolves module-level string constants, without which three of the four real writers are invisible | A real `api.patch` to the route failed; the same route in a comment passed |
+| `tests/guards/pageerrors-enforcement.spec.ts` | Every test under `tests/frontend/` destructures `pageErrors` (moved here from `tests/frontend/`; verdicts unchanged) | An untagged `test({ page })` added to `stats.spec.ts` failed; reverting passed |
+
+**Six of the eight files a `grep` flags for `pgrep`/`docker `/`manage.py` match
+only in comments.** That ratio is why these guards parse with the TypeScript
+compiler API instead of scanning text — a guard that fires on prose gets
+loosened until it catches nothing.
+
+Not enforced, and deliberately named as such in
+`docs/adr/0003-e2e-frontend-and-shared-state-contract.md`: the "never assert a
+global count or unfiltered list" and "never assert on a toast" rules remain
+review-only, because neither has a reliable static signature.
