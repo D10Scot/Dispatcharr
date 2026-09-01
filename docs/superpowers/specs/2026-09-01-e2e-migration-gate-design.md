@@ -248,9 +248,15 @@ guards, both cheap and both catching something real:
 
 ### The trigger
 
-**Branch name pattern**: a pull request whose head branch matches `relay/**` or `migration/**`
-runs the full suite. Plus a `workflow_dispatch` boolean input as an escape hatch for a branch
-that does not follow the convention.
+**Branch name pattern**: a pull request whose head branch matches **`migration/**`** runs the
+full suite. Plus a `workflow_dispatch` boolean input as an escape hatch, for a branch that does
+not follow the convention or a one-off full run on any branch.
+
+One prefix, not two. An earlier draft also matched `relay/**`, on the reasoning that the
+relay extraction is the migration this gate exists for. Dropped: two prefixes meaning exactly
+the same thing is two things to remember and two places to drift, and the extraction can be
+branched `migration/relay-…` at no cost. A second prefix can be added later by editing one
+`case` arm; removing one that branches already depend on is harder.
 
 Chosen over a PR label because the requirement is *"required on migration branches"* — a branch
 pattern is literally that predicate. A label has to be remembered by a human, needs
