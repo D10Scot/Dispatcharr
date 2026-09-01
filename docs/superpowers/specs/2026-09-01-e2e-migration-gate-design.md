@@ -270,6 +270,14 @@ uses and documents: **always trigger on pull requests, decide inside a cheap `ch
 add an always-reporting aggregate.** So:
 
 - `lifecycle-tests.yml`'s `pull_request.paths` filter comes off.
+- **The `suites` job's own `if:` comes off too.** `lifecycle-tests.yml:134` reads
+  `if: github.event_name != 'pull_request'` — a second gate, independent of the path filter,
+  that no amount of trigger surgery reaches. Removing only the path filter would leave both
+  bash suites still unrun on every pull request, and full mode would silently deliver seven
+  eighths of what it claims. G12's spec establishes the consequence of this gate having always
+  been there: the two suites **have never run in CI on a pull request at all**, so the green
+  runs on G7's own PR skipped them both. Full mode replaces the `if:` with the `changes` job's
+  full-mode output.
 - A `changes` job reproduces the filter as a job output, plus the branch-pattern check.
 - A new **`Lifecycle result`** aggregate job runs `if: always()` and passes when everything it
   needs either succeeded or was deliberately skipped — the exact shape of `e2e-result`.
@@ -285,8 +293,10 @@ than never having written them.
 ### Prerequisite: the red bash suites
 
 Full mode runs `test-puid-pgid.sh` and `test-tls-postgres.sh`, and **every run of those is
-currently red** — 8 of 126 and 7 of 12 scenarios respectively. G11 makes them reachable; **G12
-owns triaging them to green**. Until G12 lands, `Lifecycle result` must not be added to the
+currently red**. The disposition's "8 of 126 and 7 of 12 scenarios" is corrected by G12's spec,
+which counted them: those are *assertion* counts, and the true figures are 8 failed assertions
+across **4 of 20** puid-pgid scenarios and **7 of 8** tls-postgres scenarios. G11 makes them
+reachable; **G12 owns triaging them to green**. Until G12 lands, `Lifecycle result` must not be added to the
 ruleset, or it blocks every migration branch on a pre-existing failure. Recorded here because
 the two goals ship in different waves and the ordering is not otherwise obvious.
 
@@ -298,6 +308,10 @@ the two goals ship in different waves and the ordering is not otherwise obvious.
   is a hard ordering constraint, not a preference.
 - **G12–G15 all touch spec files G11 retags.** The disposition's sequencing — wave 5 is G11
   alone — follows from this. Wave 6 tags its own new tests per ADR-0002.
+- **Outbound, to G13:** G13's spec (PR #115) adds a new `dvr` Playwright project with its own
+  CI matrix job. G11 PR A rewrites that matrix from a hardcoded list into a `fromJSON` of the
+  `changes` job's output, so the two edits collide in `e2e-tests.yml`. G11 lands first and G13
+  rebases onto the new shape; recorded here so G13 does not discover it at merge time.
 
 ## Delivery: two pull requests
 
