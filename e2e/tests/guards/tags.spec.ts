@@ -16,12 +16,13 @@
  * the 196-tag retag could land as its own reviewable diff — a guard that lands
  * red is a guard someone disables — and flipped when the retag landed.
  *
- * Verified by mutation. Setting MODE to 'blocking' failed listing all 191
- * declarations; tagging one dropped it to 190; tagging one with both tags
- * reported it as "carries both tags"; and passing a details object by
- * reference — `const d = { tag: '@contract' }; test('…', d, fn)` — failed
- * **in warning mode**, which is the check that matters: a hole in the checker
- * is not a retag task and must not wait on the flip.
+ * Verified by mutation, re-runnable at this head: removing the tag from
+ * `tests/seeded/hdhr.spec.ts:29` fails naming that location with "no tag, and
+ * none inherited from an enclosing describe"; tagging it with both
+ * `@contract` and `@characterization` reports "carries both tags"; and
+ * passing a details object by reference — `const d = { tag: '@contract' };
+ * test('…', d, fn)` — fails as unverifiable, and did so even in the
+ * warning-mode era, because a hole in the checker is not a retag task.
  */
 import { test, expect } from '@playwright/test';
 import path from 'node:path';
@@ -65,7 +66,7 @@ function isUnreadableDetails(args: readonly ts.Expression[]): boolean {
 // repository's own source tree — file paths, import specifiers, allowlist
 // membership. None of it is client-observable behaviour, and all of it changes
 // shape when the suite is restructured. See docs/adr/0002-e2e-test-taxonomy.md.
-test('every test declares @contract or @characterization', { tag: '@characterization' }, async () => {
+test('every test declares exactly one taxonomy tag', { tag: '@characterization' }, async () => {
   const files = await listSpecFiles(path.join(E2E_ROOT, 'tests'), 'tests');
   const findings: Finding[] = [];
   const unverifiable: string[] = [];
@@ -121,12 +122,15 @@ test('every test declares @contract or @characterization', { tag: '@characteriza
 
   const report = findings.map((f) => `  ${f.location} — ${f.detail}`).join('\n');
 
-  // Guards the guard: a walker that silently found nothing would pass this
+  // Guards the guard: a walker that silently found nothing — or found far
+  // fewer than it should, e.g. because a directory moved — would pass this
   // test while enforcing nothing at all.
+  const declared = tagged + findings.length;
   expect(
-    tagged + findings.length,
-    'No test declarations found anywhere under tests/. That is this guard being ' +
-      'broken, not the suite being untagged — check listSpecFiles and findTestCalls.',
+    declared,
+    `Found ${declared} test declarations under tests/, expected more than 150. That is ` +
+      'this guard being broken, not the suite being untagged — check listSpecFiles and ' +
+      'findTestCalls.',
   ).toBeGreaterThan(150);
 
   expect(
