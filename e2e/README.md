@@ -62,6 +62,8 @@ one up. CI binds the same way.
 | `frontend` | The nine product surfaces in a browser: does the page mount, and does a write driven through its UI reach the server. Two workers, file-level parallelism, 120s |
 | `lifecycle` | Restarts the container mid-test. **Runs alone** — it destroys the container every other project shares. No `bootstrap` dependency: it provisions its own admin |
 | `lifecycle-upgrade` | Boots a published baseline image, seeds, then replaces the container with the local build on the same volume. **Runs alone.** Runs in `lifecycle-tests.yml`, not in `e2e-tests.yml`'s matrix |
+| `lifecycle-restore` | Takes a backup, mutates the database, restores it. **Runs alone** and resets its container: `restore_backup` drops and rebuilds the `public` schema, replacing every row under anything else sharing the instance. Runs in `lifecycle-tests.yml`, not in `e2e-tests.yml`'s matrix |
+| `lifecycle-scheduling` | Non-zero `refresh_interval` and `cron_expression`, and the django-celery-beat rows behind them. **Runs alone** and resets its container: a non-zero interval leaves an *enabled* hourly beat task re-refreshing that account for the life of the instance. Runs in `lifecycle-tests.yml`, not in `e2e-tests.yml`'s matrix |
 
 `frontend` depends on two rules that are not obvious from the config alone:
 
@@ -151,10 +153,27 @@ their own runner in CI, and neither shares a container with the other:
 ```bash
 ./scripts/e2e_up.sh --reset && npm run test:lifecycle
 npm run test:lifecycle-upgrade   # pulls a ~3.6 GB baseline; brings its own instance up and down
+npm run test:lifecycle-restore   # resets its instance; drops and rebuilds the public schema
+npm run test:lifecycle-scheduling # resets its instance; leaves an enabled hourly beat task
 ```
 
+**A container event forgets every upstream scenario, and no error says so.**
+`instance.restart()` and `up({ reset: true })` both stop the `e2e-upstream`
+provider (`scripts/e2e_up.sh`'s `--stop` and `destroy()` branches), and
+`ScenarioRegistry` is an in-memory `Map` (`e2e-upstream/src/scenario.ts`) — so
+a scenario created before the event does not exist after it. The provider
+answers `404 no scenario <uuid>`, which surfaces first as a *teardown
+diagnostic* rather than as a failed assertion, and is easy to read as noise.
+
+The consequence for anything written in `tests/lifecycle/`: **assert against
+Dispatcharr's own database through its own API, never by re-querying the
+provider.** `durable-state.ts` is built that way deliberately, and the
+extension anyone would naturally reach for — refresh the account again after
+the event and compare the catalogue — is the one thing that cannot work
+here.
+
 `npm test` (no suffix) deliberately fails with a message telling you to pick
-one of the eight — there is no single invocation that is correct for all of
+one of the ten — there is no single invocation that is correct for all of
 them, and a bare `npm test` in CI would silently run whichever config
 happened to be first.
 
@@ -644,18 +663,58 @@ way: a workflow that does not trigger reports nothing, and a required check
 that never reports blocks the merge forever. The heavy work stays gated on an
 ordinary PR; a `migration/**` branch runs all of it.
 
-`Lifecycle result` is **not** in the Main ruleset yet, and must not be added
-until G12 lands. Both bash suites are currently red, and — because the `suites`
-job carried its own `if: github.event_name != 'pull_request'` on top of the
-path filter — they had never run on a pull request at all. Requiring the check
-now would block every migration branch on a pre-existing failure.
+`lifecycle-tests.yml` runs a third heavy job, **`lifecycle-extras`**, which
+runs the `lifecycle-restore` and `lifecycle-scheduling` projects one after the
+other in a single job — one job rather than two because each would otherwise
+pay its own 3.6 GB `docker load` and both projects are short. It carries the
+same `if:` as `upgrade-migrations`, so it runs on a PR that touches lifecycle
+paths and always in full mode (`migration/**`, or a dispatch with
+`full: true`), and it is counted by `Lifecycle result`. The two run steps are
+sequential and the restore goes first: each project takes the container over
+with `up({ reset: true })`, so they cannot overlap, and the scheduling spec
+leaves an enabled hourly beat task behind. The scheduling step has no
+`if: always()` deliberately — after a failed restore the container is in an
+unknown state and a scheduling failure read off it would be uninterpretable.
+
+`Lifecycle result` is **not** in the Main ruleset yet. G12 has taken both bash
+suites to green in CI — `test-puid-pgid.sh` at 135 passed / 0 failed / 1
+skipped (`readonly_rootfs`, which needs more tmpfs mounts and is expected) and
+`test-tls-postgres.sh` at 33 passed / 0 failed — so the reason not to add it
+is gone, but a ruleset is a repository setting rather than a file in the
+diff. **Adding it is the maintainer's follow-up.** Until that happens, a green
+`Lifecycle result` is a signal, not a gate.
 
 Both bash suites need **bash 4.4+** to run. Stock macOS `/bin/bash` is
 3.2.57, where expanding an empty array under `set -u` is an unbound-variable
 error, so the suite dies on `CLEANUP_ITEMS[@]` before running a single
 scenario — CI runners ship bash 5.x, so this only bites locally, on the
-platform this repo is maintained from. Homebrew's `bash`, or a `docker:27-cli`
-container with bash installed, both work.
+platform this repo is maintained from. Homebrew's `bash` works; so does a
+Linux container with the Docker CLI and the daemon socket mounted, which is
+what G12 used:
+
+```bash
+docker run --rm \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  -v "$PWD":/repo -v /tmp:/tmp -w /repo \
+  --entrypoint /bin/bash <image-with-docker-cli-and-bash> \
+  docker/tests/test-puid-pgid.sh --skip-build
+```
+
+Two details in that command are load-bearing. **`-v /tmp:/tmp`** is required:
+the TLS suite generates its certificates inside a sibling container, so they
+land on the Docker host's `/tmp`, and a runner with its own private `/tmp`
+cannot read them back. And prefer a **Debian-based** runner over Alpine —
+busybox `grep`/`sed`/`awk` differ from the GNU tools the suites and CI
+runners use, which turns tool differences into fake assertion failures.
+
+**Three of the puid scenarios cannot pass on macOS at all**, however you run
+them: `bind_mount`, `bind_mount_upgrade` and `bind_mount_default_puid` assert
+ownership on a bind-mounted host directory, and Docker Desktop's virtiofs does
+not honour an in-container `chown` on a macOS-backed mount, so PostgreSQL
+refuses the data directory. They pass on Linux and in CI. The control is
+`bind_mount_upgrade`: it is green in CI and fails locally with the identical
+error, so a local failure in those three is an environment fact, not a
+regression.
 
 ## Architecture note
 
