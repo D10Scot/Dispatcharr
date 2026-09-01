@@ -285,5 +285,25 @@ export default defineConfig({
       // volume and provisions the superuser. Same reasoning as `lifecycle`.
       retries: 0,
     },
+    {
+      // Owns its container. A non-zero `refresh_interval` yields
+      // `should_be_enabled = true` (`create_or_update_periodic_task`,
+      // core/scheduling.py), so the instance ends up with an ENABLED hourly
+      // beat task re-refreshing that account for the life of the container.
+      // That is why `COVERAGE.md`'s refresh-interval row records this as a
+      // direct cost of G3's D10 and why it stayed `todo`: the shared
+      // `seeded` instance cannot tolerate it. Nor can `lifecycle` or
+      // `lifecycle-upgrade` — the provider forgets its scenarios across a
+      // restart (`ScenarioRegistry` is an in-memory Map and
+      // `e2e_up.sh --stop` stops the provider), so a background refresh
+      // there would mutate rows under the durable-state assertions.
+      name: 'lifecycle-scheduling',
+      testDir: './tests/lifecycle',
+      testMatch: /refresh-scheduling\.spec\.ts$/,
+      workers: 1,
+      fullyParallel: false,
+      timeout: 900_000,
+      retries: 0,
+    },
   ],
 });

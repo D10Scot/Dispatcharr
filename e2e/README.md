@@ -485,16 +485,27 @@ early on the name.
 
 ### Non-zero `refresh_interval` values, and what they cost
 
-The set in use on this branch is **{0, 2, 3, 4, 8531, 8532}**, not just the
-pre-warmed default: `e2e/tests/seeded/ws-fixture.spec.ts:50,51,109,121,122`
-uses 2, 3 and 4, and `e2e/tests/seeded/async-wait.spec.ts:41,72` uses 8531 and
-8532. The rule that keeps those from colliding with each other or with
+The set in use on this branch is **{0, 2, 3, 4, 8531, 8532, 8541, 8542}**, not
+just the pre-warmed default: `e2e/tests/seeded/ws-fixture.spec.ts:50,51,109,121,122`
+uses 2, 3 and 4, `e2e/tests/seeded/async-wait.spec.ts:41,72` uses 8531 and
+8532, and `e2e/tests/lifecycle/refresh-scheduling.spec.ts` uses 8541 and 8542. The rule that keeps those from colliding with each other or with
 `bootstrap`'s pre-warmed row is already stated in full at
 `e2e/fixtures/types.ts:517-522` and at length in the header of
 `ws-fixture.spec.ts:22-39`: `bootstrap` pre-warms the default (`0`, which maps
 to `every=1`); any other value used from a parallel test must be **unique per
 test** — not reused, and not pre-warmed from a worker, which is itself the
 concurrent create that poisons the container (#7).
+
+`e2e/tests/lifecycle/refresh-scheduling.spec.ts` uses 8541 and 8542, and is
+the one exception to the uniqueness rule above — deliberately, and only
+because of where it runs. The `lifecycle-scheduling` project is `workers: 1`,
+`fullyParallel: false`, on an instance it creates with `up({ reset: true })`
+and nothing else touches, and it declares no `bootstrap` dependency. There is
+no concurrent create, so the #7 race is structurally impossible rather than
+merely avoided, and no pre-warm is needed or possible (`bootstrap` never runs
+against that container). **Move this spec to a shared project and the
+exemption is gone**: the values would then need to be unique per test and the
+default pre-warmed from `bootstrap`, exactly as above.
 
 **If you add a test that uses a new non-zero value, add it to the set above.**
 That list is an enumeration, so it is only as true as its last edit — and a

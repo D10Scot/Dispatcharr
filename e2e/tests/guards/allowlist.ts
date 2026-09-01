@@ -43,6 +43,8 @@ export const CONTAINER_LIFECYCLE: Capability = {
     'tests/lifecycle/upgrade-migrations.spec.ts',
     // Owns and resets a container: a restore drops the public schema.
     'tests/lifecycle/backup-restore.spec.ts',
+    // Owns and resets a container: leaves an enabled hourly beat task behind.
+    'tests/lifecycle/refresh-scheduling.spec.ts',
   ],
 };
 
