@@ -262,5 +262,28 @@ export default defineConfig({
       timeout: 1_800_000,
       retries: 0,
     },
+    {
+      // Owns its container: a restore runs `DROP SCHEMA public CASCADE`
+      // (`_clean_postgresql_schema`, apps/backups/services.py) and replaces
+      // every row in the database. On the shared instance that lands under
+      // every parallel worker mid-run and under every other project sharing
+      // the container locally — which is what `COVERAGE.md`'s restore row
+      // has said since G7, and why it stayed `todo` until there was an
+      // instance to put it on.
+      name: 'lifecycle-restore',
+      testDir: './tests/lifecycle',
+      testMatch: /backup-restore\.spec\.ts$/,
+      workers: 1,
+      fullyParallel: false,
+      // One boot, a pg_dump, a schema drop, a pg_restore and a migrate.
+      // Sized above `fixtures/instance.ts`'s own subprocess timeouts (720s
+      // per e2e_up.sh call) for the reason `lifecycle` documents: whichever
+      // fires first decides whether a failed boot arrives with the
+      // container's logs or with a bare Playwright timeout.
+      timeout: 900_000,
+      // Attempt 1 consumes the state attempt 2 would need — it resets the
+      // volume and provisions the superuser. Same reasoning as `lifecycle`.
+      retries: 0,
+    },
   ],
 });
