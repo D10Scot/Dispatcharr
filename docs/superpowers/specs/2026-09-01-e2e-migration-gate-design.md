@@ -211,14 +211,31 @@ guards, both cheap and both catching something real:
   as a `data-testid` somewhere under `frontend/src/**`. Today a frontend rename surfaces as a
   `getByTestId` timeout that reads like a broken test, which `e2e/README.md:79` already
   observes without being able to prevent.
-- **`global-mutation.spec.ts`** — writes to the global settings rows (`proxy_settings`,
-  `stream_settings`, and `CoreSettings` keys with instance-wide effect) confined to an
+- **`global-mutation.spec.ts`** — **any write to `/api/core/settings/`**, confined to an
   allowlist. `playwright.config.ts` already contains the argument, twice, in prose: of
   `failover-buffering.spec.ts` raising `buffering_speed` it says *"nothing enforces that
   convention, so a future ffmpeg-profile spec added here without reading that test's header
   would race the raised threshold and fail silently"*, and it makes the same observation about
   `vod-redirect-profile.spec.ts` and `default_stream_profile`. This guard is that sentence,
   enforced.
+
+  The rule is that blunt because the data model makes it exact. `core/models.py:CoreSettings`
+  is not one row per setting: `key` is unique, `value` is a `JSONField`, and **each row is a
+  whole settings group** — eight of them (`stream_settings`, `dvr_settings`, `backup_settings`,
+  `proxy_settings`, `network_access`, `system_settings`, `epg_settings`,
+  `user_limit_settings`, `core/models.py:201-208`). Every one is instance-wide. There is no
+  such thing as a scoped `CoreSettings` write, so the guard needs no key list to maintain and
+  cannot be defeated by a group nobody thought of — including `epg_settings`, which has no
+  seeding migration and must be `POST`ed into existence before it can be `PATCH`ed.
+
+  **Serialising a project is not a substitute for the allowlist**, which is worth stating
+  because `playwright.config.ts` reaches for `workers: 1` twice. Two of these groups are read
+  through caches that outlive the test that wrote them: `CoreSettings._get_group` caches each
+  group in Redis for 300s, and `_REDIRECT_STREAM_PROFILE_ID_CACHE_KEY`
+  (`core/models.py:225`) is **TTL-only** — it appears nowhere in `core/signals.py`, so unlike
+  the group caches it has no `post_save` invalidation at all. A mutation reverted in teardown
+  can therefore still be live for the next five minutes, in a different project, on a
+  different worker. Serialisation bounds concurrency; only the allowlist bounds blast radius.
 
 ## 5. Run-everything CI mode
 
