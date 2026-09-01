@@ -33,6 +33,11 @@ on:
   pull_request:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      full:
+        description: 'Run every project, including lifecycle-upgrade'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -52,6 +57,8 @@ jobs:
     timeout-minutes: 5
     outputs:
       e2e: ${{ steps.filter.outputs.e2e }}
+      full: ${{ steps.filter.outputs.full }}
+      projects: ${{ steps.filter.outputs.projects }}
     steps:
       - name: Checkout code
         if: github.event_name == 'pull_request'
@@ -62,12 +69,36 @@ jobs:
           # the base branch tip — depth 2 is enough to diff the whole PR.
           fetch-depth: 2
 
-      - name: Decide whether the E2E suite needs to run
+      - name: Decide whether the E2E suite needs to run, and at what breadth
         id: filter
         env:
           EVENT_NAME: ${{ github.event_name }}
+          HEAD_REF: ${{ github.head_ref }}
+          REF_NAME: ${{ github.ref_name }}
+          DISPATCH_FULL: ${{ inputs.full }}
         run: |
-          if [ "$EVENT_NAME" != "pull_request" ]; then
+          # Full mode: every project, no path gating. Required on migration
+          # branches — see CLAUDE.md. `github.head_ref` is set on pull_request
+          # and empty elsewhere, so fall back to ref_name for push/dispatch.
+          branch="${HEAD_REF:-$REF_NAME}"
+          full=false
+          case "$branch" in
+            migration/*) full=true ;;
+          esac
+          if [ "$DISPATCH_FULL" = "true" ]; then
+            full=true
+          fi
+          echo "full=$full" >> "$GITHUB_OUTPUT"
+
+          # The matrix lives here rather than in the `test` job so that full
+          # mode can extend it. A NEW PROJECT MUST BE ADDED TO BOTH LINES.
+          projects='["pristine","seeded","streaming","streaming-failover","streaming-greybox","lifecycle","frontend"]'
+          if [ "$full" = "true" ]; then
+            projects='["pristine","seeded","streaming","streaming-failover","streaming-greybox","lifecycle","frontend","lifecycle-upgrade"]'
+          fi
+          echo "projects=$projects" >> "$GITHUB_OUTPUT"
+
+          if [ "$full" = "true" ] || [ "$EVENT_NAME" != "pull_request" ]; then
             echo "e2e=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -169,8 +200,13 @@ jobs:
     timeout-minutes: 30
     strategy:
       fail-fast: false
+      # Built by the `changes` job so full mode can add `lifecycle-upgrade`.
+      # A new Playwright project is added to the `projects` lists there, not
+      # here — and `guards` is deliberately not among them: it needs no
+      # container, so it has its own job below rather than a matrix row that
+      # would download a 3 GB image to read text files.
       matrix:
-        project: [pristine, seeded, streaming, streaming-failover, streaming-greybox, lifecycle, frontend]
+        project: ${{ fromJSON(needs.changes.outputs.projects) }}
     steps:
       - name: Checkout code
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
@@ -242,11 +278,18 @@ jobs:
         working-directory: ./e2e
         run: npm run typecheck
 
+      # The project name goes through the environment rather than being
+      # interpolated into the run block. It became a zizmor
+      # `template-injection` finding when the matrix stopped being a literal
+      # list and started coming from `fromJSON(needs.changes.outputs.projects)`
+      # — zizmor can no longer prove the values are static, and it is right
+      # not to try. The repo is at zero findings and that is a ratchet.
       - name: Run E2E tests
         working-directory: ./e2e
         env:
           E2E_BASE_URL: http://localhost:9191
-        run: npx playwright test --project=${{ matrix.project }}
+          PLAYWRIGHT_PROJECT: ${{ matrix.project }}
+        run: npx playwright test --project="$PLAYWRIGHT_PROJECT"
 
       - name: Container logs (on failure)
         if: failure()
@@ -273,10 +316,46 @@ jobs:
   # required check that never reports blocks the merge forever. This job runs
   # unconditionally (`if: always()`), so it always reports, and it passes only
   # when everything it depends on succeeded or was deliberately skipped.
+  # Static analysis over the suite's own source — the tag taxonomy, the
+  # grey-box capability allowlists, the data-testid contract and the
+  # instance-wide settings-write allowlist. No image, no container, no
+  # browser, so it is a sibling of `build` rather than a matrix row and it
+  # reports in under a minute instead of after the AIO build's 45-minute
+  # budget. `npx playwright install` is deliberately absent: no test in this
+  # project uses the `page` fixture, so no browser is ever launched.
+  guards:
+    name: guards
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.e2e == 'true'
+    timeout-minutes: 10
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '24'
+
+      - name: Install E2E dependencies
+        working-directory: ./e2e
+        run: npm ci
+
+      - name: Typecheck
+        working-directory: ./e2e
+        run: npm run typecheck
+
+      - name: Run the guards
+        working-directory: ./e2e
+        run: npx playwright test --project=guards
+
   e2e-result:
     name: E2E result
     runs-on: ubuntu-latest
-    needs: [changes, upstream, test]
+    needs: [changes, upstream, test, guards]
     if: always()
     timeout-minutes: 5
     steps:
@@ -285,9 +364,10 @@ jobs:
           CHANGES_RESULT: ${{ needs.changes.result }}
           UPSTREAM_RESULT: ${{ needs.upstream.result }}
           TEST_RESULT: ${{ needs.test.result }}
+          GUARDS_RESULT: ${{ needs.guards.result }}
           E2E_REQUIRED: ${{ needs.changes.outputs.e2e }}
         run: |
-          echo "changes=$CHANGES_RESULT upstream=$UPSTREAM_RESULT test=$TEST_RESULT e2e-required=$E2E_REQUIRED"
+          echo "changes=$CHANGES_RESULT upstream=$UPSTREAM_RESULT test=$TEST_RESULT guards=$GUARDS_RESULT e2e-required=$E2E_REQUIRED"
           if [ "$CHANGES_RESULT" != "success" ]; then
             echo "Change detection itself failed — cannot prove the suite was unnecessary."
             exit 1
@@ -296,7 +376,7 @@ jobs:
             echo "No E2E-relevant paths changed; suite deliberately skipped."
             exit 0
           fi
-          if [ "$UPSTREAM_RESULT" != "success" ] || [ "$TEST_RESULT" != "success" ]; then
+          if [ "$UPSTREAM_RESULT" != "success" ] || [ "$TEST_RESULT" != "success" ] || [ "$GUARDS_RESULT" != "success" ]; then
             echo "E2E suite was required and did not fully succeed."
             exit 1
           fi
