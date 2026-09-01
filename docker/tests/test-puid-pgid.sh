@@ -29,7 +29,7 @@
 #   fresh_default         Fresh AIO install, default PUID/PGID (1000:1000)
 #   fresh_custom_puid     Fresh AIO install, PUID=1500 PGID=1500
 #   upgrade_explicit_puid Upgrade from old UID 102 data with explicit PUID=1000
-#   upgrade_auto_adapt    Upgrade from old UID 102 data, no PUID set (auto-detect)
+#   upgrade_default_puid  Upgrade from foreign-UID data, no PUID set (defaults to 1000)
 #   restart_idempotent    Container restart on existing data (no unnecessary chown)
 #   puid_change           Change PUID between restarts (1000 -> 2000)
 #   uid_collision_102     PUID=102 (collides with postgres system user)
@@ -37,7 +37,7 @@
 #   puid_non_numeric      PUID=abc rejected (must be positive integer)
 #   bind_mount            Fresh install on bind mount (local filesystem)
 #   bind_mount_upgrade    Upgrade from UID 102 on bind mount
-#   bind_mount_auto_adapt Auto-adapt PUID on bind mount (no migration)
+#   bind_mount_default_puid Foreign-UID bind mount, no PUID set (defaults to 1000)
 #   modular_mode          External PostgreSQL + Redis (skip internal PG setup)
 #   custom_postgres_user  Custom POSTGRES_USER=myapp
 #   custom_port           Custom POSTGRES_PORT=5433
@@ -61,14 +61,15 @@ export MSYS_NO_PATHCONV=1
 # Configuration
 ###############################################################################
 IMAGE_NAME="dispatcharr:puid-test"
-RELEASE_IMAGE="ghcr.io/dispatcharr/dispatcharr:latest"
-BASE_IMAGE="ghcr.io/dispatcharr/dispatcharr:base"
 TEST_PREFIX="puid_test"
-STARTUP_TIMEOUT=180      # seconds to wait for container startup
+# 300s, not 180. This is a budget for a loaded CI runner that has just
+# `docker load`ed a 3.6 GB image, not a claim about how long a healthy boot
+# takes — an ordinary one is ~30s. restart_idempotent timed out at 180s on
+# run 33247491371 and passed at the same code on 33384550684.
+STARTUP_TIMEOUT=300      # seconds to wait for container startup
 SKIP_BUILD=false
 KEEP_ON_FAIL=false
 SINGLE_SCENARIO=""
-USE_RELEASE_IMAGE=false
 PASS=0
 FAIL=0
 SKIP=0
@@ -126,13 +127,26 @@ cleanup_scenario() {
         CLEANUP_ITEMS=()
         return
     fi
+    # Two passes, deliberately. CLEANUP_ITEMS is in insertion order and every
+    # scenario tracks its volume before the container that mounts it
+    # (`fresh_volume` calls `track_volume`), so a single ordered pass tries
+    # `docker volume rm` while the container is still up. That fails, the
+    # failure is swallowed by 2>/dev/null, and one PostgreSQL data volume
+    # leaks per scenario on EVERY run, pass or fail — on a runner with
+    # single-digit gigabytes free after a 3.6 GB image load.
+    # D10Scot/Dispatcharr#41.
+    for item in "${CLEANUP_ITEMS[@]}"; do
+        [ "${item%%:*}" = "container" ] || continue
+        local name="${item#*:}"
+        docker stop "$name" 2>/dev/null
+        docker rm -f "$name" 2>/dev/null
+    done
     for item in "${CLEANUP_ITEMS[@]}"; do
         local type="${item%%:*}"
         local name="${item#*:}"
         case "$type" in
-            container) docker stop "$name" 2>/dev/null; docker rm -f "$name" 2>/dev/null ;;
-            volume)    docker volume rm "$name" 2>/dev/null ;;
-            network)   docker network rm "$name" 2>/dev/null ;;
+            volume)  docker volume rm "$name" 2>/dev/null ;;
+            network) docker network rm "$name" 2>/dev/null ;;
         esac
     done
     CLEANUP_ITEMS=()
@@ -154,11 +168,11 @@ wait_for_ready() {
             return 1
         fi
         # Success: uwsgi started
-        if docker logs "$name" 2>&1 | grep -q "uwsgi started with PID"; then
+        if log_matches "$name" "uwsgi started with PID"; then
             return 0
         fi
         # Known fatal: our error handler
-        if docker logs "$name" 2>&1 | grep -q "ERROR: Cannot update ownership"; then
+        if log_matches "$name" "ERROR: Cannot update ownership"; then
             echo "  Container hit ownership error (expected in some tests)"
             return 1
         fi
@@ -221,6 +235,33 @@ check_role_superuser() {
 _capture_logs() {
     local container="$1" logfile="$2"
     docker logs "$container" > "$logfile" 2>&1
+}
+
+# Match a pattern in a container's logs WITHOUT `grep -q` on a live pipe.
+#
+# Both suites run under `set -o pipefail`, and `grep -q` exits at its first
+# match, closing the pipe. If the producer — `docker logs` on a container
+# with a few hundred lines of output — has not finished writing by then, it
+# dies of SIGPIPE (141), and pipefail makes the WHOLE pipeline return 141
+# even though grep matched. A successful match therefore reads as a failure.
+#
+# It is a race on producer size and machine load, so it presents as "passes
+# alone, fails in the full suite" and as unreproducible CI timeouts: the wait
+# loop spins its entire budget while the string it wants is sitting in the
+# log. Verified directly: under pipefail, `seq 1 2000000 | grep -q '^1$'`
+# exits 141 while `... | grep '^1$' >/dev/null` exits 0.
+#
+# check_log_contains/check_log_absent were already immune because they
+# capture to a file first; this gives the wait loops the same idiom.
+log_matches() {
+    local container="$1" pattern="$2"
+    local tmplog rc
+    tmplog=$(mktemp)
+    _capture_logs "$container" "$tmplog"
+    grep -q "$pattern" "$tmplog"
+    rc=$?
+    rm -f "$tmplog"
+    return $rc
 }
 
 # Verify no permission errors in logs
@@ -313,52 +354,26 @@ SCENARIO_FAIL_BEFORE=0
 dump_logs_on_fail() {
     local container="$1"
     if [ $FAIL -gt $SCENARIO_FAIL_BEFORE ]; then
-        echo -e "\n  ${RED}--- Last 60 lines of logs ---${NC}"
-        docker logs "$container" 2>&1 | tail -60 | sed 's/^/  | /'
+        echo -e "\n  ${RED}--- Last 200 lines of logs ---${NC}"
+        # 200, not 60, and PostgreSQL's repeated collation-mismatch triplet
+        # filtered out. At 60 lines this diagnostic was entirely consumed by
+        # that warning on the one failure it most needed to explain
+        # (pg_major_upgrade), so the artifact carried no entrypoint output at
+        # all. The filter drops only the three-line warning/DETAIL/HINT group,
+        # which is noise by construction: it fires once per connection.
+        docker logs "$container" 2>&1 \
+            | grep -vE 'has a collation version mismatch|The database was created using collation version|Rebuild all objects in this database that use the default collation' \
+            | tail -200 | sed 's/^/  | /'
         echo -e "  ${RED}--- End logs ---${NC}"
     fi
 }
 
-# Create old-style PostgreSQL data by running the actual release image.
-# This is the most realistic simulation of an upgrade — the release image
-# runs its own entrypoint, initializing PG as the postgres system user
-# with the real init scripts that users currently have.
-setup_old_pg_data() {
-    local volume="$1"
-    local name="${TEST_PREFIX}_old_setup"
-    log_info "Creating old-style data using release image ($RELEASE_IMAGE)..."
-
-    docker rm -f "$name" 2>/dev/null
-    docker run -d --name "$name" \
-        -e DISPATCHARR_ENV=aio \
-        -v "${volume}:/data" \
-        "$RELEASE_IMAGE" >/dev/null
-
-    # Wait for the release image to fully initialize (PG running + migrations)
-    local elapsed=0
-    while [ $elapsed -lt $STARTUP_TIMEOUT ]; do
-        if docker logs "$name" 2>&1 | grep -q "uwsgi started with PID"; then
-            log_info "Release image initialized successfully"
-            break
-        fi
-        if ! docker ps -q -f "name=^${name}$" 2>/dev/null | grep -q .; then
-            log_info "Release image exited during init (checking data...)"
-            break
-        fi
-        sleep 3; ((elapsed+=3))
-    done
-
-    docker stop "$name" >/dev/null 2>&1
-    docker rm "$name" >/dev/null 2>&1
-
-    # Verify data was created (use --entrypoint to avoid running full app)
-    local owner
-    owner=$(docker run --rm --entrypoint stat -v "${volume}:/data" "$IMAGE_NAME" \
-        -c '%u:%g' /data/db/PG_VERSION 2>/dev/null)
-    log_info "Old data owner: ${owner:-<not found>}"
-}
-
-# Fallback: create old-style data manually (if release image unavailable)
+# Create genuinely pre-PUID PostgreSQL data: initdb run as the `postgres` OS
+# user, so `postgres` is the bootstrap superuser (OID 10) and /data/db carries
+# the image's postgres package UID rather than 1000. This is the only seeding
+# path — the release-image variant that used to sit above it was deleted
+# because the published tag stopped being pre-PUID; see the comment in
+# test_upgrade_explicit_puid for the full account.
 setup_old_pg_data_manual() {
     local volume="$1"
     log_info "Initializing old-style PG data manually (UID 102, postgres superuser)..."
@@ -469,11 +484,22 @@ test_upgrade_explicit_puid() {
     fresh_volume "$vol"
     track_container "$name"
 
-    if [ "$USE_RELEASE_IMAGE" = true ]; then
-        setup_old_pg_data "$vol"
-    else
-        setup_old_pg_data_manual "$vol"
-    fi
+    # Always the manual seeder, never the published release image.
+    #
+    # `ghcr.io/dispatcharr/dispatcharr:latest` used to BE the pre-PUID image
+    # this scenario upgrades from. It no longer is: it initialises /data/db
+    # as 1000:1000 with `dispatch` as the bootstrap superuser and no
+    # `postgres` role at all. Seeding from it made both assertions below
+    # unreachable — `postgres` came back `<missing>`, and no ownership
+    # migration was logged because 1000 already equalled PUID=1000 — and no
+    # future version of that floating tag will be pre-PUID again.
+    #
+    # The manual seeder produces the genuine article, reproducibly and with
+    # no third-party tag in the path: initdb run as the `postgres` OS user,
+    # so `postgres` is the bootstrap superuser (OID 10) and the data carries
+    # the image's postgres package UID. `test_bind_mount_upgrade` seeds this
+    # way and its migration assertion has always passed.
+    setup_old_pg_data_manual "$vol"
 
     docker run -d --name "$name" \
         -e DISPATCHARR_ENV=aio \
@@ -506,47 +532,52 @@ test_upgrade_explicit_puid() {
 
 # Simulates upgrade without PUID set. Auto-adapt should detect the
 # existing data owner (UID 102) and skip ownership migration entirely.
-test_upgrade_auto_adapt() {
-    CURRENT_SCENARIO="upgrade_auto_adapt"
-    section "Upgrade — old UID 102 data, no PUID (auto-adapt)"
+# Verifies an upgrade onto foreign-UID data with NO PUID set. The product
+# defaults PUID to 1000 and MIGRATES the data to match, rather than adapting
+# itself to the data.
+#
+# This scenario used to be `upgrade_default_puid` and asserted the opposite:
+# that PUID was read from the data owner and the data left at UID 102. That
+# feature existed, and `7e221720` ("fix: remove PUID auto-detect") deleted it
+# on purpose — running as UID 102 broke host-side access, made existing
+# DATA_DIR files unwritable, and failed comskip. The suite arrived in
+# `52ed0fc1`, the same PR that ADDED auto-detect, and was never updated, so
+# these assertions have been red on every CI run the suite has ever had.
+# Renamed rather than repaired in place: a scenario called `auto_adapt` that
+# asserts the absence of auto-adapt is how the next reader concludes the
+# product regressed.
+test_upgrade_default_puid() {
+    CURRENT_SCENARIO="upgrade_default_puid"
+    section "Upgrade — foreign-UID data, no PUID (defaults to 1000, migrates)"
 
-    local name="${TEST_PREFIX}_upg_auto"
+    local name="${TEST_PREFIX}_upg_def"
     local vol="${name}_data"
     cleanup_scenario
     fresh_volume "$vol"
     track_container "$name"
 
-    if [ "$USE_RELEASE_IMAGE" = true ]; then
-        setup_old_pg_data "$vol"
-    else
-        setup_old_pg_data_manual "$vol"
-    fi
+    # Always the manual seeder — see the comment in test_upgrade_explicit_puid.
+    setup_old_pg_data_manual "$vol"
 
-    # No PUID/PGID — should auto-adapt to data owner (UID 102)
+    # No PUID/PGID — 01-user-setup.sh defaults both to 1000.
     docker run -d --name "$name" \
         -e DISPATCHARR_ENV=aio \
         -v "${vol}:/data" \
         "$IMAGE_NAME" >/dev/null
 
     if wait_for_ready "$name"; then
-        # Data should stay at original UID — no migration. GID depends on
-        # the postgres group GID in the release image (typically 104).
-        local actual_owner
-        actual_owner=$(docker exec "$name" stat -c '%u:%g' /data/db/PG_VERSION 2>/dev/null)
-        local expected_uid="102"
-        local actual_uid="${actual_owner%%:*}"
-        if [ "$actual_uid" = "$expected_uid" ]; then
-            log_pass "Ownership /data/db/PG_VERSION UID = $actual_uid (auto-adapted)"
-        else
-            log_fail "Ownership /data/db/PG_VERSION UID: expected $expected_uid, got $actual_uid"
-        fi
+        check_ownership "$name" "/data/db" "1000" "1000"
+        check_ownership "$name" "/data/db/PG_VERSION" "1000" "1000"
         check_pg_accessible "$name" "dispatch"
         check_no_permission_errors "$name"
         check_migrations_done "$name"
-        check_log_contains "$name" "PUID not set" \
-            "Auto-adapt logged"
-        check_log_absent "$name" "Migrating PostgreSQL data ownership" \
-            "No ownership migration (correctly skipped)"
+        check_log_contains "$name" "Migrating PostgreSQL data ownership" \
+            "Ownership migration logged (default PUID)"
+        # Not padding: this is what makes the scenario a regression guard for
+        # the REMOVAL. If auto-detect ever returns, this goes red and names
+        # the commit that took it out.
+        check_log_absent "$name" "PUID not set" \
+            "No auto-detect (removed by 7e221720)"
     else
         log_fail "Container failed to start"
     fi
@@ -786,9 +817,21 @@ test_bind_mount() {
 
     # Use a Docker-managed temp dir to avoid Windows path issues
     # Create the bind mount dir inside a helper container, then use it
-    docker run --rm -v /tmp:/hosttemp "$IMAGE_NAME" bash -c "
+    # --entrypoint bash: $IMAGE_NAME carries an ENTRYPOINT, so `bash -c …`
+    # reached it as arguments it ignores and this block never ran. Docker
+    # auto-created the bind source as root-owned 0755 instead, and the
+    # scenario has been green for a reason it does not state. Same mechanism
+    # as the cleanup call at the foot of this function, and as the two
+    # sibling scenarios, which already spell it correctly.
+    #
+    # The `chmod 777` that used to sit here is deliberately gone rather than
+    # revived. It never executed, so no green run has ever depended on it;
+    # `mkdir -p` alone reproduces exactly the state Docker was creating
+    # implicitly (root:root, 0755), which the entrypoint then chowns to
+    # PUID:PGID. Reviving 777 would have been a real change to a scenario the
+    # triage lists as passing.
+    docker run --rm -v /tmp:/hosttemp --entrypoint bash "$IMAGE_NAME" -c "
         mkdir -p /hosttemp/puid_test_bind_$$
-        chmod 777 /hosttemp/puid_test_bind_$$
     " 2>/dev/null
     local bind_path="/tmp/puid_test_bind_$$"
 
@@ -812,7 +855,12 @@ test_bind_mount() {
     dump_logs_on_fail "$name"
 
     # Clean up bind mount
-    docker run --rm -v /tmp:/hosttemp "$IMAGE_NAME" bash -c \
+    # --entrypoint bash, like the seeding call above. Without it the AIO
+    # entrypoint runs, dies minting a secret key into an unmounted /data
+    # ("mktemp failed", docker/entrypoint.sh), and the rm -rf never executes —
+    # so every bind-mount scenario leaked its /tmp directory. Sibling
+    # mechanism to D10Scot/Dispatcharr#41.
+    docker run --rm -v /tmp:/hosttemp --entrypoint bash "$IMAGE_NAME" -c \
         "rm -rf /hosttemp/puid_test_bind_$$" 2>/dev/null
     cleanup_scenario
 }
@@ -862,68 +910,70 @@ test_bind_mount_upgrade() {
     fi
     dump_logs_on_fail "$name"
 
-    docker run --rm -v /tmp:/hosttemp "$IMAGE_NAME" bash -c \
+    # --entrypoint bash, like the seeding call above. Without it the AIO
+    # entrypoint runs, dies minting a secret key into an unmounted /data
+    # ("mktemp failed", docker/entrypoint.sh), and the rm -rf never executes —
+    # so every bind-mount scenario leaked its /tmp directory. Sibling
+    # mechanism to D10Scot/Dispatcharr#41.
+    docker run --rm -v /tmp:/hosttemp --entrypoint bash "$IMAGE_NAME" -c \
         "rm -rf /hosttemp/puid_test_bind_upg_$$" 2>/dev/null
     cleanup_scenario
 }
 
-# Verifies auto-adapt works on bind mounts: no PUID set, data owned by
-# UID 102 — should auto-detect and skip migration entirely.
-test_bind_mount_auto_adapt() {
-    CURRENT_SCENARIO="bind_mount_auto_adapt"
-    section "Bind mount upgrade — no PUID (auto-adapt to UID 102)"
+# The bind-mount twin of test_upgrade_default_puid — same reversal, same
+# reason (`7e221720` removed PUID auto-detect); see that function for the
+# full account. The seeding below is untouched: it already produces genuine
+# foreign-UID data, which is why the sibling test_bind_mount_upgrade passes.
+test_bind_mount_default_puid() {
+    CURRENT_SCENARIO="bind_mount_default_puid"
+    section "Bind mount upgrade — foreign-UID data, no PUID (defaults to 1000, migrates)"
 
-    local name="${TEST_PREFIX}_bind_auto"
-    local bind_path="/tmp/puid_test_bind_auto_$$"
+    local name="${TEST_PREFIX}_bind_def"
+    local bind_path="/tmp/puid_test_bind_def_$$"
     cleanup_scenario
     track_container "$name"
 
     # Create bind mount dir with old-style data
     docker run --rm -v /tmp:/hosttemp --entrypoint bash "$IMAGE_NAME" -c "
-        mkdir -p /hosttemp/puid_test_bind_auto_$$/db
+        mkdir -p /hosttemp/puid_test_bind_def_$$/db
         PG_VER=\$(ls /usr/lib/postgresql/ | sort -V | tail -n 1)
         PG_BIN=/usr/lib/postgresql/\$PG_VER/bin
-        chown -R postgres:postgres /hosttemp/puid_test_bind_auto_$$/db
-        chmod 700 /hosttemp/puid_test_bind_auto_$$/db
-        su - postgres -c \"\$PG_BIN/initdb -D /hosttemp/puid_test_bind_auto_$$/db\"
-        su - postgres -c \"\$PG_BIN/pg_ctl -D /hosttemp/puid_test_bind_auto_$$/db start -w -o '-c port=5432'\"
+        chown -R postgres:postgres /hosttemp/puid_test_bind_def_$$/db
+        chmod 700 /hosttemp/puid_test_bind_def_$$/db
+        su - postgres -c \"\$PG_BIN/initdb -D /hosttemp/puid_test_bind_def_$$/db\"
+        su - postgres -c \"\$PG_BIN/pg_ctl -D /hosttemp/puid_test_bind_def_$$/db start -w -o '-c port=5432'\"
         su - postgres -c \"psql -p 5432 -c \\\"CREATE ROLE dispatch WITH LOGIN PASSWORD 'secret';\\\"\"
         su - postgres -c \"createdb -p 5432 --encoding=UTF8 --owner=dispatch dispatcharr\"
-        su - postgres -c \"\$PG_BIN/pg_ctl -D /hosttemp/puid_test_bind_auto_$$/db stop -w\"
+        su - postgres -c \"\$PG_BIN/pg_ctl -D /hosttemp/puid_test_bind_def_$$/db stop -w\"
     "
 
-    # No PUID — auto-adapt should match data owner
+    # No PUID — 01-user-setup.sh defaults it to 1000 and migrates the data.
     docker run -d --name "$name" \
         -e DISPATCHARR_ENV=aio \
         -v "${bind_path}:/data" \
         "$IMAGE_NAME" >/dev/null
 
     if wait_for_ready "$name"; then
-        # Should stay at original UID — no migration. GID depends on the
-        # postgres group GID in the image (typically 104, not 102).
-        local actual_owner
-        actual_owner=$(docker exec "$name" stat -c '%u:%g' /data/db/PG_VERSION 2>/dev/null)
-        local expected_uid="102"
-        local actual_uid="${actual_owner%%:*}"
-        if [ "$actual_uid" = "$expected_uid" ]; then
-            log_pass "Ownership /data/db/PG_VERSION UID = $actual_uid (auto-adapted)"
-        else
-            log_fail "Ownership /data/db/PG_VERSION UID: expected $expected_uid, got $actual_uid"
-        fi
+        check_ownership "$name" "/data/db/PG_VERSION" "1000" "1000"
         check_pg_accessible "$name" "dispatch"
         check_no_permission_errors "$name"
         check_migrations_done "$name"
-        check_log_contains "$name" "PUID not set" \
-            "Auto-adapt logged on bind mount"
-        check_log_absent "$name" "Migrating PostgreSQL data ownership" \
-            "No migration on auto-adapted bind mount"
+        check_log_contains "$name" "Migrating PostgreSQL data ownership" \
+            "Bind mount ownership migration logged (default PUID)"
+        check_log_absent "$name" "PUID not set" \
+            "No auto-detect (removed by 7e221720)"
     else
-        log_fail "Bind mount auto-adapt failed"
+        log_fail "Bind mount default-PUID upgrade failed"
     fi
     dump_logs_on_fail "$name"
 
-    docker run --rm -v /tmp:/hosttemp "$IMAGE_NAME" bash -c \
-        "rm -rf /hosttemp/puid_test_bind_auto_$$" 2>/dev/null
+    # --entrypoint bash, like the seeding call above. Without it the AIO
+    # entrypoint runs, dies minting a secret key into an unmounted /data
+    # ("mktemp failed", docker/entrypoint.sh), and the rm -rf never executes —
+    # so every bind-mount scenario leaked its /tmp directory. Sibling
+    # mechanism to D10Scot/Dispatcharr#41.
+    docker run --rm -v /tmp:/hosttemp --entrypoint bash "$IMAGE_NAME" -c \
+        "rm -rf /hosttemp/puid_test_bind_def_$$" 2>/dev/null
     cleanup_scenario
 }
 
@@ -1399,7 +1449,11 @@ test_readonly_rootfs() {
         ro_errors=$(docker logs "$name" 2>&1 | grep -iE "read-only file system|No such file or directory" | head -3)
         if [ -n "$ro_errors" ]; then
             log_skip "Read-only rootfs: non-PUID failure (expected — needs more tmpfs mounts)"
-        elif docker logs "$name" 2>&1 | grep -iE "Cannot update ownership|permission denied" | grep -q "/data/"; then
+        # No `grep -q` on the docker logs pipe — see log_matches. The first
+        # grep is the second's producer here, so the same SIGPIPE/pipefail
+        # race applies; -iE with two patterns has no log_matches equivalent,
+        # so this captures to a variable instead.
+        elif [ -n "$(docker logs "$name" 2>&1 | grep -iE "Cannot update ownership|permission denied" | grep "/data/")" ]; then
             log_fail "Read-only rootfs: PUID-related failure"
         else
             log_skip "Read-only rootfs: unrelated startup failure"
@@ -1421,14 +1475,6 @@ echo -e "${NC}"
 
 # Pull required images
 section "Pulling required images"
-if docker pull "$RELEASE_IMAGE" 2>/dev/null; then
-    log_pass "Release image pulled ($RELEASE_IMAGE)"
-    USE_RELEASE_IMAGE=true
-else
-    log_info "Could not pull release image — upgrade tests will use manual setup"
-    USE_RELEASE_IMAGE=false
-fi
-
 if docker pull postgres:17 2>/dev/null; then
     log_pass "PostgreSQL 17 image pulled"
 else
@@ -1463,7 +1509,7 @@ SCENARIOS=(
     fresh_default
     fresh_custom_puid
     upgrade_explicit_puid
-    upgrade_auto_adapt
+    upgrade_default_puid
     restart_idempotent
     puid_change
     uid_collision_102
@@ -1471,7 +1517,7 @@ SCENARIOS=(
     puid_non_numeric
     bind_mount
     bind_mount_upgrade
-    bind_mount_auto_adapt
+    bind_mount_default_puid
     modular_mode
     custom_postgres_user
     custom_port
