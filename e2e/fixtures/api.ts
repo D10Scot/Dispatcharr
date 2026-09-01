@@ -88,6 +88,15 @@ export class ApiClient {
     this.tokens.access = 'expired.invalid.token';
   }
 
+  /**
+   * Test hook: the raw refresh token this client holds. Only issue #12's
+   * regression test needs it — it must present a refresh token to the
+   * endpoint directly, after deleting the user it names.
+   */
+  freshRefreshTokenForTest(): string {
+    return this.tokens.refresh;
+  }
+
   /** Re-point this client at a different principal's tokens. */
   useTokens(tokens: { access: string; refresh: string }): void {
     this.tokens = { ...this.tokens, ...tokens };

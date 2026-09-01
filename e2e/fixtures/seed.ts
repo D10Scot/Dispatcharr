@@ -1,6 +1,8 @@
 import type { ApiClient } from './api';
 import type {
   Channel,
+  ChannelGroup,
+  ChannelGroupOverrides,
   ChannelOverrides,
   ChannelProfile,
   ChannelProfileOverrides,
@@ -18,6 +20,7 @@ import type {
   UpstreamChannelOptions,
   User,
   UserOverrides,
+  XcUser,
 } from './types';
 import type { UpstreamScenario } from './upstream';
 import type { WaitOptions, Waiter } from './wait';
@@ -132,6 +135,64 @@ export class Seeder {
       'channelProfile',
       body
     );
+  }
+
+  /**
+   * `ChannelGroupSerializer` exposes one writable field, `name`, and this
+   * factory generates it — so {@link ChannelGroupOverrides} is empty, exactly
+   * as `channelProfile()`'s is.
+   *
+   * Reach for this whenever a test asserts on an Xtream *category* or an M3U
+   * `group-title`. `seed.channel()` with no `channel_group_id` is
+   * auto-assigned a shared "Default Group" by `ChannelSerializer.create`, and
+   * four parallel workers all writing into that one group makes any
+   * category-level assertion meaningless.
+   */
+  channelGroup(overrides: ChannelGroupOverrides = {}): Promise<ChannelGroup> {
+    const body: { name: string } = {
+      ...overrides,
+      name: this.generatedName('channelGroup'),
+    };
+    return this.create<ChannelGroup>(
+      '/api/channels/groups/',
+      'channelGroup',
+      body
+    );
+  }
+
+  /**
+   * A user who can authenticate against the Xtream Codes surface.
+   *
+   * The password is generated per user and thrown away with the run. That is
+   * deliberate and load-bearing, not incidental tidiness: XC credentials
+   * travel in query strings across four surfaces, Dispatcharr logs full
+   * provider URLs including `?password=` at INFO, and
+   * `.github/workflows/e2e-tests.yml`'s failure step prints
+   * `docker logs dispatcharr-e2e` straight into the CI log. A throwaway
+   * credential makes both of those harmless. **Do not introduce a fixed XC
+   * password here.**
+   *
+   * `xc_password` is spread after the caller's `custom_properties` so a
+   * caller cannot substitute one — the same ordering rule the generated
+   * identity fields use. Other custom properties (`hide_adult_content`,
+   * `epg_days`) pass through untouched.
+   *
+   * `generatedName` sanitises to `^[A-Za-z0-9._@-]+$`, which is exactly what
+   * `SAFE_CREDENTIAL_RE` (`apps/accounts/serializers.py:16`) requires of
+   * `xc_password` (`:110-113`) — swap the generator for something that
+   * produces other characters and this factory starts failing with a 400
+   * from `UserSerializer`, not from here.
+   */
+  async xcUser(overrides: UserOverrides = {}): Promise<XcUser> {
+    const xcPassword = this.generatedName('xc-secret');
+    const user = await this.user({
+      ...overrides,
+      custom_properties: {
+        ...(overrides.custom_properties ?? {}),
+        xc_password: xcPassword,
+      },
+    });
+    return { ...user, xcPassword };
   }
 
   streamProfile(overrides: StreamProfileOverrides = {}): Promise<StreamProfile> {
