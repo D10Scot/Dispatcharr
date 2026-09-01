@@ -10,7 +10,7 @@
 
 **Spec:** `docs/superpowers/specs/2026-09-01-e2e-lifecycle-depth-design.md` — read it. Decisions are cited below as **D1**–**D22**, verified facts as **F1**–**F12**, triage rows as **T1**–**T6**. The spec's rationale is not repeated here.
 
-**Base:** branch from `origin/main` **after G11 has merged** (roadmap sequencing: wave 5 is G11 alone, and it rewrites annotations in every spec file). If G11 is still open when this starts, branch from `main` anyway and expect to rebase through additive edits to `e2e/playwright.config.ts` and `.github/workflows/lifecycle-tests.yml`.
+**Base:** branch from `origin/main` at or after **`45a33a4a`**. G11 has merged — `4211cbb7` (guards, ADRs, full-run CI) and `7a408c2b` (every test tagged, the tag guard blocking) — so its edits to `e2e/playwright.config.ts`, `.github/workflows/lifecycle-tests.yml`, `e2e/README.md` and `e2e/COVERAGE.md` are already on `main` and there is nothing to rebase through.
 
 ---
 
@@ -28,9 +28,10 @@ Every task's requirements implicitly include this section.
 8. **Every `uses:` in a workflow is a full 40-character commit SHA with a trailing version comment**; `persist-credentials: false` on every `actions/checkout`; `permissions: contents: read` at the top level only. The zizmor hook blocks on **every** finding in an edited workflow file, and the workflows are at zero findings — a ratchet. **Reuse the pins already in `.github/workflows/lifecycle-tests.yml`**; resolve nothing new.
 9. **Typecheck is `cd e2e && npm run typecheck`.** `npx tsc --noEmit -p e2e` from the repo root does not resolve. The `PostToolUse` hook runs it on every `e2e/**/*.ts` edit and blocks.
 10. **`e2e/COVERAGE.md` is updated in the same PR.** Roadmap rule 3.
-11. **G11 owns the tag taxonomy.** Apply `@contract` / `@characterization` per the spec's Tags table; do not define what they promise, do not invent new tags. If G11 has not merged, leave a `TODO(G11)` comment naming the intended tag rather than guessing at syntax.
-12. **On macOS, run the bash suites under bash 4.4+** — Homebrew's `bash`, or a `docker:27-cli` container with bash installed. Stock `/bin/bash` is 3.2.57, where expanding an empty array under `set -u` is an unbound-variable error, so the suite dies on `CLEANUP_ITEMS[@]` before it runs anything. Runners ship bash 5.x, so this never reproduces in CI.
-13. **Both suites take a single positional scenario name**, so one scenario can be re-run alone: `bash docker/tests/test-puid-pgid.sh --skip-build pg_major_upgrade`.
+11. **Every new `test(` carries a tag, or CI fails.** G11 owns the taxonomy (`docs/adr/0002-e2e-test-taxonomy.md`); apply it, do not extend it. The syntax is Playwright's native tag option as an **inline object literal second argument**: `test('title', { tag: '@characterization' }, async ({ … }) => { … })`. Hoisting that object to a const makes the declaration *unverifiable* and `e2e/tests/guards/tags.spec.ts` fails — it fails closed, and `KNOWN_UNVERIFIABLE` is empty. Every test this goal adds or touches is `@characterization` (spec D19: the files destructure `instance`, which is the `CONTAINER_LIFECYCLE` capability, and ADR 0002 makes anything on a capability list `@characterization` by construction), so each needs a `// @characterization: <fact it pins>` comment immediately above the declaration. Both existing lifecycle specs already carry the tag — no retag.
+12. **A new spec that owns a container goes on `CONTAINER_LIFECYCLE.allow` in `e2e/tests/guards/allowlist.ts`.** `capabilities.spec.ts` compares each `allow` array with `toEqual`, so a missing entry fails *and* a stale one does. `instance.manage(['dumpdata', …])` does **not** trip `CONTAINER_INTROSPECTION` — that detector matches only the literals `pgrep`, `docker ` and `manage.py` inside string and template literals. Do not add anything to `GLOBAL_SETTINGS_WRITE`: `tests/lifecycle/durable-state.ts` is already on it for the `system_settings` PATCH it has always made, and none of the seven relations writes `/api/core/settings/`.
+13. **On macOS, run the bash suites under bash 4.4+** — Homebrew's `bash`, or a `docker:27-cli` container with bash installed. Stock `/bin/bash` is 3.2.57, where expanding an empty array under `set -u` is an unbound-variable error, so the suite dies on `CLEANUP_ITEMS[@]` before it runs anything. Runners ship bash 5.x, so this never reproduces in CI.
+14. **Both suites take a single positional scenario name**, so one scenario can be re-run alone: `bash docker/tests/test-puid-pgid.sh --skip-build pg_major_upgrade`.
 
 ## Findings already made — do not re-derive them
 
@@ -43,7 +44,8 @@ The spec's investigation is complete. These are settled; re-running the investig
 | **G12-R3** | All 7 TLS failures are one exception: `PermissionError: [Errno 13] Permission denied: '/certs/ca.crt'` at `dispatcharr/settings.py`'s `_validate_tls_cert_paths`, caused by `mktemp -d`'s 0700 mode. The only passing scenario, `modular_no_tls_regression`, is the only one that mounts no certificates. | `tls-postgres.log`, all seven `--- Container logs (tls_test_app) ---` blocks. |
 | **G12-R4** | `pg_major_upgrade` is **not** classified. Its sibling `pg_upgrade_post_puid` passes on the same run using the same `pg_upgrade` path; the only difference is that it seeds its PG 16 cluster inside `$IMAGE_NAME` instead of from `postgres:16`. | Both scenarios' output in the same log; `test_pg_major_upgrade` vs `test_pg_upgrade_post_puid` in the suite. |
 | **G12-R5** | Issue #41 is **not** one of the fifteen — it fails no assertion. A **second**, distinct leak exists: the bind-mount cleanups omit `--entrypoint`, so the AIO entrypoint runs and dies at `docker/entrypoint.sh:109` (`mktemp failed`) without ever running `rm -rf`. | The `mktemp failed` lines under `Bind mount — local filesystem` and `Bind mount upgrade — old UID 102 → PUID=1000`. |
-| **G12-R6** | The bash suites have **never** been green in CI. `lifecycle-tests.yml`'s `suites` job is `if: github.event_name != 'pull_request'`, so the green G7 PR runs skipped them entirely. | The workflow file; `gh run list --workflow=lifecycle-tests.yml`. |
+| **G12-R6** | The bash suites have **never** been green in CI. `lifecycle-tests.yml`'s `suites` job *was* `if: github.event_name != 'pull_request'`, so the green G7 PR runs skipped them entirely. G11 widened it to `if: github.event_name != 'pull_request' \|\| needs.changes.outputs.full == 'true'`, so a `migration/*` head branch or a `workflow_dispatch` with `full: true` now runs them on a PR — which is how this goal verifies itself (Task 6 Step 4). | The workflow file at `45a33a4a`; `gh run list --workflow=lifecycle-tests.yml`. |
+| **G12-R9** | Nothing under `docker/tests/` changed between the spec's original verification and `45a33a4a`, so the whole triage still applies to the files on disk. | `git log --oneline cf95410e..45a33a4a -- docker/tests/` is empty. |
 | **G12-R7** | `instance.manage()` rejects any argument outside `^[A-Za-z0-9._/=-]+$`, so `shell -c` is impossible but `dumpdata django_celery_beat.PeriodicTask --format=json` passes intact. `manage.py` prints a banner to stdout first, so parse from the first `[`. | `Instance.manage` in `e2e/fixtures/instance.ts`; `appliedMigrations` in `upgrade-migrations.spec.ts`. |
 | **G12-R8** | `instance.restart()` stops and starts the **provider** container too, and `ScenarioRegistry` is an in-memory `Map` — every upstream scenario is forgotten across a restart. | `scripts/e2e_up.sh`'s `--stop` branch; `e2e-upstream/src/scenario.ts`. |
 
@@ -499,14 +501,18 @@ All three: no output.
 
 - [ ] **Step 4: Push and read the real workflow run**
 
-Push the branch. `lifecycle-tests.yml`'s `suites` job is `if: github.event_name != 'pull_request'`, so **it will not run on the PR** (G12-R6) — the two bash jobs execute only on a push to `main` or on `workflow_dispatch`. Dispatch it explicitly against the branch:
+Push the branch. `lifecycle-tests.yml`'s `suites` job is now `if: github.event_name != 'pull_request' || needs.changes.outputs.full == 'true'` (G12-R6), so on an ordinary pull request from a branch **not** named `migration/*` the two bash jobs still do not run. Two ways to make them run, and use the second:
+
+- name the implementation branch `migration/…`, which sets `full=true` in the `changes` job — but this is not a migration branch and naming it one to bend a CI condition is exactly the sort of thing that later gets read as fact;
+- **dispatch with `full: true`**, which sets the same output for one run without lying about what the branch is.
 
 ```bash
-gh workflow run lifecycle-tests.yml --repo D10Scot/Dispatcharr --ref docs/e2e-g12-spec
+gh workflow run lifecycle-tests.yml --repo D10Scot/Dispatcharr \
+  --ref test/e2e-lifecycle-depth -f full=true
 gh run watch --repo D10Scot/Dispatcharr
 ```
 
-`workflow_dispatch` requires the workflow file to be on the default branch, which it is.
+`-f full=true` is what makes **every** job run: `changes` sets `full=true`, which satisfies both the `suites` condition above and `upgrade-migrations`'s `if: needs.changes.outputs.lifecycle == 'true' || needs.changes.outputs.full == 'true'`. Substitute the real implementation branch name for `test/e2e-lifecycle-depth` — the spec branch `docs/e2e-g12-spec` an earlier draft of this plan named has merged and no longer exists. `workflow_dispatch` requires the workflow file to be on the default branch, which it is.
 
 **Verification:** both matrix jobs exit 0. Attach both suite-log artifacts to the PR body. **This is the definition of green (spec, § Triage) and Tasks 7–11 do not start until it holds.**
 
@@ -616,9 +622,11 @@ Gate it behind `opts.logoBytes ?? true`, with this comment:
 
 `restart-persistence.spec.ts` and `upgrade-migrations.spec.ts` each call `seedDurableState(api, seed)` and `assertDurableState(api, state)`. Add the `upstream` fixture to each test's destructured arguments and pass it; pass `request` to the assertion. Neither spec's structure, ordering or existing assertions change — the `(d)`-first guards (`startedAt` moved; image id changed) stay exactly where they are, ahead of everything else.
 
-- [ ] **Step 10: Apply G11's tags** (constraint 11)
+- [ ] **Step 10: Extend the two `@characterization:` comments — do not retag** (constraint 11)
 
-`restart-persistence.spec.ts` → `@contract`. `upgrade-migrations.spec.ts` → flag for G11 per the spec's Tags table: its `showmigrations` and `migrate --check` assertions are coupled to Django's migration machinery and to `manage.py`'s stdout format, and whether that makes the file `@characterization` or splits it is G11's call, not this one's. Leave a comment saying so; do not decide it here.
+Both specs already carry `{ tag: '@characterization' }` at HEAD (`restart-persistence.spec.ts:23`, `upgrade-migrations.spec.ts:163`), and both are already on `CONTAINER_LIFECYCLE.allow`. **Change neither tag and add neither path.** What this task owes is one sentence in each existing `@characterization:` comment, saying that the relations now asserted are the portable half — rows, orderings, foreign keys and file bytes surviving a container event is behaviour any rewrite must preserve — while the coupled half is unchanged and is what the tag is for: the AIO container being the unit of restart in one file, `manage.py showmigrations` output and the image layout in the other.
+
+Do **not** add a `GLOBAL_SETTINGS_WRITE` entry. `durable-state.ts` is already on that list for its `system_settings` PATCH, and none of the seven relations touches `/api/core/settings/` (constraint 12).
 
 - [ ] **Step 11: Typecheck and run**
 
@@ -642,6 +650,7 @@ Implements **D14**, **D15**, **D16**. Closes `COVERAGE.md`'s "Backups: restore" 
 - Create: `e2e/tests/lifecycle/backup-restore.spec.ts`
 - Modify: `e2e/playwright.config.ts`
 - Modify: `e2e/package.json`
+- Modify: `e2e/tests/guards/allowlist.ts` — add `'tests/lifecycle/backup-restore.spec.ts'` to `CONTAINER_LIFECYCLE.allow`, with a one-line comment saying it owns and resets a container. `capabilities.spec.ts` compares with `toEqual`, so omitting this fails the `guards` job (constraint 12).
 
 **Context the implementer needs:**
 
@@ -733,6 +742,7 @@ Implements **D17**, **D18**, **D19**, **D21**. Closes `COVERAGE.md`'s "Refresh-i
 - Create: `e2e/tests/lifecycle/refresh-scheduling.spec.ts`
 - Modify: `e2e/playwright.config.ts`
 - Modify: `e2e/package.json`
+- Modify: `e2e/tests/guards/allowlist.ts` — add `'tests/lifecycle/refresh-scheduling.spec.ts'` to `CONTAINER_LIFECYCLE.allow` (constraint 12). Nothing else on the five lists changes: `instance.manage(['dumpdata', …])` contains none of `CONTAINER_INTROSPECTION`'s three literals, and the fixture use is what `CONTAINER_LIFECYCLE` polices.
 - Modify: `e2e/README.md` (the enumerated interval set — Task 11 does the rest of the docs, but this one edit belongs with the values that need it)
 
 **Context the implementer needs:**
@@ -775,7 +785,7 @@ Two observation routes, and the split between them is the second purpose of this
 
 Add `"test:lifecycle-scheduling"` to `e2e/package.json` and name it in the `test` script's guidance string.
 
-- [ ] **Step 2: Test 1 — `@contract`, REST only**
+- [ ] **Step 2: Test 1 — portable assertions, REST only**
 
 `instance.up({ reset: true })`, `provisionAdmin`, own `ApiClient`/`Seeder` (same reasoning comment as everywhere else in this directory). Then, for an `M3UAccount` and again for an `EPGSource`:
 
@@ -783,9 +793,9 @@ Add `"test:lifecycle-scheduling"` to `e2e/package.json` and name it in the `test
 2. `PATCH { cron_expression: '<expr>' }`; read back and get the same expression — which proves a `CrontabSchedule` was created and linked.
 3. `PATCH { refresh_interval: <another non-zero>, cron_expression: '' }`; read back and get an empty `cron_expression`, proving the task's `crontab` was cleared.
 
-Tag `@contract`. State in a comment that step 2's assertion is *not* a tautology — `cron_expression` is not a model field, it is derived from `refresh_task.crontab` on every read — and cite the serializer comment that says so, because a reader who assumes it is a stored column will conclude this test proves nothing.
+Tag `@characterization`, like every test in this file and for the file-level reason (constraint 11, spec D19): the spec owns and resets a container. Its `@characterization:` comment must say that these particular assertions are the portable ones — `refresh_interval` and `cron_expression` are REST round-trips that any behaviour-preserving rewrite must keep — and that the tag is fixed by the container ownership, not by them. Also state in a comment that step 2's assertion is *not* a tautology: `cron_expression` is not a model field, it is derived from `refresh_task.crontab` on every read. Cite the serializer comment that says so, because a reader who assumes it is a stored column will conclude this test proves nothing.
 
-- [ ] **Step 3: Test 2 — `@characterization`, via `dumpdata`**
+- [ ] **Step 3: Test 2 — coupled assertions, via `dumpdata`**
 
 Same instance (the project is serial, so the second test runs against the state the first left; if that coupling is uncomfortable, seed fresh names — do **not** add a second `up({ reset: true })`, which would cost another boot).
 
@@ -795,9 +805,9 @@ Write a small local helper that runs the `dumpdata` call, slices from the first 
 - a second source created with `refresh_interval: 0` yields a `PeriodicTask` with `fields.enabled === false` — the other side of `should_be_enabled`, and the reason the rest of the suite can use 0;
 - `DELETE`ing the first source removes its `PeriodicTask` and, once nothing else references it, its `IntervalSchedule` (`_cleanup_orphaned_interval`).
 
-The `@characterization` justification comment must say: this couples to django-celery-beat's table names and to the AIO container layout because the product exposes no other view of `PeriodicTask.enabled`, and a rewrite that preserved behaviour but changed scheduler is expected to change this test.
+The `@characterization:` comment must say: this couples to django-celery-beat's table names and to the AIO container layout because the product exposes no other view of `PeriodicTask.enabled`, and a rewrite that preserved behaviour but changed scheduler is expected to change this test. This is the only test in the goal where the tag would be right on the assertions' own merits.
 
-Note for G11 (also recorded in the spec's Tags section): this is the first use of `instance.manage` from a **spec** rather than from `fixtures/instance.ts`. G11's generalised quarantine guard must either allowlist this file or permit `instance.manage` while still policing raw `child_process`/`docker`/`pgrep`.
+This is the first use of `instance.manage` from a **spec** rather than from `fixtures/instance.ts`, and G11 already decided what that costs: nothing extra. `CONTAINER_INTROSPECTION` matches only the literals `pgrep`, `docker ` and `manage.py` in string and template literals, and a `dumpdata` argument array contains none of them; the `instance` fixture use is caught by `CONTAINER_LIFECYCLE`, which this file joins in the Files list above. Do not widen any detector.
 
 - [ ] **Step 4: Record the interval values in `e2e/README.md`** (D21)
 
@@ -850,7 +860,15 @@ The hook checks `zizmor --version` against the pin in `.github/workflows/actions
 
 - [ ] **Step 1: Add one job running both new projects**
 
-One job, not two: each pays a 3.6 GB `docker load`, and both projects are short. Model it on the existing `upgrade-migrations` job — same `needs: build`, same checkout/download/load/setup-node/`npm ci`/`playwright install`/`typecheck` prologue, same `timeout-minutes: 45`, same failure-path log dump and report upload — minus the "Resolve the upgrade baseline" step, which neither project needs.
+One job, not two: each pays a 3.6 GB `docker load`, and both projects are short. Model it on the existing `upgrade-migrations` job — same `needs: [changes, build]`, same checkout/download/load/setup-node/`npm ci`/`playwright install`/`typecheck` prologue, same `timeout-minutes: 45`, same failure-path log dump and report upload — minus the "Resolve the upgrade baseline" step, which neither project needs.
+
+Give it **the same `if:` as `upgrade-migrations`**, verbatim:
+
+```yaml
+    if: needs.changes.outputs.lifecycle == 'true' || needs.changes.outputs.full == 'true'
+```
+
+That is what puts both projects in the migration gate: `changes` sets `full=true` for a head branch matching `migration/*` or a `workflow_dispatch` with `full: true`, and sets `lifecycle=true` whenever the PR diff matches its pattern — which already includes `^e2e/tests/lifecycle/`, so both new specs select the job by their own paths.
 
 ```yaml
       - name: Run the restore spec
@@ -874,21 +892,21 @@ One job, not two: each pays a 3.6 GB `docker load`, and both projects are short.
 
 Add `if: always()` to the second run step **only if** you want a failing restore spec to still report the scheduling result; the default (skip) is the right choice here because a broken container after restore would make the scheduling failure uninterpretable. Leave the default and say so in a comment.
 
-- [ ] **Step 2: Add the paths these projects depend on to the `push` filter**
+- [ ] **Step 2: Add the new job to `lifecycle-result`'s `needs:` — this is the step it is easiest to skip**
 
-The filter already covers `e2e/tests/lifecycle/**`, `e2e/fixtures/**`, `e2e/setup/**` and `e2e/playwright.config.ts` — which is everything the two new specs touch. **Verify, do not assume**, and add nothing that is already covered. The `pull_request` filter is deliberately narrower (D16) and stays as it is.
-
-- [ ] **Step 3: Record that G11's run-everything mode must include them**
-
-Add a comment beside the new job:
+`lifecycle-result` is the aggregate check, and it reads exactly what it lists:
 
 ```yaml
-  # G11's run-everything mode (the migration-branch gate) must list
-  # `lifecycle-restore` and `lifecycle-scheduling` alongside
-  # `lifecycle-upgrade`. Like that job, this one does not run on a pull
-  # request, so on a migration branch these are exactly the checks that would
-  # otherwise be missing.
+    needs: [changes, build, suites, upgrade-migrations]
 ```
+
+with a `for result in "$BUILD_RESULT" "$SUITES_RESULT" "$UPGRADE_RESULT"` loop over `success|skipped`. A job absent from `needs:` is invisible to it: the new job could fail while `Lifecycle result` reports green, which is precisely the failure that check exists to prevent (its own header explains the sibling case for `build`). Add the job to `needs:`, add its `${{ needs.<job>.result }}` to the `env:` block, and add that variable to the loop.
+
+- [ ] **Step 3: Check the `push` path filter and the `changes` job pattern**
+
+The workflow's `push` filter already covers `e2e/tests/lifecycle/**`, `e2e/fixtures/**`, `e2e/setup/**` and `e2e/playwright.config.ts` — everything the two new specs touch. **Verify, do not assume**, and add nothing already covered. There is now a second filter to check: the `changes` job's `pattern=` regex, which is what gates a pull request. It matches `^e2e/tests/lifecycle/`, so both new spec files select the job; it does **not** match `e2e/tests/guards/allowlist.ts`, and that is correct — the guards run in `e2e-tests.yml`'s own `guards` job, gated on that workflow's `e2e` output, whose pattern starts `^(apps/|core/|dispatcharr/|frontend/|docker/|scripts/|e2e/|…)` and so matches any `e2e/` path including the allowlist. The `pull_request` trigger here carries no `paths:` any more (G11 moved the filtering into `changes`), so there is nothing to narrow there.
+
+One thing **not** to do in this step. `e2e-tests.yml` carries two project lists and a comment saying "A NEW PROJECT MUST BE ADDED TO BOTH LINES." That rule is about projects that belong in *that* workflow's matrix. `lifecycle-restore` and `lifecycle-scheduling` do not (D22) — they go in the new `lifecycle-tests.yml` job instead, for the same reason `lifecycle-upgrade` does. Adding them to `e2e-tests.yml` would put a container-owning `up({ reset: true })` project into the shared-instance matrix. Leave `e2e-tests.yml` untouched; it is not on this goal's file list.
 
 - [ ] **Step 4: Verify**
 
@@ -896,14 +914,15 @@ Add a comment beside the new job:
 zizmor .github/workflows/lifecycle-tests.yml
 ```
 
-Expected: zero findings. Then push and dispatch:
+Expected: zero findings. Then push and dispatch with `full: true`, as in Task 6 Step 4 and for the same reason — without it the `suites` legs skip on anything but a `migration/*` branch:
 
 ```bash
-gh workflow run lifecycle-tests.yml --repo D10Scot/Dispatcharr --ref docs/e2e-g12-spec
+gh workflow run lifecycle-tests.yml --repo D10Scot/Dispatcharr \
+  --ref test/e2e-lifecycle-depth -f full=true
 gh run watch --repo D10Scot/Dispatcharr
 ```
 
-**Verification:** all four jobs green — `build`, both `suites` matrix legs, `upgrade-migrations`, and the new one.
+**Verification:** every job green — `changes`, `build`, both `suites` matrix legs, `upgrade-migrations`, the new restore/scheduling job, and `Lifecycle result`. Confirm `Lifecycle result` actually observed the new job: its step log prints one `name=result` pair per dependency, and the new one must appear there. A green aggregate that never names the job is Step 2 not done.
 
 ---
 
@@ -916,10 +935,10 @@ gh run watch --repo D10Scot/Dispatcharr
 
 - [ ] **Step 1: Flip the two `todo` rows**
 
-`COVERAGE.md` line 134 (Backups: restore) and line 139 (Refresh-interval scheduling) are attributed to **G7** and marked `todo`. Change the Goal column to **G12** and the Status to `done`, and extend each row's text with what was actually built and what was deliberately left out — the ledger's value is that its rows say more than "done":
+Find the two rows by their text, not by line number — G11's edits moved both, and an earlier draft of this plan cited the old positions. Under `Lifecycle`, the row beginning *"Backups: restore — split out of G6's Backups row"* and the row beginning *"Refresh-interval scheduling: a **non-zero** `refresh_interval`"*. Both are attributed to **G7** and marked `todo`. Change the Goal column to **G12** and the Status to `done`, and extend each row's text with what was actually built and what was deliberately left out — the ledger's value is that its rows say more than "done". The table is `| Area | Flow | Goal | Status |` and has **no tag column**, so any tag statement belongs in the row's prose:
 
 - the restore row must record D16: a version-2 archive holds `database.dump` and `metadata.json` and **no files**, so the logo-bytes assertion is opted out there and the docstring's "and data directories" is stale;
-- the scheduling row must record D18 (no tick is waited for; the smallest interval is one hour), D19 (the `@contract`/`@characterization` split and why), and D21 (the #7 exemption and its condition).
+- the scheduling row must record D18 (no tick is waited for; the smallest interval is one hour), D19 (both tests are `@characterization` because the file owns a container and is on `CONTAINER_LIFECYCLE`, while the assertion-portability split lives in each test's comment), and D21 (the #7 exemption and its condition).
 
 - [ ] **Step 2: Add the new rows**
 
@@ -935,7 +954,7 @@ Beyond Task 9 Step 4's interval paragraph:
 
 - the "Projects" section gains `lifecycle-restore` and `lifecycle-scheduling`, each with one line on why it owns its container;
 - the "Container lifecycle" section gains **G12-R8** — that `e2e_up.sh --stop` stops the provider and `ScenarioRegistry` is in-memory, so a restart forgets every scenario. This is a harness fact every future lifecycle spec needs and it is currently written down nowhere;
-- the "CI" section gains the new job and repeats D22's trade (it does not gate a PR; G11's run-everything mode must list it).
+- the "CI" section gains the new job, with its gating stated as it now is: the same `if:` as `upgrade-migrations`, so it runs on a lifecycle-touching PR and always in full mode (`migration/*`, or a dispatch with `full: true`), and it is counted by `Lifecycle result`.
 
 - [ ] **Step 4: Close #41**
 
@@ -943,6 +962,8 @@ Beyond Task 9 Step 4's interval paragraph:
 gh issue close 41 --repo D10Scot/Dispatcharr \
   --comment "Fixed in <PR link>: cleanup_scenario now removes containers in a first pass and volumes/networks in a second, in both test-puid-pgid.sh and test-tls-postgres.sh. A second, distinct leak was found and fixed in the same change — the bind-mount scenarios' cleanup omitted --entrypoint, so the AIO entrypoint ran, died minting a secret key into an unmounted /data (\"mktemp failed\", docker/entrypoint.sh), and the rm -rf never executed, leaking a host directory per bind-mount scenario. Verified: after a full suite run, no puid_test/tls_test volume, container or /tmp directory survives."
 ```
+
+**#41 only.** [#42](https://github.com/D10Scot/Dispatcharr/issues/42) ("the `instance` fixture is guarded only by a comment") is now answered by `CONTAINER_LIFECYCLE`, and Tasks 8 and 9 add two more files to that list — so the PR body may say so. **Do not close it here:** the mechanism landed in G11, and closing another goal's issue from this PR misattributes it.
 
 - [ ] **Step 5: Self-review**
 
@@ -960,11 +981,14 @@ Then confirm the CI story end to end: the workflow's four jobs green on a `workf
 
 ## Definition of done
 
-1. `lifecycle-tests.yml` is green on a `workflow_dispatch` run against the branch: `build`, both `suites` legs, `upgrade-migrations`, and the new restore/scheduling job.
+1. `lifecycle-tests.yml` is green on a `gh workflow run … -f full=true` run against the implementation branch: `changes`, `build`, both `suites` legs, `upgrade-migrations`, the new restore/scheduling job, and `Lifecycle result` — with the new job named in `Lifecycle result`'s own output.
 2. Both bash suites report `Failed: 0`; every `Skipped` is accounted for in the PR body and every quarantine names an issue.
 3. `durable-state.ts` asserts seven relations in addition to its seven scalar rows, and both lifecycle specs get them.
 4. `backup-restore.spec.ts` and `refresh-scheduling.spec.ts` pass, each on its own instance, each in its own project.
-5. Two product issues filed with `--repo D10Scot/Dispatcharr`; #41 closed; no product file modified.
-6. `COVERAGE.md`'s two G7 `todo` rows are `done` and attributed to G12; the new rows are written.
-7. `cd e2e && npm run typecheck` is clean; `zizmor .github/workflows/lifecycle-tests.yml` reports zero findings.
-8. Every mutation check named in Tasks 7, 8 and 9 was run and its result recorded in the PR body.
+5. Every new `test(` carries `{ tag: '@characterization' }` as an inline object literal with a `// @characterization:` comment above it, both new spec paths are on `CONTAINER_LIFECYCLE.allow`, and `npx playwright test --project=guards` passes.
+6. Two product issues filed with `--repo D10Scot/Dispatcharr`; #41 closed; #42 referenced but not closed; no product file modified.
+7. `COVERAGE.md`'s two G7 `todo` rows are `done` and attributed to G12; the new rows are written.
+8. `cd e2e && npm run typecheck` is clean; `zizmor .github/workflows/lifecycle-tests.yml` reports zero findings.
+9. Every mutation check named in Tasks 7, 8 and 9 was run and its result recorded in the PR body.
+
+**Not in this goal, and stated so the PR body can say it out loud:** adding `Lifecycle result` to the Main ruleset. This goal is what makes that possible — the workflow's header says the check "must not be added to the Main ruleset until G12 leaves both bash suites green" — but a ruleset is a repository setting, not a file in this diff. **The follow-up is the maintainer's**, and the PR body should name it as the next step rather than leave a green run looking like a finished gate.

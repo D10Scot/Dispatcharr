@@ -4,20 +4,35 @@
 
 **Goal:** Remove the ways the existing E2E suite can be green for the wrong reason, deepen three frontend surfaces that are wired but not exercised, and give the fake upstream provider a versioned contract. One PR of small, individually verified fixes. **No product code changes.**
 
-**Spec:** `docs/superpowers/specs/2026-09-01-e2e-test-quality-remediation-design.md` — read it before Task 1. Every task below cites the spec decisions and audit rows it implements. Where a task and the spec disagree, the spec was verified at `76db0332` and wins; say so in the task report rather than silently diverging.
+**Spec:** `docs/superpowers/specs/2026-09-01-e2e-test-quality-remediation-design.md` — read it before Task 1. Every task below cites the spec decisions and audit rows it implements. Where a task and the spec disagree, the spec was verified at `45a33a4a` and wins; say so in the task report rather than silently diverging.
 
-**Verified at `76db0332`** (`origin/main`, "test(e2e): catch-up and timeshift, end to end (G10) (#113)"). An earlier draft was written at `cf95410e` against #113's then-open head; #113 has merged and both documents are rebased onto its tip.
+**Verified at `45a33a4a`** (`origin/main`). Earlier drafts were written at `cf95410e` and at `76db0332`; **G11 has since merged**, as `4211cbb7` (PR #123 — the guards, ADR 0002, ADR 0003, full-run CI) and `7a408c2b` (PR #124 — every test tagged, the tag guard blocking), and both documents are rebased onto `45a33a4a`. **Branch off `origin/main` at or after `45a33a4a`.**
 
 **Tech Stack:** TypeScript 5.7.2 (strict; `npm run typecheck` = `tsc --noEmit`), Playwright 1.62.1, Node 24, the G1 fixture set (`api`, `seed`, `waitFor`, `streamClient`, `upstream`, `asPrincipal`, `adminPage`, `pageErrors`, built-in `request`), the G8 XC provider, Docker.
 
 ---
 
-## Merge-order gate — do not start until both are true
+## Merge-order gate — both discharged, the gate is open
 
-- [x] ~~**PR #113 (G10) is merged to `main`.**~~ **Discharged** — merged as `76db0332`, which both documents are written against. It also brought three further `test.fail()` pins; all three are already guarded and are audit rows 18–20, so they add no task.
-- [ ] **G11 (wave 5) is merged to `main`.** G11 applies the `@contract` / `@characterization` tag taxonomy across every spec file, including all ten this plan touches. **G15 does not define the taxonomy** and must not invent tag names — read G11's ADR and apply the tags it defines to every test this plan adds or edits.
+- [x] ~~**PR #113 (G10) is merged to `main`.**~~ **Discharged** — merged as `76db0332`. It also brought three further `test.fail()` pins; all three are already guarded and are audit rows 18–20, so they add no task.
+- [x] ~~**G11 (wave 5) is merged to `main`.**~~ **Discharged** — merged as `4211cbb7` (#123) and `7a408c2b` (#124), with `45a33a4a` on top. Every spec file this plan touches is already tagged.
 
-Branch off `main` **after** both have landed. If either is still open when this plan is dispatched, stop and report; do not rebase around it.
+**Branch off `origin/main` at or after `45a33a4a`.** Nothing here waits on another goal.
+
+**The tag mechanism, since this plan applies it and does not define it** (`docs/adr/0002-e2e-test-taxonomy.md`, `e2e/tests/guards/tags.spec.ts`):
+
+- Playwright's native details option, as an **inline object literal in the second argument**:
+
+  ```ts
+  test('a title that says what is asserted', { tag: '@contract' }, async ({ seed, api }) => { … });
+  test.fail('the pin title', { tag: '@contract' }, async ({ seed, api }) => { … });
+  ```
+
+  A tag may be inherited from an enclosing `test.describe('…', { tag: … }, …)`. The details object **must be a literal** — `const d = { tag: '@contract' }; test('…', d, fn)` is reported `unverifiable` and **fails**.
+- `@contract` is the default and needs no justification. `@characterization` additionally requires a `// @characterization: <the implementation fact it pins>` comment immediately above the declaration; the guard does not check that comment, and the ADR requires it anyway.
+- `e2e/tests/guards/tags.spec.ts` is **blocking** and fails closed. `KNOWN_UNVERIFIABLE` is empty; do not add to it.
+
+**Every test this plan adds is `@contract`** — Tasks 2–9's guard controls and Task 14's three interactions all assert client-observable behaviour — **except Task 15's contract-version guard, which is `@characterization`** because it asserts a fact about this repository's own source tree, like all eight tests already in `tests/guards/`. Tasks 10–13 edit existing tests without changing what they are; leave their tags alone.
 
 ---
 
@@ -27,7 +42,9 @@ Copied from the spec and the programme rules. Every task's requirements implicit
 
 - **No product code is modified.** Not `apps/`, not `core/`, not `dispatcharr/`, not `frontend/`. One issue is filed (Task 15's **C1**); nothing is patched.
 - **No `e2e-upstream/src/` change, no new provider capability, no `/version` endpoint.** (Spec D10.) The only file this plan adds under `e2e-upstream/` is `CONTRACT.md`.
-- **No `.github/workflows/**` change and no `e2e/playwright.config.ts` project change.** (Spec D12.) This keeps G15 entirely clear of the zizmor ratchet and of G11's and G12's CI work. If a task tempts you to edit a workflow, stop and report.
+- **No `.github/workflows/**` change and no `e2e/playwright.config.ts` project change.** (Spec D12.) This keeps G15 entirely clear of the zizmor ratchet and of G11's and G12's CI work. If a task tempts you to edit a workflow, stop and report. **This still holds even though Task 15 adds a file under `e2e/tests/guards/`**: G11 already created the `guards` project (`testDir: './tests/guards'`) and its own CI job, so a new file there is picked up by both with no edit to either.
+- **The five blocking guards in the `guards` project bind every task.** G15 was checked against all of them and trips none — see the spec's "Guards G15 must satisfy". In short: destructure `instance` nowhere (`CONTAINER_LIFECYCLE`); import no `child_process` (`SUBPROCESS`); put no `pgrep`, `docker ` or `manage.py` in a **string or template literal** (`CONTAINER_INTROSPECTION` — comments are invisible to it, code is not); write nothing to `/api/core/settings/` (`GLOBAL_SETTINGS_WRITE` — the Stats "Refresh Interval" `NumberInput` is a page control backed by the `stats-refresh-interval` **localStorage** key, not a settings row, so Task 14 Step 1 is clear); destructure `pageErrors` in every `test()` under `tests/frontend/` (`pageerrors-enforcement.spec.ts`, binding on all three of Task 14's tests); and tag every declaration (`tags.spec.ts`). Run `npm run test:guards` — it needs no container and takes about a second — after any task that adds a test.
+- **G15 does not edit G11's guards.** Not `tests/guards/ast.ts`, not `allowlist.ts`, not the five existing guard specs, not the ADRs. Task 15 adds one new file to that directory and nothing else.
 - **Every guard is a non-inverted sibling test in the same spec file.** (Spec D1.) Not a comment, not corroboration in another file — `c1858c42`'s standard. Do **not** convert any pin to `test('…')` plus an in-body `test.fail()`, whatever Task 1's spike shows (spec D2).
 - **A `test.fail()` body is satisfied by ANY failure in it** — a fixture error, a `TypeError`, an upstream 500. That is the defect being removed. Re-read the spec's three-part rubric before writing any guard.
 - **Never assert a global count or an unfiltered list** (roadmap rule 4). Four workers share one container in `seeded`; the `frontend` project shares it too. Locate your own rows by the name `seed` generated. The one documented exception is `backups.spec.ts`'s before/after set difference, whose module comment explains why it is sound — Task 14 inherits it and does not weaken it.
@@ -43,6 +60,9 @@ Copied from the spec and the programme rules. Every task's requirements implicit
   | `Channel`, `Stream`, `M3uAccount`, `User`, `BackupEntry`, `LogEntry`, `UpstreamScenario`, `ApiClient` (types) | `'../../fixtures'` |
   | `lockedProfile`, `withDeadline`, `newStreamClient`, `seedCatchupChannel`, `catchupTimestamp` | `'./helpers'` from `tests/streaming/`; `'../streaming/helpers'` elsewhere |
   | `SURFACES`, `gotoSurface` | `'./helpers'` from `tests/frontend/` |
+  | `E2E_ROOT`, `REPO_ROOT`, `ROOTS`, `findTestCalls`, `listSpecFiles`, `readSpec`, `readTags` | `'./ast'` from `tests/guards/` — Task 15's guard only |
+
+  **The `guards` project is the one exception to the first row.** It runs with no fixtures, so a test under `tests/guards/` imports `test` and `expect` from `@playwright/test` and its path constants from `./ast`, never from `'../../fixtures'`. Every other test in this plan follows the table above.
 
 ---
 
@@ -53,10 +73,13 @@ Copied from the spec and the programme rules. Every task's requirements implicit
 cd e2e && npm ci
 npx playwright install --with-deps chromium
 npm run typecheck
-npm run test:seeded                  # Tasks 2, 3, 4, 5, 11, 13, 16
+npm run test:guards                  # Task 15, and after ANY task that adds a test
+npm run test:seeded                  # Tasks 2, 3, 4, 5, 10, 11, 13
 npm run test:streaming               # Tasks 6, 7, 8, 9, 12
 npm run test:frontend                # Task 14
 ```
+
+`npm run test:guards` needs **no container and no browser** and finishes in about a second — it is static analysis over this repository's own source. Run it after every task that adds a test: an untagged declaration fails it, and finding that out at Task 16 costs more than running it fourteen times.
 
 `streaming-greybox` **must be run alone locally** — it observes container-wide state. No task in this plan touches it, but do not run it concurrently with anything else if you run it at all.
 
@@ -78,7 +101,7 @@ A pin whose recorded error moved from the intended assertion to somewhere else i
 | Path | Responsibility | Task |
 |---|---|---|
 | `e2e-upstream/CONTRACT.md` | The versioned contract: guarantees, non-guarantees, consumers, bump policy | 15 |
-| `e2e/tests/seeded/upstream-contract.spec.ts` | One test asserting `CONTRACT.md` and `package.json` declare the same version | 15 |
+| `e2e/tests/guards/upstream-contract.spec.ts` | One `@characterization` guard asserting `CONTRACT.md` and `package.json` declare the same version. In the `guards` project — no container, no browser, no fixtures — **not** in `tests/seeded/` | 15 |
 
 **Modified — one task each, no file touched by two tasks:**
 
@@ -106,6 +129,8 @@ A pin whose recorded error moved from the intended assertion to somewhere else i
 **Dependency order:** 1 → {2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14} → 15 → 16.
 Tasks 2–14 are mutually independent, touch disjoint files, and may run in any order or in parallel. Task 15 must run **after** them all; Task 16 last.
 
+**Priority order, if the wave runs long** (spec, "What this buys the migration gate"): the nine premise guards first — **Tasks 2–10** — because they are the whole migration-gate argument; then **Task 13**, the body assertions on the harness's own proofs; then **Task 15**, the contract and the inventory. Tasks 11 and 12 are two-line assertion strengthenings and can ride with any of them. **Task 14's three frontend interactions go last** and are the only part of this goal that can be dropped to a follow-up without weakening the gate. This is a priority order, not a dependency: the dependency order above still governs.
+
 ---
 
 ### Task 1: Preflight — establish the baseline and settle the D2 spike
@@ -114,16 +139,20 @@ Nothing else in this plan is trustworthy without a known-good baseline: several 
 
 **Files:** none modified. This task produces a report only.
 
-- [ ] **Step 1: Branch and environment.** Confirm `git merge-base --is-ancestor 76db0332 HEAD` succeeds and that G11's merge commit is on `HEAD` too. Branch `test/e2e-test-quality` off `main`. `cd e2e && npm ci && npx playwright install --with-deps chromium`. `./scripts/e2e_up.sh --reset`.
+- [ ] **Step 1: Branch and environment.** Confirm `git merge-base --is-ancestor 45a33a4a HEAD` succeeds — that single check covers both discharged dependencies, since `45a33a4a` sits on top of G11's `7a408c2b`, which sits on top of G10's `76db0332`. Branch `test/e2e-test-quality` off `origin/main`. `cd e2e && npm ci && npx playwright install --with-deps chromium`. `npm run test:guards` (about a second, no container) to confirm the guards are green **before** you start, so a red one later is yours. `./scripts/e2e_up.sh --reset`.
 
 - [ ] **Step 2: Re-derive the site count before baselining anything.** Run:
 
   ```bash
-  grep -rnE "^\s*test\.fail\(" e2e/tests | wc -l      # expect 20 at 76db0332
+  grep -rnE "^\s*test\.fail\(" e2e/tests | wc -l      # expect 20 at 45a33a4a
   grep -rncE "^\s*test\.fail\(" e2e/tests | grep -v ':0$' | sort
   ```
 
-  Reconcile the per-file counts against the spec's audit table, which carries one row per site (rows 1–20, all on `main`). **If the total exceeds 20, a pin landed after `76db0332` and this plan is short a task** — stop and report it rather than proceeding; a new pin has no verdict and no guard. This check is not ceremony: it is what caught the table going stale when #113 merged mid-review, and G11 may land further pins before G15 starts.
+  Reconcile the per-file counts against the spec's audit table, which carries one row per site (rows 1–20, all on `main`). Expect three in `vod-range.spec.ts`, two in `xc-vod-playback.spec.ts`, one in each of fifteen further files.
+
+  **The grep survives G11's retag**, and this was checked rather than assumed: the tag went in as an inline object literal in the *second* argument, so every site still begins with `test.fail(` on its own line. Four are the multi-line form, where `test.fail(` sits alone and the title and tag follow on the next line — `catchup-provider-timezone.spec.ts`, `catchup-proxy-mode.spec.ts`, `output-m3u.spec.ts`, `catchup-m3u-advertisement.spec.ts`. The pattern is line-anchored, not title-anchored, so both shapes count.
+
+  **If the total exceeds 20, a pin landed after `45a33a4a` and this plan is short a task** — stop and report it rather than proceeding; a new pin has no verdict and no guard. This check is not ceremony: it is what caught the table going stale when #113 merged mid-review, and it is why the count was re-derived a third time after G11.
 
 - [ ] **Step 3: Baseline all affected projects with the JSON reporter.** Run `seeded`, `streaming` and `frontend` and record, for **every site the count above produced**, which assertion the body failed at. Save the output to a scratch file. This is the reference the later tasks compare against.
 
@@ -149,9 +178,11 @@ Nothing else in this plan is trustworthy without a known-good baseline: several 
 2. It performs the pin's premise — the same seeding shape, the same route — and asserts the premise, un-inverted.
 3. Rewrite the pin's comment: replace any "verified with `--reporter=json`" sentence's load-bearing role with a named reference to the new control, in the style `vod-range.spec.ts` already uses (*"It now lives as a non-inverted assertion in the test above ('<title>'), which actually guards it."*). Keep the `--reporter=json` note where it documents *which* assertion the pin fails at; that is still useful.
 4. Do **not** delete the pin's own inline premise assertions. They are redundant belt-and-braces after the control exists, and removing them makes the pin's body harder to read for no gain.
-5. Tag both tests per G11.
+5. Tag the new control `{ tag: '@contract' }` — an inline literal, second argument. **Leave the pin's existing tag alone**: G11 already tagged all twenty pins `@contract`, and the pin is not changing what it asserts.
 
-**The shared verification:** run the file's project; assert the new control **passes**, and the pin is still reported as an **expected failure** at the same assertion the Task 1 baseline recorded. Then run the *whole project* once, to catch a control that disturbs a neighbour on the shared instance.
+**The shared verification:** run the file's project; assert the new control **passes**, and the pin is still reported as an **expected failure** at the same assertion the Task 1 baseline recorded. Then run the *whole project* once, to catch a control that disturbs a neighbour on the shared instance. Finish with `npm run test:guards` — a second, no container — because an untagged control fails a blocking guard.
+
+**If a control lands red, it blocks and must be resolved before merge.** These controls are `@contract` and non-inverted, so `docs/adr/0002-e2e-test-taxonomy.md` gives them no read-it-and-move-on disposition: *"a red `@contract` test blocks. Behaviour changed; either fix the implementation or argue the test was wrong."* A red control means the pin it guards was hollow — the good outcome this goal exists to produce. Fix the premise, or explain the red in the PR body and say what it means. **Do not retag the control `@characterization` to quieten it**; that would hide exactly the failure class this goal exists to expose.
 
 ---
 
@@ -258,7 +289,11 @@ The only test in its file. Its whole setup — scenario, `lockedProfile('Proxy')
 - [ ] **Step 2** If the pin arms a fault through `upstream.fault(...)`, add to the control — or as a second, equally cheap control — a direct assertion that the fault produces the upstream failure the pin depends on. `upstream.fault` throws on a non-2xx control response, and a throw inside the inversion is indistinguishable from the defect.
 - [ ] **Step 3** Rewrite the pin's `test.fail()` caveat paragraph. Delete the incorrect ordering argument, name the control, and state explicitly that this pin asserts an *absence*, so an unguarded premise would claim a security property was verified when it was not.
 
-**Do not file an issue.** This defect is deliberately unfiled — the comment records it as a disclosure decision for the repo owner, made in the G9 task report. Leave that as it is.
+- [ ] **Step 4: Correct the comment's filing status.** The pin's comment currently reads, verbatim: *"DELIBERATELY NOT FILED as a public issue: this is a disclosure decision for the repo owner, recorded in the G9 task report instead. Do not open one from this comment."* **That is now wrong.** The defect **is** filed, as [#89](https://github.com/D10Scot/Dispatcharr/issues/89), *"Provider credentials can reach an unauthenticated client in a 500 response body from the VOD proxy"*, opened 2026-08-30 **after checking with the repository owner** and labelled `ready-for-agent`. The disclosure decision was taken; the comment predates it. Replace that paragraph with a citation of #89, in the shape the suite's other pins use (*"KNOWN BUG — see #94"*).
+
+  **Do not open a second issue.** #89 is this defect: it cites `apps/proxy/vod_proxy/multi_worker_connection_manager.py:1405`, the same line the pin's comment quotes, and its Provenance section names this very `test.fail()` as its pin. Cite it; do not duplicate it.
+
+- [ ] **Step 5: Flag the matching `COVERAGE.md` row for Task 15.** `e2e/COVERAGE.md`'s VOD row for this defect carries the same stale claim — *"Known defect, deliberately unfiled … no public issue exists, pending a disclosure decision by the repo owner. Do not open one from this row."* **Do not edit `COVERAGE.md` here** (Task 15 owns that file, and two tasks editing it is how the shared-file rule breaks). Report the exact row text in your task report so Task 15 Step 6 can correct it to cite #89.
 
 **Verification:** `npm run test:streaming -- tests/streaming/vod-upstream-error.spec.ts`. Then re-read the pin's recorded failure in the JSON reporter and confirm it is still the credential assertion.
 
@@ -320,7 +355,7 @@ Both reads are `readPackets(20)`, which returns whole 188-byte packets, so `expe
 
 - [ ] **Step 1** `catchup-path-layout.spec.ts`: replace `expect(bytes[0]).toBe(0x47)` with `expectTsAligned(bytes)`. Add `expectTsAligned` to the import from `'../../fixtures'` — this file does not import it.
 - [ ] **Step 2** `catchup-cascade.spec.ts`: in G8's test *the candidate cascade falls through to the QUERY layout when PATH 404s*, replace `expect((await streamClient.readPackets(20))[0]).toBe(0x47)` with `expectTsAligned(await streamClient.readPackets(20))`. **This file already imports `expectTsAligned`** (#113's own five tests use it), so this is a one-line change — confirm before adding a duplicate import. Do not touch #113's five tests.
-- [ ] **Step 3** Confirm no other first-byte-only site remains: `grep -rn "0x47" e2e/tests e2e/fixtures` should return only `expectTsAligned`'s own definition in `fixtures/stream-client.ts`, the `TS_SYNC_BYTE` constant, and any place that legitimately reads a single byte for a different reason. Report anything else you find rather than changing it — it is outside this task's file list.
+- [ ] **Step 3** Confirm no other first-byte-only site remains: `grep -rn "0x47" e2e/tests e2e/fixtures`. At `45a33a4a` that returns seven hits, and after this task it should return five: `fixtures/stream-client.ts`'s `TS_SYNC_BYTE` constant and the two prose mentions around `expectTsAligned`, two doc-comment mentions in `fixtures/index.ts`, `contiguity.spec.ts:10`'s synthetic-packet **writer** (`out[off] = 0x47` — not an assertion, not touched), and `fixtures/seed.ts:620`, which is the fourth byte of a **PNG magic number** in a logo-upload payload and has nothing to do with TS. Report anything beyond those rather than changing it — it is outside this task's file list.
 
 **Verification:** `npm run test:streaming -- tests/streaming/catchup-path-layout.spec.ts tests/streaming/catchup-cascade.spec.ts`. Both files pass unchanged in outcome; the assertions are strictly stronger.
 
@@ -368,15 +403,17 @@ One interaction test per surface, each with an effect observable beyond the DOM.
 
   **Do not click a row action.** Download, **Restore** and Delete are three adjacent unlabelled `ActionIcon`s; a positional locator that drifts by one clicks Restore, which replaces the database under every parallel worker (spec D8). Restore is G12's, on an isolated instance.
 
-- [ ] **Step 4** Tag all three new tests per G11.
+- [ ] **Step 4** Tag all three new tests `{ tag: '@contract' }` — an inline object literal as the second argument. They drive a rendered page and assert an effect observable through the API, which is `@contract` by ADR 0002's default and needs no justification comment.
 
-**Verification:** `npm run test:frontend`. All three files pass, and the pre-existing tests in them are unchanged in outcome. Run the project twice in a row — the backups file's set-difference logic is the one place in this plan where a leftover from the previous run changes the result.
+- [ ] **Step 5** Confirm each of the three destructures `pageErrors`. `e2e/tests/guards/pageerrors-enforcement.spec.ts` is blocking and requires it of **every** `test()` under `tests/frontend/`; its `KNOWN_UNVERIFIABLE` holds one pinned entry (`plugins.spec.ts:15`) and G15 adds none. This is the same requirement as the `await pageErrors.expectClean()` line above, stated as the named guard it is.
+
+**Verification:** `npm run test:frontend`, then `npm run test:guards`. All three files pass, and the pre-existing tests in them are unchanged in outcome. Run the frontend project twice in a row — the backups file's set-difference logic is the one place in this plan where a leftover from the previous run changes the result.
 
 ---
 
 ### Task 15: The `e2e-upstream` contract, the inventory, and the issue
 
-**Files:** `e2e-upstream/CONTRACT.md` (new), `e2e-upstream/package.json`, `e2e/tests/seeded/upstream-contract.spec.ts` (new), `e2e/COVERAGE.md`, `e2e/README.md`
+**Files:** `e2e-upstream/CONTRACT.md` (new), `e2e-upstream/package.json`, `e2e/tests/guards/upstream-contract.spec.ts` (new), `e2e/COVERAGE.md`, `e2e/README.md`
 
 - [ ] **Step 1: Audit the provider from source, and write the non-guarantees first.** Read every file under `e2e-upstream/src/` and `e2e-upstream/scripts/`, and skim `e2e-upstream/test/` for behaviours the unit tests pin. Produce the **non-guarantee** list before the guarantee list — it is the substance, and it is the half a consumer goal will otherwise rediscover the hard way.
 
@@ -390,34 +427,53 @@ One interaction test per surface, each with an effect observable beyond the DOM.
 
 - [ ] **Step 3: Bump `e2e-upstream/package.json` to `1.1.0`** (spec D9) and record in `CONTRACT.md` why: writing the contract adds no behaviour and breaks nothing, and bumping on landing proves the procedure works.
 
-- [ ] **Step 4: Write `e2e/tests/seeded/upstream-contract.spec.ts`** in the `quarantine.spec.ts` mould — a source-scan test, no container needed. Read `e2e-upstream/package.json` and `e2e-upstream/CONTRACT.md` from disk (root them the way `quarantine.spec.ts` does, `path.resolve(__dirname, …)`, and go one level above `e2e/`), and assert the version `CONTRACT.md` declares equals `package.json`'s. Give it the same justification comment `quarantine.spec.ts` carries: *a convention plus a README decays silently; this does not.*
+- [ ] **Step 4: Write `e2e/tests/guards/upstream-contract.spec.ts`** — a source-scan guard, no container, no browser, no fixtures. **It goes in `tests/guards/`, not `tests/seeded/`.** G11 deleted `quarantine.spec.ts` (which older drafts of this plan named as the mould) and generalised its role into the `guards` Playwright project; that project is exactly this shape of test, and putting a two-string comparison in `tests/seeded/` would make it wait on a booted instance for nothing.
 
-  **Do not** add a `/version` endpoint or any other `e2e-upstream/src/` change (spec D10).
+  Five things it must get right, each matching what its five siblings already do:
+
+  - **Imports.** `import { test, expect } from '@playwright/test'` — **not** `'../../fixtures'`; the `guards` project runs with no fixtures. Read the files with `node:fs/promises`.
+  - **Roots.** `import { REPO_ROOT } from './ast'` and resolve both paths from it. **Do not hand-roll a `path.resolve(__dirname, '../..')` walk** — `ast.ts` defines `E2E_ROOT` and `REPO_ROOT = path.resolve(E2E_ROOT, '..')` precisely so a directory move breaks one definition instead of six.
+  - **Tag.** `{ tag: '@characterization' }`, an inline literal in the second argument. It asserts a fact about this repository's own source tree, not client-observable behaviour — the same reason all eight existing guard tests carry that tag.
+  - **Comment.** A `// @characterization: …` comment immediately above the declaration, naming the fact it pins, in the shared style the directory already uses (*"every test in this file asserts facts about this repository's own source tree … See docs/adr/0002-e2e-test-taxonomy.md"*). ADR 0002 requires it; the guard does not check it.
+  - **Justification.** The sentence the deleted `quarantine.spec.ts` justified itself with, which `allowlist.ts` now carries forward: *a convention plus a README decays silently. This does not.*
+
+  It has no effect on `capabilities.spec.ts`: that guard skips `tests/guards/` outright ("this directory's own source names every marker it polices"), so naming an `e2e-upstream/` path in a string literal here cannot trip `CONTAINER_INTROSPECTION`.
+
+  **Do not** add a `/version` endpoint or any other `e2e-upstream/src/` change (spec D10). **Do not** edit `ast.ts`, `allowlist.ts` or any existing guard.
 
 - [ ] **Step 5: `e2e/COVERAGE.md`.** Append:
   - three **Frontend** rows for the three new interaction tests, assigned G15;
   - one **Streaming** *Gap* row recording spec D6 — the per-stream TS marker is feasible under the Proxy profile via a dedicated marker PID injected in `LoopRewriter`, impossible under the locked FFmpeg profile (`-c:v copy -c:a copy` maps one video and one audio and the mpegts muxer rewrites PAT/PMT and PIDs), deliberately not built by G15 because it is a provider change, and recorded so it is not re-derived;
-  - one **Upstream** row for `CONTRACT.md` and its version guard.
+  - one **Upstream** row for `CONTRACT.md` and its version guard;
+  - **one row in the `## Guards (G11)` table**, whose columns are `| Guard | Enforces | Proved by |`. Guard: `tests/guards/upstream-contract.spec.ts`. Enforces: `CONTRACT.md`'s declared version equals `e2e-upstream/package.json`'s. Proved by: the mutation from this task's Verification — editing `package.json`'s version made it fail, reverting made it pass. Every guard in that table carries its mutation, and "verified by mutation, recorded in its own header comment" is the section's own rule; a row without one would be the first exception. **Leave the heading as `## Guards (G11)`** — it names the goal that built the project, not the goal that last added a row.
+
+- [ ] **Step 6: Correct the stale `COVERAGE.md` row Task 8 reports.** The VOD row for the credential-disclosure defect claims *"deliberately unfiled … no public issue exists, pending a disclosure decision by the repo owner. Do not open one from this row."* That is now wrong: the defect is filed as [#89](https://github.com/D10Scot/Dispatcharr/issues/89), opened 2026-08-30 after checking with the repository owner. Rewrite the row to cite #89, keeping its `known-bug` status and its G9 goal assignment. **This is the one row belonging to another goal that G15 edits**, and it is a factual correction rather than a re-scoping — say so in the commit message.
 
   Update no other goal's rows. Do **not** renumber or reorder the table.
 
-- [ ] **Step 6: `e2e/README.md`.** One short section pointing at `e2e-upstream/CONTRACT.md` and saying what it is for: cite a version, not a memory. No existing text rewritten.
+- [ ] **Step 7: `e2e/README.md`.** One short section pointing at `e2e-upstream/CONTRACT.md` and saying what it is for: cite a version, not a memory. No existing text rewritten.
 
-- [ ] **Step 7: File defect C1.** `gh issue create --repo D10Scot/Dispatcharr --label needs-triage`. Title: icon-only action controls on Stats and Backups have no accessible name. Body: name all eleven controls with `file:symbol` (`StreamConnectionCard.jsx` — "Stop Channel", "Disconnect client", "Switch to another stream source", "Preview Channel"; `BackupManager.jsx:RowActions` — "Download", "Restore", "Delete"); explain that Mantine's `Tooltip` contributes `aria-describedby`, which does not compute an accessible name, so `getByRole('button', { name })` cannot address any of them; state that this is filed **separately from [#73](https://github.com/D10Scot/Dispatcharr/issues/73)** because #73's fix is two `aria-label`s on two `Switch`es in one file while this is eleven controls in two, and because one of them is **Restore**, where a mis-addressed click replaces the database; propose `aria-label` matching each `Tooltip`'s existing `label`; and record that this **blocked** two otherwise-obvious tests in this PR (spec D7, D8).
+- [ ] **Step 8: File defect C1.** `gh issue create --repo D10Scot/Dispatcharr --label needs-triage`. Title: icon-only action controls on Stats and Backups have no accessible name. Body: name all eleven controls with `file:symbol` (`StreamConnectionCard.jsx` — "Stop Channel", "Disconnect client", "Switch to another stream source", "Preview Channel"; `BackupManager.jsx:RowActions` — "Download", "Restore", "Delete"); explain that Mantine's `Tooltip` contributes `aria-describedby`, which does not compute an accessible name, so `getByRole('button', { name })` cannot address any of them; state that this is filed **separately from [#73](https://github.com/D10Scot/Dispatcharr/issues/73)** because #73's fix is two `aria-label`s on two `Switch`es in one file while this is eleven controls in two, and because one of them is **Restore**, where a mis-addressed click replaces the database; propose `aria-label` matching each `Tooltip`'s existing `label`; and record that this **blocked** two otherwise-obvious tests in this PR (spec D7, D8).
 
   **No `test.fail()` pin for C1.** There is nothing to invert: a missing accessible name is not a behaviour a test can assert as correct-and-failing without pinning a specific `aria-label` string this fork has not chosen. Say that in the issue.
 
-**Verification:** `npm run typecheck`; `npm run test:seeded -- tests/seeded/upstream-contract.spec.ts`. Then deliberately edit `package.json`'s version, re-run, and confirm the guard **fails** — a guard nobody has seen fail is not a guard. Revert.
+**Verification:** `npm run typecheck`; `npm run test:guards` (no container needed). Then **deliberately edit `e2e-upstream/package.json`'s version, re-run `npm run test:guards`, and confirm the guard fails** naming both declared versions — a guard nobody has seen fail is not a guard, and every row in `COVERAGE.md`'s Guards table carries the mutation that proved it. **Revert the edit**, re-run, confirm green, and record the mutation's exact output for Step 5's Guards row and for the guard's own header comment.
 
 ---
 
 ### Task 16: Whole-suite verification and the PR
 
 - [ ] **Step 1** `cd e2e && npm run typecheck`.
-- [ ] **Step 2** `./scripts/e2e_up.sh --reset`, then `npm run test:seeded`, `npm run test:streaming`, `npm run test:frontend`, each to completion. Run `streaming-failover` too — G15 does not edit it, but Task 12's and Task 9's neighbours share fixtures with it and a regression there would be this PR's.
+- [ ] **Step 2** `npm run test:guards` first — it needs no container, takes a second, and an untagged declaration anywhere in the PR fails it. Then `./scripts/e2e_up.sh --reset`, then `npm run test:seeded`, `npm run test:streaming`, `npm run test:frontend`, each to completion. Run `streaming-failover` too — G15 does not edit it, but Task 12's and Task 9's neighbours share fixtures with it and a regression there would be this PR's.
 - [ ] **Step 3 — the verification this whole plan exists for.** Re-run the JSON-reporter command from the header against every file holding a `test.fail()`, and diff the result against Task 1 Step 3's baseline. **Every pin must still be an expected failure at the same assertion.** A pin that moved is a regression in the pin. A pin that went from expected-failure to *unexpected pass* means the product defect was fixed between the baseline and now — verify against the issue and report it; do not silently delete the pin.
 - [ ] **Step 4** If any guard added in Tasks 2–9 turned a previously-green pin loudly red, that pin was hollow. Say so **in the PR body**, name it, and say what the premise failure was. This is the expected good outcome of the goal, not a failure of it — the spec's Risks section anticipates exactly one such finding.
-- [ ] **Step 5** Push and open the PR with `gh pr create --repo D10Scot/Dispatcharr`. The body must contain: the count — seventeen `test.fail()` sites on `main`, nine guarded here, eight already safe — with the `grep` that produces the total; the per-stream TS marker verdict in one sentence (yes under Proxy, no under FFmpeg, deliberately not built); the corrections to the brief (the `expectWellFormedXml` change is two lines not one; `plugins` has 9 interactions not 8); the C1 issue link; and any hollow pin found in Step 4.
+- [ ] **Step 5** Push and open the PR with `gh pr create --repo D10Scot/Dispatcharr`. The body must contain:
+
+  - **The count: twenty `test.fail()` sites on `main`, nine guarded here, eleven already safe** — with the `grep` that produces the total (`grep -rnE "^\s*test\.fail\(" e2e/tests | wc -l`) and the figure Task 1 Step 2 re-derived. These are the spec's numbers; an earlier draft of this plan said "seventeen … eight already safe", which was the count at `cf95410e` before #113 brought three more, and it is wrong.
+  - The per-stream TS marker verdict in one sentence: yes under Proxy, no under FFmpeg, deliberately not built.
+  - The corrections to the brief: the `expectWellFormedXml` change is two lines not one, and `plugins` has 9 interactions not 8.
+  - The C1 issue link, and the correction that **the VOD credential-disclosure defect is filed as [#89](https://github.com/D10Scot/Dispatcharr/issues/89)** — the pin's comment and the `COVERAGE.md` row both said it was deliberately unfiled, and both were updated (Task 8, Task 15 Step 6). No new issue was opened for it.
+  - Any hollow pin found in Step 4, named, with what its premise failure was. If a guard control landed **red**, say so here explicitly: it is `@contract` and non-inverted, so by `docs/adr/0002-e2e-test-taxonomy.md` it **blocks**, and the PR must either fix the premise or make the argument for merging with it red.
 
 ---
 

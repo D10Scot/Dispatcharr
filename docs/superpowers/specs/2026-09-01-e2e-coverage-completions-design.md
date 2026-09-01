@@ -1,13 +1,19 @@
 # G14 — Coverage Completions
 
 **Date:** 2026-09-01
+**Revised:** 2026-09-01, after G11 landed (`45a33a4a`)
 **Status:** Draft, ready for review
-**Wave:** 6 (G11 lands first; G12, G13 and G15 run beside this one on deliberately disjoint files)
+**Wave:** 6 (**G11 has landed**; G12, G13 and G15 run beside this one on deliberately disjoint files)
 **Parent:** `2026-08-23-e2e-coverage-roadmap-design.md`
 **Goal definition:** `2026-09-01-e2e-programme-review-disposition.md`, "G14 — Coverage completions"
-**Verified at:** `origin/main` `cf95410e` (`docs(e2e): disposition the external programme review,
-define G11–G15`, #114). Cited by `file:symbol` throughout — line numbers in this repo drift and an
-earlier spec in this series shipped four wrong ones.
+**Verified at:** `origin/main` `45a33a4a` (`docs: record two traps that cost time this session`,
+#126), which is G11's merge state — PR #123 (guards, ADRs, full-run CI) and PR #124 (every test
+tagged, tag guard blocking). Cited by `file:symbol` throughout — line numbers in this repo drift
+and an earlier spec in this series shipped four wrong ones.
+
+The revision replaces every hedge about G11's mechanisms with the mechanism as it shipped, cuts
+test 9 (a design error: it lands in the ML band D6 forbids — see D6 and D13), names the guards
+G14 must satisfy, and states which of G14's rows the relay extraction actually depends on.
 
 ## Siblings in flight
 
@@ -19,14 +25,15 @@ G14's side of it:
 | **G13** | `e2e/tests/frontend/dvr.spec.ts`, `run_recording`, the DVR WebSocket events | G14 touches no DVR file and asserts no `recording_*` event, even though they are the largest family in the product's WebSocket vocabulary. See D12 |
 | **G12** | `e2e/tests/lifecycle/**`, `durable-state.ts`, backup restore, non-zero `refresh_interval`, the two bash suites | G14 opens nothing under `tests/lifecycle/`, edits no workflow, and holds every source it creates at `refresh_interval: 0` (G3's D10, still binding). G14 *hands* G12 one new row — the global-`CoreSettings` behavioural settings it cannot safely test on a shared instance (D10) |
 | **G15** | pre-G9 `test.fail()` premise guards, `stats`/`guide`/`backups` interactions, `xc-output.spec.ts`, the failover specs, the `e2e-upstream` contract doc, the `api-fixture`/`authorization` status-only audit | **G14 does not open `e2e/tests/seeded/xc-output.spec.ts`**, even though that file's `RULING R10` header is the exact hole G14 closes. G14 adds its own COVERAGE rows and cross-references G5's rather than rewriting them. See D16 |
-| **G11** | the `@contract`/`@characterization` taxonomy and its ADR; the generalised quarantine guard; the run-everything CI mode | **A hard dependency.** G14 applies the taxonomy but does not define it. Which G14 tests are which is stated in the inventory; if G11's ADR names the tags differently, the inventory column is renamed and nothing else changes |
+| **G11** | the `@contract`/`@characterization` taxonomy and `docs/adr/0002-e2e-test-taxonomy.md`; the `guards` project (`e2e/tests/guards/`) and `docs/adr/0003-e2e-frontend-and-shared-state-contract.md`; the run-everything CI mode | **Landed** at `45a33a4a`. G14 applies the taxonomy and satisfies the guards; it defines neither. See D13 for the tags and D13a for the guards |
 
 Shared files G14 edits, all additively and all also reachable by a sibling:
 `e2e/COVERAGE.md`, `e2e/README.md`, `e2e/fixtures/types.ts`, `e2e/fixtures/index.ts`,
-`e2e/fixtures/api.ts` (one method signature, D15). **G14 does not edit
-`e2e/fixtures/seed.ts`, `e2e/playwright.config.ts`, `e2e/package.json`,
-`scripts/e2e_up.sh` or any file under `.github/workflows/`** — which keeps it clear of every
-matrix edit and arms the zizmor hook zero times.
+`e2e/fixtures/api.ts` (one method signature, D15), `e2e/tests/guards/allowlist.ts` (one entry on
+`GLOBAL_SETTINGS_WRITE`, D13a). **G14 does not edit `e2e/fixtures/seed.ts`,
+`e2e/playwright.config.ts`, `e2e/package.json`, `scripts/e2e_up.sh` or any file under
+`.github/workflows/`** — which keeps it clear of every matrix edit and arms the zizmor hook zero
+times.
 
 ## Goal
 
@@ -56,7 +63,7 @@ silence.
 | Rank | Sub-area | Why here | Ships as |
 |---|---|---|---|
 | **1** | **Blocked-network ACL 403 negatives** (#2) | Closes a hole the ledger names in G5's own row, finds a verified product defect, and turns out to be nearly free. The one sub-area whose absence is written down as a coverage hole rather than inferred | `network-acl.spec.ts`, 5 tests |
-| **2** | **EPG matching / `set-*-from-epg`** (#1) | The largest deliberate gap in the ledger (G3's gap row names all five endpoints). `apps/channels/epg_matching.py` is 927 lines with no end-to-end coverage at all, and it is the highest-value migration-gate target in the goal | `epg-matching.spec.ts` (5) + `epg-field-copy.spec.ts` (3) |
+| **2** | **EPG matching / `set-*-from-epg`** (#1) | The largest deliberate gap in the ledger (G3's gap row names all five endpoints). `apps/channels/epg_matching.py` is 927 lines with no end-to-end coverage at all, and it is the highest-value migration-gate target in the goal | `epg-matching.spec.ts` (4) + `epg-field-copy.spec.ts` (3) |
 | **3** | **Product WebSocket events** (#7) | Cheap, because most of it rides on rank 2 — `single_channel_epg_match`, `epg_match` and the `epg_*_setting_progress` families are emitted by calls those tests are making anyway, and the `set-*-from-epg` tasks carry the Celery `task_id` the POST returned, the first exactly-unique correlation this suite has had. Two tests earn their own file: the cheapest correlated product event in the application (`epg_data_created`), and the **admin-only filter**, which is an authorization property with zero coverage anywhere | `ws-product-events.spec.ts` (2), plus assertions inside rank 2's two files |
 | **4** | **M3U filters** (half of #6) | Row-scoped, deterministic, no ML, no streaming. Closes `M3UFilterViewSet`, which G3 named in its Non-goals | `m3u-filters.spec.ts`, 3 tests |
 | **5** | **Channel bulk operations and reordering** (#5) | Cheap, but the reorder endpoint shifts channel numbers **instance-wide**, so only a worker-scoped band of it is expressible. Value is real but bounded | `channel-bulk-ops.spec.ts`, 5 tests |
@@ -76,14 +83,55 @@ silence.
    (D11).
 3. **Plugin "task-fires"** (rank 6's second half).
 4. **Channel `reorder`** (test 23).
-5. **The threshold-asymmetry characterization** (test 9) — the most implementation-coupled test in
-   the goal, and the one whose value drops furthest if G11's ADR treats `@characterization` as
-   something to minimise.
-6. **`m3u-filters.spec.ts`'s `order` test** (test 18).
+5. **`m3u-filters.spec.ts`'s `order` test** (test 18).
+
+**Test 9 — removed.** It is not on the cut list, because it cannot be built at all: it required a
+pair scoring in `[75, 80)` on the *bulk* path, and on that path `FUZZY_MEDIUM_CONFIDENCE` is 70,
+so `try_epg_name_match` reaches `get_sentence_transformer()` for every score in that range. It
+violated D6 by construction. The threshold asymmetry it was going to pin is recorded as a
+`COVERAGE.md` observation instead. Test numbers are otherwise unchanged.
 
 Ranks 1–3 are must-ship. If ranks 1–3 alone land, G14 has closed the two gaps the ledger actually
 names and has done so with no new infrastructure; that is a legitimate outcome, and the roadmap's
 "resist widening scope" clause is what makes it one.
+
+## Migration relevance, stated honestly
+
+The programme exists to make the E2E suite a trustworthy gate for the relay extraction
+(`CLAUDE.md`: control/data-plane split, Phase 1 the boundary). Not every G14 row serves that. Two
+do; the rest are regression coverage of the control plane, which is worth having and is not the
+same thing.
+
+**Gate-relevant.**
+
+- **Rank 1, the network ACL.** `dispatcharr/utils.py:network_access_allowed` is one function, and
+  the same function gates the endpoint the extraction moves:
+  `apps/proxy/live_proxy/views.py:stream_ts` calls it as `network_access_allowed(request,
+  "STREAMS")` before anything else. G14 proves that function's behaviour on `M3U_EPG` and `XC_API`,
+  which are the cheap scopes; a relay that reimplements or drops the check on `STREAMS` breaks a
+  property these tests describe even though they do not assert it on that route. Test 1 is the
+  honest caveat and is why it is `@characterization`: it pins the `X-Real-IP` trust of **this**
+  nginx/uwsgi topology, and a relay serving its own socket is exactly the change that invalidates
+  it. Reading it as a red `@characterization` on a `migration/*` branch is the intended outcome.
+- **Test 15, the WebSocket admin-only filter.** `channel_stats` is emitted from the relay side —
+  `apps/proxy/tasks.py:fetch_channel_stats` and inline from `GET /proxy/ts/status` — and
+  `dispatcharr/consumers.py:ADMIN_ONLY_UPDATE_TYPES` drops it silently for a non-admin socket. When
+  the relay becomes a separate process, whatever replaces that emitter must still land on a
+  consumer that applies the same filter. A silent drop that stops being applied is invisible; this
+  is the only test in the suite that would notice.
+
+**Regression coverage of the control plane, not gate coverage.** EPG matching (ranks 2 and 3), the
+`set-*-from-epg` field copy, M3U filters, channel bulk operations and plugin `run` are Django-side
+behaviour the extraction does not touch. `apps/channels/epg_matching.py` has zero end-to-end
+coverage today and 927 lines of it, so the tests are worth writing — but they will pass unchanged
+across the extraction, and a green run of them says nothing about whether the relay moved
+correctly.
+
+**Where to stop if wave 6 runs long: ranks 4 to 6.** That is the honest line, and the cut list
+already encodes it — `ServerGroup` pooling, `M3UAccountProfile` rewriting, plugin task-fires,
+`reorder` and the `order` filter test are all at or below it. Ranks 1 to 3 are the must-ship set
+for the same reason: rank 1 is gate-relevant, rank 2 closes the largest recorded gap in the ledger,
+and rank 3 rides on rank 2 and carries test 15.
 
 ## Current state
 
@@ -102,8 +150,10 @@ prior spec, or a demonstrated absence. Each is traced here so no claim is inferr
 
 ## Verified facts this design rests on
 
-Read out of the tree at `cf95410e` during this session unless the row says otherwise. Cited by
-symbol.
+Read out of the tree at `cf95410e` when first written, and re-checked at `45a33a4a` for the
+revision (`git diff cf95410e 45a33a4a -- apps/ core/ dispatcharr/ frontend/` touches none of the
+symbols cited here; the rows that changed are the harness rows, which the revision rewrote). Cited
+by symbol.
 
 ### Network access control
 
@@ -146,7 +196,7 @@ symbol.
 | `POST /api/channels/channels/<id>/match-epg/` produces exactly one `single_channel_epg_match` on **every** path, success and failure alike, carrying `channel_id`, `matched`, `message`, and on success `epg_id`/`epg_name` and the full serialized channel | `apps/channels/epg_matching.py:send_single_channel_epg_match_result`, `:run_single_channel_epg_match` | The best correlation available for matching: `channel_id` is mine, the event is guaranteed, and `matched` is a boolean the test can assert directly instead of polling the channel row |
 | The bulk terminal event `epg_match` carries `matches_count` (**changed rows only** — a re-run confirming existing matches reports `0`) and `associations: [{channel_id, epg_data_id}]`, and **no `task_id`** | `apps/channels/tasks.py:match_epg_channels`, `:match_selected_channels_epg` | The predicate is `associations.some(a => a.channel_id === mine)`; `matches_count === 1` alone would resolve on another worker's run |
 | `epg_matching_progress` carries `total`, `matched`, `remaining`, `current_channel` (truncated to 50 chars, `""` on the start and end frames), `stage` and `progress_percent` — **no id of any kind** — and is throttled to `index < 5 or index % 5 == 0 or index == total - 1` | `apps/channels/epg_matching.py:send_epg_matching_progress` | Unusable as a terminal predicate on a shared broadcast. G14 does not wait on it |
-| `run_single_channel_epg_match` hardcodes `is_bulk_matching = False`, and `match_channels_to_epg` derives it as `len(channels_data) > 1`. **So a collection `match-epg` with exactly one id runs the aggressive single-channel thresholds** | `apps/channels/epg_matching.py:run_single_channel_epg_match`, `:match_channels_to_epg` | A sharp edge, cheap to pin, and the clearest single demonstration that the thresholds are implementation rather than contract |
+| `run_single_channel_epg_match` hardcodes `is_bulk_matching = False`, and `match_channels_to_epg` derives it as `len(channels_data) > 1`. **So a collection `match-epg` with exactly one id runs the aggressive single-channel thresholds** | `apps/channels/epg_matching.py:run_single_channel_epg_match`, `:match_channels_to_epg` | A sharp edge, and **not cheap to pin after all**: any score the two branches disagree about lies in `[75, 80)`, which on the bulk path is inside `[70, 80)` and therefore calls `get_sentence_transformer()`. Recorded as an observation; the test that was going to pin it (9) is cut. See D6 |
 | `ChannelViewSet.match_epg` branches on `if channel_ids:`, so an **empty list takes the instance-wide branch**, and it validates nothing — no 400 path exists on that endpoint | `apps/channels/api_views.py:ChannelViewSet.match_epg` | D7 is stricter than "pass `channel_ids`": it must be non-empty. Recorded as an observation |
 | `apply_matched_epg_to_channels` writes **`Channel.epg_data` and nothing else**, via `bulk_update`, and therefore calls `_dispatch_program_parse_for_epg_assignments` explicitly because `bulk_update` bypasses `post_save`. It returns changed associations only | `apps/channels/epg_matching.py:apply_matched_epg_to_channels`, `:_dispatch_program_parse_for_epg_assignments` | Matching sets the association; it never touches `name`, `tvg_id` or `logo`. That is exactly why `set-*-from-epg` exists as a separate step, and why the two are separate files here |
 | The exact-`tvg_id` and exact-gracenote (`Channel.tvc_guide_stationid`) short-circuits `continue` **before** `try_epg_name_match` is reached, and both look up the **same** `tvg_id` index — there is no gracenote column on `EPGData` | `apps/channels/epg_matching.py:match_channels_to_epg`, `:build_epg_tvg_id_index` | An ID-matched channel can never reach the ML branch whatever its name scores. The safest test shape in the goal |
@@ -203,25 +253,26 @@ symbol.
 
 | # | Decision | Rationale |
 |---|---|---|
-| **D1** | **No new Playwright project, no CI matrix entry, no isolated instance.** Twelve of G14's thirteen tests land in the existing `seeded` project; the thirteenth is appended to `e2e/tests/frontend/plugins.spec.ts` | Every G14 test is an API-level read/write plus a Celery-backed wait — the same shape as G3's, which chose `seeded` for the same reason (its D1). The cost of the alternative is concrete and was priced: a project block in `playwright.config.ts`, a matrix entry in `e2e-tests.yml` (which arms the zizmor hook, a zero-findings ratchet, on a file two other wave-6 goals may also be editing), a `package.json` script, a README project row, and a whole extra container boot — for tests that would then run at `workers: 1`. D2, D3 and D4 are what make it unnecessary. Rejected: an `acl` project (buys a container nothing needs); folding into `pristine` (its requirement is "no superuser yet", which is not G14's, and `e2e/README.md` says so explicitly) |
+| **D1** | **No new Playwright project, no CI matrix entry, no isolated instance.** Twenty-two of G14's twenty-three tests land in the existing `seeded` project; the twenty-third is appended to `e2e/tests/frontend/plugins.spec.ts` | Every G14 test is an API-level read/write plus a Celery-backed wait — the same shape as G3's, which chose `seeded` for the same reason (its D1). The cost of the alternative is concrete and was priced: a project block in `playwright.config.ts`, a matrix entry in `e2e-tests.yml` (which arms the zizmor hook, a zero-findings ratchet, on a file two other wave-6 goals may also be editing), a `package.json` script, a README project row, and a whole extra container boot — for tests that would then run at `workers: 1`. D2, D3 and D4 are what make it unnecessary. Rejected: an `acl` project (buys a container nothing needs); folding into `pristine` (its requirement is "no superuser yet", which is not G14's, and `e2e/README.md` says so explicitly) |
 | **D2** | **G14 mutates no global `CoreSettings` row, with exactly one named exception: `network_access["XC_API"]`, in one test, restored in `afterEach`.** `UI` is never written, under any circumstance | Rule 4 and the two single-worker projects that already exist are the precedent for how expensive a global mutation is here. The exception is admissible because **it denies nothing that exists**: narrowing `XC_API` from `0.0.0.0/0` to `LOCAL_NETWORK_CIDRS` refuses only requests carrying a spoofed non-local `X-Real-IP`, and the only client that sends one is this test. Even a leaked value — an `afterEach` that never ran — costs the container nothing, which is the argument that makes it acceptable rather than merely small. `UI` is excluded absolutely because `apps/accounts/permissions.py:Authenticated` gates every DRF endpoint on it, including the one that would undo the change: recovery would be `manage.py reset_network_access` over `docker exec`, i.e. a grey-box escape hatch inside a black-box project. **This exception is the single thing in G14 most worth a reviewer's attention.** If review declines it, the test is dropped, `get.php`'s 403 becomes a gap row, and nothing else in the goal changes |
 | **D3** | **403 negatives are produced by moving the apparent client IP, not by narrowing an ACL.** `GET /output/m3u`, `/output/epg` and `/hdhr/lineup.json` with `X-Real-IP: 203.0.113.5` must 403 on an unmodified instance | The `M3U_EPG` scope defaults to `LOCAL_NETWORK_CIDRS` and the shipped row is `{}`, so the deny is the product's own out-of-the-box behaviour — the strongest possible form of this assertion, because nothing had to be arranged for it. `203.0.113.0/24` is RFC 5737 TEST-NET-3, reserved for documentation, so it cannot collide with a real deployment's address. This also, incidentally, exercises `get_client_ip`'s trusted-proxy path, which no test has ever reached |
 | **D3a** | **The header-trust mechanism is proved as a premise, outside the inverted assertion, before any 403 is asserted.** `POST /api/core/settings/check/` returns `client_ip`; the test reads it twice — once plainly, once with the spoofed header — and asserts the second differs and equals the spoofed address | This is the G9/G10 premise-guard pattern (`8386825c`, `c1858c42`) that G15 is backporting, applied at design time rather than retrofitted. It converts the design's one environmental assumption into a runtime assertion with a self-naming failure: if a future `DISPATCHARR_TRUSTED_PROXIES`, an `uwsgi_param` fix for [#81](https://github.com/D10Scot/Dispatcharr/issues/81), or a different container topology removes header trust, the guard fails saying exactly that instead of the 403 assertion failing as a mysterious 200 |
 | **D4** | **The per-user lever is `user.custom_properties["allowed_networks"]`, set through the ordinary admin user-update endpoint on a `seed.xcUser()`** | It is row-scoped, needs no global write, needs no header spoofing (point it at `203.0.113.0/24` and no real client can match), and costs **zero logins** — the XC surface authenticates from credentials in the URL, so no token is ever minted for that user. It is also the only way to reach `network_access_allowed`'s user branch, which no test has executed |
 | **D5** | **The XC API's per-user denial returns 401, not 403, on all four endpoints — asserted correct, `test.fail()`ed, and filed** | `xc_get_user` collapses "your network is not permitted" into the same `None` it returns for a wrong password, and every caller maps that to `401 {"error": "Unauthorized"}`. `get.php`/`xmltv.php` do have a real 403, but only from the *global* check that passes no user, so the per-user branch can never produce one anywhere. `player_api.php` and `panel_api.php` additionally log no `SystemEvent`, so the denial is invisible in the events log as well as mislabelled in the response. Three call sites disagree on the contract for the same two conditions: `stream_xc` gets it right (403 then 401), `_timeshift_proxy_impl` returns plain-text 403 for both and checks credentials first. New; not #84 (which is the unknown-username 404 oracle) and not in `CLAUDE.md`. File it with `gh issue create --repo D10Scot/Dispatcharr` |
-| **D6** | **Every EPG-matching test is built so `get_sentence_transformer()` is never called.** Name pairs are chosen so `fuzz.ratio` over the *normalised* strings lands either at or above `FUZZY_SKIP_ML` (a match, ML skipped) or below `FUZZY_LAST_RESORT_MIN` (no match, ML never reached). The threshold band is stated in a comment at every such assertion, with the numbers and which branch of `_get_epg_match_thresholds` applies | `try_epg_name_match` reaches `get_sentence_transformer()` only inside `[MEDIUM, SKIP_ML)` and `[LAST_RESORT_MIN, MEDIUM)`, and that function downloads `all-MiniLM-L6-v2` into `/data/models` unless `DISABLE_ML_DOWNLOADS=true`, which the e2e container does not set. A test in the middle band would pull ~90 MB over the public internet inside a CI job that has taken no egress dependency in ten goals, on every run, before the model is cached — and on a cold container, every time. `use_ml=True` is hardcoded at every call site, so the band discipline is the only lever the API offers. Rejected: setting `DISABLE_ML_DOWNLOADS` in `scripts/e2e_up.sh` (a harness change that alters the product's behaviour under test, hiding a real code path rather than avoiding it); pre-baking the model into the image (a ~90 MB layer for one test) |
+| **D6** | **Every EPG-matching test is built so `get_sentence_transformer()` is never called.** Name pairs are chosen so `fuzz.ratio` over the *normalised* strings lands either at or above `FUZZY_SKIP_ML` (a match, ML skipped) or below `FUZZY_LAST_RESORT_MIN` (no match, ML never reached). The threshold band is stated in a comment at every such assertion, with the numbers and which branch of `_get_epg_match_thresholds` applies. **The general rule, stated once so it is not re-derived: on the bulk path the only ML-free outcomes are a score at or above 80 (match) and below 50 (no match); on the single path, at or above 75 and below 20.** Everything between reaches `get_sentence_transformer()`, because `try_epg_name_match` calls it whenever `best_score >= fuzzy_medium` — 70 on the bulk path, 40 on the single path — and again in `[fuzzy_last_resort_min, fuzzy_medium)`. That rule is what removed test 9: it asked for a `[75, 80)` pair on the *bulk* path, which is squarely inside `[70, 80)` and downloads the model | `try_epg_name_match` reaches `get_sentence_transformer()` only inside `[MEDIUM, SKIP_ML)` and `[LAST_RESORT_MIN, MEDIUM)`, and that function downloads `all-MiniLM-L6-v2` into `/data/models` unless `DISABLE_ML_DOWNLOADS=true`, which the e2e container does not set. A test in the middle band would pull ~90 MB over the public internet inside a CI job that has taken no egress dependency in ten goals, on every run, before the model is cached — and on a cold container, every time. `use_ml=True` is hardcoded at every call site, so the band discipline is the only lever the API offers. Rejected: setting `DISABLE_ML_DOWNLOADS` in `scripts/e2e_up.sh` (a harness change that alters the product's behaviour under test, hiding a real code path rather than avoiding it); pre-baking the model into the image (a ~90 MB layer for one test) |
 | **D6a** | **The band is asserted, not assumed.** Each matching test computes nothing itself, but its comment records the exact normalised pair and the `fuzz.ratio` the design predicts, and the test asserts the *outcome* the band implies — match or no match. The plan's first task is a probe that reads the real score out of a live container before any test is written | `fuzz.ratio` over `normalize_name`'s output is deterministic but not obvious: the function strips bracketed text, preserves an uppercase call sign matched against the *original* string, and drops fifteen common words including `hd`, `tv` and `channel`. A predicted score that is wrong by ten points silently moves a test into the ML band, and the symptom is a slow first run, not a failure. Probing first is cheaper than debugging that |
 | **D7** | **`match-epg` is always called with a *non-empty* explicit `channel_ids` list, or in its detail form** | The collection form branches on `if channel_ids:`, so both an omitted list **and an empty one** dispatch `match_epg_channels`, which matches every EPG-less channel on the instance — it would rewrite other workers' and other goals' channels mid-run, and the endpoint validates nothing and has no 400 path to stop it. This is not a hazard the harness can mitigate; it is one it must never trigger. Written into `e2e/README.md`, not only here |
 | **D7a** | **The detail form, `POST /api/channels/channels/<id>/match-epg/`, is the primary matching surface; the collection form is used only where a multi-channel behaviour is the subject** | Three reasons, all from the code. It is inherently scoped, so D7's hazard cannot be triggered by a typo. It emits `single_channel_epg_match` on **every** path including failures, carrying `channel_id` — the only guaranteed, exactly-correlated matching event in the product. And its payload carries `matched` as a boolean plus `epg_id`, so the assertion is one message rather than a poll on the channel row |
 | **D8** | **`get_preferred_region_code()` is characterized in prose and filed as an issue — it gets no test, and specifically no `test.fail()`** | Two independent reasons, either sufficient. (i) The correct behaviour is "regional weighting changes which candidate wins", and `_compute_fuzzy_score`'s weighting is at most ±15 points, so any pair where it decides the outcome sits inside the ML band D6 exists to avoid — a `test.fail()` there would be unrunnable by construction, or would import the model download. (ii) Setting a region at all requires writing `system_settings["preferred_region"]`, a global `CoreSettings` group, which D2 forbids. So the honest encoding is a `COVERAGE.md` row and an issue, not a red test. The issue is worth filing anyway and is **new information** three times over: `CLAUDE.md` records one broken site, and there are **three** — `match_epg_channels` and `match_selected_channels_epg` each inline their own copy of the same dead lookup, so fixing the named one fixes nothing; the working accessor `CoreSettings.get_preferred_region` exists and no matcher calls it; and `CoreSettings.value` is a `JSONField` now, so even if the row survived, `.strip()` would raise `AttributeError`, which `except CoreSettings.DoesNotExist` does not catch. What makes it worth filing rather than merely noting is the user-facing half: the setting is exposed in the UI (`frontend/src/utils/forms/settings/SystemSettingsFormUtils.js`, System Settings) and persists correctly, so an operator can set a region, watch it save, and get no behavioural change at all |
 | **D9** | **`reorder` is exercised only with an explicit `insert_after_id`, between three channels the test seeded into a worker-scoped four-figure `channel_number` band. `insert_after_id: null` is never sent.** The instance-wide shift is recorded as an observation, not filed | `reorder` shifts every `Channel` whose number falls between the old and desired positions, with no account, group or profile filter — and `insert_after_id: null` sets the desired position to 1, making the shift range `[1, old_number)`, which on this instance is every channel any test has ever created. Confined to three adjacent numbers the test owns, the shift is fully observable *and* fully scoped: move the third channel to sit after the first, and all three of the resulting numbers are the test's own. That proves the mechanism without touching a row the test did not create. Whether the global shift is a *defect* is genuinely arguable — channel numbers are a single-tenant global namespace and "maintain contiguous ordering" is the docstring's stated intent — so it is written down as an observation with the mechanism, and left for a maintainer rather than filed as a bug this goal cannot adjudicate. G3's D3 discipline (a high band derived from the worker index) is reused verbatim |
-| **D10** | **Sub-area 3 resolves into a decision, not a test block: the behavioural settings G14 covers are the row-scoped ones — `M3UFilter` (D-rank 4), per-user `allowed_networks` (D4) — and every global `CoreSettings` group is handed to G12 as one new `COVERAGE.md` row** | The disposition asked for "settings with behavioural effect beyond the User-Agent persistence already covered". Read against the code, the settings with behavioural effect divide cleanly: the row-scoped ones are testable on `seeded` and G14 tests them, and the rest are global JSON groups — `epg_settings.epg_match_mode` (advanced-mode normalisation, which really does change matching), `stream_settings.default_user_agent`, `proxy_settings`, `system_settings.preferred_region`, `network_access` — every one of which is instance-wide state four workers share. G12 is already standing up isolated instances for backup restore and non-zero refresh intervals; one more row costs it a fixture call, and costs G14 a project it should not own. Two of those are *already* partially covered from single-worker projects (`proxy_settings` by `failover-buffering.spec.ts`, `default_stream_profile` by `vod-redirect-profile.spec.ts`), which is the precedent for how the rest should land — not in `seeded` |
+| **D10** | **Sub-area 3 resolves into a decision, not a test block: the behavioural settings G14 covers are the row-scoped ones — `M3UFilter` (D-rank 4), per-user `allowed_networks` (D4) — and every global `CoreSettings` group is recorded as one `COVERAGE.md` gap row, *unowned, post-wave-6*.** The gap names its most migration-relevant member explicitly: `network_access["STREAMS"]`, which gates `/proxy/ts/stream/<uuid>` | The disposition asked for "settings with behavioural effect beyond the User-Agent persistence already covered". Read against the code, the settings with behavioural effect divide cleanly: the row-scoped ones are testable on `seeded` and G14 tests them, and the rest are global JSON groups — `epg_settings.epg_match_mode` (advanced-mode normalisation, which really does change matching), `stream_settings.default_user_agent`, `proxy_settings`, `system_settings.preferred_region`, `network_access` — every one of which is instance-wide state four workers share. **This row was originally handed to G12, and G12 declined it** — its revised spec records that it does not absorb the global-`CoreSettings`-groups row, so the honest encoding is an unowned gap rather than a handoff to a goal that has said no. Two of those groups are *already* partially covered from single-worker projects (`proxy_settings` by `failover-buffering.spec.ts`, `default_stream_profile` by `vod-redirect-profile.spec.ts`), which is the precedent for how the rest should land — not in `seeded`. **The member that matters to the extraction is named in the row**: `apps/proxy/live_proxy/views.py:stream_ts` calls `network_access_allowed(request, "STREAMS")` with **no user**, so the global `STREAMS` scope is the only ACL on `/proxy/ts/stream/<uuid>` — the endpoint the relay extraction moves, and the one `CLAUDE.md` says becomes a Django-minted HMAC-signed URL. A second, cheaper observable for the same scope exists and is recorded as its own gap: `:stream_xc` passes `user`, so the per-user `allowed_networks["STREAMS"]` branch (`dispatcharr/utils.py:network_access_allowed`) is row-scoped and provable through the XC live route with **no global write at all** — work for whichever goal next owns the `streaming` projects, which G14 does not |
 | **D11** | **`M3UAccountProfile` URL rewriting and `ServerGroup` credential pooling are out of scope, recorded as gaps naming the exact observable each needs** | Both are real and both are `streaming`-project work. The profile's `search_pattern`/`replace_pattern` are consumed by `apps/proxy/live_proxy/url_utils.py:transform_url` at stream time, so proving it means opening a real stream and reading the path back out of the fake provider's `ScenarioLog` — a byte-level test, in a different project, for a goal that is otherwise entirely API-level. `ServerGroup` is worse: `apps/m3u/connection_pool.py:get_enforced_server_group_for_profile` and `:group_has_capacity_for_profile` share a Redis credential counter across accounts, so proving it needs two accounts sharing one credential, both at `max_streams: 1`, and two concurrent streams whose second must be refused. Note that [#68](https://github.com/D10Scot/Dispatcharr/issues/68) already reports a case-folding defect in exactly that fingerprint, so the area is known-suspect and deserves a real test — from a goal that owns the streaming projects, which G14 does not. Both rows name the mechanism so the next owner starts from the observable, not from a rediscovery |
 | **D12** | **The product's WebSocket vocabulary is the `send_websocket_update()` call sites, not `apps/connect/models.py:SUPPORTED_EVENTS`** | `core/utils.py:log_system_event` writes a `SystemEvent` row and fans out to Connect integrations and plugin event hooks, and sends **no** WebSocket message. There are three separate vocabularies in this product — `SUPPORTED_EVENTS` (17 keys, Connect and plugin hooks), `SystemEvent.EVENT_TYPES` (22 choices, the DB) and the socket's own set of `data.type` literals — and they overlap only by coincidence of naming. **The brief's map is the wrong map**, and a spec written to it would have waited for events the product never sends. Recording the correction is half of what this sub-area is worth |
 | **D12a** | **Correlation predicate, in strict preference order: (1) a Celery `task_id`; (2) an id in the payload the test owns; (3) nothing — do not wait on it.** No G14 wait uses a bare type match | `/ws/` is one broadcast across four workers, so `where` is mandatory for any type a parallel test can also produce. The available keys, from the code: the three `set-*-from-epg` tasks carry the Celery `task_id` the POST returned — globally unique, known *before* the wait registers, which is exactly the ordering `WsListener.waitForMessage` requires, and the strongest predicate in the product. `single_channel_epg_match` carries `channel_id`. `epg_match` carries `associations[].channel_id`, but `matches_count` alone is not a predicate — it counts *changed* rows, so a re-run reports `0` and a concurrent worker's run satisfies any count you pick. `epg_matching_progress` carries **no id at all** and is throttled (`index < 5 or index % 5 == 0 or index == total - 1`), so it is unusable as a terminal predicate and G14 does not wait on it. `channel_stats` is emitted by a beat task about once a second and cannot be attributed to a request at all |
 | **D12b** | **The one WebSocket property worth a test of its own is the admin-only filter, and it is proved as a paired positive and negative in a single window** | `dispatcharr/consumers.py:ADMIN_ONLY_UPDATE_TYPES` silently drops five types for a non-admin socket, and **no test has ever opened a non-admin socket** — this is an authorization property with zero coverage, and a silent drop is exactly the kind that rots unnoticed. It is also unusually cheap to prove, because `channel_stats` is beat-driven traffic that arrives whether or not the test does anything: open an admin socket (the `ws` fixture) and a Streamer socket (a hand-built `WsListener` from `asPrincipal('streamer')`'s token — `WsListener` is already exported, so no fixture change), collect for one window, and assert the admin saw at least one `channel_stats` and the Streamer saw none. The positive is the premise guard for the negative: if no traffic arrived at all, the test fails saying so rather than passing vacuously |
 | **D12c** | **`SystemEvent` is never asserted** | `log_system_event` deletes every row beyond `max_system_events` (default 100) on **every call**, instance-wide, and the only read surface — `GET /api/core/system-events/` — is global with an exact-match `event_type` filter and no scoping to anything a test owns. On a four-worker instance a row can be evicted between the trigger and the read by traffic the test cannot see. This also means the `m3u_blocked`/`epg_blocked` rows the ACL 403 paths write are observed only as prose in D5's issue, not as an assertion |
-| **D13** | **G14's default tag is `@contract`. Exactly five tests are `@characterization`, each justifying itself in a comment** | Per G11, whose ADR is the authority; G14 applies the taxonomy and does not define it. Three categories, five tests. **Test 1**, the `X-Real-IP` premise guard (D3a): it asserts a property of *this* container's nginx/uwsgi topology, and a deployment setting `DISPATCHARR_TRUSTED_PROXIES=none` would correctly fail it. **Tests 7, 8 and 9**, the fuzzy-threshold assertions (D6): they pin the six hardcoded numbers in `_get_epg_match_thresholds` and, in test 9's case, the `len(channels_data) > 1` rule that selects between the two sets — implementation, not contract. **Test 23**, `reorder` (D9): it pins today's global-namespace renumbering, which a scoped rewrite would legitimately change. Everything else — a filter excludes a stream, a bulk edit validates before it applies, a blocked network is refused, an action reaches a plugin, an event carries its task id — is behaviour any reimplementation must preserve |
+| **D13** | **G14's default tag is `@contract`. Exactly four tests are `@characterization`, each carrying a `// @characterization: <fact>` comment immediately above its `test(` call.** The tag is Playwright's native option passed as the **second argument, an inline object literal** — `test('title', { tag: '@contract' }, async ({ … }) => { … })`, and `test.fail('title', { tag: '@contract' }, async …)` for test 5 | The taxonomy is `docs/adr/0002-e2e-test-taxonomy.md` and the enforcement is `e2e/tests/guards/tags.spec.ts`, which fails closed: every `test`/`test.only`/`test.skip`/`test.fail`/`test.fixme` declaration needs exactly one recognised tag, and a declaration whose shape it cannot read is `unverifiable` and fails. **Tags go on each `test(` call, never on a shared const**: a `test.describe` may carry the tag instead, but only if its details object is an inline literal — a by-reference object makes every enclosed test unverifiable and fails the guard. This matters concretely for `network-acl.spec.ts`, which uses `test.describe.configure({ mode: 'serial' })` and so has no tagged enclosing describe to inherit from. `KNOWN_UNVERIFIABLE` is empty at `45a33a4a` and G14 adds nothing to it. Three categories, four tests. **Test 1**, the `X-Real-IP` premise guard (D3a): it asserts a property of *this* container's nginx/uwsgi topology, and a deployment setting `DISPATCHARR_TRUSTED_PROXIES=none` would correctly fail it. **Tests 7 and 8**, the fuzzy-threshold assertions (D6): they pin two of the twelve hardcoded numbers in `_get_epg_match_thresholds` (six per branch) — the single path's `FUZZY_SKIP_ML` of 75 and the bulk path's `FUZZY_LAST_RESORT_MIN` of 50. Implementation, not contract. **Test 23**, `reorder` (D9): it pins today's global-namespace renumbering, which a scoped rewrite would legitimately change. Everything else — a filter excludes a stream, a bulk edit validates before it applies, a blocked network is refused, an action reaches a plugin, an event carries its task id — is behaviour any reimplementation must preserve. ADR-0002's tie-break applies unchanged: **ambiguity resolves to `@contract`**, because a wrongly-`@characterization` test is invisible on a migration branch while a wrongly-`@contract` one is noise someone reclassifies |
+| **D13a** | **The one guard G14 has to be added to is `GLOBAL_SETTINGS_WRITE`: `tests/seeded/network-acl.spec.ts` goes on that list in `e2e/tests/guards/allowlist.ts`, with ADR-0003's required justification written into the diff.** No G14 file trips `CONTAINER_LIFECYCLE`, `SUBPROCESS`, `GREYBOX_REDIS` or `CONTAINER_INTROSPECTION` | `e2e/tests/guards/global-mutation.spec.ts` fails any `api.post/patch/put/delete` whose URL resolves to contain `core/settings` from a file not on the list, and test 3 PATCHes `/api/core/settings/<id>/`. The list is compared with `toEqual`, so the entry is mandatory rather than optional and a stale one would fail too. ADR-0003 requires the addition to say **which group it writes** (`network_access`, key `XC_API` only, `UI` never), **why nothing else reads it** (D2's blast-radius argument: the narrowed value refuses only a request carrying a spoofed non-local `X-Real-IP`, and nothing else in the suite sends one) and **how teardown restores it** (the `afterEach` that writes back the value captured before the PATCH). That is precisely the review D2 already asks for, so the two are the same argument in two places and must not drift. The other four capabilities are clear by construction: G14 destructures no `instance` fixture, imports no `node:child_process`, uses no grey-box Redis helper, and writes no `pgrep`, `docker ` or `manage.py` **string literal** into a spec — the `docker exec` probes in the plan are shell commands in the plan's own prose, which `capabilities.spec.ts` parses past because it reads literals rather than scanning text. **Tension, recorded and deliberately not resolved here:** ADR-0002 says anything on a capability allowlist is `@characterization` by construction, but the tree does not apply that — `tests/streaming-failover/failover-buffering.spec.ts` is on `GLOBAL_SETTINGS_WRITE` and tagged `@contract`. G14 follows the tree's precedent and keeps test 3 `@contract`, because its assertion — a blocked network gets 403 from `get.php` and `xmltv.php` — is client-observable behaviour any reimplementation must preserve, and the settings write is setup rather than the subject. The ADR wording is a follow-up for G11's owner; G14 does not edit an ADR it does not own |
 | **D14** | **The plugin work appends one test to `e2e/tests/frontend/plugins.spec.ts` and adds one optional argument to `buildPluginZip`. It does not create a new plugin spec** | G6's one-spec-file-per-surface rule is load-bearing in the `frontend` project: file-level parallelism at `workers: 2` is what confines the plugin directory and its shared `.reload_token` to a single worker, and `e2e/README.md` says splitting the file reopens that. A `seeded` home is worse still — `fullyParallel: true` means even one file gives no confinement. So the plugin work goes where the hazard is already managed. `plugin-zip.ts` gains `actions?: {id, label}[]`, defaulting to `[]` so G6's existing test is byte-identically unaffected, and the generated `run` returns a value derived from `params` so the assertion proves the action *and* its parameters reached the plugin. The plugin stays inert **at import**: only `run()` does anything, only when this test calls it, and G6's `afterEach` already deletes it |
 | **D14a** | **"Task-fires" is scoped to the plugin dispatching one existing product Celery task against the test's own `M3UAccount`, and is the third item on the cut list** | `Plugins.md` documents dispatching existing tasks with `.delay()` as the intended idiom, so that — not registering a new task — is what the row means. Registering a *new* Celery task from a runtime-imported plugin is a different and much worse question: `dispatcharr/celery.py` calls `PluginManager.discover_plugins()` in `worker_process_init`, i.e. once per forked child at startup, so a task defined by a plugin imported after boot is not in an already-running worker's registry. That asymmetry — the web workers converge through `.reload_token` with no restart, the Celery workers do not — is worth writing down and is recorded as an observation whether or not the test ships. The dispatch test itself is honest and cheap (`refresh_single_m3u_account` against the test's own account, asserted through the account's own `status`/`updated_at`), but it makes the fixture plugin import product internals, and that is the first thing to drop when the goal runs long |
 | **D15** | **One additive fixture change: `ApiClient.delete(url, data?)`. No change to `e2e/fixtures/seed.ts`** | `bulk-delete` carries `channel_ids` in the DELETE body and `delete()` is the one verb that does not forward `data` to the private `send()`; the fix is passing the argument through, is backward compatible, and keeps the 401 refresh-and-retry that a raw `request` call would lose. `seed.ts` is left alone deliberately: every row G14 needs is either an existing factory or a one-line POST the test should own, and `seed.ts` is the file G12, G13 and G15 are most likely to touch |
@@ -234,11 +285,11 @@ symbol.
 ```
 bootstrap ──┬─→ seeded    (existing) 4 workers, fullyParallel
             │      ├── tests/seeded/network-acl.spec.ts         (new, 5 tests, serial)
-            │      ├── tests/seeded/epg-matching.spec.ts        (new, 5 tests)
+            │      ├── tests/seeded/epg-matching.spec.ts        (new, 4 tests)
             │      ├── tests/seeded/epg-field-copy.spec.ts      (new, 3 tests)
             │      ├── tests/seeded/ws-product-events.spec.ts   (new, 2 tests)
             │      ├── tests/seeded/m3u-filters.spec.ts         (new, 3 tests)
-            │      └── tests/seeded/channel-bulk-ops.spec.ts    (new, 4 tests)
+            │      └── tests/seeded/channel-bulk-ops.spec.ts    (new, 5 tests)
             └─→ frontend  (existing) 2 workers, file-level, 120s
                    └── tests/frontend/plugins.spec.ts           (+1 test)
 ```
@@ -252,7 +303,8 @@ fetch-and-parse refresh — following G3's D9 rather than raising the project de
 
 ## Test inventory
 
-Twenty-four tests across six new files plus one test appended to an existing file. `Tag` is
+Twenty-three tests across six new files plus one test appended to an existing file (test 9 was
+removed after G11 landed; see the row below and D6). `Tag` is
 G11's taxonomy (D13).
 
 | # | Rank | File | Test | Tag | Mechanism | Est. |
@@ -265,7 +317,7 @@ G11's taxonomy (D13).
 | 6 | 2 | `epg-matching.spec.ts` | an exact `tvg_id` match is taken before any fuzzy scan | `@contract` | `seed.upstreamEpgSource()` over a 2-channel scenario; a channel carrying one scenario channel's `tvg_id` and a deliberately unrelated `name`. `POST channels/<id>/match-epg/` → `202 {accepted: true, channel_id}`; `ws.waitForMessage('single_channel_epg_match', { where: d => d.channel_id === channel.id })` → `matched: true` with `epg_id` equal to *my* `EPGData` row. Proves the short-circuit **and** that name distance is irrelevant to it — an ID-matched channel can never reach the ML branch at any score, which makes this the safest shape in the file | 45s |
 | 7 | 2 | `epg-matching.spec.ts` | a near-identical name matches by fuzzy score, with the ML branch never reached | `@characterization` | `test.setTimeout(120_000)`. A channel with **no** `tvg_id` and no `tvc_guide_stationid`, whose normalised name is within `FUZZY_SKIP_ML` (75, single path) of a scenario channel's. Detail endpoint → `single_channel_epg_match` correlated on `channel_id`, `matched: true`. The comment records the exact normalised pair, the predicted `fuzz.ratio` and which of `_get_epg_match_thresholds`'s two branches applies (D6/D6a) | 60s |
 | 8 | 2 | `epg-matching.spec.ts` | a distant name matches nothing, and the ML branch is still never reached | `@characterization` | The **bulk** form with two channels, so `FUZZY_LAST_RESORT_MIN` is 50 rather than 20 — a 30-point wider safety margin against a foreign `EPGData` row scoring higher than intended. Names built from `seed.generatedName` entropy with near-zero character overlap with any plausible EPG name. Assert on the **channel rows** — both `epg_data` still `null` — rather than on the message, because a negative cannot be exactly correlated on a broadcast; the `epg_match` frame is used only as a settle signal, and the test says so. **This is the test that would pull the model download if a score were mis-predicted**, which is why D6a probes first and why it uses the higher threshold | 60s |
-| 9 | 2 | `epg-matching.spec.ts` | a collection `match-epg` carrying exactly one id runs the *single-channel* thresholds | `@characterization` | `is_bulk_matching = len(channels_data) > 1`, so a one-element list takes the aggressive branch. A name pair scoring in `[75, 80)` matches through the collection endpoint with one id and does **not** match with two. Two `epg_match` waits, each correlated on its own `associations`. The clearest available demonstration that the six thresholds are implementation, not contract — and the reason this test is tagged `@characterization` and sits first on this file's cut list | 75s |
+| 9 | — | `epg-matching.spec.ts` | **test 9 — removed** | — | The threshold asymmetry is real — `is_bulk_matching = len(channels_data) > 1`, so a one-element collection call runs the single-channel thresholds — but demonstrating it needed a pair scoring in `[75, 80)` put through the **bulk** path, and on that path `FUZZY_MEDIUM_CONFIDENCE` is 70, so `try_epg_name_match` calls `get_sentence_transformer()` for every score in that range. The test violated D6 by construction, so it is cut permanently rather than ranked on the cut list. Recorded as a `COVERAGE.md` observation instead. Numbers 10–24 are unchanged | — |
 | 10 | 2+3 | `epg-matching.spec.ts` | the bulk match's terminal `epg_match` names this test's associations | `@contract` | `where: (d) => d.associations.some(a => a.channel_id === mine)` — the ids are known before the wait registers, which is what `WsListener.waitForMessage` requires. Asserts the association's `epg_data_id` is one of my `EPGData` rows and that `matches_count` counts **changed** rows only, by re-running and asserting the second run reports `0` | 60s |
 | 11 | 2 | `epg-field-copy.spec.ts` | `set-names-from-epg` copies the associated `EPGData` name onto the channel | `@contract` | Channel + `set-epg` (G3's deterministic path, reused as a precondition rather than re-proved), then `POST channels/set-names-from-epg/ {channel_ids}` → `200` with `task_id` and `channel_count: 1`. Poll the channel's `name` until it equals the `EPGData` name; re-run and assert it is unchanged and `updated_count` is `0` | 30s |
 | 12 | 2 | `epg-field-copy.spec.ts` | an unassociated channel is silently skipped, counting toward neither total | `@contract` | The negative the response shape hides: a channel with `epg_data: null` in the same call yields `updated_count: 0, error_count: 0` — indistinguishable from "already correct". Asserted on the terminal WS payload, because the POST returns before the task runs. This is the assertion that makes the ordering dependency on `match-epg`/`set-epg` visible | 30s |
@@ -286,7 +338,7 @@ G11's taxonomy (D13).
 writes `network_access` and `seeded` is `fullyParallel`, so a file is not a worker and only serial
 mode confines the write to one at a time.
 
-Estimated added wall clock: `seeded` grows by roughly nine minutes of test time spread over four
+Estimated added wall clock: `seeded` grows by roughly eight minutes of test time spread over four
 workers — dominated by the three M3U refreshes in `m3u-filters.spec.ts` and the three EPG
 refreshes in the two EPG files.
 
@@ -329,7 +381,9 @@ needs no fixture change. It owns its own `close()` in a `finally`, and the test 
 
 Per roadmap rule 3, in the same PR. Rows are **added**; G5's and G6's are not rewritten (D16).
 
-Eleven new flow rows (one per test group), plus these annotation rows:
+Eleven new flow rows (one per test group), plus these annotation rows. G11's `COVERAGE.md` at
+`45a33a4a` is a `| Area | Flow | Goal | Status |` table with a separate `## Guards (G11)` table
+below it; G14 appends to the first and touches the second not at all.
 
 - **Known bug** — the XC per-user network denial returns 401 rather than 403 on all four XC
   endpoints, and `player_api.php`/`panel_api.php` log no `SystemEvent` for it; three call sites
@@ -358,10 +412,28 @@ Eleven new flow rows (one per test group), plus these annotation rows:
 - **Observation** — `apps/channels/tests/test_epg_matching.py` does not test
   `apps/channels/epg_matching.py`. It covers `tasks.py:_match_epg_program_by_timeslot`, a DVR
   recording concern. Recorded so the next author does not read the filename as coverage.
-- **Gap → G12** — every global `CoreSettings` group with behavioural effect
+- **Gap — unowned, post-wave-6** — every global `CoreSettings` group with behavioural effect
   (`epg_settings.epg_match_mode` advanced normalisation, `stream_settings.default_user_agent`,
   `system_settings.preferred_region`, the `network_access` scopes beyond G14's one exception),
-  with the reason: instance-wide state four workers share. (D10)
+  with the reason: instance-wide state four workers share. **Originally handed to G12; G12's
+  revised spec declines it**, so the row is unowned rather than assigned. It names its
+  migration-relevant member: `network_access["STREAMS"]` is the only ACL on
+  `/proxy/ts/stream/<uuid>` (`apps/proxy/live_proxy/views.py:stream_ts` calls
+  `network_access_allowed(request, "STREAMS")` with no user), which is the endpoint the relay
+  extraction moves and the one `CLAUDE.md` says becomes an HMAC-signed URL. (D10)
+- **Gap** — the per-user `allowed_networks["STREAMS"]` branch, which is the cheaper observable for
+  the same scope and needs **no global write at all**:
+  `apps/proxy/live_proxy/views.py:stream_xc` passes `user` to `network_access_allowed`, so setting
+  one seeded user's `custom_properties.allowed_networks.STREAMS` to a CIDR no client can match
+  makes the XC live route (`/<user>/<pass>/<id>`) refuse, row-scoped. It is a `streaming`-project
+  test, so it belongs to whichever goal next owns those projects, not to G14. (D10)
+- **Observation** — the two threshold sets are selected by request size, not by endpoint:
+  `match_channels_to_epg` derives `is_bulk_matching = len(channels_data) > 1`, so **a one-element
+  collection `match-epg` runs the single-channel thresholds**, while
+  `run_single_channel_epg_match` hardcodes `False`. It is **not testable without entering the ML
+  band**: demonstrating the asymmetry needs a score the two branches disagree about, and on the
+  bulk path every score at or above 50 and below 80 reaches `get_sentence_transformer()`. This
+  observation replaces a test that was specified and then cut for exactly that reason. (D6)
 - **Gap** — `M3UAccountProfile.search_pattern`/`replace_pattern`, naming
   `apps/proxy/live_proxy/url_utils.py:transform_url` and the fake provider's `ScenarioLog` as the
   observable. (D11)
@@ -402,6 +474,12 @@ Each is a `COVERAGE.md` row or note, never silence.
   `log_system_event` call.
 - **The `recording_*`, `channel_stats`, `vod_stats` and `timeshift_stats` WebSocket families.**
   G13 owns the first; the rest are streaming-project observables belonging to G4's and G9's rows.
+- **Resolving ADR-0002's allowlist-implies-`@characterization` sentence.** D13a records the
+  tension and follows the tree's precedent; changing the ADR is G11's owner's call, and G14 edits
+  no ADR.
+- **The threshold asymmetry between the bulk and single matching paths.** A test for it was
+  specified (9) and cut: it cannot be shown without entering the ML band D6 forbids. Recorded as an
+  observation. (D6)
 - **Any change to the product.** Assert correct, `test.fail()`, file with an explicit
   `--repo D10Scot/Dispatcharr`.
 
@@ -445,14 +523,26 @@ Each is a `COVERAGE.md` row or note, never silence.
 - **`seeded` is `fullyParallel`, so a file is not a confinement boundary.** This bit the design
   once already (test 3's serial mode) and is the thing most likely to be forgotten by whoever adds
   a sixth test to `network-acl.spec.ts`. The plan writes it into the file's header, not just here.
-- **Five shared files collide with G12, G13 and G15** — `COVERAGE.md`, `README.md`, `types.ts`,
-  `index.ts`, `api.ts`. **Mitigation:** additive only, appended at the end of each existing list;
-  no reordering, no reflowing a neighbouring paragraph. G14's `api.ts` edit is one signature and
-  is the only one that is not a pure append.
-- **G11 has not landed.** The tag column in the inventory is written against the taxonomy as the
-  disposition defines it. If G11's ADR names the tags differently or applies them at `describe`
-  rather than `test` level, G14 follows G11 — the inventory column is a rename, and nothing about
-  which tests are portable changes.
+- **Six shared files collide with G12, G13 and G15** — `COVERAGE.md`, `README.md`, `types.ts`,
+  `index.ts`, `api.ts` and `tests/guards/allowlist.ts`. **Mitigation:** additive only, appended at
+  the end of each existing list; no reordering, no reflowing a neighbouring paragraph. G14's
+  `api.ts` edit is one signature and is the only one that is not a pure append. `allowlist.ts` is
+  the newest collision risk: G12 owns `tests/lifecycle/`, which is already on two capability lists,
+  so both goals may append to the same file in the same wave.
+- **The tag guard fails closed, and one spec shape in this goal is the shape it rejects.**
+  `e2e/tests/guards/tags.spec.ts` requires exactly one recognised tag on every test declaration and
+  reports anything it cannot parse as `unverifiable`, which fails. The rejected shape is a details
+  object passed **by reference** — so a `const TAG = { tag: '@contract' }` hoisted to the top of a
+  file to save repetition breaks every test in it. **Mitigation:** the tag is written inline on each
+  `test(` call in all seven files. `network-acl.spec.ts` is the one to watch, because it already
+  carries a `test.describe.configure({ mode: 'serial' })` and the temptation is to fold the tag into
+  a describe alongside it; `configure` takes no tag, and a describe that did would have to carry an
+  inline literal.
+- **Test 3 fails `global-mutation.spec.ts` until `allowlist.ts` is edited, and the edit is the
+  review.** The guard is a `toEqual` comparison, so the omission fails loudly rather than silently —
+  which is the good case. The risk is the opposite one: adding the entry without ADR-0003's three
+  sentences (which group, why nothing else reads it, how teardown restores it) turns a reviewable
+  decision back into an edit nobody sees. D13a states them; the diff must carry them.
 - **`WsListener` correlation is a race in principle.** A task that starts, runs and completes
   before the wait registers leaves nothing to consume. In practice the POST returns before Celery
   picks the task up, and the listener *queues* anything that arrived before the wait — messages

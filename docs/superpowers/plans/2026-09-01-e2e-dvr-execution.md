@@ -10,7 +10,14 @@
 
 **Spec:** `docs/superpowers/specs/2026-09-01-e2e-dvr-execution-design.md` — read it before Task 1. Every task below cites the decisions it implements.
 
-**Base:** branch from `origin/main` at `cf95410e`.
+**Base:** branch from `origin/main` at or after `45a33a4a` — the commit G11 landed on. G11 is a
+hard prerequisite, not a preference: the tag guard is blocking and fails closed, and the settings
+allowlist this plan edits does not exist before it.
+
+**Why this goal matters to the extraction:** DVR is the product's only non-human client of the
+relay. Read "Migration relevance" in the spec before Task 4 — it names which four rows are the
+gate (1, 3, 4, 6), which two are ordinary regression coverage (5, 7), and which two a migration
+branch is expected to rewrite rather than fix (2, 8).
 
 ## Global Constraints
 
@@ -20,13 +27,15 @@ Copied from the spec and the programme rules. Every task's requirements implicit
 - **`POST /api/channels/recordings/` must always carry a future `end_time`.** `RecordingSerializer.validate` 400s on a past one, and silently rewrites a past `start_time` to `now`.
 - **Correlate every WebSocket wait.** `/ws/` is one broadcast group. `recording_updated`, `recording_extended`, `recording_cancelled` and `comskip_status` carry `recording_id` — predicate on it. `recording_started`, `recording_stopped` and `recording_ended` carry **only `channel`** — predicate on the seeded channel's generated name. A bare `waitForMessage(type)` is wrong in every case. (`e2e/fixtures/ws.ts` says so at length; spec D11.)
 - **Every test cleans up in an `afterEach`, never at the end of the body.** Playwright tears a timed-out test down mid-`await`; body-level cleanup does not reliably run. A leaked ad-hoc recording poisons the *`frontend`* project through [#71](https://github.com/D10Scot/Dispatcharr/issues/71) and leaves a live `PeriodicTask` that fires hours later. (Spec D8.)
-- **`e2e/fixtures/instance.ts` may not be imported.** It is quarantined to the two `lifecycle` projects by its own header; it destroys the shared container, network and provider. (Spec D2.)
+- **`e2e/fixtures/instance.ts` may not be imported.** It is confined to the two `lifecycle` projects — by its own header, and since G11 by `CONTAINER_LIFECYCLE` in `e2e/tests/guards/allowlist.ts`, which lists exactly those two specs. It destroys the shared container, network and provider. (Spec D2.)
 - **Never assert a global count or an unfiltered list.** Scope every assertion to this test's own recording id, channel id or rule id. (Roadmap rule 4.)
 - **Product defects are asserted correct, marked `test.fail()` with the defect named in a comment, and filed — never patched.** `gh issue create --repo D10Scot/Dispatcharr`; the explicit `--repo` flag is mandatory, because this checkout is a fork and `gh` without it files on upstream's public tracker. (Roadmap rule 5; spec D13.)
-- **No `docker exec`, no `child_process`, no `pgrep`, no `manage.py` anywhere under `e2e/tests/dvr/`.** G11 is generalising `quarantine.spec.ts` to police exactly these; G13 must not need an allowlist entry. (Spec D5.)
+- **Every `test(` and `test.fail(` carries a tag, as an inline object literal second argument.** `test('title', { tag: '@contract' }, async ({ … }) => { … })`. `@contract` is the default and needs no justification. Rows 2 and 8 are `@characterization` and each carries a `// @characterization: <the fact it pins>` comment immediately above the `test(` call. **Do not hoist the details object to a `const`** — `e2e/tests/guards/tags.spec.ts` parses the call site, reports a by-reference details object as `unverifiable`, and fails closed with an empty `KNOWN_UNVERIFIABLE`. (`docs/adr/0002-e2e-test-taxonomy.md`; spec "Tags".)
+- **No `docker exec`, no `child_process`, no `pgrep`, no `manage.py` anywhere under `e2e/tests/dvr/`.** `e2e/tests/guards/capabilities.spec.ts` polices exactly these against `CONTAINER_LIFECYCLE`, `SUBPROCESS`, `GREYBOX_REDIS` and `CONTAINER_INTROSPECTION` in `e2e/tests/guards/allowlist.ts`. G13 trips none of those four and must not need an entry on any of them. (`quarantine.spec.ts` no longer exists; G11 deleted it and moved its role here.) (Spec D5.)
+- **`comskip.spec.ts` DOES need an allowlist entry, on `GLOBAL_SETTINGS_WRITE`.** It PATCHes `/api/core/settings/<id>/`, and `e2e/tests/guards/global-mutation.spec.ts` fails any such write from an unlisted file — it resolves URLs through module-level `const`s and template literals, so there is no way to write it that the guard does not see. Task 2 adds the entry with ADR-0003's three-part justification. (Spec D9, "The comskip decision".)
 - **The typecheck hook is blocking.** Any edit to `e2e/**/*.ts` runs `tsc --noEmit` and blocks on failure. Run `cd e2e && npm ci` first or it degrades to a loud note.
-- **The zizmor hook is blocking on every finding** in an edited `.github/workflows/*.yml`, legacy included. The workflows are at zero findings; keep them there.
-- **Five shared files collide with G12, G14 and G15**, all additively: `e2e/playwright.config.ts`, `.github/workflows/e2e-tests.yml`, `e2e/package.json`, `e2e/COVERAGE.md`, `e2e/README.md`. Land them early (Task 2) to shrink the conflict window.
+- **The zizmor hook is blocking on every finding** in an edited `.github/workflows/*.yml`, legacy included. The workflows are at zero findings; keep them there. It fires on the `e2e-tests.yml` edit in Task 2.
+- **Six shared files collide with G12, G14 and G15**, all additively: `e2e/playwright.config.ts`, `.github/workflows/e2e-tests.yml`, `e2e/tests/guards/allowlist.ts`, `e2e/package.json`, `e2e/COVERAGE.md`, `e2e/README.md`. Land them early (Task 2) to shrink the conflict window. The allowlist is compared with `toEqual`, so a rebase that drops G13's entry fails the `guards` job rather than passing silently.
 - **Do not touch `e2e/fixtures/seed.ts` or `e2e/tests/frontend/dvr.spec.ts`.** G13 owns the latter as a lock and exercises it as a no-op (spec D7, D12).
 
 ## File Structure
@@ -46,12 +55,13 @@ Copied from the spec and the programme rules. Every task's requirements implicit
 
 | Path | Change |
 |---|---|
-| `e2e/playwright.config.ts` | Add the `dvr` project |
-| `.github/workflows/e2e-tests.yml` | Add `dvr` to the matrix |
-| `e2e/package.json` | Add `test:dvr` |
+| `e2e/playwright.config.ts` | Add the `dvr` project, after `frontend` and before `lifecycle` |
+| `.github/workflows/e2e-tests.yml` | Add `"dvr"` to **both** JSON `projects` lists in the `changes` job |
+| `e2e/tests/guards/allowlist.ts` | Add `tests/dvr/comskip.spec.ts` to `GLOBAL_SETTINGS_WRITE.allow` |
+| `e2e/package.json` | Add `test:dvr`, and name it in the bare-`test` message |
 | `e2e/fixtures/types.ts` | Add `RecurringRule`, additively at the end |
 | `e2e/COVERAGE.md` | Eight rows, plus three gap rows |
-| `e2e/README.md` | Document `dvr`; add it to the run-it-alone list |
+| `e2e/README.md` | A `dvr` row in the Projects table, and `dvr` in the `## CI` section's account of the two `projects` lists |
 
 ---
 
@@ -96,11 +106,18 @@ Both issues get the `needs-triage` label, matching every other finding this prog
 Lands every shared-file change in one commit, first, to shrink the rebase window against G12, G14 and G15. Implements spec D1 and D2.
 
 **Files:**
-- Modify: `e2e/playwright.config.ts`, `.github/workflows/e2e-tests.yml`, `e2e/package.json`, `e2e/README.md`
+- Modify: `e2e/playwright.config.ts`, `.github/workflows/e2e-tests.yml`, `e2e/tests/guards/allowlist.ts`, `e2e/package.json`, `e2e/README.md`
 
 - [ ] **Step 1: Add the project**
 
-In `e2e/playwright.config.ts`, after `frontend` and before `lifecycle`:
+`e2e/playwright.config.ts` declares ten projects at `45a33a4a`, in this order: `bootstrap`,
+`guards`, `pristine`, `seeded`, `streaming`, `streaming-failover`, `streaming-greybox`,
+`frontend`, `lifecycle`, `lifecycle-upgrade`. Insert `dvr` **after the `frontend` block and
+before the `lifecycle` block** — `dvr` depends on `bootstrap` and shares the container, so it
+belongs with the ordinary projects rather than after the two that destroy it. `frontend`'s block
+ends with the same `use: { storageState: … }` line and the same "Required. `adminPage` is an alias
+of `page`" comment reused below; `lifecycle`'s block opens with the comment "Owns its container's
+lifecycle: restarts it mid-test. Must run alone".
 
 ```ts
 {
@@ -140,23 +157,67 @@ In `e2e/playwright.config.ts`, after `frontend` and before `lifecycle`:
 },
 ```
 
-- [ ] **Step 2: Add `dvr` to the CI matrix**
+- [ ] **Step 2: Add `dvr` to the CI matrix — in the `changes` job, on both lines**
 
-In `.github/workflows/e2e-tests.yml`, extend the `project:` list to `[pristine, seeded, streaming, streaming-failover, streaming-greybox, lifecycle, frontend, dvr]`. Nothing else in the job changes — the workflow's own comment already records that each project gets its own container, which is what gives `dvr` the isolation Step 1's reason 2 depends on.
+**The matrix is no longer a YAML list on the `test` job.** G11 moved it: the `changes` job's
+"Decide whether the E2E suite needs to run, and at what breadth" step builds two JSON **strings**
+in a `run:` block, and the `test` job consumes `fromJSON(needs.changes.outputs.projects)`. The
+file says so in a comment directly above them — *"The matrix lives here rather than in the `test`
+job so that full mode can extend it. A NEW PROJECT MUST BE ADDED TO BOTH LINES."*
+
+Add `"dvr"` to both:
+
+```sh
+projects='["pristine","seeded","streaming","streaming-failover","streaming-greybox","lifecycle","frontend","dvr"]'
+if [ "$full" = "true" ]; then
+  projects='["pristine","seeded","streaming","streaming-failover","streaming-greybox","lifecycle","frontend","dvr","lifecycle-upgrade"]'
+fi
+```
+
+Nothing else changes. The `test` job's own comment already records that each project gets its own
+container — which is what gives `dvr` the isolation Step 1's reason 2 depends on — and its "Run
+E2E tests" step passes the project name through the **`PLAYWRIGHT_PROJECT` env var**, not string
+interpolation, deliberately: interpolating a value that no longer comes from a literal list is a
+zizmor `template-injection` finding, and the comment above the step says so. Do not "simplify" it
+back.
+
+`guards` stays out of both lists. It needs no container and has its own job.
 
 - [ ] **Step 3: Add the npm script**
 
-`"test:dvr": "playwright test --project=dvr"` in `e2e/package.json`, alongside the existing per-project scripts. Update the bare-`test` message if it enumerates projects.
+`"test:dvr": "playwright test --project=dvr"` in `e2e/package.json`, alongside the existing per-project scripts. The bare-`test` script's message does enumerate populations — add `test:dvr` to it. Note that `e2e/README.md` says "pick one of the eight" while the script already lists nine; adding `dvr` makes ten, so fix the count word in the same edit as Step 4.
 
-- [ ] **Step 4: Document the project**
+- [ ] **Step 4: Document the project, in two places**
 
-In `e2e/README.md`'s Projects section, add `dvr` with: what it covers, that it runs one worker, and that **it must be run alone locally** — joining `pristine`, `streaming-greybox` and the two `lifecycle` projects on that list, and for the same class of reason (a global settings mutation plus a container-wide filesystem).
+In `e2e/README.md`'s **Projects** table (the `| Project | What it is for |` table), add a `dvr`
+row after `frontend` and before `lifecycle`: what it covers, that it runs one worker, and that
+**it must be run alone locally** — worded like `streaming-greybox`'s row, which is the closest
+precedent (a project observing container-wide state that anything else running would disturb).
+The two `lifecycle` rows say "Runs alone" for a stronger reason: they destroy the container.
+`pristine`'s row does **not** state a run-alone rule, so do not claim it as precedent.
+
+Then the **`## CI`** section, which since G11 describes the two `projects` lists rather than a
+hardcoded matrix. It already carries the instruction — *"If you add another project to
+`playwright.config.ts`, add it to both `projects` lists in that job"* — and enumerates the
+projects the workflow runs. Add `dvr` to that enumeration so the section does not contradict the
+workflow.
+
+- [ ] **Step 5: Allowlist the comskip settings write**
+
+In `e2e/tests/guards/allowlist.ts`, add `'tests/dvr/comskip.spec.ts'` to `GLOBAL_SETTINGS_WRITE.allow`, with a comment beside it in the shape the four existing entries use. ADR-0003 requires the diff to say three things, and all three belong in that comment:
+
+- **Which group it writes** — `dvr_settings`, and only that row: `comskip_enabled` and `comskip_mode`, merged into a copy of the row's existing `value`.
+- **Why nothing else reads it during the run** — the `dvr` project gets its own container in CI and is `workers: 1`, so no other test is executing while the flag is on. And unlike `proxy_settings`, whose group cache ADR-0003 warns can outlive the test that wrote it, `CoreSettings._get_group` invalidates `dvr_settings` on `post_save`, so the restore takes effect immediately rather than up to 300s later.
+- **How teardown restores it** — an `afterEach` PATCHes the captured `value` dict back verbatim, every key of it. See Task 8 Step 2 for why "verbatim" is load-bearing.
+
+Landing this entry in Task 2, before `comskip.spec.ts` exists, is deliberate: it is a shared file, and the guard's `toEqual` comparison means the entry is inert until the file appears — a stale entry would fail, but this one becomes live in Task 8 of the same PR.
 
 **Verification:**
 - [ ] `cd e2e && npx playwright test --list --project=dvr` exits 0 and lists nothing (the directory is empty).
 - [ ] `cd e2e && npx tsc --noEmit` passes.
 - [ ] The zizmor hook reports **zero findings** on the edited workflow. If it reports anything, fix it before moving on — this is a ratchet.
-- [ ] `git diff --stat` shows four files, all additive.
+- [ ] `git diff --stat` shows five files, all additive.
+- [ ] `cd e2e && npm run test:guards` is red on exactly one thing — `GLOBAL_SETTINGS_WRITE` naming a file that does not exist yet — and green again after Task 8. If it is red on anything else, Step 5 is wrong. (If a red `guards` job between tasks is unacceptable in your workflow, move Step 5 to the head of Task 8 instead; it is the same edit, and the only cost is a wider rebase window on a shared file.)
 
 ---
 
@@ -247,6 +308,8 @@ Wait for `recording_ended` (`where` on `channel.name` again), then `waitForRecor
 
 If `status` lands on `interrupted`, the assertion message must surface `custom_properties.interrupted_reason`; that field is the whole diagnostic budget for a failed first contact.
 
+**This requirement is the goal's main contribution to the migration gate, so do not treat it as polish.** DVR builds its URL from `get_dvr_stream_base_url()` and a channel UUID. When the relay moves out of the Django process that base URL is wrong, and if the stream endpoint becomes the HMAC-signed URL `CLAUDE.md` intends, DVR has no way to mint one. Neither failure produces an error at the API: the recording is scheduled, dispatched and started, ffmpeg is refused, and `run_recording` gives up at `_first_segment_timeout` fifteen seconds later with `status: 'interrupted'`. Without `interrupted_reason` in the message, the most informative failure in the whole suite reads as a bare wait timeout. See the spec's "Migration relevance".
+
 - [ ] **Step 6: Assert the finished file over HTTP**
 
 - `GET /file/` → **200**, `content-type: video/x-matroska`, `content-length` > 0, `accept-ranges: bytes`.
@@ -255,7 +318,17 @@ If `status` lands on `interrupted`, the assertion message must surface `custom_p
 
 - [ ] **Step 7: Row 2 — the output-path characterization**
 
-A second `test()` in the same file, tagged `@characterization`, against a recording it creates itself (the flagship's is gone by then). Its header must justify the tag in exactly the terms G11 requires: `library_root = '/data/recordings'` is a **hard-coded literal** in `_build_output_paths`, not a setting; and the shape asserted is the shipped default of `get_dvr_tv_fallback_template` (`TV_Shows/{show}/{start}.mkv`), taken because a recording with no EPG programme has `season == 0 and episode == 0`.
+A second `test()` in the same file, against a recording it creates itself (the flagship's is gone by then), declared as:
+
+```ts
+// @characterization: `library_root = '/data/recordings'` is a hard-coded literal in
+// `_build_output_paths`, not a setting, and the path shape is the shipped default of
+// `get_dvr_tv_fallback_template`. A deployment that relocates the library, or a change to
+// the default templates, legitimately breaks this row.
+test('the recording lands where the DVR templates say it should', { tag: '@characterization' }, async ({ … }) => {
+```
+
+The comment above the call is what ADR-0002 requires of every `@characterization` test — the guard checks the tag, not the comment, so nothing but review enforces it. The fact it pins: `library_root = '/data/recordings'` is a **hard-coded literal** in `_build_output_paths`, not a setting; and the shape asserted is the shipped default of `get_dvr_tv_fallback_template` (`TV_Shows/{show}/{start}.mkv`), taken because a recording with no EPG programme has `season == 0 and episode == 0`.
 
 Assert, from `custom_properties` on the ordinary detail endpoint and **not** from the filesystem:
 - `file_path` starts with `/data/recordings/`
@@ -383,7 +456,9 @@ Ordered last, deliberately. Implements spec D9. **Read "The comskip decision" in
 
 - [ ] **Step 1: Write the header first**
 
-It must say, before any code:
+Declared `test('comskip dispatch reaches a terminal state', { tag: '@characterization' }, async ({ … }) => …)`, with a `// @characterization: …` comment immediately above the call naming the fact it pins — that `comskip` compiled in `docker/DispatcharrBase` is on `PATH` in this image and an ini exists at one of three AIO paths.
+
+The file header must say, before any code:
 - what this test asserts — that the dispatch chain runs to a terminal state and emits its event;
 - what it deliberately does **not** assert — anything about commercial detection, in those words;
 - why detection is not constructible: `docker/comskip.ini` sets `detect_method=127` (all seven methods), and G2's asset is `testsrc` video with a burned-in frame counter plus a 440 Hz sine (`e2e-upstream/scripts/make-asset.sh`) — no logo, no black frames, no silence, no commercial structure. `comskip_process_recording` can only reach its `exit code 1` or `sum(commercials) <= 0.5` short-circuits.
@@ -415,8 +490,9 @@ Budget the wait at 120 s and comment why the ceiling matters: `comskip_process_r
 
 If, after three clean runs, this row is slow (over ~150 s) or flaky:
 1. Delete it.
-2. Replace it with a `COVERAGE.md` row: `Comskip dispatch | gap`, whose note states that the chain from `CoreSettings.get_dvr_comskip_enabled()` through `comskip_process_recording` to `custom_properties.comskip` is unobserved, and why (runtime against a synthetic asset was unbounded / the shared prefork queue made it non-deterministic — whichever was measured).
-3. Say so in the PR description.
+2. **Remove `tests/dvr/comskip.spec.ts` from `GLOBAL_SETTINGS_WRITE.allow` in the same commit.** `capabilities.spec.ts` and `global-mutation.spec.ts` compare with `toEqual`, so a stale entry fails exactly as loudly as a missing one — deleting the test without the allowlist edit turns the `guards` job red. This is the mechanism working, not a nuisance.
+3. Replace it with a `COVERAGE.md` row: `Comskip dispatch | gap`, whose note states that the chain from `CoreSettings.get_dvr_comskip_enabled()` through `comskip_process_recording` to `custom_properties.comskip` is unobserved, and why (runtime against a synthetic asset was unbounded / the shared prefork queue made it non-deterministic — whichever was measured).
+4. Say so in the PR description.
 
 **Do not** weaken the assertion until it cannot fail. A comskip test that passes because it asserts nothing is worth less than an honest gap row. This instruction is the point of ordering this task last.
 
@@ -424,6 +500,7 @@ If, after three clean runs, this row is slow (over ~150 s) or flaky:
 - [ ] Three consecutive runs of `cd e2e && npm run test:dvr -- comskip`, with the elapsed time of each recorded.
 - [ ] After the run, `GET /api/core/settings/` shows the `dvr_settings` row's `value` is **byte-identical to what it was before** — not merely that `comskip_enabled` is `false`. A restore that dropped `pre_offset_minutes` would pass the weaker check and leave a trap for the next recording.
 - [ ] Kill the test mid-run (Ctrl-C) and confirm the setting is *still* restored, or if it is not, say so in the PR: an `afterEach` does not survive a SIGINT, and the mitigation is that the project owns its container.
+- [ ] `cd e2e && npm run test:guards` is green — the `GLOBAL_SETTINGS_WRITE` entry added in Task 2 Step 5 now matches a real file, and `tags.spec.ts` accepts this file's declaration.
 
 ---
 
@@ -461,8 +538,10 @@ Every wait in this goal is on a state transition or an event that either happens
 
 **Verification:**
 - [ ] Three consecutive green full-project runs, or a written account of each remaining red with its issue number.
-- [ ] `grep -rn "test.fail" e2e/tests/dvr/` — every hit has a comment naming a defect and an issue link.
+- [ ] `grep -rn "test.fail" e2e/tests/dvr/` — every hit has a comment naming a defect and an issue link, **and an inline `{ tag: … }` second argument**. `test.fail` is a tagged declaration like any other; the guard reads it the same way.
+- [ ] `cd e2e && npm run test:guards` is green. This is the real check for the two greps below — it parses rather than scans, so it does not fire on prose and cannot be satisfied by moving a marker into a comment. Run the greps too, as a fast local signal:
 - [ ] `grep -rEn "child_process|docker |pgrep|manage\.py" e2e/tests/dvr/` returns nothing.
+- [ ] `grep -rn "instance" e2e/tests/dvr/` shows no destructured `instance` fixture — `CONTAINER_LIFECYCLE` would fail, and D2 forbids it.
 
 ---
 
@@ -491,9 +570,12 @@ Both get a `COVERAGE.md` mention: the `ClockedSchedule` race as a **decision not
 
 - [ ] **Step 4: Open the PR**
 
-Two commits, Conventional Commits, `docs(e2e):` for the spec/plan pair and `test(e2e):` for the implementation. PR body covers: what fires now that never fired before, the comskip decision and its one-line reasoning, the two issues filed in Task 1, anything Task 9's triage turned up, and the project's measured wall clock.
+Two commits, Conventional Commits, `docs(e2e):` for the spec/plan pair and `test(e2e):` for the implementation. PR body covers: what fires now that never fired before, the comskip decision and its one-line reasoning, the two issues filed in Task 1, anything Task 9's triage turned up, the project's measured wall clock, and **the `GLOBAL_SETTINGS_WRITE` allowlist entry with its ADR-0003 justification** — that argument belongs where a reviewer reads it, not only in the allowlist comment.
+
+Also state which rows are the migration gate. The PR is the last place a future reader looks before the spec, and "rows 1, 3, 4 and 6 prove DVR still records through the relay; 2 and 8 are expected to need rewriting when the image or the topology changes" is one sentence.
 
 **Verification:**
 - [ ] `e2e/COVERAGE.md` has no `todo` row owned by G13.
 - [ ] Every claim in the PR body is backed by a command whose output was actually read — no "should pass".
-- [ ] The full `dvr` project is green in CI, in its own matrix job.
+- [ ] The full `dvr` project is green in CI, in its own matrix job — which requires `"dvr"` to be in **both** `projects` lists in `e2e-tests.yml`'s `changes` job. A missing entry does not fail; it silently runs nothing.
+- [ ] The `guards` job is green, covering the tag on all eight declarations and the one allowlist entry.
