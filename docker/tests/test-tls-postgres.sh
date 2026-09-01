@@ -311,6 +311,24 @@ generate_test_certs() {
         chmod 600 pg-server.key pg-client.key redis-server.key server.key client.key
     ' || { log_fail "Certificate generation failed"; return 1; }
 
+    # Hand the certificates to the user running this suite.
+    #
+    # The openssl container above runs as root, so every file it writes is
+    # root-owned; the keys are then chmod 600 and unreadable by an
+    # unprivileged suite user. modular_tls_key_permission copies client.key
+    # on the HOST to build its 0777 variant, so that cp fails with
+    # `Permission denied` on a Linux runner and the scenario times out
+    # waiting for a container that was never given a usable key.
+    #
+    # Invisible on Docker Desktop, which remaps bind-mount ownership to the
+    # invoking user — the same blind spot that hid the 0700 CERT_DIR above.
+    # Containers are unaffected: the .crt files stay world-readable at 0644,
+    # and the init scripts that consume the 0600 keys run as root inside
+    # their containers, where ownership does not gate access.
+    docker run --rm --entrypoint chown \
+        -v "$(cygpath -w "$CERT_DIR" 2>/dev/null || echo "$CERT_DIR"):/certs" \
+        alpine/openssl -R "$(id -u):$(id -g)" /certs
+
     log_pass "Test certificates generated"
 }
 
