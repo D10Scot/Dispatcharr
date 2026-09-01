@@ -20,10 +20,16 @@ import {
 // it. "State survives a restart" is portable; "the restart is this container"
 // is not. Once the relay is its own process there are two units to restart and
 // this test's shape, not just its assertions, has to change.
+//
+// The relations `durable-state.ts` now asserts are the portable half: rows,
+// orderings, foreign keys, M2M membership and file bytes surviving a container
+// event is behaviour any reimplementation must preserve. The coupled half is
+// unchanged, and is what the tag is for.
 test('durable state and the signing key survive a container restart', { tag: '@characterization' }, async ({
   instance,
   request,
   baseURL,
+  upstream,
 }, testInfo) => {
   await instance.up();
 
@@ -36,7 +42,7 @@ test('durable state and the signing key survive a container restart', { tag: '@c
   // pre-restart bootstrap admin), which this spec must not touch either —
   // same reasoning as the `api`/`seed` fixtures above.
   const seed = new Seeder(api, testInfo.workerIndex, testInfo.testId, new Waiter(api));
-  const state = await seedDurableState(api, seed);
+  const state = await seedDurableState(api, seed, upstream);
 
   const startedBefore = await instance.startedAt();
   await instance.restart();
@@ -51,5 +57,5 @@ test('durable state and the signing key survive a container restart', { tag: '@c
   ).not.toBe(startedBefore);
 
   await assertAdminTokenStillValid(request, tokens.access);
-  await assertDurableState(api, state);
+  await assertDurableState(api, request, state);
 });

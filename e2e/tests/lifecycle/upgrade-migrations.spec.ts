@@ -160,10 +160,17 @@ async function appliedMigrations(instance: Instance): Promise<Set<string>> {
 // It reads `manage.py showmigrations` output and replaces one container image
 // with another on the same volume. Both are facts about how this deployment is
 // built, and a correct reimplementation is free to change either.
+//
+// The relations `durable-state.ts` now asserts are the portable half: rows,
+// orderings, foreign keys, M2M membership and file bytes surviving an upgrade
+// is behaviour any reimplementation must preserve. The coupled half — the
+// showmigrations output and the image layout — is unchanged, and is what the
+// tag is for.
 test('an upgrade onto an existing volume applies migrations and keeps the data', { tag: '@characterization' }, async ({
   instance,
   request,
   baseURL,
+  upstream,
 }, testInfo) => {
   let baseline = candidateBaseline();
   let digest: string;
@@ -226,7 +233,7 @@ test('an upgrade onto an existing volume applies migrations and keeps the data',
     const seed = new Seeder(api, testInfo.workerIndex, testInfo.testId, new Waiter(api));
 
     const migrationsBefore = await appliedMigrations(instance);
-    const state = await seedDurableState(api, seed);
+    const state = await seedDurableState(api, seed, upstream);
     const baselineImageId = await instance.imageId();
 
     await instance.recreate({ image: LOCAL_IMAGE });
@@ -270,7 +277,7 @@ test('an upgrade onto an existing volume applies migrations and keeps the data',
     ).toEqual([]);
 
     await assertAdminTokenStillValid(request, tokens.access);
-    await assertDurableState(api, state);
+    await assertDurableState(api, request, state);
   } finally {
     // Capture the container's logs BEFORE tearing it down.
     //
