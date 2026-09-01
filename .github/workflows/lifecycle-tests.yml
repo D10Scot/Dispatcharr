@@ -1,14 +1,24 @@
 name: Lifecycle Tests
 
-# Deliberately path-filtered, unlike its sibling e2e-tests.yml.
+# Always triggers, and gates internally — the same shape as its sibling
+# e2e-tests.yml, and for the same reason.
 #
-# e2e-tests.yml always triggers on pull requests because the Main ruleset
-# requires its checks, and a path-filtered workflow leaves a required check
-# "Expected" forever — blocking the merge permanently. Nothing here is a
-# required check, and nothing here should become one: this workflow builds the
-# AIO image and pulls four more, so making it unconditional would put roughly
-# an hour on every pull request. If a check from this file is ever added to the
-# ruleset, the filters below must come off in the same change.
+# This file used to be path-filtered on pull requests, and said that nothing in
+# it should ever become a required check. That rule is deliberately reversed
+# here. The gate for the relay extraction has to be *required* on a migration
+# branch, and a path-filtered workflow can never be: when it does not trigger,
+# its checks report nothing, and a required check that never reports leaves the
+# merge blocked forever.
+#
+# So the filters moved into the `changes` job, which is cheap (~10s) and always
+# runs, and `Lifecycle result` at the bottom is the aggregate that always
+# reports. The heavy work — an AIO build and four image pulls, roughly an hour
+# — stays gated exactly as before on an ordinary PR, and runs in full on a
+# `migration/**` branch or a `workflow_dispatch` with `full: true`.
+#
+# `Lifecycle result` is the ONLY check here that may ever be required, and it
+# must not be added to the Main ruleset until G12 leaves both bash suites
+# green. See the comment on that job.
 on:
   push:
     branches: [main]
@@ -26,36 +36,32 @@ on:
       - 'e2e/setup/**'
       - 'e2e/playwright.config.ts'
       - '.github/workflows/lifecycle-tests.yml'
-  # Narrow on purpose (D16): only the `upgrade-migrations` job runs on a pull
-  # request — the two bash-suite jobs are gated off below — so this gates the
-  # class of change that job exists to catch without putting an hour on every
-  # PR. `**/models.py` is not padding: a model change is what *necessitates* a
-  # migration, and a PR that alters one without shipping the migration is
-  # exactly the case filtering on migrations alone would miss.
+  # No `paths:` filter, deliberately — it moved into the `changes` job below,
+  # for the reason e2e-tests.yml already documents: a path-filtered workflow
+  # never reports at all on a PR it skips, and a required check that never
+  # reports blocks the merge forever. Always triggering and gating internally
+  # is what lets `Lifecycle result` become a required check on migration
+  # branches. Cost on an ordinary PR is one ~10s job.
   #
-  # The four `e2e`/`scripts` entries are this workflow's own machinery, and
-  # they are here because the alternative was demonstrated: the PR that
-  # introduced this file could not trigger it, so nothing in it — neither the
-  # upgrade job nor either bash suite — had executed in CI even once before
-  # merge, and `workflow_dispatch` cannot help because a workflow must be on
-  # the default branch to be dispatchable. These paths change rarely, so the
-  # build cost lands only on PRs that edit the guard itself, which is when you
-  # most want it.
+  # The filter's own reasoning survives verbatim in that job: `**/models.py`
+  # is not padding (a model change is what *necessitates* a migration, and a
+  # PR altering one without shipping the migration is exactly the case
+  # filtering on migrations alone would miss), and the `e2e`/`scripts` entries
+  # are this workflow's own machinery — the PR that introduced this file could
+  # not trigger it, so nothing in it had executed in CI even once before merge.
   pull_request:
     branches: [main]
-    paths:
-      - '**/migrations/**'
-      - '**/models.py'
-      - '.github/workflows/lifecycle-tests.yml'
-      - 'e2e/tests/lifecycle/**'
-      - 'e2e/fixtures/instance.ts'
-      - 'scripts/e2e_up.sh'
   # Earns its place: these suites pull postgres:16, postgres:17, redis:latest
   # and upstream's :latest — four floating tags whose contents change under
   # this repository, and which no path filter can ever notice.
   schedule:
     - cron: '17 4 * * 1'
   workflow_dispatch:
+    inputs:
+      full:
+        description: 'Run every lifecycle job, including both bash suites'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -74,9 +80,63 @@ jobs:
   # Deliberately NOT gated off on pull requests. The upgrade job needs it, and
   # a skipped dependency skips the dependent — which would make every PR run a
   # silent no-op that reports green.
+  # Reimplements the pull_request paths filter this workflow used to carry,
+  # plus the migration/** full-mode check. Cheap and unconditional, so the
+  # aggregate below always reports.
+  changes:
+    name: Detect relevant changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      lifecycle: ${{ steps.filter.outputs.lifecycle }}
+      full: ${{ steps.filter.outputs.full }}
+    steps:
+      - name: Checkout code
+        if: github.event_name == 'pull_request'
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+          # pull_request checks out the merge commit, whose first parent is
+          # the base branch tip — depth 2 is enough to diff the whole PR.
+          fetch-depth: 2
+
+      - name: Decide what this event needs
+        id: filter
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          HEAD_REF: ${{ github.head_ref }}
+          REF_NAME: ${{ github.ref_name }}
+          DISPATCH_FULL: ${{ inputs.full }}
+        run: |
+          branch="${HEAD_REF:-$REF_NAME}"
+          full=false
+          case "$branch" in
+            migration/*) full=true ;;
+          esac
+          if [ "$DISPATCH_FULL" = "true" ]; then
+            full=true
+          fi
+          echo "full=$full" >> "$GITHUB_OUTPUT"
+
+          if [ "$EVENT_NAME" != "pull_request" ] || [ "$full" = "true" ]; then
+            echo "lifecycle=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          changed=$(git diff --name-only HEAD^1 HEAD)
+          printf 'Changed files:\n%s\n' "$changed"
+          # The pull_request paths filter this workflow used to carry.
+          pattern='(migrations/|models\.py$|^\.github/workflows/lifecycle-tests\.yml$|^e2e/tests/lifecycle/|^e2e/fixtures/instance\.ts$|^scripts/e2e_up\.sh$)'
+          if printf '%s\n' "$changed" | grep -qE "$pattern"; then
+            echo "lifecycle=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "lifecycle=false" >> "$GITHUB_OUTPUT"
+          fi
+
   build:
     name: Build AIO image
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.lifecycle == 'true' || needs.changes.outputs.full == 'true'
     # A wedged docker build otherwise burns the 6-hour default.
     timeout-minutes: 45
     steps:
@@ -130,8 +190,12 @@ jobs:
   suites:
     name: ${{ matrix.name }}
     runs-on: ubuntu-latest
-    needs: build
-    if: github.event_name != 'pull_request'
+    needs: [changes, build]
+    # Was `if: github.event_name != 'pull_request'` — a gate independent of the
+    # (now removed) path filter, and the reason these two suites had never run
+    # in CI on a pull request even once, including on the PR that added them.
+    # Full mode is what lets a migration branch see them.
+    if: github.event_name != 'pull_request' || needs.changes.outputs.full == 'true'
     # The suites document 10-15 minutes. The headroom is for the two
     # pg_upgrade scenarios, which `apt install` a PostgreSQL major version
     # inside the container at runtime and raise their own readiness budget to
@@ -248,7 +312,8 @@ jobs:
   upgrade-migrations:
     name: upgrade-migrations
     runs-on: ubuntu-latest
-    needs: build
+    needs: [changes, build]
+    if: needs.changes.outputs.lifecycle == 'true' || needs.changes.outputs.full == 'true'
     # Matches the suite jobs: this one loads the 3.6 GB artifact and then pulls
     # a baseline of comparable size.
     timeout-minutes: 45
@@ -399,3 +464,41 @@ jobs:
       - name: Stop the container
         if: always()
         run: docker rm -f dispatcharr-e2e || true
+
+  # The one check here that may ever be required, on the same reasoning as
+  # `E2E result` in e2e-tests.yml: a gated job that skips never reports, and a
+  # required check that never reports blocks the merge forever. This runs
+  # unconditionally and passes when everything it depends on either succeeded
+  # or was deliberately skipped.
+  #
+  # NOT in the Main ruleset yet, deliberately. The two bash suites are
+  # currently red — 8 failed assertions across 4 of 20 puid-pgid scenarios and
+  # 7 of 8 tls-postgres scenarios — and until this change they had never run on
+  # a pull request at all. G12 triages them to green. Adding this check to the
+  # ruleset before G12 lands would block every migration branch on a
+  # pre-existing failure.
+  lifecycle-result:
+    name: Lifecycle result
+    runs-on: ubuntu-latest
+    needs: [changes, suites, upgrade-migrations]
+    if: always()
+    timeout-minutes: 5
+    steps:
+      - name: Verify the lifecycle outcome
+        env:
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          SUITES_RESULT: ${{ needs.suites.result }}
+          UPGRADE_RESULT: ${{ needs.upgrade-migrations.result }}
+        run: |
+          echo "changes=$CHANGES_RESULT suites=$SUITES_RESULT upgrade=$UPGRADE_RESULT"
+          if [ "$CHANGES_RESULT" != "success" ]; then
+            echo "Change detection itself failed — cannot prove these suites were unnecessary."
+            exit 1
+          fi
+          for result in "$SUITES_RESULT" "$UPGRADE_RESULT"; do
+            case "$result" in
+              success|skipped) ;;
+              *) echo "A lifecycle job did not succeed."; exit 1 ;;
+            esac
+          done
+          echo "Lifecycle jobs passed or were deliberately skipped."
