@@ -22,7 +22,7 @@ import { withDeadline } from './helpers';
 // waiting on a chunk that never arrives.
 const READ_DEADLINE_MS = 10_000;
 
-test('readPackets returns promptly when collectFor timed out mid-read', async ({
+test('readPackets returns promptly when collectFor timed out mid-read', { tag: '@contract' }, async ({
   upstream,
   streamClient,
 }) => {
@@ -79,7 +79,7 @@ test('readPackets returns promptly when collectFor timed out mid-read', async ({
   expectTsAligned(after);
 });
 
-test('readPackets throws by name when the stream ends short', async ({
+test('readPackets throws by name when the stream ends short', { tag: '@contract' }, async ({
   upstream,
   streamClient,
 }) => {

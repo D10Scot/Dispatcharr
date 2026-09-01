@@ -14,7 +14,13 @@ import {
   seedDurableState,
 } from './durable-state';
 
-test('durable state and the signing key survive a container restart', async ({
+// @characterization: pins the AIO container as the unit of restart. It drives
+// `instance.restart()` — `docker stop`/`docker start` against a single
+// all-in-one container — and asserts the signing key and durable rows survive
+// it. "State survives a restart" is portable; "the restart is this container"
+// is not. Once the relay is its own process there are two units to restart and
+// this test's shape, not just its assertions, has to change.
+test('durable state and the signing key survive a container restart', { tag: '@characterization' }, async ({
   instance,
   request,
   baseURL,

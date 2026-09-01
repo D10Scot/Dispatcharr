@@ -56,7 +56,7 @@ async function seedVodMovie(
 // fault is armed at all, or the account create itself — not the streaming
 // error path — would be what fails. The fault is armed only after ingest
 // completes, so a failure here can only be the streaming-error path.
-test.fail('an upstream failure on the VOD stream route does not return the provider credential', async ({
+test.fail('an upstream failure on the VOD stream route does not return the provider credential', { tag: '@contract' }, async ({
   upstream,
   seed,
   api,

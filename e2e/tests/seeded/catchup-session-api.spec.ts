@@ -18,7 +18,7 @@ import { catchupTimestamp, seedCatchupChannel } from '../streaming/helpers';
  * `IsStandardUser` (`apps/accounts/permissions.py:15-20`), and
  * `asPrincipal('streamer')` hands back a pre-provisioned token pair.
  */
-test('POST /api/catchup/sessions/ mints a playable session for a catch-up channel', async ({
+test('POST /api/catchup/sessions/ mints a playable session for a catch-up channel', { tag: '@contract' }, async ({
   upstream,
   seed,
   api,
@@ -71,7 +71,7 @@ test('POST /api/catchup/sessions/ mints a playable session for a catch-up channe
   expect(body.expires_at).toBeLessThanOrEqual(before + 60 + 5);
 });
 
-test('POST /api/catchup/sessions/ refuses a channel with no catch-up', async ({ seed, api }) => {
+test('POST /api/catchup/sessions/ refuses a channel with no catch-up', { tag: '@contract' }, async ({ seed, api }) => {
   const plain = await seed.channel();
 
   const res = await api.post('/api/catchup/sessions/', {
@@ -82,7 +82,7 @@ test('POST /api/catchup/sessions/ refuses a channel with no catch-up', async ({ 
   expect(await res.text()).toContain('Catch-up not supported for this channel');
 });
 
-test('POST /api/catchup/sessions/ is closed to a Streamer', async ({
+test('POST /api/catchup/sessions/ is closed to a Streamer', { tag: '@contract' }, async ({
   upstream,
   seed,
   api,
@@ -118,7 +118,7 @@ test('POST /api/catchup/sessions/ is closed to a Streamer', async ({
  * a mutation run once by the author and reverted protects nothing against a
  * future regression, while this test re-runs on every CI build.
  */
-test('POST /api/catchup/sessions/ is open to a Standard user', async ({
+test('POST /api/catchup/sessions/ is open to a Standard user', { tag: '@contract' }, async ({
   upstream,
   seed,
   api,
@@ -151,7 +151,7 @@ test('POST /api/catchup/sessions/ is open to a Standard user', async ({
  * This never opens `playback_url` and stays well inside the 60s
  * `HANDSHAKE_TTL_SECONDS`.
  */
-test('DELETE /api/catchup/sessions/{id}/ round-trips against a minted session', async ({
+test('DELETE /api/catchup/sessions/{id}/ round-trips against a minted session', { tag: '@contract' }, async ({
   upstream,
   seed,
   api,
@@ -188,7 +188,7 @@ test('DELETE /api/catchup/sessions/{id}/ round-trips against a minted session', 
  * still gets refused here, which is only explained by the session being
  * owned by `standard`, not by the admin.
  */
-test('DELETE /api/catchup/sessions/{id}/ refuses a session minted by a different user', async ({
+test('DELETE /api/catchup/sessions/{id}/ refuses a session minted by a different user', { tag: '@contract' }, async ({
   upstream,
   seed,
   api,

@@ -101,7 +101,7 @@ test.afterEach(async ({ api }, testInfo) => {
 // NEVER click "Cleanup Unused" on this page. It calls
 // /api/channels/logos/cleanup/, which deletes every unreferenced logo
 // instance-wide — four workers' data and other goals' seeded logos with it.
-test('a logo uploaded through the Logos page is stored server-side and listed', async ({
+test('a logo uploaded through the Logos page is stored server-side and listed', { tag: '@contract' }, async ({
   adminPage,
   api,
   seed,

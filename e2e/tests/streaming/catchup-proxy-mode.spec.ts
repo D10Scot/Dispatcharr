@@ -25,7 +25,7 @@ import {
  * nothing has driven, and the `hide_adult_content` hole.
  */
 
-test('proxy mode streams a catch-up programme and asks the provider for exactly it', async ({
+test('proxy mode streams a catch-up programme and asks the provider for exactly it', { tag: '@contract' }, async ({
   upstream,
   seed,
   api,
@@ -85,7 +85,7 @@ test('proxy mode streams a catch-up programme and asks the provider for exactly 
   // `start` it is given.
 });
 
-test('both root XC entry points reach the same cascade, whatever layout the client used', async ({
+test('both root XC entry points reach the same cascade, whatever layout the client used', { tag: '@contract' }, async ({
   upstream,
   seed,
   api,
@@ -178,7 +178,7 @@ test('both root XC entry points reach the same cascade, whatever layout the clie
   // given, and it served the same loop for both of these.
 });
 
-test('row 8 premise: a Standard viewer with hide_adult_content cannot list an adult channel', async ({
+test('row 8 premise: a Standard viewer with hide_adult_content cannot list an adult channel', { tag: '@contract' }, async ({
   upstream,
   seed,
   api,
@@ -214,7 +214,7 @@ test('row 8 premise: a Standard viewer with hide_adult_content cannot list an ad
 });
 
 test.fail(
-  'an adult channel a user cannot list is also refused on the catch-up path',
+  'an adult channel a user cannot list is also refused on the catch-up path', { tag: '@contract' },
   async ({ upstream, seed, api, waitFor, request, streamClient }) => {
     // KNOWN BUG — issue #95. `hide_adult_content` is applied at 14 sites
     // across apps/output/, apps/epg/, apps/channels/ and apps/vod/, and at
@@ -298,7 +298,7 @@ test.fail(
   }
 );
 
-test('a session minted through the API plays back with no credentials of its own', async ({
+test('a session minted through the API plays back with no credentials of its own', { tag: '@contract' }, async ({
   upstream,
   seed,
   api,

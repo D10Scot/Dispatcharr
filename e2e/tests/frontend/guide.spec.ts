@@ -14,7 +14,7 @@ if (!guideSurface) {
 // "TV Guide", not "Guide" (`frontend/src/config/navigation.js:50` — the
 // plan's brief for this test named the wrong string, confirmed by reading
 // `Sidebar.jsx`/`navigation.js` directly, not just relying on the brief).
-test('the Guide grid is populated from the channel API, reached from the sidebar', async ({
+test('the Guide grid is populated from the channel API, reached from the sidebar', { tag: '@contract' }, async ({
   adminPage,
   pageErrors,
   seed,

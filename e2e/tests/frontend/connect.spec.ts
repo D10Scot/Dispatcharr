@@ -109,7 +109,7 @@ test.afterEach(async ({ api }, testInfo) => {
 // live trigger is not a realistic webhook, and it is what surfaces #62 (see
 // below) — the very case the brief's literal flow, which never opens that
 // tab, cannot exercise.
-test('a webhook integration created through the Connect page round-trips to the server, toggles and deletes', async ({
+test('a webhook integration created through the Connect page round-trips to the server, toggles and deletes', { tag: '@contract' }, async ({
   adminPage,
   api,
   seed,

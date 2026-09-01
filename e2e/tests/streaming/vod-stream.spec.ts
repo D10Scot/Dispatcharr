@@ -74,7 +74,7 @@ async function seedVodContent(
   return { prefix, scenario, account, movie: movies.results[0], series, episodes: episodes.results };
 }
 
-test('a VOD movie URL mints a session, redirects, and delivers bytes matching the provider (G9 row 11)', async ({
+test('a VOD movie URL mints a session, redirects, and delivers bytes matching the provider (G9 row 11)', { tag: '@contract' }, async ({
   upstream,
   seed,
   api,
@@ -132,7 +132,7 @@ test('a VOD movie URL mints a session, redirects, and delivers bytes matching th
   expect(movieRequests.every((e) => e.status === 200 || e.status === 206)).toBe(true);
 });
 
-test('the episode and series VOD entry points deliver bytes, and the series route resolves the first episode (G9 row 12)', async ({
+test('the episode and series VOD entry points deliver bytes, and the series route resolves the first episode (G9 row 12)', { tag: '@contract' }, async ({
   upstream,
   seed,
   api,

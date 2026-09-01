@@ -25,7 +25,7 @@ import {
  * `_authenticate_user`'s XC username/password, so no `seed.xcUser()`
  * stand-in is needed for this proof at all.
  */
-test('the candidate cascade falls through to the QUERY layout when PATH 404s', async ({
+test('the candidate cascade falls through to the QUERY layout when PATH 404s', { tag: '@contract' }, async ({
   upstream,
   seed,
   api,
@@ -153,7 +153,7 @@ function candidateShapes(instant: Date) {
   };
 }
 
-test('an all-404 provider draws out all seven candidates, in order, over exactly four shapes', async ({
+test('an all-404 provider draws out all seven candidates, in order, over exactly four shapes', { tag: '@contract' }, async ({
   upstream,
   seed,
   api,
@@ -230,7 +230,7 @@ test('an all-404 provider draws out all seven candidates, in order, over exactly
   // all.
 });
 
-test('the winning candidate index is cached per account and promoted on the next walk', async ({
+test('the winning candidate index is cached per account and promoted on the next walk', { tag: '@contract' }, async ({
   upstream,
   seed,
   api,
@@ -393,7 +393,7 @@ test('the winning candidate index is cached per account and promoted on the next
   // the fake archive serves the same loop whatever `start` it is given.
 });
 
-test('a provider 401 is decisive: one attempt, and the client gets 400, not 401', async ({
+test('a provider 401 is decisive: one attempt, and the client gets 400, not 401', { tag: '@contract' }, async ({
   upstream,
   seed,
   api,
@@ -429,7 +429,7 @@ test('a provider 401 is decisive: one attempt, and the client gets 400, not 401'
   expect(asked[0].status).toBe(401);
 });
 
-test('a 200 carrying no TS sync is downgraded to a soft 404 and the whole walk continues', async ({
+test('a 200 carrying no TS sync is downgraded to a soft 404 and the whole walk continues', { tag: '@contract' }, async ({
   upstream,
   seed,
   api,

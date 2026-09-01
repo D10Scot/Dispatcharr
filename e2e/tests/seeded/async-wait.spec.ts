@@ -3,7 +3,7 @@ import type { Channel } from '../../fixtures';
 
 // Exemplar: polling is the default way to wait for backend state. Prefer it
 // over the WebSocket unless the state is only observable there.
-test('waitFor.resource polls until a created channel appears', async ({
+test('waitFor.resource polls until a created channel appears', { tag: '@contract' }, async ({
   api,
   seed,
   waitFor,
@@ -35,7 +35,7 @@ test('waitFor.resource polls until a created channel appears', async ({
 //
 // `where` and not a bare type match: /ws/ is one broadcast group and `seeded`
 // runs four workers, so this socket sees every worker's playlist_created too.
-test('ws fixture is subscribed before a test can act', async ({ ws, seed }) => {
+test('ws fixture is subscribed before a test can act', { tag: '@contract' }, async ({ ws, seed }) => {
   // A refresh_interval no other concurrent spec uses, per the IntervalSchedule
   // race in issue #7 — see the header of ws-fixture.spec.ts.
   const account = await seed.m3uAccount({ refresh_interval: 8532 });
@@ -59,7 +59,7 @@ test('ws fixture is subscribed before a test can act', async ({ ws, seed }) => {
 // start-timeout for a refresh that in fact ran and failed. See the doc
 // comment on Waiter.m3uRefreshComplete in fixtures/wait.ts for the fix and
 // why `updated_at` can't be used to detect this instead.
-test('waitFor.m3uRefreshComplete resolves promptly on a fast failure', async ({
+test('waitFor.m3uRefreshComplete resolves promptly on a fast failure', { tag: '@contract' }, async ({
   seed,
   waitFor,
 }) => {

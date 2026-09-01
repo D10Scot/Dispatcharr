@@ -78,7 +78,7 @@ const LIST_ACTIONS: Array<[action: string, expectedKeys: string[]]> = [
   ['get_series', SERIES_KEYS],
 ];
 
-test('the four XC list actions answer 200 with a well-formed array', async ({
+test('the four XC list actions answer 200 with a well-formed array', { tag: '@contract' }, async ({
   seed,
   request,
 }, testInfo) => {
@@ -114,7 +114,7 @@ test('the four XC list actions answer 200 with a well-formed array', async ({
   }
 });
 
-test('the two XC detail actions 404 rather than erroring', async ({ seed, request }) => {
+test('the two XC detail actions 404 rather than erroring', { tag: '@contract' }, async ({ seed, request }) => {
   const user = await seed.xcUser({ user_level: 1 });
 
   // Positive control (issue #84): `xc_get_user` resolves the username with

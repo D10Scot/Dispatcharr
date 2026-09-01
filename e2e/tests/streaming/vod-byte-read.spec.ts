@@ -3,7 +3,7 @@ import { test, expect } from '../../fixtures';
 interface Page<T> { count: number; results: T[] }
 interface MovieRow { id: number; uuid: string; name: string }
 
-test('a VOD stream is delivered through /proxy/vod/ with seek metadata', async ({
+test('a VOD stream is delivered through /proxy/vod/ with seek metadata', { tag: '@contract' }, async ({
   upstream,
   seed,
   waitFor,

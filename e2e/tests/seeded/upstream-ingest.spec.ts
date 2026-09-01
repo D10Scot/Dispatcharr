@@ -6,7 +6,7 @@ interface StreamPage {
   results: { id: number; name: string; url: string }[];
 }
 
-test('Dispatcharr ingests a playlist from the fake upstream', async ({
+test('Dispatcharr ingests a playlist from the fake upstream', { tag: '@contract' }, async ({
   upstream,
   seed,
   api,

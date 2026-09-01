@@ -26,7 +26,7 @@ import { test, expect, m3uQuery, parseM3u, xcLiveStreams } from '../../fixtures'
 const CATCHUP_DAYS = 7;
 
 test(
-  'a catch-up channel appears in the generated M3U (premise guard for the pin below)',
+  'a catch-up channel appears in the generated M3U (premise guard for the pin below)', { tag: '@contract' },
   async ({ seed, request }) => {
     // Guards the test.fail() pin below against a broken premise.
     // `test.fail()` is satisfied by ANY failure in its body: if the channel
@@ -53,7 +53,7 @@ test(
 );
 
 test.fail(
-  'the generated M3U advertises catch-up for a catch-up channel',
+  'the generated M3U advertises catch-up for a catch-up channel', { tag: '@contract' },
   async ({ seed, request }) => {
     // KNOWN BUG — see #94. This assertion is the CORRECT behaviour; it
     // fails today. Never invert it to assert the bug: a test.fail() that
@@ -91,7 +91,7 @@ test.fail(
   }
 );
 
-test('the XC catalogue does advertise the same channel as catch-up', async ({ seed, request }) => {
+test('the XC catalogue does advertise the same channel as catch-up', { tag: '@contract' }, async ({ seed, request }) => {
   // The other half of the asymmetry, and the reason the row above is a
   // defect rather than a preference: the same channel, the same instant, on
   // the surface Dispatcharr DOES advertise catch-up on. The XC emitter even

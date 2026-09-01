@@ -1,7 +1,7 @@
 import { test, expect } from '../../fixtures';
 import type { M3uAccount, StreamPage } from '../../fixtures';
 
-test('a 404 from the playlist leaves the account in error with no catalogue', async ({
+test('a 404 from the playlist leaves the account in error with no catalogue', { tag: '@contract' }, async ({
   upstream,
   seed,
   api,
@@ -67,7 +67,7 @@ test('a 404 from the playlist leaves the account in error with no catalogue', as
   expect(page.count).toBe(2);
 });
 
-test('a 401 from the playlist does not disturb an already-ingested catalogue', async ({
+test('a 401 from the playlist does not disturb an already-ingested catalogue', { tag: '@contract' }, async ({
   upstream,
   seed,
   api,
@@ -149,7 +149,7 @@ test('a 401 from the playlist does not disturb an already-ingested catalogue', a
  *
  * Asserts the CORRECT behaviour and is expected to fail until #60 is fixed.
  */
-test.fail('a failed refresh keeps the HTTP-status-specific message', async ({
+test.fail('a failed refresh keeps the HTTP-status-specific message', { tag: '@contract' }, async ({
   upstream,
   seed,
   waitFor,

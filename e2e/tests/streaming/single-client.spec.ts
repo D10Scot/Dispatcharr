@@ -1,7 +1,7 @@
 import { test, expect, expectTsAligned, expectContiguous, videoPidOf, TS_PACKET_SIZE, readChannelStatus } from '../../fixtures';
 import { lockedProfile } from './helpers';
 
-test('one client receives aligned, contiguous TS through the Proxy profile', async ({
+test('one client receives aligned, contiguous TS through the Proxy profile', { tag: '@contract' }, async ({
   upstream,
   seed,
   api,

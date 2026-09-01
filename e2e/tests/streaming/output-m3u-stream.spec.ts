@@ -20,7 +20,7 @@ import { lockedProfile } from './helpers';
  * never sees those headers and falls back to the client's own `Host`, so the
  * emitted origin equals `baseURL` exactly. See issue #81.
  */
-test('a URL taken verbatim from /output/m3u delivers aligned TS', async ({
+test('a URL taken verbatim from /output/m3u delivers aligned TS', { tag: '@contract' }, async ({
   upstream,
   seed,
   api,

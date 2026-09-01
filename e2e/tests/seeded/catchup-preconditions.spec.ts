@@ -52,7 +52,7 @@ import {
  * the provider. `seedCatchupChannel` here always builds a brand-new
  * scenario, so that never happens in this test as written.
  */
-test('positive control: a satisfied request reaches the provider and is logged', async ({
+test('positive control: a satisfied request reaches the provider and is logged', { tag: '@contract' }, async ({
   upstream,
   seed,
   api,
@@ -126,7 +126,7 @@ test('positive control: a satisfied request reaches the provider and is logged',
  * (`testMatch` never collects `helpers.ts`); copying it here is how the two
  * copies drift.
  */
-test('every catch-up precondition fails closed without reaching the provider', async ({
+test('every catch-up precondition fails closed without reaching the provider', { tag: '@contract' }, async ({
   upstream,
   seed,
   api,

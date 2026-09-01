@@ -39,7 +39,7 @@ import { test, expect } from '../../fixtures';
  * against roughly every other run.
  */
 
-test('two sequential waits for one type return two different messages', async ({
+test('two sequential waits for one type return two different messages', { tag: '@contract' }, async ({
   ws,
   seed,
 }) => {
@@ -63,7 +63,7 @@ test('two sequential waits for one type return two different messages', async ({
   expect(two.data?.playlist_id).not.toBe(one.data?.playlist_id);
 });
 
-test('a wait that timed out does not swallow a later wait\'s event', async ({
+test('a wait that timed out does not swallow a later wait\'s event', { tag: '@contract' }, async ({
   ws,
   seed,
 }) => {
@@ -114,7 +114,7 @@ test('a wait that timed out does not swallow a later wait\'s event', async ({
   expect(evaluationsAfterTimeout).toBe(0);
 });
 
-test('a `where` wait resolves on its own event, not the first to arrive', async ({
+test('a `where` wait resolves on its own event, not the first to arrive', { tag: '@contract' }, async ({
   ws,
   seed,
 }) => {

@@ -8,7 +8,7 @@ import { test, expect } from '../../fixtures';
 // '../../fixtures' is the rule (README, "Writing a test"). Typecheck only
 // catches a raw '@playwright/test' import when the spec destructures a custom
 // fixture — a spec using `page` alone, as this one used to, slips through.
-test('seeded project lands authenticated on /channels', async ({ adminPage }) => {
+test('seeded project lands authenticated on /channels', { tag: '@contract' }, async ({ adminPage }) => {
   await adminPage.goto('/channels');
 
   await expect(adminPage).toHaveURL(/\/channels/);
