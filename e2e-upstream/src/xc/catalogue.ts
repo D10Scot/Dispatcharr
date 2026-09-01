@@ -18,7 +18,7 @@
  * `CategorySpec` (Task 1) has no such field to source it from.
  */
 
-import type { CategorySpec, MovieSpec, Scenario, SeriesSpec } from '../scenario.js';
+import type { CategorySpec, MovieSpec, Scenario, SeasonSpec, SeriesSpec } from '../scenario.js';
 
 /** Days of archive a channel advertises when `tv_archive` is on. */
 export const DEFAULT_ARCHIVE_DAYS = 7;
@@ -86,7 +86,7 @@ function movieEntry(movie: MovieSpec): Record<string, unknown> {
     rating: '7.5',
     rating_5based: 3.75,
     added: '0',
-    category_id: String(movie.categoryId),
+    ...(movie.categoryId === null ? {} : { category_id: String(movie.categoryId) }),
     container_extension: movie.containerExtension,
     plot: `${movie.name} — e2e fixture`,
     genre: 'E2E',
@@ -94,15 +94,21 @@ function movieEntry(movie: MovieSpec): Record<string, unknown> {
     year: movie.year,
     ...(movie.tmdbId === null ? {} : { tmdb_id: movie.tmdbId }),
     ...(movie.imdbId === null ? {} : { imdb_id: movie.imdbId }),
-    // `is_adult` is deliberately absent unless a scenario declares it:
-    // process_movie_batch only writes Movie.is_adult when the key is present,
-    // so that a sparse provider cannot clear a flag another provider set.
+    // `is_adult` is deliberately absent unless the scenario declares
+    // `isAdult`: process_movie_batch only writes Movie.is_adult when the key
+    // is present, so that a sparse provider cannot clear a flag another
+    // provider set.
+    ...(movie.isAdult === undefined ? {} : { is_adult: movie.isAdult ? 1 : 0 }),
   };
 }
 
 export function renderVodStreams(scenario: Scenario, categoryId: string | null): unknown[] {
   return scenario.vod
-    .filter((movie) => categoryId === null || String(movie.categoryId) === categoryId)
+    .filter(
+      (movie) =>
+        categoryId === null ||
+        (movie.categoryId !== null && String(movie.categoryId) === categoryId),
+    )
     .map(movieEntry);
 }
 
@@ -113,7 +119,7 @@ export function renderVodInfo(
   const movie = scenario.vod.find((m) => m.id === vodId);
   if (!movie) return undefined;
   return {
-    info: {
+    info: movie.vodInfo ?? {
       plot: `${movie.name} — e2e fixture, detailed`,
       genre: 'E2E',
       rating: '7.5',
@@ -163,13 +169,8 @@ export function renderSeriesInfo(
   const series = scenario.series.find((s) => s.id === seriesId);
   if (!series) return undefined;
 
-  // An object keyed by season number, which is what a PHP panel's
-  // json_encode produces for a non-contiguous array. batch_process_episodes
-  // also accepts a JSON array; a scenario that wants that shape is G9's to
-  // add, and this renderer is where it goes.
-  const episodes: Record<string, unknown[]> = {};
-  for (const season of series.seasons) {
-    episodes[String(season.number)] = season.episodes.map((episode) => ({
+  function renderSeason(season: SeasonSpec): unknown[] {
+    return season.episodes.map((episode) => ({
       // A string, matching real panels and matching
       // `str(episode_data.get('id'))` on the ingest side.
       id: String(episode.id),
@@ -186,6 +187,15 @@ export function renderSeriesInfo(
       },
     }));
   }
+
+  // Keyed by season number by default, which is what a PHP panel's
+  // json_encode produces for a non-contiguous array. When the scenario
+  // declares `seasonsAsArray`, batch_process_episodes also accepts a JSON
+  // array indexed by position — the door (`parseSeries`) has already checked
+  // `seasons[i].number === i`, so the two shapes carry the same information.
+  const episodes = series.seasonsAsArray
+    ? series.seasons.map(renderSeason)
+    : Object.fromEntries(series.seasons.map((season) => [String(season.number), renderSeason(season)]));
 
   return {
     info: {

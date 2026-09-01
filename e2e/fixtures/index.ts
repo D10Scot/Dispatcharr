@@ -253,6 +253,9 @@
  *                          under `test.fail()` turns a transient fault into a
  *                          claim that the pinned defect is fixed.
  *   readPackets(count) → Promise<Buffer>   exactly count * 188 bytes
+ *   readBytes(count) → Promise<Buffer>     exactly count bytes, no packet
+ *                          multiplier — the VOD reader, since a VOD body is
+ *                          an MP4 with no packet structure
  *   collectFor(ms) → Promise<Buffer>       everything arriving within ms
  *   close() → Promise<void>                the fixture does this at teardown
  *
@@ -677,6 +680,18 @@ export type {
   XmltvChannel,
   XmltvDocument,
   XmltvProgramme,
+  VodLogo,
+  QualityInfo,
+  Movie,
+  Series,
+  Episode,
+  VodCategoryRelation,
+  VodCategory,
+  M3uMovieRelation,
+  M3uSeriesRelation,
+  M3uEpisodeRelation,
+  CategorySettingRow,
+  VodPage,
 } from './types';
 export {
   xcQuery,
