@@ -186,7 +186,7 @@ test('the EPG actions 404 without a stream_id', { tag: '@contract' }, async ({ s
 
 // The non-inverted control for the test.fail() below ('a profiled user sees
 // the category of every channel it can list'): get_live_streams filters
-// `channels__user_level__lte=user.user_level` in every branch, so it should
+// `user_level__lte=user.user_level` in every branch, so it should
 // list a level-1 channel for a profiled level-1 user — the pin's own
 // premise assertion, currently reachable only inside its test.fail() body.
 // The test at the top of the file ('the XC live catalogue lists a seeded
