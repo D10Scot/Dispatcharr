@@ -294,26 +294,41 @@ test('extending an in-flight recording moves its deadline past the original end'
   // (api_views.py:3612-3615's docstring: "The running task re-reads
   // end_time every ~2 s and adjusts its deadline dynamically") is that the
   // recording is still going well past where the ORIGINAL end_time would
-  // have ended it. A single read is NOT enough, though: teardown itself
-  // has a worst-case lag that can leave `status` reading 'recording' for a
-  // while even on an UN-extended recording. `_dvr_ensure_ffmpeg_exited`
-  // (tasks.py:1286-1297) waits up to `timeout=5`s for FFmpeg to exit
-  // gracefully, then — only on a timeout — kills it and waits up to
-  // another 5s: 10s worst case. It runs at tasks.py:1946, INSIDE the main
-  // loop, immediately before the `if _break_reason in ("end_time",
-  // "stopped", "deleted"): break` that lets a natural end_time hit fall
-  // through to finalisation — so even a recording extend() never touched
-  // can legitimately still read 'recording' for up to ~10s past its
-  // original end_time while FFmpeg is being torn down. A single read at
-  // +15s (this row's first version) could pass for that reason alone on a
-  // slow runner, proving nothing about whether extend() actually moved the
-  // deadline. This polls status at every 2s tick from now through
-  // ORIGINAL end_time + 25s — 2.5x the 10s teardown worst case, so
-  // teardown lag alone cannot explain every read in the window staying
-  // 'recording' — and fails on the first poll that isn't. The 60s
-  // extension leaves ample room before the real new deadline.
-  const TEARDOWN_WORST_CASE_MS = 10_000;
-  const DISCRIMINATION_MARGIN_MS = TEARDOWN_WORST_CASE_MS * 2.5;
+  // have ended it. A single read is NOT enough, though — and the gap
+  // between "reaches end_time" and "status stops reading 'recording'" has
+  // two components, only one of which is bounded:
+  //
+  //  1. BOUNDED, 10s: the main loop's `if now >= end_timestamp:` branch
+  //     (tasks.py:1859-1870) sends FFmpeg SIGINT and does
+  //     `ffmpeg_proc.wait(timeout=10)` inline — `_dvr_ensure_ffmpeg_exited`
+  //     (tasks.py:1286-1297) is NOT this component; by the time it runs
+  //     (tasks.py:1946, right before the loop's `break`) the process has
+  //     already exited from the wait above and it early-returns.
+  //  2. UNBOUNDED: after the loop breaks, the HLS→MKV concat/remux runs as
+  //     a *synchronous* `subprocess.run()` with no `timeout=` kwarg
+  //     (`_dvr_build_hls_concat_cmd`, tasks.py:1226-1246, invoked at
+  //     tasks.py:2155-2158; the MP4-intermediate fallback path,
+  //     tasks.py:2189-2196 and :2202-2211, is two more such calls). Nothing
+  //     bounds how long that ffmpeg process can run. A viewer-wait loop
+  //     (tasks.py:2268-2297, polling a Redis heartbeat with a 4-HOUR safety
+  //     cap) and a Redis stream-stats fetch (tasks.py:2364-2414) follow
+  //     before the final synchronous save that writes `status`
+  //     (tasks.py:2427-2436) — smaller, sequential costs on top, though
+  //     neither test in this file ever requests an HLS `.ts` segment (only
+  //     `.m3u8`, or nothing), so the viewer heartbeat key this harness
+  //     produces is never set and that loop returns immediately here.
+  //
+  // Fix round 1 used +25s (2.5x the 10s bounded component alone) and its
+  // own inversion run measured the flip at ~22s past the original end —
+  // too close to the boundary to trust on a loaded runner, and the
+  // inversion's own payload (`remux_success: true, bytes_written: 3257664`)
+  // proves the unbounded remux was what actually consumed that time, not
+  // component 1. +40s is chosen because 22s was observed exactly ONCE, on
+  // an otherwise-idle machine, against a step with no code-level bound —
+  // there is no tighter number to derive, only a larger margin against it.
+  // Still comfortably inside the 60s extension (20s of headroom remains
+  // before the real new deadline).
+  const DISCRIMINATION_MARGIN_MS = 40_000;
   const POLL_INTERVAL_MS = 2_000;
   const discriminationTargetMs = Date.parse(originalEndTime) + DISCRIMINATION_MARGIN_MS;
   let pollCount = 0;
