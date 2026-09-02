@@ -117,7 +117,13 @@ export function buildPluginZip(opts: {
   key: string;
   name: string;
   /** Defaults to `[]` — omitting this produces a byte-identical archive to
-   * before this parameter existed (see the zip-builder unit test). */
+   * before this parameter existed. Verified by hand at the commit that
+   * introduced this parameter: compiled the pre- and post-change generator,
+   * called both with `actions` omitted, and compared the two 862-byte
+   * archives byte-for-byte (`Buffer.compare` and `cmp` both reported no
+   * difference) — not asserted in the zip-builder unit test below, which
+   * checks structure (signatures, member names, central-directory
+   * arithmetic), not identity with a prior build. */
   actions?: { id: string; label: string }[];
 }): Buffer {
   const actions = opts.actions ?? [];
