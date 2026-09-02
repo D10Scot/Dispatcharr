@@ -104,11 +104,11 @@ test('the not-found fault on a VOD movie route produces a genuine streaming fail
     const res = await request.get(`/proxy/vod/movie/${movie.uuid}`);
     expect(
       res.status(),
-      "the not-found fault should drive the request into the connection manager's exception handler"
+      'the not-found fault should drive the request into the VOD error path'
     ).toBe(500);
     expect(
       await res.text(),
-      "the failure body should carry the connection manager's own error prefix"
+      "the failure body should carry the VOD error path's own prefix"
     ).toContain('Streaming error');
   } finally {
     await upstream.clearFault(scenario, 'not-found');
