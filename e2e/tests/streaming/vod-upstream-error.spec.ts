@@ -89,6 +89,16 @@ test('a seeded VOD movie streams successfully when no fault is armed', { tag: '@
 // the pin below as an "expected failure", since test.fail() is satisfied
 // by ANY failure in its body, not specifically the credential-disclosure
 // regression it exists to pin.
+//
+// Reciprocal note (the Task 8 rule: a non-inverted control must never be
+// coupled to a defect's current spelling without saying so): this control's
+// `toBe(500)` characterises today's defective status, the same status the
+// pin below asserts `not.toBe(500)` against. The day #89 is fixed, the pin
+// flips green as expected — but this control's `toBe(500)` assertion also
+// flips red, as an intended false alarm, not a new regression: whatever
+// status the fix settles on for a genuine upstream failure, it is not this
+// one 500 shape by definition of the fix. Re-anchor this control's status
+// assertion to the fixed shape at the same time the pin is retired.
 test('the not-found fault on a VOD movie route produces a genuine streaming failure', { tag: '@contract' }, async ({
   upstream,
   seed,
@@ -127,6 +137,12 @@ test('the not-found fault on a VOD movie route produces a genuine streaming fail
 // KNOWN BUG — see #89. This assertion is the CORRECT behaviour; it fails
 // today, on both halves: the credential does appear in the 500 body, and
 // the failure does surface as a 500.
+//
+// The day this is fixed, this test flips green as expected and the second
+// control above ('the not-found fault on a VOD movie route produces a
+// genuine streaming failure') flips red as an intended false alarm, since
+// its `toBe(500)` characterises the same defective status this pin is
+// pinning — see the reciprocal note on that control.
 //
 // test.fail() caveat: it is satisfied by ANY failure in the body, guards
 // included — so a broken premise, not just the intended assertion, would

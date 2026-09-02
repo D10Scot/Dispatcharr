@@ -160,8 +160,10 @@ test('the EPG actions 404 without a stream_id', { tag: '@contract' }, async ({ s
 // The test at the top of the file ('the XC live catalogue lists a seeded
 // channel under its own category') also calls xcLiveStreams with a
 // profiled user, but against a user_level 0 channel, so it does not
-// exercise this at level-1 — and no other test in this file calls
-// xcLiveStreams at all. A break in this listing (not just in category
+// exercise this at level-1 — and no other *non-inverted* test in this file
+// calls xcLiveStreams at level-1: the pin below does too, but from inside
+// its own test.fail() body, which is exactly the gap this control closes,
+// not a second control. A break in this listing (not just in category
 // assignment) would be swallowed by the pin below as an "expected failure",
 // since test.fail() is satisfied by ANY failure in its body, not
 // specifically the category defect it exists to pin.
