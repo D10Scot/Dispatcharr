@@ -294,21 +294,47 @@ test('extending an in-flight recording moves its deadline past the original end'
   // (api_views.py:3612-3615's docstring: "The running task re-reads
   // end_time every ~2 s and adjusts its deadline dynamically") is that the
   // recording is still going well past where the ORIGINAL end_time would
-  // have ended it. A single read at that point is enough — unlike the stop
-  // row above, there is no later finalisation write that could race a
-  // one-shot check here.
-  const targetMs = Date.parse(originalEndTime) + 15_000;
-  const waitMs = Math.max(0, targetMs - Date.now());
-  await new Promise((resolve) => setTimeout(resolve, waitMs));
-
-  const stillRecording = await readRecording(api, recording.id);
-  const stillCp = (stillRecording.custom_properties ?? {}) as Record<string, unknown>;
+  // have ended it. A single read is NOT enough, though: teardown itself
+  // has a worst-case lag that can leave `status` reading 'recording' for a
+  // while even on an UN-extended recording. `_dvr_ensure_ffmpeg_exited`
+  // (tasks.py:1286-1297) waits up to `timeout=5`s for FFmpeg to exit
+  // gracefully, then — only on a timeout — kills it and waits up to
+  // another 5s: 10s worst case. It runs at tasks.py:1946, INSIDE the main
+  // loop, immediately before the `if _break_reason in ("end_time",
+  // "stopped", "deleted"): break` that lets a natural end_time hit fall
+  // through to finalisation — so even a recording extend() never touched
+  // can legitimately still read 'recording' for up to ~10s past its
+  // original end_time while FFmpeg is being torn down. A single read at
+  // +15s (this row's first version) could pass for that reason alone on a
+  // slow runner, proving nothing about whether extend() actually moved the
+  // deadline. This polls status at every 2s tick from now through
+  // ORIGINAL end_time + 25s — 2.5x the 10s teardown worst case, so
+  // teardown lag alone cannot explain every read in the window staying
+  // 'recording' — and fails on the first poll that isn't. The 60s
+  // extension leaves ample room before the real new deadline.
+  const TEARDOWN_WORST_CASE_MS = 10_000;
+  const DISCRIMINATION_MARGIN_MS = TEARDOWN_WORST_CASE_MS * 2.5;
+  const POLL_INTERVAL_MS = 2_000;
+  const discriminationTargetMs = Date.parse(originalEndTime) + DISCRIMINATION_MARGIN_MS;
+  let pollCount = 0;
+  while (Date.now() < discriminationTargetMs) {
+    const remaining = discriminationTargetMs - Date.now();
+    await new Promise((resolve) => setTimeout(resolve, Math.min(POLL_INTERVAL_MS, remaining)));
+    pollCount += 1;
+    const polled = await readRecording(api, recording.id);
+    const polledCp = (polled.custom_properties ?? {}) as Record<string, unknown>;
+    expect(
+      polledCp.status,
+      `recording ${recording.id} was '${polledCp.status}' on discrimination poll #${pollCount}, ` +
+        `before reaching ${DISCRIMINATION_MARGIN_MS}ms past its ORIGINAL end_time (${originalEndTime}) ` +
+        `— extend()'s docstring claims the running task re-reads end_time and raises its ` +
+        `deadline; this is the only external check of that: ${JSON.stringify(polledCp)}`
+    ).toBe('recording');
+  }
   expect(
-    stillCp.status,
-    `recording ${recording.id} was '${stillCp.status}' ~15s past its ORIGINAL end_time ` +
-      `(${originalEndTime}) — the extend endpoint's docstring claims the running task ` +
-      `re-reads end_time and raises its deadline; this is the only external check of that: ${JSON.stringify(stillCp)}`
-  ).toBe('recording');
+    pollCount,
+    'discrimination poll ran zero iterations — DISCRIMINATION_MARGIN_MS/POLL_INTERVAL_MS math is wrong'
+  ).toBeGreaterThan(0);
 
   // Stop rather than waiting out the extra minute; afterEach deletes the row.
   const stopRes = await api.post(`/api/channels/recordings/${recording.id}/stop/`, {});
