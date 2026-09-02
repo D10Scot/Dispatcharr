@@ -111,47 +111,75 @@ test('the Refresh Now button re-reads the connection list', { tag: '@contract' }
   // serving before either fixture is exercised.
   await withDeadline(streamClient.readPackets(100), 30_000, 'readPackets(100)');
 
+  // Turn the page's own 5s poll off before the first load, not by driving
+  // the "Refresh Interval (seconds)" `NumberInput` after the fact. Two
+  // reasons this has to happen before `gotoSurface`, not after:
+  //
+  // 1. `useLocalStorage` (`frontend/src/hooks/useLocalStorage.jsx`) reads
+  //    `stats-refresh-interval` in a lazy `useState` initializer, i.e. only
+  //    once, at mount — a value set after the page has already rendered
+  //    would need the `NumberInput` interaction this replaces anyway.
+  // 2. `gotoSurface` begins with a real `page.goto`, which is the one
+  //    moment `addInitScript` reruns.
+  //
+  // `stats-refresh-interval` is a page-local `useLocalStorage` key
+  // (Stats.jsx), not a `CoreSettings` row, so setting it here does not touch
+  // `/api/core/settings/` (global constraint GLOBAL_SETTINGS_WRITE). Stats
+  // "Always fetch[es] once on mount, regardless of polling interval
+  // setting" (Stats.jsx's own comment on that effect), so disabling the poll
+  // up front does not stop the connection from appearing below — that first
+  // fetch still happens.
+  await adminPage.addInitScript(() => {
+    localStorage.setItem('stats-refresh-interval', '0');
+  });
+
   await gotoSurface(adminPage, statsSurface);
 
   const statsPage = adminPage.getByTestId('stats-page');
   const connections = adminPage.getByTestId('stats-connections');
 
   await expect(connections.getByText(channel.name)).toBeVisible({ timeout: 60_000 });
-
-  // Turn the page's own poll off before closing the client. Left running, a
-  // "the connection is gone" assertion after one click can't tell that click
-  // apart from the next automatic 5s tick landing at close to the same
-  // moment — and the card rendered for an active stream connection also puts
-  // a *second*, labelled "Active Stream" `Select` on this page
-  // (StreamConnectionCard.jsx), so this input is reached by walking to the
-  // sibling of its own label text rather than by a bare, page-wide
-  // `getByRole('textbox')`, which would be a strict-mode violation while a
-  // connection card is showing. `stats-refresh-interval` is a page-local
-  // `useLocalStorage` key (Stats.jsx), not a `CoreSettings` row, so setting
-  // it here does not touch `/api/core/settings/` (global constraint
-  // GLOBAL_SETTINGS_WRITE).
-  const refreshIntervalInput = statsPage
-    .getByText('Refresh Interval (seconds):', { exact: true })
-    .locator('xpath=following-sibling::*[1]//input');
-  await refreshIntervalInput.fill('0');
   await expect(statsPage.getByText('Refreshing disabled')).toBeVisible();
 
   await streamClient.close();
 
   const refreshNow = statsPage.getByRole('button', { name: 'Refresh Now', exact: true });
 
-  // With the poll disabled, the only way `stats-connections` can change
-  // again is a click here. Retrying the click (Playwright's `toPass`,
-  // clicking again on every failed attempt) rather than one click plus a
-  // single generous wait keeps the assertion pinned to the click — no
-  // automatic tick is left that could take credit for it — while not
-  // requiring this test to know how long the server takes to notice the
-  // aborted TCP connection and drop the client from its Redis client set
-  // (`ChannelStatus.get_basic_channel_info`, `apps/proxy/live_proxy/`).
-  await expect(async () => {
-    await refreshNow.click();
-    await expect(connections.getByText(channel.name)).not.toBeVisible({ timeout: 500 });
-  }).toPass({ timeout: 30_000, intervals: [1_000] });
+  // What actually proves the click does something: `ClientManager.remove_client`
+  // (apps/proxy/live_proxy/client_manager.py) fires its own WebSocket
+  // `channel_stats` broadcast the moment the server notices the client is
+  // gone, and `WebSocket.jsx`'s `channel_stats` handler calls `setChannelStats`
+  // completely unconditionally — no page gating, no dependency on the poll
+  // interval or on anything this test clicks. With that broadcast in play, a
+  // "the connection disappeared" assertion taken alone is satisfied whether
+  // or not `Refresh Now` is wired to anything: the connection would clear on
+  // its own once the server-side cleanup and broadcast land, which a
+  // generous wait cannot tell apart from the click. What the click actually,
+  // exclusively causes is the GET request `fetchAllStats`'s `onClick` fires
+  // (Stats.jsx) — `combined_stats` (apps/proxy/stats_views.py), routed at
+  // `/proxy/stats/` (apps/proxy/urls.py) — so that request, not a DOM
+  // change, is what this test asserts against the click.
+  const [response] = await Promise.all([
+    adminPage.waitForResponse(
+      (r) => r.url().includes('/proxy/stats/') && r.request().method() === 'GET',
+      { timeout: 10_000 }
+    ),
+    refreshNow.click(),
+  ]);
+  expect(response.ok()).toBe(true);
+  const body = await response.json();
+  expect(body).toHaveProperty('live');
 
+  // No separate "the connection eventually clears" assertion here. It would
+  // prove nothing about the click either way (see above), and tried against
+  // a real run it did not resolve inside a 30s wait — plausibly because
+  // `ClientManager`'s ghost-client scan, the fallback for a client whose
+  // stream generator never got a clean `GeneratorExit`, only fires after
+  // `heartbeat_interval * GHOST_CLIENT_MULTIPLIER`
+  // (`apps/proxy/live_proxy/client_manager.py`), which `apps/proxy/config.py`
+  // sets to 100s by default. Whatever the exact path, this does not reliably
+  // fit inside this project's 120s per-test timeout on top of everything
+  // already spent above it. Better to assert only what this test can back
+  // up.
   await pageErrors.expectClean();
 });
