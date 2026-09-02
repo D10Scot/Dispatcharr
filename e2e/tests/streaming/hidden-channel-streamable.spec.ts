@@ -1,6 +1,65 @@
 import { test, expect, StreamStatusError, xcLiveStreams } from '../../fixtures';
 import { lockedProfile } from './helpers';
 
+// The non-inverted control for the test.fail() below ('a channel a user
+// cannot list is not streamable by that user'): the listing-absence premise
+// that an adult channel is genuinely unlistable for a hide_adult_content
+// user, asserted alongside its positive counterpart — the same channel IS
+// listable for an admin XC user (`user_level: 10`). `_xc_live_streams_setup`
+// (apps/output/views.py:617-652) branches on `user.user_level < 10`: the
+// filtered user's branch (:620-632) applies `filters["is_adult"] = False`
+// when `hide_adult_content` is set, but the `user_level >= 10` branch
+// (:646-652) applies no `is_adult` filter at all. The negative half alone
+// could pass for a reason that has nothing to do with is_adult filtering —
+// an unresolvable channel, a scenario that never came up, a profile
+// membership gap that happens to exclude it — so this control asserts both
+// halves against the same seeded channel, with its own full setup (own
+// scenario, own seeded channel, own users): sharing the pin's fixtures
+// would share the failure modes this control exists to separate.
+//
+// The pin below calls `xcLiveStreams` once, for the filtered user only,
+// inside a test.fail() block, which is satisfied by ANY failure in its
+// body — so a broken listing premise there would also read as "expected
+// failure" and the pin would go green while proving nothing about the
+// actual defect. This control is what actually guards that premise.
+test('an adult channel is unlistable for a hide_adult_content user and listable for an admin', { tag: '@contract' }, async ({
+  upstream,
+  seed,
+  api,
+  request,
+}) => {
+  const scenario = await upstream.scenario({
+    channels: [{ id: 1, name: 'G6 Adult Control', tvgId: 'g6-adult-control.e2e', logo: null }],
+    rate: 20,
+  });
+  const proxy = await lockedProfile(api, 'Proxy');
+  const { channel } = await seed.upstreamChannel(scenario, {
+    channelIds: [1],
+    streamProfileId: proxy.id,
+    channel: { user_level: 0, is_adult: true },
+  });
+
+  const filteredUser = await seed.xcUser({
+    user_level: 1,
+    custom_properties: { hide_adult_content: true },
+  });
+  const adminUser = await seed.xcUser({ user_level: 10 });
+
+  const listedForFiltered = await xcLiveStreams(
+    request,
+    filteredUser,
+    'get_live_streams for a hide_adult_content user'
+  );
+  expect(listedForFiltered.map((s) => s.stream_id)).not.toContain(channel.id);
+
+  const listedForAdmin = await xcLiveStreams(
+    request,
+    adminUser,
+    'get_live_streams for an admin user'
+  );
+  expect(listedForAdmin.map((s) => s.stream_id)).toContain(channel.id);
+});
+
 // Asserts the behaviour Dispatcharr SHOULD have. `stream_xc`
 // (apps/proxy/live_proxy/views.py) applies `user_level__lte` and Channel
 // Profile membership to the requesting user, then serves the channel — with
@@ -21,9 +80,14 @@ import { lockedProfile } from './helpers';
 // test.fail() caveat: it is satisfied by ANY failure in the body, guards
 // included — so a broken premise, not just the intended assertion, would
 // also read as "expected failure" and this test would go green while
-// proving nothing. Verified with `--reporter=json` that this pin fails at
-// the `toBe(false)` below, with the premise assertions above it passing —
-// re-verify the same way after any edit here.
+// proving nothing. The listing-absence premise this pin depends on (the
+// `expect(listed...).not.toContain(channel.id)` below) is no longer what
+// could hollow it: the non-inverted control above ('an adult channel is
+// unlistable for a hide_adult_content user and listable for an admin')
+// already exercises that exact filtering behaviour, both directions, and
+// would go red on its own if it broke. Verified with `--reporter=json`
+// that this pin still fails at the `toBe(false)` below — re-verify the
+// same way after any edit here.
 test.fail('a channel a user cannot list is not streamable by that user', { tag: '@contract' }, async ({
   upstream,
   seed,
