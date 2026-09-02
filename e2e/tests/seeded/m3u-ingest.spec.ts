@@ -310,8 +310,8 @@ test("upstreamM3UAccount() still calls waitForCreateTimeGroupRefreshToSettle() b
 // accepted, and the write actually persists to a later read. Three tests
 // above already seed via `seed.m3uAccount()` directly, and one of them
 // ("waitFor.m3uRefreshComplete re-fires its trigger...") even PATCHes the
-// account's `is_active` and asserts the response is `ok()` — but no test in
-// this file reads an account back after a PATCH to confirm the write
+// account's `is_active` and asserts the response is `ok()` — but no other
+// test in this file reads an account back after a PATCH to confirm the write
 // actually took. That read-back is exactly what the pin's own final
 // assertion depends on, and a break in it would be swallowed by the pin
 // below as an "expected failure", since test.fail() is satisfied by ANY
