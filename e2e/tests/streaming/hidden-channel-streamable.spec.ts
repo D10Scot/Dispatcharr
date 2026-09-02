@@ -6,16 +6,17 @@ import { lockedProfile } from './helpers';
 // that an adult channel is genuinely unlistable for a hide_adult_content
 // user, asserted alongside its positive counterpart — the same channel IS
 // listable for an admin XC user (`user_level: 10`). `_xc_live_streams_setup`
-// (apps/output/views.py:617-652) branches on `user.user_level < 10`: the
-// filtered user's branch (:620-632) applies `filters["is_adult"] = False`
-// when `hide_adult_content` is set, but the `user_level >= 10` branch
-// (:646-652) applies no `is_adult` filter at all. The negative half alone
-// could pass for a reason that has nothing to do with is_adult filtering —
-// an unresolvable channel, a scenario that never came up, a profile
-// membership gap that happens to exclude it — so this control asserts both
-// halves against the same seeded channel, with its own full setup (own
-// scenario, own seeded channel, own users): sharing the pin's fixtures
-// would share the failure modes this control exists to separate.
+// (apps/output/views.py) branches on `user.user_level < 10`: both of the
+// filtered user's sub-branches (with and without a Channel Profile) apply
+// `filters["is_adult"] = False` when `hide_adult_content` is set, but the
+// `user_level >= 10` branch builds its queryset with no `is_adult` key at
+// all. The negative half alone could pass for a reason that has nothing to
+// do with is_adult filtering — an unresolvable channel, a scenario that
+// never came up, a profile membership gap that happens to exclude it — so
+// this control asserts both halves against the same seeded channel, with
+// its own full setup (own scenario, own seeded channel, own users): sharing
+// the pin's fixtures would share the failure modes this control exists to
+// separate.
 //
 // The pin below calls `xcLiveStreams` once, for the filtered user only,
 // inside a test.fail() block, which is satisfied by ANY failure in its
