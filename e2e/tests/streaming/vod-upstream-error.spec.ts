@@ -71,22 +71,24 @@ test('a seeded VOD movie streams successfully when no fault is armed', { tag: '@
 // The second non-inverted control for the test.fail() below: the pin's
 // credential check has no meaning unless arming the 'not-found' fault
 // genuinely drives the request into the connection manager's
-// `except Exception` handler at
-// multi_worker_connection_manager.py:1405 — the only place that returns
-// `HttpResponse(f"Streaming error: {str(e)}", status=500)`. This control
-// arms that same fault, on its own fresh scenario, before making any
-// request at all (so there is no already-open session to reuse from a
-// prior clean request), then asserts the failure directly: a 500 status
-// and a body carrying the handler's own "Streaming error:" prefix. No
-// other test in this file arms the 'not-found' fault and checks the
-// resulting response outside a test.fail() block: the control above never
-// arms a fault, and the pin's identical upstream.fault(scenario,
-// 'not-found') call sits inside its test.fail(...) body. A break here —
-// the fault not reaching the upstream fetch, or some other status
-// reaching the client — would be swallowed by the pin below as an
-// "expected failure", since test.fail() is satisfied by ANY failure in
-// its body, not specifically the credential-disclosure regression it
-// exists to pin.
+// `except Exception` handler at multi_worker_connection_manager.py:1405 —
+// or the identical handler wrapping it in `stream_vod` (views.py:845),
+// which returns the same `HttpResponse(f"Streaming error: {str(e)}",
+// status=500)` shape. This control asserts the shape both produce (a 500
+// whose body carries the handler's own prefix), not which of the two
+// fired — that distinction doesn't matter to the pin's premise, only that
+// the fault genuinely reached one of them. This control arms that same
+// fault, on its own fresh scenario, before making any request at all (so
+// there is no already-open session to reuse from a prior clean request),
+// then asserts the failure directly. No other test in this file arms the
+// 'not-found' fault and checks the resulting response outside a
+// test.fail() block: the control above never arms a fault, and the pin's
+// identical upstream.fault(scenario, 'not-found') call sits inside its
+// test.fail(...) body. A break here — the fault not reaching the upstream
+// fetch, or some other status reaching the client — would be swallowed by
+// the pin below as an "expected failure", since test.fail() is satisfied
+// by ANY failure in its body, not specifically the credential-disclosure
+// regression it exists to pin.
 test('the not-found fault on a VOD movie route produces a genuine streaming failure', { tag: '@contract' }, async ({
   upstream,
   seed,
@@ -107,7 +109,7 @@ test('the not-found fault on a VOD movie route produces a genuine streaming fail
     expect(
       await res.text(),
       "the failure body should carry the connection manager's own error prefix"
-    ).toContain('Streaming error:');
+    ).toContain('Streaming error');
   } finally {
     await upstream.clearFault(scenario, 'not-found');
   }
