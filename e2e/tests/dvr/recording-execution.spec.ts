@@ -349,6 +349,35 @@ test('row 2 premise: an ad-hoc recording writes its fallback file under /data/re
 // `_build_output_paths`, not a setting, and the path shape is the shipped default of
 // `get_dvr_tv_fallback_template`. A deployment that relocates the library, or a change to
 // the default templates, legitimately breaks this row.
+//
+// KNOWN BUG in `_build_output_paths` (apps/channels/tasks.py:1032-1033) — its
+// show/title derivation reads:
+//
+//   show = _safe_name(program.get('title') if isinstance(program, dict) else channel.name)
+//
+// `program` is always `cp.get("program") or {}` (tasks.py:1469) — an empty
+// dict is still a dict, so `isinstance(program, dict)` is True even when
+// `program` is `{}`, and the `else channel.name` branch is DEAD CODE: it is
+// unreachable for every ad-hoc recording with no EPG match, which is exactly
+// the case this row and the flagship both exercise. `program.get('title')` on
+// `{}` is `None`; `_safe_name(None)` returns `""` (tasks.py:976,
+// `s = s or ""`); the fallback template `TV_Shows/{show}/{start}.mkv` then
+// formats to `TV_Shows//<start>.mkv`, and `os.path.normpath` (tasks.py:1090)
+// silently collapses the empty path segment to `TV_Shows/<start>.mkv`. Every
+// ad-hoc recording with no EPG match therefore loses the per-channel/show
+// subdirectory the `{show}` placeholder in `tv_fallback_template` exists to
+// provide — confirmed empirically against this container (both via this row
+// and via a hand-built recording against a manually created channel: channel
+// "manual-debug-channel" produced file_path
+// "/data/recordings/TV_Shows/20260902_121459.mkv", with no channel-name
+// segment at all).
+//
+// This asserts the CORRECT value per the template's own stated intent, not
+// the buggy one — never invert this to match the bug, which would lock the
+// defect in.
+//
+// Filed as https://github.com/D10Scot/Dispatcharr/issues/135. Do not file a
+// second issue for this.
 test.fail('the recording lands where the DVR templates say it should', { tag: '@characterization' }, async ({
   upstream,
   seed,
@@ -356,32 +385,6 @@ test.fail('the recording lands where the DVR templates say it should', { tag: '@
   waitFor,
   ws,
 }) => {
-  // KNOWN BUG, not filed yet — the controller will file it. `_build_output_paths`'s
-  // show/title derivation (apps/channels/tasks.py:1032-1033) reads:
-  //
-  //   show = _safe_name(program.get('title') if isinstance(program, dict) else channel.name)
-  //
-  // `program` is always `cp.get("program") or {}` (tasks.py:1469) — an empty
-  // dict is still a dict, so `isinstance(program, dict)` is True even when
-  // `program` is `{}`, and the `else channel.name` branch is DEAD CODE: it is
-  // unreachable for every ad-hoc recording with no EPG match, which is
-  // exactly the case this row and the flagship both exercise.
-  // `program.get('title')` on `{}` is `None`; `_safe_name(None)` returns `""`
-  // (tasks.py:976, `s = s or ""`); the fallback template
-  // `TV_Shows/{show}/{start}.mkv` then formats to `TV_Shows//<start>.mkv`,
-  // and `os.path.normpath` (tasks.py:1090) silently collapses the empty path
-  // segment to `TV_Shows/<start>.mkv`. Every ad-hoc recording with no EPG
-  // match therefore loses the per-channel/show subdirectory the `{show}`
-  // placeholder in `tv_fallback_template` exists to provide — confirmed
-  // empirically against this container (both via this row and via a
-  // hand-built recording against a manually created channel: channel
-  // "manual-debug-channel" produced
-  // file_path "/data/recordings/TV_Shows/20260902_121459.mkv", with no
-  // channel-name segment at all).
-  //
-  // This asserts the CORRECT value per the template's own stated intent, not
-  // the buggy one — never invert this to match the bug, which would lock the
-  // defect in.
   const { cp, channelName } = await primeOutputPathRecording(
     { upstream, seed, api, waitFor, ws },
     'G13 DVR Output Path'

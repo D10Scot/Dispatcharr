@@ -181,7 +181,16 @@ export async function readRecording(api: ApiClient, id: number): Promise<Recordi
  *    (`custom_properties` defaults to `{}`, and nothing in `RecordingViewSet`
  *    seeds one) until `run_recording` begins — waiting on `"scheduled"` for
  *    one of those will simply time out.
- *  - `"recording"` — `run_recording`, once the stream connects (`tasks.py:1461`).
+ *  - `"recording"` — `run_recording`, at the very top of the task
+ *    (`tasks.py:~1460-1463`), **before** `_build_output_paths`,
+ *    `get_dvr_stream_base_url()`, or FFmpeg is even spawned — not once the
+ *    stream connects. The upstream connection can genuinely lag this status
+ *    flip by several seconds while FFmpeg starts and connects
+ *    (`_first_segment_timeout` gives it up to 15s). A bare single read of
+ *    anything connection-derived (an upstream connection count, the HLS
+ *    playlist's existence) taken right after observing this status is a
+ *    race, not a fact — poll it instead, as
+ *    `tests/dvr/recording-execution.spec.ts` does for both.
  *  - `"completed"` / `"interrupted"` — `run_recording`, at teardown, mutually
  *    exclusive with each other (`tasks.py:2353-2360`).
  *  - `"stopped"` — the stop endpoint (`apps/channels/api_views.py:3559`),
