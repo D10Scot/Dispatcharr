@@ -229,6 +229,28 @@ test('hdhr lineup scopes to a Channel Profile, and answers [] for an unknown one
   expect(await unknown.json()).toEqual([]);
 });
 
+// The non-inverted control for the test.fail() below ('hdhr lineup does not
+// expose adult or above-level channels'): a channel seeded with the
+// restricted attribute shape the pin depends on — `user_level: 10,
+// is_adult: true` — round-trips those fields on the row the API returns.
+// Four other tests in this file call `seed.channel()`, but every one of them
+// (the two above, and the two at the top of the file) seeds a plain channel
+// with no arguments — none seeds the restricted shape. That shape is exactly
+// what the pin's own final assertion depends on: it seeds a restricted
+// channel and asserts the lineup omits it, and a break in the seed
+// fixture's handling of `user_level`/`is_adult` — the channel silently
+// coming back unrestricted, say — would be swallowed by the pin below as an
+// "expected failure", since test.fail() is satisfied by ANY failure in its
+// body, not specifically the omission-from-lineup regression it exists to
+// pin.
+test('a channel seeded with the restricted attributes the lineup pin depends on round-trips them', { tag: '@contract' }, async ({
+  seed,
+}) => {
+  const restricted = await seed.channel({ user_level: 10, is_adult: true });
+  expect(restricted.user_level).toBe(10);
+  expect(restricted.is_adult).toBe(true);
+});
+
 // Asserts the behaviour Dispatcharr SHOULD have. It fails today, and the
 // cause is structural rather than a forgotten line: the four HDHomeRun views
 // in apps/hdhr/api_views.py are `permission_classes = [AllowAny]` and take no
@@ -255,6 +277,17 @@ test('hdhr lineup scopes to a Channel Profile, and answers [] for an unknown one
 // fixed, this test flips green as expected and that one's /hdhr/lineup.json
 // assertion flips red as an intended false alarm — see the comment there for
 // the reciprocal note.
+//
+// This test's own body already performs the restricted-seed-and-fetch
+// sequence its premise depends on — but inside a test.fail() block, which
+// is satisfied by ANY failure, so a regression anywhere in that sequence
+// (not just in the omission-from-lineup behaviour) would be swallowed as
+// "expected failure" and never surface. The restricted seed shape
+// (`user_level: 10, is_adult: true`) round-tripping is what the non-inverted
+// control above ('a channel seeded with the restricted attributes the
+// lineup pin depends on round-trips them') actually guards; the lineup
+// route responding and its body parsing as JSON is what 'hdhr lineup.json
+// carries a seeded channel with a proxy URL' actually guards.
 //
 // Issue: https://github.com/D10Scot/Dispatcharr/issues/82
 test.fail('hdhr lineup does not expose adult or above-level channels', { tag: '@contract' }, async ({
