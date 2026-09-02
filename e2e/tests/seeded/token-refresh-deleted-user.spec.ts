@@ -3,9 +3,10 @@ import { test, expect, SEEDED_USER_PASSWORD } from '../../fixtures';
 // The non-inverted control for the test.fail() below ('refreshing a deleted
 // user's token returns 401, not 500'): the premise that /api/accounts/token/
 // refresh/ is a working route at all — a live user's refresh token is
-// accepted and answered with a fresh access token. This file has no other
-// test: the pin below is the only place that calls this route, and it only
-// ever calls it with a *deleted* user's token, inside a test.fail() block.
+// accepted and answered with a fresh access token. The pin below remains
+// the only test in this file that calls this route with a *deleted* user's
+// token, inside a test.fail() block — this control's own call, immediately
+// above, uses a live user's token in a non-inverted body instead.
 // A broken refresh endpoint (wrong status, no `access` in the body, a 500 on
 // every input) would be swallowed by the pin below as an "expected
 // failure", since test.fail() is satisfied by ANY failure in its body, not
