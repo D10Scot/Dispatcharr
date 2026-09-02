@@ -1103,3 +1103,24 @@ export type CategorySettingRow = {
 
 /** `VODPagination` — `page_size` 20, `page_size` query param up to 100. Movies, series and episodes all paginate; categories do not. */
 export type VodPage<T> = { count: number; next: string | null; previous: string | null; results: T[] };
+
+/**
+ * `apps.channels.RecurringRecordingRule` via `RecurringRecordingRuleSerializer`
+ * (`apps/channels/serializers.py`, `fields = "__all__"`, only `created_at`/
+ * `updated_at` read-only). `days_of_week` is `0`-`6` — validated Monday(`0`)
+ * through Sunday(`6`) by `validate_days_of_week`, not Python's `weekday()`
+ * numbering, which is otherwise the same range but starts the same day.
+ * `start_time`/`end_time` are `TimeField`s (`"HH:MM:SS"`, no date component) —
+ * unlike `Recording.start_time`/`end_time`, which are full `DateTimeField`s.
+ */
+export type RecurringRule = {
+  id: number;
+  channel: number;
+  days_of_week: number[];
+  start_time: string;
+  end_time: string;
+  enabled: boolean;
+  name: string;
+  start_date: string | null;
+  end_date: string | null;
+};
