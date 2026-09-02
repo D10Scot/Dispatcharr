@@ -125,5 +125,18 @@ export const GLOBAL_SETTINGS_WRITE: Capability = {
     // Sets `stream_settings.default_stream_profile` to Redirect for its run.
     // `streaming-greybox` is `workers: 1` partly for this reason.
     'tests/streaming-greybox/vod-redirect-profile.spec.ts',
+    // Narrows network_access["XC_API"] from its default 0.0.0.0/0 to the
+    // local CIDRs, for its one PATCH-writing test. Which group: the
+    // `network_access` row, and only the `XC_API` key inside it —
+    // `network_access["UI"]` is never written, for the reason in the file's
+    // own header. Why nothing else reads it: the narrowed value refuses only
+    // a request carrying a spoofed non-local X-Real-IP header, and that test
+    // is the only client in the whole suite that sends one (D2's
+    // blast-radius argument, made executable). How teardown restores it: an
+    // `afterEach` writes back the exact value captured immediately before
+    // the PATCH, and logs rather than masks a cleanup failure that follows
+    // an already-failing test — the same non-masking shape
+    // `plugins.spec.ts`/`settings.spec.ts` use.
+    'tests/seeded/network-acl.spec.ts',
   ],
 };
