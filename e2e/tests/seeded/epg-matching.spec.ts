@@ -29,11 +29,10 @@ import type { Channel, EpgData, EpgMatchAssociation } from '../../fixtures';
  * settle signal (a same-type, unrelated `epg_match` broadcast from another
  * worker) resolved *before* this run's ML-delayed match actually committed
  * — a second, independent defect in the test, not just in the pair choice.
- * Per the dispatching brief: "If a pair cannot be placed cleanly outside the
- * ML bands after measuring, stop and say so — the fallback (spec D6a) is a
- * decision for the controller, not something to work around." Left out
- * rather than shipped broken or silently disabled; see
- * `task-4-6-report.md` for the full trace.
+ * Left out rather than shipped broken or silently disabled, per the goal's
+ * own rule that an unplaceable pair is a decision for a human to make, not
+ * something to work around in the test. See `e2e/COVERAGE.md` for this
+ * area's coverage notes, including this gap.
  *
  * ---------------------------------------------------------------------------
  * The ML band rule (D6) — read this before adding a name pair to this file
@@ -68,11 +67,12 @@ import type { Channel, EpgData, EpgMatchAssociation } from '../../fixtures';
  * The cross-worker aliasing hazard
  * ---------------------------------------------------------------------------
  * `_active_epg_fuzzy_queryset` (and `_active_epg_lookup_queryset` beneath it)
- * filters on `epg_source__is_active=True` and nothing else — no scoping to a
- * source this test created. Every `EPGData` row of every active source on
- * the shared `seeded` container is a fuzzy-scan candidate, including G3's
- * `epg-ingest.spec.ts` fixtures and every other worker's concurrent EPG
- * source. The mitigation used throughout this file is (a) per-test entropy
+ * filters on `epg_source__is_active=True` and a non-null, non-empty `name`
+ * — no scoping to a source this test created. Every `EPGData` row of every
+ * active source on the shared `seeded` container is a fuzzy-scan candidate,
+ * including G3's `epg-ingest.spec.ts` fixtures and every other worker's
+ * concurrent EPG source. The mitigation used throughout this file is (a)
+ * per-test entropy
  * baked into names that matter for a match, and (b) asserting the *specific*
  * `epg_data_id`/`epg_data`.`id` this test's own row got, never a bare
  * "something matched". That is a mitigation, not a proof: nothing here can
@@ -87,7 +87,10 @@ import type { Channel, EpgData, EpgMatchAssociation } from '../../fixtures';
  * passes a non-empty `channel_ids`.
  *
  * ---------------------------------------------------------------------------
- * Probe B — measured scores (Task 0, `task-0-report.md`), verbatim
+ * Measured scores, verbatim — the preflight probe run against seven plausible
+ * name pairs via `docker exec <container> su - dispatch -c 'cd /app && python
+ * manage.py shell -c "..."'`, calling `normalize_name` + `rapidfuzz.fuzz.ratio`
+ * exactly as `try_epg_name_match` does
  * ---------------------------------------------------------------------------
  * Near-identical pair family (band a, need >= 75, single-channel path,
  * `FUZZY_SKIP_ML`), unsuffixed:
@@ -119,10 +122,12 @@ import type { Channel, EpgData, EpgMatchAssociation } from '../../fixtures';
  * (82.93, an 8-point margin above `FUZZY_SKIP_ML`=75, comfortably clear of
  * the `[70, 80)` bulk ML band too — it never enters that branch, but the
  * margin matters because the *suffixed* pair below is what the test actually
- * runs). No third pair was built for the removed test 9's `[75, 80)`
- * disagreement band (see `task-4-6-brief.md` Task 6 — that band is
- * unreachable on the bulk path without calling `get_sentence_transformer()`
- * for every score in `[70, 80)`).
+ * runs). No third pair was built for a `[75, 80)` disagreement band — the
+ * one range the two branches' `FUZZY_SKIP_ML` values disagree on (75 single,
+ * 80 bulk) — because showing it requires the *bulk* path, where
+ * `FUZZY_MEDIUM_CONFIDENCE` is 70, so every score in `[70, 80)` calls
+ * `get_sentence_transformer()` regardless. There is no bulk-path pair that
+ * demonstrates that disagreement without violating this file's own ML rule.
  *
  * Re-measured **with per-test entropy** (a shared suffix token in both
  * halves, per the cross-worker note above — required because an unsuffixed
@@ -142,9 +147,17 @@ import type { Channel, EpgData, EpgMatchAssociation } from '../../fixtures';
  * now identical), so the margin only grows with a longer/more realistic
  * token — every shape tried, from a short 4-char token to a full
  * `seed.generatedName()`-length one, lands well clear of 75 and clear of the
- * `[40, 75)` single-path ML band. The test below uses a real
- * `seed.generatedName(...)` value as the token, which this table already
- * covers (the two `e2e-w...` rows).
+ * `[20, 75)` single-path ML band entirely (both its sub-bands —
+ * `[40, 75)`, which validates the best candidate, and `[20, 40)`, the
+ * last-resort branch — call `get_sentence_transformer()`). The test below
+ * uses a real `seed.generatedName(...)` value as the token, which this
+ * table already covers (the two `e2e-w...` rows).
+ *
+ * The ±15 region bonus in `_compute_fuzzy_score` is not a factor in any of
+ * the numbers above: `get_preferred_region_code()` reads a `CoreSettings`
+ * row a migration deleted and always returns `None` on this instance, so
+ * every score in this file is the bare `fuzz.ratio`, no bonus applied. If
+ * that defect is ever fixed, every margin in this file needs re-reading.
  */
 
 test('an exact tvg_id match short-circuits before any fuzzy name comparison', { tag: '@contract' }, async ({
@@ -182,10 +195,11 @@ test('an exact tvg_id match short-circuits before any fuzzy name comparison', { 
   );
   expect(otherRow, `no EPGData for ${declared[1].tvgId}`).toBeDefined();
 
-  // `seed.channel()` always assigns its own generated name (a caller-supplied
-  // `name` override is silently discarded — see `seed.ts`), which is exactly
-  // the "deliberately unrelated name" this test needs: it shares no words
-  // with `declared[0].name`, so only the exact-tvg_id path can succeed. Name
+  // `seed.channel()` always assigns its own generated name — `ChannelOverrides`
+  // omits `name` by type (`seed.ts`'s factory always supplies its own), so
+  // there is no override to pass here. That generated name is exactly the
+  // "deliberately unrelated name" this test needs: it shares no words with
+  // `declared[0].name`, so only the exact-tvg_id path can succeed. Name
   // distance is irrelevant to this test, which is exactly why it must not
   // touch the fuzzy/ML branch.
   const channel = await seed.channel({ tvg_id: declared[0].tvgId });
@@ -236,6 +250,18 @@ test('a near-identical name matches through fuzzy scoring alone, with no tvg_id 
   // token shape re-measured above (the two `e2e-w...` rows), where the
   // score was 92.47/93.58 — comfortably above 75 regardless of the exact
   // token length this run produces.
+  //
+  // `normalize_name` (`epg_matching.py:164`) lowercases and strips every
+  // remaining punctuation character, including the token's hyphens, so for
+  // that same `e2e-w...` row the two raw strings this test builds —
+  // 'Meridian Cinema Plus e2e-w3-a1b2c3-3a7f9e21c4b8-x-4' and 'Meridian
+  // Cinema Prime e2e-w3-a1b2c3-3a7f9e21c4b8-x-4' — normalise to
+  // 'meridian cinema plus e2ew3a1b2c33a7f9e21c4b8x4' and
+  // 'meridian cinema prime e2ew3a1b2c33a7f9e21c4b8x4': the hyphenated token
+  // collapses to one unbroken alphanumeric run in both, `fuzz.ratio` of
+  // those two strings is the 92.47 in the header, and 92.47 >= 75
+  // (`FUZZY_SKIP_ML`, single path) is why this test's match never reaches
+  // `get_sentence_transformer()`.
   const token = seed.generatedName('fuzzy7');
   const epgName = `Meridian Cinema Prime ${token}`;
   const declared = [{ id: 1, name: epgName, tvgId: `${token}.e2e`, logo: null }];
@@ -338,27 +364,52 @@ test('a collection match-epg names its associations, and a confirming re-run rep
   expect(matchB?.epg_data_id).toBe(epgRows[1].id);
   expect(message1.data?.matches_count).toBe(2);
 
-  const readA1 = await api.json<Channel>(
-    await api.get(`/api/channels/channels/${channelA.id}/`),
-    'channel A after first match-epg'
-  );
+  const [readA1, readB1] = await Promise.all([
+    api.json<Channel>(await api.get(`/api/channels/channels/${channelA.id}/`), 'channel A after first match-epg'),
+    api.json<Channel>(await api.get(`/api/channels/channels/${channelB.id}/`), 'channel B after first match-epg'),
+  ]);
   expect(readA1.epg_data_id).toBe(epgRows[0].id);
+  expect(readB1.epg_data_id).toBe(epgRows[1].id);
 
   // The confirming re-run: `apply_matched_epg_to_channels` returns changed
   // rows only, and both channels already sit on the matched EPGData, so
   // nothing changes. This second `epg_match` cannot be correlated to this
-  // POST by any id in its payload — `associations` is empty here, so there
-  // is no id to filter on, and the payload carries no task id — so it is
-  // treated as a best-effort settle signal and `matches_count === 0` / an
-  // `associations` array excluding both ids is the assertable contract, not
-  // proof this exact message was caused by this exact POST. Aliasing a
-  // different worker's own zero-match `epg_match` here is harmless for this
-  // assertion, since it would report the same shape; aliasing one that
-  // legitimately changed *other* channels would still leave `channelA.id`/
-  // `channelB.id` out of its `associations`, so only a coincidental zero
-  // total from a completely unrelated run could produce a false pass, and
-  // only for the `matches_count` half of this assertion.
-  const secondMatch = ws.waitForMessage('epg_match', { timeoutMs: 30_000 });
+  // POST by any id in its payload — `associations` is empty on a correct
+  // re-run, so there is no id to filter *in* on, and the payload carries no
+  // task id — so the predicate below filters messages *out* instead: it
+  // accepts only an `epg_match` whose `associations` do NOT name
+  // `channelA`/`channelB`. That has two effects, not one. A foreign
+  // worker's own `epg_match` is unaffected either way (this file's channel
+  // ids are never in it, so it always passes and can still be consumed
+  // instead of ours — this wait is a settle signal, not proof of
+  // correlation). But a *defective* re-run — one that incorrectly
+  // re-matched these channels, a real product regression — now produces a
+  // message this predicate rejects outright, so the wait cannot resolve on
+  // it; it can only resolve on a correct message (ours or, in principle,
+  // some other run's) or time out. That turns the regression into an
+  // honest 30s timeout instead of a read of the wrong message's fields —
+  // which, without the predicate, could go either way: a false pass if a
+  // foreign zero-match message is consumed first and masks a real (later,
+  // unread) regression, or a false fail if a foreign non-zero-match message
+  // is consumed first and this test reads someone else's numbers.
+  //
+  // Today this is airtight rather than merely best-effort: `epg_match` is
+  // emitted only by the two tasks `match_epg` dispatches
+  // (`apps/channels/tasks.py`), and this file is the only spec under
+  // `e2e/tests/` that calls `match-epg` at all, so no other test can emit
+  // one for this predicate to alias onto. **If a second spec ever calls
+  // `match-epg`,** re-read this comment: a foreign message that also
+  // excludes `channelA`/`channelB` (near-certain, since nothing else
+  // touches these ids) could then be consumed instead of ours, and this
+  // would go back to being a settle signal with no correlation guarantee.
+  const secondMatch = ws.waitForMessage('epg_match', {
+    timeoutMs: 30_000,
+    where: (d) =>
+      Array.isArray(d.associations) &&
+      !(d.associations as EpgMatchAssociation[]).some(
+        (a) => a.channel_id === channelA.id || a.channel_id === channelB.id
+      ),
+  });
 
   const res2 = await api.post('/api/channels/channels/match-epg/', {
     channel_ids: [channelA.id, channelB.id],
