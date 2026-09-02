@@ -158,7 +158,7 @@ test.fail('an unsatisfiable Range on a fresh session is 416, not 500', { tag: '@
 // test.fail() body, where ANY throw reads as the same "expected failure": a
 // broken arm would be indistinguishable from the defect the pin exists to
 // prove. This is a provider-only proof — no Dispatcharr account, ingest or
-// session — so it runs in a few seconds: it creates its own scenario, arms
+// session — so it runs in milliseconds: it creates its own scenario, arms
 // `range-unsupported` against it, and reads the asset straight from the
 // provider through `upstream.toControl()`, confirming directly that the
 // provider itself answers 200 (not 206) with the whole asset when a Range
