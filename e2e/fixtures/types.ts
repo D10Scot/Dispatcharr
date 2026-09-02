@@ -604,6 +604,21 @@ export type ChannelOverrides = {
   catchup_days?: number;
   hidden_from_output?: boolean;
   auto_created?: boolean;
+  /**
+   * Not a `ChannelSerializer` field — `ChannelViewSet.create`
+   * (apps/channels/api_views.py) reads it straight off `request.data` after
+   * `serializer.is_valid()`, which is why DRF's excess-property handling
+   * lets it through unvalidated by the serializer itself. Controls which
+   * `ChannelProfile`s the new channel is enrolled in at creation: omitted
+   * (`seed.channel()`'s default) enrols it in every profile that exists at
+   * that moment, `[]` enrols it in none, and an explicit id list enrols it
+   * in exactly those ids. `guide.spec.ts`'s profile-filter test uses `[]` to
+   * seed a channel that is provably absent from a fresh profile, despite
+   * that profile's own `post_save` receiver (`create_profile_memberships`,
+   * apps/channels/signals.py) enrolling every channel that already existed
+   * when the profile itself was created.
+   */
+  channel_profile_ids?: number[];
 };
 
 /**

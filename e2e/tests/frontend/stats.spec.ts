@@ -84,3 +84,74 @@ test('an active stream appears as a connection on the Stats page', { tag: '@cont
 
   await pageErrors.expectClean();
 });
+
+// A second G6 wiring test gets its own upstream/channel/streamClient rather
+// than reusing the test above's: every Playwright fixture is per-test, so
+// there is nothing shared here to protect and nothing to gain by sharing.
+test('the Refresh Now button re-reads the connection list', { tag: '@contract' }, async ({
+  adminPage,
+  api,
+  seed,
+  upstream,
+  streamClient,
+  pageErrors,
+}) => {
+  const scenario = await upstream.scenario({
+    channels: [{ id: 1, name: 'G6 Stats Refresh', tvgId: 'g6-stats-refresh.e2e', logo: null }],
+    rate: 20,
+  });
+  const proxy = await lockedProfile(api, 'Proxy');
+  const { channel } = await seed.upstreamChannel(scenario, {
+    channelIds: [1],
+    streamProfileId: proxy.id,
+  });
+
+  await streamClient.open(`/proxy/ts/stream/${channel.uuid}`);
+  // Same reasoning as the sibling test above: prove the channel is actually
+  // serving before either fixture is exercised.
+  await withDeadline(streamClient.readPackets(100), 30_000, 'readPackets(100)');
+
+  await gotoSurface(adminPage, statsSurface);
+
+  const statsPage = adminPage.getByTestId('stats-page');
+  const connections = adminPage.getByTestId('stats-connections');
+
+  await expect(connections.getByText(channel.name)).toBeVisible({ timeout: 60_000 });
+
+  // Turn the page's own poll off before closing the client. Left running, a
+  // "the connection is gone" assertion after one click can't tell that click
+  // apart from the next automatic 5s tick landing at close to the same
+  // moment — and the card rendered for an active stream connection also puts
+  // a *second*, labelled "Active Stream" `Select` on this page
+  // (StreamConnectionCard.jsx), so this input is reached by walking to the
+  // sibling of its own label text rather than by a bare, page-wide
+  // `getByRole('textbox')`, which would be a strict-mode violation while a
+  // connection card is showing. `stats-refresh-interval` is a page-local
+  // `useLocalStorage` key (Stats.jsx), not a `CoreSettings` row, so setting
+  // it here does not touch `/api/core/settings/` (global constraint
+  // GLOBAL_SETTINGS_WRITE).
+  const refreshIntervalInput = statsPage
+    .getByText('Refresh Interval (seconds):', { exact: true })
+    .locator('xpath=following-sibling::*[1]//input');
+  await refreshIntervalInput.fill('0');
+  await expect(statsPage.getByText('Refreshing disabled')).toBeVisible();
+
+  await streamClient.close();
+
+  const refreshNow = statsPage.getByRole('button', { name: 'Refresh Now', exact: true });
+
+  // With the poll disabled, the only way `stats-connections` can change
+  // again is a click here. Retrying the click (Playwright's `toPass`,
+  // clicking again on every failed attempt) rather than one click plus a
+  // single generous wait keeps the assertion pinned to the click — no
+  // automatic tick is left that could take credit for it — while not
+  // requiring this test to know how long the server takes to notice the
+  // aborted TCP connection and drop the client from its Redis client set
+  // (`ChannelStatus.get_basic_channel_info`, `apps/proxy/live_proxy/`).
+  await expect(async () => {
+    await refreshNow.click();
+    await expect(connections.getByText(channel.name)).not.toBeVisible({ timeout: 500 });
+  }).toPass({ timeout: 30_000, intervals: [1_000] });
+
+  await pageErrors.expectClean();
+});

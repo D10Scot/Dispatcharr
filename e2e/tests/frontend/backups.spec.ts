@@ -198,3 +198,116 @@ test('a backup created from the Backups panel produces a complete archive', { ta
 
   await pageErrors.expectClean();
 });
+
+test('an uploaded archive re-appears in the list and downloads back byte-identical', { tag: '@contract' }, async ({
+  adminPage,
+  api,
+  pageErrors,
+}) => {
+  const listBackups = async (): Promise<BackupEntry[]> =>
+    api.json<BackupEntry[]>(await api.get('/api/backups/'), 'list backups');
+
+  const downloadArchive = async (name: string): Promise<Buffer> => {
+    const tokenBody = await api.json<{ token: string }>(
+      await api.get(`/api/backups/${encodeURIComponent(name)}/download-token/`),
+      `download token for ${name}`
+    );
+    const download = await api.get(
+      `/api/backups/${encodeURIComponent(name)}/download/` +
+        `?token=${encodeURIComponent(tokenBody.token)}`
+    );
+    expect(download.status()).toBe(200);
+    return download.body();
+  };
+
+  // A source archive, created the same way the sibling test above creates
+  // one. Not a reuse of anything that test left behind: the module comment's
+  // file-level-parallelism pin says nothing about test ORDER within this
+  // file, and the `afterEach` above already deletes every name it created
+  // regardless of outcome, so there is nothing left over to borrow by the
+  // time this test starts.
+  const beforeCreate = new Set((await listBackups()).map((b) => b.name));
+
+  await gotoSurface(adminPage, backupsSurface);
+  await adminPage.getByRole('button', { name: 'Create Backup', exact: true }).click();
+
+  let source: BackupEntry | undefined;
+  await expect
+    .poll(
+      async () => {
+        const fresh = (await listBackups()).filter((b) => !beforeCreate.has(b.name));
+        fresh.forEach((b) => namesToDeleteAfterEach.add(b.name));
+        source = fresh[0];
+        return fresh.length;
+      },
+      { timeout: 90_000, intervals: [1_000] }
+    )
+    .toBe(1);
+
+  const sourceBytes = await downloadArchive(source!.name);
+
+  // The name this re-upload goes in under has to keep matching
+  // `list_backups()`'s `dispatcharr-backup-*.zip` glob (`apps/backups/services.py`)
+  // — anything else is written to disk by `upload_backup` but never appears
+  // in `GET /api/backups/` at all, which the poll below would otherwise
+  // misreport as the upload itself having failed. Deriving it from
+  // `source!.name` keeps that shape; the `Date.now()` suffix is what keeps
+  // it from colliding with `source`, or with a concurrent worker's own
+  // archive — the one case `upload_backup`'s own "-1" collision suffix
+  // (api_views.py) would otherwise silently rename it to a name this test
+  // never asked for and never records.
+  const uploadName = source!.name.replace(/\.zip$/, `-reupload-${Date.now()}.zip`);
+
+  const beforeUpload = new Set((await listBackups()).map((b) => b.name));
+
+  // Opened while the modal is not yet mounted, so this is the only "Upload"
+  // button in the accessibility tree at the moment of the click.
+  await adminPage.getByRole('button', { name: 'Upload', exact: true }).click();
+
+  const uploadDialog = adminPage.getByRole('dialog');
+  // Mantine `FileInput`'s visible control is a styled placeholder, not the
+  // real `<input type="file">` underneath it — `logos.spec.ts` and
+  // `plugins.spec.ts` both drive that underlying input directly instead of
+  // `getByLabel`, for the same reason. This modal, unlike plugins' import
+  // modal (which layers a `Dropzone` over its `FileInput`), renders exactly
+  // one `input[type="file"]`, so no further scoping by `accept` is needed
+  // here.
+  await uploadDialog.locator('input[type="file"]').setInputFiles({
+    name: uploadName,
+    mimeType: 'application/zip',
+    buffer: sourceBytes,
+  });
+  // Scoped to the dialog: the panel's own "Upload" button that opened it is
+  // still mounted behind the modal and carries the exact same accessible
+  // name, so a page-wide `getByRole('button', { name: 'Upload' })` here
+  // would be a strict-mode violation once the modal is open.
+  await uploadDialog.getByRole('button', { name: 'Upload', exact: true }).click();
+
+  let uploaded: BackupEntry | undefined;
+  await expect
+    .poll(
+      async () => {
+        const fresh = (await listBackups()).filter((b) => !beforeUpload.has(b.name));
+        fresh.forEach((b) => namesToDeleteAfterEach.add(b.name));
+        uploaded = fresh[0];
+        return fresh.length;
+      },
+      { timeout: 30_000, intervals: [1_000] }
+    )
+    .toBe(1);
+
+  expect(uploaded!.name).toBe(uploadName);
+
+  // A length-only check would pass even for a truncated re-write or a
+  // same-size file served from the wrong row; comparing the full bytes is
+  // what proves this download is the exact archive that was uploaded, not
+  // merely one the same size as it (the reasoning `logo-upload.spec.ts`
+  // applies to its own served bytes).
+  const uploadedBytes = await downloadArchive(uploaded!.name);
+  expect(
+    uploadedBytes.equals(sourceBytes),
+    'downloaded bytes differ from the archive that was uploaded'
+  ).toBe(true);
+
+  await pageErrors.expectClean();
+});
