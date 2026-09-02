@@ -6,8 +6,11 @@ import type { M3uFilterOverrides, StreamPage } from '../../fixtures';
  *
  * The whole contract lives in two functions in `apps/m3u/tasks.py`:
  *
- * - `_compile_m3u_stream_filters` (`:1008-1018`) compiles each account's
- *   filters, in `order`, into `(pattern, filter_obj)` pairs. It sets
+ * - `_compile_m3u_stream_filters` (`:1008-1018`) compiles a queryset of
+ *   `M3UFilter` rows into `(pattern, filter_obj)` pairs, in whatever order
+ *   its caller hands it — both call sites order that queryset by `order`
+ *   (`account.filters.order_by("order")`, `:1296` and `:3402-3403`), which is
+ *   what makes test 18's ordering premise hold. It sets
  *   `re.IGNORECASE` **only** when `custom_properties["case_sensitive"] is
  *   False` — the flag's *absence* (as in every test below, which never sets
  *   `custom_properties`) means case-sensitive matching, not
@@ -31,26 +34,45 @@ import type { M3uFilterOverrides, StreamPage } from '../../fixtures';
  * ---------------------------------------------------------------------------
  * `M3UFilterViewSet.perform_create` (`apps/m3u/api_views.py:593-604`) takes
  * the owning account's id from the URL (`/api/m3u/accounts/<id>/filters/`),
- * so a filter can only be created once its account already exists. But
- * `seed.m3uAccount()` (and `seed.upstreamM3UAccount()`, which this file
- * deliberately does not use) creates the account **active**, and
- * `refresh_account_on_save` (`apps/m3u/signals.py:12-20`) unconditionally
- * queues a create-time `refresh_m3u_groups` refresh for a newly-created,
- * active, non-XC account — before any filter created afterwards could
- * possibly apply to it. So every test here creates the account
- * **inactive** first, creates the filter(s) against it, and only then
- * `PATCH`es `is_active: true` and triggers the real refresh — the first
- * refresh this account ever runs is the filtered one.
+ * so a filter can only be created once its account already exists.
+ * `Seeder.m3uAccount()` already defaults `is_active: false`
+ * (`e2e/fixtures/seed.ts:223-231`) — every test below still passes it
+ * explicitly, for readability, not because the default would otherwise let
+ * something slip through. The actual hazard is `refresh_account_on_save`
+ * (`apps/m3u/signals.py:12-20`): it queues a create-time `refresh_m3u_groups`
+ * refresh for **every** newly-created non-XC account regardless of
+ * `is_active` — the signal itself never reads that field. What stops that
+ * create-time task from running unfiltered against an inactive account is
+ * the task's own account lookup (`apps/m3u/tasks.py:1552-1556`,
+ * `M3UAccount.objects.get(id=..., is_active=True)`), which raises
+ * `DoesNotExist` and writes nothing while the account stays inactive. So
+ * every test here creates the account **inactive** first, creates the
+ * filter(s) against it, and only then `PATCH`es `is_active: true` and
+ * triggers the real refresh — the first refresh this account ever runs is
+ * the filtered one. (`seed.upstreamM3UAccount()`, which this file
+ * deliberately does not use, is the one seeder factory that overrides the
+ * default to `is_active: true` — exactly why it is unsafe for this file's
+ * ordering.)
  *
  * That `PATCH` does not itself race a second refresh: `refresh_account_on_save`
  * only fires on `created`, never on update, so flipping `is_active` queues
  * no refresh of its own — `waitFor.m3uRefreshComplete()`'s own trigger
- * (`POST /api/m3u/refresh/<id>/`) is the only one in flight. That also means
- * `seed.waitForCreateTimeGroupRefreshToSettle()` (see `m3u-ingest.spec.ts`)
- * is unnecessary here: it exists to close a race with the create-time task,
- * and creating the account inactive means that task's own account lookup
- * (`is_active=True`) raises `DoesNotExist` and writes nothing at all — there
- * is no second write to race.
+ * (`POST /api/m3u/refresh/<id>/`) is the only refresh explicitly triggered
+ * here. That also means `seed.waitForCreateTimeGroupRefreshToSettle()` (see
+ * `m3u-ingest.spec.ts`) is unnecessary here: it exists to out-wait a
+ * create-time task that *does* reach a terminal write, because
+ * `upstreamM3UAccount()` creates its account active. Here, provided the
+ * create-time `refresh_m3u_groups` task executes before the activating
+ * `PATCH` — which two HTTP round-trips make near-certain — its own
+ * `is_active=True` lookup raises `DoesNotExist` and it writes nothing. If it
+ * is instead delayed past the `PATCH` (a busy Celery queue under parallel
+ * `seeded` workers), it finds the account active and writes `status:
+ * 'pending_setup'` under a separate lock (`refresh_m3u_account_groups`,
+ * `apps/m3u/tasks.py:1546`) from the explicitly-triggered refresh below — a
+ * write `waitFor.m3uRefreshComplete()` could observe as its baseline or as
+ * the in-flight status. The filter already exists by then either way, so
+ * this file's assertions still hold; the exposure is a flakier wait, not a
+ * wrong verdict.
  */
 
 /** Escapes every {@link https://tc39.es/ecma262/#sec-patterns regex metacharacter} in `value`. */
@@ -77,6 +99,7 @@ test(
     // this account's first refresh ever runs.
     const account = await seed.m3uAccount({
       is_active: false,
+      refresh_interval: 0,
       server_url: upstream.playlistUrl(scenario),
     });
 
@@ -130,6 +153,7 @@ test(
 
     const account = await seed.m3uAccount({
       is_active: false,
+      refresh_interval: 0,
       server_url: upstream.playlistUrl(scenario),
     });
 
@@ -188,6 +212,7 @@ test(
 
     const account = await seed.m3uAccount({
       is_active: false,
+      refresh_interval: 0,
       server_url: upstream.playlistUrl(scenario),
     });
 
