@@ -42,7 +42,11 @@ export MSYS_NO_PATHCONV=1
 ###############################################################################
 IMAGE_NAME="dispatcharr:tls-test"
 TEST_PREFIX="tls_test"
-STARTUP_TIMEOUT=120
+# 240s, not 120. A budget for a loaded CI runner that has just `docker
+# load`ed a 3.6 GB image, not a claim about how long a healthy boot takes.
+# Matches the 300s in test-puid-pgid.sh, less the PG-upgrade headroom this
+# suite never needs.
+STARTUP_TIMEOUT=240
 SKIP_BUILD=false
 KEEP_ON_FAIL=false
 SINGLE_SCENARIO=""
@@ -102,13 +106,26 @@ cleanup_scenario() {
         CLEANUP_ITEMS=()
         return
     fi
+    # Two passes, deliberately. CLEANUP_ITEMS is in insertion order and every
+    # scenario tracks its volume before the container that mounts it
+    # (`fresh_volume` calls `track_volume`), so a single ordered pass tries
+    # `docker volume rm` while the container is still up. That fails, the
+    # failure is swallowed by 2>/dev/null, and one PostgreSQL data volume
+    # leaks per scenario on EVERY run, pass or fail — on a runner with
+    # single-digit gigabytes free after a 3.6 GB image load.
+    # D10Scot/Dispatcharr#41.
+    for item in "${CLEANUP_ITEMS[@]}"; do
+        [ "${item%%:*}" = "container" ] || continue
+        local name="${item#*:}"
+        docker stop "$name" 2>/dev/null
+        docker rm -f "$name" 2>/dev/null
+    done
     for item in "${CLEANUP_ITEMS[@]}"; do
         local type="${item%%:*}"
         local name="${item#*:}"
         case "$type" in
-            container) docker stop "$name" 2>/dev/null; docker rm -f "$name" 2>/dev/null ;;
-            volume)    docker volume rm "$name" 2>/dev/null ;;
-            network)   docker network rm "$name" 2>/dev/null ;;
+            volume)  docker volume rm "$name" 2>/dev/null ;;
+            network) docker network rm "$name" 2>/dev/null ;;
         esac
     done
     CLEANUP_ITEMS=()
@@ -126,7 +143,7 @@ wait_for_ready() {
             echo "  Container $name exited unexpectedly"
             return 1
         fi
-        if docker logs "$name" 2>&1 | grep -q "uwsgi started with PID"; then
+        if log_matches "$name" "uwsgi started with PID"; then
             return 0
         fi
         sleep 3
@@ -141,6 +158,33 @@ _capture_logs() {
     docker logs "$container" > "$logfile" 2>&1
 }
 
+# Match a pattern in a container's logs WITHOUT `grep -q` on a live pipe.
+#
+# Both suites run under `set -o pipefail`, and `grep -q` exits at its first
+# match, closing the pipe. If the producer — `docker logs` on a container
+# with a few hundred lines of output — has not finished writing by then, it
+# dies of SIGPIPE (141), and pipefail makes the WHOLE pipeline return 141
+# even though grep matched. A successful match therefore reads as a failure.
+#
+# It is a race on producer size and machine load, so it presents as "passes
+# alone, fails in the full suite" and as unreproducible CI timeouts: the wait
+# loop spins its entire budget while the string it wants is sitting in the
+# log. Verified directly: under pipefail, `seq 1 2000000 | grep -q '^1$'`
+# exits 141 while `... | grep '^1$' >/dev/null` exits 0.
+#
+# check_log_contains/check_log_absent were already immune because they
+# capture to a file first; this gives the wait loops the same idiom.
+log_matches() {
+    local container="$1" pattern="$2"
+    local tmplog rc
+    tmplog=$(mktemp)
+    _capture_logs "$container" "$tmplog"
+    grep -q "$pattern" "$tmplog"
+    rc=$?
+    rm -f "$tmplog"
+    return $rc
+}
+
 check_log_contains() {
     local container="$1" pattern="$2" description="$3"
     local tmplog; tmplog=$(mktemp)
@@ -151,6 +195,37 @@ check_log_contains() {
         log_fail "$description (pattern not found: $pattern)"
     fi
     rm -f "$tmplog"
+}
+
+# check_log_contains, but waits for the pattern instead of reading once.
+#
+# entrypoint.celery.sh prints "Migrations complete, starting Celery..." and
+# only THEN execs the workers, whose Django settings import emits the TLS
+# banners. The wait loop returns on the former, so a bare check_log_contains
+# reads the log before the latter has been written. The app container has no
+# such gap: its banners come from the entrypoint's own `manage.py` calls,
+# which run before uwsgi starts, while the celery entrypoint sends its
+# equivalent (`migrate --check`) to /dev/null.
+#
+# The race was invisible until the pipefail/SIGPIPE fix in log_matches. While
+# that bug held, this scenario's wait loop always ran its FULL budget — which
+# handed the workers 90-240s of unintended grace to finish printing before
+# anything read the log. Fixing the loop is what made these assertions early
+# enough to be honest, and honest enough to fail.
+wait_log_contains() {
+    local container="$1" pattern="$2" description="$3"
+    local timeout="${4:-120}"
+    local elapsed=0
+    while [ $elapsed -lt $timeout ]; do
+        if log_matches "$container" "$pattern"; then
+            log_pass "$description"
+            return 0
+        fi
+        sleep 3
+        elapsed=$((elapsed + 3))
+    done
+    log_fail "$description (pattern not found after ${timeout}s: $pattern)"
+    return 1
 }
 
 check_log_absent() {
@@ -199,7 +274,10 @@ dump_logs_on_fail() {
     local container="$1"
     if [ $FAIL -gt ${SCENARIO_FAIL_BEFORE:-0} ]; then
         echo -e "  ${YELLOW}--- Container logs ($container) ---${NC}"
-        docker logs "$container" 2>&1 | tail -30 | sed 's/^/    /'
+        # 100, not 30. Every failure this suite produces is a Python traceback
+        # out of dispatcharr/settings.py, and 30 lines truncates the frames
+        # above the one that names the cause.
+        docker logs "$container" 2>&1 | tail -100 | sed 's/^/    /'
         echo -e "  ${YELLOW}--- End logs ---${NC}"
     fi
 }
@@ -209,6 +287,25 @@ dump_logs_on_fail() {
 ###############################################################################
 generate_test_certs() {
     CERT_DIR=$(mktemp -d)
+    # 0755, because mktemp -d gives 0700 owned by the invoking user and the
+    # app container reads /certs as `dispatch` (UID 1000, via su -). On a
+    # Linux runner UID 1000 cannot traverse it, so settings.py's
+    # _validate_tls_cert_paths cannot stat ca.crt and every TLS scenario dies
+    # at import with `PermissionError: [Errno 13] … '/certs/ca.crt'`. That is
+    # 7 of this suite's 8 scenarios; the eighth,
+    # modular_no_tls_regression, is the only one that mounts nothing and the
+    # only one that has ever passed.
+    #
+    # Invisible on Docker Desktop, which presents bind mounts permissively —
+    # which is exactly why this survived into CI. A real deployment mounts a
+    # secret the application user can read, so this makes the scenarios test
+    # what they were written to test rather than testing the host's umask.
+    #
+    # (The traceback that got us here is also a product defect in its own
+    # right — see D10Scot/Dispatcharr#128. Not reproduced here: a bash suite
+    # has no test.fail(), so a scenario written to fail would put this
+    # workflow straight back where it was.)
+    chmod 755 "$CERT_DIR"
     log_info "Generating test certificates in $CERT_DIR"
 
     # Generate certs inside a container for cross-platform compatibility.
@@ -244,6 +341,25 @@ generate_test_certs() {
 
         chmod 600 pg-server.key pg-client.key redis-server.key server.key client.key
     ' || { log_fail "Certificate generation failed"; return 1; }
+
+    # Hand the certificates to the user running this suite.
+    #
+    # The openssl container above runs as root, so every file it writes is
+    # root-owned; the keys are then chmod 600 and unreadable by an
+    # unprivileged suite user. modular_tls_key_permission copies client.key
+    # on the HOST to build its 0777 variant, so that cp fails with
+    # `Permission denied` on a Linux runner and the scenario times out
+    # waiting for a container that was never given a usable key.
+    #
+    # Invisible on Docker Desktop, which remaps bind-mount ownership to the
+    # invoking user — the same blind spot that hid the 0700 CERT_DIR above.
+    # Containers are unaffected: the .crt files stay world-readable at 0644,
+    # and the init scripts that consume the 0600 keys run as root inside
+    # their containers, where ownership does not gate access.
+    docker run --rm --entrypoint chown \
+        -v "$(cygpath -w "$CERT_DIR" 2>/dev/null || echo "$CERT_DIR"):/certs" \
+        alpine/openssl -R "$(id -u):$(id -g)" /certs \
+        || { log_fail "Could not hand certificate ownership to $(id -u):$(id -g)"; return 1; }
 
     log_pass "Test certificates generated"
 }
@@ -517,6 +633,13 @@ test_modular_tls_key_permission() {
     # Create a copy of certs with 0777 key permissions
     local bad_perms_dir
     bad_perms_dir=$(mktemp -d)
+    # 0755 on the directory, for exactly the reason generate_test_certs does
+    # it: this is a second mktemp -d, so it is 0700 owned by the suite user
+    # and the app cannot traverse it as `dispatch`. The scenario's subject is
+    # the 0777 KEY below, not the directory — leaving this at 0700 reproduces
+    # the very PermissionError on /certs/ca.crt that the cert-directory fix
+    # exists to remove, and the scenario never reaches the key it is about.
+    chmod 755 "$bad_perms_dir"
     cp "$CERT_DIR"/ca.crt "$CERT_DIR"/client.crt "$CERT_DIR"/client.key "$bad_perms_dir/"
     chmod 777 "$bad_perms_dir/client.key"
 
@@ -800,15 +923,27 @@ test_modular_full_tls_celery() {
         --entrypoint /app/docker/entrypoint.celery.sh \
         "$IMAGE_NAME" >/dev/null
 
-    # Wait for Celery to start (look for "starting Celery" message)
+    # Wait for Celery to start (look for "starting Celery" message).
+    #
+    # $STARTUP_TIMEOUT, not a hardcoded 90. entrypoint.celery.sh emits
+    # "Migrations complete, starting Celery..." only AFTER running the whole
+    # Django migration set over a TLS connection, so this budget covers
+    # migrations, not process startup — and 90s is inside the range a loaded
+    # machine takes to do that. Observed failing at 90s and passing at the
+    # same code minutes earlier. CI never caught it because all seven TLS
+    # scenarios died at settings import long before reaching this loop; the
+    # cert-directory fix above is what made this code reachable for the
+    # first time. The other waits in this file are left at 20s/30s
+    # deliberately: they poll pg_isready and redis-cli on infrastructure
+    # containers, which do no such work.
     local elapsed=0
     local celery_ok=false
-    while [ $elapsed -lt 90 ]; do
+    while [ $elapsed -lt $STARTUP_TIMEOUT ]; do
         if ! docker ps -q -f "name=^${celery_name}$" 2>/dev/null | grep -q .; then
             echo "  Celery container exited unexpectedly"
             break
         fi
-        if docker logs "$celery_name" 2>&1 | grep -q "starting Celery"; then
+        if log_matches "$celery_name" "starting Celery"; then
             celery_ok=true
             break
         fi
@@ -819,9 +954,9 @@ test_modular_full_tls_celery() {
         log_pass "Celery container started with PG mTLS + Redis TLS"
         check_log_contains "$celery_name" "Migrations complete" \
             "Celery confirmed migrations complete via TLS"
-        check_log_contains "$celery_name" "PostgreSQL TLS: enabled" \
+        wait_log_contains "$celery_name" "PostgreSQL TLS: enabled" \
             "Celery sees PostgreSQL TLS enabled"
-        check_log_contains "$celery_name" "Redis TLS: enabled" \
+        wait_log_contains "$celery_name" "Redis TLS: enabled" \
             "Celery sees Redis TLS enabled"
     else
         log_fail "Celery container failed to start with full TLS"

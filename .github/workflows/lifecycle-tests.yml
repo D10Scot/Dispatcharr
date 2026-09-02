@@ -465,6 +465,97 @@ jobs:
         if: always()
         run: docker rm -f dispatcharr-e2e || true
 
+  # One job for both container-owning projects, not two: each would pay its own
+  # 3.6 GB `docker load`, and both projects are short.
+  lifecycle-extras:
+    name: lifecycle-extras
+    runs-on: ubuntu-latest
+    needs: [changes, build]
+    if: needs.changes.outputs.lifecycle == 'true' || needs.changes.outputs.full == 'true'
+    # Matches the sibling jobs, which load the same 3.6 GB artifact.
+    timeout-minutes: 45
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: Download the image
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: dispatcharr-lifecycle-image
+          path: /tmp
+
+      # Restores both dispatcharr-e2e:local and dispatcharr-e2e-upstream:local
+      # — the tags scripts/e2e_up.sh defaults to, so nothing needs retagging.
+      - name: Load the image
+        run: docker load < /tmp/dispatcharr-lifecycle.tar.gz
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '24'
+
+      - name: Install E2E dependencies
+        working-directory: ./e2e
+        run: npm ci
+
+      - name: Install Playwright browsers
+        working-directory: ./e2e
+        run: npx playwright install --with-deps chromium
+
+      # Every e2e job in e2e-tests.yml is gated on this, and a project that
+      # does not typecheck cannot be trusted to have driven Docker correctly.
+      - name: Typecheck
+        working-directory: ./e2e
+        run: npm run typecheck
+
+      - name: Run the restore spec
+        working-directory: ./e2e
+        env:
+          E2E_BASE_URL: http://localhost:9191
+        run: npx playwright test --project=lifecycle-restore
+
+      # Sequential, and after the restore spec, deliberately: each project
+      # calls `up({ reset: true })` and takes the container over, so they
+      # cannot overlap. Ordering matters one way only — the scheduling spec
+      # leaves an ENABLED hourly beat task behind, and while the job ends long
+      # before it could ever tick, running it last means no later step in this
+      # job shares a container with it.
+      #
+      # No `if: always()`, deliberately. If the restore spec failed, the
+      # container it left behind is in an unknown state — a restore is not
+      # atomic — and a scheduling failure read off that container would be
+      # uninterpretable. Skipping is the honest report.
+      - name: Run the scheduling spec
+        working-directory: ./e2e
+        env:
+          E2E_BASE_URL: http://localhost:9191
+        run: npx playwright test --project=lifecycle-scheduling
+
+      - name: Container logs (on failure)
+        if: failure()
+        run: |
+          docker ps -a
+          docker logs dispatcharr-e2e 2>&1 | tail -n 200 || true
+          docker logs e2e-upstream 2>&1 | tail -n 100 || true
+
+      # playwright.config.ts sets trace: 'retain-on-failure' and screenshot:
+      # 'only-on-failure', so these exist on a failure and would otherwise be
+      # discarded with the runner.
+      - name: Upload Playwright report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: playwright-report-lifecycle-extras
+          path: e2e/playwright-report/
+          retention-days: 7
+          if-no-files-found: ignore
+
+      - name: Stop the container
+        if: always()
+        run: docker rm -f dispatcharr-e2e || true
+
   # The one check here that may ever be required, on the same reasoning as
   # `E2E result` in e2e-tests.yml: a gated job that skips never reports, and a
   # required check that never reports blocks the merge forever. This runs
@@ -485,7 +576,7 @@ jobs:
   lifecycle-result:
     name: Lifecycle result
     runs-on: ubuntu-latest
-    needs: [changes, build, suites, upgrade-migrations]
+    needs: [changes, build, suites, upgrade-migrations, lifecycle-extras]
     if: always()
     timeout-minutes: 5
     steps:
@@ -495,13 +586,14 @@ jobs:
           BUILD_RESULT: ${{ needs.build.result }}
           SUITES_RESULT: ${{ needs.suites.result }}
           UPGRADE_RESULT: ${{ needs.upgrade-migrations.result }}
+          EXTRAS_RESULT: ${{ needs.lifecycle-extras.result }}
         run: |
-          echo "changes=$CHANGES_RESULT build=$BUILD_RESULT suites=$SUITES_RESULT upgrade=$UPGRADE_RESULT"
+          echo "changes=$CHANGES_RESULT build=$BUILD_RESULT suites=$SUITES_RESULT upgrade=$UPGRADE_RESULT extras=$EXTRAS_RESULT"
           if [ "$CHANGES_RESULT" != "success" ]; then
             echo "Change detection itself failed — cannot prove these suites were unnecessary."
             exit 1
           fi
-          for result in "$BUILD_RESULT" "$SUITES_RESULT" "$UPGRADE_RESULT"; do
+          for result in "$BUILD_RESULT" "$SUITES_RESULT" "$UPGRADE_RESULT" "$EXTRAS_RESULT"; do
             case "$result" in
               success|skipped) ;;
               *) echo "A lifecycle job did not succeed."; exit 1 ;;

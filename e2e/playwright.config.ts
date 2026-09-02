@@ -262,5 +262,48 @@ export default defineConfig({
       timeout: 1_800_000,
       retries: 0,
     },
+    {
+      // Owns its container: a restore runs `DROP SCHEMA public CASCADE`
+      // (`_clean_postgresql_schema`, apps/backups/services.py) and replaces
+      // every row in the database. On the shared instance that lands under
+      // every parallel worker mid-run and under every other project sharing
+      // the container locally — which is what `COVERAGE.md`'s restore row
+      // has said since G7, and why it stayed `todo` until there was an
+      // instance to put it on.
+      name: 'lifecycle-restore',
+      testDir: './tests/lifecycle',
+      testMatch: /backup-restore\.spec\.ts$/,
+      workers: 1,
+      fullyParallel: false,
+      // One boot, a pg_dump, a schema drop, a pg_restore and a migrate.
+      // Sized above `fixtures/instance.ts`'s own subprocess timeouts (720s
+      // per e2e_up.sh call) for the reason `lifecycle` documents: whichever
+      // fires first decides whether a failed boot arrives with the
+      // container's logs or with a bare Playwright timeout.
+      timeout: 900_000,
+      // Attempt 1 consumes the state attempt 2 would need — it resets the
+      // volume and provisions the superuser. Same reasoning as `lifecycle`.
+      retries: 0,
+    },
+    {
+      // Owns its container. A non-zero `refresh_interval` yields
+      // `should_be_enabled = true` (`create_or_update_periodic_task`,
+      // core/scheduling.py), so the instance ends up with an ENABLED hourly
+      // beat task re-refreshing that account for the life of the container.
+      // That is why `COVERAGE.md`'s refresh-interval row records this as a
+      // direct cost of G3's D10 and why it stayed `todo`: the shared
+      // `seeded` instance cannot tolerate it. Nor can `lifecycle` or
+      // `lifecycle-upgrade` — the provider forgets its scenarios across a
+      // restart (`ScenarioRegistry` is an in-memory Map and
+      // `e2e_up.sh --stop` stops the provider), so a background refresh
+      // there would mutate rows under the durable-state assertions.
+      name: 'lifecycle-scheduling',
+      testDir: './tests/lifecycle',
+      testMatch: /refresh-scheduling\.spec\.ts$/,
+      workers: 1,
+      fullyParallel: false,
+      timeout: 900_000,
+      retries: 0,
+    },
   ],
 });
