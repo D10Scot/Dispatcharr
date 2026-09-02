@@ -228,9 +228,9 @@ export class ApiClient {
    * `data` matters here: `DELETE /api/channels/channels/bulk-delete/` carries
    * `channel_ids` in the body
    * (`apps/channels/api_views.py:BulkDeleteChannelsAPIView.delete`). Routing
-   * that through a raw `ctx.fetch()` call instead would lose `ApiClient`'s
-   * 401 refresh-and-retry. Backward compatible — every existing caller passes
-   * one argument.
+   * that through Playwright's own `request` fixture instead would lose
+   * `ApiClient`'s 401 refresh-and-retry. Backward compatible — every existing
+   * caller passes one argument.
    */
   delete(url: string, data?: unknown) {
     return this.send('DELETE', url, data);

@@ -1105,11 +1105,15 @@ export type CategorySettingRow = {
 export type VodPage<T> = { count: number; next: string | null; previous: string | null; results: T[] };
 
 /**
- * `/api/m3u/filters/` — `M3UFilterSerializer.Meta.fields`, the full list (no
- * field is read-only). `filter_type` is one of the three
+ * `/api/m3u/accounts/<id>/filters/` — nested under the account
+ * (`apps/m3u/api_urls.py:24-26`, `M3UFilterViewSet.get_queryset` scopes to
+ * `m3u_account_id` from the URL kwarg, `apps/m3u/api_views.py:589-591`), which
+ * is also why `m3u_account` is not a field on `M3UFilterSerializer.Meta.fields`
+ * — the full list (no field is read-only). `filter_type` is one of the three
  * `M3UFilter.FILTER_TYPE_CHOICES` (`apps/m3u/models.py`): `'group'` matches
  * the Xtream category / M3U `group-title`, `'name'` the stream name, `'url'`
- * the stream URL.
+ * the stream URL. `custom_properties` is `| null` because the model column is
+ * `JSONField(null=True)` (`apps/m3u/models.py:196`).
  */
 export type M3uFilter = {
   id: number;
@@ -1117,7 +1121,7 @@ export type M3uFilter = {
   regex_pattern: string;
   exclude: boolean;
   order: number;
-  custom_properties: Record<string, unknown>;
+  custom_properties: Record<string, unknown> | null;
 };
 
 /** The writable subset of {@link M3uFilter} — everything `M3UFilterSerializer.Meta.fields` lists except the generated `id`. */
