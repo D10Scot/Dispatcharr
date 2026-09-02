@@ -81,8 +81,18 @@ export type DurableState = {
   systemSettingsId: number;
   /** Ordered. `toEqual`, never `toContain` — see the comment at the create. */
   streams: number[];
-  /** The id of the channel whose membership was *disabled*, not enabled. */
-  channelProfileMembership: { profileId: number; channelId: number };
+  /**
+   * Two channels, deliberately: `disabledChannelId`'s membership was set to
+   * `enabled: false`, `enabledChannelId`'s was left at the receiver's
+   * default. Neither id alone can tell "the row was lost" from "the row was
+   * always correct" — see the comment above the paired assertion in
+   * `assertDurableState`.
+   */
+  channelProfileMembership: {
+    profileId: number;
+    disabledChannelId: number;
+    enabledChannelId: number;
+  };
   epgProgrammeTitles: string[];
   xcUser: XcUser;
   movie: Movie;
@@ -204,17 +214,29 @@ export async function seedDurableState(
     'the seeded channel did not take the explicit channel_number'
   ).toBe(CHANNEL_NUMBER);
 
-  // After the channel, deliberately. `create_profile_memberships` is a
+  // A second channel, created before the profile for the same reason as the
+  // first: `create_profile_memberships` only enrols channels that exist at
+  // profile-creation time. This one's membership is left at the receiver's
+  // default (enabled) — the positive counterpart to the disabled membership
+  // below. See the comment at the paired assertion in `assertDurableState`
+  // for why both are needed: an empty `channels` list would pass the
+  // disabled-membership check vacuously, and this one is what catches that.
+  const secondChannel = await seed.channel();
+
+  // After the channels, deliberately. `create_profile_memberships` is a
   // `post_save` receiver on ChannelProfile that bulk-creates a membership for
   // every channel that exists when the profile is created, so a profile made
-  // first would not enrol this channel at all.
+  // first would not enrol either channel at all.
   const channelProfile = await seed.channelProfile();
   // The durable relation recorded here is a DISABLED membership.
   // `ChannelProfileSerializer.channels` lists the ids of *enabled*
   // memberships, and the receiver above defaults every one of them to
-  // enabled — so asserting an enabled membership survived would catch
-  // nothing: losing the M2M row and re-running the receiver reproduces it
-  // exactly. A membership that comes back enabled is the loss.
+  // enabled. Disabling this one, alone, does not make the assertion sound:
+  // `.not.toContain` on an empty list (every membership lost, none
+  // re-created) also passes. `secondChannel`'s membership, left enabled, is
+  // what makes the loss distinguishable from the correct disabled state — see
+  // the read-back immediately below and the paired assertion in
+  // `assertDurableState`.
   await api.json(
     await api.patch(
       `/api/channels/profiles/${channelProfile.id}/channels/${channel.id}/`,
@@ -222,6 +244,24 @@ export async function seedDurableState(
     ),
     'disable the channel profile membership'
   );
+
+  // Prove the positive half is non-vacuous *now*, before the lifecycle event:
+  // if the receiver did not enrol `secondChannel` at seed time, the read-back
+  // assertion after the event would trivially fail for a reason that has
+  // nothing to do with persistence. Cheap to also confirm the disable took.
+  const seededProfile = await api.json<ChannelProfile>(
+    await api.get(`/api/channels/profiles/${channelProfile.id}/`),
+    'read back channel profile membership at seed time'
+  );
+  expect(
+    seededProfile.channels,
+    'the enabled channel profile membership was not created at seed time — ' +
+      '`create_profile_memberships` did not enrol it'
+  ).toContain(secondChannel.id);
+  expect(
+    seededProfile.channels,
+    'the channel profile membership was not disabled at seed time'
+  ).not.toContain(channel.id);
 
   const streamProfile = await seed.streamProfile();
   const m3uAccount = await seed.m3uAccount();
@@ -336,7 +376,11 @@ export async function seedDurableState(
     user,
     systemSettingsId: row.id,
     streams: streams.map((stream: Stream) => stream.id),
-    channelProfileMembership: { profileId: channelProfile.id, channelId: channel.id },
+    channelProfileMembership: {
+      profileId: channelProfile.id,
+      disabledChannelId: channel.id,
+      enabledChannelId: secondChannel.id,
+    },
     epgProgrammeTitles,
     xcUser,
     movie: movies.results[0],
@@ -462,12 +506,25 @@ export async function assertDurableState(
     await api.get(`/api/channels/profiles/${state.channelProfileMembership.profileId}/`),
     'read back channel profile membership'
   );
+  // Complementary pair, both required. An empty `channels` list (every
+  // ChannelProfileMembership row lost, none re-created) passes the negative
+  // assertion vacuously — it needs the positive one to fail it. Conversely, a
+  // `channels` list re-created at the receiver's default (every row lost,
+  // then regenerated as enabled) passes the positive assertion — it needs the
+  // negative one to fail it. Neither alone can tell "the rows were lost" from
+  // "the rows were always correct"; together they can.
   expect(
     membershipProfile.channels,
     'the disabled membership came back enabled: the ChannelProfileMembership ' +
       'row was lost and `create_profile_memberships` re-created it at its ' +
       'default. The enabled state is the receiver’s doing, not the database’s'
-  ).not.toContain(state.channelProfileMembership.channelId);
+  ).not.toContain(state.channelProfileMembership.disabledChannelId);
+  expect(
+    membershipProfile.channels,
+    'the enabled membership is missing: the ChannelProfileMembership rows ' +
+      'were lost outright and nothing re-created them, since the receiver ' +
+      'only runs on profile creation, not on every read'
+  ).toContain(state.channelProfileMembership.enabledChannelId);
 
   const programmes = await api.json<Page<ProgrammeRow>>(
     await api.get(

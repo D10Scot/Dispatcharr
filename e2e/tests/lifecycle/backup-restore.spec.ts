@@ -44,6 +44,16 @@ type TaskResponse = { task_id: string; task_token: string };
  * so, `failed` on either a task-level error or a Celery failure, and
  * otherwise `result.state.lower()` — so the pending states are lowercase
  * (`pending`, `started`) and the two terminal ones are these.
+ *
+ * That `failed` label is reachable only for a task that completed and
+ * reported its own error. A task that *raised* — a `pg_restore` failure is
+ * the likely case here — takes a different path entirely: `backup_status`
+ * (`apps/backups/api_views.py`) calls `result.get()` inside a `try`, the
+ * exception re-raises there, and the outer `except Exception` turns it into
+ * HTTP 500 with `{"detail": ...}`, never `state: 'failed'`. `waitForTask`
+ * below treats a non-OK response as informative, not silent: it records the
+ * status and body, and gives up after three consecutive 500s rather than
+ * polling out the full deadline to report nothing.
  */
 type TaskStatus = {
   state?: string;
@@ -63,15 +73,37 @@ async function waitForTask(
   const suffix = token ? `?token=${encodeURIComponent(token)}` : '';
   const deadline = Date.now() + 300_000;
   let latest: TaskStatus = {};
+  let consecutive500s = 0;
   while (Date.now() < deadline) {
     const res = await api.get(`/api/backups/status/${taskId}/${suffix}`);
     if (res.ok()) {
+      consecutive500s = 0;
       latest = (await res.json()) as TaskStatus;
       if (latest.state === 'completed') return latest;
       expect(
         latest.state,
         `${what} failed: ${latest.error ?? JSON.stringify(latest)}`
       ).not.toBe('failed');
+    } else {
+      // A raised task never reaches `state: 'failed'` above — it surfaces
+      // here as a non-OK response instead. Record it so a timeout doesn't
+      // report an empty object, and bail early on a run of 500s (the
+      // `result.get()` re-raise inside `backup_status`'s own `try`) rather
+      // than burning the full 300s deadline to say what a few seconds
+      // already showed. A single 500 can be the worker still starting, so
+      // this doesn't fire on the first one; other non-OK statuses (a lost
+      // session, say) keep polling under the normal deadline.
+      latest = { state: `http ${res.status()}`, error: await res.text() };
+      if (res.status() === 500) {
+        consecutive500s += 1;
+        if (consecutive500s >= 3) {
+          throw new Error(
+            `${what} status endpoint returned 500 three times in a row; last body: ${latest.error}`
+          );
+        }
+      } else {
+        consecutive500s = 0;
+      }
     }
     await new Promise((resolve) => setTimeout(resolve, 2000));
   }

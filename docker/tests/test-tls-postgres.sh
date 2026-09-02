@@ -358,7 +358,8 @@ generate_test_certs() {
     # their containers, where ownership does not gate access.
     docker run --rm --entrypoint chown \
         -v "$(cygpath -w "$CERT_DIR" 2>/dev/null || echo "$CERT_DIR"):/certs" \
-        alpine/openssl -R "$(id -u):$(id -g)" /certs
+        alpine/openssl -R "$(id -u):$(id -g)" /certs \
+        || { log_fail "Could not hand certificate ownership to $(id -u):$(id -g)"; return 1; }
 
     log_pass "Test certificates generated"
 }

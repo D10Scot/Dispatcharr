@@ -530,13 +530,11 @@ test_upgrade_explicit_puid() {
     cleanup_scenario
 }
 
-# Simulates upgrade without PUID set. Auto-adapt should detect the
-# existing data owner (UID 102) and skip ownership migration entirely.
 # Verifies an upgrade onto foreign-UID data with NO PUID set. The product
 # defaults PUID to 1000 and MIGRATES the data to match, rather than adapting
 # itself to the data.
 #
-# This scenario used to be `upgrade_default_puid` and asserted the opposite:
+# This scenario used to be `upgrade_auto_adapt` and asserted the opposite:
 # that PUID was read from the data owner and the data left at UID 102. That
 # feature existed, and `7e221720` ("fix: remove PUID auto-detect") deleted it
 # on purpose — running as UID 102 broke host-side access, made existing
