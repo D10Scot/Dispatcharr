@@ -24,7 +24,7 @@ import type { Channel, EpgData, EpgMatchAssociation } from '../../fixtures';
  * holds at 17–26); two such tokens share enough character-level structure
  * (worker/run/test-id digits, hyphens stripped to nothing by
  * `normalize_name`) to land squarely in the ML band, and this container
- * already has years^Wmany runs' worth of such leftover rows sitting active.
+ * already has many runs' worth of such leftover rows sitting active.
  * The test's own assertions still reported green, because its ws-based
  * settle signal (a same-type, unrelated `epg_match` broadcast from another
  * worker) resolved *before* this run's ML-delayed match actually committed
@@ -347,12 +347,17 @@ test('a collection match-epg names its associations, and a confirming re-run rep
   // The confirming re-run: `apply_matched_epg_to_channels` returns changed
   // rows only, and both channels already sit on the matched EPGData, so
   // nothing changes. This second `epg_match` cannot be correlated to this
-  // POST by any id in its payload either (same limitation as test 8's
-  // negative check — `associations` is empty here, so there is no id to
-  // filter on), so it is treated as a best-effort settle signal and
-  // `matches_count === 0` / an `associations` array excluding both ids is
-  // the assertable contract, not proof this exact message was caused by
-  // this exact POST.
+  // POST by any id in its payload — `associations` is empty here, so there
+  // is no id to filter on, and the payload carries no task id — so it is
+  // treated as a best-effort settle signal and `matches_count === 0` / an
+  // `associations` array excluding both ids is the assertable contract, not
+  // proof this exact message was caused by this exact POST. Aliasing a
+  // different worker's own zero-match `epg_match` here is harmless for this
+  // assertion, since it would report the same shape; aliasing one that
+  // legitimately changed *other* channels would still leave `channelA.id`/
+  // `channelB.id` out of its `associations`, so only a coincidental zero
+  // total from a completely unrelated run could produce a false pass, and
+  // only for the `matches_count` half of this assertion.
   const secondMatch = ws.waitForMessage('epg_match', { timeoutMs: 30_000 });
 
   const res2 = await api.post('/api/channels/channels/match-epg/', {
