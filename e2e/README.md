@@ -319,6 +319,76 @@ that depends on the default stream profile has to account for both, not just thi
 legal, because Playwright's `testMatch` never collects `helpers.ts`, and the alternative is a
 second copy that drifts.
 
+## Network access (G14)
+
+`network_access_allowed(request, settings_key, user=None)` (`dispatcharr/utils.py`) is the ACL
+behind four scopes — `M3U_EPG`, `STREAMS`, `XC_API`, `UI`. No backend constant enumerates all four;
+the canonical list is `frontend/src/constants.js:NETWORK_ACCESS_OPTIONS`. The shipped
+`network_access` `CoreSettings` row is `{}` — no key present — so every scope runs under its
+default: `M3U_EPG` → `LOCAL_NETWORK_CIDRS` (private/loopback only); `STREAMS`, `XC_API` and `UI` →
+`0.0.0.0/0`.
+
+**The `X-Real-IP` mechanism.** `get_client_ip` honours `X-Real-IP` only when `REMOTE_ADDR` — the
+TCP peer — is itself inside `LOCAL_NETWORK_CIDRS`. In this container that peer is nginx, reached
+over the Docker bridge, which is inside those CIDRs and therefore trusted by default; nginx's
+`uwsgi_pass` routes neither set nor strip the header, so a client that supplies its own `X-Real-IP`
+is believed verbatim ([#81](https://github.com/D10Scot/Dispatcharr/issues/81)). That is a fact about
+*this* topology's `DISPATCHARR_TRUSTED_PROXIES` default, not a portable one — a deployment setting
+it to `none` correctly refuses a spoofed header. `network-acl.spec.ts`'s first test pins this and is
+the premise every other test in that file depends on.
+
+**Never write `network_access["UI"]`.** `apps/accounts/permissions.py:Authenticated` gates every
+DRF endpoint on that scope — including the settings-write endpoint that would undo a mistake — so a
+wrong `UI` value locks out the very API call needed to fix it. Recovery on a shared instance means
+`manage.py reset_network_access` over `docker exec`, which no test in this harness has the authority
+to run casually. `network-acl.spec.ts` never writes that key, under any circumstance; the same rule
+applies to any future test in this area.
+
+## The ML band rule (D6) — read this before adding an EPG-name pair anywhere
+
+`try_epg_name_match` (`apps/channels/epg_matching.py`) calls `get_sentence_transformer()` — which
+lazily downloads `sentence-transformers/all-MiniLM-L6-v2` into `/data/models` on first use —
+whenever the best fuzzy score falls inside one of two ML bands.
+`_get_epg_match_thresholds(is_bulk_matching)` defines twelve numbers, six per branch:
+
+| Threshold | Bulk (`is_bulk_matching=True`) | Single (`is_bulk_matching=False`) |
+|---|---|---|
+| `FUZZY_HIGH_CONFIDENCE` | 90 | 85 |
+| `FUZZY_SKIP_ML` | 80 | 75 |
+| `FUZZY_MEDIUM_CONFIDENCE` | 70 | 40 |
+| `ML_HIGH_CONFIDENCE` | 0.75 | 0.65 |
+| `ML_LAST_RESORT` | 0.65 | 0.50 |
+| `FUZZY_LAST_RESORT_MIN` | 50 | 20 |
+
+A score at or above `FUZZY_SKIP_ML` matches with no ML call at all. A score below
+`FUZZY_LAST_RESORT_MIN` never reaches the ML branches either — it falls through to "no match" with
+no download. The two ML-free bands each branch leaves are therefore **bulk: 80 and up, or under
+50; single: 75 and up, or under 20** — everything in between calls
+`get_sentence_transformer()`. A test whose name pair lands between them downloads a ~90 MB model at
+test time.
+
+**The worked example that removed test 9 (the bulk/single threshold-disagreement test).** The one
+range where the two branches' `FUZZY_SKIP_ML` values disagree is `[75, 80)` — a single-path score
+there looks safe (`>= 75`), but that same score can only be produced on the *bulk* path to
+demonstrate the disagreement, and the bulk path's `FUZZY_MEDIUM_CONFIDENCE` is 70, so every score in
+`[70, 80)` — `[75, 80)` included — calls `get_sentence_transformer()` regardless. There is no
+bulk-path pair that demonstrates the threshold disagreement without violating this rule; the test
+was specified, then cut once this was worked out, rather than shipped against the ML band.
+
+**The real collision that cut test 8.** A bulk-path "no match" characterization test paired two
+`seed.channel()`/`seed.generatedName('epg')`-shaped names — normalised, they become one unbroken
+low-vowel-density token with no natural-language structure. Two such generated-shape tokens share
+enough character-level structure (worker/run/test-id digits, hyphens stripped to nothing by
+`normalize_name`) to land inside the bulk path's `[50, 80)` band by coincidence: one measured at
+fuzzy 56.91 against a *leftover* `EPGData` row from an unrelated `epg-ingest.spec.ts` run on this
+shared instance, triggering a real model download and an ML "desperate last resort" match at cosine
+0.91 between two unrelated names. The margin that holds for a generated-shape token against a
+*natural-language* EPG name (17–26, comfortably clear of both bands) does **not** hold against
+another generated-shape token — see `epg-matching.spec.ts`'s header for the full measured-score
+table. Engineer every pair's normalised `fuzz.ratio` to land at or above `FUZZY_SKIP_ML` or below
+`FUZZY_LAST_RESORT_MIN` for whichever path it exercises, and never assume a margin measured against
+natural-language names transfers to a pair of generated-shape names.
+
 ## The login throttle — read this before writing a multi-user test
 
 `POST /api/accounts/token/` is rate-limited to **3 requests per minute per
@@ -608,6 +678,25 @@ assertion is worth that. `COVERAGE.md` records that as a decision, not a gap.
    refresh on *any* 401 — exactly the status the XC rejection tests assert
    on, so a request made through `api` can silently retry away the very
    rejection the test exists to observe.
+13. `seeded` is `fullyParallel: true`, so a spec *file* is not a confinement
+   boundary on its own — two tests in one file can still run on two
+   different workers at once. A hazard that must stay confined to one file
+   (a global settings write another test in the same file needs to see
+   restored, an ordering premise later tests in the file depend on) needs
+   `test.describe.configure({ mode: 'serial' })` in that file, the way
+   `network-acl.spec.ts` does. `frontend`'s per-surface file split relies on
+   a different mechanism (`fullyParallel: false` at the project level) —
+   don't assume that guarantee carries over to a `seeded` spec.
+
+**Tags versus grey-box capabilities — an open ADR-0002 follow-up.** ADR-0002 states that anything on
+`tests/guards/allowlist.ts`'s capability list is `@characterization` by construction, because those
+are the calls that stop meaning anything once the relay is its own process. That is not enforced
+today: `streaming-failover/failover-buffering.spec.ts` is on the allowlist (it mutates the global
+`proxy_settings` row) and is tagged `@contract`. `tests/guards/tags.spec.ts` and
+`tests/guards/capabilities.spec.ts` each check their own rule and neither cross-checks the other, so
+this passes both guards while contradicting the ADR's stated consequence. Recorded here rather than
+retagged unilaterally — resolving it either way (loosen the ADR's claim, or retag the file and add a
+cross-check guard) is a call for whoever owns ADR-0002 next, not a side effect of this goal's tests.
 
 ## CI
 
@@ -726,6 +815,7 @@ Local builds are native-architecture; CI is amd64. If you need parity,
 | Fixture | Provides |
 |---|---|
 | `api` | Authenticated HTTP; retries once through a token refresh on 401. `upload()` is the one multipart path |
+| `api.delete(url, data?)` | `DELETE` with an optional JSON body, for the rare endpoint that needs one — `DELETE /api/channels/channels/bulk-delete/` carries `channel_ids` in the body (`BulkDeleteChannelsAPIView.delete`). Backward compatible: every pre-existing caller passes one argument and is unaffected |
 | `seed` | `channel`, `user`, `channelProfile`, `channelGroup`, `xcUser`, `streamProfile`, `m3uAccount`, `xcAccount`, `epgSource`, `stream`, `upstreamChannel`, `upstreamM3UAccount`, `upstreamEpgSource`, `logo` |
 | `adminPage` | A `Page` authenticated as the bootstrap admin |
 | `pageErrors` | `PageErrorCollector`: `consoleErrors`, `pageErrors`, `failedResponses` and `expectClean()`, which fails naming every offender not covered by `EXPECTED_PAGE_NOISE` (`fixtures/page-errors.ts`). Attached at fixture setup, so it sees the initial document load |
