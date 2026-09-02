@@ -6,8 +6,9 @@ import type { Channel } from '../../fixtures';
  *
  * Driven with the built-in `request` fixture everywhere, never `api`: this is
  * how TiviMate, Plex and every other real client fetch a playlist, with no
- * bearer token. The `api` fixture is reserved here for seeding and for the
- * one profile-membership PATCH, which is an admin write, not a client read.
+ * bearer token. The `api` fixture is reserved here for seeding and for admin
+ * writes — the profile-membership PATCH and the channel rename in the first
+ * test — never for a client read.
  *
  * Four workers share one instance and `generate_m3u` with no profile in the
  * URL renders every channel that exists — so nothing here may assert a
@@ -80,8 +81,8 @@ test('/output/m3u renders a parseable playlist with a well-formed proxy URL', { 
   // name, with no quote character, through the API alone: the PATCH is
   // accepted, and the rename actually persists on a read-back. No second
   // `/output/m3u` fetch here — that route's 2-second anonymous cache (see the
-  // file header) would make a second fetch a source of flake, and the API
-  // alone already proves the rename.
+  // `m3uQuery()` note at the top of this test) would make a second fetch a
+  // source of flake, and the API alone already proves the rename.
   const newName = seed.generatedName('output-m3u-renamed');
   const renamed = await api.patch(`/api/channels/channels/${channel.id}/`, {
     name: newName,
