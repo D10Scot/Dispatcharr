@@ -305,6 +305,33 @@ test("upstreamM3UAccount() still calls waitForCreateTimeGroupRefreshToSettle() b
   ).toBe(true);
 });
 
+// The non-inverted control for the test.fail() below ('M3UAccount.locked is
+// not writable over the API'): `seed.m3uAccount()` produces a usable account
+// and a PATCH to it over the real API is accepted and takes effect. Neither
+// half of that premise is exercised anywhere else in this file — the other
+// four tests here all go through `seed.upstreamM3UAccount()` instead. Without
+// this, a break in either half (the factory, or the PATCH route itself)
+// would be swallowed by the pin below as an "expected failure", since
+// test.fail() is satisfied by ANY failure in its body, not specifically the
+// `locked` regression it exists to pin.
+test('an M3U account round-trips a PATCH of a writable field', { tag: '@contract' }, async ({
+  seed,
+  api,
+}) => {
+  const account = await seed.m3uAccount();
+  expect(account.locked).toBe(false);
+
+  const newName = seed.generatedName('m3uAccountRenamed');
+  const patched = await api.patch(`/api/m3u/accounts/${account.id}/`, { name: newName });
+  expect(patched.ok()).toBeTruthy();
+
+  const readBack = await api.json<M3uAccount>(
+    await api.get(`/api/m3u/accounts/${account.id}/`),
+    'account read-back after renaming'
+  );
+  expect(readBack.name).toBe(newName);
+});
+
 /**
  * Known bug: D10Scot/Dispatcharr#15. `M3UAccountSerializer` declares
  * `read_only_fields = ["locked", "created_at", "updated_at"]` in its **class
@@ -315,6 +342,13 @@ test("upstreamM3UAccount() still calls waitForCreateTimeGroupRefreshToSettle() b
  *
  * Asserts the CORRECT behaviour and is expected to fail until #15 is fixed.
  * Do not patch the product from this harness; do not file a duplicate issue.
+ *
+ * The premise this test depends on — that `seed.m3uAccount()` and a PATCH
+ * against `/api/m3u/accounts/<id>/` both work — is not exercised by
+ * `test.fail()`'s own inline assertions in a way that can't be swallowed as
+ * "expected failure". It now lives as a non-inverted assertion in the test
+ * above ('an M3U account round-trips a PATCH of a writable field'), which
+ * actually guards it.
  */
 test.fail('M3UAccount.locked is not writable over the API', { tag: '@contract' }, async ({ seed, api }) => {
   const account = await seed.m3uAccount();
