@@ -1,4 +1,5 @@
 import { test, expect, decodeXmlEntities, m3uQuery, parseM3u } from '../../fixtures';
+import type { Channel } from '../../fixtures';
 
 /**
  * `/output/m3u[/<profile>]` — the client-facing M3U playlist surface.
@@ -16,6 +17,7 @@ import { test, expect, decodeXmlEntities, m3uQuery, parseM3u } from '../../fixtu
 
 test('/output/m3u renders a parseable playlist with a well-formed proxy URL', { tag: '@contract' }, async ({
   seed,
+  api,
   request,
   baseURL,
 }) => {
@@ -69,6 +71,28 @@ test('/output/m3u renders a parseable playlist with a well-formed proxy URL', { 
   // A truthiness check passes for either, so it cannot see the case that
   // matters: a channel whose auto-assignment silently did not happen.
   expect(mine!.attributes['group-title']).toBe('Default Group');
+
+  // Rename round-trip. The quote-escaping pin below (#80) PATCHes this same
+  // route, `/api/channels/channels/<id>/`, with a name — but inside its own
+  // test.fail() block, where a regression in the PATCH-and-persist mechanism
+  // itself (not just in quote escaping) would be swallowed as "expected
+  // failure" and never surface. This proves the mechanism for an ordinary
+  // name, with no quote character, through the API alone: the PATCH is
+  // accepted, and the rename actually persists on a read-back. No second
+  // `/output/m3u` fetch here — that route's 2-second anonymous cache (see the
+  // file header) would make a second fetch a source of flake, and the API
+  // alone already proves the rename.
+  const newName = seed.generatedName('output-m3u-renamed');
+  const renamed = await api.patch(`/api/channels/channels/${channel.id}/`, {
+    name: newName,
+  });
+  expect(renamed.status()).toBe(200);
+
+  const readBack = await api.json<Channel>(
+    await api.get(`/api/channels/channels/${channel.id}/`),
+    'channel read-back after renaming'
+  );
+  expect(readBack.name).toBe(newName);
 });
 
 test('/output/m3u/<profile> renders only the channels enabled in that profile', { tag: '@contract' }, async ({
@@ -158,8 +182,13 @@ test('/output/m3u/<profile> 404s on a profile that does not exist', { tag: '@con
  * escaping.
  *
  * Verified with `--reporter=json` that this pin fails at the `wellFormed`
- * assertion, with the premise assertions above it passing. Re-verify the same
- * way after any edit here.
+ * assertion. The rename round-trip at the end of the first test above
+ * ('/output/m3u renders a parseable playlist with a well-formed proxy URL')
+ * is the non-inverted assertion that a PATCH-rename over
+ * `/api/channels/channels/<id>/` is accepted and actually persists — the
+ * premise this pin's own PATCH depends on, proven outside a test.fail()
+ * block where a regression in it would otherwise be swallowed as "expected
+ * failure". Re-verify the failure point the same way after any edit here.
  */
 test.fail(
   'a channel name containing a double quote still produces a well-formed EXTINF line (#80)', { tag: '@contract' },
