@@ -8,16 +8,16 @@ import type { Movie, VodPage } from '../../fixtures';
 // scenario, a refresh-vod POST and the ingest wait for both movies to land.
 // This file has exactly one other test — the pin below — and its entire
 // seed-and-ingest sequence (upstream.scenario, the refresh-vod POST,
-// waitFor.resource) sits inside that test.fail() block; no other test in
-// this file performs that sequence outside one. A throw anywhere in it (a
-// malformed scenario, a refresh-vod that never reaches 202, an ingest that
-// times out) would be swallowed by the pin below as an "expected failure" of
-// the whole test, since test.fail() is satisfied by ANY failure in its body,
-// not specifically the streaming omission it exists to pin. This control
-// repeats the identical two-movie setup outside test.fail() and asserts only
-// the listing half, non-inverted, so a break in the seed-and-ingest premise
-// surfaces here instead of vanishing into the pin's "expected failure". It
-// does not stream anything — the streaming half is the pin's own subject.
+// waitFor.resource) sits inside that test.fail() block. A throw anywhere in
+// it (a malformed scenario, a refresh-vod that never reaches 202, an
+// ingest that times out) would be swallowed by the pin below as an
+// "expected failure" of the whole test, since test.fail() is satisfied by
+// ANY failure in its body, not specifically the streaming omission it
+// exists to pin. This control repeats the identical two-movie setup outside
+// test.fail() and asserts only the listing half, non-inverted, so a break
+// in the seed-and-ingest premise surfaces here instead of vanishing into
+// the pin's "expected failure". It does not stream anything — the
+// streaming half is the pin's own subject.
 test('an adult movie is unlistable for a hide_adult_content user and the control movie remains listable', { tag: '@contract' }, async ({
   upstream,
   seed,
@@ -70,6 +70,9 @@ test('an adult movie is unlistable for a hide_adult_content user and the control
   expect(adultMovie, `${prefix}-adult among the ingested movies`).toBeDefined();
   expect(controlMovie, `${prefix}-control among the ingested movies`).toBeDefined();
 
+  // seed.xcUser() ignores an attempt to override xc_password, but not
+  // user_level or custom_properties — this user is what the fixture calls a
+  // "hide_adult_content" user (see the pin below's identical note).
   const user = await seed.xcUser({
     user_level: 1,
     custom_properties: { hide_adult_content: true },
@@ -106,16 +109,15 @@ test('an adult movie is unlistable for a hide_adult_content user and the control
 // be quietly passing on a listing that never worked at all. Verified with
 // `--reporter=json` that this pin fails at the `not.toBe(200)` below, with
 // both premise assertions passing — re-verify the same way after any edit
-// here. This test's own body also performs the same seed-and-ingest
-// sequence (the upstream scenario, the refresh-vod POST, and the ingest
-// wait) that both the listing and streaming assertions below depend on —
-// but inside this test.fail() block, which is satisfied by ANY failure, a
-// broken seed or a stalled ingest would be swallowed as an "expected
-// failure" just as readily as the intended streaming defect. The
-// non-inverted control above ('an adult movie is unlistable for a
-// hide_adult_content user and the control movie remains listable') repeats
-// that same seed-and-ingest sequence outside test.fail() and is what
-// actually guards it.
+// here. This test's own body performs the seed-and-ingest sequence (the
+// upstream scenario, the refresh-vod POST, and the ingest wait) that both
+// the listing and streaming assertions below depend on — but inside this
+// test.fail() block, which is satisfied by ANY failure, a broken seed or a
+// stalled ingest would be swallowed as an "expected failure" just as
+// readily as the intended streaming defect. The non-inverted control above
+// ('an adult movie is unlistable for a hide_adult_content user and the
+// control movie remains listable') repeats that same seed-and-ingest
+// sequence outside test.fail() and is what actually guards it.
 test.fail('an adult movie a user cannot list is not streamable by that user', { tag: '@contract' }, async ({
   upstream,
   seed,
