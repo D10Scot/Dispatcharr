@@ -166,6 +166,10 @@ test.fail('an unsatisfiable Range on a fresh session is 416, not 500', { tag: '@
 test('the range-unsupported fault makes the provider ignore Range', { tag: '@contract' }, async ({
   upstream,
 }) => {
+  // Fixed names, not seed.generatedName(): this scenario is never ingested
+  // into Dispatcharr, so there is no Movie row for this file's own
+  // TMDB -> IMDB -> (name, year) collision rule (see the top-of-file
+  // comment) to apply to. Do not copy this shortcut into a test that seeds.
   const scenario = await upstream.scenario({
     xc: true,
     username: 'range-unsupported-user',
@@ -187,10 +191,14 @@ test('the range-unsupported fault makes the provider ignore Range', { tag: '@con
     `${scenario.internal}/movie/${scenario.username}/${scenario.password}/501.mp4`
   );
 
-  // Ground truth for "the whole asset", read before the fault is armed.
-  const baseline = await fetch(assetUrl);
-  expect(baseline.status).toBe(200);
-  const total = Number(baseline.headers.get('content-length'));
+  // Ground truth, proven rather than assumed: the SAME range request,
+  // unfaulted, is honoured normally — 206 with the requested slice. This is
+  // the premise the fault-armed assertion below depends on; asserting it
+  // here means the control proves its own precondition instead of
+  // inheriting it from e2e-upstream's source.
+  const baseline = await fetch(assetUrl, { headers: { Range: 'bytes=100-199' } });
+  expect(baseline.status).toBe(206);
+  const total = Number(baseline.headers.get('content-range')?.split('/')[1]);
   expect(total).toBeGreaterThan(200);
 
   try {
@@ -202,9 +210,10 @@ test('the range-unsupported fault makes the provider ignore Range', { tag: '@con
     const body = Buffer.from(await res.arrayBuffer());
     expect(body.byteLength).toBe(total);
   } finally {
-    // range-unsupported is scenario-scoped and the scenario outlives the
-    // test; leaving it armed makes the next test in the file read the wrong
-    // thing if the file is ever reordered.
+    // This scenario is this control's own — created above and touched by no
+    // other test, so there is no reordering hazard to guard against. Clear
+    // the fault anyway: a live scenario left with range-unsupported armed is
+    // never worth the ambiguity.
     await upstream.clearFault(scenario, 'range-unsupported');
   }
 });
