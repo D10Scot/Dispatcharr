@@ -63,15 +63,25 @@ test('xmltv.php renders a guide for its user', { tag: '@contract' }, async ({
   const channel = await seed.channel({ user_level: 0 });
   const user = await seed.xcUser({ user_level: 1 });
 
-  const res = await request.get(`/xmltv.php${xcQuery(user)}`);
+  // `xmltv.php` (`xc_xmltv`) hands the request straight to the same
+  // `generate_epg()` that serves `/output/epg`, which reads its forward
+  // window off `request.GET.get('days', ...)` regardless of which route
+  // called it, so `days` bounds this XC route the same way
+  // output-epg.spec.ts bounds `/output/epg`: without it, the body carries
+  // the server-default forward window for every channel this user can see —
+  // a population that only grows, since nothing in `seeded` deletes a
+  // channel — and now also crosses page.evaluate in expectWellFormedXml.
+  // Unlike there, this test asserts only channel presence, not a programme
+  // count, so the bound just caps cost.
+  const res = await request.get(`/xmltv.php${xcQuery(user, { days: 1 })}`);
   expect(res.status()).toBe(200);
   expect(res.headers()['content-type']).toContain('application/xml');
 
   const body = await res.text();
 
   // parseXmltv reads content and is deliberately shallow — it guards only on
-  // the substring `<tv` and would extract elements from a document with an
-  // unclosed root (see its own comment, which forbids tightening it).
+  // the substring `<tv` (see its own comment, which forbids tightening it)
+  // and would extract elements from a document with an unclosed root.
   // expectWellFormedXml is the only place in the suite that can honestly say
   // "valid XML".
   await expectWellFormedXml(adminPage, body);
