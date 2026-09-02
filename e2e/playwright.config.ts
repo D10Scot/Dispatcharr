@@ -207,6 +207,41 @@ export default defineConfig({
       use: { storageState: 'playwright/.auth/admin.json' },
     },
     {
+      name: 'dvr',
+      testDir: './tests/dvr',
+      dependencies: ['bootstrap'],
+      // 300s, matching the three streaming projects rather than `frontend`'s
+      // 120s. Every row here waits out a real recording: beat's clock is a 5s
+      // tick (`DEFAULT_MAX_INTERVAL` in django_celery_beat's schedulers, with
+      // `beat_max_loop_interval` unset), `run_recording`'s own
+      // `_first_segment_timeout` is 15s, and the shortest useful capture is 30s.
+      // The headroom is what turns a wedged `run_recording` into a named wait
+      // failure instead of a bare project timeout.
+      timeout: 300_000,
+      // One worker, and `fullyParallel` left unset so it inherits `false`.
+      // Three independent reasons, any one of which is already this suite's
+      // standard for serialising a project:
+      //
+      //  1. Every row writes under `/data/recordings` — a hard-coded literal in
+      //     `_build_output_paths`, not a setting — and the finalisation step
+      //     concatenates and remuxes there.
+      //  2. `comskip.spec.ts` mutates the global `dvr_settings` CoreSettings row
+      //     (`comskip_enabled`, `comskip_mode`) for the duration of its run. That
+      //     is the same hazard `streaming-failover` serialises for
+      //     (`proxy_settings.buffering_speed`) and `streaming-greybox` serialises
+      //     for (`stream_settings.default_stream_profile`), and both of those
+      //     blocks argue that serialising makes the race structurally impossible
+      //     rather than merely documented. It does here too.
+      //  3. A firing recording is a live-proxy client of its own channel, and
+      //     rows assert the provider's live connection count. A second worker
+      //     recording concurrently would not collide on the channel, but it would
+      //     on the settings row above, and nothing would enforce the distinction.
+      workers: 1,
+      // Required. `adminPage` is an alias of `page`; the admin identity comes
+      // from this line, not from the fixture.
+      use: { storageState: 'playwright/.auth/admin.json' },
+    },
+    {
       // Owns its container's lifecycle: restarts it mid-test. Must run alone —
       // `fixtures/instance.ts` has the reasoning, `e2e/README.md` has the rule.
       name: 'lifecycle',

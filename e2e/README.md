@@ -60,6 +60,7 @@ one up. CI binds the same way.
 | `streaming-failover` | Failover behaviour: dead-air and buffering watchdogs. Long timeouts, fewer workers |
 | `streaming-greybox` | Tests that reach past the API into Redis or the container directly (e.g. counting live `ffmpeg` processes). Long timeouts, one worker — **must be run alone locally**: in CI each matrix job gets its own container, but locally all projects can share one, and this project observes container-wide state that whatever else is running would disturb |
 | `frontend` | The nine product surfaces in a browser: does the page mount, and does a write driven through its UI reach the server. Two workers, file-level parallelism, 120s |
+| `dvr` | Real DVR recordings end to end — scheduling through `run_recording`, comskip's `dvr_settings` toggle, and finalisation under `/data/recordings`. Long timeouts, one worker — **must be run alone locally**: in CI each matrix job gets its own container, but locally all projects can share one, and this project mutates container-wide state (the `dvr_settings` row, the recordings directory) that whatever else is running would disturb |
 | `lifecycle` | Restarts the container mid-test. **Runs alone** — it destroys the container every other project shares. No `bootstrap` dependency: it provisions its own admin |
 | `lifecycle-upgrade` | Boots a published baseline image, seeds, then replaces the container with the local build on the same volume. **Runs alone.** Runs in `lifecycle-tests.yml`, not in `e2e-tests.yml`'s matrix |
 | `lifecycle-restore` | Takes a backup, mutates the database, restores it. **Runs alone** and resets its container: `restore_backup` drops and rebuilds the `public` schema, replacing every row under anything else sharing the instance. Runs in `lifecycle-tests.yml`, not in `e2e-tests.yml`'s matrix |
@@ -173,7 +174,7 @@ the event and compare the catalogue — is the one thing that cannot work
 here.
 
 `npm test` (no suffix) deliberately fails with a message telling you to pick
-one of the ten — there is no single invocation that is correct for all of
+one of the eleven — there is no single invocation that is correct for all of
 them, and a bare `npm test` in CI would silently run whichever config
 happened to be first.
 
@@ -613,8 +614,8 @@ assertion is worth that. `COVERAGE.md` records that as a decision, not a gap.
 
 `.github/workflows/e2e-tests.yml` builds the AIO image once, then runs
 `pristine`, `seeded`, `streaming`, `streaming-failover`, `streaming-greybox`,
-`lifecycle` and `frontend` as a matrix, each against its own fresh container,
-each gated on `npm run typecheck` before tests run.
+`lifecycle`, `frontend` and `dvr` as a matrix, each against its own fresh
+container, each gated on `npm run typecheck` before tests run.
 
 **That project list is no longer hardcoded in the `test` job** — it is built by
 the `changes` job and consumed as `fromJSON(needs.changes.outputs.projects)`,
