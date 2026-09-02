@@ -584,10 +584,11 @@ export type UpstreamSeries = {
 
 /**
  * The writable fields on `ChannelSerializer` this harness uses, minus the
- * generated `name`. A curated subset, not the complete writable set —
- * `auto_created_by` is omitted, as are the nested `override` and the
- * read-only mirrors noted on {@link Channel}. Add what you need, with
- * evidence; see this file's header.
+ * generated `name` — plus `channel_profile_ids`, which is not a serializer
+ * field at all (see its own doc comment below). A curated subset, not the
+ * complete writable set — `auto_created_by` is omitted, as are the nested
+ * `override` and the read-only mirrors noted on {@link Channel}. Add what
+ * you need, with evidence; see this file's header.
  */
 export type ChannelOverrides = {
   channel_number?: number | null;
@@ -607,8 +608,9 @@ export type ChannelOverrides = {
   /**
    * Not a `ChannelSerializer` field — `ChannelViewSet.create`
    * (apps/channels/api_views.py) reads it straight off `request.data` after
-   * `serializer.is_valid()`, which is why DRF's excess-property handling
-   * lets it through unvalidated by the serializer itself. Controls which
+   * `serializer.is_valid()`; the serializer itself ignores unknown keys in
+   * `data`, since `.is_valid()` only pulls the fields it declares, so this
+   * one reaches the view unvalidated. Controls which
    * `ChannelProfile`s the new channel is enrolled in at creation: omitted
    * (`seed.channel()`'s default) enrols it in every profile that exists at
    * that moment, `[]` enrols it in none, and an explicit id list enrols it

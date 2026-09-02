@@ -117,10 +117,30 @@ test('filtering by Channel Profile narrows the grid to that profile\'s channels'
     grid.getByAltText(member.name, { exact: false })
   ).toBeVisible({ timeout: 30_000 });
 
-  // Same search-box narrowing for the non-member: if `channel_profile_id`
-  // filtering were broken and let every channel through regardless of
-  // membership, this would be the row that catches it.
+  const profileSelect = adminPage.getByPlaceholder('Filter by profile');
+
+  // A bare `search.fill(nonMember.name)` followed immediately by
+  // `toHaveCount(0)` would pass on its very first check for a reason that
+  // has nothing to do with the profile filter: at that instant the grid
+  // still renders the *previous* search's result (the member row), so the
+  // non-member's count is legitimately zero before the new fetch has even
+  // landed — the assertion would hold identically if profile filtering were
+  // deleted from the product outright. To anchor the absence on the filter
+  // rather than on that timing accident, first prove the non-member row is
+  // reachable through search alone, with the profile filter cleared to
+  // "All Profiles" (`getProfileOptions` in `guideUtils.js` always injects
+  // this option), then re-apply the profile filter and assert the same row
+  // disappears. Only the second assertion can fail if filtering is broken;
+  // the first proves there was something there for it to filter out.
   await search.fill(nonMember.name);
+  await profileSelect.click();
+  await adminPage.getByRole('option', { name: 'All Profiles', exact: true }).click();
+  await expect(
+    grid.getByAltText(nonMember.name, { exact: false })
+  ).toBeVisible({ timeout: 30_000 });
+
+  await profileSelect.click();
+  await adminPage.getByRole('option', { name: profile.name, exact: true }).click();
   await expect(grid.getByAltText(nonMember.name, { exact: false })).toHaveCount(0);
 
   await pageErrors.expectClean();
