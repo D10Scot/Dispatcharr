@@ -139,8 +139,32 @@ test('filtering by Channel Profile narrows the grid to that profile\'s channels'
     grid.getByAltText(nonMember.name, { exact: false })
   ).toBeVisible({ timeout: 30_000 });
 
+  // A narrower residual of the same defect survives a bare click-then-assert
+  // here too: `Guide.jsx`'s filter fetch (the `useEffect` keyed on
+  // `selectedProfileId`, `params.set('channel_profile_id', …)`) is async, so
+  // the grid can render transiently empty *while that request is in
+  // flight* — a state `toHaveCount(0)` would also pass on, for a reason
+  // that is "the fetch hasn't returned yet" rather than "the filter
+  // excluded this row". Unlike the original defect the row is genuinely
+  // present at the moment of the click, so *some* change is still required
+  // for this narrower form to pass — but pinning the assertion to the
+  // completed response, the same pattern `stats.spec.ts`'s Refresh Now test
+  // uses, removes it rather than leaving it to resolve by observed timing.
+  // `channel_profile_id=<id>` on `/api/channels/channels/summary/` (the
+  // route `API.getChannelsSummary` calls, api.js) is unique to this
+  // specific re-select, so the predicate can't match a stale in-flight
+  // request left over from the "All Profiles" step above.
   await profileSelect.click();
-  await adminPage.getByRole('option', { name: profile.name, exact: true }).click();
+  await Promise.all([
+    adminPage.waitForResponse(
+      (r) =>
+        r.url().includes('/api/channels/channels/summary/') &&
+        r.url().includes(`channel_profile_id=${profile.id}`) &&
+        r.request().method() === 'GET',
+      { timeout: 10_000 }
+    ),
+    adminPage.getByRole('option', { name: profile.name, exact: true }).click(),
+  ]);
   await expect(grid.getByAltText(nonMember.name, { exact: false })).toHaveCount(0);
 
   await pageErrors.expectClean();

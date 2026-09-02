@@ -177,9 +177,10 @@ test('the Refresh Now button re-reads the connection list', { tag: '@contract' }
   // stream generator never got a clean `GeneratorExit`, only fires after
   // `heartbeat_interval * GHOST_CLIENT_MULTIPLIER`
   // (`apps/proxy/live_proxy/client_manager.py`), which `apps/proxy/config.py`
-  // sets to 100s by default. Whatever the exact path, this does not reliably
-  // fit inside this project's 120s per-test timeout on top of everything
-  // already spent above it. Better to assert only what this test can back
-  // up.
+  // sets to 5s * 10.0 = 50s by default (`CLIENT_HEARTBEAT_INTERVAL`,
+  // `GHOST_CLIENT_MULTIPLIER`) — longer than the 30s this test tried, and
+  // eating most of what's left of this project's 120s per-test timeout on
+  // top of everything already spent above it. Better to assert only what
+  // this test can back up.
   await pageErrors.expectClean();
 });
