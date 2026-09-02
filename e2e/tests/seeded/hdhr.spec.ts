@@ -233,11 +233,12 @@ test('hdhr lineup scopes to a Channel Profile, and answers [] for an unknown one
 // expose adult or above-level channels'): a channel seeded with the
 // restricted attribute shape the pin depends on — `user_level: 10,
 // is_adult: true` — round-trips those fields on the row the API returns.
-// Four other tests in this file call `seed.channel()`, but every one of them
-// (the two above, and the two at the top of the file) seeds a plain channel
-// with no arguments — none seeds the restricted shape. That shape is exactly
-// what the pin's own final assertion depends on: it seeds a restricted
-// channel and asserts the lineup omits it, and a break in the seed
+// Four other `seed.channel()` calls exist in this file, across three tests —
+// one near the top of the file, one mid-file, and two inside the single
+// profile-scoping test immediately above — and every one of them seeds a
+// plain channel with no arguments; none seeds the restricted shape. That
+// shape is exactly what the pin's own final assertion depends on: it seeds a
+// restricted channel and asserts the lineup omits it, and a break in the seed
 // fixture's handling of `user_level`/`is_adult` — the channel silently
 // coming back unrestricted, say — would be swallowed by the pin below as an
 // "expected failure", since test.fail() is satisfied by ANY failure in its
