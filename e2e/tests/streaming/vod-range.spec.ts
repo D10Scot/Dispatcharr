@@ -151,6 +151,64 @@ test.fail('an unsatisfiable Range on a fresh session is 416, not 500', { tag: '@
   expect(res.status()).toBe(416);
 });
 
+// Non-inverted control for the test.fail() below ('a provider that ignores
+// Range still yields the requested bytes'). Arming the fault —
+// `upstream.fault(scenario, 'range-unsupported')` — throws on any non-2xx
+// control response, and that call used to run only inside the pin's own
+// test.fail() body, where ANY throw reads as the same "expected failure": a
+// broken arm would be indistinguishable from the defect the pin exists to
+// prove. This is a provider-only proof — no Dispatcharr account, ingest or
+// session — so it runs in a few seconds: it creates its own scenario, arms
+// `range-unsupported` against it, and reads the asset straight from the
+// provider through `upstream.toControl()`, confirming directly that the
+// provider itself answers 200 (not 206) with the whole asset when a Range
+// header is sent.
+test('the range-unsupported fault makes the provider ignore Range', { tag: '@contract' }, async ({
+  upstream,
+}) => {
+  const scenario = await upstream.scenario({
+    xc: true,
+    username: 'range-unsupported-user',
+    password: 'range-unsupported-pass',
+    vod: [
+      {
+        id: 501,
+        name: 'range-unsupported-movie',
+        year: 2019,
+        categoryId: null,
+        containerExtension: 'mp4',
+        tmdbId: null,
+        imdbId: null,
+      },
+    ],
+    series: 0,
+  });
+  const assetUrl = upstream.toControl(
+    `${scenario.internal}/movie/${scenario.username}/${scenario.password}/501.mp4`
+  );
+
+  // Ground truth for "the whole asset", read before the fault is armed.
+  const baseline = await fetch(assetUrl);
+  expect(baseline.status).toBe(200);
+  const total = Number(baseline.headers.get('content-length'));
+  expect(total).toBeGreaterThan(200);
+
+  try {
+    await upstream.fault(scenario, 'range-unsupported');
+
+    const res = await fetch(assetUrl, { headers: { Range: 'bytes=100-199' } });
+    // 200, not 206: the provider ignored the Range header entirely.
+    expect(res.status).toBe(200);
+    const body = Buffer.from(await res.arrayBuffer());
+    expect(body.byteLength).toBe(total);
+  } finally {
+    // range-unsupported is scenario-scoped and the scenario outlives the
+    // test; leaving it armed makes the next test in the file read the wrong
+    // thing if the file is ever reordered.
+    await upstream.clearFault(scenario, 'range-unsupported');
+  }
+});
+
 // Asserts the behaviour Dispatcharr SHOULD have. With `range-unsupported`
 // armed, the provider ignores Range and answers 200 with the whole asset
 // from offset zero. `stream_content_with_session`
@@ -162,6 +220,11 @@ test.fail('an unsatisfiable Range on a fresh session is 416, not 500', { tag: '@
 // passthrough with no offset skipping. So the client gets the HEAD of the
 // file under headers describing the slice it asked for — internally
 // consistent, spec-shaped, and silently wrong.
+//
+// The fault-arming premise is now guarded above ('the range-unsupported
+// fault makes the provider ignore Range'), which arms the identical fault
+// against its own scenario and proves, directly against the provider, that
+// Range really is ignored before this test's own byte comparison ever runs.
 //
 // Filed as https://github.com/D10Scot/Dispatcharr/issues/66. Do not file a
 // second issue for this.
