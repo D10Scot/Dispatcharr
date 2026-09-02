@@ -50,9 +50,10 @@ function extractContractVersion(contract: string): string {
 }
 
 // @characterization: every test in this file asserts facts about this
-// repository's own source tree — file paths, import specifiers, allowlist
-// membership. None of it is client-observable behaviour, and all of it changes
-// shape when the suite is restructured. See docs/adr/0002-e2e-test-taxonomy.md.
+// repository's own source tree — file paths, import specifiers, declared
+// version strings. None of it is client-observable behaviour, and all of it
+// changes shape when the suite is restructured. See
+// docs/adr/0002-e2e-test-taxonomy.md.
 test(
   "e2e-upstream/CONTRACT.md's declared version matches package.json's",
   { tag: '@characterization' },

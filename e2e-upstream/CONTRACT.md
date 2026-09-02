@@ -97,12 +97,21 @@ test can prove Dispatcharr does *not* rely on them either.
   it back to truncate or bound the stream. A test asserting the provider
   "served for the requested duration" would be asserting something this
   provider does not do.
-- **Credential validation only exists when a scenario declares credentials.**
-  `credentialsMatch` (`src/server.ts`) and `xcCredentialsMatch`
-  (`src/xc/router.ts`) both return `true` unconditionally when
-  `scenario.username` is `undefined` — a scenario created with no
-  `username`/`password` accepts any request, including one with no
-  credentials at all. `auth-failure` models something different (valid
+- **Credential validation on the non-XC routes only exists when a scenario
+  declares credentials — the XC routes are stricter, not the same.**
+  `credentialsMatch` (`src/server.ts`), which gates the playlist, EPG and
+  plain `/s/<id>/stream/<n>.ts` routes, returns `true` unconditionally when
+  `scenario.username` is `undefined`: a scenario created with no
+  `username`/`password` accepts any request there, including one with no
+  credentials at all. `xcCredentialsMatch` (`src/xc/router.ts`), which gates
+  `player_api.php` and the `/live/`, `/movie/`, `/series/` routes, has **no
+  such branch** — it always compares against `scenario.username ?? ''` and
+  `scenario.password ?? ''`, so a credential-less scenario would *require*
+  empty-string credentials on those routes rather than accept anything. In
+  practice this difference is rarely reachable: `parseScenarioRequest`'s `xc`
+  door (see the next bullet) requires both fields whenever `xc: true`, so a
+  live XC scenario's `scenario.username` is essentially never `undefined`.
+  `auth-failure` models something different from either of these (valid
   credentials that stop being accepted) and is not a substitute for this.
 - **The XC empty-password door is a known provider defect, not a validated
   guarantee.** `parseScenarioRequest`'s `xc` check (`src/scenario.ts`) rejects
