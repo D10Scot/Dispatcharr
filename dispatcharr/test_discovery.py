@@ -17,7 +17,7 @@ _SHARED_PATH_PREFIXES: tuple[str, ...] = (
     ".github/workflows/backend-tests.yml",
 )
 
-# Paths whose coverage does not all live under the directory that changed.
+# Paths whose coverage lives partly or wholly outside the directory that changed.
 #
 # An alias replaces prefix matching rather than adding to it, so a directory
 # that has tests of its own must name its own app here alongside the extra

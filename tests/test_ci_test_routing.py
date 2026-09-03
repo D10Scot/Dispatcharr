@@ -65,5 +65,11 @@ class ChangedPathRoutingTests(SimpleTestCase):
         self.assertEqual(self._labels("apps/epg/tasks.py"), {"apps.epg.tests"})
 
     def test_shared_path_change_still_runs_every_label(self):
-        """_SHARED_PATH_PREFIXES short-circuits before the alias table."""
+        """Pins: _SHARED_PATH_PREFIXES short-circuits before the alias table.
+
+        A change under dispatcharr/ touches the routing and settings that every
+        app depends on. If that short-circuit regressed, such a change would
+        select a partial label set, and the commit gate -- which reads this
+        same function -- would start disagreeing with CI without saying so.
+        """
         self.assertEqual(self._labels("dispatcharr/settings.py"), self.available)
