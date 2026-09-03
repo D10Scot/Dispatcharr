@@ -54,6 +54,28 @@ test('Range and seek on the VOD proxy match the provider byte-for-byte', { tag: 
   expect(full.status()).toBe(200);
   const total = Number(full.headers()['content-length']);
 
+  // Pin the session `full` just minted and address it explicitly from here
+  // down, so "an established session" is guaranteed by construction rather
+  // than raced for. A session-less request mints a NEW id every time
+  // (views.py:760) and then depends on `find_matching_idle_session` to
+  // rejoin the established one — which skips any session still reporting
+  // `has_active_streams()` (multi_worker_connection_manager.py:1696). Lose
+  // that race and `stream_content_with_session` falls back to the fresh id
+  // (:998), finds no state for it (:1004), and creates a new connection with
+  // `content_length` unset — so every assertion below silently exercises the
+  // FRESH-session path instead of the established one it names. That is how
+  // the 416 control at the end of this test failed in CI while passing
+  // locally. With the id pinned, BOTH branches land on the established
+  // session: the matcher returns it, or the fallback uses it verbatim and
+  // finds its existing state. Note the pin is what makes this deterministic,
+  // not the view-level `if not session_id` guard (views.py:710) — the
+  // manager re-runs the match either way (:972). Playwright follows the 301
+  // `_vod_session_path_redirect` issues (views.py:120), leaving the id as
+  // the final URL's last path segment.
+  const sessionId = new URL(full.url()).pathname.split('/').pop() ?? '';
+  expect(sessionId).toMatch(/^vod_\d+_\d+$/);
+  const sessionUrl = `/proxy/vod/movie/${movie.uuid}/${sessionId}`;
+
   // A mid-file range at an offset well past the head G8's proof already
   // covered (vod-byte-read.spec.ts uses bytes=100-199). The asset is
   // generated at Docker build time from unpinned ffmpeg — its length is a
@@ -67,7 +89,7 @@ test('Range and seek on the VOD proxy match the provider byte-for-byte', { tag: 
   }
   expect(total).toBeGreaterThan(end + 1);
 
-  const partial = await request.get(`/proxy/vod/movie/${movie.uuid}`, {
+  const partial = await request.get(sessionUrl, {
     headers: { Range: `bytes=${start}-${end}` },
   });
   expect(partial.status()).toBe(206);
@@ -90,7 +112,7 @@ test('Range and seek on the VOD proxy match the provider byte-for-byte', { tag: 
   // to content_length - 1, and stream_content_with_session builds
   // Content-Range from the client's requested range and the stored full
   // size.
-  const open = await request.get(`/proxy/vod/movie/${movie.uuid}`, {
+  const open = await request.get(sessionUrl, {
     headers: { Range: `bytes=${start}-` },
   });
   expect(open.status()).toBe(206);
@@ -98,13 +120,14 @@ test('Range and seek on the VOD proxy match the provider byte-for-byte', { tag: 
 
   // The non-inverted control for the test.fail() below ('an unsatisfiable
   // Range on a fresh session is 416, not 500'): on an ESTABLISHED session
-  // (content_length already known — `full`, above, made this one), an
-  // unsatisfiable Range answers 416. This used to live only inside that
-  // test.fail() body, where test.fail() is satisfied by ANY failure, so a
-  // regression in the control itself would have been swallowed as
-  // "expected failure" and never surfaced. Asserting it here, in a passing
-  // test, is what actually guards it.
-  const outOfRange = await request.get(`/proxy/vod/movie/${movie.uuid}`, {
+  // (content_length already known — `full`, above, made this one, and
+  // `sessionUrl` guarantees this request lands on that session and not a
+  // freshly minted one), an unsatisfiable Range answers 416. This used to
+  // live only inside that test.fail() body, where test.fail() is satisfied
+  // by ANY failure, so a regression in the control itself would have been
+  // swallowed as "expected failure" and never surfaced. Asserting it here,
+  // in a passing test, is what actually guards it.
+  const outOfRange = await request.get(sessionUrl, {
     headers: { Range: `bytes=99999999-` },
   });
   expect(outOfRange.status()).toBe(416);
