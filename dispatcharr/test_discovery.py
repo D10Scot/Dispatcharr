@@ -17,11 +17,28 @@ _SHARED_PATH_PREFIXES: tuple[str, ...] = (
     ".github/workflows/backend-tests.yml",
 )
 
-# No test package of its own; route to these installed app tests instead.
+# Paths whose coverage lives partly or wholly outside the directory that changed.
+#
+# An alias replaces prefix matching rather than adding to it, so a directory
+# that has tests of its own must name its own app here alongside the extra
+# ones. Why each entry exists:
+#
+#   apps/api/              thin aggregation over every other app's API; a
+#                          change there can break any app, so run everything.
+#   apps/vod/              VOD has its own tests in apps/vod/tests/, and
+#                          apps/output/ serves VOD through the M3U/EPG and
+#                          Xtream surfaces, so both must run.
+#   apps/hdhr/             no tests of its own; the HDHomeRun lineup is built
+#                          from channels and shares the output app's listing.
+#   apps/proxy/live_proxy/ the proxy has its own tests, but its richest ones
+#                          are apps/channels/tests/test_ts_proxy_teardown.py,
+#                          which builds a real ProxyServer ten times. Editing
+#                          the proxy is the worst moment to skip them.
 _PATH_ALIASES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("apps/api/", ("__all__",)),
-    ("apps/vod/", ("apps.output",)),
+    ("apps/vod/", ("apps.vod", "apps.output")),
     ("apps/hdhr/", ("apps.output", "apps.channels")),
+    ("apps/proxy/live_proxy/", ("apps.proxy.live_proxy", "apps.channels")),
 )
 
 

@@ -12,6 +12,7 @@ Four investigation documents hold the detail behind every summary here — **rea
 - Due diligence (gaps, defects, governance) — https://claude.ai/code/artifact/6dddf987-6135-480c-8b77-c5ad621a8c06
 - Test-suite report — https://claude.ai/code/artifact/3ced4b71-c684-47e0-bf2f-b4ee1b9826cc
 - Splitting the Planes (extraction proposal) — https://claude.ai/code/artifact/149fb554-d140-4e13-abaf-2416429b2e3f
+- Phase 0 spec (harden in place, six PRs) — `docs/superpowers/specs/2026-09-03-phase0-harden-in-place-design.md`
 
 Verified at `fd413f0c` (v0.29.0); line numbers drift.
 
@@ -47,7 +48,7 @@ npm run lint   # ~112 pre-existing errors, disabled in CI. No format script: npx
 - Deliberate, matching CI: **Redis is flushed before every backend run** and **the whole package runs, not just the edited module**.
 - If Docker/the container is down the hook says so loudly and exits 0. **Then say the tests did not run — do not describe the work as verified.**
 
-`PreToolUse` on `Bash(git commit*)` gates commits on the tests covering whatever is **staged**, deriving labels from `scripts/ci_backend_test_labels.py` (exactly what CI would run); anything under `frontend/` runs the whole frontend suite; `git commit -a` is handled. Infrastructure failures warn rather than block. Baseline **16/16** backend packages pass (~1,787 tests, ~34s). The gate inherits the two routing defects under *Testing* on purpose: it must not disagree with CI. **Stage and commit in separate Bash calls** — the hook runs before the command, so one doing both is blocked. It matches on command text, so a heredoc — or a commit message — merely *containing* those two words trips it as well; write such files with the Write tool and commit with `-F <file>`.
+`PreToolUse` on `Bash(git commit*)` gates commits on the tests covering whatever is **staged**, deriving labels from `scripts/ci_backend_test_labels.py`; anything under `frontend/` runs the whole frontend suite; `git commit -a` is handled. Infrastructure failures warn rather than block. Baseline **16/16** backend packages pass (~1,787 tests, ~34s). The gate derives its labels exactly as CI does, from the same function, so the two can never disagree. **Stage and commit in separate Bash calls** — the hook runs before the command, so one doing both is blocked. It matches on command text, so a heredoc — or a commit message — merely *containing* those two words trips it as well; write such files with the Write tool and commit with `-F <file>`.
 
 ## Architecture
 
@@ -124,7 +125,7 @@ Operationally: no metrics, `/healthz`, readiness probe or structured logs. `die-
 
 **CI never runs the suite in one process** — `backend-tests.yml` runs each label as its own matrix job in its own container. The full in-process run has historically **failed** with a different set each time while every failure passed in its shard: `SimpleTestCase` subclasses in `test_catchup_redirect.py` reach the DB and pass only when an earlier test warmed the `CoreSettings` cache. **A green CI run does not mean a green suite.** The frontend suite passes in default order but fails under `vitest --sequence.shuffle` — module mocks and store singletons leak.
 
-**Two path-routing defects in `labels_for_changed_paths()`:** `_PATH_ALIASES` routes `apps/vod/` → `apps.output` only, so `apps/vod/tests/` never runs for VOD changes; and a change to `live_proxy/server.py` selects only `apps.proxy.live_proxy.tests`, skipping the richest proxy tests (`apps/channels/test_ts_proxy_teardown.py` builds a real `ProxyServer` ten times) precisely when the proxy is edited. Fixing `test_discovery.py` fixes both. `_SHARED_PATH_PREFIXES` (`dispatcharr/`, `pyproject.toml`, `manage.py`, …) forces the full set.
+**Path routing in `labels_for_changed_paths()`:** the `_PATH_ALIASES` table routes `apps/vod/` to both `apps.vod.tests` and `apps.output.tests`, and `apps/proxy/live_proxy/` to both `apps.proxy.live_proxy.tests` and `apps.channels.tests` (whose `tests/test_ts_proxy_teardown.py` builds a real `ProxyServer` ten times). An alias replaces prefix matching rather than adding to it, so each entry must name its own app too, and `tests/test_ci_test_routing.py` pins all of it. `_SHARED_PATH_PREFIXES` (`dispatcharr/`, `pyproject.toml`, `manage.py`, …) still forces the full set.
 
 Coverage ~45.6% backend / 71.9% frontend, **inversely correlated with criticality**: `hls_proxy` 0%, `plugins` 25%, `vod_proxy` 35.6%, `live_proxy` 38.5% vs `timeshift` 78.7%; `log_parsers.py`, which decides a stream is buffering, is 20.4%. **No backend unit test spawns a subprocess** — ffmpeg lifecycle and stderr parsing run only against hand-written strings there (the e2e suite now covers real ffmpeg lifecycle). Exactly one test file talks to a real Redis; the lease and ring buffer never meet real Redis semantics — the fakes reimplement the Lua in Python, proving the reimplementation correct while saying nothing about atomicity. The fuzz campaign contributes permanent Hypothesis property tests (`apps/proxy/live_proxy/tests/test_property_*.py`; `hypothesis` is a dev dependency).
 
@@ -138,7 +139,7 @@ Coverage ~45.6% backend / 71.9% frontend, **inversely correlated with criticalit
 
 ## Build reproducibility (improving)
 
-`uv.lock` is committed and hash-pins every resolved version (18 of 31 deps still have no exact pin in `pyproject.toml` itself); every `FROM`/`COPY --from=` in both Dockerfiles is digest-pinned. Remaining gaps: CI installs the frontend with `npm ci` but **`docker/Dockerfile` still uses `npm install`** — the shipped bundle comes from a dependency set CI never tested; the base image compiles comskip from `refs/heads/master` (no tagged release builds on current Ubuntu/FFmpeg/gcc — see comment in `docker/DispatcharrBase`) and installs Redis/PostgreSQL from unversioned apt (deliberate). Still no Python linter, formatter, type checker or pre-commit config. `lint.yml` covers actionlint, hadolint, gitleaks (full history) and `uv.lock` freshness — all as digest-pinned containers. CodeQL (`codeql.yml`) analyzes three language packs: `actions`, `python`, `javascript-typescript`.
+`uv.lock` is committed and hash-pins every resolved version (18 of 31 deps still have no exact pin in `pyproject.toml` itself); every `FROM`/`COPY --from=` in both Dockerfiles is digest-pinned, and both CI and `docker/Dockerfile` install the frontend with `npm ci` from the committed lockfile. Remaining gaps: the base image compiles comskip from `refs/heads/master` (no tagged release builds on current Ubuntu/FFmpeg/gcc — see comment in `docker/DispatcharrBase`) and installs Redis/PostgreSQL from unversioned apt (deliberate). Still no Python linter, formatter, type checker or pre-commit config. `lint.yml` covers actionlint, hadolint, gitleaks (full history) and `uv.lock` freshness — all as digest-pinned containers. CodeQL (`codeql.yml`) analyzes three language packs: `actions`, `python`, `javascript-typescript`.
 
 ## Supply chain security
 
