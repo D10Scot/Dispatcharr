@@ -5,45 +5,78 @@ from django.db import migrations, models
 
 def backfill_stream_catchup(apps, schema_editor):
     """Derive is_catchup/catchup_days from Stream.custom_properties JSON."""
-    with schema_editor.connection.cursor() as cursor:
-        cursor.execute("""
-            UPDATE dispatcharr_channels_stream
-            SET is_catchup = TRUE,
-                catchup_days = COALESCE(
-                    CASE WHEN (custom_properties->>'tv_archive_duration') ~ '^\\d+$'
-                         THEN (custom_properties->>'tv_archive_duration')::int
-                         ELSE NULL
-                    END, 7
-                )
-            WHERE custom_properties IS NOT NULL
-              AND custom_properties != 'null'::jsonb
-              AND (
-                  custom_properties->>'tv_archive' = '1'
-                  -- JSON booleans extract as lowercase 'true' via ->>; the
-                  -- 'True' spelling covers Python-str values stored by
-                  -- older import code.
-                  OR custom_properties->>'tv_archive' = 'true'
-                  OR custom_properties->>'tv_archive' = 'True'
-              )
-        """)
+    if schema_editor.connection.vendor == "postgresql":
+        with schema_editor.connection.cursor() as cursor:
+            cursor.execute("""
+                UPDATE dispatcharr_channels_stream
+                SET is_catchup = TRUE,
+                    catchup_days = COALESCE(
+                        CASE WHEN (custom_properties->>'tv_archive_duration') ~ '^\\d+$'
+                             THEN (custom_properties->>'tv_archive_duration')::int
+                             ELSE NULL
+                        END, 7
+                    )
+                WHERE custom_properties IS NOT NULL
+                  AND custom_properties != 'null'::jsonb
+                  AND (
+                      custom_properties->>'tv_archive' = '1'
+                      -- JSON booleans extract as lowercase 'true' via ->>; the
+                      -- 'True' spelling covers Python-str values stored by
+                      -- older import code.
+                      OR custom_properties->>'tv_archive' = 'true'
+                      OR custom_properties->>'tv_archive' = 'True'
+                  )
+            """)
+        return
+
+    Stream = apps.get_model("dispatcharr_channels", "Stream")
+    for stream in Stream.objects.exclude(custom_properties=None).only(
+        "id", "custom_properties"
+    ).iterator(chunk_size=2000):
+        props = stream.custom_properties
+        if not isinstance(props, dict):
+            continue
+        if props.get("tv_archive") not in ("1", "true", "True", True, 1):
+            continue
+        days = props.get("tv_archive_duration")
+        try:
+            days = int(days)
+        except (TypeError, ValueError):
+            days = 7
+        stream.is_catchup = True
+        stream.catchup_days = days
+        stream.save(update_fields=["is_catchup", "catchup_days"])
 
 
 def backfill_channel_catchup(apps, schema_editor):
     """Roll up catch-up fields from streams to channels."""
-    with schema_editor.connection.cursor() as cursor:
-        cursor.execute("""
-            UPDATE dispatcharr_channels_channel c SET
-                is_catchup = EXISTS (
-                    SELECT 1 FROM dispatcharr_channels_channelstream cs
-                    JOIN dispatcharr_channels_stream s ON s.id = cs.stream_id
-                    WHERE cs.channel_id = c.id AND s.is_catchup = TRUE
-                ),
-                catchup_days = COALESCE((
-                    SELECT MAX(s.catchup_days) FROM dispatcharr_channels_channelstream cs
-                    JOIN dispatcharr_channels_stream s ON s.id = cs.stream_id
-                    WHERE cs.channel_id = c.id AND s.is_catchup = TRUE
-                ), 0)
-        """)
+    if schema_editor.connection.vendor == "postgresql":
+        with schema_editor.connection.cursor() as cursor:
+            cursor.execute("""
+                UPDATE dispatcharr_channels_channel c SET
+                    is_catchup = EXISTS (
+                        SELECT 1 FROM dispatcharr_channels_channelstream cs
+                        JOIN dispatcharr_channels_stream s ON s.id = cs.stream_id
+                        WHERE cs.channel_id = c.id AND s.is_catchup = TRUE
+                    ),
+                    catchup_days = COALESCE((
+                        SELECT MAX(s.catchup_days) FROM dispatcharr_channels_channelstream cs
+                        JOIN dispatcharr_channels_stream s ON s.id = cs.stream_id
+                        WHERE cs.channel_id = c.id AND s.is_catchup = TRUE
+                    ), 0)
+            """)
+        return
+
+    from django.db.models import Max
+
+    Channel = apps.get_model("dispatcharr_channels", "Channel")
+    for channel in Channel.objects.iterator(chunk_size=2000):
+        catchup_streams = channel.streams.filter(is_catchup=True)
+        channel.is_catchup = catchup_streams.exists()
+        channel.catchup_days = catchup_streams.aggregate(Max("catchup_days"))[
+            "catchup_days__max"
+        ] or 0
+        channel.save(update_fields=["is_catchup", "catchup_days"])
 
 
 class Migration(migrations.Migration):
