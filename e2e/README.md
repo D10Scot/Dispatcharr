@@ -256,6 +256,15 @@ background tasks than a standard M3U refresh:
   present right after account creation or even right after the main refresh; it lands on its own
   schedule, later.
 
+## The provider's contract
+
+`e2e-upstream/CONTRACT.md` is the version-addressed record of what the fake provider guarantees and
+deliberately does not — the calendar-free catch-up timestamp parser, the non-time-addressable
+archive, which faults reach an already-open connection, and more. When a test needs to know whether
+some provider behaviour is safe to depend on, cite that document's version, not a memory of reading
+`e2e-upstream/src/` once — its own "Bump policy" section is what keeps a cited guarantee from going
+stale under you.
+
 ## VOD
 
 `POST /api/m3u/accounts/<id>/refresh-vod/` is the trigger for VOD ingest — `202` on success, `400`

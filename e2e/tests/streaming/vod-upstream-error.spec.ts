@@ -35,6 +35,96 @@ async function seedVodMovie(
   return { prefix, scenario, account, movie: movies.results[0] };
 }
 
+// The first non-inverted control for the test.fail() below ('an upstream
+// failure on the VOD stream route does not return the provider
+// credential'): its premise is that seedVodMovie's own scenario, account,
+// refresh-vod POST and waitFor.resource ingest wait produce a movie that
+// genuinely streams over /proxy/vod/movie/<uuid> when no fault is armed —
+// the account create, the ingest wait and the route itself all have to work
+// before the pin's credential check is even reachable. No other test in
+// this file requests the movie route with no fault armed: the second
+// control below arms the 'not-found' fault before its first request, and
+// the pin's identical seedVodMovie call sits inside its test.fail(...)
+// body, only ever requested with the fault already armed. A break in the
+// seed-and-ingest sequence itself (not just in the credential-disclosure
+// behaviour) would be swallowed by the pin below as an "expected failure",
+// since test.fail() is satisfied by ANY failure in its body, not
+// specifically the regression it exists to pin.
+test('a seeded VOD movie streams successfully when no fault is armed', { tag: '@contract' }, async ({
+  upstream,
+  seed,
+  api,
+  waitFor,
+  request,
+}) => {
+  test.setTimeout(180_000);
+  const { movie } = await seedVodMovie(upstream, seed, api, waitFor);
+
+  const res = await request.get(`/proxy/vod/movie/${movie.uuid}`);
+  expect([200, 206]).toContain(res.status());
+  expect(
+    (await res.body()).byteLength,
+    'a clean VOD stream must return a non-empty body'
+  ).toBeGreaterThan(0);
+});
+
+// The second non-inverted control for the test.fail() below: the pin's
+// credential check has no meaning unless arming the 'not-found' fault
+// genuinely drives the request into the connection manager's
+// `except Exception` handler at multi_worker_connection_manager.py:1405 —
+// or the identical handler wrapping it in `stream_vod` (views.py:845),
+// which returns the same `HttpResponse(f"Streaming error: {str(e)}",
+// status=500)` shape. This control asserts the shape both produce (a 500
+// whose body carries the handler's own prefix), not which of the two
+// fired — that distinction doesn't matter to the pin's premise, only that
+// the fault genuinely reached one of them. This control arms that same
+// fault, on its own fresh scenario, before making any request at all (so
+// there is no already-open session to reuse from a prior clean request),
+// then asserts the failure directly. No other test in this file arms the
+// 'not-found' fault and checks the resulting response outside a
+// test.fail() block: the control above never arms a fault, and the pin's
+// identical upstream.fault(scenario, 'not-found') call sits inside its
+// test.fail(...) body. A break here — the fault not reaching the upstream
+// fetch, or some other status reaching the client — would be swallowed by
+// the pin below as an "expected failure", since test.fail() is satisfied
+// by ANY failure in its body, not specifically the credential-disclosure
+// regression it exists to pin.
+//
+// Reciprocal note (the Task 8 rule: a non-inverted control must never be
+// coupled to a defect's current spelling without saying so): this control's
+// `toBe(500)` characterises today's defective status, the same status the
+// pin below asserts `not.toBe(500)` against. The day #89 is fixed, the pin
+// flips green as expected — but this control's `toBe(500)` assertion also
+// flips red, as an intended false alarm, not a new regression: whatever
+// status the fix settles on for a genuine upstream failure, it is not this
+// one 500 shape by definition of the fix. Re-anchor this control's status
+// assertion to the fixed shape at the same time the pin is retired.
+test('the not-found fault on a VOD movie route produces a genuine streaming failure', { tag: '@contract' }, async ({
+  upstream,
+  seed,
+  api,
+  waitFor,
+  request,
+}) => {
+  test.setTimeout(180_000);
+  const { scenario, movie } = await seedVodMovie(upstream, seed, api, waitFor);
+
+  await upstream.fault(scenario, 'not-found');
+  try {
+    const res = await request.get(`/proxy/vod/movie/${movie.uuid}`);
+    expect(
+      res.status(),
+      'the not-found fault should drive the request into the VOD error path'
+    ).toBe(500);
+    expect(
+      await res.text(),
+      "the failure body should carry the VOD error path's own prefix"
+    ).toContain('Streaming error');
+  } finally {
+    await upstream.clearFault(scenario, 'not-found');
+  }
+});
+
 // Asserts the behaviour Dispatcharr SHOULD have. Any exception raised while
 // establishing the upstream VOD connection becomes
 //     HttpResponse(f"Streaming error: {str(e)}", status=500)
@@ -44,18 +134,32 @@ async function seedVodMovie(
 // whose default ACL is 0.0.0.0/0 — so this response body reaches an
 // unauthenticated caller. The account credential must not appear in it.
 //
-// DELIBERATELY NOT FILED as a public issue: this is a disclosure decision
-// for the repo owner, recorded in the G9 task report instead. Do not open
-// one from this comment.
+// KNOWN BUG — see #89. This assertion is the CORRECT behaviour; it fails
+// today, on both halves: the credential does appear in the 500 body, and
+// the failure does surface as a 500.
+//
+// The day this is fixed, this test flips green as expected and the second
+// control above ('the not-found fault on a VOD movie route produces a
+// genuine streaming failure') flips red as an intended false alarm, since
+// its `toBe(500)` characterises the same defective status this pin is
+// pinning — see the reciprocal note on that control.
 //
 // test.fail() caveat: it is satisfied by ANY failure in the body, guards
 // included — so a broken premise, not just the intended assertion, would
 // also read as "expected failure" and this test would go green while
-// proving nothing. The premise here (that the movie was genuinely ingested,
-// via `seedVodMovie`'s own `waitFor.resource` wait) has to hold before the
-// fault is armed at all, or the account create itself — not the streaming
-// error path — would be what fails. The fault is armed only after ingest
-// completes, so a failure here can only be the streaming-error path.
+// proving nothing. This pin asserts an ABSENCE (the credential must not
+// appear in the response), and an absence is exactly the shape an
+// unguarded premise can counterfeit: any failure before the credential
+// check even runs — seedVodMovie's own `waitFor.resource` never resolving,
+// the fault arm itself throwing — reads as the same "expected failure" as
+// the credential genuinely leaking, and this test would go green having
+// verified a security property that was never checked. The two
+// non-inverted controls above ('a seeded VOD movie streams successfully
+// when no fault is armed' and 'the not-found fault on a VOD movie route
+// produces a genuine streaming failure') are what actually guard it: the
+// first proves the seed-and-ingest sequence produces a movie that
+// genuinely streams, and the second proves the 'not-found' fault genuinely
+// reaches the streaming-error path this pin's premise depends on.
 test.fail('an upstream failure on the VOD stream route does not return the provider credential', { tag: '@contract' }, async ({
   upstream,
   seed,
