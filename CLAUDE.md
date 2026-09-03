@@ -38,7 +38,7 @@ npm run lint   # ~112 pre-existing errors, disabled in CI. No format script: npx
 
 ## Test hooks (this fork only)
 
-`.claude/settings.json` registers `PostToolUse` on `Write|Edit`, each check scoped to the edited file. Blocking: `*tests/test_*.py` (whole package), `frontend/**/*.test.jsx` (vitest), `*/models.py` (`makemigrations --check`), `live_proxy/{constants,redis_keys}.py` (`manage.py check`), `.github/workflows/*.yml` + `action.yml` + `dependabot.yml` (zizmor), `e2e/**/*.ts` + `e2e-upstream/**/*.ts` (`tsc --noEmit` for that package — blocking, unlike eslint: both packages typecheck clean, so it's a ratchet, and the only automated check those trees have; a full Playwright run is far too slow for a hook). Advisory: eslint on `frontend/**/*.jsx` (so pre-existing errors don't punish touching legacy code), credential-logging grep on any `*.py`.
+`.claude/settings.json` registers `PostToolUse` on `Write|Edit`, each check scoped to the edited file. Blocking: `*tests/test_*.py` (whole package), `frontend/**/*.test.jsx` (vitest), `*/models.py` (`makemigrations --check`), `live_proxy/{constants,redis_keys}.py` (`manage.py check`), `.github/workflows/*.yml` + `action.yml` + `dependabot.yml` (zizmor), `e2e/**/*.ts` + `e2e-upstream/**/*.ts` (`tsc --noEmit` for that package — blocking, unlike eslint: both packages typecheck clean, so it's a ratchet, and the only automated check those trees have; a full Playwright run is far too slow for a hook), any `*.py` (`scripts/check_credential_logging.sh`). Advisory: eslint on `frontend/**/*.jsx` (so pre-existing errors don't punish touching legacy code).
 
 - The migration check resolves the app label via `apps.get_app_configs()`, never the directory name: `apps.channels` has label `dispatcharr_channels`, and the guess `channels` hits the *Django Channels library*, which reports "no changes" and exits 0 — guessing fails silently.
 - The boot check exists because `apps/channels/models.py:6–7` imports two `live_proxy` leaf modules at module level; a cycle there breaks `manage.py check` for every command.
@@ -94,7 +94,7 @@ Verified. **Don't "fix" surrounding code without knowing these are already there
 
 Security — treat the first as an incident:
 
-- Provider credentials logged at **INFO**: `vod_proxy/views.py:628` (full path + entire header dict; Xtream URLs carry the password in the path), `m3u/tasks.py:3084`, `channels/tasks.py:1577`, `:1633`. Anyone who shared a support log shared working credentials.
+- Provider credentials were logged at INFO at five sites (VOD proxy request path/headers, M3U URL transform, DVR stream URLs); all five now log at DEBUG through `redact_url`/`redact_headers` (`dispatcharr/utils.py`), and `scripts/check_credential_logging.sh` blocks any log call naming a URL, path, header or credential that bypasses them — in the edit hook and in `lint.yml`.
 - `docker/docker-compose.yml` publishes Postgres on `5436:5432` (all interfaces) as `dispatch`/`secret`.
 - `settings.py`: `ALLOWED_HOSTS=["*"]`, `CORS_ALLOW_ALL_ORIGINS=True`, `CSRF_TRUSTED_ORIGINS=["http://*","https://*"]` — none conditioned on `DEBUG`.
 - Xtream passwords plaintext in `custom_properties["xc_password"]`, compared with `!=`; API keys looked up by plaintext value, unscoped.
