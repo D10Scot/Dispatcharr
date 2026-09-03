@@ -3,6 +3,7 @@ import {
   scheduleRecording,
   readRecording,
   waitForRecordingStatus,
+  cleanupRecordingAndChannel,
   MKV_MAGIC,
 } from './helpers';
 
@@ -33,32 +34,12 @@ test.afterEach(async ({ api }, testInfo) => {
   const channelId = channelIdToCleanup;
   recordingIdToCleanup = undefined;
   channelIdToCleanup = undefined;
-  if (recordingId === undefined && channelId === undefined) return;
-
-  try {
-    if (recordingId !== undefined) {
-      const res = await api.delete(`/api/channels/recordings/${recordingId}/`);
-      if (res.status() !== 204 && res.status() !== 404) {
-        throw new Error(`recording cleanup failed: DELETE returned ${res.status()}`);
-      }
-    }
-    if (channelId !== undefined) {
-      const res = await api.delete(`/api/channels/channels/${channelId}/`);
-      if (res.status() !== 204 && res.status() !== 404) {
-        throw new Error(`channel cleanup failed: DELETE returned ${res.status()}`);
-      }
-    }
-  } catch (cleanupError) {
-    if (testInfo.status !== 'passed') {
-      console.error(
-        'recording-control.spec.ts: cleanup failed after an in-flight test ' +
-          'failure — not overwriting it. Cleanup error:',
-        cleanupError
-      );
-      return;
-    }
-    throw cleanupError;
-  }
+  await cleanupRecordingAndChannel(
+    api,
+    testInfo,
+    { recordingId, channelId },
+    'recording-control.spec.ts'
+  );
 });
 
 /**
@@ -141,6 +122,17 @@ test('stopping an in-flight recording preserves stopped and keeps the partial MK
     }
   );
 
+  // Registered before the stop call, not after: `recording_ended` is sent
+  // once, well after the stop (finalisation can take up to ~22s — see the
+  // margin derivation in the extend test below), and `waitForMessage`
+  // resolves on it whenever this promise is awaited, so opening the listener
+  // here removes any window, even in principle, in which the event could be
+  // missed while this test does other work in between.
+  const recordingEndedPromise = ws.waitForMessage('recording_ended', {
+    where: (data) => data.channel === channel.name,
+    timeoutMs: 60_000,
+  });
+
   const stopRes = await api.post(`/api/channels/recordings/${recording.id}/stop/`, {});
   expect(stopRes.status(), `POST /stop/ returned ${stopRes.status()}: ${await stopRes.text()}`).toBe(200);
 
@@ -168,8 +160,11 @@ test('stopping an in-flight recording preserves stopped and keeps the partial MK
   // A single read immediately after the POST would pass even if that
   // priority were broken (e.g. if the `elif not interrupted: cp["status"]
   // = "completed"` branch at :2354-2355 ran unconditionally) — the
-  // finalisation block would not have executed yet. Poll for >= 15s past
-  // the transition observed above so a later overwrite has time to show up.
+  // finalisation block would not have executed yet. This poll is a
+  // best-effort heuristic, not the airtight check: 15s can close before
+  // finalisation runs (worst case ~22s — see the extend test's margin
+  // derivation below), so it narrows the race without closing it. The
+  // deterministic check follows below, keyed on `recording_ended` itself.
   const STABILITY_WINDOW_MS = 15_000;
   const POLL_INTERVAL_MS = 2_000;
   const stabilityDeadline = Date.now() + STABILITY_WINDOW_MS;
@@ -187,6 +182,25 @@ test('stopping an in-flight recording preserves stopped and keeps the partial MK
     ).toBe('stopped');
   }
   expect(pollCount, 'stability loop ran zero polls — STABILITY_WINDOW_MS/POLL_INTERVAL_MS math is wrong').toBeGreaterThan(0);
+
+  // The airtight check: `recording_ended` is broadcast (tasks.py:2437-2446)
+  // only after run_recording's finalisation block calls
+  // `recording_obj.save(update_fields=["custom_properties"])` — the exact
+  // write the priority comment above describes — and that send site runs
+  // unconditionally after the save, in the stopped path exactly like every
+  // other break reason: the `if db_status_now == "stopped":` branch just
+  // above it only pops `interrupted_reason`, it does not skip the save or
+  // the notify that follow. Once this resolves, that write is guaranteed
+  // visible, closing the race the stability poll above can only narrow.
+  const endedMsg = await recordingEndedPromise;
+  expect(endedMsg.data?.channel).toBe(channel.name);
+  const afterEnded = await readRecording(api, recording.id);
+  const endedCp = (afterEnded.custom_properties ?? {}) as Record<string, unknown>;
+  expect(endedCp.status).toBe('stopped');
+  expect(
+    endedCp.ended_at,
+    `custom_properties.ended_at missing after recording_ended: ${JSON.stringify(endedCp)}`
+  ).toBeTruthy();
 
   // "Retaining the partial content for playback" is file()'s own docstring
   // (api_views.py:3376-3381) — nothing before this row checked it. The
@@ -332,16 +346,32 @@ test('extending an in-flight recording moves its deadline past the original end'
   //     `.m3u8`, or nothing), so the viewer heartbeat key this harness
   //     produces is never set and that loop returns immediately here.
   //
-  // Fix round 1 used +25s (2.5x the 10s bounded component alone) and its
-  // own inversion run measured the flip at ~22s past the original end —
-  // too close to the boundary to trust on a loaded runner, and the
-  // inversion's own payload (`remux_success: true, bytes_written: 3257664`)
-  // proves the unbounded remux was what actually consumed that time, not
-  // component 1. +40s is chosen because 22s was observed exactly ONCE, on
-  // an otherwise-idle machine, against a step with no code-level bound —
-  // there is no tighter number to derive, only a larger margin against it.
-  // Still comfortably inside the 60s extension (20s of headroom remains
-  // before the real new deadline).
+  // Fix round 1 used +25s (2.5x the 10s bounded component alone) and ran an
+  // inversion check (extend() skipped) to prove the margin actually
+  // discriminates. That run failed at poll #11 — ~22s into the
+  // DISCRIMINATION poll loop, whose clock started right after
+  // `waitForRecordingStatus(['recording'])` above, i.e. at recording START,
+  // not at end_time (round 1's loop began immediately after that call, with
+  // no extend-related work between them once extend() was skipped). The
+  // failure was read at the time as "~22s past the original end", crediting
+  // the unbounded remux with consuming it — a misread: the inversion
+  // payload itself says otherwise. `ended_at 2026-09-02 13:02:40.109543` vs.
+  // the original `end_time 2026-09-02T13:02:39.100000Z` puts the real
+  // finalisation at ≈ +1.0s past end (container-naive `datetime.now()` is
+  // UTC; `started_at 2026-09-02 13:02:19.126560` matches the
+  // `20260902_130219.mkv` filename) — so the actual flip was ≈ +2s past end,
+  // and the remux itself ran in ≈ 1s, not 22.
+  //
+  // +40s is kept, but derived rather than measured: worst case is ≈2s for
+  // the natural-end path to be noticed + the 10s inline SIGINT grace
+  // (component 1 above, tasks.py:1859-1870) + up to another 10s in
+  // `_dvr_ensure_ffmpeg_exited` if that inline wait also times out
+  // (tasks.py:1286-1297) ≈ 22s, on top of the unbounded concat/remux
+  // (component 2 above) measured at ≈1s in every run so far. 40s is
+  // therefore generous margin against that bound, not a number derived from
+  // the ~22s observation — that observation measured something else
+  // entirely. Still comfortably inside the 60s extension (20s of headroom
+  // remains before the real new deadline).
   const DISCRIMINATION_MARGIN_MS = 40_000;
   const POLL_INTERVAL_MS = 2_000;
   const discriminationTargetMs = Date.parse(originalEndTime) + DISCRIMINATION_MARGIN_MS;

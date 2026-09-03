@@ -174,9 +174,9 @@ the event and compare the catalogue — is the one thing that cannot work
 here.
 
 `npm test` (no suffix) deliberately fails with a message telling you to pick
-one of the eleven — there is no single invocation that is correct for all of
-them, and a bare `npm test` in CI would silently run whichever config
-happened to be first.
+one of the population-specific `test:*` scripts in `package.json` — there is
+no single invocation that is correct for all of them, and a bare `npm test`
+in CI would silently run whichever config happened to be first.
 
 ## Running against an existing instance
 

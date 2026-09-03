@@ -1,5 +1,5 @@
 import { test, expect } from '../../fixtures';
-import { scheduleRecording, waitForRecordingStatus } from './helpers';
+import { scheduleRecording, waitForRecordingStatus, cleanupRecordingAndChannel } from './helpers';
 
 /**
  * `recording_cancelled` — the destroy path's WebSocket event, and the three
@@ -81,38 +81,16 @@ test.afterEach(async ({ api }, testInfo) => {
   const channelId = channelIdToCleanup;
   recordingIdToCleanup = undefined;
   channelIdToCleanup = undefined;
-  if (recordingId === undefined && channelId === undefined) return;
-
-  try {
-    if (recordingId !== undefined) {
-      // Both rows below delete their own recording as part of the test body
-      // (that's the thing under test), so a 404 here is the expected,
-      // already-cleaned-up case, not a cleanup failure.
-      const res = await api.delete(`/api/channels/recordings/${recordingId}/`);
-      if (res.status() !== 204 && res.status() !== 404) {
-        throw new Error(`recording cleanup failed: DELETE returned ${res.status()}`);
-      }
-    }
-    if (channelId !== undefined) {
-      const res = await api.delete(`/api/channels/channels/${channelId}/`);
-      if (res.status() !== 204 && res.status() !== 404) {
-        throw new Error(`channel cleanup failed: DELETE returned ${res.status()}`);
-      }
-    }
-  } catch (cleanupError) {
-    // Same non-masking shape recording-execution.spec.ts/recording-control.spec.ts
-    // settled on: a cleanup failure must not replace an already-failing
-    // test's real cause.
-    if (testInfo.status !== 'passed') {
-      console.error(
-        'recording-events.spec.ts: cleanup failed after an in-flight test ' +
-          'failure — not overwriting it. Cleanup error:',
-        cleanupError
-      );
-      return;
-    }
-    throw cleanupError;
-  }
+  // Both rows below delete their own recording as part of the test body
+  // (that's the thing under test), so cleanupRecordingAndChannel's 404
+  // tolerance is exercising the expected, already-cleaned-up case here, not
+  // papering over a real cleanup failure.
+  await cleanupRecordingAndChannel(
+    api,
+    testInfo,
+    { recordingId, channelId },
+    'recording-events.spec.ts'
+  );
 });
 
 test(
@@ -258,11 +236,16 @@ test(
 
     // upstream.connections is keyed by the provider scenario, not by the
     // Recording row, so THIS poll — unlike the /file/ read above — is real
-    // evidence that _stop_dvr_clients() (api_views.py:3915, run from the
-    // same background thread via _background_cancel at :3910-3931) actually
-    // reached live_proxy and tore down the DVR client's upstream connection,
-    // rather than merely reflecting a row that is already gone. Backgrounded
-    // in a daemon thread, so poll rather than assert once.
+    // evidence that the cancel path released the upstream, rather than
+    // merely reflecting a row that is already gone. Not attributed to a
+    // specific mechanism: `_stop_dvr_clients()` (api_views.py:3915, run from
+    // the background thread via `_background_cancel` at :3910-3931) reaching
+    // live_proxy and run_recording's own ~2s poll noticing the row is gone
+    // (`_sc is None` at tasks.py:~1874-1889, which SIGINTs FFmpeg and exits
+    // the loop) both release the same upstream connection, and there is no
+    // way to tell from outside the container which one this run actually
+    // saw. Backgrounded (at least one of the two paths is), so poll rather
+    // than assert once.
     let lastLiveAfterCancel: number | undefined;
     await waitFor.condition(
       async () => {

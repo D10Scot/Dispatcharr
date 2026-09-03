@@ -1,4 +1,5 @@
 import { test } from '@playwright/test';
+import type { TestInfo } from '@playwright/test';
 import type { ApiClient, Recording, WaitOptions, Waiter } from '../../fixtures';
 
 /**
@@ -104,8 +105,12 @@ import type { ApiClient, Recording, WaitOptions, Waiter } from '../../fixtures';
  *
  * 100ms-wide slot per worker: comfortably supports the project's configured
  * `workers: 1` (and up to 10, should that ever change) before two workers'
- * slots could overlap, while still leaving room for hundreds of calls per
- * worker within one wall-clock second before the shared 0-999ms space wraps.
+ * slots could overlap. That budget is per worker, not "hundreds": `sequence`
+ * is a single shared counter added on top of `workerIndex * 100`, so it is
+ * only collision-free against the *next* worker's slot for the first <100
+ * calls a worker makes before spilling into it — comfortably enough for
+ * what any one test here needs, just not the larger number the wording used
+ * to imply.
  */
 const WORKER_SLOT_WIDTH_MS = 100;
 let sequence = 0;
@@ -256,3 +261,62 @@ export async function waitForRecordingStatus(
  * one.
  */
 export const MKV_MAGIC = Buffer.from([0x1a, 0x45, 0xdf, 0xa3]);
+
+/**
+ * Deletes a recording and its channel from a `test.afterEach`, tolerating an
+ * already-gone row (204 or 404 both count as success — a test that deletes
+ * the recording itself as part of what it is testing leaves nothing here to
+ * clean up) and never letting a cleanup failure mask an already-failing
+ * test's real cause.
+ *
+ * Always call this from `test.afterEach`, never a body-level `try`/`finally`:
+ * Playwright tears a timed-out test down mid-`await`, with nothing after
+ * that point — a `finally` block included — guaranteed to run, but fixture
+ * teardown always does. The recording is deleted before the channel
+ * (`Recording.channel` is `on_delete=CASCADE`, so the channel delete alone
+ * would remove it too, but deleting the recording explicitly and first is
+ * what triggers `revoke_task_on_delete`, tearing down its
+ * `PeriodicTask`/`ClockedSchedule` pair) — a leaked pair widens the
+ * `uniqueStartTime` collision surface above and is D10Scot/Dispatcharr#71's
+ * failure mode besides.
+ *
+ * `label` names the calling spec file in the diagnostic — a parameter rather
+ * than inferred, so a caller's log lines keep matching its own file name.
+ */
+export async function cleanupRecordingAndChannel(
+  api: ApiClient,
+  testInfo: TestInfo,
+  ids: { recordingId: number | undefined; channelId: number | undefined },
+  label: string
+): Promise<void> {
+  const { recordingId, channelId } = ids;
+  if (recordingId === undefined && channelId === undefined) return;
+
+  try {
+    if (recordingId !== undefined) {
+      const res = await api.delete(`/api/channels/recordings/${recordingId}/`);
+      if (res.status() !== 204 && res.status() !== 404) {
+        throw new Error(`recording cleanup failed: DELETE returned ${res.status()}`);
+      }
+    }
+    if (channelId !== undefined) {
+      const res = await api.delete(`/api/channels/channels/${channelId}/`);
+      if (res.status() !== 204 && res.status() !== 404) {
+        throw new Error(`channel cleanup failed: DELETE returned ${res.status()}`);
+      }
+    }
+  } catch (cleanupError) {
+    // A cleanup failure must not replace an already-failing test's real
+    // cause — same non-masking shape every spec in this project used before
+    // this was extracted.
+    if (testInfo.status !== 'passed') {
+      console.error(
+        `${label}: cleanup failed after an in-flight test failure — not ` +
+          'overwriting it. Cleanup error:',
+        cleanupError
+      );
+      return;
+    }
+    throw cleanupError;
+  }
+}

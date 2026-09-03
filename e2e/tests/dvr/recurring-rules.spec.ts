@@ -60,7 +60,7 @@ import type { Recording, RecurringRule } from '../../fixtures';
  *           end_window = end_limit
  *       else:
  *           end_window = horizon.astimezone(tz).date()
- *           if end_limit and end_window < end_limit:
+ *           if end_limit and end_limit < end_window:
  *               end_window = end_limit
  *
  *     `perform_create` always calls with `drop_existing=True`, and — per (1)

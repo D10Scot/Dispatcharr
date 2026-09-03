@@ -1,7 +1,12 @@
 import path from 'node:path';
 import { test, expect, expectTsAligned } from '../../fixtures';
 import type { Fixtures } from '../../fixtures';
-import { scheduleRecording, waitForRecordingStatus, MKV_MAGIC } from './helpers';
+import {
+  scheduleRecording,
+  waitForRecordingStatus,
+  cleanupRecordingAndChannel,
+  MKV_MAGIC,
+} from './helpers';
 
 /**
  * The goal's centre: the first execution of `run_recording`
@@ -37,34 +42,12 @@ test.afterEach(async ({ api }, testInfo) => {
   const channelId = channelIdToCleanup;
   recordingIdToCleanup = undefined;
   channelIdToCleanup = undefined;
-  if (recordingId === undefined && channelId === undefined) return;
-
-  try {
-    if (recordingId !== undefined) {
-      const res = await api.delete(`/api/channels/recordings/${recordingId}/`);
-      if (res.status() !== 204 && res.status() !== 404) {
-        throw new Error(`recording cleanup failed: DELETE returned ${res.status()}`);
-      }
-    }
-    if (channelId !== undefined) {
-      const res = await api.delete(`/api/channels/channels/${channelId}/`);
-      if (res.status() !== 204 && res.status() !== 404) {
-        throw new Error(`channel cleanup failed: DELETE returned ${res.status()}`);
-      }
-    }
-  } catch (cleanupError) {
-    // Same non-masking shape dvr.spec.ts/plugins.spec.ts settled on: a
-    // cleanup failure must not replace an already-failing test's real cause.
-    if (testInfo.status !== 'passed') {
-      console.error(
-        'recording-execution.spec.ts: cleanup failed after an in-flight test ' +
-          'failure — not overwriting it. Cleanup error:',
-        cleanupError
-      );
-      return;
-    }
-    throw cleanupError;
-  }
+  await cleanupRecordingAndChannel(
+    api,
+    testInfo,
+    { recordingId, channelId },
+    'recording-execution.spec.ts'
+  );
 });
 
 /** Escapes regex metacharacters in a generated channel name for use inside `new RegExp(...)`. */

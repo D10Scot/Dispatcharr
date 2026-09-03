@@ -1,6 +1,6 @@
 import { test, expect } from '../../fixtures';
 import type { ApiClient, Recording } from '../../fixtures';
-import { scheduleRecording, waitForRecordingStatus } from './helpers';
+import { scheduleRecording, waitForRecordingStatus, cleanupRecordingAndChannel } from './helpers';
 
 /**
  * Row 8 (spec D9): the comskip dispatch chain — `CoreSettings.get_dvr_comskip_enabled()`
@@ -171,20 +171,21 @@ test.afterEach(async ({ api }, testInfo) => {
     }
   }
 
+  // Calls the shared helper for the recording/channel half — see
+  // helpers.ts's own doc comment for its 404 tolerance and non-masking
+  // shape. That ordering (settings restore first, unconditional; recording/
+  // channel cleanup second) is preserved here, not delegated wholesale,
+  // because leaving `dvr_settings` mutated is the worse of the two failure
+  // modes on a shared container and must never be skipped or reordered
+  // behind the recording/channel cleanup.
   let cleanupError: unknown;
   try {
-    if (recordingId !== undefined) {
-      const res = await api.delete(`/api/channels/recordings/${recordingId}/`);
-      if (res.status() !== 204 && res.status() !== 404) {
-        throw new Error(`recording cleanup failed: DELETE returned ${res.status()}`);
-      }
-    }
-    if (channelId !== undefined) {
-      const res = await api.delete(`/api/channels/channels/${channelId}/`);
-      if (res.status() !== 204 && res.status() !== 404) {
-        throw new Error(`channel cleanup failed: DELETE returned ${res.status()}`);
-      }
-    }
+    await cleanupRecordingAndChannel(
+      api,
+      testInfo,
+      { recordingId, channelId },
+      'comskip.spec.ts'
+    );
   } catch (err) {
     cleanupError = err;
   }
@@ -198,20 +199,23 @@ test.afterEach(async ({ api }, testInfo) => {
         `is left with comskip settings mutated. row id=${rowId}, intended ` +
         `value=${JSON.stringify(original)}.`
     );
+    if (cleanupError !== undefined) {
+      // Otherwise discarded silently: restoreError below is what actually
+      // fails the test and takes priority, but a recording/channel cleanup
+      // failure alongside it is still real evidence, not noise to drop.
+      console.error(
+        'comskip.spec.ts: the recording/channel cleanup ALSO failed, ' +
+          'alongside the settings restore failure above. Cleanup error:',
+        cleanupError
+      );
+    }
     throw restoreError;
   }
   if (cleanupError !== undefined) {
-    // Same non-masking shape recording-execution.spec.ts/dvr.spec.ts settled
-    // on: a cleanup failure must not replace an already-failing test's real
-    // cause.
-    if (testInfo.status !== 'passed') {
-      console.error(
-        'comskip.spec.ts: cleanup failed after an in-flight test failure — ' +
-          'not overwriting it. Cleanup error:',
-        cleanupError
-      );
-      return;
-    }
+    // cleanupRecordingAndChannel already applies its own non-masking check
+    // (testInfo.status) and swallows-and-logs rather than throwing when that
+    // applies, so a defined cleanupError here always means the test itself
+    // passed and this failure should propagate.
     throw cleanupError;
   }
 });

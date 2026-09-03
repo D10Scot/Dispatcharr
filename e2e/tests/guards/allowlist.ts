@@ -126,7 +126,7 @@ export const GLOBAL_SETTINGS_WRITE: Capability = {
     // `streaming-greybox` is `workers: 1` partly for this reason.
     'tests/streaming-greybox/vod-redirect-profile.spec.ts',
     // Writes `dvr_settings`, and only `comskip_enabled` and `comskip_mode`
-    // within it — merged into a deep copy of the row's existing `value`
+    // within it — merged into a spread copy of the row's existing `value`
     // (`CoreSettingsViewSet.update` replaces `value` wholesale, so every
     // other key, including `pre_offset_minutes`/`post_offset_minutes`, is
     // carried through unchanged to avoid triggering that view's
