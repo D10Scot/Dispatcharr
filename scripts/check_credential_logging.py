@@ -20,10 +20,12 @@ is reported for its third argument. An f-string is one argument, so
 
 is reported too, while `logger.info(f"{redact_url(url)}")` is clear.
 
-Arguments that log no runtime value are skipped — a plain string, or an
-f-string with nothing interpolated into it, has no expression to evaluate and
-cannot carry a credential. That is what lets a message name get_stream_url()
-without tripping the check.
+LITERAL ARGUMENTS ARE SKIPPED: an argument with no runtime value in it — a
+plain string, or an f-string with nothing interpolated — has no expression to
+evaluate and so cannot carry a credential. Without that rule the check reports
+message *text* that merely names something like get_stream_url(), and a guard
+that flags message text trains people to reach for the ignore marker, which is
+the one thing that would make the marker meaningless.
 
 WHOLE CALLS, NOT PHYSICAL LINES. The file is parsed with `ast`, so a call
 wrapped across several lines — which is what Black produces by default — is
@@ -76,6 +78,26 @@ unrelated pull requests. Three gaps are known and were found by reading:
 
 Closing them means working off the resulting backlog in one pass. Until then,
 read a diff for these three shapes yourself; the check will not do it for you.
+
+KNOWN LIMITS OF THE CHECK ITSELF, as opposed to its pattern:
+
+  * It reads one call, never the statements around it. A URL redacted — or not
+    redacted — into a variable on one line and logged on the next is invisible:
+
+        message = f"fetching {server_url}"
+        logger.info(message)
+
+    Redact at the point of use rather than working around this.
+  * It matches a receiver whose name ends in `logger` (`logger`, `_logger`,
+    `self.logger`), which is the scope the grep it replaced had. A direct
+    `logging.info(...)` on the module is not examined; the tree holds 50 of
+    those today, 5 of which name a credential expression.
+  * A leak reaching the log through `str(exception)` is a separate class it
+    does not model at all: `requests` embeds the full URL in its exception
+    text, so `logger.error(f"{e}")` around a provider fetch leaks while naming
+    nothing the pattern looks for.
+
+All three are follow-ups, not gaps to work around with the ignore marker.
 """
 
 import ast
