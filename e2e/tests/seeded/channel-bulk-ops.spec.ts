@@ -15,10 +15,10 @@ import type { ApiClient, Channel } from '../../fixtures';
  * is what makes the shift both observable and safe to provoke.
  *
  * **D18.** [#72](https://github.com/D10Scot/Dispatcharr/issues/72) is
- * deliberately not reproduced. This file creates channels and profiles but
- * never concurrently, because provoking that race leaves a
- * partially-populated membership set on a shared instance, and a
- * reproduction that fails to fire is a green test proving nothing.
+ * deliberately not reproduced. This file creates channels, never
+ * concurrently with a profile-membership operation, because provoking that
+ * race leaves a partially-populated membership set on a shared instance, and
+ * a reproduction that fails to fire is a green test proving nothing.
  *
  * ---------------------------------------------------------------------------
  * The worker band

@@ -1161,7 +1161,7 @@ export type NetworkAccessCheck = {
 };
 
 /**
- * `POST /api/plugins/<key>/run/` — `PluginRunAPIView.post`
+ * `POST /api/plugins/plugins/<key>/run/` — `PluginRunAPIView.post`
  * (`apps/plugins/api_views.py`). `result` is **double-wrapped** unless the
  * plugin action returns a `dict`: `PluginManager.run_action`
  * (`apps/plugins/loader.py`) passes a `dict` result through as-is, but wraps

@@ -120,7 +120,7 @@ import type { Channel, EpgData, EpgMatchAssociation } from '../../fixtures';
  *
  * Test 7 uses the `Meridian Cinema Plus` / `Meridian Cinema Prime` pair
  * (82.93, an 8-point margin above `FUZZY_SKIP_ML`=75, comfortably clear of
- * the `[70, 80)` bulk ML band too — it never enters that branch, but the
+ * the bulk `[50, 80)` ML band too — it never enters that branch, but the
  * margin matters because the *suffixed* pair below is what the test actually
  * runs). No third pair was built for a `[75, 80)` disagreement band — the
  * one range the two branches' `FUZZY_SKIP_ML` values disagree on (75 single,

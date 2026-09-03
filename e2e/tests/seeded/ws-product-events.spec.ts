@@ -63,7 +63,19 @@ test.describe('epg_data_created', () => {
 
   test.afterEach(async ({ api }) => {
     if (source) {
-      await api.delete(`/api/epg/sources/${source.id}/`);
+      const deleted = await api.delete(`/api/epg/sources/${source.id}/`);
+      if (!deleted.ok()) {
+        // Non-masking: log rather than throw, so a cleanup failure never
+        // hides an already-failing test's real cause (same shape as
+        // network-acl.spec.ts's afterEach). Left active, this dummy source's
+        // auto-created EPGData row is exactly the generated-shape fuzzy
+        // candidate the test-8 gap row in COVERAGE.md blames for its 56.91
+        // collision — worth knowing about even when the test itself passed.
+        console.error(
+          `ws-product-events.spec.ts: DELETE /api/epg/sources/${source.id}/ failed with ` +
+            `${deleted.status()} — an active dummy EPG source was left behind`
+        );
+      }
       source = undefined;
     }
   });
@@ -145,8 +157,28 @@ test('the admin-only filter: an admin socket receives channel_stats, a Streamer 
 
     // Both waits are registered *before* the polling loop starts, so neither
     // can miss a message that arrives while the loop is still running.
+    //
+    // The admin wait is bare-type (D12a's last resort, not its default): the
+    // `{"channels": [], "count": 0}` payload this idle instance's `GET
+    // /proxy/ts/status` broadcasts carries nothing test-owned to correlate
+    // on. It is safe here specifically because this wait is only a premise
+    // guard, not the assertion under test — a foreign `channel_stats`
+    // arriving in this window still proves "the event fired while the
+    // Streamer socket was open", which is all the negative below needs, and
+    // a foreign message can only strengthen that guard, never weaken it.
+    // Nothing else in `seeded` emits `channel_stats`: `channel-status.ts`
+    // reads the per-channel form (`GET /proxy/ts/status/<uuid>`), which does
+    // not broadcast (`apps/proxy/live_proxy/views.py:24-48`) — only the bare
+    // collection form polled below does.
     const adminWait = ws.waitForMessage('channel_stats', { timeoutMs: WINDOW_MS });
     const streamerWait = streamer.waitForMessage('channel_stats', { timeoutMs: WINDOW_MS });
+    // If the premise guard below throws (adminWait never resolves),
+    // streamerWait is left with no consumer until streamer.close() rejects
+    // it in the finally block. Attaching a no-op handler here keeps that
+    // rejection from being reported as a second, unrelated failure — the
+    // `expect(streamerWait).rejects` below still observes and asserts on the
+    // same rejection.
+    streamerWait.catch(() => {});
 
     for (let i = 0; i < POLL_COUNT; i++) {
       await api.get('/proxy/ts/status');

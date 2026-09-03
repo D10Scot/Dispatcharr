@@ -326,11 +326,13 @@ behind four scopes — `M3U_EPG`, `STREAMS`, `XC_API`, `UI`. No backend constant
 the canonical list is `frontend/src/constants.js:NETWORK_ACCESS_OPTIONS`. The shipped
 `network_access` `CoreSettings` row is `{}` — no key present — so every scope runs under its
 default: `M3U_EPG` → `LOCAL_NETWORK_CIDRS` (private/loopback only); `STREAMS`, `XC_API` and `UI` →
-`0.0.0.0/0`.
+`["0.0.0.0/0", "::/0"]`.
 
 **The `X-Real-IP` mechanism.** `get_client_ip` honours `X-Real-IP` only when `REMOTE_ADDR` — the
-TCP peer — is itself inside `LOCAL_NETWORK_CIDRS`. In this container that peer is nginx, reached
-over the Docker bridge, which is inside those CIDRs and therefore trusted by default; nginx's
+TCP peer — is itself inside `LOCAL_NETWORK_CIDRS`. In this container that peer is not nginx's own
+address; it is the Docker bridge gateway that `include uwsgi_params` forwards as nginx's
+`$remote_addr` (Probe A measured `172.25.0.1`), which is inside those CIDRs and therefore trusted
+by default; nginx's
 `uwsgi_pass` routes neither set nor strip the header, so a client that supplies its own `X-Real-IP`
 is believed verbatim ([#81](https://github.com/D10Scot/Dispatcharr/issues/81)). That is a fact about
 *this* topology's `DISPATCHARR_TRUSTED_PROXIES` default, not a portable one — a deployment setting

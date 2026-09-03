@@ -13,20 +13,21 @@ import { listRows } from '../../setup/http';
  * one worker, in order) makes that window something this file alone can see
  * and clean up.
  *
- * `network_access_allowed(request, settings_key, user=None)` has exactly
- * three scope defaults, and the shipped `network_access` `CoreSettings` row
- * is `{}` — no key present — so every request in tests 1 and 2 runs under
+ * `network_access_allowed(request, settings_key, user=None)` has two default
+ * values over its four scopes, and the shipped `network_access` `CoreSettings`
+ * row is `{}` — no key present — so every request in tests 1 and 2 runs under
  * these defaults, untouched:
  *   - `M3U_EPG` → `LOCAL_NETWORK_CIDRS` (private/loopback only)
- *   - everything else (including `XC_API`, `STREAMS`, `UI`) → `0.0.0.0/0`
+ *   - everything else (including `XC_API`, `STREAMS`, `UI`) → `["0.0.0.0/0", "::/0"]`
  *
  * The mechanism every test here depends on: `get_client_ip`
  * (`dispatcharr/utils.py`) honours `X-Real-IP` only when `REMOTE_ADDR` — the
- * TCP peer — is itself a trusted proxy. In this container that peer is
- * nginx, reached over the Docker bridge, which is inside
- * `LOCAL_NETWORK_CIDRS` and therefore trusted by default. nginx's
- * `uwsgi_pass` routes neither set nor strip `X-Real-IP`, so a client that
- * supplies its own header is believed verbatim
+ * TCP peer — is itself a trusted proxy. In this container that peer is not
+ * nginx's own address; it is the Docker bridge gateway that `include
+ * uwsgi_params` forwards as nginx's `$remote_addr` (Probe A measured
+ * `172.25.0.1`), which is inside `LOCAL_NETWORK_CIDRS` and therefore trusted
+ * by default. nginx's `uwsgi_pass` routes neither set nor strip `X-Real-IP`,
+ * so a client that supplies its own header is believed verbatim
  * ([#81](https://github.com/D10Scot/Dispatcharr/issues/81)). Test 1 pins
  * this as a fact about *this* topology, not a portable one.
  *
@@ -38,7 +39,7 @@ import { listRows } from '../../setup/http';
  * over `docker exec` against a shared instance.
  *
  * Every request below goes through the built-in `request` fixture, never
- * `api`: `e2e/README.md` rule 11 — `ApiClient` retries once through a token
+ * `api`: `e2e/README.md` rule 12 — `ApiClient` retries once through a token
  * refresh on *any* 401, and 401 is one of the two statuses this file
  * asserts on (test 5 pins a `player_api.php` 401 as a known defect). Driving
  * that call through `api` would let the retry silently absorb the very
@@ -83,27 +84,17 @@ function isWithinLocalNetworkCidrs(ip: string): boolean {
 }
 
 /**
- * "Refused" for the XC surfaces, without pinning a specific status: a 200
- * is never a refusal, and the one surface that could otherwise produce a
- * false negative — `player_api.php`'s default action returns a `user_info`
- * envelope on success — is checked explicitly. `get.php`/`xmltv.php` never
- * produce that envelope on success (M3U text / XMLTV text respectively), so
- * the JSON-parse failure there is itself consistent with refusal.
+ * "Refused" for the XC surfaces, pinned to the two statuses the ACL actually
+ * produces: `401` (test 5's known defect, #134 — the per-user branch mapping
+ * a denial to "wrong password") and `403` (the correct/eventual status). Any
+ * other status — a `500` from a broken view, a `404` from a moved route — is
+ * *not* a refusal and must fail the calling test rather than pass it; this
+ * stays green whichever way #134 resolves without also accepting server
+ * errors as a stand-in for the ACL working. No body check is needed: neither
+ * `401` nor `403` ever carries the `player_api.php` `user_info` envelope.
  */
-async function isXcRefused(res: {
-  status(): number;
-  json(): Promise<unknown>;
-}): Promise<boolean> {
-  if (res.status() === 200) return false;
-  try {
-    const body: unknown = await res.json();
-    if (body && typeof body === 'object' && 'user_info' in (body as Record<string, unknown>)) {
-      return false;
-    }
-  } catch {
-    // Not JSON — fine; only the player_api.php envelope is JSON-shaped.
-  }
-  return true;
+function isXcRefused(res: { status(): number }): boolean {
+  return [401, 403].includes(res.status());
 }
 
 // @characterization: pins a fact about this container's nginx/uwsgi
@@ -324,6 +315,26 @@ test(
     });
     expect(patched.status()).toBe(200);
 
+    // Strengthens the read-modify-write above for free: a client whose
+    // X-Real-IP falls *inside* TEST_NET_3_CIDR must still succeed, proving
+    // (a) the merge above did not corrupt xc_password, so the credentials
+    // this test reuses below are still real, and (b) the refusals in the
+    // loop are the *network* branch of the per-user check, not a broken
+    // password — the global XC_API default (0.0.0.0/0) admits this request
+    // regardless of the spoofed header, so only the per-user CIDR is in play.
+    const inRange = await request.get(`/player_api.php${xcQuery(user)}`, {
+      headers: SPOOF_HEADERS,
+    });
+    expect(
+      inRange.status(),
+      'a client whose X-Real-IP is inside the per-user allowed_networks CIDR must succeed'
+    ).toBe(200);
+    const inRangeBody = (await inRange.json()) as { user_info?: { username?: string } };
+    expect(
+      inRangeBody.user_info?.username,
+      'in-range request must be the real user_info envelope, not a coincidental 200'
+    ).toBe(user.username);
+
     // Refusal, not a specific status: this test stays green whichever way
     // test 5's defect (401 instead of a correct 403) is resolved.
     for (const path of [
@@ -333,7 +344,7 @@ test(
     ]) {
       const res = await request.get(path);
       expect(
-        await isXcRefused(res),
+        isXcRefused(res),
         `${path} must refuse a user whose allowed_networks excludes the real client`
       ).toBe(true);
     }
