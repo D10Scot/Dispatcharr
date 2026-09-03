@@ -7,6 +7,11 @@ name: Create Release
 #      It verifies that every check the Main ruleset requires passed on the
 #      head SHA, tags that SHA, builds, signs, attests and creates the
 #      release. It never writes to a branch.
+#
+# The tag is created before the build, deliberately: the images are labelled
+# and pushed against a tag that already exists. So a `docker` job that fails
+# leaves the tag behind, and re-dispatching the same version needs that tag
+# deleted by hand first — `verify` refuses an existing tag on purpose.
 on:
   workflow_dispatch:
     inputs:
@@ -73,13 +78,10 @@ jobs:
           SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
-          case "${INPUT_VERSION}" in
-            [0-9]*.[0-9]*.[0-9]*) ;;
-            *)
-              echo "::error::version input \"${INPUT_VERSION}\" is not MAJOR.MINOR.PATCH with no leading v"
-              exit 1
-              ;;
-          esac
+          if [[ ! "${INPUT_VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::version input \"${INPUT_VERSION}\" is not MAJOR.MINOR.PATCH with no leading v"
+            exit 1
+          fi
           FILE_VERSION=$(python3 -c 'import version; print(version.__version__)')
           if [ "${FILE_VERSION}" != "${INPUT_VERSION}" ]; then
             echo "::error::version.py at ${SHA} is ${FILE_VERSION}, but this dispatch asked for ${INPUT_VERSION}; merge a version bump pull request first"
@@ -88,12 +90,28 @@ jobs:
           echo "version.py is ${FILE_VERSION}"
 
       - name: Check the tag does not already exist
+        # Three outcomes, not two. `git ls-remote … | grep -q .` collapsed a
+        # network or authentication failure into "the tag is free" — an `if`
+        # condition is exempt from `set -e`, and pipefail only turns git's
+        # non-zero exit into a false condition. Here 200 means the tag exists,
+        # 404 means it is free, and anything else is a failed lookup that
+        # stops the release rather than being read as absence.
         env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
           INPUT_VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
-          if git ls-remote --tags origin "refs/tags/v${INPUT_VERSION}" | grep -q .; then
+          LOOKUP="${RUNNER_TEMP}/tag-lookup.txt"
+          RC=0
+          gh api "repos/${REPOSITORY}/git/ref/tags/v${INPUT_VERSION}" > "${LOOKUP}" 2>&1 || RC=$?
+          if [ "${RC}" -eq 0 ]; then
             echo "::error::tag v${INPUT_VERSION} already exists on origin; a release is never re-cut over an existing tag"
+            exit 1
+          fi
+          if ! grep -q "HTTP 404" "${LOOKUP}"; then
+            echo "::error::could not determine whether tag v${INPUT_VERSION} exists; the lookup itself failed, so absence cannot be assumed"
+            cat "${LOOKUP}"
             exit 1
           fi
           echo "tag v${INPUT_VERSION} is free"
@@ -139,15 +157,22 @@ jobs:
           while IFS= read -r CONTEXT; do
             [ -n "${CONTEXT}" ] || continue
             # Most recent run wins: re-running a failed aggregate is what makes
-            # a commit releasable, so only the latest attempt counts.
+            # a commit releasable, so only the latest attempt counts. Ordered
+            # by id alone, never by started_at: a queued run has a null
+            # started_at, which sorts first and would let an older success
+            # mask a re-run that has not started yet. Check-run ids are
+            # monotonic per repository, so the newest attempt has the highest.
             STATE=$(jq -rs --arg name "${CONTEXT}" '
               [ .[] | select(.name == $name) ]
-              | sort_by(.started_at, .id)
+              | sort_by(.id)
               | last
               | if . == null then "absent" else (.conclusion // "still running") end
             ' "${RUNS}")
             if [ "${STATE}" = "success" ]; then
               echo "ok       ${CONTEXT}"
+            elif [ "${STATE}" = "absent" ]; then
+              echo "::error::required check \"${CONTEXT}\" is absent on ${SHA}, expected success — no run of the workflow that produces it reached this commit"
+              FAILED=1
             else
               echo "::error::required check \"${CONTEXT}\" is ${STATE} on ${SHA}, expected success"
               FAILED=1
