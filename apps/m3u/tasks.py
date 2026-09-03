@@ -27,7 +27,7 @@ from core.utils import (
 from core.models import CoreSettings
 from core.xtream_codes import Client as XCClient
 from core.utils import send_websocket_update
-from dispatcharr.utils import REDACTED, redact_headers, redact_url
+from dispatcharr.utils import redact_headers, redact_url
 from .utils import (
     convert_js_numbered_backreferences,
     normalize_stream_url,
@@ -1570,10 +1570,16 @@ def refresh_m3u_groups(account_id, use_cache=False, full_refresh=False, scan_sta
     if account.account_type == M3UAccount.Types.XC:
         # Log detailed information about the account
         logger.info(
-            f"Processing XC account {account_id} with URL: {account.server_url}"
+            "Processing XC account %s with URL: %s",
+            account_id,
+            redact_url(account.server_url),
         )
-        logger.debug(
-            f"Username: {account.username}, Has password: {'Yes' if account.password else 'No'}"
+        # Presence only. The username is a provider credential in its own
+        # right: half of an Xtream login, and half of the URL path.
+        logger.debug(  # credential-logging: ignore - logs presence booleans, never the values
+            "Has username: %s, has password: %s",
+            "Yes" if account.username else "No",
+            "Yes" if account.password else "No",
         )
 
         # Validate required fields
@@ -1626,7 +1632,9 @@ def refresh_m3u_groups(account_id, use_cache=False, full_refresh=False, scan_sta
                 )
 
             logger.info(
-                f"Creating XCClient with URL: {account.server_url}, Username: {account.username}, User-Agent: {user_agent_string}"
+                "Creating XCClient with URL: %s, User-Agent: %s",
+                redact_url(account.server_url),
+                user_agent_string,
             )
 
             # Create XCClient with explicit error handling
@@ -3117,11 +3125,8 @@ def get_transformed_credentials(account, profile=None):
                     # The username and password are deliberately not logged, at any
                     # level: this function exists to extract provider credentials.
                     logger.debug(
-                        "Extracted transformed credentials from server URL %s "
-                        "(username %s, password %s)",
+                        "Extracted transformed credentials from server URL %s",
                         redact_url(transformed_url),
-                        REDACTED,
-                        REDACTED,
                     )
 
                     return transformed_url, transformed_username, transformed_password

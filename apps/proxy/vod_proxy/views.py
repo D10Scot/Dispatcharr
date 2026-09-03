@@ -197,7 +197,7 @@ def _select_vod_stream(
             logger.warning(
                 "[VOD-FAILOVER] Invalid stream URL from account %s: %s",
                 cand_account.name,
-                final_stream_url,
+                redact_url(final_stream_url),
             )
             continue
 
@@ -752,7 +752,7 @@ def stream_vod(request, content_type, content_id, session_id=None, profile_id=No
                     return HttpResponse("No available stream", status=503)
                 logger.info(
                     "[VOD-REDIRECT] Redirecting to provider URL: %s",
-                    selected["final_stream_url"],
+                    redact_url(selected["final_stream_url"]),
                 )
                 close_old_connections()
                 return HttpResponseRedirect(selected["final_stream_url"])
@@ -901,7 +901,7 @@ def head_vod(request, content_type, content_id, session_id=None, profile_id=None
                         return HttpResponse("No available stream", status=503)
                     logger.info(
                         "[VOD-HEAD] Redirecting to provider URL: %s",
-                        selected["final_stream_url"],
+                        redact_url(selected["final_stream_url"]),
                     )
                     return HttpResponseRedirect(selected["final_stream_url"])
 

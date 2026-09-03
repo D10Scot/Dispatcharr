@@ -10,7 +10,7 @@
 #   typecheck    e2e{,-upstream}/*.ts tsc --noEmit, that pkg  (blocking)
 #   lint         frontend/*.js(x)     eslint that file        (advisory)
 #   actions      workflows/action.yml zizmor, whole file      (blocking)
-#   secrets      any *.py             check_credential_logging.sh (blocking)
+#   secrets      any *.py             check_credential_logging.py (blocking)
 #
 # All but zizmor, typecheck and secrets are deliberately independent of the
 # repo's pre-existing backlog. Those three are ratchets: they hold the whole
@@ -72,15 +72,17 @@ dexec() {
 # through redact_url()/redact_headers(), and the same script runs in lint.yml
 # over every changed *.py, so local and CI cannot disagree.
 if [[ "$REL" == *.py ]]; then
-  CREDENTIAL_GUARD="scripts/check_credential_logging.sh"
-  if [ -x "$CREDENTIAL_GUARD" ]; then
-    OUT="$(bash "$CREDENTIAL_GUARD" "$REL" 2>&1)"
+  CREDENTIAL_GUARD="scripts/check_credential_logging.py"
+  if [ ! -f "$CREDENTIAL_GUARD" ]; then
+    note "Did NOT check ${REL} for credential logging — ${CREDENTIAL_GUARD} is missing."
+  elif ! command -v python3 >/dev/null 2>&1; then
+    note "Did NOT check ${REL} for credential logging — python3 is not on PATH."
+  else
+    OUT="$(python3 "$CREDENTIAL_GUARD" "$REL" 2>&1)"
     if [ $? -ne 0 ]; then
       block "credential logging in ${REL}" \
-            "$(printf '%s' "$OUT" | head -20)"$'\n\n'"Route the logged value through redact_url() / redact_headers() (dispatcharr/utils.py) on the same line. If the line logs no value at all, mark it with a trailing '# credential-logging: ignore - <reason>'."
+            "$(printf '%s' "$OUT" | head -20)"$'\n\n'"Route the logged value through redact_url() / redact_headers() (dispatcharr/utils.py). If the call logs no value at all, mark it with a '# credential-logging: ignore - <reason>' comment on one of its lines."
     fi
-  else
-    note "Did NOT check ${REL} for credential logging — ${CREDENTIAL_GUARD} is missing or not executable."
   fi
 fi
 

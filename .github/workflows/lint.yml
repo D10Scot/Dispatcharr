@@ -106,10 +106,21 @@ jobs:
         # files are checked: the pattern still flags pre-existing log calls
         # elsewhere in the tree, and this job is a ratchet, not a backlog.
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
         run: |
           set -euo pipefail
-          base="${BASE_SHA:-HEAD^}"
+          # A pull request diffs against its base. A push diffs against the
+          # commit the branch was at before it, so a multi-commit push is
+          # checked whole rather than only its tip; github.event.before is all
+          # zeros for a new branch (and absent outside push), so fall back.
+          if [ -n "${PR_BASE_SHA:-}" ]; then
+            base="$PR_BASE_SHA"
+          elif [ -n "${PUSH_BEFORE_SHA:-}" ] && [ "${PUSH_BEFORE_SHA//0/}" != "" ]; then
+            base="$PUSH_BEFORE_SHA"
+          else
+            base="HEAD^"
+          fi
           # Collected into the positional parameters rather than with mapfile,
           # so the same snippet can be run locally on a bash 3.2 (macOS) shell.
           set --
@@ -122,7 +133,7 @@ jobs:
           fi
           echo "Checking $# changed Python file(s):"
           printf '  %s\n' "$@"
-          ./scripts/check_credential_logging.sh "$@"
+          python3 ./scripts/check_credential_logging.py "$@"
 
   lockfile-fresh:
     name: uv.lock freshness
