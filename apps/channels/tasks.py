@@ -31,6 +31,7 @@ from apps.channels.models import Channel
 from apps.epg.models import EPGData
 from core.models import CoreSettings
 from core.utils import acquire_task_lock, release_task_lock
+from dispatcharr.utils import redact_url
 
 from django.db import InterfaceError, OperationalError, close_old_connections
 from channels.layers import get_channel_layer
@@ -218,7 +219,12 @@ def validate_logo_url(logo_url, max_length=2000):
     base64-encoded images embedded in URLs.
     """
     if logo_url and len(logo_url) > max_length:
-        logger.warning(f"Logo URL too long ({len(logo_url)} > {max_length}), skipping: {logo_url[:100]}...")
+        logger.warning(
+            "Logo URL too long (%s > %s), skipping: %s...",
+            len(logo_url),
+            max_length,
+            redact_url(logo_url)[:100],
+        )
         return None
     return logo_url
 
@@ -1574,7 +1580,9 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
     bytes_written = 0
 
     base_url = get_dvr_stream_base_url()
-    logger.info(f"DVR recording {recording_id}: using stream base URL {base_url}")
+    logger.debug(
+        "DVR recording %s: using stream base URL %s", recording_id, redact_url(base_url)
+    )
 
     # --- DB retry constants ---
     _dvr_db_max_retries = 3
@@ -1630,7 +1638,9 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
 
     if not interrupted and hls_dir:
         stream_url = f"{base}/proxy/ts/stream/{channel.uuid}"
-        logger.info(f"DVR recording {recording_id}: stream URL: {stream_url}")
+        logger.debug(
+            "DVR recording %s: stream URL: %s", recording_id, redact_url(stream_url)
+        )
         logger.info(f"DVR recording {recording_id}: HLS output dir: {hls_dir}")
         logger.info(
             f"DVR recording {recording_id}: FFmpeg outage retry window "

@@ -23,7 +23,7 @@ from apps.accounts.permissions import IsAdmin
 from rest_framework_simplejwt.authentication import JWTAuthentication
 from apps.accounts.authentication import ApiKeyAuthentication, QueryParamJWTAuthentication
 from apps.proxy.utils import check_user_stream_limits
-from dispatcharr.utils import network_access_allowed
+from dispatcharr.utils import network_access_allowed, redact_headers, redact_url
 from core.utils import dispatcharr_user_agent
 
 logger = logging.getLogger(__name__)
@@ -127,7 +127,7 @@ def _vod_session_path_redirect(request, session_id, profile_id=None, user=None):
         query_params["session_id"] = session_id
         redirect_url = f"{request.path}?{urlencode(query_params, doseq=True)}"
 
-    logger.info("[VOD-SESSION] Redirecting to path-based URL: %s", redirect_url)
+    logger.info("[VOD-SESSION] Redirecting to path-based URL: %s", redact_url(redirect_url))
 
     if user:
         try:
@@ -459,12 +459,12 @@ def _get_stream_url_from_relation(relation):
         if hasattr(relation, 'get_stream_url'):
             url = relation.get_stream_url()
             if url:
-                logger.info(f"[VOD-URL] Built URL from get_stream_url(): {url}")
+                logger.info("[VOD-URL] Built URL from get_stream_url(): %s", redact_url(url))
                 return url
             else:
-                logger.warning(f"[VOD-URL] get_stream_url() returned None")
+                logger.warning("[VOD-URL] get_stream_url() returned None")  # credential-logging: ignore - names a method, logs no value
 
-        logger.error(f"[VOD-URL] Relation has no get_stream_url method or it failed")
+        logger.error("[VOD-URL] Relation has no get_stream_url method or it failed")  # credential-logging: ignore - names a method, logs no value
         return None
     except Exception as e:
         logger.error(f"[VOD-URL] Error getting stream URL from relation: {e}", exc_info=True)
@@ -625,9 +625,9 @@ def stream_vod(request, content_type, content_id, session_id=None, profile_id=No
     if user is None and hasattr(request, "user") and request.user.is_authenticated:
         user = request.user
     logger.info(f"[VOD-REQUEST] Starting VOD stream request: {content_type}/{content_id}, session: {session_id}, profile: {profile_id}")
-    logger.info(f"[VOD-REQUEST] Full request path: {request.get_full_path()}")
+    logger.debug("[VOD-REQUEST] Full request path: %s", redact_url(request.get_full_path()))
     logger.info(f"[VOD-REQUEST] Request method: {request.method}")
-    logger.info(f"[VOD-REQUEST] Request headers: {dict(request.headers)}")
+    logger.debug("[VOD-REQUEST] Request headers: %s", redact_headers(request.headers))
 
     try:
         client_ip, client_user_agent = get_client_info(request)
@@ -808,7 +808,7 @@ def stream_vod(request, content_type, content_id, session_id=None, profile_id=No
 
         logger.info(f"[VOD-CONTENT] Found content: {getattr(content_obj, 'name', 'Unknown')}")
         logger.info(f"[VOD-ACCOUNT] Using M3U account: {m3u_account.name}")
-        logger.info(f"[VOD-URL] Final stream URL: {final_stream_url}")
+        logger.info("[VOD-URL] Final stream URL: %s", redact_url(final_stream_url))
         logger.info(
             f"[VOD-PROFILE] Using M3U profile: {m3u_profile.id} "
             f"(max_streams: {m3u_profile.max_streams}, current: {current_connections})"
@@ -958,7 +958,10 @@ def head_vod(request, content_type, content_id, session_id=None, profile_id=None
             'Range': 'bytes=0-1'  # Request only first 2 bytes
         }
 
-        logger.info(f"[VOD-HEAD] Making small range GET request to provider: {final_stream_url}")
+        logger.info(
+            "[VOD-HEAD] Making small range GET request to provider: %s",
+            redact_url(final_stream_url),
+        )
         response = requests.get(final_stream_url, headers=headers, timeout=30, allow_redirects=True, stream=True)
 
         # Check for range support - should be 206 for partial content
@@ -1046,7 +1049,10 @@ def head_vod(request, content_type, content_id, session_id=None, profile_id=None
         head_response['X-Session-URL'] = session_url
         head_response['X-Dispatcharr-Session'] = session_id
 
-        logger.info(f"[VOD-HEAD] Returning HEAD response with session URL: {session_url}")
+        logger.info(
+            "[VOD-HEAD] Returning HEAD response with session URL: %s",
+            redact_url(session_url),
+        )
         return head_response
 
     except Exception as e:

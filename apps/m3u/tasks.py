@@ -27,6 +27,7 @@ from core.utils import (
 from core.models import CoreSettings
 from core.xtream_codes import Client as XCClient
 from core.utils import send_websocket_update
+from dispatcharr.utils import REDACTED, redact_headers, redact_url
 from .utils import (
     convert_js_numbered_backreferences,
     normalize_stream_url,
@@ -194,7 +195,7 @@ def fetch_m3u_lines(account, use_cache=False):
                     f"Using user agent: {user_agent} for M3U account: {account.name}"
                 )
                 headers = {"User-Agent": user_agent}
-                logger.info(f"Fetching from URL {account.server_url}")
+                logger.info("Fetching from URL %s", redact_url(account.server_url))
 
                 # Set account status to FETCHING before starting download
                 account.status = M3UAccount.Status.FETCHING
@@ -207,14 +208,22 @@ def fetch_m3u_lines(account, use_cache=False):
                 )
 
                 # Log the actual response details for debugging
-                logger.debug(f"HTTP Response: {response.status_code} from {account.server_url}")
+                logger.debug(
+                    "HTTP Response: %s from %s",
+                    response.status_code,
+                    redact_url(account.server_url),
+                )
                 logger.debug(f"Content-Type: {response.headers.get('content-type', 'Not specified')}")
                 logger.debug(f"Content-Length: {response.headers.get('content-length', 'Not specified')}")
-                logger.debug(f"Response headers: {dict(response.headers)}")
+                logger.debug("Response headers: %s", redact_headers(response.headers))
 
                 # Check if we've been redirected to a different URL
                 if hasattr(response, 'url') and response.url != account.server_url:
-                    logger.warning(f"Request was redirected from {account.server_url} to {response.url}")
+                    logger.warning(
+                        "Request was redirected from %s to %s",
+                        redact_url(account.server_url),
+                        redact_url(response.url),
+                    )
 
                 # Check for ANY non-success status code FIRST (before raise_for_status)
                 if response.status_code < 200 or response.status_code >= 300:
@@ -3069,7 +3078,7 @@ def get_transformed_credentials(account, profile=None):
 
         # Build the complete URL with embedded credentials
         complete_url = f"{clean_server_url}/live/{base_username}/{base_password}/1234.ts"
-        logger.debug(f"Built complete URL: {complete_url}")
+        logger.debug("Built complete URL: %s", redact_url(complete_url))
 
         # Apply profile-specific transformations if profile is provided
         if profile and profile.search_pattern and profile.replace_pattern:
@@ -3081,7 +3090,11 @@ def get_transformed_credentials(account, profile=None):
 
                 # Apply transformation to the complete URL
                 transformed_complete_url = regex.sub(profile.search_pattern, safe_replace_pattern, complete_url)
-                logger.info(f"Transformed complete URL: {complete_url} -> {transformed_complete_url}")
+                logger.debug(
+                    "Transformed complete URL: %s -> %s",
+                    redact_url(complete_url),
+                    redact_url(transformed_complete_url),
+                )
 
                 # Extract components from the transformed URL
                 # Pattern: http://server.com:port/live/username/password/1234.ts
@@ -3101,14 +3114,22 @@ def get_transformed_credentials(account, profile=None):
                     base_path = ('/' + '/'.join(base_path_parts)) if base_path_parts else ''
                     transformed_url = f"{parsed_url.scheme}://{parsed_url.netloc}{base_path}"
 
-                    logger.debug(f"Extracted transformed credentials:")
-                    logger.debug(f"  Server URL: {transformed_url}")
-                    logger.debug(f"  Username: {transformed_username}")
-                    logger.debug(f"  Password: {transformed_password}")
+                    # The username and password are deliberately not logged, at any
+                    # level: this function exists to extract provider credentials.
+                    logger.debug(
+                        "Extracted transformed credentials from server URL %s "
+                        "(username %s, password %s)",
+                        redact_url(transformed_url),
+                        REDACTED,
+                        REDACTED,
+                    )
 
                     return transformed_url, transformed_username, transformed_password
                 else:
-                    logger.warning(f"Could not extract credentials from transformed URL: {transformed_complete_url}")
+                    logger.warning(
+                        "Could not extract credentials from transformed URL: %s",
+                        redact_url(transformed_complete_url),
+                    )
                     return base_url, base_username, base_password
 
             except Exception as e:

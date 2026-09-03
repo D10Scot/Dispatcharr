@@ -2,6 +2,8 @@
 import ipaddress
 import logging
 import os
+import re
+from urllib.parse import unquote, urlsplit, urlunsplit
 
 from django.core.exceptions import ValidationError
 from django.http import JsonResponse
@@ -33,6 +35,173 @@ _trusted_proxies_networks = ()
 # Sentinel values for DISPATCHARR_TRUSTED_PROXIES when explicitly disabling
 # header trust (env unset still means default local CIDRs).
 _TRUSTED_PROXIES_NONE = frozenset({"", "none", "off", "false", "0"})
+
+
+# --------------------------------------------------------------------------
+# Credential redaction
+#
+# Provider URLs in this project carry credentials in three places at once:
+# HTTP userinfo (``http://user:pass@host``), query parameters (the Xtream
+# ``get.php?username=…&password=…`` shape), and *path segments* (the Xtream
+# ``/live/<user>/<pass>/<id>`` family, which dispatcharr/urls.py mounts at the
+# site root). Anything that logs a request path, a stream URL or a header dict
+# therefore leaks working credentials unless it goes through these helpers.
+#
+# Both helpers are deliberately failure-tolerant: a logging call must never be
+# the thing that raises. On any doubt they return the mask rather than the
+# input.
+# --------------------------------------------------------------------------
+
+REDACTED = "***"
+
+# Query parameter names whose *values* are masked (compared case-insensitively,
+# after percent-decoding the name).
+SENSITIVE_QUERY_KEYS = frozenset({"password", "username", "token", "api_key"})
+
+# Header names whose values are masked. Compared case-insensitively after
+# normalising ``_`` to ``-`` and dropping a leading ``http-``, so the same set
+# covers Django ``HttpHeaders`` ("Authorization") and raw ``request.META``
+# ("HTTP_AUTHORIZATION") spellings.
+SENSITIVE_HEADERS = frozenset(
+    {
+        "authorization",
+        "cookie",
+        "x-api-key",
+        "proxy-authorization",
+        "set-cookie",
+    }
+)
+
+# Path segments after which the next two segments are the Xtream username and
+# password. Matched anywhere in the path, because a provider's server URL may
+# carry a sub-path before /live/ (see apps/m3u/tasks.py).
+XTREAM_PATH_PREFIXES = frozenset({"live", "movie", "series", "timeshift"})
+
+# The XC root route is `/<username>/<password>/<channel_id>` with no prefix to
+# key off (dispatcharr/urls.py `xc_stream_endpoint`). It is only recognised as
+# credential-bearing when the path is exactly three segments and the last looks
+# like a stream id — a number with an optional extension. That shape can also
+# match a non-Xtream path, in which case two harmless segments get masked;
+# over-masking a log line is the safe direction of that trade.
+_XC_STREAM_ID_RE = re.compile(r"\A\d+(?:\.[A-Za-z0-9]+)?\Z")
+
+
+def _redact_netloc(netloc):
+    """Replace ``user:pass@`` userinfo with the mask, keeping host and port."""
+    if "@" not in netloc:
+        return netloc
+    _userinfo, _at, host = netloc.rpartition("@")
+    return f"{REDACTED}@{host}"
+
+
+def _redact_path(path):
+    """Mask the credential segments of the Xtream path shapes."""
+    if "/" not in path:
+        return path
+
+    segments = path.split("/")
+    # Indices of the non-empty segments, so leading/trailing slashes and any
+    # empty segments survive the rebuild untouched.
+    filled = [i for i, seg in enumerate(segments) if seg]
+    if not filled:
+        return path
+
+    changed = False
+
+    for n, i in enumerate(filled):
+        if segments[i].lower() in XTREAM_PATH_PREFIXES and n + 2 < len(filled):
+            for j in (filled[n + 1], filled[n + 2]):
+                if segments[j] != REDACTED:
+                    segments[j] = REDACTED
+                    changed = True
+
+    if (
+        not changed
+        and len(filled) == 3
+        and segments[filled[0]].lower() not in XTREAM_PATH_PREFIXES
+        and _XC_STREAM_ID_RE.match(segments[filled[2]])
+    ):
+        segments[filled[0]] = REDACTED
+        segments[filled[1]] = REDACTED
+        changed = True
+
+    return "/".join(segments) if changed else path
+
+
+def _redact_query(query):
+    """Mask the values of the sensitive query parameters, order preserved."""
+    if not query:
+        return query
+
+    parts = query.split("&")
+    changed = False
+    for i, part in enumerate(parts):
+        name, sep, _value = part.partition("=")
+        if not sep:
+            continue
+        if name.lower() in SENSITIVE_QUERY_KEYS or unquote(name).strip().lower() in SENSITIVE_QUERY_KEYS:
+            parts[i] = f"{name}={REDACTED}"
+            changed = True
+
+    return "&".join(parts) if changed else query
+
+
+def redact_url(url):
+    """Return ``url`` with any embedded credentials replaced by ``***``.
+
+    Masks three carriers: HTTP userinfo, the values of the query parameters
+    named in ``SENSITIVE_QUERY_KEYS``, and the Xtream credential path segments
+    (``/live|movie|series|timeshift/<user>/<pass>/…`` plus the bare
+    ``/<user>/<pass>/<id>`` root route).
+
+    A URL with no credentials in it is returned byte-identical — the parsed
+    components are only reassembled when something was actually masked, so this
+    never normalises an untouched URL. Accepts relative paths such as
+    ``request.get_full_path()`` as well as absolute URLs.
+
+    Never raises. Non-string input, or input urlsplit cannot parse, returns
+    ``"***"`` rather than propagating.
+    """
+    if not isinstance(url, str):
+        return REDACTED
+
+    try:
+        parts = urlsplit(url)
+        netloc = _redact_netloc(parts.netloc)
+        path = _redact_path(parts.path)
+        query = _redact_query(parts.query)
+        if netloc == parts.netloc and path == parts.path and query == parts.query:
+            return url
+        return urlunsplit((parts.scheme, netloc, path, query, parts.fragment))
+    except Exception:  # noqa: BLE001 - a log call must never raise
+        return REDACTED
+
+
+def redact_headers(headers):
+    """Return a plain dict of ``headers`` with credential values masked.
+
+    Accepts any mapping with ``.items()`` — a Django ``HttpHeaders``, a plain
+    dict, or ``request.META``. Names in ``SENSITIVE_HEADERS`` get the ``***``
+    mask; every other entry is copied through unchanged.
+
+    Never raises. Anything that is not a mapping yields an empty dict.
+    """
+    try:
+        items = list(headers.items())
+    except Exception:  # noqa: BLE001 - a log call must never raise
+        return {}
+
+    redacted = {}
+    for name, value in items:
+        try:
+            key = str(name).strip().lower().replace("_", "-")
+            if key.startswith("http-"):
+                key = key[len("http-"):]
+            sensitive = key in SENSITIVE_HEADERS
+        except Exception:  # noqa: BLE001
+            sensitive = True
+        redacted[name] = REDACTED if sensitive else value
+    return redacted
 
 
 def json_error_response(message, status=400):
