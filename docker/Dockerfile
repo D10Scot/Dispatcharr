@@ -16,9 +16,9 @@ FROM node:24@sha256:934240a162082fd8b8a2f90cd5114446443f1eba1c5378f6687167ca405e
 
 WORKDIR /app/frontend
 COPY ./frontend /app/frontend
-# remove any node_modules that may have been copied from the host (x86)
-RUN rm -rf node_modules || true; \
-    npm install --no-audit --progress=false;
+# npm ci installs exactly the committed lockfile and removes any node_modules
+# itself, so the image is built from the dependency set CI tested.
+RUN npm ci --no-audit --progress=false
 RUN    npm run build && \
     rm -rf node_modules .cache
 
