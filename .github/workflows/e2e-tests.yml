@@ -130,9 +130,9 @@ jobs:
       - name: Build the upstream provider image
         run: docker build -f e2e-upstream/Dockerfile -t dispatcharr-e2e-upstream:local e2e-upstream
 
-      # One build for all three consumers. docker/Dockerfile:14 uses
-      # `npm install` with no lockfile, so N builds can produce N different
-      # frontend bundles; building once means one artifact under test.
+      # One build for all three consumers, so every test job exercises the
+      # same artifact rather than one each job happened to build, and the
+      # minutes an AIO build costs are spent once instead of three times.
       - name: Build the image
         run: docker build -f docker/Dockerfile -t dispatcharr-e2e:local .
 
