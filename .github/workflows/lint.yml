@@ -112,11 +112,16 @@ jobs:
           set -euo pipefail
           # A pull request diffs against its base. A push diffs against the
           # commit the branch was at before it, so a multi-commit push is
-          # checked whole rather than only its tip; github.event.before is all
-          # zeros for a new branch (and absent outside push), so fall back.
+          # checked whole rather than only its tip. github.event.before is all
+          # zeros for a new branch, absent outside push, and after a force-push
+          # names a commit that is no longer reachable — without the cat-file
+          # probe that last case makes `git diff` fail into "nothing changed",
+          # which is the silent pass this job exists to prevent.
           if [ -n "${PR_BASE_SHA:-}" ]; then
             base="$PR_BASE_SHA"
-          elif [ -n "${PUSH_BEFORE_SHA:-}" ] && [ "${PUSH_BEFORE_SHA//0/}" != "" ]; then
+          elif [ -n "${PUSH_BEFORE_SHA:-}" ] \
+            && [ "${PUSH_BEFORE_SHA//0/}" != "" ] \
+            && git cat-file -e "${PUSH_BEFORE_SHA}^{commit}" 2>/dev/null; then
             base="$PUSH_BEFORE_SHA"
           else
             base="HEAD^"

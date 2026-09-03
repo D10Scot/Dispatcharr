@@ -138,6 +138,18 @@ def go(account):
     )
 '''
 
+MARKED_WITHOUT_A_REASON = '''
+import logging
+
+logger = logging.getLogger(__name__)
+
+
+def go(account):
+    logger.debug(  # credential-logging: ignore
+        "has password: %s", "yes" if account.password else "no"
+    )
+'''
+
 FAKE_REDACT_COMMENT = '''
 import logging
 
@@ -253,6 +265,15 @@ class CredentialLoggingGuardTests(SimpleTestCase):
         result = self.run_guard(path)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(result.stdout, "")
+
+    def test_ignore_marker_without_a_reason_does_not_clear_a_call(self):
+        # An exemption nobody has to justify is not reviewable.
+        path = self.write("bare_marker.py", MARKED_WITHOUT_A_REASON)
+        result = self.run_guard(path)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertEqual(len(result.stdout.splitlines()), 1, result.stdout)
+        self.assertIn(f"{path}:7:", result.stdout)
+        self.assertIn("needs a reason", result.stdout)
 
     def test_a_redact_url_comment_does_not_clear_a_call(self):
         # The exclusion is anchored to a real call, not the bare substring.

@@ -51,14 +51,18 @@ The one escape hatch is a `# credential-logging: ignore - <reason>` comment on
 any line the call spans, modelled on the repo's `# zizmor: ignore[...]`
 convention. It exists for the calls that trip the pattern while logging no
 credential — a presence check that names `password`, or a length taken from a
-URL.
-Rewording a log message to dodge the pattern is not an acceptable alternative;
-take the marker and state why, so the exemption is reviewable.
+URL. Rewording a log message to dodge the pattern is not an acceptable
+alternative; take the marker and state why, so the exemption is reviewable.
+
+**The reason is required.** A bare `# credential-logging: ignore` does not
+clear a call; it is reported like any other finding, with a line saying so. An
+exemption nobody has to justify is not reviewable, which is the only thing that
+makes this hatch safe to have.
 
 KNOWN GAPS IN THE PATTERN. It is inherited verbatim from the advisory grep this
 check replaced, and widening it is a deliberate change, not a drive-by — a
 wider pattern would flag pre-existing calls across the whole tree and redden
-unrelated pull requests. Two gaps are known and were found by reading:
+unrelated pull requests. Three gaps are known and were found by reading:
 
   * `\bpassword\b` requires a word boundary, and `_` is a word character, so it
     misses `base_password`, `xc_password` and `transformed_password`. A call
@@ -66,9 +70,12 @@ unrelated pull requests. Two gaps are known and were found by reading:
   * `request.headers` is matched but `response.headers` is not, so logging a
     *provider's* response header dict — which can carry Set-Cookie — is not
     reported.
+  * `_url\b` does not match `_uri`, so `request.build_absolute_uri()` — which
+    returns the full request URL, credentials in the path and all — is not
+    reported.
 
 Closing them means working off the resulting backlog in one pass. Until then,
-read a diff for these two shapes yourself; the check will not do it for you.
+read a diff for these three shapes yourself; the check will not do it for you.
 """
 
 import ast
@@ -87,6 +94,15 @@ CREDENTIAL_RE = re.compile(
 REDACT_FUNCTIONS = frozenset({"redact_url", "redact_headers"})
 
 IGNORE_MARKER = "credential-logging: ignore"
+
+# What has to follow the marker for it to count: a dash (or colon) and some
+# text. An exemption with no stated reason is not reviewable.
+IGNORE_REASON_RE = re.compile(r"\s*[-:–—]\s*\S")
+
+NEEDS_REASON = (
+    "'# credential-logging: ignore' needs a reason "
+    "('# credential-logging: ignore - <why>'); not cleared:"
+)
 
 MAX_REPORTED_CHARS = 200
 
@@ -163,6 +179,17 @@ def _unredacted_arguments(call):
             yield argument
 
 
+def _ignore_marker(spanned):
+    """Whether the call is marked, and whether the marker states a reason."""
+    for line in spanned.splitlines():
+        index = line.find(IGNORE_MARKER)
+        if index == -1:
+            continue
+        rest = line[index + len(IGNORE_MARKER) :]
+        return True, bool(IGNORE_REASON_RE.match(rest))
+    return False, False
+
+
 def _collapse(text):
     collapsed = " ".join(text.split())
     if len(collapsed) > MAX_REPORTED_CHARS:
@@ -206,7 +233,8 @@ def check_file(path, out=sys.stdout, err=sys.stderr):
         # comment after the closing paren, which the source segment excludes.
         end = getattr(node, "end_lineno", node.lineno) or node.lineno
         spanned = "\n".join(lines[node.lineno - 1 : end])
-        if IGNORE_MARKER in spanned:
+        marked, has_reason = _ignore_marker(spanned)
+        if marked and has_reason:
             continue
 
         segment = ast.get_source_segment(source, node)
@@ -215,7 +243,10 @@ def check_file(path, out=sys.stdout, err=sys.stderr):
             # fall back to the call's first physical line.
             segment = lines[node.lineno - 1] if node.lineno <= len(lines) else ""
 
-        findings.append((node.lineno, _collapse(segment)))
+        content = _collapse(segment)
+        if marked:
+            content = f"{NEEDS_REASON} {content}"
+        findings.append((node.lineno, content))
 
     for lineno, content in sorted(findings):
         print(f"{path}:{lineno}: {content}", file=out)
