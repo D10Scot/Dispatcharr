@@ -132,7 +132,7 @@ jobs:
 
       # One build for all three consumers, so every test job exercises the
       # same artifact rather than one each job happened to build, and the
-      # minutes an AIO build costs are spent once instead of three times.
+      # minutes an AIO build costs are spent once, not once per matrix job.
       - name: Build the image
         run: docker build -f docker/Dockerfile -t dispatcharr-e2e:local .
 
