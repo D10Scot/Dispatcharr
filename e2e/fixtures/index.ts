@@ -662,6 +662,7 @@ export type {
   ProgramSearchPage,
   ProgramSearchResult,
   Recording,
+  RecurringRule,
   Stream,
   StreamOverrides,
   StreamPage,

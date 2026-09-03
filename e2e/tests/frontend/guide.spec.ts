@@ -62,3 +62,110 @@ test('the Guide grid is populated from the channel API, reached from the sidebar
 
   await pageErrors.expectClean();
 });
+
+// Membership timing matters here and is easy to get backwards. Two facts,
+// both read off `apps/channels/`, not assumed:
+//   - `ChannelProfile`'s `post_save` receiver (`create_profile_memberships`,
+//     signals.py) enrols every channel that ALREADY EXISTS at the moment a
+//     profile is created — so a channel seeded before `seed.channelProfile()`
+//     would land in it regardless of anything this test does.
+//   - `ChannelViewSet.create` (api_views.py) enrols a NEW channel in every
+//     profile that already exists whenever `channel_profile_ids` is omitted
+//     — `seed.channel()`'s default — so a channel seeded after the profile
+//     with no override would also land in it.
+// Both channels below are therefore seeded AFTER the profile, each with an
+// explicit `channel_profile_ids` override that sidesteps both paths:
+// `[profile.id]` for the member, `[]` (enrol in nothing) for the one that
+// must stay out of it. See `ChannelOverrides.channel_profile_ids` in
+// `fixtures/types.ts` for the full evidence trail — `channel-profiles.spec.ts`
+// exercises the same receiver from the opposite direction.
+test('filtering by Channel Profile narrows the grid to that profile\'s channels', { tag: '@contract' }, async ({
+  adminPage,
+  pageErrors,
+  seed,
+}) => {
+  const profile = await seed.channelProfile();
+  const member = await seed.channel({ channel_profile_ids: [profile.id] });
+  const nonMember = await seed.channel({ channel_profile_ids: [] });
+
+  await gotoSurface(adminPage, guideSurface);
+  await expect(adminPage).toHaveURL(/\/guide/);
+
+  const grid = adminPage.getByTestId('guide-grid');
+  await expect(grid).toBeVisible();
+
+  // Mantine `Select`: a click on the placeholder input opens the option
+  // list, which portals to the document body but stays reachable through
+  // `getByRole('option', …)` — Task 1's finding, re-used rather than
+  // re-derived.
+  await adminPage.getByPlaceholder('Filter by profile').click();
+  await adminPage.getByRole('option', { name: profile.name, exact: true }).click();
+
+  // The profile filter alone proves the API call was scoped correctly, but
+  // this shared instance's other workers keep enrolling their own plain
+  // `seed.channel()` calls into every profile that exists when they run
+  // (the second fact in the comment above) — so the filtered grid can hold
+  // far more than this test's one member row, and the freshly seeded member
+  // still has no `channel_number` and is routinely scrolled out of the
+  // virtualised window on its own (`guide.spec.ts`'s sibling test, above).
+  // Driving the same "Search channels..." box that test uses, on top of the
+  // profile filter, narrows to the one row this test actually seeded and
+  // proves it is not just off-screen.
+  const search = adminPage.getByPlaceholder('Search channels...');
+  await search.fill(member.name);
+  await expect(
+    grid.getByAltText(member.name, { exact: false })
+  ).toBeVisible({ timeout: 30_000 });
+
+  const profileSelect = adminPage.getByPlaceholder('Filter by profile');
+
+  // A bare `search.fill(nonMember.name)` followed immediately by
+  // `toHaveCount(0)` would pass on its very first check for a reason that
+  // has nothing to do with the profile filter: at that instant the grid
+  // still renders the *previous* search's result (the member row), so the
+  // non-member's count is legitimately zero before the new fetch has even
+  // landed — the assertion would hold identically if profile filtering were
+  // deleted from the product outright. To anchor the absence on the filter
+  // rather than on that timing accident, first prove the non-member row is
+  // reachable through search alone, with the profile filter cleared to
+  // "All Profiles" (`getProfileOptions` in `guideUtils.js` always injects
+  // this option), then re-apply the profile filter and assert the same row
+  // disappears. Only the second assertion can fail if filtering is broken;
+  // the first proves there was something there for it to filter out.
+  await search.fill(nonMember.name);
+  await profileSelect.click();
+  await adminPage.getByRole('option', { name: 'All Profiles', exact: true }).click();
+  await expect(
+    grid.getByAltText(nonMember.name, { exact: false })
+  ).toBeVisible({ timeout: 30_000 });
+
+  // A narrower residual of the same defect survives a bare click-then-assert
+  // here too: `Guide.jsx`'s filter fetch (the `useEffect` keyed on
+  // `selectedProfileId`, `params.set('channel_profile_id', …)`) is async, so
+  // the grid can render transiently empty *while that request is in
+  // flight* — a state `toHaveCount(0)` would also pass on, for a reason
+  // that is "the fetch hasn't returned yet" rather than "the filter
+  // excluded this row". Unlike the original defect the row is genuinely
+  // present at the moment of the click, so *some* change is still required
+  // for this narrower form to pass — but pinning the assertion to the
+  // completed response, the same pattern `stats.spec.ts`'s Refresh Now test
+  // uses, removes it rather than leaving it to resolve by observed timing.
+  // `channel_profile_id=<id>` on `/api/channels/channels/summary/` (the
+  // route `API.getChannelsSummary` calls, api.js) is unique to this
+  // specific re-select, so the predicate can't match a stale in-flight
+  // request left over from the "All Profiles" step above.
+  await profileSelect.click();
+  await Promise.all([
+    adminPage.waitForResponse(
+      (r) =>
+        r.url().includes('/api/channels/channels/summary/') &&
+        r.url().includes(`channel_profile_id=${profile.id}`) &&
+        r.request().method() === 'GET',
+      { timeout: 10_000 }
+    ),
+    adminPage.getByRole('option', { name: profile.name, exact: true }).click(),
+  ]);
+  await expect(grid.getByAltText(nonMember.name, { exact: false })).toHaveCount(0);
+
+  await pageErrors.expectClean();
+});

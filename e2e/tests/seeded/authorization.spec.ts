@@ -5,6 +5,8 @@ import {
   loginsSpentByThisWorker,
 } from '../../fixtures';
 import type { User } from '../../fixtures';
+import { ADMIN } from '../../setup/credentials';
+import { listRows } from '../../setup/http';
 
 // Exemplar: how a later goal drives non-admin principals. The REST API is
 // deny-by-default (DEFAULT_PERMISSION_CLASSES = IsAdmin), so a non-admin is
@@ -51,6 +53,13 @@ for (const [name, principal] of Object.entries(PRINCIPALS)) {
     const res = await client.get('/api/accounts/users/');
 
     expect(res.status()).toBe(403);
+
+    // No body assertion here, deliberately. DRF's default exception handler
+    // (no custom `EXCEPTION_HANDLER` is configured) renders `PermissionDenied`
+    // as the stock `{"detail": "..."}` envelope with its own default string —
+    // asserting that would pin a DRF framework detail, not anything this
+    // product does. The `me` check above already narrows the 403 to one
+    // cause (user_level), which is the only thing this test claims.
   });
 }
 
@@ -88,4 +97,20 @@ test('driving a fixed principal spends no login', { tag: '@contract' }, async ({
 test('an admin can list users', { tag: '@contract' }, async ({ api }) => {
   const res = await api.get('/api/accounts/users/');
   expect(res.status()).toBe(200);
+
+  // Containment, never a count or an equality: four workers share this
+  // instance and other tests create their own users (roadmap rule 4) —
+  // `body.length === N` would be flaky by construction. What a status-only
+  // assertion misses is a filter regression that returns 200 with an empty
+  // or wrongly-scoped list; three usernames guaranteed to exist — the
+  // bootstrap admin this client authenticates as, plus the two fixed
+  // `PRINCIPALS` — being present is what rules that out. `UserViewSet` sets
+  // no `pagination_class` and the project has no `DEFAULT_PAGINATION_CLASS`,
+  // so today the body is a bare array; `listRows` reads it anyway so this
+  // assertion keeps working if that ever changes.
+  const body = await api.json<unknown>(res, 'admin user list');
+  const usernames = listRows<User>(body).map((u) => u.username);
+  expect(usernames).toContain(ADMIN.username);
+  expect(usernames).toContain(PRINCIPALS.streamer.username);
+  expect(usernames).toContain(PRINCIPALS.standard.username);
 });

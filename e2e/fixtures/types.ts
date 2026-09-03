@@ -584,10 +584,11 @@ export type UpstreamSeries = {
 
 /**
  * The writable fields on `ChannelSerializer` this harness uses, minus the
- * generated `name`. A curated subset, not the complete writable set —
- * `auto_created_by` is omitted, as are the nested `override` and the
- * read-only mirrors noted on {@link Channel}. Add what you need, with
- * evidence; see this file's header.
+ * generated `name` — plus `channel_profile_ids`, which is not a serializer
+ * field at all (see its own doc comment below). A curated subset, not the
+ * complete writable set — `auto_created_by` is omitted, as are the nested
+ * `override` and the read-only mirrors noted on {@link Channel}. Add what
+ * you need, with evidence; see this file's header.
  */
 export type ChannelOverrides = {
   channel_number?: number | null;
@@ -604,6 +605,22 @@ export type ChannelOverrides = {
   catchup_days?: number;
   hidden_from_output?: boolean;
   auto_created?: boolean;
+  /**
+   * Not a `ChannelSerializer` field — `ChannelViewSet.create`
+   * (apps/channels/api_views.py) reads it straight off `request.data` after
+   * `serializer.is_valid()`; the serializer itself ignores unknown keys in
+   * `data`, since `.is_valid()` only pulls the fields it declares, so this
+   * one reaches the view unvalidated. Controls which
+   * `ChannelProfile`s the new channel is enrolled in at creation: omitted
+   * (`seed.channel()`'s default) enrols it in every profile that exists at
+   * that moment, `[]` enrols it in none, and an explicit id list enrols it
+   * in exactly those ids. `guide.spec.ts`'s profile-filter test uses `[]` to
+   * seed a channel that is provably absent from a fresh profile, despite
+   * that profile's own `post_save` receiver (`create_profile_memberships`,
+   * apps/channels/signals.py) enrolling every channel that already existed
+   * when the profile itself was created.
+   */
+  channel_profile_ids?: number[];
 };
 
 /**
@@ -1103,6 +1120,31 @@ export type CategorySettingRow = {
 
 /** `VODPagination` — `page_size` 20, `page_size` query param up to 100. Movies, series and episodes all paginate; categories do not. */
 export type VodPage<T> = { count: number; next: string | null; previous: string | null; results: T[] };
+
+/**
+ * `apps.channels.RecurringRecordingRule` via `RecurringRecordingRuleSerializer`
+ * (`apps/channels/serializers.py`, `fields = "__all__"`, only `created_at`/
+ * `updated_at` read-only). `days_of_week` is `0`-`6`, Monday(`0`) through
+ * Sunday(`6`), validated by `validate_days_of_week` — this **is** Python's
+ * `date.weekday()` numbering, matching `sync_recurring_rule_impl`'s own
+ * `target_date.weekday() not in days` check (`tasks.py:896`), not a
+ * different scheme that merely happens to start the same day.
+ * `start_time`/`end_time` are `TimeField`s (`"HH:MM:SS"`, no date component) —
+ * unlike `Recording.start_time`/`end_time`, which are full `DateTimeField`s.
+ */
+export type RecurringRule = {
+  id: number;
+  channel: number;
+  days_of_week: number[];
+  start_time: string;
+  end_time: string;
+  enabled: boolean;
+  name: string;
+  start_date: string | null;
+  end_date: string | null;
+  created_at: string;
+  updated_at: string;
+};
 
 /**
  * `/api/m3u/accounts/<id>/filters/` — nested under the account

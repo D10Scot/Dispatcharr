@@ -52,7 +52,7 @@ one up. CI binds the same way.
 
 | Project | What it is for |
 |---|---|
-| `bootstrap` | Creates the superuser, pre-warms the `IntervalSchedule` row (see below) and writes auth state. Runs automatically as a dependency of `seeded`, `streaming`, `streaming-failover`, `streaming-greybox` and `frontend` — every project except `pristine` and the two `lifecycle` ones, which each need an instance bootstrap has not touched |
+| `bootstrap` | Creates the superuser, pre-warms the `IntervalSchedule` row (see below) and writes auth state. Runs automatically as a dependency of `seeded`, `streaming`, `streaming-failover`, `streaming-greybox`, `frontend` and `dvr` — every project that shares the default container. `guards` needs no container at all; `pristine`, `lifecycle`, `lifecycle-upgrade`, `lifecycle-restore` and `lifecycle-scheduling` each need an instance bootstrap has not touched |
 | `guards` | Static analysis over this suite's own source. **No container, no browser, no fixtures** — it runs in about a second and needs nothing running. Home for every enforcement spec: the tag taxonomy, the grey-box capability allowlists, the `data-testid` contract, the instance-wide settings-write allowlist and the `pageErrors` check (which moved here from `tests/frontend/`) |
 | `pristine` | Needs an instance with **no superuser**: first-run setup, and global `CoreSettings` changes |
 | `seeded` | The default. Shared instance, parallel workers, API-seeded data |
@@ -60,6 +60,7 @@ one up. CI binds the same way.
 | `streaming-failover` | Failover behaviour: dead-air and buffering watchdogs. Long timeouts, fewer workers |
 | `streaming-greybox` | Tests that reach past the API into Redis or the container directly (e.g. counting live `ffmpeg` processes). Long timeouts, one worker — **must be run alone locally**: in CI each matrix job gets its own container, but locally all projects can share one, and this project observes container-wide state that whatever else is running would disturb |
 | `frontend` | The nine product surfaces in a browser: does the page mount, and does a write driven through its UI reach the server. Two workers, file-level parallelism, 120s |
+| `dvr` | Real DVR recordings end to end — scheduling through `run_recording`, comskip's `dvr_settings` toggle, and finalisation under `/data/recordings`. Long timeouts, one worker — **must be run alone locally**: in CI each matrix job gets its own container, but locally all projects can share one, and this project mutates container-wide state (the `dvr_settings` row, the recordings directory) that whatever else is running would disturb |
 | `lifecycle` | Restarts the container mid-test. **Runs alone** — it destroys the container every other project shares. No `bootstrap` dependency: it provisions its own admin |
 | `lifecycle-upgrade` | Boots a published baseline image, seeds, then replaces the container with the local build on the same volume. **Runs alone.** Runs in `lifecycle-tests.yml`, not in `e2e-tests.yml`'s matrix |
 | `lifecycle-restore` | Takes a backup, mutates the database, restores it. **Runs alone** and resets its container: `restore_backup` drops and rebuilds the `public` schema, replacing every row under anything else sharing the instance. Runs in `lifecycle-tests.yml`, not in `e2e-tests.yml`'s matrix |
@@ -173,9 +174,9 @@ the event and compare the catalogue — is the one thing that cannot work
 here.
 
 `npm test` (no suffix) deliberately fails with a message telling you to pick
-one of the ten — there is no single invocation that is correct for all of
-them, and a bare `npm test` in CI would silently run whichever config
-happened to be first.
+one of the population-specific `test:*` scripts in `package.json` — there is
+no single invocation that is correct for all of them, and a bare `npm test`
+in CI would silently run whichever config happened to be first.
 
 ## Running against an existing instance
 
@@ -255,6 +256,15 @@ background tasks than a standard M3U refresh:
   `server_info` (timezone included) into `M3UAccountProfile.custom_properties`. That value is not
   present right after account creation or even right after the main refresh; it lands on its own
   schedule, later.
+
+## The provider's contract
+
+`e2e-upstream/CONTRACT.md` is the version-addressed record of what the fake provider guarantees and
+deliberately does not — the calendar-free catch-up timestamp parser, the non-time-addressable
+archive, which faults reach an already-open connection, and more. When a test needs to know whether
+some provider behaviour is safe to depend on, cite that document's version, not a memory of reading
+`e2e-upstream/src/` once — its own "Bump policy" section is what keeps a cited guarantee from going
+stale under you.
 
 ## VOD
 
@@ -704,8 +714,8 @@ cross-check guard) is a call for whoever owns ADR-0002 next, not a side effect o
 
 `.github/workflows/e2e-tests.yml` builds the AIO image once, then runs
 `pristine`, `seeded`, `streaming`, `streaming-failover`, `streaming-greybox`,
-`lifecycle` and `frontend` as a matrix, each against its own fresh container,
-each gated on `npm run typecheck` before tests run.
+`lifecycle`, `frontend` and `dvr` as a matrix, each against its own fresh
+container, each gated on `npm run typecheck` before tests run.
 
 **That project list is no longer hardcoded in the `test` job** — it is built by
 the `changes` job and consumed as `fromJSON(needs.changes.outputs.projects)`,
