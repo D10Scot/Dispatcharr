@@ -1,7 +1,7 @@
 # Phase 0 — Harden in Place
 
 **Date:** 2026-09-03
-**Status:** Accepted
+**Status:** Done — all six items landed 2026-09-03; see § Done log
 **Parent:** *Splitting the Planes* (extraction proposal, artifact `149fb554`), § "Phase 0 · harden
 in place". This spec is where that one-paragraph phase becomes a delivery.
 **Predecessor:** the E2E programme (G1–G15), whose closing note in
@@ -247,12 +247,43 @@ Filled in as PRs merge: PR number, merge SHA, and for PR 6 the ruleset JSON befo
 
 | Item | PR | Merged |
 |---|---|---|
-| Routing | | |
-| `npm ci` | | |
-| Redaction | | |
-| Aggregates | | |
-| Release | | |
-| Ruleset | | |
+| Routing | [#150](https://github.com/D10Scot/Dispatcharr/pull/150) | `5bbd4b21`, 2026-09-03 |
+| `npm ci` | [#149](https://github.com/D10Scot/Dispatcharr/pull/149) | `0b2b902d`, 2026-09-03 |
+| Redaction | [#154](https://github.com/D10Scot/Dispatcharr/pull/154) | `58bfba1e`, 2026-09-03 |
+| Aggregates | [#151](https://github.com/D10Scot/Dispatcharr/pull/151) | `6c9b4bae`, 2026-09-03 |
+| Release | [#152](https://github.com/D10Scot/Dispatcharr/pull/152) | `5df7bd6e`, 2026-09-03 |
+| Ruleset | settings action, 2026-09-03 | applied after `5df7bd6e`; see below |
+| (unplanned) E2E full-mode fix | [#153](https://github.com/D10Scot/Dispatcharr/pull/153) | `8621f2bc`, 2026-09-03 |
+
+**Ruleset change (PR 6).** Applied with `gh api -X PUT repos/D10Scot/Dispatcharr/rulesets/21229979
+--input ruleset.json`, where `ruleset.json` was the `GET` of the same ruleset with only the
+`required_status_checks` rule edited. Before: contexts `["E2E result"]`. After: contexts
+`["E2E result", "Lifecycle result", "Backend result", "Frontend result"]`, all with
+`integration_id 15368` (GitHub Actions); `strict_required_status_checks_policy: true` and every
+other rule (`deletion`, `non_fast_forward`, `pull_request` squash-only) unchanged. The four names had
+reported on #152's head, a workflow-only diff, before the change was applied: each aggregate passed
+through its "deliberately skipped" branch, which is the docs-only behaviour the design depends on.
+
+**What the first full-mode runs found.** #149 and #150 were the first `migration/**` branches ever
+pushed, so the first full-mode E2E runs. Both failed `lifecycle-upgrade`: `e2e-tests.yml` listed
+that project in the full-mode matrix without the baseline-image resolver that only
+`lifecycle-tests.yml` has. #153 dropped the duplicate listing (the project still runs, with its
+baseline, in `lifecycle-tests.yml`'s `upgrade-migrations` job). Deviation from the G11 spec's
+full-mode text, recorded here.
+
+**What the guard found.** Once `scripts/check_credential_logging.py` judged whole calls per
+argument instead of physical lines, `main`'s versions of the three files carried 23 leaking log
+sites, not the five this spec named, including the provider stream URL at INFO on both VOD redirect
+paths and at WARNING on failover. All are redacted in #154.
+
+**Deferred, for follow-up issues.** `hypothesis` is absent from the test-container image
+(`.claude/hooks/start-test-container.sh`), so property tests do not import in a fresh hook
+container. About fifty direct `logging.<level>(` calls are outside the guard's receiver scope.
+`requests` exception text embedding a provider URL in `logger.error(f"{e}")` is a leak class the
+guard does not model. `scripts/bump_version.py` and `scripts/update_changelog.py` are uncalled since
+#152. The lifecycle push and pull-request change lists differ and are kept verbatim, selected by
+event; unifying them is a coverage decision. The `suites` job's `if:` and `Lifecycle result`'s
+required set are kept in lockstep by comment only.
 
 ## Risks
 
