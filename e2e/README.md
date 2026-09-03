@@ -52,7 +52,7 @@ one up. CI binds the same way.
 
 | Project | What it is for |
 |---|---|
-| `bootstrap` | Creates the superuser, pre-warms the `IntervalSchedule` row (see below) and writes auth state. Runs automatically as a dependency of `seeded`, `streaming`, `streaming-failover`, `streaming-greybox` and `frontend` — every project except `pristine` and the two `lifecycle` ones, which each need an instance bootstrap has not touched |
+| `bootstrap` | Creates the superuser, pre-warms the `IntervalSchedule` row (see below) and writes auth state. Runs automatically as a dependency of `seeded`, `streaming`, `streaming-failover`, `streaming-greybox`, `frontend` and `dvr` — every project that shares the default container. `guards` needs no container at all; `pristine`, `lifecycle`, `lifecycle-upgrade`, `lifecycle-restore` and `lifecycle-scheduling` each need an instance bootstrap has not touched |
 | `guards` | Static analysis over this suite's own source. **No container, no browser, no fixtures** — it runs in about a second and needs nothing running. Home for every enforcement spec: the tag taxonomy, the grey-box capability allowlists, the `data-testid` contract, the instance-wide settings-write allowlist and the `pageErrors` check (which moved here from `tests/frontend/`) |
 | `pristine` | Needs an instance with **no superuser**: first-run setup, and global `CoreSettings` changes |
 | `seeded` | The default. Shared instance, parallel workers, API-seeded data |
