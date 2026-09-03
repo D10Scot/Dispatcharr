@@ -1,32 +1,21 @@
 name: Backend Tests
 
+# Always triggers, and gates internally — the same shape as e2e-tests.yml and
+# lifecycle-tests.yml, and for the same reason. `Backend result` at the bottom
+# of this file is the aggregate that can be required on every PR; the `test`
+# matrix jobs cannot be. When `plan` selects no labels the matrix is skipped
+# *before expansion*, so no check named `apps.channels.tests` ever reports at
+# all, and a path-filtered workflow that never triggers leaves such a required
+# check "Expected" forever and blocks the merge. A job that runs and *skips*
+# satisfies it. So neither trigger carries a `paths:` filter — the `plan` job
+# below is the change detector, and it already derives its labels from the
+# diff, yielding `[]` (and `has_tests=false`) for a diff touching no backend
+# path. Cost on a docs-only PR is one `plan` job, not a test matrix.
 on:
   push:
     branches: [main]
-    paths:
-      - 'apps/**'
-      - 'core/**'
-      - 'tests/**'
-      - 'dispatcharr/**'
-      - 'pyproject.toml'
-      - 'version.py'
-      - 'manage.py'
-      - 'scripts/ci_backend_test_labels.py'
-      - 'scripts/ci_bootstrap_backend.sh'
-      - '.github/workflows/backend-tests.yml'
   pull_request:
     branches: [main]
-    paths:
-      - 'apps/**'
-      - 'core/**'
-      - 'tests/**'
-      - 'dispatcharr/**'
-      - 'pyproject.toml'
-      - 'version.py'
-      - 'manage.py'
-      - 'scripts/ci_backend_test_labels.py'
-      - 'scripts/ci_bootstrap_backend.sh'
-      - '.github/workflows/backend-tests.yml'
   workflow_dispatch:
     inputs:
       full_suite:
@@ -172,3 +161,40 @@ jobs:
           GITHUB_WORKSPACE: ${{ github.workspace }}
           TEST_LABEL: ${{ matrix.label }}
         run: bash scripts/ci_bootstrap_backend.sh "$TEST_LABEL" -v2
+
+  # The one check in this workflow that may be required. It always reports,
+  # because it is not gated on anything — see the comment on the triggers.
+  #
+  # `needs.test.result` is the matrix job's aggregate: `success` only if every
+  # shard passed, `failure` if any shard failed, and `skipped` when the job's
+  # `if` was false — which is exactly the "no backend paths changed" case, and
+  # the only case in which a skip is legitimate. Branch 3 below therefore
+  # demands `success` and nothing else: a skipped matrix on a run that DID
+  # select labels means the shards never ran, and must not report green.
+  backend-result:
+    name: Backend result
+    runs-on: ubuntu-latest
+    needs: [plan, test]
+    if: always()
+    timeout-minutes: 5
+    steps:
+      - name: Verify the backend test outcome
+        env:
+          PLAN_RESULT: ${{ needs.plan.result }}
+          TEST_RESULT: ${{ needs.test.result }}
+          TESTS_REQUIRED: ${{ needs.plan.outputs.has_tests }}
+        run: |
+          echo "plan=$PLAN_RESULT test=$TEST_RESULT tests-required=$TESTS_REQUIRED"
+          if [ "$PLAN_RESULT" != "success" ]; then
+            echo "Test planning itself failed — cannot prove the suite was unnecessary."
+            exit 1
+          fi
+          if [ "$TESTS_REQUIRED" != "true" ]; then
+            echo "No backend-relevant paths changed; suite deliberately skipped."
+            exit 0
+          fi
+          if [ "$TEST_RESULT" != "success" ]; then
+            echo "Backend suite was required and did not fully succeed."
+            exit 1
+          fi
+          echo "Backend suite passed."

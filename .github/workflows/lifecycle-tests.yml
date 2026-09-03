@@ -16,39 +16,39 @@ name: Lifecycle Tests
 # — stays gated exactly as before on an ordinary PR, and runs in full on a
 # `migration/**` branch or a `workflow_dispatch` with `full: true`.
 #
-# `Lifecycle result` is the ONLY check here that may ever be required, and it
-# must not be added to the Main ruleset until G12 leaves both bash suites
-# green. See the comment on that job.
+# `Lifecycle result` is the ONLY check here that may ever be required. G12 left
+# both bash suites green, so it is requireable on every branch. See the comment
+# on that job for exactly which jobs it demands in which mode.
 on:
+  # Neither trigger carries a `paths:` filter, deliberately — both filters
+  # moved into the `changes` job below, for the reason e2e-tests.yml already
+  # documents: a path-filtered workflow never reports at all on an event it
+  # skips, and a required check that never reports blocks forever. Always
+  # triggering and gating internally is what lets `Lifecycle result` become a
+  # required check.
+  #
+  # `pull_request` lost its filter first, so that the check could be required
+  # on a migration branch. `push` lost its filter second, and for a reason of
+  # its own: a release is cut from a commit on `main`, and the version bump
+  # that produces it touches `version.py` alone. Under the old filter that
+  # push produced no run at all, so no `Lifecycle result` check existed on
+  # that SHA — and a release workflow that verifies the check then fails
+  # closed on "context absent" for every release.
+  #
+  # The two filters were never the same list, and they are still not: the
+  # pull_request one adds `**/models.py` and the push one covers `docker/**`,
+  # `dispatcharr/settings.py`, `scripts/wait_for_redis.py`, all of
+  # `e2e/fixtures/**`, `e2e/setup/**` and `e2e/playwright.config.ts`. Both are
+  # reproduced verbatim in `changes`, selected by event, so neither event's
+  # coverage changed. The reasoning behind each survives in the comments
+  # there: `**/models.py` is not padding on a PR (a model change is what
+  # *necessitates* a migration, and a PR altering one without shipping the
+  # migration is exactly what filtering on migrations alone would miss), and
+  # the `e2e`/`scripts`/`docker` entries are this workflow's own machinery.
+  #
+  # Cost on a push or PR matching neither pattern is one ~10s job.
   push:
     branches: [main]
-    paths:
-      - 'docker/**'
-      - '**/migrations/**'
-      - 'scripts/e2e_up.sh'
-      - 'scripts/wait_for_redis.py'
-      - 'dispatcharr/settings.py'
-      - 'e2e/tests/lifecycle/**'
-      # The lifecycle projects depend on the shared fixtures, on the config,
-      # and on `provisionAdmin` in e2e/setup — a change to any of them can
-      # break these specs while touching nothing else the filter would see.
-      - 'e2e/fixtures/**'
-      - 'e2e/setup/**'
-      - 'e2e/playwright.config.ts'
-      - '.github/workflows/lifecycle-tests.yml'
-  # No `paths:` filter, deliberately — it moved into the `changes` job below,
-  # for the reason e2e-tests.yml already documents: a path-filtered workflow
-  # never reports at all on a PR it skips, and a required check that never
-  # reports blocks the merge forever. Always triggering and gating internally
-  # is what lets `Lifecycle result` become a required check on migration
-  # branches. Cost on an ordinary PR is one ~10s job.
-  #
-  # The filter's own reasoning survives verbatim in that job: `**/models.py`
-  # is not padding (a model change is what *necessitates* a migration, and a
-  # PR altering one without shipping the migration is exactly the case
-  # filtering on migrations alone would miss), and the `e2e`/`scripts` entries
-  # are this workflow's own machinery — the PR that introduced this file could
-  # not trigger it, so nothing in it had executed in CI even once before merge.
   pull_request:
     branches: [main]
   # Earns its place: these suites pull postgres:16, postgres:17, redis:latest
@@ -80,9 +80,9 @@ jobs:
   # Deliberately NOT gated off on pull requests. The upgrade job needs it, and
   # a skipped dependency skips the dependent — which would make every PR run a
   # silent no-op that reports green.
-  # Reimplements the pull_request paths filter this workflow used to carry,
-  # plus the migration/** full-mode check. Cheap and unconditional, so the
-  # aggregate below always reports.
+  # Holds both paths filters this workflow used to carry on its triggers, one
+  # per event, plus the migration/** full-mode check. Cheap and unconditional,
+  # so the aggregate below always reports.
   changes:
     name: Detect relevant changes
     runs-on: ubuntu-latest
@@ -92,13 +92,17 @@ jobs:
       full: ${{ steps.filter.outputs.full }}
     steps:
       - name: Checkout code
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request' || github.event_name == 'push'
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           persist-credentials: false
           # pull_request checks out the merge commit, whose first parent is
-          # the base branch tip — depth 2 is enough to diff the whole PR.
-          fetch-depth: 2
+          # the base branch tip — depth 2 is enough to diff the whole PR. A
+          # push diffs `github.event.before` against the new head instead, and
+          # that commit is at an unknown depth, so it needs full history.
+          # Written this way round on purpose: `X == 'push' && 0 || 2` would
+          # always yield 2, because GitHub's `||` treats the 0 as falsy.
+          fetch-depth: ${{ github.event_name == 'pull_request' && 2 || 0 }}
 
       - name: Decide what this event needs
         id: filter
@@ -107,6 +111,8 @@ jobs:
           HEAD_REF: ${{ github.head_ref }}
           REF_NAME: ${{ github.ref_name }}
           DISPATCH_FULL: ${{ inputs.full }}
+          EVENT_BEFORE: ${{ github.event.before }}
+          HEAD_SHA: ${{ github.sha }}
         run: |
           branch="${HEAD_REF:-$REF_NAME}"
           full=false
@@ -118,14 +124,41 @@ jobs:
           fi
           echo "full=$full" >> "$GITHUB_OUTPUT"
 
-          if [ "$EVENT_NAME" != "pull_request" ] || [ "$full" = "true" ]; then
+          # Full mode runs everything by definition. So do the weekly schedule
+          # and a manual dispatch: the schedule exists precisely to catch the
+          # four floating image tags that no diff can ever see, and a dispatch
+          # is a human asking for the run.
+          if [ "$full" = "true" ] || [ "$EVENT_NAME" = "schedule" ] || [ "$EVENT_NAME" = "workflow_dispatch" ]; then
             echo "lifecycle=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          changed=$(git diff --name-only HEAD^1 HEAD)
+
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            changed=$(git diff --name-only HEAD^1 HEAD)
+            # The pull_request paths filter this workflow used to carry.
+            pattern='(migrations/|models\.py$|^\.github/workflows/lifecycle-tests\.yml$|^e2e/tests/lifecycle/|^e2e/fixtures/instance\.ts$|^scripts/e2e_up\.sh$)'
+          else
+            # push. Branch creation reports an all-zero `before`, and a force
+            # push can leave it unreachable; in either case there is no range
+            # to read, so run rather than guess.
+            if [ "$EVENT_BEFORE" = "0000000000000000000000000000000000000000" ]; then
+              echo "No previous commit to diff against; running the lifecycle jobs."
+              echo "lifecycle=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            if ! changed=$(git diff --name-only "$EVENT_BEFORE" "$HEAD_SHA"); then
+              echo "Could not diff the pushed range; running the lifecycle jobs."
+              echo "lifecycle=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            # The push paths filter this workflow used to carry. It is a
+            # different list from the pull_request one above — wider on
+            # docker/, settings, the redis wait script and the e2e machinery,
+            # and with no `models.py` entry — and both are kept as they were,
+            # so moving them here changed neither event's coverage.
+            pattern='^(docker/|dispatcharr/settings\.py$|e2e/tests/lifecycle/|e2e/fixtures/|e2e/setup/|e2e/playwright\.config\.ts$|scripts/e2e_up\.sh$|scripts/wait_for_redis\.py$|\.github/workflows/lifecycle-tests\.yml$)|migrations/'
+          fi
           printf 'Changed files:\n%s\n' "$changed"
-          # The pull_request paths filter this workflow used to carry.
-          pattern='(migrations/|models\.py$|^\.github/workflows/lifecycle-tests\.yml$|^e2e/tests/lifecycle/|^e2e/fixtures/instance\.ts$|^scripts/e2e_up\.sh$)'
           if printf '%s\n' "$changed" | grep -qE "$pattern"; then
             echo "lifecycle=true" >> "$GITHUB_OUTPUT"
           else
@@ -147,8 +180,8 @@ jobs:
 
       # Tagged exactly as e2e-tests.yml tags it, and as scripts/e2e_up.sh
       # defaults to, so the upgrade job needs no retagging step. One build for
-      # every consumer: docker/Dockerfile:14 uses `npm install` with no
-      # lockfile, so N builds can produce N different frontend bundles.
+      # every consumer, so every job exercises the same artifact rather than
+      # one each job happened to build, and the build cost is paid once.
       - name: Build the image
         run: docker build -f docker/Dockerfile -t dispatcharr-e2e:local .
 
@@ -559,20 +592,36 @@ jobs:
   # The one check here that may ever be required, on the same reasoning as
   # `E2E result` in e2e-tests.yml: a gated job that skips never reports, and a
   # required check that never reports blocks the merge forever. This runs
-  # unconditionally and passes when everything it depends on either succeeded
-  # or was deliberately skipped.
+  # unconditionally, so it always reports.
   #
-  # NOT in the Main ruleset yet, deliberately. The two bash suites are
-  # currently red — 8 failed assertions across 4 of 20 puid-pgid scenarios and
-  # 7 of 8 tls-postgres scenarios — and until this change they had never run on
-  # a pull request at all. G12 triages them to green. Adding this check to the
-  # ruleset before G12 lands would block every migration branch on a
-  # pre-existing failure.
+  # It used to forgive `skipped` on every job it watches, unconditionally.
+  # That is a hole: on a run that DID need the lifecycle jobs, a job skipped
+  # because its own dependency collapsed reports green. The three branches
+  # below close it — the run is either unprovable, deliberately not required,
+  # or required and then every job that this mode actually runs must be
+  # exactly `success`.
+  #
+  # Which jobs a mode runs is not uniform, so the aggregate encodes it:
+  #   * `build`, `upgrade-migrations` and `lifecycle-extras` all gate on
+  #     `lifecycle == 'true' || full == 'true'` — the same condition as the
+  #     run being required, so on a required run all three must succeed.
+  #   * `suites` — the two bash suites — gates on
+  #     `github.event_name != 'pull_request' || full == 'true'` instead. On an
+  #     ordinary pull request with `full` false it is *legitimately* skipped
+  #     even though the run is required, so it is checked only in the modes
+  #     that run it. That condition is mirrored below and must stay in
+  #     lockstep with the job's own `if:`.
+  # `changes` sets `lifecycle=true` whenever `full` is true, and on the
+  # schedule and on a dispatch, so "required" reduces to
+  # `lifecycle == 'true'`. A push now diffs its own range like a pull request
+  # does, so a docs-only or version-bump push to main lands in branch 2 and
+  # reports green without running anything — which is the point: the check
+  # exists on that SHA for the release workflow to read.
   #
   # `build` is listed in needs even though nothing here reads its output
   # directly: `suites` and `upgrade-migrations` both depend on it, so a failed
-  # build makes them report skipped rather than failed, and skipped-is-fine
-  # must not transitively excuse a build that never happened.
+  # build makes them report skipped rather than failed, and a skip must not
+  # transitively excuse a build that never happened.
   lifecycle-result:
     name: Lifecycle result
     runs-on: ubuntu-latest
@@ -587,16 +636,39 @@ jobs:
           SUITES_RESULT: ${{ needs.suites.result }}
           UPGRADE_RESULT: ${{ needs.upgrade-migrations.result }}
           EXTRAS_RESULT: ${{ needs.lifecycle-extras.result }}
+          LIFECYCLE_REQUIRED: ${{ needs.changes.outputs.lifecycle }}
+          FULL_MODE: ${{ needs.changes.outputs.full }}
+          EVENT_NAME: ${{ github.event_name }}
         run: |
           echo "changes=$CHANGES_RESULT build=$BUILD_RESULT suites=$SUITES_RESULT upgrade=$UPGRADE_RESULT extras=$EXTRAS_RESULT"
+          echo "lifecycle-required=$LIFECYCLE_REQUIRED full=$FULL_MODE event=$EVENT_NAME"
           if [ "$CHANGES_RESULT" != "success" ]; then
             echo "Change detection itself failed — cannot prove these suites were unnecessary."
             exit 1
           fi
-          for result in "$BUILD_RESULT" "$SUITES_RESULT" "$UPGRADE_RESULT" "$EXTRAS_RESULT"; do
-            case "$result" in
-              success|skipped) ;;
-              *) echo "A lifecycle job did not succeed."; exit 1 ;;
-            esac
+          if [ "$LIFECYCLE_REQUIRED" != "true" ]; then
+            echo "No lifecycle-relevant paths changed; suites deliberately skipped."
+            exit 0
+          fi
+          status=0
+          for job in build:"$BUILD_RESULT" upgrade-migrations:"$UPGRADE_RESULT" lifecycle-extras:"$EXTRAS_RESULT"; do
+            if [ "${job#*:}" != "success" ]; then
+              echo "Required job ${job%%:*} reported ${job#*:}, not success."
+              status=1
+            fi
           done
-          echo "Lifecycle jobs passed or were deliberately skipped."
+          # Mirrors the `suites` job's own `if:` — the bash suites run on every
+          # non-pull_request event, and on a pull request only in full mode.
+          if [ "$EVENT_NAME" != "pull_request" ] || [ "$FULL_MODE" = "true" ]; then
+            if [ "$SUITES_RESULT" != "success" ]; then
+              echo "Required job suites reported $SUITES_RESULT, not success."
+              status=1
+            fi
+          else
+            echo "Bash suites are not part of a non-full pull request run; skip is expected."
+          fi
+          if [ "$status" -ne 0 ]; then
+            echo "The lifecycle run was required and did not fully succeed."
+            exit 1
+          fi
+          echo "Every lifecycle job this mode runs passed."

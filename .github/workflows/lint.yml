@@ -89,6 +89,57 @@ jobs:
             zricethezav/gitleaks@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f \
             detect --source=/repo --config=/repo/.gitleaks.toml -v --redact --exit-code=1
 
+  credential-logging:
+    name: credential logging
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+          # The check diffs against the PR base (or the previous commit on a
+          # push), so it needs history rather than the default shallow clone.
+          fetch-depth: 0
+
+      - name: check changed Python files
+        # Mirrors the PostToolUse hook in .claude/hooks/run-affected-tests.sh,
+        # which runs the same script on the file just edited. Only *changed*
+        # files are checked: the pattern still flags pre-existing log calls
+        # elsewhere in the tree, and this job is a ratchet, not a backlog.
+        env:
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          # A pull request diffs against its base. A push diffs against the
+          # commit the branch was at before it, so a multi-commit push is
+          # checked whole rather than only its tip. github.event.before is all
+          # zeros for a new branch, absent outside push, and after a force-push
+          # names a commit that is no longer reachable — without the cat-file
+          # probe that last case makes `git diff` fail into "nothing changed",
+          # which is the silent pass this job exists to prevent.
+          if [ -n "${PR_BASE_SHA:-}" ]; then
+            base="$PR_BASE_SHA"
+          elif [ -n "${PUSH_BEFORE_SHA:-}" ] \
+            && [ "${PUSH_BEFORE_SHA//0/}" != "" ] \
+            && git cat-file -e "${PUSH_BEFORE_SHA}^{commit}" 2>/dev/null; then
+            base="$PUSH_BEFORE_SHA"
+          else
+            base="HEAD^"
+          fi
+          # Collected into the positional parameters rather than with mapfile,
+          # so the same snippet can be run locally on a bash 3.2 (macOS) shell.
+          set --
+          while IFS= read -r changed; do
+            [ -n "$changed" ] && set -- "$@" "$changed"
+          done < <(git diff --name-only --diff-filter=ACMR "$base" HEAD -- '*.py')
+          if [ "$#" -eq 0 ]; then
+            echo "No Python files changed against ${base}."
+            exit 0
+          fi
+          echo "Checking $# changed Python file(s):"
+          printf '  %s\n' "$@"
+          python3 ./scripts/check_credential_logging.py "$@"
+
   lockfile-fresh:
     name: uv.lock freshness
     runs-on: ubuntu-latest

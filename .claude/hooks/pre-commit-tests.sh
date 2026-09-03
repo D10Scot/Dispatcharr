@@ -7,8 +7,9 @@
 # Detected via $1 == "--git-hook", which skips the stdin payload parse.
 #
 # Backend labels come from the repo's OWN mapping (scripts/ci_backend_test_labels.py),
-# so this gate runs exactly what CI would run for the same diff — including its two
-# known routing defects, which is deliberate: the gate should not disagree with CI.
+# so this gate runs exactly what CI would run for the same diff. Sharing the one
+# function rather than keeping a second copy is the point: the gate cannot disagree
+# with CI, and a routing fix reaches both at once.
 #
 # Exit 2 blocks the commit. Infrastructure problems (Docker down) do NOT block —
 # they warn loudly, because a gate that fails closed on infra just gets bypassed.
