@@ -1145,3 +1145,98 @@ export type RecurringRule = {
   created_at: string;
   updated_at: string;
 };
+
+/**
+ * `/api/m3u/accounts/<id>/filters/` — nested under the account
+ * (`apps/m3u/api_urls.py:24-26`, `M3UFilterViewSet.get_queryset` scopes to
+ * `m3u_account_id` from the URL kwarg, `apps/m3u/api_views.py:589-591`), which
+ * is also why `m3u_account` is not a field on `M3UFilterSerializer.Meta.fields`
+ * — the full list (no field is read-only). `filter_type` is one of the three
+ * `M3UFilter.FILTER_TYPE_CHOICES` (`apps/m3u/models.py`): `'group'` matches
+ * the Xtream category / M3U `group-title`, `'name'` the stream name, `'url'`
+ * the stream URL. `custom_properties` is `| null` because the model column is
+ * `JSONField(null=True)` (`apps/m3u/models.py:196`).
+ */
+export type M3uFilter = {
+  id: number;
+  filter_type: 'group' | 'name' | 'url';
+  regex_pattern: string;
+  exclude: boolean;
+  order: number;
+  custom_properties: Record<string, unknown> | null;
+};
+
+/** The writable subset of {@link M3uFilter} — everything `M3UFilterSerializer.Meta.fields` lists except the generated `id`. */
+export type M3uFilterOverrides = {
+  filter_type?: 'group' | 'name' | 'url';
+  regex_pattern?: string;
+  exclude?: boolean;
+  order?: number;
+  custom_properties?: Record<string, unknown>;
+};
+
+/**
+ * `/api/core/settings/` — `CoreSettingsSerializer` is `fields = "__all__"`
+ * over the four-column `CoreSettings` model (`core/models.py`): `id`, `key`,
+ * `name`, `value` (a `JSONField`). Lookup is by **`id`**, not `key` — `key`
+ * is unique but is not the route's primary key, so a caller lists first to
+ * find the row's `id`.
+ */
+export type CoreSetting = {
+  id: number;
+  key: string;
+  name: string;
+  value: unknown;
+};
+
+/**
+ * `POST /api/core/settings/check/` — `CoreSettingsViewSet.check`
+ * (`core/api_views.py`). For the network-access-list key only, returns
+ * `{...perScopeExcludedCidrs, client_ip}`: one key per scope in the posted
+ * `value`, each holding the CIDRs from that scope that do **not** contain the
+ * requesting client, plus the resolved `client_ip`. An empty array for a
+ * scope means the client is covered by it.
+ */
+export type NetworkAccessCheck = {
+  client_ip: string;
+  [scope: string]: string | string[];
+};
+
+/**
+ * `POST /api/plugins/plugins/<key>/run/` — `PluginRunAPIView.post`
+ * (`apps/plugins/api_views.py`). `result` is **double-wrapped** unless the
+ * plugin action returns a `dict`: `PluginManager.run_action`
+ * (`apps/plugins/loader.py`) passes a `dict` result through as-is, but wraps
+ * anything else as `{"status": "ok", "result": <value>}` before this view
+ * nests it again under its own `"result"` key.
+ */
+export type PluginRunResponse = {
+  success: boolean;
+  result?: unknown;
+  error?: string;
+};
+
+/**
+ * One entry of the `associations` array in the `epg_match` WebSocket event
+ * (`apps/channels/tasks.py`, `match_epg_channels`/`match_selected_channels_epg`),
+ * which carries the return value of
+ * `apply_matched_epg_to_channels` (`apps/channels/epg_matching.py`) verbatim —
+ * one row per channel whose `epg_data` assignment actually changed.
+ */
+export type EpgMatchAssociation = {
+  channel_id: number;
+  epg_data_id: number;
+};
+
+/**
+ * The response shared by `ChannelViewSet.set_names_from_epg`,
+ * `set_logos_from_epg` and `set_tvg_ids_from_epg`
+ * (`apps/channels/api_views.py`) — each starts a Celery task over
+ * `channel_ids` (or, for `set_logos_from_epg` only, an `epg_source_id`) and
+ * returns immediately with the task handle, not the task's result.
+ */
+export type EpgFieldCopyResponse = {
+  message: string;
+  task_id: string;
+  channel_count: number;
+};

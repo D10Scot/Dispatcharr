@@ -11,7 +11,18 @@
  * The plugin it builds is INERT BY CONSTRUCTION. Enabling a plugin causes
  * `PluginManager._load_plugin` to import its module into the uWSGI worker and
  * run it there, unsandboxed (CLAUDE.md, "Events and plugins"). This one
- * declares one settings field and a `run` that returns a constant.
+ * declares one settings field and a `run` that returns a constant — only
+ * `run()` does anything at all, and only when a test calls it; importing and
+ * enabling the plugin does nothing by itself.
+ *
+ * With `actions` supplied, `run` still does nothing until called, but an
+ * `echo` action becomes available whose `run` derives its return value from
+ * `params` (`{"echoed": params.get("token")}`), so a caller can prove its
+ * parameters actually reached the plugin. `PluginManager.run_action`
+ * (`apps/plugins/loader.py`) passes a `dict` return through verbatim and
+ * wraps anything else as `{"status": "ok", "result": <value>}` before the
+ * view nests it again under its own `"result"` key — returning a dict here
+ * keeps the response one level shallower and the assertion readable.
  */
 
 const CRC_TABLE: number[] = (() => {
@@ -102,7 +113,21 @@ function zipOf(members: Member[]): Buffer {
  * `plugin.json` manifest, whose `fields` are what the Plugins page renders as
  * the settings form.
  */
-export function buildPluginZip(opts: { key: string; name: string }): Buffer {
+export function buildPluginZip(opts: {
+  key: string;
+  name: string;
+  /** Defaults to `[]` — omitting this produces a byte-identical archive to
+   * before this parameter existed. Verified by hand at the commit that
+   * introduced this parameter: compiled the pre- and post-change generator,
+   * called both with `actions` omitted, and compared the two 862-byte
+   * archives byte-for-byte (`Buffer.compare` and `cmp` both reported no
+   * difference) — not asserted in the zip-builder unit test below, which
+   * checks structure (signatures, member names, central-directory
+   * arithmetic), not identity with a prior build. */
+  actions?: { id: string; label: string }[];
+}): Buffer {
+  const actions = opts.actions ?? [];
+
   const manifest = JSON.stringify(
     {
       name: opts.name,
@@ -112,11 +137,32 @@ export function buildPluginZip(opts: { key: string; name: string }): Buffer {
       fields: [
         { id: 'note', label: 'Note', type: 'string', default: '' },
       ],
-      actions: [],
+      actions,
     },
     null,
     2
   );
+
+  const actionsLiteral =
+    actions.length === 0
+      ? '[]'
+      : '[\n' +
+        actions
+          .map((a) => `        {"id": ${JSON.stringify(a.id)}, "label": ${JSON.stringify(a.label)}},`)
+          .join('\n') +
+        '\n    ]';
+
+  // Only the `echo` action derives its result from `params`; anything else
+  // (including no actions at all) keeps the original constant reply — this
+  // is what keeps the `actions`-omitted archive byte-identical to before.
+  const runBody =
+    actions.length === 0
+      ? ['        return {"status": "noop"}']
+      : [
+          '        if action == "echo":',
+          '            return {"echoed": params.get("token")}',
+          '        return {"status": "noop"}',
+        ];
 
   const source = [
     'class Plugin:',
@@ -127,10 +173,10 @@ export function buildPluginZip(opts: { key: string; name: string }): Buffer {
     '    fields = [',
     '        {"id": "note", "label": "Note", "type": "string", "default": ""},',
     '    ]',
-    '    actions = []',
+    `    actions = ${actionsLiteral}`,
     '',
     '    def run(self, action, params, context):',
-    '        return {"status": "noop"}',
+    ...runBody,
     '',
   ].join('\n');
 

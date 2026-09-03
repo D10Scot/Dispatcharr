@@ -1,5 +1,5 @@
 import { test, expect } from '../../fixtures';
-import type { ApiClient, PluginListEntry } from '../../fixtures';
+import type { ApiClient, PluginListEntry, PluginRunResponse } from '../../fixtures';
 import { buildPluginZip } from './plugin-zip';
 import { SURFACES, gotoSurface } from './helpers';
 
@@ -225,5 +225,138 @@ test('a plugin imported through the Plugins page lists, enables and configures',
   // captured region, attributing any console error to the import/enable/
   // configure steps above rather than to whatever `afterEach` cleanup does
   // next, and before that cleanup runs at all.
+  await pageErrors.expectClean();
+});
+
+/**
+ * D14a's dispatch test — a `run` that `.delay()`s an existing product task
+ * against a row this test owns — is third on the cut list and is NOT
+ * shipped here. Recording the asymmetry anyway, because it is the
+ * interesting finding, not a gap: a runtime-imported plugin *can* `.delay()`
+ * a task the Celery worker already registered through `autodiscover_tasks()`
+ * — `.delay()` only publishes a message naming a task the worker already
+ * knows — but it *cannot* define a new `@shared_task` an already-running
+ * worker will honour, because plugins live outside `INSTALLED_APPS` and the
+ * only import hook is `@worker_process_init` in
+ * `dispatcharr/celery.py:init_worker_process`, which runs once per forked
+ * child at start. A newly forked `--autoscale` child *does* pick up a new
+ * task, so the failure is nondeterministic rather than clean — not a shape
+ * this suite's other tests assert on. Left for a future task (see
+ * `e2e/COVERAGE.md`) rather than shipped as a flaky assertion.
+ */
+
+test('a plugin action runs with its parameters, and rejects three ways', { tag: '@contract' }, async ({
+  adminPage,
+  api,
+  seed,
+  pageErrors,
+}) => {
+  const key = seed.generatedName('plugin').toLowerCase().replace(/[^a-z0-9_]/g, '_');
+  const displayName = `E2E ${key}`;
+
+  // Same registration pattern as the test above: assigned before the plugin
+  // necessarily exists, so `afterEach`'s idempotent DELETE always has a key
+  // to clean up, even on a mid-flow timeout.
+  keyToDeleteAfterEach = key;
+
+  // Import-and-enable, reusing the flow above verbatim — see its comments
+  // for why each step is shaped the way it is (the two file inputs, the
+  // "Done" barrier, the trust-confirmation dialog, the `.reload_token`
+  // propagation this poll exercises).
+  await gotoSurface(adminPage, pluginsSurface);
+  await expect(adminPage.getByTestId('plugins-page')).toBeVisible();
+
+  await adminPage.getByRole('button', { name: 'Import Plugin', exact: true }).click();
+  await adminPage.locator('input[type="file"][accept=".zip"]').setInputFiles({
+    name: `${key}.zip`,
+    mimeType: 'application/zip',
+    buffer: buildPluginZip({
+      key,
+      name: displayName,
+      actions: [{ id: 'echo', label: 'Echo' }],
+    }),
+  });
+  await adminPage.getByRole('button', { name: 'Upload', exact: true }).click();
+  await adminPage.getByRole('button', { name: 'Done', exact: true }).click();
+
+  await expect.poll(() => findPlugin(api, key), { timeout: 60_000 }).toBeDefined();
+  expect((await findPlugin(api, key))!.enabled).toBe(false);
+
+  const card = adminPage
+    .getByTestId('plugins-page')
+    .locator('.mantine-Card-root', { hasText: displayName });
+
+  await card.locator('label.mantine-Switch-body').first().click();
+  await adminPage
+    .getByRole('dialog')
+    .getByRole('button', { name: 'I understand, enable', exact: true })
+    .click();
+
+  await expect
+    .poll(async () => (await findPlugin(api, key))?.enabled, { timeout: 60_000 })
+    .toBe(true);
+
+  // Positive: the action runs with its parameters. The generated token is
+  // what proves the parameters actually reached the plugin, not just that
+  // something ran — a hardcoded literal would pass even if `run_action`
+  // dropped `params` on the floor. `run_action` (apps/plugins/loader.py:568-570)
+  // passes the plugin's dict return through verbatim, and the view
+  // (apps/plugins/api_views.py:472-473) nests that once under its own
+  // `"result"` key — one level of wrapping, not two, matching
+  // `PluginRunResponse`'s doc comment in fixtures/types.ts.
+  const token = seed.generatedName('token');
+  const runRes = await api.post(`/api/plugins/plugins/${key}/run/`, {
+    action: 'echo',
+    params: { token },
+  });
+  expect(runRes.status()).toBe(200);
+  const runBody: PluginRunResponse = await runRes.json();
+  expect(runBody).toEqual({ success: true, result: { echoed: token } });
+
+  // Not asserted, but worth recording: `GET /api/plugins/plugins/`
+  // (`findPlugin` above) returns the raw `PluginConfig.settings`, while
+  // `run()` sees that dict merged with each field's declared default via
+  // `PluginManager._merge_settings_with_defaults` — a default read back from
+  // the list endpoint is not the value the plugin actually used. This
+  // plugin's `run` doesn't read `context["settings"]`, so nothing here
+  // depends on that distinction; it just isn't safe to assume elsewhere.
+
+  // Negative 1: missing 'action' -> 400.
+  // (`PluginRunAPIView.post`, apps/plugins/api_views.py:458-461.)
+  const missingActionRes = await api.post(`/api/plugins/plugins/${key}/run/`, {});
+  expect(missingActionRes.status()).toBe(400);
+
+  // Negative 2: a key with no `PluginConfig` row at all -> 404. This must be
+  // a key that was never imported, not merely a disabled or broken one: the
+  // view's own `PluginConfig.objects.get(key=key)` (api_views.py:465) is
+  // what raises `DoesNotExist` -> 404 (api_views.py:468-469) here. A row
+  // that *does* exist but whose module fails to load takes a different path
+  // entirely — the view's lookup succeeds, so it calls
+  // `pm.run_action(...)`, which does its own `get_plugin()` and raises
+  // `ValueError` (loader.py:549) when nothing loaded; the view's broad
+  // `except Exception` (api_views.py:476-478) turns that into 500, not 404.
+  const neverImportedKey = seed
+    .generatedName('never_imported')
+    .toLowerCase()
+    .replace(/[^a-z0-9_]/g, '_');
+  const notFoundRes = await api.post(`/api/plugins/plugins/${neverImportedKey}/run/`, {
+    action: 'echo',
+  });
+  expect(notFoundRes.status()).toBe(404);
+
+  // Negative 3: disabled -> 403. Driven through the API directly, not the
+  // UI switch, since the assertion is about the `run` endpoint's own
+  // enabled check (api_views.py:463-469), not about the toggle control.
+  // Re-enabling afterward isn't necessary: `afterEach`'s DELETE is
+  // unconditional and idempotent whether this plugin ends the test enabled
+  // or disabled.
+  const disableRes = await api.post(`/api/plugins/plugins/${key}/enabled/`, { enabled: false });
+  expect(disableRes.status()).toBe(200);
+
+  const disabledRunRes = await api.post(`/api/plugins/plugins/${key}/run/`, { action: 'echo' });
+  expect(disabledRunRes.status()).toBe(403);
+  const disabledRunBody: PluginRunResponse = await disabledRunRes.json();
+  expect(disabledRunBody).toEqual({ success: false, error: 'Plugin is disabled' });
+
   await pageErrors.expectClean();
 });

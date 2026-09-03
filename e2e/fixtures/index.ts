@@ -25,7 +25,7 @@
  * ---------------------------------------------------------------------------
  * `api: ApiClient` — authed HTTP as the bootstrap admin. Refreshes and retries
  * once on a 401, so a suite outliving the 30-minute access token is fine.
- *   get(url) / delete(url) → Promise<APIResponse>
+ *   get(url) / delete(url, data?) → Promise<APIResponse>
  *   post(url, data) / patch(url, data) → Promise<APIResponse>
  *   json<T>(res, context) → Promise<T>   asserts res.ok(), throws with status
  *                                        + body prefixed by `context`. `T`
@@ -693,6 +693,13 @@ export type {
   M3uEpisodeRelation,
   CategorySettingRow,
   VodPage,
+  M3uFilter,
+  M3uFilterOverrides,
+  CoreSetting,
+  NetworkAccessCheck,
+  PluginRunResponse,
+  EpgMatchAssociation,
+  EpgFieldCopyResponse,
 } from './types';
 export {
   xcQuery,
