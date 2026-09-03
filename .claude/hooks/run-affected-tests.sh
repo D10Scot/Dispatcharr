@@ -10,12 +10,13 @@
 #   typecheck    e2e{,-upstream}/*.ts tsc --noEmit, that pkg  (blocking)
 #   lint         frontend/*.js(x)     eslint that file        (advisory)
 #   actions      workflows/action.yml zizmor, whole file      (blocking)
-#   secrets      any *.py             credential-logging grep (advisory)
+#   secrets      any *.py             check_credential_logging.py (blocking)
 #
-# All but zizmor and typecheck are deliberately independent of the repo's
-# pre-existing backlog. Those two are ratchets: they hold the whole edited
-# file (or package) clean, because there is nothing to tolerate — the
-# workflow backlog was worked off, and both e2e packages typecheck clean.
+# All but zizmor, typecheck and secrets are deliberately independent of the
+# repo's pre-existing backlog. Those three are ratchets: they hold the whole
+# edited file (or package) clean, because there is nothing to tolerate — the
+# workflow backlog was worked off, both e2e packages typecheck clean, and the
+# five log calls that leaked provider credentials now redact.
 #
 # Backend work happens in a warm local container (see start-test-container.sh).
 # Real PostgreSQL is required: a migration uses the PG-only `~` regex operator,
@@ -64,14 +65,25 @@ dexec() {
 }
 
 # ---------------------------------------------------------------- secrets ---
-# Provider credentials are currently logged at INFO (vod_proxy/views.py:628,
-# m3u/tasks.py:3084) — Xtream URLs carry the password in the path. Advisory,
-# because "is this line a leak" is a judgement call, not a rule.
+# Xtream provider URLs carry the password in the path, so any log call naming a
+# URL, request path, header dict or credential can leak one. This used to be an
+# advisory grep inline here, because "is this line a leak" was a judgement call
+# while the repo still leaked at INFO. It is a ratchet now: those five calls go
+# through redact_url()/redact_headers(), and the same script runs in lint.yml
+# over every changed *.py, so local and CI cannot disagree.
 if [[ "$REL" == *.py ]]; then
-  HITS="$(grep -nE 'logger\.(info|debug|warning|error|exception)\(' "$FILE" 2>/dev/null \
-          | grep -E 'request\.headers|request\.META|get_full_path|\bpassword\b|api_key|\btoken\b|_url\b|url\}' \
-          | head -5)"
-  [ -z "$HITS" ] || note "Possible credential logging in ${REL} — Xtream URLs carry the password in the path, and this repo already leaks them at INFO. Check these lines redact before logging:"$'\n'"${HITS}"
+  CREDENTIAL_GUARD="scripts/check_credential_logging.py"
+  if [ ! -f "$CREDENTIAL_GUARD" ]; then
+    note "Did NOT check ${REL} for credential logging — ${CREDENTIAL_GUARD} is missing."
+  elif ! command -v python3 >/dev/null 2>&1; then
+    note "Did NOT check ${REL} for credential logging — python3 is not on PATH."
+  else
+    OUT="$(python3 "$CREDENTIAL_GUARD" "$REL" 2>&1)"
+    if [ $? -ne 0 ]; then
+      block "credential logging in ${REL}" \
+            "$(printf '%s' "$OUT" | head -20)"$'\n\n'"Route the logged value through redact_url() / redact_headers() (dispatcharr/utils.py). If the call logs no value at all, mark it with a '# credential-logging: ignore - <reason>' comment on one of its lines."
+    fi
+  fi
 fi
 
 # ------------------------------------------------------------- migrations ---

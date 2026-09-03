@@ -167,7 +167,7 @@ shows four required checks.
 - `tests/test_redaction.py`: property tests that no input containing a userinfo, a listed query
   key, or an Xtream credential path shape survives unmasked; example tests for each of the five
   sites' actual shapes; a control that a credential-free URL is returned unchanged.
-- `scripts/check_credential_logging.sh` (the grep from the hook, plus "and does not call
+- `scripts/check_credential_logging.py` (the grep from the hook, plus "and does not call
   `redact_`" ), called by the hook with `block` and by a new `lint.yml` job over every `*.py` in
   the diff.
 - **Done:** the script exits non-zero on the pre-fix tree and zero after; the hook blocks a

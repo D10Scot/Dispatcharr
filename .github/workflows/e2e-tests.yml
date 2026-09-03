@@ -35,7 +35,7 @@ on:
   workflow_dispatch:
     inputs:
       full:
-        description: 'Run every project, including lifecycle-upgrade'
+        description: 'Run every project even for a docs-only diff (lifecycle-upgrade runs in lifecycle-tests.yml)'
         type: boolean
         default: false
 
@@ -88,12 +88,14 @@ jobs:
             full=true
           fi
 
-          # The matrix lives here rather than in the `test` job so that full
-          # mode can extend it. A NEW PROJECT MUST BE ADDED TO BOTH LINES.
+          # The matrix lives here rather than in the `test` job so that a
+          # future mode can extend it. `lifecycle-upgrade` is deliberately NOT
+          # here, in full mode or otherwise: its spec needs
+          # DISPATCHARR_E2E_BASELINE_IMAGE resolved from git history, which only
+          # `lifecycle-tests.yml`'s `upgrade-migrations` job does, and that job
+          # already runs the project on every `migration/**` branch. Listing it
+          # here too ran it without the baseline and failed every full run.
           projects='["pristine","seeded","streaming","streaming-failover","streaming-greybox","lifecycle","frontend","dvr"]'
-          if [ "$full" = "true" ]; then
-            projects='["pristine","seeded","streaming","streaming-failover","streaming-greybox","lifecycle","frontend","dvr","lifecycle-upgrade"]'
-          fi
           echo "projects=$projects" >> "$GITHUB_OUTPUT"
 
           if [ "$full" = "true" ] || [ "$EVENT_NAME" != "pull_request" ]; then
@@ -130,9 +132,9 @@ jobs:
       - name: Build the upstream provider image
         run: docker build -f e2e-upstream/Dockerfile -t dispatcharr-e2e-upstream:local e2e-upstream
 
-      # One build for all three consumers. docker/Dockerfile:14 uses
-      # `npm install` with no lockfile, so N builds can produce N different
-      # frontend bundles; building once means one artifact under test.
+      # One build for all three consumers, so every test job exercises the
+      # same artifact rather than one each job happened to build, and the
+      # minutes an AIO build costs are spent once, not once per matrix job.
       - name: Build the image
         run: docker build -f docker/Dockerfile -t dispatcharr-e2e:local .
 
@@ -198,7 +200,7 @@ jobs:
     timeout-minutes: 30
     strategy:
       fail-fast: false
-      # Built by the `changes` job so full mode can add `lifecycle-upgrade`.
+      # Built by the `changes` job so a mode can extend it without editing here.
       # A new Playwright project is added to the `projects` lists there, not
       # here — and `guards` is deliberately not among them: it needs no
       # container, so it has its own job below rather than a matrix row that
