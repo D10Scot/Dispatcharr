@@ -305,6 +305,36 @@ test("upstreamM3UAccount() still calls waitForCreateTimeGroupRefreshToSettle() b
   ).toBe(true);
 });
 
+// The non-inverted control for the test.fail() below ('M3UAccount.locked is
+// not writable over the API'): a PATCH to an account over the real API is
+// accepted, and the write actually persists to a later read. Three tests
+// above already seed via `seed.m3uAccount()` directly, and one of them
+// ("waitFor.m3uRefreshComplete re-fires its trigger...") even PATCHes the
+// account's `is_active` and asserts the response is `ok()` — but no other
+// test in this file reads an account back after a PATCH to confirm the write
+// actually took. That read-back is exactly what the pin's own final
+// assertion depends on, and a break in it would be swallowed by the pin
+// below as an "expected failure", since test.fail() is satisfied by ANY
+// failure in its body, not specifically the `locked` regression it exists
+// to pin.
+test('an M3U account round-trips a PATCH of a writable field', { tag: '@contract' }, async ({
+  seed,
+  api,
+}) => {
+  const account = await seed.m3uAccount();
+  expect(account.locked).toBe(false);
+
+  const newName = seed.generatedName('m3uAccountRenamed');
+  const patched = await api.patch(`/api/m3u/accounts/${account.id}/`, { name: newName });
+  expect(patched.ok()).toBeTruthy();
+
+  const readBack = await api.json<M3uAccount>(
+    await api.get(`/api/m3u/accounts/${account.id}/`),
+    'account read-back after renaming'
+  );
+  expect(readBack.name).toBe(newName);
+});
+
 /**
  * Known bug: D10Scot/Dispatcharr#15. `M3UAccountSerializer` declares
  * `read_only_fields = ["locked", "created_at", "updated_at"]` in its **class
@@ -315,6 +345,13 @@ test("upstreamM3UAccount() still calls waitForCreateTimeGroupRefreshToSettle() b
  *
  * Asserts the CORRECT behaviour and is expected to fail until #15 is fixed.
  * Do not patch the product from this harness; do not file a duplicate issue.
+ *
+ * This test's own body already performs the PATCH-and-read-back sequence its
+ * premise depends on — but inside a test.fail() block, which is satisfied by
+ * ANY failure, so a regression in the read-back mechanism itself (not just
+ * in `locked`) would be swallowed as "expected failure" and never surface.
+ * The non-inverted assertion in the test above ('an M3U account round-trips
+ * a PATCH of a writable field') is what actually guards it.
  */
 test.fail('M3UAccount.locked is not writable over the API', { tag: '@contract' }, async ({ seed, api }) => {
   const account = await seed.m3uAccount();

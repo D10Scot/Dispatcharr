@@ -59,7 +59,7 @@ test('the candidate cascade falls through to the QUERY layout when PATH 404s', {
     `/proxy/catchup/${channel.uuid}?start=${encodeURIComponent(start)}&duration=60`,
     { headers: { Authorization: `Bearer ${token}` } }
   );
-  expect((await streamClient.readPackets(20))[0]).toBe(0x47);
+  expectTsAligned(await streamClient.readPackets(20));
   await streamClient.close();
 
   const log = await upstream.log(scenario);

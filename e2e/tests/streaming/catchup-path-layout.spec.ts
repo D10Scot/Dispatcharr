@@ -1,4 +1,4 @@
-import { test, expect } from '../../fixtures';
+import { test, expect, expectTsAligned } from '../../fixtures';
 import { catchupTimestamp, seedCatchupChannel } from './helpers';
 
 /**
@@ -46,7 +46,7 @@ test('a catch-up request reaches the provider in the PATH layout with the right 
     `/timeshift/${xcUser.username}/${xcUser.xcPassword}/60/${start}/${channel.id}.ts`
   );
   const bytes = await streamClient.readPackets(20);
-  expect(bytes[0]).toBe(0x47);
+  expectTsAligned(bytes);
   await streamClient.close();
 
   const log = await upstream.log(scenario);

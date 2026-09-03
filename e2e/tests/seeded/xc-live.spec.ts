@@ -14,8 +14,12 @@ test('the XC live catalogue lists a seeded channel under its own category', { ta
 
   // One Channel Profile assigned, and a user_level 0 channel. This is
   // deliberately the exact shape the known-bug test below uses, differing
-  // only in the channel's user_level — which makes this the positive control
-  // for that bug rather than an unrelated happy path.
+  // only in the channel's user_level — a contrast case for that bug, not a
+  // positive control for it: at user_level 0 the has-profiles branch's
+  // exact-match filter and get_live_streams' __lte filter agree by
+  // construction, so this shape alone cannot confirm the level-1 half of
+  // that other test's premise. See its doc comment, and the control above
+  // it, for what does.
   const profile = await seed.channelProfile();
   const user = await seed.xcUser({ user_level: 1, channel_profiles: [profile.id] });
 
@@ -148,6 +152,37 @@ test('the EPG actions 404 without a stream_id', { tag: '@contract' }, async ({ s
   }
 });
 
+// The non-inverted control for the test.fail() below ('a profiled user sees
+// the category of every channel it can list'): get_live_streams filters
+// `user_level__lte=user.user_level` in every branch, so it should
+// list a level-1 channel for a profiled level-1 user — the pin's own
+// premise assertion, currently reachable only inside its test.fail() body.
+// The test at the top of the file ('the XC live catalogue lists a seeded
+// channel under its own category') also calls xcLiveStreams with a
+// profiled user, but against a user_level 0 channel, so it does not
+// exercise this at level-1 — and no other *non-inverted* test in this file
+// calls xcLiveStreams at level-1: the pin below does too, but from inside
+// its own test.fail() body, which is exactly the gap this control closes,
+// not a second control. A break in this listing (not just in category
+// assignment) would be swallowed by the pin below as an "expected failure",
+// since test.fail() is satisfied by ANY failure in its body, not
+// specifically the category defect it exists to pin.
+test('a profiled level-1 user lists a level-1 channel', { tag: '@contract' }, async ({
+  seed,
+  request,
+}) => {
+  const group = await seed.channelGroup();
+  const channel = await seed.channel({ channel_group_id: group.id, user_level: 1 });
+  const profile = await seed.channelProfile();
+  const user = await seed.xcUser({ user_level: 1, channel_profiles: [profile.id] });
+
+  const streams = await xcLiveStreams(request, user);
+  expect(
+    streams.map((s) => s.stream_id),
+    'a profiled level-1 user should list a level-1 channel'
+  ).toContain(channel.id);
+});
+
 // Asserts the behaviour Dispatcharr SHOULD have. `xc_get_live_categories` in
 // apps/output/views.py has three branches. The no-profiles branch and the
 // admin branch both filter `channels__user_level__lte=user.user_level`. The
@@ -159,10 +194,22 @@ test('the EPG actions 404 without a stream_id', { tag: '@contract' }, async ({ s
 // is missing from get_live_categories, so an XC client shows a stream that
 // belongs to no category.
 //
-// The positive control is 'the XC live catalogue lists a seeded channel under
-// its own category' above: identical setup, user_level 0 channel, passes
-// today. The two differ in exactly one field, which is what makes this a
-// located defect rather than a guess.
+// 'the XC live catalogue lists a seeded channel under its own category'
+// above is not a positive control for this test, despite the matching
+// setup: it shares this test's profiled-user shape
+// (`channel_profiles: [profile.id]`) but at channel user_level 0, where
+// get_live_categories' has-profiles exact-match filter
+// (channels__user_level == 0) and get_live_streams' __lte filter agree by
+// construction — it cannot confirm the level-1 half of this test's premise.
+// It is a contrast case: the two tests differ in exactly one field (the
+// channel's user_level), which is what makes this a located defect rather
+// than a guess.
+//
+// This test's own body already performs that level-1 premise sequence, but
+// inside this test.fail() block, where it is guarded only by test.fail()'s
+// "any failure" net rather than by the assertion itself — see the
+// non-inverted control above ('a profiled level-1 user lists a level-1
+// channel') for why that gap matters and what closes it.
 //
 // Issue: https://github.com/D10Scot/Dispatcharr/issues/85
 test.fail('a profiled user sees the category of every channel it can list', { tag: '@contract' }, async ({
