@@ -117,6 +117,7 @@ test('stopping an in-flight recording preserves stopped and keeps the partial MK
   // contact. Confirming a segment exists first guarantees the partial MKV
   // this row is actually testing for has real content to be built from.
   const authHeaders = { Authorization: `Bearer ${await api.freshAccessToken()}` };
+  let lastPlaylistBeforeStop = '';
   await waitFor.condition(
     async () => {
       try {
@@ -124,6 +125,7 @@ test('stopping an in-flight recording preserves stopped and keeps the partial MK
           headers: authHeaders,
         });
         const playlist = (await streamClient.collectFor(2_000)).toString('utf8');
+        lastPlaylistBeforeStop = playlist;
         return playlist.startsWith('#EXTM3U') && /seg_\d+\.ts/.test(playlist);
       } finally {
         await streamClient.close();
@@ -132,6 +134,10 @@ test('stopping an in-flight recording preserves stopped and keeps the partial MK
     {
       timeoutMs: 30_000,
       description: `the HLS playlist for recording ${recording.id} to list at least one segment before stopping`,
+      describeLast: () =>
+        lastPlaylistBeforeStop
+          ? `last playlist (${lastPlaylistBeforeStop.length} bytes) starts=${lastPlaylistBeforeStop.startsWith('#EXTM3U')}, hasSegment=${/seg_\d+\.ts/.test(lastPlaylistBeforeStop)}`
+          : '(no playlist body observed yet)',
     }
   );
 
@@ -189,12 +195,16 @@ test('stopping an in-flight recording preserves stopped and keeps the partial MK
   // rather than read once. Reuses the authHeaders built above.
   let mkvHead: Buffer | undefined;
   let mkvSize: number | undefined;
+  let lastFileStatus: number | undefined;
+  let lastFileContentType: string | null | undefined;
   await waitFor.condition(
     async () => {
       try {
         await streamClient.open(`/api/channels/recordings/${recording.id}/file/`, {
           headers: authHeaders,
         });
+        lastFileStatus = streamClient.status;
+        lastFileContentType = streamClient.headers?.get('content-type');
         const isMkv =
           streamClient.status === 200 &&
           streamClient.headers?.get('content-type') === 'video/x-matroska';
@@ -210,6 +220,10 @@ test('stopping an in-flight recording preserves stopped and keeps the partial MK
     {
       timeoutMs: 30_000,
       description: `GET /file/ for recording ${recording.id} to serve the finished partial MKV (concat/remux runs after the stop)`,
+      describeLast: () =>
+        lastFileStatus === undefined
+          ? '(no response observed yet)'
+          : `last observed status=${lastFileStatus}, content-type=${lastFileContentType ?? '(none)'}`,
     }
   );
   expect(mkvSize, 'partial MKV content-length missing or unparsable').toBeGreaterThan(0);

@@ -183,6 +183,10 @@ test('a scheduled recording fires, plays back in progress, completes and is serv
       description:
         `the HLS playlist for recording ${recording.id} to list at least one ` +
         `segment (FFmpeg's HLS muxer, hls_time=4s, lags the upstream connection)`,
+      describeLast: () =>
+        playlist
+          ? `last playlist (${playlist.length} bytes) starts=${playlist.startsWith('#EXTM3U')}, hasSegment=${segmentMatch !== null}`
+          : '(no playlist body observed yet)',
     }
   );
   expect(playlist.startsWith('#EXTM3U')).toBe(true);

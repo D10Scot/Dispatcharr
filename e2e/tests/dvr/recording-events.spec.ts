@@ -200,6 +200,7 @@ test(
         describeLast: () => `last observed live=${lastLiveCount}`,
       }
     );
+    let lastPlaylistBeforeCancel = '';
     await waitFor.condition(
       async () => {
         try {
@@ -207,6 +208,7 @@ test(
             headers: authHeaders,
           });
           const playlist = (await streamClient.collectFor(2_000)).toString('utf8');
+          lastPlaylistBeforeCancel = playlist;
           return playlist.startsWith('#EXTM3U') && /seg_\d+\.ts/.test(playlist);
         } finally {
           await streamClient.close();
@@ -215,6 +217,10 @@ test(
       {
         timeoutMs: 30_000,
         description: `the HLS playlist for recording ${recording.id} to list at least one segment before cancelling`,
+        describeLast: () =>
+          lastPlaylistBeforeCancel
+            ? `last playlist (${lastPlaylistBeforeCancel.length} bytes) starts=${lastPlaylistBeforeCancel.startsWith('#EXTM3U')}, hasSegment=${/seg_\d+\.ts/.test(lastPlaylistBeforeCancel)}`
+            : '(no playlist body observed yet)',
       }
     );
 
