@@ -16,9 +16,9 @@ name: Lifecycle Tests
 # — stays gated exactly as before on an ordinary PR, and runs in full on a
 # `migration/**` branch or a `workflow_dispatch` with `full: true`.
 #
-# `Lifecycle result` is the ONLY check here that may ever be required, and it
-# must not be added to the Main ruleset until G12 leaves both bash suites
-# green. See the comment on that job.
+# `Lifecycle result` is the ONLY check here that may ever be required. G12 left
+# both bash suites green, so it is requireable on every branch. See the comment
+# on that job for exactly which jobs it demands in which mode.
 on:
   push:
     branches: [main]
@@ -559,20 +559,32 @@ jobs:
   # The one check here that may ever be required, on the same reasoning as
   # `E2E result` in e2e-tests.yml: a gated job that skips never reports, and a
   # required check that never reports blocks the merge forever. This runs
-  # unconditionally and passes when everything it depends on either succeeded
-  # or was deliberately skipped.
+  # unconditionally, so it always reports.
   #
-  # NOT in the Main ruleset yet, deliberately. The two bash suites are
-  # currently red — 8 failed assertions across 4 of 20 puid-pgid scenarios and
-  # 7 of 8 tls-postgres scenarios — and until this change they had never run on
-  # a pull request at all. G12 triages them to green. Adding this check to the
-  # ruleset before G12 lands would block every migration branch on a
-  # pre-existing failure.
+  # It used to forgive `skipped` on every job it watches, unconditionally.
+  # That is a hole: on a run that DID need the lifecycle jobs, a job skipped
+  # because its own dependency collapsed reports green. The three branches
+  # below close it — the run is either unprovable, deliberately not required,
+  # or required and then every job that this mode actually runs must be
+  # exactly `success`.
+  #
+  # Which jobs a mode runs is not uniform, so the aggregate encodes it:
+  #   * `build`, `upgrade-migrations` and `lifecycle-extras` all gate on
+  #     `lifecycle == 'true' || full == 'true'` — the same condition as the
+  #     run being required, so on a required run all three must succeed.
+  #   * `suites` — the two bash suites — gates on
+  #     `github.event_name != 'pull_request' || full == 'true'` instead. On an
+  #     ordinary pull request with `full` false it is *legitimately* skipped
+  #     even though the run is required, so it is checked only in the modes
+  #     that run it. That condition is mirrored below and must stay in
+  #     lockstep with the job's own `if:`.
+  # `changes` sets `lifecycle=true` for every non-pull_request event and
+  # whenever `full` is true, so "required" reduces to `lifecycle == 'true'`.
   #
   # `build` is listed in needs even though nothing here reads its output
   # directly: `suites` and `upgrade-migrations` both depend on it, so a failed
-  # build makes them report skipped rather than failed, and skipped-is-fine
-  # must not transitively excuse a build that never happened.
+  # build makes them report skipped rather than failed, and a skip must not
+  # transitively excuse a build that never happened.
   lifecycle-result:
     name: Lifecycle result
     runs-on: ubuntu-latest
@@ -587,16 +599,39 @@ jobs:
           SUITES_RESULT: ${{ needs.suites.result }}
           UPGRADE_RESULT: ${{ needs.upgrade-migrations.result }}
           EXTRAS_RESULT: ${{ needs.lifecycle-extras.result }}
+          LIFECYCLE_REQUIRED: ${{ needs.changes.outputs.lifecycle }}
+          FULL_MODE: ${{ needs.changes.outputs.full }}
+          EVENT_NAME: ${{ github.event_name }}
         run: |
           echo "changes=$CHANGES_RESULT build=$BUILD_RESULT suites=$SUITES_RESULT upgrade=$UPGRADE_RESULT extras=$EXTRAS_RESULT"
+          echo "lifecycle-required=$LIFECYCLE_REQUIRED full=$FULL_MODE event=$EVENT_NAME"
           if [ "$CHANGES_RESULT" != "success" ]; then
             echo "Change detection itself failed — cannot prove these suites were unnecessary."
             exit 1
           fi
-          for result in "$BUILD_RESULT" "$SUITES_RESULT" "$UPGRADE_RESULT" "$EXTRAS_RESULT"; do
-            case "$result" in
-              success|skipped) ;;
-              *) echo "A lifecycle job did not succeed."; exit 1 ;;
-            esac
+          if [ "$LIFECYCLE_REQUIRED" != "true" ]; then
+            echo "No lifecycle-relevant paths changed; suites deliberately skipped."
+            exit 0
+          fi
+          status=0
+          for job in build:"$BUILD_RESULT" upgrade-migrations:"$UPGRADE_RESULT" lifecycle-extras:"$EXTRAS_RESULT"; do
+            if [ "${job#*:}" != "success" ]; then
+              echo "Required job ${job%%:*} reported ${job#*:}, not success."
+              status=1
+            fi
           done
-          echo "Lifecycle jobs passed or were deliberately skipped."
+          # Mirrors the `suites` job's own `if:` — the bash suites run on every
+          # non-pull_request event, and on a pull request only in full mode.
+          if [ "$EVENT_NAME" != "pull_request" ] || [ "$FULL_MODE" = "true" ]; then
+            if [ "$SUITES_RESULT" != "success" ]; then
+              echo "Required job suites reported $SUITES_RESULT, not success."
+              status=1
+            fi
+          else
+            echo "Bash suites are not part of a non-full pull request run; skip is expected."
+          fi
+          if [ "$status" -ne 0 ]; then
+            echo "The lifecycle run was required and did not fully succeed."
+            exit 1
+          fi
+          echo "Every lifecycle job this mode runs passed."
