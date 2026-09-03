@@ -109,3 +109,22 @@ Streamer (0), Standard User (1), Admin (10) — model labels, verbatim
 Profile membership (see Channel Profile, above — zero profiles means
 unrestricted, not none). Django's Group and Permission tables are
 vestigial — do not use them.
+
+## Programme terms
+
+- **Phase 0** — "harden in place": the work that makes the relay extraction
+  safer without moving any boundary. Exactly five items: the two CI
+  label-routing defects, `npm ci` in the image build, a release that cannot
+  ship an untested commit, the Main ruleset requiring every test aggregate,
+  and provider credentials no longer logged. Deployment defaults (published
+  Postgres port, wildcard hosts/CORS/CSRF, plaintext XC passwords, no request
+  timeout) are **not** Phase 0 — they are recorded as constraints the
+  extracted relay must not recreate.
+- **Migration gate** — the set of required checks a PR to `main` must pass:
+  the E2E, Lifecycle, Backend and Frontend result aggregates. A `migration/**`
+  branch runs the gate in full mode (every project, both bash suites). "Green
+  CI" without the gate is not evidence.
+- **Result aggregate** — the one job per test workflow that a ruleset can
+  require. It always reports: it passes when the workflow's own change
+  detection proved the suite unnecessary, and otherwise only when every heavy
+  job succeeded. A skipped heavy job on a required run is a failure, not a pass.
