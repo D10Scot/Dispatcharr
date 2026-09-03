@@ -1,16 +1,19 @@
 name: Frontend Tests
 
+# Always triggers, and gates internally — the same shape as e2e-tests.yml and
+# lifecycle-tests.yml, and for the same reason. `Frontend result` at the bottom
+# of this file is the aggregate that can be required on every PR; `test` itself
+# cannot be, because a gated job that skips still reports, but a *path-filtered
+# workflow* that never triggers reports nothing at all, leaving a required
+# check "Expected" forever and blocking the merge. So the filter moved out of
+# the triggers and into the `changes` job below, which is cheap (~10s) and
+# always runs. Cost on a backend-only or docs-only PR is that one job, not an
+# `npm ci` plus the ~6,128-test vitest suite.
 on:
   push:
     branches: [main]
-    paths:
-      - 'frontend/**'
-      - '.github/workflows/frontend-tests.yml'
   pull_request:
     branches: [main]
-    paths:
-      - 'frontend/**'
-      - '.github/workflows/frontend-tests.yml'
   workflow_dispatch:
 
 permissions:
@@ -21,8 +24,49 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Reimplements the paths filter both triggers used to carry, so the required
+  # check always reports without the suite always running. Keep the pattern
+  # below in lockstep with what the frontend build actually depends on.
+  changes:
+    name: Detect relevant changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      frontend: ${{ steps.filter.outputs.frontend }}
+    steps:
+      - name: Checkout code
+        if: github.event_name == 'pull_request'
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+          # pull_request checks out the merge commit, whose first parent is
+          # the base branch tip — depth 2 is enough to diff the whole PR.
+          fetch-depth: 2
+
+      - name: Decide whether the frontend suite needs to run
+        id: filter
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          # push and workflow_dispatch always run the suite: neither carries a
+          # base to diff against that is worth trusting, and both are rare.
+          if [ "$EVENT_NAME" != "pull_request" ]; then
+            echo "frontend=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          changed=$(git diff --name-only HEAD^1 HEAD)
+          printf 'Changed files:\n%s\n' "$changed"
+          pattern='^(frontend/|\.github/workflows/frontend-tests\.yml$)'
+          if printf '%s\n' "$changed" | grep -qE "$pattern"; then
+            echo "frontend=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "frontend=false" >> "$GITHUB_OUTPUT"
+          fi
+
   test:
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.frontend == 'true'
 
     defaults:
       run:
@@ -49,3 +93,35 @@ jobs:
 
       - name: Run tests
         run: npm test
+
+  # The one check in this workflow that may be required. It always reports,
+  # because it is not gated on anything — see the comment on the triggers.
+  frontend-result:
+    name: Frontend result
+    runs-on: ubuntu-latest
+    needs: [changes, test]
+    if: always()
+    timeout-minutes: 5
+    steps:
+      - name: Verify the frontend test outcome
+        env:
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          TEST_RESULT: ${{ needs.test.result }}
+          FRONTEND_REQUIRED: ${{ needs.changes.outputs.frontend }}
+        run: |
+          echo "changes=$CHANGES_RESULT test=$TEST_RESULT frontend-required=$FRONTEND_REQUIRED"
+          if [ "$CHANGES_RESULT" != "success" ]; then
+            echo "Change detection itself failed — cannot prove the suite was unnecessary."
+            exit 1
+          fi
+          if [ "$FRONTEND_REQUIRED" != "true" ]; then
+            echo "No frontend-relevant paths changed; suite deliberately skipped."
+            exit 0
+          fi
+          # `skipped` here means the gated job never ran on a run that needed
+          # it, so only an exact `success` may report green.
+          if [ "$TEST_RESULT" != "success" ]; then
+            echo "Frontend suite was required and did not fully succeed."
+            exit 1
+          fi
+          echo "Frontend suite passed."
