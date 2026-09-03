@@ -90,9 +90,9 @@ jobs:
 
           # The matrix lives here rather than in the `test` job so that full
           # mode can extend it. A NEW PROJECT MUST BE ADDED TO BOTH LINES.
-          projects='["pristine","seeded","streaming","streaming-failover","streaming-greybox","lifecycle","frontend"]'
+          projects='["pristine","seeded","streaming","streaming-failover","streaming-greybox","lifecycle","frontend","dvr"]'
           if [ "$full" = "true" ]; then
-            projects='["pristine","seeded","streaming","streaming-failover","streaming-greybox","lifecycle","frontend","lifecycle-upgrade"]'
+            projects='["pristine","seeded","streaming","streaming-failover","streaming-greybox","lifecycle","frontend","dvr","lifecycle-upgrade"]'
           fi
           echo "projects=$projects" >> "$GITHUB_OUTPUT"
 

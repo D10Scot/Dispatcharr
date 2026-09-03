@@ -125,5 +125,20 @@ export const GLOBAL_SETTINGS_WRITE: Capability = {
     // Sets `stream_settings.default_stream_profile` to Redirect for its run.
     // `streaming-greybox` is `workers: 1` partly for this reason.
     'tests/streaming-greybox/vod-redirect-profile.spec.ts',
+    // Writes `dvr_settings`, and only `comskip_enabled` and `comskip_mode`
+    // within it — merged into a spread copy of the row's existing `value`
+    // (`CoreSettingsViewSet.update` replaces `value` wholesale, so every
+    // other key, including `pre_offset_minutes`/`post_offset_minutes`, is
+    // carried through unchanged to avoid triggering that view's
+    // reschedule-every-upcoming-recording side effect). Nothing else reads
+    // it during the run: the `dvr` project gets its own container in CI and
+    // is `workers: 1`, and unlike `proxy_settings` (a 10s process-local
+    // cache on top of Redis), `CoreSettings._get_group` invalidates
+    // `dvr_settings` in Redis on `post_save`, so the restore below takes
+    // effect on every worker immediately, with no settling delay. Teardown
+    // restores it in an unconditional `afterEach` that PATCHes the captured
+    // original `value` dict back verbatim, every key, run before the
+    // recording/channel cleanup and independent of whether it succeeds.
+    'tests/dvr/comskip.spec.ts',
   ],
 };
