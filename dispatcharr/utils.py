@@ -72,6 +72,19 @@ SENSITIVE_HEADERS = frozenset(
     }
 )
 
+# request.META keys whose values are whole URLs or query strings, and so carry
+# the Xtream path/query credentials verbatim. Masked through redact_url rather
+# than blanked, because the path itself is the useful part of a request log.
+# Same normalisation as SENSITIVE_HEADERS ("_" to "-", lowercased).
+URL_VALUED_META_KEYS = frozenset(
+    {
+        "path-info",
+        "query-string",
+        "raw-uri",
+        "request-uri",
+    }
+)
+
 # Path segments after which the next two segments are the Xtream username and
 # password. Matched anywhere in the path, because a provider's server URL may
 # carry a sub-path before /live/ (see apps/m3u/tasks.py).
@@ -149,10 +162,12 @@ def _redact_query(query):
 def redact_url(url):
     """Return ``url`` with any embedded credentials replaced by ``***``.
 
-    Masks three carriers: HTTP userinfo, the values of the query parameters
-    named in ``SENSITIVE_QUERY_KEYS``, and the Xtream credential path segments
+    Masks four carriers: HTTP userinfo, the values of the query parameters
+    named in ``SENSITIVE_QUERY_KEYS``, the Xtream credential path segments
     (``/live|movie|series|timeshift/<user>/<pass>/…`` plus the bare
-    ``/<user>/<pass>/<id>`` root route).
+    ``/<user>/<pass>/<id>`` root route), and those same parameter names inside
+    the fragment when the fragment is shaped like a query string (contains an
+    ``=``) — the shape a client-side player uses to carry stream parameters.
 
     A URL with no credentials in it is returned byte-identical — the parsed
     components are only reassembled when something was actually masked, so this
@@ -170,9 +185,15 @@ def redact_url(url):
         netloc = _redact_netloc(parts.netloc)
         path = _redact_path(parts.path)
         query = _redact_query(parts.query)
-        if netloc == parts.netloc and path == parts.path and query == parts.query:
+        fragment = _redact_query(parts.fragment) if "=" in parts.fragment else parts.fragment
+        if (
+            netloc == parts.netloc
+            and path == parts.path
+            and query == parts.query
+            and fragment == parts.fragment
+        ):
             return url
-        return urlunsplit((parts.scheme, netloc, path, query, parts.fragment))
+        return urlunsplit((parts.scheme, netloc, path, query, fragment))
     except Exception:  # noqa: BLE001 - a log call must never raise
         return REDACTED
 
@@ -183,6 +204,14 @@ def redact_headers(headers):
     Accepts any mapping with ``.items()`` — a Django ``HttpHeaders``, a plain
     dict, or ``request.META``. Names in ``SENSITIVE_HEADERS`` get the ``***``
     mask; every other entry is copied through unchanged.
+
+    ``request.META`` needs more than the header set. It also carries the
+    request line in ``PATH_INFO``, ``QUERY_STRING``, ``RAW_URI`` and
+    ``REQUEST_URI``, and on this project those hold the Xtream path and query
+    credentials verbatim — so those four go through ``redact_url`` rather than
+    being copied. Name matching is normalised (``_`` to ``-``, a leading
+    ``http-`` dropped), which is also what makes ``HTTP_AUTHORIZATION`` and
+    friends match their ``Authorization`` header spelling.
 
     Never raises. Anything that is not a mapping yields an empty dict.
     """
@@ -197,10 +226,25 @@ def redact_headers(headers):
             key = str(name).strip().lower().replace("_", "-")
             if key.startswith("http-"):
                 key = key[len("http-"):]
-            sensitive = key in SENSITIVE_HEADERS
-        except Exception:  # noqa: BLE001
-            sensitive = True
-        redacted[name] = REDACTED if sensitive else value
+        except Exception:  # noqa: BLE001 - unusable name, assume the worst
+            redacted[name] = REDACTED
+            continue
+
+        if key in SENSITIVE_HEADERS:
+            redacted[name] = REDACTED
+        elif key == "query-string":
+            if value:
+                # A bare query string is not a URL; give redact_url the "?" it
+                # needs to parse it as one, then take it back off. If redact_url
+                # bailed to the bare mask, keep the mask rather than slicing it.
+                masked = redact_url(f"?{value}")
+                redacted[name] = masked[1:] if masked.startswith("?") else masked
+            else:
+                redacted[name] = value
+        elif key in URL_VALUED_META_KEYS:
+            redacted[name] = redact_url(value)
+        else:
+            redacted[name] = value
     return redacted
 
 

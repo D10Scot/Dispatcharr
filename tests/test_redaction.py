@@ -185,6 +185,17 @@ class RedactUrlExamples(SimpleTestCase):
     def test_empty_string_round_trips(self):
         self.assertEqual(redact_url(""), "")
 
+    def test_query_shaped_fragment_is_masked(self):
+        # Client-side players carry stream parameters after the "#".
+        self.assertEqual(
+            redact_url("http://p.tv/play.html#username=joe&password=hunter2&x=1"),
+            "http://p.tv/play.html#username=***&password=***&x=1",
+        )
+
+    def test_plain_fragment_is_left_alone(self):
+        url = "https://example.com/docs/guide.html#password-reset"
+        self.assertIs(redact_url(url), url)
+
 
 class RedactHeadersTests(SimpleTestCase):
     def test_authorization_and_cookie_are_masked(self):
@@ -223,6 +234,70 @@ class RedactHeadersTests(SimpleTestCase):
         # request.META spelling, which the credential-logging guard also flags.
         out = redact_headers({"HTTP_AUTHORIZATION": "Basic x", "HTTP_HOST": "h"})
         self.assertEqual(out, {"HTTP_AUTHORIZATION": REDACTED, "HTTP_HOST": "h"})
+
+    def test_meta_carries_the_request_line_and_it_is_redacted(self):
+        # The dangerous half of request.META is not the headers: PATH_INFO,
+        # QUERY_STRING, RAW_URI and REQUEST_URI hold the Xtream credentials
+        # verbatim. They are redacted, not blanked — the path is the useful
+        # part of a request log.
+        out = redact_headers(
+            {
+                "PATH_INFO": "/live/joe/hunter2/1.ts",
+                "QUERY_STRING": "username=joe&password=hunter2&type=m3u",
+                "RAW_URI": "/movie/joe/hunter2/2.mkv?token=s3cr3t",
+                "REQUEST_URI": "/series/joe/hunter2/3.mp4",
+                "HTTP_AUTHORIZATION": "Basic am9lOmh1bnRlcjI=",
+                "HTTP_COOKIE": "sessionid=deadbeef",
+                "HTTP_X_API_KEY": "k-12345",
+                "HTTP_PROXY_AUTHORIZATION": "Basic am9lOmh1bnRlcjI=",
+                "REQUEST_METHOD": "GET",
+                "SERVER_PORT": "5656",
+            }
+        )
+        self.assertEqual(
+            out,
+            {
+                "PATH_INFO": "/live/***/***/1.ts",
+                "QUERY_STRING": "username=***&password=***&type=m3u",
+                "RAW_URI": "/movie/***/***/2.mkv?token=***",
+                "REQUEST_URI": "/series/***/***/3.mp4",
+                "HTTP_AUTHORIZATION": REDACTED,
+                "HTTP_COOKIE": REDACTED,
+                "HTTP_X_API_KEY": REDACTED,
+                "HTTP_PROXY_AUTHORIZATION": REDACTED,
+                "REQUEST_METHOD": "GET",
+                "SERVER_PORT": "5656",
+            },
+        )
+        self.assertNotIn("hunter2", str(out))
+        self.assertNotIn("s3cr3t", str(out))
+
+    def test_credential_free_request_line_is_left_alone(self):
+        out = redact_headers(
+            {
+                "PATH_INFO": "/api/channels/",
+                "QUERY_STRING": "page=2&ordering=name",
+                "REQUEST_URI": "",
+            }
+        )
+        self.assertEqual(
+            out,
+            {
+                "PATH_INFO": "/api/channels/",
+                "QUERY_STRING": "page=2&ordering=name",
+                "REQUEST_URI": "",
+            },
+        )
+
+    def test_unparseable_request_line_value_yields_the_mask(self):
+        out = redact_headers({"REQUEST_URI": "http://[::1/live/joe/hunter2/1.ts"})
+        self.assertEqual(out, {"REQUEST_URI": REDACTED})
+
+    def test_non_string_request_line_value_yields_the_mask(self):
+        out = redact_headers({"PATH_INFO": None, "QUERY_STRING": None})
+        # PATH_INFO goes through redact_url (non-string -> mask); an empty
+        # QUERY_STRING is falsy and copied through untouched.
+        self.assertEqual(out, {"PATH_INFO": REDACTED, "QUERY_STRING": None})
 
     def test_returns_a_plain_dict_not_the_input_mapping(self):
         source = {"User-Agent": "VLC/3.0.20"}
