@@ -147,8 +147,8 @@ jobs:
 
       # Tagged exactly as e2e-tests.yml tags it, and as scripts/e2e_up.sh
       # defaults to, so the upgrade job needs no retagging step. One build for
-      # every consumer: docker/Dockerfile:14 uses `npm install` with no
-      # lockfile, so N builds can produce N different frontend bundles.
+      # every consumer, so every job exercises the same artifact rather than
+      # one each job happened to build, and the build cost is paid once.
       - name: Build the image
         run: docker build -f docker/Dockerfile -t dispatcharr-e2e:local .
 
