@@ -7,8 +7,9 @@ name: Frontend Tests
 # workflow* that never triggers reports nothing at all, leaving a required
 # check "Expected" forever and blocking the merge. So the filter moved out of
 # the triggers and into the `changes` job below, which is cheap (~10s) and
-# always runs. Cost on a backend-only or docs-only PR is that one job, not an
-# `npm ci` plus the ~6,128-test vitest suite.
+# always runs. It diffs on push as well as on pull request, so the cost of a
+# backend-only or docs-only change — whether proposed or merged — is that one
+# job, not an `npm ci` plus the ~6,128-test vitest suite.
 on:
   push:
     branches: [main]
@@ -35,26 +36,51 @@ jobs:
       frontend: ${{ steps.filter.outputs.frontend }}
     steps:
       - name: Checkout code
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request' || github.event_name == 'push'
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           persist-credentials: false
           # pull_request checks out the merge commit, whose first parent is
-          # the base branch tip — depth 2 is enough to diff the whole PR.
-          fetch-depth: 2
+          # the base branch tip — depth 2 is enough to diff the whole PR. A
+          # push diffs `github.event.before` against the new head instead, and
+          # that commit is at an unknown depth, so it needs full history.
+          # Written this way round on purpose: `X == 'push' && 0 || 2` would
+          # always yield 2, because GitHub's `||` treats the 0 as falsy.
+          fetch-depth: ${{ github.event_name == 'pull_request' && 2 || 0 }}
 
       - name: Decide whether the frontend suite needs to run
         id: filter
         env:
           EVENT_NAME: ${{ github.event_name }}
+          EVENT_BEFORE: ${{ github.event.before }}
+          HEAD_SHA: ${{ github.sha }}
         run: |
-          # push and workflow_dispatch always run the suite: neither carries a
-          # base to diff against that is worth trusting, and both are rare.
-          if [ "$EVENT_NAME" != "pull_request" ]; then
+          # A manual dispatch runs the suite unconditionally — it is a human
+          # asking, with no diff to consult. Push and pull_request are both
+          # diffed against the same pattern; a merge to main that touches no
+          # frontend path costs this job and nothing else.
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
             echo "frontend=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          changed=$(git diff --name-only HEAD^1 HEAD)
+
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            changed=$(git diff --name-only HEAD^1 HEAD)
+          else
+            # push. Branch creation reports an all-zero `before`, and a force
+            # push can leave it unreachable; in either case there is no range
+            # to read, so run rather than guess.
+            if [ "$EVENT_BEFORE" = "0000000000000000000000000000000000000000" ]; then
+              echo "No previous commit to diff against; running the suite."
+              echo "frontend=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            if ! changed=$(git diff --name-only "$EVENT_BEFORE" "$HEAD_SHA"); then
+              echo "Could not diff the pushed range; running the suite."
+              echo "frontend=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          fi
           printf 'Changed files:\n%s\n' "$changed"
           pattern='^(frontend/|\.github/workflows/frontend-tests\.yml$)'
           if printf '%s\n' "$changed" | grep -qE "$pattern"; then
