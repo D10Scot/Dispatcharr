@@ -219,7 +219,7 @@ def validate_logo_url(logo_url, max_length=2000):
     base64-encoded images embedded in URLs.
     """
     if logo_url and len(logo_url) > max_length:
-        logger.warning(
+        logger.warning(  # credential-logging: ignore - len() of the URL, not the URL
             "Logo URL too long (%s > %s), skipping: %s...",
             len(logo_url),
             max_length,

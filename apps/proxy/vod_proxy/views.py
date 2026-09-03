@@ -462,9 +462,9 @@ def _get_stream_url_from_relation(relation):
                 logger.info("[VOD-URL] Built URL from get_stream_url(): %s", redact_url(url))
                 return url
             else:
-                logger.warning("[VOD-URL] get_stream_url() returned None")  # credential-logging: ignore - names a method, logs no value
+                logger.warning("[VOD-URL] get_stream_url() returned None")
 
-        logger.error("[VOD-URL] Relation has no get_stream_url method or it failed")  # credential-logging: ignore - names a method, logs no value
+        logger.error("[VOD-URL] Relation has no get_stream_url method or it failed")
         return None
     except Exception as e:
         logger.error(f"[VOD-URL] Error getting stream URL from relation: {e}", exc_info=True)
