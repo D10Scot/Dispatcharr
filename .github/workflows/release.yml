@@ -1,74 +1,169 @@
 name: Create Release
 
+# A release is two steps and this workflow commits nothing (ADR 0004):
+#   1. A normal pull request bumps version.py and merges through the Main
+#      ruleset like any other change.
+#   2. This workflow is dispatched manually on main with that same version.
+#      It verifies that every check the Main ruleset requires passed on the
+#      head SHA, tags that SHA, builds, signs, attests and creates the
+#      release. It never writes to a branch.
 on:
   workflow_dispatch:
     inputs:
-      version_type:
-        description: 'Type of version increment'
+      version:
+        description: 'Version to release, with no leading v (e.g. 0.30.0). Must already be __version__ in version.py on main.'
         required: true
-        default: 'patch'
-        type: choice
-        options:
-          - major
-          - minor
-          - patch
+        type: string
 
 # Add explicit permissions for the workflow
 permissions:
   contents: read
 
-# No cancel-in-progress: this workflow commits a version bump, pushes a tag,
-# then builds/pushes images against that tag. Cancelling mid-run could leave
-# a pushed tag with no matching image. Serialize instead of cancelling.
+# No cancel-in-progress: this workflow pushes a tag, then builds/pushes images
+# against that tag. Cancelling mid-run could leave a pushed tag with no
+# matching image. Serialize instead of cancelling.
 concurrency:
   group: release
   cancel-in-progress: false
 
 jobs:
-  prepare:
+  verify:
+    # The whole trust model of a release lives in this job. Nothing here
+    # re-runs a suite: it proves the migration gate already passed on the
+    # exact commit about to be tagged, and refuses otherwise.
     runs-on: ubuntu-24.04
     outputs:
-      new_version: ${{ steps.update_version.outputs.new_version }}
+      version: ${{ inputs.version }}
+      sha: ${{ github.sha }}
       repo_owner: ${{ steps.meta.outputs.repo_owner }}
       repo_name: ${{ steps.meta.outputs.repo_name }}
       timestamp: ${{ steps.timestamp.outputs.timestamp }}
       base_image: ${{ steps.base.outputs.image }}
     permissions:
-      contents: write
+      contents: read
+      checks: read # list check runs for the head SHA
     steps:
-      # persist-credentials stays on here alone: this job commits the version
-      # bump and pushes it with tags (see "Commit and tag" below), so it needs
-      # the credential the other ten checkouts in this repo drop. It uploads no
-      # artifacts, which is the leak artipacked actually guards against.
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0 # zizmor: ignore[artipacked]
+      - name: Refuse a dispatch from anything but main
+        # Deliberately a failing step and not a job-level `if:`: a skipped job
+        # reports success, and "the release quietly did nothing" is exactly
+        # the outcome this gate exists to prevent.
+        env:
+          REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          if [ "${REF}" != "refs/heads/main" ]; then
+            echo "::error::a release can only be dispatched on main; this run is on ${REF}"
+            exit 1
+          fi
+          echo "ref is ${REF}"
+
+      # Pinned to github.sha rather than the moving `main` tip: this is the
+      # commit whose checks are verified below, the commit the tag job tags,
+      # and the commit every build checks out. Reading version.py from `main`
+      # instead would read a different tree if main advanced mid-run.
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
-          fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
+          persist-credentials: false
+          fetch-depth: 1
+          ref: ${{ github.sha }}
+
+      - name: Check version.py matches the requested version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          case "${INPUT_VERSION}" in
+            [0-9]*.[0-9]*.[0-9]*) ;;
+            *)
+              echo "::error::version input \"${INPUT_VERSION}\" is not MAJOR.MINOR.PATCH with no leading v"
+              exit 1
+              ;;
+          esac
+          FILE_VERSION=$(python3 -c 'import version; print(version.__version__)')
+          if [ "${FILE_VERSION}" != "${INPUT_VERSION}" ]; then
+            echo "::error::version.py at ${SHA} is ${FILE_VERSION}, but this dispatch asked for ${INPUT_VERSION}; merge a version bump pull request first"
+            exit 1
+          fi
+          echo "version.py is ${FILE_VERSION}"
+
+      - name: Check the tag does not already exist
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          if git ls-remote --tags origin "refs/tags/v${INPUT_VERSION}" | grep -q .; then
+            echo "::error::tag v${INPUT_VERSION} already exists on origin; a release is never re-cut over an existing tag"
+            exit 1
+          fi
+          echo "tag v${INPUT_VERSION} is free"
+
+      - name: Read the required checks from the Main ruleset
+        # Read at run time, never hard-coded: the release and the merge gate
+        # must be the same list seen from two sides. Adding a required check
+        # to the ruleset tightens the release with no edit here.
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          CONTEXTS="${RUNNER_TEMP}/required-contexts.txt"
+          gh api "repos/${REPOSITORY}/rulesets/21229979" \
+            --jq '.rules[] | select(.type=="required_status_checks") | .parameters.required_status_checks[].context' \
+            > "${CONTEXTS}"
+          if [ ! -s "${CONTEXTS}" ]; then
+            echo "::error::the Main ruleset (21229979) lists no required status checks; refusing to release against an empty gate"
+            exit 1
+          fi
+          echo "required checks:"
+          cat "${CONTEXTS}"
+
+      - name: Require every ruleset check to have succeeded on this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          CONTEXTS="${RUNNER_TEMP}/required-contexts.txt"
+          RUNS="${RUNNER_TEMP}/check-runs.jsonl"
+
+          # A push to main produces these check runs under the push workflows;
+          # the aggregate job names ("E2E result" and friends) are the
+          # check-run names the ruleset lists as contexts.
+          gh api "repos/${REPOSITORY}/commits/${SHA}/check-runs?per_page=100" --paginate \
+            --jq '.check_runs[] | {name: .name, conclusion: .conclusion, started_at: .started_at, id: .id}' \
+            > "${RUNS}"
+
+          FAILED=0
+          while IFS= read -r CONTEXT; do
+            [ -n "${CONTEXT}" ] || continue
+            # Most recent run wins: re-running a failed aggregate is what makes
+            # a commit releasable, so only the latest attempt counts.
+            STATE=$(jq -rs --arg name "${CONTEXT}" '
+              [ .[] | select(.name == $name) ]
+              | sort_by(.started_at, .id)
+              | last
+              | if . == null then "absent" else (.conclusion // "still running") end
+            ' "${RUNS}")
+            if [ "${STATE}" = "success" ]; then
+              echo "ok       ${CONTEXT}"
+            else
+              echo "::error::required check \"${CONTEXT}\" is ${STATE} on ${SHA}, expected success"
+              FAILED=1
+            fi
+          done < "${CONTEXTS}"
+
+          if [ "${FAILED}" -ne 0 ]; then
+            echo "::error::the Main ruleset gate did not pass on ${SHA}; nothing is tagged or built"
+            exit 1
+          fi
+          echo "every required check succeeded on ${SHA}"
 
       - name: Set up Docker Buildx
         # Needed for "Resolve base image digest" below (docker buildx
         # imagetools inspect) — this job otherwise never touches Docker.
         uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
-
-      - name: Configure Git
-        run: |
-          git config user.name "GitHub Actions"
-          git config user.email "actions@github.com"
-
-      - name: Update Version
-        id: update_version
-        env:
-          INPUT_VERSION_TYPE: ${{ github.event.inputs.version_type }}
-        run: |
-          python scripts/bump_version.py "${INPUT_VERSION_TYPE}"
-          NEW_VERSION=$(python -c "import version; print(f'{version.__version__}')")
-          echo "new_version=${NEW_VERSION}" >> $GITHUB_OUTPUT
-
-      - name: Update Changelog
-        env:
-          UPDATED_VERSION: ${{ steps.update_version.outputs.new_version }}
-        run: |
-          python scripts/update_changelog.py "${UPDATED_VERSION}"
 
       - name: Set repository metadata
         id: meta
@@ -89,12 +184,12 @@ jobs:
           echo "timestamp=${TIMESTAMP}" >> $GITHUB_OUTPUT
 
       - name: Resolve base image digest
-        # Resolved exactly once, here in `prepare`, not inside the matrix
+        # Resolved exactly once, here in `verify`, not inside the matrix
         # job below: the matrix runs amd64 and arm64 as separate jobs on
         # separate runners that can start minutes apart, so resolving
         # per-leg (the previous version of this step) could let ":base"
         # move between them and hand each arch a different base. Every
-        # matrix leg now reads the same needs.prepare.outputs.base_image.
+        # matrix leg now reads the same needs.verify.outputs.base_image.
         id: base
         env:
           REPO_OWNER: ${{ steps.meta.outputs.repo_owner }}
@@ -104,17 +199,43 @@ jobs:
           DIGEST=$(docker buildx imagetools inspect "ghcr.io/${REPO_OWNER}/${REPO_NAME}:base" --format '{{json .Manifest}}' | jq -r .digest)
           echo "image=ghcr.io/${REPO_OWNER}/${REPO_NAME}@${DIGEST}" >> "$GITHUB_OUTPUT"
 
-      - name: Commit and Tag
+  tag:
+    # The only job in this workflow that writes to the repository, and it
+    # writes exactly one ref. There is deliberately no checkout here: the tag
+    # is created through the API, so no job in this workflow ever holds a git
+    # credential on disk and the file needs no persist-credentials exception.
+    needs: [verify]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Create the annotated release tag
         env:
-          UPDATED_VERSION: ${{ steps.update_version.outputs.new_version }}
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          VERSION: ${{ needs.verify.outputs.version }}
+          SHA: ${{ needs.verify.outputs.sha }}
         run: |
-          git add version.py CHANGELOG.md
-          git commit -m "Release v${UPDATED_VERSION}"
-          git tag -a "v${UPDATED_VERSION}" -m "Release v${UPDATED_VERSION}"
-          git push origin main --tags
+          set -euo pipefail
+          TAG_SHA=$(gh api "repos/${REPOSITORY}/git/tags" \
+            --method POST \
+            -f "tag=v${VERSION}" \
+            -f "message=Release v${VERSION}" \
+            -f "object=${SHA}" \
+            -f "type=commit" \
+            --jq '.sha')
+          gh api "repos/${REPOSITORY}/git/refs" \
+            --method POST \
+            -f "ref=refs/tags/v${VERSION}" \
+            -f "sha=${TAG_SHA}" \
+            --jq '.ref'
+          echo "tagged ${SHA} as v${VERSION}"
 
   docker:
-    needs: [prepare]
+    # Needs `tag` as well as `verify` so a failure to tag never leaves
+    # published :latest and :<version> images with no tag or release behind
+    # them — the same ordering the old tag-then-build job had.
+    needs: [verify, tag]
     strategy:
       fail-fast: false
       matrix:
@@ -134,7 +255,7 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
-          ref: main
+          ref: ${{ needs.verify.outputs.sha }}
 
       - name: Configure Git
         run: |
@@ -156,21 +277,21 @@ jobs:
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
           images: |
-            ghcr.io/${{ needs.prepare.outputs.repo_owner }}/${{ needs.prepare.outputs.repo_name }}
+            ghcr.io/${{ needs.verify.outputs.repo_owner }}/${{ needs.verify.outputs.repo_name }}
           labels: |
-            org.opencontainers.image.title=${{ needs.prepare.outputs.repo_name }}
+            org.opencontainers.image.title=${{ needs.verify.outputs.repo_name }}
             org.opencontainers.image.description=Your ultimate IPTV & stream Management companion.
             org.opencontainers.image.url=https://github.com/${{ github.repository }}
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
-            org.opencontainers.image.version=${{ needs.prepare.outputs.new_version }}
-            org.opencontainers.image.created=${{ needs.prepare.outputs.timestamp }}
+            org.opencontainers.image.version=${{ needs.verify.outputs.version }}
+            org.opencontainers.image.created=${{ needs.verify.outputs.timestamp }}
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.licenses=See repository
             org.opencontainers.image.documentation=https://dispatcharr.github.io/Dispatcharr-Docs/
-            org.opencontainers.image.vendor=${{ needs.prepare.outputs.repo_owner }}
+            org.opencontainers.image.vendor=${{ needs.verify.outputs.repo_owner }}
             org.opencontainers.image.authors=${{ github.actor }}
             maintainer=${{ github.actor }}
-            build_version=Dispatcharr version: ${{ needs.prepare.outputs.new_version }} Build date: ${{ needs.prepare.outputs.timestamp }}
+            build_version=Dispatcharr version: ${{ needs.verify.outputs.version }} Build date: ${{ needs.verify.outputs.timestamp }}
 
       - name: Build and push Docker image
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
@@ -179,17 +300,17 @@ jobs:
           push: true
           platforms: linux/${{ matrix.platform }}
           tags: |
-            ghcr.io/${{ needs.prepare.outputs.repo_owner }}/${{ needs.prepare.outputs.repo_name }}:latest-${{ matrix.platform }}
-            ghcr.io/${{ needs.prepare.outputs.repo_owner }}/${{ needs.prepare.outputs.repo_name }}:${{ needs.prepare.outputs.new_version }}-${{ matrix.platform }}
+            ghcr.io/${{ needs.verify.outputs.repo_owner }}/${{ needs.verify.outputs.repo_name }}:latest-${{ matrix.platform }}
+            ghcr.io/${{ needs.verify.outputs.repo_owner }}/${{ needs.verify.outputs.repo_name }}:${{ needs.verify.outputs.version }}-${{ matrix.platform }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
-            BASE_IMAGE=${{ needs.prepare.outputs.base_image }}
+            BASE_IMAGE=${{ needs.verify.outputs.base_image }}
             BRANCH=${{ github.ref_name }}
             REPO_URL=https://github.com/${{ github.repository }}
           file: ./docker/Dockerfile
 
   create-manifest:
-    needs: [prepare, docker]
+    needs: [verify, docker]
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -207,10 +328,10 @@ jobs:
 
       - name: Create multi-arch manifest tags
         env:
-          PREP_REPO_OWNER: ${{ needs.prepare.outputs.repo_owner }}
-          PREP_REPO_NAME: ${{ needs.prepare.outputs.repo_name }}
-          PREP_NEW_VERSION: ${{ needs.prepare.outputs.new_version }}
-          PREP_TIMESTAMP: ${{ needs.prepare.outputs.timestamp }}
+          PREP_REPO_OWNER: ${{ needs.verify.outputs.repo_owner }}
+          PREP_REPO_NAME: ${{ needs.verify.outputs.repo_name }}
+          PREP_NEW_VERSION: ${{ needs.verify.outputs.version }}
+          PREP_TIMESTAMP: ${{ needs.verify.outputs.timestamp }}
           REPOSITORY: ${{ github.repository }}
           COMMIT_SHA: ${{ github.sha }}
           ACTOR: ${{ github.actor }}
@@ -247,7 +368,7 @@ jobs:
     # Deliberately its own job — the only one in this workflow with
     # id-token/attestations write, so auditing "what can sign a release"
     # means reading this one job, not cross-referencing several.
-    needs: [prepare, create-manifest]
+    needs: [verify, create-manifest]
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -266,9 +387,9 @@ jobs:
       - name: Resolve published digest
         id: resolved
         env:
-          PREP_REPO_OWNER: ${{ needs.prepare.outputs.repo_owner }}
-          PREP_REPO_NAME: ${{ needs.prepare.outputs.repo_name }}
-          PREP_NEW_VERSION: ${{ needs.prepare.outputs.new_version }}
+          PREP_REPO_OWNER: ${{ needs.verify.outputs.repo_owner }}
+          PREP_REPO_NAME: ${{ needs.verify.outputs.repo_name }}
+          PREP_NEW_VERSION: ${{ needs.verify.outputs.version }}
         run: |
           set -euo pipefail
           IMAGE="ghcr.io/${PREP_REPO_OWNER}/${PREP_REPO_NAME}"
@@ -326,7 +447,7 @@ jobs:
           push-to-registry: true
 
   create-release:
-    needs: [prepare, create-manifest, sign-and-attest]
+    needs: [verify, tag, create-manifest, sign-and-attest]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -335,12 +456,12 @@ jobs:
       # from an existing tag" with no assets and no body, which gh does natively
       # (draft and prerelease both default to false), so this drops a
       # third-party action from the release path. The tag already exists: the
-      # prepare job pushes it before this job runs.
+      # tag job creates it before this job runs.
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPOSITORY: ${{ github.repository }}
-          VERSION: ${{ needs.prepare.outputs.new_version }}
+          VERSION: ${{ needs.verify.outputs.version }}
         run: |
           set -euo pipefail
           gh release create "v${VERSION}" \
