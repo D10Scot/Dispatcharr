@@ -107,17 +107,21 @@ at higher concurrency either.
 
 **The set of specs allowed to reach for grey-box Redis access is a checked
 allowlist, not a comment asking politely.** `e2e/fixtures/greybox/redis.ts`
-exports `GREYBOX_ALLOWLIST`, and
-`e2e/tests/streaming-greybox/quarantine.spec.ts` walks every `.ts` file under
-`e2e/`, greps each for an import of `greybox/redis`, and asserts the set it
-finds matches the allowlist exactly — in either direction: a new grey-box
-import that isn't listed fails the meta-test, and a stale allowlist entry for
-a file that no longer imports it fails the same way. That is what happened
-when G4's ownership-lease flagship (`ownership-lease.spec.ts`) was deleted as
-an unprovable gap (see `COVERAGE.md`'s Streaming/G4 rows) — its allowlist
-entry had to go with it, or `quarantine.spec.ts` would fail on a name that no
-longer exists. A convention written down in this file would rot silently the
-same way; this one fails CI instead.
+is the sanctioned way a test reaches Redis, and `e2e/tests/guards/allowlist.ts`
+exports the `GREYBOX_REDIS` capability naming every file allowed to import
+it. `e2e/tests/guards/capabilities.spec.ts` parses every spec under `e2e/`
+(AST, not a grep) and asserts the files that actually import `greybox/redis`
+match that list exactly — in either direction: a new grey-box import that
+isn't listed fails the check, and a stale allowlist entry for a file that no
+longer imports it fails the same way. That is what happened when G4's
+ownership-lease flagship (`ownership-lease.spec.ts`) was deleted as an
+unprovable gap (see `COVERAGE.md`'s Streaming/G4 rows) — its allowlist entry
+had to go with it, or `capabilities.spec.ts` would fail on a name that no
+longer exists. `capabilities.spec.ts` also polices three sibling
+capabilities the original `quarantine.spec.ts` did not — container
+lifecycle, subprocess execution and container introspection — for the same
+reason: a convention written down in this file would rot silently; a
+checked allowlist fails CI instead.
 
 `pristine` deliberately has no `bootstrap` dependency — it needs the
 superuser *not* to exist yet, which is the entire point of that project, and
@@ -784,13 +788,13 @@ leaves an enabled hourly beat task behind. The scheduling step has no
 `if: always()` deliberately — after a failed restore the container is in an
 unknown state and a scheduling failure read off it would be uninterpretable.
 
-`Lifecycle result` is **not** in the Main ruleset yet. G12 has taken both bash
-suites to green in CI — `test-puid-pgid.sh` at 135 passed / 0 failed / 1
-skipped (`readonly_rootfs`, which needs more tmpfs mounts and is expected) and
-`test-tls-postgres.sh` at 33 passed / 0 failed — so the reason not to add it
-is gone, but a ruleset is a repository setting rather than a file in the
-diff. **Adding it is the maintainer's follow-up.** Until that happens, a green
-`Lifecycle result` is a signal, not a gate.
+`Lifecycle result` **is** in the Main ruleset. G12 took both bash suites to
+green in CI — `test-puid-pgid.sh` at 135 passed / 0 failed / 1 skipped
+(`readonly_rootfs`, which needs more tmpfs mounts and is expected) and
+`test-tls-postgres.sh` at 33 passed / 0 failed — and the maintainer's
+follow-up landed: the live ruleset requires `Lifecycle result` on every PR,
+the same way it requires `E2E result`, `Backend result` and `Frontend
+result`. A green `Lifecycle result` is a gate, not just a signal.
 
 Both bash suites need **bash 4.4+** to run. Stock macOS `/bin/bash` is
 3.2.57, where expanding an empty array under `set -u` is an unbound-variable

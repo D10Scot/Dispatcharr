@@ -96,9 +96,14 @@ retag task.
   rule; the guard enforces it.
 - Goals G12–G15 tag their own tests as they add them, rather than a second
   retag later.
-- Anything on a `tests/guards/allowlist.ts` capability list is
-  `@characterization` by construction — those are the calls that stop meaning
-  anything once the relay is its own process.
+- Anything on a `tests/guards/allowlist.ts` capability list is normally
+  `@characterization` — those are the calls that stop meaning anything once
+  the relay is its own process. The one exception documents itself in-file:
+  `tests/streaming-greybox/nginx-stream-buffering.spec.ts` is `SUBPROCESS`-listed
+  for its `docker exec ... nginx -T` mechanism but tagged `@contract`, because
+  what it pins (the `uwsgi_buffering` directive) is a load-bearing deploy
+  fact meant to survive the split, not an artifact of the current
+  single-process shape.
 - **A third tag is out of scope.** `@slow`, `@flaky` and per-area tags were
   considered and rejected: two tags with a stated default is a contract, and
   more tags is a taxonomy nobody maintains. The guard rejects any test carrying

@@ -59,6 +59,9 @@ export const SUBPROCESS: Capability = {
     // Counts `ffmpeg` processes with `pgrep -x` to prove Output Profile
     // sharing — a container-wide observable with no client-facing equivalent.
     'tests/streaming-greybox/output-profile-sharing.spec.ts',
+    // Reads the resolved nginx config with `docker exec ... nginx -T` to pin
+    // uwsgi_buffering off on the /proxy/ location.
+    'tests/streaming-greybox/nginx-stream-buffering.spec.ts',
   ],
 };
 
