@@ -1,11 +1,14 @@
 ---
-description: Review every non-draft pull request with Kimi K3 and leave inline comments; the Main ruleset requires this job and resolution of every thread before merge.
+description: Review each non-draft pull request once with Kimi K3 and leave inline comments; later pushes skip the agent. The Main ruleset requires this job and resolution of every thread before merge.
 emoji: 🔍
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
   stop-after: "+90d"
 # Drafts are skipped; ready_for_review re-triggers when the author flips it.
+# synchronize stays in the trigger list so the required `agent` / `safe_outputs`
+# checks are reported on every head SHA — the `prior-review` job below is what
+# makes the *review itself* happen once per PR.
 if: github.event.pull_request.draft == false
 permissions:
   contents: read
@@ -70,6 +73,48 @@ steps:
       open(".pr-review/pr.annotated.diff", "w", encoding="utf-8").write("\n".join(out) + "\n")
       PY
       wc -l .pr-review/pr.diff .pr-review/pr.annotated.diff
+jobs:
+  # One review per pull request. The flow is: push → one review → fixes → merge.
+  # Re-reviewing every fix push produced an endless review → fix → review loop,
+  # so this job looks for a review this workflow already left (posted by
+  # github-actions[bot] from the safe_outputs job, always carrying a
+  # `Verdict:` line) and, if one exists, the agent job is skipped. A skipped
+  # `agent` skips `safe_outputs` too, and both then satisfy the ruleset's
+  # required checks on the new head; merge stays gated on thread resolution.
+  # A cancelled or failed first run leaves no review, so the next push retries.
+  prior-review:
+    runs-on: ubuntu-slim
+    permissions:
+      pull-requests: read
+    outputs:
+      found: ${{ steps.check.outputs.found }}
+    steps:
+      - name: Look for an existing review from this workflow
+        id: check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          # If the API call fails, fall toward reviewing: a wasted review beats a
+          # PR that silently never gets one.
+          if ! ids=$(gh api "repos/$REPO/pulls/$PR_NUMBER/reviews" --paginate \
+              --jq '.[] | select(.user.login == "github-actions[bot]" and (.body | contains("Verdict:"))) | .id'); then
+            echo "::warning::Could not list reviews on PR #$PR_NUMBER; reviewing anyway."
+            ids=""
+          fi
+          count=$(printf '%s\n' "$ids" | grep -c . || true)
+          if [ "$count" -gt 0 ]; then
+            echo "found=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::PR #$PR_NUMBER already has $count review(s) from this workflow; skipping the agent (one review per PR)."
+          else
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            echo "No prior review on PR #$PR_NUMBER; the agent will review this head."
+          fi
+  agent:
+    needs: [prior-review]
+    if: needs.prior-review.outputs.found != 'true'
 safe-outputs:
   create-pull-request-review-comment:
     max: 15
