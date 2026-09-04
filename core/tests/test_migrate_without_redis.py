@@ -1,7 +1,8 @@
 """Fresh-install migrate must not require Redis (AIO boot order).
 
-In AIO, ``manage.py migrate`` runs in the entrypoint before uWSGI starts
-Redis via ``attach-daemon``. Any data migration that hard-requires Redis
+In AIO, ``manage.py migrate`` runs in the entrypoint before supervisord —
+and therefore before Redis — starts at all. Any data migration that
+hard-requires Redis
 leaves a partially migrated DB and a boot loop (see m3u.0003 / CoreSettings
 group cache).
 
