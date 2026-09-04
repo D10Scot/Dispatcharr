@@ -10,6 +10,7 @@ docker/DockerfileAIO
 docker/Dockerfile DEV
 static/
 data/
+!/metrics/build/tests/fixtures/data/
 .next
 next-env.d.ts
 media/

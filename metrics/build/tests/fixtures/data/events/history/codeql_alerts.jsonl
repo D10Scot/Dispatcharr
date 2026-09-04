@@ -1,0 +1,2 @@
+{"id": 9, "seen_at": "2026-08-25T06:00:00+00:00", "record": {"id": 9, "state": "open", "created_at": "2026-08-24T00:00:00Z", "fixed_at": null, "dismissed_at": null, "dismissed_reason": null, "rule_id": "js/insecure-randomness", "severity": "high", "tool": "CodeQL", "path": "d.js"}}
+{"id": 1, "seen_at": "2026-08-25T06:00:00+00:00", "record": {"id": 1, "state": "open", "created_at": "2026-08-23T16:00:00Z", "fixed_at": null, "dismissed_at": null, "dismissed_reason": null, "rule_id": "py/full-ssrf", "severity": "high", "tool": "CodeQL", "path": "a.py"}}

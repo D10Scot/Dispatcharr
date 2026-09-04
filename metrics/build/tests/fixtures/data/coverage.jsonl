@@ -1,0 +1,1 @@
+{"commit_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "family": "coverage", "metrics": {"backend_line_pct": 45.6, "backend_by_app": {"apps.proxy": 38.5}, "backend_status": "ok", "backend_failed_labels": [], "frontend_line_pct": 71.9, "frontend_status": "ok"}, "timestamp": "2026-09-05T06:30:00+00:00"}
