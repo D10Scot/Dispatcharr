@@ -18,6 +18,8 @@ Verified at `fd413f0c` (v0.29.0); line numbers drift.
 
 **Isolation for new work.** Anything large (multi-file, unattended, or a `/goal`) gets its own worktree + branch off `main` — keeps this checkout free and test-hook container state from crossing streams. A small change (one file / few lines) can go on a new branch in this checkout.
 
+**Delegation for phase work.** Every phase task (Phase 0–3 specs, plans and their PRs) is executed by subagents, not in the main session. Start each task on `sonnet`; escalate that task to `opus` when it is stuck or its output falls short. A separate `fable` subagent reviews every worker's output against the spec; the orchestrator relays its findings back to the worker for fixes until the reviewer passes it — nothing lands unreviewed. The orchestrator itself neither implements nor reviews: its context window is reserved for coordination.
+
 ## Commands
 
 ```bash
