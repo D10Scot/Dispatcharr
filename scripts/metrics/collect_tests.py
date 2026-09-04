@@ -14,11 +14,13 @@ Counts of tests as written (not as run — no suite execution here):
   backend test files.
 - coverage_md_rows: ``{"done": n, "known_bug": n, "todo": n}``, the Status
   column of ``e2e/COVERAGE.md``'s table rows (the shared e2e worklist).
-- frontend_coverage_pct: NOT set by this script. On schedule runs only, the
-  metrics workflow runs `vitest run --coverage` separately and merges the
-  number in afterwards via `collect_all.py --extra-metrics tests=<path>`
-  (see metrics.yml) — keeping this collector itself cheap/backfillable per
-  the reasoning below. Absent on push-triggered runs.
+
+Frontend coverage is NOT this script's concern: it is its own ``coverage``
+family, produced by the metrics workflow's separate `coverage` job (real
+backend + frontend suite runs under coverage, summarised by
+`coverage_summary.py` and merged in via `collect_all.py --extra-metrics
+coverage=<path>` — see metrics.yml). Keeping it out of this collector is what
+lets `tests` stay cheap and backfillable per the reasoning below.
 
 Backend test counting excludes the top-level ``e2e``, ``e2e-upstream``,
 ``frontend``, ``metrics``, ``scripts`` and ``dashboard`` directories — the

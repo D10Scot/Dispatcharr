@@ -1,4 +1,6 @@
+import datetime as dt
 import json
+import re
 import subprocess
 import sys
 import tempfile
@@ -50,11 +52,31 @@ def responses():
     }
 
 
-def run(env, out, kinds):
+def run(env, out, kinds, extra_args=()):
     return subprocess.run(
-        [sys.executable, str(SCRIPT), "--repo", "o/r", "--out-dir", str(out), "--kinds", kinds, "--no-scorecard"],
+        [sys.executable, str(SCRIPT), "--repo", "o/r", "--out-dir", str(out), "--kinds", kinds,
+         "--no-scorecard", *extra_args],
         env=env, capture_output=True, text=True, check=False,
     )
+
+
+def windows(runs_since_days: int) -> list[tuple[dt.date, dt.date]]:
+    """Mirror fetch_workflow_runs' own window computation so a test can build
+    the exact `created=A..B` query keys the fetcher will request, whatever
+    day the test happens to run on."""
+    since_date = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=runs_since_days)).date()
+    today = dt.datetime.now(dt.timezone.utc).date()
+    out = []
+    start = since_date
+    while start <= today:
+        end = min(start + dt.timedelta(days=6), today)
+        out.append((start, end))
+        start = end + dt.timedelta(days=1)
+    return out
+
+
+def runs_query_key(start: dt.date, end: dt.date) -> str:
+    return f"/repos/o/r/actions/runs?created={start.isoformat()}..{end.isoformat()}&per_page=100"
 
 
 def read(out, kind):
@@ -167,6 +189,79 @@ class CollectEventsTests(unittest.TestCase):
             run(env, out, "codeql_alerts"); run(env, out, "codeql_alerts")
             lines = (out / "events" / "history" / "codeql_alerts.jsonl").read_text().splitlines()
             self.assertEqual(len(lines), 1)
+
+    def test_workflow_runs_windows_union_by_id_later_window_wins(self):
+        # --runs-since-days 8 always produces exactly two 7-day-or-shorter
+        # windows (see windows()): the fetcher must union both, dedupe the id
+        # that appears in both, and keep the later window's copy.
+        (w0, w1) = windows(8)
+        run_only_in_w0 = {"id": 101, "name": "E2E", "event": "push", "status": "completed",
+                           "conclusion": "success", "created_at": "2026-08-20T00:00:00Z",
+                           "updated_at": "2026-08-20T00:05:00Z", "run_started_at": "2026-08-20T00:00:10Z",
+                           "head_sha": "sha-101"}
+        overlap_old = {"id": 202, "name": "Backend", "event": "push", "status": "completed",
+                       "conclusion": "failure", "created_at": "2026-08-20T01:00:00Z",
+                       "updated_at": "2026-08-20T01:05:00Z", "run_started_at": "2026-08-20T01:00:10Z",
+                       "head_sha": "sha-old"}
+        overlap_new = dict(overlap_old, conclusion="success", head_sha="sha-new",
+                            updated_at="2026-08-27T01:05:00Z")
+        run_only_in_w1 = {"id": 303, "name": "Frontend", "event": "push", "status": "completed",
+                           "conclusion": "success", "created_at": "2026-08-27T02:00:00Z",
+                           "updated_at": "2026-08-27T02:05:00Z", "run_started_at": "2026-08-27T02:00:10Z",
+                           "head_sha": "sha-303"}
+        with tempfile.TemporaryDirectory() as tmp:
+            resp = responses()
+            del resp["/repos/o/r/actions/runs"]
+            resp[runs_query_key(*w0)] = {"pages": [{"total_count": 2, "workflow_runs": [run_only_in_w0, overlap_old]}]}
+            resp[runs_query_key(*w1)] = {"pages": [{"total_count": 2, "workflow_runs": [overlap_new, run_only_in_w1]}]}
+            env = fake_gh_env(tmp, resp)
+            out = Path(tmp) / "data"
+            r = run(env, out, "workflow_runs", extra_args=("--runs-since-days", "8"))
+            self.assertEqual(r.returncode, 0, r.stderr)
+            dump = read(out, "workflow_runs")
+            self.assertEqual(dump["status"], "ok")
+            recs = {rec["id"]: rec for rec in dump["records"]}
+            self.assertEqual(sorted(recs), [101, 202, 303])
+            self.assertEqual(recs[202]["conclusion"], "success", "later window's copy must win the merge")
+            self.assertEqual(recs[202]["head_sha"], "sha-new")
+
+    def test_workflow_runs_window_hitting_the_1000_cap_is_reported(self):
+        (w0,) = windows(1)  # a 1-day lookback is always a single window
+        capped = [
+            {"id": i, "name": "E2E", "event": "push", "status": "completed", "conclusion": "success",
+             "created_at": "2026-08-20T00:00:00Z", "updated_at": "2026-08-20T00:05:00Z",
+             "run_started_at": "2026-08-20T00:00:10Z", "head_sha": f"sha-{i}"}
+            for i in range(1000)
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            resp = responses()
+            del resp["/repos/o/r/actions/runs"]
+            resp[runs_query_key(*w0)] = {"pages": [{"total_count": 1000, "workflow_runs": capped}]}
+            env = fake_gh_env(tmp, resp)
+            out = Path(tmp) / "data"
+            r = run(env, out, "workflow_runs", extra_args=("--runs-since-days", "1"))
+            self.assertEqual(r.returncode, 0, r.stderr)
+            dump = read(out, "workflow_runs")
+            self.assertEqual(dump["status"], "ok")
+            self.assertEqual(len(dump["records"]), 1000)
+            self.assertIn("1000-record listing cap", dump["detail"])
+            self.assertIn(f"{w0[0].isoformat()}..{w0[1].isoformat()}", dump["detail"])
+
+    def test_workflow_runs_calls_carry_windowed_created_param(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            env = fake_gh_env(tmp, responses(), log=True)
+            out = Path(tmp) / "data"
+            r = run(env, out, "workflow_runs", extra_args=("--runs-since-days", "8"))
+            self.assertEqual(r.returncode, 0, r.stderr)
+            runs_calls = [c for c in calls(env) if any("/actions/runs" in a for a in c)]
+            created_params = []
+            for call in runs_calls:
+                arg = next(a for a in call if "/actions/runs" in a)
+                match = re.search(r"created=(\d{4}-\d{2}-\d{2})\.\.(\d{4}-\d{2}-\d{2})", arg)
+                self.assertIsNotNone(match, f"no created=A..B param in {arg!r}")
+                created_params.append(match.group(0))
+            self.assertEqual(len(runs_calls), 2, "8-day lookback must produce exactly two windowed calls")
+            self.assertEqual(len(set(created_params)), 2, "each window must carry its own distinct created range")
 
 
 if __name__ == "__main__":

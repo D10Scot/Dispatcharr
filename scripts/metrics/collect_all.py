@@ -80,10 +80,10 @@ def main() -> int:
         metavar="FAMILY=PATH",
         help="Merge additional key/value pairs from a JSON file into a "
         "family's metrics dict before writing (e.g. "
-        "'coverage=/tmp/coverage.json' to supply the external `coverage` "
-        "family's metrics, or 'tests=/tmp/frontend-coverage.json' to fold "
-        "in a weekly-only vitest coverage number without collect_tests.py "
-        "itself executing the suite). Repeatable.",
+        "'coverage=/tmp/coverage-row.json' to supply the external `coverage` "
+        "family's metrics, produced by coverage_summary.py from a real "
+        "backend + frontend suite run under coverage — see metrics.yml's "
+        "coverage job). Repeatable.",
     )
     parser.add_argument(
         "--commit-sha",

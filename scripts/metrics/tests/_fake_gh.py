@@ -6,7 +6,11 @@ out of scope: the shim exits 64 on any other invocation so a test that reaches
 a real `gh` subcommand fails loudly rather than hitting the network.
 
 responses: { "<path-prefix>": <one page> | {"pages": [<page>, ...]} | {"error": "HTTP 403: nope"} }
-The longest matching prefix wins. A request for a path with no match exits 64.
+An exact match against the full requested path (query string included) wins
+first, letting a test give two calls to the same endpoint with different
+query parameters (e.g. windowed `created=A..B` pagination) distinct
+responses; otherwise the longest key that is a prefix of the path *without*
+its query string wins. A request for a path with no match exits 64.
 """
 
 from __future__ import annotations
@@ -30,7 +34,10 @@ log = os.environ.get("FAKE_GH_LOG")
 if log:
     with open(log, "a") as f:
         f.write(json.dumps(args) + "\\n")
-match = max((k for k in responses if path is not None and path.split("?")[0].startswith(k)), key=len, default=None)
+if path in responses:
+    match = path
+else:
+    match = max((k for k in responses if path is not None and path.split("?")[0].startswith(k)), key=len, default=None)
 if match is None:
     sys.stderr.write("fake gh: no response for %s\\n" % path)
     sys.exit(64)

@@ -27,6 +27,12 @@ projection or fetcher, not an API outcome: it propagates out of collect_kind
 (no file is written for that kind, avoiding a silent bad-data row) and
 main() turns it into a nonzero exit so the run fails visibly instead of
 being recorded as data.
+
+A third, non-fatal case: ``workflow_runs`` paginates GitHub's `/actions/runs`
+listing in 7-day windows because the endpoint truncates at a 1,000-record
+ceiling per query. If a single window itself hits that ceiling, the kind is
+still "ok" (every other window's records did arrive) but ``detail`` names the
+window, so the gap is visible in the dump rather than silently dropped.
 """
 
 from __future__ import annotations
@@ -218,10 +224,31 @@ def fetch_pull_requests(repo: str, sidecar: Sidecar, opts) -> list[dict]:
     return out
 
 
-def fetch_workflow_runs(repo: str, sidecar: Sidecar, opts) -> list[dict]:
-    since = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=opts.runs_since_days)).strftime("%Y-%m-%d")
-    runs = gh_api(repo, "/actions/runs", {"created": f">={since}", "per_page": "100"}, list_key="workflow_runs")
-    return [project_run(r) for r in runs]
+def fetch_workflow_runs(repo: str, sidecar: Sidecar, opts) -> tuple[list[dict], str | None]:
+    """`/actions/runs` listing (with `created=>=since`) silently truncates at
+    GitHub's 1,000-record ceiling — this repo already has 1,178 runs, so a
+    single unwindowed call loses the oldest ~15% with no signal. Fetch in
+    7-day `created=A..B` windows instead, from `since` up to today inclusive
+    (UTC dates), and union the results by id — a later window's copy of a
+    record wins the merge. If any single window itself returns exactly 1000
+    records (still possible on a very busy week), that window's cap is
+    reported back to the caller as ``detail`` rather than silently dropped.
+    """
+    since_date = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=opts.runs_since_days)).date()
+    today = dt.datetime.now(dt.timezone.utc).date()
+    by_id: dict[int, dict] = {}
+    cap_detail: str | None = None
+    window_start = since_date
+    while window_start <= today:
+        window_end = min(window_start + dt.timedelta(days=6), today)
+        created = f"{window_start.isoformat()}..{window_end.isoformat()}"
+        runs = gh_api(repo, "/actions/runs", {"created": created, "per_page": "100"}, list_key="workflow_runs")
+        if len(runs) == 1000:
+            cap_detail = f"window {window_start.isoformat()}..{window_end.isoformat()} hit the 1000-record listing cap"
+        for run in runs:
+            by_id[run["id"]] = run
+        window_start = window_end + dt.timedelta(days=1)
+    return [project_run(r) for r in by_id.values()], cap_detail
 
 
 def fetch_issues(repo: str, sidecar: Sidecar, opts) -> list[dict]:
@@ -271,8 +298,18 @@ def collect_kind(kind: str, repo: str, out_dir: Path, opts) -> dict:
     sidecar = Sidecar(events_dir / "history" / f"{kind}.jsonl")
     fetched_at = now_iso()
     envelope = {"kind": kind, "fetched_at": fetched_at, "repo": repo, "status": "ok", "detail": None, "records": []}
+    # A fetcher normally returns just the record list. One (workflow_runs)
+    # also needs to report a non-fatal condition (a per-window listing cap)
+    # alongside a still-"ok" status, so it may return (records, detail)
+    # instead — collect_kind accepts either shape without every other
+    # fetcher having to change.
+    fetch_detail: str | None = None
     try:
-        envelope["records"] = KINDS[kind](repo, sidecar, opts)
+        result = KINDS[kind](repo, sidecar, opts)
+        if isinstance(result, tuple):
+            envelope["records"], fetch_detail = result
+        else:
+            envelope["records"] = result
     except DetailFetchError as exc:
         # A per-record detail call failed, not the listing call: never
         # not_permitted/disabled — those describe the whole kind being
@@ -290,6 +327,8 @@ def collect_kind(kind: str, repo: str, out_dir: Path, opts) -> dict:
         envelope["status"] = "error"
         envelope["detail"] = f"{type(exc).__name__}: {exc}"[:200]
     if envelope["status"] == "ok":
+        if fetch_detail:
+            envelope["detail"] = fetch_detail
         appended = sidecar.absorb(envelope["records"], fetched_at)
         print(f"{kind}: {len(envelope['records'])} records, {appended} new/changed in history", file=sys.stderr)
     else:

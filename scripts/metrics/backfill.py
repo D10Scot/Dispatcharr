@@ -68,6 +68,12 @@ def main() -> int:
                         sha,
                         "--commit-date",
                         author_date,
+                        # coverage is external (no script, no --extra-metrics
+                        # here) and never backfilled — see the module
+                        # docstring. Without --only, every historical commit
+                        # prints a "skip coverage: external family" line.
+                        "--only",
+                        "code_health,architecture,tests",
                     ],
                     check=True,
                 )
