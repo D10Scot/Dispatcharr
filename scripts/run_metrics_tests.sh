@@ -19,7 +19,10 @@ run_suite() {
     echo "missing metrics test suite: $start" >&2
     return 1
   fi
-  "$PY" -m unittest discover -s "$start" -t "$top" -v 2>&1 | tail -25
+  # 80 lines, not 25: a unittest failure traceback plus its assertion message
+  # (curated-file validation errors run to a few dozen lines) was getting
+  # truncated out of the CI log before the actual cause ever showed.
+  "$PY" -m unittest discover -s "$start" -t "$top" -v 2>&1 | tail -80
   return "${PIPESTATUS[0]}"
 }
 
