@@ -64,7 +64,7 @@
 - {id: time_to_triage, family: derived, derivation: issues_time_to_triage_median_30d, params: {}, label: Median time to triage (30 d), unit: seconds, direction: down, target: 259200, group: agents, headline: true, since: 2026-08-23,
    note: "Creation to needs-triage removal, issues triaged in the trailing 30 days. Target 3 days."}
 - {id: agent_prs_merged, family: derived, derivation: prs_merged_30d, params: {author_type: agent}, label: Agent PRs merged (30 d), unit: count, direction: info, target: null, group: agents, headline: true, since: 2026-08-23,
-   note: "Bot authors or gh-aw branch patterns (copilot/, agentics/, *remediation*). A person driving Copilot CLI counts as human."}
+   note: "Bot authors, or a head ref starting with copilot/, agentics/, remediation, or containing issue-remediation. A person driving Copilot CLI counts as human."}
 - {id: defects_fixed, family: derived, derivation: defects_by_status, params: {status: fixed}, label: Known defects fixed, unit: count, direction: up, target: null, group: agents, headline: true, since: 2026-08-22,
    note: "Ledger entries with a merged fixing PR."}
 - {id: ready_for_agent_open, family: derived, derivation: issues_open_by_label, params: {label: ready-for-agent}, label: Open ready-for-agent issues, unit: count, direction: info, target: null, group: agents, headline: false, since: 2026-08-23, note: "The remediation queue."}

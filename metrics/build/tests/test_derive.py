@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 
 from curated import Defect
-from derive import DERIVATION_SOURCES, DERIVATIONS, Context
+from derive import DERIVATION_SOURCES, DERIVATIONS, Context, _is_agent
 from load import load_events
 
 DATA = Path(__file__).resolve().parent / "fixtures" / "data"
@@ -89,3 +89,32 @@ class DeriveTests(unittest.TestCase):
         self.assertEqual(DERIVATION_SOURCES["defects_by_status"], ())
         self.assertEqual(DERIVATION_SOURCES["codeql_open_count"], ("codeql_alerts",))
         self.assertEqual(DERIVATION_SOURCES["ci_pass_rate_30d"], ("workflow_runs",))
+
+
+class IsAgentTests(unittest.TestCase):
+    """A bare "remediation" substring over-matched human branches like PR
+    #139's `test/e2e-test-quality-remediation` on the live repo, inflating
+    agent_prs_merged and polluting the agent lead-time series. The rule is
+    now: bot author, or a head ref that STARTS WITH copilot/, agentics/, or
+    remediation, or CONTAINS issue-remediation (the gh-aw remediation
+    workflow's branch shape)."""
+
+    def test_human_branch_merely_containing_remediation_is_human(self):
+        pr = {"author_type": "User", "head_ref": "test/e2e-test-quality-remediation"}
+        self.assertFalse(_is_agent(pr))
+
+    def test_copilot_prefixed_branch_is_agent_even_for_a_human_author_type(self):
+        pr = {"author_type": "User", "head_ref": "copilot/fix-flaky-test"}
+        self.assertTrue(_is_agent(pr))
+
+    def test_agentics_issue_remediation_branch_is_agent(self):
+        pr = {"author_type": "User", "head_ref": "agentics/issue-remediation-9"}
+        self.assertTrue(_is_agent(pr))
+
+    def test_bot_author_is_agent_regardless_of_branch(self):
+        pr = {"author_type": "Bot", "head_ref": "wip"}
+        self.assertTrue(_is_agent(pr))
+
+    def test_plain_human_branch_is_human(self):
+        pr = {"author_type": "User", "head_ref": "wip"}
+        self.assertFalse(_is_agent(pr))

@@ -15,7 +15,16 @@ from typing import Callable
 from curated import Defect
 from load import Dump, parse_ts
 
-AGENT_BRANCH_MARKERS = ("copilot/", "agentics/", "remediation")
+# A head ref counts as agent-driven when it starts with one of these
+# prefixes (gh-aw's own branch shapes) or contains AGENT_BRANCH_MARKER (the
+# gh-aw issue-remediation workflow's branch shape, e.g.
+# "agentics/issue-remediation-9"). Deliberately NOT a bare "remediation"
+# substring: that also matched human branches like
+# "test/e2e-test-quality-remediation" (PR #139 on the live repo), which
+# inflated agent_prs_merged and polluted the agent lead-time series with a
+# human data point.
+AGENT_BRANCH_PREFIXES = ("copilot/", "agentics/", "remediation")
+AGENT_BRANCH_MARKER = "issue-remediation"
 
 
 @dc.dataclass
@@ -144,10 +153,16 @@ def ci_median_wall_time_30d(ctx: Context, day: dt.date, params: dict):
 # ---------------------------------------------------------------------- PRs ---
 
 def _is_agent(pr: dict) -> bool:
+    """A PR is agent-authored when GitHub reports a bot author, or its head
+    ref starts with a gh-aw branch prefix (AGENT_BRANCH_PREFIXES: copilot/,
+    agentics/, remediation) or contains the issue-remediation workflow's
+    marker (AGENT_BRANCH_MARKER). A human driving Copilot CLI (author_type
+    "User", no matching ref) counts as human — this is a branch-shape
+    heuristic, not an attempt to detect AI assistance in general."""
     if (pr.get("author_type") or "").lower() == "bot":
         return True
     ref = pr.get("head_ref") or ""
-    return ref.startswith(AGENT_BRANCH_MARKERS[:2]) or AGENT_BRANCH_MARKERS[2] in ref
+    return ref.startswith(AGENT_BRANCH_PREFIXES) or AGENT_BRANCH_MARKER in ref
 
 
 def _merged_prs(ctx: Context, day: dt.date, author_type: str) -> list[dict]:
