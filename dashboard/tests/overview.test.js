@@ -46,6 +46,30 @@ describe('overview', () => {
     expect(cov.querySelector('.d').textContent).toContain('no data yet');
   });
 
+  it('derives "since" from the first non-null daily point, not the first (baseline-padded) point', () => {
+    // The real build pads `daily` with nulls back to meta.baseline.date so
+    // every series lines up on the same x-axis — daily[0][0] is therefore
+    // always the baseline date, never the metric's actual since. A metric
+    // whose real data starts well after the baseline (e.g. a catalogue
+    // metric added later, like the real `scorecard` series starting 4 Sep
+    // against an 19 Aug baseline) must still read "since <its own date>".
+    const padded = {
+      ...site,
+      headline: [{
+        ...site.headline[0], // reuse e2e_scenarios' shape (group safety_net, unit count, direction up)
+        id: 'padded_metric',
+        daily: [['2026-08-19', null], ['2026-08-20', null], ['2026-09-01', 10], ['2026-09-02', 12]],
+        commits: null,
+        now: 12,
+        at_baseline: 10,
+        spark: [null, null, 10, 12],
+      }],
+    };
+    render(padded, root);
+    const t = root.querySelector('[data-id="padded_metric"]');
+    expect(t.querySelector('.d').textContent).toBe('+2 since 1 Sep');
+  });
+
   it('positions phase milestones by inline left:N% rather than nth-of-type CSS', () => {
     render(site, root);
     const dots = root.querySelectorAll('.phase .m');

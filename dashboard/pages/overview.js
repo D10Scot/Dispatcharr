@@ -17,9 +17,13 @@ export function render(site, root) {
 }
 
 // See lib/status.js's contextLine() doc comment: site.json metrics carry
-// `daily` (whose first point is `since`) but not `since` itself, so the page
-// decorates each metric before handing it to tile().
+// `daily` but not `since` itself, so the page decorates each metric before
+// handing it to tile(). `daily` is padded with nulls back to the baseline
+// date (so every series lines up on the same x-axis) — `daily[0][0]` is
+// therefore always the baseline date, never the metric's real `since`.
+// `since` is the date of the first NON-NULL point (null when the series has
+// no real data at all).
 function withSince(m, baselineDate) {
-  const since = m.daily && m.daily.length ? m.daily[0][0] : null;
-  return { ...m, since, baseline_date: baselineDate };
+  const real = (m.daily || []).find(([, v]) => v !== null && v !== undefined);
+  return { ...m, since: real ? real[0] : null, baseline_date: baselineDate };
 }

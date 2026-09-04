@@ -13,8 +13,9 @@ const SPARK_H = 60;
 
 // `m.since`/`m.baseline_date` are optional decorations a page adds before
 // calling tile()/contextLine() (see pages/overview.js's withSince()) — real
-// site.json metric objects don't carry a `since` field, only `daily`, whose
-// first point *is* since. When since is after meta.baseline.date, "since
+// site.json metric objects don't carry a `since` field, only `daily`, which
+// is padded with nulls back to the baseline date, so `since` (the first
+// non-null point) can differ from meta.baseline.date. When it does, "since
 // baseline" is misleading (at_baseline is the value at since, not at the
 // baseline date — see site-contract.md), so the line names the date instead.
 // Absent those fields, this falls back to "since baseline" unchanged.
@@ -26,8 +27,8 @@ export function contextLine(m) {
   const target = m.direction === 'zero' ? 0 : m.target;
   if (target !== null && target !== undefined && m.direction !== 'info') parts.push(`target ${fmt(target, m.unit)}`);
   if (m.at_baseline !== null && m.at_baseline !== undefined) {
-    const sinceAfterBaseline = m.since && m.baseline_date && m.since > m.baseline_date;
-    const label = sinceAfterBaseline ? `since ${fmtDate(m.since)}` : 'since baseline';
+    const sinceDiffersFromBaseline = m.since && m.baseline_date && m.since !== m.baseline_date;
+    const label = sinceDiffersFromBaseline ? `since ${fmtDate(m.since)}` : 'since baseline';
     parts.push(`${fmtDelta(m.now - m.at_baseline, m.unit)} ${label}`);
   }
   if (m.stale && m.last_real) parts.push(`stale since ${fmtDate(m.last_real)}`);
