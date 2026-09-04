@@ -13,6 +13,13 @@ from load import load_events, load_snapshots
 
 SPARK_POINTS = 30
 
+# R27: families produced only by a once-daily scheduled job (not on every
+# push) are keyed to whatever sha HEAD happened to be when that job ran -
+# comparing that row's sha against the CURRENT HEAD would flag them stale on
+# every push between runs, even though the job is perfectly healthy. Use the
+# age rule for these, same as a derived (event-dump) series.
+DAILY_FAMILIES = {"coverage"}
+
 
 def _iso(d: dt.date) -> str:
     return d.isoformat()
@@ -61,14 +68,22 @@ def build_site(data_dir: Path, curated: Curated, *, repo: Path, base: str, today
     # R26: SNAPSHOT-family freshness is "does the family have a row for the
     # repo's current first-parent HEAD", not a calendar-age check - a quiet
     # week with no new commits is a healthy pipeline, not a stale one.
-    head_sha = first_parent_shas(repo, base, ref)[-1]
+    first_parent = first_parent_shas(repo, base, ref)
+    head_sha = first_parent[-1]
+    # Same-day milestones tie on a date string, so sorting by date alone
+    # leaves them in whatever order the curated file happened to list them
+    # (undefined, and observed backwards on the real data). sha_order
+    # reflects true git chronology; a milestone sha absent from the
+    # first-parent chain (shouldn't happen once validate() has run) sorts
+    # last rather than raising.
+    sha_order = {sha: i for i, sha in enumerate(first_parent)}
 
     milestones = []
     for m in curated.milestones:
         d = commit_date(repo, m.sha)
         milestones.append({"sha": m.sha, "date": _iso(d.date()), "label": m.label, "kind": m.kind,
                            "phase": m.phase, "pr": m.pr, "summary": m.summary})
-    milestones.sort(key=lambda x: x["date"])
+    milestones.sort(key=lambda x: sha_order.get(x["sha"], len(first_parent)))
     milestone_days = [dt.date.fromisoformat(x["date"]) for x in milestones]
 
     groups: dict[str, list[dict]] = {}
@@ -79,7 +94,7 @@ def build_site(data_dir: Path, curated: Curated, *, repo: Path, base: str, today
             # Nothing is expected yet - don't flag a series that hasn't
             # started as stale.
             stale = False
-        elif m.family == "derived":
+        elif m.family == "derived" or m.family in DAILY_FAMILIES:
             stale = is_stale(last_real, today)
         else:
             rows = snapshots.get(m.family, [])
@@ -136,8 +151,8 @@ def build_site(data_dir: Path, curated: Curated, *, repo: Path, base: str, today
     for rows in snapshots.values():
         if rows and (latest_sha is None or rows[-1].timestamp > latest_ts):
             latest_sha, latest_ts = rows[-1].commit_sha, rows[-1].timestamp
-    if latest_sha and milestones and (milestones[0]["sha"], latest_sha) not in compare_pairs:
-        compare_pairs.append((milestones[0]["sha"], latest_sha))
+    if latest_sha and (base, latest_sha) not in compare_pairs:
+        compare_pairs.append((base, latest_sha))
     compare_section = {f"{a}..{b}": compare(a, b) for a, b in compare_pairs}
 
     by_status_daily = [[_iso(d), {s: DERIVATIONS["defects_by_status"](ctx, d, {"status": s}) for s in ("open", "pinned", "carried", "fixed")}] for d in dates]

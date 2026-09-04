@@ -9,7 +9,7 @@ import unittest
 from pathlib import Path
 
 from curated import load_curated, validate
-from curated import _pointers  # R9(d): the one shared implementation
+from curated import pointers  # R9(d): the one shared implementation
 
 ROOT = Path(__file__).resolve().parents[3]
 BASE = "fd413f0cc4ab3131789a68fb31f1ae622ae7371a"
@@ -23,7 +23,7 @@ def latest_family_pointers() -> dict[str, set[str]]:
         if r.returncode != 0 or not r.stdout.strip():
             continue
         row = json.loads(r.stdout.strip().splitlines()[-1])
-        out[family] = set(_pointers(row["metrics"]))
+        out[family] = set(pointers(row["metrics"]))
     return out
 
 

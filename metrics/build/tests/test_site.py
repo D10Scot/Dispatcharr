@@ -107,6 +107,64 @@ class SiteTests(unittest.TestCase):
         proxy = next(m for m in s["groups"]["extraction"] if m["id"] == "proxy_loc")
         self.assertTrue(proxy["stale"]); self.assertIsNone(proxy["now"])
 
+    def test_milestones_sort_by_first_parent_order_not_curated_file_order(self):
+        # Two milestones on the SAME calendar day tie on their date string,
+        # so sorting by date alone leaves them in whichever order the
+        # curated file happened to list them - undefined, and observed
+        # backwards on the real data (adjacent compare pairs reporting
+        # deltas the wrong way round). Add a same-day-but-git-later commit,
+        # and list it BEFORE the earlier same-day milestone in the curated
+        # file, to prove the sort uses git chronology, not file order.
+        git(self.repo, "commit", "-q", "--allow-empty", "-m", "same-day", "--date", "2026-09-03T21:09:30+00:00")
+        third = git(self.repo, "rev-parse", "HEAD")
+        # setUp() already substituted the BASE/SECOND placeholders for the
+        # real shas, so match on the real `self.second` sha here.
+        text = (self.cur / "milestones.yml").read_text()
+        text = text.replace(
+            f"  - sha: {self.second}",
+            f'  - sha: {third}\n    label: Same-day, filed first\n    kind: goal\n    phase: phase0\n'
+            f'    pr: null\n    summary: "Listed before SECOND in the YAML on purpose."\n  - sha: {self.second}',
+        )
+        (self.cur / "milestones.yml").write_text(text)
+        curated = load_curated(self.cur)
+        s = build_site(self.data, curated, repo=self.repo, base=self.base, today=D(2026, 9, 5))
+        self.assertEqual([m["sha"] for m in s["milestones"]], [self.base, self.second, third])
+        self.assertIn(f"{self.second}..{third}", s["compare"])
+        self.assertNotIn(f"{third}..{self.second}", s["compare"])
+
+    def test_daily_family_uses_age_rule_not_sha_rule(self):
+        # R27: "coverage" is populated by a once-daily job, not on every
+        # push - its row is keyed to whatever sha HEAD was at 06:15 UTC that
+        # morning. Comparing that sha against the CURRENT HEAD (the sha
+        # rule used for push-driven snapshot families) would flag it stale
+        # on every push since, even right after a healthy run. Add a commit
+        # so HEAD moves past the coverage row's sha, and confirm freshness
+        # is still judged by age, not by the sha mismatch.
+        git(self.repo, "commit", "-q", "--allow-empty", "-m", "third", "--date", "2026-09-04T00:00:00+00:00")
+        cat = (self.cur / "catalogue.yml").read_text()
+        cat += (
+            "\n- id: backend_coverage\n  family: coverage\n  path: /backend_line_pct\n"
+            "  label: Backend coverage\n  unit: pct\n  direction: up\n  target: null\n"
+            "  group: safety_net\n  headline: false\n  since: 2026-08-19\n"
+            '  note: "Daily job."\n'
+        )
+        (self.cur / "catalogue.yml").write_text(cat)
+        row = {"commit_sha": self.base, "family": "coverage", "metrics": {"backend_line_pct": 50.0},
+               "timestamp": "2026-09-05T06:15:00+00:00"}
+        (self.data / "coverage.jsonl").write_text(json.dumps(row) + "\n")
+        curated = load_curated(self.cur)
+
+        # Dated "today" (age 0): fresh, even though its sha (self.base) is
+        # not the current HEAD (third).
+        s = build_site(self.data, curated, repo=self.repo, base=self.base, today=D(2026, 9, 5))
+        cov = next(m for m in s["groups"]["safety_net"] if m["id"] == "backend_coverage")
+        self.assertFalse(cov["stale"])
+
+        # Same row, no new one added, but built 3 days later: now stale by age.
+        s2 = build_site(self.data, curated, repo=self.repo, base=self.base, today=D(2026, 9, 8))
+        cov2 = next(m for m in s2["groups"]["safety_net"] if m["id"] == "backend_coverage")
+        self.assertTrue(cov2["stale"])
+
     def test_phases_and_compare(self):
         s = self.build()
         self.assertEqual([p["id"] for p in s["phases"]], ["investigate", "phase0"])
@@ -134,6 +192,32 @@ class SiteTests(unittest.TestCase):
         r = subprocess.run([sys.executable, "-m", "metrics.build", "--validate-only", "--curated", str(self.cur),
                             "--repo", str(self.repo), "--base", self.base], capture_output=True, text=True, cwd=str(HERE.parents[2]))
         self.assertEqual(r.returncode, 0, r.stderr)
+        # sort_keys=True: object keys inside site.json come out alphabetical
+        # (readable diffs), not insertion order.
+        self.assertEqual(list(json.loads(out.read_text())["meta"].keys()),
+                          sorted(json.loads(out.read_text())["meta"].keys()))
+
+    def test_cli_malformed_today_is_a_one_line_usage_error_not_a_traceback(self):
+        out = self.tmp / "site.json"
+        r = subprocess.run([sys.executable, "-m", "metrics.build", "--data", str(self.data), "--curated", str(self.cur),
+                            "--out", str(out), "--repo", str(self.repo), "--base", self.base, "--today", "not-a-date"],
+                           capture_output=True, text=True, cwd=str(HERE.parents[2]))
+        self.assertEqual(r.returncode, 2)
+        self.assertNotIn("Traceback", r.stderr)
+        self.assertIn("--today", r.stderr)
+        self.assertFalse(out.exists())
+
+    def test_cli_missing_out_is_a_usage_error_before_any_data_is_touched(self):
+        # --data present, --out missing, and --curated pointed at a
+        # nonexistent directory: the missing---out usage check must fire
+        # before load_curated() ever runs, or this would fail with a
+        # curated-files-not-found error (exit 1) instead of a usage error
+        # (exit 2).
+        r = subprocess.run([sys.executable, "-m", "metrics.build", "--data", str(self.data),
+                            "--curated", str(self.tmp / "does-not-exist"), "--repo", str(self.repo), "--base", self.base],
+                           capture_output=True, text=True, cwd=str(HERE.parents[2]))
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("--out", r.stderr)
 
 
 if __name__ == "__main__":

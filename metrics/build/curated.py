@@ -132,7 +132,7 @@ def _read(path: Path) -> Any:
         return yaml.safe_load(f)
 
 
-def _pointers(obj, prefix=""):
+def pointers(obj, prefix=""):
     """Every JSON-pointer path (leaf-only) reachable inside `obj`, e.g.
     `{"a": {"b": 1}}` -> `["/a/b"]`. Used to check a headline catalogue
     metric's `path` resolves against the newest snapshot row for its family
@@ -140,7 +140,7 @@ def _pointers(obj, prefix=""):
     rather than duplicated)."""
     if isinstance(obj, dict):
         for k, v in obj.items():
-            yield from _pointers(v, f"{prefix}/{k}")
+            yield from pointers(v, f"{prefix}/{k}")
     else:
         yield prefix
 

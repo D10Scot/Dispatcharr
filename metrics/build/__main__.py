@@ -1,4 +1,9 @@
-"""CLI: build site.json, or only validate the curated files."""
+"""CLI: build site.json, or only validate the curated files.
+
+Exit codes: 0 success; 1 curated files invalid (structurally malformed, or
+`validate()` reported errors); 2 usage error - missing required arguments or
+a malformed --today (raised via argparse's own `p.error()`, which prints
+usage plus a one-line message to stderr rather than a traceback)."""
 
 from __future__ import annotations
 
@@ -12,7 +17,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))  # the package's modules import each other by bare name (tests do too)
 
 from assemble import build_site  # noqa: E402
-from curated import _pointers, load_curated, validate  # noqa: E402
+from curated import load_curated, pointers, validate  # noqa: E402
 from gitinfo import pr_is_merged  # noqa: E402
 from load import load_snapshots  # noqa: E402
 
@@ -33,6 +38,22 @@ def main(argv=None) -> int:
     p.add_argument("--validate-only", action="store_true")
     a = p.parse_args(argv)
 
+    # Required-argument and format checks first, before touching the
+    # filesystem, running the (possibly network-calling, via --check-prs)
+    # validator, or building anything - a usage mistake should fail fast
+    # and cheap, not after a curated-file load and a round of `gh api` calls.
+    if not a.validate_only and (not a.data or not a.out):
+        p.error("--data and --out are required unless --validate-only")
+    today = None
+    if not a.validate_only:
+        if a.today:
+            try:
+                today = dt.date.fromisoformat(a.today)
+            except ValueError:
+                p.error(f"--today: invalid date {a.today!r}, expected YYYY-MM-DD")
+        else:
+            today = dt.datetime.now(dt.timezone.utc).date()
+
     try:
         curated = load_curated(a.curated)
     except ValueError as exc:
@@ -40,7 +61,7 @@ def main(argv=None) -> int:
         return 1
     known = None
     if a.data:
-        known = {fam: set(_pointers(rows[-1].metrics)) for fam, rows in load_snapshots(a.data).items() if rows}
+        known = {fam: set(pointers(rows[-1].metrics)) for fam, rows in load_snapshots(a.data).items() if rows}
     checker = (lambda n: pr_is_merged(REPO_SLUG, n)) if a.check_prs else None
     errors = validate(curated, repo=a.repo, base=a.base, ref=a.ref, pr_checker=checker, known_families=known)
     if errors:
@@ -49,12 +70,9 @@ def main(argv=None) -> int:
     if a.validate_only:
         print(f"ok: {len(curated.catalogue)} metrics, {len(curated.milestones)} milestones, {len(curated.defects)} defects")
         return 0
-    if not a.data or not a.out:
-        p.error("--data and --out are required unless --validate-only")
-    today = dt.date.fromisoformat(a.today) if a.today else dt.datetime.now(dt.timezone.utc).date()
     site = build_site(a.data, curated, repo=a.repo, base=a.base, today=today, ref=a.ref)
     a.out.parent.mkdir(parents=True, exist_ok=True)
-    a.out.write_text(json.dumps(site, separators=(",", ":")) + "\n", encoding="utf-8")
+    a.out.write_text(json.dumps(site, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
     print(f"wrote {a.out} ({a.out.stat().st_size // 1024} KB, {len(site['headline'])} headline metrics)")
     return 0
 
