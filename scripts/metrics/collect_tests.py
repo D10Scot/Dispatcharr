@@ -12,15 +12,19 @@ Counts of tests as written (not as run — no suite execution here):
 - e2e_greybox_test_count: the subset under ``tests/streaming-greybox/``.
 - hypothesis_property_test_count: ``@given``-decorated tests anywhere in
   backend test files.
-- frontend_coverage_pct: NOT set by this script. On schedule runs only, the
-  metrics workflow runs `vitest run --coverage` separately and merges the
-  number in afterwards via `collect_all.py --extra-metrics tests=<path>`
-  (see metrics.yml) — keeping this collector itself cheap/backfillable per
-  the reasoning below. Absent on push-triggered runs.
-- coverage: null — deliberately deferred (backend only). Backend coverage
-  requires a full test-matrix run against Postgres, which is neither cheap
-  per-collection nor backfillable against historical commits without
-  executing their suites; still out of scope as of M2.
+- coverage_md_rows: ``{"done": n, "known_bug": n, "todo": n}``, the Status
+  column of ``e2e/COVERAGE.md``'s table rows (the shared e2e worklist).
+
+Frontend coverage is NOT this script's concern: it is its own ``coverage``
+family, produced by the metrics workflow's separate `coverage` job (real
+backend + frontend suite runs under coverage, summarised by
+`coverage_summary.py` and merged in via `collect_all.py --extra-metrics
+coverage=<path>` — see metrics.yml). Keeping it out of this collector is what
+lets `tests` stay cheap and backfillable per the reasoning below.
+
+Backend test counting excludes the top-level ``e2e``, ``e2e-upstream``,
+``frontend``, ``metrics``, ``scripts`` and ``dashboard`` directories — the
+metrics stack's own tests are not product tests.
 """
 
 from __future__ import annotations
@@ -32,6 +36,7 @@ from pathlib import Path
 from _common import emit, is_test_path, iter_files, parse_python, repo_root_arg
 
 JS_TEST_RE = re.compile(r"(?:^|[^\w.])(?:it|test)(?:\.(?:each|skip|only|todo|fails|concurrent)(?:\([^)]*\))?)?\s*\(", re.M)
+COVERAGE_ROW_RE = re.compile(r"^\|.*\|\s*(done|known-bug|todo)\s*\|\s*$", re.M)
 
 
 def count_js_tests(paths: list[Path]) -> int:
@@ -42,6 +47,16 @@ def count_js_tests(paths: list[Path]) -> int:
     return total
 
 
+def count_coverage_md_rows(path: Path) -> dict[str, int]:
+    """Status column of e2e/COVERAGE.md's table rows (the shared e2e worklist)."""
+    counts = {"done": 0, "known_bug": 0, "todo": 0}
+    if not path.is_file():
+        return counts
+    for status in COVERAGE_ROW_RE.findall(path.read_text(encoding="utf-8", errors="replace")):
+        counts[status.replace("-", "_")] += 1
+    return counts
+
+
 def main() -> None:
     root = repo_root_arg(__doc__)
 
@@ -49,7 +64,7 @@ def main() -> None:
     hypothesis_tests = 0
     for path in iter_files(root, (".py",)):
         rel = path.relative_to(root)
-        if rel.parts[0] in {"e2e", "e2e-upstream", "frontend"} or not is_test_path(rel):
+        if rel.parts[0] in {"e2e", "e2e-upstream", "frontend", "metrics", "scripts", "dashboard"} or not is_test_path(rel):
             continue
         tree = parse_python(path)
         if tree is None:
@@ -82,6 +97,8 @@ def main() -> None:
         [p for p in e2e_files if "streaming-greybox" in p.parts]
     )
 
+    coverage_md_rows = count_coverage_md_rows(root / "e2e" / "COVERAGE.md")
+
     emit(
         {
             "backend_test_count": backend_test_count,
@@ -89,10 +106,7 @@ def main() -> None:
             "e2e_scenario_count": e2e_scenario_count,
             "e2e_greybox_test_count": e2e_greybox,
             "hypothesis_property_test_count": hypothesis_tests,
-            "coverage": None,
-            "_notes": "backend coverage deferred (needs Postgres matrix; see docstring). "
-            "frontend_coverage_pct is merged in separately by the metrics "
-            "workflow on schedule runs only, not present on push runs.",
+            "coverage_md_rows": coverage_md_rows,
         }
     )
 

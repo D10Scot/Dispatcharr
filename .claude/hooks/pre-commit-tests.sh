@@ -101,6 +101,36 @@ if printf '%s\n' "$PATHS" | grep -q '^frontend/'; then
   fi
 fi
 
+# ---------- metrics (collectors + build step, no Django) ----------
+if printf '%s\n' "$PATHS" | grep -qE '^(metrics/|scripts/metrics/|scripts/run_metrics_tests\.sh)'; then
+  OUT="$(scripts/run_metrics_tests.sh all 2>&1)"; ST=$?
+  if [ $ST -ne 0 ] && [ $ST -ne 3 ]; then
+    FAILED+=("metrics")
+    REPORT+="$(printf '\n--- metrics ---\n%s\n' "$(printf '%s' "$OUT" | tail -30)")"
+  fi
+  if [ -f metrics/build/__main__.py ]; then
+    if [ -x .venv/bin/python ]; then PY=.venv/bin/python; else PY=python3; fi
+    VOUT="$("$PY" -m metrics.build --validate-only --curated metrics/curated 2>&1)"
+    if [ $? -ne 0 ]; then
+      FAILED+=("metrics validate-only")
+      REPORT+="$(printf '\n--- metrics validate-only ---\n%s\n' "$(printf '%s' "$VOUT" | tail -40)")"
+    fi
+  fi
+fi
+
+# ---------- dashboard (vitest, dashboard config) ----------
+if printf '%s\n' "$PATHS" | grep -q '^dashboard/'; then
+  if [ -d frontend/node_modules ] && [ -f frontend/vitest.dashboard.config.js ]; then
+    OUT="$(cd frontend && npx vitest --run --config vitest.dashboard.config.js 2>&1)"
+    if [ $? -ne 0 ]; then
+      FAILED+=("dashboard")
+      REPORT+="$(printf '\n--- dashboard ---\n%s\n' "$(printf '%s' "$OUT" | grep -E 'FAIL|✗|Tests ' | head -20)")"
+    fi
+  else
+    note "Commit gate: dashboard/ files are staged but the dashboard vitest config or frontend/node_modules is missing — dashboard tests were NOT run."
+  fi
+fi
+
 if [ ${#FAILED[@]} -gt 0 ]; then
   printf 'COMMIT BLOCKED — tests failing for: %s\n%s\n\nFix these, or if the failure pre-existed this change, say so explicitly rather than committing over it.\n' \
     "${FAILED[*]}" "$REPORT" >&2

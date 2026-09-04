@@ -7,11 +7,11 @@ using a temporary detached git worktree per commit. Rows land in --out-dir
 via collect_all.py, timestamped with each commit's author date; appends are
 idempotent, so re-running after new merges only adds the new commits.
 
-Deliberately excludes the GitHub-API-backed families (security, delivery,
-agentic — see collect_all.py's API_FAMILIES): those collectors report live
-repo/API state, not a fact about a specific historical commit, so attributing
-today's CodeQL alert count to a commit from three months ago would be
-misleading. Their series starts at first collection instead.
+GitHub-backed data (formerly the security/delivery/agentic families) is
+collected separately by collect_events.py and is not part of this per-commit
+loop: it reports live repo/API state, not a fact about a specific historical
+commit, so attributing today's CodeQL alert count to a commit from three
+months ago would be misleading.
 """
 
 from __future__ import annotations
@@ -64,12 +64,16 @@ def main() -> int:
                         str(worktree),
                         "--out-dir",
                         str(args.out_dir),
-                        "--skip-families",
-                        "security,delivery,agentic",
                         "--commit-sha",
                         sha,
                         "--commit-date",
                         author_date,
+                        # coverage is external (no script, no --extra-metrics
+                        # here) and never backfilled — see the module
+                        # docstring. Without --only, every historical commit
+                        # prints a "skip coverage: external family" line.
+                        "--only",
+                        "code_health,architecture,tests",
                     ],
                     check=True,
                 )

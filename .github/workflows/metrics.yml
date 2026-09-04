@@ -1,18 +1,20 @@
 name: Metrics
 
-# Collects deterministic engineering metrics (scripts/metrics/) and appends
-# one JSONL row per metric family to the orphan `metrics-data` branch, keyed
-# by {timestamp, commit_sha}. Appends are idempotent, so retries and
-# re-dispatches never duplicate history.
+# Raw engineering-metrics facts for the dashboard (docs/superpowers/specs/
+# 2026-09-04-engineering-metrics-dashboard-design.md, §4):
+#   * per-commit snapshot rows (scripts/metrics/collect_all.py) on every push
+#     to main that touches a measured path, and daily;
+#   * daily event dumps of GitHub state (scripts/metrics/collect_events.py);
+#   * a daily coverage row from a real backend + frontend suite run.
+# Everything lands on the orphan `metrics-data` branch. Nothing here derives
+# a trend or a status — that is the Pages build step's job.
 
 on:
   schedule:
-    - cron: '0 6 * * 1' # weekly, Monday 06:00 UTC
+    - cron: '0 6 * * *' # daily, 06:00 UTC; pages.yml follows at 06:15
   push:
     branches:
       - main
-    # Only paths the collectors measure (plus the collectors and this
-    # workflow); a docs-only merge does not produce a data point.
     paths:
       - 'apps/**'
       - 'core/**'
@@ -25,15 +27,16 @@ on:
     inputs:
       backfill:
         description: >-
-          Run the backfill over every first-parent commit since fd413f0c
-          instead of a single collection at HEAD (idempotent; only missing
-          commits are added).
+          Run the snapshot backfill over every first-parent commit since
+          fd413f0c instead of a single collection at HEAD (idempotent).
         type: boolean
         default: false
 
 permissions:
   contents: read
 
+# Both jobs push to metrics-data; the group serialises runs and `needs:`
+# serialises the two jobs inside a run.
 concurrency:
   group: metrics-append
   cancel-in-progress: false
@@ -43,7 +46,16 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write # push to the metrics-data branch
-      security-events: read # collect_security.py reads CodeQL code-scanning alerts
+      # An explicit `permissions:` block zeroes every unlisted scope, and
+      # collect_events.py reads several GITHUB_TOKEN-scoped endpoints — a
+      # missing grant here is a silent 403 -> "not_permitted" row, not a
+      # workflow failure. dependabot_alerts/secret_scanning have no
+      # workflow permission key at all and stay "not_permitted" under
+      # GITHUB_TOKEN by design; that's not fixable from here.
+      security-events: read # code-scanning alerts (collect_events.py)
+      actions: read # workflow runs (collect_events.py)
+      issues: read # issues + label timelines (collect_events.py)
+      pull-requests: read # pull requests + files (collect_events.py)
     steps:
       - name: Checkout
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
@@ -59,56 +71,33 @@ jobs:
             git worktree add --orphan -b metrics-data metrics-data-wt
           fi
 
-      # Weekly only: a frontend suite run under coverage instrumentation is
-      # too slow to run on every push-to-main (would make merges wait on it),
-      # so this field is only ever fresh as of the last Monday run — see
-      # collect_tests.py's docstring. The number is folded into the `tests`
-      # family row afterwards via --extra-metrics, not computed by
-      # collect_tests.py itself (which stays stdlib-only/backfillable).
-      - name: Setup Node.js
-        if: github.event_name == 'schedule'
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        with:
-          node-version: '24'
-          cache: 'npm'
-          cache-dependency-path: './frontend/package-lock.json'
-
-      - name: Install frontend dependencies
-        if: github.event_name == 'schedule'
-        working-directory: frontend
-        run: npm ci
-
-      - name: Run frontend coverage
-        if: github.event_name == 'schedule'
-        working-directory: frontend
-        run: npx vitest run --coverage --coverage.reporter=json-summary
-
-      - name: Extract frontend coverage percentage
-        if: github.event_name == 'schedule'
-        run: |
-          python3 -c "
-          import json
-          summary = json.load(open('frontend/coverage/coverage-summary.json'))
-          pct = summary['total']['lines']['pct']
-          json.dump({'frontend_coverage_pct': pct}, open('/tmp/frontend-coverage.json', 'w'))
-          "
-
-      - name: Run collectors
+      - name: Snapshot collectors
         env:
           BACKFILL: ${{ inputs.backfill && '1' || '' }}
-          EXTRA_METRICS_ARGS: ${{ github.event_name == 'schedule' && '--extra-metrics tests=/tmp/frontend-coverage.json' || '' }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }} # collect_security/delivery/agentic.py use `gh`
         run: |
           if [ -n "$BACKFILL" ]; then
-            python3 scripts/metrics/backfill.py \
-              --repo-root . --out-dir metrics-data-wt --ref "$GITHUB_SHA"
+            python3 scripts/metrics/backfill.py --repo-root . --out-dir metrics-data-wt --ref "$GITHUB_SHA"
           else
-            python3 scripts/metrics/collect_all.py \
-              --repo-root . --out-dir metrics-data-wt --repo "$GITHUB_REPOSITORY" \
-              $EXTRA_METRICS_ARGS
+            python3 scripts/metrics/collect_all.py --repo-root . --out-dir metrics-data-wt \
+              --only code_health,architecture,tests
           fi
 
+      - name: Event dumps
+        # Daily and on dispatch only: a push already gets a snapshot row and
+        # the dumps are the same facts whatever commit triggered the run.
+        # !cancelled() (not success()): a failed snapshot-collectors step
+        # above must not also skip the dumps — same spec §4.4 reasoning as
+        # the commit-and-push step below.
+        if: ${{ !cancelled() && github.event_name != 'push' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 scripts/metrics/collect_events.py --repo "$GITHUB_REPOSITORY" --out-dir metrics-data-wt
+
       - name: Commit and push
+        # Runs even if a snapshot/event step above failed (!cancelled(), not
+        # success()): the families that did collect must still land, and a
+        # skipped push here would silently drop them (spec §4.4).
+        if: ${{ !cancelled() }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -124,3 +113,101 @@ jobs:
           git push \
             "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
             HEAD:metrics-data
+
+  coverage:
+    # Daily and on dispatch: a real run of both suites under coverage. Never
+    # on push — required checks stay uninstrumented and merges do not wait.
+    # `needs:` orders this after collect-and-append under the shared
+    # concurrency group (both push to metrics-data); it is not a success
+    # gate — a failed snapshot family must not cost the day's coverage row,
+    # so the condition checks !cancelled() rather than defaulting to
+    # success(). Not always(): a *cancelled* run (e.g. workflow
+    # superseded) must still skip, not race a half-torn-down job.
+    needs: collect-and-append
+    if: ${{ !cancelled() && github.event_name != 'push' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # push the coverage row to metrics-data
+      packages: read # pull the base image
+    container:
+      # The fork's own base image (see backend-tests.yml for why a digest pin
+      # cannot apply to a deliberately floating own-built tag). Hard-coded
+      # rather than resolved by a plan job: this workflow is fork-specific by
+      # construction (it names the metrics-data branch and the Pages site).
+      image: ghcr.io/d10scot/dispatcharr:base # zizmor: ignore[unpinned-images]
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: --entrypoint ""
+    env:
+      DISPATCHARR_ENV: aio
+      DJANGO_SECRET_KEY: ci-test-secret-key
+      POSTGRES_DB: dispatcharr
+      POSTGRES_USER: dispatch
+      POSTGRES_PASSWORD: secret
+      DISPATCHARR_LOG_LEVEL: WARNING
+      SYNC_PYTHON_DEPS: 'true' # picks up `coverage` before the base image is rebuilt
+    steps:
+      # ghcr.io/d10scot/dispatcharr:base ships no git, so actions/checkout
+      # falls back to a tarball download with no .git/ — every git command
+      # below (config/fetch/worktree add) and collect_all.py's own
+      # `git rev-parse HEAD` fallback would fail. Unversioned apt install is
+      # the base image's own convention (CLAUDE.md: "Redis/PostgreSQL from
+      # unversioned apt, deliberate").
+      - name: Install git
+        run: apt-get update && apt-get install -y --no-install-recommends git
+
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: Backend suite under coverage
+        env:
+          GITHUB_WORKSPACE: ${{ github.workspace }}
+          CI_BACKEND_RUNNER: bash scripts/ci_coverage_backend.sh
+        run: bash scripts/ci_bootstrap_backend.sh
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '24'
+          cache: 'npm'
+          cache-dependency-path: './frontend/package-lock.json'
+
+      - name: Frontend suite under coverage
+        working-directory: frontend
+        run: |
+          npm ci
+          npx vitest run --coverage --coverage.reporter=json-summary || echo "::warning::frontend suite failed under coverage"
+
+      - name: Summarise
+        # Runs even if the backend/frontend suite step above failed
+        # (!cancelled(), not success()): coverage_summary.py already
+        # tolerates missing inputs, and a skipped row here would silently
+        # drop a day's coverage data (spec §4.4).
+        if: ${{ !cancelled() }}
+        run: |
+          python3 scripts/metrics/coverage_summary.py \
+            --backend /tmp/dispatcharr-coverage/backend-coverage.json \
+            --backend-status /tmp/dispatcharr-coverage/backend-status.json \
+            --frontend frontend/coverage/coverage-summary.json \
+            --out /tmp/coverage-row.json
+
+      - name: Append the coverage row and push
+        if: ${{ !cancelled() }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git fetch origin metrics-data
+          git worktree add -B metrics-data metrics-data-wt FETCH_HEAD
+          python3 scripts/metrics/collect_all.py --repo-root . --out-dir metrics-data-wt \
+            --only coverage --extra-metrics coverage=/tmp/coverage-row.json --commit-sha "$GITHUB_SHA"
+          cd metrics-data-wt
+          git add -A
+          if git diff --cached --quiet; then echo "No coverage row; nothing to push."; exit 0; fi
+          git -c user.name="github-actions[bot]" \
+              -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+              commit -m "metrics: coverage row for ${GITHUB_SHA}"
+          git push "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" HEAD:metrics-data
