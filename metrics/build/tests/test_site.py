@@ -89,6 +89,24 @@ class SiteTests(unittest.TestCase):
         e2e = {h["id"]: h for h in s["headline"]}["e2e_scenarios"]
         self.assertTrue(e2e["stale"]); self.assertEqual(e2e["status"], "stale")
 
+    def test_derived_series_goes_stale_via_age(self):
+        # The 2-day age rule (calendar_.is_stale) is still the right check
+        # for a DERIVED (event-dump) series: there's no commit sha to compare
+        # against HEAD, only a fetch timestamp. codeql_alerts.json's
+        # fetched_at is 2026-09-05T06:05:00Z; five days later is well past
+        # the 2-day threshold.
+        s = self.build(today=D(2026, 9, 10))
+        cq = {h["id"]: h for h in s["headline"]}["codeql_open_critical_high"]
+        self.assertTrue(cq["stale"]); self.assertEqual(cq["status"], "stale")
+
+    def test_snapshot_family_with_no_rows_at_all_is_stale(self):
+        # proxy_loc's family is "code_health", which has no fixture file at
+        # all (only tests.jsonl/coverage.jsonl exist under fixtures/data) -
+        # no data is not fresh, regardless of HEAD.
+        s = self.build()
+        proxy = next(m for m in s["groups"]["extraction"] if m["id"] == "proxy_loc")
+        self.assertTrue(proxy["stale"])
+
     def test_phases_and_compare(self):
         s = self.build()
         self.assertEqual([p["id"] for p in s["phases"]], ["investigate", "phase0"])
