@@ -91,6 +91,10 @@ jobs:
         run: python3 scripts/metrics/collect_events.py --repo "$GITHUB_REPOSITORY" --out-dir metrics-data-wt
 
       - name: Commit and push
+        # Runs even if a snapshot/event step above failed (!cancelled(), not
+        # success()): the families that did collect must still land, and a
+        # skipped push here would silently drop them (spec §4.4).
+        if: ${{ !cancelled() }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -141,6 +145,15 @@ jobs:
       DISPATCHARR_LOG_LEVEL: WARNING
       SYNC_PYTHON_DEPS: 'true' # picks up `coverage` before the base image is rebuilt
     steps:
+      # ghcr.io/d10scot/dispatcharr:base ships no git, so actions/checkout
+      # falls back to a tarball download with no .git/ — every git command
+      # below (config/fetch/worktree add) and collect_all.py's own
+      # `git rev-parse HEAD` fallback would fail. Unversioned apt install is
+      # the base image's own convention (CLAUDE.md: "Redis/PostgreSQL from
+      # unversioned apt, deliberate").
+      - name: Install git
+        run: apt-get update && apt-get install -y --no-install-recommends git
+
       - name: Checkout
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
@@ -166,6 +179,11 @@ jobs:
           npx vitest run --coverage --coverage.reporter=json-summary || echo "::warning::frontend suite failed under coverage"
 
       - name: Summarise
+        # Runs even if the backend/frontend suite step above failed
+        # (!cancelled(), not success()): coverage_summary.py already
+        # tolerates missing inputs, and a skipped row here would silently
+        # drop a day's coverage data (spec §4.4).
+        if: ${{ !cancelled() }}
         run: |
           python3 scripts/metrics/coverage_summary.py \
             --backend /tmp/dispatcharr-coverage/backend-coverage.json \
@@ -174,6 +192,7 @@ jobs:
             --out /tmp/coverage-row.json
 
       - name: Append the coverage row and push
+        if: ${{ !cancelled() }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -181,7 +200,7 @@ jobs:
           git fetch origin metrics-data
           git worktree add -B metrics-data metrics-data-wt FETCH_HEAD
           python3 scripts/metrics/collect_all.py --repo-root . --out-dir metrics-data-wt \
-            --only coverage --extra-metrics coverage=/tmp/coverage-row.json
+            --only coverage --extra-metrics coverage=/tmp/coverage-row.json --commit-sha "$GITHUB_SHA"
           cd metrics-data-wt
           git add -A
           if git diff --cached --quiet; then echo "No coverage row; nothing to push."; exit 0; fi
