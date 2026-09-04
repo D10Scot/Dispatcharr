@@ -86,14 +86,20 @@ if [ "$(id -u)" = "0" ]; then
     # Fix data directories (non-recursive to avoid touching user files).
     # Failures are collected rather than fatal — directories may be on
     # external mounts (NFS, SMB/CIFS, FUSE) that reject chown.
-    for dir in "${DATA_DIRS[@]}"; do
-        if [ -d "$dir" ] && [ "$(stat -c '%u:%g' "$dir" 2>/dev/null)" != "$PUID:$PGID" ]; then
-            _chown_err=$(chown "$PUID:$PGID" "$dir" 2>&1) || {
-                _current_owner=$(stat -c '%u:%g' "$dir" 2>/dev/null || echo "unknown")
-                _failed_chown+=("$dir (current: $_current_owner, error: $_chown_err)")
-            }
-        fi
-    done
+    # Only all/api chown /data: worker and relay containers may run under a
+    # different PUID/PGID and never ran this script before supervisord
+    # (entrypoint.celery.sh never called 03-init), so letting them chown
+    # shared /data would fight the api's ownership.
+    if [[ "${DISPATCHARR_ROLE:-all}" == "all" || "${DISPATCHARR_ROLE:-all}" == "api" ]]; then
+        for dir in "${DATA_DIRS[@]}"; do
+            if [ -d "$dir" ] && [ "$(stat -c '%u:%g' "$dir" 2>/dev/null)" != "$PUID:$PGID" ]; then
+                _chown_err=$(chown "$PUID:$PGID" "$dir" 2>&1) || {
+                    _current_owner=$(stat -c '%u:%g' "$dir" 2>/dev/null || echo "unknown")
+                    _failed_chown+=("$dir (current: $_current_owner, error: $_chown_err)")
+                }
+            fi
+        done
+    fi
 
     # Fix app directories (recursive since they're managed by the app)
     for dir in "${APP_DIRS[@]}"; do

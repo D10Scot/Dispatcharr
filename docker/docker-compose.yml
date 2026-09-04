@@ -11,12 +11,15 @@ services:
     container_name: dispatcharr_web
     restart: unless-stopped
     # supervisord stops its programs one priority group at a time, waiting
-    # for each to finish before signalling the next, so the budget is the
-    # sum of their stopwaitsecs and not the largest of them: 135s today,
-    # 155s once PR 4 adds relay-uwsgi at 20s. 160s covers that ceiling, and
-    # is set here once so PR 4's relay service needs no compose change.
-    # The realistic stop is nearer 90s -- only the two Celery workers use
-    # their full window, on warm shutdown with a task in flight.
+    # for each to finish before signalling the next, so a rung's budget is
+    # the sum of its programs' stopwaitsecs, not the largest of them. 160s
+    # is used uniformly across every supervisord-based service here, sized
+    # to the largest rung (all: 135s today, 155s once PR 4 adds
+    # relay-uwsgi at 20s) so no service needs its own tuned value. This
+    # web service actually runs role api, whose own rung sums to 30s
+    # (uwsgi 10 + daphne 10 + nginx 10) -- the realistic stop is nearer
+    # 90s, on the celery service's Celery workers using their full window
+    # on warm shutdown with a task in flight.
     stop_grace_period: 160s
     ports:
       - 9191:9191
@@ -132,6 +135,7 @@ services:
       web:
         condition: service_started
     volumes:
+      # PUID/PGID must match the web service (and any future relay service) — they share this /data volume, and only web/api's 03-init-dispatcharr.sh chowns it.
       - ./data:/data
       #- ./certs:/certs:ro  # TLS certificates (optional)
     extra_hosts:
