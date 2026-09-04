@@ -71,7 +71,13 @@ def gh_api(
     2026-09-01.
 
     Raises GhApiError with ``.status`` set on HTTP failure so callers can
-    distinguish 403 (no access) from 404 (feature disabled).
+    distinguish 403 (no access) from 404 (feature disabled); also raised
+    (with no ``.status``) when an object page doesn't have ``list_key`` —
+    a wrong/misspelled key must not silently come back as an empty list.
+    Omitting ``list_key`` entirely for an object-shaped endpoint is a
+    caller bug, not an API condition, so that raises ``TypeError`` instead
+    — callers must not be able to catch it as ``GhApiError`` and paper over
+    the programming error with a status.
     """
     full_path = f"/repos/{repo}{path}" if not path.startswith("http") else path
     if params:
@@ -91,8 +97,10 @@ def gh_api(
             records.extend(page)
         elif isinstance(page, dict):
             if list_key is None:
-                raise GhApiError(f"paginated object page for {path} needs list_key (keys: {sorted(page)})")
-            records.extend(page.get(list_key) or [])
+                raise TypeError(f"paginated object page for {path} needs list_key (keys: {sorted(page)})")
+            if list_key not in page:
+                raise GhApiError(f"page for {path} has no {list_key!r} (keys: {sorted(page)})")
+            records.extend(page[list_key] or [])
     return records
 
 

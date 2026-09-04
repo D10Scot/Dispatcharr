@@ -61,6 +61,37 @@ class GhApiTests(unittest.TestCase):
             from _fake_gh import calls
             self.assertIn("--slurp", calls(env)[0])
 
+    def test_wrong_list_key_raises_error_naming_it(self):
+        # A misspelled/wrong list_key must not silently come back as [] —
+        # that's the same silent-bad-data failure mode this task exists to fix.
+        with tempfile.TemporaryDirectory() as tmp:
+            env = fake_gh_env(tmp, {"/repos/o/r/actions/runs": {"total_count": 1, "workflow_runs": [{"id": 1}]}})
+            r = run_gh_api(
+                env,
+                "from _gh import gh_api, GhApiError\n"
+                "try:\n"
+                "    gh_api('o/r', '/actions/runs', list_key='workflow_run')\n"
+                "except GhApiError as e:\n"
+                "    print(e)",
+            )
+            self.assertIn("workflow_run", r.stdout)
+
+    def test_object_page_without_list_key_raises_typeerror(self):
+        # Omitting list_key for an object-shaped endpoint is a caller bug, not
+        # an API condition — it must not be catchable as GhApiError, which
+        # callers map to a status and would hide the programming error.
+        with tempfile.TemporaryDirectory() as tmp:
+            env = fake_gh_env(tmp, {"/repos/o/r/actions/runs": {"total_count": 1, "workflow_runs": [{"id": 1}]}})
+            r = run_gh_api(
+                env,
+                "from _gh import gh_api\n"
+                "try:\n"
+                "    gh_api('o/r', '/actions/runs')\n"
+                "except TypeError as e:\n"
+                "    print('TypeError:', e)",
+            )
+            self.assertIn("TypeError", r.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()
