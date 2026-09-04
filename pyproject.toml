@@ -42,6 +42,7 @@ dependencies = [
     # the repo has no dev/test dependency group yet and CI installs with --no-dev;
     # splitting out a [dependency-groups] dev group is a deliberate future refactor.
     "hypothesis>=6.165.10",
+    "coverage>=7.10",
 ]
 
 [build-system]
