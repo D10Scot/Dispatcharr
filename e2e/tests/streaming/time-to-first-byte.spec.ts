@@ -8,14 +8,13 @@ import { lockedProfile } from './helpers';
  * nginx (a `proxy_buffering`/`uwsgi_buffering`-style default buffer, 4k or
  * 8k) would still forward well inside a 10s window, so a 10s pass here
  * cannot tell an unbuffered response apart from a briefly-buffered one — see
- * the second test below, which is the actual spooling detector and needs a
- * starved upstream to make that distinction. What this test does verify: a
- * live channel answers with a valid, 188-byte-aligned TS packet within 10s
- * through whichever process serves `/proxy/ts/stream/<uuid>` — nginx today,
- * and unchanged after PR 4 gives that route its own nginx location, since
- * nothing about this assertion depends on which process answers the
- * request. It must exist before that routing changes and keep passing after
- * it.
+ * tests/streaming-greybox/nginx-stream-buffering.spec.ts, which pins the
+ * directive statically. What this test does verify: a live channel answers
+ * with a valid, 188-byte-aligned TS packet within 10s through whichever
+ * process serves `/proxy/ts/stream/<uuid>` — nginx today, and unchanged
+ * after PR 4 gives that route its own nginx location, since nothing about
+ * this assertion depends on which process answers the request. It must
+ * exist before that routing changes and keep passing after it.
  *
  * The measured elapsed time is logged unconditionally below; the
  * implementing PR copies that number, plus this 10s ceiling, into its

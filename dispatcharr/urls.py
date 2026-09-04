@@ -41,13 +41,17 @@ urlpatterns = [
     # stream_xc's get_object_or_404(User, ...) 404. See docs/superpowers/
     # plans/2026-09-04-phase1-pr2-ttfb-test.md's Spec amendments for why this
     # can't be fixed inside stream_xc itself.
+    # \Z, not $: `$` also matches just before a trailing '\n', so a
+    # %0A-suffixed channel_id would route (and, via _XC_STREAM_ID_RE's own
+    # \A...\Z in utils.py, would NOT be redacted) — the two would disagree on
+    # exactly that input. \Z matches only the absolute end of the string.
     re_path(
-        rf"^live/(?P<username>[^/]+)/(?P<password>[^/]+)/(?P<channel_id>{XC_STREAM_ID_PATTERN})$",
+        rf"^live/(?P<username>[^/]+)/(?P<password>[^/]+)/(?P<channel_id>{XC_STREAM_ID_PATTERN})\Z",
         stream_xc,
         name="xc_live_stream_endpoint",
     ),
     re_path(
-        rf"^(?P<username>[^/]+)/(?P<password>[^/]+)/(?P<channel_id>{XC_STREAM_ID_PATTERN})$",
+        rf"^(?P<username>[^/]+)/(?P<password>[^/]+)/(?P<channel_id>{XC_STREAM_ID_PATTERN})\Z",
         stream_xc,
         name="xc_stream_endpoint",
     ),

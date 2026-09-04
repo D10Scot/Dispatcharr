@@ -100,7 +100,7 @@ XTREAM_PATH_PREFIXES = frozenset({"live", "movie", "series", "timeshift"})
 # Shared with dispatcharr/urls.py's XC URL patterns (xc_stream_endpoint /
 # xc_live_stream_endpoint), so the URL resolver and this redaction path can
 # never disagree about what counts as a real Xtream channel id. Anchors are
-# the caller's job: this file wraps it in \A...\Z, urls.py in ^...$.
+# the caller's job: this file wraps it in \A...\Z.
 XC_STREAM_ID_PATTERN = r"\d+(?:\.[A-Za-z0-9]+)?"
 
 _XC_STREAM_ID_RE = re.compile(rf"\A{XC_STREAM_ID_PATTERN}\Z")

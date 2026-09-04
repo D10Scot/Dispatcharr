@@ -24,10 +24,10 @@ interface LocationBlock {
 
 /**
  * Parses `nginx -T`'s resolved config into every top-level `location` block,
- * by brace depth rather than a fixed indentation guess — `nginx -T` reflows
- * indentation from its own directive tree, not from the source file's
- * layout, so a naive "next line starting with the same number of spaces"
- * scan would be one nginx version away from silently matching nothing.
+ * by brace depth rather than a fixed indentation guess — `nginx -T` echoes
+ * the files verbatim under a `# configuration file …:` banner, so
+ * indentation is whatever the config author used, not something nginx
+ * normalises; brace depth is the only reliable structure.
  */
 function parseLocationBlocks(config: string): LocationBlock[] {
   const lines = config.split('\n');
@@ -87,6 +87,13 @@ function parseLocationBlocks(config: string): LocationBlock[] {
  * part of the relay split, must keep this passing — nothing about this
  * assertion depends on which upstream process nginx forwards to, only on
  * the directive nginx applies before it does.
+ *
+ * `@contract`, not `@characterization`, despite being on the `SUBPROCESS`
+ * allowlist (normally a `@characterization` signal, `docs/adr/0002`): the
+ * directive it pins is a load-bearing deploy fact that must survive the
+ * process split, not an implementation detail of the current single-process
+ * shape. A red run here is meant to block PR 4 by design, the way any other
+ * `@contract` test does.
  */
 test(
   'the /proxy/ location keeps uwsgi_buffering off',

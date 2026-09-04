@@ -541,7 +541,9 @@ every other three-segment URI with no trailing slash, and three groups of those 
 `/hdhr/<channel_profile>/discover.json` and its two siblings (`apps/hdhr/urls.py:28-30`),
 `/output/m3u/<profile_name>` and `/output/epg/<profile_name>` (`apps/output/urls.py:8-9`), and SPA
 deep links. `^~` on `/hdhr` and the new `^~ /output/` take the first two out of the regex's reach
-outright. SPA deep links stay in it and reach the same urlconf (D1), but D1 alone does not serve them: PR 2 narrows the XC pattern's `channel_id` to the numeric stream-id shape so they fall to Django's catch-all, and PR 2's test pins that. What must never happen is `^~` on `/`: it would take
+outright. SPA deep links stay in it and reach the same urlconf (D1), but D1 alone does not serve
+them: PR 2 narrows the XC pattern's `channel_id` to the numeric stream-id shape so they fall to
+Django's catch-all, and PR 2's test pins that. What must never happen is `^~` on `/`: it would take
 *every* URI out of regex reach, silently disabling the XC regex, the admin redirect and all four
 image caches at once.
 
@@ -1066,7 +1068,10 @@ resolve it, and each exists because a simpler arrangement provably does not boot
   and a one-branch `map` on a constant would be noise a reader has to disprove.
   `docker/init/03-init-dispatcharr.sh` gains a `RELAY_UPSTREAM` `sed` beside the `NGINX_PORT` one
   at `:64` (inside the same role gate PR 3 added), plus a numeric guard on
-  `DISPATCHARR_RELAY_PORT` matching the existing `DISPATCHARR_PORT` guard.
+  `DISPATCHARR_RELAY_PORT` matching the existing `DISPATCHARR_PORT` guard. Extend
+  `tests/streaming-greybox/nginx-stream-buffering.spec.ts`'s location filter (`/proxy/` today) to
+  every relay-bound location this PR adds, so the buffering-directive pin keeps covering the whole
+  relay surface, not just the one route it happened to be written against.
 - `apps/channels/tasks.py`: `get_dvr_stream_base_url()`'s AIO/dev/debug branch per D6.
   `apps/channels/tests/test_dvr_port_resolution.py`: the four `5656` assertions become `9191`, and
   a fifth test pins that `DISPATCHARR_PORT` is honoured in AIO.
