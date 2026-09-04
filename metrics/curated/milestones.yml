@@ -47,6 +47,8 @@ milestones:
   - {sha: ce15981f003e0515dd6ffb00b55d8fcd00340655, label: Issue remediation workflow, kind: goal, phase: agents, pr: 28, summary: "Reproduce first, second-model review, draft PR."}
   - {sha: b63e2cf9e2744d7961f74aef9d81c512d7da25e1, label: Hypothesis foundation, kind: goal, phase: agents, pr: 36, summary: "Property tests for TS realignment and log parsers."}
   - {sha: a6fc2b96142d008771edbea5232bcc60b619c609, label: Metrics collectors (M1), kind: goal, phase: agents, pr: 40, summary: "Collectors, history workflow, backfill."}
+  - {sha: d88c8bee140090d46fd5e8edd38f7990201cb981, label: Metrics dashboard (M3), kind: goal, phase: agents, pr: 46, summary: "Static no-build dashboard published to GitHub Pages, with dynamic family discovery."}
+  - {sha: 3d59dc5296920c6c30ac20404298e9900c94eb05, label: Metrics API collectors (M2), kind: goal, phase: agents, pr: 47, summary: "GitHub API collectors for security, delivery and agentic metrics, plus weekly frontend coverage."}
   - {sha: 0f41319ad6b0fd2cd943340f5cf2f3830b140dae, label: Phase 0 spec, kind: phase-start, phase: phase0, pr: 148, summary: "Six items and ADR 0004."}
   - {sha: 58bfba1e856e7db973b62a7e3c32b7e7bb40a97f, label: Credentials redacted, kind: incident, phase: phase0, pr: 154, summary: "Provider credentials no longer logged at INFO; regression guard in hook and CI."}
   - {sha: 75a68555b931e7d088bfbbd859b35e6e27064312, label: Phase 0 done, kind: phase-done, phase: phase0, pr: 155, summary: "All six items merged; the ruleset requires four result aggregates."}
