@@ -1,0 +1,22 @@
+phases:
+  - id: investigate
+    label: Investigate
+    summary: "Read before writing: a verified defect map."
+    headline_ids: [e2e_scenarios]
+  - id: phase0
+    label: Phase 0
+    summary: "Harden in place."
+    headline_ids: [codeql_open_critical_high]
+milestones:
+  - sha: BASE
+    label: v0.29.0 baseline
+    kind: phase-start
+    phase: investigate
+    pr: null
+    summary: "Fork divergence point."
+  - sha: SECOND
+    label: PR 2
+    kind: goal
+    phase: phase0
+    pr: 2
+    summary: "A goal."

@@ -1,0 +1,24 @@
+- id: unfenced-lease
+  title: "Ownership lease is not fenced"
+  area: correctness
+  severity: high
+  status: open
+  source: "CLAUDE.md#known-defects-and-traps"
+  issue: null
+  test: null
+  fixed_in: null
+  carried_as: null
+  first_seen: 2026-08-22
+  status_changed: 2026-08-22
+- id: m3u-quote
+  title: "Unescaped quote in EXTINF"
+  area: correctness
+  severity: medium
+  status: pinned
+  source: null
+  issue: 80
+  test: e2e/tests/seeded/output-m3u.spec.ts
+  fixed_in: null
+  carried_as: null
+  first_seen: 2026-08-29
+  status_changed: 2026-08-30
