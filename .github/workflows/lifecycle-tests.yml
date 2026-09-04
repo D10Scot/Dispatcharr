@@ -183,7 +183,11 @@ jobs:
       # every consumer, so every job exercises the same artifact rather than
       # one each job happened to build, and the build cost is paid once.
       - name: Build the image
-        run: docker build -f docker/Dockerfile -t dispatcharr-e2e:local .
+        env:
+          REPOSITORY_OWNER: ${{ github.repository_owner }}
+        run: |
+          REPO_OWNER="$(echo "$REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')"
+          docker build -f docker/Dockerfile --build-arg REPO_OWNER="$REPO_OWNER" -t dispatcharr-e2e:local .
 
       # Neither lifecycle spec uses the provider, but scripts/e2e_up.sh starts
       # it unconditionally and waits for /scenarios before starting

@@ -8,6 +8,7 @@ from apps.output.views import xc_player_api, xc_panel_api, xc_get, xc_xmltv
 from apps.proxy.live_proxy.views import stream_xc
 from apps.proxy.vod_proxy.views import stream_xc_movie, stream_xc_episode
 from apps.timeshift.views import timeshift_proxy, timeshift_proxy_query
+from dispatcharr.utils import XC_STREAM_ID_PATTERN
 
 urlpatterns = [
     # API Routes
@@ -32,13 +33,25 @@ urlpatterns = [
     re_path("panel_api.php", xc_panel_api, name="xc_panel_api"),
     re_path("get.php", xc_get, name="xc_get"),
     re_path("xmltv.php", xc_xmltv, name="xc_xmltv"),
-    path(
-        "live/<str:username>/<str:password>/<str:channel_id>",
+    # channel_id is constrained to XC_STREAM_ID_PATTERN (dispatcharr/utils.py) —
+    # the shape a real Xtream client sends: digits, optionally with an
+    # extension (stream_xc does pathlib.Path(channel_id).stem / .suffix, then
+    # int(channel_id)) — so a same-shaped SPA deep link (e.g.
+    # /settings/example/page) falls through to the SPA catch-all instead of
+    # stream_xc's get_object_or_404(User, ...) 404. See docs/superpowers/
+    # plans/2026-09-04-phase1-pr2-ttfb-test.md's Spec amendments for why this
+    # can't be fixed inside stream_xc itself.
+    # \Z, not $: `$` also matches just before a trailing '\n', so a
+    # %0A-suffixed channel_id would route (and, via _XC_STREAM_ID_RE's own
+    # \A...\Z in utils.py, would NOT be redacted) — the two would disagree on
+    # exactly that input. \Z matches only the absolute end of the string.
+    re_path(
+        rf"^live/(?P<username>[^/]+)/(?P<password>[^/]+)/(?P<channel_id>{XC_STREAM_ID_PATTERN})\Z",
         stream_xc,
         name="xc_live_stream_endpoint",
     ),
-    path(
-        "<str:username>/<str:password>/<str:channel_id>",
+    re_path(
+        rf"^(?P<username>[^/]+)/(?P<password>[^/]+)/(?P<channel_id>{XC_STREAM_ID_PATTERN})\Z",
         stream_xc,
         name="xc_stream_endpoint",
     ),

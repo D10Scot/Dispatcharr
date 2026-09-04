@@ -8,8 +8,10 @@
  * and would have been accepted silently in any new one.
  *
  * Four capabilities, four allowlists, in `./allowlist.ts`. Everything on those
- * lists is `@characterization` by construction: they are the calls that stop
- * meaning anything once the relay is its own process.
+ * lists is normally `@characterization`: they are the calls that stop meaning
+ * anything once the relay is its own process. The one exception documents
+ * itself in-file — see `tests/streaming-greybox/nginx-stream-buffering.spec.ts`'s
+ * own header for why it's `@contract` despite being `SUBPROCESS`-listed.
  *
  * Verified by mutation, and one of those mutations is the whole argument for
  * parsing over grep: adding `// we run pgrep here` as a **comment** to

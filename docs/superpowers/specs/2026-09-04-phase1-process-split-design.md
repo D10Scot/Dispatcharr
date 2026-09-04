@@ -420,12 +420,12 @@ The Main ruleset requires `E2E result`, `Lifecycle result`, `Backend result`, `F
 | # | Decision | Why |
 |---|---|---|
 | **D1** | **Same image, same Django settings, same urlconf in both processes; only the nginx location table and the uWSGI ini differ.** Role-scoped urlconfs are Phase 2+ hardening. | A misrouted request is served correctly by the wrong process, never 404 — the split degrades gracefully under any nginx-config mistake. Building two urlconfs now is the scope-widening `CLAUDE.md` names as the main failure mode. |
-| **D2** | **supervisord**, added to `pyproject.toml`/`uv.lock` in its own PR (PR 1), replaces the bash `pkill`-based `trap cleanup` in **every** `DISPATCHARR_ENV`, including `dev` and `debug`. Not s6, not uWSGI `attach-daemon`. | The venv is built once in `docker/DispatcharrBase` with `--no-dev --locked`, and `base-image.yml` rebuilds `:base` only on `main`, so a PR that both adds the dependency and execs it fails its own image build. Covering `dev`/`debug` too costs one extra program file per mode and avoids the outcome the route page warns about most: two supervision shapes that drift. The one casualty is `uwsgi.debug.ini:72`'s `honour-stdin = true`, which PR 3 removes: supervisord gives a child no controlling TTY, so uWSGI would hold a stdin that is never a terminal. Nothing is lost — debugpy attaches over TCP :5678 (`docker-compose.debug.yml`), never over stdin; the flag exists for an interactive `pdb`, which was already unreachable through `docker logs`. |
+| **D2** | **supervisord**, added to `pyproject.toml`/`uv.lock` in its own PR (PR 1), replaces the bash `pkill`-based `trap cleanup` in **every** `DISPATCHARR_ENV`, including `dev` and `debug`. Not s6, not uWSGI `attach-daemon`. | The venv is built once in `docker/DispatcharrBase` with `--no-dev --locked`, and `base-image.yml` rebuilds `:base` only on `main`, so a PR that both adds the dependency and execs it fails its own image build. Covering `dev`/`debug` too costs one extra program file per mode and avoids the outcome the route page warns about most: two supervision shapes that drift. The one casualty is `uwsgi.debug.ini:72`'s `honour-stdin = true`, which PR 3 removes: supervisord gives a child no controlling TTY, so uWSGI would hold a stdin that is never a terminal. Nothing is lost — debugpy attaches over TCP :5678 (`docker-compose.debug.yml`), never over stdin; the flag exists for an interactive `pdb`, which was already unreachable through `docker logs`. Landing the dependency alone is necessary but not sufficient for CI to ever exercise it: `e2e-tests.yml`, `lifecycle-tests.yml` and `scripts/e2e_up.sh` build `docker/Dockerfile` with no `REPO_OWNER` build-arg, which defaults to upstream (`ghcr.io/dispatcharr/dispatcharr:base`) rather than this fork's rebuilt `:base` — fixed in this same PR, discovered verifying PR 1's own done criteria rather than anticipated when this decision was written. |
 | **D3** | **`DISPATCHARR_ROLE` ∈ {`all`, `api`, `relay`, `worker`}**, orthogonal to `DISPATCHARR_ENV` ∈ {`aio`, `modular`, `dev`}. AIO defaults to `all`; the modular compose file's `web`/`relay`/`celery` services set `api`/`relay`/`worker`. | `DISPATCHARR_ENV` answers "where do Postgres and Redis run"; `DISPATCHARR_ROLE` answers "which programs does supervisord start in *this* container". Conflating them would need a third value nothing else reads. |
 | **D4** | **Every long-lived response surface moves to the relay in one PR (PR 4)**, not just live TS: VOD, catch-up and all six XC streaming root forms together. | If VOD or catch-up stay on the API process, `harakiri = 120` kills a two-hour movie at two minutes and the timeout the split exists to enable never applies. The route page calls this "free in step 1"; it is the point of step 1, not scope creep. |
 | **D5** | **The relay's uWSGI has exactly one listener, `socket = 0.0.0.0:5657` (uwsgi protocol). No `http =` listener.** | The relay's byte path (PR 4) and its control API (PR 7, `/proxy/relay/…`) are both plain Django views reached through nginx `uwsgi_pass` — the directive family `CLAUDE.md` records as load-bearing for `uwsgi_buffering off`. D9 routes Django's control calls through nginx as well, so nothing ever dials a raw HTTP port on the relay. This diverges from the brief's tentative "add `http = 127.0.0.1:5658`". |
 | **D6** | **`get_dvr_stream_base_url()`'s AIO/dev/debug branch changes from `http://127.0.0.1:5656` to `http://127.0.0.1:{DISPATCHARR_PORT:-9191}`** (nginx); the modular and explicit-override branches are unchanged. | The DVR fetches `/proxy/ts/stream/<uuid>` exactly like a player. Once PR 5 puts that route behind the authorize hop, a recording that bypasses nginx bypasses authorization. `apps/channels/tests/test_dvr_port_resolution.py`'s four `5656` assertions change in the same PR. |
-| **D7** | **`^~` goes on every specific non-root prefix location, never on `/`.** The four `proxy_cache` regexes move inside a new `location ^~ /api/ { … }`; the admin regex stays ahead of the XC regex; exact (`=`) locations carry no `^~`. | `^~` on `/` would disable every regex in the file, including the XC three-segment regex the change exists to add, the admin→`/login` redirect and all four image caches — `/` is the longest matching prefix for any URI no other prefix claims. Nesting the cache regexes inside `^~ /api/` keeps them reachable while `^~` protects `/api/`. SPA deep links that happen to be three segments with no trailing slash still fall to the XC regex and are served correctly by the relay (D1); PR 2's test pins that. |
+| **D7** | **`^~` goes on every specific non-root prefix location, never on `/`.** The four `proxy_cache` regexes move inside a new `location ^~ /api/ { … }`; the admin regex stays ahead of the XC regex; exact (`=`) locations carry no `^~`. | `^~` on `/` would disable every regex in the file, including the XC three-segment regex the change exists to add, the admin→`/login` redirect and all four image caches — `/` is the longest matching prefix for any URI no other prefix claims. Nesting the cache regexes inside `^~ /api/` keeps them reachable while `^~` protects `/api/`. SPA deep links that happen to be three segments with no trailing slash reach the same urlconf as the XC regex, courtesy of D1 — but D1 alone does not make them serve correctly: `stream_xc`'s `get_object_or_404(User, ...)` 404s on any non-matching username, and DRF's exception handler absorbs that `Http404` before Django's catch-all ever sees it. PR 2 narrows the XC pattern's `channel_id` segment (`dispatcharr/urls.py`, sharing the shape `dispatcharr/utils.py` already used privately for log redaction, now exported as `XC_STREAM_ID_PATTERN`) to the numeric-with-optional-extension shape a real Xtream stream id has, so a same-shaped SPA path falls through to the SPA catch-all instead; PR 2's test pins the fixed behaviour. |
 | **D8** | **`authorize_stream(request, surface, ...)` lives at `apps/proxy/authorize.py`, no new Django app.** Two callers: nginx `auth_request` (production) and an inline call from the stream views when the nginx marker is absent (dev `runserver`). | `apps/proxy/` already has a discovered test label (`apps.proxy.tests`), so a new module there is covered by CI routing on day one; a new app with no `tests/` dir selects zero backend tests silently. One function behind two callers makes "same gate everywhere" a property of the code. |
 | **D9** | **One internal base-URL resolver, shared by both directions.** `get_relay_control_base_url()` (Django→relay) and `get_control_plane_base_url()` (relay→Django) are two thin wrappers over one function using the DVR formula: explicit override (`DISPATCHARR_RELAY_BASE_URL` and `DISPATCHARR_INTERNAL_API_BASE_URL` respectively) → modular `http://{HOST}:{DISPATCHARR_PORT:-9191}` → AIO `http://127.0.0.1:{DISPATCHARR_PORT:-9191}`, with `HOST` being `DISPATCHARR_RELAY_HOST` (default `relay`) or `DISPATCHARR_WEB_HOST` (default `web`) respectively. **`/proxy/relay/` is gated by the internal token alone, with no source-IP allowlist.** | Two of the four roles have no local nginx to loop back to. The `worker` role runs `core/tasks.py:424 fetch_channel_stats`, `apps/m3u/tasks.py:62 ChannelService.stop_channels` and `apps/channels/tasks.py:2377`, and in modular it must reach the relay across the compose network; a loopback address would be connection-refused and `allow 127.0.0.1; deny all;` would reject its source address anyway. A source-IP allowlist does not survive a compose network, so the token is the whole gate. This replaces the earlier draft's "always the caller's local nginx" and the brief's Django-side `RELAYS` dict. |
 | **D10** | **Nothing under `apps/proxy/live_proxy/`, `apps/proxy/vod_proxy/` or `apps/timeshift/`'s streaming path imports `relay_client`.** The in-relay `ChannelService` static methods are untouched; only the six Django-side call sites move. | `ChannelService` statics are called 25 times *inside* the relay. Reimplementing them on `relay_client` would make the relay call itself over HTTP through an nginx it does not run, and would rewrite relay internals — the one thing this phase forbids. The facade splits by caller, not by symbol. |
@@ -541,8 +541,9 @@ every other three-segment URI with no trailing slash, and three groups of those 
 `/hdhr/<channel_profile>/discover.json` and its two siblings (`apps/hdhr/urls.py:28-30`),
 `/output/m3u/<profile_name>` and `/output/epg/<profile_name>` (`apps/output/urls.py:8-9`), and SPA
 deep links. `^~` on `/hdhr` and the new `^~ /output/` take the first two out of the regex's reach
-outright. SPA deep links stay in it, are answered correctly by the relay because the urlconf is
-identical (D1), and are pinned by PR 2's test. What must never happen is `^~` on `/`: it would take
+outright. SPA deep links stay in it and reach the same urlconf (D1), but D1 alone does not serve
+them: PR 2 narrows the XC pattern's `channel_id` to the numeric stream-id shape so they fall to
+Django's catch-all, and PR 2's test pins that. What must never happen is `^~` on `/`: it would take
 *every* URI out of regex reach, silently disabling the XC regex, the admin redirect and all four
 image caches at once.
 
@@ -821,8 +822,11 @@ scenarios for whenever PR 5 lands. Stopping after PR 7 means taking PR 8 whole.
 - No entrypoint or ini change. The dependency lands alone so `base-image.yml` rebuilds
   `ghcr.io/…:base` on `main` before any later PR execs `supervisord` in a CI-built image (D2).
 - **Done:** `uv lock --check` green in `lint.yml`; `Backend result` green — it runs in full,
-  because `pyproject.toml` is in `_SHARED_PATH_PREFIXES`; `E2E result` and `Lifecycle result` green
-  (the images build, proving `uv sync --locked` still resolves under `requires-python = ">=3.13"`).
+  because `pyproject.toml` is in `_SHARED_PATH_PREFIXES`; `base-image.yml`'s `docker` job green on
+  the PR itself (build-only on `pull_request`, `:148`; this is the real `uv sync --locked` proof,
+  run in the actual `DispatcharrBase` build stage against this branch's lockfile); `E2E result` and
+  `Lifecycle result` green, now built against this fork's own `:base` rather than upstream's
+  default (`docker/Dockerfile`'s `REPO_OWNER` build-arg, fixed in this same PR — see D2).
   After merge, `base-image.yml` runs on `main` and the new `:base` digest contains supervisord —
   confirmed by `docker run --rm <digest> /dispatcharrpy/bin/supervisord -v`, recorded in the PR.
 
@@ -830,19 +834,46 @@ scenarios for whenever PR 5 lands. Stopping after PR 7 means taking PR 8 whole.
 
 - New E2E spec in the `streaming` project, `@contract`: request `/proxy/ts/stream/<uuid>` through
   port 9191 and assert at least one 188-byte-aligned TS packet arrives within **N seconds, where
-  N ≤ 10**. Ten seconds is the ceiling: past it the assertion no longer distinguishes a live stream
-  from nginx spooling to disk, which is the only thing this test exists to catch. The implementing
-  PR measures the current value against G4's `streaming` timings and records both the measurement
-  and the chosen N in its description.
-- New E2E spec, same project, `@contract`: a three-segment root URI that is a valid SPA deep link
-  still serves the SPA shell, not a 404. Written **before** PR 4's routing change exists, on the
-  current single-process shape, so it is a real regression guard rather than a test written to
-  match the code.
+  N ≤ 10**. This is a liveness/routing guard across the relay split, not a spooling detector: at a
+  normal stream rate, buffered nginx would still forward well inside a 10s window, so a pass here
+  cannot by itself tell an unbuffered response apart from a briefly-buffered one. (A first attempt
+  at a *behavioural* spooling detector — a dead-air upstream, timed against how fast Dispatcharr's
+  own keep-alive packets arrive — was tried while implementing this PR and dropped: a from-open
+  dead-air connection gates its first keep-alive behind `channel_init_grace_period` (60s default,
+  `apps/proxy/config.py`), not the faster dead-air failover watchdog, so no ceiling under a minute
+  could discriminate buffered nginx from Dispatcharr's own unrelated initialization delay.) The
+  implementing PR measures the current value against G4's `streaming` timings and records both the
+  measurement and the chosen N in its description.
+- New E2E spec in the `streaming-greybox` project, `@contract`: reads the running container's
+  resolved nginx config (`docker exec <container> nginx -T`) and asserts every `location` block
+  targeting `/proxy/` sets `uwsgi_buffering off`. This is the actual spooling-detection pin — a
+  static configuration assertion rather than a timing-based behavioural one — for the trap this PR
+  exists to guard: nginx's `/proxy/` location must keep `uwsgi_buffering off` (docker/nginx.conf,
+  CLAUDE.md § Architecture), since a past bug used `proxy_buffering off` (the wrong directive family
+  for `uwsgi_pass`) and nginx silently spooled live TS to disk before forwarding it. Needs the
+  container-introspection capability; add its file to `e2e/tests/guards/allowlist.ts`'s `SUBPROCESS`
+  entry (it imports `node:child_process` directly) and confirm `e2e/tests/guards/capabilities.spec.ts`
+  still passes.
+- **`dispatcharr/urls.py`'s XC three-segment pattern (`xc_stream_endpoint`/`xc_live_stream_endpoint`) is
+  narrowed** to the numeric-with-optional-extension `channel_id` shape a real Xtream client sends
+  — the shape `dispatcharr/utils.py` already used privately for log redaction, now exported as
+  `XC_STREAM_ID_PATTERN` and shared rather than duplicated. Verified against the tree: today the
+  bare `<str:username>/<str:password>/<str:channel_id>` pattern captures every three-segment,
+  no-trailing-slash URI ahead of the SPA catch-all, and `stream_xc`'s
+  `get_object_or_404(User, ...)` 404s inside DRF's own exception handling before Django's root
+  handler — and therefore the SPA catch-all — ever sees it. No `apps/proxy/live_proxy/` change.
+- New E2E spec, same `streaming` project, `@contract`: a three-segment root URI that is a valid SPA
+  deep link still serves the SPA shell, not a 404. Written **before** PR 4's routing change exists,
+  on the current single-process shape, so it is a real regression guard — and, given the routing gap
+  just above, this PR's own fix for it, not a test written to match code that already worked.
 - `e2e/README.md:104` and `:111` corrected to name `e2e/tests/guards/allowlist.ts` +
   `capabilities.spec.ts`; `e2e/README.md:780` corrected — the live Main ruleset already requires
   `Lifecycle result`.
-- **Done:** both specs pass in the `streaming` project on `main`'s current shape; `E2E result`
-  green; `e2e/tests/guards/tags.spec.ts` passes (each new `test()` carries exactly one tag).
+- **Done:** all three specs pass — the liveness ceiling and SPA-shaped-route specs in the
+  `streaming` project, the nginx buffering-directive spec in `streaming-greybox` — on `main`'s
+  current shape; `E2E result` green; `e2e/tests/guards/tags.spec.ts` and
+  `e2e/tests/guards/capabilities.spec.ts` both pass (each new `test()` carries exactly one tag; the
+  nginx spec's subprocess use is on the `SUBPROCESS` allowlist).
 - **`CLAUDE.md` corrected:** § Testing, "five projects" → thirteen and "eight injectable faults" →
   twelve; the greybox-quarantine sentence naming the deleted file.
 
@@ -1040,7 +1071,10 @@ resolve it, and each exists because a simpler arrangement provably does not boot
   and a one-branch `map` on a constant would be noise a reader has to disprove.
   `docker/init/03-init-dispatcharr.sh` gains a `RELAY_UPSTREAM` `sed` beside the `NGINX_PORT` one
   at `:64` (inside the same role gate PR 3 added), plus a numeric guard on
-  `DISPATCHARR_RELAY_PORT` matching the existing `DISPATCHARR_PORT` guard.
+  `DISPATCHARR_RELAY_PORT` matching the existing `DISPATCHARR_PORT` guard. Extend
+  `tests/streaming-greybox/nginx-stream-buffering.spec.ts`'s location filter (`/proxy/` today) to
+  every relay-bound location this PR adds, so the buffering-directive pin keeps covering the whole
+  relay surface, not just the one route it happened to be written against.
 - `apps/channels/tasks.py`: `get_dvr_stream_base_url()`'s AIO/dev/debug branch per D6.
   `apps/channels/tests/test_dvr_port_resolution.py`: the four `5656` assertions become `9191`, and
   a fifth test pins that `DISPATCHARR_PORT` is honoured in AIO.
