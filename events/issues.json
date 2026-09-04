@@ -1,0 +1,2350 @@
+{
+ "detail": null,
+ "fetched_at": "2026-09-04T19:41:39+00:00",
+ "kind": "issues",
+ "records": [
+  {
+   "closed_at": null,
+   "created_at": "2026-09-04T16:50:30Z",
+   "id": 162,
+   "label_events": [
+    {
+     "at": "2026-09-04T16:50:31Z",
+     "event": "labeled",
+     "label": "agentic-workflows"
+    }
+   ],
+   "labels": [
+    "agentic-workflows"
+   ],
+   "state": "open",
+   "title": "[fuzz-hardening] test(output): Hypothesis property tests for output/vod helper surfaces",
+   "updated_at": "2026-09-04T16:50:30Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-09-04T05:23:04Z",
+   "id": 158,
+   "label_events": [
+    {
+     "at": "2026-09-04T05:23:05Z",
+     "event": "labeled",
+     "label": "agentic-workflows"
+    }
+   ],
+   "labels": [
+    "agentic-workflows"
+   ],
+   "state": "open",
+   "title": "[fuzz-hardening] test(epg): Hypothesis property tests for XMLTV/EPG parsing surfaces",
+   "updated_at": "2026-09-04T05:23:04Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-09-04T05:22:59Z",
+   "id": 157,
+   "label_events": [
+    {
+     "at": "2026-09-04T05:23:01Z",
+     "event": "labeled",
+     "label": "bug"
+    },
+    {
+     "at": "2026-09-04T05:23:01Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    },
+    {
+     "at": "2026-09-04T05:23:02Z",
+     "event": "labeled",
+     "label": "fuzzing"
+    },
+    {
+     "at": "2026-09-04T05:23:02Z",
+     "event": "labeled",
+     "label": "type:correctness"
+    },
+    {
+     "at": "2026-09-04T05:23:02Z",
+     "event": "labeled",
+     "label": "priority:p2"
+    }
+   ],
+   "labels": [
+    "bug",
+    "needs-triage",
+    "fuzzing",
+    "type:correctness",
+    "priority:p2"
+   ],
+   "state": "open",
+   "title": "[domain-fuzz] Programme index keys mismatch DB tvg_id for channel ids containing HTML-only entities (e.g. &NewLine;)",
+   "updated_at": "2026-09-04T05:22:59Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-09-04T05:22:59Z",
+   "id": 156,
+   "label_events": [
+    {
+     "at": "2026-09-04T05:23:00Z",
+     "event": "labeled",
+     "label": "bug"
+    },
+    {
+     "at": "2026-09-04T05:23:00Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    },
+    {
+     "at": "2026-09-04T05:23:00Z",
+     "event": "labeled",
+     "label": "fuzzing"
+    },
+    {
+     "at": "2026-09-04T05:23:01Z",
+     "event": "labeled",
+     "label": "type:crash"
+    },
+    {
+     "at": "2026-09-04T05:23:01Z",
+     "event": "labeled",
+     "label": "priority:p1"
+    }
+   ],
+   "labels": [
+    "bug",
+    "needs-triage",
+    "fuzzing",
+    "type:crash",
+    "priority:p1"
+   ],
+   "state": "open",
+   "title": "[domain-fuzz] Malformed XMLTV timestamp crashes the CurrentPrograms API fallback (uncaught ValueError in parse_xmltv_time)",
+   "updated_at": "2026-09-04T05:22:59Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-09-03T17:23:12Z",
+   "id": 147,
+   "label_events": [
+    {
+     "at": "2026-09-03T17:23:14Z",
+     "event": "labeled",
+     "label": "agentic-workflows"
+    }
+   ],
+   "labels": [
+    "agentic-workflows"
+   ],
+   "state": "open",
+   "title": "[issue-fix] fix(vod_proxy): import DRF Response so XC VOD credential failures return 401/403, not 500",
+   "updated_at": "2026-09-03T17:23:12Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-09-03T16:55:31Z",
+   "id": 146,
+   "label_events": [
+    {
+     "at": "2026-09-03T16:55:33Z",
+     "event": "labeled",
+     "label": "bug"
+    },
+    {
+     "at": "2026-09-03T16:55:33Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    },
+    {
+     "at": "2026-09-03T16:55:33Z",
+     "event": "labeled",
+     "label": "fuzzing"
+    },
+    {
+     "at": "2026-09-03T16:55:34Z",
+     "event": "labeled",
+     "label": "type:correctness"
+    },
+    {
+     "at": "2026-09-03T16:55:34Z",
+     "event": "labeled",
+     "label": "priority:p2"
+    }
+   ],
+   "labels": [
+    "bug",
+    "needs-triage",
+    "fuzzing",
+    "type:correctness",
+    "priority:p2"
+   ],
+   "state": "open",
+   "title": "[domain-fuzz] Negative ServerGroup credential counter is never repaired and silently disables the connection cap",
+   "updated_at": "2026-09-03T16:55:31Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-09-03T16:55:30Z",
+   "id": 145,
+   "label_events": [
+    {
+     "at": "2026-09-03T16:55:32Z",
+     "event": "labeled",
+     "label": "agentic-workflows"
+    }
+   ],
+   "labels": [
+    "agentic-workflows"
+   ],
+   "state": "open",
+   "title": "[fuzz-hardening] test(m3u): Hypothesis property tests for stream filters, numbering, and connection-pool counters",
+   "updated_at": "2026-09-03T16:55:30Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-09-03T05:17:07Z",
+   "id": 142,
+   "label_events": [
+    {
+     "at": "2026-09-03T05:17:08Z",
+     "event": "labeled",
+     "label": "agentic-workflows"
+    }
+   ],
+   "labels": [
+    "agentic-workflows"
+   ],
+   "state": "open",
+   "title": "[fuzz-hardening] test(timeshift): Hypothesis property tests for catch-up HTTP Range helpers",
+   "updated_at": "2026-09-03T05:17:07Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-09-03T05:17:02Z",
+   "id": 141,
+   "label_events": [
+    {
+     "at": "2026-09-03T05:17:04Z",
+     "event": "labeled",
+     "label": "bug"
+    },
+    {
+     "at": "2026-09-03T05:17:04Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    },
+    {
+     "at": "2026-09-03T05:17:04Z",
+     "event": "labeled",
+     "label": "fuzzing"
+    },
+    {
+     "at": "2026-09-03T05:17:04Z",
+     "event": "labeled",
+     "label": "type:correctness"
+    },
+    {
+     "at": "2026-09-03T05:17:04Z",
+     "event": "labeled",
+     "label": "priority:p2"
+    }
+   ],
+   "labels": [
+    "bug",
+    "needs-triage",
+    "fuzzing",
+    "type:correctness",
+    "priority:p2"
+   ],
+   "state": "open",
+   "title": "[domain-fuzz] Catch-up proxy emits invalid Content-Range/negative Content-Length for adversarial or suffix Range headers",
+   "updated_at": "2026-09-03T05:17:02Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-09-02T18:47:26Z",
+   "id": 140,
+   "label_events": [
+    {
+     "at": "2026-09-02T18:47:28Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    }
+   ],
+   "labels": [
+    "needs-triage"
+   ],
+   "state": "open",
+   "title": "EPG regional weighting is permanently inert: preferred-region is read at three dead sites",
+   "updated_at": "2026-09-02T18:47:26Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-09-02T18:08:53Z",
+   "id": 138,
+   "label_events": [
+    {
+     "at": "2026-09-02T18:08:54Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    }
+   ],
+   "labels": [
+    "needs-triage"
+   ],
+   "state": "open",
+   "title": "Recurring rules materialise unboundedly: the 14-day horizon in sync_recurring_rule_impl is dead code on every REST path",
+   "updated_at": "2026-09-02T18:08:53Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-09-02T18:08:31Z",
+   "id": 137,
+   "label_events": [
+    {
+     "at": "2026-09-02T18:08:32Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    },
+    {
+     "at": "2026-09-02T18:12:56Z",
+     "event": "unlabeled",
+     "label": "needs-triage"
+    }
+   ],
+   "labels": [],
+   "state": "open",
+   "title": "icon-only action controls on Stats and Backups have no accessible name",
+   "updated_at": "2026-09-02T18:12:57Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-09-02T17:01:44Z",
+   "id": 136,
+   "label_events": [
+    {
+     "at": "2026-09-02T17:01:45Z",
+     "event": "labeled",
+     "label": "agentic-workflows"
+    }
+   ],
+   "labels": [
+    "agentic-workflows"
+   ],
+   "state": "open",
+   "title": "[aw] Domain fuzz campaign failed",
+   "updated_at": "2026-09-02T17:01:44Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-09-02T12:31:02Z",
+   "id": 135,
+   "label_events": [
+    {
+     "at": "2026-09-02T12:31:04Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    },
+    {
+     "at": "2026-09-02T12:34:52Z",
+     "event": "unlabeled",
+     "label": "needs-triage"
+    },
+    {
+     "at": "2026-09-02T12:34:54Z",
+     "event": "labeled",
+     "label": "wontfix"
+    }
+   ],
+   "labels": [
+    "wontfix"
+   ],
+   "state": "open",
+   "title": "Ad-hoc recordings lose their channel subdirectory: _build_output_paths' channel.name fallback is dead code",
+   "updated_at": "2026-09-02T12:34:55Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-09-02T12:19:42Z",
+   "id": 134,
+   "label_events": [
+    {
+     "at": "2026-09-02T12:19:44Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    },
+    {
+     "at": "2026-09-02T12:23:57Z",
+     "event": "unlabeled",
+     "label": "needs-triage"
+    }
+   ],
+   "labels": [],
+   "state": "open",
+   "title": "XC API returns 401 for a network-blocked user, not 403, and logs no event on player_api.php",
+   "updated_at": "2026-09-02T12:23:57Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-09-02T11:58:11Z",
+   "id": 133,
+   "label_events": [
+    {
+     "at": "2026-09-02T11:58:12Z",
+     "event": "labeled",
+     "label": "agentic-workflows"
+    }
+   ],
+   "labels": [
+    "agentic-workflows"
+   ],
+   "state": "open",
+   "title": "[aw] Issue triage is missing required data",
+   "updated_at": "2026-09-02T11:58:11Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-09-02T11:49:22Z",
+   "id": 132,
+   "label_events": [
+    {
+     "at": "2026-09-02T11:49:24Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    }
+   ],
+   "labels": [
+    "needs-triage"
+   ],
+   "state": "open",
+   "title": "Three of the seven DVR WebSocket events carry no recording_id",
+   "updated_at": "2026-09-02T11:49:22Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-09-02T11:49:17Z",
+   "id": 131,
+   "label_events": [
+    {
+     "at": "2026-09-02T11:49:19Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    },
+    {
+     "at": "2026-09-02T11:53:08Z",
+     "event": "labeled",
+     "label": "needs-info"
+    },
+    {
+     "at": "2026-09-02T11:53:09Z",
+     "event": "unlabeled",
+     "label": "needs-triage"
+    }
+   ],
+   "labels": [
+    "needs-info"
+   ],
+   "state": "open",
+   "title": "Concurrent recordings at an identical start_time can permanently and silently fail to schedule",
+   "updated_at": "2026-09-02T11:53:09Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-09-01T21:53:46Z",
+   "id": 129,
+   "label_events": [
+    {
+     "at": "2026-09-01T21:53:47Z",
+     "event": "labeled",
+     "label": "bug"
+    }
+   ],
+   "labels": [
+    "bug"
+   ],
+   "state": "open",
+   "title": "A failed pg_upgrade is reported as 'Upgrade complete' and the empty new cluster replaces the old data",
+   "updated_at": "2026-09-01T21:53:46Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-09-01T21:20:54Z",
+   "id": 128,
+   "label_events": [
+    {
+     "at": "2026-09-01T21:20:56Z",
+     "event": "labeled",
+     "label": "bug"
+    }
+   ],
+   "labels": [
+    "bug"
+   ],
+   "state": "open",
+   "title": "TLS cert validation raises a raw PermissionError instead of its own ImproperlyConfigured when the app user cannot read the file",
+   "updated_at": "2026-09-01T21:20:54Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-09-01T17:12:13Z",
+   "id": 121,
+   "label_events": [
+    {
+     "at": "2026-09-01T17:12:14Z",
+     "event": "labeled",
+     "label": "agentic-workflows"
+    }
+   ],
+   "labels": [
+    "agentic-workflows"
+   ],
+   "state": "open",
+   "title": "[fuzz-hardening] test(live-relay): Hypothesis property tests for buffer positioning and fMP4 fragment parsing",
+   "updated_at": "2026-09-01T17:12:13Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-09-01T17:12:09Z",
+   "id": 120,
+   "label_events": [
+    {
+     "at": "2026-09-01T17:12:10Z",
+     "event": "labeled",
+     "label": "bug"
+    },
+    {
+     "at": "2026-09-01T17:12:11Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    },
+    {
+     "at": "2026-09-01T17:12:11Z",
+     "event": "labeled",
+     "label": "fuzzing"
+    },
+    {
+     "at": "2026-09-01T17:12:11Z",
+     "event": "labeled",
+     "label": "type:reliability"
+    },
+    {
+     "at": "2026-09-01T17:12:11Z",
+     "event": "labeled",
+     "label": "priority:p3"
+    }
+   ],
+   "labels": [
+    "bug",
+    "needs-triage",
+    "fuzzing",
+    "type:reliability",
+    "priority:p3"
+   ],
+   "state": "open",
+   "title": "[domain-fuzz] Channel status endpoints: one corrupt numeric Redis field blanks (basic) or 500s (detailed) the whole channel status payload",
+   "updated_at": "2026-09-01T17:12:09Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-09-01T17:12:08Z",
+   "id": 119,
+   "label_events": [
+    {
+     "at": "2026-09-01T17:12:10Z",
+     "event": "labeled",
+     "label": "bug"
+    },
+    {
+     "at": "2026-09-01T17:12:11Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    },
+    {
+     "at": "2026-09-01T17:12:11Z",
+     "event": "labeled",
+     "label": "fuzzing"
+    },
+    {
+     "at": "2026-09-01T17:12:11Z",
+     "event": "labeled",
+     "label": "type:correctness"
+    },
+    {
+     "at": "2026-09-01T17:12:12Z",
+     "event": "labeled",
+     "label": "priority:p3"
+    }
+   ],
+   "labels": [
+    "bug",
+    "needs-triage",
+    "fuzzing",
+    "type:correctness",
+    "priority:p3"
+   ],
+   "state": "open",
+   "title": "[domain-fuzz] fMP4 desync recovery silently gives up when garbage bytes parse as a large box length",
+   "updated_at": "2026-09-01T17:12:08Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-09-01T13:08:48Z",
+   "id": 111,
+   "label_events": [
+    {
+     "at": "2026-09-01T13:08:50Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    },
+    {
+     "at": "2026-09-01T13:13:33Z",
+     "event": "labeled",
+     "label": "wontfix"
+    },
+    {
+     "at": "2026-09-01T13:13:34Z",
+     "event": "unlabeled",
+     "label": "needs-triage"
+    }
+   ],
+   "labels": [
+    "wontfix"
+   ],
+   "state": "open",
+   "title": "A non-UTC provider server_info.timezone silently truncates the requested catch-up start to the minute",
+   "updated_at": "2026-09-01T13:13:34Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-09-01T12:48:04Z",
+   "id": 110,
+   "label_events": [
+    {
+     "at": "2026-09-01T12:48:06Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    }
+   ],
+   "labels": [
+    "needs-triage"
+   ],
+   "state": "open",
+   "title": "stream_xc_movie, stream_xc_episode and stream_vod apply no is_adult filter, so a hidden movie is streamable",
+   "updated_at": "2026-09-01T12:48:14Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-09-01T05:47:03Z",
+   "id": 109,
+   "label_events": [
+    {
+     "at": "2026-09-01T05:47:05Z",
+     "event": "labeled",
+     "label": "agentic-workflows"
+    }
+   ],
+   "labels": [
+    "agentic-workflows"
+   ],
+   "state": "open",
+   "title": "[aw] Domain fuzz campaign failed",
+   "updated_at": "2026-09-02T05:06:55Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-08-31T19:40:08Z",
+   "id": 108,
+   "label_events": [
+    {
+     "at": "2026-08-31T19:40:09Z",
+     "event": "labeled",
+     "label": "agentic-workflows"
+    }
+   ],
+   "labels": [
+    "agentic-workflows"
+   ],
+   "state": "open",
+   "title": "[aw] Issue remediation hit engine rate limit (HTTP 429)",
+   "updated_at": "2026-08-31T19:40:08Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-08-31T17:16:37Z",
+   "id": 107,
+   "label_events": [
+    {
+     "at": "2026-08-31T17:16:38Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    },
+    {
+     "at": "2026-08-31T17:16:38Z",
+     "event": "labeled",
+     "label": "priority:p1"
+    }
+   ],
+   "labels": [
+    "needs-triage",
+    "priority:p1"
+   ],
+   "state": "open",
+   "title": "[codeql] js/incomplete-url-substring-sanitization: Incomplete URL substring sanitization (frontend/src/components/__tests__/PluginDetailPanel.test.jsx:305)",
+   "updated_at": "2026-08-31T17:16:37Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-08-31T17:16:34Z",
+   "id": 106,
+   "label_events": [
+    {
+     "at": "2026-08-31T17:16:36Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    },
+    {
+     "at": "2026-08-31T17:16:36Z",
+     "event": "labeled",
+     "label": "priority:p1"
+    }
+   ],
+   "labels": [
+    "needs-triage",
+    "priority:p1"
+   ],
+   "state": "open",
+   "title": "[codeql] js/incomplete-url-substring-sanitization: Incomplete URL substring sanitization (frontend/src/components/__tests__/PluginDetailPanel.test.jsx:293)",
+   "updated_at": "2026-08-31T17:16:34Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-08-31T17:16:32Z",
+   "id": 105,
+   "label_events": [
+    {
+     "at": "2026-08-31T17:16:34Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    },
+    {
+     "at": "2026-08-31T17:16:34Z",
+     "event": "labeled",
+     "label": "priority:p1"
+    }
+   ],
+   "labels": [
+    "needs-triage",
+    "priority:p1"
+   ],
+   "state": "open",
+   "title": "[codeql] py/full-ssrf: Full server-side request forgery (apps/plugins/api_views.py:1267)",
+   "updated_at": "2026-08-31T17:16:32Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-08-31T17:16:29Z",
+   "id": 104,
+   "label_events": [
+    {
+     "at": "2026-08-31T17:16:31Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    },
+    {
+     "at": "2026-08-31T17:16:31Z",
+     "event": "labeled",
+     "label": "priority:p1"
+    }
+   ],
+   "labels": [
+    "needs-triage",
+    "priority:p1"
+   ],
+   "state": "open",
+   "title": "[codeql] py/full-ssrf: Full server-side request forgery (apps/plugins/api_views.py:1149)",
+   "updated_at": "2026-08-31T17:16:29Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-08-31T17:16:27Z",
+   "id": 103,
+   "label_events": [
+    {
+     "at": "2026-08-31T17:16:28Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    },
+    {
+     "at": "2026-08-31T17:16:29Z",
+     "event": "labeled",
+     "label": "priority:p1"
+    }
+   ],
+   "labels": [
+    "needs-triage",
+    "priority:p1"
+   ],
+   "state": "open",
+   "title": "[codeql] py/full-ssrf: Full server-side request forgery (apps/plugins/api_views.py:780)",
+   "updated_at": "2026-08-31T17:16:27Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-08-31T06:17:44Z",
+   "id": 102,
+   "label_events": [
+    {
+     "at": "2026-08-31T06:17:44Z",
+     "event": "labeled",
+     "label": "agentic-workflows"
+    }
+   ],
+   "labels": [
+    "agentic-workflows"
+   ],
+   "state": "open",
+   "title": "[aw] Domain fuzz campaign hit engine rate limit (HTTP 429)",
+   "updated_at": "2026-08-31T19:26:18Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-08-31T01:25:34Z",
+   "id": 101,
+   "label_events": [
+    {
+     "at": "2026-08-31T01:25:36Z",
+     "event": "labeled",
+     "label": "agentic-workflows"
+    }
+   ],
+   "labels": [
+    "agentic-workflows"
+   ],
+   "state": "open",
+   "title": "[aw] Issue triage produced no safe outputs",
+   "updated_at": "2026-08-31T01:25:34Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-08-31T01:24:03Z",
+   "id": 100,
+   "label_events": [
+    {
+     "at": "2026-08-31T01:24:04Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    },
+    {
+     "at": "2026-08-31T01:29:41Z",
+     "event": "labeled",
+     "label": "ready-for-agent"
+    },
+    {
+     "at": "2026-08-31T01:29:42Z",
+     "event": "unlabeled",
+     "label": "needs-triage"
+    }
+   ],
+   "labels": [
+    "ready-for-agent"
+   ],
+   "state": "open",
+   "title": "stream_xc_movie and stream_xc_episode 500 on wrong/missing xc_password: Response is never imported",
+   "updated_at": "2026-09-01T12:56:39Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-08-31T01:21:43Z",
+   "id": 99,
+   "label_events": [
+    {
+     "at": "2026-08-31T01:21:45Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    }
+   ],
+   "labels": [
+    "needs-triage"
+   ],
+   "state": "open",
+   "title": "stream_xc_episode's DoesNotExist guard is dead after .first(), so an unknown episode id is a 500",
+   "updated_at": "2026-08-31T01:21:43Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-08-31T01:20:19Z",
+   "id": 98,
+   "label_events": [
+    {
+     "at": "2026-08-31T01:20:21Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    }
+   ],
+   "labels": [
+    "needs-triage"
+   ],
+   "state": "open",
+   "title": "An unsatisfiable Range on a VOD session's first request is a 500, not a 416",
+   "updated_at": "2026-09-02T18:50:59Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-08-31T01:19:51Z",
+   "id": 97,
+   "label_events": [
+    {
+     "at": "2026-08-31T01:19:52Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    }
+   ],
+   "labels": [
+    "needs-triage"
+   ],
+   "state": "open",
+   "title": "xc_get_vod_info gates the detailed_info merge on Movie.custom_properties while reading the relation's",
+   "updated_at": "2026-08-31T01:19:51Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-08-30T20:39:05Z",
+   "id": 96,
+   "label_events": [
+    {
+     "at": "2026-08-30T20:39:06Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    }
+   ],
+   "labels": [
+    "needs-triage"
+   ],
+   "state": "open",
+   "title": "VODCategoryFilter.m3u_account names a relation VODCategory does not have, so the filter is a 500",
+   "updated_at": "2026-08-30T20:42:17Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-08-30T20:24:33Z",
+   "id": 95,
+   "label_events": [
+    {
+     "at": "2026-08-30T20:24:34Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    },
+    {
+     "at": "2026-08-30T20:28:12Z",
+     "event": "unlabeled",
+     "label": "needs-triage"
+    },
+    {
+     "at": "2026-08-30T20:28:13Z",
+     "event": "labeled",
+     "label": "ready-for-agent"
+    }
+   ],
+   "labels": [
+    "ready-for-agent"
+   ],
+   "state": "open",
+   "title": "hide_adult_content is not applied on the catch-up path: an adult channel is unlistable but still streamable",
+   "updated_at": "2026-08-30T20:28:13Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-08-30T20:08:32Z",
+   "id": 94,
+   "label_events": [
+    {
+     "at": "2026-08-30T20:08:34Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    },
+    {
+     "at": "2026-08-30T20:12:27Z",
+     "event": "unlabeled",
+     "label": "needs-triage"
+    },
+    {
+     "at": "2026-08-30T20:12:29Z",
+     "event": "labeled",
+     "label": "ready-for-agent"
+    }
+   ],
+   "labels": [
+    "ready-for-agent"
+   ],
+   "state": "open",
+   "title": "Generated M3U advertises no catchup= attribute, so M3U-only clients cannot discover working catch-up",
+   "updated_at": "2026-08-30T20:12:30Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-08-30T17:12:45Z",
+   "id": 92,
+   "label_events": [
+    {
+     "at": "2026-08-30T17:12:47Z",
+     "event": "labeled",
+     "label": "agentic-workflows"
+    }
+   ],
+   "labels": [
+    "agentic-workflows"
+   ],
+   "state": "open",
+   "title": "[fuzz-hardening] test(output,vod): add Hypothesis property tests for output-API helper surfaces",
+   "updated_at": "2026-08-30T17:12:45Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-08-30T17:12:41Z",
+   "id": 91,
+   "label_events": [
+    {
+     "at": "2026-08-30T17:12:42Z",
+     "event": "labeled",
+     "label": "bug"
+    },
+    {
+     "at": "2026-08-30T17:12:42Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    },
+    {
+     "at": "2026-08-30T17:12:43Z",
+     "event": "labeled",
+     "label": "fuzzing"
+    },
+    {
+     "at": "2026-08-30T17:12:43Z",
+     "event": "labeled",
+     "label": "type:correctness"
+    },
+    {
+     "at": "2026-08-30T17:12:43Z",
+     "event": "labeled",
+     "label": "priority:p2"
+    }
+   ],
+   "labels": [
+    "bug",
+    "needs-triage",
+    "fuzzing",
+    "type:correctness",
+    "priority:p2"
+   ],
+   "state": "open",
+   "title": "[domain-fuzz] XC get_short_epg/get_simple_data_table 500 on non-numeric `limit` query param (unguarded int())",
+   "updated_at": "2026-08-30T17:12:41Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-08-30T17:12:40Z",
+   "id": 90,
+   "label_events": [
+    {
+     "at": "2026-08-30T17:12:42Z",
+     "event": "labeled",
+     "label": "bug"
+    },
+    {
+     "at": "2026-08-30T17:12:42Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    },
+    {
+     "at": "2026-08-30T17:12:43Z",
+     "event": "labeled",
+     "label": "fuzzing"
+    },
+    {
+     "at": "2026-08-30T17:12:43Z",
+     "event": "labeled",
+     "label": "type:crash"
+    },
+    {
+     "at": "2026-08-30T17:12:43Z",
+     "event": "labeled",
+     "label": "priority:p1"
+    }
+   ],
+   "labels": [
+    "bug",
+    "needs-triage",
+    "fuzzing",
+    "type:crash",
+    "priority:p1"
+   ],
+   "state": "open",
+   "title": "[domain-fuzz] Provider-controlled channel names crash dummy-EPG generation (ValueError escapes into XMLTV export)",
+   "updated_at": "2026-08-30T17:12:40Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-08-30T16:39:21Z",
+   "id": 89,
+   "label_events": [
+    {
+     "at": "2026-08-30T16:43:06Z",
+     "event": "labeled",
+     "label": "ready-for-agent"
+    }
+   ],
+   "labels": [
+    "ready-for-agent"
+   ],
+   "state": "open",
+   "title": "Provider credentials can reach an unauthenticated client in a 500 response body from the VOD proxy",
+   "updated_at": "2026-08-30T16:43:07Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-08-30T14:20:05Z",
+   "id": 87,
+   "label_events": [
+    {
+     "at": "2026-08-30T14:20:06Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    },
+    {
+     "at": "2026-08-30T14:24:00Z",
+     "event": "labeled",
+     "label": "wontfix"
+    },
+    {
+     "at": "2026-08-30T14:24:01Z",
+     "event": "unlabeled",
+     "label": "needs-triage"
+    }
+   ],
+   "labels": [
+    "wontfix"
+   ],
+   "state": "open",
+   "title": "stream_xc omits the is_adult and hidden_from_output filters every listing path applies",
+   "updated_at": "2026-08-30T14:24:02Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-08-30T12:50:47Z",
+   "id": 86,
+   "label_events": [],
+   "labels": [],
+   "state": "open",
+   "title": "Flaky E2E test: channel-profiles.spec.ts 'bulk-update sets several memberships in one call' fails under parallel load",
+   "updated_at": "2026-08-30T14:55:13Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-08-30T12:36:26Z",
+   "id": 85,
+   "label_events": [
+    {
+     "at": "2026-08-30T12:36:27Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    },
+    {
+     "at": "2026-08-30T12:42:08Z",
+     "event": "labeled",
+     "label": "ready-for-human"
+    },
+    {
+     "at": "2026-08-30T12:42:09Z",
+     "event": "unlabeled",
+     "label": "needs-triage"
+    }
+   ],
+   "labels": [
+    "ready-for-human"
+   ],
+   "state": "open",
+   "title": "xc_get_live_categories filters user_level exactly instead of __lte for profiled users",
+   "updated_at": "2026-08-30T12:42:09Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-08-30T12:15:16Z",
+   "id": 84,
+   "label_events": [
+    {
+     "at": "2026-08-30T12:15:17Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    }
+   ],
+   "labels": [
+    "needs-triage"
+   ],
+   "state": "open",
+   "title": "XC player_api.php distinguishes an unknown username (404) from a wrong password (401)",
+   "updated_at": "2026-08-30T12:15:16Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-08-30T11:57:47Z",
+   "id": 83,
+   "label_events": [
+    {
+     "at": "2026-08-30T11:57:48Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    },
+    {
+     "at": "2026-08-30T12:01:27Z",
+     "event": "labeled",
+     "label": "needs-info"
+    },
+    {
+     "at": "2026-08-30T12:01:27Z",
+     "event": "labeled",
+     "label": "ready-for-agent"
+    },
+    {
+     "at": "2026-08-30T12:01:28Z",
+     "event": "unlabeled",
+     "label": "needs-triage"
+    }
+   ],
+   "labels": [
+    "needs-info",
+    "ready-for-agent"
+   ],
+   "state": "open",
+   "title": "HDHomeRun device.xml never reflects a configured HDHRDevice row, unlike discover.json",
+   "updated_at": "2026-08-30T12:01:29Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-08-30T11:43:06Z",
+   "id": 82,
+   "label_events": [
+    {
+     "at": "2026-08-30T11:43:07Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    },
+    {
+     "at": "2026-08-30T11:47:20Z",
+     "event": "labeled",
+     "label": "ready-for-human"
+    },
+    {
+     "at": "2026-08-30T11:47:21Z",
+     "event": "unlabeled",
+     "label": "needs-triage"
+    }
+   ],
+   "labels": [
+    "ready-for-human"
+   ],
+   "state": "open",
+   "title": "HDHomeRun endpoints apply no authorization: AllowAny with no principal",
+   "updated_at": "2026-08-30T11:47:21Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-08-30T11:09:43Z",
+   "id": 81,
+   "label_events": [
+    {
+     "at": "2026-08-30T11:13:58Z",
+     "event": "labeled",
+     "label": "ready-for-agent"
+    }
+   ],
+   "labels": [
+    "ready-for-agent"
+   ],
+   "state": "open",
+   "title": "nginx sets X-Forwarded-* with proxy_set_header, which has no effect on the uwsgi_pass locations",
+   "updated_at": "2026-08-30T11:13:59Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-08-30T10:51:23Z",
+   "id": 80,
+   "label_events": [],
+   "labels": [],
+   "state": "open",
+   "title": "M3U output: unescaped double quote in tvg-name/group-title breaks EXTINF line",
+   "updated_at": "2026-08-30T10:51:23Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-08-30T06:06:37Z",
+   "id": 76,
+   "label_events": [
+    {
+     "at": "2026-08-30T06:06:39Z",
+     "event": "labeled",
+     "label": "bug"
+    },
+    {
+     "at": "2026-08-30T06:06:39Z",
+     "event": "labeled",
+     "label": "fuzzing"
+    },
+    {
+     "at": "2026-08-30T06:06:39Z",
+     "event": "labeled",
+     "label": "type:crash"
+    },
+    {
+     "at": "2026-08-30T06:06:39Z",
+     "event": "labeled",
+     "label": "priority:p1"
+    }
+   ],
+   "labels": [
+    "bug",
+    "fuzzing",
+    "type:crash",
+    "priority:p1"
+   ],
+   "state": "open",
+   "title": "[domain-fuzz] Malformed XMLTV timestamp crashes the Current Programs API (uncaught ValueError in now-playing lookup)",
+   "updated_at": "2026-08-30T06:06:37Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-08-30T06:06:37Z",
+   "id": 75,
+   "label_events": [
+    {
+     "at": "2026-08-30T06:06:39Z",
+     "event": "labeled",
+     "label": "bug"
+    },
+    {
+     "at": "2026-08-30T06:06:39Z",
+     "event": "labeled",
+     "label": "fuzzing"
+    },
+    {
+     "at": "2026-08-30T06:06:39Z",
+     "event": "labeled",
+     "label": "type:correctness"
+    },
+    {
+     "at": "2026-08-30T06:06:39Z",
+     "event": "labeled",
+     "label": "priority:p1"
+    }
+   ],
+   "labels": [
+    "bug",
+    "fuzzing",
+    "type:correctness",
+    "priority:p1"
+   ],
+   "state": "open",
+   "title": "[domain-fuzz] XMLTV timezone offset without a space is silently ignored, shifting all programme times",
+   "updated_at": "2026-08-30T06:06:37Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-08-30T06:06:36Z",
+   "id": 74,
+   "label_events": [
+    {
+     "at": "2026-08-30T06:06:37Z",
+     "event": "labeled",
+     "label": "fuzzing"
+    },
+    {
+     "at": "2026-08-30T06:06:37Z",
+     "event": "labeled",
+     "label": "agentic-workflows"
+    }
+   ],
+   "labels": [
+    "fuzzing",
+    "agentic-workflows"
+   ],
+   "state": "open",
+   "title": "[fuzz-hardening] test(epg): add Hypothesis property tests for XMLTV/SD parsing surfaces",
+   "updated_at": "2026-08-30T06:06:36Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-08-29T20:58:33Z",
+   "id": 73,
+   "label_events": [
+    {
+     "at": "2026-08-29T20:58:34Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    },
+    {
+     "at": "2026-08-29T21:02:29Z",
+     "event": "unlabeled",
+     "label": "needs-triage"
+    },
+    {
+     "at": "2026-08-29T21:02:31Z",
+     "event": "labeled",
+     "label": "wontfix"
+    },
+    {
+     "at": "2026-08-29T22:46:20Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    },
+    {
+     "at": "2026-08-29T22:46:20Z",
+     "event": "unlabeled",
+     "label": "wontfix"
+    }
+   ],
+   "labels": [
+    "needs-triage"
+   ],
+   "state": "open",
+   "title": "Plugin enable/disable switches have no accessible name, so they are unreachable by role",
+   "updated_at": "2026-08-29T22:46:20Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-08-29T20:49:15Z",
+   "id": 72,
+   "label_events": [
+    {
+     "at": "2026-08-29T20:49:16Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    }
+   ],
+   "labels": [
+    "needs-triage"
+   ],
+   "state": "open",
+   "title": "Concurrent channel and profile creation can 500: two bulk_create calls race on ChannelProfileMembership's unique_together",
+   "updated_at": "2026-08-29T20:49:15Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-08-29T17:25:04Z",
+   "id": 71,
+   "label_events": [
+    {
+     "at": "2026-08-29T17:28:46Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    },
+    {
+     "at": "2026-08-29T17:29:29Z",
+     "event": "unlabeled",
+     "label": "needs-triage"
+    },
+    {
+     "at": "2026-08-29T20:34:37Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    }
+   ],
+   "labels": [
+    "needs-triage"
+   ],
+   "state": "open",
+   "title": "Upcoming custom recordings with no EPG program data all collapse into one grouped card",
+   "updated_at": "2026-08-29T20:34:37Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-08-29T17:16:02Z",
+   "id": 70,
+   "label_events": [
+    {
+     "at": "2026-08-29T17:16:04Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    }
+   ],
+   "labels": [
+    "needs-triage"
+   ],
+   "state": "open",
+   "title": "A failed auto channel sync is reported as a successful refresh",
+   "updated_at": "2026-08-29T20:33:27Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-08-29T17:11:50Z",
+   "id": 69,
+   "label_events": [
+    {
+     "at": "2026-08-29T17:11:52Z",
+     "event": "labeled",
+     "label": "fuzzing"
+    },
+    {
+     "at": "2026-08-29T17:11:52Z",
+     "event": "labeled",
+     "label": "agentic-workflows"
+    }
+   ],
+   "labels": [
+    "fuzzing",
+    "agentic-workflows"
+   ],
+   "state": "open",
+   "title": "[fuzz-hardening] test(m3u): add Hypothesis property tests for M3U ingestion parsing, credentials, and retry surfaces",
+   "updated_at": "2026-08-29T17:11:50Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-08-29T17:11:45Z",
+   "id": 68,
+   "label_events": [
+    {
+     "at": "2026-08-29T17:11:46Z",
+     "event": "labeled",
+     "label": "bug"
+    },
+    {
+     "at": "2026-08-29T17:11:46Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    },
+    {
+     "at": "2026-08-29T17:11:46Z",
+     "event": "labeled",
+     "label": "fuzzing"
+    },
+    {
+     "at": "2026-08-29T17:11:47Z",
+     "event": "labeled",
+     "label": "type:correctness"
+    },
+    {
+     "at": "2026-08-29T17:11:47Z",
+     "event": "labeled",
+     "label": "priority:p3"
+    }
+   ],
+   "labels": [
+    "bug",
+    "needs-triage",
+    "fuzzing",
+    "type:correctness",
+    "priority:p3"
+   ],
+   "state": "open",
+   "title": "[domain-fuzz] Credential fingerprint is not fully case-insensitive: usernames differing only by case (e.g. \u03bc vs M) escape the ServerGroup shar\n[Content truncated due to length]",
+   "updated_at": "2026-08-29T17:11:45Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-08-29T17:10:23Z",
+   "id": 67,
+   "label_events": [
+    {
+     "at": "2026-08-29T17:10:25Z",
+     "event": "labeled",
+     "label": "agentic-workflows"
+    }
+   ],
+   "labels": [
+    "agentic-workflows"
+   ],
+   "state": "open",
+   "title": "[aw] Issue triage produced no safe outputs",
+   "updated_at": "2026-08-30T12:18:31Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-08-29T17:05:57Z",
+   "id": 66,
+   "label_events": [
+    {
+     "at": "2026-08-29T17:06:02Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    }
+   ],
+   "labels": [
+    "needs-triage"
+   ],
+   "state": "open",
+   "title": "vod_proxy serves a correct-looking 206 with the wrong bytes when the upstream ignores Range",
+   "updated_at": "2026-08-29T17:06:02Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-08-29T15:27:35Z",
+   "id": 65,
+   "label_events": [
+    {
+     "at": "2026-08-29T15:27:36Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    },
+    {
+     "at": "2026-08-29T15:31:09Z",
+     "event": "labeled",
+     "label": "needs-info"
+    },
+    {
+     "at": "2026-08-29T15:31:10Z",
+     "event": "unlabeled",
+     "label": "needs-triage"
+    }
+   ],
+   "labels": [
+    "needs-info"
+   ],
+   "state": "open",
+   "title": "Icon-only row action buttons have no accessible name (Users table edit/delete)",
+   "updated_at": "2026-08-29T17:24:32Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-08-29T15:20:30Z",
+   "id": 64,
+   "label_events": [
+    {
+     "at": "2026-08-29T15:20:31Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    }
+   ],
+   "labels": [
+    "needs-triage"
+   ],
+   "state": "open",
+   "title": "VOD suffix Range requests are rewritten as prefix ranges: bytes=-500 becomes bytes=0-500",
+   "updated_at": "2026-08-29T15:20:30Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-08-29T13:07:45Z",
+   "id": 63,
+   "label_events": [
+    {
+     "at": "2026-08-29T13:07:47Z",
+     "event": "labeled",
+     "label": "agentic-workflows"
+    }
+   ],
+   "labels": [
+    "agentic-workflows"
+   ],
+   "state": "open",
+   "title": "[aw] Detection Runs",
+   "updated_at": "2026-09-02T18:17:59Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-08-29T13:02:21Z",
+   "id": 62,
+   "label_events": [
+    {
+     "at": "2026-08-29T13:02:22Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    }
+   ],
+   "labels": [
+    "needs-triage"
+   ],
+   "state": "open",
+   "title": "Connect integration subscription badges render without a React key",
+   "updated_at": "2026-08-29T16:23:17Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-08-29T12:54:14Z",
+   "id": 61,
+   "label_events": [
+    {
+     "at": "2026-08-29T12:56:09Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    },
+    {
+     "at": "2026-08-29T12:58:07Z",
+     "event": "unlabeled",
+     "label": "needs-triage"
+    },
+    {
+     "at": "2026-08-29T12:58:08Z",
+     "event": "labeled",
+     "label": "ready-for-agent"
+    }
+   ],
+   "labels": [
+    "ready-for-agent"
+   ],
+   "state": "open",
+   "title": "collect_xc_streams builds live URLs with unencoded credentials, unlike catch-up's quote()",
+   "updated_at": "2026-08-29T12:58:08Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-08-29T12:39:04Z",
+   "id": 60,
+   "label_events": [
+    {
+     "at": "2026-08-29T12:39:06Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    },
+    {
+     "at": "2026-08-29T12:46:37Z",
+     "event": "unlabeled",
+     "label": "needs-triage"
+    },
+    {
+     "at": "2026-08-29T12:46:38Z",
+     "event": "labeled",
+     "label": "ready-for-human"
+    }
+   ],
+   "labels": [
+    "ready-for-human"
+   ],
+   "state": "open",
+   "title": "The specific upstream refresh error is overwritten by a generic message, discarding the diagnostic",
+   "updated_at": "2026-08-29T12:46:38Z"
+  },
+  {
+   "closed_at": "2026-08-30T09:58:20Z",
+   "created_at": "2026-08-29T12:38:47Z",
+   "id": 59,
+   "label_events": [
+    {
+     "at": "2026-08-29T12:38:48Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    }
+   ],
+   "labels": [
+    "needs-triage"
+   ],
+   "state": "closed",
+   "title": "A refresh triggered just after one completes is silently discarded, and the API reports success",
+   "updated_at": "2026-08-30T09:58:20Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-08-29T12:28:01Z",
+   "id": 58,
+   "label_events": [
+    {
+     "at": "2026-08-29T12:30:01Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    },
+    {
+     "at": "2026-08-29T12:34:49Z",
+     "event": "labeled",
+     "label": "ready-for-agent"
+    },
+    {
+     "at": "2026-08-29T12:34:50Z",
+     "event": "unlabeled",
+     "label": "needs-triage"
+    }
+   ],
+   "labels": [
+    "ready-for-agent"
+   ],
+   "state": "open",
+   "title": "Direct navigation to a protected route other than /channels always bounces to /channels",
+   "updated_at": "2026-08-29T21:51:33Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-08-29T12:26:06Z",
+   "id": 57,
+   "label_events": [
+    {
+     "at": "2026-08-29T12:30:00Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    },
+    {
+     "at": "2026-08-29T12:30:28Z",
+     "event": "labeled",
+     "label": "wontfix"
+    },
+    {
+     "at": "2026-08-29T12:30:29Z",
+     "event": "unlabeled",
+     "label": "needs-triage"
+    }
+   ],
+   "labels": [
+    "wontfix"
+   ],
+   "state": "open",
+   "title": "Unmatched /api/ paths silently 200 with index.html instead of 404",
+   "updated_at": "2026-08-29T12:30:29Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-08-29T11:22:12Z",
+   "id": 56,
+   "label_events": [
+    {
+     "at": "2026-08-29T11:22:13Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    },
+    {
+     "at": "2026-08-29T11:25:47Z",
+     "event": "unlabeled",
+     "label": "needs-triage"
+    },
+    {
+     "at": "2026-08-29T11:25:49Z",
+     "event": "labeled",
+     "label": "ready-for-human"
+    }
+   ],
+   "labels": [
+    "ready-for-human"
+   ],
+   "state": "open",
+   "title": "M3U refresh reports \"download failed\" when the lock is merely held by another refresh",
+   "updated_at": "2026-08-29T11:25:50Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-08-29T11:19:33Z",
+   "id": 55,
+   "label_events": [
+    {
+     "at": "2026-08-29T11:19:34Z",
+     "event": "labeled",
+     "label": "agentic-workflows"
+    }
+   ],
+   "labels": [
+    "agentic-workflows"
+   ],
+   "state": "open",
+   "title": "[fuzz-hardening] timeshift: property-based tests for catch-up timestamp parsing, URL builders, and playback stats",
+   "updated_at": "2026-08-29T11:19:33Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-08-29T11:19:29Z",
+   "id": 54,
+   "label_events": [
+    {
+     "at": "2026-08-29T11:19:30Z",
+     "event": "labeled",
+     "label": "bug"
+    },
+    {
+     "at": "2026-08-29T11:19:30Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    },
+    {
+     "at": "2026-08-29T11:19:31Z",
+     "event": "labeled",
+     "label": "fuzzing"
+    },
+    {
+     "at": "2026-08-29T11:19:31Z",
+     "event": "labeled",
+     "label": "type:correctness"
+    },
+    {
+     "at": "2026-08-29T11:19:31Z",
+     "event": "labeled",
+     "label": "priority:p3"
+    }
+   ],
+   "labels": [
+    "bug",
+    "needs-triage",
+    "fuzzing",
+    "type:correctness",
+    "priority:p3"
+   ],
+   "state": "open",
+   "title": "[domain-fuzz] Catch-up stats position freezes at 0:00 when playback_base_secs is 0.0 or the URL timestamp predates EPG start",
+   "updated_at": "2026-08-29T11:19:29Z"
+  },
+  {
+   "closed_at": "2026-08-29T12:40:33Z",
+   "created_at": "2026-08-28T22:43:17Z",
+   "id": 44,
+   "label_events": [
+    {
+     "at": "2026-08-28T22:43:17Z",
+     "event": "labeled",
+     "label": "agentic-workflows"
+    }
+   ],
+   "labels": [
+    "agentic-workflows"
+   ],
+   "state": "closed",
+   "title": "[aw] Domain fuzz campaign failed",
+   "updated_at": "2026-08-29T12:40:33Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-08-28T22:16:42Z",
+   "id": 42,
+   "label_events": [
+    {
+     "at": "2026-08-28T22:16:43Z",
+     "event": "labeled",
+     "label": "enhancement"
+    },
+    {
+     "at": "2026-08-28T22:16:44Z",
+     "event": "labeled",
+     "label": "ready-for-agent"
+    },
+    {
+     "at": "2026-08-28T22:16:44Z",
+     "event": "labeled",
+     "label": "type:test-gap"
+    }
+   ],
+   "labels": [
+    "enhancement",
+    "ready-for-agent",
+    "type:test-gap"
+   ],
+   "state": "open",
+   "title": "The instance fixture can destroy the shared container from any project, guarded only by a comment \u2014 extend the grey-box quarantine test to cover it",
+   "updated_at": "2026-08-28T22:20:36Z"
+  },
+  {
+   "closed_at": "2026-09-01T23:28:30Z",
+   "created_at": "2026-08-28T21:38:00Z",
+   "id": 41,
+   "label_events": [
+    {
+     "at": "2026-08-28T21:38:01Z",
+     "event": "labeled",
+     "label": "bug"
+    },
+    {
+     "at": "2026-08-28T21:38:01Z",
+     "event": "labeled",
+     "label": "ready-for-agent"
+    },
+    {
+     "at": "2026-08-28T21:38:01Z",
+     "event": "labeled",
+     "label": "type:reliability"
+    }
+   ],
+   "labels": [
+    "bug",
+    "ready-for-agent",
+    "type:reliability"
+   ],
+   "state": "closed",
+   "title": "test-puid-pgid.sh leaks a PostgreSQL volume per scenario: cleanup runs in insertion order, so volumes are removed before their containers",
+   "updated_at": "2026-09-01T23:28:30Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-08-28T17:05:51Z",
+   "id": 27,
+   "label_events": [
+    {
+     "at": "2026-08-28T17:05:52Z",
+     "event": "labeled",
+     "label": "bug"
+    },
+    {
+     "at": "2026-08-28T17:05:53Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    },
+    {
+     "at": "2026-08-28T17:05:53Z",
+     "event": "labeled",
+     "label": "fuzzing"
+    },
+    {
+     "at": "2026-08-28T17:05:53Z",
+     "event": "labeled",
+     "label": "type:correctness"
+    },
+    {
+     "at": "2026-08-28T17:05:53Z",
+     "event": "labeled",
+     "label": "priority:p3"
+    }
+   ],
+   "labels": [
+    "bug",
+    "needs-triage",
+    "fuzzing",
+    "type:correctness",
+    "priority:p3"
+   ],
+   "state": "open",
+   "title": "[domain-fuzz] Reject non-finite values from FFmpeg stats output",
+   "updated_at": "2026-08-28T17:05:51Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-08-28T17:05:51Z",
+   "id": 26,
+   "label_events": [
+    {
+     "at": "2026-08-28T17:05:51Z",
+     "event": "labeled",
+     "label": "bug"
+    },
+    {
+     "at": "2026-08-28T17:05:52Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    },
+    {
+     "at": "2026-08-28T17:05:52Z",
+     "event": "labeled",
+     "label": "fuzzing"
+    },
+    {
+     "at": "2026-08-28T17:05:52Z",
+     "event": "labeled",
+     "label": "type:performance"
+    },
+    {
+     "at": "2026-08-28T17:05:52Z",
+     "event": "labeled",
+     "label": "priority:p2"
+    }
+   ],
+   "labels": [
+    "bug",
+    "needs-triage",
+    "fuzzing",
+    "type:performance",
+    "priority:p2"
+   ],
+   "state": "open",
+   "title": "[domain-fuzz] Bound fMP4 catch-up reads for lagging clients",
+   "updated_at": "2026-08-28T17:05:51Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-08-28T16:07:54Z",
+   "id": 24,
+   "label_events": [
+    {
+     "at": "2026-08-28T16:07:55Z",
+     "event": "labeled",
+     "label": "bug"
+    },
+    {
+     "at": "2026-08-28T16:07:55Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    },
+    {
+     "at": "2026-08-28T16:07:55Z",
+     "event": "labeled",
+     "label": "fuzzing"
+    },
+    {
+     "at": "2026-08-28T16:07:55Z",
+     "event": "labeled",
+     "label": "type:reliability"
+    },
+    {
+     "at": "2026-08-28T16:07:56Z",
+     "event": "labeled",
+     "label": "priority:p2"
+    }
+   ],
+   "labels": [
+    "bug",
+    "needs-triage",
+    "fuzzing",
+    "type:reliability",
+    "priority:p2"
+   ],
+   "state": "open",
+   "title": "[domain-fuzz] Live relay stderr reader grows without bound on unterminated frame output",
+   "updated_at": "2026-08-28T16:07:54Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-08-27T22:35:27Z",
+   "id": 22,
+   "label_events": [
+    {
+     "at": "2026-08-27T22:35:29Z",
+     "event": "labeled",
+     "label": "agentic-workflows"
+    }
+   ],
+   "labels": [
+    "agentic-workflows"
+   ],
+   "state": "open",
+   "title": "[aw] Domain fuzz campaign failed",
+   "updated_at": "2026-08-28T12:10:53Z"
+  },
+  {
+   "closed_at": "2026-08-27T14:40:03Z",
+   "created_at": "2026-08-27T10:27:25Z",
+   "id": 20,
+   "label_events": [
+    {
+     "at": "2026-08-27T10:27:26Z",
+     "event": "labeled",
+     "label": "agentic-workflows"
+    }
+   ],
+   "labels": [
+    "agentic-workflows"
+   ],
+   "state": "closed",
+   "title": "[aw] Domain fuzz campaign failed",
+   "updated_at": "2026-08-27T14:40:03Z"
+  },
+  {
+   "closed_at": "2026-08-27T14:40:00Z",
+   "created_at": "2026-08-26T02:12:18Z",
+   "id": 18,
+   "label_events": [
+    {
+     "at": "2026-08-26T02:12:19Z",
+     "event": "labeled",
+     "label": "agentic-workflows"
+    }
+   ],
+   "labels": [
+    "agentic-workflows"
+   ],
+   "state": "closed",
+   "title": "[aw] Domain fuzz campaign failed",
+   "updated_at": "2026-08-27T14:40:00Z"
+  },
+  {
+   "closed_at": "2026-08-27T14:39:59Z",
+   "created_at": "2026-08-25T02:06:23Z",
+   "id": 17,
+   "label_events": [
+    {
+     "at": "2026-08-25T02:06:24Z",
+     "event": "labeled",
+     "label": "agentic-workflows"
+    }
+   ],
+   "labels": [
+    "agentic-workflows"
+   ],
+   "state": "closed",
+   "title": "[aw] Domain fuzz campaign failed",
+   "updated_at": "2026-08-27T14:39:59Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-08-24T20:57:14Z",
+   "id": 16,
+   "label_events": [
+    {
+     "at": "2026-08-24T20:57:15Z",
+     "event": "labeled",
+     "label": "documentation"
+    },
+    {
+     "at": "2026-08-24T20:57:15Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    },
+    {
+     "at": "2026-09-03T00:49:18Z",
+     "event": "labeled",
+     "label": "ready-for-agent"
+    },
+    {
+     "at": "2026-09-03T00:49:19Z",
+     "event": "unlabeled",
+     "label": "needs-triage"
+    }
+   ],
+   "labels": [
+    "documentation",
+    "ready-for-agent"
+   ],
+   "state": "open",
+   "title": "Upgrade E2E workflow actions from Node 20 runtime to supported Node 24 actions",
+   "updated_at": "2026-09-03T00:49:19Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-08-24T20:45:09Z",
+   "id": 15,
+   "label_events": [
+    {
+     "at": "2026-08-24T21:01:06Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    },
+    {
+     "at": "2026-09-02T00:39:21Z",
+     "event": "labeled",
+     "label": "needs-info"
+    },
+    {
+     "at": "2026-09-02T00:39:22Z",
+     "event": "unlabeled",
+     "label": "needs-triage"
+    }
+   ],
+   "labels": [
+    "needs-info"
+   ],
+   "state": "open",
+   "title": "read_only_fields declared on the serializer class instead of Meta, so DRF ignores it (M3UAccount.locked and .updated_at, EPGSource.updated_at are writable over the API)",
+   "updated_at": "2026-09-02T00:39:22Z"
+  },
+  {
+   "closed_at": "2026-08-24T21:00:30Z",
+   "created_at": "2026-08-24T19:59:33Z",
+   "id": 14,
+   "label_events": [
+    {
+     "at": "2026-08-24T19:59:34Z",
+     "event": "labeled",
+     "label": "agentic-workflows"
+    }
+   ],
+   "labels": [
+    "agentic-workflows"
+   ],
+   "state": "closed",
+   "title": "[aw] Domain fuzz campaign failed",
+   "updated_at": "2026-08-24T21:00:30Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-08-24T19:45:29Z",
+   "id": 12,
+   "label_events": [
+    {
+     "at": "2026-08-24T21:01:07Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    },
+    {
+     "at": "2026-08-31T01:00:49Z",
+     "event": "unlabeled",
+     "label": "needs-triage"
+    },
+    {
+     "at": "2026-08-31T01:00:50Z",
+     "event": "labeled",
+     "label": "wontfix"
+    }
+   ],
+   "labels": [
+    "wontfix"
+   ],
+   "state": "open",
+   "title": "Token refresh 500s instead of 401 when the refresh token names a deleted user",
+   "updated_at": "2026-08-31T01:00:50Z"
+  },
+  {
+   "closed_at": "2026-08-24T21:00:32Z",
+   "created_at": "2026-08-24T19:24:32Z",
+   "id": 11,
+   "label_events": [
+    {
+     "at": "2026-08-24T19:24:34Z",
+     "event": "labeled",
+     "label": "agentic-workflows"
+    }
+   ],
+   "labels": [
+    "agentic-workflows"
+   ],
+   "state": "closed",
+   "title": "[aw] Domain fuzz campaign failed",
+   "updated_at": "2026-08-24T21:00:32Z"
+  },
+  {
+   "closed_at": "2026-08-24T21:00:34Z",
+   "created_at": "2026-08-24T19:05:37Z",
+   "id": 9,
+   "label_events": [
+    {
+     "at": "2026-08-24T19:05:38Z",
+     "event": "labeled",
+     "label": "agentic-workflows"
+    }
+   ],
+   "labels": [
+    "agentic-workflows"
+   ],
+   "state": "closed",
+   "title": "[aw] Domain fuzz campaign has no AI credits pricing for model (auto)",
+   "updated_at": "2026-08-24T21:00:34Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-08-24T17:59:43Z",
+   "id": 7,
+   "label_events": [
+    {
+     "at": "2026-08-24T21:01:09Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    },
+    {
+     "at": "2026-08-30T00:51:48Z",
+     "event": "labeled",
+     "label": "wontfix"
+    },
+    {
+     "at": "2026-08-30T00:51:49Z",
+     "event": "unlabeled",
+     "label": "needs-triage"
+    }
+   ],
+   "labels": [
+    "wontfix"
+   ],
+   "state": "open",
+   "title": "M3U/EPG source creation 500s permanently after a concurrent-create race duplicates an IntervalSchedule",
+   "updated_at": "2026-08-30T00:51:49Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-08-24T08:09:12Z",
+   "id": 6,
+   "label_events": [
+    {
+     "at": "2026-08-24T21:01:10Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    },
+    {
+     "at": "2026-08-29T03:59:09Z",
+     "event": "unlabeled",
+     "label": "needs-triage"
+    }
+   ],
+   "labels": [],
+   "state": "open",
+   "title": "Concurrent source creation permanently 500s: IntervalSchedule.get_or_create races into duplicate rows",
+   "updated_at": "2026-08-29T03:59:09Z"
+  }
+ ],
+ "repo": "D10Scot/Dispatcharr",
+ "status": "ok"
+}
