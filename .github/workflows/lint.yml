@@ -167,11 +167,12 @@ jobs:
           persist-credentials: false
 
       - name: Install the build step's one dependency (hash-pinned)
-        # metrics/requirements.txt appears in Part B; until then the file is
-        # absent and this step is a no-op, which is why it is guarded. Goes
-        # into a venv rather than the system interpreter — PEP 668 hazard on
-        # the runner image. scripts/run_metrics_tests.sh already prefers
-        # .venv/bin/python when it exists, so nothing else changes.
+        # Guarded because earlier revisions of this branch predate
+        # metrics/requirements.txt; the file exists from here on, but the
+        # guard is cheap to keep. Goes into a venv rather than the system
+        # interpreter — PEP 668 hazard on the runner image.
+        # scripts/run_metrics_tests.sh already prefers .venv/bin/python when
+        # it exists, so nothing else changes.
         run: |
           if [ -f metrics/requirements.txt ]; then
             python3 -m venv .venv
@@ -179,13 +180,4 @@ jobs:
           fi
 
       - name: Collector and build-step tests
-        # Exit 3 means "no suite exists yet" (see scripts/run_metrics_tests.sh);
-        # it is a pass here so the job can land before the suites do. GitHub's
-        # default shell is `bash -e {0}`, so the script's own nonzero exit
-        # must be caught by `||` rather than `;` — a bare `;` would abort the
-        # step right there and never reach `rc=$?`.
-        run: |
-          rc=0
-          scripts/run_metrics_tests.sh all || rc=$?
-          [ "$rc" -eq 3 ] && exit 0
-          exit "$rc"
+        run: scripts/run_metrics_tests.sh all
