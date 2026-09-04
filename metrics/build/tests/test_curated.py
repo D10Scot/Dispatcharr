@@ -147,8 +147,24 @@ class CuratedTests(unittest.TestCase):
         self.assertEqual(self._errors(pr_checker=lambda n: None), [])
 
     def test_milestone_summary_must_be_one_sentence(self):
-        self._mutate("milestones.yml", lambda d: d["milestones"][1].update(summary="One. Two."))
+        self._mutate("milestones.yml", lambda d: d["milestones"][1].update(summary="Merged. Ruleset updated."))
         self.assertTrue(any("summary" in e for e in self._errors()))
+
+    def test_milestone_summary_allows_abbreviations_and_version_strings(self):
+        # "v0.29.0" (no space after the period) and "e.g." (lowercase after
+        # the space) must not be mistaken for a second sentence.
+        self._mutate("milestones.yml", lambda d: d["milestones"][1].update(
+            summary="Bumped to v0.29.0, e.g. the ruleset now requires four checks."))
+        self.assertEqual(self._errors(), [])
+
+    def test_defect_test_path_must_stay_inside_repo(self):
+        # An absolute path that genuinely exists on disk: if the guard were
+        # missing, the plain existence check below it would pass silently
+        # and produce no error at all, so this only goes green because the
+        # guard itself fires.
+        self._mutate("defects.yml", lambda d: d[1].update(test="/etc/passwd"))
+        errs = self._errors()
+        self.assertTrue(any("m3u-quote" in e and "stay inside the repo" in e for e in errs))
 
     def test_defect_area_severity_status_vocabularies(self):
         self._mutate("defects.yml", lambda d: d[0].update(area="chaos", severity="ultra", status="zombie"))

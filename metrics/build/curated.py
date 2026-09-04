@@ -10,28 +10,29 @@ from __future__ import annotations
 import dataclasses as dc
 import datetime as dt
 import re
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Callable
 
 import yaml
 
 from gitinfo import is_first_parent_on
 
-# A sentence terminator (. ! ?) followed by whitespace or end of string — used
-# to enforce the one-sentence milestone summary rule (spec §5.2).
-_SENTENCE_TERM_RE = re.compile(r"[.!?](?=\s|$)")
+# A second sentence start: ". " followed by an uppercase letter — a pragmatic
+# proxy for "one sentence" (spec §5.2) that tolerates abbreviations like
+# "e.g." and version strings like "v0.29.0" (neither has a space after the
+# period, or the following character isn't uppercase).
+_SECOND_SENTENCE_RE = re.compile(r"\. [A-Z]")
 
 
 def _is_one_sentence(text: str) -> bool:
-    """True when `text` is non-empty and has no sentence terminator other
-    than at most one, positioned at the very end."""
-    s = (text or "").strip()
-    if not s:
+    """True when `text` is non-empty, single-line, and does not start a
+    second sentence."""
+    s = text or ""
+    if not s.strip():
         return False
-    matches = list(_SENTENCE_TERM_RE.finditer(s))
-    if len(matches) > 1:
+    if "\n" in s:
         return False
-    if len(matches) == 1 and matches[0].end() != len(s):
+    if _SECOND_SENTENCE_RE.search(s):
         return False
     return True
 
@@ -234,8 +235,12 @@ def validate(
             errors.append(f"{w}: status fixed needs fixed_in")
         if d.status == "carried" and not d.carried_as:
             errors.append(f"{w}: status carried needs carried_as")
-        if d.test and not (repo / d.test).exists():
-            errors.append(f"{w}: test path {d.test} does not exist")
+        if d.test:
+            pp = PurePosixPath(d.test)
+            if pp.is_absolute() or ".." in pp.parts:
+                errors.append(f"{w}: test path {d.test} must stay inside the repo (no absolute path or '..')")
+            elif not (repo / d.test).exists():
+                errors.append(f"{w}: test path {d.test} does not exist")
         if d.fixed_in is not None and pr_checker is not None and pr_checker(d.fixed_in) is False:
             errors.append(f"{w}: fixed_in PR #{d.fixed_in} is not merged")
         for name in ("first_seen", "status_changed"):
