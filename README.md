@@ -14,5 +14,17 @@ Rows are keyed by `(commit_sha, family)` and appends are idempotent.
 Backfilled rows use the commit's author date as `timestamp`. History starts
 at `fd413f0c` (v0.29.0, upstream divergence point).
 
-Families: `code_health`, `architecture`, `tests` — metric definitions are
-frozen in each collector's docstring (`scripts/metrics/collect_<family>.py`).
+Families: `code_health`, `architecture`, `tests`, `coverage` — metric
+definitions are frozen in each collector's docstring
+(`scripts/metrics/collect_<family>.py`).
+
+## Event dumps
+
+`events/<kind>.json` (overwritten daily) and `events/history/<kind>.jsonl`
+(append-only sidecars for records that leave an API's window) — see
+`events/` and `events/history/`.
+
+## Retired
+
+`security.jsonl`, `delivery.jsonl`, `agentic.jsonl` were frozen on
+2026-08-29 and are no longer written.
