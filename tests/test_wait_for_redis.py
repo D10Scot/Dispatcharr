@@ -10,24 +10,32 @@ import redis as redis_module
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'scripts'))
 
 
-def _import_wait_for_redis():
-    """Import (or reimport) the wait_for_redis function from scripts/."""
+def _import_wait_for_redis_module():
+    """Import (or reimport) scripts/wait_for_redis.py."""
     import wait_for_redis as module
     importlib.reload(module)
-    return module.wait_for_redis
+    return module
+
+
+def _import_wait_for_redis():
+    """Import (or reimport) the wait_for_redis function from scripts/."""
+    return _import_wait_for_redis_module().wait_for_redis
 
 
 class WaitForRedisTests(SimpleTestCase):
     """
     Tests for scripts/wait_for_redis.py.
 
-    Verifies flush behaviour: full flushdb in AIO mode, selective
-    (non-Celery) key deletion in modular mode.
+    D15: nothing flushes Redis, in any role, ever. wait_for_redis() only
+    waits for a successful ping — no flushdb, no selective key deletion,
+    in either AIO or modular mode. AIO starts empty because supervisord's
+    [program:redis] runs redis-server non-persistent, not because anything
+    wipes it.
     """
 
     @patch('wait_for_redis.redis.Redis')
-    def test_aio_mode_calls_flushdb(self, mock_redis_cls):
-        """In AIO mode (default), flushdb is called after successful ping."""
+    def test_aio_mode_never_flushes(self, mock_redis_cls):
+        """In AIO mode (default), flushdb must NOT be called."""
         mock_client = MagicMock()
         mock_client.ping.return_value = True
         mock_redis_cls.return_value = mock_client
@@ -38,24 +46,36 @@ class WaitForRedisTests(SimpleTestCase):
             result = wait_for_redis(max_retries=1, retry_interval=0)
 
         self.assertTrue(result)
-        mock_client.flushdb.assert_called_once()
+        mock_client.flushdb.assert_not_called()
+        mock_client.delete.assert_not_called()
 
     @patch('wait_for_redis.redis.Redis')
-    def test_modular_mode_does_not_call_flushdb(self, mock_redis_cls):
-        """In modular mode, flushdb must NOT be called — selective flush instead."""
+    def test_modular_mode_never_flushes(self, mock_redis_cls):
+        """In modular mode, flushdb must NOT be called either."""
         mock_client = MagicMock()
         mock_client.ping.return_value = True
         mock_redis_cls.return_value = mock_client
 
         with patch.dict(os.environ, {'DISPATCHARR_ENV': 'modular'}):
             wait_for_redis = _import_wait_for_redis()
-            # Patch after reload so the mock isn't overwritten by module re-execution
-            with patch('wait_for_redis._flush_non_celery_keys') as mock_selective:
-                result = wait_for_redis(max_retries=1, retry_interval=0)
+            result = wait_for_redis(max_retries=1, retry_interval=0)
 
         self.assertTrue(result)
         mock_client.flushdb.assert_not_called()
-        mock_selective.assert_called_once_with(mock_client)
+        mock_client.scan.assert_not_called()
+        mock_client.delete.assert_not_called()
+
+    def test_selective_flush_helper_removed(self):
+        """_flush_non_celery_keys is deleted, not moved (D15)."""
+        module = _import_wait_for_redis_module()
+        self.assertFalse(
+            hasattr(module, '_flush_non_celery_keys'),
+            "_flush_non_celery_keys must be deleted, not carried forward",
+        )
+        self.assertFalse(
+            hasattr(module, '_CELERY_KEY_PREFIXES'),
+            "_CELERY_KEY_PREFIXES must be deleted with its only caller",
+        )
 
     @patch('wait_for_redis.redis.Redis')
     def test_retries_on_connection_error(self, mock_redis_cls):
