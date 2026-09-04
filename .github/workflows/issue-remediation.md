@@ -246,6 +246,7 @@ Once verification passes, invoke the `remediation-reviewer` sub-agent (it runs o
 Create one draft PR containing the fix and regression test, with `temporary_id: aw_fix_pr`. The body must include:
 
 - `Fixes #$ISSUE_NUMBER` on its own line
+- If `metrics/curated/defects.yml` has an entry whose `issue` is this issue, set its `status` to `fixed`, `fixed_in` to the PR number (use the temporary id if the number is not known yet) and `status_changed` to today, in the same commit; `docs/agents/metrics.md` has the rules.
 - what was wrong (root cause, files/lines)
 - how the fix works
 - reproduction evidence: failing output before, passing output after
