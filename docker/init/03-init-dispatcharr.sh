@@ -56,19 +56,28 @@ if [ "$(id -u)" = "0" ] && [ -d "/app" ]; then
         chown "$PUID:$PGID" /app
     fi
 fi
-# Configure nginx port
-if ! [[ "$DISPATCHARR_PORT" =~ ^[0-9]+$ ]]; then
-    echo "⚠️  Warning: DISPATCHARR_PORT is not a valid integer, using default port 9191"
-    DISPATCHARR_PORT=9191
-fi
-sed -i "s/NGINX_PORT/${DISPATCHARR_PORT}/g" /etc/nginx/sites-enabled/default
+# Configure nginx port and IPv6 — only the roles that run nginx.
+# all and api are the two rungs that include [program:nginx]; all-dev runs
+# vite instead and is reached with DISPATCHARR_ROLE=all, so it passes this
+# gate and templates a config nothing loads, which is harmless and keeps
+# the condition about roles rather than about rungs. relay and worker have
+# no nginx and must not touch /etc/nginx/sites-enabled/default: under a
+# read-only rootfs, or simply on a container that never serves HTTP, that
+# is a write with no reader.
+if [[ "$DISPATCHARR_ROLE" == "all" || "$DISPATCHARR_ROLE" == "api" ]]; then
+    if ! [[ "$DISPATCHARR_PORT" =~ ^[0-9]+$ ]]; then
+        echo "⚠️  Warning: DISPATCHARR_PORT is not a valid integer, using default port 9191"
+        DISPATCHARR_PORT=9191
+    fi
+    sed -i "s/NGINX_PORT/${DISPATCHARR_PORT}/g" /etc/nginx/sites-enabled/default
 
-# Configure nginx based on IPv6 availability
-if ip -6 addr show | grep -q "inet6"; then
-    echo "✅ IPv6 is available, enabling IPv6 in nginx"
-else
-    echo "⚠️  IPv6 not available, disabling IPv6 in nginx"
-    sed -i '/listen \[::\]:/d' /etc/nginx/sites-enabled/default
+    # Configure nginx based on IPv6 availability
+    if ip -6 addr show | grep -q "inet6"; then
+        echo "✅ IPv6 is available, enabling IPv6 in nginx"
+    else
+        echo "⚠️  IPv6 not available, disabling IPv6 in nginx"
+        sed -i '/listen \[::\]:/d' /etc/nginx/sites-enabled/default
+    fi
 fi
 
 # NOTE: mac doesn't run as root, so only manage permissions
