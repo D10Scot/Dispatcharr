@@ -76,4 +76,10 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# CI_BACKEND_RUNNER lets the metrics coverage job reuse this bootstrap (the
+# internal Postgres/Redis, the role and database setup) with its own runner.
+# The default is what backend-tests.yml has always run.
+if [ -n "${CI_BACKEND_RUNNER:-}" ]; then
+  exec bash -c "$CI_BACKEND_RUNNER"
+fi
 exec python manage.py test --keepdb "$@"
