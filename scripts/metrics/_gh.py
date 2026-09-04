@@ -8,8 +8,9 @@ cwd (CLAUDE.md: "gh commands use explicit --repo").
 
 Collectors must never hard-fail on a permission gap: some endpoints
 (Dependabot alerts, secret-scanning alerts) are 403/404 depending on repo
-settings the collector doesn't control. Callers catch ``GhApiError`` and emit
-``null`` + an explanatory ``_notes`` entry instead of raising.
+settings the collector doesn't control. Callers catch ``GhApiError`` and map
+403/404 to explicit ``status`` values (rather than ``null``) plus an
+explanatory ``_notes`` entry instead of raising.
 """
 
 from __future__ import annotations
@@ -51,27 +52,48 @@ def run_gh(*args: str) -> str:
     return result.stdout
 
 
-def gh_api(repo: str, path: str, params: dict[str, str] | None = None, paginate: bool = True):
-    """Call `gh api /repos/<repo><path>`, returning parsed JSON.
+def gh_api(
+    repo: str,
+    path: str,
+    params: dict[str, str] | None = None,
+    paginate: bool = True,
+    list_key: str | None = None,
+):
+    """Call `gh api /repos/<repo><path>` and return parsed JSON.
 
-    Always paginates by default (safe for both list and object endpoints:
-    `gh api --paginate` on a non-array response just returns the single
-    object). Raises GhApiError with `.status` set when the HTTP call fails,
-    so callers can special-case 403 ("no access")/404 ("feature disabled").
+    With ``paginate`` (the default) every page is fetched and the result is
+    the flattened list of records: ``gh api --paginate --slurp`` returns one
+    JSON array of pages, and each page is either an array (concatenated) or
+    an object carrying the records under ``list_key`` (``workflow_runs``,
+    ``workflows``...), whose arrays are concatenated. Without ``--slurp`` gh
+    prints the pages back to back, which is one JSON document only while
+    there is one page — the bug that stopped every collection after
+    2026-09-01.
+
+    Raises GhApiError with ``.status`` set on HTTP failure so callers can
+    distinguish 403 (no access) from 404 (feature disabled).
     """
-    full_path = f"/repos/{repo}{path}"
+    full_path = f"/repos/{repo}{path}" if not path.startswith("http") else path
     if params:
         full_path += "?" + urllib.parse.urlencode(params)
     args = ["api", full_path, "--method", "GET"]
     if paginate:
-        args.append("--paginate")
+        args += ["--paginate", "--slurp"]
     stdout = run_gh(*args)
     if not stdout.strip():
-        return []
-    # `gh api --paginate` merges all pages into a single JSON array (or
-    # returns the lone object for non-list endpoints), so one json.loads
-    # is correct regardless of how many pages were fetched.
-    return json.loads(stdout)
+        return [] if paginate else {}
+    doc = json.loads(stdout)
+    if not paginate:
+        return doc
+    records: list = []
+    for page in doc:
+        if isinstance(page, list):
+            records.extend(page)
+        elif isinstance(page, dict):
+            if list_key is None:
+                raise GhApiError(f"paginated object page for {path} needs list_key (keys: {sorted(page)})")
+            records.extend(page.get(list_key) or [])
+    return records
 
 
 def repo_arg(description: str) -> str:
