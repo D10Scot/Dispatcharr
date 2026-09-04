@@ -5,6 +5,8 @@
 #
 #   tests        *tests/test_*.py     run the whole package   (blocking)
 #                frontend/*.test.jsx  run that file           (blocking)
+#   metrics      metrics/**, scripts/metrics/**   run_metrics_tests.sh   (blocking)
+#   dashboard    dashboard/*.{js,html}   vitest (dashboard config)       (blocking)
 #   migrations   */models.py          makemigrations --check  (blocking)
 #   boot         live_proxy leaves    manage.py check         (blocking)
 #   typecheck    e2e{,-upstream}/*.ts tsc --noEmit, that pkg  (blocking)
@@ -233,6 +235,31 @@ case "$REL" in
       fi
     else
       note "Did NOT run ${REL} — frontend/node_modules missing. Run 'cd frontend && npm install'."
+    fi
+    ;;
+  metrics/*|scripts/metrics/*|scripts/run_metrics_tests.sh)
+    # Plain unittest, no Django: the metrics collectors and the site build step.
+    OUT="$(scripts/run_metrics_tests.sh all 2>&1)"; ST=$?
+    case $ST in
+      0) printf '%s\n' "$OUT" | grep -E '^(Ran |OK)' | head -2 ;;
+      3) ;;
+      *) block "metrics tests" "$(printf '%s' "$OUT" | tail -40)" ;;
+    esac
+    if [ -f metrics/build/__main__.py ]; then
+      if [ -x .venv/bin/python ]; then PY=.venv/bin/python; else PY=python3; fi
+      VOUT="$("$PY" -m metrics.build --validate-only --curated metrics/curated 2>&1)" || block "metrics validate-only" "$(printf '%s' "$VOUT" | tail -40)"
+    fi
+    ;;
+  dashboard/*.js|dashboard/*.html)
+    if [ -d frontend/node_modules ]; then
+      OUT="$(cd frontend && npx vitest --run --config vitest.dashboard.config.js 2>&1)"
+      if [ $? -ne 0 ]; then
+        block "dashboard tests" "$(printf '%s' "$OUT" | tail -40)"
+      else
+        printf '%s\n' "$OUT" | grep -E '^ +(Test Files|Tests)  ' | head -2
+      fi
+    else
+      note "Did NOT run dashboard tests — frontend/node_modules missing. Run 'cd frontend && npm install'."
     fi
     ;;
   *tests/test_*.py)
