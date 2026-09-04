@@ -132,6 +132,19 @@ def _read(path: Path) -> Any:
         return yaml.safe_load(f)
 
 
+def _pointers(obj, prefix=""):
+    """Every JSON-pointer path (leaf-only) reachable inside `obj`, e.g.
+    `{"a": {"b": 1}}` -> `["/a/b"]`. Used to check a headline catalogue
+    metric's `path` resolves against the newest snapshot row for its family
+    (R9(d): lives once here, imported by __main__.py and test_real_curated.py
+    rather than duplicated)."""
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            yield from _pointers(v, f"{prefix}/{k}")
+    else:
+        yield prefix
+
+
 def load_curated(directory: Path) -> Curated:
     """Load the three files; raises ValueError listing structural problems."""
     errors: list[str] = []

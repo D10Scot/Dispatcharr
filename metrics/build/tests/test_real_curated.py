@@ -9,6 +9,7 @@ import unittest
 from pathlib import Path
 
 from curated import load_curated, validate
+from curated import _pointers  # R9(d): the one shared implementation
 
 ROOT = Path(__file__).resolve().parents[3]
 BASE = "fd413f0cc4ab3131789a68fb31f1ae622ae7371a"
@@ -24,14 +25,6 @@ def latest_family_pointers() -> dict[str, set[str]]:
         row = json.loads(r.stdout.strip().splitlines()[-1])
         out[family] = set(_pointers(row["metrics"]))
     return out
-
-
-def _pointers(obj, prefix=""):
-    if isinstance(obj, dict):
-        for k, v in obj.items():
-            yield from _pointers(v, f"{prefix}/{k}")
-    else:
-        yield prefix
 
 
 class RealCuratedFilesTests(unittest.TestCase):
