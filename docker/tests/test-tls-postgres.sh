@@ -979,7 +979,7 @@ echo -e "${BOLD}╚════════════════════�
 # Build image
 if [ "$SKIP_BUILD" = false ]; then
     echo -e "\n${BOLD}Building test image...${NC}"
-    if ! docker build -t "$IMAGE_NAME" -f docker/Dockerfile . 2>&1 | tail -5; then
+    if ! docker build -t "$IMAGE_NAME" -f docker/Dockerfile --build-arg REPO_OWNER=d10scot . 2>&1 | tail -5; then
         echo -e "${RED}Build failed${NC}"
         exit 1
     fi

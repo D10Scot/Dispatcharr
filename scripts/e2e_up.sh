@@ -27,6 +27,13 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.."
 NAME="${DISPATCHARR_E2E_CONTAINER:-dispatcharr-e2e}"
 VOLUME="${DISPATCHARR_E2E_VOLUME:-dispatcharr-e2e-data}"
 IMAGE="${DISPATCHARR_E2E_IMAGE:-dispatcharr-e2e:local}"
+# Only takes effect on an actual build -- the `docker image inspect` guard
+# below skips it whenever $IMAGE already exists, same caveat as $IMAGE
+# itself. docker/Dockerfile's REPO_OWNER build-arg resolves which :base to
+# pull from, and its own default (dispatcharr, i.e. upstream) is wrong for
+# this fork: upstream's :base has no supervisord once Phase 1 PR 1 lands,
+# and never will.
+REPO_OWNER="${DISPATCHARR_E2E_REPO_OWNER:-d10scot}"
 PORT="${DISPATCHARR_E2E_PORT:-9191}"
 # Readiness polls, 5s apart. Overridable because CI boots a cold container on a
 # slower runner than a developer's laptop; .github/workflows/e2e-tests.yml
@@ -135,7 +142,7 @@ esac
 
 if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
   echo "Building $IMAGE for the native architecture..."
-  docker build -f docker/Dockerfile -t "$IMAGE" .
+  docker build -f docker/Dockerfile --build-arg REPO_OWNER="$REPO_OWNER" -t "$IMAGE" .
 fi
 
 # Container-name DNS works only on a user-defined network. The default bridge
