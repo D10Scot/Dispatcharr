@@ -61,7 +61,7 @@ One new snapshot family, **`coverage.jsonl`**, written only by the coverage job 
 ```json
 {"timestamp": "...", "commit_sha": "...", "family": "coverage",
  "metrics": {"backend_line_pct": 45.6, "backend_by_app": {"apps.proxy": 38.5, ...},
-             "frontend_line_pct": 71.9,
+             "frontend_line_pct": 71.9, "backend_failed_labels": [],
              "backend_status": "ok" | "failed", "frontend_status": "ok" | "failed"}}
 ```
 
@@ -235,8 +235,8 @@ compare:   { "<sha_a>..<sha_b>": [ {id, from, to, delta, good: true|false|null} 
 
 Two jobs.
 
-- `collect-and-append` (existing, reshaped): triggers per §4.3; runs snapshot collectors and, on schedule/dispatch, the event-dump collectors; `permissions: contents: write, security-events: read, plus actions: read, issues: read and pull-requests: read for the event-dump collector (an explicit permissions block nulls every unlisted scope, and a listing 403 would be recorded as a silent not_permitted)`; commits and pushes to `metrics-data` under the existing `metrics-append` concurrency group.
-- `coverage` (new, schedule and dispatch only): Postgres and Redis services as in `backend-tests.yml`; `scripts/ci_bootstrap_backend.sh`; the 16-label backend matrix run in one job under `coverage run` (sharded execution is what CI does for correctness; for coverage a single process is acceptable and the known order-dependent failures are recorded as `backend_status: failed` rather than hidden); `vitest run --coverage --coverage.reporter=json-summary`; writes one `coverage.jsonl` row. Runs after `collect-and-append` (`needs:`) so both push under the same concurrency group without racing.
+- `collect-and-append` (existing, reshaped): triggers per §4.3; runs snapshot collectors and, on schedule/dispatch, the event-dump collectors; `permissions: contents: write, security-events: read`, plus `actions: read`, `issues: read` and `pull-requests: read` for the event-dump collector (an explicit permissions block nulls every unlisted scope, and a listing 403 would be recorded as a silent `not_permitted`); commits and pushes to `metrics-data` under the existing `metrics-append` concurrency group.
+- `coverage` (new, schedule and dispatch only): Postgres and Redis services as in `backend-tests.yml`; `scripts/ci_bootstrap_backend.sh`; each of the 16 labels runs as its own `coverage run -p` process via `scripts/ci_coverage_backend.sh` (Redis flushed between labels, mirroring CI's per-label isolation), results are combined, and a failed label is recorded in `backend_failed_labels` with `backend_status: failed` while the combined pct is still reported; `vitest run --coverage --coverage.reporter=json-summary`; writes one `coverage.jsonl` row. Runs after `collect-and-append` (`needs:`) so both push under the same concurrency group without racing.
 
 ### 7.2 `pages.yml`
 
