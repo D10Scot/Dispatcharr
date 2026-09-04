@@ -19,6 +19,16 @@ The PostToolUse hook runs the offline form on every edit under `metrics/`;
 the commit gate runs it for staged changes; `pages.yml` runs the online form
 and fails the site build on any error. Errors are listed all at once.
 
+The validator needs PyYAML (`metrics/requirements.txt`) and is run as a
+module from the repo root — `python3 -m metrics.build ...`, not a direct
+path to `__main__.py` — so its bare-name imports between `metrics/build/`'s
+own modules resolve. `--check-prs` is what makes the difference between the
+two commands above: without it, `pr_checker` is never consulted, so a
+milestone's `pr` or a defect's `fixed_in` is accepted unverified (only a
+confirmed-unmerged PR, via `--check-prs`, is an error) — expect the offline
+hook and gate to wave through a typo'd PR number that the online Pages
+build will then catch.
+
 ## `catalogue.yml` — what may be rendered
 
 One entry per metric. **Nothing renders unless it is here.** Fields:
@@ -57,7 +67,9 @@ Two keys. `phases:` — `id`, `label`, `summary` (two sentences max),
 `milestones:` — `sha` (full, first-parent on `main` since `fd413f0c`),
 `label` (≤ 40 chars), `kind` (`phase-start` `phase-done` `goal` `incident`
 `release`), `phase` (a declared phase id), `pr` (number or `null`), `summary`
-(one sentence). `date` is derived from the commit; do not store it.
+(one sentence — the validator's practical proxy: a full stop followed by a
+space and a capital letter counts as a second sentence, so keep to one).
+`date` is derived from the commit; do not store it.
 
 **When to add an entry:**
 - a phase's spec is committed → `phase-start`
