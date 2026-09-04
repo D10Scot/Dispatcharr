@@ -3462,7 +3462,7 @@ Commit message: `feat(metrics): thirteen pure derivations over event dumps and t
 ### Task 13: Daily calendar, forward fill, status rule
 
 **Files:**
-- Create: `metrics/build/calendar.py`
+- Create: `metrics/build/calendar_.py` (trailing underscore: `calendar` is a stdlib module)
 - Create: `metrics/build/tests/test_calendar.py`
 
 **Interfaces:**
@@ -4134,7 +4134,10 @@ git fetch origin metrics-data && git worktree add /tmp/md origin/metrics-data
 python -m metrics.build --data /tmp/md --curated metrics/curated --out dashboard/site.json
 cd dashboard && python3 -m http.server 8123     # http://localhost:8123/
 ```
-`dashboard/site.json` is gitignored.
+`dashboard/site.json` is a preview artefact only: it is gitignored and must never be
+committed. The pages fetch `site.json` relative to themselves, which is why the preview
+builds it in-tree; the deployed site never contains a committed copy — `pages.yml` builds a
+fresh one into the site artifact at deploy time. Do not "fix" the `.gitignore` entry.
 ```
 
 - [ ] **Step 2: CLAUDE.md pointers**
@@ -5404,6 +5407,10 @@ git fetch origin metrics-data && git worktree add /tmp/md origin/metrics-data
 python -m metrics.build --data /tmp/md --curated metrics/curated --out dashboard/site.json
 cd dashboard && python3 -m http.server 8123
 ```
+
+`dashboard/site.json` is gitignored and must never be committed: the pages fetch it
+relative to themselves, so the preview builds it here, and `pages.yml` builds the real one
+into the site artifact at deploy time.
 ```
 
 - [ ] **Step 3: Commit and open PR C**
