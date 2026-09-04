@@ -43,15 +43,10 @@ MILESTONE_KINDS = {"phase-start", "phase-done", "goal", "incident", "release"}
 DEFECT_AREAS = {"security", "correctness", "dead-code", "operational"}
 DEFECT_SEVERITIES = {"critical", "high", "medium", "low"}
 DEFECT_STATUSES = ("open", "pinned", "carried", "fixed")
-# Literal until Task 12 lands derive.py and curated.DERIVATIONS becomes a lazy
-# lookup into derive.DERIVATIONS (avoids an import cycle: derive imports
-# Defect from this module).
-DERIVATIONS = {
-    "codeql_open_count", "codeql_oldest_open_age_days", "codeql_fixed_per_week",
-    "scorecard_score", "scorecard_check", "ci_pass_rate_30d", "ci_median_wall_time_30d",
-    "pr_lead_time_30d", "pr_product_ratio_30d", "prs_merged_30d",
-    "issues_open_by_label", "issues_time_to_triage_median_30d", "defects_by_status",
-}
+def known_derivations() -> set[str]:
+    from derive import DERIVATIONS  # local import: derive imports Defect from this module
+
+    return set(DERIVATIONS)
 ALLOWED_TRANSITIONS = {("open", "pinned"), ("open", "carried"), ("open", "fixed"),
                        ("pinned", "fixed"), ("carried", "fixed")}
 
@@ -179,7 +174,7 @@ def validate(
         if not isinstance(m.since, dt.date):
             errors.append(f"{w}: since must be a date")
         if m.family == "derived":
-            if m.derivation not in DERIVATIONS:
+            if m.derivation not in known_derivations():
                 errors.append(f"{w}: unknown derivation '{m.derivation}'")
         else:
             if not m.path or not m.path.startswith("/"):
