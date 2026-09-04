@@ -54,8 +54,8 @@ def wait_for_redis(host='localhost', port=6379, db=0, password='', username='', 
     """Wait for Redis to become available.
 
     Wait-only (D15). A restart of any role must never disturb a running
-    relay's Redis state, so this never flushes — neither a full flushdb nor
-    the old selective non-Celery-key deletion. AIO's Redis starts empty
+    relay's Redis state, so this never flushes — neither a full database
+    flush nor the old selective non-Celery-key deletion. AIO's Redis starts empty
     because supervisord's [program:redis] runs it non-persistent
     (--save "" --appendonly no), not because anything wipes it.
     """

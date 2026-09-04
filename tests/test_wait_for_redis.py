@@ -27,8 +27,8 @@ class WaitForRedisTests(SimpleTestCase):
     Tests for scripts/wait_for_redis.py.
 
     D15: nothing flushes Redis, in any role, ever. wait_for_redis() only
-    waits for a successful ping — no flushdb, no selective key deletion,
-    in either AIO or modular mode. AIO starts empty because supervisord's
+    waits for a successful ping — no database flush, no selective key
+    deletion, in either AIO or modular mode. AIO starts empty because supervisord's
     [program:redis] runs redis-server non-persistent, not because anything
     wipes it.
     """
