@@ -103,3 +103,79 @@ class CuratedTests(unittest.TestCase):
         errs = validate_transitions(before.defects, after.defects)
         self.assertTrue(any("backward" in e for e in errs))
         self.assertEqual(validate_transitions(after.defects, before.defects), [])
+
+    # --- fix round 1: one test per previously-untested validator branch ---
+
+    def test_catalogue_rejects_unknown_unit(self):
+        self._mutate("catalogue.yml", lambda d: d[0].update(unit="parsecs"))
+        self.assertTrue(any("unit" in e for e in self._errors()))
+
+    def test_catalogue_direction_zero_requires_null_or_zero_target(self):
+        self._mutate("catalogue.yml", lambda d: d[1].update(target=5))
+        self.assertTrue(any("target" in e for e in self._errors()))
+
+    def test_catalogue_since_must_be_a_date(self):
+        self._mutate("catalogue.yml", lambda d: d[0].update(since="not-a-date"))
+        self.assertTrue(any("since" in e and "date" in e for e in self._errors()))
+
+    def test_catalogue_path_must_start_with_slash(self):
+        self._mutate("catalogue.yml", lambda d: d[2].update(path="loc_per_app/apps.proxy"))
+        self.assertTrue(any("path" in e for e in self._errors()))
+
+    def test_known_families_none_skips_headline_resolution(self):
+        # known_families=None is hook mode: no data to check against, so an
+        # unresolvable headline path (even for an unknown family) is not an
+        # error — validate() only checks resolution when data is available.
+        self._mutate("catalogue.yml", lambda d: d[0].update(path="/does_not_exist"))
+        c = load_curated(self.curated)
+        errs = validate(c, repo=self.repo, base=self.base, ref="main",
+                         pr_checker=lambda n: True, known_families=None)
+        self.assertEqual(errs, [])
+
+    def test_milestone_kind_must_be_in_vocabulary(self):
+        self._mutate("milestones.yml", lambda d: d["milestones"][1].update(kind="asteroid"))
+        self.assertTrue(any("kind" in e for e in self._errors()))
+
+    def test_milestone_sha_wrong_length_names_forty_in_message(self):
+        self._mutate("milestones.yml", lambda d: d["milestones"][1].update(sha="abc123"))
+        self.assertTrue(any("40" in e for e in self._errors()))
+
+    def test_milestone_pr_checker_returning_none_is_not_an_error(self):
+        # gitinfo.pr_is_merged returns None when gh is unreachable/unverifiable
+        # (its own docstring: "unverifiable, not fatal") — validate() must not
+        # turn that into a hard error, matching the defect fixed_in check below.
+        self.assertEqual(self._errors(pr_checker=lambda n: None), [])
+
+    def test_milestone_summary_must_be_one_sentence(self):
+        self._mutate("milestones.yml", lambda d: d["milestones"][1].update(summary="One. Two."))
+        self.assertTrue(any("summary" in e for e in self._errors()))
+
+    def test_defect_area_severity_status_vocabularies(self):
+        self._mutate("defects.yml", lambda d: d[0].update(area="chaos", severity="ultra", status="zombie"))
+        errs = self._errors()
+        self.assertTrue(any("area" in e for e in errs))
+        self.assertTrue(any("severity" in e for e in errs))
+        self.assertTrue(any("status" in e for e in errs))
+
+    def test_defect_fixed_status_needs_fixed_in(self):
+        self._mutate("defects.yml", lambda d: d[1].update(status="fixed"))
+        self.assertTrue(any("fixed_in" in e for e in self._errors()))
+
+    def test_defect_carried_status_needs_carried_as(self):
+        self._mutate("defects.yml", lambda d: d[1].update(status="carried"))
+        self.assertTrue(any("carried_as" in e for e in self._errors()))
+
+    def test_defect_fixed_in_must_be_a_merged_pr(self):
+        self._mutate("defects.yml", lambda d: d[1].update(status="fixed", fixed_in=99))
+        errs = self._errors(pr_checker=lambda n: False)
+        self.assertTrue(any("fixed_in" in e and "not merged" in e for e in errs))
+
+    def test_defect_dates_must_be_dates(self):
+        self._mutate("defects.yml", lambda d: d[0].update(first_seen="not-a-date", status_changed="also-not-a-date"))
+        errs = self._errors()
+        self.assertTrue(any("first_seen" in e for e in errs))
+        self.assertTrue(any("status_changed" in e for e in errs))
+
+    def test_defect_ids_unique(self):
+        self._mutate("defects.yml", lambda d: d[1].update(id="unfenced-lease"))
+        self.assertTrue(any("duplicate id" in e for e in self._errors()))

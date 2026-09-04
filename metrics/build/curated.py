@@ -9,12 +9,31 @@ from __future__ import annotations
 
 import dataclasses as dc
 import datetime as dt
+import re
 from pathlib import Path
 from typing import Any, Callable
 
 import yaml
 
 from gitinfo import is_first_parent_on
+
+# A sentence terminator (. ! ?) followed by whitespace or end of string — used
+# to enforce the one-sentence milestone summary rule (spec §5.2).
+_SENTENCE_TERM_RE = re.compile(r"[.!?](?=\s|$)")
+
+
+def _is_one_sentence(text: str) -> bool:
+    """True when `text` is non-empty and has no sentence terminator other
+    than at most one, positioned at the very end."""
+    s = (text or "").strip()
+    if not s:
+        return False
+    matches = list(_SENTENCE_TERM_RE.finditer(s))
+    if len(matches) > 1:
+        return False
+    if len(matches) == 1 and matches[0].end() != len(s):
+        return False
+    return True
 
 DIRECTIONS = {"up", "down", "zero", "info"}
 UNITS = {"count", "pct", "seconds", "days", "score", "lines", "ratio"}
@@ -187,12 +206,13 @@ def validate(
             errors.append(f"{w}: sha must be a full 40-character SHA")
         elif not is_first_parent_on(repo, m.sha, base, ref):
             errors.append(f"{w}: sha {m.sha[:12]} is not a first-parent commit on {ref} since {base[:12]}")
-        if m.pr is not None and pr_checker is not None:
-            merged = pr_checker(m.pr)
-            if merged is False:
-                errors.append(f"{w}: PR #{m.pr} is not merged")
-            elif merged is None:
-                errors.append(f"{w}: could not verify PR #{m.pr} (gh unavailable)")
+        # None means unverifiable (gh unavailable/timed out/non-JSON — see
+        # gitinfo.pr_is_merged), not fatal: only a confirmed False is an
+        # error, matching the defect fixed_in check below.
+        if m.pr is not None and pr_checker is not None and pr_checker(m.pr) is False:
+            errors.append(f"{w}: PR #{m.pr} is not merged")
+        if not _is_one_sentence(m.summary):
+            errors.append(f"{w}: summary must be one sentence")
 
     seen: set[str] = set()
     for d in c.defects:
