@@ -13,9 +13,16 @@
 # must not need root: pg_isready and a Redis PING are all it does.
 set -euo pipefail
 
+pg_attempt=0
+pg_max_attempts=60
 until "$PG_BINDIR/pg_isready" -h "$POSTGRES_HOST" -p "$POSTGRES_PORT" -q; do
+    pg_attempt=$((pg_attempt + 1))
+    if [ "$pg_attempt" -ge "$pg_max_attempts" ]; then
+        echo "wait-for-stores: PostgreSQL at ${POSTGRES_HOST}:${POSTGRES_PORT} did not become ready after ${pg_max_attempts} attempts, giving up" >&2
+        exit 1
+    fi
     echo "wait-for-stores: waiting for PostgreSQL at ${POSTGRES_HOST}:${POSTGRES_PORT}..."
-    sleep 1
+    sleep 2
 done
 
 # Wait-only after D15 — no flag needed, and nothing here may flush.
