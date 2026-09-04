@@ -251,7 +251,7 @@ case "$REL" in
     fi
     ;;
   dashboard/*.js|dashboard/*.html)
-    if [ -d frontend/node_modules ]; then
+    if [ -d frontend/node_modules ] && [ -f frontend/vitest.dashboard.config.js ]; then
       OUT="$(cd frontend && npx vitest --run --config vitest.dashboard.config.js 2>&1)"
       if [ $? -ne 0 ]; then
         block "dashboard tests" "$(printf '%s' "$OUT" | tail -40)"
@@ -259,7 +259,7 @@ case "$REL" in
         printf '%s\n' "$OUT" | grep -E '^ +(Test Files|Tests)  ' | head -2
       fi
     else
-      note "Did NOT run dashboard tests — frontend/node_modules missing. Run 'cd frontend && npm install'."
+      note "Did NOT run dashboard tests — frontend/node_modules or frontend/vitest.dashboard.config.js missing. Run 'cd frontend && npm install'."
     fi
     ;;
   *tests/test_*.py)

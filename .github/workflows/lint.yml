@@ -180,8 +180,12 @@ jobs:
 
       - name: Collector and build-step tests
         # Exit 3 means "no suite exists yet" (see scripts/run_metrics_tests.sh);
-        # it is a pass here so the job can land before the suites do.
+        # it is a pass here so the job can land before the suites do. GitHub's
+        # default shell is `bash -e {0}`, so the script's own nonzero exit
+        # must be caught by `||` rather than `;` — a bare `;` would abort the
+        # step right there and never reach `rc=$?`.
         run: |
-          scripts/run_metrics_tests.sh all; rc=$?
+          rc=0
+          scripts/run_metrics_tests.sh all || rc=$?
           [ "$rc" -eq 3 ] && exit 0
           exit "$rc"
