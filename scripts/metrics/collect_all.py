@@ -80,9 +80,10 @@ def main() -> int:
         metavar="FAMILY=PATH",
         help="Merge additional key/value pairs from a JSON file into a "
         "family's metrics dict before writing (e.g. "
-        "'tests=/tmp/coverage.json' to fold in a weekly-only vitest "
-        "coverage number without collect_tests.py itself executing the "
-        "suite). Repeatable.",
+        "'coverage=/tmp/coverage.json' to supply the external `coverage` "
+        "family's metrics, or 'tests=/tmp/frontend-coverage.json' to fold "
+        "in a weekly-only vitest coverage number without collect_tests.py "
+        "itself executing the suite). Repeatable.",
     )
     parser.add_argument(
         "--commit-sha",
@@ -97,23 +98,30 @@ def main() -> int:
     )
     args = parser.parse_args()
 
+    only = {f.strip() for f in args.only.split(",") if f.strip()}
+    unknown = only - set(FAMILIES)
+    if unknown:
+        print(f"unknown family in --only: {', '.join(sorted(unknown))}", file=sys.stderr)
+        return 2
+
     repo_root = args.repo_root.resolve()
     out_dir: Path = args.out_dir
     out_dir.mkdir(parents=True, exist_ok=True)
     scripts_dir = Path(__file__).resolve().parent
     skip = {f.strip() for f in args.skip_families.split(",") if f.strip()}
 
-    extra_metrics: dict[str, dict] = {}
+    # Parsed lazily per family inside the loop below (a missing/malformed
+    # file must fail only the family that consumes it, not every family).
+    extra_metrics_paths: dict[str, str] = {}
     for entry in args.extra_metrics:
         family, _, path = entry.partition("=")
-        extra_metrics[family] = json.loads(Path(path).read_text(encoding="utf-8"))
+        extra_metrics_paths[family] = path
 
     sha = args.commit_sha or git_head_sha(repo_root)
     timestamp = args.commit_date or dt.datetime.now(dt.timezone.utc).isoformat(
         timespec="seconds"
     )
 
-    only = {f.strip() for f in args.only.split(",") if f.strip()}
     overrides = dict(
         item.split("=", 1) for item in os.environ.get("METRICS_COLLECTOR_OVERRIDE", "").split(",") if "=" in item
     )
@@ -130,7 +138,7 @@ def main() -> int:
             continue
         try:
             if script is None:
-                if family not in extra_metrics:
+                if family not in extra_metrics_paths:
                     print(f"skip {family}: external family, no --extra-metrics given", file=sys.stderr)
                     continue
                 metrics = {}
@@ -138,17 +146,20 @@ def main() -> int:
                 script_path = Path(overrides.get(family, str(scripts_dir / script)))
                 result = subprocess.run(
                     [sys.executable, str(script_path), "--repo-root", str(repo_root)],
-                    check=True, capture_output=True, text=True,
+                    capture_output=True, text=True,
                 )
                 if result.stderr:
                     sys.stderr.write(result.stderr)
+                if result.returncode != 0:
+                    raise RuntimeError(f"{script_path} exited {result.returncode}")
                 metrics = json.loads(result.stdout)
-        except (subprocess.CalledProcessError, OSError, json.JSONDecodeError) as exc:
+            if family in extra_metrics_paths:
+                extra = json.loads(Path(extra_metrics_paths[family]).read_text(encoding="utf-8"))
+                metrics.update(extra)
+        except (OSError, json.JSONDecodeError, RuntimeError) as exc:
             print(f"FAILED {family}: {exc}", file=sys.stderr)
             failures.append(family)
             continue
-        if family in extra_metrics:
-            metrics.update(extra_metrics[family])
         row = {"timestamp": timestamp, "commit_sha": sha, "family": family, "metrics": metrics}
         with out_path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(row, sort_keys=True) + "\n")

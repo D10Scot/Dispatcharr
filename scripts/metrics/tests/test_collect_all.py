@@ -51,9 +51,13 @@ class CollectAllTests(unittest.TestCase):
             out = Path(tmp) / "out"
             # A repo root that is a git repo but has no apps/ makes every checkout
             # collector emit zeros rather than fail, so force a failure by pointing
-            # one family's script at a missing file via the override env used only
-            # by this test.
-            env = dict(__import__("os").environ, METRICS_COLLECTOR_OVERRIDE="architecture=/nonexistent.py")
+            # one family's script at a broken stand-in via the override env used
+            # only by this test — it writes to stderr and exits non-zero, so the
+            # test can also confirm collect_all.py forwards a failed collector's
+            # own stderr instead of swallowing it.
+            broken = Path(tmp) / "broken_collector.py"
+            broken.write_text("import sys\nsys.stderr.write('boom\\n')\nsys.exit(1)\n")
+            env = dict(__import__("os").environ, METRICS_COLLECTOR_OVERRIDE=f"architecture={broken}")
             r = subprocess.run([sys.executable, str(COLLECT_ALL), "--repo-root", str(repo), "--out-dir", str(out),
                                 "--only", "code_health,architecture,tests"], capture_output=True, text=True, env=env)
             self.assertEqual(r.returncode, 1)
@@ -61,3 +65,28 @@ class CollectAllTests(unittest.TestCase):
             self.assertTrue((out / "tests.jsonl").exists())
             self.assertFalse((out / "architecture.jsonl").exists())
             self.assertIn("architecture", r.stderr)
+            self.assertIn("boom", r.stderr)
+
+    def test_unknown_only_family_exits_before_running_anything(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = make_git_repo(Path(tmp))
+            out = Path(tmp) / "out"
+            r = subprocess.run([sys.executable, str(COLLECT_ALL), "--repo-root", str(repo), "--out-dir", str(out),
+                                "--only", "bogus,tests"], capture_output=True, text=True)
+            self.assertEqual(r.returncode, 2)
+            self.assertIn("bogus", r.stderr)
+            self.assertFalse(out.exists())
+
+    def test_bad_extra_metrics_file_fails_only_that_family(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = make_git_repo(Path(tmp))
+            out = Path(tmp) / "out"
+            r = subprocess.run([sys.executable, str(COLLECT_ALL), "--repo-root", str(repo), "--out-dir", str(out),
+                                "--extra-metrics", "coverage=/nonexistent.json"],
+                               capture_output=True, text=True)
+            self.assertEqual(r.returncode, 1)
+            self.assertTrue((out / "code_health.jsonl").exists())
+            self.assertTrue((out / "architecture.jsonl").exists())
+            self.assertTrue((out / "tests.jsonl").exists())
+            self.assertFalse((out / "coverage.jsonl").exists())
+            self.assertIn("coverage", r.stderr)
