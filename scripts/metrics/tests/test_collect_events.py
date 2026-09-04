@@ -25,6 +25,11 @@ PR = {"number": 5, "title": "G1", "created_at": "2026-08-24T10:00:00Z", "merged_
       "closed_at": "2026-08-25T10:00:00Z", "user": {"login": "d", "type": "User"}, "head": {"ref": "e2e/g1"}}
 PR_DETAIL = dict(PR, additions=100, deletions=5, changed_files=3)
 PR_FILES = [{"filename": "apps/x.py"}, {"filename": "e2e/a.spec.ts"}, {"filename": "docs/b.md"}]
+OPEN_PR = {"number": 6, "title": "Open work", "created_at": "2026-08-24T10:00:00Z",
+           "merged_at": None, "closed_at": None, "updated_at": "2026-08-24T10:00:00Z",
+           "user": {"login": "d", "type": "User"}, "head": {"ref": "e2e/open"}}
+OPEN_PR_DETAIL = dict(OPEN_PR, additions=20, deletions=2, changed_files=1)
+OPEN_PR_FILES = [{"filename": "apps/y.py"}]
 RUN = {"id": 11, "name": "E2E Tests", "event": "push", "status": "completed", "conclusion": "success",
        "created_at": "2026-08-29T08:00:00Z", "updated_at": "2026-08-29T08:05:00Z",
        "run_started_at": "2026-08-29T08:00:10Z", "head_sha": "abc"}
@@ -122,6 +127,45 @@ class CollectEventsTests(unittest.TestCase):
             self.assertEqual(rec2["deletions"], 5)
             self.assertEqual(rec2["changed_files"], 3)
             self.assertEqual(rec2["files"], ["apps/x.py", "e2e/a.spec.ts", "docs/b.md"])
+
+    def test_open_pr_detail_is_reused_when_updated_at_is_unchanged(self):
+        # The closed-PR reuse case above is the easy one (closed_at, once
+        # set, never changes). The gap this closes: an *open* PR untouched
+        # between two daily runs used to have its detail/files re-fetched
+        # every single day forever. The real invariant is updated_at, not
+        # closed_at — same rule fetch_issues already applies to its timeline
+        # call.
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "data"
+            resp = responses()
+            resp["/repos/o/r/pulls"] = {"pages": [[OPEN_PR]]}
+            resp["/repos/o/r/pulls/6"] = OPEN_PR_DETAIL
+            resp["/repos/o/r/pulls/6/files"] = OPEN_PR_FILES
+            env = fake_gh_env(tmp, resp, log=True)
+
+            self.assertEqual(run(env, out, "pull_requests").returncode, 0)
+            after_first = len([c for c in calls(env) if "/pulls/6" in " ".join(c)])
+            self.assertEqual(after_first, 2, "first run must fetch detail and files once each")
+
+            self.assertEqual(run(env, out, "pull_requests").returncode, 0)
+            after_second = len([c for c in calls(env) if "/pulls/6" in " ".join(c)])
+            self.assertEqual(after_second, after_first,
+                              "unchanged updated_at on an OPEN pr must reuse the sidecar, not re-fetch")
+            rec = next(r for r in read(out, "pull_requests")["records"] if r["id"] == 6)
+            self.assertEqual(rec["additions"], 20)
+            self.assertEqual(rec["files"], ["apps/y.py"])
+
+            # A changed updated_at (a fresh push) must re-fetch both calls.
+            changed = dict(OPEN_PR, updated_at="2026-08-25T00:00:00Z")
+            resp2 = dict(resp)
+            resp2["/repos/o/r/pulls"] = {"pages": [[changed]]}
+            resp2["/repos/o/r/pulls/6"] = dict(OPEN_PR_DETAIL, additions=99, updated_at="2026-08-25T00:00:00Z")
+            env2 = fake_gh_env(tmp, resp2, log=True)  # same tmp -> same call log, so we diff counts
+            self.assertEqual(run(env2, out, "pull_requests").returncode, 0)
+            after_third = len([c for c in calls(env2) if "/pulls/6" in " ".join(c)])
+            self.assertEqual(after_third, after_second + 2, "changed updated_at must re-fetch detail and files")
+            rec2 = next(r for r in read(out, "pull_requests")["records"] if r["id"] == 6)
+            self.assertEqual(rec2["additions"], 99)
 
     def test_detail_fetch_failure_does_not_misattribute_kind_status(self):
         # A 403 on a per-record detail call (secondary rate limit, say) is

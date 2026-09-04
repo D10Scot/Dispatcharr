@@ -12,6 +12,11 @@ set -uo pipefail
 OUT=/tmp/dispatcharr-coverage
 rm -rf "$OUT"; mkdir -p "$OUT"
 
+# ci_backend_test_labels.py's only stdout write is the final
+# print(json.dumps(labels)) — labels_for_changed_paths (dispatcharr/
+# test_discovery.py) has no print/logging calls of its own either, so
+# nothing else can land in $LABELS_JSON here; verified by reading both
+# files rather than assumed.
 LABELS_JSON="$(FULL_SUITE=1 python scripts/ci_backend_test_labels.py < /dev/null)"
 mapfile -t LABELS < <(python -c 'import json,sys; print("\n".join(json.load(sys.stdin)))' <<< "$LABELS_JSON")
 echo "coverage over ${#LABELS[@]} labels"

@@ -130,6 +130,7 @@ def project_pr(pr: dict, detail: dict | None, files: list[dict] | None) -> dict:
         "id": pr["number"],
         "title": pr.get("title"),
         "created_at": pr.get("created_at"),
+        "updated_at": pr.get("updated_at"),
         "merged_at": pr.get("merged_at"),
         "closed_at": pr.get("closed_at"),
         "author": user.get("login"),
@@ -206,8 +207,12 @@ def fetch_pull_requests(repo: str, sidecar: Sidecar, opts) -> list[dict]:
     out = []
     for pr in gh_api(repo, "/pulls", {"state": "all", "per_page": "100"}):
         prior = sidecar.get(pr["number"])
-        # A merged or closed PR's line counts and file list are final: reuse them.
-        if prior and prior.get("closed_at") and prior.get("additions") is not None:
+        # A PR whose updated_at hasn't moved since the last run has nothing
+        # new for the detail/files calls to find — true forever once a PR is
+        # merged/closed, but also true of an untouched *open* PR from one
+        # daily run to the next, which used to re-fetch every day regardless.
+        # Same reuse rule fetch_issues applies to its timeline call.
+        if prior and prior.get("updated_at") == pr.get("updated_at") and prior.get("additions") is not None:
             out.append(project_pr(pr, prior, [{"filename": f} for f in prior.get("files", [])]))
             continue
         detail_path = f"/pulls/{pr['number']}"
