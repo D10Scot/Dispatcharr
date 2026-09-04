@@ -8,7 +8,8 @@ ROOT = Path(__file__).resolve().parents[3]
 
 class RequirementsPinTests(unittest.TestCase):
     def test_pyyaml_pin_matches_uv_lock(self):
-        lock = tomllib.load((ROOT / "uv.lock").open("rb"))
+        with (ROOT / "uv.lock").open("rb") as f:
+            lock = tomllib.load(f)
         pkg = next(p for p in lock["package"] if p["name"] == "pyyaml")
         text = (ROOT / "metrics" / "requirements.txt").read_text()
         self.assertIn(f"pyyaml=={pkg['version']}", text)

@@ -53,3 +53,8 @@ class GitInfoTests(unittest.TestCase):
         self.assertFalse(pr_is_merged("o/r", 6, gh=lambda *a: '{"merged_at": null}'))
         def broken(*a): raise OSError("no gh")
         self.assertIsNone(pr_is_merged("o/r", 7, gh=broken))
+
+    def test_pr_is_merged_returns_none_for_non_object_json(self):
+        # A JSON array (or any non-dict body) has no `merged_at` to read — that
+        # is unverifiable, not a confirmed "not merged", so it must not raise.
+        self.assertIsNone(pr_is_merged("o/r", 8, gh=lambda *a: "[]"))

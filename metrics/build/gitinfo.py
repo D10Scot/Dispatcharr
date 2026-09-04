@@ -10,7 +10,11 @@ from pathlib import Path
 
 
 def _git(repo: Path, *args: str) -> str:
-    return subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True, text=True).stdout.strip()
+    # No timeout catch here: a hung git is a real failure and should propagate
+    # subprocess.TimeoutExpired rather than being mistaken for "no answer".
+    return subprocess.run(
+        ["git", "-C", str(repo), *args], check=True, capture_output=True, text=True, timeout=60
+    ).stdout.strip()
 
 
 def first_parent_shas(repo: Path, base: str, ref: str = "main") -> list[str]:
@@ -34,13 +38,16 @@ def commit_date(repo: Path, sha: str) -> dt.datetime:
 
 
 def run_gh(*args: str) -> str:
-    return subprocess.run(["gh", *args], check=True, capture_output=True, text=True).stdout
+    return subprocess.run(["gh", *args], check=True, capture_output=True, text=True, timeout=60).stdout
 
 
 def pr_is_merged(repo_slug: str, number: int, gh=run_gh) -> bool | None:
-    """True/False from the API; None when gh is unavailable or the call fails."""
+    """True/False from the API; None when gh is unavailable, times out, errors, or
+    returns something that isn't a JSON object (unverifiable, not fatal)."""
     try:
         doc = json.loads(gh("api", f"/repos/{repo_slug}/pulls/{number}", "--method", "GET"))
-    except (OSError, subprocess.CalledProcessError, ValueError):
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired, ValueError):
+        return None
+    if not isinstance(doc, dict):
         return None
     return bool(doc.get("merged_at"))
