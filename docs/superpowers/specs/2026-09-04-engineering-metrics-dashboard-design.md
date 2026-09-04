@@ -65,7 +65,11 @@ One new snapshot family, **`coverage.jsonl`**, written only by the coverage job 
              "backend_status": "ok" | "failed", "frontend_status": "ok" | "failed"}}
 ```
 
-A failed suite records `"failed"` with the pct fields `null` for that side, so a red day is a visible point, not a gap. Never backfilled.
+The backend suite runs one `coverage run -p` process per label and combines; the row carries
+`backend_failed_labels` and `backend_status: "failed"` when any label failed, and still
+reports the combined pct when `coverage combine` succeeded. The frontend side reports
+`frontend_status: "failed"` with a null pct when vitest did not produce a summary. A red
+day is a visible point, not a gap. Never backfilled.
 
 ### 4.2 Event dumps (new; replace the three API snapshot families)
 
@@ -231,7 +235,7 @@ compare:   { "<sha_a>..<sha_b>": [ {id, from, to, delta, good: true|false|null} 
 
 Two jobs.
 
-- `collect-and-append` (existing, reshaped): triggers per §4.3; runs snapshot collectors and, on schedule/dispatch, the event-dump collectors; `permissions: contents: write, security-events: read`; commits and pushes to `metrics-data` under the existing `metrics-append` concurrency group.
+- `collect-and-append` (existing, reshaped): triggers per §4.3; runs snapshot collectors and, on schedule/dispatch, the event-dump collectors; `permissions: contents: write, security-events: read, plus actions: read, issues: read and pull-requests: read for the event-dump collector (an explicit permissions block nulls every unlisted scope, and a listing 403 would be recorded as a silent not_permitted)`; commits and pushes to `metrics-data` under the existing `metrics-append` concurrency group.
 - `coverage` (new, schedule and dispatch only): Postgres and Redis services as in `backend-tests.yml`; `scripts/ci_bootstrap_backend.sh`; the 16-label backend matrix run in one job under `coverage run` (sharded execution is what CI does for correctness; for coverage a single process is acceptable and the known order-dependent failures are recorded as `backend_status: failed` rather than hidden); `vitest run --coverage --coverage.reporter=json-summary`; writes one `coverage.jsonl` row. Runs after `collect-and-append` (`needs:`) so both push under the same concurrency group without racing.
 
 ### 7.2 `pages.yml`
