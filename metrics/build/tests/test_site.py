@@ -105,7 +105,7 @@ class SiteTests(unittest.TestCase):
         # no data is not fresh, regardless of HEAD.
         s = self.build()
         proxy = next(m for m in s["groups"]["extraction"] if m["id"] == "proxy_loc")
-        self.assertTrue(proxy["stale"])
+        self.assertTrue(proxy["stale"]); self.assertIsNone(proxy["now"])
 
     def test_phases_and_compare(self):
         s = self.build()
