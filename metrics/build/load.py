@@ -20,27 +20,34 @@ from pathlib import Path
 # skipped rather than surfaced as unknown families.
 RETIRED_FAMILIES = {"security", "delivery", "agentic"}
 
-# The field that identifies a record varies by event kind: workflow runs use
-# "id", Scorecard rows use "date", and alerts/PRs/issues use "number" (GitHub's
-# issue/PR "number", not an internal "id" - confirmed against the live
-# metrics-data branch). Trying them in this order, generically, means the
-# loader does not need to hardcode a kind -> field table: whichever of these
-# three keys is present on a given record is its identity for the union merge.
-_RECORD_ID_KEYS = ("number", "id", "date")
-
 
 def _record_key(kind: str, record: dict) -> str:
-    for key in _RECORD_ID_KEYS:
-        if key in record:
-            return str(record[key])
-    raise KeyError(f"event '{kind}' record has none of {_RECORD_ID_KEYS}: {record!r}")
+    # scripts/metrics/collect_events.py's project_* functions always
+    # normalize the source-specific identifier (GitHub's issue/PR "number",
+    # a workflow run's "id", a Scorecard row's "date") into a single "id"
+    # field before a record is written to either the dump or the sidecar —
+    # that projection is the source of truth, not this loader. No record on
+    # the live metrics-data branch carries a bare "number" field, so keying
+    # on anything but "id" here would silently fail to match dump records to
+    # their sidecar history. Missing "id" is a bug in the collector's
+    # projection, not a shape we should merge around: raise loudly.
+    try:
+        return str(record["id"])
+    except KeyError:
+        raise KeyError(f"event '{kind}' record has no 'id': {record!r}") from None
 
 
 def parse_ts(value: str) -> dt.datetime:
-    """Parse an ISO-8601 timestamp with a 'Z' suffix or a numeric UTC offset,
-    returning a UTC-aware datetime. GitHub's API emits 'Z'; our own
-    'fetched_at'/'seen_at' emit '+00:00' — both must parse the same way."""
-    return dt.datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(dt.timezone.utc)
+    """Parse an ISO-8601 timestamp with a 'Z' suffix, a numeric UTC offset, or
+    no offset at all, returning a UTC-aware datetime. GitHub's API emits 'Z';
+    our own 'fetched_at'/'seen_at' emit '+00:00'. A naive value (no offset)
+    is treated as already being UTC, not the host's local timezone —
+    `datetime.astimezone()` on a naive value assumes local time, which would
+    silently shift a naive timestamp by the build host's UTC offset."""
+    parsed = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=dt.timezone.utc)
+    return parsed.astimezone(dt.timezone.utc)
 
 
 @dc.dataclass
