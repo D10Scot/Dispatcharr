@@ -222,3 +222,16 @@ class CuratedTests(unittest.TestCase):
         # The valid fixture's pr/issue values must not be flagged - only a
         # wrong-typed value is an error.
         self.assertEqual(self._errors(), [])
+
+    def test_milestones_yml_top_level_must_be_a_mapping(self):
+        # PR review: milestones.yml was the only curated file with no
+        # type check on its top level - a YAML sequence there reached
+        # `ms_raw.get("phases", [])` unguarded and raised AttributeError
+        # ('list' object has no attribute 'get') instead of the ValueError
+        # every other structural problem in this module produces.
+        (self.curated / "milestones.yml").write_text("- just\n- a\n- list\n")
+        with self.assertRaises(ValueError) as cm:
+            load_curated(self.curated)
+        msg = str(cm.exception)
+        self.assertIn("milestones.yml", msg)
+        self.assertIn("mapping", msg)

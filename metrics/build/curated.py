@@ -177,6 +177,19 @@ def _ensure_list(raw: Any, where: str, errors: list[str]) -> list:
     return []
 
 
+def _ensure_mapping(raw: Any, where: str, errors: list[str]) -> dict:
+    """Sibling of `_ensure_list`: milestones.yml must be a YAML mapping
+    (its two keys are `phases:` and `milestones:`), not a sequence. Without
+    this, a list-shaped milestones.yml reached `ms_raw.get("phases", [])`
+    unguarded and raised `AttributeError: 'list' object has no attribute
+    'get'` instead of the `ValueError` every other structural problem in
+    this module produces."""
+    if isinstance(raw, dict):
+        return raw
+    errors.append(f"{where}: top level must be a mapping with phases: and milestones:, got {type(raw).__name__}")
+    return {}
+
+
 def pointers(obj, prefix=""):
     """Every JSON-pointer path (leaf-only) reachable inside `obj`, e.g.
     `{"a": {"b": 1}}` -> `["/a/b"]`. Used to check a headline catalogue
@@ -194,7 +207,7 @@ def load_curated(directory: Path) -> Curated:
     """Load the three files; raises ValueError listing structural problems."""
     errors: list[str] = []
     cat_raw = _ensure_list(_read(directory / "catalogue.yml") or [], "catalogue.yml", errors)
-    ms_raw = _read(directory / "milestones.yml") or {}
+    ms_raw = _ensure_mapping(_read(directory / "milestones.yml") or {}, "milestones.yml", errors)
     def_raw = _ensure_list(_read(directory / "defects.yml") or [], "defects.yml", errors)
     catalogue = [m for i, r in enumerate(cat_raw) if (m := _build(Metric, r, f"catalogue[{i}]", errors))]
     phases = [p for i, r in enumerate(ms_raw.get("phases", [])) if (p := _build(Phase, r, f"phases[{i}]", errors))]

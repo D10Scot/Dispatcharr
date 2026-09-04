@@ -190,6 +190,14 @@ def prs_merged_30d(ctx: Context, day: dt.date, params: dict):
 
 
 def pr_product_ratio_30d(ctx: Context, day: dt.date, params: dict):
+    """Share of a merged PR's changed lines attributed to product code:
+    each PR's (additions + deletions) weighted by the fraction of its
+    changed files under apps/, summed over PRs merged in the trailing 30
+    days. An approximation, not an exact per-line count - the event dump
+    keeps file paths (spec S4.2), not which file each changed line
+    belongs to, so a PR touching both product and non-product files
+    splits its total lines by file-count share rather than by counting
+    lines in apps/ files directly."""
     product = total = 0.0
     for pr in _merged_prs(ctx, day, "all"):
         lines = (pr.get("additions") or 0) + (pr.get("deletions") or 0)

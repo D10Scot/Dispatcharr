@@ -245,7 +245,7 @@ Four stages:
    - `ci_pass_rate_30d`, `ci_median_wall_time_30d` (params: `workflow(s)`)
    - `pr_lead_time_30d` (params: `quantile`, `author_type`) — human/agent heuristic as in `derive.py`'s `_is_agent` docstring
    - `prs_merged_30d` (params: `author_type`)
-   - `pr_product_ratio_30d` — lines under `apps/` over all lines, per merged PR, rolling 30 days
+   - `pr_product_ratio_30d` — each merged PR's (additions + deletions) weighted by the fraction of its changed files under `apps/`, summed over PRs merged in the trailing 30 days. An approximation: the dump keeps file paths, not per-file line counts, so a PR touching both product and non-product files splits its total lines by file-count share, not by which lines actually changed where
    - `issues_open_by_label` (params: `label`), `issues_time_to_triage_median_30d`
    - `defects_by_status` (params: `status`)
 3. **Align to a daily calendar.** Every series is resampled to one point per day from the baseline date to today, last value on or before that day (`forward_fill` in `metrics/build/calendar_.py` — a calendar helper used by every family and derivation, not itself a derivation with a catalogue entry). Per-commit resolution is kept as a second series for Explore.
