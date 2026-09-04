@@ -394,7 +394,7 @@ dump_logs_on_fail() {
         docker exec "$container" cat /run/supervisord.log 2>/dev/null \
             | tail -60 | sed 's/^/  | /' || echo "  | (unavailable)"
         echo -e "  ${RED}--- supervisorctl status ---${NC}"
-        supervisorctl_status "$container" | sed 's/^/  | /' || echo "  | (unavailable)"
+        supervisorctl_status "$container" | sed 's/^/  | /' || true
         echo -e "  ${RED}--- End logs ---${NC}"
     fi
 }
