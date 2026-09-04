@@ -21,6 +21,7 @@ dependencies = [
     "django-db-geventpool",
     "daphne",
     "uwsgi",
+    "supervisor==4.3.0", # process supervisor (D2); pin exactly, a version swap changes supervision for every deployment
     "django-cors-headers",
     "djangorestframework-simplejwt",
     "m3u8",

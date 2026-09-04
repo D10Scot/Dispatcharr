@@ -550,6 +550,7 @@ dependencies = [
     { name = "requests" },
     { name = "sentence-transformers" },
     { name = "streamlink" },
+    { name = "supervisor" },
     { name = "torch" },
     { name = "tzlocal" },
     { name = "uwsgi" },
@@ -586,6 +587,7 @@ requires-dist = [
     { name = "requests", specifier = "==2.34.2" },
     { name = "sentence-transformers", specifier = "==5.6.1" },
     { name = "streamlink" },
+    { name = "supervisor", specifier = "==4.3.0" },
     { name = "torch", specifier = "==2.13.0+cpu", index = "https://download.pytorch.org/whl/cpu" },
     { name = "tzlocal" },
     { name = "uwsgi" },
@@ -2193,6 +2195,15 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/be/ae/1b04d888b0ba4294c0f4c89c4599a5922f1c1f14c54c48853ab9d6419d8f/streamlink-8.5.0-py3-none-any.whl", hash = "sha256:14595986ce0ed098fba7944e6d246b2d6b49985f7a1deb8f5d2cee22c17df1e4", size = 583615, upload-time = "2026-08-01T18:37:43.39Z" },
     { url = "https://files.pythonhosted.org/packages/b9/cf/68cfa69ffb96c4c0ff28be8c9f8880b781a161cd479870147e629f537d0a/streamlink-8.5.0-py3-none-win32.whl", hash = "sha256:5de77da682a43644d53a1bf05c70fc91c865a5bf791ce5b7905b5de35a8c7823", size = 583627, upload-time = "2026-08-01T18:37:44.867Z" },
     { url = "https://files.pythonhosted.org/packages/93/ea/0703c65ced4b608d1b5c524d65e9e79378987fd68b86feed1942fb115e62/streamlink-8.5.0-py3-none-win_amd64.whl", hash = "sha256:2484970638474e66f5e0de5c22015bc5c2989a375ec10dfd7522867a60993b1b", size = 583632, upload-time = "2026-08-01T18:37:46.312Z" },
+]
+
+[[package]]
+name = "supervisor"
+version = "4.3.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/a9/b5/37e7a3706de436a8a2d75334711dad1afb4ddffab09f25e31d89e467542f/supervisor-4.3.0.tar.gz", hash = "sha256:4a2bf149adf42997e1bb44b70c43b613275ec9852c3edacca86a9166b27e945e", size = 468912, upload-time = "2025-08-23T18:25:02.418Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/0e/65/5e726c372da8a5e35022a94388b12252710aad0c2351699c3d76ae8dba78/supervisor-4.3.0-py2.py3-none-any.whl", hash = "sha256:0bcb763fddafba410f35cbde226aa7f8514b9fb82eb05a0c85f6588d1c13f8db", size = 320736, upload-time = "2025-08-23T18:25:00.767Z" },
 ]
 
 [[package]]
