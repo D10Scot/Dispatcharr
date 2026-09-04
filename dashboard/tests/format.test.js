@@ -13,6 +13,10 @@ describe('fmt', () => {
     expect(fmt(12, 'days')).toBe('12 d');
     expect(fmt(6.9, 'score')).toBe('6.9');
   });
+  it('shows one decimal for a ratio under 10%, not a rounded whole percent', () => {
+    expect(fmt(0.0064, 'ratio')).toBe('0.6%');
+    expect(fmt(0.9535, 'ratio')).toBe('95%');
+  });
   it('formats deltas with a sign', () => {
     expect(fmtDelta(249, 'count')).toBe('+249');
     expect(fmtDelta(-3, 'count')).toBe('−3');

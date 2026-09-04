@@ -6,12 +6,19 @@ export function fmt(value, unit) {
   if (value === null || value === undefined || Number.isNaN(value)) return '—';
   switch (unit) {
     case 'pct': return `${round(value, 1)}%`;
-    case 'ratio': return `${Math.round(value * 100)}%`;
+    case 'ratio': return fmtPercent(value * 100);
     case 'seconds': return fmtSeconds(value);
     case 'days': return `${Math.round(value)} d`;
     case 'score': return String(round(value, 1));
     default: return Number.isInteger(value) ? value.toLocaleString('en-GB') : String(round(value, 2));
   }
+}
+
+function fmtPercent(pct) {
+  // A whole-number round hides a real signal under 10% (0.64% -> "1%" reads
+  // as a much bigger change than it is), so keep one decimal there; above
+  // that a whole percent is precise enough.
+  return pct !== 0 && Math.abs(pct) < 10 ? `${round(pct, 1)}%` : `${Math.round(pct)}%`;
 }
 
 function fmtSeconds(s) {

@@ -13,6 +13,11 @@ const root = fileURLToPath(new URL('../dashboard', import.meta.url));
 
 export default defineConfig({
   root,
+  // Vite's default cacheDir is <root>/node_modules/.vite — with root set to
+  // ../dashboard that would write into the dashboard tree itself. Keep it
+  // under this package's node_modules instead, alongside the frontend
+  // suite's own cache.
+  cacheDir: fileURLToPath(new URL('./node_modules/.vite-dashboard', import.meta.url)),
   server: { fs: { allow: [root] } },
   test: {
     environment: 'jsdom',
