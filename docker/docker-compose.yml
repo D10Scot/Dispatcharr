@@ -10,6 +10,14 @@ services:
     image: ghcr.io/dispatcharr/dispatcharr:latest
     container_name: dispatcharr_web
     restart: unless-stopped
+    # supervisord stops its programs one priority group at a time, waiting
+    # for each to finish before signalling the next, so the budget is the
+    # sum of their stopwaitsecs and not the largest of them: 135s today,
+    # 155s once PR 4 adds relay-uwsgi at 20s. 160s covers that ceiling, and
+    # is set here once so PR 4's relay service needs no compose change.
+    # The realistic stop is nearer 90s -- only the two Celery workers use
+    # their full window, on warm shutdown with a task in flight.
+    stop_grace_period: 160s
     ports:
       - 9191:9191
     volumes:
@@ -27,6 +35,11 @@ services:
     environment:
       # Deployment Mode
       - DISPATCHARR_ENV=modular
+      # Which supervisord programs this container runs: nginx, uwsgi and
+      # daphne. This is also what the entrypoint would default to in
+      # modular mode; stated explicitly so the compose file answers the
+      # question on its own.
+      - DISPATCHARR_ROLE=api
 
       # PostgreSQL Connection
       - POSTGRES_HOST=db
@@ -108,6 +121,9 @@ services:
     image: ghcr.io/dispatcharr/dispatcharr:latest
     container_name: dispatcharr_celery
     restart: unless-stopped
+    # Both Celery workers carry stopwaitsecs=30 for a task in flight, and
+    # supervisord waits for each in turn — see the web service above.
+    stop_grace_period: 160s
     depends_on:
       db:
         condition: service_healthy
@@ -120,12 +136,15 @@ services:
       #- ./certs:/certs:ro  # TLS certificates (optional)
     extra_hosts:
       - "host.docker.internal:host-gateway"
-    entrypoint: ["/app/docker/entrypoint.celery.sh"]
 
     # --- Environment Configuration ---
     environment:
       # Deployment Mode
       - DISPATCHARR_ENV=modular
+      # Which supervisord programs this container runs: the three Celery
+      # programs and nothing else. Replaces the entrypoint override that
+      # used to point at docker/entrypoint.celery.sh.
+      - DISPATCHARR_ROLE=worker
 
       # Internal Service Communication
       # Celery uses these to reach the web container for DVR recording.
