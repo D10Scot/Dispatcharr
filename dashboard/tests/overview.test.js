@@ -26,8 +26,12 @@ describe('overview', () => {
 
   it('colours tiles by status and shows the value and context', () => {
     render(site, root);
-    // e2e_scenarios: daily starts 2026-08-25, after meta.baseline.date
-    // (2026-08-19) — so the label reads "since 25 Aug", not "since baseline".
+    // e2e_scenarios' daily (fixture) is padded with leading nulls from
+    // meta.baseline.date (2026-08-19) through 2026-08-24 — the real build's
+    // shape, since daily spans the full baseline..today range — with its
+    // first real point on 2026-08-25. The label must read "since 25 Aug",
+    // derived from that first non-null point, not "since baseline" (which
+    // daily[0][0] would wrongly give, since daily[0] is a padded null).
     const e2e = root.querySelector('[data-id="e2e_scenarios"]');
     expect(e2e.classList.contains('good')).toBe(true);
     expect(e2e.querySelector('.v').textContent).toBe('249');
@@ -49,25 +53,19 @@ describe('overview', () => {
   it('derives "since" from the first non-null daily point, not the first (baseline-padded) point', () => {
     // The real build pads `daily` with nulls back to meta.baseline.date so
     // every series lines up on the same x-axis — daily[0][0] is therefore
-    // always the baseline date, never the metric's actual since. A metric
-    // whose real data starts well after the baseline (e.g. a catalogue
-    // metric added later, like the real `scorecard` series starting 4 Sep
-    // against an 19 Aug baseline) must still read "since <its own date>".
-    const padded = {
-      ...site,
-      headline: [{
-        ...site.headline[0], // reuse e2e_scenarios' shape (group safety_net, unit count, direction up)
-        id: 'padded_metric',
-        daily: [['2026-08-19', null], ['2026-08-20', null], ['2026-09-01', 10], ['2026-09-02', 12]],
-        commits: null,
-        now: 12,
-        at_baseline: 10,
-        spark: [null, null, 10, 12],
-      }],
-    };
-    render(padded, root);
-    const t = root.querySelector('[data-id="padded_metric"]');
-    expect(t.querySelector('.d').textContent).toBe('+2 since 1 Sep');
+    // always the baseline date, never the metric's actual since. This was a
+    // real regression: withSince() originally read daily[0][0] directly, so
+    // every real headline tile with any delta read "since baseline"
+    // regardless of when its data actually started. The fixture's
+    // e2e_scenarios carries that exact shape (6 leading nulls at
+    // 2026-08-19..2026-08-24, first real point 2026-08-25) so this is
+    // exercised directly against fixture data, not a synthetic one-off.
+    expect(site.headline[0].id).toBe('e2e_scenarios');
+    expect(site.headline[0].daily[0]).toEqual(['2026-08-19', null]);
+    expect(site.headline[0].daily.slice(0, 6).every(([, v]) => v === null)).toBe(true);
+    render(site, root);
+    const e2e = root.querySelector('[data-id="e2e_scenarios"]');
+    expect(e2e.querySelector('.d').textContent).toBe('+249 since 25 Aug');
   });
 
   it('positions phase milestones by inline left:N% rather than nth-of-type CSS', () => {
