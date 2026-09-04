@@ -8,13 +8,14 @@ Appends are idempotent on (commit_sha, family): an existing row for the same
 commit and family is left untouched and the new one skipped, so re-running a
 backfill or a CI retry never duplicates history.
 
-Two kinds of families:
-- checkout-scanning (code_health, architecture, tests): stdlib-only, run
-  against --repo-root, safe to run in a historical worktree (backfill.py).
-- GitHub-API-backed (security, delivery, agentic — see API_FAMILIES): call
-  `gh` against --repo, report *live* repo/API state rather than a fact about
-  the given commit, and are therefore excluded from backfill.py's per-commit
-  loop via --skip-families.
+Families are checkout-scanning (stdlib AST/grep over --repo-root, safe in a
+historical worktree) or external (coverage: no script, metrics arrive via
+--extra-metrics from the workflow's coverage job). GitHub-backed data is not a
+family any more — see collect_events.py.
+
+Every family runs independently: one family's script failing does not stop
+the others from running. Failures are collected and reported, and the
+process exits 1 at the end if any family failed.
 """
 
 from __future__ import annotations
@@ -22,24 +23,19 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
 
-FAMILIES = {
+# family -> collector script, or None for a family whose metrics arrive only
+# via --extra-metrics (coverage: produced by the workflow's coverage job).
+FAMILIES: dict[str, str | None] = {
     "code_health": "collect_code_health.py",
     "architecture": "collect_architecture.py",
     "tests": "collect_tests.py",
-    "security": "collect_security.py",
-    "delivery": "collect_delivery.py",
-    "agentic": "collect_agentic.py",
+    "coverage": None,
 }
-
-# Families that call the GitHub API (via `gh`) instead of scanning a
-# checkout. They report live repo state, not a fact about a specific commit,
-# so they cannot be backfilled against historical commits and are excluded
-# by default there (see backfill.py, which passes --skip-families for these).
-API_FAMILIES = {"security", "delivery", "agentic"}
 
 
 def git_head_sha(repo_root: Path) -> str:
@@ -68,17 +64,14 @@ def main() -> int:
     parser.add_argument("--repo-root", type=Path, default=Path("."))
     parser.add_argument("--out-dir", type=Path, required=True)
     parser.add_argument(
-        "--repo",
-        default="D10Scot/Dispatcharr",
-        help="owner/repo passed to the GitHub-API families (security, "
-        "delivery, agentic); irrelevant to the checkout-scanning families.",
-    )
-    parser.add_argument(
         "--skip-families",
         default="",
-        help="Comma-separated family names to skip entirely (e.g. "
-        "backfill.py passes the API_FAMILIES here, since they report live "
-        "repo state and cannot be attributed to a historical commit).",
+        help="Comma-separated family names to skip entirely.",
+    )
+    parser.add_argument(
+        "--only",
+        default="",
+        help="Comma-separated family names to run (default: all in FAMILIES).",
     )
     parser.add_argument(
         "--extra-metrics",
@@ -120,7 +113,14 @@ def main() -> int:
         timespec="seconds"
     )
 
+    only = {f.strip() for f in args.only.split(",") if f.strip()}
+    overrides = dict(
+        item.split("=", 1) for item in os.environ.get("METRICS_COLLECTOR_OVERRIDE", "").split(",") if "=" in item
+    )
+    failures: list[str] = []
     for family, script in FAMILIES.items():
+        if only and family not in only:
+            continue
         if family in skip:
             print(f"skip {family}: excluded via --skip-families", file=sys.stderr)
             continue
@@ -128,30 +128,35 @@ def main() -> int:
         if sha in existing_keys(out_path):
             print(f"skip {family}: row for {sha[:12]} already present", file=sys.stderr)
             continue
-        script_args = (
-            ["--repo", args.repo] if family in API_FAMILIES else ["--repo-root", str(repo_root)]
-        )
-        result = subprocess.run(
-            [sys.executable, str(scripts_dir / script), *script_args],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-        if result.stderr:
-            sys.stderr.write(result.stderr)
-        metrics = json.loads(result.stdout)
+        try:
+            if script is None:
+                if family not in extra_metrics:
+                    print(f"skip {family}: external family, no --extra-metrics given", file=sys.stderr)
+                    continue
+                metrics = {}
+            else:
+                script_path = Path(overrides.get(family, str(scripts_dir / script)))
+                result = subprocess.run(
+                    [sys.executable, str(script_path), "--repo-root", str(repo_root)],
+                    check=True, capture_output=True, text=True,
+                )
+                if result.stderr:
+                    sys.stderr.write(result.stderr)
+                metrics = json.loads(result.stdout)
+        except (subprocess.CalledProcessError, OSError, json.JSONDecodeError) as exc:
+            print(f"FAILED {family}: {exc}", file=sys.stderr)
+            failures.append(family)
+            continue
         if family in extra_metrics:
             metrics.update(extra_metrics[family])
-        row = {
-            "timestamp": timestamp,
-            "commit_sha": sha,
-            "family": family,
-            "metrics": metrics,
-        }
+        row = {"timestamp": timestamp, "commit_sha": sha, "family": family, "metrics": metrics}
         with out_path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(row, sort_keys=True) + "\n")
         print(f"wrote {family} row for {sha[:12]}", file=sys.stderr)
 
+    if failures:
+        print(f"{len(failures)} famil{'y' if len(failures) == 1 else 'ies'} failed: {', '.join(failures)}", file=sys.stderr)
+        return 1
     return 0
 
 
