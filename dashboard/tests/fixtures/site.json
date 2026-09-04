@@ -1,0 +1,70 @@
+{
+  "meta": {"built_at": "2026-09-05T06:20:00+00:00", "today": "2026-09-05",
+           "baseline": {"sha": "fd413f0cc4ab3131789a68fb31f1ae622ae7371a", "date": "2026-08-19"},
+           "freshness": {"tests": "2026-09-03T21:09:00+00:00", "codeql_alerts": "2026-09-05T06:05:00+00:00"},
+           "source_notes": ["dependabot_alerts: not_permitted (HTTP 403)"], "commit_count": 67},
+  "headline": [
+    {"id": "e2e_scenarios", "label": "E2E scenarios", "unit": "count", "direction": "up", "target": null, "group": "safety_net", "headline": true,
+     "note": "Playwright test() call sites.", "daily": [["2026-09-03", 200], ["2026-09-04", 249], ["2026-09-05", 249]],
+     "commits": [["fd413f0cc4ab3131789a68fb31f1ae622ae7371a", "2026-08-19T22:13:45+00:00", 0], ["75a68555b931e7d088bfbbd859b35e6e27064312", "2026-09-03T21:09:00+00:00", 249]],
+     "last_real": "2026-09-03T21:09:00+00:00", "stale": false, "status": "good", "now": 249, "at_baseline": 0, "at_prev_milestone": 200, "spark": [200, 249, 249]},
+    {"id": "codeql_open_critical_high", "label": "Open CodeQL critical + high", "unit": "count", "direction": "zero", "target": null, "group": "security", "headline": true,
+     "note": "Open alerts.", "daily": [["2026-09-03", 75], ["2026-09-04", 75], ["2026-09-05", 75]], "commits": null,
+     "last_real": "2026-09-05T06:05:00+00:00", "stale": false, "status": "bad", "now": 75, "at_baseline": 75, "at_prev_milestone": 75, "spark": [75, 75, 75]},
+    {"id": "backend_coverage", "label": "Backend line coverage", "unit": "pct", "direction": "up", "target": 60, "group": "safety_net", "headline": true,
+     "note": "Daily.", "daily": [["2026-09-03", null], ["2026-09-04", null], ["2026-09-05", null]], "commits": [],
+     "last_real": null, "stale": true, "status": "stale", "now": null, "at_baseline": null, "at_prev_milestone": null, "spark": [null, null, null]}
+  ],
+  "groups": {
+    "safety_net": [
+      {"id": "e2e_scenarios", "label": "E2E scenarios", "unit": "count", "direction": "up", "target": null, "group": "safety_net", "headline": true, "note": "Playwright test() call sites.",
+       "daily": [["2026-09-03", 200], ["2026-09-04", 249], ["2026-09-05", 249]],
+       "commits": [["fd413f0cc4ab3131789a68fb31f1ae622ae7371a", "2026-08-19T22:13:45+00:00", 0], ["75a68555b931e7d088bfbbd859b35e6e27064312", "2026-09-03T21:09:00+00:00", 249]],
+       "last_real": "2026-09-03T21:09:00+00:00", "stale": false, "status": "good", "now": 249, "at_baseline": 0, "at_prev_milestone": 200},
+      {"id": "backend_coverage", "label": "Backend line coverage", "unit": "pct", "direction": "up", "target": 60, "group": "safety_net", "headline": true, "note": "Daily.",
+       "daily": [["2026-09-03", null], ["2026-09-04", null], ["2026-09-05", null]], "commits": [], "last_real": null, "stale": true, "status": "stale", "now": null, "at_baseline": null, "at_prev_milestone": null}
+    ],
+    "security": [
+      {"id": "codeql_open_critical_high", "label": "Open CodeQL critical + high", "unit": "count", "direction": "zero", "target": null, "group": "security", "headline": true, "note": "Open alerts.",
+       "daily": [["2026-09-03", 75], ["2026-09-04", 75], ["2026-09-05", 75]], "commits": null, "last_real": "2026-09-05T06:05:00+00:00", "stale": false, "status": "bad", "now": 75, "at_baseline": 75, "at_prev_milestone": 75}
+    ],
+    "extraction": [
+      {"id": "reverse_imports_into_proxy", "label": "Reverse imports into apps/proxy", "unit": "count", "direction": "down", "target": 0, "group": "extraction", "headline": false, "note": "Imports.",
+       "daily": [["2026-09-03", 24], ["2026-09-04", 24], ["2026-09-05", 24]],
+       "commits": [["fd413f0cc4ab3131789a68fb31f1ae622ae7371a", "2026-08-19T22:13:45+00:00", 24], ["75a68555b931e7d088bfbbd859b35e6e27064312", "2026-09-03T21:09:00+00:00", 24]],
+       "last_real": "2026-09-03T21:09:00+00:00", "stale": false, "status": "bad", "now": 24, "at_baseline": 24, "at_prev_milestone": 24}
+    ],
+    "delivery": [
+      {"id": "median_review_hours", "label": "Median PR review time", "unit": "seconds", "direction": "info", "target": null, "group": "delivery", "headline": false, "note": "Time-to-first-review median, derived from PR events.",
+       "daily": [["2026-09-03", 3600], ["2026-09-04", 4000], ["2026-09-05", 4200]], "commits": null,
+       "last_real": "2026-09-05T06:05:00+00:00", "stale": false, "status": "neutral", "now": 4200, "at_baseline": 3600, "at_prev_milestone": 3600}
+    ],
+    "agents": []
+  },
+  "phases": [
+    {"id": "investigate", "label": "Investigate", "summary": "Read before writing.", "headline_ids": ["e2e_scenarios"], "start": "2026-08-19", "end": null,
+     "milestones": [{"sha": "fd413f0cc4ab3131789a68fb31f1ae622ae7371a", "date": "2026-08-19", "label": "v0.29.0 baseline", "kind": "phase-start", "phase": "investigate", "pr": null, "summary": "Fork point."}]},
+    {"id": "phase0", "label": "Phase 0", "summary": "Harden in place.", "headline_ids": ["codeql_open_critical_high"], "start": "2026-09-03", "end": "2026-09-03",
+     "milestones": [{"sha": "75a68555b931e7d088bfbbd859b35e6e27064312", "date": "2026-09-03", "label": "Phase 0 done", "kind": "phase-done", "phase": "phase0", "pr": 155, "summary": "All six items merged."}]}
+  ],
+  "milestones": [
+    {"sha": "fd413f0cc4ab3131789a68fb31f1ae622ae7371a", "date": "2026-08-19", "label": "v0.29.0 baseline", "kind": "phase-start", "phase": "investigate", "pr": null, "summary": "Fork point."},
+    {"sha": "75a68555b931e7d088bfbbd859b35e6e27064312", "date": "2026-09-03", "label": "Phase 0 done", "kind": "phase-done", "phase": "phase0", "pr": 155, "summary": "All six items merged."}
+  ],
+  "defects": {
+    "entries": [
+      {"id": "m3u-unescaped-quote", "title": "Unescaped quote in EXTINF", "area": "correctness", "severity": "medium", "status": "pinned", "source": null, "issue": 80, "test": "e2e/tests/seeded/output-m3u.spec.ts", "fixed_in": null, "carried_as": null, "first_seen": "2026-08-30", "status_changed": "2026-08-30"},
+      {"id": "credentials-logged-at-info", "title": "Credentials logged at INFO", "area": "security", "severity": "critical", "status": "fixed", "source": null, "issue": 89, "test": null, "fixed_in": 154, "carried_as": null, "first_seen": "2026-08-22", "status_changed": "2026-09-03"}
+    ],
+    "by_status_daily": [["2026-09-03", {"open": 0, "pinned": 1, "carried": 0, "fixed": 1}], ["2026-09-04", {"open": 0, "pinned": 1, "carried": 0, "fixed": 1}], ["2026-09-05", {"open": 0, "pinned": 1, "carried": 0, "fixed": 1}]]
+  },
+  "compare": {
+    "fd413f0cc4ab3131789a68fb31f1ae622ae7371a..75a68555b931e7d088bfbbd859b35e6e27064312": [
+      {"id": "e2e_scenarios", "group": "safety_net", "label": "E2E scenarios", "unit": "count", "direction": "up", "from": 0, "to": 249, "delta": 249, "good": true},
+      {"id": "reverse_imports_into_proxy", "group": "extraction", "label": "Reverse imports into apps/proxy", "unit": "count", "direction": "down", "from": 24, "to": 24, "delta": 0, "good": null},
+      {"id": "codeql_open_critical_high", "group": "security", "label": "Open CodeQL critical + high", "unit": "count", "direction": "zero", "from": null, "to": 75, "delta": null, "good": null},
+      {"id": "backend_coverage", "group": "safety_net", "label": "Backend line coverage", "unit": "pct", "direction": "up", "from": null, "to": null, "delta": null, "good": null},
+      {"id": "median_review_hours", "group": "delivery", "label": "Median PR review time", "unit": "seconds", "direction": "info", "from": null, "to": 3600, "delta": null, "good": null}
+    ]
+  }
+}
