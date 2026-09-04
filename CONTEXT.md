@@ -128,3 +128,53 @@ vestigial — do not use them.
   require. It always reports: it passes when the workflow's own change
   detection proved the suite unnecessary, and otherwise only when every heavy
   job succeeded. A skipped heavy job on a required run is a failure, not a pass.
+- **Phase 1** — "still Python": the process split, described in
+  `docs/superpowers/specs/2026-09-04-phase1-process-split-design.md`. Five
+  steps that move no relay internals: process split with a supervisor and
+  roles, an authorize hop keyed by relay name, next-source and events calls
+  to Django, a relay status/control API, and the tune-path tests and lifted
+  constraints that gate everything after. Stopping after Phase 1 — or after
+  step 1 or step 4, its two legitimate stopping points — is not a failure of
+  the plan; widening it while it is in flight is.
+- **Relay (data plane)** — the process that owns the byte path: live TS/fMP4,
+  VOD, catch-up, and the Xtream stream roots. Same Django code and the same
+  URL config as the API process, run as a second uWSGI with a request timeout
+  deliberately left off. It resolves no user and authorizes nothing itself,
+  and by the end of Phase 1 performs no ORM writes. It still *reads*
+  PostgreSQL — VOD and catch-up resolve their content at tune time, the
+  ffmpeg reconnect path re-reads its `StreamProfile`, and several status and
+  cleanup paths look up a `Channel` or `Stream` by id. The Phase 1 spec lists
+  every one that remains.
+- **Control plane** — the process (or processes) that decide things: the API,
+  the UI, Xtream JSON, HDHR, Celery, Daphne. Owns every durable decision —
+  who may stream, which source a channel uses next, whether a provider slot
+  is free — and answers the relay's questions over HTTP rather than sharing
+  Python memory with it. Some coordination stays in Redis by design: the
+  provider-slot counters, and the timeshift and VOD halves of the per-user
+  connection scan, are written by control-plane code rather than by the relay,
+  so they are not relay-private state and do not move behind the control API.
+  The live half of that same scan does move, because those client sets are the
+  relay's own.
+- **Role** — the value of `DISPATCHARR_ROLE` (`all`, `api`, `relay`,
+  `worker`) that tells supervisord which programs to start in a given
+  container. `all` is the AIO default; `api`/`relay`/`worker` are the modular
+  split. Same image, same settings, same urlconf in every role — what differs
+  is which programs run, and whether nginx runs at all: the `api` and `all`
+  roles run it with the full location table, and `relay` and `worker` run
+  none. The supervisord config is picked from the role together with
+  `DISPATCHARR_ENV` and `DISPATCHARR_DEBUG`, because `dev` runs vite in place
+  of nginx and `debug` runs a different uWSGI ini — the same three-input
+  ladder the entrypoint already uses to choose that ini.
+- **Authorize hop** — the nginx `auth_request` subrequest Django answers once
+  per tune, before the relay ever sees the connection. Applies the `STREAMS`
+  network ACL, resolves the principal, checks `user_level`, channel-profile
+  membership, `hidden_from_output` and the user's `hide_adult_content`
+  against `Channel.is_adult`, and resolves the Output Profile — every stream
+  surface through one function. An administrator bypasses every channel check
+  but not the ACL or the per-user stream limit, which is what the admin UI's
+  own preview player relies on. See ADR 0005.
+- **Relay name** — the header (`X-Relay-Name`, default `py`) Django's
+  authorize response carries and nginx's `map` turns into an upstream. One
+  relay, one map entry, in Phase 1; the same mechanism is the Phase 2 canary
+  switch and the scale-out seam, so it is a name from day one, never a
+  Python-or-Go flag. See ADR 0005.
