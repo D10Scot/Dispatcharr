@@ -32,7 +32,14 @@ done:
 | `./scripts/e2e_up.sh --down` | Destroy container + volume, start nothing |
 
 `DISPATCHARR_E2E_PORT`, `_CONTAINER`, `_VOLUME` and `_IMAGE` override the
-defaults, and every command above respects them. The equivalent
+defaults, and every command above respects them. `DISPATCHARR_E2E_REPO_OWNER`
+(default `d10scot`) picks which fork's `:base` the AIO image is built from.
+Like `_IMAGE`, it matters only when this script actually builds, which happens
+only when `$IMAGE` is absent locally: to switch owners on an existing checkout,
+`docker rmi -f dispatcharr-e2e:local` (the running container still references
+the image, so a plain `docker rmi` refuses with a "conflict" error; `-f`
+untags it so the build guard misses) or point `_IMAGE` at a new tag, then run
+`--recreate` so the container serves the rebuilt image. The equivalent
 `DISPATCHARR_E2E_UPSTREAM_CONTAINER`/`_PORT` variables exist for the fake
 upstream provider but are **not safe to change**: unlike the variables
 above, nothing downstream of `scripts/e2e_up.sh` reads them back — the
