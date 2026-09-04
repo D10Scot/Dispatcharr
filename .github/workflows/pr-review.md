@@ -82,6 +82,10 @@ jobs:
   # `agent` skips `safe_outputs` too, and both then satisfy the ruleset's
   # required checks on the new head; merge stays gated on thread resolution.
   # A cancelled or failed first run leaves no review, so the next push retries.
+  # Dismissed reviews are ignored, so dismissing the bot's review is how a human
+  # forces a fresh review of a later head. The review's commit SHA is
+  # deliberately not compared: the design accepts that fixes after the one
+  # review are checked by whoever resolves the threads, not by the agent.
   prior-review:
     runs-on: ubuntu-slim
     permissions:
@@ -100,7 +104,7 @@ jobs:
           # If the API call fails, fall toward reviewing: a wasted review beats a
           # PR that silently never gets one.
           if ! ids=$(gh api "repos/$REPO/pulls/$PR_NUMBER/reviews" --paginate \
-              --jq '.[] | select(.user.login == "github-actions[bot]" and (.body | contains("Verdict:"))) | .id'); then
+              --jq '.[] | select(.user.login == "github-actions[bot]" and .state != "DISMISSED" and (.body | contains("Verdict:"))) | .id'); then
             echo "::warning::Could not list reviews on PR #$PR_NUMBER; reviewing anyway."
             ids=""
           fi
@@ -158,7 +162,7 @@ Combine related findings on the same lines into one comment. At most 15 comments
 
 Then **always** call `submit_pull_request_review` exactly once with `event: COMMENT`, even when you found nothing. The body must contain:
 
-- `Verdict: ready to merge` or `Verdict: changes needed` (changes needed if any comment is `[blocking]` or `[should-fix]`).
+- `Verdict: ready to merge` or `Verdict: changes needed` (changes needed if any comment is `[blocking]` or `[should-fix]`). **This line is load-bearing**: the `prior-review` job detects an existing review by the `Verdict:` marker, and a review without it would be re-run on the next push.
 - A one-paragraph summary of what the change does and the risk you see in it.
 - Counts by severity, and the summarised overflow findings if any.
 - The exact phrase `Reviewed by kimi-k3 via gh-aw`.
