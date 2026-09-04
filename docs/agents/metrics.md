@@ -45,7 +45,7 @@ One entry per metric. **Nothing renders unless it is here.** Fields:
 | `group` | `safety_net` `security` `extraction` `delivery` `agents` | |
 | `headline` | bool | exactly twenty `true`, four per group (tested) |
 | `since` | date | first day the series means anything |
-| `note` | one sentence | the counting rule; shown under the chart |
+| `note` | the counting rule, one or two sentences | shown under the chart |
 
 **When to edit:** a PR that adds, renames or removes a collector field or a
 derivation updates its entry in the same PR. To promote a metric to the

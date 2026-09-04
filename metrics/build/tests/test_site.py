@@ -7,18 +7,19 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from assemble import build_site
-from curated import load_curated
-
 HERE = Path(__file__).resolve().parent
+# `unittest discover -t metrics/build` puts only metrics/build on sys.path, so
+# `from assemble import ...`/`from curated import ...` below resolve but a
+# sibling test helper does not without this (R2).
+sys.path.insert(0, str(HERE))
+
+from assemble import build_site  # noqa: E402
+from curated import load_curated  # noqa: E402
+from _git import git  # noqa: E402  (R2/R10: shared helper, not redefined here)
+
 DATA = HERE / "fixtures" / "data"
 CUR = HERE / "fixtures" / "curated" / "valid"
 D = dt.date
-
-
-def git(repo, *args):
-    return subprocess.run(["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@t", *args],
-                          check=True, capture_output=True, text=True).stdout.strip()
 
 
 class SiteTests(unittest.TestCase):
@@ -174,6 +175,24 @@ class SiteTests(unittest.TestCase):
         row = next(r for r in s["compare"][key] if r["id"] == "e2e_scenarios")
         self.assertEqual((row["from"], row["to"], row["delta"], row["good"]), (0, 249, 249, True))
 
+    def test_compare_includes_a_derived_metric_via_forward_filled_daily_value(self):
+        # R31: codeql_open_critical_high (family "derived") has no per-sha
+        # row to look up - before this fix it was skipped from `compare`
+        # entirely (`if not e["commits"]: continue`, and a derived series'
+        # `commits` is always None). It must now appear, read at each
+        # milestone's own calendar date from the same forward-filled daily
+        # series the chart draws. `self.base` (2026-08-19) is before the
+        # metric's `since` (2026-08-23), so `from` is a genuine null - not
+        # a bug in this test, the gap the chart itself shows (see
+        # test_headline_tiles: daily[0] == ["2026-08-19", None]). `to` is
+        # the value on `self.second` (2026-09-03): CodeQL alerts 1 (critical,
+        # still open) and 9 (high, open, retired from the live API but kept
+        # via the history sidecar) are open at that date - 2.
+        s = self.build()
+        key = f"{self.base}..{self.second}"
+        row = next(r for r in s["compare"][key] if r["id"] == "codeql_open_critical_high")
+        self.assertEqual((row["from"], row["to"], row["delta"], row["good"]), (None, 2, None, None))
+
     def test_defects_section(self):
         s = self.build()
         self.assertEqual(len(s["defects"]["entries"]), 2)
@@ -205,6 +224,20 @@ class SiteTests(unittest.TestCase):
         self.assertEqual(r.returncode, 2)
         self.assertNotIn("Traceback", r.stderr)
         self.assertIn("--today", r.stderr)
+        self.assertFalse(out.exists())
+
+    def test_cli_today_before_baseline_is_a_one_line_usage_error(self):
+        # R32(a): the baseline is self.base, dated 2026-08-19 - a --today
+        # before that produces a negative-length (or zero, exclusive) daily
+        # series that downstream code was never written to handle.
+        out = self.tmp / "site.json"
+        r = subprocess.run([sys.executable, "-m", "metrics.build", "--data", str(self.data), "--curated", str(self.cur),
+                            "--out", str(out), "--repo", str(self.repo), "--base", self.base, "--today", "2026-08-01"],
+                           capture_output=True, text=True, cwd=str(HERE.parents[2]))
+        self.assertEqual(r.returncode, 2)
+        self.assertNotIn("Traceback", r.stderr)
+        self.assertIn("--today", r.stderr)
+        self.assertIn("2026-08-19", r.stderr, "the baseline date should be named in the error")
         self.assertFalse(out.exists())
 
     def test_cli_missing_out_is_a_usage_error_before_any_data_is_touched(self):

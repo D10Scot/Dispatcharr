@@ -1,9 +1,14 @@
 """CLI: build site.json, or only validate the curated files.
 
 Exit codes: 0 success; 1 curated files invalid (structurally malformed, or
-`validate()` reported errors); 2 usage error - missing required arguments or
-a malformed --today (raised via argparse's own `p.error()`, which prints
-usage plus a one-line message to stderr rather than a traceback)."""
+`validate()` reported errors); 2 usage error - missing required arguments,
+a malformed --today, or a --today earlier than the baseline commit's date
+(raised via argparse's own `p.error()`, which prints usage plus a one-line
+message to stderr rather than a traceback).
+
+--ref defaults to "auto" (R30): `origin/main` when that ref exists in
+`--repo`, else the literal `main` - see `gitinfo.default_ref`. Pass
+`--ref <name>` to override."""
 
 from __future__ import annotations
 
@@ -19,7 +24,7 @@ sys.path.insert(0, str(HERE))  # the package's modules import each other by bare
 
 from assemble import build_site  # noqa: E402
 from curated import Defect, load_curated, parse_defects, pointers, validate, validate_transitions  # noqa: E402
-from gitinfo import pr_is_merged  # noqa: E402
+from gitinfo import commit_date, default_ref, pr_is_merged, ref_exists  # noqa: E402
 from load import load_snapshots  # noqa: E402
 
 BASE = "fd413f0cc4ab3131789a68fb31f1ae622ae7371a"
@@ -39,11 +44,10 @@ def _load_committed_defects(repo: Path) -> tuple[list[Defect] | None, str | None
     ref = None
     for candidate in ("origin/main", "main"):
         try:
-            rr = subprocess.run(["git", "-C", str(repo), "rev-parse", "-q", "--verify", candidate],
-                                 capture_output=True, timeout=60)
+            found = ref_exists(repo, candidate)
         except (OSError, subprocess.TimeoutExpired) as exc:
             return None, f"git rev-parse failed: {exc}"
-        if rr.returncode == 0:
+        if found:
             ref = candidate
             break
     if ref is None:
@@ -68,11 +72,14 @@ def main(argv=None) -> int:
     p.add_argument("--out", type=Path)
     p.add_argument("--repo", type=Path, default=Path("."))
     p.add_argument("--base", default=BASE)
-    p.add_argument("--ref", default="main")
+    p.add_argument("--ref", default="auto",
+                    help="first-parent ref to walk (default: auto - origin/main if it exists in --repo, else main)")
     p.add_argument("--today", default=None, help="YYYY-MM-DD (default: today UTC)")
     p.add_argument("--check-prs", action="store_true", help="verify milestone/fixed_in PRs are merged via gh")
     p.add_argument("--validate-only", action="store_true")
     a = p.parse_args(argv)
+    if a.ref == "auto":
+        a.ref = default_ref(a.repo)
 
     # Required-argument and format checks first, before touching the
     # filesystem, running the (possibly network-calling, via --check-prs)
@@ -89,6 +96,18 @@ def main(argv=None) -> int:
                 p.error(f"--today: invalid date {a.today!r}, expected YYYY-MM-DD")
         else:
             today = dt.datetime.now(dt.timezone.utc).date()
+        # R32(a): a --today before the baseline commit's date produces daily
+        # series with zero days, which downstream code was never written to
+        # handle - fail fast here rather than let it surface as a confusing
+        # empty-chart bug. Unresolvable base/repo (bad --base, no git) is not
+        # this check's job to diagnose: leave it alone and let build_site's
+        # own commit_date call raise its own, more specific error.
+        try:
+            baseline_date = commit_date(a.repo, a.base).date()
+        except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+            baseline_date = None
+        if baseline_date is not None and today < baseline_date:
+            p.error(f"--today {today.isoformat()} is before the baseline commit's date {baseline_date.isoformat()}")
 
     try:
         curated = load_curated(a.curated)

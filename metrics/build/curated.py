@@ -110,6 +110,33 @@ class Curated:
     defects: list[Defect]
 
 
+# R32(b): fields that carry a GitHub number (Milestone.pr, Defect.issue,
+# Defect.fixed_in) must be an int or null - a bare unquoted YAML scalar like
+# `aw_fix_pr` (not a gh-aw run's actual PR number, a placeholder someone
+# forgot to fill in) parses to a str, which the dataclass constructor
+# accepts silently since dataclasses don't enforce field types at runtime.
+_INT_OR_NULL_FIELDS = {"pr", "issue", "fixed_in"}
+# Metric.target: a quoted "60" parses to a str, same trap.
+_NUMBER_OR_NULL_FIELDS = {"target"}
+
+
+def _check_types(where: str, kwargs: dict, errors: list[str]) -> None:
+    """Type-checks the handful of fields above wherever they appear
+    (kwargs is filtered to known fields already, so this runs the same for
+    every dataclass `_build` constructs). bool is excluded from both -
+    it's an int subclass, but `pr: true` is not a PR number."""
+    for name in _INT_OR_NULL_FIELDS:
+        if name in kwargs:
+            v = kwargs[name]
+            if v is not None and (isinstance(v, bool) or not isinstance(v, int)):
+                errors.append(f"{where}: {name} must be an int or null, got {v!r}")
+    for name in _NUMBER_OR_NULL_FIELDS:
+        if name in kwargs:
+            v = kwargs[name]
+            if v is not None and (isinstance(v, bool) or not isinstance(v, (int, float))):
+                errors.append(f"{where}: {name} must be a number or null, got {v!r}")
+
+
 def _build(cls, raw: dict, where: str, errors: list[str]):
     fields = {f.name for f in dc.fields(cls)}
     unknown = set(raw) - fields
@@ -120,6 +147,7 @@ def _build(cls, raw: dict, where: str, errors: list[str]):
         if f.name not in kwargs and f.default is dc.MISSING and f.default_factory is dc.MISSING:
             errors.append(f"{where}: missing required field '{f.name}'")
             kwargs[f.name] = None
+    _check_types(where, kwargs, errors)
     try:
         return cls(**kwargs)
     except TypeError as exc:

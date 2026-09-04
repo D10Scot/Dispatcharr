@@ -217,7 +217,7 @@ One entry per item in CLAUDE.md's "Known defects and traps".
   status_changed: 2026-08-22
 ```
 
-Status moves only forward along `open → pinned → fixed` or `open → carried`; `carried → fixed` is also allowed (a constraint that later gets a real fix). The validator checks the required-by-status fields — `open` needs `issue` **or** `source` (not both: a defect surfaced straight into CLAUDE.md before it ever got an issue points `source` at the CLAUDE.md heading instead), `pinned` needs `issue` **and** `test`, `carried` needs `carried_as`, `fixed` needs `fixed_in` — that `test` exists in the tree, that `fixed_in` is a merged PR, and that no status moves backward relative to the committed version on `main`.
+Status moves only forward along `open → pinned → fixed` or `open → carried`; `carried → fixed` is also allowed (a constraint that later gets a real fix), and so is `open → fixed` directly (a defect fixed without ever being pinned by a test). The validator checks the required-by-status fields — `open` needs `issue` **or** `source` (not both: a defect surfaced straight into CLAUDE.md before it ever got an issue points `source` at the CLAUDE.md heading instead), `pinned` needs `issue` **and** `test`, `carried` needs `carried_as`, `fixed` needs `fixed_in` — that `test` exists in the tree, that `fixed_in` is a merged PR, and that no status moves backward relative to the committed version on `main`.
 
 **When an agent updates an entry:** a PR that closes the linked issue moves it to `fixed` with `fixed_in`; a `test.fail()` pin or backend test added for it moves it to `pinned` with `test`; a spec that lists it as a constraint the extracted relay must not recreate moves it to `carried` with `carried_as`. **Amendment (Part B):** the gh-aw `issue-remediation` workflow's prompt does not move the entry itself — its draft PR's body is written in the same step that creates the PR, before a PR number exists, and `fixed` requires `fixed_in`. Instead it adds a `Ledger: <defect id> -> fixed` line to the PR body, and the merger applies the ledger change (`status: fixed`, `fixed_in`, `status_changed`) by hand at merge time.
 
@@ -256,10 +256,10 @@ meta:      built_at, baseline {sha, date}, freshness {family: last_real_point}, 
 headline:  [ {id, label, unit, direction, target, group, now, at_baseline, at_prev_milestone,
               status: good|bad|neutral|stale, spark: [30 daily points]} ]
 groups:    { group: [ {id, ..., daily: [[date, value]], commits: [[sha, date, value]]} ] }
-phases:    [ {phase, label, start, end|null, summary, milestones: [...], headline_ids: [...]} ]
+phases:    [ {id, label, start, end|null, summary, milestones: [...], headline_ids: [...]} ]
 milestones:[ {sha, date, label, kind, phase, pr, summary} ]
 defects:   { entries: [...], by_status_daily: [[date, {open, pinned, carried, fixed}]] }
-compare:   { "<sha_a>..<sha_b>": [ {id, from, to, delta, good: true|false|null} ] }   # adjacent milestone pairs precomputed; arbitrary pairs computed client-side from groups
+compare:   { "<sha_a>..<sha_b>": [ {id, from, to, delta, good: true|false|null} ] }   # adjacent milestone pairs precomputed, plus baseline..latest; every catalogue metric gets a row (null from/to/delta/good when it has none at that end) - a snapshot metric reads its two exact per-sha values, a derived metric has no per-commit row and instead reads its forward-filled daily value on each milestone's calendar date
 ```
 
 **Status rule** (used for tile colour and Compare's good/bad column): `good` when the value is at target, or has moved toward it since the previous milestone; `bad` when it has moved away, or is stalled with an unmet target; `neutral` for `info`; `stale` overrides both and shows a warning. Freshness is not one rule (R26/R27): the per-commit snapshot families (`code_health`, `architecture`, `tests`) are keyed by commit sha, not date, so they use the SHA rule — fresh iff a row exists for `main`'s current first-parent HEAD, since a quiet week with no new commit is healthy, not stale. The once-daily `coverage` family and every `derived` series have no such natural cadence to key off, so they use the 2-day age rule instead — stale when the series' last real point is older than 2 days (the daily cadence plus one missed run).

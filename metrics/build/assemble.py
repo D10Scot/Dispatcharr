@@ -1,4 +1,13 @@
-"""Assemble site.json from snapshots, event dumps and the curated files."""
+"""Assemble site.json from snapshots, event dumps and the curated files.
+
+R31: `compare()` lists every catalogue metric for every milestone pair, even
+one with no value at either end - `from`/`to`/`delta`/`good` are all `null`
+in that row rather than the metric being dropped from the pair's list. A
+table whose row set changes between pairs is a worse contract for Part C's
+UI than a null cell to render as "no data", and it is what lets the UI
+render one fixed set of table rows across every pair without special-casing
+absence per pair.
+"""
 
 from __future__ import annotations
 
@@ -132,17 +141,41 @@ def build_site(data_dir: Path, curated: Curated, *, repo: Path, base: str, today
         phases.append({"id": p.id, "label": p.label, "summary": p.summary, "headline_ids": p.headline_ids,
                        "start": min(starts) if starts else None, "end": max(ends) if ends else None, "milestones": own})
 
+    # R31: a milestone-pair sha's calendar date, for reading a derived
+    # metric's forward-filled daily value (derived series have no per-commit
+    # row to look up by sha - they're computed per day). Seeded from the
+    # milestones already dated above (free); a sha that isn't one of them -
+    # `base`, or the synthetic pair's `latest_sha` below, a snapshot row's
+    # commit rather than a curated milestone - falls back to a fresh
+    # `commit_date` lookup.
+    date_cache: dict[str, dt.date] = {base: base_date}
+    date_cache.update({m["sha"]: dt.date.fromisoformat(m["date"]) for m in milestones})
+
+    def date_of(sha: str) -> dt.date:
+        if sha not in date_cache:
+            date_cache[sha] = commit_date(repo, sha).date()
+        return date_cache[sha]
+
     def compare(sha_a: str, sha_b: str) -> list[dict]:
         rows = []
         for e in series_by_id.values():
-            if not e["commits"]:
-                continue
-            by_sha = {c[0]: c[2] for c in e["commits"]}
-            if sha_a not in by_sha or sha_b not in by_sha:
-                continue
-            delta = by_sha[sha_b] - by_sha[sha_a]
+            if e["commits"] is not None:
+                # Snapshot metric: read its two exact per-sha row values
+                # (R31 keeps this rule) - None when the family has no row
+                # for that particular sha, not "skip this metric".
+                by_sha = {c[0]: c[2] for c in e["commits"]}
+                frm, to = by_sha.get(sha_a), by_sha.get(sha_b)
+            else:
+                # Derived (commits is None, per-day not per-commit): the
+                # same forward-filled daily series the chart draws, read at
+                # each milestone's own calendar date.
+                values = [v for _, v in e["daily"]]
+                frm = _value_at(values, dates, date_of(sha_a))
+                to = _value_at(values, dates, date_of(sha_b))
+            delta = (to - frm) if frm is not None and to is not None else None
             rows.append({"id": e["id"], "group": e["group"], "label": e["label"], "unit": e["unit"], "direction": e["direction"],
-                         "from": by_sha[sha_a], "to": by_sha[sha_b], "delta": delta, "good": delta_is_good(e["direction"], delta)})
+                         "from": frm, "to": to, "delta": delta,
+                         "good": delta_is_good(e["direction"], delta) if delta is not None else None})
         return rows
 
     compare_pairs = [(a["sha"], b["sha"]) for a, b in zip(milestones, milestones[1:])]

@@ -10,7 +10,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from _git import git  # noqa: E402
-from gitinfo import commit_date, first_parent_shas, is_first_parent_on, pr_is_merged  # noqa: E402
+from gitinfo import commit_date, default_ref, first_parent_shas, is_first_parent_on, pr_is_merged, ref_exists  # noqa: E402
 
 
 def make_repo(tmp: Path) -> tuple[Path, list[str]]:
@@ -58,3 +58,27 @@ class GitInfoTests(unittest.TestCase):
         # A JSON array (or any non-dict body) has no `merged_at` to read — that
         # is unverifiable, not a confirmed "not merged", so it must not raise.
         self.assertIsNone(pr_is_merged("o/r", 8, gh=lambda *a: "[]"))
+
+    def test_ref_exists(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, shas = make_repo(Path(tmp))
+            self.assertTrue(ref_exists(repo, "main"))
+            self.assertTrue(ref_exists(repo, shas[0]))
+            self.assertFalse(ref_exists(repo, "no-such-ref"))
+
+    def test_default_ref_prefers_origin_main_when_present(self):
+        # R30: `origin/main` may be ahead of a stale local `main` (a
+        # checkout that fetched but never merged/rebased) - "auto" must
+        # prefer it whenever it resolves.
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, shas = make_repo(Path(tmp))
+            git(repo, "update-ref", "refs/remotes/origin/main", shas[0])
+            self.assertEqual(default_ref(repo), "origin/main")
+
+    def test_default_ref_falls_back_to_main_when_no_origin_remote(self):
+        # A worktree with no `origin` remote at all (this repo's own
+        # `.superpowers` worktrees, a fresh `git init`) has no
+        # `origin/main` to prefer.
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, shas = make_repo(Path(tmp))
+            self.assertEqual(default_ref(repo), "main")

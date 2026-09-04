@@ -32,6 +32,29 @@ def is_first_parent_on(repo: Path, sha: str, base: str, ref: str = "main") -> bo
     return full in first_parent_shas(repo, base, ref)
 
 
+def ref_exists(repo: Path, ref: str) -> bool:
+    """Whether `ref` resolves in `repo` (`git rev-parse --verify --quiet`,
+    exit-code only - no exception on a missing ref). Shared by --ref's
+    "auto" default (`default_ref`) and __main__.py's committed-defects
+    lookup for the transition check, so the two agree on what "does this
+    ref exist" means."""
+    r = subprocess.run(["git", "-C", str(repo), "rev-parse", "--verify", "--quiet", ref],
+                        capture_output=True, timeout=60)
+    return r.returncode == 0
+
+
+def default_ref(repo: Path) -> str:
+    """--ref's "auto" default (R30): `origin/main` when that ref exists in
+    `repo`, else the literal `main`. A checkout that only ever `git fetch`es
+    (CI's actions/checkout in detached-HEAD mode, or a dev clone that hasn't
+    merged/rebased) can have a local `main` that lags well behind
+    `origin/main` - building against it silently walks a stale first-parent
+    chain. Does not itself verify `main` resolves: if neither ref exists,
+    the caller's own git calls raise with a clear error rather than this
+    function guessing further."""
+    return "origin/main" if ref_exists(repo, "origin/main") else "main"
+
+
 def commit_date(repo: Path, sha: str) -> dt.datetime:
     iso = _git(repo, "show", "-s", "--format=%aI", sha)
     return dt.datetime.fromisoformat(iso).astimezone(dt.timezone.utc)

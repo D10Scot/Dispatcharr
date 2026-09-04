@@ -196,3 +196,29 @@ class CuratedTests(unittest.TestCase):
     def test_defect_ids_unique(self):
         self._mutate("defects.yml", lambda d: d[1].update(id="unfenced-lease"))
         self.assertTrue(any("duplicate id" in e for e in self._errors()))
+
+    # --- R32(b): curated._build type-checks pr/issue/fixed_in (int or
+    # null) and target (number or null) - a bare or quoted YAML scalar
+    # that isn't the right type must be rejected structurally, naming the
+    # entry, rather than silently accepted (dataclasses don't type-check).
+
+    def test_fixed_in_rejects_a_non_numeric_placeholder(self):
+        self._mutate("defects.yml", lambda d: d[1].update(status="fixed", fixed_in="aw_fix_pr"))
+        with self.assertRaises(ValueError) as cm:
+            load_curated(self.curated)
+        msg = str(cm.exception)
+        self.assertIn("fixed_in", msg)
+        self.assertIn("defects[1]", msg)
+
+    def test_target_rejects_a_quoted_number(self):
+        self._mutate("catalogue.yml", lambda d: d[0].update(target="60"))
+        with self.assertRaises(ValueError) as cm:
+            load_curated(self.curated)
+        msg = str(cm.exception)
+        self.assertIn("target", msg)
+        self.assertIn("catalogue[0]", msg)
+
+    def test_pr_and_issue_accept_int_or_null(self):
+        # The valid fixture's pr/issue values must not be flagged - only a
+        # wrong-typed value is an error.
+        self.assertEqual(self._errors(), [])
