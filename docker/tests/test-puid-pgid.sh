@@ -1492,7 +1492,7 @@ fi
 # Build test image from local changes
 if [ "$SKIP_BUILD" = false ]; then
     section "Building test image from local changes"
-    if docker build -t "$IMAGE_NAME" -f docker/Dockerfile . ; then
+    if docker build -t "$IMAGE_NAME" -f docker/Dockerfile --build-arg REPO_OWNER=d10scot . ; then
         log_pass "Test image built ($IMAGE_NAME)"
     else
         echo -e "${RED}Image build failed. Aborting.${NC}"
