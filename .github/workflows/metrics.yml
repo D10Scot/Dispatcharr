@@ -46,7 +46,16 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write # push to the metrics-data branch
+      # An explicit `permissions:` block zeroes every unlisted scope, and
+      # collect_events.py reads several GITHUB_TOKEN-scoped endpoints — a
+      # missing grant here is a silent 403 -> "not_permitted" row, not a
+      # workflow failure. dependabot_alerts/secret_scanning have no
+      # workflow permission key at all and stay "not_permitted" under
+      # GITHUB_TOKEN by design; that's not fixable from here.
       security-events: read # code-scanning alerts (collect_events.py)
+      actions: read # workflow runs (collect_events.py)
+      issues: read # issues + label timelines (collect_events.py)
+      pull-requests: read # pull requests + files (collect_events.py)
     steps:
       - name: Checkout
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
@@ -101,8 +110,14 @@ jobs:
   coverage:
     # Daily and on dispatch: a real run of both suites under coverage. Never
     # on push — required checks stay uninstrumented and merges do not wait.
+    # `needs:` orders this after collect-and-append under the shared
+    # concurrency group (both push to metrics-data); it is not a success
+    # gate — a failed snapshot family must not cost the day's coverage row,
+    # so the condition checks !cancelled() rather than defaulting to
+    # success(). Not always(): a *cancelled* run (e.g. workflow
+    # superseded) must still skip, not race a half-torn-down job.
     needs: collect-and-append
-    if: github.event_name != 'push'
+    if: ${{ !cancelled() && github.event_name != 'push' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write # push the coverage row to metrics-data
