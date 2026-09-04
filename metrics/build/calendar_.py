@@ -92,12 +92,13 @@ def delta_is_good(direction: str, delta: float) -> bool | None:
 
 
 def is_stale(last_real: dt.datetime | None, today: dt.date, max_age_days: int = 2) -> bool:
-    """Age-based freshness for event-dump-derived series (R26): stale when
-    the series' last real point is more than `max_age_days` old, or there is
-    no real point at all. NOT the rule for SNAPSHOT families (code_health,
-    architecture, tests, coverage) — those are keyed by commit sha, not
-    date, so a quiet week with no new commit produces no new row without the
-    pipeline being unhealthy; use `snapshot_is_stale` for those instead."""
+    """Age-based freshness for event-dump-derived series, and for the
+    once-daily `coverage` family (R26/R27): stale when the series' last real
+    point is more than `max_age_days` old, or there is no real point at all.
+    NOT the rule for the other SNAPSHOT families (code_health, architecture,
+    tests) — those are keyed by commit sha, not date, so a quiet week with no
+    new commit produces no new row without the pipeline being unhealthy; use
+    `snapshot_is_stale` for those instead."""
     if last_real is None:
         return True
     return (today - last_real.date()).days > max_age_days

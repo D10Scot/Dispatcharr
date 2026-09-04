@@ -38,3 +38,6 @@ e2e-upstream/assets/
 
 # brainstorming visual-companion artefacts (superpowers plugin)
 .superpowers/
+
+# build output, never committed
+dashboard/site.json

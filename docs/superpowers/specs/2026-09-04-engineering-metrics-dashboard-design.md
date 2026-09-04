@@ -138,10 +138,16 @@ Initial headline set (twenty entries, four per group; the full catalogue is larg
 | Group | Headline metrics |
 |---|---|
 | Safety net | E2E scenarios; backend line coverage (target 60); frontend line coverage (target 75); known bugs pinned by a test (from the defect ledger, `pinned` count) |
-| Security | open CodeQL critical+high (target 0); age in days of the oldest open critical/high (target < 30); OpenSSF Scorecard (target 8.0); zizmor findings (zero) |
+| Security | open CodeQL critical+high (target 0); age in days of the oldest open critical/high (target < 30); OpenSSF Scorecard (target 8.0); open Scorecard findings (target 0) |
 | Extraction readiness | reverse imports into `apps/proxy` (target 0 by end of Phase 1); import cycles (target 0); `models.py` module-level `live_proxy` imports (zero); `apps/proxy` ORM writes (target 0) |
 | Delivery | trailing-30-day CI pass rate across required workflows; median E2E wall time; PR lead time p50; product-vs-scaffolding line ratio per merged PR (info) |
 | Agent pipeline | open `needs-triage`; median time to triage (target < 3 days); PRs merged by agents in trailing 30 days; fixed defects (ledger `fixed` count) |
+
+**Amendment (Part B):** the Security row's fourth headline is "open Scorecard
+findings (target 0)", not "zizmor findings (zero)" as originally specified.
+Nothing in this repo uploads a zizmor SARIF to GitHub's code-scanning API, so
+no event-dump series exists for it to read; `scorecard_check` against the
+Scorecard dump's per-check breakdown does.
 
 ### 5.2 `milestones.yml`
 
@@ -200,18 +206,18 @@ python -m metrics.build --validate-only --curated metrics/curated   # hook and c
 Four stages:
 
 1. **Load and validate.** Read every snapshot family, every event dump plus its history sidecar, then the three curated files. Failures are collected and reported together; exit non-zero on any. Missing data is not an error: a family with no rows yields empty series so the site builds on day one.
-2. **Derive.** Each derivation is a pure function named in the catalogue's `path`. The set for this design:
-   - `codeql_open_by_severity(date)` — created ≤ D and not (fixed ≤ D or dismissed ≤ D)
-   - `codeql_oldest_open_age_days(date, severities)`
+2. **Derive.** Each derivation is a pure function of `(events, defects, day, params)`, named by its catalogue entry's `derivation` field and registered in `metrics/build/derive.py`'s `DERIVATIONS`. As implemented:
+   - `codeql_open_count` — created ≤ D and not (fixed ≤ D or dismissed ≤ D)
+   - `codeql_oldest_open_age_days`
    - `codeql_fixed_per_week`
-   - `scorecard_score`, `scorecard_check(name)`
-   - `ci_pass_rate_30d(workflow | required_set)`, `ci_median_wall_time_30d(workflow)`
-   - `pr_lead_time_30d(p50 | p90, author_type)` — human/agent heuristic as in today's `collect_delivery.py` docstring
-   - `pr_product_ratio` — lines under `apps/` over all lines, per merged PR and rolling
-   - `issues_open_by_label(date, label)`, `issues_time_to_triage_median_30d`
-   - `defects_by_status`
-   - `forward_fill(family, path)` — for daily-only fields
-3. **Align to a daily calendar.** Every series is resampled to one point per day from the baseline date to today, last value on or before that day. Per-commit resolution is kept as a second series for Explore.
+   - `scorecard_score`, `scorecard_check` (params: `name`)
+   - `ci_pass_rate_30d`, `ci_median_wall_time_30d` (params: `workflow(s)`)
+   - `pr_lead_time_30d` (params: `quantile`, `author_type`) — human/agent heuristic as in `derive.py`'s `_is_agent` docstring
+   - `prs_merged_30d` (params: `author_type`)
+   - `pr_product_ratio_30d` — lines under `apps/` over all lines, per merged PR, rolling 30 days
+   - `issues_open_by_label` (params: `label`), `issues_time_to_triage_median_30d`
+   - `defects_by_status` (params: `status`)
+3. **Align to a daily calendar.** Every series is resampled to one point per day from the baseline date to today, last value on or before that day (`forward_fill` in `metrics/build/calendar_.py` — a calendar helper used by every family and derivation, not itself a derivation with a catalogue entry). Per-commit resolution is kept as a second series for Explore.
 4. **Emit `site.json`.**
 
 ```
@@ -225,7 +231,7 @@ defects:   { entries: [...], by_status_daily: [[date, {open, pinned, carried, fi
 compare:   { "<sha_a>..<sha_b>": [ {id, from, to, delta, good: true|false|null} ] }   # adjacent milestone pairs precomputed; arbitrary pairs computed client-side from groups
 ```
 
-**Status rule** (used for tile colour and Compare's good/bad column): `good` when the value is at target, or has moved toward it since the previous milestone; `bad` when it has moved away, or is stalled with an unmet target; `neutral` for `info`; `stale` when the series' last real point is older than 2 days (the daily cadence plus one missed run). `stale` overrides colour and shows a warning.
+**Status rule** (used for tile colour and Compare's good/bad column): `good` when the value is at target, or has moved toward it since the previous milestone; `bad` when it has moved away, or is stalled with an unmet target; `neutral` for `info`; `stale` overrides both and shows a warning. Freshness is not one rule (R26/R27): the per-commit snapshot families (`code_health`, `architecture`, `tests`) are keyed by commit sha, not date, so they use the SHA rule — fresh iff a row exists for `main`'s current first-parent HEAD, since a quiet week with no new commit is healthy, not stale. The once-daily `coverage` family and every `derived` series have no such natural cadence to key off, so they use the 2-day age rule instead — stale when the series' last real point is older than 2 days (the daily cadence plus one missed run).
 
 **Freshness is data.** Each series carries the timestamp of its last real point and every page shows it, so a broken collector is visible as "stale since" rather than a flat line.
 
@@ -246,7 +252,7 @@ Both workflows stay at zero zizmor findings, every `uses:` SHA-pinned via a tool
 
 ### 7.3 Local hooks
 
-`.claude/settings.json` `PostToolUse` gains one rule: an edit under `metrics/` runs `python -m pytest metrics/build/tests` plus `python -m metrics.build --validate-only`. A few seconds, no container. The commit gate picks the same tests up through `scripts/ci_backend_test_labels.py`'s routing (a `metrics/` prefix added to `_PATH_ALIASES` mapping to the metrics test target only, pinned in `tests/test_ci_test_routing.py`).
+`.claude/settings.json` `PostToolUse` gains rules for the metrics stack: an edit under `metrics/**` or `scripts/metrics/**` runs `scripts/run_metrics_tests.sh` (plain `unittest`, no `pytest`, no container) plus `python -m metrics.build --validate-only`; an edit under `dashboard/*.{js,html}` runs `vitest` against `frontend/vitest.dashboard.config.js`. A few seconds either way. `.claude/hooks/pre-commit-tests.sh` (the commit gate) picks up the same paths with its own grep over the staged file list — not through `scripts/ci_backend_test_labels.py`'s `_PATH_ALIASES`, which maps prefixes to Django test *labels* and so cannot express a plain-`unittest` or `vitest` runner.
 
 ## 8. Pages
 
@@ -260,7 +266,7 @@ Five static HTML files under `dashboard/`, one shared `app.js`, one `style.css`,
 
 ## 9. Testing
 
-- **Build step:** `metrics/build/tests/`, fixtures checked in (a small `metrics-data` tree with snapshot rows and one dump per kind; valid and invalid curated files). One test per derivation, one per validation rule, one end-to-end build asserting `site.json`'s shape against the catalogue.
+- **Build step:** `metrics/build/tests/`, fixtures checked in (a small `metrics-data` tree with snapshot rows and one dump per kind; valid and invalid curated files); run via `python -m unittest discover` (`scripts/run_metrics_tests.sh build`), not `pytest` — no third-party test runner is a dependency of this stack. One test per derivation, one per validation rule, one end-to-end build asserting `site.json`'s shape against the catalogue.
 - **Collectors:** event-dump collectors tested with a fake `gh` on `PATH` returning canned paginated output including the multi-page case that broke delivery; snapshot collectors get one regression test each against a tiny fixture checkout.
 - **Curated files:** a test validates the real `metrics/curated/*.yml` against the current `main`, so the suite fails if a milestone SHA is wrong or a ledger `test` path no longer exists.
 - **Pages:** a handful of vitest cases against a fixture `site.json` — each page renders, tiles colour by direction, Compare marks deltas correctly, stale warnings appear. No Playwright.
