@@ -243,7 +243,7 @@ Once verification passes, invoke the `remediation-reviewer` sub-agent (it runs o
 
 ### 5. Pull request
 
-Create one draft PR containing the fix and regression test, with `temporary_id: aw_fix_pr`. The body must include:
+Create one draft PR containing the fix and regression test, with `temporary_id: aw_fix_pr`. If `metrics/curated/defects.yml` has an entry whose `issue` is this issue, do NOT edit the ledger yourself — the PR number does not exist yet and `fixed` requires it (`fixed_in`) — instead add a line `Ledger: <defect id> -> fixed` to the PR body so the merger sets `status: fixed`, `fixed_in: <PR>` and `status_changed: <date>` in the merge; `docs/agents/metrics.md` has the rules. The body must include:
 
 - `Fixes #$ISSUE_NUMBER` on its own line
 - what was wrong (root cause, files/lines)

@@ -1,0 +1,3 @@
+{"kind": "scorecard", "fetched_at": "2026-09-05T06:05:00+00:00", "repo": "o/r", "status": "ok", "detail": null, "records": [
+ {"id": "2026-09-03T21:24:00Z", "date": "2026-09-03T21:24:00Z", "score": 6.9, "commit": "x", "checks": {"Branch-Protection": 4, "Pinned-Dependencies": 9}}
+]}

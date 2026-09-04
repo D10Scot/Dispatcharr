@@ -104,7 +104,7 @@ fi
 # ---------- metrics (collectors + build step, no Django) ----------
 if printf '%s\n' "$PATHS" | grep -qE '^(metrics/|scripts/metrics/|scripts/run_metrics_tests\.sh)'; then
   OUT="$(scripts/run_metrics_tests.sh all 2>&1)"; ST=$?
-  if [ $ST -ne 0 ] && [ $ST -ne 3 ]; then
+  if [ $ST -ne 0 ]; then
     FAILED+=("metrics")
     REPORT+="$(printf '\n--- metrics ---\n%s\n' "$(printf '%s' "$OUT" | tail -30)")"
   fi

@@ -1,0 +1,6 @@
+{"kind": "workflow_runs", "fetched_at": "2026-09-05T06:05:00+00:00", "repo": "o/r", "status": "ok", "detail": null, "records": [
+ {"id": 11, "workflow": "E2E Tests", "event": "push", "status": "completed", "conclusion": "success", "created_at": "2026-08-29T08:00:00Z", "updated_at": "2026-08-29T08:06:00Z", "run_started_at": "2026-08-29T08:00:00Z", "head_sha": "x"},
+ {"id": 12, "workflow": "E2E Tests", "event": "push", "status": "completed", "conclusion": "failure", "created_at": "2026-09-01T08:00:00Z", "updated_at": "2026-09-01T08:10:00Z", "run_started_at": "2026-09-01T08:00:00Z", "head_sha": "y"},
+ {"id": 13, "workflow": "E2E Tests", "event": "push", "status": "completed", "conclusion": "cancelled", "created_at": "2026-09-02T08:00:00Z", "updated_at": "2026-09-02T08:01:00Z", "run_started_at": "2026-09-02T08:00:00Z", "head_sha": "z"},
+ {"id": 14, "workflow": "Metrics", "event": "schedule", "status": "completed", "conclusion": "failure", "created_at": "2026-09-02T06:00:00Z", "updated_at": "2026-09-02T06:01:00Z", "run_started_at": "2026-09-02T06:00:00Z", "head_sha": "z"}
+]}

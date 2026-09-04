@@ -1,0 +1,54 @@
+# Phases and milestones. Contract: docs/agents/metrics.md.
+# Every sha is a first-parent commit on main; never edit a past entry's sha or kind.
+phases:
+  - id: investigate
+    label: Investigate
+    summary: "Read before writing: CLAUDE.md and CONTEXT.md as a verified defect map, a supply-chain audit that cleared 101 zizmor findings and found a test package CI never ran."
+    headline_ids: [scorecard_findings_open, backend_tests]
+  - id: e2e
+    label: E2E programme
+    summary: "Fifteen goals, each a spec, plan, worktree and PR: a fake Xtream provider, then 249 Playwright scenarios across 13 projects; every defect found became a test.fail() pin, an issue and a COVERAGE.md row."
+    headline_ids: [e2e_scenarios, coverage_rows_done, defects_pinned]
+  - id: agents
+    label: Agent pipeline
+    summary: "Fuzz campaign, triage and remediation workflows on a label-driven pipeline; Hypothesis property tests as permanent output."
+    headline_ids: [needs_triage_open, property_tests]
+  - id: phase0
+    label: Phase 0
+    summary: "Harden in place: six small PRs in one day — test routing, lockfile install, credential redaction, a requireable result aggregate per suite, a release that trusts the migration gate."
+    headline_ids: [codeql_open_critical_high, ci_pass_rate_required, defects_fixed]
+  - id: phase1
+    label: Phase 1
+    summary: "Extract the relay boundary, still Python. Stopping here is a legitimate outcome."
+    headline_ids: [reverse_imports_into_proxy, import_cycles, proxy_orm_writes]
+milestones:
+  - {sha: fd413f0cc4ab3131789a68fb31f1ae622ae7371a, label: v0.29.0 baseline, kind: phase-start, phase: investigate, pr: null, summary: "Fork divergence point from upstream Dispatcharr."}
+  - {sha: 4ede0d70778abfa167001045b15153bf43fa2edc, label: zizmor + 16/16 packages, kind: goal, phase: investigate, pr: 2, summary: "Actions linting, 101 findings cleared, the silently missing 16th backend test package fixed."}
+  - {sha: f902412da3bc5763c31af8c8771a6b671b1a1ebc, label: Supply-chain hardening, kind: goal, phase: investigate, pr: 4, summary: "SHA-pinned actions, digest-pinned images, lint, vuln-scan, Scorecard, Renovate, CodeQL."}
+  - {sha: e1098206077f7d6c4e60a47133eb95c15dbd354e, label: First Playwright test, kind: phase-start, phase: e2e, pr: 1, summary: "One smoke test and a CI workflow."}
+  - {sha: a0c99cddfabd26e32b65f17bb68129a986b35214, label: G1 harness, kind: goal, phase: e2e, pr: 5, summary: "Fixtures, project topology, storageState, WS queue, byte-level TS reading."}
+  - {sha: c188aab6f7c593cccd8f4aadc316371f0ad0e2d5, label: G2 fake provider, kind: goal, phase: e2e, pr: 19, summary: "Playlist, EPG, paced TS loop, eight injectable faults."}
+  - {sha: 6e71ca20376b01cd73945ee10fe006f22a30ac11, label: G4 streaming data path, kind: goal, phase: e2e, pr: 33, summary: "Eleven rows, three CI jobs, the grey-box Redis quarantine."}
+  - {sha: dcdeae68166c3dfa9e8b9692ce70d8a461c32d00, label: G7 lifecycle, kind: goal, phase: e2e, pr: 43, summary: "Restart, upgrade-with-migrations, and 28 bash scenarios that ran nowhere."}
+  - {sha: e1616ae69d4f6aba7f553543d7b5e9e8d0832e54, label: G8 Xtream provider, kind: goal, phase: e2e, pr: 77, summary: "The fake provider speaks Xtream Codes."}
+  - {sha: 8d6db577f7280beed0e6ba8e40db362b83de6306, label: G3 sources and ingest, kind: goal, phase: e2e, pr: 78, summary: "M3U and EPG sources end to end."}
+  - {sha: e8f70df96fe767d674f86ee9b4cd0bfb8540540f, label: G6 frontend surfaces, kind: goal, phase: e2e, pr: 79, summary: "Nine surfaces with page-level handles."}
+  - {sha: 10c792d7cf5604b917f4053384acf1b53aff6f0b, label: G5 client outputs, kind: goal, phase: e2e, pr: 88, summary: "M3U, EPG, HDHR, Xtream and the authorization matrix."}
+  - {sha: 25bf34844a8885a91c854e8117c67662586aa6db, label: G9 VOD and series, kind: goal, phase: e2e, pr: 112, summary: "VOD and series end to end."}
+  - {sha: 76db0332a1586f22cfe715902c69d34589e921fb, label: G10 catch-up, kind: goal, phase: e2e, pr: 113, summary: "Catch-up and timeshift end to end."}
+  - {sha: 4211cbb7968a349c32efbb84d96439811d42288a, label: G11 migration gate, kind: goal, phase: e2e, pr: 123, summary: "Six static guards, two ADRs, full-run CI on migration branches."}
+  - {sha: 7a408c2b09e11314d6ae63309e0482b35964d243, label: G11 every test tagged, kind: goal, phase: e2e, pr: 124, summary: "@contract or @characterization on every test, enforced."}
+  - {sha: 9808cad8be2175ee2d410a2c110e563e17c4b477, label: G12 bash suites green, kind: goal, phase: e2e, pr: 130, summary: "Triage the bash suites; deepen the lifecycle gate."}
+  - {sha: e840f676f3aeedd1b938fbe76fbce32e7b107290, label: G15 hollow pins guarded, kind: goal, phase: e2e, pr: 139, summary: "Nine hollow-premise test.fail() pins guarded."}
+  - {sha: 32e8ba0dedb3ec7d5894b818b7365baeeab76961, label: G13 DVR lifecycle, kind: goal, phase: e2e, pr: 144, summary: "Recording lifecycle through the real relay."}
+  - {sha: cdc87a383842cd7b28d76cd851d4e45626853665, label: G14 coverage completions, kind: phase-done, phase: e2e, pr: 143, summary: "ACL 403s, EPG matching, bulk ops, M3U filters, WS events; the programme closes."}
+  - {sha: 7f42b25e435ec25c5b1843da0b0dc31336727730, label: Fuzz campaign, kind: phase-start, phase: agents, pr: 8, summary: "One domain per run, typed prioritised issues."}
+  - {sha: 908d312b123854676e9c7674b7a25e2a9f70f1c3, label: Issue triage workflow, kind: goal, phase: agents, pr: 29, summary: "Validate, dedupe, audit priority, route."}
+  - {sha: ce15981f003e0515dd6ffb00b55d8fcd00340655, label: Issue remediation workflow, kind: goal, phase: agents, pr: 28, summary: "Reproduce first, second-model review, draft PR."}
+  - {sha: b63e2cf9e2744d7961f74aef9d81c512d7da25e1, label: Hypothesis foundation, kind: goal, phase: agents, pr: 36, summary: "Property tests for TS realignment and log parsers."}
+  - {sha: a6fc2b96142d008771edbea5232bcc60b619c609, label: Metrics collectors (M1), kind: goal, phase: agents, pr: 40, summary: "Collectors, history workflow, backfill."}
+  - {sha: d88c8bee140090d46fd5e8edd38f7990201cb981, label: Metrics dashboard (M3), kind: goal, phase: agents, pr: 46, summary: "Static no-build dashboard published to GitHub Pages, with dynamic family discovery."}
+  - {sha: 3d59dc5296920c6c30ac20404298e9900c94eb05, label: Metrics API collectors (M2), kind: goal, phase: agents, pr: 47, summary: "GitHub API collectors for security, delivery and agentic metrics, plus weekly frontend coverage."}
+  - {sha: 0f41319ad6b0fd2cd943340f5cf2f3830b140dae, label: Phase 0 spec, kind: phase-start, phase: phase0, pr: 148, summary: "Six items and ADR 0004."}
+  - {sha: 58bfba1e856e7db973b62a7e3c32b7e7bb40a97f, label: Credentials redacted, kind: incident, phase: phase0, pr: 154, summary: "Provider credentials no longer logged at INFO; regression guard in hook and CI."}
+  - {sha: 75a68555b931e7d088bfbbd859b35e6e27064312, label: Phase 0 done, kind: phase-done, phase: phase0, pr: 155, summary: "All six items merged; the ruleset requires four result aggregates."}

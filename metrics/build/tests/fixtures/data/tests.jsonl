@@ -1,0 +1,2 @@
+{"commit_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "family": "tests", "metrics": {"backend_test_count": 1787, "e2e_scenario_count": 0, "coverage_md_rows": {"done": 0, "known_bug": 0, "todo": 0}}, "timestamp": "2026-08-19T22:13:45Z"}
+{"commit_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "family": "tests", "metrics": {"backend_test_count": 1860, "e2e_scenario_count": 249, "coverage_md_rows": {"done": 132, "known_bug": 27, "todo": 24}}, "timestamp": "2026-09-03T21:09:00+00:00"}
