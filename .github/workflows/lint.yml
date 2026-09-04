@@ -157,3 +157,35 @@ jobs:
           docker run --rm -v "$PWD:/repo" -w /repo \
             ghcr.io/astral-sh/uv:0.12.5-python3.13-trixie-slim@sha256:d1e005e6f5aac724b7554db95f1c128a77d8d35b59ebe70e188852b4bdad3a3d \
             uv lock --check
+
+  metrics-tests:
+    name: metrics unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: Install the build step's one dependency (hash-pinned)
+        # metrics/requirements.txt appears in Part B; until then the file is
+        # absent and this step is a no-op, which is why it is guarded. Goes
+        # into a venv rather than the system interpreter — PEP 668 hazard on
+        # the runner image. scripts/run_metrics_tests.sh already prefers
+        # .venv/bin/python when it exists, so nothing else changes.
+        run: |
+          if [ -f metrics/requirements.txt ]; then
+            python3 -m venv .venv
+            .venv/bin/python -m pip install --require-hashes -r metrics/requirements.txt
+          fi
+
+      - name: Collector and build-step tests
+        # Exit 3 means "no suite exists yet" (see scripts/run_metrics_tests.sh);
+        # it is a pass here so the job can land before the suites do. GitHub's
+        # default shell is `bash -e {0}`, so the script's own nonzero exit
+        # must be caught by `||` rather than `;` — a bare `;` would abort the
+        # step right there and never reach `rc=$?`.
+        run: |
+          rc=0
+          scripts/run_metrics_tests.sh all || rc=$?
+          [ "$rc" -eq 3 ] && exit 0
+          exit "$rc"

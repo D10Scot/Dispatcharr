@@ -1,0 +1,20 @@
+# Backend coverage for the daily metrics job (scripts/ci_coverage_backend.sh).
+# Not used by backend-tests.yml — required checks stay uninstrumented.
+[run]
+source = apps, core, dispatcharr
+omit =
+    */migrations/*
+    */tests/*
+    dispatcharr/settings*.py
+    dispatcharr/asgi.py
+    dispatcharr/wsgi.py
+    dispatcharr/test_runner.py
+    dispatcharr/test_discovery.py
+parallel = True
+data_file = /tmp/dispatcharr-coverage/.coverage
+
+[report]
+skip_empty = True
+
+[json]
+output = /tmp/dispatcharr-coverage/backend-coverage.json
