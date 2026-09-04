@@ -7,11 +7,20 @@ table whose row set changes between pairs is a worse contract for Part C's
 UI than a null cell to render as "no data", and it is what lets the UI
 render one fixed set of table rows across every pair without special-casing
 absence per pair.
+
+R33(2): a DAILY_FAMILIES metric (currently just "coverage") is keyed to
+whatever sha the once-daily job happened to see, not to the milestone's own
+sha - looking it up by exact sha (the plain snapshot-metric rule) would
+almost always miss, leaving these headline tiles null in every pair even
+when the chart itself shows a value. `compare()` therefore reads a
+DAILY_FAMILIES metric the same way as a derived one: the forward-filled
+daily value on each milestone's own calendar date, not a per-sha row.
 """
 
 from __future__ import annotations
 
 import datetime as dt
+import subprocess
 from pathlib import Path
 
 from calendar_ import daily_dates, delta_is_good, forward_fill, is_stale, snapshot_is_stale, snapshot_series, status
@@ -61,8 +70,8 @@ def _series_for(m: Metric, snapshots, ctx: Context, dates: list[dt.date], today:
     return daily, commits, last_real
 
 
-def _value_at(daily: list, dates: list[dt.date], day: dt.date):
-    if day < dates[0]:
+def _value_at(daily: list, dates: list[dt.date], day: dt.date | None):
+    if day is None or day < dates[0]:
         return None
     idx = min((day - dates[0]).days, len(dates) - 1)
     return daily[idx]
@@ -148,27 +157,45 @@ def build_site(data_dir: Path, curated: Curated, *, repo: Path, base: str, today
     # `base`, or the synthetic pair's `latest_sha` below, a snapshot row's
     # commit rather than a curated milestone - falls back to a fresh
     # `commit_date` lookup.
-    date_cache: dict[str, dt.date] = {base: base_date}
+    date_cache: dict[str, dt.date | None] = {base: base_date}
     date_cache.update({m["sha"]: dt.date.fromisoformat(m["date"]) for m in milestones})
 
-    def date_of(sha: str) -> dt.date:
+    def date_of(sha: str) -> dt.date | None:
+        # R33(1): `sha` here isn't always a curated (and therefore
+        # `validate()`-checked) milestone - the synthetic (base, latest_sha)
+        # pair below sources `latest_sha` straight from a data row, and a
+        # checkout whose object store lags the collector by one push (the
+        # documented preview recipe used to fetch only metrics-data) won't
+        # have that commit at all. `commit_date` raises CalledProcessError
+        # (unknown revision) or TimeoutExpired for a hung git in that case;
+        # treat "can't date it" the same as "no data" (None) rather than
+        # letting the whole build die over one unresolvable sha.
         if sha not in date_cache:
-            date_cache[sha] = commit_date(repo, sha).date()
+            try:
+                date_cache[sha] = commit_date(repo, sha).date()
+            except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+                date_cache[sha] = None
         return date_cache[sha]
+
+    # R33(2): metrics in a DAILY_FAMILY read by calendar date, same as
+    # derived - see the module docstring.
+    daily_family_ids = {m.id for m in curated.catalogue if m.family in DAILY_FAMILIES}
 
     def compare(sha_a: str, sha_b: str) -> list[dict]:
         rows = []
         for e in series_by_id.values():
-            if e["commits"] is not None:
+            if e["commits"] is not None and e["id"] not in daily_family_ids:
                 # Snapshot metric: read its two exact per-sha row values
                 # (R31 keeps this rule) - None when the family has no row
                 # for that particular sha, not "skip this metric".
                 by_sha = {c[0]: c[2] for c in e["commits"]}
                 frm, to = by_sha.get(sha_a), by_sha.get(sha_b)
             else:
-                # Derived (commits is None, per-day not per-commit): the
-                # same forward-filled daily series the chart draws, read at
-                # each milestone's own calendar date.
+                # Derived (commits is None, per-day not per-commit) or a
+                # DAILY_FAMILY metric (R33(2)): the same forward-filled
+                # daily series the chart draws, read at each milestone's
+                # own calendar date. `date_of` can return None (R33(1)),
+                # which `_value_at` treats as "no value here", not an error.
                 values = [v for _, v in e["daily"]]
                 frm = _value_at(values, dates, date_of(sha_a))
                 to = _value_at(values, dates, date_of(sha_b))

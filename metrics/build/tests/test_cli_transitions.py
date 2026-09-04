@@ -97,6 +97,35 @@ class TransitionCheckTests(unittest.TestCase):
         self.assertIn("transition check skipped:", r.stdout)
         self.assertIn("not present on main", r.stdout)
 
+    def test_skip_path_prints_and_exits_zero_when_ledger_on_ref_is_not_a_list(self):
+        # R33(3): a committed defects.yml whose top level is a mapping (a
+        # stray `key: value` where a list was meant) used to make
+        # `parse_defects` raise AttributeError ('str' object has no
+        # attribute 'items', reached via enumerate() over a dict yielding
+        # bare-string keys) - a type `_load_committed_defects`'s
+        # `except ValueError` does not catch, crashing the whole build
+        # instead of printing the one-line skip every other malformed-
+        # ledger case gets.
+        repo = self.tmp / "repo"; repo.mkdir()
+        git(repo, "init", "-q", "-b", "main")
+        _seed_test_file(repo)
+        (repo / "metrics/curated").mkdir(parents=True)
+        (repo / "metrics/curated/defects.yml").write_text("not-a-list: true\n")
+        git(repo, "add", "-A")
+        git(repo, "commit", "-q", "-m", "malformed ledger (mapping, not a list)")
+        base = git(repo, "rev-parse", "HEAD")
+
+        working = self.tmp / "working"; shutil.copytree(CUR, working)
+        (working / "milestones.yml").write_text(
+            (working / "milestones.yml").read_text().replace("BASE", base).replace("SECOND", base)
+        )
+
+        r = run_cli(working, repo, base)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertNotIn("Traceback", r.stderr)
+        self.assertIn("transition check skipped:", r.stdout)
+        self.assertIn("malformed", r.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -160,6 +160,23 @@ def _read(path: Path) -> Any:
         return yaml.safe_load(f)
 
 
+def _ensure_list(raw: Any, where: str, errors: list[str]) -> list:
+    """R33(3): catalogue.yml and defects.yml must each be a YAML sequence
+    at the top level. A mapping there (a stray `key: value` where a list
+    was meant) used to reach `_build()` by accident - `enumerate()` over a
+    dict yields its keys, each a bare string - and crash with
+    `AttributeError: 'str' object has no attribute 'items'` deep inside
+    `_build`, not a `ValueError`. `__main__.py`'s `_load_committed_defects`
+    only catches `ValueError` around `parse_defects`, so that crash broke
+    its skip-the-check contract for every other malformed-ledger case
+    instead of printing one line and moving on. Caught here as an ordinary
+    structural error instead."""
+    if isinstance(raw, list):
+        return raw
+    errors.append(f"{where}: top level must be a list, got {type(raw).__name__}")
+    return []
+
+
 def pointers(obj, prefix=""):
     """Every JSON-pointer path (leaf-only) reachable inside `obj`, e.g.
     `{"a": {"b": 1}}` -> `["/a/b"]`. Used to check a headline catalogue
@@ -176,9 +193,9 @@ def pointers(obj, prefix=""):
 def load_curated(directory: Path) -> Curated:
     """Load the three files; raises ValueError listing structural problems."""
     errors: list[str] = []
-    cat_raw = _read(directory / "catalogue.yml") or []
+    cat_raw = _ensure_list(_read(directory / "catalogue.yml") or [], "catalogue.yml", errors)
     ms_raw = _read(directory / "milestones.yml") or {}
-    def_raw = _read(directory / "defects.yml") or []
+    def_raw = _ensure_list(_read(directory / "defects.yml") or [], "defects.yml", errors)
     catalogue = [m for i, r in enumerate(cat_raw) if (m := _build(Metric, r, f"catalogue[{i}]", errors))]
     phases = [p for i, r in enumerate(ms_raw.get("phases", [])) if (p := _build(Phase, r, f"phases[{i}]", errors))]
     milestones = [m for i, r in enumerate(ms_raw.get("milestones", [])) if (m := _build(Milestone, r, f"milestones[{i}]", errors))]
@@ -197,7 +214,7 @@ def parse_defects(text: str) -> list[Defect]:
     here as reason to skip the check rather than fail the build on history
     the checkout may not have."""
     errors: list[str] = []
-    raw = yaml.safe_load(text) or []
+    raw = _ensure_list(yaml.safe_load(text) or [], "defects.yml", errors)
     defects = [d for i, r in enumerate(raw) if (d := _build(Defect, r, f"defects[{i}]", errors))]
     if errors:
         raise ValueError("committed defects.yml is malformed:\n  " + "\n  ".join(errors))

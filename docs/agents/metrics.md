@@ -136,7 +136,7 @@ zero.
 ## Preview the site locally
 
 ```bash
-git fetch origin metrics-data && git worktree add /tmp/md origin/metrics-data
+git fetch origin main metrics-data && git worktree add /tmp/md origin/metrics-data
 python -m metrics.build --data /tmp/md --curated metrics/curated --out dashboard/site.json
 cd dashboard && python3 -m http.server 8123     # http://localhost:8123/
 ```
@@ -144,3 +144,7 @@ cd dashboard && python3 -m http.server 8123     # http://localhost:8123/
 committed. The pages fetch `site.json` relative to themselves, which is why the preview
 builds it in-tree; the deployed site never contains a committed copy — `pages.yml` builds a
 fresh one into the site artifact at deploy time. Do not "fix" the `.gitignore` entry.
+Fetch `main` too, not just `metrics-data`: `--ref`'s "auto" default and the
+`compare` pairs that look up a commit's date locally (`assemble.py`'s
+`date_of`) both need `origin/main` to actually have the commits the
+collector snapshotted, or those lookups quietly null out instead of erroring.

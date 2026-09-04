@@ -188,3 +188,4 @@ Rules learned the hard way:
 - **Same-run resource references**: give `create_pull_request` a `temporary_id: aw_xxx`, target it from `add_comment` with `item_number: "#aw_xxx"`.
 - **Step ordering**: `pre-steps:` (before checkout) → `steps:` → cache-memory restore → `pre-agent-steps:` → engine → `post-steps:`. Anything needing `/tmp/gh-aw/cache-memory/` must be in `pre-agent-steps:`.
 - Safe-outputs are the only write path (jobs run read-only); `create-pull-request` is draft-enforced and blocks `.github/workflows/` edits; label allowlists are sized to the worst case.
+- **Recompile with a bare `gh aw compile`** (no filename), not one workflow at a time: whether any workflow in the repo has a maintenance job that can enforce an issue's expiry is repo-wide state, and a single-file compile can't see it — it silently falls back to `GH_AW_ACTION_FAILURE_ISSUE_EXPIRES_HOURS: "168"` instead of the correct `"0"`.

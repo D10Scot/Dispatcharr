@@ -193,6 +193,58 @@ class SiteTests(unittest.TestCase):
         row = next(r for r in s["compare"][key] if r["id"] == "codeql_open_critical_high")
         self.assertEqual((row["from"], row["to"], row["delta"], row["good"]), (None, 2, None, None))
 
+    def test_compare_reads_a_daily_family_metric_via_forward_filled_daily_value(self):
+        # R33(2): a DAILY_FAMILIES metric (e.g. "coverage") is keyed to
+        # whatever sha the once-daily job happened to see (R27's age rule,
+        # not the sha rule) - looking it up by the milestone's own sha in
+        # `compare` (the plain snapshot-metric branch) would almost always
+        # miss, leaving these headline tiles null in every pair even though
+        # the chart itself shows a value. The coverage row below sits at
+        # `self.base`'s sha - deliberately NOT `self.second`'s, the pair's
+        # `to` side - dated before `self.second` (2026-09-03): only reading
+        # the forward-filled daily value on that date (not the row's own
+        # sha) can find it.
+        cat = (self.cur / "catalogue.yml").read_text()
+        cat += (
+            "\n- id: backend_coverage\n  family: coverage\n  path: /backend_line_pct\n"
+            "  label: Backend coverage\n  unit: pct\n  direction: up\n  target: null\n"
+            "  group: safety_net\n  headline: false\n  since: 2026-08-19\n"
+            '  note: "Daily job."\n'
+        )
+        (self.cur / "catalogue.yml").write_text(cat)
+        row = {"commit_sha": self.base, "family": "coverage", "metrics": {"backend_line_pct": 50.0},
+               "timestamp": "2026-09-01T06:15:00+00:00"}
+        (self.data / "coverage.jsonl").write_text(json.dumps(row) + "\n")
+        curated = load_curated(self.cur)
+
+        s = build_site(self.data, curated, repo=self.repo, base=self.base, today=D(2026, 9, 5))
+        key = f"{self.base}..{self.second}"
+        cov = next(r for r in s["compare"][key] if r["id"] == "backend_coverage")
+        self.assertEqual(cov["to"], 50.0)
+
+    def test_compare_with_a_latest_sha_absent_from_the_local_repo_builds_without_error(self):
+        # R33(1): the synthetic base..latest_sha pair's `latest_sha` comes
+        # straight from a data row's commit_sha, not a curated (and
+        # therefore validate()-checked) milestone - a checkout whose object
+        # store lags the collector by one push (the documented preview
+        # recipe used to fetch only metrics-data, not main too) can have a
+        # `latest_sha` `git show` has never heard of. Add a fourth,
+        # chronologically-latest snapshot row at a sha that plainly doesn't
+        # exist anywhere in this test's throwaway repo.
+        missing = "c" * 40
+        p = self.data / "tests.jsonl"
+        row = {"commit_sha": missing, "family": "tests",
+               "metrics": {"backend_test_count": 1900, "e2e_scenario_count": 300,
+                           "coverage_md_rows": {"done": 150, "known_bug": 10, "todo": 10}},
+               "timestamp": "2026-09-05T12:00:00+00:00"}
+        p.write_text(p.read_text() + json.dumps(row) + "\n")
+
+        s = self.build()  # must not raise CalledProcessError
+        key = f"{self.base}..{missing}"
+        self.assertIn(key, s["compare"])
+        cq = next(r for r in s["compare"][key] if r["id"] == "codeql_open_critical_high")
+        self.assertEqual((cq["from"], cq["to"], cq["delta"], cq["good"]), (None, None, None, None))
+
     def test_defects_section(self):
         s = self.build()
         self.assertEqual(len(s["defects"]["entries"]), 2)
