@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -17,12 +18,47 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))  # the package's modules import each other by bare name (tests do too)
 
 from assemble import build_site  # noqa: E402
-from curated import load_curated, pointers, validate  # noqa: E402
+from curated import Defect, load_curated, parse_defects, pointers, validate, validate_transitions  # noqa: E402
 from gitinfo import pr_is_merged  # noqa: E402
 from load import load_snapshots  # noqa: E402
 
 BASE = "fd413f0cc4ab3131789a68fb31f1ae622ae7371a"
 REPO_SLUG = "D10Scot/Dispatcharr"
+LEDGER_PATH = "metrics/curated/defects.yml"
+
+
+def _load_committed_defects(repo: Path) -> tuple[list[Defect] | None, str | None]:
+    """The defect ledger as committed on the mainline, for the forward-only
+    status-transition check (curated.validate_transitions). Never fatal: no
+    git, neither `origin/main` nor `main` resolvable, the ledger not present
+    on that ref, or a malformed document there all return `(None, reason)`
+    so the caller prints one line and skips the check rather than failing a
+    build over history the local checkout may not have - a shallow clone, a
+    worktree with no `origin` remote, or (true on this branch today) a
+    curated tree that predates this file on `main`."""
+    ref = None
+    for candidate in ("origin/main", "main"):
+        try:
+            rr = subprocess.run(["git", "-C", str(repo), "rev-parse", "-q", "--verify", candidate],
+                                 capture_output=True, timeout=60)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            return None, f"git rev-parse failed: {exc}"
+        if rr.returncode == 0:
+            ref = candidate
+            break
+    if ref is None:
+        return None, "neither origin/main nor main is resolvable"
+    try:
+        r = subprocess.run(["git", "-C", str(repo), "show", f"{ref}:{LEDGER_PATH}"],
+                            capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return None, f"git show failed: {exc}"
+    if r.returncode != 0:
+        return None, f"{LEDGER_PATH} not present on {ref}"
+    try:
+        return parse_defects(r.stdout), None
+    except ValueError as exc:
+        return None, f"committed {LEDGER_PATH} on {ref} is malformed: {exc}"
 
 
 def main(argv=None) -> int:
@@ -64,6 +100,11 @@ def main(argv=None) -> int:
         known = {fam: set(pointers(rows[-1].metrics)) for fam, rows in load_snapshots(a.data).items() if rows}
     checker = (lambda n: pr_is_merged(REPO_SLUG, n)) if a.check_prs else None
     errors = validate(curated, repo=a.repo, base=a.base, ref=a.ref, pr_checker=checker, known_families=known)
+    committed_defects, skip_reason = _load_committed_defects(a.repo)
+    if skip_reason:
+        print(f"transition check skipped: {skip_reason}")
+    else:
+        errors += validate_transitions(committed_defects, curated.defects)
     if errors:
         print("curated files invalid:\n  " + "\n  ".join(errors), file=sys.stderr)
         return 1

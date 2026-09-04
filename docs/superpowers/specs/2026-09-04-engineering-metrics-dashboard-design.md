@@ -113,18 +113,36 @@ Three YAML files under `metrics/curated/`. All are validated by the build step, 
 
 One entry per metric the dashboard may show. Anything a collector emits that is not catalogued is stored but never rendered, so **adding a metric means adding an entry.**
 
+A snapshot-family entry points `path` at a JSON pointer into the row; a
+`derived` entry names a `derivation` from `metrics/build/derive.py`'s
+`DERIVATIONS` instead, with its arguments in `params` — the two are never
+mixed on one entry:
+
 ```yaml
 - id: e2e_scenarios
   family: tests                      # snapshot family, or "derived"
-  path: /e2e_scenario_count          # JSON pointer into the row's metrics, or a derivation name
+  path: /e2e_scenario_count          # JSON pointer into the row's metrics (snapshot families only)
   label: E2E scenarios
-  unit: count                        # count | pct | seconds | days | score | lines
+  unit: count                        # count | pct | seconds | days | score | lines | ratio
   direction: up                      # up | down | zero | info
   target: null                       # number or null
   group: safety_net                  # safety_net | security | extraction | delivery | agents
   headline: true
   since: 2026-08-19                  # first date the series is meaningful
   note: "Playwright test() call sites under e2e/tests/**/*.spec.ts, counted by regex; test.fail() pins count."
+
+- id: codeql_open_critical_high
+  family: derived                    # a "derived" entry has no `path`
+  derivation: codeql_open_count      # a name in metrics/build/derive.py's DERIVATIONS
+  params: {severities: [critical, high]}
+  label: Open CodeQL critical + high
+  unit: count
+  direction: zero
+  target: null
+  group: security
+  headline: true
+  since: 2026-08-23
+  note: "Open code-scanning alerts at security severity critical or high, as of each day."
 ```
 
 Rules:
@@ -146,25 +164,37 @@ Initial headline set (twenty entries, four per group; the full catalogue is larg
 **Amendment (Part B):** the Security row's fourth headline is "open Scorecard
 findings (target 0)", not "zizmor findings (zero)" as originally specified.
 Nothing in this repo uploads a zizmor SARIF to GitHub's code-scanning API, so
-no event-dump series exists for it to read; `scorecard_check` against the
-Scorecard dump's per-check breakdown does.
+no series exists for a zizmor-findings metric to read. `scorecard.yml`
+uploads one SARIF finding per failing Scorecard check to the same
+code-scanning API CodeQL uses, so the catalogue entry
+(`scorecard_findings_open`) reuses the `codeql_open_count` derivation with
+`params: {tools: [Scorecard]}` rather than adding a new derivation.
 
 ### 5.2 `milestones.yml`
 
-One entry per event worth a line on a chart.
+Two top-level keys. `phases:` declares the phase timeline the Story page
+walks; `milestones:` is one entry per event worth a line on a chart, each
+naming the phase it belongs to.
 
 ```yaml
-- sha: 75a68555b931e7d088bfbbd859b35e6e27064312   # full; must be first-parent on main
-  label: Phase 0 done
-  kind: phase-done          # phase-start | phase-done | goal | incident | release
-  phase: 0                  # 0 | 1 | 2 | 3, or "e2e" / "investigate" for the pre-phase work
-  pr: 155
-  summary: "All six Phase 0 items merged; the ruleset requires four result aggregates."
+phases:
+  - id: phase0                       # referenced by milestones[].phase and catalogue phases[].headline_ids
+    label: Phase 0
+    summary: "Harden in place: six small PRs in one day."   # two sentences max
+    headline_ids: [codeql_open_critical_high, ci_pass_rate_required, defects_fixed]
+
+milestones:
+  - sha: 75a68555b931e7d088bfbbd859b35e6e27064312   # full; must be first-parent on main
+    label: Phase 0 done
+    kind: phase-done          # phase-start | phase-done | goal | incident | release
+    phase: phase0             # a `phases[].id` declared above
+    pr: 155
+    summary: "All six Phase 0 items merged; the ruleset requires four result aggregates."
 ```
 
-`date` is derived from the commit, never stored. Validation: `sha` is on `main` (first-parent), `pr` exists and is merged, `kind` and `phase` in vocabulary, `label` ≤ 40 chars, `summary` one sentence.
+`date` is derived from the commit, never stored. Validation: `sha` is on `main` (first-parent), `pr` exists and is merged, `kind` in vocabulary, `phase` names a declared `phases[].id`, `label` ≤ 40 chars, `summary` one sentence; every `phases[].headline_ids` entry is a real `catalogue.yml` id.
 
-**When an agent adds an entry:** a spec's Done log gets its final tick (`phase-done`), a goal's PR merges (`goal`), a release is tagged (`release`), a security incident is fixed (`incident`), a phase's spec is committed (`phase-start`). **Never** edit a past entry's `sha` or `kind`; correct `summary` or `label` freely.
+**When an agent adds an entry:** a spec's Done log gets its final tick (`phase-done`), a goal's PR merges (`goal`), a release is tagged (`release`), a security incident is fixed (`incident`), a phase's spec is committed (`phase-start` — which also means declaring the phase itself under `phases:`, with `headline_ids` naming the two or three catalogue metrics it's meant to move). **Never** edit a past entry's `sha` or `kind`; correct `summary` or `label` freely.
 
 The first version is seeded from the inventory in Appendix A (baseline, PR #2 guardrails, PR #4 supply chain, the fifteen e2e goals, the three metrics PRs, Phase 0 start/done).
 
@@ -178,7 +208,8 @@ One entry per item in CLAUDE.md's "Known defects and traps".
   area: correctness         # security | correctness | dead-code | operational
   severity: high            # critical | high | medium | low
   status: open              # open | pinned | carried | fixed
-  issue: 61                 # required for open, pinned
+  source: null              # CLAUDE.md anchor; required for open when there is no issue yet
+  issue: 61                 # required for open when there is no source, and for pinned
   test: null                # path; required for pinned
   fixed_in: null            # PR number; required for fixed
   carried_as: null          # spec section reference; required for carried
@@ -186,9 +217,9 @@ One entry per item in CLAUDE.md's "Known defects and traps".
   status_changed: 2026-08-22
 ```
 
-Status moves only forward along `open → pinned → fixed` or `open → carried`; `carried → fixed` is also allowed (a constraint that later gets a real fix). The validator checks the required-by-status fields, that `test` exists in the tree, that `fixed_in` is a merged PR, and that no status moves backward relative to the committed version on `main`.
+Status moves only forward along `open → pinned → fixed` or `open → carried`; `carried → fixed` is also allowed (a constraint that later gets a real fix). The validator checks the required-by-status fields — `open` needs `issue` **or** `source` (not both: a defect surfaced straight into CLAUDE.md before it ever got an issue points `source` at the CLAUDE.md heading instead), `pinned` needs `issue` **and** `test`, `carried` needs `carried_as`, `fixed` needs `fixed_in` — that `test` exists in the tree, that `fixed_in` is a merged PR, and that no status moves backward relative to the committed version on `main`.
 
-**When an agent updates an entry:** a PR that closes the linked issue moves it to `fixed` with `fixed_in`; a `test.fail()` pin or backend test added for it moves it to `pinned` with `test`; a spec that lists it as a constraint the extracted relay must not recreate moves it to `carried` with `carried_as`. The gh-aw remediation workflow's prompt gets one sentence telling it to update the ledger when it closes an issue that has an entry.
+**When an agent updates an entry:** a PR that closes the linked issue moves it to `fixed` with `fixed_in`; a `test.fail()` pin or backend test added for it moves it to `pinned` with `test`; a spec that lists it as a constraint the extracted relay must not recreate moves it to `carried` with `carried_as`. **Amendment (Part B):** the gh-aw `issue-remediation` workflow's prompt does not move the entry itself — its draft PR's body is written in the same step that creates the PR, before a PR number exists, and `fixed` requires `fixed_in`. Instead it adds a `Ledger: <defect id> -> fixed` line to the PR body, and the merger applies the ledger change (`status: fixed`, `fixed_in`, `status_changed`) by hand at merge time.
 
 ### 5.4 Where the contract lives
 

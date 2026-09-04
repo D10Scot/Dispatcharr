@@ -160,6 +160,22 @@ def load_curated(directory: Path) -> Curated:
     return Curated(catalogue, phases, milestones, defects)
 
 
+def parse_defects(text: str) -> list[Defect]:
+    """Parse a raw `defects.yml` document (e.g. from `git show <ref>:...`,
+    where there is no file on disk to hand to `load_curated`) into `Defect`
+    objects. Raises ValueError on any structural problem, same as
+    `load_curated` - used for the forward-only status-transition check
+    against a historical revision (__main__.py), which treats any failure
+    here as reason to skip the check rather than fail the build on history
+    the checkout may not have."""
+    errors: list[str] = []
+    raw = yaml.safe_load(text) or []
+    defects = [d for i, r in enumerate(raw) if (d := _build(Defect, r, f"defects[{i}]", errors))]
+    if errors:
+        raise ValueError("committed defects.yml is malformed:\n  " + "\n  ".join(errors))
+    return defects
+
+
 def validate(
     c: Curated,
     *,

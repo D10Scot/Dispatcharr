@@ -91,15 +91,22 @@ move.
 `fixed_in` and today's `status_changed`; a `test.fail()` pin or backend test
 added for it → `pinned` with `test`; a spec that lists it as a carried
 constraint → `carried`. A new CLAUDE.md defect entry gets a ledger entry in
-the same PR.
+the same PR. Do this only when the PR number is already known (it usually
+is — GitHub assigns one as soon as the PR opens, before merge). The
+gh-aw `issue-remediation` workflow can't: it generates its draft PR's body
+in the same step that creates the PR, before a number exists, so `fixed_in`
+would have nothing to point at. It instead adds a `Ledger: <defect id> ->
+fixed` line to the PR body, and whoever merges sets `status`, `fixed_in`
+and `status_changed` by hand at merge time.
 
 **A `wontfix`-labelled issue keeps its ledger status.** Triage can close an
 issue as `wontfix` without ever fixing it (for example #87
 `hidden-channel-streamable`, #7 `interval-schedule-create-race`). That is not
 one of the four ledger statuses — do not invent a new one. Leave the entry's
 `status` exactly where it was (typically `open` or `pinned`, sitting there
-indefinitely) and add a sentence to `title` or `note` saying the linked issue
-was closed `wontfix` and why, so a reader of the ledger isn't left assuming
+indefinitely) and add a clause to `title` saying the linked issue was closed
+`wontfix` and why (`Defect` has no `note` field — an unknown field is
+rejected by the validator), so a reader of the ledger isn't left assuming
 someone is still going to act on it.
 
 ## When a collector says "not permitted" or "disabled"
