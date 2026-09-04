@@ -151,11 +151,12 @@ class CuratedTests(unittest.TestCase):
         self.assertTrue(any("summary" in e for e in self._errors()))
 
     def test_milestone_summary_allows_abbreviations_and_version_strings(self):
-        # "v0.29.0" (no space after the period) and "e.g." (lowercase after
-        # the space) must not be mistaken for a second sentence.
-        self._mutate("milestones.yml", lambda d: d["milestones"][1].update(
-            summary="Bumped to v0.29.0, e.g. the ruleset now requires four checks."))
-        self.assertEqual(self._errors(), [])
+        # "v0.29.0" (no space after the period) and "Fixed e.g. the ruleset"
+        # (lowercase after the space) must not be mistaken for a second
+        # sentence.
+        for summary in ("v0.29.0", "Fixed e.g. the ruleset"):
+            self._mutate("milestones.yml", lambda d, s=summary: d["milestones"][1].update(summary=s))
+            self.assertEqual(self._errors(), [], summary)
 
     def test_defect_test_path_must_stay_inside_repo(self):
         # An absolute path that genuinely exists on disk: if the guard were
