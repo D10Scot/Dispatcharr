@@ -112,14 +112,19 @@ cd .worktrees/phase1-pr2
 
 ## Global Constraints
 
-- **TTFB ceiling is N ≤ 10 s, chosen, not measured** (spec, PR 2): it is the threshold past which
-  the assertion stops telling a live stream from nginx spooling the response to disk
-  (`docker/nginx.conf`'s `uwsgi_buffering off` on `/proxy/`, CLAUDE.md § Architecture) — a tighter
-  N buys nothing that failure mode needs. The test hardcodes `10_000` ms; the implementing run
-  records the measured value in the PR description, per the spec's own instruction.
+- **TTFB ceiling is N ≤ 10 s, chosen, not measured** (spec, PR 2). It is a liveness/routing guard
+  across the relay split, not a spooling detector: at a normal stream rate, buffered nginx would
+  still forward well inside 10s, so a pass here alone cannot distinguish an unbuffered response from
+  a briefly-buffered one. The actual spooling-detection pin — that `/proxy/` runs with
+  `uwsgi_buffering off` (`docker/nginx.conf`, CLAUDE.md § Architecture) — is a separate, static
+  configuration assertion (§ Task 2, `nginx-stream-buffering.spec.ts`), not a timing ceiling; a
+  behavioural attempt at folding spooling-detection into the TTFB test itself was tried during
+  implementation and dropped (§ Task 2's own header explains why). The TTFB test hardcodes `10_000`
+  ms; the implementing run records the measured value in the PR description, per the spec's own
+  instruction.
 - **Every new `test()` carries exactly one of `@contract`/`@characterization`** as its
   details-object second argument (`docs/adr/0002-e2e-test-taxonomy.md`, enforced by
-  `e2e/tests/guards/tags.spec.ts`). Both new tests here are `@contract`.
+  `e2e/tests/guards/tags.spec.ts`). All three new tests here are `@contract`.
 - **No line of `apps/proxy/live_proxy/`, `vod_proxy/` or `apps/timeshift/`'s streaming path is
   rewritten** (spec Goal). Task 1's fix lives entirely outside `apps/proxy/`: `dispatcharr/urls.py`
   plus one exported constant in `dispatcharr/utils.py`.
@@ -146,11 +151,20 @@ cd .worktrees/phase1-pr2
 
 ## Done criteria (from the spec)
 
-- [ ] Both specs pass in the `streaming` project on `main`'s current shape —
-      `cd e2e && E2E_BASE_URL=http://localhost:$DISPATCHARR_E2E_PORT npx playwright test --project=streaming -g "time to first byte|SPA-shaped"`.
+- [ ] Both `streaming` specs pass on `main`'s current shape —
+      `cd e2e && E2E_BASE_URL=http://localhost:$DISPATCHARR_E2E_PORT npx playwright test --project=streaming -g "liveness ceiling|SPA-shaped"`.
+- [ ] The `streaming-greybox` nginx buffering-directive spec passes —
+      `cd e2e && DISPATCHARR_E2E_CONTAINER=$DISPATCHARR_E2E_CONTAINER E2E_BASE_URL=http://localhost:$DISPATCHARR_E2E_PORT npx playwright test --project=streaming-greybox -g "uwsgi_buffering off"`.
+      **`DISPATCHARR_E2E_CONTAINER` is not optional here**: `nginx-stream-buffering.spec.ts`
+      resolves the container to `docker exec` into from that variable, defaulting to the shared
+      `dispatcharr-e2e` when it's unset — forgetting it doesn't fail loudly, it silently reads the
+      *shared* container's nginx config instead of this worktree's, and the test can pass while
+      proving nothing about the code under test. Verified by hand: running this command without the
+      variable set still passes, against the wrong container.
 - [ ] `E2E result` green in CI on the PR.
-- [ ] `e2e/tests/guards/tags.spec.ts` passes (each new `test()` carries exactly one tag) —
-      `cd e2e && npx playwright test --project=guards`.
+- [ ] `e2e/tests/guards/tags.spec.ts` and `e2e/tests/guards/capabilities.spec.ts` pass (each new
+      `test()` carries exactly one tag; the nginx spec's subprocess use is on the `SUBPROCESS`
+      allowlist) — `cd e2e && npx playwright test --project=guards`.
 - [ ] **`CLAUDE.md` corrected:** § Testing, "five projects" → thirteen and "eight injectable
       faults" → twelve; the greybox-quarantine sentence naming the deleted
       `quarantine.spec.ts` corrected to name `e2e/tests/guards/allowlist.ts` +
@@ -186,19 +200,46 @@ run tests automatically. Run them yourself:
    `cd /Users/dion/git/Dispatcharr/.worktrees/phase1-pr2/e2e && npm ci && npx tsc --noEmit`. A
    full Playwright project run needs the AIO image built from this worktree (`e2e/README.md`); use
    a distinct container/port/volume/network so the shared `dispatcharr-e2e` stack is untouched,
-   and never pass `--reset`:
+   and never pass `--reset`. **`DISPATCHARR_E2E_IMAGE` must also be set to a worktree-scoped tag**:
+   `scripts/e2e_up.sh` only rebuilds the AIO image tag when it is *absent* (unlike the upstream
+   provider image, which it always rebuilds), so without this a pre-existing `dispatcharr-e2e:local`
+   from any other worktree or an earlier run is silently reused and the container under test may
+   not contain this branch's own commits — confirmed by hand: an initial run without this variable
+   set reused a stale image predating Task 1's routing fix and the SPA spec failed with a 404 that
+   a fresh image did not reproduce:
    ```bash
    cd /Users/dion/git/Dispatcharr/.worktrees/phase1-pr2
    DISPATCHARR_E2E_CONTAINER=dispatcharr-e2e-pr2 \
    DISPATCHARR_E2E_PORT=19191 \
    DISPATCHARR_E2E_VOLUME=dispatcharr-e2e-pr2-data \
    DISPATCHARR_E2E_NETWORK=dispatcharr-e2e-pr2-net \
+   DISPATCHARR_E2E_IMAGE=dispatcharr-e2e-pr2:local \
    ./scripts/e2e_up.sh
    cd e2e && npm ci && npx playwright install --with-deps chromium
    E2E_BASE_URL=http://localhost:19191 npx playwright test --project=guards
-   E2E_BASE_URL=http://localhost:19191 npx playwright test --project=streaming -g "time to first byte|SPA-shaped"
-   cd .. && DISPATCHARR_E2E_CONTAINER=dispatcharr-e2e-pr2 DISPATCHARR_E2E_VOLUME=dispatcharr-e2e-pr2-data DISPATCHARR_E2E_NETWORK=dispatcharr-e2e-pr2-net ./scripts/e2e_up.sh --down
+   E2E_BASE_URL=http://localhost:19191 npx playwright test --project=streaming -g "liveness ceiling|SPA-shaped"
+   E2E_BASE_URL=http://localhost:19191 npx playwright test --project=streaming-greybox -g "uwsgi_buffering off"
+   cd ..
    ```
+   **Teardown: NEVER run `./scripts/e2e_up.sh --down` or `--reset` from a worktree.** The upstream
+   provider container's name (`e2e-upstream` by default, `DISPATCHARR_E2E_UPSTREAM_CONTAINER` to
+   override) is not scoped by `DISPATCHARR_E2E_CONTAINER`/`_VOLUME`/`_NETWORK`, and `destroy()` in
+   the script `docker rm -f`s it unconditionally — deleting the single shared upstream container
+   every other worktree's stack (and the long-running shared `dispatcharr-e2e` /
+   `dispatcharr-e2e-g14`) also depends on. Confirmed by incident during this plan's own
+   implementation: two `--down` calls against a pr2-suffixed stack, made by following an earlier
+   draft of this exact section, silently disconnected `e2e-upstream` from both of those stacks'
+   networks. Tear down only your own resources, by name:
+   ```bash
+   docker rm -f dispatcharr-e2e-pr2
+   docker network disconnect dispatcharr-e2e-pr2-net e2e-upstream   # additive-safe: only detaches, doesn't touch e2e-upstream itself
+   docker network rm dispatcharr-e2e-pr2-net
+   docker volume rm dispatcharr-e2e-pr2-data
+   docker rmi dispatcharr-e2e-pr2:local   # this run's image tag is worktree-scoped, not part of the shared set
+   ```
+   If the permission system blocks the `docker network disconnect` step, leave the network in place
+   (it costs nothing sitting empty) and say so in the task report rather than working around the
+   block.
 6. If the container cannot start, say so in the task report: the work is then unverified, not
    verified.
 
@@ -218,7 +259,12 @@ docs/superpowers/specs/2026-09-04-phase1-process-       MODIFY: correct the D7 r
                                                          (:544-545), and the PR 2 bullet (:837-840)
                                                          to state the gap and fix Task 1 makes, not
                                                          behaviour already present
-e2e/tests/streaming/time-to-first-byte.spec.ts           NEW: @contract TTFB-through-nginx test
+e2e/tests/streaming/time-to-first-byte.spec.ts           NEW: @contract liveness/routing ceiling
+                                                         test (not a spooling detector)
+e2e/tests/streaming-greybox/nginx-stream-buffering.spec.ts NEW: @contract static config assertion —
+                                                         every /proxy/ location block in nginx -T's
+                                                         resolved output sets uwsgi_buffering off
+e2e/tests/guards/allowlist.ts                            MODIFY: add the nginx spec to SUBPROCESS
 e2e/tests/streaming/spa-three-segment-route.spec.ts      NEW: @contract SPA-shaped-route test
 e2e/README.md                                            MODIFY: correct the quarantine-file lines
                                                          (:101-113) and the Lifecycle-result line
@@ -525,17 +571,56 @@ CLAUDE.md                                                MODIFY: correct project
   Claude-Session: https://claude.ai/code/session_015etUXzEMh4fD6y6na9ZGaf
   ```
 
-### Task 2: Add the time-to-first-byte contract test
+### Task 2: Add the TTFB liveness guard and the nginx buffering-directive contract tests
 
 **Files:**
 - Create: `e2e/tests/streaming/time-to-first-byte.spec.ts`
+- Create: `e2e/tests/streaming-greybox/nginx-stream-buffering.spec.ts`
+- Modify: `e2e/tests/guards/allowlist.ts`
 
 **Interfaces:**
-- Consumes: `test`, `expect`, `expectTsAligned`, `TS_PACKET_SIZE` from `../../fixtures`;
-  `lockedProfile` from `./helpers` (both already exported/verified in `e2e/fixtures/index.ts` and
-  `e2e/tests/streaming/helpers.ts`).
+- `time-to-first-byte.spec.ts` consumes: `test`, `expect`, `expectTsAligned`, `TS_PACKET_SIZE` from
+  `../../fixtures`; `lockedProfile` from `./helpers` (both already exported/verified in
+  `e2e/fixtures/index.ts` and `e2e/tests/streaming/helpers.ts`).
+- `nginx-stream-buffering.spec.ts` consumes: `test`, `expect` from `../../fixtures`; `execFile` from
+  `node:child_process` (the same `execFileAsync`/container-name-resolution pattern
+  `tests/streaming-greybox/output-profile-sharing.spec.ts` already uses for `pgrep`).
 
-- [ ] **Step 1: Write the test**
+**Two tests, two different mechanisms, not the single spooling-detection test the spec originally
+called for.** Round 1 of implementing this task found that a normal-rate stream (`rate: 20`) fills
+any ordinary nginx buffer (4k/8k) in well under a second, so a 10s pass on that case alone cannot
+tell an unbuffered response apart from a briefly-buffered one — it is a liveness/routing guard, not
+a spooling detector, and its header comment must say so honestly.
+
+Round 2 tried making it one by arming the provider's `dead-air` fault before the channel ever
+opened and timing Dispatcharr's own keep-alive packets. That does not work on this codebase: a
+from-open dead-air connection (`buffer.index == 0` at fault-arm time) is measured, not by
+`CONNECTION_TIMEOUT` (10s), but by `_health_inactivity_threshold()`
+(`apps/proxy/live_proxy/input/manager.py`) returning `channel_init_grace_period()` — 60s default,
+`apps/proxy/config.py`, confirmed live in a running container via `TSConfig
+.get_channel_init_grace_period()`. Only once `StreamManager.healthy` flips `False` inside
+`_monitor_health()` does `_should_send_keepalive()`
+(`apps/proxy/live_proxy/output/ts/generator.py`) start emitting anything; `_wait_for_initialization()`
+itself yields no keep-alives, only error packets on abort. Measured: 50,216ms against a 5,000ms
+ceiling on a real run — not a near-miss, and architecturally incapable of landing under a minute for
+a truly-from-open dead-air connection. That test was dropped entirely rather than either forced to
+pass with a ~65s+ ceiling or re-armed against an already-live connection (which would only prove the
+*second* packet after the fault, not the first byte of the connection, and times against an
+unrelated watchdog with its own uncertain delay).
+
+The actual spooling-detection pin is a **static configuration assertion**, not a timing-based
+behavioural one: read the running container's resolved nginx config with `nginx -T` and assert every
+`location` block targeting `/proxy/` sets `uwsgi_buffering off`. This needs the
+container-introspection capability that `tests/streaming-greybox/` exists for, so the new spec lands
+there, not in `streaming`, mirroring `output-profile-sharing.spec.ts`'s `pgrep` pattern (a local
+`execFileAsync` wrapper, `docker exec <container> ...`, no shared helper). It requires one addition to
+`e2e/tests/guards/allowlist.ts`'s `SUBPROCESS` list (it imports `node:child_process` directly); it
+does **not** need the `CONTAINER_INTROSPECTION` list, since none of its string/template literals
+contain that guard's markers (`pgrep`, `docker ` with a trailing space, `manage.py`) — verified by
+running the `guards` project after adding only the `SUBPROCESS` entry and confirming all nine guard
+tests still pass, rather than assuming both lists apply by analogy to the sibling spec.
+
+- [ ] **Step 1: Write the liveness test**
 
   `e2e/tests/streaming/time-to-first-byte.spec.ts`:
 
@@ -544,33 +629,31 @@ CLAUDE.md                                                MODIFY: correct project
   import { lockedProfile } from './helpers';
 
   /**
-   * Time to first byte through nginx (Phase 1 PR 2).
+   * Liveness/routing guard across the relay split (Phase 1 PR 2).
    *
-   * nginx's `/proxy/` location runs with `uwsgi_buffering off` (docker/nginx.conf,
-   * CLAUDE.md § Architecture) specifically so a live TS response streams
-   * straight through instead of being spooled to disk first.
-   *
-   * N = 10s is the CHOSEN ceiling, not a measurement: it's the spec's own
-   * spooling-detection threshold (docs/superpowers/specs/2026-09-04-phase1-
-   * process-split-design.md, PR 2), not a characterisation of normal
-   * latency. Past it the assertion stops telling a live stream apart from
-   * nginx spooling the whole response to disk before forwarding it, which is
-   * the only failure this test exists to catch — a tighter N would buy
-   * nothing that failure mode needs, since real TTFB (logged below) sits
-   * nowhere near the ceiling. It must exist before PR 4 changes any nginx
-   * routing and keep passing after it — nothing about this assertion depends
-   * on which process answers the request.
+   * This is NOT a spooling detector: at this scenario's `rate: 20`, buffered
+   * nginx (a `proxy_buffering`/`uwsgi_buffering`-style default buffer, 4k or
+   * 8k) would still forward well inside a 10s window, so a 10s pass here
+   * cannot tell an unbuffered response apart from a briefly-buffered one — see
+   * tests/streaming-greybox/nginx-stream-buffering.spec.ts for the actual
+   * spooling-detection pin, a static configuration assertion. What this test
+   * does verify: a live channel answers with a valid, 188-byte-aligned TS
+   * packet within 10s through whichever process serves
+   * `/proxy/ts/stream/<uuid>` — nginx today, and unchanged after PR 4 gives
+   * that route its own nginx location, since nothing about this assertion
+   * depends on which process answers the request. It must exist before that
+   * routing changes and keep passing after it.
    *
    * The measured elapsed time is logged unconditionally below; the
    * implementing PR copies that number, plus this 10s ceiling, into its
    * description per the spec's own instruction.
    */
-  const TTFB_CEILING_MS = 10_000;
+  const LIVENESS_CEILING_MS = 10_000;
 
   test(
-    'the first TS packet through nginx arrives within the TTFB ceiling',
+    'the first TS packet arrives within the liveness ceiling',
     { tag: '@contract' },
-    async ({ upstream, seed, api, streamClient }) => {
+    async ({ upstream, seed, api, streamClient, baseURL }) => {
       const scenario = await upstream.scenario({
         channels: [{ id: 1, name: 'G4 TTFB', tvgId: 'g4-ttfb.e2e', logo: null }],
         rate: 20,
@@ -586,33 +669,63 @@ CLAUDE.md                                                MODIFY: correct project
       const packet = await streamClient.readPackets(1);
       const elapsedMs = Date.now() - started;
 
-      console.log(`[ttfb] first TS packet through nginx (:9191): ${elapsedMs}ms (ceiling ${TTFB_CEILING_MS}ms)`);
+      console.log(`[ttfb] first TS packet via ${baseURL}: ${elapsedMs}ms (ceiling ${LIVENESS_CEILING_MS}ms)`);
 
       expect(packet.byteLength).toBe(TS_PACKET_SIZE);
       expectTsAligned(packet);
       expect(
         elapsedMs,
-        `first TS packet took ${elapsedMs}ms through nginx; ceiling is ${TTFB_CEILING_MS}ms`
-      ).toBeLessThanOrEqual(TTFB_CEILING_MS);
+        `first TS packet took ${elapsedMs}ms; ceiling is ${LIVENESS_CEILING_MS}ms`
+      ).toBeLessThanOrEqual(LIVENESS_CEILING_MS);
     }
   );
+
+  // The spooling detector for nginx's /proxy/ location lives in
+  // tests/streaming-greybox/nginx-stream-buffering.spec.ts as a static
+  // configuration assertion, not here. A dead-air-based behavioural attempt
+  // at it was tried and dropped — see that spec's header for the full trace.
   ```
 
   Run: `cd e2e && npx tsc --noEmit` (also the blocking PostToolUse hook for this file).
   Expected: no type errors.
 
-- [ ] **Step 2: Run it against a live container**
+- [ ] **Step 2: Write the nginx buffering-directive test**
 
-  Run (against the distinct-port stack from § Test environment, step 5):
-  `cd e2e && E2E_BASE_URL=http://localhost:19191 npx playwright test --project=streaming -g "time to first byte"`
-  Expected: PASS. Note the `[ttfb] first TS packet ...` console line — that measured value goes
-  into the PR description alongside the `10_000` ms ceiling, per the spec's instruction for this
-  PR.
+  `e2e/tests/streaming-greybox/nginx-stream-buffering.spec.ts`: `docker exec <container> nginx -T`
+  to read the resolved config (not the checked-in `docker/nginx.conf` template — the deployed
+  artifact, after `docker/init/03-init-dispatcharr.sh` substitutes `NGINX_PORT`); parse every
+  `location` block by brace depth (not by fixed indentation — `nginx -T` reflows its own
+  indentation from the directive tree); filter to blocks whose target starts with `/proxy/`; assert
+  `.length > 0` first (vacuous-pass guard — an empty `.every()` would otherwise pass silently if the
+  location were ever renamed), then assert every one of those blocks contains a line matching
+  `uwsgi_buffering off;`. See the file's own header comment (written during implementation) for the
+  full docstring including the dropped dead-air approach's trace.
 
-- [ ] **Step 3: Commit**
+  Add `'tests/streaming-greybox/nginx-stream-buffering.spec.ts'` to `SUBPROCESS.allow` in
+  `e2e/tests/guards/allowlist.ts`, next to `output-profile-sharing.spec.ts`.
+
+  Run: `cd e2e && npx tsc --noEmit`, then `npx playwright test --project=guards` — confirm all nine
+  guard tests still pass, including `container-introspection commands are confined to their
+  allowlist` (this file should **not** need adding there — see rationale above; if the guard run
+  disagrees, trust the guard run, not this note, and add the second entry).
+
+- [ ] **Step 3: Run both against a live container**
+
+  Run (against the distinct-port stack from § Test environment, step 5, with
+  `DISPATCHARR_E2E_IMAGE` set to a worktree-scoped tag — see that section's image-staleness note):
+  ```
+  cd e2e
+  E2E_BASE_URL=http://localhost:19191 npx playwright test --project=streaming -g "liveness ceiling"
+  E2E_BASE_URL=http://localhost:19191 npx playwright test --project=streaming-greybox -g "uwsgi_buffering off"
+  ```
+  Expected: PASS on both. Note the `[ttfb] first TS packet ...` console line — that measured value
+  goes into the PR description alongside the `10_000` ms ceiling, per the spec's instruction for
+  this PR.
+
+- [ ] **Step 4: Commit**
 
   ```bash
-  git add e2e/tests/streaming/time-to-first-byte.spec.ts
+  git add e2e/tests/streaming/time-to-first-byte.spec.ts e2e/tests/streaming-greybox/nginx-stream-buffering.spec.ts e2e/tests/guards/allowlist.ts docs/superpowers/plans/2026-09-04-phase1-pr2-ttfb-test.md docs/superpowers/specs/2026-09-04-phase1-process-split-design.md
   ```
 
   Write the message to a scratch file, then:
@@ -624,12 +737,22 @@ CLAUDE.md                                                MODIFY: correct project
   Message body:
 
   ```
-  test(e2e): pin time-to-first-byte through nginx before PR 4's routing change
+  test(e2e): pin TTFB liveness and nginx buffering directive before PR 4's routing change
 
-  Adds an @contract regression guard in the streaming project: the first
-  TS packet through nginx (:9191) must arrive within 10s, the ceiling past
-  which the measurement stops telling a live stream apart from nginx
-  spooling the response to disk. Measured <MEASURED>ms on this run.
+  Adds two @contract regression guards:
+
+  - streaming: a normal-rate stream's first TS packet must arrive within
+    10s — a liveness/routing guard across the relay split, not a spooling
+    detector (a normal-rate stream fills any ordinary nginx buffer too
+    fast to tell the two apart). Measured <MEASURED_LIVENESS>ms on this
+    run.
+  - streaming-greybox: every location block targeting /proxy/ in the
+    container's resolved nginx config sets uwsgi_buffering off — the
+    actual spooling-detection pin, as a static configuration assertion.
+    A behavioural dead-air-timing approach was tried and dropped: a
+    from-open dead-air connection's first keep-alive is gated behind the
+    60s channel_init_grace_period, not a sub-5s watchdog (measured
+    50,216ms against a 5,000ms ceiling on a real run).
 
   docs/superpowers/specs/2026-09-04-phase1-process-split-design.md, PR 2.
 
@@ -637,7 +760,7 @@ CLAUDE.md                                                MODIFY: correct project
   Claude-Session: https://claude.ai/code/session_015etUXzEMh4fD6y6na9ZGaf
   ```
 
-  Replace `<MEASURED>` with the console-logged value from Step 2 before writing the file.
+  Replace `<MEASURED_LIVENESS>` with the console-logged value from Step 3 before writing the file.
 
 ### Task 3: Add the SPA-three-segment-route contract test
 

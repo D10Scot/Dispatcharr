@@ -829,10 +829,26 @@ scenarios for whenever PR 5 lands. Stopping after PR 7 means taking PR 8 whole.
 
 - New E2E spec in the `streaming` project, `@contract`: request `/proxy/ts/stream/<uuid>` through
   port 9191 and assert at least one 188-byte-aligned TS packet arrives within **N seconds, where
-  N ≤ 10**. Ten seconds is the ceiling: past it the assertion no longer distinguishes a live stream
-  from nginx spooling to disk, which is the only thing this test exists to catch. The implementing
-  PR measures the current value against G4's `streaming` timings and records both the measurement
-  and the chosen N in its description.
+  N ≤ 10**. This is a liveness/routing guard across the relay split, not a spooling detector: at a
+  normal stream rate, buffered nginx would still forward well inside a 10s window, so a pass here
+  cannot by itself tell an unbuffered response apart from a briefly-buffered one. (A first attempt
+  at a *behavioural* spooling detector — a dead-air upstream, timed against how fast Dispatcharr's
+  own keep-alive packets arrive — was tried while implementing this PR and dropped: a from-open
+  dead-air connection gates its first keep-alive behind `channel_init_grace_period` (60s default,
+  `apps/proxy/config.py`), not the faster dead-air failover watchdog, so no ceiling under a minute
+  could discriminate buffered nginx from Dispatcharr's own unrelated initialization delay.) The
+  implementing PR measures the current value against G4's `streaming` timings and records both the
+  measurement and the chosen N in its description.
+- New E2E spec in the `streaming-greybox` project, `@contract`: reads the running container's
+  resolved nginx config (`docker exec <container> nginx -T`) and asserts every `location` block
+  targeting `/proxy/` sets `uwsgi_buffering off`. This is the actual spooling-detection pin — a
+  static configuration assertion rather than a timing-based behavioural one — for the trap this PR
+  exists to guard: nginx's `/proxy/` location must keep `uwsgi_buffering off` (docker/nginx.conf,
+  CLAUDE.md § Architecture), since a past bug used `proxy_buffering off` (the wrong directive family
+  for `uwsgi_pass`) and nginx silently spooled live TS to disk before forwarding it. Needs the
+  container-introspection capability; add its file to `e2e/tests/guards/allowlist.ts`'s `SUBPROCESS`
+  entry (it imports `node:child_process` directly) and confirm `e2e/tests/guards/capabilities.spec.ts`
+  still passes.
 - **`dispatcharr/urls.py`'s XC three-segment pattern (`xc_stream_endpoint`/`xc_live_stream_endpoint`) is
   narrowed** to the numeric-with-optional-extension `channel_id` shape a real Xtream client sends
   — the shape `dispatcharr/utils.py` already used privately for log redaction, now exported as
@@ -841,15 +857,18 @@ scenarios for whenever PR 5 lands. Stopping after PR 7 means taking PR 8 whole.
   no-trailing-slash URI ahead of the SPA catch-all, and `stream_xc`'s
   `get_object_or_404(User, ...)` 404s inside DRF's own exception handling before Django's root
   handler — and therefore the SPA catch-all — ever sees it. No `apps/proxy/live_proxy/` change.
-- New E2E spec, same project, `@contract`: a three-segment root URI that is a valid SPA deep link
-  still serves the SPA shell, not a 404. Written **before** PR 4's routing change exists, on the
-  current single-process shape, so it is a real regression guard — and, given the routing gap
+- New E2E spec, same `streaming` project, `@contract`: a three-segment root URI that is a valid SPA
+  deep link still serves the SPA shell, not a 404. Written **before** PR 4's routing change exists,
+  on the current single-process shape, so it is a real regression guard — and, given the routing gap
   just above, this PR's own fix for it, not a test written to match code that already worked.
 - `e2e/README.md:104` and `:111` corrected to name `e2e/tests/guards/allowlist.ts` +
   `capabilities.spec.ts`; `e2e/README.md:780` corrected — the live Main ruleset already requires
   `Lifecycle result`.
-- **Done:** both specs pass in the `streaming` project on `main`'s current shape; `E2E result`
-  green; `e2e/tests/guards/tags.spec.ts` passes (each new `test()` carries exactly one tag).
+- **Done:** all three specs pass — the liveness ceiling and SPA-shaped-route specs in the
+  `streaming` project, the nginx buffering-directive spec in `streaming-greybox` — on `main`'s
+  current shape; `E2E result` green; `e2e/tests/guards/tags.spec.ts` and
+  `e2e/tests/guards/capabilities.spec.ts` both pass (each new `test()` carries exactly one tag; the
+  nginx spec's subprocess use is on the `SUBPROCESS` allowlist).
 - **`CLAUDE.md` corrected:** § Testing, "five projects" → thirteen and "eight injectable faults" →
   twelve; the greybox-quarantine sentence naming the deleted file.
 
