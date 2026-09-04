@@ -3,6 +3,10 @@
 // two milestones can be compared.
 
 export function deltaIsGood(direction, delta) {
+  // `null < 0` / `null > 0` are both false, not null, so a missing delta
+  // (either milestone sha has no row for this metric) must be guarded
+  // before the direction switch, not left to fall through it.
+  if (delta === null || delta === undefined || !Number.isFinite(delta)) return null;
   if (direction === 'info' || delta === 0) return null;
   return direction === 'down' || direction === 'zero' ? delta < 0 : delta > 0;
 }

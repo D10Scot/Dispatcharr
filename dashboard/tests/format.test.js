@@ -25,4 +25,10 @@ describe('fmt', () => {
     expect(statusClass('good')).toBe('good');
     expect(statusClass('weird')).toBe('neutral');
   });
+  it('fmtDate is null-safe', () => {
+    // phases[].start/end and a stale series' last_real can all be null in the
+    // real site.json (one phase has start: null; three have end: null).
+    expect(fmtDate(null)).toBe('—');
+    expect(fmtDate(undefined)).toBe('—');
+  });
 });

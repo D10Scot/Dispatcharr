@@ -25,4 +25,10 @@ describe('compare', () => {
     expect(deltaIsGood('info', 2)).toBeNull();
     expect(deltaIsGood('up', 0)).toBeNull();
   });
+  it('is null-safe (JS-only guard, not mirrored from Python)', () => {
+    // The contract says `good` is null whenever `delta` is null (either sha
+    // missing a row), which delta < 0 / delta > 0 alone would get wrong
+    // (null < 0 is false, not null) — guard before the direction switch.
+    expect(deltaIsGood('up', null)).toBeNull();
+  });
 });

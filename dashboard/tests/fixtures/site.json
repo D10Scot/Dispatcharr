@@ -5,9 +5,11 @@
            "source_notes": ["dependabot_alerts: not_permitted (HTTP 403)"], "commit_count": 67},
   "headline": [
     {"id": "e2e_scenarios", "label": "E2E scenarios", "unit": "count", "direction": "up", "target": null, "group": "safety_net", "headline": true,
-     "note": "Playwright test() call sites.", "daily": [["2026-09-03", 200], ["2026-09-04", 249], ["2026-09-05", 249]],
+     "note": "Playwright test() call sites.",
+     "daily": [["2026-08-25", 0], ["2026-08-26", 20], ["2026-08-27", 45], ["2026-08-28", 70], ["2026-08-29", 95], ["2026-08-30", 120], ["2026-08-31", 145], ["2026-09-01", 170], ["2026-09-02", 190], ["2026-09-03", 200], ["2026-09-04", 249], ["2026-09-05", 249]],
      "commits": [["fd413f0cc4ab3131789a68fb31f1ae622ae7371a", "2026-08-19T22:13:45+00:00", 0], ["75a68555b931e7d088bfbbd859b35e6e27064312", "2026-09-03T21:09:00+00:00", 249]],
-     "last_real": "2026-09-03T21:09:00+00:00", "stale": false, "status": "good", "now": 249, "at_baseline": 0, "at_prev_milestone": 200, "spark": [200, 249, 249]},
+     "last_real": "2026-09-03T21:09:00+00:00", "stale": false, "status": "good", "now": 249, "at_baseline": 0, "at_prev_milestone": 200,
+     "spark": [0, 20, 45, 70, 95, 120, 145, 170, 190, 200, 249, 249]},
     {"id": "codeql_open_critical_high", "label": "Open CodeQL critical + high", "unit": "count", "direction": "zero", "target": null, "group": "security", "headline": true,
      "note": "Open alerts.", "daily": [["2026-09-03", 75], ["2026-09-04", 75], ["2026-09-05", 75]], "commits": null,
      "last_real": "2026-09-05T06:05:00+00:00", "stale": false, "status": "bad", "now": 75, "at_baseline": 75, "at_prev_milestone": 75, "spark": [75, 75, 75]},
@@ -18,7 +20,7 @@
   "groups": {
     "safety_net": [
       {"id": "e2e_scenarios", "label": "E2E scenarios", "unit": "count", "direction": "up", "target": null, "group": "safety_net", "headline": true, "note": "Playwright test() call sites.",
-       "daily": [["2026-09-03", 200], ["2026-09-04", 249], ["2026-09-05", 249]],
+       "daily": [["2026-08-25", 0], ["2026-08-26", 20], ["2026-08-27", 45], ["2026-08-28", 70], ["2026-08-29", 95], ["2026-08-30", 120], ["2026-08-31", 145], ["2026-09-01", 170], ["2026-09-02", 190], ["2026-09-03", 200], ["2026-09-04", 249], ["2026-09-05", 249]],
        "commits": [["fd413f0cc4ab3131789a68fb31f1ae622ae7371a", "2026-08-19T22:13:45+00:00", 0], ["75a68555b931e7d088bfbbd859b35e6e27064312", "2026-09-03T21:09:00+00:00", 249]],
        "last_real": "2026-09-03T21:09:00+00:00", "stale": false, "status": "good", "now": 249, "at_baseline": 0, "at_prev_milestone": 200},
       {"id": "backend_coverage", "label": "Backend line coverage", "unit": "pct", "direction": "up", "target": 60, "group": "safety_net", "headline": true, "note": "Daily.",
@@ -45,7 +47,8 @@
     {"id": "investigate", "label": "Investigate", "summary": "Read before writing.", "headline_ids": ["e2e_scenarios"], "start": "2026-08-19", "end": null,
      "milestones": [{"sha": "fd413f0cc4ab3131789a68fb31f1ae622ae7371a", "date": "2026-08-19", "label": "v0.29.0 baseline", "kind": "phase-start", "phase": "investigate", "pr": null, "summary": "Fork point."}]},
     {"id": "phase0", "label": "Phase 0", "summary": "Harden in place.", "headline_ids": ["codeql_open_critical_high"], "start": "2026-09-03", "end": "2026-09-03",
-     "milestones": [{"sha": "75a68555b931e7d088bfbbd859b35e6e27064312", "date": "2026-09-03", "label": "Phase 0 done", "kind": "phase-done", "phase": "phase0", "pr": 155, "summary": "All six items merged."}]}
+     "milestones": [{"sha": "75a68555b931e7d088bfbbd859b35e6e27064312", "date": "2026-09-03", "label": "Phase 0 done", "kind": "phase-done", "phase": "phase0", "pr": 155, "summary": "All six items merged."}]},
+    {"id": "phase1", "label": "Phase 1", "summary": "Extract the relay boundary, still Python.", "headline_ids": [], "start": null, "end": null, "milestones": []}
   ],
   "milestones": [
     {"sha": "fd413f0cc4ab3131789a68fb31f1ae622ae7371a", "date": "2026-08-19", "label": "v0.29.0 baseline", "kind": "phase-start", "phase": "investigate", "pr": null, "summary": "Fork point."},

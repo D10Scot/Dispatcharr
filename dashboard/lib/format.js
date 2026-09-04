@@ -38,6 +38,9 @@ const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', '
 
 export function fmtDate(iso) {
   // Fixed abbreviations: ICU's en-GB short month is "Sept", which drifts by Node version.
+  // Null-safe like fmt(): phases[].start/end and a stale series' last_real
+  // are all nullable in the real site.json.
+  if (iso === null || iso === undefined) return '—';
   const d = new Date(`${iso.slice(0, 10)}T00:00:00Z`);
   return `${d.getUTCDate()} ${MONTHS[d.getUTCMonth()]}`;
 }
