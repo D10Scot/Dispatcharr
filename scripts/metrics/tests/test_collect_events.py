@@ -92,6 +92,32 @@ class CollectEventsTests(unittest.TestCase):
             self.assertEqual(run(env, out, "pull_requests").returncode, 0)
             second = len([c for c in calls(env) if "/pulls/5" in " ".join(c)])
             self.assertEqual(second, first, "merged PR detail must come from the sidecar on the second run")
+            # Not just "no re-fetch" — the reused record must still carry the
+            # first run's detail/files data, not a regression to
+            # project_pr(pr, None, None).
+            rec2 = read(out, "pull_requests")["records"][0]
+            self.assertEqual(rec2["additions"], 100)
+            self.assertEqual(rec2["deletions"], 5)
+            self.assertEqual(rec2["changed_files"], 3)
+            self.assertEqual(rec2["files"], ["apps/x.py", "e2e/a.spec.ts", "docs/b.md"])
+
+    def test_detail_fetch_failure_does_not_misattribute_kind_status(self):
+        # A 403 on a per-record detail call (secondary rate limit, say) is
+        # not the same thing as the whole kind being forbidden: it must not
+        # come back as "not_permitted" the way a 403 on the listing call
+        # does.
+        with tempfile.TemporaryDirectory() as tmp:
+            resp = responses()
+            resp["/repos/o/r/pulls/5/files"] = {"error": "HTTP 403: secondary rate limit"}
+            env = fake_gh_env(tmp, resp)
+            out = Path(tmp) / "data"
+            r = run(env, out, "pull_requests")
+            self.assertEqual(r.returncode, 0, r.stderr)
+            dump = read(out, "pull_requests")
+            self.assertEqual(dump["status"], "error")
+            self.assertIn("record 5", dump["detail"])
+            self.assertIn("/pulls/5/files", dump["detail"])
+            self.assertEqual(dump["records"], [])
 
     def test_workflow_runs_use_list_key(self):
         with tempfile.TemporaryDirectory() as tmp:

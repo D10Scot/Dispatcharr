@@ -15,13 +15,18 @@ events/history/<kind>.jsonl: a record is appended there the first time it is
 seen and again whenever its projected form changes. The build step reads the
 union, current record winning.
 
-Permission gaps are recorded, never hidden: a 403 writes status
-"not_permitted", a 404 writes "disabled", any other GhApiError, OSError or
-ValueError writes "error" with the message in ``detail`` and an empty record
-list. Any other exception is a bug in a projection or fetcher, not an API
-outcome: it propagates out of collect_kind (no file is written for that
-kind, avoiding a silent bad-data row) and main() turns it into a nonzero exit
-so the run fails visibly instead of being recorded as data.
+Permission gaps are recorded, never hidden: a 403 from the *listing* call
+writes status "not_permitted", a 404 writes "disabled", any other GhApiError,
+OSError or ValueError writes "error" with the message in ``detail`` and an
+empty record list. A failure on a *per-record* detail call (PR detail, PR
+files, issue timeline) is a different thing: it says nothing about whether
+the whole kind is permitted, so fetchers wrap it in DetailFetchError, which
+collect_kind always maps to "error" (never "not_permitted"/"disabled") with
+the record id and path named in ``detail``. Any other exception is a bug in a
+projection or fetcher, not an API outcome: it propagates out of collect_kind
+(no file is written for that kind, avoiding a silent bad-data row) and
+main() turns it into a nonzero exit so the run fails visibly instead of
+being recorded as data.
 """
 
 from __future__ import annotations
@@ -36,6 +41,26 @@ from pathlib import Path
 from _gh import GhApiError, gh_api
 
 SCORECARD_URL = "https://api.securityscorecards.dev/projects/github.com/{repo}"
+
+
+class DetailFetchError(Exception):
+    """A per-record detail call failed — not a listing-endpoint outcome.
+
+    The 403→not_permitted / 404→disabled mapping in collect_kind describes
+    the *whole kind* being gated (e.g. Dependabot alerts off for this repo).
+    A single record's detail call failing — a secondary rate limit hit while
+    backfilling PR file lists, say — means something else entirely and must
+    never be recorded as if the kind itself were forbidden or absent.
+    Fetchers raise this for a failed detail/files/timeline call; collect_kind
+    always maps it to status "error" with the record named in ``detail``.
+    """
+
+    def __init__(self, kind: str, record_id, path: str, message: str) -> None:
+        self.kind = kind
+        self.record_id = record_id
+        self.path = path
+        self.message = message
+        super().__init__(f"{kind} record {record_id} ({path}): {message}")
 
 
 def now_iso() -> str:
@@ -179,8 +204,16 @@ def fetch_pull_requests(repo: str, sidecar: Sidecar, opts) -> list[dict]:
         if prior and prior.get("closed_at") and prior.get("additions") is not None:
             out.append(project_pr(pr, prior, [{"filename": f} for f in prior.get("files", [])]))
             continue
-        detail = gh_api(repo, f"/pulls/{pr['number']}", paginate=False)
-        files = gh_api(repo, f"/pulls/{pr['number']}/files", {"per_page": "100"})
+        detail_path = f"/pulls/{pr['number']}"
+        try:
+            detail = gh_api(repo, detail_path, paginate=False)
+        except GhApiError as exc:
+            raise DetailFetchError("pull_requests", pr["number"], detail_path, str(exc)) from exc
+        files_path = f"/pulls/{pr['number']}/files"
+        try:
+            files = gh_api(repo, files_path, {"per_page": "100"})
+        except GhApiError as exc:
+            raise DetailFetchError("pull_requests", pr["number"], files_path, str(exc)) from exc
         out.append(project_pr(pr, detail, files))
     return out
 
@@ -200,7 +233,11 @@ def fetch_issues(repo: str, sidecar: Sidecar, opts) -> list[dict]:
         if prior and prior.get("updated_at") == issue.get("updated_at"):
             out.append(dict(prior, labels=[l.get("name") for l in (issue.get("labels") or [])]))
             continue
-        timeline = gh_api(repo, f"/issues/{issue['number']}/timeline", {"per_page": "100"})
+        timeline_path = f"/issues/{issue['number']}/timeline"
+        try:
+            timeline = gh_api(repo, timeline_path, {"per_page": "100"})
+        except GhApiError as exc:
+            raise DetailFetchError("issues", issue["number"], timeline_path, str(exc)) from exc
         out.append(project_issue(issue, timeline))
     return out
 
@@ -236,6 +273,12 @@ def collect_kind(kind: str, repo: str, out_dir: Path, opts) -> dict:
     envelope = {"kind": kind, "fetched_at": fetched_at, "repo": repo, "status": "ok", "detail": None, "records": []}
     try:
         envelope["records"] = KINDS[kind](repo, sidecar, opts)
+    except DetailFetchError as exc:
+        # A per-record detail call failed, not the listing call: never
+        # not_permitted/disabled — those describe the whole kind being
+        # gated, which this isn't.
+        envelope["status"] = "error"
+        envelope["detail"] = str(exc)[:200]
     except GhApiError as exc:
         envelope["status"] = {403: "not_permitted", 404: "disabled"}.get(exc.status, "error")
         envelope["detail"] = str(exc).splitlines()[0][:200]
