@@ -31,15 +31,19 @@ def snapshot_series(rows: list[SnapshotRow], ptr: str) -> list[tuple[dt.datetime
 
 
 def forward_fill(points: list[tuple[dt.datetime, float]], dates: list[dt.date]) -> list[float | None]:
-    """The last value at or before each day's end (23:59:59 UTC), `None`
-    before the first point. `points` need not be pre-sorted."""
+    """The last value at or before each day's end, `None` before the first
+    point. `points` need not be pre-sorted. A day is the half-open interval
+    `[day 00:00Z, day+1 00:00Z)` rather than closing at `23:59:59` — a
+    snapshot timestamp carries microseconds (e.g. `23:59:59.5Z`), and a
+    literal `23:59:59` boundary would push such a point into the next day,
+    dropping it entirely when that day is outside the requested range."""
     pts = sorted(points, key=lambda p: p[0])
     out: list[float | None] = []
     i = 0
     last: float | None = None
     for day in dates:
-        end = dt.datetime.combine(day, dt.time(23, 59, 59), tzinfo=UTC)
-        while i < len(pts) and pts[i][0] <= end:
+        next_day_start = dt.datetime.combine(day + dt.timedelta(days=1), dt.time.min, tzinfo=UTC)
+        while i < len(pts) and pts[i][0] < next_day_start:
             last = pts[i][1]
             i += 1
         out.append(last)
@@ -99,10 +103,15 @@ def is_stale(last_real: dt.datetime | None, today: dt.date, max_age_days: int = 
     return (today - last_real.date()).days > max_age_days
 
 
-def snapshot_is_stale(latest_row_sha: str | None, head_sha: str) -> bool:
+def snapshot_is_stale(latest_row_sha: str | None, head_sha: str | None) -> bool:
     """Freshness for SNAPSHOT families (R26): a row exists for the current
     first-parent HEAD of main. Snapshot rows are keyed by commit sha, not
     by calendar date, so `is_stale`'s age rule would wrongly flag a healthy
-    but quiet pipeline as stale. Fresh iff the latest row's sha is exactly
-    the current HEAD sha; `None` (no rows at all) is always stale."""
+    but quiet pipeline as stale. Fresh iff both `latest_row_sha` and
+    `head_sha` are non-empty full 40-character commit SHAs and are exactly
+    equal; anything else — no rows at all, no resolvable HEAD, or a mismatch
+    — is stale. Guards against `None == None`/`"" == ""` reading as a match
+    when either side genuinely has no sha to compare."""
+    if not latest_row_sha or not head_sha:
+        return True
     return latest_row_sha != head_sha

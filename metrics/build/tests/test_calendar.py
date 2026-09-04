@@ -39,6 +39,13 @@ class CalendarTests(unittest.TestCase):
         pts = [(ts("2026-08-22T23:00"), 2.0), (ts("2026-08-20T10:00"), 1.0)]
         self.assertEqual(forward_fill(pts, daily_dates(D(2026, 8, 19), D(2026, 8, 23))), [None, 1.0, 1.0, 2.0, 2.0])
 
+    def test_forward_fill_last_moment_of_day_counts_for_that_day(self):
+        # A point at 23:59:59.5Z (snapshot timestamps carry microseconds) is
+        # still within that calendar day, not pushed into the next one — the
+        # day boundary is half-open [day 00:00Z, day+1 00:00Z).
+        pts = [(dt.datetime(2026, 8, 20, 23, 59, 59, 500000, tzinfo=UTC), 5.0)]
+        self.assertEqual(forward_fill(pts, daily_dates(D(2026, 8, 19), D(2026, 8, 20))), [None, 5.0])
+
     def test_status_rule(self):
         self.assertEqual(status("down", 0, 0, 3, False), "good")        # at target
         self.assertEqual(status("down", 0, 2, 3, False), "good")        # moving toward
@@ -75,6 +82,14 @@ class CalendarTests(unittest.TestCase):
 
     def test_snapshot_is_stale_no_rows(self):
         self.assertTrue(snapshot_is_stale(None, "a" * 40))
+
+    def test_snapshot_is_stale_both_none_is_stale(self):
+        # Neither a row nor a resolvable HEAD sha exists to compare — must
+        # not fall through to `None == None` and read as "fresh".
+        self.assertTrue(snapshot_is_stale(None, None))
+
+    def test_snapshot_is_stale_empty_head_is_stale(self):
+        self.assertTrue(snapshot_is_stale("a" * 40, ""))
 
 
 if __name__ == "__main__":
