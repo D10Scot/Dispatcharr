@@ -30,17 +30,20 @@ from supervisor.options import ServerOptions
 
 EXPECTED = {
     "all.conf": [
-        "postgres", "redis", "api-uwsgi", "daphne",
+        "postgres", "redis", "api-uwsgi", "relay-uwsgi", "daphne",
         "celery-default", "celery-dvr", "celery-beat", "nginx",
     ],
     "all-dev.conf": [
-        "postgres", "redis-dev", "api-uwsgi", "daphne",
+        "postgres", "redis-dev", "api-uwsgi", "relay-uwsgi", "daphne",
         "celery-default", "celery-dvr", "celery-beat", "vite",
     ],
     "api.conf": ["api-uwsgi", "daphne", "nginx"],
     "worker.conf": ["celery-default", "celery-dvr", "celery-beat"],
-    # PR 4 adds relay-uwsgi.conf; the glob matches nothing until then.
-    "relay.conf": [],
+    # relay.conf's [include] is a glob (relay-*.conf); PR 4 is what
+    # first populates it, with relay-uwsgi (D14 — the relay role runs
+    # no nginx, so this program is and stays the only one this rung
+    # includes).
+    "relay.conf": ["relay-uwsgi"],
 }
 
 FAKE_ENV = {
