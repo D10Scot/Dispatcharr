@@ -13,7 +13,8 @@ from apps.channels.models import Channel, ChannelStream, Stream
 from apps.m3u.models import M3UAccount
 from apps.timeshift import sessions, views
 from apps.timeshift.redis_keys import TimeshiftRedisKeys
-from apps.timeshift.tests.test_views import _proxy_url
+from apps.timeshift.tests.test_views import _authorized, _proxy_url
+from apps.proxy.authorize import SURFACE_CATCHUP, AuthorizeDenied
 from rest_framework.test import APIRequestFactory, force_authenticate
 
 
@@ -449,14 +450,20 @@ class CatchupProxySessionAuthTests(TestCase):
         self.channel_uuid = uuid.uuid4()
 
     @patch.object(views, "resolve_catchup_playback")
-    @patch.object(views, "network_access_allowed", return_value=True)
+    @patch.object(views, "resolve_authorization")
     @patch.object(views, "_serve_catchup", return_value=HttpResponse("ok"))
-    @patch.object(views, "_user_can_access_channel", return_value=True)
     @patch.object(views, "Channel")
     def test_session_auth_without_jwt(
-        self, channel_cls, _access, serve, _net, resolve_mock,
+        self, channel_cls, serve, authorize_mock, resolve_mock,
     ):
+        # The session -> principal resolution this used to do inline now
+        # happens inside the hop (apps/proxy/authorize.py's
+        # _catchup_session_user); this mocks the hop's answer directly
+        # rather than views.resolve_catchup_playback, which the hop does not
+        # call (it imports its own copy). The view's own
+        # resolve_catchup_playback call below still binds the timestamp.
         user = MagicMock(id=42, is_authenticated=False)
+        authorize_mock.return_value = _authorized(user, surface=SURFACE_CATCHUP)
         resolve_mock.return_value = (user, "2026-06-08T17:00:00Z", None)
         channel_cls.objects.get.return_value = MagicMock(
             id=8, uuid=self.channel_uuid,
@@ -470,19 +477,24 @@ class CatchupProxySessionAuthTests(TestCase):
         _args, kwargs = serve.call_args
         self.assertEqual(_args[3], "2026-06-08T17:00:00Z")
 
-    @patch.object(views, "resolve_catchup_playback", return_value=None)
-    @patch.object(views, "network_access_allowed", return_value=True)
-    def test_expired_session_without_jwt_returns_401(self, _net, _resolve):
+    @patch.object(
+        views, "resolve_authorization",
+        side_effect=AuthorizeDenied(401, "Authentication required"),
+    )
+    def test_expired_session_without_jwt_returns_401(self, _authorize):
         request = self.factory.get(
             f"/proxy/catchup/{self.channel_uuid}?session_id=gone",
         )
         response = views.catchup_proxy(request, self.channel_uuid)
         self.assertEqual(response.status_code, 401)
 
-    @patch.object(views, "resolve_catchup_playback")
-    @patch.object(views, "network_access_allowed", return_value=True)
-    def test_mismatched_jwt_and_session_returns_403(self, _net, resolve_mock):
-        resolve_mock.return_value = (MagicMock(id=1), "2026-06-08T17:00:00Z", None)
+    @patch.object(
+        views, "resolve_authorization",
+        side_effect=AuthorizeDenied(403, "Access denied"),
+    )
+    def test_mismatched_jwt_and_session_returns_403(self, _authorize):
+        # A credentialed user driving someone else's session is now caught
+        # inside the hop's own principal resolution.
         request = self.factory.get(
             f"/proxy/catchup/{self.channel_uuid}?session_id=test",
         )
@@ -491,12 +503,12 @@ class CatchupProxySessionAuthTests(TestCase):
         response = views.catchup_proxy(request, self.channel_uuid)
         self.assertEqual(response.status_code, 403)
 
-    @patch.object(views, "network_access_allowed", return_value=True)
+    @patch.object(views, "resolve_authorization")
     @patch.object(views, "_serve_catchup", return_value=HttpResponse("ok"))
-    @patch.object(views, "_user_can_access_channel", return_value=True)
     @patch.object(views, "Channel")
-    def test_legacy_jwt_start_still_works(self, channel_cls, _access, serve, _net):
+    def test_legacy_jwt_start_still_works(self, channel_cls, serve, authorize_mock):
         user = MagicMock(id=1, is_authenticated=True)
+        authorize_mock.return_value = _authorized(user, surface=SURFACE_CATCHUP)
         channel_cls.objects.get.return_value = MagicMock(
             id=8, uuid=self.channel_uuid,
         )
@@ -510,10 +522,8 @@ class CatchupProxySessionAuthTests(TestCase):
 
     def test_xc_path_unchanged(self):
         request = self.factory.get(_proxy_url())
-        with patch.object(views, "_authenticate_user", return_value=MagicMock(id=1)), \
-             patch.object(views, "network_access_allowed", return_value=True), \
+        with patch.object(views, "resolve_authorization", return_value=_authorized(MagicMock(id=1))), \
              patch.object(views, "Channel") as channel_cls, \
-             patch.object(views, "_user_can_access_channel", return_value=True), \
              patch.object(views, "_serve_catchup", return_value=HttpResponse("ok")) as serve:
             channel_cls.objects.get.return_value = MagicMock(id=8)
             response = views.timeshift_proxy(

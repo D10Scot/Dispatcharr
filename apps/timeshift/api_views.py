@@ -11,6 +11,7 @@ from apps.channels.models import Channel
 from apps.channels.utils import get_channel_catchup_streams, is_catchup_enabled
 from core.utils import RedisClient
 from dispatcharr.utils import network_access_allowed
+from apps.proxy.authorize import user_can_access_channel
 
 from .helpers import MAX_DURATION_MINUTES, parse_catchup_timestamp
 from .sessions import (
@@ -21,7 +22,7 @@ from .sessions import (
     user_owns_catchup_session,
 )
 from .stats import update_catchup_session_position
-from .views import _trigger_timeshift_stats_update, _user_can_access_channel
+from .views import _trigger_timeshift_stats_update
 
 # Programme length cap expressed in seconds for position reports.
 _MAX_POSITION_SECS = MAX_DURATION_MINUTES * 60
@@ -135,7 +136,7 @@ class CatchupSessionCreateAPIView(APIView):
         except Channel.DoesNotExist:
             raise Http404("Channel not found") from None
 
-        if not _user_can_access_channel(user, channel):
+        if not user_can_access_channel(user, channel):
             return Response({"error": "Access denied"}, status=status.HTTP_403_FORBIDDEN)
 
         if not channel.is_catchup:

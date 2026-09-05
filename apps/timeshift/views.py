@@ -58,7 +58,8 @@ from apps.proxy.utils import (
     get_user_active_connections,
 )
 from core.utils import RedisClient, _is_gevent_monkey_patched, dispatcharr_user_agent
-from dispatcharr.utils import network_access_allowed
+from apps.proxy.authorize import SURFACE_CATCHUP, SURFACE_CATCHUP_XC, AuthorizeDenied
+from apps.proxy.authorize_views import authorize_error_response, resolve_authorization
 
 from .helpers import (
     TimeshiftCredentials,
@@ -159,21 +160,23 @@ def _timeshift_proxy_impl(
 ):
     raw_id = channel_id[:-3] if channel_id.endswith(".ts") else channel_id
 
-    user = _authenticate_user(username, password)
-    if user is None:
-        return _finalize_timeshift_response(HttpResponseForbidden("Invalid credentials"))
+    try:
+        decision = resolve_authorization(
+            request,
+            SURFACE_CATCHUP_XC,
+            identifier=raw_id,
+            username=username,
+            password=password,
+        )
+    except AuthorizeDenied as exc:
+        return _finalize_timeshift_response(authorize_error_response(exc))
 
-    if not network_access_allowed(request, "XC_API", user):
-        return _finalize_timeshift_response(HttpResponseForbidden("Access denied"))
-
+    user = decision.user
     try:
         channel = Channel.objects.get(id=int(raw_id))
     except (Channel.DoesNotExist, ValueError, TypeError):
         close_old_connections()
         raise Http404("Channel not found") from None
-
-    if not _user_can_access_channel(user, channel):
-        return _finalize_timeshift_response(HttpResponseForbidden("Access denied"))
 
     return _serve_catchup(
         request, user, channel, timestamp,
@@ -282,55 +285,37 @@ def _timeshift_proxy_impl(
 @permission_classes([AllowAny])
 def catchup_proxy(request, channel_id):
     """Native API catch-up playback for a channel."""
-    if not network_access_allowed(request, "STREAMS"):
-        return _finalize_timeshift_response(
-            JsonResponse({"error": "Forbidden"}, status=403)
-        )
-
-    auth_user = (
-        request.user
-        if getattr(request, "user", None) and request.user.is_authenticated
-        else None
-    )
-
     session_id = request.GET.get("session_id")
     timestamp = request.GET.get("start")
-    user = auth_user
     # Direct-auth clients may pass ?duration=; API sessions store their own.
     client_duration_hint = request.GET.get("duration")
 
+    try:
+        decision = resolve_authorization(
+            request, SURFACE_CATCHUP, identifier=str(channel_id), session_id=session_id,
+        )
+    except AuthorizeDenied as exc:
+        return _finalize_timeshift_response(authorize_error_response(exc))
+
+    user = decision.user
+
     if session_id:
+        # The hop resolved the principal from this same session; what the
+        # view still needs from it is the bound programme start and length,
+        # which are not authorization. resolve_catchup_playback's TTL touch
+        # is idempotent, so running it twice costs one Redis write.
         resolved = resolve_catchup_playback(session_id, channel_id)
-        if resolved is None:
-            if auth_user is None:
-                return _finalize_timeshift_response(
-                    JsonResponse(
-                        {"error": "Invalid or expired playback session"},
-                        status=401,
-                    )
-                )
-        else:
-            session_user, bound_start, bound_duration = resolved
-            if auth_user is not None and auth_user.id != session_user.id:
-                return _finalize_timeshift_response(HttpResponseForbidden("Access denied"))
-            user = session_user
+        if resolved is not None:
+            _session_user, bound_start, bound_duration = resolved
             timestamp = bound_start
             if bound_duration is not None:
                 client_duration_hint = bound_duration
-
-    if user is None:
-        return _finalize_timeshift_response(
-            JsonResponse({"error": "Authentication required"}, status=401)
-        )
 
     try:
         channel = Channel.objects.get(uuid=channel_id)
     except Channel.DoesNotExist:
         close_old_connections()
         raise Http404("Channel not found") from None
-
-    if not _user_can_access_channel(user, channel):
-        return _finalize_timeshift_response(HttpResponseForbidden("Access denied"))
 
     if not timestamp:
         return _finalize_timeshift_response(HttpResponseBadRequest("Missing start parameter"))
@@ -752,37 +737,6 @@ def _serve_catchup(request, user, channel, timestamp, client_duration_hint=None)
         )
     return _finalize_timeshift_response(
         HttpResponseBadRequest("Cannot build timeshift URL")
-    )
-
-
-def _authenticate_user(username, password):
-    try:
-        user = User.objects.get(username=username)
-    except User.DoesNotExist:
-        return None
-    expected = (user.custom_properties or {}).get("xc_password")
-    if not expected:
-        return None
-    if not hmac.compare_digest(str(expected), str(password)):
-        return None
-    return user
-
-
-def _user_can_access_channel(user, channel):
-    if user.user_level < channel.user_level:
-        return False
-    if user.user_level >= User.UserLevel.ADMIN:
-        return True
-    profile_count = user.channel_profiles.count()
-    if profile_count == 0:
-        return True
-    return (
-        type(channel).objects.filter(
-            id=channel.id,
-            channelprofilemembership__enabled=True,
-            channelprofilemembership__channel_profile__in=user.channel_profiles.all(),
-        )
-        .exists()
     )
 
 
@@ -2688,7 +2642,8 @@ def _attempt_timeshift_stream(
     stats_channel_id = make_stats_channel_id(channel.id, client_id)
 
     if debug:
-        logger.debug(
+        logger.debug(  # credential-logging: ignore - `final_url` here is a truthiness
+            # check ("cached" vs "portal"), not the URL value; no URL is logged.
             "Timeshift attempt: channel=%s ts=%s (provider tz=%s -> %s) "
             "account=%s profile=%s provider_sid=%s vid=%s client=%s range=%s "
             "cdn=%s",
@@ -3248,13 +3203,15 @@ def _stream_from_provider(
             )
         except requests.exceptions.RequestException as exc:
             if cached_final:
-                logger.warning(
+                logger.warning(  # credential-logging: ignore - already redacted by
+                    # the local _redact_url() helper (:3621), not redact_url().
                     "Timeshift cached CDN unreachable (%s): %s; falling back to portal",
                     _redact_url(url), type(exc).__name__,
                 )
                 _clear_pool_final_url(redis_client, pool_session_id)
                 continue
-            logger.error(
+            logger.error(  # credential-logging: ignore - already redacted by
+                # the local _redact_url() helper (:3621), not redact_url().
                 "Timeshift provider unreachable (%s): %s",
                 _redact_url(url), type(exc).__name__,
             )
@@ -3265,7 +3222,8 @@ def _stream_from_provider(
         last_url = getattr(response, "url", None) or url
         cascade_label = "cdn" if cached_final else (orig_idx if orig_idx is not None else "?")
         if debug:
-            logger.debug(
+            logger.debug(  # credential-logging: ignore - already redacted by
+                # the local _redact_url() helper (:3621), not redact_url().
                 "Timeshift cascade[%s]: status=%d type=%s url=%s",
                 cascade_label, response.status_code,
                 response.headers.get("Content-Type", "?"),
@@ -3298,7 +3256,8 @@ def _stream_from_provider(
                 used_cached_final = cached_final
                 break
             snippet = peek[:200].decode("utf-8", errors="replace") if peek else "(empty)"
-            logger.warning(
+            logger.warning(  # credential-logging: ignore - already redacted by
+                # the local _redact_url() helper (:3621), not redact_url().
                 "Timeshift upstream returned %d but no TS sync in first %d "
                 "bytes (likely PHP error): %s, url=%s",
                 response.status_code,
@@ -3330,8 +3289,10 @@ def _stream_from_provider(
         _set_cached_format_index(account_id, winning_index)
 
     if upstream is None:
-        logger.error("Timeshift upstream rejected: status=%s url=%s",
-                     last_status, _redact_url(last_url))
+        logger.error(  # credential-logging: ignore - already redacted by
+            # the local _redact_url() helper (:3621), not redact_url().
+            "Timeshift upstream rejected: status=%s url=%s",
+            last_status, _redact_url(last_url))
         # Map 404/403 to meaningful client responses; other failures stay 400.
         if last_status == 404:
             failure = HttpResponseNotFound("Catch-up not available yet")

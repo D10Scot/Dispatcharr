@@ -13,6 +13,7 @@ from apps.timeshift.helpers import (
     client_timeshift_url_layout,
 )
 from apps.timeshift.tests.test_views import (
+    _authorized,
     _FakeRedis,
     _make_catchup_stream,
     _proxy_url,
@@ -80,13 +81,10 @@ class CatchupRedirectViewTests(SimpleTestCase):
         channel_cls = stack.enter_context(patch.object(views, "Channel"))
         redis_cls = stack.enter_context(patch.object(views, "RedisClient"))
         stack.enter_context(
-            patch.object(views, "_authenticate_user", return_value=MagicMock(id=1))
-        )
-        stack.enter_context(
-            patch.object(views, "network_access_allowed", return_value=True)
-        )
-        stack.enter_context(
-            patch.object(views, "_user_can_access_channel", return_value=True)
+            patch.object(
+                views, "resolve_authorization",
+                return_value=_authorized(MagicMock(id=1)),
+            )
         )
         stack.enter_context(
             patch.object(views, "get_channel_catchup_streams", return_value=[stream])
