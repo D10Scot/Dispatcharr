@@ -3,9 +3,11 @@
  * assert afterwards.
  *
  * Postgres-backed rows only. Redis is excluded by construction rather than by
- * preference: AIO configures no persistence and `scripts/wait_for_redis.py`
- * calls `flushdb()` on every boot, so a Redis-backed persistence assertion
- * would be asserting a falsehood (spec D11).
+ * preference: AIO runs Redis non-persistent (`--save "" --appendonly no`), so
+ * it starts empty on every boot and a Redis-backed persistence assertion
+ * would be asserting a falsehood (spec D11). Nothing flushes it any more —
+ * `scripts/wait_for_redis.py` is wait-only — but the observable outcome for
+ * this file is the same.
  *
  * Every assertion is by id against a value recorded at creation. No counts, no
  * unfiltered lists — the roadmap's rule 4, and here it is also the only shape

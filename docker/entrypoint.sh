@@ -2,68 +2,6 @@
 
 set -e  # Exit immediately if a command exits with a non-zero status
 
-# Guard flag to prevent cleanup running twice (trap + explicit call)
-_cleanup_done=false
-
-# Function to clean up only running processes
-cleanup() {
-    if $_cleanup_done; then return; fi
-    _cleanup_done=true
-    set +e  # Disable exit-on-error so cleanup always runs fully
-    echo "🔥 Cleanup triggered! Stopping services..."
-
-    # Explicitly stop uwsgi workers - children of 'su' wrapper, not tracked in pids[]
-    echo "⛔ Stopping uwsgi workers..."
-    pkill -TERM -f uwsgi 2>/dev/null || true
-
-    # Stop celery, daphne, redis - also not tracked in pids[]
-    echo "⛔ Stopping celery, daphne, redis..."
-    pkill -TERM -f "celery" 2>/dev/null || true
-    pkill -TERM -f "daphne" 2>/dev/null || true
-    pkill -TERM -f "redis-server" 2>/dev/null || true
-
-    # Stop tracked processes (postgres, nginx, su/uwsgi wrapper)
-    for pid in "${pids[@]}"; do
-        if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
-            echo "⛔ Stopping process (PID: $pid)..."
-            kill -TERM "$pid" 2>/dev/null
-        else
-            echo "✅ Process (PID: $pid) already stopped."
-        fi
-    done
-
-    # Wait up to 8 s for graceful shutdown, exit early once all are gone
-    # (leaves headroom within Docker's default 10 s stop_grace_period)
-    _shutdown_timeout=8
-    _shutdown_elapsed=0
-    while [ "$_shutdown_elapsed" -lt "$_shutdown_timeout" ]; do
-        pgrep -f "uwsgi|celery|daphne|redis-server|postgres" >/dev/null 2>&1 || break
-        sleep 1
-        _shutdown_elapsed=$((_shutdown_elapsed + 1))
-    done
-
-    # Force kill anything still lingering
-    pkill -KILL -f uwsgi 2>/dev/null || true
-    pkill -KILL -f "celery" 2>/dev/null || true
-    pkill -KILL -f "daphne" 2>/dev/null || true
-    pkill -KILL -f "redis-server" 2>/dev/null || true
-    # Use pg_ctl immediate stop rather than SIGKILL. Avoids data corruption
-    # while still forcing a fast exit (crash recovery runs on next startup)
-    if pgrep -f "postgres" >/dev/null 2>&1; then
-        su - "$POSTGRES_USER" -c "$PG_BINDIR/pg_ctl -D ${POSTGRES_DIR} stop -m immediate" 2>/dev/null || true
-    fi
-
-    wait
-    echo "✅ All processes stopped cleanly."
-}
-
-# Catch termination signals (CTRL+C, Docker Stop, etc.)
-trap cleanup TERM INT
-
-# Initialize an array to store PIDs and a map of PID->name
-pids=()
-declare -A pid_names
-
 # Function to echo with timestamp
 echo_with_timestamp() {
     echo "$(date '+%Y-%m-%d %H:%M:%S') - $1"
@@ -81,6 +19,68 @@ else
     export POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-secret}"
 fi
 export DISPATCHARR_ENV=${DISPATCHARR_ENV:-aio}
+
+# DISPATCHARR_ROLE selects which supervisord programs this container runs.
+# It is orthogonal to DISPATCHARR_ENV, which answers where Postgres and
+# Redis run — but the impossible pairings are rejected rather than left to
+# fail later as a FATAL program or a five-minute wait loop:
+#   * role all runs its own Postgres and Redis, so it cannot be modular;
+#   * roles api, relay and worker have neither, so they cannot be anything
+#     else. A non-modular worker would sit in the migrate --check loop
+#     below until MIG_TIMEOUT against a database nothing was going to
+#     start.
+# Every deployment that predates this variable sets only DISPATCHARR_ENV,
+# so the default is derived from it: modular means api, anything else means
+# all. Without that derivation an existing modular web container would load
+# all.conf and its [program:postgres] would fail against an uninitialised
+# /data/db forever.
+if [ -z "${DISPATCHARR_ROLE:-}" ]; then
+    if [ "$DISPATCHARR_ENV" = "modular" ]; then
+        DISPATCHARR_ROLE=api
+    else
+        DISPATCHARR_ROLE=all
+    fi
+fi
+export DISPATCHARR_ROLE
+case "$DISPATCHARR_ROLE" in
+    all|api|relay|worker) ;;
+    *)
+        echo ""
+        echo "================================================================"
+        echo "ERROR: DISPATCHARR_ROLE must be one of: all, api, relay, worker."
+        echo "  DISPATCHARR_ROLE=$DISPATCHARR_ROLE"
+        echo "================================================================"
+        echo ""
+        exit 1
+        ;;
+esac
+if [ "$DISPATCHARR_ROLE" = "all" ] && [ "$DISPATCHARR_ENV" = "modular" ]; then
+    echo ""
+    echo "================================================================"
+    echo "ERROR: DISPATCHARR_ROLE=all runs its own PostgreSQL and Redis and"
+    echo "  cannot be combined with DISPATCHARR_ENV=modular."
+    echo "  Use DISPATCHARR_ROLE=api (the default in modular mode)."
+    echo "================================================================"
+    echo ""
+    exit 1
+fi
+case "$DISPATCHARR_ROLE" in
+    api|relay|worker)
+        if [ "$DISPATCHARR_ENV" != "modular" ]; then
+            echo ""
+            echo "================================================================"
+            echo "ERROR: DISPATCHARR_ROLE=$DISPATCHARR_ROLE expects external"
+            echo "  PostgreSQL and Redis, and therefore DISPATCHARR_ENV=modular."
+            echo "  DISPATCHARR_ENV=$DISPATCHARR_ENV"
+            echo "  Use DISPATCHARR_ROLE=all for a self-contained container."
+            echo "================================================================"
+            echo ""
+            exit 1
+        fi
+        ;;
+esac
+echo "🎛️  DISPATCHARR_ROLE=$DISPATCHARR_ROLE (DISPATCHARR_ENV=$DISPATCHARR_ENV)"
+
 if [[ "$DISPATCHARR_ENV" == "aio" ]]; then
     # Use Unix socket for loopback values (unset, localhost, 127.0.0.1)
     if [[ -z "$POSTGRES_HOST" || "$POSTGRES_HOST" == "localhost" || "$POSTGRES_HOST" == "127.0.0.1" ]]; then
@@ -101,31 +101,74 @@ export DISPATCHARR_PORT=${DISPATCHARR_PORT:-9191}
 export LIBVA_DRIVERS_PATH='/usr/local/lib/x86_64-linux-gnu/dri'
 export LD_LIBRARY_PATH='/usr/local/lib'
 export SECRET_FILE="/data/jwt"
-# Ensure Django secret key exists or generate a new one
-if [ ! -f "$SECRET_FILE" ]; then
-  echo "Generating new Django secret key..."
-  old_umask=$(umask)
-  umask 077
-  tmpfile="$(mktemp "${SECRET_FILE}.XXXXXX")" || { echo "mktemp failed"; exit 1; }
-  python3 - <<'PY' >"$tmpfile" || { echo "secret generation failed"; rm -f "$tmpfile"; exit 1; }
+
+if [[ "$DISPATCHARR_ROLE" == "all" || "$DISPATCHARR_ROLE" == "api" ]]; then
+    # Ensure Django secret key exists or generate a new one
+    if [ ! -f "$SECRET_FILE" ]; then
+      echo "Generating new Django secret key..."
+      old_umask=$(umask)
+      umask 077
+      tmpfile="$(mktemp "${SECRET_FILE}.XXXXXX")" || { echo "mktemp failed"; exit 1; }
+      python3 - <<'PY' >"$tmpfile" || { echo "secret generation failed"; rm -f "$tmpfile"; exit 1; }
 import secrets
 print(secrets.token_urlsafe(64))
 PY
-  mv -f "$tmpfile" "$SECRET_FILE" || { echo "move failed"; rm -f "$tmpfile"; exit 1; }
-  umask $old_umask
+      mv -f "$tmpfile" "$SECRET_FILE" || { echo "move failed"; rm -f "$tmpfile"; exit 1; }
+      umask $old_umask
+    fi
+else
+    # relay and worker never generate the key: they mount the same /data
+    # volume as the all/api container, and two roles racing to create
+    # /data/jwt on first boot would leave one writer's key overwritten and
+    # every internal HMAC comparison 403ing. Lifted from the deleted
+    # docker/entrypoint.celery.sh:12-24.
+    echo 'Waiting for Django secret key...'
+    JWT_TIMEOUT=120
+    JWT_WAITED=0
+    while [ ! -f "$SECRET_FILE" ]; do
+        if [ "$JWT_WAITED" -ge "$JWT_TIMEOUT" ]; then
+            echo "❌ ERROR: Timed out waiting for ${SECRET_FILE} after ${JWT_TIMEOUT}s."
+            echo "   Is the api/all container running? Does it have the /data volume mounted?"
+            exit 1
+        fi
+        sleep 1
+        JWT_WAITED=$((JWT_WAITED + 1))
+    done
 fi
 export DJANGO_SECRET_KEY="$(tr -d '\r\n' < "$SECRET_FILE")"
 
 # Process priority configuration
 # UWSGI_NICE_LEVEL: Absolute nice value for uWSGI/streaming (default: 0 = normal priority)
 # CELERY_NICE_LEVEL: Absolute nice value for Celery/background tasks (default: 5 = low priority)
-# Note: The script will automatically calculate the relative offset for Celery since it's spawned by uWSGI
+# Both are absolute now. Before supervisord, Celery was an attach-daemon of
+# an already-niced uWSGI, so the entrypoint subtracted UWSGI_NICE_LEVEL to
+# reach the intended absolute value. Under supervisord every program is a
+# direct child of supervisord at nice 0, so the subtraction would land
+# Celery at the wrong priority at any non-zero UWSGI_NICE_LEVEL.
+# Negative values still need cap_add: SYS_NICE, which is why the programs
+# run `nice` as root and drop privileges afterwards with setpriv rather
+# than using supervisord's own user=.
 export UWSGI_NICE_LEVEL=${UWSGI_NICE_LEVEL:-0}
-CELERY_NICE_ABSOLUTE=${CELERY_NICE_LEVEL:-5}
+export CELERY_NICE_LEVEL=${CELERY_NICE_LEVEL:-5}
 
-# Calculate relative nice value for Celery (since nice is relative to parent process)
-# Celery is spawned by uWSGI, so we need to add the offset to reach the desired absolute value
-export CELERY_NICE_LEVEL=$((CELERY_NICE_ABSOLUTE - UWSGI_NICE_LEVEL))
+# Who Celery runs as, and how loudly — both per role, both preserving what
+# the deployment did before supervisord.
+#   * AIO's Celery was an attach-daemon of a uWSGI started under `su -`,
+#     so it ran as $POSTGRES_USER, and it carried no -l, so celery's own
+#     default of WARNING applied.
+#   * entrypoint.celery.sh never used `su -`, so modular Celery ran as
+#     root, and it passed -l info on all three commands.
+# Dropping the worker to $POSTGRES_USER needs a one-time recursive chown of
+# /data/recordings, /data/m3us, /data/epgs, /data/uploads and /data/plugins
+# — 03-init-dispatcharr.sh's chown is non-recursive — so it is a follow-up,
+# not this PR.
+if [ "$DISPATCHARR_ROLE" = "worker" ]; then
+    export DISPATCHARR_CELERY_USER="${DISPATCHARR_CELERY_USER:-root}"
+    export CELERY_LOG_LEVEL="${CELERY_LOG_LEVEL:-info}"
+else
+    export DISPATCHARR_CELERY_USER="${DISPATCHARR_CELERY_USER:-$POSTGRES_USER}"
+    export CELERY_LOG_LEVEL="${CELERY_LOG_LEVEL:-warning}"
+fi
 
 # Set LIBVA_DRIVER_NAME if user has specified it
 if [ -v LIBVA_DRIVER_NAME ]; then
@@ -150,8 +193,30 @@ DISPATCHARR_LOG_LEVEL=${DISPATCHARR_LOG_LEVEL^^}
 
 echo "Environment DISPATCHARR_LOG_LEVEL set to: '${DISPATCHARR_LOG_LEVEL}'"
 
-# Also make the log level available in /etc/environment for all login shells
-#grep -q "DISPATCHARR_LOG_LEVEL" /etc/environment || echo "DISPATCHARR_LOG_LEVEL=${DISPATCHARR_LOG_LEVEL}" >> /etc/environment
+# Select the uwsgi ini that [program:api-uwsgi] will load, and the extra
+# args that go with it. Unconditional, in every role: an unset %(ENV_x)s is
+# a hard supervisord config error, not an empty expansion, and it is
+# cheaper to always export these two than to reason about which rungs
+# include api-uwsgi. Same ladder, same order, as the pre-supervisord
+# entrypoint used at :332-353.
+if [ "$DISPATCHARR_ENV" = "dev" ] && [ "$DISPATCHARR_DEBUG" != "true" ]; then
+    export DISPATCHARR_UWSGI_INI="/app/docker/uwsgi.dev.ini"
+elif [ "$DISPATCHARR_DEBUG" = "true" ]; then
+    export DISPATCHARR_UWSGI_INI="/app/docker/uwsgi.debug.ini"
+elif [ "$DISPATCHARR_ENV" = "modular" ]; then
+    export DISPATCHARR_UWSGI_INI="/app/docker/uwsgi.modular.ini"
+else
+    export DISPATCHARR_UWSGI_INI="/app/docker/uwsgi.ini"
+fi
+# uWSGI's own per-request access log, independent of Django's logging.
+# Suppressed outside debug mode; debug.ini needs it to see request timing
+# while attached. api-uwsgi.conf is one file shared by every rung that runs
+# it, so the flag travels as an env var rather than being baked in.
+if [ "$DISPATCHARR_DEBUG" != "true" ]; then
+    export DISPATCHARR_UWSGI_EXTRA_ARGS="--disable-logging"
+else
+    export DISPATCHARR_UWSGI_EXTRA_ARGS=""
+fi
 
 # Translate Dispatcharr POSTGRES_SSL_* env vars into libpq-recognized PGSSL*
 # env vars. Called once before any external PostgreSQL connection; all child
@@ -170,6 +235,23 @@ setup_pg_ssl_env() {
 # READ-ONLY - don't let users change these
 export POSTGRES_DIR=/data/db
 
+# Run init scripts. User setup runs before the environment files are
+# written, so DISPATCHARR_HOME can be read back from the passwd database
+# this script has just reconciled with PUID/PGID.
+echo "Starting user setup..."
+. /app/docker/init/01-user-setup.sh
+
+# supervisord gives a child no login shell, so nothing sets HOME and USER
+# the way `su -` did: without these, every non-root program would inherit
+# HOME=/root and fail or litter (npm's cache, Celery's, psql's history).
+# Read from getent rather than assumed, because 01-user-setup.sh may have
+# renamed a pre-existing account at this PUID rather than creating one.
+_dispatcharr_home=$(getent passwd "$POSTGRES_USER" | cut -d: -f6)
+export DISPATCHARR_HOME="${_dispatcharr_home:-/home/$POSTGRES_USER}"
+_dispatcharr_celery_home=$(getent passwd "$DISPATCHARR_CELERY_USER" | cut -d: -f6)
+export DISPATCHARR_CELERY_HOME="${_dispatcharr_celery_home:-$DISPATCHARR_HOME}"
+unset _dispatcharr_home _dispatcharr_celery_home
+
 # Global variables, stored so other users inherit them.
 # Rewritten every startup so that container restarts with changed env vars
 # pick up the new values (not stale ones from a previous run).
@@ -177,10 +259,12 @@ export POSTGRES_DIR=/data/db
 variables=(
     PATH VIRTUAL_ENV DJANGO_SETTINGS_MODULE PYTHONUNBUFFERED PYTHONDONTWRITEBYTECODE
     POSTGRES_DB POSTGRES_USER POSTGRES_PASSWORD POSTGRES_HOST POSTGRES_PORT
-    DISPATCHARR_ENV DISPATCHARR_DEBUG DISPATCHARR_LOG_LEVEL DISPATCHARR_ENABLE_IP_LOOKUP
+    DISPATCHARR_ENV DISPATCHARR_ROLE DISPATCHARR_DEBUG DISPATCHARR_LOG_LEVEL DISPATCHARR_ENABLE_IP_LOOKUP
     REDIS_HOST REDIS_PORT REDIS_DB REDIS_PASSWORD REDIS_USER POSTGRES_DIR DISPATCHARR_PORT
     DISPATCHARR_VERSION DISPATCHARR_TIMESTAMP LIBVA_DRIVERS_PATH LIBVA_DRIVER_NAME LD_LIBRARY_PATH
     CELERY_NICE_LEVEL UWSGI_NICE_LEVEL DJANGO_SECRET_KEY
+    PG_BINDIR DISPATCHARR_HOME DISPATCHARR_CELERY_USER DISPATCHARR_CELERY_HOME CELERY_LOG_LEVEL
+    DISPATCHARR_UWSGI_INI DISPATCHARR_UWSGI_EXTRA_ARGS
 )
 
 # Optional variables, only propagate when set to avoid noisy warnings
@@ -222,14 +306,14 @@ fi
 EOF
 fi
 
-# Run init scripts
-echo "Starting user setup..."
-. /app/docker/init/01-user-setup.sh
-
 # Fix TLS client key permissions/ownership BEFORE any external PG connections.
 # Must run after 01-user-setup.sh (user exists for chown) and before
 # 02-postgres.sh / pg_isready (which make the first external PG connections).
-FIXED_KEY_PATH="/data/.pg-client.key"
+# The destination is per-role because api, relay and worker containers share
+# one /data volume from PR 4 on, and a single fixed path would have three
+# writers racing on it. The file is a per-boot scratch copy, never read
+# across boots, so renaming it costs nothing.
+FIXED_KEY_PATH="/data/.pg-client-${DISPATCHARR_ROLE}.key"
 . /app/docker/init/00-fix-pg-ssl-key.sh
 # Propagate the fixed path to login shells (su - strips env vars)
 if [ "${POSTGRES_SSL_KEY:-}" = "$FIXED_KEY_PATH" ]; then
@@ -242,78 +326,23 @@ fi
 # (in 02-postgres.sh, modular-mode checks, etc.) use TLS automatically.
 setup_pg_ssl_env
 
-# Initialize PostgreSQL (script handles modular vs internal mode internally)
-echo "Setting up PostgreSQL..."
-. /app/docker/init/02-postgres.sh
+if [[ "$DISPATCHARR_ROLE" == "all" || "$DISPATCHARR_ROLE" == "api" ]]; then
+    # Initialize PostgreSQL (script handles modular vs internal mode
+    # internally, and defines promote_app_role, ensure_app_database,
+    # ensure_utf8_encoding, check_external_postgres_version and
+    # prepare_pg_socket_dir, all used below).
+    echo "Setting up PostgreSQL..."
+    . /app/docker/init/02-postgres.sh
+fi
 
 echo "Starting init process..."
 . /app/docker/init/03-init-dispatcharr.sh
 
-# Start PostgreSQL if NOT in modular mode (using external database)
-if [[ "$DISPATCHARR_ENV" != "modular" ]]; then
-    echo "Starting Postgres..."
-    prepare_pg_socket_dir
-    su - "$POSTGRES_USER" -c "$PG_BINDIR/pg_ctl -D ${POSTGRES_DIR} start -w -t 300 -o '-c port=${POSTGRES_PORT}'"
-    # Wait for PostgreSQL to be ready
-    until su - "$POSTGRES_USER" -c "$PG_BINDIR/pg_isready -h ${POSTGRES_HOST} -p ${POSTGRES_PORT}" >/dev/null 2>&1; do
-        echo_with_timestamp "Waiting for PostgreSQL to be ready..."
-        sleep 1
-    done
-    postgres_pid=$(su - "$POSTGRES_USER" -c "$PG_BINDIR/pg_ctl -D ${POSTGRES_DIR} status" | sed -n 's/.*PID: \([0-9]\+\).*/\1/p')
-    echo "✅ Postgres started with PID $postgres_pid"
-    if [ -n "$postgres_pid" ]; then pids+=("$postgres_pid"); pid_names[$postgres_pid]="postgres"; fi
-
-    # Unconditional startup guarantees — run on every AIO startup.
-    # Each is idempotent and handles all scenarios (fresh, upgrade, restart).
-    promote_app_role
-    ensure_app_database
-else
-    echo "🔗 Modular mode: Using external PostgreSQL at ${POSTGRES_HOST}:${POSTGRES_PORT}"
-    # Wait for external PostgreSQL to be ready using pg_isready (checks actual protocol readiness)
-    echo_with_timestamp "Waiting for external PostgreSQL to be ready..."
-    until $PG_BINDIR/pg_isready -h "${POSTGRES_HOST}" -p "${POSTGRES_PORT}" -q >/dev/null 2>&1; do
-        echo_with_timestamp "Waiting for PostgreSQL at ${POSTGRES_HOST}:${POSTGRES_PORT}..."
-        sleep 1
-    done
-    echo "✅ External PostgreSQL is ready"
-
-    # Check PostgreSQL version compatibility
-    check_external_postgres_version || exit 1
-fi
-
-# Wait for Redis to be ready and flush stale state.
-# In modular mode Redis is external — call wait_for_redis.py here
-# because uWSGI's exec-pre runs under 'su -' which strips env vars
-# (DISPATCHARR_ENV, REDIS_HOST, etc.).
-# In AIO mode Redis is started by uWSGI (attach-daemon), so the
-# exec-pre in uwsgi.ini handles the wait + flush there instead.
-if [[ "$DISPATCHARR_ENV" == "modular" ]]; then
-    echo "🔗 Modular mode: Using external Redis at ${REDIS_HOST}:${REDIS_PORT}"
-    echo_with_timestamp "Waiting for Redis to be ready..."
-    python3 /app/scripts/wait_for_redis.py
-    echo "✅ Redis is ready"
-fi
-
-# Ensure database encoding is UTF8 (handles both internal and external databases)
-ensure_utf8_encoding
-
-if [[ "$DISPATCHARR_ENV" = "dev" ]]; then
-    . /app/docker/init/99-init-dev.sh
-    echo "Starting frontend dev environment"
-    su - "$POSTGRES_USER" -c "cd /app/frontend && npm run dev &"
-    npm_pid=$(pgrep vite | sort | head -n1)
-    echo "✅ vite started with PID $npm_pid"
-    if [ -n "$npm_pid" ]; then pids+=("$npm_pid"); pid_names[$npm_pid]="vite"; fi
-else
-    echo "🚀 Starting nginx..."
-    nginx
-    nginx_pid=$(pgrep nginx | sort | head -n1)
-    echo "✅ nginx started with PID $nginx_pid"
-    if [ -n "$nginx_pid" ]; then pids+=("$nginx_pid"); pid_names[$nginx_pid]="nginx"; fi
-fi
-
-
 # --- NumPy version switching for legacy hardware ---
+# Outside the role gate: docker-compose.yml documents USE_LEGACY_NUMPY on
+# the celery service as well as the web one, and entrypoint.celery.sh ran
+# this same block. A worker on a pre-2009 CPU needs the swap as much as the
+# API does.
 if [ "$USE_LEGACY_NUMPY" = "true" ]; then
     # Check if NumPy was compiled with baseline support
     if "$VIRTUAL_ENV/bin/python" -c "import numpy; numpy.show_config()" 2>&1 | grep -qi "baseline" || [ $? -ne 0 ]; then
@@ -325,73 +354,121 @@ if [ "$USE_LEGACY_NUMPY" = "true" ]; then
     fi
 fi
 
-# Run Django commands as non-root user to prevent permission issues
-su - "$POSTGRES_USER" -c "cd /app && python manage.py migrate --noinput"
-su - "$POSTGRES_USER" -c "cd /app && python manage.py collectstatic --noinput"
-
-# Select proper uwsgi config based on environment
-if [ "$DISPATCHARR_ENV" = "dev" ] && [ "$DISPATCHARR_DEBUG" != "true" ]; then
-    echo "🚀 Starting uwsgi in dev mode..."
-    uwsgi_file="/app/docker/uwsgi.dev.ini"
-elif [ "$DISPATCHARR_DEBUG" = "true" ]; then
-    echo "🚀 Starting uwsgi in debug mode..."
-    uwsgi_file="/app/docker/uwsgi.debug.ini"
-elif [ "$DISPATCHARR_ENV" = "modular" ]; then
-    echo "🚀 Starting uwsgi in modular mode..."
-    uwsgi_file="/app/docker/uwsgi.modular.ini"
-else
-    echo "🚀 Starting uwsgi in production mode..."
-    uwsgi_file="/app/docker/uwsgi.ini"
-fi
-
-# Set base uwsgi args
-uwsgi_args="--ini $uwsgi_file"
-
-# Conditionally disable logging if not in debug mode
-if [ "$DISPATCHARR_DEBUG" != "true" ]; then
-    uwsgi_args+=" --disable-logging"
-fi
-
-# Launch uwsgi with configurable nice level (default: 0 for normal priority)
-# Users can override via UWSGI_NICE_LEVEL environment variable in docker-compose
-# Start with nice as root, then use setpriv to drop privileges to dispatch user
-# This preserves both the nice value and environment variables
-nice -n "$UWSGI_NICE_LEVEL" su - "$POSTGRES_USER" -c "cd /app && exec $VIRTUAL_ENV/bin/uwsgi $uwsgi_args" & uwsgi_pid=$!
-echo "✅ uwsgi started with PID $uwsgi_pid (nice $UWSGI_NICE_LEVEL)"
-pids+=("$uwsgi_pid"); pid_names[$uwsgi_pid]="uwsgi"
-
-# Wait for services to fully initialize before checking hardware
-echo "⏳ Waiting for services to fully initialize before hardware check..."
-sleep 5
-
-# Run hardware check
-echo "🔍 Running hardware acceleration check..."
-. /app/docker/init/04-check-hwaccel.sh
-
-# Wait for at least one process to exit and log the process that exited first
-if [ ${#pids[@]} -gt 0 ]; then
-    echo "⏳ Dispatcharr is running. Monitoring processes..."
-    set +e
-    while kill -0 "${pids[@]}" 2>/dev/null; do
-        sleep 1  # Wait for a second before checking again
+if [[ "$DISPATCHARR_ROLE" == "all" ]]; then
+    # Start PostgreSQL exactly as before. supervisord's [program:postgres]
+    # takes it over after the one-shot work; see the fast stop below.
+    echo "Starting Postgres..."
+    prepare_pg_socket_dir
+    su - "$POSTGRES_USER" -c "$PG_BINDIR/pg_ctl -D ${POSTGRES_DIR} start -w -t 300 -o '-c port=${POSTGRES_PORT}'"
+    # Wait for PostgreSQL to be ready
+    until su - "$POSTGRES_USER" -c "$PG_BINDIR/pg_isready -h ${POSTGRES_HOST} -p ${POSTGRES_PORT}" >/dev/null 2>&1; do
+        echo_with_timestamp "Waiting for PostgreSQL to be ready..."
+        sleep 1
     done
+    echo "✅ Postgres is ready"
 
-    # Only report unexpected exits — skip if cleanup was already triggered by
-    # the trap (i.e. docker stop sent SIGTERM and we shut down intentionally)
-    if ! $_cleanup_done; then
-        echo "🚨 One of the processes exited unexpectedly! Checking which one..."
+    # Unconditional startup guarantees — run on every AIO startup.
+    # Each is idempotent and handles all scenarios (fresh, upgrade, restart).
+    promote_app_role
+    ensure_app_database
+elif [[ "$DISPATCHARR_ROLE" == "api" ]]; then
+    echo "🔗 Modular mode: Using external PostgreSQL at ${POSTGRES_HOST}:${POSTGRES_PORT}"
+    # Wait for external PostgreSQL to be ready using pg_isready (checks actual protocol readiness)
+    echo_with_timestamp "Waiting for external PostgreSQL to be ready..."
+    until $PG_BINDIR/pg_isready -h "${POSTGRES_HOST}" -p "${POSTGRES_PORT}" -q >/dev/null 2>&1; do
+        echo_with_timestamp "Waiting for PostgreSQL at ${POSTGRES_HOST}:${POSTGRES_PORT}..."
+        sleep 1
+    done
+    echo "✅ External PostgreSQL is ready"
 
-        for pid in "${pids[@]}"; do
-            if ! kill -0 "$pid" 2>/dev/null; then
-                process_name=${pid_names[$pid]:-unknown}
-                echo "❌ Process $process_name (PID: $pid) has exited!"
-            fi
-        done
-    fi
-else
-    echo "❌ No processes started. Exiting."
-    exit 1
+    # Check PostgreSQL version compatibility
+    check_external_postgres_version || exit 1
+
+    # Wait for external Redis so a misconfigured host fails here with a
+    # clear message rather than inside a supervisord program's retry loop.
+    # wait_for_redis.py is wait-only after D15 — it must not, and does not,
+    # flush: a modular web restart cannot be allowed to wipe a running
+    # relay's keys. [program:api-uwsgi] waits again through
+    # wait-for-stores.sh, which is what actually gates the process.
+    echo "🔗 Modular mode: Using external Redis at ${REDIS_HOST}:${REDIS_PORT}"
+    echo_with_timestamp "Waiting for Redis to be ready..."
+    python3 /app/scripts/wait_for_redis.py
+    echo "✅ Redis is ready"
 fi
 
-# Cleanup and stop remaining processes
-cleanup
+if [[ "$DISPATCHARR_ROLE" == "all" || "$DISPATCHARR_ROLE" == "api" ]]; then
+    # Ensure database encoding is UTF8 (handles both internal and external databases)
+    ensure_utf8_encoding
+
+    # Development container setup: node, npm install, uv sync, and debugpy
+    # when DISPATCHARR_DEBUG=true. Runs as root, before migrate, because
+    # `uv sync` inside it can change the venv the migration then runs from,
+    # and because [program:vite] starts as soon as supervisord does — a
+    # container without node would crash-loop it.
+    if [[ "$DISPATCHARR_ENV" == "dev" ]]; then
+        . /app/docker/init/99-init-dev.sh
+    fi
+
+    # Run Django commands as non-root user to prevent permission issues
+    su - "$POSTGRES_USER" -c "cd /app && python manage.py migrate --noinput"
+    su - "$POSTGRES_USER" -c "cd /app && python manage.py collectstatic --noinput"
+
+    # Run hardware acceleration check. Pure diagnostics (lspci, ffmpeg
+    # -hwaccels, vainfo), so it no longer waits behind a running uWSGI.
+    echo "🔍 Running hardware acceleration check..."
+    . /app/docker/init/04-check-hwaccel.sh
+elif [[ "$DISPATCHARR_ROLE" == "relay" || "$DISPATCHARR_ROLE" == "worker" ]]; then
+    # Wait for migrations to complete. 'migrate --check' exits 0 only when
+    # every migration is applied, and exits 1 on either an unapplied
+    # migration or a connection error (safe either way). Lifted from the
+    # deleted docker/entrypoint.celery.sh:43-58, including running as root
+    # rather than through `su -`, so the worker role does exactly what its
+    # own entrypoint did.
+    MIG_TIMEOUT=300
+    MIG_WAITED=0
+    echo 'Waiting for migrations to complete...'
+    until (cd /app && python manage.py migrate --check) >/dev/null 2>&1; do
+        if [ "$MIG_WAITED" -ge "$MIG_TIMEOUT" ]; then
+            echo "❌ ERROR: Timed out waiting for migrations after ${MIG_TIMEOUT}s."
+            echo "   Check the api/all container logs for migration errors."
+            exit 1
+        fi
+        echo_with_timestamp 'Migrations not ready yet, waiting...'
+        sleep 2
+        MIG_WAITED=$((MIG_WAITED + 2))
+    done
+    echo "✅ Migrations complete."
+    if [ "$DISPATCHARR_ROLE" = "worker" ]; then
+        # Wording preserved verbatim from entrypoint.celery.sh:61 —
+        # docker/tests/test-tls-postgres.sh waits on this exact substring.
+        echo 'Migrations complete, starting Celery...'
+    fi
+fi
+
+if [[ "$DISPATCHARR_ROLE" == "all" ]]; then
+    # Hand PostgreSQL over to supervisord. Without this stop,
+    # [program:postgres] starts a second postmaster against a data
+    # directory whose postmaster.pid belongs to this script's instance; it
+    # fails, retries and lands in FATAL, leaving the container running on
+    # an orphaned, unsupervised postmaster. -w so supervisord's own start
+    # cannot race the shutdown. -m fast, not -m immediate: this script is
+    # no longer racing an 8-second ceiling.
+    echo "Handing PostgreSQL over to supervisord (fast stop)..."
+    su - "$POSTGRES_USER" -c "$PG_BINDIR/pg_ctl -D ${POSTGRES_DIR} stop -m fast -w"
+    echo "✅ Postgres stopped; supervisord will start it as [program:postgres]"
+fi
+
+# Select the supervisord config. Two inputs, not three: DISPATCHARR_DEBUG
+# chooses only the uwsgi ini (above), because docker-compose.debug.yml sets
+# DISPATCHARR_ENV=dev as well as DISPATCHARR_DEBUG=true and the
+# pre-supervisord entrypoint keyed its vite-instead-of-nginx branch on
+# DISPATCHARR_ENV=dev alone. A debug rung with nginx and no vite would not
+# match what debug does today.
+if [ "$DISPATCHARR_ENV" = "dev" ]; then
+    SUPERVISORD_CONF="/app/docker/supervisord/all-dev.conf"
+else
+    SUPERVISORD_CONF="/app/docker/supervisord/${DISPATCHARR_ROLE}.conf"
+fi
+
+echo "🚀 Starting supervisord ($DISPATCHARR_ROLE) with $SUPERVISORD_CONF"
+exec supervisord -n -c "$SUPERVISORD_CONF"
