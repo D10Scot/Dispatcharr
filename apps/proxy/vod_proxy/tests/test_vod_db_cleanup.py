@@ -6,6 +6,18 @@ from django.http import StreamingHttpResponse
 from django.test import RequestFactory, SimpleTestCase
 
 
+def _decision(user=None):
+    """The authorize hop's answer, as stream_vod now receives it."""
+    from apps.proxy.authorize import SURFACE_VOD, AuthorizeResult
+
+    return AuthorizeResult(
+        surface=SURFACE_VOD,
+        user_id=str(user.id) if user is not None else "",
+        relay_name="py",
+        user=user,
+    )
+
+
 class StreamVodDbCleanupTests(SimpleTestCase):
     def setUp(self):
         self.factory = RequestFactory()
@@ -17,10 +29,10 @@ class StreamVodDbCleanupTests(SimpleTestCase):
         "core.models.CoreSettings.is_default_stream_profile_redirect",
         return_value=False,
     )
-    @patch("apps.proxy.vod_proxy.views.network_access_allowed", return_value=True)
+    @patch("apps.proxy.vod_proxy.views.resolve_authorization", return_value=_decision())
     def test_stream_vod_closes_db_before_streaming_response(
         self,
-        _network_ok,
+        _authorize_mock,
         _is_redirect,
         mock_select,
         mock_manager_cls,

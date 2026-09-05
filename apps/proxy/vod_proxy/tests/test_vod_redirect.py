@@ -6,6 +6,18 @@ from django.http import HttpResponse, HttpResponseRedirect, StreamingHttpRespons
 from django.test import RequestFactory, SimpleTestCase
 
 
+def _decision(user=None):
+    """The authorize hop's answer, as stream_vod now receives it."""
+    from apps.proxy.authorize import SURFACE_VOD, AuthorizeResult
+
+    return AuthorizeResult(
+        surface=SURFACE_VOD,
+        user_id=str(user.id) if user is not None else "",
+        relay_name="py",
+        user=user,
+    )
+
+
 class StreamVodRedirectTests(SimpleTestCase):
     def setUp(self):
         self.factory = RequestFactory()
@@ -21,12 +33,12 @@ class StreamVodRedirectTests(SimpleTestCase):
         "core.models.CoreSettings.is_default_stream_profile_redirect",
         return_value=True,
     )
-    @patch("apps.proxy.vod_proxy.views.network_access_allowed", return_value=True)
+    @patch("apps.proxy.vod_proxy.views.resolve_authorization", return_value=_decision())
     @patch("apps.proxy.vod_proxy.views.MultiWorkerVODConnectionManager")
     def test_stream_vod_redirects_without_session_mint(
         self,
         mock_manager_cls,
-        _network_ok,
+        _authorize_mock,
         _is_redirect,
         mock_select,
         _idle,
@@ -62,10 +74,10 @@ class StreamVodRedirectTests(SimpleTestCase):
         "core.models.CoreSettings.is_default_stream_profile_redirect",
         return_value=False,
     )
-    @patch("apps.proxy.vod_proxy.views.network_access_allowed", return_value=True)
+    @patch("apps.proxy.vod_proxy.views.resolve_authorization", return_value=_decision())
     def test_stream_vod_proxies_when_not_redirect(
         self,
-        _network_ok,
+        _authorize_mock,
         _is_redirect,
         _idle,
         mock_select,
@@ -111,10 +123,10 @@ class StreamVodRedirectTests(SimpleTestCase):
         "core.models.CoreSettings.is_default_stream_profile_redirect",
         return_value=True,
     )
-    @patch("apps.proxy.vod_proxy.views.network_access_allowed", return_value=True)
+    @patch("apps.proxy.vod_proxy.views.resolve_authorization", return_value=_decision())
     def test_stream_vod_redirect_returns_503_when_no_url(
         self,
-        _network_ok,
+        _authorize_mock,
         _is_redirect,
         _select,
         _idle,
@@ -138,10 +150,10 @@ class StreamVodRedirectTests(SimpleTestCase):
         "core.models.CoreSettings.is_default_stream_profile_redirect",
         return_value=True,
     )
-    @patch("apps.proxy.vod_proxy.views.network_access_allowed", return_value=True)
+    @patch("apps.proxy.vod_proxy.views.resolve_authorization", return_value=_decision())
     def test_existing_session_proxies_even_when_default_is_redirect(
         self,
-        _network_ok,
+        _authorize_mock,
         _is_redirect,
         mock_select,
         mock_manager_cls,
@@ -197,10 +209,10 @@ class StreamVodRedirectTests(SimpleTestCase):
         "core.models.CoreSettings.is_default_stream_profile_redirect",
         return_value=True,
     )
-    @patch("apps.proxy.vod_proxy.views.network_access_allowed", return_value=True)
+    @patch("apps.proxy.vod_proxy.views.resolve_authorization", return_value=_decision())
     def test_idle_session_match_skips_redirect(
         self,
-        _network_ok,
+        _authorize_mock,
         _is_redirect,
         mock_idle,
         mock_select,
@@ -235,10 +247,10 @@ class StreamVodRedirectTests(SimpleTestCase):
         "core.models.CoreSettings.is_default_stream_profile_redirect",
         return_value=False,
     )
-    @patch("apps.proxy.vod_proxy.views.network_access_allowed", return_value=True)
+    @patch("apps.proxy.vod_proxy.views.resolve_authorization", return_value=_decision())
     def test_no_idle_check_when_not_redirect(
         self,
-        _network_ok,
+        _authorize_mock,
         _is_redirect,
         mock_idle,
         mock_select,

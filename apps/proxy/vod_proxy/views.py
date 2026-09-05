@@ -23,6 +23,12 @@ from apps.accounts.permissions import IsAdmin
 from rest_framework_simplejwt.authentication import JWTAuthentication
 from apps.accounts.authentication import ApiKeyAuthentication, QueryParamJWTAuthentication
 from apps.proxy.utils import check_user_stream_limits
+from apps.proxy.authorize import SURFACE_VOD, SURFACE_VOD_XC, AuthorizeDenied
+from apps.proxy.authorize_views import authorize_error_response, resolve_authorization
+# network_access_allowed stays imported for head_vod (apps/proxy/vod_proxy/views.py,
+# no route per CLAUDE.md but still exercised directly by
+# tests/test_vod_redirect.py's HeadVodRedirectTests) — Task 6 does not touch
+# head_vod, which the plan's brief did not account for as a fourth caller.
 from dispatcharr.utils import network_access_allowed, redact_headers, redact_url
 from core.utils import dispatcharr_user_agent
 
@@ -610,7 +616,8 @@ def _transform_url(original_url, m3u_profile):
 @api_view(["GET"])
 @authentication_classes([JWTAuthentication, ApiKeyAuthentication, QueryParamJWTAuthentication])
 @permission_classes([AllowAny])
-def stream_vod(request, content_type, content_id, session_id=None, profile_id=None, user=None):
+def stream_vod(request, content_type, content_id, session_id=None, profile_id=None,
+               user=None, decision=None):
     """
     Stream VOD content (movies or series episodes) with session-based connection reuse
 
@@ -619,11 +626,18 @@ def stream_vod(request, content_type, content_id, session_id=None, profile_id=No
         content_id: ID of the content
         session_id: Optional session ID from URL path (for persistent connections)
         profile_id: Optional M3U profile ID for authentication
+        decision: the authorize hop's answer, when an XC entry point already
+            made it for this same request
     """
-    if not network_access_allowed(request, "STREAMS"):
-        return JsonResponse({"error": "Forbidden"}, status=403)
-    if user is None and hasattr(request, "user") and request.user.is_authenticated:
-        user = request.user
+    if decision is None:
+        try:
+            decision = resolve_authorization(
+                request, SURFACE_VOD, identifier=str(content_id), session_id=session_id
+            )
+        except AuthorizeDenied as exc:
+            return authorize_error_response(exc)
+    if user is None:
+        user = decision.user
     logger.info(f"[VOD-REQUEST] Starting VOD stream request: {content_type}/{content_id}, session: {session_id}, profile: {profile_id}")
     logger.debug("[VOD-REQUEST] Full request path: %s", redact_url(request.get_full_path()))
     logger.info(f"[VOD-REQUEST] Request method: {request.method}")
@@ -778,6 +792,9 @@ def stream_vod(request, content_type, content_id, session_id=None, profile_id=No
                 pass
 
         if user:
+            # Not moved to the authorize hop: the XC movie/series routes resolve
+            # content_id from an M3U relation inside this view, so the hop has no
+            # media_id to check for two of this function's three entry points.
             if not check_user_stream_limits(user, session_id, media_id=content_id):
                 return JsonResponse(
                     {"error": f"Stream limit exceeded ({user.stream_limit} concurrent streams allowed)"},
@@ -1391,70 +1408,71 @@ def stop_vod_client(request):
 @api_view(["GET"])
 @permission_classes([AllowAny])
 def stream_xc_movie(request, username, password, stream_id, extension):
-    if not network_access_allowed(request, "STREAMS"):
-        return JsonResponse({"error": "Forbidden"}, status=403)
-
     from apps.vod.models import M3UMovieRelation
 
     session_id = request.GET.get('session_id')
     profile_id = request.GET.get('profile_id')
 
-    user = get_object_or_404(User, username=username)
-
-    if not network_access_allowed(request, 'STREAMS', user):
-        return Response({"error": "Forbidden"}, status=403)
-
-    custom_properties = user.custom_properties or {}
-
-    if "xc_password" not in custom_properties:
-        return Response({"error": "Invalid credentials"}, status=401)
-
-    if custom_properties["xc_password"] != password:
-        return Response({"error": "Invalid credentials"}, status=401)
-
-    # All authenticated users get access to VOD from all active M3U accounts
-    filters = {"movie_id": stream_id, "m3u_account__is_active": True}
-
     try:
-        # Order by account priority to get the best relation when multiple exist
-        movie_relation = M3UMovieRelation.objects.select_related('movie').filter(**filters).order_by('-m3u_account__priority', 'id').first()
+        decision = resolve_authorization(
+            request,
+            SURFACE_VOD_XC,
+            identifier=str(stream_id),
+            username=username,
+            password=password,
+            session_id=session_id,
+        )
+    except AuthorizeDenied as exc:
+        return authorize_error_response(exc)
+
+    # Content resolution stays here on purpose: the hop resolves the
+    # principal, not the content object (spec § ORM reads that remain).
+    filters = {"movie_id": stream_id, "m3u_account__is_active": True}
+    try:
+        movie_relation = M3UMovieRelation.objects.select_related('movie').filter(
+            **filters
+        ).order_by('-m3u_account__priority', 'id').first()
         if not movie_relation:
             return JsonResponse({"error": "Movie not found"}, status=404)
     except (M3UMovieRelation.DoesNotExist, M3UMovieRelation.MultipleObjectsReturned):
         return JsonResponse({"error": "Movie not found"}, status=404)
 
-    return stream_vod(request._request, 'movie', movie_relation.movie.uuid, session_id, profile_id, user)
+    return stream_vod(
+        request._request, 'movie', movie_relation.movie.uuid, session_id, profile_id,
+        decision.user, decision=decision,
+    )
 
 @api_view(["GET"])
 @permission_classes([AllowAny])
 def stream_xc_episode(request, username, password, stream_id, extension):
-    if not network_access_allowed(request, "STREAMS"):
-        return JsonResponse({"error": "Forbidden"}, status=403)
-
     from apps.vod.models import M3UEpisodeRelation
 
     session_id = request.GET.get('session_id')
     profile_id = request.GET.get('profile_id')
 
-    user = get_object_or_404(User, username=username)
-
-    if not network_access_allowed(request, 'STREAMS', user):
-        return Response({"error": "Forbidden"}, status=403)
-
-    custom_properties = user.custom_properties or {}
-
-    if "xc_password" not in custom_properties:
-        return Response({"error": "Invalid credentials"}, status=401)
-
-    if custom_properties["xc_password"] != password:
-        return Response({"error": "Invalid credentials"}, status=401)
-
-    # All authenticated users get access to series/episodes from all active M3U accounts
-    filters = {"episode_id": stream_id, "m3u_account__is_active": True}
-
     try:
-        episode_relation = M3UEpisodeRelation.objects.select_related('episode').filter(**filters).order_by('-m3u_account__priority', 'id').first()
+        decision = resolve_authorization(
+            request,
+            SURFACE_VOD_XC,
+            identifier=str(stream_id),
+            username=username,
+            password=password,
+            session_id=session_id,
+        )
+    except AuthorizeDenied as exc:
+        return authorize_error_response(exc)
+
+    # Content resolution stays here on purpose: the hop resolves the
+    # principal, not the content object (spec § ORM reads that remain).
+    filters = {"episode_id": stream_id, "m3u_account__is_active": True}
+    try:
+        episode_relation = M3UEpisodeRelation.objects.select_related('episode').filter(
+            **filters
+        ).order_by('-m3u_account__priority', 'id').first()
     except M3UEpisodeRelation.DoesNotExist:
         return JsonResponse({"error": "Episode not found"}, status=404)
 
-    return stream_vod(request._request, 'episode', episode_relation.episode.uuid, session_id, profile_id, user)
+    return stream_vod(
+        request._request, 'episode', episode_relation.episode.uuid, session_id, profile_id,
+        decision.user, decision=decision,
+    )
