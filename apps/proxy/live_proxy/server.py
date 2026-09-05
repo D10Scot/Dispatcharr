@@ -267,7 +267,27 @@ class ProxyServer:
                                         event_m3u_profile_id = data.get("m3u_profile_id")
                                         event_stream_name = data.get("stream_name")
 
-                                        if new_url and channel_id in self.stream_managers:
+                                        # Coerce at this boundary too: this event
+                                        # crosses the wire as JSON in the split
+                                        # deployment, and a non-integer id here
+                                        # ends up in tried_stream_ids next to int
+                                        # ids from Django, which crashes the next
+                                        # automatic failover's sorted() call
+                                        # (Phase 1 PR 6 fix wave B). Ignore the
+                                        # event rather than adopt a bad id.
+                                        event_stream_id_valid = True
+                                        if event_stream_id is not None:
+                                            try:
+                                                event_stream_id = int(event_stream_id)
+                                            except (TypeError, ValueError):
+                                                logger.warning(
+                                                    f"Ignoring {EventType.STREAM_SWITCH} event for "
+                                                    f"channel {channel_id}: non-integer stream_id "
+                                                    f"{event_stream_id!r}"
+                                                )
+                                                event_stream_id_valid = False
+
+                                        if event_stream_id_valid and new_url and channel_id in self.stream_managers:
                                             # Mark the switch as in-progress in Redis so other workers know to wait
                                             status_key = RedisKeys.switch_status(channel_id)
                                             if self.redis_client:

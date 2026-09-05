@@ -874,6 +874,22 @@ def change_stream(request, channel_id):
         m3u_profile_id = None
         stream_name = None
 
+        # Coerce at the boundary: the Stats card's Select yields a string id
+        # and, in the split deployment, this travels to the relay as JSON
+        # and lands in tried_stream_ids/current_stream_id, which
+        # _try_next_stream later sorts alongside int ids from Django --
+        # sorted({int, str}) raises TypeError and tears the channel down on
+        # the next automatic failover (Phase 1 PR 6 fix wave B, final-review
+        # Blocking finding). Reject a non-integer here instead of failing
+        # later, opaquely, in the relay's main loop.
+        if stream_id is not None:
+            try:
+                stream_id = int(stream_id)
+            except (TypeError, ValueError):
+                return JsonResponse(
+                    {"error": "stream_id must be an integer"}, status=400
+                )
+
         # If stream_id is provided, get the URL and user_agent from it
         if stream_id:
             logger.info(

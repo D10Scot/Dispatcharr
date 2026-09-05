@@ -656,8 +656,9 @@ def resolve_source(
     # `except Http404 -> 404` (Task 6) depends on this line, and so does
     # test_an_unknown_identifier_raises_http404. The DB-cleanup pin
     # patches this same name, so test_resolve_source_closes_db is
-    # unaffected.
-    get_stream_object(identifier)
+    # unaffected. Kept (not discarded) so the reuse-or-reserve branch below
+    # can tell a channel from a previewed stream without a second lookup.
+    resolved_object = get_stream_object(identifier)
 
     excluded = {int(sid) for sid in exclude_stream_ids or ()}
 
@@ -670,7 +671,16 @@ def resolve_source(
 
     if not excluded and target_stream_id is None and not is_failover_request:
         answer = resolve_initial_source(identifier)
-        if answer["source"] is not None and include_alternates:
+        # A previewed Stream has no assigned alternates -- get_alternate_streams()
+        # walks Channel.streams, which a bare Stream doesn't have -- so
+        # _resolve_alternates would call get_alternate_streams(), which logs
+        # "Stream is not a channel" at ERROR on every preview tune. Skip it
+        # for anything that isn't a Channel instead (Phase 1 PR 6 fix wave B).
+        if (
+            answer["source"] is not None
+            and include_alternates
+            and isinstance(resolved_object, Channel)
+        ):
             answer["alternates"] = _resolve_alternates(
                 identifier, answer["source"]["stream_id"]
             )

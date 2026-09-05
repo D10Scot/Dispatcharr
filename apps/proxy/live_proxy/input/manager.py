@@ -1451,9 +1451,14 @@ class StreamManager:
             self._last_bitrate_db_save_time = 0
             self._bitrate_warmup_samples = 10
 
-            # Update stream ID if provided
+            # Update stream ID if provided. Coerced here too (belt and
+            # suspenders alongside the callers that already coerce): every
+            # id that ends up in current_stream_id/tried_stream_ids has to
+            # be an int, since _try_next_stream sorts them together with
+            # ids Django hands back (Phase 1 PR 6 fix wave B).
             if stream_id:
                 old_stream_id = self.current_stream_id
+                stream_id = int(stream_id)
                 self.current_stream_id = stream_id
                 # Add stream ID to tried streams for proper tracking
                 self.tried_stream_ids.add(stream_id)
@@ -2002,114 +2007,169 @@ class StreamManager:
         from apps.proxy import control_plane
         from ..url_utils import read_cached_alternates
 
-        exclude = set(self.tried_stream_ids)
-        if self.current_stream_id:
-            exclude.add(self.current_stream_id)
-
-        degraded = False
         try:
-            answer = control_plane.next_source(
-                self.channel_id,
-                exclude_stream_ids=sorted(exclude),
-                current_url=self.url,
-                current_stream_id=self.current_stream_id,
-                reason="failover",
-            )
-            source = answer.get("source")
-        except control_plane.ControlPlaneRefused as exc:
-            # Django answered, and said no: a deleted channel, a bad token, a
-            # SECRET_KEY mismatch between roles. Never degrade on a refusal —
-            # the cached list would keep a deleted channel streaming, and a
-            # token fault would make every failover on the deployment degrade
-            # forever instead of failing once, loudly. Today's equivalent is
-            # get_alternate_streams catching Http404 and returning [].
-            logger.error(
-                f"Control plane refused the failover for channel "
-                f"{self.channel_id} with {exc.status}"
-            )
-            return False
-        except control_plane.ControlPlaneUnavailable as exc:
-            # Degraded fallback: the candidate list cached at channel start.
-            # Stale, unenforced, and no slot moves — refusing to fail over at
-            # all is worse for the viewer, and the channel_error event below
-            # makes it visible after the fact.
-            logger.warning(
-                f"Control plane unreachable during failover for channel "
-                f"{self.channel_id}: {exc}; using the cached candidate list "
-                f"unenforced"
-            )
-            degraded = True
-            source = self._pick_cached_alternate(read_cached_alternates(self.channel_id), exclude)
+            exclude = set(self.tried_stream_ids)
+            if self.current_stream_id:
+                exclude.add(self.current_stream_id)
 
-        if not source:
-            logger.error(f"No alternate stream available for channel {self.channel_id}")
-            return False
-
-        stream_id = source["stream_id"]
-        profile_id = source["m3u_profile_id"]
-        self.tried_stream_ids.add(stream_id)
-        logger.info(
-            f"Switching channel {self.channel_id} to stream {stream_id} "
-            f"with M3U profile {profile_id}"
-        )
-
-        if not self.update_url(source["url"], stream_id, profile_id):
-            # Unreachable once Django took the failover branch: current_url
-            # is what keeps it from answering with the URL already playing;
-            # the only other False is update_url's own except (Phase 1 PR 6
-            # review round 1 -- next_source.py's resolve_source routes on
-            # current_url/reason, not just exclude_stream_ids, so this holds
-            # even when nothing has been tried yet).
-            logger.error(
-                f"Failed to update URL for stream {stream_id} on channel "
-                f"{self.channel_id}"
-            )
-            return False
-
-        self.current_stream_id = stream_id
-        self.user_agent = source["user_agent"]
-        self.transcode = source["transcode"]
-
-        if hasattr(self.buffer, "redis_client") and self.buffer.redis_client:
+            # exclude can mix an int (from Django) with a not-yet-coerced
+            # string id -- sorted() over mixed types raises TypeError, which
+            # used to tear the whole channel down on the next automatic
+            # failover (Phase 1 PR 6 fix wave B, final-review Blocking
+            # finding). Every producer of these ids is coerced at its own
+            # boundary now; this is the last line of defense.
             try:
-                self.buffer.redis_client.hset(
-                    RedisKeys.channel_metadata(self.channel_id),
-                    mapping={
-                        ChannelMetadataField.URL: source["url"],
-                        ChannelMetadataField.USER_AGENT: source["user_agent"],
-                        ChannelMetadataField.STREAM_PROFILE: str(source["stream_profile"]["id"]),
-                        ChannelMetadataField.M3U_PROFILE: str(profile_id),
-                        ChannelMetadataField.STREAM_ID: str(stream_id),
-                        ChannelMetadataField.STREAM_SWITCH_TIME: str(time.time()),
-                        ChannelMetadataField.STREAM_SWITCH_REASON: "max_retries_exceeded",
-                    },
-                )
-            except Exception as e:
-                # The switch already happened (update_url returned True):
-                # a metadata-write failure here must not unwind it and
-                # report the failover as failed.
+                exclude_stream_ids = sorted({int(s) for s in exclude})
+            except (TypeError, ValueError):
                 logger.error(
-                    f"Failed to write switch metadata for channel "
-                    f"{self.channel_id} to stream {stream_id}: {e}"
+                    f"Non-integer stream id in the exclude set for channel "
+                    f"{self.channel_id}: {sorted(str(s) for s in exclude)}"
                 )
+                return False
 
-        if degraded:
-            self._failover_degraded = True
-        elif self._failover_degraded:
-            # Django is answering again: say, once, that an earlier failover
-            # ran blind on the cached list and may have exceeded max_streams.
-            self._failover_degraded = False
-            emit_event(
-                "channel_error",
-                channel_id=self.channel_id,
-                channel_name=self.channel_name,
-                reason="degraded_failover",
+            degraded = False
+            try:
+                answer = control_plane.next_source(
+                    self.channel_id,
+                    exclude_stream_ids=exclude_stream_ids,
+                    current_url=self.url,
+                    current_stream_id=self.current_stream_id,
+                    reason="failover",
+                )
+                source = answer.get("source")
+            except control_plane.ControlPlaneRefused as exc:
+                # Django answered, and said no: a deleted channel, a bad token, a
+                # SECRET_KEY mismatch between roles. Never degrade on a refusal —
+                # the cached list would keep a deleted channel streaming, and a
+                # token fault would make every failover on the deployment degrade
+                # forever instead of failing once, loudly. Today's equivalent is
+                # get_alternate_streams catching Http404 and returning [].
+                logger.error(
+                    f"Control plane refused the failover for channel "
+                    f"{self.channel_id} with {exc.status}"
+                )
+                return False
+            except control_plane.ControlPlaneUnavailable as exc:
+                # Degraded fallback: the candidate list cached at channel start.
+                # Stale, unenforced, and no slot moves — refusing to fail over at
+                # all is worse for the viewer, and the channel_error event below
+                # makes it visible after the fact.
+                logger.warning(
+                    f"Control plane unreachable during failover for channel "
+                    f"{self.channel_id}: {exc}; using the cached candidate list "
+                    f"unenforced"
+                )
+                degraded = True
+                source = self._pick_cached_alternate(read_cached_alternates(self.channel_id), exclude)
+
+            if not source:
+                logger.error(f"No alternate stream available for channel {self.channel_id}")
+                return False
+
+            # Validate the live source the same way the degraded path already
+            # validates a cached one (_pick_cached_alternate): a
+            # version-skewed Django answering a source missing a key must
+            # not turn a failover into a main-loop teardown (Phase 1 PR 6
+            # fix wave B, final-review Minor finding).
+            missing_fields = [
+                field for field in self._CACHED_ALTERNATE_REQUIRED_FIELDS
+                if field not in source
+            ]
+            if missing_fields:
+                logger.error(
+                    f"Control plane source for channel {self.channel_id} is "
+                    f"missing {missing_fields}"
+                )
+                return False
+            if not isinstance(source.get("stream_profile"), dict) or "id" not in source["stream_profile"]:
+                logger.error(
+                    f"Control plane source for channel {self.channel_id} is "
+                    f"missing stream_profile.id"
+                )
+                return False
+
+            stream_id = source["stream_id"]
+            profile_id = source["m3u_profile_id"]
+            self.tried_stream_ids.add(stream_id)
+            logger.info(
+                f"Switching channel {self.channel_id} to stream {stream_id} "
+                f"with M3U profile {profile_id}"
             )
 
-        logger.info(
-            f"Successfully switched channel {self.channel_id} to stream {stream_id}"
-        )
-        return True
+            if not self.update_url(source["url"], stream_id, profile_id):
+                # Unreachable once Django took the failover branch: current_url
+                # is what keeps it from answering with the URL already playing;
+                # the only other False is update_url's own except (Phase 1 PR 6
+                # review round 1 -- next_source.py's resolve_source routes on
+                # current_url/reason, not just exclude_stream_ids, so this holds
+                # even when nothing has been tried yet).
+                logger.error(
+                    f"Failed to update URL for stream {stream_id} on channel "
+                    f"{self.channel_id}"
+                )
+                return False
+
+            self.current_stream_id = stream_id
+            self.user_agent = source["user_agent"]
+            self.transcode = source["transcode"]
+
+            if hasattr(self.buffer, "redis_client") and self.buffer.redis_client:
+                try:
+                    self.buffer.redis_client.hset(
+                        RedisKeys.channel_metadata(self.channel_id),
+                        mapping={
+                            ChannelMetadataField.URL: source["url"],
+                            ChannelMetadataField.USER_AGENT: source["user_agent"],
+                            ChannelMetadataField.STREAM_PROFILE: str(source["stream_profile"]["id"]),
+                            ChannelMetadataField.M3U_PROFILE: str(profile_id),
+                            ChannelMetadataField.STREAM_ID: str(stream_id),
+                            ChannelMetadataField.STREAM_SWITCH_TIME: str(time.time()),
+                            ChannelMetadataField.STREAM_SWITCH_REASON: "max_retries_exceeded",
+                        },
+                    )
+                except Exception as e:
+                    # The switch already happened (update_url returned True):
+                    # a metadata-write failure here must not unwind it and
+                    # report the failover as failed.
+                    logger.error(
+                        f"Failed to write switch metadata for channel "
+                        f"{self.channel_id} to stream {stream_id}: {e}"
+                    )
+
+            if degraded:
+                self._failover_degraded = True
+            elif self._failover_degraded:
+                # Django is answering again: say, once, that an earlier failover
+                # ran blind on the cached list and may have exceeded max_streams.
+                self._failover_degraded = False
+                emit_event(
+                    "channel_error",
+                    channel_id=self.channel_id,
+                    channel_name=self.channel_name,
+                    reason="degraded_failover",
+                )
+
+            logger.info(
+                f"Successfully switched channel {self.channel_id} to stream {stream_id}"
+            )
+            return True
+        except Exception as e:
+            # Defensive boundary restored: pre-PR, this whole method's body
+            # was one `except Exception: return False` (git show
+            # ce25bd7e:apps/proxy/live_proxy/input/manager.py). Losing it
+            # changed the failure mode from "no failover" to "Stream error"
+            # -> full channel teardown, since the two call sites (:431,
+            # :600) sit inside run()'s single try (Phase 1 PR 6 fix wave B,
+            # final-review Blocking finding). Never put a URL in this
+            # message -- exc_info carries the traceback for anyone who
+            # needs it; scripts/check_credential_logging.py enforces the
+            # rest of the tree the same way.
+            logger.error(
+                f"Unexpected error trying next stream for channel "
+                f"{self.channel_id}: {type(e).__name__}",
+                exc_info=True,
+            )
+            return False
 
     # Add a new helper method to safely reset the URL switching state
     def _reset_url_switching_state(self):

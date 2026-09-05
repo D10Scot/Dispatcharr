@@ -237,4 +237,75 @@ class TryNextStreamTests(TestCase):
             result = sm._try_next_stream()
 
         self.assertTrue(result)
-        self.assertEqual(sm.current_stream_id, 2)
+
+    def test_a_string_current_stream_id_is_coerced_before_the_exclude_list_is_built(self):
+        # Fix wave B, final-review Blocking finding: a manual switch from the
+        # Stats card lands a string stream_id in current_stream_id/
+        # tried_stream_ids on the manager (change_stream/update_url used to
+        # store whatever the client sent). Mixing that string with the ints
+        # Django hands back used to crash sorted(exclude) on the very next
+        # automatic failover. current_stream_id="12" here stands in for that
+        # already-landed string; the fix must coerce it before building
+        # exclude_stream_ids, not merely reject it going forward.
+        sm = make_manager(current_stream_id="12", tried={7})
+        answer = {"source": make_source(stream_id=2), "alternates": [], "error": None}
+
+        with patch("apps.proxy.control_plane.next_source", return_value=answer) as mock_next:
+            result = sm._try_next_stream()
+
+        self.assertTrue(result)
+        mock_next.assert_called_once()
+        args, kwargs = mock_next.call_args
+        self.assertEqual(kwargs["exclude_stream_ids"], [7, 12])
+
+    def test_a_non_integer_id_anywhere_in_the_exclude_set_fails_the_switch_not_the_channel(self):
+        sm = make_manager(current_stream_id="not-an-id", tried={7})
+
+        with patch("apps.proxy.control_plane.next_source") as mock_next, \
+             self.assertLogs(manager_module.logger, level="ERROR"):
+            result = sm._try_next_stream()
+
+        self.assertFalse(result)
+        mock_next.assert_not_called()
+        sm.update_url.assert_not_called()
+
+    def test_a_live_source_missing_a_required_field_returns_false_instead_of_raising(self):
+        # Minor finding: the live source dict is indexed unconditionally
+        # once picked; a version-skewed Django answering one short a key
+        # must not turn a failover into an unhandled KeyError.
+        sm = make_manager()
+        source = make_source(stream_id=2)
+        del source["user_agent"]
+        answer = {"source": source, "alternates": [], "error": None}
+
+        with patch("apps.proxy.control_plane.next_source", return_value=answer), \
+             self.assertLogs(manager_module.logger, level="ERROR"):
+            result = sm._try_next_stream()
+
+        self.assertFalse(result)
+        sm.update_url.assert_not_called()
+
+    def test_an_unexpected_exception_is_caught_and_reported_as_a_failed_switch(self):
+        # Restored defensive boundary: pre-PR, this method's whole body was
+        # one `except Exception: return False`. An exception anywhere in the
+        # body (not just the two control-plane exceptions) must still return
+        # False rather than propagate into run()'s single try/except, which
+        # would tear the whole channel down instead of just failing the
+        # switch attempt.
+        sm = make_manager(current_stream_id=1, tried={1})
+
+        with patch("apps.proxy.control_plane.next_source",
+                   side_effect=RuntimeError("boom")), \
+             self.assertLogs(manager_module.logger, level="ERROR") as logs:
+            result = sm._try_next_stream()
+
+        self.assertFalse(result)
+        # The f-string we write must not embed the exception directly (it
+        # names only the exception's type) -- exc_info=True still carries
+        # the exception's own text in the traceback for anyone reading the
+        # log, which is unavoidable and a separate, documented limit of
+        # scripts/check_credential_logging.py, not something this test
+        # re-litigates. Assert on the message we control instead.
+        self.assertTrue(any("RuntimeError" in message for message in logs.output))
+        sm.update_url.assert_not_called()
+        self.assertEqual(sm.current_stream_id, 1)

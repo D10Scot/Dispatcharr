@@ -308,6 +308,21 @@ class NextSourceResolutionTests(TestCase):
         self.assertIn("m3u_profile_id", alt)
         self.assertFalse(alt["slot_reserved"])
 
+    def test_include_alternates_on_a_previewed_stream_logs_nothing_and_returns_none(self):
+        # Minor finding, fix wave B: generate_stream_url always sends
+        # include_alternates=True, and a directly previewed Stream has no
+        # assigned alternates -- get_alternate_streams() walks
+        # Channel.streams, which a bare Stream doesn't have. Before the fix,
+        # resolve_source called it anyway on every preview tune and it
+        # logged "Stream is not a channel" at ERROR.
+        from apps.proxy.next_source import resolve_source
+
+        with self.assertNoLogs("live_proxy", level="ERROR"):
+            answer = resolve_source(self.stream_a.stream_hash, include_alternates=True)
+
+        self.assertIsNotNone(answer["source"])
+        self.assertEqual(answer["alternates"], [])
+
 
 class NextSourceProfileSwitchTests(TestCase):
     """A switch across two M3U accounts, each with its own default profile.
