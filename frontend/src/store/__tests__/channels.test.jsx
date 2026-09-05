@@ -28,6 +28,7 @@ describe('useChannelsStore', () => {
       isLoading: false,
       error: null,
       forceUpdate: 0,
+      relayEvents: {},
     });
   });
 
@@ -322,6 +323,96 @@ describe('useChannelsStore', () => {
 
       expect(result.current.stats).toEqual(newStats);
       expect(showNotification).toHaveBeenCalled();
+    });
+  });
+
+  describe('applyRelayEvent', () => {
+    it('stores the newest event per channel, keyed by channel_id', () => {
+      const { result } = renderHook(() => useChannelsStore());
+
+      act(() => {
+        result.current.applyRelayEvent({
+          event: 'channel_failover',
+          channel_id: 'uuid-1',
+          stream_id: 7,
+          reason: 'dead_air',
+          timestamp: 1234,
+        });
+      });
+
+      expect(result.current.relayEvents['uuid-1']).toEqual({
+        event: 'channel_failover',
+        streamId: 7,
+        clientId: null,
+        reason: 'dead_air',
+        timestamp: 1234,
+      });
+    });
+
+    it('replaces the prior event for the same channel', () => {
+      const { result } = renderHook(() => useChannelsStore());
+
+      act(() => {
+        result.current.applyRelayEvent({
+          event: 'channel_failover',
+          channel_id: 'uuid-1',
+          stream_id: 7,
+          reason: 'dead_air',
+          timestamp: 1234,
+        });
+      });
+
+      act(() => {
+        result.current.applyRelayEvent({
+          event: 'stream_switch',
+          channel_id: 'uuid-1',
+          stream_id: 9,
+          reason: 'manual',
+          timestamp: 5678,
+        });
+      });
+
+      expect(result.current.relayEvents['uuid-1']).toEqual({
+        event: 'stream_switch',
+        streamId: 9,
+        clientId: null,
+        reason: 'manual',
+        timestamp: 5678,
+      });
+    });
+
+    it('ignores an event with no channel_id', () => {
+      const { result } = renderHook(() => useChannelsStore());
+
+      act(() => {
+        result.current.applyRelayEvent({
+          event: 'stream_switch',
+          stream_id: 9,
+        });
+      });
+
+      expect(result.current.relayEvents).toEqual({});
+    });
+
+    it('records a client_disconnect for a channel with no prior entry', () => {
+      const { result } = renderHook(() => useChannelsStore());
+
+      act(() => {
+        result.current.applyRelayEvent({
+          event: 'client_disconnect',
+          channel_id: 'uuid-2',
+          client_id: 'client-1',
+          timestamp: 4321,
+        });
+      });
+
+      expect(result.current.relayEvents['uuid-2']).toEqual({
+        event: 'client_disconnect',
+        streamId: null,
+        clientId: 'client-1',
+        reason: null,
+        timestamp: 4321,
+      });
     });
   });
 

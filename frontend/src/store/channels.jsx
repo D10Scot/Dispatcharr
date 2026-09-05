@@ -125,6 +125,7 @@ const useChannelsStore = create((set, get) => ({
   isLoading: false,
   error: null,
   forceUpdate: 0,
+  relayEvents: {},
 
   triggerUpdate: () => {
     set({ forceUpdate: new Date() });
@@ -416,6 +417,29 @@ const useChannelsStore = create((set, get) => ({
     set(() => ({
       selectedProfileId: id,
     })),
+
+  // The relay's transitions, pushed over the WebSocket since Phase 1 PR 6.
+  // Before this there was no push for a stream switch, a failover or a
+  // client teardown at all — the only way to see one was to poll
+  // /proxy/ts/status. One entry per channel, newest wins: this is a
+  // "what just happened" indicator, not a log.
+  applyRelayEvent: (payload) =>
+    set((state) => {
+      const uuid = payload?.channel_id;
+      if (!uuid) return state;
+      return {
+        relayEvents: {
+          ...state.relayEvents,
+          [uuid]: {
+            event: payload.event,
+            streamId: payload.stream_id ?? null,
+            clientId: payload.client_id ?? null,
+            reason: payload.reason ?? null,
+            timestamp: payload.timestamp ?? null,
+          },
+        },
+      };
+    }),
 
   setChannelStats: (stats) => {
     return set((state) => {
