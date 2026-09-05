@@ -47,14 +47,28 @@ export function rowsFor(site, fromSha, toSha) {
     for (const m of (site.groups || {})[group] || []) {
       let from = null;
       let to = null;
-      if (m.commits !== null && m.commits !== undefined) {
-        // Snapshot metric: per-sha row value, null when a sha has no row.
+      // R45: `compare_by` is the build step's own branch, published on every
+      // metric entry — reading it is what keeps this fallback and
+      // assemble.py's `compare()` from drifting. `commits !== null` is NOT a
+      // substitute: a coverage metric has per-commit rows just like a
+      // snapshot metric, but they sit at whatever sha the once-daily job
+      // happened to see, so a per-sha lookup misses at both ends and the
+      // whole row reads as "no data". The field is absent in a site.json
+      // built before it existed; the old rule is the right guess there,
+      // since it is wrong only for the daily families.
+      //
+      // Either way a per-sha read needs a commit list to read from; without
+      // one there is nothing to look up, so it falls through to the date rule.
+      const hasCommits = m.commits !== null && m.commits !== undefined;
+      const readBySha = hasCommits && m.compare_by !== 'date';
+      if (readBySha) {
+        // Per-sha row value, null when a sha has no row of its own.
         const bySha = Object.fromEntries(m.commits.map(([sha, , v]) => [sha, v]));
         from = fromSha in bySha ? bySha[fromSha] : null;
         to = toSha in bySha ? bySha[toSha] : null;
       } else {
-        // Derived/coverage metric: forward-filled daily value on each
-        // milestone's date; null when the milestone predates the series.
+        // Forward-filled daily value on each milestone's own date; null when
+        // the milestone predates the series.
         from = valueOnDate(m.daily, fromDate);
         to = valueOnDate(m.daily, toDate);
       }

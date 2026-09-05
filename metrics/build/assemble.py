@@ -15,6 +15,15 @@ almost always miss, leaving these headline tiles null in every pair even
 when the chart itself shows a value. `compare()` therefore reads a
 DAILY_FAMILIES metric the same way as a derived one: the forward-filled
 daily value on each milestone's own calendar date, not a per-sha row.
+
+R45: every metric entry carries `compare_by` ("sha" or "date") saying which
+of those two rules `compare()` applied to it. The UI has its own fallback
+path for arbitrary (non-adjacent) milestone pairs the build step never
+precomputes, and it cannot re-derive the rule from the entry alone: a
+DAILY_FAMILIES metric has a non-null `commits` list just like a snapshot
+metric does, so "commits is not null" picks the wrong branch for it. The
+field is set from `_compare_by()`, the same helper `compare()` reads, so
+the two cannot drift.
 """
 
 from __future__ import annotations
@@ -37,6 +46,21 @@ SPARK_POINTS = 30
 # every push between runs, even though the job is perfectly healthy. Use the
 # age rule for these, same as a derived (event-dump) series.
 DAILY_FAMILIES = {"coverage"}
+
+
+def _compare_by(family: str, commits) -> str:
+    """R45: which rule `compare()` reads this metric's two endpoint values by.
+
+    "sha" - the exact per-sha row value, for a snapshot metric that has one
+    row per push. "date" - the forward-filled daily value on each
+    milestone's own calendar date, for a derived metric (no per-commit rows
+    at all, `commits is None`) or a DAILY_FAMILIES one (R33(2): rows exist,
+    but at whatever sha the once-daily job saw, so a per-sha lookup misses).
+
+    Single source of truth for both the emitted `compare_by` field and
+    `compare()`'s own branch - they cannot disagree.
+    """
+    return "sha" if commits is not None and family not in DAILY_FAMILIES else "date"
 
 
 def _iso(d: dt.date) -> str:
@@ -130,6 +154,7 @@ def build_site(data_dir: Path, curated: Curated, *, repo: Path, base: str, today
             "group": m.group, "headline": m.headline, "note": m.note,
             "daily": [[_iso(d), v] for d, v in zip(dates, daily)],
             "commits": commits,
+            "compare_by": _compare_by(m.family, commits),
             "last_real": last_real.isoformat() if last_real else None,
             "stale": stale,
             "status": status(m.direction, m.target, now, prev, stale),
@@ -177,24 +202,24 @@ def build_site(data_dir: Path, curated: Curated, *, repo: Path, base: str, today
                 date_cache[sha] = None
         return date_cache[sha]
 
-    # R33(2): metrics in a DAILY_FAMILY read by calendar date, same as
-    # derived - see the module docstring.
-    daily_family_ids = {m.id for m in curated.catalogue if m.family in DAILY_FAMILIES}
-
     def compare(sha_a: str, sha_b: str) -> list[dict]:
         rows = []
         for e in series_by_id.values():
-            if e["commits"] is not None and e["id"] not in daily_family_ids:
+            # R45: the entry's own `compare_by`, set by `_compare_by()` above
+            # - reading the field the site.json publishes is what stops this
+            # branch and the UI's fallback from drifting apart. "date" covers
+            # both a derived metric (commits is None) and a DAILY_FAMILIES
+            # one (R33(2)); see the module docstring.
+            if e["compare_by"] == "sha":
                 # Snapshot metric: read its two exact per-sha row values
                 # (R31 keeps this rule) - None when the family has no row
                 # for that particular sha, not "skip this metric".
                 by_sha = {c[0]: c[2] for c in e["commits"]}
                 frm, to = by_sha.get(sha_a), by_sha.get(sha_b)
             else:
-                # Derived (commits is None, per-day not per-commit) or a
-                # DAILY_FAMILY metric (R33(2)): the same forward-filled
-                # daily series the chart draws, read at each milestone's
-                # own calendar date. `date_of` can return None (R33(1)),
+                # compare_by == "date": the same forward-filled daily series
+                # the chart draws, read at each milestone's own calendar
+                # date. `date_of` can return None (R33(1)),
                 # which `_value_at` treats as "no value here", not an error.
                 values = [v for _, v in e["daily"]]
                 frm = _value_at(values, dates, date_of(sha_a))

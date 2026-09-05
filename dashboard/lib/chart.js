@@ -69,11 +69,19 @@ export function block(metric, mode, site, opts = {}) {
     attrs['data-shade'] = `${shade.from}..${shade.to}`;
   }
   const plot = h('div', attrs);
+  // Nothing drawable — no x values at all, or an x for every day but a null
+  // at each one (a catalogued metric whose collector has not reported yet).
+  // uPlot renders that as an empty 160px box with no hint of why, so say so
+  // in words and skip the draw entirely. `data-points` still reports the raw
+  // series length: "0" when there are no x values, the day count when the
+  // series is all gaps.
+  const drawable = ys.some((v) => v !== null && v !== undefined && Number.isFinite(v));
+  if (!drawable) plot.append(h('p', { class: 'empty', text: 'no data yet' }));
   const el = h('div', { class: 'chart-block', 'data-id': metric.id },
     h('h3', { text: metric.label }),
     h('p', { class: 'note', text: metric.note || '' }),
     plot);
-  pending.set(plot, () => draw(plot, metric, mode, xs, ys, labels, shade, marks));
+  if (drawable) pending.set(plot, () => draw(plot, metric, mode, xs, ys, labels, shade, marks));
   return el;
 }
 
@@ -95,12 +103,29 @@ function draw(plot, metric, mode, xs, ys, labels, shade, marks) {
     height: 160,
     tzDate: (ts) => window.uPlot.tzDate(new Date(ts * 1e3), 'Etc/UTC'),
     scales: { x: { time: true } },
+    // uPlot's built-in axis colours are hard-coded near-black: legible on
+    // the light theme, all but invisible against the dark theme's panel.
+    // Drive stroke, ticks and grid from the same CSS variables the rest of
+    // the dashboard uses so both themes get readable axes.
     axes: [
-      // uPlot's own tick formatter defaults to US "8/19"; match the rest of
-      // the dashboard's date style instead. The year is deliberately left
-      // off — the hover readout below already carries the full ISO date.
-      { grid: { show: false }, values: (u, splits) => splits.map((ts) => fmtDate(new Date(ts * 1e3).toISOString())) },
-      { size: 56 },
+      {
+        // uPlot's own tick formatter defaults to US "8/19"; match the rest of
+        // the dashboard's date style instead. The year is deliberately left
+        // off — the hover readout below already carries the full ISO date.
+        stroke: cssVar('--muted'),
+        ticks: { stroke: cssVar('--border') },
+        grid: { show: false },
+        values: (u, splits) => splits.map((ts) => fmtDate(new Date(ts * 1e3).toISOString())),
+      },
+      {
+        size: 56,
+        stroke: cssVar('--muted'),
+        ticks: { stroke: cssVar('--border') },
+        grid: { stroke: cssVar('--border') },
+        // Same formatter as the hover legend below, so a y tick and the
+        // readout beside it never disagree about units.
+        values: (u, splits) => splits.map((v) => fmt(v, metric.unit)),
+      },
     ],
     series: [
       { label: mode === 'commits' ? 'commit' : 'day', value: (u, v, sidx, idx) => xReadout(mode, labels, v, idx) },

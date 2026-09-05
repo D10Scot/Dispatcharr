@@ -58,6 +58,17 @@ describe('explore page', () => {
     expect(root.querySelector('[data-id="codeql_open_critical_high"] .plot').dataset.points).toBe('3');
     expect(root.querySelector('a.active').textContent).toBe('per commit');
   });
+  it('draws a metric with an empty commit list daily, and says so when it has no data at all', () => {
+    // backend_coverage is catalogued but its collector has not reported yet:
+    // `commits` is [] (not null — the family exists) and every daily point
+    // is null. Per-commit mode would otherwise render it as a blank box.
+    render(site, root, new URLSearchParams(''));
+    const plot = root.querySelector('[data-id="backend_coverage"] .plot');
+    expect(plot.dataset.points).toBe('3'); // the daily series, not the empty commit list
+    expect(plot.querySelector('.empty').textContent).toBe('no data yet');
+    // A series with real values keeps its chart and gets no such message.
+    expect(root.querySelector('[data-id="e2e_scenarios"] .plot .empty')).toBeNull();
+  });
   it('honours ?mode=daily', () => {
     render(site, root, new URLSearchParams('mode=daily'));
     expect(root.querySelector('[data-id="e2e_scenarios"] .plot').dataset.points).toBe('18');

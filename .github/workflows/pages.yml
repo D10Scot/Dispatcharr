@@ -36,6 +36,13 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
+    # Least privilege for the build half, narrowing the top-level default:
+    # `contents: read` for the two checkouts, `pull-requests: read` for the
+    # `--check-prs` validation below. Publishing needs more than either and
+    # gets it on the deploy job alone.
+    permissions:
+      contents: read
+      pull-requests: read
     steps:
       - name: Checkout main
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
@@ -63,10 +70,11 @@ jobs:
           .venv/bin/python -m pip install --require-hashes -r metrics/requirements.txt
 
       - name: Validate curated files online and build site.json
-        # --check-prs needs the API; GITHUB_TOKEN is enough for merged-state
-        # reads on this public repo. --ref stays at its default "auto" (R30:
-        # prefers origin/main, else main); no --repo needed since
-        # working-directory is already the main checkout.
+        # --check-prs reads each curated PR's merged state from the API. The
+        # job grants `pull-requests: read` for exactly that; GITHUB_TOKEN
+        # carries no more. --ref stays at its default "auto" (R30: prefers
+        # origin/main, else main); no --repo needed since working-directory
+        # is already the main checkout.
         #
         # A push-triggered run can race the Metrics workflow: if this build
         # starts before HEAD's snapshot row has landed on metrics-data, the

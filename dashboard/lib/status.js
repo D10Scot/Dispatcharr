@@ -85,5 +85,8 @@ export function footer(site) {
   const notes = (site.meta.source_notes || []).join(' · ');
   return h('div', { class: 'foot' },
     h('span', { text: `Data as of: ${fresh || 'none'}${notes ? ` · ⚠ ${notes}` : ''}` }),
-    h('span', { text: `baseline ${shortSha(site.meta.baseline.sha)} · ${site.meta.commit_count} commits · built ${site.meta.built_at.slice(0, 16).replace('T', ' ')} UTC` }));
+    // "snapshots", not "commits": meta.commit_count is the number of `tests`
+    // family rows the collector has appended, which is not the repository's
+    // commit count (see site-contract.md).
+    h('span', { text: `baseline ${shortSha(site.meta.baseline.sha)} · ${site.meta.commit_count} snapshots · built ${site.meta.built_at.slice(0, 16).replace('T', ' ')} UTC` }));
 }

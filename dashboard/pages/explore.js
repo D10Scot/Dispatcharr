@@ -15,8 +15,12 @@ export function render(site, root, params = new URLSearchParams('')) {
     const metrics = site.groups[g] || [];
     if (metrics.length === 0) continue;
     root.append(h('div', { class: 'grp', text: GROUP_LABELS[g] }));
-    // Derived series have no per-commit points; show them daily whatever the toggle says.
-    root.append(h('div', { class: 'chart-grid' }, metrics.map((m) => block(m, m.commits ? mode : 'daily', site))));
+    // Derived series have no per-commit points (`commits` is null), and a
+    // snapshot family that has not reported yet has an empty list — both
+    // draw daily whatever the toggle says, or per-commit mode shows them as
+    // a blank chart with no explanation.
+    root.append(h('div', { class: 'chart-grid' },
+      metrics.map((m) => block(m, m.commits && m.commits.length ? mode : 'daily', site))));
   }
   root.append(footer(site));
   // Charts are only drawn now, with every .plot actually attached to the
