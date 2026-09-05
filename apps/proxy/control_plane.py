@@ -225,23 +225,45 @@ def release_source(identifier, *, stream_id=None, m3u_profile_id=None, channel_p
     return bool(answer.get("released"))
 
 
+# Whether the last attempt to post an event batch failed. Module-level,
+# mirroring StreamManager's per-channel _failover_degraded (Task 8) but
+# scoped to the whole relay process rather than one channel, because the
+# endpoint it tracks -- POST /api/relay/events -- is the same one for
+# every channel. A stream_stats flush fires every 30s per channel plus on
+# every parsed codec line, so a real Django outage would otherwise write
+# one WARNING/ERROR per failed batch; this flag caps it to one line per
+# transition into and out of the outage instead.
+_events_down = False
+
+
 def post_events(events):
     """POST one batch of events. Never raises — both exception types are
     swallowed here so a caller that wants fire-and-forget delivery (see
     emit_event) gets it; a caller that wants to know about a failure
     reads the boolean.
     """
+    global _events_down
     try:
         _post("/api/relay/events", {"events": events})
-        return True
     except ControlPlaneUnavailable as exc:
-        logger.warning("Could not post %d relay event(s): %s", len(events), exc)
+        if _events_down:
+            logger.debug("Could not post %d relay event(s): %s", len(events), exc)
+        else:
+            logger.warning("Could not post %d relay event(s): %s", len(events), exc)
+            _events_down = True
         return False
     except ControlPlaneRefused as exc:
-        logger.error(
-            "Relay events refused with status %s", exc.status
-        )
+        if _events_down:
+            logger.debug("Relay events refused with status %s", exc.status)
+        else:
+            logger.error("Relay events refused with status %s", exc.status)
+            _events_down = True
         return False
+    else:
+        if _events_down:
+            logger.info("Relay events reachable again after an outage")
+            _events_down = False
+        return True
 
 
 def emit_event(event_type, channel_id=None, channel_name=None, **details):

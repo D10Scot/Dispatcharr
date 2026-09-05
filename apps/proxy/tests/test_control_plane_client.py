@@ -116,6 +116,11 @@ class _ControlPlaneTestCase(SimpleTestCase):
         self.sleep = sleep_patcher.start()
         self.addCleanup(sleep_patcher.stop)
 
+        # post_events' outage-suppression flag (module-level, process-wide)
+        # must not leak between tests regardless of run order.
+        control_plane._events_down = False
+        self.addCleanup(setattr, control_plane, "_events_down", False)
+
 
 class PostTransportTests(_ControlPlaneTestCase):
     def test_both_internal_headers_are_sent(self):
@@ -415,3 +420,65 @@ class EmitEventTests(_ControlPlaneTestCase):
                 ]
             },
         )
+
+
+class PostEventsOutageLogSuppressionTests(_ControlPlaneTestCase):
+    """Task 10 review, Minor: a Django outage must log once, not per batch.
+
+    stream_stats alone flushes every 30s per channel plus on every parsed
+    codec line, so logging at WARNING/ERROR on every failed post_events
+    call would flood the log for the duration of an outage.
+    """
+
+    def test_second_consecutive_outage_logs_at_debug_not_warning(self):
+        self.requests.request.side_effect = self.requests.ConnectionError("boom")
+
+        with self.assertLogs("apps.proxy.control_plane", "WARNING") as first:
+            control_plane.post_events([{"type": "channel_start"}])
+        self.assertTrue(any("WARNING" in line for line in first.output))
+
+        with self.assertLogs("apps.proxy.control_plane", "DEBUG") as second:
+            control_plane.post_events([{"type": "channel_start"}])
+        self.assertFalse(any("WARNING" in line for line in second.output))
+        self.assertTrue(any("DEBUG" in line for line in second.output))
+
+    def test_second_consecutive_refusal_logs_at_debug_not_error(self):
+        self.requests.request.return_value = _response(403)
+
+        with self.assertLogs("apps.proxy.control_plane", "ERROR") as first:
+            control_plane.post_events([{"type": "channel_start"}])
+        self.assertTrue(any("ERROR" in line for line in first.output))
+
+        with self.assertLogs("apps.proxy.control_plane", "DEBUG") as second:
+            control_plane.post_events([{"type": "channel_start"}])
+        self.assertFalse(any("ERROR" in line for line in second.output))
+
+    def test_recovery_after_an_outage_logs_one_info_line(self):
+        self.requests.request.side_effect = self.requests.ConnectionError("boom")
+        control_plane.post_events([{"type": "channel_start"}])
+        self.assertTrue(control_plane._events_down)
+
+        self.requests.request.side_effect = None
+        self.requests.request.return_value = _response(200, {"ok": True})
+
+        with self.assertLogs("apps.proxy.control_plane", "INFO") as logs:
+            result = control_plane.post_events([{"type": "channel_start"}])
+
+        self.assertTrue(result)
+        self.assertFalse(control_plane._events_down)
+        self.assertTrue(any("reachable again" in line for line in logs.output))
+
+    def test_a_fresh_outage_after_recovery_logs_at_warning_again(self):
+        self.requests.request.side_effect = self.requests.ConnectionError("boom")
+        control_plane.post_events([{"type": "channel_start"}])
+
+        self.requests.request.side_effect = None
+        self.requests.request.return_value = _response(200, {"ok": True})
+        control_plane.post_events([{"type": "channel_start"}])
+        self.assertFalse(control_plane._events_down)
+
+        self.requests.request.side_effect = self.requests.ConnectionError("boom again")
+        self.requests.request.return_value = None
+        with self.assertLogs("apps.proxy.control_plane", "WARNING") as logs:
+            control_plane.post_events([{"type": "channel_start"}])
+        self.assertTrue(any("WARNING" in line for line in logs.output))
