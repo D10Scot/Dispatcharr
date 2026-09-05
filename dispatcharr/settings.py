@@ -24,6 +24,13 @@ def _validate_tls_cert_paths(paths, service_name):
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 SECRET_KEY = os.environ.get("DJANGO_SECRET_KEY")
+
+# The relay this deployment's authorize hop names in X-Relay-Name. One
+# relay exists in Phase 1 and the value is always "py"; nginx maps it to
+# an upstream group, so Phase 2's canary is a map entry rather than a code
+# change on either side (ADR 0005).
+RELAY_DEFAULT_NAME = os.environ.get("DISPATCHARR_RELAY_DEFAULT_NAME", "py")
+
 REDIS_HOST = os.environ.get("REDIS_HOST", "localhost")
 REDIS_PORT = int(os.environ.get("REDIS_PORT", 6379))
 REDIS_DB = os.environ.get("REDIS_DB", "0")

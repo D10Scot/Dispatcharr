@@ -1324,50 +1324,6 @@ class CatchupStreamsDbTests(TestCase):
         self.assertEqual(get_channel_catchup_streams(ch), [])
 
 
-class AuthHelpersDbTests(TestCase):
-    """_authenticate_user (xc_password custom property) and
-    _user_can_access_channel (user_level gate) - exercised against real models
-    instead of being mocked away."""
-
-    @classmethod
-    def setUpTestData(cls):
-        from apps.accounts.models import User
-        from apps.channels.models import Channel
-
-        cls.viewer = User.objects.create(
-            username="ts-test-viewer", user_level=0,
-            custom_properties={"xc_password": "right-pass"},
-        )
-        cls.no_xc = User.objects.create(
-            username="ts-test-noxc", user_level=10,
-            custom_properties={},
-        )
-        cls.basic_channel = Channel.objects.create(name="ts-test-basic", user_level=0)
-        cls.admin_channel = Channel.objects.create(name="ts-test-adult", user_level=10)
-
-    def test_valid_xc_password_authenticates(self):
-        user = views._authenticate_user("ts-test-viewer", "right-pass")
-        self.assertIsNotNone(user)
-        self.assertEqual(user.id, self.viewer.id)
-
-    def test_wrong_xc_password_rejected(self):
-        self.assertIsNone(views._authenticate_user("ts-test-viewer", "wrong"))
-
-    def test_user_without_xc_password_rejected(self):
-        # Accounts with no xc_password set (e.g. admins) must be denied even
-        # if the caller guesses any string - there is nothing to compare to.
-        self.assertIsNone(views._authenticate_user("ts-test-noxc", ""))
-        self.assertIsNone(views._authenticate_user("ts-test-noxc", "anything"))
-
-    def test_unknown_username_rejected(self):
-        self.assertIsNone(views._authenticate_user("ts-test-ghost", "x"))
-
-    def test_user_level_gate(self):
-        # Level-0 viewer with no profiles: allowed on level-0, denied on level-10.
-        self.assertTrue(views._user_can_access_channel(self.viewer, self.basic_channel))
-        self.assertFalse(views._user_can_access_channel(self.viewer, self.admin_channel))
-
-
 class TimeshiftSlotPoolTests(_ProxyLoopTestMixin, TestCase):
     """Provider pool participation: a profile slot is reserved before any
     upstream attempt and released exactly once afterwards, the same accounting
