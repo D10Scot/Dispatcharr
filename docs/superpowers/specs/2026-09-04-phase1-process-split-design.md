@@ -425,7 +425,7 @@ The Main ruleset requires `E2E result`, `Lifecycle result`, `Backend result`, `F
 | **D3** | **`DISPATCHARR_ROLE` ∈ {`all`, `api`, `relay`, `worker`}**, orthogonal to `DISPATCHARR_ENV` ∈ {`aio`, `modular`, `dev`}. AIO defaults to `all` and modular defaults to `api`, because every deployment predating this variable sets only `DISPATCHARR_ENV`; the modular compose file states `api`/`relay`/`worker` explicitly anyway. There is no modular `all`, and no non-modular `api`, `relay` or `worker`; the entrypoint rejects all four. | `DISPATCHARR_ENV` answers "where do Postgres and Redis run"; `DISPATCHARR_ROLE` answers "which programs does supervisord start in *this* container". Conflating them would need a third value nothing else reads. Defaulting a modular deployment to `all` would load `[program:postgres]` against an uninitialised `/data/db` and land in `FATAL`, plus a stray Redis and a duplicated Celery set. |
 | **D4** | **Every long-lived response surface moves to the relay in one PR (PR 4)**, not just live TS: VOD, catch-up and all six XC streaming root forms together. | If VOD or catch-up stay on the API process, `harakiri = 120` kills a two-hour movie at two minutes and the timeout the split exists to enable never applies. The route page calls this "free in step 1"; it is the point of step 1, not scope creep. |
 | **D5** | **The relay's uWSGI has exactly one listener, `socket = 0.0.0.0:5657` (uwsgi protocol). No `http =` listener.** | The relay's byte path (PR 4) and its control API (PR 7, `/proxy/relay/…`) are both plain Django views reached through nginx `uwsgi_pass` — the directive family `CLAUDE.md` records as load-bearing for `uwsgi_buffering off`. D9 routes Django's control calls through nginx as well, so nothing ever dials a raw HTTP port on the relay. This diverges from the brief's tentative "add `http = 127.0.0.1:5658`". |
-| **D6** | **`get_dvr_stream_base_url()`'s AIO/dev/debug branch changes from `http://127.0.0.1:5656` to `http://127.0.0.1:{DISPATCHARR_PORT:-9191}`** (nginx); the modular and explicit-override branches are unchanged. | The DVR fetches `/proxy/ts/stream/<uuid>` exactly like a player. Once PR 5 puts that route behind the authorize hop, a recording that bypasses nginx bypasses authorization. `apps/channels/tests/test_dvr_port_resolution.py`'s four `5656` assertions change in the same PR. |
+| **D6** | **`get_dvr_stream_base_url()`'s AIO branch changes from `http://127.0.0.1:5656` to `http://127.0.0.1:{DISPATCHARR_PORT:-9191}`** (nginx). **`dev` becomes its own branch and keeps `http://127.0.0.1:5656`**; the modular and explicit-override branches are unchanged. | The DVR fetches `/proxy/ts/stream/<uuid>` exactly like a player. Once PR 5 puts that route behind the authorize hop, a recording that bypasses nginx bypasses authorization. `dev` is the exception because there is nothing to go through: `docker/supervisord/all-dev.conf`'s `[include]` names `vite.conf`, not `nginx.conf`, and `frontend/vite.config.js` proxies only `/api` and `/ws` — a DVR fetch on `DISPATCHARR_PORT` there would record vite's `index.html`. **PR 5 must design for this**: in `dev` (and `debug`, which sets `DISPATCHARR_ENV=dev` as well) a recording still bypasses the authorize hop. `apps/channels/tests/test_dvr_port_resolution.py` has **three** `5656` assertions, not four; two become `9191` and the `dev` one stays. |
 | **D7** | **`^~` goes on every specific non-root prefix location, never on `/`.** The four `proxy_cache` regexes move inside a new `location ^~ /api/ { … }`; the admin regex stays ahead of the XC regex; exact (`=`) locations carry no `^~`. | `^~` on `/` would disable every regex in the file, including the XC three-segment regex the change exists to add, the admin→`/login` redirect and all four image caches — `/` is the longest matching prefix for any URI no other prefix claims. Nesting the cache regexes inside `^~ /api/` keeps them reachable while `^~` protects `/api/`. SPA deep links that happen to be three segments with no trailing slash reach the same urlconf as the XC regex, courtesy of D1 — but D1 alone does not make them serve correctly: `stream_xc`'s `get_object_or_404(User, ...)` 404s on any non-matching username, and DRF's exception handler absorbs that `Http404` before Django's catch-all ever sees it. PR 2 narrows the XC pattern's `channel_id` segment (`dispatcharr/urls.py`, sharing the shape `dispatcharr/utils.py` already used privately for log redaction, now exported as `XC_STREAM_ID_PATTERN`) to the numeric-with-optional-extension shape a real Xtream stream id has, so a same-shaped SPA path falls through to the SPA catch-all instead; PR 2's test pins the fixed behaviour. |
 | **D8** | **`authorize_stream(request, surface, ...)` lives at `apps/proxy/authorize.py`, no new Django app.** Two callers: nginx `auth_request` (production) and an inline call from the stream views when the nginx marker is absent (dev `runserver`). | `apps/proxy/` already has a discovered test label (`apps.proxy.tests`), so a new module there is covered by CI routing on day one; a new app with no `tests/` dir selects zero backend tests silently. One function behind two callers makes "same gate everywhere" a property of the code. |
 | **D9** | **One internal base-URL resolver, shared by both directions.** `get_relay_control_base_url()` (Django→relay) and `get_control_plane_base_url()` (relay→Django) are two thin wrappers over one function using the DVR formula: explicit override (`DISPATCHARR_RELAY_BASE_URL` and `DISPATCHARR_INTERNAL_API_BASE_URL` respectively) → modular `http://{HOST}:{DISPATCHARR_PORT:-9191}` → AIO `http://127.0.0.1:{DISPATCHARR_PORT:-9191}`, with `HOST` being `DISPATCHARR_RELAY_HOST` (default `relay`) or `DISPATCHARR_WEB_HOST` (default `web`) respectively. **`/proxy/relay/` is gated by the internal token alone, with no source-IP allowlist.** | Two of the four roles have no local nginx to loop back to. The `worker` role runs `core/tasks.py:424 fetch_channel_stats`, `apps/m3u/tasks.py:62 ChannelService.stop_channels` and `apps/channels/tasks.py:2377`, and in modular it must reach the relay across the compose network; a loopback address would be connection-refused and `allow 127.0.0.1; deny all;` would reject its source address anyway. A source-IP allowlist does not survive a compose network, so the token is the whole gate. This replaces the earlier draft's "always the caller's local nginx" and the brief's Django-side `RELAYS` dict. |
@@ -510,6 +510,7 @@ location ^~ /api/ {
     location ~ ^/api/vod/vodlogos/(?<logo_id>\d+)/cache/            { proxy_cache … }
     location ~ ^/api/vod/(movies|series|episodes)/(?<vod_id>\d+)/image/ { proxy_cache … }
     location ~ ^/api/epg/programs/(?<prog_id>\d+)/poster/           { proxy_cache … }
+    location ~ ^/api/channels/recordings/\d+/file/$                  { relay }   # long-lived; see below
 }
 location ^~ /assets/            { static }
 location ^~ /static/            { static }
@@ -1132,28 +1133,55 @@ resolve it, and each exists because a simpler arrangement provably does not boot
   `all.conf`, `all-dev.conf` and `relay.conf` (there is no separate debug rung — PR 3's five-rung
   design, D2); `api.conf` (`api-uwsgi`, `daphne`, `nginx`) and `relay.conf` (`relay-uwsgi` only,
   D14) start being used as whole files for the first time here. `docker/init/04-check-hwaccel.sh`
-  runs in the `all` and `api` roles only (PR 3's one-shot gate); the `relay` role, which is what
-  will actually spawn ffmpeg from PR 4 on, gets no hardware-acceleration report. Recorded here so
-  the gap is a deliberate PR 4 decision rather than a rediscovery.
+  moves out of PR 3's `all`/`api` one-shot gate into its own
+  `if [[ "$DISPATCHARR_ROLE" != "worker" ]]` block, run after the migrate/wait branch rather than
+  inside it, so the `relay` role — which is what actually spawns ffmpeg from PR 4 on — gets the
+  report too. **This reverses PR 3's note**, which recorded the gap as a deliberate PR 4
+  decision; PR 4 is where that decision gets made, and it goes the other way. The script is pure diagnostics
+  (`lspci`, `ffmpeg -hwaccels`, `vainfo` — every line an `echo`, nothing consumed downstream), so
+  running it in one more role costs boot log and nothing else, and a relay container that cannot
+  reach the GPU is exactly the container an operator needs told about.
 - `docker/nginx.conf`: the full location table in § Architecture, minus the `auth_request` block
   and minus the `map`. PR 4 writes `upstream relay_py { server RELAY_UPSTREAM; }` and
   `uwsgi_pass relay_py;` directly — there is no `X-Relay-Name` header to key a `map` on until PR 5,
   and a one-branch `map` on a constant would be noise a reader has to disprove.
+  **The table's `^~ /api/` block carries a fifth nested regex**,
+  `location ~ ^/api/channels/recordings/\d+/file/$`, sending `GET
+  /api/channels/recordings/<pk>/file/` to the relay with `uwsgi_buffering off` and the same
+  read/send timeouts every other relay-bound location has. `RecordingViewSet.file`
+  (`apps/channels/api_views.py`, routed by `apps/channels/api_urls.py`'s `DefaultRouter`,
+  `trailing_slash=True`) returns a `StreamingHttpResponse` over the recorded MKV/MP4 with Range
+  support and is played back by the DVR UI — hours, not seconds, and therefore the one response
+  on the API that this PR's `harakiri = 120` would kill, taking its gevent worker's other ~400
+  in-flight requests with it. Routing keeps the same urlconf, view and DRF authentication (D1)
+  and changes nothing under `apps/channels/` (D10). Its sibling
+  `recordings/<pk>/hls/<seg_path>` stays on the API: HLS segments are small files, not one long
+  response.
   `docker/init/03-init-dispatcharr.sh` gains a `RELAY_UPSTREAM` `sed` beside the `NGINX_PORT` one
   at `:64` (inside the same role gate PR 3 added), plus a numeric guard on
   `DISPATCHARR_RELAY_PORT` matching the existing `DISPATCHARR_PORT` guard. Extend
   `tests/streaming-greybox/nginx-stream-buffering.spec.ts`'s location filter (`/proxy/` today) to
   every relay-bound location this PR adds, so the buffering-directive pin keeps covering the whole
   relay surface, not just the one route it happened to be written against.
-- `apps/channels/tasks.py`: `get_dvr_stream_base_url()`'s AIO/dev/debug branch per D6.
-  `apps/channels/tests/test_dvr_port_resolution.py`: the four `5656` assertions become `9191`, and
-  a fifth test pins that `DISPATCHARR_PORT` is honoured in AIO.
+- `apps/channels/tasks.py`: `get_dvr_stream_base_url()`'s AIO branch per D6, with `dev` split out
+  into its own branch that keeps `127.0.0.1:5656`.
+  `apps/channels/tests/test_dvr_port_resolution.py` has **three** `5656` assertions, not four
+  (`test_aio_default_uses_localhost_5656`, `test_aio_explicit_uses_localhost_5656`,
+  `test_dev_mode_uses_localhost_5656`): the two AIO ones become `9191`, the `dev` one keeps `5656`
+  under a docstring saying why, and a fourth test pins that `DISPATCHARR_PORT` is honoured in AIO.
 - `docker/docker-compose.yml`: new `relay` service — same image, `DISPATCHARR_ROLE=relay`,
   `DISPATCHARR_ENV=modular`, **`./data:/data`** (D11: without it the relay generates its own
   `SECRET_KEY` and every internal call 403s), `POSTGRES_HOST=db`, `REDIS_HOST=redis`, no published
-  ports, `depends_on` db and redis `service_healthy`. `web` gains `DISPATCHARR_ROLE=api` and
-  `DISPATCHARR_RELAY_HOST=relay`. `docker/docker-compose.yml:191`'s `5436:5432` publish is **not**
-  touched (carried; see § Requirements).
+  ports, `depends_on` db and redis `service_healthy`, and `stop_grace_period: 160s` — the value
+  PR 3 set uniformly on every supervisord-backed service in this file, sized to the sum of a
+  rung's `stopwaitsecs`, not tuned per-service. `web` gains `DISPATCHARR_RELAY_HOST=relay` (its
+  `DISPATCHARR_ROLE=api` was already added by PR 3) **and `depends_on: relay: condition:
+  service_started`**: nginx resolves `upstream relay_py { server relay:5657; }` **once, at config
+  load**, so a `web` container that starts with no `relay` in DNS fails with "host not found in
+  upstream" and `[program:nginx]` goes BACKOFF then FATAL — taking the whole API surface down, not
+  just streaming. The corollary for operators: recreating the relay with a new IP needs
+  `nginx -s reload` in the web container. `docker/docker-compose.yml:191`'s `5436:5432` publish is
+  **not** touched (carried; see § Requirements).
 - `docker/tests/test-puid-pgid.sh`: new `test_role_split`, modelled on `test_modular_mode`
   (`:980-1046`). It is the only test in the programme that exercises the modular relay hop; a
   Playwright project cannot do it, because `scripts/e2e_up.sh:247` is a single `docker run` with
