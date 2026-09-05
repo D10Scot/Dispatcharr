@@ -130,3 +130,13 @@ class RedisKeys:
         """Sorted set mapping fragment receive-timestamps to fragment indices."""
         return f"live:channel:{channel_id}:output:{fmt}:buffer:chunk_timestamps"
 
+    @staticmethod
+    def channel_source_cache(channel_id):
+        """Resolved failover candidates, cached at channel start.
+
+        Read only when the control plane is unreachable at failover time
+        (Phase 1 PR 6's degraded fallback): the entries are stale, carry no
+        slot reservation, and are used unenforced.
+        """
+        return f"live:channel:{channel_id}:source_cache"
+
