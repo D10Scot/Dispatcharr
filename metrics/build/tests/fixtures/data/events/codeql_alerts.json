@@ -1,0 +1,6 @@
+{"kind": "codeql_alerts", "fetched_at": "2026-09-05T06:05:00+00:00", "repo": "o/r", "status": "ok", "detail": null, "records": [
+ {"id": 1, "state": "open", "created_at": "2026-08-23T16:00:00Z", "fixed_at": null, "dismissed_at": null, "dismissed_reason": null, "rule_id": "py/full-ssrf", "severity": "critical", "tool": "CodeQL", "path": "a.py"},
+ {"id": 2, "state": "fixed", "created_at": "2026-08-28T19:12:00Z", "fixed_at": "2026-09-03T21:11:00Z", "dismissed_at": null, "dismissed_reason": null, "rule_id": "py/clear-text-logging-sensitive-data", "severity": "high", "tool": "CodeQL", "path": "b.py"},
+ {"id": 3, "state": "dismissed", "created_at": "2026-08-23T16:00:00Z", "fixed_at": null, "dismissed_at": "2026-08-30T00:00:00Z", "dismissed_reason": "false positive", "rule_id": "py/path-injection", "severity": "high", "tool": "CodeQL", "path": "c.py"},
+ {"id": 4, "state": "open", "created_at": "2026-08-23T16:00:00Z", "fixed_at": null, "dismissed_at": null, "dismissed_reason": null, "rule_id": "PinnedDependenciesID", "severity": "medium", "tool": "Scorecard", "path": ".github/workflows/x.yml"}
+]}

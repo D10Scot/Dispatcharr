@@ -113,18 +113,36 @@ Three YAML files under `metrics/curated/`. All are validated by the build step, 
 
 One entry per metric the dashboard may show. Anything a collector emits that is not catalogued is stored but never rendered, so **adding a metric means adding an entry.**
 
+A snapshot-family entry points `path` at a JSON pointer into the row; a
+`derived` entry names a `derivation` from `metrics/build/derive.py`'s
+`DERIVATIONS` instead, with its arguments in `params` — the two are never
+mixed on one entry:
+
 ```yaml
 - id: e2e_scenarios
   family: tests                      # snapshot family, or "derived"
-  path: /e2e_scenario_count          # JSON pointer into the row's metrics, or a derivation name
+  path: /e2e_scenario_count          # JSON pointer into the row's metrics (snapshot families only)
   label: E2E scenarios
-  unit: count                        # count | pct | seconds | days | score | lines
+  unit: count                        # count | pct | seconds | days | score | lines | ratio
   direction: up                      # up | down | zero | info
   target: null                       # number or null
   group: safety_net                  # safety_net | security | extraction | delivery | agents
   headline: true
   since: 2026-08-19                  # first date the series is meaningful
   note: "Playwright test() call sites under e2e/tests/**/*.spec.ts, counted by regex; test.fail() pins count."
+
+- id: codeql_open_critical_high
+  family: derived                    # a "derived" entry has no `path`
+  derivation: codeql_open_count      # a name in metrics/build/derive.py's DERIVATIONS
+  params: {severities: [critical, high]}
+  label: Open CodeQL critical + high
+  unit: count
+  direction: zero
+  target: null
+  group: security
+  headline: true
+  since: 2026-08-23
+  note: "Open code-scanning alerts at security severity critical or high, as of each day."
 ```
 
 Rules:
@@ -138,27 +156,45 @@ Initial headline set (twenty entries, four per group; the full catalogue is larg
 | Group | Headline metrics |
 |---|---|
 | Safety net | E2E scenarios; backend line coverage (target 60); frontend line coverage (target 75); known bugs pinned by a test (from the defect ledger, `pinned` count) |
-| Security | open CodeQL critical+high (target 0); age in days of the oldest open critical/high (target < 30); OpenSSF Scorecard (target 8.0); zizmor findings (zero) |
+| Security | open CodeQL critical+high (target 0); age in days of the oldest open critical/high (target < 30); OpenSSF Scorecard (target 8.0); open Scorecard findings (target 0) |
 | Extraction readiness | reverse imports into `apps/proxy` (target 0 by end of Phase 1); import cycles (target 0); `models.py` module-level `live_proxy` imports (zero); `apps/proxy` ORM writes (target 0) |
 | Delivery | trailing-30-day CI pass rate across required workflows; median E2E wall time; PR lead time p50; product-vs-scaffolding line ratio per merged PR (info) |
 | Agent pipeline | open `needs-triage`; median time to triage (target < 3 days); PRs merged by agents in trailing 30 days; fixed defects (ledger `fixed` count) |
 
+**Amendment (Part B):** the Security row's fourth headline is "open Scorecard
+findings (target 0)", not "zizmor findings (zero)" as originally specified.
+Nothing in this repo uploads a zizmor SARIF to GitHub's code-scanning API, so
+no series exists for a zizmor-findings metric to read. `scorecard.yml`
+uploads one SARIF finding per failing Scorecard check to the same
+code-scanning API CodeQL uses, so the catalogue entry
+(`scorecard_findings_open`) reuses the `codeql_open_count` derivation with
+`params: {tools: [Scorecard]}` rather than adding a new derivation.
+
 ### 5.2 `milestones.yml`
 
-One entry per event worth a line on a chart.
+Two top-level keys. `phases:` declares the phase timeline the Story page
+walks; `milestones:` is one entry per event worth a line on a chart, each
+naming the phase it belongs to.
 
 ```yaml
-- sha: 75a68555b931e7d088bfbbd859b35e6e27064312   # full; must be first-parent on main
-  label: Phase 0 done
-  kind: phase-done          # phase-start | phase-done | goal | incident | release
-  phase: 0                  # 0 | 1 | 2 | 3, or "e2e" / "investigate" for the pre-phase work
-  pr: 155
-  summary: "All six Phase 0 items merged; the ruleset requires four result aggregates."
+phases:
+  - id: phase0                       # referenced by milestones[].phase and catalogue phases[].headline_ids
+    label: Phase 0
+    summary: "Harden in place: six small PRs in one day."   # two sentences max
+    headline_ids: [codeql_open_critical_high, ci_pass_rate_required, defects_fixed]
+
+milestones:
+  - sha: 75a68555b931e7d088bfbbd859b35e6e27064312   # full; must be first-parent on main
+    label: Phase 0 done
+    kind: phase-done          # phase-start | phase-done | goal | incident | release
+    phase: phase0             # a `phases[].id` declared above
+    pr: 155
+    summary: "All six Phase 0 items merged; the ruleset requires four result aggregates."
 ```
 
-`date` is derived from the commit, never stored. Validation: `sha` is on `main` (first-parent), `pr` exists and is merged, `kind` and `phase` in vocabulary, `label` ≤ 40 chars, `summary` one sentence.
+`date` is derived from the commit, never stored. Validation: `sha` is on `main` (first-parent), `pr` exists and is merged, `kind` in vocabulary, `phase` names a declared `phases[].id`, `label` ≤ 40 chars, `summary` one sentence; every `phases[].headline_ids` entry is a real `catalogue.yml` id.
 
-**When an agent adds an entry:** a spec's Done log gets its final tick (`phase-done`), a goal's PR merges (`goal`), a release is tagged (`release`), a security incident is fixed (`incident`), a phase's spec is committed (`phase-start`). **Never** edit a past entry's `sha` or `kind`; correct `summary` or `label` freely.
+**When an agent adds an entry:** a spec's Done log gets its final tick (`phase-done`), a goal's PR merges (`goal`), a release is tagged (`release`), a security incident is fixed (`incident`), a phase's spec is committed (`phase-start` — which also means declaring the phase itself under `phases:`, with `headline_ids` naming the two or three catalogue metrics it's meant to move). **Never** edit a past entry's `sha` or `kind`; correct `summary` or `label` freely.
 
 The first version is seeded from the inventory in Appendix A (baseline, PR #2 guardrails, PR #4 supply chain, the fifteen e2e goals, the three metrics PRs, Phase 0 start/done).
 
@@ -172,7 +208,8 @@ One entry per item in CLAUDE.md's "Known defects and traps".
   area: correctness         # security | correctness | dead-code | operational
   severity: high            # critical | high | medium | low
   status: open              # open | pinned | carried | fixed
-  issue: 61                 # required for open, pinned
+  source: null              # CLAUDE.md anchor; required for open when there is no issue yet
+  issue: 61                 # required for open when there is no source, and for pinned
   test: null                # path; required for pinned
   fixed_in: null            # PR number; required for fixed
   carried_as: null          # spec section reference; required for carried
@@ -180,9 +217,9 @@ One entry per item in CLAUDE.md's "Known defects and traps".
   status_changed: 2026-08-22
 ```
 
-Status moves only forward along `open → pinned → fixed` or `open → carried`; `carried → fixed` is also allowed (a constraint that later gets a real fix). The validator checks the required-by-status fields, that `test` exists in the tree, that `fixed_in` is a merged PR, and that no status moves backward relative to the committed version on `main`.
+Status moves only forward along `open → pinned → fixed` or `open → carried`; `carried → fixed` is also allowed (a constraint that later gets a real fix), and so is `open → fixed` directly (a defect fixed without ever being pinned by a test). The validator checks the required-by-status fields — `open` needs `issue` **or** `source` (not both: a defect surfaced straight into CLAUDE.md before it ever got an issue points `source` at the CLAUDE.md heading instead), `pinned` needs `issue` **and** `test`, `carried` needs `carried_as`, `fixed` needs `fixed_in` — that `test` exists in the tree, that `fixed_in` is a merged PR, and that no status moves backward relative to the committed version on `main`.
 
-**When an agent updates an entry:** a PR that closes the linked issue moves it to `fixed` with `fixed_in`; a `test.fail()` pin or backend test added for it moves it to `pinned` with `test`; a spec that lists it as a constraint the extracted relay must not recreate moves it to `carried` with `carried_as`. The gh-aw remediation workflow's prompt gets one sentence telling it to update the ledger when it closes an issue that has an entry.
+**When an agent updates an entry:** a PR that closes the linked issue moves it to `fixed` with `fixed_in`; a `test.fail()` pin or backend test added for it moves it to `pinned` with `test`; a spec that lists it as a constraint the extracted relay must not recreate moves it to `carried` with `carried_as`. **Amendment (Part B):** the gh-aw `issue-remediation` workflow's prompt does not move the entry itself — its draft PR's body is written in the same step that creates the PR, before a PR number exists, and `fixed` requires `fixed_in`. Instead it adds a `Ledger: <defect id> -> fixed` line to the PR body, and the merger applies the ledger change (`status: fixed`, `fixed_in`, `status_changed`) by hand at merge time.
 
 ### 5.4 Where the contract lives
 
@@ -200,18 +237,18 @@ python -m metrics.build --validate-only --curated metrics/curated   # hook and c
 Four stages:
 
 1. **Load and validate.** Read every snapshot family, every event dump plus its history sidecar, then the three curated files. Failures are collected and reported together; exit non-zero on any. Missing data is not an error: a family with no rows yields empty series so the site builds on day one.
-2. **Derive.** Each derivation is a pure function named in the catalogue's `path`. The set for this design:
-   - `codeql_open_by_severity(date)` — created ≤ D and not (fixed ≤ D or dismissed ≤ D)
-   - `codeql_oldest_open_age_days(date, severities)`
+2. **Derive.** Each derivation is a pure function of `(events, defects, day, params)`, named by its catalogue entry's `derivation` field and registered in `metrics/build/derive.py`'s `DERIVATIONS`. As implemented:
+   - `codeql_open_count` — created ≤ D and not (fixed ≤ D or dismissed ≤ D)
+   - `codeql_oldest_open_age_days`
    - `codeql_fixed_per_week`
-   - `scorecard_score`, `scorecard_check(name)`
-   - `ci_pass_rate_30d(workflow | required_set)`, `ci_median_wall_time_30d(workflow)`
-   - `pr_lead_time_30d(p50 | p90, author_type)` — human/agent heuristic as in today's `collect_delivery.py` docstring
-   - `pr_product_ratio` — lines under `apps/` over all lines, per merged PR and rolling
-   - `issues_open_by_label(date, label)`, `issues_time_to_triage_median_30d`
-   - `defects_by_status`
-   - `forward_fill(family, path)` — for daily-only fields
-3. **Align to a daily calendar.** Every series is resampled to one point per day from the baseline date to today, last value on or before that day. Per-commit resolution is kept as a second series for Explore.
+   - `scorecard_score`, `scorecard_check` (params: `name`)
+   - `ci_pass_rate_30d`, `ci_median_wall_time_30d` (params: `workflow(s)`)
+   - `pr_lead_time_30d` (params: `quantile`, `author_type`) — human/agent heuristic as in `derive.py`'s `_is_agent` docstring
+   - `prs_merged_30d` (params: `author_type`)
+   - `pr_product_ratio_30d` — each merged PR's (additions + deletions) weighted by the fraction of its changed files under `apps/`, summed over PRs merged in the trailing 30 days. An approximation: the dump keeps file paths, not per-file line counts, so a PR touching both product and non-product files splits its total lines by file-count share, not by which lines actually changed where
+   - `issues_open_by_label` (params: `label`), `issues_time_to_triage_median_30d`
+   - `defects_by_status` (params: `status`)
+3. **Align to a daily calendar.** Every series is resampled to one point per day from the baseline date to today, last value on or before that day (`forward_fill` in `metrics/build/calendar_.py` — a calendar helper used by every family and derivation, not itself a derivation with a catalogue entry). Per-commit resolution is kept as a second series for Explore.
 4. **Emit `site.json`.**
 
 ```
@@ -219,13 +256,13 @@ meta:      built_at, baseline {sha, date}, freshness {family: last_real_point}, 
 headline:  [ {id, label, unit, direction, target, group, now, at_baseline, at_prev_milestone,
               status: good|bad|neutral|stale, spark: [30 daily points]} ]
 groups:    { group: [ {id, ..., daily: [[date, value]], commits: [[sha, date, value]]} ] }
-phases:    [ {phase, label, start, end|null, summary, milestones: [...], headline_ids: [...]} ]
+phases:    [ {id, label, start, end|null, summary, milestones: [...], headline_ids: [...]} ]
 milestones:[ {sha, date, label, kind, phase, pr, summary} ]
 defects:   { entries: [...], by_status_daily: [[date, {open, pinned, carried, fixed}]] }
-compare:   { "<sha_a>..<sha_b>": [ {id, from, to, delta, good: true|false|null} ] }   # adjacent milestone pairs precomputed; arbitrary pairs computed client-side from groups
+compare:   { "<sha_a>..<sha_b>": [ {id, from, to, delta, good: true|false|null} ] }   # adjacent milestone pairs precomputed, plus baseline..latest; every catalogue metric gets a row (null from/to/delta/good when it has none at that end) - a snapshot metric reads its two exact per-sha values, a derived metric has no per-commit row and instead reads its forward-filled daily value on each milestone's calendar date
 ```
 
-**Status rule** (used for tile colour and Compare's good/bad column): `good` when the value is at target, or has moved toward it since the previous milestone; `bad` when it has moved away, or is stalled with an unmet target; `neutral` for `info`; `stale` when the series' last real point is older than 2 days (the daily cadence plus one missed run). `stale` overrides colour and shows a warning.
+**Status rule** (used for tile colour and Compare's good/bad column): `good` when the value is at target, or has moved toward it since the previous milestone; `bad` when it has moved away, or is stalled with an unmet target; `neutral` for `info`; `stale` overrides both and shows a warning. Freshness is not one rule (R26/R27): the per-commit snapshot families (`code_health`, `architecture`, `tests`) are keyed by commit sha, not date, so they use the SHA rule — fresh iff a row exists for `main`'s current first-parent HEAD, since a quiet week with no new commit is healthy, not stale. The once-daily `coverage` family and every `derived` series have no such natural cadence to key off, so they use the 2-day age rule instead — stale when the series' last real point is older than 2 days (the daily cadence plus one missed run).
 
 **Freshness is data.** Each series carries the timestamp of its last real point and every page shows it, so a broken collector is visible as "stale since" rather than a flat line.
 
@@ -246,7 +283,7 @@ Both workflows stay at zero zizmor findings, every `uses:` SHA-pinned via a tool
 
 ### 7.3 Local hooks
 
-`.claude/settings.json` `PostToolUse` gains one rule: an edit under `metrics/` runs `python -m pytest metrics/build/tests` plus `python -m metrics.build --validate-only`. A few seconds, no container. The commit gate picks the same tests up through `scripts/ci_backend_test_labels.py`'s routing (a `metrics/` prefix added to `_PATH_ALIASES` mapping to the metrics test target only, pinned in `tests/test_ci_test_routing.py`).
+`.claude/settings.json` `PostToolUse` gains rules for the metrics stack: an edit under `metrics/**` or `scripts/metrics/**` runs `scripts/run_metrics_tests.sh` (plain `unittest`, no `pytest`, no container) plus `python -m metrics.build --validate-only`; an edit under `dashboard/*.{js,html}` runs `vitest` against `frontend/vitest.dashboard.config.js`. A few seconds either way. `.claude/hooks/pre-commit-tests.sh` (the commit gate) picks up the same paths with its own grep over the staged file list — not through `scripts/ci_backend_test_labels.py`'s `_PATH_ALIASES`, which maps prefixes to Django test *labels* and so cannot express a plain-`unittest` or `vitest` runner.
 
 ## 8. Pages
 
@@ -260,7 +297,7 @@ Five static HTML files under `dashboard/`, one shared `app.js`, one `style.css`,
 
 ## 9. Testing
 
-- **Build step:** `metrics/build/tests/`, fixtures checked in (a small `metrics-data` tree with snapshot rows and one dump per kind; valid and invalid curated files). One test per derivation, one per validation rule, one end-to-end build asserting `site.json`'s shape against the catalogue.
+- **Build step:** `metrics/build/tests/`, fixtures checked in (a small `metrics-data` tree with snapshot rows and one dump per kind; valid and invalid curated files); run via `python -m unittest discover` (`scripts/run_metrics_tests.sh build`), not `pytest` — no third-party test runner is a dependency of this stack. One test per derivation, one per validation rule, one end-to-end build asserting `site.json`'s shape against the catalogue.
 - **Collectors:** event-dump collectors tested with a fake `gh` on `PATH` returning canned paginated output including the multi-page case that broke delivery; snapshot collectors get one regression test each against a tiny fixture checkout.
 - **Curated files:** a test validates the real `metrics/curated/*.yml` against the current `main`, so the suite fails if a milestone SHA is wrong or a ledger `test` path no longer exists.
 - **Pages:** a handful of vitest cases against a fixture `site.json` — each page renders, tiles colour by direction, Compare marks deltas correctly, stale warnings appear. No Playwright.

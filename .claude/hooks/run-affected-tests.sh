@@ -242,7 +242,6 @@ case "$REL" in
     OUT="$(scripts/run_metrics_tests.sh all 2>&1)"; ST=$?
     case $ST in
       0) printf '%s\n' "$OUT" | grep -E '^(Ran |OK)' | head -2 ;;
-      3) ;;
       *) block "metrics tests" "$(printf '%s' "$OUT" | tail -40)" ;;
     esac
     if [ -f metrics/build/__main__.py ]; then

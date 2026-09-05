@@ -1,0 +1,34 @@
+- id: e2e_scenarios
+  family: tests
+  path: /e2e_scenario_count
+  label: E2E scenarios
+  unit: count
+  direction: up
+  target: null
+  group: safety_net
+  headline: true
+  since: 2026-08-19
+  note: "Playwright test() call sites under e2e/tests/**/*.spec.ts."
+- id: codeql_open_critical_high
+  family: derived
+  derivation: codeql_open_count
+  params: {severities: [critical, high]}
+  label: Open CodeQL critical + high
+  unit: count
+  direction: zero
+  target: null
+  group: security
+  headline: true
+  since: 2026-08-23
+  note: "Open code-scanning alerts with security severity critical or high."
+- id: proxy_loc
+  family: code_health
+  path: /loc_per_app/apps.proxy
+  label: apps/proxy lines
+  unit: lines
+  direction: info
+  target: null
+  group: extraction
+  headline: false
+  since: 2026-08-19
+  note: "Non-blank Python lines under apps/proxy."

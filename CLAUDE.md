@@ -41,7 +41,7 @@ npm run lint   # ~112 pre-existing errors, disabled in CI. No format script: npx
 
 ## Test hooks (this fork only)
 
-`.claude/settings.json` registers `PostToolUse` on `Write|Edit`, each check scoped to the edited file. Blocking: `*tests/test_*.py` (whole package), `frontend/**/*.test.jsx` (vitest), `*/models.py` (`makemigrations --check`), `live_proxy/{constants,redis_keys}.py` (`manage.py check`), `.github/workflows/*.yml` + `action.yml` + `dependabot.yml` (zizmor), `e2e/**/*.ts` + `e2e-upstream/**/*.ts` (`tsc --noEmit` for that package — blocking, unlike eslint: both packages typecheck clean, so it's a ratchet, and the only automated check those trees have; a full Playwright run is far too slow for a hook), any `*.py` (`scripts/check_credential_logging.py`). Advisory: eslint on `frontend/**/*.jsx` (so pre-existing errors don't punish touching legacy code).
+`.claude/settings.json` registers `PostToolUse` on `Write|Edit`, each check scoped to the edited file. Blocking: `*tests/test_*.py` (whole package), `frontend/**/*.test.jsx` (vitest), `*/models.py` (`makemigrations --check`), `live_proxy/{constants,redis_keys}.py` (`manage.py check`), `.github/workflows/*.yml` + `action.yml` + `dependabot.yml` (zizmor), `e2e/**/*.ts` + `e2e-upstream/**/*.ts` (`tsc --noEmit` for that package — blocking, unlike eslint: both packages typecheck clean, so it's a ratchet, and the only automated check those trees have; a full Playwright run is far too slow for a hook), any `*.py` (`scripts/check_credential_logging.py`), `metrics/**` + `scripts/metrics/**` (`scripts/run_metrics_tests.sh`, plain unittest, no container, plus `python -m metrics.build --validate-only`), `dashboard/*.{js,html}` (vitest with `frontend/vitest.dashboard.config.js`). Advisory: eslint on `frontend/**/*.jsx` (so pre-existing errors don't punish touching legacy code).
 
 - The migration check resolves the app label via `apps.get_app_configs()`, never the directory name: `apps.channels` has label `dispatcharr_channels`, and the guess `channels` hits the *Django Channels library*, which reports "no changes" and exits 0 — guessing fails silently.
 - The boot check exists because `apps/channels/models.py:6–7` imports two `live_proxy` leaf modules at module level; a cycle there breaks `manage.py check` for every command.
@@ -169,6 +169,7 @@ See `CONTRIBUTING.md` for the upstream PR process and fuller style guide.
 - **Issue tracker**: GitHub Issues on the fork, `D10Scot/Dispatcharr` — **always with an explicit `--repo` flag**; `gh` otherwise resolves to the upstream public tracker. See `docs/agents/issue-tracker.md`.
 - **Triage labels**: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`. See `docs/agents/triage-labels.md`.
 - **Domain docs**: `CONTEXT.md` and `docs/adr/` at the repo root. See `docs/agents/domain.md`.
+- **Metrics dashboard**: three agent-maintained files under `metrics/curated/` (catalogue, milestones, defect ledger) feed https://d10scot.github.io/Dispatcharr/. A PR that closes a ledger issue, adds a `test.fail()` pin, merges a goal, or ticks a Done log updates them in the same PR. Validate with `python -m metrics.build --validate-only`. See `docs/agents/metrics.md`.
 
 ## Agentic workflows (gh-aw)
 
@@ -187,3 +188,4 @@ Rules learned the hard way:
 - **Same-run resource references**: give `create_pull_request` a `temporary_id: aw_xxx`, target it from `add_comment` with `item_number: "#aw_xxx"`.
 - **Step ordering**: `pre-steps:` (before checkout) → `steps:` → cache-memory restore → `pre-agent-steps:` → engine → `post-steps:`. Anything needing `/tmp/gh-aw/cache-memory/` must be in `pre-agent-steps:`.
 - Safe-outputs are the only write path (jobs run read-only); `create-pull-request` is draft-enforced and blocks `.github/workflows/` edits; label allowlists are sized to the worst case.
+- **Recompile with a bare `gh aw compile`** (no filename), not one workflow at a time: whether any workflow in the repo has a maintenance job that can enforce an issue's expiry is repo-wide state, and a single-file compile can't see it — it silently falls back to `GH_AW_ACTION_FAILURE_ISSUE_EXPIRES_HOURS: "168"` instead of the correct `"0"`.
