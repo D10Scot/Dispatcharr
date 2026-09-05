@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import site from './fixtures/site.json';
+import { unix } from '../lib/chart.js';
 import { render } from '../pages/story.js';
 
 describe('story page', () => {
@@ -14,14 +15,17 @@ describe('story page', () => {
     expect(phases[0].querySelector('.when').textContent).toBe('from 19 Aug');
     expect(phases[0].querySelectorAll('.chart-block').length).toBe(1);
     // Investigate's start (2026-08-19) has no end, so shade.to resolves to
-    // the headline metric's own last x rather than staying null.
-    const shade = phases[0].querySelector('.chart-block .plot').dataset.shade;
-    expect(shade.startsWith(`${Math.floor(Date.parse('2026-08-19T00:00:00Z') / 1000)}..`)).toBe(true);
+    // the headline metric's own last x (e2e_scenarios' daily series runs
+    // through 2026-09-05, the fixture's "today") rather than staying null.
+    expect(phases[0].querySelector('.chart-block .plot').dataset.shade).toBe(`${unix('2026-08-19')}..${unix('2026-09-05')}`);
 
     expect(phases[1].querySelector('.when').textContent).toBe('3 Sep – 3 Sep');
     expect(phases[1].querySelector('li').textContent).toContain('Phase 0 done');
     expect(phases[1].querySelector('li a').getAttribute('href')).toBe('https://github.com/D10Scot/Dispatcharr/pull/155');
     expect(phases[1].querySelector('.chart-block h3').textContent).toBe('Open CodeQL critical + high');
+    // phase0's window is a single day (start === end): shade runs from that
+    // day's start through the end of that same day.
+    expect(phases[1].querySelector('.chart-block .plot').dataset.shade).toBe(`${unix('2026-09-03')}..${unix('2026-09-03') + 86399}`);
 
     expect(phases[2].querySelector('.when').textContent).toBe('not started');
     expect(phases[2].querySelectorAll('li').length).toBe(0);

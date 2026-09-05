@@ -1,4 +1,4 @@
-import { block } from '../lib/chart.js';
+import { block, mountAll } from '../lib/chart.js';
 import { GROUP_ORDER } from '../lib/compare.js';
 import { h } from '../lib/dom.js';
 import { footer, GROUP_LABELS } from '../lib/status.js';
@@ -19,4 +19,8 @@ export function render(site, root, params = new URLSearchParams('')) {
     root.append(h('div', { class: 'chart-grid' }, metrics.map((m) => block(m, m.commits ? mode : 'daily', site))));
   }
   root.append(footer(site));
+  // Charts are only drawn now, with every .plot actually attached to the
+  // document — mount(el, ...) inside block() would read el.clientWidth
+  // before root.append() ever ran, always seeing 0.
+  mountAll(root);
 }

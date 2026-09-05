@@ -1,13 +1,9 @@
-import { block } from '../lib/chart.js';
+import { block, mountAll, unix } from '../lib/chart.js';
 import { h } from '../lib/dom.js';
 import { fmtDate } from '../lib/format.js';
 import { footer } from '../lib/status.js';
 
 const PR_URL = 'https://github.com/D10Scot/Dispatcharr/pull/';
-
-function unix(iso) {
-  return Math.floor(new Date(`${iso}T00:00:00Z`).getTime() / 1000);
-}
 
 export function render(site, root) {
   root.replaceChildren();
@@ -27,4 +23,7 @@ export function render(site, root) {
     root.append(section);
   }
   root.append(footer(site));
+  // See explore.js's comment: charts must be drawn only after every .plot
+  // is actually attached under root, or clientWidth reads as 0.
+  mountAll(root);
 }
