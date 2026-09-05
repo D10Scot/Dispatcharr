@@ -90,14 +90,25 @@ def _post(path, payload):
     for attempt in range(ATTEMPTS):
         try:
             response = requests.request(
-                "POST", url, data=body, headers=headers, timeout=TIMEOUT
+                "POST",
+                url,
+                data=body,
+                headers=headers,
+                timeout=TIMEOUT,
+                # Never follow a redirect: requests re-sends a redirected
+                # POST with every custom header intact (it strips only
+                # Authorization on a host change), so an nginx `return
+                # 301 …` or a mis-set DISPATCHARR_INTERNAL_API_BASE_URL
+                # would otherwise forward the signed internal headers off
+                # this deployment. Handled as a 3xx below instead.
+                allow_redirects=False,
             )
         except requests.RequestException as exc:
             last = exc
         else:
-            if response.status_code < 400:
+            if response.status_code < 300:
                 try:
-                    return response.json()
+                    answer = response.json()
                 except ValueError as exc:
                     # A 2xx with a body that is not JSON is nginx or a
                     # proxy answering, not Django. Treat it as an outage
@@ -106,6 +117,23 @@ def _post(path, payload):
                     raise ControlPlaneUnavailable(
                         f"{path} answered 2xx with a non-JSON body"
                     ) from exc
+                if not isinstance(answer, dict):
+                    # A 2xx whose JSON is a list, a string or null is not
+                    # a shape any caller here expects; `answer.get(...)`
+                    # would raise AttributeError out of a greenlet instead
+                    # of being an ordinary, catchable outage.
+                    raise ControlPlaneUnavailable(
+                        f"{path} answered 2xx with a non-object body"
+                    )
+                return answer
+            if response.status_code < 400:
+                # A redirect: allow_redirects=False above means requests
+                # handed it straight back rather than following it. Not
+                # an answer, and not worth retrying — misconfiguration
+                # doesn't fix itself inside the 120s signing window.
+                raise ControlPlaneUnavailable(
+                    f"{path} redirected with {response.status_code}"
+                )
             if response.status_code < 500:
                 # A refusal, not an outage — and the distinction is
                 # load-bearing. Only ControlPlaneUnavailable fires the
@@ -129,6 +157,7 @@ def next_source(
     exclude_stream_ids=(),
     current_url=None,
     target_stream_id=None,
+    current_stream_id=None,
     reason="initial",
     include_alternates=False,
 ):
@@ -141,6 +170,11 @@ def next_source(
     400, or a 403 from a SECRET_KEY mismatch between the api and relay
     roles) propagates as ControlPlaneRefused — the caller must not
     degrade on it.
+
+    current_stream_id is the stream being failed over FROM; Django passes
+    it straight through to the traversal so it starts right after that
+    stream, wrapping (order_alternates_from_current), the same rotation
+    today's pre-move get_alternate_streams(current_stream_id=) call gives.
     """
     path = f"/api/relay/channels/{identifier}/next-source"
     payload = {
@@ -151,14 +185,28 @@ def next_source(
         payload["current_url"] = current_url
     if target_stream_id is not None:
         payload["target_stream_id"] = target_stream_id
+    if current_stream_id is not None:
+        payload["current_stream_id"] = current_stream_id
     if include_alternates:
         payload["include_alternates"] = True
     try:
-        return _post(path, payload)
+        answer = _post(path, payload)
     except ControlPlaneRefused as exc:
         if exc.status == 404:
             return {"source": None, "alternates": [], "error": "identifier not found"}
         raise
+    # _post already guarantees a dict; guard the two fields _try_next_stream
+    # actually indexes into, so a malformed 200 (Django's serializer
+    # rejecting its own contract, or a proxy answering with an unrelated
+    # JSON object) becomes a catchable outage rather than a KeyError or a
+    # TypeError deep inside the failover loop.
+    source = answer.get("source")
+    if source is not None and not isinstance(source, dict):
+        raise ControlPlaneUnavailable(f"{path} answered a non-dict source")
+    alternates = answer.get("alternates", [])
+    if not isinstance(alternates, list):
+        raise ControlPlaneUnavailable(f"{path} answered non-list alternates")
+    return answer
 
 
 def release_source(identifier, *, stream_id=None, m3u_profile_id=None, channel_pk=None):
