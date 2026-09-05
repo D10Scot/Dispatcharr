@@ -338,7 +338,7 @@ clears only the writing process; the relay stays up to 10s stale. Unchanged by t
 `http://{DISPATCHARR_WEB_HOST:-web}:{DISPATCHARR_PORT:-9191}` → AIO/dev/debug
 `http://127.0.0.1:5656`. Its single call site is `tasks.py:1582`; the URL is built at `:1640` and
 handed to ffmpeg by `_dvr_build_ffmpeg_cmd` (`:1203-1229`), which today passes `-user_agent` and
-**no `-headers`**. `apps/channels/tests/test_dvr_port_resolution.py` has 8 tests, 4 of which assert
+**no `-headers`**. `apps/channels/tests/test_dvr_port_resolution.py` has 8 tests, 3 of which assert
 `5656`.
 
 **nginx `location` matching order** (primary docs, `ngx_http_core_module` — "Matching types and
@@ -393,7 +393,7 @@ must write `%%h`, the same escaping `docker/uwsgi.ini:13` already uses.
 **Compose files, verified in full.** `docker/docker-compose.yml` (modular): `web` (port 9191,
 `DISPATCHARR_ENV=modular`, `./data:/data`), `celery` (`entrypoint.celery.sh`, `./data:/data`, no
 ports, `depends_on: web: service_started`, `DISPATCHARR_WEB_HOST` documented but commented out at
-`:136`), `db` (`postgres:17`, **`5436:5432` published on all interfaces**, `:191`), `redis` (no
+`:136`), `db` (`postgres:17`, **`5436:5432` published on all interfaces**, `:295`), `redis` (no
 ports). `docker/docker-compose.aio.yml`: one service, port 9191, `DISPATCHARR_ENV=aio`.
 Neither file has a `relay` service or a `DISPATCHARR_ROLE` variable. Neither sets
 `stop_grace_period`, so Docker's 10-second default applies.
@@ -1137,10 +1137,11 @@ resolve it, and each exists because a simpler arrangement provably does not boot
   `if [[ "$DISPATCHARR_ROLE" != "worker" ]]` block, run after the migrate/wait branch rather than
   inside it, so the `relay` role — which is what actually spawns ffmpeg from PR 4 on — gets the
   report too. **This reverses PR 3's note**, which recorded the gap as a deliberate PR 4
-  decision; PR 4 is where that decision gets made, and it goes the other way. The script is pure diagnostics
-  (`lspci`, `ffmpeg -hwaccels`, `vainfo` — every line an `echo`, nothing consumed downstream), so
-  running it in one more role costs boot log and nothing else, and a relay container that cannot
-  reach the GPU is exactly the container an operator needs told about.
+  decision; PR 4 is where that decision gets made, and it goes the other way. The script is
+  diagnostic-only — it runs `lspci` and `ffmpeg -hwaccels`, exports nothing and writes nothing,
+  only echoing to the boot log — so running it in one more role costs boot log and nothing else,
+  and a relay container that cannot reach the GPU is exactly the container an operator needs told
+  about.
 - `docker/nginx.conf`: the full location table in § Architecture, minus the `auth_request` block
   and minus the `map`. PR 4 writes `upstream relay_py { server RELAY_UPSTREAM; }` and
   `uwsgi_pass relay_py;` directly — there is no `X-Relay-Name` header to key a `map` on until PR 5,
@@ -1180,7 +1181,7 @@ resolve it, and each exists because a simpler arrangement provably does not boot
   load**, so a `web` container that starts with no `relay` in DNS fails with "host not found in
   upstream" and `[program:nginx]` goes BACKOFF then FATAL — taking the whole API surface down, not
   just streaming. The corollary for operators: recreating the relay with a new IP needs
-  `nginx -s reload` in the web container. `docker/docker-compose.yml:191`'s `5436:5432` publish is
+  `nginx -s reload` in the web container. `docker/docker-compose.yml:295`'s `5436:5432` publish is
   **not** touched (carried; see § Requirements).
 - `docker/tests/test-puid-pgid.sh`: new `test_role_split`, modelled on `test_modular_mode`
   (`:980-1046`). It is the only test in the programme that exercises the modular relay hop; a
@@ -1235,8 +1236,10 @@ resolve it, and each exists because a simpler arrangement provably does not boot
   behaviour); `Lifecycle result` green with `test_role_split` passing; `Backend result` green
   (`apps.channels.tests` covers the DVR URL change).
 - **`CLAUDE.md` corrected:** § Architecture's opening paragraph (one uWSGI → two); the
-  `uwsgi_buffering off` bullet, to name the relay-bound locations; § Known defects, "No `harakiri`,
-  and it can't be enabled while the relay shares a process with the API" — now enabled on the API.
+  `uwsgi_buffering off` bullet, to name the relay-bound locations; the "Four worker processes"
+  bullet, to account for the relay's own worker separately from the API's four; § Known defects,
+  "No `harakiri`, and it can't be enabled while the relay shares a process with the API" — now
+  enabled on the API.
 
 ### PR 5 — `migration/phase1-authorize`
 
@@ -1413,7 +1416,7 @@ Phase 0's § Carried, not fixed table, with a status column now that Phase 1 exi
 
 | Requirement | Status after Phase 1 | Where |
 |---|---|---|
-| The relay's own stores bind to loopback or an internal network by default, never `0.0.0.0`, with no default credential. | **Still carried.** `docker/docker-compose.yml:191`'s `5436:5432` publish as `dispatch`/`secret` is deliberately untouched by PR 4. | — |
+| The relay's own stores bind to loopback or an internal network by default, never `0.0.0.0`, with no default credential. | **Still carried.** `docker/docker-compose.yml:295`'s `5436:5432` publish as `dispatch`/`secret` is deliberately untouched by PR 4. | — |
 | `Host`/origin validated, deny-by-default, not conditioned on a debug flag. | **Still carried.** `ALLOWED_HOSTS=["*"]`, `CORS_ALLOW_ALL_ORIGINS=True`, `CSRF_TRUSTED_ORIGINS=["http://*","https://*"]` untouched. | — |
 | Any credential the relay stores or compares is hashed or constant-time compared, never plaintext-equality. | **Partially met.** The XC password compare becomes `hmac.compare_digest` (PR 5) and the internal token is `hmac.compare_digest`-checked from day one (PR 5/6). XC passwords remain **plaintext at rest** in `custom_properties["xc_password"]` — out of scope (ADR 0005). | PR 5, PR 6 |
 | A request timeout and a drain-on-shutdown from day one. | **Met as a timeout, bounded rather than graceful as a shutdown.** `harakiri = 120` on the API (PR 4) is the first request timeout this codebase has run in production. The relay gets a bounded restart via supervisord `stopwaitsecs=20` inside a 160s `stop_grace_period` (PR 3/4) — sized to the sum of every program's `stopwaitsecs`, since supervisord's shutdown walk is sequential per priority group, not concurrent — not a drain: in-flight streams still drop and players reconnect, exactly as the route page's "Honest limits" states. | PR 3, PR 4 |
@@ -1544,4 +1547,4 @@ Filled in as PRs merge. Empty at spec-writing time.
   `map` exist so Phase 2 is a map entry and a settings change; adding a second relay is not this
   spec's work.
 - **The published Postgres port on `5436`.** Repeated here for emphasis: PR 4 edits
-  `docker/docker-compose.yml` and deliberately leaves line 191 alone.
+  `docker/docker-compose.yml` and deliberately leaves line 295 alone.

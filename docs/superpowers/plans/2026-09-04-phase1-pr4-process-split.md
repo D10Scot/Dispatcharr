@@ -167,7 +167,7 @@ all settled by PR 3 and are already correct in both the tree and the spec.
       (`e2e/tests/streaming/spa-three-segment-route.spec.ts`) still pass, now genuinely crossing the
       process boundary — proven by `E2E result` on this branch's CI run (`streaming` project) and,
       locally, by Task 14 Step 4's
-      `npx playwright test --project=streaming -g "liveness ceiling|SPA"`.
+      `npx playwright test --project=streaming -g "liveness ceiling|SPA-shaped route"`.
 - [ ] `E2E result` green in full mode, specifically the `streaming` and `streaming-failover`
       projects (G4's existing coverage running unmodified against two processes is the evidence the
       split preserved relay behaviour) — proven by CI on this branch (full mode, `migration/**`).
@@ -3049,7 +3049,7 @@ removes the shared Docker network and takes the shared `e2e-upstream` provider c
   ```bash
   cd /Users/dion/git/Dispatcharr/.worktrees/phase1-pr4/e2e
   E2E_BASE_URL=http://localhost:39191 DISPATCHARR_E2E_CONTAINER=dispatcharr-e2e-pr4 \
-    npx playwright test --project=streaming -g "liveness ceiling|SPA" </dev/null
+    npx playwright test --project=streaming -g "liveness ceiling|SPA-shaped route" </dev/null
   E2E_BASE_URL=http://localhost:39191 DISPATCHARR_E2E_CONTAINER=dispatcharr-e2e-pr4 \
     npx playwright test --project=streaming-greybox -g relay-bound </dev/null
   ```
