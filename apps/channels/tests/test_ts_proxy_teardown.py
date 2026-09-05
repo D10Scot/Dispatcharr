@@ -491,6 +491,24 @@ class CleanRedisKeysOrderTests(TestCase):
             CHANNEL_ID, stream_id=2243070, m3u_profile_id=50, channel_pk=224
         )
 
+    @patch("apps.proxy.control_plane.release_source", return_value=True)
+    def test_clean_redis_keys_releases_via_control_plane_when_redis_client_is_none(
+        self, mock_release
+    ):
+        """Redis unreachable at boot (__init__ leaves redis_client None) must
+        not stop the control-plane release from happening, and must not
+        raise out of _clean_redis_keys' bare try/finally."""
+        with patch("apps.proxy.live_proxy.server.RedisClient.get_client", return_value=MagicMock()):
+            server = ProxyServer()
+        server.redis_client = None
+
+        total_deleted = server._clean_redis_keys(CHANNEL_ID)
+
+        mock_release.assert_called_once_with(
+            CHANNEL_ID, stream_id=None, m3u_profile_id=None, channel_pk=None
+        )
+        self.assertEqual(total_deleted, 0)
+
 
 class LocalUpstreamActivityTests(TestCase):
     def _make_server(self):

@@ -300,6 +300,32 @@ class ReleaseRouteTests(RelayApiTestCase):
         self.assertEqual(int(self.redis.get(profile_key) or 0), 0)
         self.assertIsNone(self.redis.get(channel_stream_key))
 
+    def test_release_frees_metadata_ids_when_identifier_resolves_to_neither_row(self):
+        """Ruling 8: a channel deleted mid-playback resolves to neither a
+        Channel nor a Stream row. release_view (api_views.py) performs no
+        identifier resolution -- <str:identifier> matches anything -- so
+        this is a pure pass-through to next_source.release_source()'s
+        metadata-ids fallback, exercised here through the HTTP seam rather
+        than by calling release_source() directly."""
+        channel_stream_key = f"channel_stream:{self.channel.id}"
+        stream_profile_key = f"stream_profile:{self.stream_a.id}"
+        self.redis.set(channel_stream_key, self.stream_a.id)
+        self.redis.set(stream_profile_key, self.m3u_profile.id)
+
+        response = self._post(
+            self.release_path("this-identifier-matches-nothing"),
+            {
+                "stream_id": self.stream_a.id,
+                "m3u_profile_id": self.m3u_profile.id,
+                "channel_pk": self.channel.id,
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()["released"])
+        self.assertIsNone(self.redis.get(channel_stream_key))
+        self.assertIsNone(self.redis.get(stream_profile_key))
+
 
 class EventsRouteTests(RelayApiTestCase):
     def test_events_turns_a_batch_into_rows(self):

@@ -864,8 +864,8 @@ class ChannelService:
     def _update_stream_stats_in_db(stream_id, **stats):
         """Post the stats; Django writes the row.
 
-        Phase 1 PR 6: this was the relay's only ORM write
-        (stream.save(update_fields=['stream_stats', 'stream_stats_updated_at'])),
+        Phase 1 PR 6: this was the relay's only ORM write -- a Stream update
+        setting its stream_stats and stream_stats_updated_at fields --
         called from three hot-path sites. The merge semantics -- a None value
         never overwrites an existing key -- move with it to
         core/relay_events.py. stream_stats is deliberately not in

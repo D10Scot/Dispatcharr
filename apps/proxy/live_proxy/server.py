@@ -2317,19 +2317,28 @@ class ProxyServer:
         metadata READ stays here, because that hash is relay state and PR 7
         takes the control plane out of relay keys entirely; only the ids
         cross. One call, not one per fallback rung.
+
+        self.redis_client is None when Redis was unreachable at boot
+        (__init__); _clean_redis_keys already tolerates that for its own
+        scan/delete loop, and the deleted _release_profile_slot_from_redis_
+        metadata opened with the same guard. Without it, Django's own
+        Channel.release_stream()/Stream.release_stream() (each with its own
+        Redis client and its own metadata fallback) never gets a chance to
+        run, because the AttributeError below would escape _clean_redis_
+        keys' bare try/finally and skip stop_channel's remaining teardown.
         """
         from apps.proxy import control_plane
 
         metadata_key = RedisKeys.channel_metadata(channel_id)
-        stream_id = self._redis_field_to_str(
-            self.redis_client.hget(metadata_key, ChannelMetadataField.STREAM_ID)
-        )
-        m3u_profile_id = self._redis_field_to_str(
-            self.redis_client.hget(metadata_key, ChannelMetadataField.M3U_PROFILE)
-        )
-        channel_pk = self._redis_field_to_str(
-            self.redis_client.hget(metadata_key, ChannelMetadataField.CHANNEL_ID)
-        )
+
+        def _meta(field):
+            if not self.redis_client:
+                return None
+            return self._redis_field_to_str(self.redis_client.hget(metadata_key, field))
+
+        stream_id = _meta(ChannelMetadataField.STREAM_ID)
+        m3u_profile_id = _meta(ChannelMetadataField.M3U_PROFILE)
+        channel_pk = _meta(ChannelMetadataField.CHANNEL_ID)
 
         try:
             released = control_plane.release_source(
@@ -2347,11 +2356,11 @@ class ProxyServer:
         except control_plane.ControlPlaneUnavailable as exc:
             logger.warning(
                 f"Channel {channel_id}: control plane unreachable for release; "
-                f"profile slot stays counted: {exc}"
+                f"profile slot stays counted: {type(exc).__name__}"
             )
             return False
 
-        if released:
+        if released and self.redis_client:
             self.redis_client.hdel(
                 metadata_key,
                 ChannelMetadataField.STREAM_ID,
