@@ -32,17 +32,30 @@ through to the inline path.
 
 import hashlib
 import hmac
+import time
 
 from django.conf import settings
 
 RELAY_TRUST_CONTEXT = b"relay-trust"
 INTERNAL_PRINCIPAL_CONTEXT = b"internal-principal"
+# A third context, for the *bound* form of the internal principal. The
+# static token above is long-lived and shared by every internal caller
+# (issue #181); this one binds a single request — method, path, body — and
+# expires. /api/relay/... (PR 6) and /proxy/relay/... (PR 7) require both:
+# the static header says "part of this deployment", the bound one says
+# "and this exact call, just now". The DVR's stream fetch deliberately
+# sends only the static header, because ffmpeg re-sends its -headers line
+# on every reconnect for the life of a recording and a windowed token
+# would 403 the reconnect.
+INTERNAL_REQUEST_CONTEXT = b"internal-request"
+INTERNAL_REQUEST_WINDOW_SECONDS = 120
 
 # Wire names, for the two producers that spell headers rather than META
 # keys: docker/init/03-init-dispatcharr.sh (nginx) and the DVR's ffmpeg
 # -headers argument.
 HEADER_AUTHORIZED = "X-Dispatcharr-Authorized"
 HEADER_INTERNAL = "X-Dispatcharr-Internal"
+HEADER_INTERNAL_REQUEST = "X-Dispatcharr-Internal-Request"
 HEADER_RELAY_CHANNEL = "X-Relay-Channel"
 HEADER_RELAY_OUTPUT = "X-Relay-Output"
 HEADER_RELAY_CLIENT = "X-Relay-Client"
@@ -57,6 +70,7 @@ HEADER_AUTHORIZE_STATUS = "X-Authorize-Status"
 # request.META keys, which is how Django sees all of the above.
 META_AUTHORIZED = "HTTP_X_DISPATCHARR_AUTHORIZED"
 META_INTERNAL = "HTTP_X_DISPATCHARR_INTERNAL"
+META_INTERNAL_REQUEST = "HTTP_X_DISPATCHARR_INTERNAL_REQUEST"
 META_RELAY_CHANNEL = "HTTP_X_RELAY_CHANNEL"
 META_RELAY_OUTPUT = "HTTP_X_RELAY_OUTPUT"
 META_RELAY_CLIENT = "HTTP_X_RELAY_CLIENT"
@@ -107,3 +121,58 @@ def request_is_relay_trusted(request) -> bool:
 def request_is_internal(request) -> bool:
     """True when the caller proved it holds this deployment's SECRET_KEY."""
     return _matches(request.META.get(META_INTERNAL), internal_principal_token())
+
+
+def internal_request_token(method: str, path: str, body: bytes, timestamp: int) -> str:
+    """The hex digest half of X-Dispatcharr-Internal-Request.
+
+    Signed over the method, the path, the timestamp and a digest of the
+    body, so a captured call cannot be replayed against another route or
+    with different arguments, and cannot be replayed at all once the
+    window closes.
+
+    Replay INSIDE the window is possible and accepted: there is no nonce.
+    The effect is bounded — a replayed next-source is idempotent, since
+    Channel.get_stream() reuses a live assignment and reports
+    slot_reserved=False, and the worst case is a replayed release after a
+    new tune re-reserved, which under-counts one provider slot until that
+    channel's next release. A nonce store would put Redis on the verify
+    path, and an attacker positioned to capture on the internal network
+    already holds the static X-Dispatcharr-Internal token.
+    """
+    message = b"\n".join(
+        [
+            INTERNAL_REQUEST_CONTEXT,
+            method.upper().encode(),
+            path.encode(),
+            str(int(timestamp)).encode(),
+            hashlib.sha256(body or b"").hexdigest().encode(),
+        ]
+    )
+    return hmac.new(settings.SECRET_KEY.encode(), message, hashlib.sha256).hexdigest()
+
+
+def build_internal_request_header(method: str, path: str, body: bytes) -> str:
+    """The full header value a caller sends. Used by control_plane and PR 7."""
+    timestamp = int(time.time())
+    return f"v1.{timestamp}.{internal_request_token(method, path, body, timestamp)}"
+
+
+def request_is_internal_request(request) -> bool:
+    """True when this exact request was signed, recently, with SECRET_KEY."""
+    raw = request.META.get(META_INTERNAL_REQUEST)
+    if not isinstance(raw, str) or not raw.isascii():
+        return False
+    parts = raw.split(".")
+    if len(parts) != 3 or parts[0] != "v1":
+        return False
+    try:
+        timestamp = int(parts[1])
+    except ValueError:
+        return False
+    if abs(int(time.time()) - timestamp) > INTERNAL_REQUEST_WINDOW_SECONDS:
+        return False
+    expected = internal_request_token(
+        request.method, request.path, request.body, timestamp
+    )
+    return _matches(parts[2], expected)
