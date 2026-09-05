@@ -1440,6 +1440,68 @@ resolve it, and each exists because a simpler arrangement provably does not boot
   split-brain description (now Django-only); § Observing a channel, "No WebSocket event exists for
   stream switch, failover or client teardown" (now `relay_event`).
 
+**Amendment S10 (PR 6 next-source and events).** The tree required eight decisions this section did
+not make, recorded here rather than re-derived by PR 7 or Phase 2:
+
+1. The follow-up bullet above is resolved by binding the token, not deferring it: a second header,
+   `X-Dispatcharr-Internal-Request` (`v1.<unix_seconds>.<hexdigest>` over
+   `method\npath\ntimestamp\nsha256hex(body)`, accepted inside a ±120s window), gates the three new
+   routes on top of the existing static `X-Dispatcharr-Internal`. Both are required on
+   `/api/relay/…`. The DVR keeps the static token only — its ffmpeg `-headers` line is re-sent
+   unchanged on every reconnect for the life of a recording, and a 120-second window would 403 a
+   mid-recording reconnect.
+2. The event-batch writes (`log_system_event()` calls and the `stream.save()`) live in
+   `core/relay_events.py`, not in `apps/proxy/api_views.py`, even though D12 puts the routes inside
+   `apps/proxy/`: the Done grep above forbids a write there, and
+   `scripts/metrics/collect_architecture.py` counts every write under `apps/proxy/` into
+   `proxy_orm_writes`, a phase-1 headline metric with target 0. Splitting view from write satisfies
+   both.
+3. The contract carries three fields this section's field list omits, each named with the caller
+   that needs it: the next-source request carries `current_url` so Django, not the relay, can skip a
+   candidate that resolves to the stream already running (`_try_next_stream`'s existing
+   reject-current-URL rule, preserved in one round trip instead of N); the response carries
+   `slot_reserved` so `stream_ts`'s five release paths (`views.py:383,510,539,560,785`) can tell a
+   reused assignment from a new reservation and avoid double-releasing; and the response carries
+   `alternates` — the candidate list resolved once at tune time, each entry already carrying `url`,
+   `user_agent`, `transcode` and the profile ids — because the degraded fallback below is only usable
+   without Django if the cached list needs no further resolution.
+4. Every relay-side `release_stream()` call becomes `control_plane.release_source()`, not only the
+   six rows in the § ORM reads table (`server.py:2363,2373`, `output/ts/generator.py:618,620` and
+   `output/fmp4/generator.py:378,380`): `views.py:383,510,539,560,785` call the same method on a
+   `Channel` the relay loaded, and leaving them would contradict this PR's own "exactly one writer"
+   requirement.
+5. "No candidate available" answers `200 {"source": null, "error": "<reason>"}`, never a 4xx; `404`
+   is reserved for an identifier that resolves to neither a `Channel` nor a `Stream`. The client's
+   `_post` raises `ControlPlaneRefused` on every other 4xx — a separate exception from
+   `ControlPlaneUnavailable`, not a subclass of it — and only `ControlPlaneUnavailable` (5xx, a
+   timeout, a connection error, or a 3xx, which is never followed) fires the degraded fallback below.
+   Without the split, a channel deleted mid-playback (404 at failover) or a `SECRET_KEY` mismatch
+   between the api and relay roles (403) would each read as a Django outage and degrade silently
+   instead of failing loudly.
+6. **`channel_stream:*` semantics are unchanged.** `Channel.update_stream_profile()`
+   (`apps/channels/models.py:933-1003`) reads `channel_stream:{id}` to find the channel's *original*
+   stream and rewrites `stream_profile:{original}`; it never writes `channel_stream` itself, so after
+   a failover that key still names the first stream tuned, and `release_stream()`, `get_stream()`'s
+   reuse branch and `core/utils.py`'s event enrichment all read the chain that way on purpose. PR 6
+   moves *where* `update_stream_profile()` is called from — into `next_source.resolve_source()`, for
+   the returned source only — and changes nothing about what it does. Fixing the chain would mean
+   deleting the stale `stream_profile:{old}` and re-deriving three readers, a relay-internals change
+   this phase forbids. Recorded here so PR 8 or Phase 2 revisits it deliberately rather than
+   discovering it.
+7. The bound token in point 1 carries no nonce, so a captured internal call can be replayed inside
+   the ±120s window. Accepted: the effect is bounded because a replayed `next-source` is idempotent
+   once point 5's 404 mapping lands (`Channel.get_stream()` reuses a live assignment and reports
+   `slot_reserved=False`), the worst case is a replayed `release` after a new tune re-reserved
+   (under-counts one provider slot until that channel's next release), and an attacker positioned to
+   capture on the internal network already holds the static token. Stated in
+   `internal_auth.internal_request_token`'s docstring as well as here.
+8. The two synchronous control-plane calls (`next_source()`, `release_source()`) can occupy one
+   greenlet for up to ~14s during a Django outage — 2 × (2s connect + 5s read) + 0.1s retry delay,
+   since `_try_next_stream` runs on the channel's main-loop greenlet and each generator's release
+   runs inside the client response's `finally`. Other greenlets are unaffected; this is a cooperative
+   yield, not a blocked hub. Stated because it is the number PR 8's Django-down scenario measures
+   against.
+
 ### PR 7 — `migration/phase1-control-api`
 
 - `apps/proxy/relay_urls.py` / `relay_views.py` (D12): the five routes in § Architecture,
