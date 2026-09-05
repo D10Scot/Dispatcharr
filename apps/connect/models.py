@@ -6,6 +6,7 @@ SUPPORTED_EVENTS = {
     "channel_reconnect": "Channel Reconnected",
     "channel_error": "Channel Error",
     "channel_failover": "Channel Failover",
+    "channel_buffering": "Channel Buffering",
     "stream_switch": "Stream Switch",
     "recording_start": "Recording Started",
     "recording_end": "Recording Ended",
