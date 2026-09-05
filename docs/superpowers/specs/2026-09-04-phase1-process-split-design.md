@@ -152,7 +152,9 @@ command that settled it.
   `hdhr/api_views.py:144`, `channels/api_views.py:1017` and `:3351`. PR 5 deletes the two on the
   streaming path (`live_proxy/views.py`, `timeshift/views.py`) by folding them into
   `authorize_stream`; the other ten are listing paths this spec does not touch, so the corrected
-  count in `CLAUDE.md` becomes ten, not zero.
+  count in `CLAUDE.md` becomes ten, not zero — ten blocks in eight functions, which is the unit
+  `CLAUDE.md` now states (`generate_m3u` and `epg_generator` each carry the profile and no-profile
+  copies, hence eight functions but ten blocks).
 - **`docs/agents/issue-tracker.md`** names the `resolveReviewThread` mutation but carries no
   runnable example. PR 8 adds one.
 - **Nginx `location` matching creates live collisions with the XC three-segment root form.** New
@@ -580,8 +582,9 @@ equivalent of the auth_request docs' canonical `X-Original-URI` header) and
 **Amendment S3:** `X-Relay-Channel` is consumed by `stream_xc`, which receives a numeric Xtream id
 and needs the uuid the hop resolved; `stream_ts` keeps using the identifier already in its own URL.
 `X-Relay-Output` carries the Output **Profile id**, and the relay re-fetches the `OutputProfile`
-row by primary key to call `build_command()` — the header contract cannot carry a built ffmpeg
-command, and `apps/proxy/live_proxy/views.py:689` needs the model instance, not the id. What moves
+row by primary key to call `build_command()` (`apps/proxy/live_proxy/views.py`, in `stream_ts`) —
+the header contract cannot carry a built ffmpeg command, and that call site needs the model
+instance, not the id. What moves
 to Django is the *resolution rule* (query param → user preference → none), which is the substance
 of ADR 0005's "any direct read of `M3UAccount`/`OutputProfile` at tune time"; one primary-key read
 remains in the relay, alongside the `User` row the relay loads from `X-Relay-User` for
@@ -1317,9 +1320,9 @@ resolve it, and each exists because a simpler arrangement provably does not boot
   `network_access_allowed`, plaintext password compare and `_user_can_access_channel` calls are
   deleted, not duplicated. The XC compare becomes `hmac.compare_digest`. **Amendment S2:**
   `check_user_stream_limits` is deleted only from `stream_ts` and `stream_xc`, per S1 immediately
-  below; `stream_vod`'s call (`apps/proxy/vod_proxy/views.py:781`) and `_serve_catchup`'s
-  (`apps/timeshift/views.py:493`) are unchanged, so a later grep for `check_user_stream_limits` in
-  the stream views finding those two is not a regression.
+  below; `stream_vod`'s call (`apps/proxy/vod_proxy/views.py`, inside `stream_vod` itself) and
+  `_serve_catchup`'s (`apps/timeshift/views.py`) are unchanged, so a later grep for
+  `check_user_stream_limits` in the stream views finding those two is not a regression.
 - **Amendment S1:** `check_user_stream_limits` moves *inside* `authorize_stream` unchanged, but for
   the **live** surfaces only (`stream_ts`, `stream_xc`), still scanning Redis directly from
   whichever process runs the hop. That is the intermediate state, not the end state: PR 7 splits
@@ -1404,8 +1407,8 @@ resolve it, and each exists because a simpler arrangement provably does not boot
   shares the same value for as long as `SECRET_KEY` is unrotated, and PR 6 makes it the sole gate on
   `/api/relay/…` (PR 7 mounts `/proxy/relay/…` behind the same token) with no source-IP allowlist.
   Before that token becomes the sole gate on a real network boundary, either bind it — a scope
-  and/or an expiry — or document here why not. Neither is done in PR 6 or PR 7; both ship the token
-  as designed in this spec, unbound.
+  and/or an expiry — or document here why not. Neither is done in this PR; PR 6 must do one or the
+  other before `/api/relay/…` merges, and PR 7 inherits the answer.
 - `apps/proxy/control_plane.py`: `get_control_plane_base_url()` (D9), the next-source/release/events
   clients with the stated timeouts, one retry and the degraded fallback.
 - `apps/proxy/live_proxy/url_utils.py:82,116,284` and `services/channel_service.py:159` (the four

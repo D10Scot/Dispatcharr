@@ -70,7 +70,9 @@ already accept: Xtream credentials, JWT, API key, query-param JWT, session or
 anonymous), `user_level`, channel-profile membership, `hidden_from_output`,
 the user's `hide_adult_content` against `Channel.is_adult`, Output Profile
 resolution and the per-user
-`stream_limit`, and answers 200 with headers or 401/403/404/429. nginx copies
+`stream_limit`, and answers 200 with headers or 401/403/404/429 (through nginx the view carries
+404 and 429 as 403 plus `X-Authorize-Status`, since `auth_request` transports only 401 and 403 —
+spec amendment S7). nginx copies
 the 200 response's headers into nginx variables with `auth_request_set` — the
 only context where the subrequest's own response headers are readable — and
 re-emits them toward the relay as `uwsgi_param HTTP_X_RELAY_*` values. The

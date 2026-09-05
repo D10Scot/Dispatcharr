@@ -92,11 +92,18 @@ test(
     // test_a_forged_marker_falls_through_to_the_inline_decision).
     //
     // What this does NOT pin: whether nginx would have discarded these
-    // headers before the relay saw them at all. This stack has no
-    // `auth_request` (its image predates 569d5b5f), so every request
-    // here reaches the inline path directly; the `uwsgi_param` blanking
-    // layer on every relay-bound location is pinned separately by
-    // nginx-stream-buffering.spec.ts.
+    // headers before the relay saw them at all — that depends on which
+    // image is under test, not on this assertion. Through nginx
+    // (CI's image), the `auth_request` subrequest denies the tune before
+    // `uwsgi_pass` ever reaches this location, since the channel is
+    // `hidden_from_output`, so the client's forged headers never reach a
+    // view at all. Without nginx in front (an image predating 569d5b5f,
+    // or any no-nginx deployment), the request reaches the inline path
+    // directly and the forged `X-Dispatcharr-Authorized` fails the
+    // constant-time compare there instead. Either path lands on the same
+    // `authorize_stream` denial, which is what this test actually pins;
+    // the `uwsgi_param` blanking layer on every relay-bound location is
+    // pinned separately by nginx-stream-buffering.spec.ts.
     const scenario = await upstream.scenario({
       channels: [{ id: 1, name: 'PR5 Forge', tvgId: 'pr5-forge.e2e', logo: null }],
       rate: 20,
