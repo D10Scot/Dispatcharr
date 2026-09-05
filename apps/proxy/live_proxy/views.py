@@ -793,25 +793,12 @@ def stream_ts(request, channel_id, user=None, force_output_format=None, decision
         logger.error(f"Error in stream_ts: {e}", exc_info=True)
         if connection_allocated and channel is not None:
             try:
-                try:
-                    released = control_plane.release_source(channel_id)
-                except (control_plane.ControlPlaneRefused, control_plane.ControlPlaneUnavailable) as exc:
-                    logger.warning(f"Could not release the slot for {channel_id}: {exc}")
-                    released = False
-                if not released:
-                    logger.warning(f"[{client_id}] Failed to release stream in exception handler")
-            except (control_plane.ControlPlaneRefused, control_plane.ControlPlaneUnavailable):
-                # Narrowed from a bare `except Exception: pass` (Phase 1 PR 6
-                # fix wave A): that caught ImproperlyConfigured too, which a
-                # misconfigured DISPATCHARR_WEB_HOST/DISPATCHARR_INTERNAL_API_
-                # BASE_URL raises from get_control_plane_base_url() -- it must
-                # propagate and fail loudly, not be swallowed as part of an
-                # already-failing request's best-effort cleanup. The inner
-                # try/except already handles both control-plane exceptions;
-                # this outer clause is now unreachable in practice and kept
-                # only so a future third release_source() failure mode inside
-                # this block still can't crash the exception handler.
-                pass
+                released = control_plane.release_source(channel_id)
+            except (control_plane.ControlPlaneRefused, control_plane.ControlPlaneUnavailable) as exc:
+                logger.warning(f"Could not release the slot for {channel_id}: {exc}")
+                released = False
+            if not released:
+                logger.warning(f"[{client_id}] Failed to release stream in exception handler")
         # Client may have been pre-registered (before ensure_output_profile /
         # get_buffer / generator setup) to protect against the non-owner
         # cleanup thread. If setup then failed with an unhandled exception,

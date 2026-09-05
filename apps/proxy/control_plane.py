@@ -33,6 +33,7 @@ from apps.proxy.internal_auth import (
     build_internal_request_header,
     internal_principal_token,
 )
+from dispatcharr.utils import redact_url
 
 logger = logging.getLogger(__name__)
 
@@ -65,37 +66,83 @@ class ControlPlaneRefused(Exception):
 _host_validation_warned = False
 
 
-def _validated(url, var_name=None, raw_value=None):
-    """Reject a URL whose host Django's own get_host() would reject.
+def _subject(var_name, raw_value, url):
+    # var_name/raw_value name the environment variable responsible, for
+    # the explicit and modular branches; dev/aio have no user-supplied
+    # hostname to blame, so they fall back to naming the URL itself --
+    # always the literal 127.0.0.1 form, never anything a caller supplied.
+    return f"{var_name}={raw_value}" if var_name else f"the control-plane URL {url!r}"
 
-    Uses Django's own split_domain_port -- exactly what HttpRequest.get_host()
-    calls -- so the client and the server can never disagree about what
-    counts as a valid Host header. It returns ('', '') for anything
-    host_validation_re rejects (notably: an underscore anywhere in the
-    host), and get_host() raises DisallowedHost for that BEFORE
-    ALLOWED_HOSTS is even consulted. A relay that sent such a URL as an
-    HTTP request would just get an opaque 400 with no indication why;
-    failing here, at the source of the value, points at the actual
-    variable and value responsible.
 
-    No network access -- this is a regex check on a string that is already
-    in hand, safe to run on every call.
-    """
+def _raise_and_warn_once(message, var_name):
+    # var_name travels on the exception (not just baked into the message)
+    # so a catcher that must not repeat the message -- release_source(),
+    # which logs its own ERROR without the URL -- can still name which
+    # variable is responsible.
     global _host_validation_warned
-    domain, _port = split_domain_port(urlsplit(url).netloc)
-    if domain:
-        return url
-    subject = f"{var_name}={raw_value}" if var_name else f"the control-plane URL {url!r}"
-    message = (
-        f"{subject} produces a Host header Django's get_host() rejects "
-        "before ALLOWED_HOSTS is consulted (host_validation_re allows only "
-        "letters, digits, dots and hyphens -- no underscores). Use a "
-        "hostname made of those characters."
-    )
     if not _host_validation_warned:
         logger.error(message)
         _host_validation_warned = True
-    raise ImproperlyConfigured(message)
+    exc = ImproperlyConfigured(message)
+    exc.var_name = var_name
+    raise exc
+
+
+def _validated(url, var_name=None, raw_value=None):
+    """Reject a URL requests would turn into a Host header Django refuses.
+
+    Two checks, in order:
+
+    1. The scheme must be http or https. get_control_plane_base_url()
+       only ever builds http:// URLs, so a scheme-less or malformed
+       explicit value (e.g. "web:9191", urlsplit scheme "web") has no
+       real host at all -- rejecting it with the host-shape message below
+       would blame underscores for a problem that has nothing to do with
+       them.
+    2. What requests actually puts on the wire as the Host header is the
+       netloc MINUS userinfo: requests turns "user:pw@host:9191" into
+       HTTP Basic auth and sends "Host: host:9191", never forwarding the
+       userinfo as part of the host. Validating the raw netloc (including
+       userinfo) would reject a URL Django would happily accept, and
+       validating it with Django's own split_domain_port -- exactly what
+       HttpRequest.get_host() calls -- means the client and the server can
+       never disagree about what counts as a valid Host header once
+       userinfo is out of the way. It returns ('', '') for anything
+       host_validation_re rejects (notably: an underscore anywhere in the
+       host), and get_host() raises DisallowedHost for that BEFORE
+       ALLOWED_HOSTS is even consulted. A relay that sent such a URL as an
+       HTTP request would just get an opaque 400 with no indication why;
+       failing here, at the source of the value, points at the actual
+       variable and value responsible.
+
+    raw_value must never carry a credential into the exception message or
+    the log: a rejection here can surface in an anonymous streaming
+    client's 500 response body by the time it reaches stream_ts's
+    catch-all, so callers pass dispatcharr.utils.redact_url(explicit) for
+    the explicit branch rather than the raw environment value. The
+    modular branch's raw_value is a bare hostname and never carries
+    userinfo, so it needs no redaction.
+
+    No network access -- this is string parsing on a value already in
+    hand, safe to run on every call.
+    """
+    parsed = urlsplit(url)
+    if parsed.scheme not in ("http", "https"):
+        _raise_and_warn_once(
+            f"{_subject(var_name, raw_value, url)} is not an http(s) URL: "
+            "get_control_plane_base_url() only builds http:// URLs, and a "
+            "scheme-less or malformed value has no host requests can send.",
+            var_name,
+        )
+    host_for_wire = parsed.netloc.rpartition("@")[2]
+    domain, _port = split_domain_port(host_for_wire)
+    if domain:
+        return url
+    _raise_and_warn_once(
+        f"{_subject(var_name, raw_value, url)} must be an http(s) URL "
+        "whose host is letters, digits, dots and hyphens.",
+        var_name,
+    )
 
 
 def get_control_plane_base_url():
@@ -112,7 +159,9 @@ def get_control_plane_base_url():
     explicit = os.environ.get("DISPATCHARR_INTERNAL_API_BASE_URL")
     if explicit:
         return _validated(
-            explicit.rstrip("/"), "DISPATCHARR_INTERNAL_API_BASE_URL", explicit
+            explicit.rstrip("/"),
+            "DISPATCHARR_INTERNAL_API_BASE_URL",
+            redact_url(explicit),
         )
     env = os.environ.get("DISPATCHARR_ENV", "aio").lower()
     if env == "modular":
@@ -258,10 +307,25 @@ def next_source(
 
 
 def release_source(identifier, *, stream_id=None, m3u_profile_id=None, channel_pk=None):
-    """Give a reserved slot back. Raises like _post — the caller decides
-    whether an unreachable control plane is worth a WARNING and moving on
-    (ruling 9), because that call site already knows what it was tearing
-    down.
+    """Give a reserved slot back. Raises ControlPlaneRefused/Unavailable
+    like _post — the caller decides whether an unreachable control plane
+    is worth a WARNING and moving on (ruling 9), because that call site
+    already knows what it was tearing down.
+
+    A misconfigured host is different, and deliberately NOT raised here:
+    "fail loudly on the first tune" (see next_source's docstring) belongs
+    to the tune path, where a viewer is about to be told to try again.
+    release_source() runs from a channel-stop cleanup path instead --
+    aborting that cannot fix the configuration, and only leaks state (the
+    channel's Redis keys, its ownership lease and a still-running ffmpeg
+    holding a provider slot). It is also reachable in the worker role,
+    which stops channels but never tunes, so "the first tune" may never
+    happen there at all before a release is attempted. So
+    ImproperlyConfigured is caught here, logged once per call (naming the
+    variable only -- the offending value already got its once-per-process
+    ERROR inside _validated) and treated as "not released": every caller
+    already handles a False return the same way it handles the two
+    control-plane exceptions.
     """
     path = f"/api/relay/channels/{identifier}/release"
     payload = {
@@ -269,6 +333,15 @@ def release_source(identifier, *, stream_id=None, m3u_profile_id=None, channel_p
         "m3u_profile_id": m3u_profile_id,
         "channel_pk": channel_pk,
     }
+    try:
+        get_control_plane_base_url()
+    except ImproperlyConfigured as exc:
+        logger.error(
+            "Could not release the slot for %s: %s is misconfigured",
+            identifier,
+            getattr(exc, "var_name", None) or "the control-plane base URL",
+        )
+        return False
     answer = _post(path, payload)
     return bool(answer.get("released"))
 

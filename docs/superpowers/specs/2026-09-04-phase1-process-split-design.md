@@ -1527,12 +1527,19 @@ not make, recorded here rather than re-derived by PR 7 or Phase 2:
     `ALLOWED_HOSTS` is even consulted, so the relay's call fails with an opaque 400 pointing at
     nothing. Three fixes, all landed:
     (a) `control_plane.py`'s `_validated()` checks every branch (explicit, modular, dev, aio) with
-    Django's own `split_domain_port` — the same function `get_host()` calls — and raises
-    `ImproperlyConfigured` at resolve time, naming the offending variable and value, before any HTTP
-    call is attempted. No caller of `get_control_plane_base_url()`, `next_source()` or
-    `release_source()` catches `ImproperlyConfigured`: point 5's reasoning applies here too — a
-    misconfigured deployment must fail loudly, not degrade through the same fallback path a genuine
-    Django outage uses.
+    Django's own `split_domain_port` — the same function `get_host()` calls, fed the netloc with any
+    userinfo stripped first, since that is what `requests` actually puts on the wire as the Host
+    header — and raises `ImproperlyConfigured` at resolve time, naming the offending variable (and,
+    for the explicit override, a credential-redacted form of the value), before any HTTP call is
+    attempted. Point 5's "fail loudly, don't degrade through the fallback a genuine Django outage
+    uses" reasoning applies only on the tune path: `get_control_plane_base_url()` and `next_source()`
+    let `ImproperlyConfigured` propagate, so a misconfigured deployment fails visibly on the first
+    tune. `release_source()` is different — it runs from a channel-stop cleanup path, where aborting
+    cannot fix the configuration and would instead leak the channel's Redis keys, its ownership lease
+    and a still-running ffmpeg holding a provider slot (reachable in the worker role, which stops
+    channels but never tunes, and in a relay restarted after the tune) — so it catches
+    `ImproperlyConfigured` itself, logs once per call naming only the variable, and returns `False`,
+    which every caller already treats the same as an unreachable control plane.
     (b) This section's own D9 enumerates only explicit → modular → AIO and omits the `dev` →
     `http://127.0.0.1:5656` branch the code has always had; D6 already establishes that branch for
     the DVR formula D9 states it borrows, so D9 was restating D6's shape rather than inventing a

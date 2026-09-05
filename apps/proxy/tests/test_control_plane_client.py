@@ -167,6 +167,54 @@ class HostValidationTests(SimpleTestCase):
                 control_plane.get_control_plane_base_url(), "http://10.0.0.5:9191"
             )
 
+    def test_userinfo_in_an_explicit_base_url_is_accepted_unchanged(self):
+        # requests turns "user:pw@host" into HTTP Basic auth and sends
+        # "Host: host:9191" on the wire -- Django would accept this Host,
+        # so validating the raw netloc (userinfo included) must not reject
+        # a URL that is actually fine.
+        with mock.patch.dict(
+            os.environ,
+            {"DISPATCHARR_INTERNAL_API_BASE_URL": "http://user:pw@web:9191/"},
+            clear=False,
+        ):
+            self.assertEqual(
+                control_plane.get_control_plane_base_url(),
+                "http://user:pw@web:9191",
+            )
+
+    def test_userinfo_never_reaches_the_rejection_message_or_log(self):
+        # A bad host with credentials attached must still be rejected (the
+        # host, not the userinfo, is the problem here), but the password
+        # must not ride along into the exception text or the ERROR log --
+        # both can end up in an anonymous streaming client's response body
+        # by the time this reaches stream_ts's catch-all.
+        with mock.patch.dict(
+            os.environ,
+            {"DISPATCHARR_INTERNAL_API_BASE_URL": "http://user:pw@bad_host:9191"},
+            clear=False,
+        ):
+            with self.assertLogs("apps.proxy.control_plane", level="ERROR") as logs:
+                with self.assertRaises(ImproperlyConfigured) as ctx:
+                    control_plane.get_control_plane_base_url()
+        self.assertIn("DISPATCHARR_INTERNAL_API_BASE_URL", str(ctx.exception))
+        self.assertNotIn("pw", str(ctx.exception))
+        self.assertTrue(any("pw" not in line for line in logs.output))
+        for line in logs.output:
+            self.assertNotIn("pw", line)
+
+    def test_a_scheme_less_explicit_base_url_is_rejected_with_its_own_message(self):
+        with mock.patch.dict(
+            os.environ,
+            {"DISPATCHARR_INTERNAL_API_BASE_URL": "web:9191"},
+            clear=False,
+        ):
+            with self.assertRaises(ImproperlyConfigured) as ctx:
+                control_plane.get_control_plane_base_url()
+        message = str(ctx.exception)
+        self.assertIn("DISPATCHARR_INTERNAL_API_BASE_URL", message)
+        self.assertIn("http(s)", message)
+        self.assertNotIn("hyphens", message)
+
 
 @override_settings(SECRET_KEY="control-plane-test-secret")
 class _ControlPlaneTestCase(SimpleTestCase):
@@ -459,6 +507,21 @@ class ReleaseSourceTests(_ControlPlaneTestCase):
 
         with self.assertRaises(control_plane.ControlPlaneRefused):
             control_plane.release_source("some-uuid")
+
+    def test_release_source_with_a_bad_host_returns_false_with_no_call(self):
+        # release_source() must not raise ImproperlyConfigured -- a
+        # misconfigured control plane must not abort a channel teardown,
+        # only be reported as "not released" like any other failed release.
+        control_plane._host_validation_warned = False
+        self.addCleanup(setattr, control_plane, "_host_validation_warned", False)
+        with mock.patch.dict(
+            os.environ,
+            {"DISPATCHARR_INTERNAL_API_BASE_URL": "http://bad_host:9191"},
+            clear=False,
+        ):
+            released = control_plane.release_source("some-uuid")
+        self.assertFalse(released)
+        self.requests.request.assert_not_called()
 
 
 class EmitEventTests(_ControlPlaneTestCase):

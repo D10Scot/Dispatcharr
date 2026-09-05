@@ -91,6 +91,10 @@ class InternalRequestTokenTests(SimpleTestCase):
         # for POST must not validate a PUT carrying the same path, body
         # and timestamp.
         signed_as_post = _request(self.factory)
+        # Prove the token is valid for its own method first, so the PUT
+        # assertion below can't pass for an unrelated reason (a clock-window
+        # miss would also return False).
+        self.assertTrue(request_is_internal_request(signed_as_post))
         headers = {
             k: v for k, v in signed_as_post.META.items() if k.startswith("HTTP_")
         }
