@@ -6,6 +6,20 @@ from django.http import Http404, JsonResponse, StreamingHttpResponse
 from django.test import RequestFactory, SimpleTestCase
 
 
+def _decision(user=None, client_id="client_test_1", channel_uuid=""):
+    """The authorize hop's answer, as the views now receive it."""
+    from apps.proxy.authorize import SURFACE_LIVE, AuthorizeResult
+
+    return AuthorizeResult(
+        surface=SURFACE_LIVE,
+        channel_uuid=channel_uuid,
+        client_id=client_id,
+        user_id=str(user.id) if user is not None else "",
+        relay_name="py",
+        user=user,
+    )
+
+
 class StreamTsDbCleanupTests(SimpleTestCase):
     def setUp(self):
         self.factory = RequestFactory()
@@ -25,15 +39,15 @@ class StreamTsDbCleanupTests(SimpleTestCase):
     @patch("apps.proxy.live_proxy.views.close_old_connections")
     @patch("apps.proxy.live_proxy.views.create_stream_generator")
     @patch("apps.proxy.live_proxy.views._resolve_output_format", return_value="mpegts")
-    @patch("apps.proxy.live_proxy.views._resolve_output_profile", return_value=None)
+    @patch("apps.proxy.live_proxy.views._output_profile_for", return_value=None)
     @patch("apps.proxy.live_proxy.views.ChannelService.is_channel_unavailable_for_new_clients", return_value=False)
     @patch("apps.proxy.live_proxy.views.get_stream_object")
-    @patch("apps.proxy.live_proxy.views.network_access_allowed", return_value=True)
+    @patch("apps.proxy.live_proxy.views.resolve_authorization", return_value=_decision())
     @patch("apps.proxy.live_proxy.views.ProxyServer")
     def test_stream_ts_closes_db_before_streaming_response(
         self,
         mock_proxy_cls,
-        _network_ok,
+        _authorize_mock,
         mock_get_stream_object,
         _unavailable,
         _output_profile,
@@ -69,15 +83,15 @@ class StreamTsDbCleanupTests(SimpleTestCase):
     @patch("apps.proxy.live_proxy.views.close_old_connections")
     @patch("apps.proxy.live_proxy.views.create_stream_generator", side_effect=RuntimeError("orm blew up"))
     @patch("apps.proxy.live_proxy.views._resolve_output_format", return_value="mpegts")
-    @patch("apps.proxy.live_proxy.views._resolve_output_profile", return_value=None)
+    @patch("apps.proxy.live_proxy.views._output_profile_for", return_value=None)
     @patch("apps.proxy.live_proxy.views.ChannelService.is_channel_unavailable_for_new_clients", return_value=False)
     @patch("apps.proxy.live_proxy.views.get_stream_object")
-    @patch("apps.proxy.live_proxy.views.network_access_allowed", return_value=True)
+    @patch("apps.proxy.live_proxy.views.resolve_authorization", return_value=_decision())
     @patch("apps.proxy.live_proxy.views.ProxyServer")
     def test_stream_ts_closes_db_on_exception(
         self,
         mock_proxy_cls,
-        _network_ok,
+        _authorize_mock,
         mock_get_stream_object,
         _unavailable,
         _output_profile,
@@ -108,15 +122,15 @@ class StreamTsDbCleanupTests(SimpleTestCase):
     @patch("apps.proxy.live_proxy.views.close_old_connections")
     @patch("apps.proxy.live_proxy.views.create_stream_generator")
     @patch("apps.proxy.live_proxy.views._resolve_output_format", return_value="mpegts")
-    @patch("apps.proxy.live_proxy.views._resolve_output_profile", return_value=None)
+    @patch("apps.proxy.live_proxy.views._output_profile_for", return_value=None)
     @patch("apps.proxy.live_proxy.views.ChannelService.is_channel_unavailable_for_new_clients", return_value=False)
     @patch("apps.proxy.live_proxy.views.get_stream_object")
-    @patch("apps.proxy.live_proxy.views.network_access_allowed", return_value=True)
+    @patch("apps.proxy.live_proxy.views.resolve_authorization", return_value=_decision())
     @patch("apps.proxy.live_proxy.views.ProxyServer")
     def test_stream_ts_closes_db_on_early_client_register_failure(
         self,
         mock_proxy_cls,
-        _network_ok,
+        _authorize_mock,
         mock_get_stream_object,
         _unavailable,
         _output_profile,
@@ -380,12 +394,12 @@ class GeneratorAndStatusDbCleanupTests(SimpleTestCase):
 
     @patch("apps.proxy.live_proxy.views.close_old_connections")
     @patch("apps.proxy.live_proxy.views.get_stream_object", side_effect=Http404("missing"))
-    @patch("apps.proxy.live_proxy.views.network_access_allowed", return_value=True)
+    @patch("apps.proxy.live_proxy.views.resolve_authorization", return_value=_decision())
     @patch("apps.proxy.live_proxy.views.ProxyServer")
     def test_stream_ts_closes_db_on_http404(
         self,
         mock_proxy_cls,
-        _network_ok,
+        _authorize_mock,
         _get_stream_object,
         mock_close,
     ):

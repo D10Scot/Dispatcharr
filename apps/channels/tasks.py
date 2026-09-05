@@ -1200,10 +1200,20 @@ def _dvr_ffmpeg_retry_backoff_seconds(retry_index):
     return min(0.25 * retry_index, 3.0)
 
 
-def _dvr_build_ffmpeg_cmd(stream_url, recording_id, hls_m3u8, hls_seg_pattern, hls_start_number):
-    """Build the FFmpeg command for DVR HLS segment recording."""
+def _dvr_build_ffmpeg_cmd(stream_url, recording_id, hls_m3u8, hls_seg_pattern,
+                          hls_start_number, internal_token=None):
+    """Build the FFmpeg command for DVR HLS segment recording.
+
+    Never add "-loglevel debug" here: at that verbosity ffmpeg echoes the
+    full request line, X-Dispatcharr-Internal header included, into its own
+    stderr — which run_recording's outage-handling code logs the tail of on
+    failure. There is currently no -loglevel argument in this command, so
+    that tail is unreachable, but it would carry the token the moment one is
+    added.
+    """
     from core.utils import dispatcharr_dvr_user_agent
-    return [
+
+    cmd = [
         "ffmpeg", "-y",
         "-reconnect", "1",
         "-reconnect_streamed", "1",
@@ -1214,6 +1224,15 @@ def _dvr_build_ffmpeg_cmd(stream_url, recording_id, hls_m3u8, hls_seg_pattern, h
         "-fflags", "+genpts",
         # Tolerate minor TS corruption without aborting the whole process.
         "-err_detect", "ignore_err",
+    ]
+    if internal_token:
+        # The authorize hop's internal-principal row (Phase 1 PR 5): the DVR
+        # carries no user credential and must not be judged as anonymous, or
+        # every recording of a hidden or adult or profile-gated channel
+        # fails. Real CR LF: ffmpeg splits -headers on the control
+        # characters and does not unescape a literal backslash pair.
+        cmd += ["-headers", f"X-Dispatcharr-Internal: {internal_token}\r\n"]
+    cmd += [
         "-i", stream_url,
         "-c", "copy",
         # Shift output timestamps so they start from 0, fixing negative PTS
@@ -1227,6 +1246,40 @@ def _dvr_build_ffmpeg_cmd(stream_url, recording_id, hls_m3u8, hls_seg_pattern, h
         "-hls_segment_filename", hls_seg_pattern,
         hls_m3u8,
     ]
+    return cmd
+
+
+def _dvr_redact_cmd(cmd):
+    """The ffmpeg argv, safe to log.
+
+    Two carriers, neither of which scripts/check_credential_logging.py's
+    CREDENTIAL_RE matches: the -headers value now holds an HMAC of
+    SECRET_KEY, and the -i URL is an Xtream path when
+    DISPATCHARR_INTERNAL_TS_BASE_URL points somewhere with credentials in
+    it. The guard would not catch either, which is exactly why this is
+    here rather than left to the guard.
+    """
+    from dispatcharr.utils import redact_url
+
+    redacted = []
+    mask_next = False
+    for arg in cmd:
+        text = str(arg)
+        if mask_next:
+            # No CR LF terminator on the mask: the joined debug line is one
+            # log record, and a raw control character in it is a mild
+            # injection/parsing hazard for whatever reads the log.
+            head, _, tail = text.partition(":")
+            redacted.append(f"{head}: ***" if tail else "***")
+            mask_next = False
+            continue
+        if text == "-headers":
+            mask_next = True
+        elif text.startswith("http://") or text.startswith("https://"):
+            redacted.append(redact_url(text))
+            continue
+        redacted.append(text)
+    return redacted
 
 
 def _dvr_build_hls_concat_cmd(concat_list_path, output_path, extra_args=None):
@@ -1354,6 +1407,7 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
     - Attempts to capture a poster (via program.custom_properties) and store a Logo reference
     """
     from .models import Recording, Logo
+    from apps.proxy.internal_auth import internal_principal_token
 
     # --- Idempotency guard (prevents duplicate recordings from task redelivery) ---
     # Fail closed after retries: without a definitive status read we must not
@@ -1728,6 +1782,7 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
             hls_start_number = _dvr_hls_start_number(hls_dir, hls_m3u8)
             ffmpeg_cmd = _dvr_build_ffmpeg_cmd(
                 stream_url, recording_id, hls_m3u8, hls_seg_pattern, hls_start_number,
+                internal_token=internal_principal_token(),
             )
 
             logger.info(
@@ -1737,7 +1792,7 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
             )
             logger.debug(
                 f"DVR recording {recording_id}: FFmpeg command: "
-                f"{' '.join(str(a) for a in ffmpeg_cmd)}"
+                f"{' '.join(_dvr_redact_cmd(ffmpeg_cmd))}"
             )
 
             ffmpeg_proc = None

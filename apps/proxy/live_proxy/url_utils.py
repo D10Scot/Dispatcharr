@@ -13,6 +13,7 @@ from apps.m3u.connection_pool import (
     profile_available_for_channel_switch,
 )
 from .utils import get_logger
+from dispatcharr.utils import redact_url
 import requests
 
 logger = get_logger()
@@ -98,7 +99,11 @@ def generate_stream_url(
                 stream_profile = stream.get_stream_profile()
                 logger.debug(f"Using stream profile: {stream_profile.name}")
 
-                transcode = not stream_profile.is_proxy()
+                # Redirect is treated like Proxy here: the relay never
+                # spawns a subprocess for either, and StreamManager reads
+                # this flag on every subsequent failover/switch, not just
+                # the initial tune (Phase 1 PR 5 re-review).
+                transcode = not (stream_profile.is_proxy() or stream_profile.is_redirect())
                 stream_profile_id = stream_profile.id
 
                 return stream_url, stream_user_agent, transcode, stream_profile_id, slot_reserved, None
@@ -131,9 +136,15 @@ def generate_stream_url(
 
             stream_url = _resolve_live_stream_url(stream, m3u_account, m3u_profile)
 
-            # Check if transcoding is needed
+            # Check if transcoding is needed. Redirect is treated like Proxy
+            # here: this is the value the initial DVR tune reads
+            # (apps/proxy/live_proxy/views.py's stream_ts), and
+            # get_stream_info_for_switch below must agree, or a Redirect
+            # channel's first failover rebuilds this exact command from the
+            # Redirect profile's empty command/parameters (Phase 1 PR 5
+            # re-review).
             stream_profile = channel.get_stream_profile()
-            if stream_profile.is_proxy() or stream_profile is None:
+            if stream_profile.is_proxy() or stream_profile.is_redirect() or stream_profile is None:
                 transcode = False
             else:
                 transcode = True
@@ -172,7 +183,7 @@ def transform_url(input_url: str, search_pattern: str, replace_pattern: str) -> 
     """
     try:
         logger.debug("Executing URL pattern replacement:")
-        logger.debug(f"  base URL: {input_url}")
+        logger.debug(f"  base URL: {redact_url(input_url)}")
         logger.debug(f"  search: {search_pattern}")
 
         # Convert JS-style backreferences in replace pattern: $<name> -> \g<name>, $1 -> \1
@@ -191,9 +202,9 @@ def transform_url(input_url: str, search_pattern: str, replace_pattern: str) -> 
             timeout=URL_TRANSFORM_REGEX_TIMEOUT,
         )
         if match_count == 0:
-            logger.warning(f"URL pattern '{search_pattern}' did not match, falling back to original URL: {input_url}")
+            logger.warning(f"URL pattern '{search_pattern}' did not match, falling back to original URL: {redact_url(input_url)}")
         else:
-            logger.info(f"Generated stream url: {stream_url}")
+            logger.info(f"Generated stream url: {redact_url(stream_url)}")
 
         return stream_url
     except Exception as e:
@@ -297,7 +308,13 @@ def get_stream_info_for_switch(channel_id: str, target_stream_id: Optional[int] 
         stream_url = _resolve_live_stream_url(stream, m3u_account, m3u_profile)
 
         stream_profile = channel.get_stream_profile()
-        transcode = not (stream_profile.is_proxy() or stream_profile is None)
+        # Redirect is treated like Proxy here too (see generate_stream_url
+        # above): StreamManager reads this flag on every failover/switch,
+        # not just the initial tune, and a Redirect profile's build_command
+        # is empty.
+        transcode = not (
+            stream_profile.is_proxy() or stream_profile.is_redirect() or stream_profile is None
+        )
         profile_value = stream_profile.id
 
         return {
@@ -489,7 +506,7 @@ def validate_stream_url(url, user_agent=None, timeout=(5, 5)):
     # Check if URL uses non-HTTP protocols (UDP/RTP/RTSP)
     # These cannot be validated via HTTP methods, so we skip validation
     if url.startswith(('udp://', 'rtp://', 'rtsp://')):
-        logger.info(f"Skipping HTTP validation for non-HTTP protocol: {url}")
+        logger.info(f"Skipping HTTP validation for non-HTTP protocol: {redact_url(url)}")
         return True, url, 200, "Non-HTTP protocol (UDP/RTP/RTSP) - validation skipped"
 
     try:

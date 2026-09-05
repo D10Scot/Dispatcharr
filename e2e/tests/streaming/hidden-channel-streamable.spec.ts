@@ -61,35 +61,21 @@ test('an adult channel is unlistable for a hide_adult_content user and listable 
   expect(listedForAdmin.map((s) => s.stream_id)).toContain(channel.id);
 });
 
-// Asserts the behaviour Dispatcharr SHOULD have. `stream_xc`
-// (apps/proxy/live_proxy/views.py) applies `user_level__lte` and Channel
-// Profile membership to the requesting user, then serves the channel — with
-// no `is_adult` filter, and no `hidden_from_output` exclusion either. Every
-// listing path applies both for the same user.
+// Closed by Phase 1 PR 5. Every stream surface now authorizes through
+// apps/proxy/authorize.py's authorize_stream(), which applies the user's
+// hide_adult_content against Channel.is_adult — the check every listing
+// path already applied and stream_xc did not. The refusal is a 403 from
+// the authorize hop rather than the 404 stream_xc's deleted filter would
+// have produced: the channel exists, and this user may not have it.
 //
-// So a `hide_adult_content` user cannot see this channel in get_live_streams,
-// in get.php's playlist or in xmltv.php's guide, and can still watch it by
-// asking for it by id. That is CLAUDE.md's "hidden channels are unlistable
-// yet still streamable", located precisely.
+// Kept in its inverted-pin shape (the try/catch that accepts only an
+// exact 403, and rethrows anything else) on purpose. A bare "expect a
+// refusal" rewrite would go green on a connection reset or a 500, which
+// is exactly the failure mode a security assertion must not have.
 //
-// Filed separately from the HDHomeRun defect (hdhr.spec.ts): stream_xc HAS
-// the principal and omits one filter clause, so its fix is that clause; HDHR
-// has no principal at all. Neither change closes the other.
-//
-// Issue: https://github.com/D10Scot/Dispatcharr/issues/87
-//
-// test.fail() caveat: it is satisfied by ANY failure in the body, guards
-// included — so a broken premise, not just the intended assertion, would
-// also read as "expected failure" and this test would go green while
-// proving nothing. The listing-absence premise this pin depends on (the
-// `expect(listed...).not.toContain(channel.id)` below) is no longer what
-// could hollow it: the non-inverted control above ('an adult channel is
-// unlistable for a hide_adult_content user and listable for an admin')
-// already exercises that exact filtering behaviour, both directions, and
-// would go red on its own if it broke. Verified with `--reporter=json`
-// that this pin still fails at the `toBe(false)` below — re-verify the
-// same way after any edit here.
-test.fail('a channel a user cannot list is not streamable by that user', { tag: '@contract' }, async ({
+// Issue: https://github.com/D10Scot/Dispatcharr/issues/87 — closed by
+// PR 8, which references this PR.
+test('a channel a user cannot list is not streamable by that user', { tag: '@contract' }, async ({
   upstream,
   seed,
   api,
@@ -139,16 +125,17 @@ test.fail('a channel a user cannot list is not streamable by that user', { tag: 
   // defect is closed. So anything that is not a refusal status rethrows,
   // failing the body and leaving the pin held — the safe direction.
   //
-  // 404 first because that is what the fix produces: adding is_adult /
-  // hidden_from_output to stream_xc's `filters` dict makes the lookup return
-  // no channel, and that path already answers `{"error": "Not found"}` with
-  // 404 (apps/proxy/live_proxy/views.py:815-816). 403 is accepted too, in
-  // case the fix rejects before the lookup as the network-ACL branch does.
+  // Exactly 403, not "any refusal": the hop's `_apply_channel_checks`
+  // (apps/proxy/authorize.py:383-386) answers before `stream_xc` ever
+  // looks the channel up, so there is no lookup left to 404 — the
+  // pre-PR-5 hypothesis that a deleted `filters` clause would make the
+  // lookup miss no longer applies. A 404 here would mean something else
+  // broke (an unresolvable channel id), not that this defect closed.
   let served = true;
   try {
     await streamClient.open(`/live/${user.username}/${user.xcPassword}/${channel.id}`);
   } catch (error) {
-    if (!(error instanceof StreamStatusError) || ![403, 404].includes(error.status)) {
+    if (!(error instanceof StreamStatusError) || error.status !== 403) {
       throw error;
     }
     served = false;

@@ -35,6 +35,7 @@ WORKDIR /app
 COPY . /app
 # Copy nginx configuration
 COPY ./docker/nginx.conf /etc/nginx/sites-enabled/default
+COPY ./docker/dispatcharr_api_params.conf /etc/nginx/dispatcharr_api_params.conf
 # Fix line endings and make entrypoint scripts executable
 RUN for f in /app/docker/entrypoint*.sh; do \
     if [ -f "$f" ]; then \

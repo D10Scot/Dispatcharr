@@ -92,6 +92,37 @@ if [[ "$DISPATCHARR_ROLE" == "all" || "$DISPATCHARR_ROLE" == "api" ]]; then
     fi
     sed -i "s/RELAY_UPSTREAM/${RELAY_HOST}:${RELAY_PORT}/g" /etc/nginx/sites-enabled/default
 
+    # The relay's trust marker: HMAC(SECRET_KEY, "relay-trust"), the value
+    # nginx puts in X-Dispatcharr-Authorized on every relay-bound location
+    # (Phase 1 PR 5, D11). python3 rather than openssl: the entrypoint
+    # already generates the secret with a python3 heredoc, and nothing in
+    # either Dockerfile installs openssl as an app dependency.
+    #
+    # DJANGO_SECRET_KEY is exported by docker/entrypoint.sh before this
+    # script is sourced, from /data/jwt — the same file every role reads,
+    # which is what makes the relay derive the identical value in Python.
+    RELAY_TRUST_TOKEN=$(python3 - <<'PY'
+import hashlib
+import hmac
+import os
+
+print(hmac.new(os.environ["DJANGO_SECRET_KEY"].encode(), b"relay-trust", hashlib.sha256).hexdigest())
+PY
+)
+    if [[ ! "$RELAY_TRUST_TOKEN" =~ ^[0-9a-f]{64}$ ]]; then
+        echo "❌ ERROR: could not derive the relay trust token from DJANGO_SECRET_KEY."
+        echo "   nginx would forward an unauthorized marker and every tune would 403."
+        exit 1
+    fi
+    # This sed consumes the RELAY_TRUST_TOKEN placeholder on first boot: once
+    # substituted, a `docker restart` (same writable layer, no fresh copy of
+    # this file) finds no placeholder left to replace, so a later /data/jwt
+    # rotation leaves the stale, pre-rotation token in nginx. Fails safe --
+    # every hop-authorized tune then falls through to inline authorization,
+    # same as NGINX_PORT/RELAY_UPSTREAM above; re-templating from a pristine
+    # copy on every boot is a follow-up shared with those two.
+    sed -i "s/RELAY_TRUST_TOKEN/${RELAY_TRUST_TOKEN}/g" /etc/nginx/sites-enabled/default
+
     # Configure nginx based on IPv6 availability
     if ip -6 addr show | grep -q "inet6"; then
         echo "✅ IPv6 is available, enabling IPv6 in nginx"

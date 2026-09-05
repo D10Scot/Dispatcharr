@@ -70,7 +70,9 @@ already accept: Xtream credentials, JWT, API key, query-param JWT, session or
 anonymous), `user_level`, channel-profile membership, `hidden_from_output`,
 the user's `hide_adult_content` against `Channel.is_adult`, Output Profile
 resolution and the per-user
-`stream_limit`, and answers 200 with headers or 401/403/404/429. nginx copies
+`stream_limit`, and answers 200 with headers or 401/403/404/429 (through nginx the view carries
+404 and 429 as 403 plus `X-Authorize-Status`, since `auth_request` transports only 401 and 403 —
+spec amendment S7). nginx copies
 the 200 response's headers into nginx variables with `auth_request_set` — the
 only context where the subrequest's own response headers are readable — and
 re-emits them toward the relay as `uwsgi_param HTTP_X_RELAY_*` values. The
@@ -138,9 +140,13 @@ unreachable. The relay never enforces `max_streams`; it asks.
   per-request dependency on Django after that.
 - Deployments without nginx (dev `runserver`) need the inline fallback path,
   which duplicates no logic — it calls `authorize_stream` directly.
-- The relay drops two imports it holds today: `apps.accounts` (user
-  resolution) and any direct read of `M3UAccount`/`OutputProfile` at
-  tune time, both now resolved by Django before the relay is reached.
+- The relay stops *resolving* a principal or an Output Profile: which user,
+  and which profile, are Django's answers, carried in `X-Relay-User` and
+  `X-Relay-Output`. It still reads both rows by primary key — `add_client`
+  stores the `User`, and `OutputProfile.build_command()` is model behaviour
+  a header cannot carry — so the tune-time ORM reads fall from a resolution
+  chain to two indexed lookups rather than to zero. `M3UAccount`'s
+  tune-time reads move behind the next-source call in PR 6, not here.
 - A channel marked `hidden_from_output` stops being streamable by UUID even
   anonymously, because that field is a property of the channel and needs no
   principal. `hide_adult_content` is a per-user preference read against

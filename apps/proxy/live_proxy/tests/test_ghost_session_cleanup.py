@@ -10,6 +10,20 @@ from django.http import StreamingHttpResponse
 from django.test import RequestFactory, SimpleTestCase
 
 
+def _decision(user=None, client_id="client_test_1", channel_uuid=""):
+    """The authorize hop's answer, as the views now receive it."""
+    from apps.proxy.authorize import SURFACE_LIVE, AuthorizeResult
+
+    return AuthorizeResult(
+        surface=SURFACE_LIVE,
+        channel_uuid=channel_uuid,
+        client_id=client_id,
+        user_id=str(user.id) if user is not None else "",
+        relay_name="py",
+        user=user,
+    )
+
+
 def make_proxy_server(redis_client):
     """Build a ProxyServer without running __init__ (no threads, no Redis)."""
     from apps.proxy.live_proxy.server import ProxyServer
@@ -188,16 +202,16 @@ class StreamTsEarlyOwnershipTests(SimpleTestCase):
     @patch("apps.proxy.live_proxy.views.close_old_connections")
     @patch("apps.proxy.live_proxy.views.create_stream_generator")
     @patch("apps.proxy.live_proxy.views._resolve_output_format", return_value="mpegts")
-    @patch("apps.proxy.live_proxy.views._resolve_output_profile", return_value=None)
+    @patch("apps.proxy.live_proxy.views._output_profile_for", return_value=None)
     @patch("apps.proxy.live_proxy.views.generate_stream_url")
     @patch("apps.proxy.live_proxy.views.ChannelService")
     @patch("apps.proxy.live_proxy.views.get_stream_object")
-    @patch("apps.proxy.live_proxy.views.network_access_allowed", return_value=True)
+    @patch("apps.proxy.live_proxy.views.resolve_authorization", return_value=_decision())
     @patch("apps.proxy.live_proxy.views.ProxyServer")
     def test_follower_skips_stream_reservation_when_ownership_lost(
         self,
         mock_proxy_cls,
-        _network_ok,
+        _authorize_mock,
         mock_get_stream_object,
         mock_channel_service,
         mock_generate_url,
@@ -245,16 +259,16 @@ class StreamTsEarlyOwnershipTests(SimpleTestCase):
     @patch("apps.proxy.live_proxy.views.close_old_connections")
     @patch("apps.proxy.live_proxy.views.create_stream_generator")
     @patch("apps.proxy.live_proxy.views._resolve_output_format", return_value="mpegts")
-    @patch("apps.proxy.live_proxy.views._resolve_output_profile", return_value=None)
+    @patch("apps.proxy.live_proxy.views._output_profile_for", return_value=None)
     @patch("apps.proxy.live_proxy.views.generate_stream_url")
     @patch("apps.proxy.live_proxy.views.ChannelService")
     @patch("apps.proxy.live_proxy.views.get_stream_object")
-    @patch("apps.proxy.live_proxy.views.network_access_allowed", return_value=True)
+    @patch("apps.proxy.live_proxy.views.resolve_authorization", return_value=_decision())
     @patch("apps.proxy.live_proxy.views.ProxyServer")
     def test_owner_reserves_stream_after_acquiring_ownership(
         self,
         mock_proxy_cls,
-        _network_ok,
+        _authorize_mock,
         mock_get_stream_object,
         mock_channel_service,
         mock_generate_url,
@@ -314,16 +328,16 @@ class StreamTsEarlyOwnershipTests(SimpleTestCase):
     @patch("apps.proxy.live_proxy.views.close_old_connections")
     @patch("apps.proxy.live_proxy.views.create_stream_generator")
     @patch("apps.proxy.live_proxy.views._resolve_output_format", return_value="mpegts")
-    @patch("apps.proxy.live_proxy.views._resolve_output_profile", return_value=None)
+    @patch("apps.proxy.live_proxy.views._output_profile_for", return_value=None)
     @patch("apps.proxy.live_proxy.views.generate_stream_url")
     @patch("apps.proxy.live_proxy.views.ChannelService")
     @patch("apps.proxy.live_proxy.views.get_stream_object")
-    @patch("apps.proxy.live_proxy.views.network_access_allowed", return_value=True)
+    @patch("apps.proxy.live_proxy.views.resolve_authorization", return_value=_decision())
     @patch("apps.proxy.live_proxy.views.ProxyServer")
     def test_same_worker_follower_skips_when_setting_up(
         self,
         mock_proxy_cls,
-        _network_ok,
+        _authorize_mock,
         mock_get_stream_object,
         mock_channel_service,
         mock_generate_url,
@@ -375,16 +389,16 @@ class StreamTsEarlyOwnershipTests(SimpleTestCase):
     @patch("apps.proxy.live_proxy.views.close_old_connections")
     @patch("apps.proxy.live_proxy.views.create_stream_generator")
     @patch("apps.proxy.live_proxy.views._resolve_output_format", return_value="mpegts")
-    @patch("apps.proxy.live_proxy.views._resolve_output_profile", return_value=None)
+    @patch("apps.proxy.live_proxy.views._output_profile_for", return_value=None)
     @patch("apps.proxy.live_proxy.views.generate_stream_url")
     @patch("apps.proxy.live_proxy.views.ChannelService")
     @patch("apps.proxy.live_proxy.views.get_stream_object")
-    @patch("apps.proxy.live_proxy.views.network_access_allowed", return_value=True)
+    @patch("apps.proxy.live_proxy.views.resolve_authorization", return_value=_decision())
     @patch("apps.proxy.live_proxy.views.ProxyServer")
     def test_claim_lock_released_before_stream_url_fetch(
         self,
         mock_proxy_cls,
-        _network_ok,
+        _authorize_mock,
         mock_get_stream_object,
         mock_channel_service,
         mock_generate_url,
@@ -455,16 +469,16 @@ class StreamTsEarlyOwnershipTests(SimpleTestCase):
     @patch("apps.proxy.live_proxy.views.close_old_connections")
     @patch("apps.proxy.live_proxy.views.create_stream_generator")
     @patch("apps.proxy.live_proxy.views._resolve_output_format", return_value="mpegts")
-    @patch("apps.proxy.live_proxy.views._resolve_output_profile", return_value=None)
+    @patch("apps.proxy.live_proxy.views._output_profile_for", return_value=None)
     @patch("apps.proxy.live_proxy.views.generate_stream_url")
     @patch("apps.proxy.live_proxy.views.ChannelService")
     @patch("apps.proxy.live_proxy.views.get_stream_object")
-    @patch("apps.proxy.live_proxy.views.network_access_allowed", return_value=True)
+    @patch("apps.proxy.live_proxy.views.resolve_authorization", return_value=_decision())
     @patch("apps.proxy.live_proxy.views.ProxyServer")
     def test_owner_init_failure_clears_setting_up_and_releases_ownership(
         self,
         mock_proxy_cls,
-        _network_ok,
+        _authorize_mock,
         mock_get_stream_object,
         mock_channel_service,
         mock_generate_url,

@@ -119,9 +119,16 @@ test('the root XC movie and series routes authenticate and deliver bytes by Disp
   // episode-404 defect below. Keeping it inline here would make this
   // "passing" test red for a reason unrelated to what it exists to prove.
 
-  // 3. Unknown username -> 404, from get_object_or_404(User, username=...).
+  // 3. Unknown username -> 401, not 404. Before Phase 1 PR 5 this came from
+  // `get_object_or_404(User, username=...)`; that call site is gone, and
+  // `stream_xc_movie` now resolves its principal the same way every other
+  // XC surface does, through `resolve_authorization` /
+  // `apps.proxy.authorize.resolve_xc_user`, which returns no principal for
+  // an unknown username exactly as it does for a wrong password — the
+  // contract table's "401: No principal resolved where one is required
+  // (the XC credential surfaces)" row, not a 404.
   const unknownUserRes = await request.get(`/movie/${user.username}-does-not-exist/${user.xcPassword}/${movie.id}.mp4`);
-  expect(unknownUserRes.status()).toBe(404);
+  expect(unknownUserRes.status()).toBe(401);
 
   // 4. Unknown movie id -> 404. Derived from the id this test created, never
   // a fixed literal (which could collide with a real row on a warm instance)
@@ -148,37 +155,29 @@ test('the root XC movie and series routes authenticate and deliver bytes by Disp
   expect(episodeBody).toEqual(episodeAssetBytes);
 });
 
-// Asserts the behaviour Dispatcharr SHOULD have. `stream_xc_movie`'s
-// credential-mismatch branch (apps/proxy/vod_proxy/views.py:1407):
+// Asserts the behaviour Dispatcharr SHOULD have. Before Phase 1 PR 5,
+// `stream_xc_movie`'s credential-mismatch branch (apps/proxy/vod_proxy/views.py:1407, pre-PR line numbers):
 //     if custom_properties["xc_password"] != password:
 //         return Response({"error": "Invalid credentials"}, status=401)
-// looks correct, but `Response` (rest_framework.response.Response) is never
-// imported anywhere in this file — only `JsonResponse`, `HttpResponse`,
+// looked correct, but `Response` (rest_framework.response.Response) was
+// never imported anywhere in this file — only `JsonResponse`, `HttpResponse`,
 // `HttpResponseRedirect` and `Http404` from `django.http`, plus DRF's
 // `api_view`/`permission_classes` decorators and `AllowAny`. The name
-// resolves to nothing, so the branch raises `NameError` instead of
-// returning, and the client gets an unhandled 500. The identical pattern is
+// resolved to nothing, so the branch raised `NameError` instead of
+// returning, and the client got an unhandled 500. The identical pattern was
 // duplicated in `stream_xc_episode` (:1441, :1444) and in both functions'
 // network-ACL `Forbidden` branches (:1399, :1436) — six call sites, one
 // missing import.
 //
-// Not in the brief: found writing this file, distinct from the episode-404
-// defect below (that one is a dead exception guard; this one is a bare
-// NameError, and it also breaks the *movie* route the other defect never
-// touches). This departs from the task-9 plan, which specified this
-// assertion as an inline, passing part of the test above.
+// Closed by Phase 1 PR 5. The wrong-password branch that raised
+// `NameError: name 'Response' is not defined` — and answered 500 — is
+// gone: `stream_xc_movie` now resolves its principal through
+// `resolve_authorization`, and the hop's refusal is a real 401.
 //
-// Issue: https://github.com/D10Scot/Dispatcharr/issues/100
-//
-// test.fail() caveat: it is satisfied by ANY failure in the body, guards
-// included — so a broken premise would also read as "expected failure" and
-// this test would go green while proving nothing. The premise (that the
-// route, a real movie id, and a real username all work) is proven separately
-// by assertion 1 of the passing test above, so nothing here needs to
-// re-guard it. Verified with --reporter=json that this pin fails at the
-// `toBe(401)` assertion below, not before it — re-verify the same way after
-// any edit here.
-test.fail('wrong XC credentials against the movie route are a 401, not a 500', { tag: '@contract' }, async ({
+// Issue: https://github.com/D10Scot/Dispatcharr/issues/100 — closed by
+// this PR. The body already asserts `toBe(401)`, so uninverting it
+// asserts the fix rather than passing vacuously.
+test('wrong XC credentials against the movie route are a 401, not a 500', { tag: '@contract' }, async ({
   upstream,
   seed,
   api,

@@ -5,6 +5,7 @@ from django.conf.urls.static import static
 from django.views.generic import TemplateView, RedirectView
 from .routing import websocket_urlpatterns
 from apps.output.views import xc_player_api, xc_panel_api, xc_get, xc_xmltv
+from apps.proxy.authorize_views import authorize_view
 from apps.proxy.live_proxy.views import stream_xc
 from apps.proxy.vod_proxy.views import stream_xc_movie, stream_xc_episode
 from apps.timeshift.views import timeshift_proxy, timeshift_proxy_query
@@ -28,6 +29,11 @@ urlpatterns = [
     # Add proxy apps - Move these before the catch-all
     path("proxy/", include(("apps.proxy.urls", "proxy"), namespace="proxy")),
     path("proxy", RedirectView.as_view(url="/proxy/", permanent=True)),
+    # Internal: nginx's auth_request target (Phase 1 PR 5, ADR 0005). The
+    # nginx location is `internal;`, so this is unreachable from outside
+    # the container in every shape that runs nginx; in dev, where nothing
+    # runs nginx, the stream views authorize inline and never call it.
+    path("_dispatcharr/authorize", authorize_view, name="authorize"),
     # xc
     re_path("player_api.php", xc_player_api, name="xc_player_api"),
     re_path("panel_api.php", xc_panel_api, name="xc_panel_api"),
