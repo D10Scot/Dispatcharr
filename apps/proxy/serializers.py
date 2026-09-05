@@ -64,6 +64,14 @@ class NextSourceRequestSerializer(serializers.Serializer):
     target_stream_id = serializers.IntegerField(
         required=False, allow_null=True, default=None
     )
+    # The stream the relay is failing over FROM, so the traversal can
+    # rotate to start right after it (order_alternates_from_current) the
+    # same way today's pre-move get_alternate_streams(current_stream_id=)
+    # call does. Consulted only on the failover branch (exclude_stream_ids
+    # non-empty, target_stream_id absent); harmless elsewhere.
+    current_stream_id = serializers.IntegerField(
+        required=False, allow_null=True, default=None
+    )
     reason = serializers.CharField(required=False, default="initial")
     include_alternates = serializers.BooleanField(required=False, default=False)
 

@@ -18,7 +18,6 @@ import logging
 from typing import List, Optional
 
 import regex
-import requests  # noqa: F401  moved with the other url_utils.py imports; validate_stream_url (the only user) stays behind
 from django.db import close_old_connections
 from django.shortcuts import get_object_or_404
 
@@ -602,6 +601,7 @@ def resolve_source(
     exclude_stream_ids=(),
     current_url=None,
     target_stream_id=None,
+    current_stream_id=None,
     reason="initial",
     include_alternates=False,
 ):
@@ -617,6 +617,15 @@ def resolve_source(
         then the slot moves to the winner. current_url is what lets
         Django make the whole decision: the relay used to loop
         candidates only to reject one whose URL matched its own.
+
+    current_stream_id is the stream the relay is failing over FROM. It is
+    passed straight through to get_alternate_streams() in the failover
+    branch below so order_alternates_from_current() can rotate candidates
+    to start right after it, wrapping — the property
+    apps.proxy.live_proxy.input.manager._try_next_stream relies on today
+    by passing self.current_stream_id to the pre-move get_alternate_streams.
+    Without it, the traversal silently falls back to channel order from
+    the top, which is a different (worse) failover than today's.
 
     Returns {"source": <dict|None>, "alternates": [dict], "error": <str|None>}.
     Only "source" ever reserves or moves a slot; alternates are
@@ -660,7 +669,10 @@ def resolve_source(
     # Failover: the ordered traversal, minus what the relay has tried and
     # minus anything resolving to the URL already playing. That last check
     # is the only reason input/manager.py used to loop candidates itself.
-    for candidate in get_alternate_streams(identifier):
+    # current_stream_id rotates the start point (see docstring); passing
+    # it through here is what keeps get_alternate_streams' rotation the
+    # same as it is today.
+    for candidate in get_alternate_streams(identifier, current_stream_id=current_stream_id):
         if candidate["stream_id"] in excluded:
             continue
         info = get_stream_info_for_switch(identifier, candidate["stream_id"])

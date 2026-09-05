@@ -2,7 +2,6 @@
 Utilities for handling stream URLs and transformations.
 """
 
-from typing import Optional, Tuple  # noqa: F401  kept for this module's surviving signatures
 from django.db import close_old_connections
 from apps.m3u.models import M3UAccountProfile
 from .utils import get_logger

@@ -196,6 +196,36 @@ class NextSourceResolutionTests(TestCase):
         self.assertIsNotNone(answer["source"])
         self.assertEqual(answer["source"]["stream_id"], self.stream_b.id)
 
+    def test_failover_rotation_starts_after_the_current_stream(self):
+        from apps.proxy.next_source import resolve_source
+
+        # A third stream so the rotation order (order_alternates_from_
+        # current) is observably different from plain channel order.
+        stream_c = Stream.objects.create(
+            name="Stream C",
+            url="http://example.com/c.ts",
+            m3u_account=self.account,
+            stream_profile=self.stream_profile_obj,
+            stream_hash="next-source-test-hash-c",
+        )
+        ChannelStream.objects.create(channel=self.channel, stream=stream_c, order=2)
+
+        # Failing over away from B: without current_stream_id threaded
+        # through to get_alternate_streams, the traversal falls back to
+        # channel order (A first). With it, order_alternates_from_current
+        # rotates to start right after B, wrapping, so C is offered first
+        # instead — the property apps.proxy.live_proxy.input.manager's
+        # _try_next_stream relies on today.
+        answer = resolve_source(
+            str(self.channel.uuid),
+            exclude_stream_ids=[self.stream_b.id],
+            current_stream_id=self.stream_b.id,
+            reason="failover",
+        )
+
+        self.assertIsNotNone(answer["source"])
+        self.assertEqual(answer["source"]["stream_id"], stream_c.id)
+
     def test_no_candidate_left_is_an_error_not_an_exception(self):
         from apps.proxy.next_source import resolve_source
 
