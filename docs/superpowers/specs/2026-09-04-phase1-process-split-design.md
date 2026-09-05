@@ -1426,8 +1426,10 @@ resolve it, and each exists because a simpler arrangement provably does not boot
   (`live_proxy/views.py:967`); `frontend/src/WebSocket.jsx` handles the new type and updates the
   channels store.
 - New E2E `@contract` spec in `streaming-failover`: after a `dead-air` fault,
-  `GET /api/core/system-events/` (`core/api_urls.py:29`) contains `channel_failover`, and the
-  WebSocket receives `relay_event`.
+  `GET /api/core/system-events/` (`core/api_urls.py:29`) contains `stream_switch`, and the
+  WebSocket receives `relay_event`. `channel_failover` is reachable only from
+  `_parse_ffmpeg_stats`'s buffering-timeout branch (`apps/proxy/live_proxy/input/manager.py:1157`),
+  which the Proxy profile never runs — a dead-air fault does not go through that branch.
 - Unit tests: control-plane client timeout, retry and degraded-fallback behaviour with `requests`
   mocked; the next-source view reserves a slot exactly once per call; the events view turns a batch
   into the right `SystemEvent` rows.
@@ -1617,7 +1619,7 @@ Phase 0's § Carried, not fixed table, with a status column now that Phase 1 exi
 - **Authorize matrix** (`streaming`, `@contract`, PR 5) — `hidden_from_output` and `is_adult` 403 on every
   relay-served surface, anonymous-plus-valid-UUID still streams, forged trust headers 403.
 - **Failover produces events** (`streaming-failover`, `@contract`, PR 6) — `dead-air` fault →
-  `channel_failover` in `GET /api/core/system-events/` and a `relay_event` WebSocket message.
+  `stream_switch` in `GET /api/core/system-events/` and a `relay_event` WebSocket message.
 - **Django down / bounded relay restart** (`streaming-split`, `@contract`, PR 8, N ≤ 30 s) — plus
   the unrelated-stream and queued-Celery-task assertions that pin D15.
 - **Unit tests**: the authorize matrix and `_dvr_redact_cmd` (PR 5); control-plane client
