@@ -1711,7 +1711,7 @@ Filled in as PRs merge. Empty at spec-writing time.
 | Supervisord | — | — |
 | Process split | — | — |
 | Authorize hop | #176 | — |
-| Next-source + events | — | — |
+| Next-source + events | #188 | — |
 | Control API | — | — |
 | Django-down + docs | — | — |
 
