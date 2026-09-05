@@ -68,10 +68,10 @@ test('an adult channel is unlistable for a hide_adult_content user and listable 
 // the authorize hop rather than the 404 stream_xc's deleted filter would
 // have produced: the channel exists, and this user may not have it.
 //
-// Kept in its inverted-pin shape (the try/catch that accepts only 403 or
-// 404, and rethrows anything else) on purpose. A bare "expect a refusal"
-// rewrite would go green on a connection reset or a 500, which is exactly
-// the failure mode a security assertion must not have.
+// Kept in its inverted-pin shape (the try/catch that accepts only an
+// exact 403, and rethrows anything else) on purpose. A bare "expect a
+// refusal" rewrite would go green on a connection reset or a 500, which
+// is exactly the failure mode a security assertion must not have.
 //
 // Issue: https://github.com/D10Scot/Dispatcharr/issues/87 — closed by
 // PR 8, which references this PR.
@@ -125,16 +125,17 @@ test('a channel a user cannot list is not streamable by that user', { tag: '@con
   // defect is closed. So anything that is not a refusal status rethrows,
   // failing the body and leaving the pin held — the safe direction.
   //
-  // 404 first because that is what the fix produces: adding is_adult /
-  // hidden_from_output to stream_xc's `filters` dict makes the lookup return
-  // no channel, and that path already answers `{"error": "Not found"}` with
-  // 404 (apps/proxy/live_proxy/views.py:815-816). 403 is accepted too, in
-  // case the fix rejects before the lookup as the network-ACL branch does.
+  // Exactly 403, not "any refusal": the hop's `_apply_channel_checks`
+  // (apps/proxy/authorize.py:383-386) answers before `stream_xc` ever
+  // looks the channel up, so there is no lookup left to 404 — the
+  // pre-PR-5 hypothesis that a deleted `filters` clause would make the
+  // lookup miss no longer applies. A 404 here would mean something else
+  // broke (an unresolvable channel id), not that this defect closed.
   let served = true;
   try {
     await streamClient.open(`/live/${user.username}/${user.xcPassword}/${channel.id}`);
   } catch (error) {
-    if (!(error instanceof StreamStatusError) || ![403, 404].includes(error.status)) {
+    if (!(error instanceof StreamStatusError) || error.status !== 403) {
       throw error;
     }
     served = false;

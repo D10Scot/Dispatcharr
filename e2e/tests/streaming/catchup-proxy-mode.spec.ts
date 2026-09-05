@@ -225,10 +225,12 @@ test(
     // than serving TS-aligned packets: the strong form of the bug is
     // closed, not just the 301.
     //
-    // The assertion below is deliberately status-agnostic above 400:
-    // whether the hop answers 403 (matching `_user_can_access_channel`'s
-    // existing refusal) or 404 is an unmade choice, and pinning one would
-    // let the other go red the wrong way.
+    // The hop's status is not an open choice: `_apply_channel_checks`
+    // raises exactly 403 for `is_adult` + `hide_adult_content`
+    // (apps/proxy/authorize.py:383-386), so only 403 counts as the
+    // refusal below. A 500 from a broken hop, a 400 from a malformed seed
+    // or a 401 from an unresolvable XC user must all still fail this
+    // test rather than read as "refused".
     //
     // Issue: https://github.com/D10Scot/Dispatcharr/issues/95 — closed by
     // PR 8, which references this PR.
@@ -267,12 +269,12 @@ test(
         `/timeshift/${viewer.username}/${viewer.xcPassword}/60/${start}/${channel.id}.ts`
       );
     } catch (err) {
-      // A >=400 here IS the correct behaviour — StreamClient.open() throws
-      // StreamStatusError for exactly that, so catching it is not swallowing
-      // a failure, it is recognising a pass. Anything else (a DNS failure, a
-      // reset, StreamStatusError below 400) is not evidence of a fix and must
-      // still fail this test.
-      if (!(err instanceof StreamStatusError) || err.status < 400) throw err;
+      // Only a StreamStatusError carrying exactly 403 IS the correct
+      // behaviour. Anything else — a DNS failure, a reset, a 500 from a
+      // broken hop, a 400 from a malformed catch-up seed, a 401 from an
+      // unresolvable XC user — is not evidence of a fix and must still
+      // fail this test, not read as "refused".
+      if (!(err instanceof StreamStatusError) || err.status !== 403) throw err;
       refusedAtOpen = true;
     }
 

@@ -1,4 +1,5 @@
-import { test, expect, StreamStatusError } from '../../fixtures';
+import { test, expect, StreamStatusError, SEEDED_USER_PASSWORD } from '../../fixtures';
+import type { Seeder } from '../../fixtures';
 import { catchupTimestamp, lockedProfile, seedCatchupChannel } from './helpers';
 
 /**
@@ -80,10 +81,22 @@ test(
   'a client-supplied trust marker does not authorize a hidden channel',
   { tag: '@contract' },
   async ({ upstream, seed, api, streamClient }) => {
-    // Two layers are under test at once. The marker is an HMAC of
-    // SECRET_KEY, so a guessed value cannot match; and nginx overrides
-    // every one of these five params in every relay-bound location, so
-    // even a correct guess would be discarded before the relay saw it.
+    // What this pins: a client-supplied marker cannot short-circuit the
+    // hop. `resolve_authorization` does read these headers, but
+    // `X-Dispatcharr-Authorized` is only trusted when it matches
+    // `hmac.compare_digest(SECRET_KEY, "relay-trust")` — a forged value
+    // fails that compare and falls through to the inline decision,
+    // `authorize_stream`, which denies on `hidden_from_output` the same
+    // as an unmarked request (unit:
+    // apps/proxy/tests/test_authorize_view.py:229,
+    // test_a_forged_marker_falls_through_to_the_inline_decision).
+    //
+    // What this does NOT pin: whether nginx would have discarded these
+    // headers before the relay saw them at all. This stack has no
+    // `auth_request` (its image predates 569d5b5f), so every request
+    // here reaches the inline path directly; the `uwsgi_param` blanking
+    // layer on every relay-bound location is pinned separately by
+    // nginx-stream-buffering.spec.ts.
     const scenario = await upstream.scenario({
       channels: [{ id: 1, name: 'PR5 Forge', tvgId: 'pr5-forge.e2e', logo: null }],
       rate: 20,
@@ -203,6 +216,89 @@ test(
       `/timeshift/${viewer.username}/${viewer.xcPassword}/60/${start}/${channel.id}.ts`,
       403,
       'an adult channel must not serve its archive to a filtered viewer'
+    );
+  }
+);
+
+/**
+ * A single Standard-level user with `hide_adult_content` set, shared by the
+ * two native-route `is_adult` tests below.
+ *
+ * Seeding is unthrottled (`seed.user()` is a plain POST), but minting a JWT
+ * for it is not: `POST /api/accounts/token/` is capped at 3/minute for the
+ * whole suite (e2e/README.md "The login throttle"), and the pre-provisioned
+ * `standard`/`streamer` roster principals may not be mutated — a
+ * `hide_adult_content` write on a shared row would corrupt any other test
+ * driving it concurrently. `makeUserClient`'s own guidance is "budget it at
+ * one per run"; memoizing the seed here and asking `asUser` for the exact
+ * same credentials from both tests keeps this file's login cost at one,
+ * since `fixtures/auth.ts`'s token cache is keyed on username+password and
+ * both tests in this file run in the same worker (the `streaming` project
+ * leaves `fullyParallel` at its inherited `false`, so one spec file never
+ * splits across workers) — the second `asUser` call is a cache hit, not a
+ * second login.
+ */
+let adultHiderCredentials: Promise<{ username: string; password: string }> | undefined;
+function adultHiderUser(seed: Seeder): Promise<{ username: string; password: string }> {
+  if (!adultHiderCredentials) {
+    adultHiderCredentials = seed
+      .user({ user_level: 1, custom_properties: { hide_adult_content: true } })
+      .then((user) => ({ username: user.username, password: SEEDED_USER_PASSWORD }));
+  }
+  return adultHiderCredentials;
+}
+
+test(
+  'an adult channel is refused on the native stream route to a hide_adult_content JWT viewer',
+  { tag: '@contract' },
+  async ({ upstream, seed, api, asUser, streamClient }) => {
+    // The native counterpart to the XC-live is_adult row above (#87): the
+    // spec (design.md:1353-1354) requires is_adult 403 on
+    // /proxy/ts/stream/<uuid> as well as on the XC roots, and until this
+    // test existed only the XC surfaces were covered.
+    const scenario = await upstream.scenario({
+      channels: [{ id: 1, name: 'PR5 Adult Native', tvgId: 'pr5-adult-native.e2e', logo: null }],
+      rate: 20,
+    });
+    const proxy = await lockedProfile(api, 'Proxy');
+    const { channel } = await seed.upstreamChannel(scenario, {
+      channelIds: [1],
+      streamProfileId: proxy.id,
+      channel: { is_adult: true },
+    });
+
+    const { username, password } = await adultHiderUser(seed);
+    const viewer = await asUser(username, password);
+    const token = await viewer.freshAccessToken();
+
+    await expectRefused(
+      streamClient,
+      `/proxy/ts/stream/${channel.uuid}?token=${token}`,
+      403,
+      'an adult channel must not stream to a hide_adult_content viewer by UUID'
+    );
+  }
+);
+
+test(
+  'an adult channel is refused on the native catch-up route to a hide_adult_content JWT viewer',
+  { tag: '@contract' },
+  async ({ upstream, seed, api, waitFor, asUser, streamClient }) => {
+    // The native counterpart to the XC-timeshift is_adult row above: same
+    // spec requirement, /proxy/catchup/<uuid> instead of /proxy/ts/stream/.
+    const { channel } = await seedCatchupChannel({ upstream, seed, api, waitFor });
+    await api.patch(`/api/channels/channels/${channel.id}/`, { is_adult: true });
+
+    const { username, password } = await adultHiderUser(seed);
+    const viewer = await asUser(username, password);
+    const token = await viewer.freshAccessToken();
+    const start = catchupTimestamp(new Date(Date.now() - 2 * 60 * 60 * 1000));
+
+    await expectRefused(
+      streamClient,
+      `/proxy/catchup/${channel.uuid}?token=${token}&start=${start}`,
+      403,
+      'an adult channel must not serve its archive to a hide_adult_content viewer'
     );
   }
 );
