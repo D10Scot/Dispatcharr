@@ -30,7 +30,8 @@ What it deliberately does NOT decide:
 
 import random
 import time
-from dataclasses import dataclass, field
+import uuid
+from dataclasses import dataclass
 
 from django.conf import settings
 from django.http import Http404
@@ -152,7 +153,14 @@ def resolve_xc_user(username, password):
         return None
     import hmac
 
-    if not hmac.compare_digest(str(expected), str(password or "")):
+    # Bytes, not str: hmac.compare_digest raises TypeError on a non-ASCII
+    # str operand, which would 500 the tune instead of authorizing or
+    # 401ing it. The `!=` this replaces (live_proxy/views.py, vod_proxy)
+    # never hit that trap; encoding is what keeps the constant-time
+    # property without reintroducing it.
+    if not hmac.compare_digest(
+        str(expected).encode("utf-8"), str(password or "").encode("utf-8")
+    ):
         return None
     return user
 
@@ -214,16 +222,38 @@ def _drf_user(http_request):
     HttpRequest so this behaves identically whether the caller is the
     nginx subrequest view (whose own DRF authentication ran against the
     subrequest's query string) or a stream view calling inline.
+
+    A credential an authenticator explicitly rejects (a malformed Bearer
+    JWT, an unknown API key) must 401, not fall through to anonymous —
+    that is the behaviour `@api_view`'s own authentication gives
+    `stream_ts` today, and the single decision function must not depend on
+    the calling view's own `authentication_classes` to keep it (Task 4).
+    Declining silently (no header presented at all) still returns None.
+
+    When nothing here matches, reading `drf_request.user` sets
+    `http_request.user` to AnonymousUser as a side effect — DRF's
+    `Request.user` setter mirrors onto the wrapped request on every
+    access, including the implicit one `_not_authenticated()` makes. Left
+    alone, that silently overwrites whatever AuthenticationMiddleware had
+    already resolved from a session cookie before `_session_user` gets a
+    turn, making that fallback unreachable. Restored in that case only, so
+    the two principal sources stay independent.
     """
+    original_user = getattr(http_request, "user", None)
     try:
         drf_request = Request(
             http_request,
             authenticators=[cls() for cls in _AUTHENTICATOR_CLASSES],
         )
         user = drf_request.user
-    except (AuthenticationFailed, APIException):
+    except AuthenticationFailed:
+        raise AuthorizeDenied(401, "Invalid credentials") from None
+    except APIException:
         return None
-    return user if user is not None and user.is_authenticated else None
+    if user is not None and user.is_authenticated:
+        return user
+    http_request.user = original_user
+    return None
 
 
 def _session_user(http_request):
@@ -294,6 +324,17 @@ def _resolve_channel(surface, identifier):
             return target, False
         return None, True
     if surface == SURFACE_CATCHUP:
+        # Unreachable inline (apps/timeshift/urls.py:11 is <uuid:channel_id>)
+        # but reachable through authorize_view's X-Original-URI parser,
+        # which does not itself validate the segment it hands on here.
+        # Channel.objects.filter(uuid=...) raises ValidationError, not
+        # DoesNotExist, for a non-UUID string — pre-validate so a bad
+        # identifier 404s like every other unresolvable one, rather than
+        # 500ing.
+        try:
+            uuid.UUID(str(identifier))
+        except (ValueError, TypeError, AttributeError):
+            raise AuthorizeDenied(404, "Not found") from None
         channel = Channel.objects.filter(uuid=identifier).first()
     else:
         # The XC families address a channel by its numeric id, with an

@@ -7,7 +7,7 @@ what it is rather than restating the table.
 
 from unittest.mock import patch
 
-from django.test import RequestFactory, TestCase, override_settings
+from django.test import RequestFactory, TestCase
 
 from apps.accounts.models import User
 from apps.channels.models import Channel, ChannelProfile, ChannelProfileMembership
@@ -154,12 +154,26 @@ class NonAdminRowTests(AuthorizeBase):
         profile = ChannelProfile.objects.create(name="pr5-profile")
         self.standard.channel_profiles.add(profile)
         self.addCleanup(self.standard.channel_profiles.clear)
-        ChannelProfileMembership.objects.filter(
+        updated = ChannelProfileMembership.objects.filter(
             channel_profile=profile, channel=self.channel
         ).update(enabled=False)
+        # A 403 results equally when no membership row exists at all, so
+        # without this the test cannot tell "disabled membership" from "no
+        # membership row" — the row is created by a signal on Channel.save(),
+        # not by this test, and must actually exist to be worth disabling.
+        self.assertEqual(updated, 1)
         with self.assertRaises(AuthorizeDenied) as caught:
             self._as(self.standard, SURFACE_LIVE, identifier=str(self.channel.uuid))
         self.assertEqual(caught.exception.status, 403)
+
+    def test_membership_filter_allows_an_enabled_membership(self):
+        # The positive control for the test above: same setup, membership
+        # left enabled, and the tune succeeds.
+        profile = ChannelProfile.objects.create(name="pr5-profile-enabled")
+        self.standard.channel_profiles.add(profile)
+        self.addCleanup(self.standard.channel_profiles.clear)
+        result = self._as(self.standard, SURFACE_LIVE, identifier=str(self.channel.uuid))
+        self.assertEqual(result.channel_uuid, str(self.channel.uuid))
 
 
 class InternalPrincipalRowTests(AuthorizeBase):
@@ -216,11 +230,32 @@ class StreamByHashRowTests(AuthorizeBase):
     # classmethod reads CoreSettings for its key list.
     HASH = "a" * 64
 
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        from apps.m3u.models import M3UAccount
+
+        # Passed explicitly rather than relying on the "custom" M3UAccount
+        # a data migration seeds: apps/channels/signals.py's
+        # set_default_m3u_account pre_save receiver looks that row up on
+        # any Stream saved without one, and the edit hook / commit gate run
+        # --keepdb against a long-lived database where a TransactionTestCase
+        # elsewhere in the suite can flush it without reseeding — every
+        # other Stream fixture in the tree (apps/m3u/tests/test_xc_live_url.py,
+        # test_sync_correctness.py, test_rename_preview_parity.py) already
+        # passes m3u_account= for exactly this reason.
+        cls.m3u_account = M3UAccount.objects.create(
+            name="pr5-acct", account_type="STD", max_streams=0
+        )
+
     def test_a_stream_hash_authorizes_with_no_channel(self):
         from apps.channels.models import Stream
 
         stream = Stream.objects.create(
-            name="pr5-stream", url="http://x.invalid/s.ts", stream_hash=self.HASH
+            name="pr5-stream",
+            url="http://x.invalid/s.ts",
+            stream_hash=self.HASH,
+            m3u_account=self.m3u_account,
         )
         self.assertTrue(stream.stream_hash)
         result = self._allow(SURFACE_LIVE, identifier=stream.stream_hash)
@@ -297,6 +332,18 @@ class SurfaceScopeTests(AuthorizeBase):
             self._allow(SURFACE_CATCHUP, identifier=str(self.channel.uuid))
         self.assertEqual(caught.exception.status, 401)
 
+    def test_catchup_with_a_non_uuid_identifier_is_404_not_500(self):
+        # Unreachable inline (apps/timeshift/urls.py:11 is <uuid:channel_id>)
+        # but reachable through authorize_view's X-Original-URI parser,
+        # which does not itself validate the segment it hands on.
+        # Channel.objects.filter(uuid=...) raises ValidationError, not
+        # DoesNotExist, for a non-UUID string.
+        with patch.object(authorize, "network_access_allowed", return_value=True), \
+             patch.object(authorize, "_drf_user", return_value=self.standard):
+            with self.assertRaises(AuthorizeDenied) as caught:
+                authorize_stream(self._request(), SURFACE_CATCHUP, identifier="not-a-uuid")
+        self.assertEqual(caught.exception.status, 404)
+
     def test_an_unknown_surface_fails_closed(self):
         with self.assertRaises(AuthorizeDenied) as caught:
             self._allow("not-a-surface", identifier="x")
@@ -358,3 +405,120 @@ class AuthHelpersDbTests(TestCase):
         # Level-0 viewer with no profiles: allowed on level-0, denied on level-10.
         self.assertTrue(authorize.user_can_access_channel(self.viewer, self.basic_channel))
         self.assertFalse(authorize.user_can_access_channel(self.viewer, self.admin_channel))
+
+    def test_a_matching_non_ascii_password_authenticates(self):
+        # hmac.compare_digest raises TypeError on a non-ASCII str operand;
+        # resolve_xc_user must compare bytes, not str, or this 500s instead
+        # of authorizing.
+        user = User.objects.create(
+            username="ts-test-nonascii",
+            user_level=0,
+            custom_properties={"xc_password": "pässwörd"},
+        )
+        resolved = authorize.resolve_xc_user("ts-test-nonascii", "pässwörd")
+        self.assertIsNotNone(resolved)
+        self.assertEqual(resolved.id, user.id)
+
+    def test_a_mismatching_non_ascii_password_is_rejected(self):
+        User.objects.create(
+            username="ts-test-nonascii-wrong",
+            user_level=0,
+            custom_properties={"xc_password": "pässwörd"},
+        )
+        self.assertIsNone(
+            authorize.resolve_xc_user("ts-test-nonascii-wrong", "wrong-pässwörd")
+        )
+
+
+class PrincipalResolutionTests(AuthorizeBase):
+    """The principal-resolution paths themselves. Every other class above
+    patches `_drf_user` (or the internal token) directly, so none of them
+    exercise the authenticator union itself, the Django session row, the
+    catch-up tokenless-session path, or the cross-check between them."""
+
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        from apps.channels.models import Stream
+        from apps.m3u.models import M3UAccount
+
+        cls.m3u_account = M3UAccount.objects.create(
+            name="pr5-principal-acct", account_type="STD", max_streams=0
+        )
+        cls.hash_stream = Stream.objects.create(
+            name="pr5-principal-stream",
+            url="http://x.invalid/s.ts",
+            stream_hash="b" * 64,
+            m3u_account=cls.m3u_account,
+        )
+
+    def test_a_bad_bearer_token_is_401_not_anonymous(self):
+        # A credential an authenticator explicitly rejects must not fall
+        # through to an anonymous tune (that would authorize SURFACE_LIVE
+        # anonymously even though the caller believes it is authenticated).
+        request = self._request(HTTP_AUTHORIZATION="Bearer not-a-token")
+        with patch.object(authorize, "network_access_allowed", return_value=True):
+            with self.assertRaises(AuthorizeDenied) as caught:
+                authorize_stream(request, SURFACE_LIVE, identifier=str(self.channel.uuid))
+        self.assertEqual(caught.exception.status, 401)
+
+    def test_query_param_jwt_resolves_through_the_authenticator_union(self):
+        # The deliberate widening spec § PR 5 calls out: /proxy/ts/stream/
+        # gains QueryParamJWTAuthentication by the authenticator union.
+        from rest_framework_simplejwt.tokens import RefreshToken
+
+        token = str(RefreshToken.for_user(self.standard).access_token)
+        request = self._request(f"/proxy/ts/stream/x?token={token}")
+        with patch.object(authorize, "network_access_allowed", return_value=True):
+            result = authorize_stream(request, SURFACE_LIVE, identifier=str(self.channel.uuid))
+        self.assertEqual(result.user_id, str(self.standard.id))
+
+    def test_session_user_is_read_when_no_drf_credential_is_presented(self):
+        request = self._request()
+        request.user = self.standard
+        with patch.object(authorize, "network_access_allowed", return_value=True):
+            result = authorize_stream(request, SURFACE_LIVE, identifier=str(self.channel.uuid))
+        self.assertEqual(result.user_id, str(self.standard.id))
+
+    def test_catchup_session_id_resolves_a_tokenless_principal(self):
+        with patch.object(authorize, "network_access_allowed", return_value=True), \
+             patch(
+                 "apps.timeshift.sessions.resolve_catchup_playback",
+                 return_value=(self.standard, "2026-01-01 00:00:00", None),
+             ):
+            result = authorize_stream(
+                self._request(), SURFACE_CATCHUP,
+                identifier=str(self.channel.uuid), session_id="sess-1",
+            )
+        self.assertEqual(result.user_id, str(self.standard.id))
+
+    def test_a_credentialed_request_may_not_drive_someone_elses_session(self):
+        # Today's cross-check (apps/timeshift/views.py:313-315): the session
+        # belongs to self.standard, but the request itself carries a
+        # different credentialed principal.
+        with patch.object(authorize, "network_access_allowed", return_value=True), \
+             patch.object(authorize, "_drf_user", return_value=self.filtered), \
+             patch(
+                 "apps.timeshift.sessions.resolve_catchup_playback",
+                 return_value=(self.standard, "2026-01-01 00:00:00", None),
+             ):
+            with self.assertRaises(AuthorizeDenied) as caught:
+                authorize_stream(
+                    self._request(), SURFACE_CATCHUP,
+                    identifier=str(self.channel.uuid), session_id="sess-1",
+                )
+        self.assertEqual(caught.exception.status, 403)
+
+    def test_vod_xc_with_no_username_is_401(self):
+        with self.assertRaises(AuthorizeDenied) as caught:
+            self._allow(SURFACE_VOD_XC, identifier="1", username=None, password="x")
+        self.assertEqual(caught.exception.status, 401)
+
+    def test_stream_limit_is_enforced_for_a_credentialed_by_hash_tune(self):
+        # By-hash has no channel, but a resolved principal still consumes a
+        # slot — the limit exemption is for VOD/catch-up, not for this.
+        with patch.object(authorize, "_drf_user", return_value=self.standard), \
+             patch.object(authorize, "check_user_stream_limits", return_value=False):
+            with self.assertRaises(AuthorizeDenied) as caught:
+                self._allow(SURFACE_LIVE, identifier=self.hash_stream.stream_hash)
+        self.assertEqual(caught.exception.status, 429)
