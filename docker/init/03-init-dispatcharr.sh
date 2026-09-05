@@ -71,6 +71,23 @@ if [[ "$DISPATCHARR_ROLE" == "all" || "$DISPATCHARR_ROLE" == "api" ]]; then
     fi
     sed -i "s/NGINX_PORT/${DISPATCHARR_PORT}/g" /etc/nginx/sites-enabled/default
 
+    # Relay upstream address (Phase 1 PR 4), sed'd exactly like
+    # DISPATCHARR_PORT above. Outside modular the relay shares this
+    # container (all/dev/debug), so the address is always loopback; in
+    # modular it is the relay compose service's name, the same override
+    # shape get_dvr_stream_base_url() uses for DISPATCHARR_WEB_HOST.
+    if [[ "$DISPATCHARR_ENV" == "modular" ]]; then
+        RELAY_HOST="${DISPATCHARR_RELAY_HOST:-relay}"
+    else
+        RELAY_HOST="127.0.0.1"
+    fi
+    RELAY_PORT="${DISPATCHARR_RELAY_PORT:-5657}"
+    if ! [[ "$RELAY_PORT" =~ ^[0-9]+$ ]]; then
+        echo "⚠️  Warning: DISPATCHARR_RELAY_PORT is not a valid integer, using default port 5657"
+        RELAY_PORT=5657
+    fi
+    sed -i "s/RELAY_UPSTREAM/${RELAY_HOST}:${RELAY_PORT}/g" /etc/nginx/sites-enabled/default
+
     # Configure nginx based on IPv6 availability
     if ip -6 addr show | grep -q "inet6"; then
         echo "✅ IPv6 is available, enabling IPv6 in nginx"
