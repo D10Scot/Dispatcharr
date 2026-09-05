@@ -9,12 +9,16 @@ logger = logging.getLogger(__name__)
 # channel/content UUIDs (usable against anonymous /proxy/ts/stream/<uuid>),
 # upstream stream URLs, client IPs, and session details. The Stats UI is
 # already admin-only; keep that telemetry off Standard-user sockets.
+# relay_event carries a channel_id too (a stream switch, failover or client
+# teardown pushed by the relay via core/relay_events.py) and gets the same
+# treatment.
 ADMIN_ONLY_UPDATE_TYPES = frozenset({
     "channel_stats",
     "vod_stats",
     "timeshift_stats",
     "vod_started",
     "vod_stopped",
+    "relay_event",
 })
 
 # m3u_profile_test runs sync regex on Daphne's event loop. Cap inputs and

@@ -31,6 +31,7 @@ class UserMayReceiveUpdateTests(SimpleTestCase):
                     "timeshift_stats",
                     "vod_started",
                     "vod_stopped",
+                    "relay_event",
                 }
             ),
         )
