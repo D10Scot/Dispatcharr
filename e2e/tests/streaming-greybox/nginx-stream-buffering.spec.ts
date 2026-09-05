@@ -60,8 +60,8 @@ function parseLocationBlocks(config: string): LocationBlock[] {
 }
 
 /**
- * Pins the trap D7/the spec name for the streaming route: nginx's `/proxy/`
- * location must run with `uwsgi_buffering off` (docker/nginx.conf,
+ * Pins the trap D7/the spec name for the streaming routes: every relay-bound
+ * nginx location must run with `uwsgi_buffering off` (docker/nginx.conf,
  * CLAUDE.md § Architecture) — a past bug used `proxy_buffering off` (the
  * wrong directive family for `uwsgi_pass`) and nginx silently spooled live
  * TS to disk before forwarding it.
@@ -83,10 +83,10 @@ function parseLocationBlocks(config: string): LocationBlock[] {
  * the *resolved* config the running container actually serves —
  * `docker/init/03-init-dispatcharr.sh` substitutes `NGINX_PORT` at container
  * start, and this test is exercising the deployed artifact, not the
- * template. PR 4, which gives `/proxy/`'s route its own nginx location as
- * part of the relay split, must keep this passing — nothing about this
- * assertion depends on which upstream process nginx forwards to, only on
- * the directive nginx applies before it does.
+ * template. PR 4 split the original single `/proxy/` location into the
+ * relay-bound location table below, each with its own `uwsgi_pass` target —
+ * nothing about this assertion depends on which upstream process nginx
+ * forwards to, only on the directive nginx applies before it does.
  *
  * `@contract`, not `@characterization`, despite being on the `SUBPROCESS`
  * allowlist (normally a `@characterization` signal, `docs/adr/0002`): the
@@ -112,9 +112,12 @@ function parseLocationBlocks(config: string): LocationBlock[] {
  * three `/proxy/catchup/` control routes. Comparing whole targets keeps the
  * filter naming exactly the nine blocks it means.
  *
- * Two relay-adjacent locations are absent on purpose: `^~ /proxy/`, which is
- * the API's own short IsAdmin control routes, and `^~ /proxy/relay/`, PR 7's
- * control API, which will serve short JSON rather than a stream.
+ * Two locations are absent on purpose, for different reasons: `^~ /proxy/`
+ * stays on the API — it is the API's own short IsAdmin control routes, never
+ * `uwsgi_pass relay_py`. `^~ /proxy/relay/` *is* relay-bound
+ * (`uwsgi_pass relay_py`) but carries no `uwsgi_buffering off`, correctly:
+ * it is PR 7's still-unmounted control API, which will serve short JSON
+ * rather than a stream.
  *
  * A third is absent because it cannot appear: PR 4 also routes
  * `^/api/channels/recordings/\d+/file/$` to the relay, but that location is

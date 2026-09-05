@@ -454,8 +454,8 @@ elif [[ "$DISPATCHARR_ROLE" == "relay" || "$DISPATCHARR_ROLE" == "worker" ]]; th
     fi
 fi
 
-# Hardware acceleration is a diagnostic (lspci, ffmpeg -hwaccels, vainfo;
-# nothing exported downstream) about whether *this* process can reach a
+# Hardware acceleration is a diagnostic (lspci, ffmpeg -hide_banner
+# -hwaccels; nothing exported downstream) about whether *this* process can reach a
 # GPU. Before this PR that was always the all/api process; from this PR on,
 # apps/proxy/live_proxy/'s ffmpeg spawning runs in the relay process's
 # request path (docker/nginx.conf routes stream tunes there), so relay

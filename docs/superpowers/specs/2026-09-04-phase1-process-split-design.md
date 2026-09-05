@@ -1158,6 +1158,11 @@ resolve it, and each exists because a simpler arrangement provably does not boot
   and changes nothing under `apps/channels/` (D10). Its sibling
   `recordings/<pk>/hls/<seg_path>` stays on the API: HLS segments are small files, not one long
   response.
+  **Decision for PR 5:** this location is excluded from `auth_request`; it carries the
+  `dispatcharr_api_params.conf` blanking include like every non-relay location, so a
+  client-supplied `X-Relay-*` header never reaches the relay on this path, and DRF authentication
+  plus `network_access_allowed("STREAMS")` remain its only gate — the authorize matrix gets no row
+  for it.
   `docker/init/03-init-dispatcharr.sh` gains a `RELAY_UPSTREAM` `sed` beside the `NGINX_PORT` one
   at `:64` (inside the same role gate PR 3 added), plus a numeric guard on
   `DISPATCHARR_RELAY_PORT` matching the existing `DISPATCHARR_PORT` guard. Extend
@@ -1182,7 +1187,9 @@ resolve it, and each exists because a simpler arrangement provably does not boot
   upstream" and `[program:nginx]` goes BACKOFF then FATAL — taking the whole API surface down, not
   just streaming. The corollary for operators: recreating the relay with a new IP needs
   `nginx -s reload` in the web container. `docker/docker-compose.yml:295`'s `5436:5432` publish is
-  **not** touched (carried; see § Requirements).
+  **not** touched (carried; see § Requirements). `DISPATCHARR_RELAY_PORT` is honoured on both
+  ends: nginx's `RELAY_UPSTREAM` sed substitutes it into the upstream, and `uwsgi.relay.ini`'s
+  `socket = 0.0.0.0:$(DISPATCHARR_RELAY_PORT)` binds the relay's own listener to the same value.
 - `docker/tests/test-puid-pgid.sh`: new `test_role_split`, modelled on `test_modular_mode`
   (`:980-1046`). It is the only test in the programme that exercises the modular relay hop; a
   Playwright project cannot do it, because `scripts/e2e_up.sh:247` is a single `docker run` with
@@ -1197,7 +1204,8 @@ resolve it, and each exists because a simpler arrangement provably does not boot
      and three app containers with `DISPATCHARR_ROLE` of `api`, `relay` and `worker`.
   2. **Shared state.** All three app containers mount **one** `/data` volume, because
      `SECRET_KEY` is read from `/data/jwt` and a relay with a different key 403s every internal
-     call (D11). `api` publishes 9191; `relay` and `worker` publish nothing.
+     call (D11). None of the three publishes a port; every HTTP call in the scenario runs inside
+     the containers via `docker exec`, which is better on a shared runner than publishing one.
      `DISPATCHARR_WEB_HOST` is the api container's name (worker → Django, and relay → Django), and
      `DISPATCHARR_RELAY_HOST` is the relay container's name (nginx → relay, and Django → relay).
   3. **Seeding, ported from `e2e/fixtures/seed.ts`** rather than reinvented — that file is the
@@ -1268,7 +1276,10 @@ resolve it, and each exists because a simpler arrangement provably does not boot
   location gains the `auth_request` + five `auth_request_set` + `uwsgi_param HTTP_X_*` block from
   § Architecture; every non-relay uwsgi location switches to the shared
   `dispatcharr_api_params.conf` include that blanks the five trust headers; the `map` key becomes
-  `$relay_name`.
+  `$relay_name`. The nested `^/api/channels/recordings/\d+/file/$` location (§ PR 4, amendment S5)
+  is the one exception: it stays on the blanking include rather than gaining `auth_request`, since
+  its gate is DRF authentication plus `network_access_allowed("STREAMS")`, not a surface
+  `authorize_stream()` knows, so it gets no row in the authorize matrix below.
 - `apps/channels/tasks.py`: `_dvr_build_ffmpeg_cmd` gains `-headers` with
   `X-Dispatcharr-Internal`, and the argv debug log at `:1726` goes through a new `_dvr_redact_cmd`.
 - Remove the erroneous `wontfix` label from issue #87 before closing it (see § What the code says).

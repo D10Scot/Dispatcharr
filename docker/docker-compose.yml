@@ -145,6 +145,11 @@ services:
     image: ghcr.io/dispatcharr/dispatcharr:latest
     container_name: dispatcharr_relay
     restart: unless-stopped
+    # DISPATCHARR_RELAY_PORT (unset here, default 5657) is honoured on both
+    # ends: nginx's RELAY_UPSTREAM sed (docker/init/03-init-dispatcharr.sh)
+    # substitutes it into the web service's upstream, and this container's
+    # own uwsgi.relay.ini binds `socket = 0.0.0.0:$(DISPATCHARR_RELAY_PORT)`
+    # — set it on both services together, never just one.
     # Same rationale as web/celery above: 160s is used uniformly across
     # every supervisord-backed service here, sized to the largest rung's
     # summed stopwaitsecs rather than tuned per-service. This rung sums to
