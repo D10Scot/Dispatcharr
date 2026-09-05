@@ -134,9 +134,13 @@ class RedisKeys:
     def channel_source_cache(channel_id):
         """Resolved failover candidates, cached at channel start.
 
-        Read only when the control plane is unreachable at failover time
-        (Phase 1 PR 6's degraded fallback): the entries are stale, carry no
-        slot reservation, and are used unenforced.
+        Read by two callers, neither of which reserves anything or moves
+        the provider slot: views.py's stream_ts, trying the next candidate
+        when a Redirect profile's primary URL fails validation at tune
+        time (unconditionally, not just on an outage); and
+        input/manager.py's _try_next_stream degraded fallback, only when
+        the control plane is unreachable at failover time (Phase 1 PR 6).
+        Both treat the list as stale and unenforced.
         """
         return f"live:channel:{channel_id}:source_cache"
 

@@ -272,8 +272,12 @@ class InitializeChannelDbCleanupTests(SimpleTestCase):
 
 
 class StreamManagerDbCleanupTests(SimpleTestCase):
-    @patch("apps.proxy.live_proxy.input.manager.Channel.objects")
-    def test_stream_manager_init_uses_passed_name_without_orm(self, mock_channel_objects):
+    def test_stream_manager_init_uses_passed_name_without_orm(self):
+        # Phase 1 PR 6, Task 8: manager.py no longer imports Channel at all
+        # -- the only ORM read update_url() used to make moved into Django's
+        # next-source answer -- so there is nothing left in this module for
+        # __init__ to reach the ORM through. The assertion that matters is
+        # the one below: a passed channel_name is used as-is.
         from apps.proxy.live_proxy.input.manager import StreamManager
 
         buffer = MagicMock()
@@ -291,7 +295,6 @@ class StreamManagerDbCleanupTests(SimpleTestCase):
         )
 
         self.assertEqual(manager.channel_name, "Test Channel")
-        mock_channel_objects.filter.assert_not_called()
 
     @patch("apps.proxy.live_proxy.input.manager.close_old_connections")
     def test_read_stderr_closes_db_on_exit(self, mock_close):

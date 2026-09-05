@@ -396,13 +396,15 @@ def stream_ts(request, channel_id, user=None, force_output_format=None, decision
                             {"error": error_msg, "waited": wait_duration}, status=503
                         )  # 503 Service Unavailable is appropriate here
 
-                    # generate_stream_url() called get_stream() which allocated a connection
-                    # slot (INCR'd profile_connections) - track this for cleanup on error
+                    # generate_stream_url() asked Django (control_plane.next_source),
+                    # which called get_stream() and allocated a connection slot
+                    # (INCR'd profile_connections) - track this for cleanup on error
                     if needs_initialization and slot_reserved:
                         connection_allocated = True
 
-                    # Read stream assignment from Redis (already set by generate_stream_url → get_stream).
-                    # Avoid calling get_stream() again (INCR profile counter)
+                    # Read stream assignment from Redis (already set by Django's
+                    # next-source answer, via Channel.get_stream()).
+                    # Avoid asking again (INCR profile counter)
                     # It could double-allocate if the keys were cleared by a concurrent release.
                     stream_id = None
                     m3u_profile_id = None

@@ -22,18 +22,7 @@ logger = get_logger()
 # the relay. transform_url: apps/m3u/connection_pool.py:81 and
 # dispatcharr/consumers.py:116 both import it from here, function-locally,
 # and neither should have to learn that it moved.
-#
-# The other three are TRANSITIONAL aliases. views.py:32-34,
-# input/manager.py:19 and services/channel_service.py:16 import them at
-# module level today; Tasks 7 and 8 rewrite those call sites and Task 8's
-# last step deletes these three lines. Without them, every commit between
-# here and there leaves the package unimportable.
 from apps.proxy.next_source import get_stream_object, transform_url  # noqa: F401
-from apps.proxy.next_source import (  # noqa: F401  transitional, deleted in Task 8
-    get_alternate_streams,
-    get_stream_info_for_switch,
-    order_alternates_from_current,
-)
 
 
 def generate_stream_url(channel_id):
@@ -85,20 +74,23 @@ def _cache_alternates(channel_id, alternates):
     in Python memory. TTL matches the metadata hash's REDIS_TTL_DEFAULT,
     so a dead channel's cache expires on its own like every other key
     (D15 — nothing flushes Redis).
+
+    An empty answer clears the key rather than leaving it untouched: a
+    channel re-tuned onto a source with no alternates must not leave a
+    stale list from its previous tune for the next failover to read.
     """
-    if not alternates:
-        return
     try:
         from core.utils import RedisClient
         from .constants import REDIS_TTL_DEFAULT
 
         client = RedisClient.get_client()
-        if client:
-            client.set(
-                RedisKeys.channel_source_cache(channel_id),
-                json.dumps(alternates),
-                ex=REDIS_TTL_DEFAULT,
-            )
+        if not client:
+            return
+        key = RedisKeys.channel_source_cache(channel_id)
+        if not alternates:
+            client.delete(key)
+            return
+        client.set(key, json.dumps(alternates), ex=REDIS_TTL_DEFAULT)
     except Exception as exc:
         logger.debug(f"Could not cache alternates for {channel_id}: {exc}")
 

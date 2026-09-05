@@ -150,26 +150,33 @@ class ChannelService:
             if ChannelService._channel_proxy_is_active(
                 proxy_server.redis_client, channel_id
             ):
-                from apps.channels.models import Channel
+                from apps.proxy import control_plane
 
-                channel = Channel.objects.filter(uuid=channel_id).first()
-                if channel and not proxy_server.redis_client.get(
-                    f"channel_stream:{channel.id}"
-                ):
-                    sid, pid, error, slot_reserved = channel.get_stream()
-                    if error:
+                try:
+                    answer = control_plane.next_source(channel_id, reason="resume")
+                except (control_plane.ControlPlaneRefused, control_plane.ControlPlaneUnavailable) as exc:
+                    # Both end the re-reservation, and neither is fatal: the channel is
+                    # still running on the slot it already holds. Only the reasons differ,
+                    # which is why the exception object goes in the message.
+                    logger.warning(
+                        f"Could not re-reserve stream for {channel_id} after shutdown "
+                        f"cancel: {exc}"
+                    )
+                else:
+                    source = answer.get("source")
+                    if source is None:
                         logger.warning(
-                            f"Could not re-reserve stream for {channel_id} "
-                            f"after shutdown cancel: {error}"
+                            f"Could not re-reserve stream for {channel_id} after shutdown "
+                            f"cancel: {answer.get('error')}"
                         )
-                    elif slot_reserved and sid and pid:
+                    elif source["slot_reserved"]:
                         proxy_server.redis_client.hset(metadata_key, mapping={
-                            ChannelMetadataField.STREAM_ID: str(sid),
-                            ChannelMetadataField.M3U_PROFILE: str(pid),
+                            ChannelMetadataField.STREAM_ID: str(source["stream_id"]),
+                            ChannelMetadataField.M3U_PROFILE: str(source["m3u_profile_id"]),
                         })
                         logger.info(
                             f"Re-reserved profile slot for {channel_id} "
-                            f"(stream={sid}, profile={pid})"
+                            f"(stream={source['stream_id']}, profile={source['m3u_profile_id']})"
                         )
         finally:
             close_old_connections()
