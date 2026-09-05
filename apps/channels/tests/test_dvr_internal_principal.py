@@ -7,9 +7,11 @@ so without an internal principal every recording of a hidden, adult or
 profile-gated channel would break silently.
 """
 
+import inspect
+
 from django.test import SimpleTestCase, override_settings
 
-from apps.channels.tasks import _dvr_build_ffmpeg_cmd, _dvr_redact_cmd
+from apps.channels.tasks import _dvr_build_ffmpeg_cmd, _dvr_redact_cmd, run_recording
 from apps.proxy.internal_auth import internal_principal_token
 
 
@@ -34,9 +36,8 @@ class DvrInternalPrincipalTests(SimpleTestCase):
         # ffmpeg splits -headers on CR LF and does not unescape a literal
         # backslash-r backslash-n; a header built with escaped text is sent
         # as one malformed line and silently ignored.
-        value = self._cmd(internal_principal_token())[
-            self._cmd(internal_principal_token()).index("-headers") + 1
-        ]
+        cmd = self._cmd(internal_principal_token())
+        value = cmd[cmd.index("-headers") + 1]
         self.assertTrue(value.endswith("\r\n"))
         self.assertNotIn("\\r\\n", value)
         self.assertTrue(value.startswith("X-Dispatcharr-Internal: "))
@@ -49,7 +50,12 @@ class DvrInternalPrincipalTests(SimpleTestCase):
         redacted = _dvr_redact_cmd(cmd)
         self.assertNotIn(internal_principal_token(), " ".join(redacted))
         self.assertIn("ffmpeg", redacted)
-        self.assertIn("X-Dispatcharr-Internal: ***\r\n", redacted)
+        self.assertIn("X-Dispatcharr-Internal: ***", redacted)
+        # No raw CR LF anywhere in the redacted argv: a joined debug log
+        # line carrying one renders as two log lines, and a bare CR in a
+        # log record is a mild injection/parsing hazard.
+        self.assertNotIn("\r", " ".join(redacted))
+        self.assertNotIn("\n", " ".join(redacted))
 
     def test_redaction_masks_credentials_in_the_input_url(self):
         cmd = _dvr_build_ffmpeg_cmd(
@@ -59,3 +65,12 @@ class DvrInternalPrincipalTests(SimpleTestCase):
 
     def test_redaction_returns_a_list_the_caller_can_join(self):
         self.assertIsInstance(_dvr_redact_cmd(self._cmd(None)), list)
+
+    def test_run_recording_calls_the_builder_with_the_internal_token(self):
+        # Pins the real call site (this file's tests otherwise only drive
+        # _dvr_build_ffmpeg_cmd / _dvr_redact_cmd in isolation), matching
+        # this module's existing inspect.getsource convention
+        # (test_recording_pipeline.py's test_run_recording_has_retry_loop).
+        source = inspect.getsource(run_recording)
+        self.assertIn("internal_token=internal_principal_token()", source)
+        self.assertIn("_dvr_redact_cmd(ffmpeg_cmd)", source)

@@ -1202,7 +1202,15 @@ def _dvr_ffmpeg_retry_backoff_seconds(retry_index):
 
 def _dvr_build_ffmpeg_cmd(stream_url, recording_id, hls_m3u8, hls_seg_pattern,
                           hls_start_number, internal_token=None):
-    """Build the FFmpeg command for DVR HLS segment recording."""
+    """Build the FFmpeg command for DVR HLS segment recording.
+
+    Never add "-loglevel debug" here: at that verbosity ffmpeg echoes the
+    full request line, X-Dispatcharr-Internal header included, into its own
+    stderr — which run_recording's outage-handling code logs the tail of on
+    failure. There is currently no -loglevel argument in this command, so
+    that tail is unreachable, but it would carry the token the moment one is
+    added.
+    """
     from core.utils import dispatcharr_dvr_user_agent
 
     cmd = [
@@ -1258,8 +1266,11 @@ def _dvr_redact_cmd(cmd):
     for arg in cmd:
         text = str(arg)
         if mask_next:
+            # No CR LF terminator on the mask: the joined debug line is one
+            # log record, and a raw control character in it is a mild
+            # injection/parsing hazard for whatever reads the log.
             head, _, tail = text.partition(":")
-            redacted.append(f"{head}: ***\r\n" if tail else "***")
+            redacted.append(f"{head}: ***" if tail else "***")
             mask_next = False
             continue
         if text == "-headers":

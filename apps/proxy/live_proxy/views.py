@@ -45,6 +45,7 @@ from apps.proxy.authorize import (
     resolve_output_profile,
 )
 from apps.proxy.authorize_views import authorize_error_response, resolve_authorization
+from apps.proxy.internal_auth import request_is_internal
 
 logger = get_logger()
 
@@ -420,7 +421,31 @@ def stream_ts(request, channel_id, user=None, force_output_format=None, decision
 
                     # Generate transcode command if needed
                     stream_profile = channel.get_stream_profile()
-                    if stream_profile.is_redirect():
+                    # Phase 1 PR 5: the relay never redirects an internal
+                    # principal (the DVR) to a third-party provider. ffmpeg
+                    # re-sends every `-headers` line to the redirect target
+                    # on the new host, so a 302 here would hand the provider
+                    # (and its access logs) a credential — X-Dispatcharr-
+                    # Internal — that is otherwise never supposed to leave
+                    # this deployment. Serve it through the Proxy path
+                    # instead: server bandwidth is unchanged (the DVR runs
+                    # server-side either way, whether ffmpeg reads the
+                    # provider directly or the ring buffer), and the
+                    # recording gains failover it didn't have. `transcode`
+                    # was computed above from the channel's real (Redirect)
+                    # profile and must be forced False here, or the
+                    # Redirect profile's empty build_command() would be
+                    # used to spawn a subprocess.
+                    internal_principal = request_is_internal(
+                        getattr(request, "_request", request)
+                    )
+                    if stream_profile.is_redirect() and internal_principal:
+                        logger.info(
+                            f"[{client_id}] Internal principal on a Redirect-profile "
+                            f"channel — serving via Proxy instead of a redirect"
+                        )
+                        transcode = False
+                    elif stream_profile.is_redirect():
                         # Validate the stream URL before redirecting
                         from .url_utils import (
                             validate_stream_url,
