@@ -2,8 +2,11 @@
 Utilities for handling stream URLs and transformations.
 """
 
+import json
+
 from django.db import close_old_connections
 from apps.m3u.models import M3UAccountProfile
+from .redis_keys import RedisKeys
 from .utils import get_logger
 from dispatcharr.utils import redact_url
 import requests
@@ -34,17 +37,37 @@ from apps.proxy.next_source import (  # noqa: F401  transitional, deleted in Tas
 
 
 def generate_stream_url(channel_id):
-    """Unchanged 6-tuple contract; the resolution moved to next_source.
+    """Ask Django what to play. Same 6-tuple every caller already reads.
 
-    Task 7 replaces this body again with the control-plane call. Split in
-    two so the move and the HTTP hop are separately reviewable.
+    Phase 1 PR 6: the resolution runs in the API process now
+    (apps/proxy/next_source.py). The alternates that come back are cached
+    in Redis so a failover during a Django outage has something to fall
+    back to — unenforced, no reservation, exactly as the spec's degraded
+    fallback states.
     """
-    from apps.proxy.next_source import resolve_source
+    from apps.proxy import control_plane
 
-    answer = resolve_source(channel_id, reason="initial", include_alternates=True)
-    source = answer["source"]
+    try:
+        answer = control_plane.next_source(
+            channel_id, reason="initial", include_alternates=True
+        )
+    except control_plane.ControlPlaneRefused as exc:
+        # Django said no — a deleted channel, a token fault. Distinct from
+        # an outage so a refusal never looks like one (ruling 15).
+        logger.error(
+            f"Control plane refused the tune for channel {channel_id}: "
+            f"{exc.status}"
+        )
+        return None, None, False, None, False, "Control plane refused this channel"
+    except control_plane.ControlPlaneUnavailable as exc:
+        logger.error(f"Control plane unreachable for channel {channel_id}: {exc}")
+        return None, None, False, None, False, "Control plane unreachable"
+
+    source = answer.get("source")
     if source is None:
-        return None, None, False, None, False, answer["error"]
+        return None, None, False, None, False, answer.get("error")
+
+    _cache_alternates(channel_id, answer.get("alternates") or [])
     return (
         source["url"],
         source["user_agent"],
@@ -53,6 +76,54 @@ def generate_stream_url(channel_id):
         source["slot_reserved"],
         None,
     )
+
+
+def _cache_alternates(channel_id, alternates):
+    """Store resolved candidates for the degraded failover path.
+
+    In Redis, not on any object: four uWSGI workers and no channel state
+    in Python memory. TTL matches the metadata hash's REDIS_TTL_DEFAULT,
+    so a dead channel's cache expires on its own like every other key
+    (D15 — nothing flushes Redis).
+    """
+    if not alternates:
+        return
+    try:
+        from core.utils import RedisClient
+        from .constants import REDIS_TTL_DEFAULT
+
+        client = RedisClient.get_client()
+        if client:
+            client.set(
+                RedisKeys.channel_source_cache(channel_id),
+                json.dumps(alternates),
+                ex=REDIS_TTL_DEFAULT,
+            )
+    except Exception as exc:
+        logger.debug(f"Could not cache alternates for {channel_id}: {exc}")
+
+
+def read_cached_alternates(channel_id):
+    """Read back what _cache_alternates wrote for the redirect-alternates
+    loop (views.py's stream_ts). Never raises: a missing, expired or
+    corrupt cache is an empty candidate list, not a stream failure.
+    """
+    try:
+        from core.utils import RedisClient
+
+        client = RedisClient.get_client()
+        if not client:
+            return []
+        raw = client.get(RedisKeys.channel_source_cache(channel_id))
+        if not raw:
+            return []
+        alternates = json.loads(raw)
+        if not isinstance(alternates, list):
+            return []
+        return alternates
+    except Exception as exc:
+        logger.debug(f"Could not read cached alternates for {channel_id}: {exc}")
+        return []
 
 
 def validate_stream_url(url, user_agent=None, timeout=(5, 5)):

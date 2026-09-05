@@ -13,8 +13,8 @@ from ..server import ProxyServer
 from ..redis_keys import RedisKeys
 from ..constants import EventType, ChannelState, ChannelMetadataField, REDIS_TTL_MEDIUM
 from ..config_helper import ConfigHelper
-from ..url_utils import get_stream_info_for_switch
 from core.utils import log_system_event
+from dispatcharr.utils import redact_url
 from .log_parsers import LogParserFactory
 
 logger = logging.getLogger("live_proxy")
@@ -381,7 +381,15 @@ class ChannelService:
         # If no direct URL is provided but a target stream is, get URL from target stream
         stream_id = None
         if not new_url and target_stream_id:
-            stream_info = get_stream_info_for_switch(channel_id, target_stream_id)
+            # This runs in the API process today (PR 4's routing keeps
+            # change_stream_url's caller on the API role); PR 7 turns this
+            # view into a relay_client wrapper, at which point
+            # change_stream_url runs in the relay and PR 7 revisits this
+            # call (D10).
+            from apps.proxy.next_source import resolve_source
+
+            answer = resolve_source(channel_id, target_stream_id=target_stream_id, reason="operator")
+            stream_info = answer["source"] or {"error": answer["error"]}
             if 'error' in stream_info:
                 return {
                     'status': 'error',
@@ -455,11 +463,11 @@ class ChannelService:
             if new_url == old_url:
                 # update_url() returns False for same URL; still success so metadata refreshes
                 success = True
-                logger.info(f"Channel {channel_id} already using URL {new_url}, refreshing metadata only")
+                logger.info(f"Channel {channel_id} already using URL {redact_url(new_url)}, refreshing metadata only")
             else:
                 # Update the stream
                 success = manager.update_url(new_url, stream_id, m3u_profile_id)
-                logger.info(f"Stream URL changed from {old_url} to {new_url}, result: {success}")
+                logger.info(f"Stream URL changed from {redact_url(old_url)} to {redact_url(new_url)}, result: {success}")
 
             # Update Redis metadata based on the actual outcome.
             # On success, write the new values. On failure, restore whatever URL

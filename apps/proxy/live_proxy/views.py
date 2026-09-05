@@ -30,7 +30,6 @@ from .services.channel_service import ChannelService
 from core.utils import send_websocket_update
 from .url_utils import (
     generate_stream_url,
-    get_stream_info_for_switch,
     get_stream_object,
 )
 from .utils import get_logger
@@ -445,12 +444,13 @@ def stream_ts(request, channel_id, user=None, force_output_format=None, decision
                         )
                         transcode = False
                     elif stream_profile.is_redirect():
-                        # Validate the stream URL before redirecting
-                        from .url_utils import (
-                            validate_stream_url,
-                            get_alternate_streams,
-                            get_stream_info_for_switch,
-                        )
+                        # Phase 1 PR 6: the alternates were resolved by
+                        # Django on the next-source call a few lines above
+                        # and cached in Redis; the relay no longer
+                        # re-queries for them. Validation of each URL stays
+                        # here, because it is an HTTP probe of the
+                        # provider, not a database question.
+                        from .url_utils import validate_stream_url, read_cached_alternates
 
                         # Try initial URL
                         logger.info(f"[{client_id}] Validating redirect URL: {redact_url(stream_url)}")
@@ -467,33 +467,18 @@ def stream_ts(request, channel_id, user=None, force_output_format=None, decision
                             # Track tried streams to avoid loops
                             tried_streams = {stream_id}
 
-                            # Get alternate streams
-                            alternates = get_alternate_streams(channel_id, stream_id)
-
-                            # Try each alternate until one works
-                            for alt in alternates:
+                            for alt in read_cached_alternates(channel_id):
                                 if alt["stream_id"] in tried_streams:
                                     continue
 
                                 tried_streams.add(alt["stream_id"])
 
-                                # Get stream info
-                                alt_info = get_stream_info_for_switch(
-                                    channel_id, alt["stream_id"]
-                                )
-                                if "error" in alt_info:
-                                    logger.warning(
-                                        f"[{client_id}] Error getting alternate stream info: {alt_info['error']}"
-                                    )
-                                    continue
-
-                                # Validate the alternate URL
                                 logger.info(
-                                    f"[{client_id}] Trying alternate stream #{alt['stream_id']}: {alt_info['url']}"
+                                    f"[{client_id}] Trying alternate stream #{alt['stream_id']}"
                                 )
                                 is_valid, final_url, status_code, message = validate_stream_url(
-                                    alt_info["url"],
-                                    user_agent=alt_info["user_agent"],
+                                    alt["url"],
+                                    user_agent=alt["user_agent"],
                                     timeout=(5, 5),
                                 )
 
@@ -866,7 +851,15 @@ def change_stream(request, channel_id):
             logger.info(
                 f"Stream ID {stream_id} provided, looking up stream info for channel {channel_id}"
             )
-            stream_info = get_stream_info_for_switch(channel_id, stream_id)
+            # This view runs in the API process today (PR 4's routing keeps
+            # /proxy/ts/change_stream/ on the API role); PR 7 turns it into
+            # a relay_client wrapper, at which point ChannelService.
+            # change_stream_url runs in the relay and PR 7 revisits this
+            # call (D10).
+            from apps.proxy.next_source import resolve_source
+
+            answer = resolve_source(channel_id, target_stream_id=stream_id, reason="operator")
+            stream_info = answer["source"] or {"error": answer["error"]}
 
             if "error" in stream_info:
                 return JsonResponse(
@@ -1153,8 +1146,16 @@ def next_stream(request, channel_id):
             f"Rotating to next stream ID {next_stream_id} for channel {channel_id}"
         )
 
-        # Get full stream info including URL for the next stream
-        stream_info = get_stream_info_for_switch(channel_id, next_stream_id)
+        # Get full stream info including URL for the next stream. This view
+        # runs in the API process today (PR 4's routing keeps
+        # /proxy/ts/next_stream/ on the API role); PR 7 turns it into a
+        # relay_client wrapper, at which point ChannelService.
+        # change_stream_url runs in the relay and PR 7 revisits this call
+        # (D10).
+        from apps.proxy.next_source import resolve_source
+
+        answer = resolve_source(channel_id, target_stream_id=next_stream_id, reason="operator")
+        stream_info = answer["source"] or {"error": answer["error"]}
 
         if "error" in stream_info:
             return JsonResponse(
