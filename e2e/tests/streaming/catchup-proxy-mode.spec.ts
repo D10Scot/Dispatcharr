@@ -213,26 +213,25 @@ test('row 8 premise: a Standard viewer with hide_adult_content cannot list an ad
   ).toBe(false);
 });
 
-test.fail(
+test(
   'an adult channel a user cannot list is also refused on the catch-up path', { tag: '@contract' },
   async ({ upstream, seed, api, waitFor, request, streamClient }) => {
-    // KNOWN BUG — issue #95. `hide_adult_content` is applied at 14 sites
-    // across apps/output/, apps/epg/, apps/channels/ and apps/vod/, and at
-    // ZERO under apps/timeshift/. `_user_can_access_channel`
-    // (views.py:771-786) checks user_level and Channel Profile membership
-    // only. So a Standard user who cannot see an adult channel in any
-    // listing can still stream its archive — and this is the STRONG form of
-    // the bug, not merely "not refused": following the session-minting
-    // redirect all the way through gets a 200, TS-aligned packets, and one
-    // provider request. A pin on the 301 alone would be one hop too early —
-    // it would also go green for a fix applied AFTER session establishment,
-    // which would close the hole while leaving the redirect unchanged.
+    // Closed by Phase 1 PR 5. Every stream surface now authorizes through
+    // apps/proxy/authorize.py's authorize_stream(), which applies the
+    // user's hide_adult_content against Channel.is_adult before a byte
+    // moves — the check every listing path already applied and the
+    // apps/timeshift/ catch-up path did not. Following the
+    // session-minting redirect all the way through now refuses rather
+    // than serving TS-aligned packets: the strong form of the bug is
+    // closed, not just the 301.
     //
-    // The assertion below is the CORRECT behaviour and fails today. It is
-    // deliberately status-agnostic above 400: whether the fix answers 403
-    // (matching `_user_can_access_channel`'s existing refusal) or 404 is an
-    // unmade choice, and pinning one would let the other go green the wrong
-    // way.
+    // The assertion below is deliberately status-agnostic above 400:
+    // whether the hop answers 403 (matching `_user_can_access_channel`'s
+    // existing refusal) or 404 is an unmade choice, and pinning one would
+    // let the other go red the wrong way.
+    //
+    // Issue: https://github.com/D10Scot/Dispatcharr/issues/95 — closed by
+    // PR 8, which references this PR.
     const { channel } = await seedCatchupChannel({ upstream, seed, api, waitFor });
     await api.patch(`/api/channels/channels/${channel.id}/`, { is_adult: true });
 
@@ -276,6 +275,17 @@ test.fail(
       if (!(err instanceof StreamStatusError) || err.status < 400) throw err;
       refusedAtOpen = true;
     }
+
+    // The pin's inversion made this necessary: with the fix in place
+    // open() throws, refusedAtOpen is true, and the block below is
+    // skipped — so without this line the test would pass having asserted
+    // nothing. The block stays for the case where a future regression
+    // serves the archive again: it then proves no playable packets reach
+    // this viewer, which is the strong form of the bug.
+    expect(
+      refusedAtOpen,
+      'an adult channel must be refused to a hide_adult_content viewer at open'
+    ).toBe(true);
 
     if (!refusedAtOpen) {
       // withDeadline so a stall reads as a named cause instead of the
