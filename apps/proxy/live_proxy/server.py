@@ -15,7 +15,8 @@ import os
 import json
 import gevent
 from apps.proxy.config import TSConfig as Config
-from core.utils import RedisClient, log_system_event
+from core.utils import RedisClient
+from apps.proxy.control_plane import emit_event
 from django.db import close_old_connections
 from redis.exceptions import ConnectionError, TimeoutError
 from .input.manager import StreamManager
@@ -806,7 +807,7 @@ class ProxyServer:
 
             # Log channel start event (names already resolved without ORM)
             try:
-                log_system_event(
+                emit_event(
                     'channel_start',
                     channel_id=channel_id,
                     channel_name=channel_name,
@@ -1573,7 +1574,7 @@ class ProxyServer:
             return
 
         def _log_stop():
-            log_system_event('channel_stop', **stop_event_data)
+            emit_event('channel_stop', **stop_event_data)
 
         gevent.spawn(_log_stop)
 

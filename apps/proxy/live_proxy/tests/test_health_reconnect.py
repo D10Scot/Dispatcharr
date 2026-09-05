@@ -166,7 +166,7 @@ class HealthReconnectRetryLoopTests(TestCase):
                 patch.object(sm, "_process_stream_data", side_effect=fake_process), \
                 patch.object(sm, "_close_socket", side_effect=fake_close_socket), \
                 patch("apps.proxy.live_proxy.input.manager.gevent.sleep"), \
-                patch("apps.proxy.live_proxy.input.manager.log_system_event"):
+                patch("apps.proxy.live_proxy.input.manager.emit_event"):
             sm.run()
 
         # Three health reconnects (close + re-establish each time), then URL failed.

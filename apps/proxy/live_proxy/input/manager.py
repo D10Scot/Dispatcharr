@@ -9,7 +9,6 @@ import gevent
 import re
 from django.db import connection, close_old_connections
 from apps.proxy.config import TSConfig as Config
-from core.utils import log_system_event
 from apps.proxy.control_plane import emit_event
 from .buffer import StreamBuffer
 from ..utils import detect_stream_type, get_logger
@@ -485,7 +484,7 @@ class StreamManager:
                             # Log reconnection event if this is a retry (not first attempt)
                             if self.retry_count > 0:
                                 try:
-                                    log_system_event(
+                                    emit_event(
                                         'channel_reconnect',
                                         channel_id=self.channel_id,
                                         channel_name=self.channel_name,
@@ -542,7 +541,7 @@ class StreamManager:
 
                             # Log connection error event
                             try:
-                                log_system_event(
+                                emit_event(
                                     'channel_error',
                                     channel_id=self.channel_id,
                                     channel_name=self.channel_name,
@@ -572,7 +571,7 @@ class StreamManager:
 
                             # Log connection error event with exception details
                             try:
-                                log_system_event(
+                                emit_event(
                                     'channel_error',
                                     channel_id=self.channel_id,
                                     channel_name=self.channel_name,
@@ -1154,7 +1153,7 @@ class StreamManager:
 
                                 # Log failover event
                                 try:
-                                    log_system_event(
+                                    emit_event(
                                         'channel_failover',
                                         channel_id=self.channel_id,
                                         channel_name=self.channel_name,
@@ -1173,7 +1172,7 @@ class StreamManager:
 
                     # Log system event for buffering
                     try:
-                        log_system_event(
+                        emit_event(
                             'channel_buffering',
                             channel_id=self.channel_id,
                             channel_name=self.channel_name,
@@ -1473,7 +1472,7 @@ class StreamManager:
 
             # Log stream switch event
             try:
-                log_system_event(
+                emit_event(
                     'stream_switch',
                     channel_id=self.channel_id,
                     channel_name=self.channel_name,
@@ -1605,7 +1604,7 @@ class StreamManager:
 
                     # Log reconnection event
                     try:
-                        log_system_event(
+                        emit_event(
                             'channel_reconnect',
                             channel_id=self.channel_id,
                             channel_name=self.channel_name,

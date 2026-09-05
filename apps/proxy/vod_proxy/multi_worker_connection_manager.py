@@ -15,6 +15,7 @@ from django.http import StreamingHttpResponse, HttpResponse
 from core.utils import RedisClient
 from apps.vod.models import Movie, Episode
 from apps.m3u.models import M3UAccountProfile
+from dispatcharr.utils import redact_url
 
 logger = logging.getLogger("vod_proxy")
 
@@ -129,20 +130,20 @@ def infer_content_type_from_url(url: str) -> Optional[str]:
         }
 
         if ext in video_mime_types:
-            logger.debug(f"Inferred content type '{video_mime_types[ext]}' from extension '{ext}' in URL: {url}")
+            logger.debug(f"Inferred content type '{video_mime_types[ext]}' from extension '{ext}' in URL: {redact_url(url)}")
             return video_mime_types[ext]
 
         # Fallback to mimetypes module
         mime_type, _ = mimetypes.guess_type(path)
         if mime_type and mime_type.startswith('video/'):
-            logger.debug(f"Inferred content type '{mime_type}' using mimetypes for URL: {url}")
+            logger.debug(f"Inferred content type '{mime_type}' using mimetypes for URL: {redact_url(url)}")
             return mime_type
 
-        logger.debug(f"Could not infer content type from URL: {url}")
+        logger.debug(f"Could not infer content type from URL: {redact_url(url)}")
         return None
 
     except Exception as e:
-        logger.warning(f"Error inferring content type from URL '{url}': {e}")
+        logger.warning(f"Error inferring content type from URL '{redact_url(url)}': {e}")
         return None
 
 
@@ -478,7 +479,7 @@ class RedisBackedVODConnection:
             target_url = state.final_url if state.final_url else state.stream_url
             allow_redirects = not state.final_url  # Only follow redirects if we don't have final URL
 
-            logger.info(f"[{self.session_id}] Making request #{state.request_count} to {'final' if state.final_url else 'original'} URL")
+            logger.info(f"[{self.session_id}] Making request #{state.request_count} to {'final' if state.final_url else 'original'} URL")  # credential-logging: ignore - logs only the literal "final"/"original", never the URL itself
 
             # Make request (10s connect, 10s read timeout - keeps lock time reasonable if client disconnects)
             response = self.local_session.get(
@@ -493,6 +494,8 @@ class RedisBackedVODConnection:
             # that has since expired), clear it and retry from the original stream_url.
             if response.status_code >= 400 and state.final_url:
                 logger.warning(
+                    # credential-logging: ignore - "final_url"/"stream_url" are literal
+                    # words in the message text here, not the URL values themselves
                     f"[{self.session_id}] Cached final_url returned {response.status_code}, "
                     f"clearing and retrying from stream_url"
                 )
@@ -881,7 +884,8 @@ class MultiWorkerVODConnectionManager:
     def _send_vod_event(self, event_type, session_id, content_name, content_uuid, client_ip, user_id, username=None):
         """Send a vod_started or vod_stopped WebSocket event, log a system event, then update stats."""
         try:
-            from core.utils import send_websocket_update, log_system_event
+            from core.utils import send_websocket_update
+            from apps.proxy.control_plane import emit_event
             if not self.redis_client:
                 return
 
@@ -899,7 +903,7 @@ class MultiWorkerVODConnectionManager:
 
             system_event_type = 'vod_start' if event_type == 'vod_started' else 'vod_stop'
             try:
-                log_system_event(
+                emit_event(
                     system_event_type,
                     content_name=content_name,
                     content_uuid=content_uuid,
@@ -1471,7 +1475,7 @@ class MultiWorkerVODConnectionManager:
                 parsed_url.fragment
             ))
 
-            logger.info(f"Modified URL: {modified_url}")
+            logger.info(f"Modified URL: {redact_url(modified_url)}")
             return modified_url
 
         except Exception as e:

@@ -13,7 +13,6 @@ from ..server import ProxyServer
 from ..redis_keys import RedisKeys
 from ..constants import EventType, ChannelState, ChannelMetadataField, REDIS_TTL_MEDIUM
 from ..config_helper import ConfigHelper
-from core.utils import log_system_event
 from dispatcharr.utils import redact_url
 from .log_parsers import LogParserFactory
 
@@ -863,36 +862,23 @@ class ChannelService:
 
     @staticmethod
     def _update_stream_stats_in_db(stream_id, **stats):
-        """Update stream stats in database"""
-        try:
-            from apps.channels.models import Stream
-            from django.utils import timezone
+        """Post the stats; Django writes the row.
 
-            stream = Stream.objects.get(id=stream_id)
+        Phase 1 PR 6: this was the relay's only ORM write
+        (stream.save(update_fields=['stream_stats', 'stream_stats_updated_at'])),
+        called from three hot-path sites. The merge semantics -- a None value
+        never overwrites an existing key -- move with it to
+        core/relay_events.py. stream_stats is deliberately not in
+        apps/connect/models.py's SUPPORTED_EVENTS and writes no SystemEvent
+        row: input/manager.py flushes every 30s and
+        parse_and_store_stream_info fires on every parsed codec line, and
+        log_system_event trims to max_system_events (100 by default), so a
+        row per stats line would evict every real event.
+        """
+        from apps.proxy.control_plane import emit_event
 
-            # Get existing stats or create new dict
-            current_stats = stream.stream_stats or {}
-
-            # Update with new stats
-            for key, value in stats.items():
-                if value is not None:
-                    current_stats[key] = value
-
-            # Save updated stats and timestamp
-            stream.stream_stats = current_stats
-            stream.stream_stats_updated_at = timezone.now()
-            stream.save(update_fields=['stream_stats', 'stream_stats_updated_at'])
-
-            logger.debug(f"Updated stream stats in database for stream {stream_id}: {stats}")
-            return True
-
-        except Exception as e:
-            logger.error(f"Error updating stream stats in database for stream {stream_id}: {e}")
-            return False
-
-        finally:
-            # Release geventpool checkout after ORM.
-            close_old_connections()
+        emit_event("stream_stats", stream_id=stream_id, **stats)
+        return True
 
     # Helper methods for Redis operations
 

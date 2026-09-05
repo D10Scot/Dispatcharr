@@ -9,7 +9,7 @@ zero-clients → stop_channel shutdown chain works for all client types.
 
 import time
 import gevent
-from core.utils import log_system_event
+from apps.proxy.control_plane import emit_event
 from django.db import close_old_connections
 from ...server import ProxyServer
 from ...redis_keys import RedisKeys
@@ -104,7 +104,7 @@ class FMP4StreamGenerator:
                 return
 
             try:
-                log_system_event(
+                emit_event(
                     'client_connect',
                     channel_id=self.channel_id,
                     channel_name=self.channel_name,

@@ -7,7 +7,7 @@ import time
 import gevent
 from apps.proxy.config import TSConfig as Config
 from django.db import close_old_connections
-from core.utils import log_system_event
+from apps.proxy.control_plane import emit_event
 from ...server import ProxyServer
 from ...utils import create_ts_packet, get_logger, resolve_channel_display_name
 from ...redis_keys import RedisKeys
@@ -124,7 +124,7 @@ class StreamGenerator:
 
             # Log client connect event
             try:
-                log_system_event(
+                emit_event(
                     'client_connect',
                     channel_id=self.channel_id,
                     channel_name=self.channel_name,
@@ -640,7 +640,7 @@ class StreamGenerator:
 
                 # Log client disconnect event
                 try:
-                    log_system_event(
+                    emit_event(
                         'client_disconnect',
                         channel_id=self.channel_id,
                         channel_name=self.channel_name,

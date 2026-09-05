@@ -178,7 +178,7 @@ class InitializeChannelOwnershipOrderTests(SimpleTestCase):
                 patch("apps.proxy.live_proxy.server.StreamManager"), \
                 patch("apps.proxy.live_proxy.server.RedisClient"), \
                 patch("apps.proxy.live_proxy.server.close_old_connections"), \
-                patch("apps.proxy.live_proxy.server.log_system_event"), \
+                patch("apps.proxy.live_proxy.server.emit_event"), \
                 patch("apps.proxy.live_proxy.server.threading.Thread"):
             result = server.initialize_channel(
                 "http://example.com/stream.ts",
