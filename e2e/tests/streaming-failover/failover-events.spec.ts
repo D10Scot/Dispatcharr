@@ -7,19 +7,19 @@ import { lockedProfile } from '../streaming/helpers';
 // asserted here, because a batch that reaches the view but never pushes
 // would still fill the events list and look correct.
 //
-// Deviation from the task brief and from the design spec's own Facts
-// table (both name `channel_failover`): a dead-air fault on this Proxy-
-// profile channel empirically produces `stream_switch`, verified against
-// a live pr6 stack. `channel_failover` is emitted from exactly one call
-// site (`input/manager.py`'s buffering-timeout branch inside the ffmpeg
-// stderr stats parser), which only runs for a transcoding profile —
-// structurally unreachable for Proxy, the profile this project's
-// `failover-dead-air.spec.ts` sibling also locks for the same reason
-// (Proxy has no stderr to parse). `update_url()` (`input/manager.py:1497`)
-// is what a dead-air-triggered `_try_next_stream()` actually calls, and
-// it emits `stream_switch` — unchanged by Phase 1 PR 6, which moved the
-// call site's ORM write into `core/relay_events.py` without renaming the
-// event. Asserting `channel_failover` here would time out forever.
+// The design spec names `channel_failover`; a dead-air fault on this
+// Proxy-profile channel empirically produces `stream_switch` instead,
+// verified against a live pr6 stack. `channel_failover` is emitted from
+// exactly one call site (`input/manager.py`'s buffering-timeout branch
+// inside the ffmpeg stderr stats parser) and only runs when the profile
+// spawns ffmpeg (the stats come from its stderr) — structurally
+// unreachable for Proxy, the profile this project's
+// `failover-dead-air.spec.ts` sibling also locks for the same reason.
+// `update_url()` is what a dead-air-triggered `_try_next_stream()`
+// actually calls, and it emits `stream_switch` — unchanged by Phase 1
+// PR 6, which moved the call site's ORM write into `core/relay_events.py`
+// without renaming the event. Asserting `channel_failover` here would
+// time out forever.
 test(
   'a dead-air failover is reported as an event and a relay_event push',
   { tag: '@contract' },
@@ -63,19 +63,28 @@ test(
 
     const message = await pushed;
     expect(message.data?.channel_id).toBe(channel.uuid);
+    // Pins the push to the switch the poll above observed, not just any
+    // stream_switch on this channel.
+    expect(message.data?.stream_id).toBe(streams[1].id);
     expect(
       message.data,
       'the push is a field whitelist — no provider URL reaches a browser'
     ).not.toHaveProperty('new_url');
 
     // The row. Django wrote it, from the batch the relay posted.
-    const events = await api.json<{ events: Array<{ channel_id: string }> }>(
+    const events = await api.json<{
+      events: Array<{ channel_id: string; details?: { stream_id?: number } }>;
+    }>(
       await api.get('/api/core/system-events/?event_type=stream_switch&limit=100'),
       'system events after a dead-air failover'
     );
     expect(
-      events.events.some((event) => event.channel_id === channel.uuid),
-      'stream_switch should be recorded for this channel'
+      events.events.some(
+        (event) =>
+          event.channel_id === channel.uuid &&
+          event.details?.stream_id === streams[1].id
+      ),
+      'stream_switch to stream B should be recorded for this channel'
     ).toBe(true);
   }
 );

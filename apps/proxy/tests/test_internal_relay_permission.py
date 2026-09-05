@@ -6,16 +6,11 @@ becomes the sole gate on a control API. X-Dispatcharr-Internal-Request adds
 the binding: method, path, body and a 120s window.
 """
 
-import hashlib
-import hmac
 import time
 
-from django.conf import settings
 from django.test import RequestFactory, SimpleTestCase, override_settings
 
 from apps.proxy.internal_auth import (
-    HEADER_INTERNAL,
-    HEADER_INTERNAL_REQUEST,
     INTERNAL_REQUEST_WINDOW_SECONDS,
     internal_principal_token,
     internal_request_token,
@@ -76,19 +71,33 @@ class InternalRequestTokenTests(SimpleTestCase):
             request.META["HTTP_X_DISPATCHARR_INTERNAL_REQUEST"] = value
             self.assertFalse(request_is_internal_request(request))
 
-    @override_settings(SECRET_KEY="a-different-secret-entirely")
     def test_a_token_from_another_secret_is_refused(self):
-        # Signed under the test's own SECRET_KEY, verified under another.
+        # Signed under a different SECRET_KEY, verified under this test's
+        # actual one -- proving a token from a deployment with a different
+        # key is refused, not merely an arbitrary wrong string. The token
+        # is computed INSIDE the override (so it is genuinely signed under
+        # "a-different-secret-entirely") and verified OUTSIDE it (so
+        # request_is_internal_request checks it against the real SECRET_KEY
+        # this test runs under).
         request = self.factory.post(PATH, data=BODY, content_type="application/json")
         ts = int(time.time())
-        other = hmac.new(
-            b"the-original-secret",
-            b"internal-request\nPOST\n" + PATH.encode() + b"\n" + str(ts).encode()
-            + b"\n" + hashlib.sha256(BODY).hexdigest().encode(),
-            hashlib.sha256,
-        ).hexdigest()
+        with override_settings(SECRET_KEY="a-different-secret-entirely"):
+            other = internal_request_token("POST", PATH, BODY, ts)
         request.META["HTTP_X_DISPATCHARR_INTERNAL_REQUEST"] = f"v1.{ts}.{other}"
         self.assertFalse(request_is_internal_request(request))
+
+    def test_a_token_signed_for_a_different_method_is_refused(self):
+        # Bound to method as well as path/body/timestamp: a token signed
+        # for POST must not validate a PUT carrying the same path, body
+        # and timestamp.
+        signed_as_post = _request(self.factory)
+        headers = {
+            k: v for k, v in signed_as_post.META.items() if k.startswith("HTTP_")
+        }
+        sent_as_put = self.factory.generic(
+            "PUT", PATH, data=BODY, content_type="application/json", **headers
+        )
+        self.assertFalse(request_is_internal_request(sent_as_put))
 
 
 class IsInternalRelayTests(SimpleTestCase):
