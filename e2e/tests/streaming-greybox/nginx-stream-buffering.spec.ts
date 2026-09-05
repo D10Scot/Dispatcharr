@@ -148,7 +148,8 @@ function parseLocationBlocks(config: string): LocationBlock[] {
  *
  * The last entry is the XC three-segment root form: `parseLocationBlocks`
  * strips a regex location's leading `^` from its `target`, so this is the
- * literal the parser produces for `location ~ ^/[^/]+/[^/]+/[^/]+$`.
+ * literal the parser produces for
+ * `location ~ ^/[^/]+/[^/]+/\d+(?:\.[A-Za-z0-9]+)?$`.
  */
 const RELAY_BOUND_TARGETS = [
   '/proxy/ts/stream/',
@@ -159,7 +160,7 @@ const RELAY_BOUND_TARGETS = [
   '/series/',
   '/timeshift/',
   '/streaming/timeshift.php',
-  '/[^/]+/[^/]+/[^/]+$',
+  '/[^/]+/[^/]+/\\d+(?:\\.[A-Za-z0-9]+)?$',
 ];
 
 test(
@@ -184,7 +185,7 @@ test(
     for (const block of relayBlocks) {
       expect(
         block.body.some((line) => /^\s*uwsgi_buffering\s+off\s*;/.test(line)),
-        `location block "${block.header}" does not set uwsgi_buffering off:\n${block.body.join('\n')}`
+        `location block "${block.header}" does not set uwsgi_buffering off:\n${block.body.map((l) => l.replace(/"[0-9a-f]{64}"/, '"<marker>"')).join('\n')}`
       ).toBe(true);
     }
   }
@@ -224,7 +225,7 @@ test(
     for (const block of relayBlocks) {
       expect(
         block.body.some((line) => /^\s*auth_request\s+\/_dispatcharr\/authorize\s*;/.test(line)),
-        `location "${block.header}" does not issue the authorize subrequest:\n${block.body.join('\n')}`
+        `location "${block.header}" does not issue the authorize subrequest:\n${block.body.map((l) => l.replace(/"[0-9a-f]{64}"/, '"<marker>"')).join('\n')}`
       ).toBe(true);
 
       for (const variable of AUTH_REQUEST_SET_VARS) {

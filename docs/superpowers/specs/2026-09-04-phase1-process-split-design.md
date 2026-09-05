@@ -530,8 +530,8 @@ location ^~ /series/            { relay }
 location ^~ /timeshift/         { relay }
 
 # --- regexes, first match wins; admin must precede the XC form ---
-location ~ ^/admin(?!/[^/]+/[^/]+/?$)(?:/|$)  { return 301 /login; }   # unchanged
-location ~ ^/[^/]+/[^/]+/[^/]+$               { relay }                # XC 3-segment root
+location ~ ^/admin(?!/[^/]+/[^/]+/?$)(?:/|$)          { return 301 /login; }   # unchanged
+location ~ ^/[^/]+/[^/]+/\d+(?:\.[A-Za-z0-9]+)?$      { relay }                # XC 3-segment root
 
 # --- plain prefix fallback ---
 location /                      { API }     # SPA + everything else; NEVER ^~
@@ -548,6 +548,15 @@ them: PR 2 narrows the XC pattern's `channel_id` to the numeric stream-id shape 
 Django's catch-all, and PR 2's test pins that. What must never happen is `^~` on `/`: it would take
 *every* URI out of regex reach, silently disabling the XC regex, the admin redirect and all four
 image caches at once.
+
+**Amendment S9 (PR 5 final fix wave).** PR 2's narrowing alone stopped mattering the moment PR 5's
+authorize hop landed: a three-segment URI that matches this nginx regex is no longer forwarded to
+the same urlconf either way — it is routed to the *relay* process and put through
+`auth_request /_dispatcharr/authorize`, which 404s or 403s a URI that does not resolve to a real
+stream rather than falling through to Django's SPA catch-all. So the nginx regex itself is narrowed
+to mirror `XC_STREAM_ID_PATTERN` (`dispatcharr/utils.py`): `^/[^/]+/[^/]+/\d+(?:\.[A-Za-z0-9]+)?$`.
+A same-shaped SPA deep link now fails this regex outright and falls to `location /` (API), never
+reaching the relay or the authorize hop at all.
 
 ### The contract, every endpoint and header named
 
@@ -1335,7 +1344,12 @@ resolve it, and each exists because a simpler arrangement provably does not boot
   mounting the hop in front of it would break Django→relay control calls the moment PR 7 lands.
   Both exceptions keep `uwsgi_pass relay_py;` rather than `$relay_upstream`, and neither runs a
   subrequest, so `$relay_name` is unset for them — the `map` default resolves correctly, but a
-  variable pass nothing feeds is a thing a reader has to disprove.
+  variable pass nothing feeds is a thing a reader has to disprove. **Amendment S9:** the XC
+  three-segment root regex (`location ~ ^/[^/]+/[^/]+/[^/]+$`) is narrowed to
+  `^/[^/]+/[^/]+/\d+(?:\.[A-Za-z0-9]+)?$`, mirroring `XC_STREAM_ID_PATTERN` — once this location
+  routes to the relay and the authorize hop rather than sharing Django's urlconf, a same-shaped SPA
+  deep link that stayed in the old regex's reach would 403 through the hop instead of falling to
+  `location /`; the narrowed regex keeps it out of relay routing entirely.
 - `apps/channels/tasks.py`: `_dvr_build_ffmpeg_cmd` gains `-headers` with
   `X-Dispatcharr-Internal`, and the argv debug log at `:1726` goes through a new `_dvr_redact_cmd`.
 - **Amendment S4:** this PR neither closes #87/#95 nor edits their labels — it flips both
