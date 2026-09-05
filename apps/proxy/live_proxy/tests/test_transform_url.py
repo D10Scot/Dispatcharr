@@ -1,11 +1,18 @@
-"""Regression tests for URL profile regex transforms."""
+"""Regression tests for URL profile regex transforms.
+
+transform_url's implementation, its `regex` import and
+URL_TRANSFORM_REGEX_TIMEOUT moved to apps/proxy/next_source.py in Phase 1
+PR 6 (url_utils.transform_url is a permanent re-export of the same
+function object, so the import below is unchanged); only the two mock
+patch targets and the timeout constant's module moved with it.
+"""
 
 import time
 from unittest.mock import patch
 
 from django.test import SimpleTestCase
 
-from apps.proxy.live_proxy import url_utils
+from apps.proxy import next_source
 from apps.proxy.live_proxy.url_utils import transform_url
 
 
@@ -28,25 +35,25 @@ class TransformUrlTests(SimpleTestCase):
         # catching a regression back to unbounded backtracking.
         self.assertLess(
             elapsed,
-            url_utils.URL_TRANSFORM_REGEX_TIMEOUT * 20,
+            next_source.URL_TRANSFORM_REGEX_TIMEOUT * 20,
             f"transform_url blocked for {elapsed:.2f}s on catastrophic regex",
         )
         self.assertEqual(result, url)
 
     def test_subn_receives_timeout(self):
         with patch(
-            "apps.proxy.live_proxy.url_utils.regex.subn",
+            "apps.proxy.next_source.regex.subn",
             return_value=("http://example.com/b", 1),
         ) as mock_subn:
             transform_url("http://example.com/a", "a", "b")
         self.assertEqual(
             mock_subn.call_args.kwargs.get("timeout"),
-            url_utils.URL_TRANSFORM_REGEX_TIMEOUT,
+            next_source.URL_TRANSFORM_REGEX_TIMEOUT,
         )
 
     def test_timeout_error_falls_back_to_original(self):
         with patch(
-            "apps.proxy.live_proxy.url_utils.regex.subn",
+            "apps.proxy.next_source.regex.subn",
             side_effect=TimeoutError("regex timed out"),
         ):
             self.assertEqual(
