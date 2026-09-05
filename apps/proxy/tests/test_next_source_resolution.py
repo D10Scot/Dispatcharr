@@ -196,6 +196,57 @@ class NextSourceResolutionTests(TestCase):
         self.assertIsNotNone(answer["source"])
         self.assertEqual(answer["source"]["stream_id"], self.stream_b.id)
 
+    def test_a_failover_with_nothing_tried_yet_still_takes_the_traversal_branch(self):
+        from apps.proxy.next_source import resolve_source
+
+        # Establish the live assignment on stream_a, the way the initial
+        # tune does -- this is what the failover below is failing away
+        # FROM, with no current_stream_id known yet (the relay's own
+        # __init__ can fail to load it from Redis -- CLAUDE.md, manager.py's
+        # warning about relying on URL comparison).
+        first = resolve_source(str(self.channel.uuid))
+        self.assertEqual(first["source"]["stream_id"], self.stream_a.id)
+
+        # Review round 1, Important: exclude_stream_ids=[] alone must not
+        # route into the reuse-or-reserve branch, or this "failover" would
+        # just hand back stream_a's URL again (which update_url then
+        # refuses to "switch" to). current_url is what has to force the
+        # traversal branch even though nothing has been tried yet.
+        answer = resolve_source(
+            str(self.channel.uuid),
+            exclude_stream_ids=[],
+            current_url=self.stream_a.url,
+            reason="failover",
+        )
+
+        self.assertIsNotNone(answer["source"])
+        self.assertEqual(answer["source"]["stream_id"], self.stream_b.id)
+
+    def test_a_failover_reason_alone_avoids_the_reuse_branch(self):
+        from apps.proxy.next_source import resolve_source
+
+        first = resolve_source(str(self.channel.uuid))
+        self.assertEqual(first["source"]["stream_id"], self.stream_a.id)
+
+        # reason="failover" with no current_url at all (the relay has no
+        # URL to compare against) must still route into the traversal
+        # branch rather than Channel.get_stream()'s reuse branch -- it just
+        # has no way to skip stream_a without current_url, so it lands back
+        # on stream_a via the ordered traversal rather than the reuse path.
+        # The observable difference from the reuse branch is slot_reserved:
+        # the reuse branch reports False for an unchanged live assignment,
+        # the traversal branch always reserves (moves the slot) for the
+        # candidate it picks, even when that candidate is the same stream.
+        answer = resolve_source(
+            str(self.channel.uuid),
+            exclude_stream_ids=[],
+            reason="failover",
+        )
+
+        self.assertIsNotNone(answer["source"])
+        self.assertEqual(answer["source"]["stream_id"], self.stream_a.id)
+        self.assertTrue(answer["source"]["slot_reserved"])
+
     def test_failover_rotation_starts_after_the_current_stream(self):
         from apps.proxy.next_source import resolve_source
 

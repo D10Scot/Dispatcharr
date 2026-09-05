@@ -61,7 +61,27 @@ class TryNextStreamTests(TestCase):
         self.assertEqual(args[0], sm.channel_id)
         self.assertEqual(sorted(kwargs["exclude_stream_ids"]), [1, 7])
         self.assertEqual(kwargs["current_url"], "http://current")
+        self.assertEqual(kwargs["current_stream_id"], 1)
         self.assertEqual(kwargs["reason"], "failover")
+
+    def test_failover_with_no_known_current_stream_id_still_passes_it_through(self):
+        # Review round 1, Blocking: current_stream_id must reach next_source
+        # even when it is None (nothing tried yet, no stream id loaded) --
+        # the client then omits it from the request body, and Django's
+        # resolve_source routes on current_url/reason instead of on
+        # exclude_stream_ids alone (Important finding, fixed in
+        # next_source.py) so this case still reaches the failover traversal
+        # rather than replaying the URL already playing.
+        sm = make_manager(current_stream_id=None, tried=set())
+        answer = {"source": make_source(stream_id=2), "alternates": [], "error": None}
+
+        with patch("apps.proxy.control_plane.next_source", return_value=answer) as mock_next:
+            result = sm._try_next_stream()
+
+        self.assertTrue(result)
+        args, kwargs = mock_next.call_args
+        self.assertEqual(kwargs["exclude_stream_ids"], [])
+        self.assertIsNone(kwargs["current_stream_id"])
 
     def test_the_returned_source_is_applied_without_a_second_call(self):
         sm = make_manager(current_stream_id=1, tried={1})
@@ -191,3 +211,30 @@ class TryNextStreamTests(TestCase):
         mock_cached.assert_not_called()
         sm.update_url.assert_not_called()
         self.assertTrue(any("403" in message for message in logs.output))
+
+    def test_the_degraded_path_skips_a_cached_entry_missing_required_fields(self):
+        sm = make_manager(current_stream_id=1, tried={1})
+        corrupt = {"stream_id": 3, "url": "http://cached-3"}  # no user_agent/transcode/m3u_profile_id
+        good = make_source(stream_id=4, url="http://cached-4")
+
+        with patch("apps.proxy.control_plane.next_source",
+                   side_effect=control_plane.ControlPlaneUnavailable("down")), \
+             patch("apps.proxy.live_proxy.url_utils.read_cached_alternates",
+                   return_value=[corrupt, good]), \
+             self.assertLogs(manager_module.logger, level="WARNING"):
+            result = sm._try_next_stream()
+
+        self.assertTrue(result)
+        sm.update_url.assert_called_once_with("http://cached-4", 4, good["m3u_profile_id"])
+
+    def test_a_metadata_write_failure_does_not_unwind_an_applied_switch(self):
+        sm = make_manager(current_stream_id=1, tried={1})
+        sm.buffer.redis_client.hset.side_effect = RuntimeError("redis down")
+        answer = {"source": make_source(stream_id=2), "alternates": [], "error": None}
+
+        with patch("apps.proxy.control_plane.next_source", return_value=answer), \
+             self.assertLogs(manager_module.logger, level="ERROR"):
+            result = sm._try_next_stream()
+
+        self.assertTrue(result)
+        self.assertEqual(sm.current_stream_id, 2)

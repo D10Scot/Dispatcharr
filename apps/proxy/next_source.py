@@ -610,15 +610,27 @@ def resolve_source(
     """Resolve one playable source, and optionally the fallback list.
 
     Three shapes, one function:
-      * no excludes, no target -> Channel.get_stream() unchanged (D13),
-        which reuses a live assignment or reserves a new slot.
+      * no excludes, no target, no current_url, reason != "failover" ->
+        Channel.get_stream() unchanged (D13), which reuses a live
+        assignment or reserves a new slot. This is the tune path
+        (reason="initial", never sends current_url) and the
+        cancel_pending_shutdown resume path (reason="resume") — both want
+        the reuse-or-reserve behaviour, not a traversal.
       * target_stream_id -> that stream, if a profile has capacity; the
         provider slot moves to its profile.
-      * exclude_stream_ids -> the ordered traversal, skipping what the
+      * otherwise (exclude_stream_ids non-empty, OR current_url given, OR
+        reason=="failover") -> the ordered traversal, skipping what the
         relay has already tried and anything resolving to current_url,
         then the slot moves to the winner. current_url is what lets
         Django make the whole decision: the relay used to loop
         candidates only to reject one whose URL matched its own.
+        Routing on current_url/reason as well as exclude_stream_ids
+        matters because a failover with nothing tried yet and no known
+        current_stream_id still sends an empty exclude list — without
+        this, that request would fall into the reuse branch above and
+        Channel.get_stream() would hand back the URL already playing,
+        which update_url then refuses to "switch" to (Phase 1 PR 6,
+        Task 8 review round 1).
 
     current_stream_id is the stream the relay is failing over FROM. It is
     passed straight through to get_alternate_streams() in the failover
@@ -649,7 +661,14 @@ def resolve_source(
 
     excluded = {int(sid) for sid in exclude_stream_ids or ()}
 
-    if not excluded and target_stream_id is None:
+    # A failover request can carry an empty exclude list -- nothing tried
+    # yet, and no current_stream_id to add to it -- so "no excludes" alone
+    # cannot mean "reuse the live assignment". current_url is not None (the
+    # tune and resume paths never send it) or reason=="failover" is what
+    # actually distinguishes a failover from the reuse-or-reserve shape.
+    is_failover_request = current_url is not None or reason == "failover"
+
+    if not excluded and target_stream_id is None and not is_failover_request:
         answer = resolve_initial_source(identifier)
         if answer["source"] is not None and include_alternates:
             answer["alternates"] = _resolve_alternates(

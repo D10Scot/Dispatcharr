@@ -1962,6 +1962,13 @@ class StreamManager:
             logger.error(f"Error in buffer check for channel {self.channel_id}: {e}")
             return False
 
+    # Fields _try_next_stream indexes into unconditionally once an entry is
+    # picked (source["stream_profile"]["id"] included) -- an entry missing
+    # any of these is a corrupt or truncated cache write, not a candidate.
+    _CACHED_ALTERNATE_REQUIRED_FIELDS = (
+        "stream_id", "url", "user_agent", "transcode", "m3u_profile_id",
+    )
+
     def _pick_cached_alternate(self, alternates, exclude):
         """First cached candidate not already tried and not the current URL.
 
@@ -1970,9 +1977,15 @@ class StreamManager:
         answered and never re-checked for capacity here.
         """
         for entry in alternates:
-            if entry.get("stream_id") in exclude:
+            if not isinstance(entry, dict):
                 continue
-            if entry.get("url") == self.url:
+            if any(field not in entry for field in self._CACHED_ALTERNATE_REQUIRED_FIELDS):
+                continue
+            if not isinstance(entry.get("stream_profile"), dict) or "id" not in entry["stream_profile"]:
+                continue
+            if entry["stream_id"] in exclude:
+                continue
+            if entry["url"] == self.url:
                 continue
             return entry
         return None
@@ -2000,6 +2013,7 @@ class StreamManager:
                 self.channel_id,
                 exclude_stream_ids=sorted(exclude),
                 current_url=self.url,
+                current_stream_id=self.current_stream_id,
                 reason="failover",
             )
             source = answer.get("source")
@@ -2041,9 +2055,12 @@ class StreamManager:
         )
 
         if not self.update_url(source["url"], stream_id, profile_id):
-            # Unreachable from here since Phase 1 PR 6: update_url's only
-            # False branch is "the URL did not change", and Django was given
-            # current_url precisely so it never answers with it.
+            # Unreachable once Django took the failover branch: current_url
+            # is what keeps it from answering with the URL already playing;
+            # the only other False is update_url's own except (Phase 1 PR 6
+            # review round 1 -- next_source.py's resolve_source routes on
+            # current_url/reason, not just exclude_stream_ids, so this holds
+            # even when nothing has been tried yet).
             logger.error(
                 f"Failed to update URL for stream {stream_id} on channel "
                 f"{self.channel_id}"
@@ -2055,18 +2072,27 @@ class StreamManager:
         self.transcode = source["transcode"]
 
         if hasattr(self.buffer, "redis_client") and self.buffer.redis_client:
-            self.buffer.redis_client.hset(
-                RedisKeys.channel_metadata(self.channel_id),
-                mapping={
-                    ChannelMetadataField.URL: source["url"],
-                    ChannelMetadataField.USER_AGENT: source["user_agent"],
-                    ChannelMetadataField.STREAM_PROFILE: str(source["stream_profile"]["id"]),
-                    ChannelMetadataField.M3U_PROFILE: str(profile_id),
-                    ChannelMetadataField.STREAM_ID: str(stream_id),
-                    ChannelMetadataField.STREAM_SWITCH_TIME: str(time.time()),
-                    ChannelMetadataField.STREAM_SWITCH_REASON: "max_retries_exceeded",
-                },
-            )
+            try:
+                self.buffer.redis_client.hset(
+                    RedisKeys.channel_metadata(self.channel_id),
+                    mapping={
+                        ChannelMetadataField.URL: source["url"],
+                        ChannelMetadataField.USER_AGENT: source["user_agent"],
+                        ChannelMetadataField.STREAM_PROFILE: str(source["stream_profile"]["id"]),
+                        ChannelMetadataField.M3U_PROFILE: str(profile_id),
+                        ChannelMetadataField.STREAM_ID: str(stream_id),
+                        ChannelMetadataField.STREAM_SWITCH_TIME: str(time.time()),
+                        ChannelMetadataField.STREAM_SWITCH_REASON: "max_retries_exceeded",
+                    },
+                )
+            except Exception as e:
+                # The switch already happened (update_url returned True):
+                # a metadata-write failure here must not unwind it and
+                # report the failover as failed.
+                logger.error(
+                    f"Failed to write switch metadata for channel "
+                    f"{self.channel_id} to stream {stream_id}: {e}"
+                )
 
         if degraded:
             self._failover_degraded = True
