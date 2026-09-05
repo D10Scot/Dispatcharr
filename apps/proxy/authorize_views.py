@@ -17,6 +17,7 @@
    identically. Same function underneath, so the two cannot drift.
 """
 
+import logging
 from django.http import JsonResponse
 from django.urls import Resolver404, resolve
 from drf_spectacular.utils import OpenApiResponse, extend_schema
@@ -45,6 +46,7 @@ from apps.proxy.internal_auth import (
     HEADER_RELAY_NAME,
     HEADER_RELAY_OUTPUT,
     HEADER_RELAY_USER,
+    META_AUTHORIZED,
     META_ORIGINAL_URI,
     META_RELAY_CHANNEL,
     META_RELAY_CLIENT,
@@ -52,6 +54,16 @@ from apps.proxy.internal_auth import (
     META_RELAY_USER,
     request_is_relay_trusted,
 )
+
+logger = logging.getLogger(__name__)
+
+# M1 (final-review.md § 3): a present-but-mismatched trust marker means
+# nginx's rendered token and this process's token disagree (a SECRET_KEY
+# mismatch between web and relay, or /data/jwt rotated under a non-
+# idempotent docker/init/03-init-dispatcharr.sh restart). The outcome is
+# fail-safe -- every tune authorizes inline -- but silent, so warn once per
+# process rather than once per request.
+_TRUST_MISMATCH_WARNED = False
 
 
 class AuthorizeDenialSerializer(serializers.Serializer):
@@ -129,6 +141,14 @@ def resolve_authorization(request, surface: str, **identity) -> AuthorizeResult:
     http_request = getattr(request, "_request", request)
     if request_is_relay_trusted(http_request):
         return result_from_headers(http_request, surface)
+    global _TRUST_MISMATCH_WARNED
+    if http_request.META.get(META_AUTHORIZED) and not _TRUST_MISMATCH_WARNED:
+        _TRUST_MISMATCH_WARNED = True
+        logger.warning(
+            "X-Dispatcharr-Authorized is present but does not match this "
+            "process's relay trust token; every tune is authorizing inline "
+            "instead of trusting nginx's decision"
+        )
     return authorize_stream(http_request, surface, **identity)
 
 
@@ -240,7 +260,23 @@ def authorize_view(request):
         # authorize inline but 401 through this view. unquote is the
         # decode step that carries credentials; nginx's own // collapsing
         # and .. resolution on $document_uri has no bearing on identity.
-        match = resolve(unquote(split.path))
+        #
+        # M2 (final-review.md § 3): that's the percent-encoded case. A
+        # client that sends a non-ASCII credential as raw UTF-8 bytes in
+        # the request line (some set-top players do; nginx accepts it)
+        # arrives here already latin-1-decoded by uWSGI -- the same
+        # WSGI-header rule internal_auth._matches works around -- so
+        # re-encode to latin-1 and decode as UTF-8 before unquote. A no-op
+        # for ASCII/percent-encoded input, since encode/decode round-trips
+        # to the same string; UnicodeError means the bytes genuinely
+        # weren't UTF-8, and the raw (mojibake) path is resolved as-is
+        # rather than raising here.
+        path = split.path
+        try:
+            path = path.encode("latin-1").decode("utf-8")
+        except UnicodeError:
+            pass
+        match = resolve(unquote(path))
     except Resolver404:
         return subrequest_error_response(AuthorizeDenied(404, "Not found"))
 

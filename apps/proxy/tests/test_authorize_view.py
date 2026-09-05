@@ -35,6 +35,13 @@ class AuthorizeViewTests(TestCase):
         cls.xc_user = User.objects.create_user(username="u@x", password="unused")
         cls.xc_user.custom_properties = {"xc_password": "p#w"}
         cls.xc_user.save()
+        # A password with a raw non-ASCII character — the fixture for the
+        # M2 latin-1/UTF-8 request-line decode fix.
+        cls.xc_user_nonascii = User.objects.create_user(
+            username="u-nonascii", password="unused"
+        )
+        cls.xc_user_nonascii.custom_properties = {"xc_password": "café"}
+        cls.xc_user_nonascii.save()
 
     def setUp(self):
         self.client = Client()
@@ -139,6 +146,23 @@ class AuthorizeViewTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response["X-Relay-User"], str(self.xc_user.id))
 
+    def test_a_raw_non_ascii_credential_decodes_before_resolving(self):
+        # M2 (final-review.md § 3): the percent-encoded case above is not
+        # the only shape a request line carries credentials in. Some
+        # set-top players send a non-ASCII XC password as raw UTF-8 bytes
+        # in the request line, which nginx accepts and forwards; uWSGI
+        # then hands X-Original-URI to Django latin-1-decoded (the same
+        # WSGI-header rule internal_auth._matches works around), producing
+        # mojibake that unquote() alone leaves broken. Encoding the
+        # constructed URI as raw UTF-8 bytes decoded as latin-1 reproduces
+        # exactly what uWSGI would have handed Django for a real été/café
+        # style password on the wire.
+        raw_path = f"/live/{self.xc_user_nonascii.username}/café/{self.channel.id}"
+        as_uwsgi_would_decode_it = raw_path.encode("utf-8").decode("latin-1")
+        response = self._get(as_uwsgi_would_decode_it)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response["X-Relay-User"], str(self.xc_user_nonascii.id))
+
     def test_a_session_principal_reaches_authorize_stream_through_the_view(self):
         # @authentication_classes([]) means DRF's own perform_authentication
         # clobbers request.user to AnonymousUser before authorize_stream
@@ -237,6 +261,31 @@ class ResolveAuthorizationTests(TestCase):
                 request, authorize.SURFACE_LIVE, identifier="x"
             )
         inline.assert_called_once()
+
+    def test_a_mismatched_marker_warns_once_per_process(self):
+        # M1 (final-review.md § 3): a present-but-mismatched marker (as
+        # above) is never expected in a healthy deployment -- it means
+        # nginx's rendered trust token and this process's disagree -- and
+        # the outcome is otherwise completely silent. Two calls, one
+        # warning: the module-level flag is reset around this test so it
+        # cannot see state left by test_a_forged_marker_falls_through_
+        # to_the_inline_decision or leak into a test that runs after it.
+        request = self.factory.get(
+            "/proxy/ts/stream/x", HTTP_X_DISPATCHARR_AUTHORIZED="1"
+        )
+        with patch.object(authorize_views, "_TRUST_MISMATCH_WARNED", False), \
+             patch.object(authorize_views, "authorize_stream"), \
+             self.assertLogs(authorize_views.logger, level="WARNING") as logs:
+            authorize_views.resolve_authorization(
+                request, authorize.SURFACE_LIVE, identifier="x"
+            )
+            authorize_views.resolve_authorization(
+                request, authorize.SURFACE_LIVE, identifier="x"
+            )
+        self.assertEqual(len(logs.output), 1)
+        # The marker value itself must never reach the log line --
+        # scripts/check_credential_logging.py's remit, restated as a test.
+        self.assertNotIn("1", logs.output[0].rsplit("WARNING", 1)[-1])
 
     def test_a_blank_marker_falls_through(self):
         # What every non-relay nginx location sends.
