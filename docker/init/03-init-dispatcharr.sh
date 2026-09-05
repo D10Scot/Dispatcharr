@@ -78,6 +78,10 @@ if [[ "$DISPATCHARR_ROLE" == "all" || "$DISPATCHARR_ROLE" == "api" ]]; then
     # shape get_dvr_stream_base_url() uses for DISPATCHARR_WEB_HOST.
     if [[ "$DISPATCHARR_ENV" == "modular" ]]; then
         RELAY_HOST="${DISPATCHARR_RELAY_HOST:-relay}"
+        if ! [[ "$RELAY_HOST" =~ ^[A-Za-z0-9._-]+$ ]]; then
+            echo "⚠️  Warning: DISPATCHARR_RELAY_HOST is not a valid hostname (${RELAY_HOST}), using default relay"
+            RELAY_HOST="relay"
+        fi
     else
         RELAY_HOST="127.0.0.1"
     fi
