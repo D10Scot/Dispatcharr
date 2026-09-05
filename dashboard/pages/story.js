@@ -10,7 +10,10 @@ export function render(site, root) {
   const byId = Object.fromEntries(Object.values(site.groups).flat().map((m) => [m.id, m]));
   for (const p of site.phases) {
     const when = p.end ? `${fmtDate(p.start)} – ${fmtDate(p.end)}` : p.start ? `from ${fmtDate(p.start)}` : 'not started';
-    const opts = p.start ? { shade: { from: unix(p.start), to: p.end ? unix(p.end) + 86399 : null } } : {};
+    // Restrict marks to this phase's own milestones — every other phase's
+    // milestones would otherwise paper the chart and bury the shade.
+    const opts = { milestones: p.milestones };
+    if (p.start) opts.shade = { from: unix(p.start), to: p.end ? unix(p.end) + 86399 : null };
     const section = h('section', { class: 'story-phase', id: p.id },
       h('h2', { text: p.label }),
       h('div', { class: 'when', text: when }),

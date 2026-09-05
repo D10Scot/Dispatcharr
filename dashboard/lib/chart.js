@@ -1,6 +1,6 @@
 // uPlot wrappers plus the pure series builders the tests exercise.
 import { h } from './dom.js';
-import { fmt, shortSha } from './format.js';
+import { fmt, fmtDate, shortSha } from './format.js';
 
 const DAY = 86400;
 
@@ -17,15 +17,29 @@ export function seriesFor(metric, mode) {
   return { xs: daily.map((d) => unix(d[0])), ys: daily.map((d) => d[1]), labels: daily.map(() => '') };
 }
 
-export function milestoneMarks(site, xs) {
+// `milestones` defaults to every milestone on `site` (Explore's picture: the
+// whole timeline); pass a narrower list — e.g. a single phase's own
+// `milestones[]` — to restrict which ones can ever be marked (Story: only
+// the current phase's milestones, not every phase's).
+export function milestoneMarks(site, xs, milestones = site.milestones) {
   if (xs.length === 0) return [];
   const first = Math.min(...xs);
   const last = Math.max(...xs);
   const lo = first - (first % DAY); // milestones carry a date, not a time: compare from the day's start
   const hi = last - (last % DAY) + DAY - 1; // ...through the end of the last x's calendar day
-  return (site.milestones || [])
+  return (milestones || [])
     .map((m) => ({ x: unix(m.date), label: m.label }))
     .filter((m) => m.x >= lo && m.x <= hi);
+}
+
+// The x-series readout: `sha · date` in commit mode, just the date in daily
+// mode. uPlot 1.6.32 calls this with v === null whenever the cursor sits
+// off the plot (not just for a genuine data gap) — without the guard that
+// rendered `new Date(null * 1000)`, the epoch, as the resting legend value.
+export function xReadout(mode, labels, v, idx) {
+  if (v === null || v === undefined) return '—';
+  const date = new Date(v * 1000).toISOString().slice(0, 10);
+  return mode === 'commits' ? `${labels[idx]} · ${date}` : date;
 }
 
 // Elements built by block() below whose uPlot instantiation is still
@@ -38,11 +52,14 @@ export function milestoneMarks(site, xs) {
 const pending = new WeakMap();
 
 // `block(metric, mode, site, opts)` builds the `.chart-block` (h3, note,
-// `.plot` with `data-points`/`data-shade`) without touching layout; the
-// actual uPlot draw is deferred to mountAll().
+// `.plot` with `data-points`/`data-shade`/`data-marks`) without touching
+// layout; the actual uPlot draw is deferred to mountAll(). `opts.milestones`
+// restricts which milestones can be marked (see milestoneMarks' doc comment)
+// — it defaults to every milestone on `site` when omitted.
 export function block(metric, mode, site, opts = {}) {
   const { xs, ys, labels } = seriesFor(metric, mode);
-  const attrs = { class: 'plot', 'data-points': String(xs.length) };
+  const marks = milestoneMarks(site, xs, opts.milestones);
+  const attrs = { class: 'plot', 'data-points': String(xs.length), 'data-marks': String(marks.length) };
   let shade = null;
   if (opts.shade) {
     const to = opts.shade.to !== null && opts.shade.to !== undefined
@@ -56,7 +73,7 @@ export function block(metric, mode, site, opts = {}) {
     h('h3', { text: metric.label }),
     h('p', { class: 'note', text: metric.note || '' }),
     plot);
-  pending.set(plot, () => draw(plot, metric, mode, site, xs, ys, labels, shade));
+  pending.set(plot, () => draw(plot, metric, mode, xs, ys, labels, shade, marks));
   return el;
 }
 
@@ -71,23 +88,22 @@ export function mountAll(root) {
   }
 }
 
-function draw(plot, metric, mode, site, xs, ys, labels, shade) {
+function draw(plot, metric, mode, xs, ys, labels, shade, marks) {
   if (typeof window === 'undefined' || !window.uPlot || xs.length === 0) return null;
-  const marks = milestoneMarks(site, xs);
   const uplotOpts = {
     width: Math.max(plot.clientWidth, 320),
     height: 160,
     tzDate: (ts) => window.uPlot.tzDate(new Date(ts * 1e3), 'Etc/UTC'),
     scales: { x: { time: true } },
-    axes: [{ grid: { show: false } }, { size: 56 }],
+    axes: [
+      // uPlot's own tick formatter defaults to US "8/19"; match the rest of
+      // the dashboard's date style instead. The year is deliberately left
+      // off — the hover readout below already carries the full ISO date.
+      { grid: { show: false }, values: (u, splits) => splits.map((ts) => fmtDate(new Date(ts * 1e3).toISOString())) },
+      { size: 56 },
+    ],
     series: [
-      {
-        label: mode === 'commits' ? 'commit' : 'day',
-        value: (u, v, sidx, idx) => {
-          const date = new Date(v * 1000).toISOString().slice(0, 10);
-          return mode === 'commits' ? `${labels[idx]} · ${date}` : date;
-        },
-      },
+      { label: mode === 'commits' ? 'commit' : 'day', value: (u, v, sidx, idx) => xReadout(mode, labels, v, idx) },
       {
         label: metric.label,
         stroke: cssVar('--accent'),

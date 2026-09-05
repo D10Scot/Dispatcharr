@@ -18,6 +18,10 @@ describe('story page', () => {
     // the headline metric's own last x (e2e_scenarios' daily series runs
     // through 2026-09-05, the fixture's "today") rather than staying null.
     expect(phases[0].querySelector('.chart-block .plot').dataset.shade).toBe(`${unix('2026-08-19')}..${unix('2026-09-05')}`);
+    // Only investigate's own milestone ('v0.29.0 baseline') marks its
+    // chart — 'Phase 0 done' belongs to phase0 and must not appear here,
+    // or the shade would be buried under every other phase's milestones too.
+    expect(phases[0].querySelector('.chart-block .plot').dataset.marks).toBe('1');
 
     expect(phases[1].querySelector('.when').textContent).toBe('3 Sep – 3 Sep');
     expect(phases[1].querySelector('li').textContent).toContain('Phase 0 done');
@@ -26,6 +30,8 @@ describe('story page', () => {
     // phase0's window is a single day (start === end): shade runs from that
     // day's start through the end of that same day.
     expect(phases[1].querySelector('.chart-block .plot').dataset.shade).toBe(`${unix('2026-09-03')}..${unix('2026-09-03') + 86399}`);
+    // Only phase0's own milestone ('Phase 0 done') marks its chart.
+    expect(phases[1].querySelector('.chart-block .plot').dataset.marks).toBe('1');
 
     expect(phases[2].querySelector('.when').textContent).toBe('not started');
     expect(phases[2].querySelectorAll('li').length).toBe(0);
