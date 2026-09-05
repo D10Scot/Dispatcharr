@@ -665,9 +665,12 @@ uwsgi_param HTTP_X_RELAY_USER    "";
 ```
 
 It has to be an include repeated per location, not a server-level block, because a location that
-declares any `uwsgi_param` of its own inherits none from above. An empty value is still sent, so
-the relay sees `""` and fails the constant-time compare, falling through to the inline
-`authorize_stream` call — the correct outcome, since that location's request was never authorized.
+declares any `uwsgi_param` of its own inherits none from above. On nginx 1.24, setting a
+`HTTP_`-prefixed `*_param` to the empty string does not forward an empty header: nginx drops the
+client's header and sends nothing under that name, so the relay sees no marker at all, not `""`.
+Either way the practical outcome is the same — the relay's read of a missing key defaults to the
+empty string, fails the constant-time compare, and falls through to the inline `authorize_stream`
+call — the correct outcome, since that location's request was never authorized.
 PR 5 ships an E2E `@contract` test that sends a forged marker and a forged `X-Relay-Channel` for a
 hidden channel and asserts 403.
 
@@ -707,9 +710,11 @@ network ACL, matching the one extracted helper in the tree today
 | **Stream-by-hash** (`/proxy/ts/stream/<stream_hash>`), any principal | as above | applied | not applicable | not applicable | not applicable | not applicable | enforced when a principal resolved |
 
 ¹ An internal principal is never redirected: `stream_ts` checks `request_is_internal()` before the
-`is_redirect()` decision and, when true, forces the Proxy path instead of a 302, since ffmpeg
-re-sends every `-headers` line — `X-Dispatcharr-Internal` included — to a cross-host redirect
-target. See "The DVR is an internal principal" below.
+`is_redirect()` decision and, when true, forces the Proxy path instead of a 302 for the initial
+tune, since ffmpeg re-sends every `-headers` line — `X-Dispatcharr-Internal` included — to a
+cross-host redirect target. The fix that holds across an automatic failover lives in
+`apps/proxy/live_proxy/url_utils.py`, not `views.py` alone — see "The DVR is an internal
+principal" below.
 
 Four rows carry the whole behaviour change, and each is deliberate:
 
@@ -755,11 +760,20 @@ Four rows carry the whole behaviour change, and each is deliberate:
   would print the internal token, and `scripts/check_credential_logging.py`'s `CREDENTIAL_RE` does
   **not** match `ffmpeg_cmd`, so the guard would not catch it. PR 5 routes that log line through a
   new `_dvr_redact_cmd()` helper and unit-tests it beside `test_dvr_port_resolution.py`. **The
-  relay never redirects an internal principal**: `stream_ts` checks `request_is_internal()`
-  immediately before the `is_redirect()` decision and, when true, forces the Proxy path instead of
-  a 302, because ffmpeg re-sends every `-headers` line — `X-Dispatcharr-Internal` included — to a
-  cross-host redirect target, and that credential is otherwise never supposed to leave this
-  deployment.
+  relay never redirects an internal principal**: `stream_ts` (`apps/proxy/live_proxy/views.py`)
+  checks `request_is_internal()` immediately before the `is_redirect()` decision and, when true,
+  forces the Proxy path instead of a 302 for the initial tune, because ffmpeg re-sends every
+  `-headers` line — `X-Dispatcharr-Internal` included — to a cross-host redirect target, and that
+  credential is otherwise never supposed to leave this deployment. That view-level override alone
+  does not survive a failover: `StreamManager`'s dead-air/connect-failure trigger re-derives
+  `transcode` from `apps/proxy/live_proxy/url_utils.py` on every subsequent switch, which computed
+  `True` for a Redirect profile and rebuilt the locked Redirect profile's empty command — so a
+  Redirect-profile channel's first automatic switch during a recording emptied its own ffmpeg
+  invocation. **The fix that holds is in `url_utils.py`, alongside `views.py`, not instead of it:**
+  both `generate_stream_url`'s branches and `get_stream_info_for_switch` derive
+  `transcode = not (is_proxy() or is_redirect())`, treating Redirect exactly like Proxy on every
+  derivation rather than only the view's first one — so a Redirect channel the DVR is recording
+  now survives failover instead of dying at its first automatic switch.
 
 **2. Next-source / release / events (PR 6).**
 
@@ -1479,9 +1493,13 @@ resolve it, and each exists because a simpler arrangement provably does not boot
 - New `streaming-split` E2E project (or a greybox spec), `@contract`, driving
   `instance.supervisorctl()` (added in PR 4) rather than shelling out, so
   `e2e/tests/guards/allowlist.ts` needs no new entry and `capabilities.spec.ts` stays green:
-  `supervisorctl stop api-uwsgi` → an existing stream keeps flowing, a new tune returns one of
-  `{502, 503, 504}`; `supervisorctl start api-uwsgi` → a new tune succeeds. The project does need
-  `CONTAINER_LIFECYCLE` for the `instance` fixture itself, which is one allowlist line.
+  `supervisorctl stop api-uwsgi` → an existing stream keeps flowing, a new tune answers **500**
+  (Amendment S7: through the authorize hop, `ngx_http_auth_request_module` treats an unreachable
+  `auth_request` subrequest as neither 2xx nor 401/403 and reports its own error — 500, not one of
+  `{502, 503, 504}`, which describes `uwsgi_pass` failing directly rather than the subrequest
+  failing; PR 8 decides whether to narrow it); `supervisorctl start api-uwsgi` → a new tune
+  succeeds. The project does need `CONTAINER_LIFECYCLE` for the `instance` fixture itself, which is
+  one allowlist line.
 - Second scenario, same spec: `supervisorctl restart relay-uwsgi` → a client reconnecting within
   **N seconds, where N ≤ 30**, gets bytes. Thirty seconds is the ceiling: `stopwaitsecs=20` plus
   process start has to fit inside it or the restart is not bounded in any useful sense. The PR

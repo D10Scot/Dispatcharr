@@ -114,6 +114,13 @@ PY
         echo "   nginx would forward an unauthorized marker and every tune would 403."
         exit 1
     fi
+    # This sed consumes the RELAY_TRUST_TOKEN placeholder on first boot: once
+    # substituted, a `docker restart` (same writable layer, no fresh copy of
+    # this file) finds no placeholder left to replace, so a later /data/jwt
+    # rotation leaves the stale, pre-rotation token in nginx. Fails safe --
+    # every hop-authorized tune then falls through to inline authorization,
+    # same as NGINX_PORT/RELAY_UPSTREAM above; re-templating from a pristine
+    # copy on every boot is a follow-up shared with those two.
     sed -i "s/RELAY_TRUST_TOKEN/${RELAY_TRUST_TOKEN}/g" /etc/nginx/sites-enabled/default
 
     # Configure nginx based on IPv6 availability
