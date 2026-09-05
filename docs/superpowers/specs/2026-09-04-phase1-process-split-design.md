@@ -1442,7 +1442,7 @@ resolve it, and each exists because a simpler arrangement provably does not boot
   split-brain description (now Django-only); § Observing a channel, "No WebSocket event exists for
   stream switch, failover or client teardown" (now `relay_event`).
 
-**Amendment S10 (PR 6 next-source and events).** The tree required eight decisions this section did
+**Amendment S10 (PR 6 next-source and events).** The tree required nine decisions this section did
 not make, recorded here rather than re-derived by PR 7 or Phase 2:
 
 1. The follow-up bullet above is resolved by binding the token, not deferring it: a second header,
@@ -1503,6 +1503,14 @@ not make, recorded here rather than re-derived by PR 7 or Phase 2:
    runs inside the client response's `finally`. Other greenlets are unaffected; this is a cooperative
    yield, not a blocked hub. Stated because it is the number PR 8's Django-down scenario measures
    against.
+9. A dead-air failover's event is `stream_switch`, not `channel_failover`, a pre-existing fact this
+   spec stated wrong in two places until the PR 6 implementation corrected it. `stream_switch` fires
+   from `update_url()` (`apps/proxy/live_proxy/input/manager.py:1476`), which every failover trigger
+   (dead-air, connect-failure, buffering-timeout) calls once a next stream is chosen.
+   `channel_failover` fires only from `_parse_ffmpeg_stats`'s buffering-timeout branch
+   (`input/manager.py:1157`) — reachable exclusively while parsing ffmpeg stderr, which the Proxy
+   stream profile never produces. The new `streaming-failover` E2E spec (PR 6) therefore asserts
+   `stream_switch` for its `dead-air` fault, not `channel_failover`.
 
 ### PR 7 — `migration/phase1-control-api`
 
