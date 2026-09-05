@@ -1,6 +1,6 @@
 {
  "detail": null,
- "fetched_at": "2026-09-04T19:40:12+00:00",
+ "fetched_at": "2026-09-05T10:00:03+00:00",
  "kind": "codeql_alerts",
  "records": [
   {
@@ -1855,12 +1855,12 @@
    "created_at": "2026-08-23T16:00:55Z",
    "dismissed_at": null,
    "dismissed_reason": null,
-   "fixed_at": null,
+   "fixed_at": "2026-09-05T08:26:03Z",
    "id": 5,
    "path": "docker/entrypoint.aio.sh",
    "rule_id": "PinnedDependenciesID",
    "severity": "medium",
-   "state": "open",
+   "state": "fixed",
    "tool": "Scorecard"
   },
   {
