@@ -563,10 +563,35 @@ equivalent of the auth_request docs' canonical `X-Original-URI` header) and
 | Status | Meaning |
 |---|---|
 | `200` | Authorized. Response carries `X-Relay-Channel` (uuid), `X-Relay-Output` (Output Profile id or empty), `X-Relay-Client` (client id, minted here when the request has none — the logic now at `live_proxy/views.py:179`), `X-Relay-User` (user id or empty), `X-Relay-Name` (from `settings.RELAY_DEFAULT_NAME`). |
-| `401` | No principal resolved where one is required (the XC credential surfaces). |
+| `401` | No principal resolved where one is required: the XC credential surfaces, and (**Amendment S6**) `/proxy/catchup/<uuid>` — `catchup_proxy` (`apps/timeshift/views.py:319-323`) already returns 401 for an anonymous request today, and the anonymous row of the matrix below is written against `/proxy/ts/stream/<uuid>` only and must not be read as making catch-up anonymous. |
 | `403` | STREAMS ACL denied, or `hidden_from_output` / `is_adult` + the user's `hide_adult_content` / `user_level` / profile membership denied. |
 | `404` | Nothing resolved for the identifier — neither a `Channel` by uuid nor a `Stream` by `stream_hash`, nor a VOD or catch-up target. |
 | `429` | `check_user_stream_limits` denied and `attempt_stream_termination` could not free a slot. |
+
+**Amendment S3:** `X-Relay-Channel` is consumed by `stream_xc`, which receives a numeric Xtream id
+and needs the uuid the hop resolved; `stream_ts` keeps using the identifier already in its own URL.
+`X-Relay-Output` carries the Output **Profile id**, and the relay re-fetches the `OutputProfile`
+row by primary key to call `build_command()` — the header contract cannot carry a built ffmpeg
+command, and `apps/proxy/live_proxy/views.py:689` needs the model instance, not the id. What moves
+to Django is the *resolution rule* (query param → user preference → none), which is the substance
+of ADR 0005's "any direct read of `M3UAccount`/`OutputProfile` at tune time"; one primary-key read
+remains in the relay, alongside the `User` row the relay loads from `X-Relay-User` for
+output-format resolution and client registration. Recorded so PR 6/7 do not read either read as an
+unfixed leak. ADR 0005's own Consequences bullet is amended in this PR to match.
+
+**Amendment S7:** the table above states `authorize_stream`'s own decision, which is exactly what
+the inline fallback (no nginx) answers. Through nginx, `ngx_http_auth_request_module` allows on 2xx
+and denies with 401 or 403 *verbatim*, but treats every other subrequest status as an error — so
+`authorize_view` collapses every non-401 denial (403, 404, 429) to **403 plus
+`X-Authorize-Status: <real code>`**, each relay-bound location adds
+`auth_request_set $authorize_status $upstream_http_x_authorize_status;` and
+`error_page 403 = @authorize_denied;`, and one server-level `location @authorize_denied` returns
+the real code. Through nginx the hop therefore answers **200, 401 or 403 only**; a 404 or 429
+decision travels as 403 and is restored by `@authorize_denied`, which nginx does not touch on the
+inline path, where `AuthorizeDenied` keeps its true status. Without this mapping, an unknown
+channel id in a stale cached playlist would answer 500 where it answers 404 today, and a user over
+their stream limit would answer 500 where they get 429 today — two regressions in a PR whose
+subject is authorization.
 
 nginx then does, once per relay-bound location:
 
@@ -664,13 +689,18 @@ network ACL, matching the one extracted helper in the tree today
 
 | Principal | Resolved from | STREAMS ACL | `user_level` | Profile membership | `hidden_from_output` | `is_adult` + `hide_adult_content` | `stream_limit` |
 |---|---|---|---|---|---|---|---|
-| **Internal** (DVR, and any caller with a valid `X-Dispatcharr-Internal`) | HMAC header (D11) | applied | bypassed | bypassed | bypassed | bypassed | bypassed |
+| **Internal**¹ (DVR, and any caller with a valid `X-Dispatcharr-Internal`) | HMAC header (D11) | applied | bypassed | bypassed | bypassed | bypassed | bypassed |
 | **Admin** (`user_level >= 10`, any authenticator) | JWT / API key / session | applied | bypassed | bypassed | bypassed | bypassed | enforced |
 | **XC credentials** | `<user>/<pass>` path segments, `hmac.compare_digest` | applied | enforced | enforced | 403 | 403 | enforced |
 | **JWT / API key / query-param JWT** (non-admin) | DRF authenticators | applied | enforced | enforced | 403 | 403 | enforced |
 | **Session** (non-admin) | `request.user` when authenticated | applied | enforced | enforced | 403 | 403 | enforced |
 | **Anonymous** (bare `/proxy/ts/stream/<uuid>`) | none | applied | not applicable | not applicable | **403** | not applicable | not applicable |
 | **Stream-by-hash** (`/proxy/ts/stream/<stream_hash>`), any principal | as above | applied | not applicable | not applicable | not applicable | not applicable | enforced when a principal resolved |
+
+¹ An internal principal is never redirected: `stream_ts` checks `request_is_internal()` before the
+`is_redirect()` decision and, when true, forces the Proxy path instead of a 302, since ffmpeg
+re-sends every `-headers` line — `X-Dispatcharr-Internal` included — to a cross-host redirect
+target. See "The DVR is an internal principal" below.
 
 Four rows carry the whole behaviour change, and each is deliberate:
 
@@ -715,7 +745,12 @@ Four rows carry the whole behaviour change, and each is deliberate:
   `logger.debug(f"... FFmpeg command: {' '.join(...)}")` currently renders the whole argv — it
   would print the internal token, and `scripts/check_credential_logging.py`'s `CREDENTIAL_RE` does
   **not** match `ffmpeg_cmd`, so the guard would not catch it. PR 5 routes that log line through a
-  new `_dvr_redact_cmd()` helper and unit-tests it beside `test_dvr_port_resolution.py`.
+  new `_dvr_redact_cmd()` helper and unit-tests it beside `test_dvr_port_resolution.py`. **The
+  relay never redirects an internal principal**: `stream_ts` checks `request_is_internal()`
+  immediately before the `is_redirect()` decision and, when true, forces the Proxy path instead of
+  a 302, because ffmpeg re-sends every `-headers` line — `X-Dispatcharr-Internal` included — to a
+  cross-host redirect target, and that credential is otherwise never supposed to leave this
+  deployment.
 
 **2. Next-source / release / events (PR 6).**
 
@@ -790,7 +825,7 @@ runs in the API process (PR 5).
 | Hop failing | Behaviour |
 |---|---|
 | **Django down, existing viewer** | Unaffected. Nothing on the byte path calls Django once a stream runs; next-source fires only at failover. |
-| **Django down, new tune** | The `auth_request` subrequest to an unreachable upstream is not a 2xx and not 401/403, so nginx reports its own error: `502` when the API process is stopped (connection refused), `504` when it is hung. PR 8's test asserts the status is in `{502, 503, 504}` rather than one code, because which one appears depends on how the API died. |
+| **Django down, new tune** | **Amendment S7:** the `auth_request` subrequest to an unreachable upstream is not a 2xx and not 401/403 either — `ngx_http_auth_request_module` treats it as "any other response code" and reports its own error, which is **500**, not `{502, 503, 504}` as this row previously stated (that range describes `uwsgi_pass` failing directly on a relay hop, not an `auth_request` subrequest failing). PR 8 decides whether to narrow the 500; this PR states it as measured. |
 | **Django down, failover on an existing stream** | Degraded fallback above — stale candidate list, unenforced, logged, `channel_error` posted on recovery. |
 | **Relay down, existing viewer** | Connection drops; retries get `502`/`504` until supervisord restarts `relay-uwsgi`, then a normal reconnect. Bounded, not invisible (route page, "Honest limits"). |
 | **Relay down, new tune** | Authorize succeeds (Django is up), `uwsgi_pass` to `$relay_upstream` fails, nginx returns `502`/`504`; every player in the supported set retries a failed connect. |
@@ -1256,14 +1291,29 @@ resolve it, and each exists because a simpler arrangement provably does not boot
   helper the stream views use.
 - `stream_ts`, `stream_xc`, `stream_vod`, `catchup_proxy`, `timeshift_proxy[_query]`,
   `stream_xc_movie`, `stream_xc_episode` call `authorize_stream` first; their inline
-  `network_access_allowed`, plaintext password compare, `_user_can_access_channel` and
-  `check_user_stream_limits` calls are deleted, not duplicated. The XC compare becomes
-  `hmac.compare_digest`.
-- `check_user_stream_limits` moves *inside* `authorize_stream` unchanged, still scanning Redis
-  directly from whichever process runs the hop. That is the intermediate state, not the end state:
-  PR 7 splits `get_user_active_connections` by owner so the live branch goes through
-  `relay_client`. Recorded here because between PR 5 and PR 7 the API process reads a relay key,
-  which PR 7's own grep would otherwise look like a regression against.
+  `network_access_allowed`, plaintext password compare and `_user_can_access_channel` calls are
+  deleted, not duplicated. The XC compare becomes `hmac.compare_digest`. **Amendment S2:**
+  `check_user_stream_limits` is deleted only from `stream_ts` and `stream_xc`, per S1 immediately
+  below; `stream_vod`'s call (`apps/proxy/vod_proxy/views.py:781`) and `_serve_catchup`'s
+  (`apps/timeshift/views.py:493`) are unchanged, so a later grep for `check_user_stream_limits` in
+  the stream views finding those two is not a regression.
+- **Amendment S1:** `check_user_stream_limits` moves *inside* `authorize_stream` unchanged, but for
+  the **live** surfaces only (`stream_ts`, `stream_xc`), still scanning Redis directly from
+  whichever process runs the hop. That is the intermediate state, not the end state: PR 7 splits
+  `get_user_active_connections` by owner so the live branch goes through `relay_client`. Recorded
+  here because between PR 5 and PR 7 the API process reads a relay key, which PR 7's own grep would
+  otherwise look like a regression against. `stream_vod` and `_serve_catchup` keep their own calls
+  because neither identifier the check needs exists at the hop: the XC VOD entry points resolve
+  `content_id` from an `M3UMovieRelation`/`M3UEpisodeRelation` **inside the view** (the § ORM reads
+  table keeps that read in the relay — "the authorize hop resolves the *principal*, not the content
+  object"), so the hop cannot pass a `media_id` for `/movie/…` or `/series/…`, and running the check
+  only for the native VOD route would leave the two XC routes unchecked or double-checked;
+  `_serve_catchup`'s call matches on a `<channel>_<programme>` `media_id` and a pool-derived
+  `client_id` computed ~160 lines into the view, after session/fingerprint resolution, so a hop
+  passing the bare channel uuid would miss the sibling exemption
+  (`conn_media_id.startswith(f"{media_id}_")`, `apps/proxy/utils.py:334-337`) and **429 a legitimate
+  mid-programme seek**. The client-visible contract is unchanged: a limit breach is still 429 on
+  live and still `HttpResponseForbidden`/`429` on the surfaces that already answer that way today.
 - The authenticator set becomes the union of what the four stream views accept today, which means
   `/proxy/ts/stream/` gains `QueryParamJWTAuthentication` — VOD (`vod_proxy/views.py:611`) and
   catch-up (`apps/timeshift/views.py:281`) already accept `?token=`, live TS does not. A small,
@@ -1277,12 +1327,23 @@ resolve it, and each exists because a simpler arrangement provably does not boot
   § Architecture; every non-relay uwsgi location switches to the shared
   `dispatcharr_api_params.conf` include that blanks the five trust headers; the `map` key becomes
   `$relay_name`. The nested `^/api/channels/recordings/\d+/file/$` location (§ PR 4, amendment S5)
-  is the one exception: it stays on the blanking include rather than gaining `auth_request`, since
-  its gate is DRF authentication plus `network_access_allowed("STREAMS")`, not a surface
-  `authorize_stream()` knows, so it gets no row in the authorize matrix below.
+  is one of two exceptions (**Amendment S8** — the spec previously named only this one): it stays on
+  the blanking include rather than gaining `auth_request`, since its gate is DRF authentication
+  plus `network_access_allowed("STREAMS")`, not a surface `authorize_stream()` knows, so it gets no
+  row in the authorize matrix below. `^~ /proxy/relay/` is the second: PR 7's control API is gated
+  by the internal token alone (D9), and `authorize_stream()` would 404 a URI naming no channel, so
+  mounting the hop in front of it would break Django→relay control calls the moment PR 7 lands.
+  Both exceptions keep `uwsgi_pass relay_py;` rather than `$relay_upstream`, and neither runs a
+  subrequest, so `$relay_name` is unset for them — the `map` default resolves correctly, but a
+  variable pass nothing feeds is a thing a reader has to disprove.
 - `apps/channels/tasks.py`: `_dvr_build_ffmpeg_cmd` gains `-headers` with
   `X-Dispatcharr-Internal`, and the argv debug log at `:1726` goes through a new `_dvr_redact_cmd`.
-- Remove the erroneous `wontfix` label from issue #87 before closing it (see § What the code says).
+- **Amendment S4:** this PR neither closes #87/#95 nor edits their labels — it flips both
+  `test.fail()` pins and moves both `metrics/curated/defects.yml` rows to `fixed`. PR 8 closes both
+  issues and removes the erroneous `wontfix` label from #87 (applied in error by triage; see § What
+  the code says) in the same action. The Done item below already defers the closure to PR 8; this
+  bullet was the odd one out, since performing the label edit here and the closure there would
+  leave a window where #87 is open, unlabelled and fixed.
 - `docker/init/03-init-dispatcharr.sh`: compute `HMAC(SECRET_KEY, "relay-trust")` with a
   `python3 - <<'PY'` heredoc — the same tool and shape the entrypoint already uses to generate the
   secret at `:110-113`, and the only one guaranteed present, since nothing in either Dockerfile
@@ -1310,6 +1371,13 @@ resolve it, and each exists because a simpler arrangement provably does not boot
 - `apps/proxy/api_urls.py` (D12): `next-source`, `release`, `events`, behind an `IsInternalRelay`
   permission class checking `X-Dispatcharr-Internal` (D11). DRF serializers for every request and
   response body, verified present in the drf-spectacular schema.
+- **Follow-up recorded, not fixed here:** the internal-principal token (`X-Dispatcharr-Internal` =
+  `HMAC(SECRET_KEY, "internal-principal")`, D11) is static and long-lived — every internal caller
+  shares the same value for as long as `SECRET_KEY` is unrotated, and PR 6 makes it the sole gate on
+  `/api/relay/…` (PR 7 mounts `/proxy/relay/…` behind the same token) with no source-IP allowlist.
+  Before that token becomes the sole gate on a real network boundary, either bind it — a scope
+  and/or an expiry — or document here why not. Neither is done in PR 6 or PR 7; both ship the token
+  as designed in this spec, unbound.
 - `apps/proxy/control_plane.py`: `get_control_plane_base_url()` (D9), the next-source/release/events
   clients with the stated timeouts, one retry and the degraded fallback.
 - `apps/proxy/live_proxy/url_utils.py:82,116,284` and `services/channel_service.py:159` (the four
@@ -1412,8 +1480,9 @@ resolve it, and each exists because a simpler arrangement provably does not boot
 - § Requirements the relay meets or carries, finalized with real PR numbers and merge SHAs.
 - Remaining `CLAUDE.md` corrections not folded into an earlier PR, plus § Repository and direction
   gaining this spec beside the four investigation documents.
-- `e2e/COVERAGE.md`: new rows for time-to-first-byte, Django-down, bounded relay restart, the
-  authorize matrix and the modular role split — all five absent today.
+- `e2e/COVERAGE.md`: new rows for time-to-first-byte, Django-down, bounded relay restart and the
+  modular role split. **Amendment S5:** the authorize matrix row is added by PR 5 itself, in the
+  same PR as its test, not deferred here — see § Documentation.
 - `docs/agents/issue-tracker.md`: the `resolveReviewThread` GraphQL example.
 - Issues #87 and #95 closed, referencing PR 5.
 - This spec's § Done log filled in.
@@ -1473,8 +1542,13 @@ Per-PR `CLAUDE.md` corrections are listed under each PR. Additionally:
 - `CONTEXT.md` glossary and ADR 0005 — PR 0 (this branch), not deferred.
 - `e2e/README.md`'s two stale quarantine-file lines (`:104`, `:111`) and the stale
   `Lifecycle result` line (`:780`) — PR 2, the first PR touching E2E docs.
-- `e2e/COVERAGE.md` rows for TTFB, Django-down, bounded relay restart, the authorize matrix and the
-  modular role split — PR 8.
+- `e2e/COVERAGE.md` rows for TTFB, Django-down, bounded relay restart and the modular role split —
+  PR 8. **Amendment S5:** the authorize matrix row is added by PR 5, under a new `Goal` value `P1`
+  — a value the column has never held (only `G1`–`G15` so far), which costs nothing since nothing
+  validates that column (`e2e/tests/guards/`, `scripts/` and `metrics/` grepped for `COVERAGE` find
+  only prose references in spec files). `e2e/README.md:691` ("Update `COVERAGE.md` in the same PR
+  as the test") and `CLAUDE.md` § Testing are the standing rule this follows; § PR 8's bullet was
+  written before PR 2 and PR 5 existed.
 - `docs/agents/issue-tracker.md`'s missing `resolveReviewThread` example — PR 8.
 
 ## Done log
@@ -1487,7 +1561,7 @@ Filled in as PRs merge. Empty at spec-writing time.
 | TTFB + SPA-three-segment tests | — | — |
 | Supervisord | — | — |
 | Process split | — | — |
-| Authorize hop | — | — |
+| Authorize hop | #176 | — |
 | Next-source + events | — | — |
 | Control API | — | — |
 | Django-down + docs | — | — |

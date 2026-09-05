@@ -138,9 +138,13 @@ unreachable. The relay never enforces `max_streams`; it asks.
   per-request dependency on Django after that.
 - Deployments without nginx (dev `runserver`) need the inline fallback path,
   which duplicates no logic — it calls `authorize_stream` directly.
-- The relay drops two imports it holds today: `apps.accounts` (user
-  resolution) and any direct read of `M3UAccount`/`OutputProfile` at
-  tune time, both now resolved by Django before the relay is reached.
+- The relay stops *resolving* a principal or an Output Profile: which user,
+  and which profile, are Django's answers, carried in `X-Relay-User` and
+  `X-Relay-Output`. It still reads both rows by primary key — `add_client`
+  stores the `User`, and `OutputProfile.build_command()` is model behaviour
+  a header cannot carry — so the tune-time ORM reads fall from a resolution
+  chain to two indexed lookups rather than to zero. `M3UAccount`'s
+  tune-time reads move behind the next-source call in PR 6, not here.
 - A channel marked `hidden_from_output` stops being streamable by UUID even
   anonymously, because that field is a property of the channel and needs no
   principal. `hide_adult_content` is a per-user preference read against
