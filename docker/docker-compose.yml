@@ -31,6 +31,14 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      # service_started, not service_healthy: the relay has no healthcheck,
+      # and what nginx needs is only that the name resolves. nginx resolves
+      # `upstream relay_py { server relay:5657; }` ONCE, at config load, so a
+      # web container that starts with no relay container in DNS fails with
+      # "host not found in upstream" and [program:nginx] goes BACKOFF then
+      # FATAL -- taking the whole API surface down, not just streaming.
+      relay:
+        condition: service_started
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
@@ -74,6 +82,19 @@ services:
       # Logging
       - DISPATCHARR_LOG_LEVEL=info
 
+      # Internal Service Communication: nginx's RELAY_UPSTREAM sed
+      # (docker/init/03-init-dispatcharr.sh) uses this to reach the relay
+      # service below. It defaults to "relay" (the service name), so this
+      # line only needs changing if the service is renamed.
+      #
+      # It must always name something DNS can resolve, though. nginx
+      # resolves the relay_py upstream once, at config load, so a web
+      # container brought up without a relay -- `docker compose up web`, or
+      # a cut-down compose file -- fails config load outright unless this
+      # points somewhere resolvable. 127.0.0.1 is the answer in that case:
+      # it resolves, and streaming simply 502s, leaving the API up.
+      - DISPATCHARR_RELAY_HOST=relay
+
       # First-time web setup from a public IP (optional). When unset, only
       # local/private networks may POST to initialize-superuser.
       #- DISPATCHARR_SETUP_ALLOWED_IP=203.0.113.50
@@ -116,6 +137,66 @@ services:
     #        - driver: nvidia
     #          count: all
     #          capabilities: [gpu]
+
+  # ============================================================================
+  # Relay Service — the streaming relay's own uWSGI process (Phase 1 PR 4)
+  # ============================================================================
+  relay:
+    image: ghcr.io/dispatcharr/dispatcharr:latest
+    container_name: dispatcharr_relay
+    restart: unless-stopped
+    # Same rationale as web/celery above: 160s is used uniformly across
+    # every supervisord-backed service here, sized to the largest rung's
+    # summed stopwaitsecs rather than tuned per-service. This rung sums to
+    # 20s (relay-uwsgi alone).
+    stop_grace_period: 160s
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      # Same volume as web and celery: SECRET_KEY comes from /data/jwt
+      # (docker/entrypoint.sh), and a relay that generates its own key
+      # 403s every internal call once PR 5/6 add internal HMAC auth (D11).
+      - ./data:/data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+    environment:
+      - DISPATCHARR_ENV=modular
+      - DISPATCHARR_ROLE=relay
+
+      - POSTGRES_HOST=db
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=dispatcharr
+      - POSTGRES_USER=dispatch
+      - POSTGRES_PASSWORD=secret
+
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+
+      - DISPATCHARR_LOG_LEVEL=info
+
+      - DJANGO_SETTINGS_MODULE=dispatcharr.settings
+      - PYTHONUNBUFFERED=1
+
+      # Process Priority Configuration (Optional)
+      #- UWSGI_NICE_LEVEL=-5   # uWSGI/FFmpeg/Streaming (default: 0, recommended: -5 for high priority)
+
+    # --- Advanced Configuration ---
+    # Uncomment to enable high priority for streaming (required if UWSGI_NICE_LEVEL < 0)
+    #cap_add:
+    #  - SYS_NICE
+
+    # --- Hardware Acceleration (Optional) ---
+    # Uncomment for GPU access (transcoding acceleration) -- the relay is
+    # where ffmpeg actually runs after this PR.
+    #group_add:
+    #  - video
+    #  #- render  # Uncomment if your GPU requires it
+    #devices:
+    #  - /dev/dri:/dev/dri  # For Intel/AMD GPU acceleration (VA-API)
 
   # ============================================================================
   # Celery Service - Background task worker
