@@ -20,7 +20,7 @@
 #   scenario_name   Run only the named scenario (e.g., "fresh_default")
 #
 # Examples:
-#   bash docker/tests/test-puid-pgid.sh                     # Full run (build + all 20 scenarios)
+#   bash docker/tests/test-puid-pgid.sh                     # Full run (build + all 21 scenarios)
 #   bash docker/tests/test-puid-pgid.sh fresh_default        # Run one scenario
 #   bash docker/tests/test-puid-pgid.sh --skip-build         # Reuse existing image
 #   bash docker/tests/test-puid-pgid.sh --keep-on-fail       # Keep resources for debugging
@@ -39,6 +39,7 @@
 #   bind_mount_upgrade    Upgrade from UID 102 on bind mount
 #   bind_mount_default_puid Foreign-UID bind mount, no PUID set (defaults to 1000)
 #   modular_mode          External PostgreSQL + Redis (skip internal PG setup)
+#   role_split            Modular role split: api, relay and worker containers (Phase 1 PR 4)
 #   custom_postgres_user  Custom POSTGRES_USER=myapp
 #   custom_port           Custom POSTGRES_PORT=5433
 #   tmpfs_volume          Ephemeral tmpfs storage
@@ -1245,9 +1246,10 @@ test_role_split() {
         -e POSTGRES_USER=dispatch -e POSTGRES_PASSWORD=secret -e POSTGRES_DB=dispatcharr \
         -e REDIS_HOST="$redis_name" \
         -e DISPATCHARR_WEB_HOST="$api_name" \
+        -v "${vol}:/data" \
         "$IMAGE_NAME" >/dev/null
 
-    if ! wait_for_ready "$api_name" 180; then
+    if ! wait_for_ready "$api_name"; then
         log_fail "api container failed to start"
         dump_logs_on_fail "$api_name"
         dump_logs_on_fail "$relay_name"
@@ -1262,6 +1264,9 @@ test_role_split() {
     # seeding script below retries the tune itself.
     local relay_elapsed=0
     while [ $relay_elapsed -lt 180 ]; do
+        if ! docker ps -q -f "name=^${relay_name}$" 2>/dev/null | grep -q .; then
+            break
+        fi
         if supervisorctl_status "$relay_name" relay-uwsgi | grep -q "RUNNING"; then
             break
         fi
@@ -1279,6 +1284,9 @@ test_role_split() {
     # intermittently on a required CI job.
     local worker_elapsed=0
     while [ $worker_elapsed -lt 180 ]; do
+        if ! docker ps -q -f "name=^${worker_name}$" 2>/dev/null | grep -q .; then
+            break
+        fi
         if supervisorctl_status "$worker_name" celery-default | grep -q "RUNNING"; then
             break
         fi
@@ -1340,7 +1348,22 @@ def call(method, url, body=None, headers=None):
 
 
 try:
-    _, state = call("GET", base + "/api/accounts/initialize-superuser/")
+    # api-uwsgi RUNNING (checked by the relay/worker polls above) still
+    # means only "wrapper alive 5s" — the socket can still be unbound.
+    # Retry the first call for up to 30s; every later call is then safe.
+    deadline = time.monotonic() + 30
+    while True:
+        try:
+            _, state = call("GET", base + "/api/accounts/initialize-superuser/")
+            break
+        except urllib.error.HTTPError as exc:
+            if exc.code not in (502, 503, 504) or time.monotonic() >= deadline:
+                raise
+            time.sleep(2)
+        except urllib.error.URLError:
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(2)
     if not (state or {}).get("superuser_exists"):
         call("POST", base + "/api/accounts/initialize-superuser/", {
             "username": "role-split-admin",
@@ -1467,8 +1490,9 @@ try:
     r = urllib.request.urlopen('http://127.0.0.1:9191/api/channels/channels/', timeout=10)
     print(r.status)
 except urllib.error.HTTPError as e:
-    # Any HTTP status (401 from IsAdmin included) proves Django is still
-    # answering through this container's own nginx and uwsgi.
+    # Any non-5xx status (401 from IsAdmin included) proves Django is still
+    # answering through this container's own nginx and uwsgi. A 5xx here
+    # comes from nginx, not Django, and must not be read as a pass.
     print(e.code)
 except Exception as e:
     print('ERR:%s' % e)
@@ -1476,6 +1500,9 @@ except Exception as e:
         case "$api_alive_status" in
             ERR:*|'')
                 log_fail "api container stopped answering with the relay down: ${api_alive_status:-<no output>}"
+                ;;
+            5[0-9][0-9])
+                log_fail "api container's nginx answered $api_alive_status with the relay stopped — api-uwsgi is not serving"
                 ;;
             *)
                 log_pass "api container still answers /api/channels/channels/ (HTTP $api_alive_status) with the relay stopped"
@@ -1937,8 +1964,10 @@ fi
 # dispatcharr-e2e-upstream:local — the fake provider test_role_split seeds
 # against. CI's suites job already docker-loads it from the shared build
 # artifact, so this inspect succeeds there and nothing is built. Locally,
-# build it once if it is missing.
-if ! docker image inspect dispatcharr-e2e-upstream:local >/dev/null 2>&1; then
+# build it once if it is missing — but only when role_split will actually
+# run, so a single-scenario invocation of an unrelated test doesn't pay for
+# a Node + ffmpeg asset build it never uses.
+if { [ -z "$SINGLE_SCENARIO" ] || [ "$SINGLE_SCENARIO" = role_split ]; } && ! docker image inspect dispatcharr-e2e-upstream:local >/dev/null 2>&1; then
     section "Building fake upstream provider image"
     if docker build -f e2e-upstream/Dockerfile -t dispatcharr-e2e-upstream:local e2e-upstream >/dev/null; then
         log_pass "Upstream provider image built (dispatcharr-e2e-upstream:local)"
