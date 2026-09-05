@@ -4,11 +4,11 @@ Gated by IsInternalRelay -- the two internal HMAC headers, never a DRF or
 session principal, never IsAdmin (which would need a resolved User, the
 one thing these hops must not need).
 
-No ORM write appears in this file, deliberately: the event batch's
-log_system_event() calls and the one Stream.save() live in
-core/relay_events.py, because scripts/metrics/collect_architecture.py
-counts every write under apps/proxy/ into proxy_orm_writes, whose Phase 1
-target is zero, and because the spec's Done grep runs over this directory.
+No ORM write appears in this file, deliberately: the event-row writes and
+the Stream update live in core/relay_events.py, because
+scripts/metrics/collect_architecture.py counts every write under
+apps/proxy/ into proxy_orm_writes, whose Phase 1 target is zero, and
+because the spec's Done grep runs over this directory.
 """
 
 import logging
@@ -63,8 +63,14 @@ def next_source_view(request, identifier):
         # 4xx this route answers: "no candidate available" is a 200 with a
         # null source, because the client turns every 4xx into a refusal
         # and an exhausted channel is not a refusal (rulings 13 and 15).
+        # Rendered through the same response serializer as the 200 path
+        # (CLAUDE.md § Conventions) -- the client's own 404 mapping
+        # (control_plane.next_source) substitutes exactly this shape.
         return Response(
-            {"error": "identifier not found"}, status=status.HTTP_404_NOT_FOUND
+            NextSourceResponseSerializer(
+                {"source": None, "alternates": [], "error": "identifier not found"}
+            ).data,
+            status=status.HTTP_404_NOT_FOUND,
         )
     return Response(NextSourceResponseSerializer(answer).data)
 

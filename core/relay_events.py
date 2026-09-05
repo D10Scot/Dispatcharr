@@ -65,7 +65,15 @@ def _push(event):
     }
     details = event.get("details") or {}
     for field in _WS_FIELDS:
-        value = event.get(field, details.get(field))
+        # Not `event.get(field, details.get(field))`: through the view,
+        # RelayEventSerializer's validated_data always carries the
+        # identity fields explicitly, as None when absent -- a dict.get
+        # default only fires when the key is missing, never when it is
+        # present with value None, so that form never actually falls back
+        # to details.
+        value = event.get(field)
+        if value is None:
+            value = details.get(field)
         if value is not None:
             payload[field] = value
     send_websocket_update("updates", "update", payload)
@@ -83,7 +91,16 @@ def _apply_stream_stats(event):
     from apps.channels.models import Stream
 
     stream_id = event.get("stream_id")
-    stats = event.get("details") or {}
+    # Task 10's emit_event("stream_stats", stream_id=stream_id, **stats)
+    # copies stream_id to the top level but leaves it in details too --
+    # exclude it here, or it lands inside Stream.stream_stats itself,
+    # which today's ChannelService._update_stream_stats_in_db(stream_id,
+    # **stats) never stored.
+    stats = {
+        key: value
+        for key, value in (event.get("details") or {}).items()
+        if key != "stream_id"
+    }
     try:
         stream = Stream.objects.get(id=stream_id)
 
@@ -117,6 +134,12 @@ def apply_event_batch(events):
     Returns {"accepted": int, "rejected": int}. An unknown event type is
     counted as rejected, never raised -- a batch is many independent
     transitions and one bad entry must not lose the rest.
+
+    The counts are advisory telemetry only, not a delivery guarantee:
+    log_system_event() swallows its own errors internally (a bare `except
+    Exception`, logged, returning None either way), so a write that fails
+    inside it is still counted as accepted here. No caller of this
+    function inspects the counts to retry or alert on a mismatch.
     """
     accepted = 0
     rejected = 0
@@ -137,10 +160,28 @@ def apply_event_batch(events):
         channel_id = _clean(event.get("channel_id"))
         channel_name = _clean(event.get("channel_name"))
         details = dict(event.get("details") or {})
+        # channel_id, channel_name and event_type (the positional first
+        # argument) are already bound above by name; control_plane's own
+        # emit_event() never puts them in details, but a hand-built batch
+        # (a Phase 2 relay, or a malformed request) could, and any of the
+        # three would collide as a duplicate keyword argument and raise
+        # TypeError -- one bad entry must not 500 the whole batch.
+        details.pop("channel_id", None)
+        details.pop("channel_name", None)
+        details.pop("event_type", None)
 
-        log_system_event(
-            event_type, channel_id=channel_id, channel_name=channel_name, **details
-        )
+        try:
+            log_system_event(
+                event_type, channel_id=channel_id, channel_name=channel_name, **details
+            )
+        except TypeError:
+            logger.error(
+                "Rejecting malformed relay event %r: details collided with a "
+                "reserved argument name",
+                event_type,
+            )
+            rejected += 1
+            continue
 
         if event_type in RELAY_WS_EVENT_TYPES:
             _push(event)

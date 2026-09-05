@@ -8,7 +8,7 @@ without the view.
 
 from unittest.mock import patch
 
-from django.test import TestCase, TransactionTestCase
+from django.test import TestCase
 
 from apps.channels.models import Stream
 from apps.m3u.models import M3UAccount
@@ -80,15 +80,74 @@ class EventBatchWritesSystemEventRowsTests(TestCase):
         self.assertIsNone(row.channel_id)
         self.assertEqual(row.details["content_name"], "Movie Title")
 
+    def test_a_details_key_colliding_with_a_reserved_name_does_not_crash_the_batch(self):
+        # control_plane.emit_event never puts channel_id/channel_name/
+        # event_type inside details -- it binds them by name itself -- but
+        # a hand-built batch (a Phase 2 relay, or a malformed request)
+        # could, and log_system_event(event_type, channel_id=...,
+        # channel_name=..., **details) would raise TypeError on the
+        # duplicate keyword argument without the pop below. The real
+        # top-level identity fields win; the colliding detail is dropped,
+        # not stored, and every event in the batch is still accepted.
+        from core.relay_events import apply_event_batch
 
-class StreamStatsAreNotSystemEventsTests(TransactionTestCase):
-    # TransactionTestCase, not TestCase: _apply_stream_stats calls the real
-    # close_old_connections() unconditionally (moved verbatim from
-    # ChannelService._update_stream_stats_in_db), which under test settings'
-    # CONN_MAX_AGE=0 actually closes the live psycopg connection. A
-    # TestCase's per-test atomic wrapper cannot survive that; a
-    # TransactionTestCase's own connection reopens transparently on the
-    # next query, and the write was already committed.
+        channel_id = "44444444-4444-4444-4444-444444444444"
+        counts = apply_event_batch(
+            [
+                {
+                    "type": "channel_start",
+                    "channel_id": channel_id,
+                    "details": {"channel_id": "spoofed-value"},
+                },
+                {
+                    "type": "channel_failover",
+                    "channel_id": channel_id,
+                    "details": {"event_type": "spoofed-value"},
+                },
+            ]
+        )
+
+        self.assertEqual(counts, {"accepted": 2, "rejected": 0})
+        self.assertEqual(SystemEvent.objects.count(), 2)
+        for row in SystemEvent.objects.all():
+            self.assertEqual(str(row.channel_id), channel_id)
+            self.assertNotIn("channel_id", row.details)
+            self.assertNotIn("event_type", row.details)
+
+    def test_an_event_that_still_fails_the_write_is_rejected_not_fatal(self):
+        # Defense in depth beyond the pop above: whatever else might make
+        # log_system_event raise TypeError, one bad entry must not lose
+        # the rest of the batch.
+        from core.relay_events import apply_event_batch
+
+        channel_id = "55555555-5555-5555-5555-555555555555"
+        with patch(
+            "core.relay_events.log_system_event",
+            side_effect=[TypeError("boom"), None],
+        ):
+            counts = apply_event_batch(
+                [
+                    {"type": "channel_start", "channel_id": channel_id, "details": {}},
+                    {"type": "channel_stop", "channel_id": channel_id, "details": {}},
+                ]
+            )
+
+        self.assertEqual(counts, {"accepted": 1, "rejected": 1})
+
+
+class StreamStatsAreNotSystemEventsTests(TestCase):
+    # _apply_stream_stats calls the real close_old_connections()
+    # unconditionally (moved verbatim from
+    # ChannelService._update_stream_stats_in_db), which under test
+    # settings' CONN_MAX_AGE=0 actually closes the live psycopg
+    # connection -- fatal to a TestCase's atomic wrapper on the next
+    # query. Every DB-effect test below patches it out, the same way
+    # apps/proxy/tests/test_next_source_resolution.py patches
+    # apps.proxy.next_source.close_old_connections. A TransactionTestCase
+    # would dodge the same hazard, but every TransactionTestCase flushes
+    # every table in a --keepdb database, stripping migration-seeded rows
+    # for every later run in the same container -- the hazard the
+    # implementer preamble itself warns about.
     def setUp(self):
         # A Stream fixture must carry its own M3UAccount: the kept test DB
         # can lose the migration-seeded "custom" row to an earlier
@@ -108,15 +167,16 @@ class StreamStatsAreNotSystemEventsTests(TransactionTestCase):
     def test_stream_stats_writes_the_stream_row_and_no_event_row(self):
         from core.relay_events import apply_event_batch
 
-        counts = apply_event_batch(
-            [
-                {
-                    "type": "stream_stats",
-                    "stream_id": self.stream.id,
-                    "details": {"ffmpeg_output_bitrate": 4200.0},
-                }
-            ]
-        )
+        with patch("core.relay_events.close_old_connections"):
+            counts = apply_event_batch(
+                [
+                    {
+                        "type": "stream_stats",
+                        "stream_id": self.stream.id,
+                        "details": {"ffmpeg_output_bitrate": 4200.0},
+                    }
+                ]
+            )
 
         self.assertEqual(counts, {"accepted": 1, "rejected": 0})
         self.assertEqual(SystemEvent.objects.count(), 0)
@@ -133,18 +193,19 @@ class StreamStatsAreNotSystemEventsTests(TransactionTestCase):
         self.stream.stream_stats = {"video_codec": "h264"}
         self.stream.save(update_fields=["stream_stats"])
 
-        apply_event_batch(
-            [
-                {
-                    "type": "stream_stats",
-                    "stream_id": self.stream.id,
-                    "details": {
-                        "ffmpeg_output_bitrate": 4200.0,
-                        "audio_codec": None,
-                    },
-                }
-            ]
-        )
+        with patch("core.relay_events.close_old_connections"):
+            apply_event_batch(
+                [
+                    {
+                        "type": "stream_stats",
+                        "stream_id": self.stream.id,
+                        "details": {
+                            "ffmpeg_output_bitrate": 4200.0,
+                            "audio_codec": None,
+                        },
+                    }
+                ]
+            )
 
         self.stream.refresh_from_db()
         self.assertEqual(self.stream.stream_stats.get("video_codec"), "h264")
@@ -152,6 +213,35 @@ class StreamStatsAreNotSystemEventsTests(TransactionTestCase):
             self.stream.stream_stats.get("ffmpeg_output_bitrate"), 4200.0
         )
         self.assertNotIn("audio_codec", self.stream.stream_stats)
+
+    def test_stream_id_is_never_stored_inside_stream_stats(self):
+        # Task 10's emit_event("stream_stats", stream_id=stream_id, **stats)
+        # copies stream_id to the top level of the event but leaves it in
+        # details too -- it must not end up as a key inside
+        # Stream.stream_stats, which today's
+        # ChannelService._update_stream_stats_in_db(stream_id, **stats)
+        # never stored.
+        from core.relay_events import apply_event_batch
+
+        with patch("core.relay_events.close_old_connections"):
+            apply_event_batch(
+                [
+                    {
+                        "type": "stream_stats",
+                        "stream_id": self.stream.id,
+                        "details": {
+                            "stream_id": self.stream.id,
+                            "ffmpeg_output_bitrate": 4200.0,
+                        },
+                    }
+                ]
+            )
+
+        self.stream.refresh_from_db()
+        self.assertNotIn("stream_id", self.stream.stream_stats)
+        self.assertEqual(
+            self.stream.stream_stats.get("ffmpeg_output_bitrate"), 4200.0
+        )
 
     def test_stream_stats_releases_the_db_connection(self):
         from core.relay_events import apply_event_batch
@@ -232,3 +322,30 @@ class RelayEventWebSocketPushTests(TestCase):
         self.assertEqual(payload["event"], "stream_switch")
         self.assertEqual(payload["channel_id"], channel_id)
         self.assertEqual(payload["stream_id"], 42)
+
+    def test_the_push_falls_back_to_details_when_the_top_level_field_is_none(self):
+        # Through the view, RelayEventSerializer's validated_data always
+        # carries client_id/stream_id explicitly (None when the caller
+        # omitted them), so a plain dict.get(field, details.get(field))
+        # never actually reaches the details fallback: the key is present
+        # with value None, not absent. This shape -- key present, value
+        # None, the real value only in details -- is exactly what that
+        # validated_data produces for a field the caller left out.
+        from core.relay_events import apply_event_batch
+
+        channel_id = "66666666-6666-6666-6666-666666666666"
+        with patch("core.relay_events.send_websocket_update") as mock_send:
+            apply_event_batch(
+                [
+                    {
+                        "type": "client_disconnect",
+                        "channel_id": channel_id,
+                        "client_id": None,
+                        "details": {"client_id": "client-42"},
+                    }
+                ]
+            )
+
+        mock_send.assert_called_once()
+        payload = mock_send.call_args.args[2]
+        self.assertEqual(payload["client_id"], "client-42")

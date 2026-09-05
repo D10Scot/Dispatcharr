@@ -256,6 +256,31 @@ class NextSourceRouteTests(RelayApiTestCase):
         response = self._post(path, {})
         self.assertEqual(response.status_code, 404)
 
+    def test_current_stream_id_is_threaded_into_the_failover_traversal(self):
+        # Fix round: NextSourceRequestSerializer's current_stream_id must
+        # reach apps.proxy.next_source.get_alternate_streams(), which
+        # rotates the failover traversal to start right after it
+        # (order_alternates_from_current) -- the property
+        # input/manager.py's pre-move _try_next_stream relies on today.
+        path = self.next_source_path(str(self.channel.uuid))
+        with patch(
+            "apps.proxy.next_source.get_alternate_streams",
+            return_value=[],
+        ) as mock_get_alternates:
+            response = self._post(
+                path,
+                {
+                    "exclude_stream_ids": [999999],
+                    "current_stream_id": self.stream_a.id,
+                    "reason": "failover",
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        mock_get_alternates.assert_called_once_with(
+            str(self.channel.uuid), current_stream_id=self.stream_a.id
+        )
+
 
 class ReleaseRouteTests(RelayApiTestCase):
     def test_release_gives_the_slot_back(self):
@@ -299,6 +324,30 @@ class EventsRouteTests(RelayApiTestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), {"accepted": 2, "rejected": 0})
         self.assertEqual(SystemEvent.objects.count(), 2)
+
+    def test_a_blank_channel_id_writes_a_row_with_a_null_channel_id(self):
+        # RelayEventSerializer.channel_id needs allow_blank=True (a
+        # channel-less vod_start, built by hand rather than through
+        # control_plane.emit_event, may legitimately send ""); this
+        # exercises core.relay_events._clean() end to end, through the
+        # view, not just at the writer layer.
+        response = self._post(
+            "/api/relay/events",
+            {
+                "events": [
+                    {
+                        "type": "vod_start",
+                        "channel_id": "",
+                        "details": {"content_name": "Movie Title"},
+                    }
+                ]
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"accepted": 1, "rejected": 0})
+        row = SystemEvent.objects.get()
+        self.assertIsNone(row.channel_id)
 
 
 class SchemaTests(RelayApiTestCase):

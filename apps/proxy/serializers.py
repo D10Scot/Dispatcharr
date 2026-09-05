@@ -39,7 +39,6 @@ class StreamProfileRefSerializer(serializers.Serializer):
 
 class SourceSerializer(serializers.Serializer):
     stream_id = serializers.IntegerField()
-    stream_name = serializers.CharField(allow_blank=True, allow_null=True)
     url = serializers.CharField()
     user_agent = serializers.CharField(allow_blank=True)
     transcode = serializers.BooleanField()
@@ -97,22 +96,25 @@ class ReleaseResponseSerializer(serializers.Serializer):
 
 class RelayEventSerializer(serializers.Serializer):
     type = serializers.CharField()
-    # None, never "". SystemEvent.channel_id is a UUIDField
-    # (core/models.py:803, null=True); UUIDField.to_python("") raises
-    # ValidationError, and log_system_event's bare `except Exception`
-    # (core/utils.py:922-924) would swallow it — no row, no Connect
-    # fan-out, one error log per event. Every channel-less event hits
-    # this: vod_start and vod_stop
+    # allow_blank=True: a caller may legitimately send "" (e.g. a
+    # channel-less vod_start/vod_stop built by hand rather than through
+    # control_plane.emit_event, which omits the key entirely when None).
+    # core.relay_events._clean() normalises "" to None before the write:
+    # SystemEvent.channel_id is a UUIDField (core/models.py:803,
+    # null=True); UUIDField.to_python("") raises ValidationError, and
+    # log_system_event's bare `except Exception` (core/utils.py:922-924)
+    # would swallow it — no row, no Connect fan-out, one error log per
+    # event. Every channel-less event hits this: vod_start and vod_stop
     # (vod_proxy/multi_worker_connection_manager.py:902) carry no channel
     # at all, and they are written today.
     channel_id = serializers.CharField(
-        required=False, allow_null=True, default=None
+        required=False, allow_blank=True, allow_null=True, default=None
     )
     channel_name = serializers.CharField(
-        required=False, allow_null=True, default=None
+        required=False, allow_blank=True, allow_null=True, default=None
     )
     client_id = serializers.CharField(
-        required=False, allow_null=True, default=None
+        required=False, allow_blank=True, allow_null=True, default=None
     )
     stream_id = serializers.IntegerField(required=False, allow_null=True, default=None)
     details = serializers.DictField(required=False, default=dict)
