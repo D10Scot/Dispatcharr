@@ -1,6 +1,5 @@
 import json
 import time
-import random
 import re
 import pathlib
 from django.db import close_old_connections
@@ -12,15 +11,12 @@ from django.http import (
     Http404,
 )
 from django.views.decorators.csrf import csrf_exempt
-from django.shortcuts import get_object_or_404
 from .server import ProxyServer
 from .channel_status import ChannelStatus, build_live_channel_stats_data
 from .output.ts.generator import create_stream_generator
 from .output.fmp4.generator import create_fmp4_stream_generator
-from dispatcharr.utils import get_client_ip, network_access_allowed
+from dispatcharr.utils import get_client_ip, redact_url
 from .redis_keys import RedisKeys
-from apps.channels.models import Channel
-from apps.accounts.models import User
 from core.models import CoreSettings, PROXY_PROFILE_NAME
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny
@@ -41,7 +37,14 @@ from .url_utils import (
 from .utils import get_logger
 from uuid import UUID
 import gevent
-from apps.proxy.utils import check_user_stream_limits
+from apps.proxy.authorize import (
+    SURFACE_LIVE,
+    SURFACE_LIVE_XC,
+    AuthorizeDenied,
+    mint_client_id,
+    resolve_output_profile,
+)
+from apps.proxy.authorize_views import authorize_error_response, resolve_authorization
 
 logger = get_logger()
 
@@ -132,34 +135,45 @@ def _resolve_output_format(user, force=None, request=None):
     return CoreSettings.get_default_output_format()
 
 
-def _resolve_output_profile(request, user):
+def _output_profile_for(decision, request, user):
+    """The Output Profile this tune runs under.
+
+    When nginx authorized the request, Django already applied the rule
+    (?output_profile= then the user's custom_properties) and put the id
+    in X-Relay-Output; the row is re-read here because
+    OutputProfile.build_command() is model behaviour the relay needs and
+    a header cannot carry a built ffmpeg command. Without a trusted
+    marker — dev runserver, or any request that did not come through a
+    relay-bound location — the same rule runs inline.
+    """
     from core.models import OutputProfile
-    param = request.GET.get('output_profile')
-    if param:
-        try:
-            return OutputProfile.objects.get(id=int(param), is_active=True)
-        except (OutputProfile.DoesNotExist, ValueError, TypeError):
+
+    if decision is not None and decision.trusted:
+        if not decision.output_profile_id:
             return None
-    if user:
-        custom = getattr(user, 'custom_properties', None) or {}
-        profile_id = custom.get('output_profile')
-        if profile_id:
-            try:
-                return OutputProfile.objects.get(id=int(profile_id), is_active=True)
-            except (OutputProfile.DoesNotExist, ValueError, TypeError):
-                return None
-    return None
+        return OutputProfile.objects.filter(
+            id=decision.output_profile_id, is_active=True
+        ).first()
+    return resolve_output_profile(request, user)
 
 
 @api_view(["GET"])
 @permission_classes([AllowAny])
-def stream_ts(request, channel_id, user=None, force_output_format=None):
-    if not network_access_allowed(request, "STREAMS"):
-        return JsonResponse({"error": "Forbidden"}, status=403)
-
+def stream_ts(request, channel_id, user=None, force_output_format=None, decision=None):
     """Stream TS data to client with immediate response and keep-alive packets during initialization"""
-    if user is None and hasattr(request, 'user') and request.user.is_authenticated:
-        user = request.user
+    if decision is None:
+        # `decision` is supplied only by stream_xc, which authorized this
+        # same tune under its own surface a moment ago; re-running the hop
+        # would re-check a limit that has not changed and mint a second
+        # client id.
+        try:
+            decision = resolve_authorization(
+                request, SURFACE_LIVE, identifier=channel_id
+            )
+        except AuthorizeDenied as exc:
+            return authorize_error_response(exc)
+    if user is None:
+        user = decision.user
 
     client_user_agent = None
     proxy_server = ProxyServer.get_instance()
@@ -175,8 +189,9 @@ def stream_ts(request, channel_id, user=None, force_output_format=None):
         channel = get_stream_object(channel_id)
         channel_display_name = getattr(channel, "name", None)
 
-        # Generate a unique client ID
-        client_id = f"client_{int(time.time() * 1000)}_{random.randint(1000, 9999)}"
+        # Minted by the authorize hop (apps/proxy/authorize.py), so the id
+        # nginx put in X-Relay-Client is the id this worker registers.
+        client_id = decision.client_id or mint_client_id()
         client_ip = get_client_ip(request)
         logger.info(f"[{client_id}] Requested stream for channel {channel_id}")
 
@@ -188,13 +203,6 @@ def stream_ts(request, channel_id, user=None, force_output_format=None):
                     f"[{client_id}] Client connected with user agent: {client_user_agent}"
                 )
                 break
-
-        if user:
-            if not check_user_stream_limits(user, client_id, media_id=channel_id):
-                return JsonResponse(
-                    {"error": f"Stream limit exceeded ({user.stream_limit} concurrent streams allowed)"},
-                    status=429
-                )
 
         if ChannelService.is_channel_unavailable_for_new_clients(channel_id):
             logger.info(
@@ -421,7 +429,7 @@ def stream_ts(request, channel_id, user=None, force_output_format=None):
                         )
 
                         # Try initial URL
-                        logger.info(f"[{client_id}] Validating redirect URL: {stream_url}")
+                        logger.info(f"[{client_id}] Validating redirect URL: {redact_url(stream_url)}")
                         is_valid, final_url, status_code, message = validate_stream_url(
                             stream_url, user_agent=stream_user_agent, timeout=(5, 5)
                         )
@@ -481,7 +489,7 @@ def stream_ts(request, channel_id, user=None, force_output_format=None):
                         # Final decision based on validation results
                         if is_valid:
                             logger.info(
-                                f"[{client_id}] Redirecting to validated URL: {final_url} ({message})"
+                                f"[{client_id}] Redirecting to validated URL: {redact_url(final_url)} ({message})"
                             )
 
                             # For non-HTTP protocols (RTSP/RTP/UDP), we need to manually create the redirect
@@ -541,7 +549,7 @@ def stream_ts(request, channel_id, user=None, force_output_format=None):
                     # longer than the grace period). The generator handles waiting
                     # with keepalive packets via _wait_for_initialization().
                     if proxy_server.am_i_owner(channel_id):
-                        resolved_output_profile = _resolve_output_profile(request, user)
+                        resolved_output_profile = _output_profile_for(decision, request, user)
                         resolved_output_format = _resolve_output_format(user, force_output_format, request)
                         output_options_resolved = True
                         resolved_format = (
@@ -648,7 +656,7 @@ def stream_ts(request, channel_id, user=None, force_output_format=None):
             return _channel_stopping_response()
 
         if not output_options_resolved:
-            resolved_output_profile = _resolve_output_profile(request, user)
+            resolved_output_profile = _output_profile_for(decision, request, user)
             resolved_output_format = _resolve_output_format(user, force_output_format, request)
         # When an output profile is active, append :p{id} to the format key so each
         # (format, profile) pair gets its own independent remux pipeline in Redis.
@@ -775,47 +783,19 @@ def stream_ts(request, channel_id, user=None, force_output_format=None):
 @permission_classes([AllowAny])
 def stream_xc(request, username, password, channel_id):
     try:
-        user = get_object_or_404(User, username=username)
-
         extension = pathlib.Path(channel_id).suffix
-        channel_id = pathlib.Path(channel_id).stem
+        stream_id = pathlib.Path(channel_id).stem
 
-        if not network_access_allowed(request, 'STREAMS', user):
-            return Response({"error": "Forbidden"}, status=403)
-
-        custom_properties = user.custom_properties or {}
-
-        if "xc_password" not in custom_properties:
-            return Response({"error": "Invalid credentials"}, status=401)
-
-        if custom_properties["xc_password"] != password:
-            return Response({"error": "Invalid credentials"}, status=401)
-
-        if user.user_level < 10:
-            user_profile_count = user.channel_profiles.count()
-
-            # If user has ALL profiles or NO profiles, give unrestricted access
-            if user_profile_count == 0:
-                # No profile filtering - user sees all channels based on user_level
-                filters = {
-                    "id": int(channel_id),
-                    "user_level__lte": user.user_level
-                }
-                channel = Channel.objects.filter(**filters).first()
-            else:
-                # User has specific limited profiles assigned
-                filters = {
-                    "id": int(channel_id),
-                    "channelprofilemembership__enabled": True,
-                    "user_level__lte": user.user_level,
-                    "channelprofilemembership__channel_profile__in": user.channel_profiles.all()
-                }
-                channel = Channel.objects.filter(**filters).distinct().first()
-
-            if not channel:
-                return JsonResponse({"error": "Not found"}, status=404)
-        else:
-            channel = get_object_or_404(Channel, id=channel_id)
+        try:
+            decision = resolve_authorization(
+                request,
+                SURFACE_LIVE_XC,
+                identifier=stream_id,
+                username=username,
+                password=password,
+            )
+        except AuthorizeDenied as exc:
+            return authorize_error_response(exc)
 
         if extension.lower() == '.mp4':
             force_format = 'fmp4'
@@ -823,11 +803,22 @@ def stream_xc(request, username, password, channel_id):
             force_format = 'mpegts'
         else:
             force_format = None
-        return stream_ts(request._request, str(channel.uuid), user, force_output_format=force_format)
+        # X-Relay-Channel is the uuid the hop resolved from the numeric
+        # Xtream id — the lookup that used to be a copy of the channel
+        # authorization filter, applied here for the fourth time in the
+        # tree.
+        return stream_ts(
+            request._request,
+            decision.channel_uuid,
+            decision.user,
+            force_output_format=force_format,
+            decision=decision,
+        )
     except Http404:
         raise
     finally:
-        # Auth/channel lookup ORM above; stream_ts also releases on its own paths.
+        # stream_ts releases on its own paths; the hop's ORM work is done
+        # by the time this returns.
         close_old_connections()
 
 
@@ -869,7 +860,7 @@ def change_stream(request, channel_id):
             )
 
         logger.info(
-            f"Attempting to change stream for channel {channel_id} to {new_url}"
+            f"Attempting to change stream for channel {channel_id} to {redact_url(new_url)}"
         )
 
         # Use the service layer instead of direct implementation
