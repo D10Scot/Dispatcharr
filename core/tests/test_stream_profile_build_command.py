@@ -1,6 +1,6 @@
 from django.test import SimpleTestCase
 
-from core.models import StreamProfile
+from core.models import REDIRECT_PROFILE_NAME, StreamProfile
 
 
 class StreamProfileBuildCommandTests(SimpleTestCase):
@@ -43,3 +43,19 @@ class StreamProfileBuildCommandTests(SimpleTestCase):
             "http://example.com/stream.ts", "Mozilla/5.0", channel_id=7
         )
         self.assertEqual(cmd, ["ffmpeg", "-i", "http://example.com/stream.ts"])
+
+    def test_redirect_profile_builds_no_command(self):
+        # Belt-and-braces (Phase 1 PR 5 re-review): callers are expected to
+        # treat Redirect like Proxy and never reach build_command for it,
+        # but the locked Redirect profile's command/parameters are empty
+        # strings, so without this it would return [""] — an empty
+        # executable — rather than [].
+        profile = StreamProfile(
+            name=REDIRECT_PROFILE_NAME,
+            command="",
+            parameters="",
+            locked=True,
+        )
+        self.assertEqual(
+            profile.build_command("http://example.com/stream.ts", "Mozilla/5.0"), []
+        )

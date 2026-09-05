@@ -136,7 +136,13 @@ class StreamProfile(models.Model):
 
     def build_command(self, stream_url, user_agent, channel_id=None):
 
-        if self.is_proxy():
+        # Belt-and-braces (Phase 1 PR 5 re-review): callers are expected to
+        # treat Redirect like Proxy and never reach here for it (the relay
+        # answers with a 302 or, for an internal principal, serves the
+        # Proxy path with transcode=False), but a locked Redirect profile's
+        # command/parameters are empty strings — build_command would
+        # otherwise return [""], spawning an empty executable.
+        if self.is_proxy() or self.is_redirect():
             return []
 
         replacements = {
