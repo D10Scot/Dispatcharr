@@ -1,6 +1,5 @@
 """Catch-up (timeshift) proxy with multi-provider failover."""
 
-import hmac
 import json
 import logging
 import secrets
@@ -29,7 +28,6 @@ from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import OpenApiParameter, extend_schema
 
 from apps.accounts.authentication import ApiKeyAuthentication, QueryParamJWTAuthentication
-from apps.accounts.models import User
 from apps.channels.models import Channel
 from apps.channels.utils import get_channel_catchup_streams, is_catchup_enabled
 from apps.m3u.connection_pool import (

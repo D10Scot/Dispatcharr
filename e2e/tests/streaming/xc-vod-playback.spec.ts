@@ -155,16 +155,16 @@ test('the root XC movie and series routes authenticate and deliver bytes by Disp
   expect(episodeBody).toEqual(episodeAssetBytes);
 });
 
-// Asserts the behaviour Dispatcharr SHOULD have. `stream_xc_movie`'s
-// credential-mismatch branch (apps/proxy/vod_proxy/views.py:1407):
+// Asserts the behaviour Dispatcharr SHOULD have. Before Phase 1 PR 5,
+// `stream_xc_movie`'s credential-mismatch branch (apps/proxy/vod_proxy/views.py:1407, pre-PR line numbers):
 //     if custom_properties["xc_password"] != password:
 //         return Response({"error": "Invalid credentials"}, status=401)
-// looks correct, but `Response` (rest_framework.response.Response) is never
-// imported anywhere in this file — only `JsonResponse`, `HttpResponse`,
+// looked correct, but `Response` (rest_framework.response.Response) was
+// never imported anywhere in this file — only `JsonResponse`, `HttpResponse`,
 // `HttpResponseRedirect` and `Http404` from `django.http`, plus DRF's
 // `api_view`/`permission_classes` decorators and `AllowAny`. The name
-// resolves to nothing, so the branch raises `NameError` instead of
-// returning, and the client gets an unhandled 500. The identical pattern is
+// resolved to nothing, so the branch raised `NameError` instead of
+// returning, and the client got an unhandled 500. The identical pattern was
 // duplicated in `stream_xc_episode` (:1441, :1444) and in both functions'
 // network-ACL `Forbidden` branches (:1399, :1436) — six call sites, one
 // missing import.

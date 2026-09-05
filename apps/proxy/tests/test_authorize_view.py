@@ -260,6 +260,22 @@ class ResolveAuthorizationTests(TestCase):
         )
         self.assertIsNone(result.user)
 
+    def test_a_non_integer_relay_output_denies_with_403_not_an_exception(self):
+        # A trusted marker naming a garbage output profile indicates a
+        # broken internal contract, not "no profile" (that case is the
+        # empty string) -- result_from_headers must deny it rather than
+        # let OutputProfile.objects.filter(id=...) raise ValueError.
+        request = self.factory.get(
+            "/proxy/ts/stream/x",
+            HTTP_X_DISPATCHARR_AUTHORIZED=internal_auth.relay_trust_token(),
+            HTTP_X_RELAY_OUTPUT="not-a-number",
+        )
+        with self.assertRaises(authorize.AuthorizeDenied) as ctx:
+            authorize_views.resolve_authorization(
+                request, authorize.SURFACE_LIVE, identifier="x"
+            )
+        self.assertEqual(ctx.exception.status, 403)
+
     def test_the_error_response_carries_the_status_and_a_json_body(self):
         response = authorize_views.authorize_error_response(
             authorize.AuthorizeDenied(429, "Stream limit exceeded (2 …)")

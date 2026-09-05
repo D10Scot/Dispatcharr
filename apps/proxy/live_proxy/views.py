@@ -20,7 +20,6 @@ from .redis_keys import RedisKeys
 from core.models import CoreSettings, PROXY_PROFILE_NAME
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny
-from rest_framework.response import Response
 from apps.accounts.permissions import (
     IsAdmin,
     permission_classes_by_method,

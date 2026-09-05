@@ -101,10 +101,21 @@ def result_from_headers(request, surface: str) -> AuthorizeResult:
     user = None
     if user_id.isdigit():
         user = User.objects.filter(id=int(user_id)).first()
+
+    output_profile_id = (request.META.get(META_RELAY_OUTPUT) or "").strip()
+    if output_profile_id and not output_profile_id.isdigit():
+        # A trusted marker is only ever "" (no profile) or a digit string
+        # nginx copied from X-Relay-Output; anything else means the
+        # internal contract is broken, not that no profile was chosen.
+        # OutputProfile.objects.filter(id=output_profile_id, ...) would
+        # raise ValueError on a non-integer id and fail closed as an
+        # uncontrolled 500 -- deny explicitly instead.
+        raise AuthorizeDenied(403, "Forbidden")
+
     return AuthorizeResult(
         surface=surface,
         channel_uuid=(request.META.get(META_RELAY_CHANNEL) or "").strip(),
-        output_profile_id=(request.META.get(META_RELAY_OUTPUT) or "").strip(),
+        output_profile_id=output_profile_id,
         client_id=(request.META.get(META_RELAY_CLIENT) or "").strip(),
         user_id=str(user.id) if user is not None else "",
         relay_name=settings.RELAY_DEFAULT_NAME,
