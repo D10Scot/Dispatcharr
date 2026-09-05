@@ -3,7 +3,8 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Dispatcharr fork metrics — Trends</title>
+<meta name="color-scheme" content="light dark" />
+<title>Dispatcharr fork · engineering metrics · Story</title>
 <link rel="stylesheet" href="vendor/uplot/uPlot.min.css" />
 <link rel="stylesheet" href="style.css" />
 </head>
@@ -12,16 +13,14 @@
   <h1>Dispatcharr fork metrics</h1>
   <nav>
     <a href="index.html">Overview</a>
-    <a href="trends.html" class="active">Trends</a>
-    <a href="presentation.html">Presentation</a>
+    <a href="story.html" class="active">Story</a>
+    <a href="explore.html">Explore</a>
+    <a href="compare.html">Compare</a>
+    <a href="defects.html">Defects</a>
   </nav>
 </header>
-<main>
-  <p class="present-header">Full history per metric family, one chart per numeric metric. Vertical lines mark phase milestones.</p>
-  <div id="families"><p class="empty">Loading…</p></div>
-</main>
+<main data-page="story"><p class="empty">Loading…</p></main>
 <script src="vendor/uplot/uPlot.iife.min.js"></script>
-<script src="data.js"></script>
-<script src="trends.js"></script>
+<script type="module" src="app.js"></script>
 </body>
 </html>

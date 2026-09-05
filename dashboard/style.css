@@ -1,168 +1,92 @@
 :root {
-  --bg: #0f1115;
-  --panel: #171a21;
-  --border: #2a2f3a;
-  --text: #e6e8eb;
-  --muted: #9aa3b2;
-  --accent: #4da3ff;
-  --up: #4caf50;
-  --down: #e05252;
-  font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --bg: #fafafa; --panel: #fff; --border: #e5e7eb; --text: #1f2937; --muted: #6b7280;
+  --accent: #1d4ed8; --good: #15803d; --bad: #b91c1c; --stale: #6b7280;
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
 }
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #0f1115; --panel: #171a21; --border: #2a2f3a; --text: #e6e8eb; --muted: #9aa3b2;
+          --accent: #4da3ff; --good: #4ade80; --bad: #f87171; --stale: #9aa3b2; }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text); }
+header { padding: .9rem 1.5rem; border-bottom: 1px solid var(--border); display: flex; align-items: baseline; gap: 1.5rem; }
+header h1 { font-size: 1.05rem; margin: 0; }
+nav a { color: var(--muted); text-decoration: none; margin-right: 1rem; font-size: .9rem; }
+nav a.active, nav a:hover { color: var(--accent); }
+main { padding: 1.25rem 1.5rem; max-width: 1200px; margin: 0 auto; }
+.empty, .error { color: var(--muted); font-style: italic; }
 
-* {
-  box-sizing: border-box;
-}
+/* phase strip */
+.phases { display: flex; gap: 0; margin: .5rem 0 1.25rem; }
+.phase { flex: 1; border-top: 3px solid var(--muted); position: relative; padding: .5rem .25rem 0 0; font-size: .8rem; color: var(--muted); }
+.phase.done { border-top-color: var(--good); }
+.phase.cur { border-top-color: var(--accent); color: var(--text); }
+.phase .name { display: block; font-weight: 600; }
+/* Milestone dots are positioned by an inline `left: N%` (computed from the
+   milestone's date within the phase's date window), not by CSS selector
+   order — nth-of-type would also count the .name/.muted spans in the same
+   phase element and land every dot on the wrong offset. */
+.phase .m { position: absolute; top: -7px; width: 10px; height: 10px; border-radius: 50%;
+            background: var(--panel); border: 2px solid var(--muted); transform: translateX(-50%); }
+.phase .m.phase-done, .phase .m.release { border-color: var(--good); background: var(--good); }
+.phase .m.incident { border-color: var(--bad); }
 
-body {
-  margin: 0;
-  background: var(--bg);
-  color: var(--text);
-}
+/* groups and tiles */
+.grp { margin: 1rem 0 .4rem; font-size: .7rem; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); font-weight: 700; }
+.tiles { display: grid; grid-template-columns: repeat(4, 1fr); gap: .75rem; }
+/* Spec §8: single column under 800px. */
+@media (max-width: 800px) { .tiles { grid-template-columns: 1fr; } }
+.tile { position: relative; overflow: hidden; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: .7rem .85rem; min-height: 104px; }
+.tile svg { position: absolute; left: 0; right: 0; bottom: 0; width: 100%; height: 66%; pointer-events: none; }
+.tile .area { fill: var(--accent); fill-opacity: .06; }
+.tile .line { fill: none; stroke: var(--accent); stroke-opacity: .35; stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+.tile.good .area { fill: var(--good); } .tile.good .line { stroke: var(--good); }
+.tile.bad .area { fill: var(--bad); } .tile.bad .line { stroke: var(--bad); }
+.tile.stale .area { fill: var(--stale); } .tile.stale .line { stroke: var(--stale); stroke-dasharray: 3 3; }
+.tile .l, .tile .v, .tile .d { position: relative; }
+.tile .l { font-size: .78rem; color: var(--muted); }
+.tile .v { font-size: 1.7rem; font-weight: 700; line-height: 1.2; }
+.tile .d { font-size: .76rem; color: var(--muted); }
+.tile.good .d { color: var(--good); } .tile.bad .d { color: var(--bad); }
+.tile.stale .d::before { content: "⚠ "; }
 
-header {
-  padding: 1rem 1.5rem;
-  border-bottom: 1px solid var(--border);
-  display: flex;
-  align-items: baseline;
-  gap: 1.5rem;
-}
-
-header h1 {
-  font-size: 1.1rem;
-  margin: 0;
-}
-
-nav a {
-  color: var(--muted);
-  text-decoration: none;
-  margin-right: 1rem;
-  font-size: 0.9rem;
-}
-
-nav a.active,
-nav a:hover {
-  color: var(--accent);
-}
-
-main {
-  padding: 1.5rem;
-  max-width: 1200px;
-  margin: 0 auto;
-}
-
-.cards {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
-  gap: 1rem;
-  margin-bottom: 2rem;
-}
-
-.card {
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 1rem;
-}
-
-.card .label {
-  color: var(--muted);
-  font-size: 0.8rem;
-  text-transform: uppercase;
-  letter-spacing: 0.03em;
-}
-
-.card .value {
-  font-size: 1.6rem;
-  font-weight: 600;
-  margin: 0.25rem 0;
-}
-
-.card .delta {
-  font-size: 0.85rem;
-}
-
-.card .delta.up {
-  color: var(--up);
-}
-
-.card .delta.down {
-  color: var(--down);
-}
-
-.card .spark {
-  height: 40px;
-  margin-top: 0.5rem;
-}
-
-section.family {
-  margin-bottom: 2.5rem;
-}
-
-section.family h2 {
-  font-size: 1rem;
-  color: var(--muted);
-  border-bottom: 1px solid var(--border);
-  padding-bottom: 0.4rem;
-}
-
-.chart-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(420px, 1fr));
-  gap: 1.5rem;
-}
-
-.chart-block {
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 0.75rem;
-}
-
-.chart-block h3 {
-  font-size: 0.85rem;
-  color: var(--muted);
-  margin: 0 0 0.5rem 0;
-  font-weight: 500;
-}
-
-.empty,
-.error {
-  color: var(--muted);
-  font-style: italic;
-}
-
-table.delta-table {
-  border-collapse: collapse;
-  width: 100%;
-  margin-bottom: 2rem;
-}
-
-table.delta-table th,
-table.delta-table td {
-  border-bottom: 1px solid var(--border);
-  padding: 0.4rem 0.6rem;
-  text-align: left;
-  font-size: 0.9rem;
-}
-
-table.delta-table th {
-  color: var(--muted);
-  font-weight: 500;
-}
-
-.present-header {
-  color: var(--muted);
-  margin-bottom: 1rem;
-}
-
-.present-header code {
-  color: var(--accent);
-}
-
-.milestone-note {
-  color: var(--muted);
-  font-size: 0.8rem;
-  margin-top: -0.75rem;
-  margin-bottom: 1.5rem;
-}
+/* charts, tables, story */
+.chart-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(420px, 1fr)); gap: 1rem; }
+@media (max-width: 520px) { .chart-grid { grid-template-columns: 1fr; } }
+.chart-block { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: .6rem .75rem; }
+.chart-block h3 { font-size: .85rem; margin: 0 0 .1rem; font-weight: 600; }
+.chart-block .note { font-size: .74rem; color: var(--muted); margin: 0 0 .4rem; }
+.chart-block .plot { min-height: 160px; }
+.toolbar { display: flex; gap: .75rem; align-items: center; margin: .5rem 0 1rem; font-size: .85rem; color: var(--muted); }
+.toolbar select, .toolbar button { font: inherit; padding: .2rem .4rem; }
+/* Explore's resolution toggle is a pair of links, not site navigation:
+   inherit the toolbar's muted colour rather than picking up a browser
+   default, and mark the current one by weight and full text colour. */
+.toolbar a { color: inherit; text-decoration: none; }
+.toolbar a:hover { text-decoration: underline; }
+.toolbar a.active { font-weight: 700; color: var(--text); }
+table { border-collapse: collapse; width: 100%; margin-bottom: 1.5rem; font-size: .88rem; }
+th, td { border-bottom: 1px solid var(--border); padding: .35rem .5rem; text-align: left; }
+th { color: var(--muted); font-weight: 500; font-size: .74rem; text-transform: uppercase; letter-spacing: .05em; }
+/* Compare's in-table group headers are section labels inside the body, not
+   column headings: full-strength text, spaced away from the rows above, and
+   left in their own casing (uppercasing "Extraction readiness" reads as a
+   second header row). */
+th.group { text-align: left; color: var(--text); padding-top: .8rem; text-transform: none;
+           letter-spacing: normal; font-size: .8rem; font-weight: 700; }
+td.n { text-align: right; font-variant-numeric: tabular-nums; }
+td.good { color: var(--good); } td.bad { color: var(--bad); }
+/* Direction arrows on the delta column: colour alone carries the signal on
+   screen but is lost in the printed/greyscale view. Pseudo-elements, so
+   `td.delta` textContent (what compare-page.test.js asserts) is unchanged. */
+td.delta.good::before { content: "▲ "; }
+td.delta.bad::before { content: "▼ "; }
+.story-phase { margin: 0 0 2rem; padding-top: .5rem; border-top: 1px solid var(--border); }
+.story-phase h2 { font-size: 1.05rem; margin: .25rem 0; }
+.story-phase .when { color: var(--muted); font-size: .8rem; }
+.story-phase ul { padding-left: 1.2rem; font-size: .88rem; }
+.foot { margin-top: 1.25rem; font-size: .72rem; color: var(--muted); display: flex; justify-content: space-between; gap: 1rem; flex-wrap: wrap; }
+.status-bar { display: flex; height: 14px; border-radius: 4px; overflow: hidden; margin: .5rem 0 1rem; }
+.status-bar span { display: block; height: 100%; }
+.status-bar .open { background: var(--bad); } .status-bar .pinned { background: var(--accent); } .status-bar .carried { background: var(--muted); } .status-bar .fixed { background: var(--good); }
+@media print { header, .toolbar { display: none; } main { max-width: none; padding: 0; } body { background: #fff; color: #000; } }

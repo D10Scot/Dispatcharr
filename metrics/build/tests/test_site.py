@@ -222,6 +222,38 @@ class SiteTests(unittest.TestCase):
         cov = next(r for r in s["compare"][key] if r["id"] == "backend_coverage")
         self.assertEqual(cov["to"], 50.0)
 
+    def test_every_metric_entry_declares_how_compare_reads_it(self):
+        # R45: `compare_by` is the build's own branch, published. The UI has
+        # to reproduce this rule for arbitrary (non-adjacent) milestone pairs
+        # the build step never precomputes, and cannot infer it from the
+        # entry: a DAILY_FAMILIES metric carries a non-null `commits` list
+        # exactly like a snapshot metric does, so "commits is not null" picks
+        # the wrong branch for coverage. All three shapes are asserted here.
+        cat = (self.cur / "catalogue.yml").read_text()
+        cat += (
+            "\n- id: backend_coverage\n  family: coverage\n  path: /backend_line_pct\n"
+            "  label: Backend coverage\n  unit: pct\n  direction: up\n  target: null\n"
+            "  group: safety_net\n  headline: false\n  since: 2026-08-19\n"
+            '  note: "Daily job."\n'
+        )
+        (self.cur / "catalogue.yml").write_text(cat)
+        row = {"commit_sha": self.base, "family": "coverage", "metrics": {"backend_line_pct": 50.0},
+               "timestamp": "2026-09-01T06:15:00+00:00"}
+        (self.data / "coverage.jsonl").write_text(json.dumps(row) + "\n")
+        curated = load_curated(self.cur)
+
+        s = build_site(self.data, curated, repo=self.repo, base=self.base, today=D(2026, 9, 5))
+        by_id = {m["id"]: m for g in s["groups"].values() for m in g}
+        self.assertEqual(by_id["e2e_scenarios"]["compare_by"], "sha", "snapshot family: per-sha row value")
+        self.assertEqual(by_id["backend_coverage"]["compare_by"], "date", "DAILY_FAMILIES (R33(2)): daily value by date")
+        self.assertEqual(by_id["codeql_open_critical_high"]["compare_by"], "date", "derived: no per-commit rows at all")
+        # Coverage is the case the field exists for: its rows are real, so
+        # `commits` is a list rather than None - the "commits is not null"
+        # rule the UI used before this would read it by sha and miss.
+        self.assertIsNotNone(by_id["backend_coverage"]["commits"])
+        # Headline entries are those same dicts plus `spark`, so they carry it too.
+        self.assertEqual({h["id"]: h["compare_by"] for h in s["headline"]}["e2e_scenarios"], "sha")
+
     def test_compare_with_a_latest_sha_absent_from_the_local_repo_builds_without_error(self):
         # R33(1): the synthetic base..latest_sha pair's `latest_sha` comes
         # straight from a data row's commit_sha, not a curated (and
