@@ -36,6 +36,6 @@ function evidence(d) {
   if (d.test) links.push(h('a', { href: `${REPO}/blob/main/${d.test}`, text: d.test.split('/').pop() }));
   if (d.fixed_in) links.push(h('a', { href: `${REPO}/pull/${d.fixed_in}`, text: `PR #${d.fixed_in}` }));
   if (d.carried_as) links.push(h('a', { href: `${REPO}/blob/main/${d.carried_as}`, text: 'spec' }));
-  if (!links.length && d.source) links.push(h('a', { href: `${REPO}/blob/main/${d.source}`, text: 'CLAUDE.md' }));
+  if (!links.length && d.source) links.push(h('a', { href: `${REPO}/blob/main/${d.source}`, text: d.source.split('#')[0].split('/').pop() }));
   return links.flatMap((l, i) => (i ? [' · ', l] : [l]));
 }

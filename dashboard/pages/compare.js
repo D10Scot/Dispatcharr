@@ -7,15 +7,25 @@ import { footer, GROUP_LABELS } from '../lib/status.js';
 
 export function render(site, root, params = new URLSearchParams('')) {
   const ms = site.milestones;
-  const from = params.get('from') || ms[0].sha;
-  const to = params.get('to') || ms[ms.length - 1].sha;
+  const shas = new Set(ms.map((m) => m.sha));
+  // A sha named in the query but not in site.milestones (stale link, typo)
+  // falls back to the default rather than rendering a select with no
+  // matching option and a table for a pair that doesn't exist.
+  const fromParam = params.get('from');
+  const toParam = params.get('to');
+  const from = fromParam && shas.has(fromParam) ? fromParam : ms[0].sha;
+  const to = toParam && shas.has(toParam) ? toParam : ms[ms.length - 1].sha;
   root.replaceChildren();
 
   const option = (m, value) => h('option', {
     value: m.sha, selected: m.sha === value ? 'selected' : null,
     text: `${fmtDate(m.date)} · ${m.label} (${shortSha(m.sha)})`,
   });
-  const select = (name, value) => h('select', { name }, ms.map((m) => option(m, value)));
+  const navigate = (e) => {
+    const el = e.target.form;
+    if (el.requestSubmit) el.requestSubmit(); else el.submit();
+  };
+  const select = (name, value) => h('select', { name, onchange: navigate }, ms.map((m) => option(m, value)));
   const form = h('form', { class: 'toolbar', method: 'get' },
     h('span', { text: 'From' }), select('from', from),
     h('span', { text: 'to' }), select('to', to),
@@ -43,7 +53,7 @@ export function render(site, root, params = new URLSearchParams('')) {
         h('td', { class: `n delta ${cls}`.trim(), text: fmtDelta(r.delta, r.unit) })));
     }
   }
-  if (rows.length === 0) body.append(h('tr', {}, h('td', { colspan: '4', class: 'empty', text: 'No snapshot metric has a value at both commits.' })));
+  if (rows.length === 0) body.append(h('tr', {}, h('td', { colspan: '4', class: 'empty', text: 'No metrics in the catalogue.' })));
   table.append(body);
   root.append(table, footer(site));
 }

@@ -2,8 +2,11 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import site from './fixtures/site.json';
 import { render } from '../pages/compare.js';
 
-const A = site.milestones[0].sha;
-const B = site.milestones[1].sha;
+// Literal, not read from the fixture: pins the addendum's constants so a
+// fixture edit that silently reordered milestones would fail this test
+// rather than silently comparing the wrong pair.
+const A = 'fd413f0cc4ab3131789a68fb31f1ae622ae7371a';
+const B = '75a68555b931e7d088bfbbd859b35e6e27064312';
 
 describe('compare page', () => {
   let root;
@@ -11,7 +14,11 @@ describe('compare page', () => {
 
   it('defaults to baseline -> latest milestone and marks deltas', () => {
     render(site, root, new URLSearchParams(''));
+    const form = root.querySelector('form');
+    expect(form.getAttribute('method')).toBe('get');
     const selects = root.querySelectorAll('select');
+    expect(selects[0].getAttribute('name')).toBe('from');
+    expect(selects[1].getAttribute('name')).toBe('to');
     expect(selects[0].value).toBe(A);
     expect(selects[1].value).toBe(B);
 
@@ -53,5 +60,13 @@ describe('compare page', () => {
 
     expect([...root.querySelectorAll('th.group')].map((t) => t.textContent))
       .toEqual(['Safety net', 'Security', 'Extraction readiness', 'Delivery']);
+  });
+
+  it('falls back to the default pair when a query sha is not a known milestone', () => {
+    render(site, root, new URLSearchParams('from=deadbeef'));
+    const selects = root.querySelectorAll('select');
+    expect(selects[0].value).toBe(A);
+    expect(selects[1].value).toBe(B);
+    expect(root.querySelectorAll('td.delta').length).toBe(5);
   });
 });
