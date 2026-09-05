@@ -1419,7 +1419,9 @@ resolve it, and each exists because a simpler arrangement provably does not boot
   three callers (`input/manager.py:1104,1407`, `channel_service.py:775`) post rather than write.
   This is the point at which the relay reaches zero ORM writes.
 - `channel_stream:{id}` / `stream_profile:{stream_id}` added to `RedisKeys`; the relay's writes to
-  both are deleted, leaving `Channel.get_stream()`/`release_stream()` as the only writers.
+  both are deleted, leaving Django as the only writer — `Channel.get_stream()`/`release_stream()`
+  plus the channel-deleted fallback that moves into `next_source.release_source()` (ruling 8),
+  which runs in the API process, never in the relay.
 - `apps/connect/models.py`: `channel_buffering` added to `SUPPORTED_EVENTS`.
 - WebSocket `relay_event` push on `channel_failover`/`stream_switch`/`client_disconnect`, emitted
   from the Django events view beside the existing `send_websocket_update` call pattern
@@ -1442,7 +1444,7 @@ resolve it, and each exists because a simpler arrangement provably does not boot
   split-brain description (now Django-only); § Observing a channel, "No WebSocket event exists for
   stream switch, failover or client teardown" (now `relay_event`).
 
-**Amendment S10 (PR 6 next-source and events).** The tree required nine decisions this section did
+**Amendment S10 (PR 6 next-source and events).** The tree required ten decisions this section did
 not make, recorded here rather than re-derived by PR 7 or Phase 2:
 
 1. The follow-up bullet above is resolved by binding the token, not deferring it: a second header,
@@ -1462,16 +1464,22 @@ not make, recorded here rather than re-derived by PR 7 or Phase 2:
    that needs it: the next-source request carries `current_url` so Django, not the relay, can skip a
    candidate that resolves to the stream already running (`_try_next_stream`'s existing
    reject-current-URL rule, preserved in one round trip instead of N); the response carries
-   `slot_reserved` so `stream_ts`'s five release paths (`views.py:383,510,539,560,785`) can tell a
-   reused assignment from a new reservation and avoid double-releasing; and the response carries
-   `alternates` — the candidate list resolved once at tune time, each entry already carrying `url`,
+   `slot_reserved` so `stream_ts`'s five release paths (`views.py:383,510,539,560,785`, pre-PR
+   lines) can tell a reused assignment from a new reservation and avoid double-releasing; and the
+   response carries `alternates` — the candidate list resolved once at tune time, each entry already carrying `url`,
    `user_agent`, `transcode` and the profile ids — because the degraded fallback below is only usable
    without Django if the cached list needs no further resolution.
 4. Every relay-side `release_stream()` call becomes `control_plane.release_source()`, not only the
    six rows in the § ORM reads table (`server.py:2363,2373`, `output/ts/generator.py:618,620` and
-   `output/fmp4/generator.py:378,380`): `views.py:383,510,539,560,785` call the same method on a
-   `Channel` the relay loaded, and leaving them would contradict this PR's own "exactly one writer"
-   requirement.
+   `output/fmp4/generator.py:378,380`): `views.py:383,510,539,560,785` (pre-PR lines) call the same
+   method on a `Channel` the relay loaded, and leaving them would contradict this PR's own
+   "one writer" requirement — which means one *process* (Django), not one file: ruling 8's
+   `server.py:2335,2342` deletes (the channel-deleted-mid-playback fallback) move into
+   `next_source.py`'s `release_source()` rather than disappearing, so the two Redis
+   `.delete()` calls that satisfy that fallback live in a second Django-side module, not in
+   `apps/channels/models.py` alongside `get_stream()`/`release_stream()`/`update_stream_profile()`/
+   `_release_stale_stream_assignment()`. Both modules run only in the API process; neither runs in
+   the relay.
 5. "No candidate available" answers `200 {"source": null, "error": "<reason>"}`, never a 4xx; `404`
    is reserved for an identifier that resolves to neither a `Channel` nor a `Stream`. The client's
    `_post` raises `ControlPlaneRefused` on every other 4xx — a separate exception from
@@ -1511,6 +1519,29 @@ not make, recorded here rather than re-derived by PR 7 or Phase 2:
    (`input/manager.py:1157`) — reachable exclusively while parsing ffmpeg stderr, which the Proxy
    stream profile never produces. The new `streaming-failover` E2E spec (PR 6) therefore asserts
    `stream_switch` for its `dead-air` fault, not `channel_failover`.
+10. Verifying this PR uncovered a real failure this section did not anticipate: a `DISPATCHARR_WEB_HOST`
+    or `DISPATCHARR_INTERNAL_API_BASE_URL` containing an underscore (`docker/tests/test-puid-pgid.sh`'s
+    `test_role_split()` named its containers `puid_test_role_api` etc. and passed that name straight
+    through as `DISPATCHARR_WEB_HOST`) reaches `get_control_plane_base_url()`, which sends it verbatim
+    as a Host header — Django's own `get_host()` rejects any Host containing an underscore before
+    `ALLOWED_HOSTS` is even consulted, so the relay's call fails with an opaque 400 pointing at
+    nothing. Three fixes, all landed:
+    (a) `control_plane.py`'s `_validated()` checks every branch (explicit, modular, dev, aio) with
+    Django's own `split_domain_port` — the same function `get_host()` calls — and raises
+    `ImproperlyConfigured` at resolve time, naming the offending variable and value, before any HTTP
+    call is attempted. No caller of `get_control_plane_base_url()`, `next_source()` or
+    `release_source()` catches `ImproperlyConfigured`: point 5's reasoning applies here too — a
+    misconfigured deployment must fail loudly, not degrade through the same fallback path a genuine
+    Django outage uses.
+    (b) This section's own D9 enumerates only explicit → modular → AIO and omits the `dev` →
+    `http://127.0.0.1:5656` branch the code has always had; D6 already establishes that branch for
+    the DVR formula D9 states it borrows, so D9 was restating D6's shape rather than inventing a
+    fourth one, and both are now consistent with what `control_plane.py:74-75` and `CLAUDE.md`'s
+    Commands section document.
+    (c) `docker/tests/test-puid-pgid.sh`'s `test_role_split()` containers, network and volume are
+    hyphenated (`puid-test-role-api`, etc.) instead of underscored, because the relay→Django hop
+    this PR adds is the first traffic in that harness to carry a container name as an HTTP Host
+    header rather than only a DNS name, where an underscore is legal.
 
 ### PR 7 — `migration/phase1-control-api`
 
