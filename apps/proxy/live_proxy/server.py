@@ -15,7 +15,6 @@ import os
 import json
 import gevent
 from apps.proxy.config import TSConfig as Config
-from apps.channels.models import Channel, Stream
 from core.utils import RedisClient, log_system_event
 from django.db import close_old_connections
 from redis.exceptions import ConnectionError, TimeoutError
@@ -30,6 +29,20 @@ from .config_helper import ConfigHelper
 from .utils import get_logger
 
 logger = get_logger()
+
+
+def _int_or_none(value):
+    """int(value), or None on anything that isn't one.
+
+    Redis metadata fields arrive as strings, a truncated/absent field, or
+    (in tests) a MagicMock the fixture's side_effect doesn't map — bare
+    int() raises TypeError on the last of those, not just ValueError.
+    """
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
 
 class ProxyServer:
     """Manages TS proxy server instance with worker coordination"""
@@ -2294,96 +2307,56 @@ class ProxyServer:
             return value.decode("utf-8", errors="replace")
         return str(value)
 
-    def _release_profile_slot_from_redis_metadata(self, channel_id):
-        """Release M3U profile slot using only Redis metadata for this UUID.
+    def _release_stream_resources(self, channel_id):
+        """Ask Django to release the provider slot.
 
-        Needed when the Channel row was deleted while a stream was still
-        playing (manual delete without stop_stream). Stats stop / client
-        disconnect must still DECR profile_connections.
+        Phase 1 PR 6: the three-step fallback — Channel, then Stream, then
+        the ids in this channel's own metadata hash for a channel deleted
+        mid-playback — moved to apps/proxy/next_source.release_source(). The
+        metadata READ stays here, because that hash is relay state and PR 7
+        takes the control plane out of relay keys entirely; only the ids
+        cross. One call, not one per fallback rung.
         """
-        if not self.redis_client:
-            return False
-
-        from apps.m3u.connection_pool import release_profile_slot
+        from apps.proxy import control_plane
 
         metadata_key = RedisKeys.channel_metadata(channel_id)
-        meta_stream_id = self._redis_field_to_str(
+        stream_id = self._redis_field_to_str(
             self.redis_client.hget(metadata_key, ChannelMetadataField.STREAM_ID)
         )
-        meta_profile_id = self._redis_field_to_str(
+        m3u_profile_id = self._redis_field_to_str(
             self.redis_client.hget(metadata_key, ChannelMetadataField.M3U_PROFILE)
         )
-        meta_channel_id = self._redis_field_to_str(
+        channel_pk = self._redis_field_to_str(
             self.redis_client.hget(metadata_key, ChannelMetadataField.CHANNEL_ID)
         )
 
-        if not meta_profile_id:
-            logger.debug(
-                f"Channel {channel_id}: no m3u_profile in metadata for orphan release"
-            )
-            return False
-
         try:
-            profile_id = int(meta_profile_id)
-        except (TypeError, ValueError):
+            released = control_plane.release_source(
+                channel_id,
+                stream_id=_int_or_none(stream_id),
+                m3u_profile_id=_int_or_none(m3u_profile_id),
+                channel_pk=_int_or_none(channel_pk),
+            )
+        except control_plane.ControlPlaneRefused as exc:
             logger.warning(
-                f"Channel {channel_id}: invalid m3u_profile in metadata: {meta_profile_id!r}"
+                f"Channel {channel_id}: control plane refused the release "
+                f"({exc.status}); profile slot stays counted"
+            )
+            return False
+        except control_plane.ControlPlaneUnavailable as exc:
+            logger.warning(
+                f"Channel {channel_id}: control plane unreachable for release; "
+                f"profile slot stays counted: {exc}"
             )
             return False
 
-        if meta_channel_id:
-            self.redis_client.delete(f"channel_stream:{meta_channel_id}")
-        if meta_stream_id:
-            try:
-                stream_id = int(meta_stream_id)
-            except (TypeError, ValueError):
-                stream_id = None
-            if stream_id is not None:
-                self.redis_client.delete(f"stream_profile:{stream_id}")
-
-        self.redis_client.hdel(
-            metadata_key,
-            ChannelMetadataField.STREAM_ID,
-            ChannelMetadataField.M3U_PROFILE,
-        )
-        release_profile_slot(profile_id, self.redis_client)
-        logger.info(
-            f"Released profile slot {profile_id} for deleted channel {channel_id} "
-            f"via Redis metadata"
-        )
-        return True
-
-    def _release_stream_resources(self, channel_id):
-        """Release profile slot before wiping live Redis keys.
-
-        Prefer Channel/Stream ORM helpers while rows exist; fall back to
-        metadata-only release when the channel was deleted mid-playback.
-        """
-        try:
-            channel = Channel.objects.get(uuid=channel_id)
-            if channel.release_stream():
-                return True
-            logger.debug(f"Channel {channel_id}: release_stream found no keys to clean")
-        except Channel.DoesNotExist:
-            pass
-        except Exception as e:
-            logger.debug(f"Channel {channel_id}: release_stream via ORM failed: {e}")
-
-        try:
-            stream = Stream.objects.get(stream_hash=channel_id)
-            if stream.release_stream():
-                return True
-            logger.debug(f"Stream {channel_id}: release_stream found no keys to clean")
-        except Stream.DoesNotExist:
-            pass
-        except Exception as e:
-            logger.debug(f"Stream {channel_id}: release_stream via ORM failed: {e}")
-
-        if self._release_profile_slot_from_redis_metadata(channel_id):
-            return True
-
-        logger.debug(f"No Channel, Stream, or Redis metadata release for {channel_id}")
-        return False
+        if released:
+            self.redis_client.hdel(
+                metadata_key,
+                ChannelMetadataField.STREAM_ID,
+                ChannelMetadataField.M3U_PROFILE,
+            )
+        return released
 
     def _clean_redis_keys(self, channel_id):
         """Clean up all Redis keys for a channel more efficiently"""

@@ -170,6 +170,7 @@ def get_stream_info_for_switch(channel_id: str, target_stream_id: Optional[int] 
     channel = None
     try:
         from core.utils import RedisClient
+        from apps.proxy.live_proxy.redis_keys import RedisKeys
 
         channel = get_object_or_404(Channel, uuid=channel_id)
         redis_client = RedisClient.get_client()
@@ -202,10 +203,10 @@ def get_stream_info_for_switch(channel_id: str, target_stream_id: Optional[int] 
             for profile in profiles:
                 if redis_client:
                     channel_using_profile = False
-                    existing_stream_id = redis_client.get(f"channel_stream:{channel.id}")
+                    existing_stream_id = redis_client.get(RedisKeys.channel_stream(channel.id))
                     if existing_stream_id:
                         existing_profile_id = redis_client.get(
-                            f"stream_profile:{existing_stream_id}"
+                            RedisKeys.stream_profile(existing_stream_id)
                         )
                         if existing_profile_id and int(existing_profile_id) == profile.id:
                             channel_using_profile = True
@@ -292,6 +293,7 @@ def get_alternate_streams(channel_id: str, current_stream_id: Optional[int] = No
     """
     try:
         from core.utils import RedisClient
+        from apps.proxy.live_proxy.redis_keys import RedisKeys
 
         # Get channel object
         channel = get_stream_object(channel_id)
@@ -345,10 +347,10 @@ def get_alternate_streams(channel_id: str, current_stream_id: Optional[int] = No
                 for profile in profiles:
                     if redis_client:
                         channel_using_profile = False
-                        existing_stream_id = redis_client.get(f"channel_stream:{channel.id}")
+                        existing_stream_id = redis_client.get(RedisKeys.channel_stream(channel.id))
                         if existing_stream_id:
                             existing_profile_id = redis_client.get(
-                                f"stream_profile:{existing_stream_id}"
+                                RedisKeys.stream_profile(existing_stream_id)
                             )
                             if existing_profile_id and int(existing_profile_id) == profile.id:
                                 channel_using_profile = True
@@ -727,15 +729,16 @@ def release_source(identifier, *, stream_id=None, m3u_profile_id=None, channel_p
 
     from core.utils import RedisClient
     from apps.m3u.connection_pool import release_profile_slot
+    from apps.proxy.live_proxy.redis_keys import RedisKeys
 
     redis_client = RedisClient.get_client()
     if not redis_client:
         return False
 
     if channel_pk is not None:
-        redis_client.delete(f"channel_stream:{channel_pk}")
+        redis_client.delete(RedisKeys.channel_stream(channel_pk))
     if stream_id is not None:
-        redis_client.delete(f"stream_profile:{stream_id}")
+        redis_client.delete(RedisKeys.stream_profile(stream_id))
 
     release_profile_slot(int(m3u_profile_id), redis_client)
     logger.info(

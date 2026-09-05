@@ -315,8 +315,12 @@ class GeneratorAndStatusDbCleanupTests(SimpleTestCase):
     def setUp(self):
         self.factory = RequestFactory()
 
-    @patch("apps.proxy.live_proxy.output.ts.generator.Channel.objects")
-    def test_ts_generator_init_uses_passed_name_without_orm(self, mock_channel_objects):
+    def test_ts_generator_init_uses_passed_name_without_orm(self):
+        # Phase 1 PR 6, Task 9: generator.py no longer imports Channel/Stream
+        # at all -- release_stream() moved behind control_plane.release_source()
+        # -- so there is nothing left in this module for __init__ to reach the
+        # ORM through. The assertion that matters is the one below: a passed
+        # channel_name is used as-is.
         from apps.proxy.live_proxy.output.ts.generator import StreamGenerator
 
         gen = StreamGenerator(
@@ -328,7 +332,6 @@ class GeneratorAndStatusDbCleanupTests(SimpleTestCase):
         )
 
         self.assertEqual(gen.channel_name, "CNN")
-        mock_channel_objects.filter.assert_not_called()
 
     @patch("apps.proxy.live_proxy.channel_status.close_old_connections")
     @patch("apps.proxy.live_proxy.channel_status.ProxyServer")

@@ -6,7 +6,6 @@ This module handles generating and delivering video streams to clients.
 import time
 import gevent
 from apps.proxy.config import TSConfig as Config
-from apps.channels.models import Channel, Stream
 from django.db import close_old_connections
 from core.utils import log_system_event
 from ...server import ProxyServer
@@ -614,11 +613,13 @@ class StreamGenerator:
                         # During shutdown_delay, keep the slot until coordinated stop runs.
                         if client_count <= 1 and ConfigHelper.channel_shutdown_delay() <= 0:
                             try:
+                                from apps.proxy import control_plane
+
                                 try:
-                                    obj = Channel.objects.get(uuid=self.channel_id)
-                                except (Channel.DoesNotExist, Exception):
-                                    obj = Stream.objects.get(stream_hash=self.channel_id)
-                                stream_released = obj.release_stream()
+                                    stream_released = control_plane.release_source(self.channel_id)
+                                except (control_plane.ControlPlaneRefused, control_plane.ControlPlaneUnavailable) as exc:
+                                    logger.warning(f"Could not release the slot for {self.channel_id}: {exc}")
+                                    stream_released = False
                                 if stream_released:
                                     logger.debug(f"[{self.client_id}] Released stream for channel {self.channel_id}")
                                 else:

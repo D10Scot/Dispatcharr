@@ -174,6 +174,8 @@ def stream_ts(request, channel_id, user=None, force_output_format=None, decision
     if user is None:
         user = decision.user
 
+    from apps.proxy import control_plane
+
     client_user_agent = None
     proxy_server = ProxyServer.get_instance()
     connection_allocated = False  # Track if connection slot was allocated via get_stream()
@@ -379,8 +381,14 @@ def stream_ts(request, channel_id, user=None, force_output_format=None, decision
                             )
 
                     if stream_url is None:
-                        if slot_reserved and not channel.release_stream():
-                            logger.debug(f"[{client_id}] release_stream found no keys during failed init cleanup")
+                        if slot_reserved:
+                            try:
+                                released = control_plane.release_source(channel_id)
+                            except (control_plane.ControlPlaneRefused, control_plane.ControlPlaneUnavailable) as exc:
+                                logger.warning(f"Could not release the slot for {channel_id}: {exc}")
+                                released = False
+                            if not released:
+                                logger.debug(f"[{client_id}] release_stream found no keys during failed init cleanup")
 
                         # Get the specific error message if available
                         wait_duration = f"{int(time.time() - wait_start_time)}s"
@@ -409,10 +417,10 @@ def stream_ts(request, channel_id, user=None, force_output_format=None, decision
                     stream_id = None
                     m3u_profile_id = None
                     if proxy_server.redis_client:
-                        stream_id_bytes = proxy_server.redis_client.get(f"channel_stream:{channel.id}")
+                        stream_id_bytes = proxy_server.redis_client.get(RedisKeys.channel_stream(channel.id))
                         if stream_id_bytes:
                             stream_id = int(stream_id_bytes)
-                            profile_id_bytes = proxy_server.redis_client.get(f"stream_profile:{stream_id}")
+                            profile_id_bytes = proxy_server.redis_client.get(RedisKeys.stream_profile(stream_id))
                             if profile_id_bytes:
                                 m3u_profile_id = int(profile_id_bytes)
                     logger.info(
@@ -494,8 +502,14 @@ def stream_ts(request, channel_id, user=None, force_output_format=None, decision
                                         f"[{client_id}] Alternate stream #{alt['stream_id']} failed validation: {message}"
                                     )
                         # Release stream lock before redirecting only if we reserved a slot
-                        if connection_allocated and not channel.release_stream():
-                            logger.warning(f"[{client_id}] Failed to release stream before redirect")
+                        if connection_allocated:
+                            try:
+                                released = control_plane.release_source(channel_id)
+                            except (control_plane.ControlPlaneRefused, control_plane.ControlPlaneUnavailable) as exc:
+                                logger.warning(f"Could not release the slot for {channel_id}: {exc}")
+                                released = False
+                            if not released:
+                                logger.warning(f"[{client_id}] Failed to release stream before redirect")
                         connection_allocated = False
                         # Final decision based on validation results
                         if is_valid:
@@ -523,7 +537,12 @@ def stream_ts(request, channel_id, user=None, force_output_format=None, decision
                     # Initialize channel with the stream's user agent (not the client's)
                     if ChannelService.is_channel_unavailable_for_new_clients(channel_id):
                         if connection_allocated:
-                            if not channel.release_stream():
+                            try:
+                                released = control_plane.release_source(channel_id)
+                            except (control_plane.ControlPlaneRefused, control_plane.ControlPlaneUnavailable) as exc:
+                                logger.warning(f"Could not release the slot for {channel_id}: {exc}")
+                                released = False
+                            if not released:
                                 logger.warning(f"[{client_id}] Failed to release stream before teardown reject")
                             connection_allocated = False
                         logger.info(
@@ -544,7 +563,12 @@ def stream_ts(request, channel_id, user=None, force_output_format=None, decision
 
                     if not success:
                         if connection_allocated:
-                            if not channel.release_stream():
+                            try:
+                                released = control_plane.release_source(channel_id)
+                            except (control_plane.ControlPlaneRefused, control_plane.ControlPlaneUnavailable) as exc:
+                                logger.warning(f"Could not release the slot for {channel_id}: {exc}")
+                                released = False
+                            if not released:
                                 logger.warning(f"[{client_id}] Failed to release stream after init failure")
                             connection_allocated = False
                         return JsonResponse(
@@ -769,7 +793,12 @@ def stream_ts(request, channel_id, user=None, force_output_format=None, decision
         logger.error(f"Error in stream_ts: {e}", exc_info=True)
         if connection_allocated and channel is not None:
             try:
-                if not channel.release_stream():
+                try:
+                    released = control_plane.release_source(channel_id)
+                except (control_plane.ControlPlaneRefused, control_plane.ControlPlaneUnavailable) as exc:
+                    logger.warning(f"Could not release the slot for {channel_id}: {exc}")
+                    released = False
+                if not released:
                     logger.warning(f"[{client_id}] Failed to release stream in exception handler")
             except Exception:
                 pass

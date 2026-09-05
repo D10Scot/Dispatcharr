@@ -144,3 +144,18 @@ class RedisKeys:
         """
         return f"live:channel:{channel_id}:source_cache"
 
+    # Written only by apps/channels/models.py — Channel.get_stream(),
+    # release_stream(), update_stream_profile() — and reached only through
+    # apps/proxy/next_source.py since Phase 1 PR 6. They were hand-rolled
+    # f-strings on both sides of the boundary, which is what made them
+    # split-brain; naming them here is what makes a second writer visible.
+    @staticmethod
+    def channel_stream(channel_pk):
+        """Stream id currently assigned to this channel (numeric channel pk)."""
+        return f"channel_stream:{channel_pk}"
+
+    @staticmethod
+    def stream_profile(stream_id):
+        """M3U account profile id serving this stream."""
+        return f"stream_profile:{stream_id}"
+

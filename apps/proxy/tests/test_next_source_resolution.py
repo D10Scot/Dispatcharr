@@ -398,3 +398,32 @@ class NextSourceDbCleanupTests(SimpleTestCase):
 
         self.assertIn("error", result)
         mock_close.assert_called_once()
+
+
+class ReleaseSourceMetadataFallbackTests(SimpleTestCase):
+    """Phase 1 PR 6, Task 9: the half of the release pin that moved to
+    Django. A channel deleted mid-playback (neither a Channel nor a Stream
+    row exists) still frees channel_stream:*/stream_profile:* and the
+    provider slot, using only the ids the relay read out of its own
+    metadata hash and passed as arguments."""
+
+    @patch("apps.m3u.connection_pool.release_profile_slot")
+    @patch("core.utils.RedisClient.get_client")
+    @patch("apps.proxy.next_source.Stream.objects.get", side_effect=Stream.DoesNotExist)
+    @patch("apps.proxy.next_source.Channel.objects.get", side_effect=Channel.DoesNotExist)
+    def test_release_source_falls_back_to_metadata_when_channel_gone(
+        self, mock_channel_get, mock_stream_get, mock_get_client, mock_release_slot
+    ):
+        redis_client = MagicMock()
+        mock_get_client.return_value = redis_client
+
+        from apps.proxy.next_source import release_source
+
+        released = release_source(
+            "gone", stream_id=2243070, m3u_profile_id=50, channel_pk=224
+        )
+
+        self.assertTrue(released)
+        redis_client.delete.assert_any_call("channel_stream:224")
+        redis_client.delete.assert_any_call("stream_profile:2243070")
+        mock_release_slot.assert_called_once_with(50, redis_client)

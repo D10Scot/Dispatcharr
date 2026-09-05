@@ -225,7 +225,7 @@ class Stream(models.Model):
             (stream_id, profile_id, error_reason, slot_reserved)
         """
         redis_client = RedisClient.get_client()
-        profile_id = redis_client.get(f"stream_profile:{self.id}")
+        profile_id = redis_client.get(RedisKeys.stream_profile(self.id))
         if profile_id:
             profile_id = int(profile_id)
             return self.id, profile_id, None, False
@@ -250,8 +250,8 @@ class Stream(models.Model):
             )
 
             if reserved:
-                redis_client.set(f"channel_stream:{self.id}", self.id)
-                redis_client.set(f"stream_profile:{self.id}", profile.id)
+                redis_client.set(RedisKeys.channel_stream(self.id), self.id)
+                redis_client.set(RedisKeys.stream_profile(self.id), profile.id)
                 return self.id, profile.id, None, True
 
         return None, None, "All active M3U profiles have reached maximum connection limits", False
@@ -268,15 +268,15 @@ class Stream(models.Model):
 
         stream_id = self.id
         # Get the matched profile for cleanup
-        profile_id = redis_client.get(f"stream_profile:{stream_id}")
+        profile_id = redis_client.get(RedisKeys.stream_profile(stream_id))
         if not profile_id:
             logger.debug(
                 f"Stream {stream_id}: no profile found in "
-                f"stream_profile:{stream_id}"
+                f"{RedisKeys.stream_profile(stream_id)}"
             )
             return False
 
-        redis_client.delete(f"stream_profile:{stream_id}")  # Remove profile association
+        redis_client.delete(RedisKeys.stream_profile(stream_id))  # Remove profile association
 
         profile_id = int(profile_id)
         logger.debug(
@@ -642,14 +642,14 @@ class Channel(models.Model):
 
         metadata_key = RedisKeys.channel_metadata(str(self.uuid))
         if not redis_client.exists(metadata_key):
-            return redis_client.get(f"stream_profile:{stream_id}") is not None
+            return redis_client.get(RedisKeys.stream_profile(stream_id)) is not None
 
         return False
 
     def _release_stale_stream_assignment(self, redis_client, stream_id: int) -> None:
         """Release pool counters and remove stale channel/stream assignment keys."""
         profile_id = None
-        profile_id_bytes = redis_client.get(f"stream_profile:{stream_id}")
+        profile_id_bytes = redis_client.get(RedisKeys.stream_profile(stream_id))
         if profile_id_bytes:
             try:
                 profile_id = int(profile_id_bytes)
@@ -686,8 +686,8 @@ class Channel(models.Model):
                 stream_id,
             )
 
-        redis_client.delete(f"channel_stream:{self.id}")
-        redis_client.delete(f"stream_profile:{stream_id}")
+        redis_client.delete(RedisKeys.channel_stream(self.id))
+        redis_client.delete(RedisKeys.stream_profile(stream_id))
 
     def get_stream(self, requester=None):
         """
@@ -708,7 +708,7 @@ class Channel(models.Model):
         # Reuse assignment only when this channel is still active in the proxy.
         # Stale channel_stream keys after stop/disconnect skip INCR and break pool
         # accounting, which lets a second stream reach the provider and fail validation.
-        stream_id_bytes = redis_client.get(f"channel_stream:{self.id}")
+        stream_id_bytes = redis_client.get(RedisKeys.channel_stream(self.id))
         if stream_id_bytes:
             try:
                 stream_id = int(stream_id_bytes)
@@ -720,7 +720,7 @@ class Channel(models.Model):
 
             if stream_id is not None:
                 if self._stream_assignment_is_reusable(redis_client, stream_id):
-                    profile_id_bytes = redis_client.get(f"stream_profile:{stream_id}")
+                    profile_id_bytes = redis_client.get(RedisKeys.stream_profile(stream_id))
                     if profile_id_bytes:
                         try:
                             profile_id = int(profile_id_bytes)
@@ -778,8 +778,8 @@ class Channel(models.Model):
 
                 if reserved:
                     # Slot reserved — assign stream to this channel
-                    redis_client.set(f"channel_stream:{self.id}", stream.id)
-                    redis_client.set(f"stream_profile:{stream.id}", profile.id)
+                    redis_client.set(RedisKeys.channel_stream(self.id), stream.id)
+                    redis_client.set(RedisKeys.stream_profile(stream.id), profile.id)
                     logger.info(
                         f"Channel {self.uuid}: assigned stream {stream.id} "
                         f"profile {profile.id} ({profile.name})"
@@ -839,7 +839,7 @@ class Channel(models.Model):
         """
         redis_client = RedisClient.get_client()
 
-        stream_id = redis_client.get(f"channel_stream:{self.id}")
+        stream_id = redis_client.get(RedisKeys.channel_stream(self.id))
         if not stream_id:
             # Primary key missing — try metadata hash fallback.
             # The proxy may have already cleaned up channel_stream/stream_profile
@@ -860,8 +860,8 @@ class Channel(models.Model):
                     f"profile_id={profile_id} from metadata fallback"
                 )
                 # Clean up any remaining keys
-                redis_client.delete(f"channel_stream:{self.id}")
-                redis_client.delete(f"stream_profile:{stream_id}")
+                redis_client.delete(RedisKeys.channel_stream(self.id))
+                redis_client.delete(RedisKeys.stream_profile(stream_id))
 
                 # Clear metadata fields so duplicate release_stream() calls
                 # won't find them and DECR again
@@ -880,18 +880,18 @@ class Channel(models.Model):
             )
             return False
 
-        redis_client.delete(f"channel_stream:{self.id}")  # Remove active stream
+        redis_client.delete(RedisKeys.channel_stream(self.id))  # Remove active stream
 
         stream_id = int(stream_id)
         logger.debug(
             f"Channel {self.uuid}: found stream_id={stream_id} for "
-            f"channel_stream:{self.id}"
+            f"{RedisKeys.channel_stream(self.id)}"
         )
 
         # Get the matched profile for cleanup
-        profile_id = redis_client.get(f"stream_profile:{stream_id}")
+        profile_id = redis_client.get(RedisKeys.stream_profile(stream_id))
         if profile_id:
-            redis_client.delete(f"stream_profile:{stream_id}")  # Remove profile association
+            redis_client.delete(RedisKeys.stream_profile(stream_id))  # Remove profile association
             profile_id = int(profile_id)
         else:
             # stream_profile key missing — try metadata hash fallback
@@ -903,12 +903,12 @@ class Channel(models.Model):
                 profile_id = int(meta_profile_id)
                 logger.debug(
                     f"Channel {self.uuid}: recovered profile_id={profile_id} "
-                    f"from metadata fallback (stream_profile:{stream_id} was missing)"
+                    f"from metadata fallback ({RedisKeys.stream_profile(stream_id)} was missing)"
                 )
             else:
                 logger.warning(
                     f"Channel {self.uuid}: no profile found for "
-                    f"stream_profile:{stream_id} or in metadata fallback"
+                    f"{RedisKeys.stream_profile(stream_id)} or in metadata fallback"
                 )
                 return False
         logger.debug(
@@ -943,7 +943,7 @@ class Channel(models.Model):
         redis_client = RedisClient.get_client()
 
         # Get current stream ID
-        stream_id_bytes = redis_client.get(f"channel_stream:{self.id}")
+        stream_id_bytes = redis_client.get(RedisKeys.channel_stream(self.id))
         if not stream_id_bytes:
             logger.debug("No active stream found for channel")
             return False
@@ -951,7 +951,7 @@ class Channel(models.Model):
         stream_id = int(stream_id_bytes)
 
         # Get current profile ID
-        current_profile_id_bytes = redis_client.get(f"stream_profile:{stream_id}")
+        current_profile_id_bytes = redis_client.get(RedisKeys.stream_profile(stream_id))
         if not current_profile_id_bytes:
             logger.debug("No profile found for current stream")
             return False
@@ -992,7 +992,7 @@ class Channel(models.Model):
         pipe = redis_client.pipeline()
         if old_count > 0:
             pipe.decr(old_profile_connections_key)
-        pipe.set(f"stream_profile:{stream_id}", new_profile_id)
+        pipe.set(RedisKeys.stream_profile(stream_id), new_profile_id)
         pipe.incr(new_profile_connections_key)
         pipe.execute()
         logger.info(
