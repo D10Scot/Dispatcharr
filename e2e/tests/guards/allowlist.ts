@@ -60,7 +60,8 @@ export const SUBPROCESS: Capability = {
     // sharing — a container-wide observable with no client-facing equivalent.
     'tests/streaming-greybox/output-profile-sharing.spec.ts',
     // Reads the resolved nginx config with `docker exec ... nginx -T` to pin
-    // uwsgi_buffering off on the /proxy/ location.
+    // uwsgi_buffering off on every relay-bound location (Phase 1 PR 4 split
+    // the original single /proxy/ block into nine).
     'tests/streaming-greybox/nginx-stream-buffering.spec.ts',
   ],
 };

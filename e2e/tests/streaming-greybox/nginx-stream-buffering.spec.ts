@@ -92,27 +92,75 @@ function parseLocationBlocks(config: string): LocationBlock[] {
  * allowlist (normally a `@characterization` signal, `docs/adr/0002`): the
  * directive it pins is a load-bearing deploy fact that must survive the
  * process split, not an implementation detail of the current single-process
- * shape. A red run here is meant to block PR 4 by design, the way any other
- * `@contract` test does.
+ * shape. PR 4 is the process split this test was written to survive — its
+ * location filter now covers every location that split introduced, not just
+ * the original single `/proxy/` block.
  */
+
+/**
+ * Every relay-bound location as of Phase 1 PR 4 (docker/nginx.conf), by the
+ * exact `target` `parseLocationBlocks` produces for it. Widened from the
+ * original single `/proxy/` prefix once that block split into eight
+ * relay-bound locations plus the XC three-segment regex — this list is what
+ * keeps the buffering pin covering the whole relay surface rather than the
+ * one route it happened to be written against.
+ *
+ * **Exact targets, deliberately, not `startsWith` prefixes.** A prefix test
+ * on `/proxy/vod/` also matches the `= /proxy/vod/stats/` and
+ * `= /proxy/vod/stop_client/` exact locations, which stay on the API and
+ * correctly carry no `uwsgi_buffering off` — the same trap applies to the
+ * three `/proxy/catchup/` control routes. Comparing whole targets keeps the
+ * filter naming exactly the nine blocks it means.
+ *
+ * Two relay-adjacent locations are absent on purpose: `^~ /proxy/`, which is
+ * the API's own short IsAdmin control routes, and `^~ /proxy/relay/`, PR 7's
+ * control API, which will serve short JSON rather than a stream.
+ *
+ * A third is absent because it cannot appear: PR 4 also routes
+ * `^/api/channels/recordings/\d+/file/$` to the relay, but that location is
+ * **nested inside `^~ /api/`**, and `parseLocationBlocks` walks by brace
+ * depth from each `location` header — so the nested block's lines are part
+ * of `/api/`'s own `body`, and it never surfaces as a separate entry with a
+ * `target` of its own. Adding it to this list would make the set assertion
+ * below fail on a correct config. Its `uwsgi_buffering off` is pinned by
+ * `docker/nginx.conf` review and Task 5's grep counts instead.
+ *
+ * The last entry is the XC three-segment root form: `parseLocationBlocks`
+ * strips a regex location's leading `^` from its `target`, so this is the
+ * literal the parser produces for `location ~ ^/[^/]+/[^/]+/[^/]+$`.
+ */
+const RELAY_BOUND_TARGETS = [
+  '/proxy/ts/stream/',
+  '/proxy/vod/',
+  '/proxy/catchup/',
+  '/live/',
+  '/movie/',
+  '/series/',
+  '/timeshift/',
+  '/streaming/timeshift.php',
+  '/[^/]+/[^/]+/[^/]+$',
+];
+
 test(
-  'the /proxy/ location keeps uwsgi_buffering off',
+  'every relay-bound location keeps uwsgi_buffering off',
   { tag: '@contract' },
   async () => {
     const { stdout } = await execFileAsync('docker', ['exec', CONTAINER_NAME, 'nginx', '-T']);
     const blocks = parseLocationBlocks(stdout);
-    const proxyBlocks = blocks.filter((b) => b.target.startsWith('/proxy/'));
+    const relayBlocks = blocks.filter((b) => RELAY_BOUND_TARGETS.includes(b.target));
 
-    // Vacuous-pass guard: if nginx's config ever stops declaring a /proxy/
-    // location at all (renamed, merged into another block), the `.every()`
-    // below would pass on an empty array and this test would silently stop
-    // meaning anything. Fail loudly instead.
+    // Vacuous-pass guard: if nginx's config ever stops declaring these
+    // locations (renamed, merged, or the relay split reverted), the loop
+    // below would pass over an empty array and this test would silently
+    // stop meaning anything. Fail loudly instead — and assert the full set,
+    // not just "more than zero", so losing eight of the nine is a failure
+    // rather than a pass.
     expect(
-      proxyBlocks.length,
-      `expected at least one location block targeting /proxy/ in nginx -T's output; found blocks: ${blocks.map((b) => b.header).join(', ')}`
-    ).toBeGreaterThan(0);
+      relayBlocks.map((b) => b.target).sort(),
+      `expected every relay-bound location in nginx -T's output (${RELAY_BOUND_TARGETS.join(', ')}); found blocks: ${blocks.map((b) => b.header).join(', ')}`
+    ).toEqual([...RELAY_BOUND_TARGETS].sort());
 
-    for (const block of proxyBlocks) {
+    for (const block of relayBlocks) {
       expect(
         block.body.some((line) => /^\s*uwsgi_buffering\s+off\s*;/.test(line)),
         `location block "${block.header}" does not set uwsgi_buffering off:\n${block.body.join('\n')}`
