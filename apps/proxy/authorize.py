@@ -378,8 +378,8 @@ def _apply_channel_checks(channel, principal):
         raise AuthorizeDenied(403, "Forbidden")
     if user is None:
         return
-    if user.user_level < channel.user_level:
-        raise AuthorizeDenied(403, "Forbidden")
+    # user_level is checked again inside user_can_access_channel below;
+    # not duplicated here.
     if channel.is_adult and (getattr(user, "custom_properties", None) or {}).get(
         "hide_adult_content"
     ):
