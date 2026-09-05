@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+
 import { test, expect, StreamStatusError, SEEDED_USER_PASSWORD } from '../../fixtures';
 import type { Seeder } from '../../fixtures';
 import { catchupTimestamp, lockedProfile, seedCatchupChannel } from './helpers';
@@ -306,6 +308,45 @@ test(
       `/proxy/catchup/${channel.uuid}?token=${token}&start=${start}`,
       403,
       'an adult channel must not serve its archive to a hide_adult_content viewer'
+    );
+  }
+);
+
+test(
+  'an unknown channel is refused as 404, not 500, through the hop',
+  { tag: '@contract' },
+  async ({ streamClient }) => {
+    // I1 (final-review.md § 3): S7 collapses every hop-side 404/429 denial
+    // to 403 + X-Authorize-Status precisely because
+    // ngx_http_auth_request_module treats any other subrequest status as
+    // an error and answers the client 500; error_page 403 =
+    // @authorize_denied is what puts the real code back. Every other test
+    // in this file asserts 403, so a config that dropped that mapping
+    // entirely would still pass all of them — this is the one row that
+    // actually exercises the restoration, on the one status a stale
+    // playlist's unknown UUID must produce.
+    await expectRefused(
+      streamClient,
+      `/proxy/ts/stream/${randomUUID()}`,
+      404,
+      'an unknown channel must be 404, not 500, through the hop'
+    );
+  }
+);
+
+test(
+  'an unknown channel id on the XC live root is refused as 404, not 500, through the hop',
+  { tag: '@contract' },
+  async ({ seed, streamClient }) => {
+    // The XC three-segment root form of the same I1 gap: a valid XC
+    // principal but a channel id nothing resolves to.
+    const viewer = await seed.xcUser({ user_level: 1 });
+
+    await expectRefused(
+      streamClient,
+      `/live/${viewer.username}/${viewer.xcPassword}/999999999`,
+      404,
+      'an unknown channel id must be 404, not 500, through the hop'
     );
   }
 );

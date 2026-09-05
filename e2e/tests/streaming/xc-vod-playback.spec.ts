@@ -175,9 +175,8 @@ test('the root XC movie and series routes authenticate and deliver bytes by Disp
 // `resolve_authorization`, and the hop's refusal is a real 401.
 //
 // Issue: https://github.com/D10Scot/Dispatcharr/issues/100 — closed by
-// this PR, which is also why it is listed in the PR body beside #87 and
-// #95. The body already asserts `toBe(401)`, so uninverting it asserts
-// the fix rather than passing vacuously.
+// this PR. The body already asserts `toBe(401)`, so uninverting it
+// asserts the fix rather than passing vacuously.
 test('wrong XC credentials against the movie route are a 401, not a 500', { tag: '@contract' }, async ({
   upstream,
   seed,
