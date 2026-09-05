@@ -12,22 +12,40 @@ class DVRStreamBaseURLTests(SimpleTestCase):
     """
 
     @patch.dict(os.environ, {}, clear=True)
-    def test_aio_default_uses_localhost_5656(self):
-        """AIO mode (default) reaches uwsgi directly on loopback port 5656."""
+    def test_aio_default_uses_localhost_nginx_port(self):
+        """AIO mode (default) reaches uwsgi through nginx, on DISPATCHARR_PORT
+        (default 9191) — not the uwsgi socket's own port 5656 directly. Once
+        PR 5 puts /proxy/ts/stream/<uuid> behind the authorize hop, a
+        recording that bypassed nginx would bypass authorization (D6)."""
         url = get_dvr_stream_base_url()
-        self.assertEqual(url, 'http://127.0.0.1:5656')
+        self.assertEqual(url, 'http://127.0.0.1:9191')
 
     @patch.dict(os.environ, {'DISPATCHARR_ENV': 'aio'}, clear=True)
-    def test_aio_explicit_uses_localhost_5656(self):
-        """Explicit DISPATCHARR_ENV=aio also uses loopback port 5656."""
+    def test_aio_explicit_uses_localhost_nginx_port(self):
+        """Explicit DISPATCHARR_ENV=aio also goes through nginx on port 9191."""
+        url = get_dvr_stream_base_url()
+        self.assertEqual(url, 'http://127.0.0.1:9191')
+
+    @patch.dict(os.environ, {'DISPATCHARR_ENV': 'dev'}, clear=True)
+    def test_dev_mode_keeps_the_uwsgi_port(self):
+        """Dev is the one mode that must NOT go through DISPATCHARR_PORT.
+
+        docker/supervisord/all-dev.conf includes vite.conf, not nginx.conf —
+        dev runs no nginx at all — and frontend/vite.config.js proxies only
+        /api and /ws. A DVR fetch of /proxy/ts/stream/<uuid> through vite
+        would record vite's index.html, so dev keeps reaching uwsgi's own
+        http listener on 5656. The consequence, recorded for PR 5: in dev a
+        recording bypasses the authorize hop (spec S3)."""
         url = get_dvr_stream_base_url()
         self.assertEqual(url, 'http://127.0.0.1:5656')
 
-    @patch.dict(os.environ, {'DISPATCHARR_ENV': 'dev'}, clear=True)
-    def test_dev_mode_uses_localhost_5656(self):
-        """Dev mode shares the container with uwsgi — uses loopback port 5656."""
+    @patch.dict(os.environ, {'DISPATCHARR_ENV': 'aio', 'DISPATCHARR_PORT': '9195'}, clear=True)
+    def test_aio_honours_custom_dispatcharr_port(self):
+        """A non-default DISPATCHARR_PORT (a custom_port deployment) is
+        honoured, matching docker/init/03-init-dispatcharr.sh's own NGINX_PORT
+        sed and its 9191 default."""
         url = get_dvr_stream_base_url()
-        self.assertEqual(url, 'http://127.0.0.1:5656')
+        self.assertEqual(url, 'http://127.0.0.1:9195')
 
     @patch.dict(os.environ, {'DISPATCHARR_ENV': 'modular', 'DISPATCHARR_PORT': '9191'}, clear=True)
     def test_modular_uses_web_service_name(self):

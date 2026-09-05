@@ -322,7 +322,8 @@ scheduling, stays `todo` — see the row itself):
 - `e2e/tests/lifecycle/restart-persistence.spec.ts` (restart preserves
   channels and settings)
 - `docker/tests/test-puid-pgid.sh`, run by
-  `.github/workflows/lifecycle-tests.yml` (PUID/PGID honoured)
+  `.github/workflows/lifecycle-tests.yml` (PUID/PGID honoured; also carries
+  `test_role_split`, the programme's only cross-container relay scenario)
 - `docker/tests/test-tls-postgres.sh`, run by
   `.github/workflows/lifecycle-tests.yml` (TLS Postgres connection)
 

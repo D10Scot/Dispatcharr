@@ -20,7 +20,7 @@
 #   scenario_name   Run only the named scenario (e.g., "fresh_default")
 #
 # Examples:
-#   bash docker/tests/test-puid-pgid.sh                     # Full run (build + all 20 scenarios)
+#   bash docker/tests/test-puid-pgid.sh                     # Full run (build + all 21 scenarios)
 #   bash docker/tests/test-puid-pgid.sh fresh_default        # Run one scenario
 #   bash docker/tests/test-puid-pgid.sh --skip-build         # Reuse existing image
 #   bash docker/tests/test-puid-pgid.sh --keep-on-fail       # Keep resources for debugging
@@ -39,6 +39,7 @@
 #   bind_mount_upgrade    Upgrade from UID 102 on bind mount
 #   bind_mount_default_puid Foreign-UID bind mount, no PUID set (defaults to 1000)
 #   modular_mode          External PostgreSQL + Redis (skip internal PG setup)
+#   role_split            Modular role split: api, relay and worker containers (Phase 1 PR 4)
 #   custom_postgres_user  Custom POSTGRES_USER=myapp
 #   custom_port           Custom POSTGRES_PORT=5433
 #   tmpfs_volume          Ephemeral tmpfs storage
@@ -1075,6 +1076,15 @@ test_modular_mode() {
     # before that variable existed looks like. If the default regressed to
     # `all`, all.conf's [program:postgres] would start against an
     # uninitialised /data/db and the status assertion below would catch it.
+    #
+    # DISPATCHARR_RELAY_HOST is set, though, and to loopback rather than to a
+    # container name. From Phase 1 PR 4 nginx declares
+    # `upstream relay_py { server <relay host>:5657; }` and resolves that name
+    # once, at config load — so a role-api container with no relay on its
+    # network must still be given something resolvable or nginx never starts.
+    # Loopback always resolves and simply 502s at request time, which is the
+    # correct behaviour for a deployment that has no relay: the API surface
+    # this scenario actually asserts on stays up.
     docker run -d --name "$name" --network "$net" \
         -e DISPATCHARR_ENV=modular \
         -e POSTGRES_HOST="$pg_name" \
@@ -1083,6 +1093,7 @@ test_modular_mode() {
         -e POSTGRES_PASSWORD=secret \
         -e POSTGRES_DB=dispatcharr \
         -e REDIS_HOST="$redis_name" \
+        -e DISPATCHARR_RELAY_HOST=127.0.0.1 \
         -v "${vol}:/data" \
         "$IMAGE_NAME" >/dev/null
 
@@ -1134,6 +1145,379 @@ test_modular_mode() {
         log_fail "Modular mode failed to start"
     fi
     dump_logs_on_fail "$name"
+    cleanup_scenario
+}
+
+# Verifies the modular role split (Phase 1 PR 4): three app containers —
+# api, relay, worker — on one network, sharing one /data volume (SECRET_KEY
+# lives in /data/jwt; D11). TS bytes are read through the api container's
+# own nginx, which uwsgi_passes to the relay container over the network
+# (RELAY_UPSTREAM sed'd to <relay-container>:5657 in modular). This is the
+# only test in either bash suite exercising the cross-container relay hop:
+# scripts/e2e_up.sh is a single AIO `docker run`, so no Playwright project
+# can reach this topology.
+test_role_split() {
+    CURRENT_SCENARIO="role_split"
+    section "Modular role split — api, relay, worker containers (PR 4)"
+
+    if ! docker image inspect dispatcharr-e2e-upstream:local >/dev/null 2>&1; then
+        log_fail "dispatcharr-e2e-upstream:local not available; role_split cannot seed a channel"
+        return
+    fi
+
+    local net="${TEST_PREFIX}_role_net"
+    local pg_name="${TEST_PREFIX}_role_pg"
+    local redis_name="${TEST_PREFIX}_role_redis"
+    local upstream_name="${TEST_PREFIX}_role_upstream"
+    local api_name="${TEST_PREFIX}_role_api"
+    local relay_name="${TEST_PREFIX}_role_relay"
+    local worker_name="${TEST_PREFIX}_role_worker"
+    local vol="${TEST_PREFIX}_role_data"
+    cleanup_scenario
+
+    docker network create "$net" >/dev/null 2>&1
+    fresh_volume "$vol"
+    track_network "$net"
+    track_container "$pg_name"
+    track_container "$redis_name"
+    track_container "$upstream_name"
+    track_container "$api_name"
+    track_container "$relay_name"
+    track_container "$worker_name"
+
+    docker run -d --name "$pg_name" --network "$net" \
+        -e POSTGRES_USER=dispatch \
+        -e POSTGRES_PASSWORD=secret \
+        -e POSTGRES_DB=dispatcharr \
+        postgres:17 >/dev/null
+
+    docker run -d --name "$redis_name" --network "$net" \
+        redis:latest >/dev/null
+
+    # UPSTREAM_INTERNAL_ORIGIN: the provider echoes an internal stream URL
+    # built from this on every /scenarios response (e2e-upstream/src/
+    # server.ts), so the app containers on THIS network can reach it. Its
+    # default names the shared e2e-upstream host, which does not exist here.
+    docker run -d --name "$upstream_name" --network "$net" \
+        -e "UPSTREAM_INTERNAL_ORIGIN=http://${upstream_name}:8080" \
+        dispatcharr-e2e-upstream:local >/dev/null
+
+    local elapsed=0
+    while [ $elapsed -lt 30 ]; do
+        if docker exec "$pg_name" pg_isready -U dispatch 2>/dev/null | grep -q "accepting"; then
+            break
+        fi
+        sleep 2
+        ((elapsed+=2))
+    done
+
+    # relay BEFORE api, deliberately. nginx in the api container resolves
+    # `upstream relay_py { server <relay>:5657; }` ONCE, at config load. With
+    # no relay container in Docker's DNS by then, nginx fails config load
+    # with "host not found in upstream" and [program:nginx] goes BACKOFF then
+    # FATAL — the api container would then fail for a reason that has
+    # nothing to do with what this scenario is testing.
+    #
+    # The relay's own entrypoint waits on `migrate --check`, which only the
+    # api container ever satisfies, so it sits waiting until api has
+    # migrated. That is fine: DNS resolves as soon as the container exists.
+    #
+    # relay → Django calls arrive in PR 6; the spec's shape names it now.
+    docker run -d --name "$relay_name" --network "$net" \
+        -e DISPATCHARR_ENV=modular -e DISPATCHARR_ROLE=relay \
+        -e POSTGRES_HOST="$pg_name" -e POSTGRES_PORT=5432 \
+        -e POSTGRES_USER=dispatch -e POSTGRES_PASSWORD=secret -e POSTGRES_DB=dispatcharr \
+        -e REDIS_HOST="$redis_name" \
+        -e DISPATCHARR_WEB_HOST="$api_name" \
+        -v "${vol}:/data" \
+        "$IMAGE_NAME" >/dev/null
+
+    # No published port: every HTTP call below runs inside this container
+    # through `docker exec`, so nothing on the host needs to reach it.
+    docker run -d --name "$api_name" --network "$net" \
+        -e DISPATCHARR_ENV=modular -e DISPATCHARR_ROLE=api \
+        -e POSTGRES_HOST="$pg_name" -e POSTGRES_PORT=5432 \
+        -e POSTGRES_USER=dispatch -e POSTGRES_PASSWORD=secret -e POSTGRES_DB=dispatcharr \
+        -e REDIS_HOST="$redis_name" \
+        -e DISPATCHARR_RELAY_HOST="$relay_name" \
+        -v "${vol}:/data" \
+        "$IMAGE_NAME" >/dev/null
+
+    docker run -d --name "$worker_name" --network "$net" \
+        -e DISPATCHARR_ENV=modular -e DISPATCHARR_ROLE=worker \
+        -e POSTGRES_HOST="$pg_name" -e POSTGRES_PORT=5432 \
+        -e POSTGRES_USER=dispatch -e POSTGRES_PASSWORD=secret -e POSTGRES_DB=dispatcharr \
+        -e REDIS_HOST="$redis_name" \
+        -e DISPATCHARR_WEB_HOST="$api_name" \
+        -v "${vol}:/data" \
+        "$IMAGE_NAME" >/dev/null
+
+    if ! wait_for_ready "$api_name"; then
+        log_fail "api container failed to start"
+        dump_logs_on_fail "$api_name"
+        dump_logs_on_fail "$relay_name"
+        dump_logs_on_fail "$worker_name"
+        cleanup_scenario
+        return
+    fi
+
+    # The relay only leaves its migrate-wait once api has migrated, so it is
+    # polled separately and with its own budget. RUNNING is still a weaker
+    # claim than "listening" (see wait_for_ready's header), which is why the
+    # seeding script below retries the tune itself.
+    local relay_elapsed=0
+    while [ $relay_elapsed -lt 180 ]; do
+        if ! docker ps -q -f "name=^${relay_name}$" 2>/dev/null | grep -q .; then
+            break
+        fi
+        if supervisorctl_status "$relay_name" relay-uwsgi | grep -q "RUNNING"; then
+            break
+        fi
+        sleep 3
+        ((relay_elapsed+=3))
+    done
+
+    # The worker needs its own poll, for the same reason and on the same
+    # budget. It leaves the migrate-wait within a second or two of the relay
+    # and celery-default has startsecs=5 (docker/supervisord.d/
+    # celery-default.conf), so a status read taken right after the relay's
+    # poll regularly lands while celery-default is still STARTING -- or
+    # before supervisord's socket exists at all, when supervisorctl_status
+    # returns nothing. Either way the assertion below would log_fail
+    # intermittently on a required CI job.
+    local worker_elapsed=0
+    while [ $worker_elapsed -lt 180 ]; do
+        if ! docker ps -q -f "name=^${worker_name}$" 2>/dev/null | grep -q .; then
+            break
+        fi
+        if supervisorctl_status "$worker_name" celery-default | grep -q "RUNNING"; then
+            break
+        fi
+        sleep 3
+        ((worker_elapsed+=3))
+    done
+
+    # supervisorctl status per role, proving each container runs the
+    # program(s) its own rung's [include] names (docker/supervisord/
+    # {api,relay,worker}.conf) and that none is FATAL or BACKOFF.
+    local api_ctl relay_ctl worker_ctl
+    api_ctl=$(supervisorctl_status "$api_name")
+    if echo "$api_ctl" | grep -q "api-uwsgi.*RUNNING" && ! echo "$api_ctl" | grep -qE "FATAL|BACKOFF"; then
+        log_pass "api container: api-uwsgi RUNNING, nothing FATAL/BACKOFF"
+    else
+        log_fail "api container supervisorctl status unexpected: $api_ctl"
+    fi
+    relay_ctl=$(supervisorctl_status "$relay_name")
+    if echo "$relay_ctl" | grep -q "relay-uwsgi.*RUNNING" && ! echo "$relay_ctl" | grep -qE "FATAL|BACKOFF"; then
+        log_pass "relay container: relay-uwsgi RUNNING, nothing FATAL/BACKOFF"
+    else
+        log_fail "relay container supervisorctl status unexpected: $relay_ctl"
+    fi
+    worker_ctl=$(supervisorctl_status "$worker_name")
+    if echo "$worker_ctl" | grep -q "celery-default.*RUNNING" && ! echo "$worker_ctl" | grep -qE "FATAL|BACKOFF"; then
+        log_pass "worker container: celery-default RUNNING, nothing FATAL/BACKOFF"
+    else
+        log_fail "worker container supervisorctl status unexpected: $worker_ctl"
+    fi
+
+    # Seed a channel and read TS bytes through the api container's nginx —
+    # proving nginx routed to the relay container over the network, the relay
+    # tuned the upstream, and the bytes came back TS-aligned. One python3
+    # process inside the api container does the whole sequence (superuser,
+    # token, provider scenario, stream, channel, byte read) so there is
+    # nothing to shuttle between separate docker exec calls. It prints one
+    # line: OK:<uuid>, BAD-ALIGNMENT:<bytes> or ERROR:<message>.
+    local result
+    result=$(docker exec -i "$api_name" python3 - "$upstream_name" <<'PY'
+import json
+import sys
+import time
+import urllib.error
+import urllib.request
+
+upstream_host = sys.argv[1]
+base = "http://127.0.0.1:9191"
+upstream_control = "http://%s:8080" % upstream_host
+
+
+def call(method, url, body=None, headers=None):
+    data = json.dumps(body).encode() if body is not None else None
+    hdrs = {"Content-Type": "application/json"}
+    hdrs.update(headers or {})
+    req = urllib.request.Request(url, data=data, method=method, headers=hdrs)
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        raw = resp.read()
+        return resp.status, (json.loads(raw) if raw else None)
+
+
+try:
+    # api-uwsgi RUNNING (checked by the relay/worker polls above) still
+    # means only "wrapper alive 5s" — the socket can still be unbound.
+    # Retry the first call for up to 30s; every later call is then safe.
+    deadline = time.monotonic() + 30
+    while True:
+        try:
+            _, state = call("GET", base + "/api/accounts/initialize-superuser/")
+            break
+        except urllib.error.HTTPError as exc:
+            if exc.code not in (502, 503, 504) or time.monotonic() >= deadline:
+                raise
+            time.sleep(2)
+        except urllib.error.URLError:
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(2)
+    if not (state or {}).get("superuser_exists"):
+        call("POST", base + "/api/accounts/initialize-superuser/", {
+            "username": "role-split-admin",
+            "password": "Role-Split-Test-42!",
+            "email": "role-split-admin@example.com",
+        })
+    _, tokens = call("POST", base + "/api/accounts/token/", {
+        "username": "role-split-admin",
+        "password": "Role-Split-Test-42!",
+    })
+    auth = {"Authorization": "Bearer " + tokens["access"]}
+
+    _, profiles = call("GET", base + "/api/core/streamprofiles/", headers=auth)
+    rows = profiles if isinstance(profiles, list) else profiles.get("results", [])
+    proxy_profile = next(p for p in rows if p["name"] == "Proxy")
+
+    _, scenario = call("POST", upstream_control + "/scenarios", {
+        "channels": [
+            {"id": 1, "name": "role-split", "tvgId": "role-split.e2e", "logo": None}
+        ],
+        "rate": 20,
+    })
+    # Mirrors Seeder.upstreamStreamUrl() in e2e/fixtures/seed.ts.
+    stream_url = "%s/stream/1.ts%s" % (
+        scenario["internal"], scenario.get("credentialQuery", "")
+    )
+
+    _, stream = call("POST", base + "/api/channels/streams/", {
+        "name": "role-split-stream",
+        "url": stream_url,
+        "is_custom": True,
+    }, headers=auth)
+
+    _, channel = call("POST", base + "/api/channels/channels/", {
+        "name": "role-split-channel",
+        "streams": [stream["id"]],
+        "stream_profile_id": proxy_profile["id"],
+    }, headers=auth)
+
+    # relay-uwsgi RUNNING is not relay-uwsgi listening: nginx answers
+    # 502/503/504 while the socket is still unbound. Retry for up to 60s.
+    deadline = time.monotonic() + 60
+    packet = b""
+    last = "never attempted"
+    while True:
+        try:
+            req = urllib.request.Request(base + "/proxy/ts/stream/" + channel["uuid"])
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                packet = resp.read(189)
+            break
+        except urllib.error.HTTPError as exc:
+            last = "HTTP %s" % exc.code
+            if exc.code not in (502, 503, 504) or time.monotonic() >= deadline:
+                break
+            time.sleep(2)
+        except Exception as exc:
+            last = str(exc)
+            if time.monotonic() >= deadline:
+                break
+            time.sleep(2)
+
+    if len(packet) >= 189 and packet[0] == 0x47 and packet[188] == 0x47:
+        print("OK:" + channel["uuid"])
+    elif not packet:
+        print("ERROR:relay served no tune within 60s (last: %s)" % last)
+    else:
+        print("BAD-ALIGNMENT:%r" % packet[:20])
+except Exception as exc:
+    print("ERROR:%s" % exc)
+PY
+    )
+
+    local channel_uuid=""
+    case "$result" in
+        OK:*)
+            channel_uuid="${result#OK:}"
+            log_pass "TS bytes read through api's nginx -> relay container (bytes 0 and 188 are 0x47)"
+            ;;
+        *)
+            log_fail "role_split channel seed/read failed: $result"
+            ;;
+    esac
+
+    if [ -n "$channel_uuid" ]; then
+        # Second assertion: stop the relay container. A new tune must fail —
+        # nginx's uwsgi_pass to relay_py gets connection-refused, so it
+        # answers 502 — while the api container stays up and keeps answering
+        # its own DB-backed routes.
+        #
+        # timeout=70, not 10. A stopped container's IP simply vanishes from
+        # the bridge; nginx normally gets EHOSTUNREACH within a few seconds
+        # and answers 502, but on some network drivers it waits out
+        # uwsgi_connect_timeout (60s default) and answers 504. A 10s client
+        # timeout would turn that second, equally correct outcome into
+        # `ERR:timed out` and a spurious log_fail. 70 lets nginx be the one
+        # that decides, and both of its verdicts are accepted below.
+        docker stop "$relay_name" >/dev/null
+        sleep 2
+
+        local after_stop_status
+        after_stop_status=$(docker exec "$api_name" python3 -c "
+import urllib.error, urllib.request
+try:
+    urllib.request.urlopen('http://127.0.0.1:9191/proxy/ts/stream/${channel_uuid}', timeout=70)
+    print('200')
+except urllib.error.HTTPError as e:
+    print(e.code)
+except Exception as e:
+    print('ERR:%s' % e)
+" 2>/dev/null)
+        case "$after_stop_status" in
+            502|503|504)
+                log_pass "new tune fails ($after_stop_status) with the relay container stopped"
+                ;;
+            *)
+                log_fail "expected 502/503/504 with the relay stopped, got: $after_stop_status"
+                ;;
+        esac
+
+        local api_alive_status
+        api_alive_status=$(docker exec "$api_name" python3 -c "
+import urllib.error, urllib.request
+try:
+    r = urllib.request.urlopen('http://127.0.0.1:9191/api/channels/channels/', timeout=10)
+    print(r.status)
+except urllib.error.HTTPError as e:
+    # Any non-5xx status (401 from IsAdmin included) proves Django is still
+    # answering through this container's own nginx and uwsgi. A 5xx here
+    # comes from nginx, not Django, and must not be read as a pass.
+    print(e.code)
+except Exception as e:
+    print('ERR:%s' % e)
+" 2>/dev/null)
+        case "$api_alive_status" in
+            ERR:*|'')
+                log_fail "api container stopped answering with the relay down: ${api_alive_status:-<no output>}"
+                ;;
+            5[0-9][0-9])
+                log_fail "api container's nginx answered $api_alive_status with the relay stopped — api-uwsgi is not serving"
+                ;;
+            *)
+                log_pass "api container still answers /api/channels/channels/ (HTTP $api_alive_status) with the relay stopped"
+                ;;
+        esac
+    else
+        log_info "skipping the relay-stopped assertions — no channel UUID from the seed step"
+    fi
+
+    dump_logs_on_fail "$api_name"
+    dump_logs_on_fail "$relay_name"
+    dump_logs_on_fail "$worker_name"
     cleanup_scenario
 }
 
@@ -1580,6 +1964,21 @@ else
     log_info "postgres:16 not available — pg_major_upgrade test will be skipped"
 fi
 
+# dispatcharr-e2e-upstream:local — the fake provider test_role_split seeds
+# against. CI's suites job already docker-loads it from the shared build
+# artifact, so this inspect succeeds there and nothing is built. Locally,
+# build it once if it is missing — but only when role_split will actually
+# run, so a single-scenario invocation of an unrelated test doesn't pay for
+# a Node + ffmpeg asset build it never uses.
+if { [ -z "$SINGLE_SCENARIO" ] || [ "$SINGLE_SCENARIO" = role_split ]; } && ! docker image inspect dispatcharr-e2e-upstream:local >/dev/null 2>&1; then
+    section "Building fake upstream provider image"
+    if docker build -f e2e-upstream/Dockerfile -t dispatcharr-e2e-upstream:local e2e-upstream >/dev/null; then
+        log_pass "Upstream provider image built (dispatcharr-e2e-upstream:local)"
+    else
+        log_info "Upstream provider build failed — role_split will skip with a failure of its own"
+    fi
+fi
+
 # Build test image from local changes
 if [ "$SKIP_BUILD" = false ]; then
     section "Building test image from local changes"
@@ -1608,6 +2007,7 @@ SCENARIOS=(
     bind_mount_upgrade
     bind_mount_default_puid
     modular_mode
+    role_split
     custom_postgres_user
     custom_port
     tmpfs_volume

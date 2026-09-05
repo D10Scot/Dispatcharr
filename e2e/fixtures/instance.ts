@@ -383,4 +383,58 @@ export class Instance {
       );
     }
   }
+
+  /**
+   * Run `supervisorctl` inside the container, returning the exit code rather
+   * than throwing — `supervisorctl status` exits non-zero when any queried
+   * process isn't RUNNING, which callers here check by inspecting `stdout`,
+   * not `code`.
+   *
+   * `docker/supervisord/supervisorctl.conf` is the one config this always
+   * points at: it carries only a `[supervisorctl]` section naming the same
+   * `unix:///run/supervisor.sock` every rung's `[unix_http_server]` listens
+   * on, so it works whichever role (`all`/`api`/`relay`/`worker`) the
+   * container is actually running — see that file's own header comment.
+   *
+   * `argv` reaches `docker exec` as an argv array, not a shell string, so
+   * the same plain-token restriction `manage()` applies is more than
+   * enough; it is kept for symmetry with that method rather than out of
+   * quoting need.
+   */
+  async supervisorctl(argv: string[]): Promise<ManageResult> {
+    for (const arg of argv) {
+      if (!/^[A-Za-z0-9._/=-]+$/.test(arg)) {
+        throw new Error(
+          `instance.supervisorctl() argument ${JSON.stringify(arg)} contains ` +
+            'characters that are not plain tokens.'
+        );
+      }
+    }
+    try {
+      const { stdout, stderr } = await run(
+        'docker',
+        [
+          'exec',
+          CONTAINER,
+          'supervisorctl',
+          '-c',
+          '/app/docker/supervisord/supervisorctl.conf',
+          ...argv,
+        ],
+        { timeout: DOCKER_TIMEOUT_MS, maxBuffer: MAX_BUFFER }
+      );
+      return { code: 0, stdout, stderr };
+    } catch (error) {
+      if (isExecError(error) && typeof error.code === 'number') {
+        return {
+          code: error.code,
+          stdout: error.stdout ?? '',
+          stderr: error.stderr ?? '',
+        };
+      }
+      throw new Error(
+        `docker exec … supervisorctl ${argv.join(' ')} did not run: ${String(error)}`
+      );
+    }
+  }
 }

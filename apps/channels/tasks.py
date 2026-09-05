@@ -1311,8 +1311,16 @@ def get_dvr_stream_base_url():
     2. Modular mode (DISPATCHARR_ENV=modular) — celery runs in a separate container
        and must reach the web container by its Docker service name on DISPATCHARR_PORT.
        Override the host with DISPATCHARR_WEB_HOST for non-standard compose setups.
-    3. AIO / dev / debug — celery shares the container with uwsgi which binds on
-       port 5656; use 127.0.0.1 to avoid any nginx layer.
+    3. Dev (and debug, which sets DISPATCHARR_ENV=dev too) — docker/supervisord/
+       all-dev.conf runs vite, not nginx, and frontend/vite.config.js proxies only
+       /api and /ws, so DISPATCHARR_PORT would serve vite's index.html here. Reach
+       uwsgi's own http listener on 5656 instead. Consequence for Phase 1 PR 5:
+       in dev a recording bypasses the authorize hop.
+    4. AIO — celery shares the container with nginx; go through nginx on
+       DISPATCHARR_PORT (default 9191), not the uwsgi socket's own port 5656
+       directly (D6, Phase 1 PR 4). The DVR fetches /proxy/ts/stream/<uuid>
+       exactly like a player; once that route sits behind the authorize hop
+       (PR 5), a recording that bypassed nginx would bypass authorization.
     """
     explicit = os.environ.get('DISPATCHARR_INTERNAL_TS_BASE_URL')
     if explicit:
@@ -1325,8 +1333,13 @@ def get_dvr_stream_base_url():
         port = os.environ.get('DISPATCHARR_PORT', '9191')
         return f'http://{host}:{port}'
 
-    # AIO, dev, debug: celery and uwsgi share the container, reach uwsgi directly
-    return 'http://127.0.0.1:5656'
+    if dispatcharr_env == 'dev':
+        # No nginx in this deployment shape — reach uwsgi's http listener.
+        return 'http://127.0.0.1:5656'
+
+    # AIO: reach nginx, not the uwsgi socket directly.
+    port = os.environ.get('DISPATCHARR_PORT', '9191')
+    return f'http://127.0.0.1:{port}'
 
 
 @shared_task

@@ -218,6 +218,18 @@ else
     export DISPATCHARR_UWSGI_EXTRA_ARGS=""
 fi
 
+# uWSGI's own $(VAR) expansion reads these from its process environment
+# (not %(ENV_x)s — that is supervisord's own syntax, irrelevant to what
+# the uwsgi binary itself expands). Exported unconditionally, in every
+# role, for the same reason DISPATCHARR_UWSGI_INI is: an unset $(VAR) in
+# an ini uWSGI does not even load is harmless, but a role that does load
+# it (relay-uwsgi reads DISPATCHARR_RELAY_GEVENT; api-uwsgi reads the
+# other two) must never see an empty expansion.
+export DISPATCHARR_API_HARAKIRI=${DISPATCHARR_API_HARAKIRI:-120}
+export DISPATCHARR_API_MAX_REQUESTS=${DISPATCHARR_API_MAX_REQUESTS:-5000}
+export DISPATCHARR_RELAY_GEVENT=${DISPATCHARR_RELAY_GEVENT:-1600}
+export DISPATCHARR_RELAY_PORT=${DISPATCHARR_RELAY_PORT:-5657}
+
 # Translate Dispatcharr POSTGRES_SSL_* env vars into libpq-recognized PGSSL*
 # env vars. Called once before any external PostgreSQL connection; all child
 # processes (psql, pg_dump, pg_isready, createdb, dropdb) inherit these
@@ -265,6 +277,8 @@ variables=(
     CELERY_NICE_LEVEL UWSGI_NICE_LEVEL DJANGO_SECRET_KEY
     PG_BINDIR DISPATCHARR_HOME DISPATCHARR_CELERY_USER DISPATCHARR_CELERY_HOME CELERY_LOG_LEVEL
     DISPATCHARR_UWSGI_INI DISPATCHARR_UWSGI_EXTRA_ARGS
+    DISPATCHARR_API_HARAKIRI DISPATCHARR_API_MAX_REQUESTS DISPATCHARR_RELAY_GEVENT
+    DISPATCHARR_RELAY_PORT
 )
 
 # Optional variables, only propagate when set to avoid noisy warnings
@@ -412,11 +426,6 @@ if [[ "$DISPATCHARR_ROLE" == "all" || "$DISPATCHARR_ROLE" == "api" ]]; then
     # Run Django commands as non-root user to prevent permission issues
     su - "$POSTGRES_USER" -c "cd /app && python manage.py migrate --noinput"
     su - "$POSTGRES_USER" -c "cd /app && python manage.py collectstatic --noinput"
-
-    # Run hardware acceleration check. Pure diagnostics (lspci, ffmpeg
-    # -hwaccels, vainfo), so it no longer waits behind a running uWSGI.
-    echo "🔍 Running hardware acceleration check..."
-    . /app/docker/init/04-check-hwaccel.sh
 elif [[ "$DISPATCHARR_ROLE" == "relay" || "$DISPATCHARR_ROLE" == "worker" ]]; then
     # Wait for migrations to complete. 'migrate --check' exits 0 only when
     # every migration is applied, and exits 1 on either an unapplied
@@ -443,6 +452,20 @@ elif [[ "$DISPATCHARR_ROLE" == "relay" || "$DISPATCHARR_ROLE" == "worker" ]]; th
         # docker/tests/test-tls-postgres.sh waits on this exact substring.
         echo 'Migrations complete, starting Celery...'
     fi
+fi
+
+# Hardware acceleration is a diagnostic (lspci, ffmpeg -hide_banner
+# -hwaccels; nothing exported downstream) about whether *this* process can reach a
+# GPU. Before this PR that was always the all/api process; from this PR on,
+# apps/proxy/live_proxy/'s ffmpeg spawning runs in the relay process's
+# request path (docker/nginx.conf routes stream tunes there), so relay
+# needs the same report. worker runs no ffmpeg and stays excluded.
+# This reverses the note PR 3 added to the spec's PR 4 section, which
+# recorded the gap as a deliberate PR 4 decision -- PR 4 decides the
+# other way (spec amendment S2).
+if [[ "$DISPATCHARR_ROLE" != "worker" ]]; then
+    echo "🔍 Running hardware acceleration check..."
+    . /app/docker/init/04-check-hwaccel.sh
 fi
 
 if [[ "$DISPATCHARR_ROLE" == "all" ]]; then
