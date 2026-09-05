@@ -198,7 +198,6 @@ class HostValidationTests(SimpleTestCase):
                     control_plane.get_control_plane_base_url()
         self.assertIn("DISPATCHARR_INTERNAL_API_BASE_URL", str(ctx.exception))
         self.assertNotIn("pw", str(ctx.exception))
-        self.assertTrue(any("pw" not in line for line in logs.output))
         for line in logs.output:
             self.assertNotIn("pw", line)
 
@@ -214,6 +213,71 @@ class HostValidationTests(SimpleTestCase):
         self.assertIn("DISPATCHARR_INTERNAL_API_BASE_URL", message)
         self.assertIn("http(s)", message)
         self.assertNotIn("hyphens", message)
+
+    def test_a_scheme_less_url_with_userinfo_never_echoes_the_password(self):
+        # An operator who forgot "http://": urlsplit takes "user" as the
+        # scheme and "pw@web:9191" as the path, so there is no netloc to
+        # redact at all. The scheme-check message must therefore name only
+        # the variable, never any form of the value.
+        with mock.patch.dict(
+            os.environ,
+            {"DISPATCHARR_INTERNAL_API_BASE_URL": "user:pw@web:9191"},
+            clear=False,
+        ):
+            with self.assertLogs("apps.proxy.control_plane", level="ERROR") as logs:
+                with self.assertRaises(ImproperlyConfigured) as ctx:
+                    control_plane.get_control_plane_base_url()
+        self.assertIn("DISPATCHARR_INTERNAL_API_BASE_URL", str(ctx.exception))
+        self.assertNotIn("pw", str(ctx.exception))
+        for line in logs.output:
+            self.assertNotIn("pw", line)
+
+    def test_a_bad_modular_host_with_userinfo_never_echoes_the_password(self):
+        # DISPATCHARR_WEB_HOST=user:pw@web is a working configuration
+        # (requests turns it into basic auth) -- not hypothetical -- so a
+        # bad host with userinfo attached must still be rejected without
+        # leaking the password, the same as the explicit-URL case.
+        with mock.patch.dict(
+            os.environ,
+            {"DISPATCHARR_ENV": "modular", "DISPATCHARR_WEB_HOST": "user:pw@bad_host"},
+            clear=False,
+        ):
+            os.environ.pop("DISPATCHARR_INTERNAL_API_BASE_URL", None)
+            with self.assertLogs("apps.proxy.control_plane", level="ERROR") as logs:
+                with self.assertRaises(ImproperlyConfigured) as ctx:
+                    control_plane.get_control_plane_base_url()
+        self.assertIn("DISPATCHARR_WEB_HOST", str(ctx.exception))
+        self.assertNotIn("pw", str(ctx.exception))
+        for line in logs.output:
+            self.assertNotIn("pw", line)
+
+    def test_a_good_modular_host_with_userinfo_is_accepted(self):
+        with mock.patch.dict(
+            os.environ,
+            {"DISPATCHARR_ENV": "modular", "DISPATCHARR_WEB_HOST": "user:pw@web"},
+            clear=False,
+        ):
+            os.environ.pop("DISPATCHARR_INTERNAL_API_BASE_URL", None)
+            os.environ.pop("DISPATCHARR_PORT", None)
+            self.assertEqual(
+                control_plane.get_control_plane_base_url(),
+                "http://user:pw@web:9191",
+            )
+
+    def test_an_unparseable_url_raises_improperly_configured_not_value_error(self):
+        # urlsplit() itself raises a bare ValueError on an unbalanced IPv6
+        # bracket -- must be caught and turned into the same exception
+        # type every other rejection uses, or it escapes release_source()
+        # and post_events() (neither catches ValueError) and aborts
+        # exactly the teardown/event paths this whole fix wave protects.
+        with mock.patch.dict(
+            os.environ,
+            {"DISPATCHARR_INTERNAL_API_BASE_URL": "http://[::1:9191"},
+            clear=False,
+        ):
+            with self.assertRaises(ImproperlyConfigured) as ctx:
+                control_plane.get_control_plane_base_url()
+        self.assertIn("DISPATCHARR_INTERNAL_API_BASE_URL", str(ctx.exception))
 
 
 @override_settings(SECRET_KEY="control-plane-test-secret")
@@ -532,6 +596,25 @@ class EmitEventTests(_ControlPlaneTestCase):
             result = control_plane.emit_event("channel_start", channel_id="x")
 
         self.assertIsNone(result)
+
+    def test_emit_event_never_raises_with_a_bad_host(self):
+        # post_events()'s own docstring says "Never raises" -- it must
+        # catch ImproperlyConfigured too, or a misconfigured host either
+        # propagates out of a Celery worker's synchronous _spawn call, or
+        # (on a gevent greenlet) prints an unhandled-exception traceback
+        # per event instead of a one-line log.
+        control_plane._host_validation_warned = False
+        self.addCleanup(setattr, control_plane, "_host_validation_warned", False)
+        with mock.patch.dict(
+            os.environ,
+            {"DISPATCHARR_INTERNAL_API_BASE_URL": "http://bad_host:9191"},
+            clear=False,
+        ):
+            with self.assertLogs("apps.proxy.control_plane", "ERROR"):
+                result = control_plane.emit_event("channel_start", channel_id="x")
+
+        self.assertIsNone(result)
+        self.requests.request.assert_not_called()
 
     def test_emit_event_never_raises_on_a_refusal(self):
         # _spawn is synchronous in the test environment (no gevent hub, not

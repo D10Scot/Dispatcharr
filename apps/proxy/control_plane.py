@@ -60,18 +60,30 @@ class ControlPlaneRefused(Exception):
 
 
 # Set once we have logged the ImproperlyConfigured message for this
-# process. Mirrors _events_down below: every misconfigured call still
-# raises (the caller must not degrade on it), but the process only writes
-# the explanation to the log once instead of once per tune.
+# process. Mirrors _events_down below: the process only writes the
+# explanation to the log once, whichever entry point hits it first --
+# next_source() (and get_control_plane_base_url() directly) still
+# propagate ImproperlyConfigured on every call after that; release_source()
+# and post_events() catch it on every call too, but only the first one logs.
 _host_validation_warned = False
 
 
-def _subject(var_name, raw_value, url):
-    # var_name/raw_value name the environment variable responsible, for
-    # the explicit and modular branches; dev/aio have no user-supplied
-    # hostname to blame, so they fall back to naming the URL itself --
-    # always the literal 127.0.0.1 form, never anything a caller supplied.
-    return f"{var_name}={raw_value}" if var_name else f"the control-plane URL {url!r}"
+def _var_only_subject(var_name):
+    # Used where the value itself must not be echoed at all -- a
+    # scheme-less or unparseable string can't be redacted reliably, so
+    # naming only the responsible variable is the safe option. dev/aio
+    # have no user-supplied hostname to blame.
+    return var_name if var_name else "the control-plane URL"
+
+
+def _subject_with_value(var_name, url):
+    # Only call this once the scheme is confirmed http/https: redact_url
+    # needs a parseable netloc to mask userinfo, and a scheme-less string
+    # can misparse (e.g. "user:pw@host" takes "user" as the scheme and
+    # never exposes a netloc at all, so redact_url would return it
+    # unchanged, password included). dev/aio's url is always the literal
+    # 127.0.0.1 form and never carries a caller-supplied credential.
+    return f"{var_name}={redact_url(url)}" if var_name else f"the control-plane URL {url!r}"
 
 
 def _raise_and_warn_once(message, var_name):
@@ -88,18 +100,27 @@ def _raise_and_warn_once(message, var_name):
     raise exc
 
 
-def _validated(url, var_name=None, raw_value=None):
+def _validated(url, var_name=None):
     """Reject a URL requests would turn into a Host header Django refuses.
 
-    Two checks, in order:
+    Three checks, in order:
 
-    1. The scheme must be http or https. get_control_plane_base_url()
+    1. url must actually parse as a URL. urlsplit() raises a bare
+       ValueError (not caught anywhere else on this path) on malformed
+       input such as an unbalanced IPv6 bracket ("http://[::1:9191") --
+       caught here and re-raised as ImproperlyConfigured, naming only the
+       variable, so every entry point (release_source(), post_events(),
+       the tune path) sees one exception type instead of two.
+    2. The scheme must be http or https. get_control_plane_base_url()
        only ever builds http:// URLs, so a scheme-less or malformed
        explicit value (e.g. "web:9191", urlsplit scheme "web") has no
        real host at all -- rejecting it with the host-shape message below
        would blame underscores for a problem that has nothing to do with
-       them.
-    2. What requests actually puts on the wire as the Host header is the
+       them. The value is NOT echoed here, even redacted: a scheme-less
+       string can misparse in a way that defeats redact_url (see
+       _subject_with_value), so naming the variable is the only safe
+       option.
+    3. What requests actually puts on the wire as the Host header is the
        netloc MINUS userinfo: requests turns "user:pw@host:9191" into
        HTTP Basic auth and sends "Host: host:9191", never forwarding the
        userinfo as part of the host. Validating the raw netloc (including
@@ -113,23 +134,23 @@ def _validated(url, var_name=None, raw_value=None):
        ALLOWED_HOSTS is even consulted. A relay that sent such a URL as an
        HTTP request would just get an opaque 400 with no indication why;
        failing here, at the source of the value, points at the actual
-       variable and value responsible.
-
-    raw_value must never carry a credential into the exception message or
-    the log: a rejection here can surface in an anonymous streaming
-    client's 500 response body by the time it reaches stream_ts's
-    catch-all, so callers pass dispatcharr.utils.redact_url(explicit) for
-    the explicit branch rather than the raw environment value. The
-    modular branch's raw_value is a bare hostname and never carries
-    userinfo, so it needs no redaction.
+       variable responsible. By this point the scheme is confirmed, so
+       the message echoes redact_url(url) -- the netloc parses reliably
+       and any userinfo is masked.
 
     No network access -- this is string parsing on a value already in
     hand, safe to run on every call.
     """
-    parsed = urlsplit(url)
+    try:
+        parsed = urlsplit(url)
+    except ValueError:
+        _raise_and_warn_once(
+            f"{_var_only_subject(var_name)} could not be parsed as a URL.",
+            var_name,
+        )
     if parsed.scheme not in ("http", "https"):
         _raise_and_warn_once(
-            f"{_subject(var_name, raw_value, url)} is not an http(s) URL: "
+            f"{_var_only_subject(var_name)} is not an http(s) URL: "
             "get_control_plane_base_url() only builds http:// URLs, and a "
             "scheme-less or malformed value has no host requests can send.",
             var_name,
@@ -139,7 +160,7 @@ def _validated(url, var_name=None, raw_value=None):
     if domain:
         return url
     _raise_and_warn_once(
-        f"{_subject(var_name, raw_value, url)} must be an http(s) URL "
+        f"{_subject_with_value(var_name, url)} must be an http(s) URL "
         "whose host is letters, digits, dots and hyphens.",
         var_name,
     )
@@ -158,16 +179,12 @@ def get_control_plane_base_url():
     """
     explicit = os.environ.get("DISPATCHARR_INTERNAL_API_BASE_URL")
     if explicit:
-        return _validated(
-            explicit.rstrip("/"),
-            "DISPATCHARR_INTERNAL_API_BASE_URL",
-            redact_url(explicit),
-        )
+        return _validated(explicit.rstrip("/"), "DISPATCHARR_INTERNAL_API_BASE_URL")
     env = os.environ.get("DISPATCHARR_ENV", "aio").lower()
     if env == "modular":
         host = os.environ.get("DISPATCHARR_WEB_HOST", "web")
         port = os.environ.get("DISPATCHARR_PORT", "9191")
-        return _validated(f"http://{host}:{port}", "DISPATCHARR_WEB_HOST", host)
+        return _validated(f"http://{host}:{port}", "DISPATCHARR_WEB_HOST")
     if env == "dev":
         return _validated("http://127.0.0.1:5656")
     port = os.environ.get("DISPATCHARR_PORT", "9191")
@@ -313,9 +330,10 @@ def release_source(identifier, *, stream_id=None, m3u_profile_id=None, channel_p
     already knows what it was tearing down.
 
     A misconfigured host is different, and deliberately NOT raised here:
-    "fail loudly on the first tune" (see next_source's docstring) belongs
-    to the tune path, where a viewer is about to be told to try again.
-    release_source() runs from a channel-stop cleanup path instead --
+    "fail loudly on the first tune" (see _validated()'s docstring and the
+    design spec's Amendment S10 point 10) belongs to the tune path, where
+    a viewer is about to be told to try again. release_source() runs from
+    a channel-stop cleanup path instead --
     aborting that cannot fix the configuration, and only leaks state (the
     channel's Redis keys, its ownership lease and a still-running ffmpeg
     holding a provider slot). It is also reachable in the worker role,
@@ -358,9 +376,9 @@ _events_down = False
 
 
 def post_events(events):
-    """POST one batch of events. Never raises — both exception types are
-    swallowed here so a caller that wants fire-and-forget delivery (see
-    emit_event) gets it; a caller that wants to know about a failure
+    """POST one batch of events. Never raises — all three exception types
+    are swallowed here so a caller that wants fire-and-forget delivery
+    (see emit_event) gets it; a caller that wants to know about a failure
     reads the boolean.
     """
     global _events_down
@@ -378,6 +396,28 @@ def post_events(events):
             logger.debug("Relay events refused with status %s", exc.status)
         else:
             logger.error("Relay events refused with status %s", exc.status)
+            _events_down = True
+        return False
+    except ImproperlyConfigured as exc:
+        # Same reasoning as release_source(): a misconfigured host must
+        # not raise out of a fire-and-forget call -- under the sync branch
+        # of _spawn (a Celery worker context) that would propagate into
+        # the caller, and even on a gevent greenlet it would print an
+        # unhandled-exception traceback per event instead of the one-line
+        # warning every other outage gets.
+        misconfigured = getattr(exc, "var_name", None) or "the control-plane base URL"
+        if _events_down:
+            logger.debug(
+                "Could not post %d relay event(s): %s is misconfigured",
+                len(events),
+                misconfigured,
+            )
+        else:
+            logger.error(
+                "Could not post %d relay event(s): %s is misconfigured",
+                len(events),
+                misconfigured,
+            )
             _events_down = True
         return False
     else:
