@@ -18,9 +18,11 @@ on:
       - main
     paths:
       - 'dashboard/**'
+      - 'metrics/**'
+      - 'scripts/run_metrics_tests.sh'
       - '.github/workflows/pages.yml'
   schedule:
-    - cron: '15 6 * * 1' # weekly, shortly after Metrics' Monday 06:00 UTC run
+    - cron: '15 6 * * *' # daily, shortly after Metrics' daily 06:00 UTC run
   workflow_dispatch: {}
 
 permissions:
@@ -39,6 +41,9 @@ jobs:
         with:
           persist-credentials: false
           path: main
+          # Milestone SHAs are validated as first-parent commits since the
+          # v0.29.0 baseline; a shallow checkout leaves that history missing.
+          fetch-depth: 0
 
       - name: Checkout metrics-data
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
@@ -47,33 +52,41 @@ jobs:
           ref: metrics-data
           path: metrics-data
 
+      - name: Install the build step's one dependency (hash-pinned)
+        # Into a venv, not the system interpreter - PEP 668 hazard on the
+        # runner image (mirrors lint.yml's metrics-tests job).
+        working-directory: main
+        run: |
+          python3 -m venv .venv
+          .venv/bin/python -m pip install --require-hashes -r metrics/requirements.txt
+
+      - name: Validate curated files online and build site.json
+        # --check-prs needs the API; GITHUB_TOKEN is enough for merged-state
+        # reads on this public repo. --ref stays at its default "auto" (R30:
+        # prefers origin/main, else main); no --repo needed since
+        # working-directory is already the main checkout.
+        #
+        # A push-triggered run can race the Metrics workflow: if this build
+        # starts before HEAD's snapshot row has landed on metrics-data, the
+        # site.json it produces shows that day's snapshot tiles as stale
+        # until the next daily run picks it up. Accepted (R30) - the
+        # schedule trigger self-heals a day later, and a push-triggered
+        # rebuild only happens on dashboard/metrics code changes anyway.
+        working-directory: main
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          .venv/bin/python -m metrics.build --validate-only --curated metrics/curated --check-prs
+          .venv/bin/python -m metrics.build --data ../metrics-data --curated metrics/curated --out "$RUNNER_TEMP/site/site.json"
+
       - name: Assemble site
         id: assemble
         run: |
           set -euo pipefail
           site="$RUNNER_TEMP/site"
-          mkdir -p "$site/data"
-
-          # Dashboard code (HTML/CSS/JS + vendored chart lib) - dashboard/
-          # contains only servable assets, so a plain recursive copy is safe.
           cp -r main/dashboard/. "$site/"
-
-          # Metrics history: every *.jsonl file present on metrics-data,
-          # whatever families exist at build time (dynamic discovery, no
-          # hard-coded family list).
-          manifest="[]"
-          shopt -s nullglob
-          families=()
-          for f in metrics-data/*.jsonl; do
-            name="$(basename "$f" .jsonl)"
-            cp "$f" "$site/data/$name.jsonl"
-            families+=("\"$name\"")
-          done
-          if [ "${#families[@]}" -gt 0 ]; then
-            manifest="[$(IFS=,; echo "${families[*]}")]"
-          fi
-          printf '%s' "$manifest" > "$site/data/manifest.json"
-
+          rm -rf "$site/tests"
           {
             echo "site_dir<<SITE_DIR_EOF"
             echo "$site"
