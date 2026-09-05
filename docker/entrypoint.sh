@@ -424,11 +424,6 @@ if [[ "$DISPATCHARR_ROLE" == "all" || "$DISPATCHARR_ROLE" == "api" ]]; then
     # Run Django commands as non-root user to prevent permission issues
     su - "$POSTGRES_USER" -c "cd /app && python manage.py migrate --noinput"
     su - "$POSTGRES_USER" -c "cd /app && python manage.py collectstatic --noinput"
-
-    # Run hardware acceleration check. Pure diagnostics (lspci, ffmpeg
-    # -hwaccels, vainfo), so it no longer waits behind a running uWSGI.
-    echo "🔍 Running hardware acceleration check..."
-    . /app/docker/init/04-check-hwaccel.sh
 elif [[ "$DISPATCHARR_ROLE" == "relay" || "$DISPATCHARR_ROLE" == "worker" ]]; then
     # Wait for migrations to complete. 'migrate --check' exits 0 only when
     # every migration is applied, and exits 1 on either an unapplied
@@ -455,6 +450,20 @@ elif [[ "$DISPATCHARR_ROLE" == "relay" || "$DISPATCHARR_ROLE" == "worker" ]]; th
         # docker/tests/test-tls-postgres.sh waits on this exact substring.
         echo 'Migrations complete, starting Celery...'
     fi
+fi
+
+# Hardware acceleration is a diagnostic (lspci, ffmpeg -hwaccels, vainfo;
+# nothing exported downstream) about whether *this* process can reach a
+# GPU. Before this PR that was always the all/api process; from this PR on,
+# apps/proxy/live_proxy/'s ffmpeg spawning runs in the relay process's
+# request path (docker/nginx.conf routes stream tunes there), so relay
+# needs the same report. worker runs no ffmpeg and stays excluded.
+# This reverses the note PR 3 added to the spec's PR 4 section, which
+# recorded the gap as a deliberate PR 4 decision -- PR 4 decides the
+# other way (spec amendment S2).
+if [[ "$DISPATCHARR_ROLE" != "worker" ]]; then
+    echo "🔍 Running hardware acceleration check..."
+    . /app/docker/init/04-check-hwaccel.sh
 fi
 
 if [[ "$DISPATCHARR_ROLE" == "all" ]]; then
