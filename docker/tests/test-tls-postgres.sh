@@ -133,6 +133,19 @@ cleanup_scenario() {
 
 trap 'cleanup_scenario; [ -n "$CERT_DIR" ] && rm -rf "$CERT_DIR"' EXIT
 
+# Ask a container's supervisord for status. The -c target is a
+# serverurl-only file, not a rung, so this makes no claim about which role
+# the container is running.
+supervisorctl_status() {
+    local name="$1" program="${2:-}"
+    docker exec "$name" supervisorctl \
+        -c /app/docker/supervisord/supervisorctl.conf status $program 2>/dev/null
+}
+
+# RUNNING is a weaker claim than the "uwsgi started with PID" line it
+# replaces — api-uwsgi runs through wait-for-stores.sh and startsecs=5
+# counts from the wrapper, not from uWSGI — but every assertion in this
+# file reads logs or runs psql, and none issues an HTTP request.
 wait_for_ready() {
     local name="$1"
     local timeout="${2:-$STARTUP_TIMEOUT}"
@@ -143,7 +156,7 @@ wait_for_ready() {
             echo "  Container $name exited unexpectedly"
             return 1
         fi
-        if log_matches "$name" "uwsgi started with PID"; then
+        if supervisorctl_status "$name" api-uwsgi | grep -q "RUNNING"; then
             return 0
         fi
         sleep 3
@@ -199,13 +212,14 @@ check_log_contains() {
 
 # check_log_contains, but waits for the pattern instead of reading once.
 #
-# entrypoint.celery.sh prints "Migrations complete, starting Celery..." and
-# only THEN execs the workers, whose Django settings import emits the TLS
-# banners. The wait loop returns on the former, so a bare check_log_contains
-# reads the log before the latter has been written. The app container has no
-# such gap: its banners come from the entrypoint's own `manage.py` calls,
-# which run before uwsgi starts, while the celery entrypoint sends its
-# equivalent (`migrate --check`) to /dev/null.
+# The shared entrypoint's worker branch prints "Migrations complete,
+# starting Celery..." and only THEN execs supervisord, whose Celery
+# programs emit the TLS banners on their Django settings import. The wait
+# loop returns on the former, so a bare check_log_contains reads the log
+# before the latter has been written. The app container has no such gap:
+# its banners come from the entrypoint's own `manage.py` calls, which run
+# before supervisord starts, while the worker branch sends its equivalent
+# (`migrate --check`) to /dev/null.
 #
 # The race was invisible until the pipefail/SIGPIPE fix in log_matches. While
 # that bug held, this scenario's wait loop always ran its FULL budget — which
@@ -246,8 +260,8 @@ check_migrations_done() {
     _capture_logs "$container" "$tmplog"
     if grep -qE "Running migrations|No migrations to apply|Operations to perform|Applying .+\.\.\. OK" "$tmplog"; then
         log_pass "Django migrations completed"
-    elif grep -q "uwsgi started with PID" "$tmplog"; then
-        log_pass "Django migrations completed (confirmed via uwsgi startup)"
+    elif supervisorctl_status "$container" api-uwsgi | grep -q "RUNNING"; then
+        log_pass "Django migrations completed (confirmed via api-uwsgi startup)"
     else
         log_fail "Django migrations did not complete"
     fi
@@ -278,6 +292,14 @@ dump_logs_on_fail() {
         # out of dispatcharr/settings.py, and 30 lines truncates the frames
         # above the one that names the cause.
         docker logs "$container" 2>&1 | tail -100 | sed 's/^/    /'
+        echo -e "  ${YELLOW}--- supervisord log ($container) ---${NC}"
+        # supervisord's state transitions go to /run/supervisord.log, not
+        # to container stdout; a program that went FATAL is invisible in
+        # `docker logs` alone.
+        docker exec "$container" cat /run/supervisord.log 2>/dev/null \
+            | tail -60 | sed 's/^/    /' || echo "    (unavailable)"
+        echo -e "  ${YELLOW}--- supervisorctl status ($container) ---${NC}"
+        supervisorctl_status "$container" | sed 's/^/    /' || true
         echo -e "  ${YELLOW}--- End logs ---${NC}"
     fi
 }
@@ -913,24 +935,29 @@ test_modular_full_tls_celery() {
     fi
     log_pass "Web container started with PG mTLS + Redis TLS"
 
-    # Start Celery container (shares /data volume for JWT, waits for migrations)
+    # Start Celery container (shares /data volume for JWT, waits for
+    # migrations). No entrypoint override: the shared entrypoint's worker
+    # role does what entrypoint.celery.sh did, including running Celery as
+    # root and passing -l info, and it additionally does the PUID/PGID and
+    # TLS client-key setup that script did differently.
     docker run -d --name "$celery_name" --network "$net" \
         "${tls_env[@]}" \
         -e DJANGO_SETTINGS_MODULE=dispatcharr.settings \
         -e PYTHONUNBUFFERED=1 \
+        -e DISPATCHARR_ROLE=worker \
         -v "${cert_mount}:/certs:ro" \
         -v "${vol}:/data" \
-        --entrypoint /app/docker/entrypoint.celery.sh \
         "$IMAGE_NAME" >/dev/null
 
     # Wait for Celery to start (look for "starting Celery" message).
     #
-    # $STARTUP_TIMEOUT, not a hardcoded 90. entrypoint.celery.sh emits
-    # "Migrations complete, starting Celery..." only AFTER running the whole
-    # Django migration set over a TLS connection, so this budget covers
-    # migrations, not process startup — and 90s is inside the range a loaded
-    # machine takes to do that. Observed failing at 90s and passing at the
-    # same code minutes earlier. CI never caught it because all seven TLS
+    # $STARTUP_TIMEOUT, not a hardcoded 90. The shared entrypoint's worker
+    # branch emits "Migrations complete, starting Celery..." only AFTER the
+    # whole Django migration set has been applied over a TLS connection by
+    # the api container, so this budget covers migrations, not process
+    # startup — and 90s is inside the range a loaded machine takes to do
+    # that. Observed failing at 90s and passing at the same code minutes
+    # earlier. CI never caught it because all seven TLS
     # scenarios died at settings import long before reaching this loop; the
     # cert-directory fix above is what made this code reachable for the
     # first time. The other waits in this file are left at 20s/30s

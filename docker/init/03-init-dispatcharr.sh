@@ -56,19 +56,28 @@ if [ "$(id -u)" = "0" ] && [ -d "/app" ]; then
         chown "$PUID:$PGID" /app
     fi
 fi
-# Configure nginx port
-if ! [[ "$DISPATCHARR_PORT" =~ ^[0-9]+$ ]]; then
-    echo "⚠️  Warning: DISPATCHARR_PORT is not a valid integer, using default port 9191"
-    DISPATCHARR_PORT=9191
-fi
-sed -i "s/NGINX_PORT/${DISPATCHARR_PORT}/g" /etc/nginx/sites-enabled/default
+# Configure nginx port and IPv6 — only the roles that run nginx.
+# all and api are the two rungs that include [program:nginx]; all-dev runs
+# vite instead and is reached with DISPATCHARR_ROLE=all, so it passes this
+# gate and templates a config nothing loads, which is harmless and keeps
+# the condition about roles rather than about rungs. relay and worker have
+# no nginx and must not touch /etc/nginx/sites-enabled/default: under a
+# read-only rootfs, or simply on a container that never serves HTTP, that
+# is a write with no reader.
+if [[ "$DISPATCHARR_ROLE" == "all" || "$DISPATCHARR_ROLE" == "api" ]]; then
+    if ! [[ "$DISPATCHARR_PORT" =~ ^[0-9]+$ ]]; then
+        echo "⚠️  Warning: DISPATCHARR_PORT is not a valid integer, using default port 9191"
+        DISPATCHARR_PORT=9191
+    fi
+    sed -i "s/NGINX_PORT/${DISPATCHARR_PORT}/g" /etc/nginx/sites-enabled/default
 
-# Configure nginx based on IPv6 availability
-if ip -6 addr show | grep -q "inet6"; then
-    echo "✅ IPv6 is available, enabling IPv6 in nginx"
-else
-    echo "⚠️  IPv6 not available, disabling IPv6 in nginx"
-    sed -i '/listen \[::\]:/d' /etc/nginx/sites-enabled/default
+    # Configure nginx based on IPv6 availability
+    if ip -6 addr show | grep -q "inet6"; then
+        echo "✅ IPv6 is available, enabling IPv6 in nginx"
+    else
+        echo "⚠️  IPv6 not available, disabling IPv6 in nginx"
+        sed -i '/listen \[::\]:/d' /etc/nginx/sites-enabled/default
+    fi
 fi
 
 # NOTE: mac doesn't run as root, so only manage permissions
@@ -77,14 +86,22 @@ if [ "$(id -u)" = "0" ]; then
     # Fix data directories (non-recursive to avoid touching user files).
     # Failures are collected rather than fatal — directories may be on
     # external mounts (NFS, SMB/CIFS, FUSE) that reject chown.
-    for dir in "${DATA_DIRS[@]}"; do
-        if [ -d "$dir" ] && [ "$(stat -c '%u:%g' "$dir" 2>/dev/null)" != "$PUID:$PGID" ]; then
-            _chown_err=$(chown "$PUID:$PGID" "$dir" 2>&1) || {
-                _current_owner=$(stat -c '%u:%g' "$dir" 2>/dev/null || echo "unknown")
-                _failed_chown+=("$dir (current: $_current_owner, error: $_chown_err)")
-            }
-        fi
-    done
+    # Only all/api chown the DATA_DIRS: worker and relay containers may run
+    # under a different PUID/PGID and never ran this script before
+    # supervisord (entrypoint.celery.sh never called 03-init), so letting
+    # them chown shared /data would fight the api's ownership. The
+    # non-recursive /data top-level chown below is still unconditional
+    # (narrowing it to this same gate is a follow-up).
+    if [[ "${DISPATCHARR_ROLE:-all}" == "all" || "${DISPATCHARR_ROLE:-all}" == "api" ]]; then
+        for dir in "${DATA_DIRS[@]}"; do
+            if [ -d "$dir" ] && [ "$(stat -c '%u:%g' "$dir" 2>/dev/null)" != "$PUID:$PGID" ]; then
+                _chown_err=$(chown "$PUID:$PGID" "$dir" 2>&1) || {
+                    _current_owner=$(stat -c '%u:%g' "$dir" 2>/dev/null || echo "unknown")
+                    _failed_chown+=("$dir (current: $_current_owner, error: $_chown_err)")
+                }
+            fi
+        done
+    fi
 
     # Fix app directories (recursive since they're managed by the app)
     for dir in "${APP_DIRS[@]}"; do

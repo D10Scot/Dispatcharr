@@ -377,11 +377,12 @@ environment variables in configuration options. The `[include]` section's `files
 documented as evaluated "against a dictionary that includes `host_node_name` and `here`", but the
 4.3.0 source is broader than its reference: `supervisor/options.py:578-588` builds that dictionary
 from `here` and `host_node_name` and then calls `expansions.update(self.environ_expansions)`
-before expanding `files`, so `%(ENV_X)s` **does** work there. **The design still uses six separate
-conf files selected with `-c`**, not one file with a variable in its glob — not because the
-expansion is unavailable, but because the selector is role × env × debug and no single environment
-variable names that. The entrypoint already resolves the same three inputs in bash to pick a uWSGI
-ini (`:332-345`); doing it once more is cheaper to read than encoding a ladder in a glob.
+before expanding `files`, so `%(ENV_X)s` **does** work there. **The design still uses five separate
+rung conf files selected with `-c`** (plus a sixth, `supervisorctl.conf`, carrying only the
+`[supervisorctl]` section), not one file with a variable in its glob — not because the expansion is
+unavailable, but because the selector is role × env and no single environment variable names that.
+The entrypoint already resolves the same two inputs in bash to pick a uWSGI ini (`:332-345`); doing
+it once more is cheaper to read than encoding a ladder in a glob.
 `[supervisord] logfile`, `pidfile` and
 `childlogdir` default to the current directory and the system temp dir and must be set explicitly
 under a writable path. With `nodaemon` true and `silent` false (the defaults for `supervisord -n`)
@@ -420,8 +421,8 @@ The Main ruleset requires `E2E result`, `Lifecycle result`, `Backend result`, `F
 | # | Decision | Why |
 |---|---|---|
 | **D1** | **Same image, same Django settings, same urlconf in both processes; only the nginx location table and the uWSGI ini differ.** Role-scoped urlconfs are Phase 2+ hardening. | A misrouted request is served correctly by the wrong process, never 404 — the split degrades gracefully under any nginx-config mistake. Building two urlconfs now is the scope-widening `CLAUDE.md` names as the main failure mode. |
-| **D2** | **supervisord**, added to `pyproject.toml`/`uv.lock` in its own PR (PR 1), replaces the bash `pkill`-based `trap cleanup` in **every** `DISPATCHARR_ENV`, including `dev` and `debug`. Not s6, not uWSGI `attach-daemon`. | The venv is built once in `docker/DispatcharrBase` with `--no-dev --locked`, and `base-image.yml` rebuilds `:base` only on `main`, so a PR that both adds the dependency and execs it fails its own image build. Covering `dev`/`debug` too costs one extra program file per mode and avoids the outcome the route page warns about most: two supervision shapes that drift. The one casualty is `uwsgi.debug.ini:72`'s `honour-stdin = true`, which PR 3 removes: supervisord gives a child no controlling TTY, so uWSGI would hold a stdin that is never a terminal. Nothing is lost — debugpy attaches over TCP :5678 (`docker-compose.debug.yml`), never over stdin; the flag exists for an interactive `pdb`, which was already unreachable through `docker logs`. Landing the dependency alone is necessary but not sufficient for CI to ever exercise it: `e2e-tests.yml`, `lifecycle-tests.yml` and `scripts/e2e_up.sh` build `docker/Dockerfile` with no `REPO_OWNER` build-arg, which defaults to upstream (`ghcr.io/dispatcharr/dispatcharr:base`) rather than this fork's rebuilt `:base` — fixed in this same PR, discovered verifying PR 1's own done criteria rather than anticipated when this decision was written. |
-| **D3** | **`DISPATCHARR_ROLE` ∈ {`all`, `api`, `relay`, `worker`}**, orthogonal to `DISPATCHARR_ENV` ∈ {`aio`, `modular`, `dev`}. AIO defaults to `all`; the modular compose file's `web`/`relay`/`celery` services set `api`/`relay`/`worker`. | `DISPATCHARR_ENV` answers "where do Postgres and Redis run"; `DISPATCHARR_ROLE` answers "which programs does supervisord start in *this* container". Conflating them would need a third value nothing else reads. |
+| **D2** | **supervisord**, added to `pyproject.toml`/`uv.lock` in its own PR (PR 1), replaces the bash `pkill`-based `trap cleanup` in **every** `DISPATCHARR_ENV`, including `dev` and `debug`. Not s6, not uWSGI `attach-daemon`. | The venv is built once in `docker/DispatcharrBase` with `--no-dev --locked`, and `base-image.yml` rebuilds `:base` only on `main`, so a PR that both adds the dependency and execs it fails its own image build. Covering `dev` and `debug` together costs one extra *rung*, `all-dev`, not a program file per mode — `docker-compose.debug.yml` sets `DISPATCHARR_ENV=dev` as well as `DISPATCHARR_DEBUG=true`, so debug shares the dev rung rather than needing its own — and avoids the outcome the route page warns about most: two supervision shapes that drift. The one casualty is `uwsgi.debug.ini:72`'s `honour-stdin = true`, which PR 3 removes: supervisord gives a child no controlling TTY, so uWSGI would hold a stdin that is never a terminal. Nothing is lost — debugpy attaches over TCP :5678 (`docker-compose.debug.yml`), never over stdin; the flag exists for an interactive `pdb`, which was already unreachable through `docker logs`. Landing the dependency alone is necessary but not sufficient for CI to ever exercise it: `e2e-tests.yml`, `lifecycle-tests.yml` and `scripts/e2e_up.sh` build `docker/Dockerfile` with no `REPO_OWNER` build-arg, which defaults to upstream (`ghcr.io/dispatcharr/dispatcharr:base`) rather than this fork's rebuilt `:base` — fixed in this same PR, discovered verifying PR 1's own done criteria rather than anticipated when this decision was written. |
+| **D3** | **`DISPATCHARR_ROLE` ∈ {`all`, `api`, `relay`, `worker`}**, orthogonal to `DISPATCHARR_ENV` ∈ {`aio`, `modular`, `dev`}. AIO defaults to `all` and modular defaults to `api`, because every deployment predating this variable sets only `DISPATCHARR_ENV`; the modular compose file states `api`/`relay`/`worker` explicitly anyway. There is no modular `all`, and no non-modular `api`, `relay` or `worker`; the entrypoint rejects all four. | `DISPATCHARR_ENV` answers "where do Postgres and Redis run"; `DISPATCHARR_ROLE` answers "which programs does supervisord start in *this* container". Conflating them would need a third value nothing else reads. Defaulting a modular deployment to `all` would load `[program:postgres]` against an uninitialised `/data/db` and land in `FATAL`, plus a stray Redis and a duplicated Celery set. |
 | **D4** | **Every long-lived response surface moves to the relay in one PR (PR 4)**, not just live TS: VOD, catch-up and all six XC streaming root forms together. | If VOD or catch-up stay on the API process, `harakiri = 120` kills a two-hour movie at two minutes and the timeout the split exists to enable never applies. The route page calls this "free in step 1"; it is the point of step 1, not scope creep. |
 | **D5** | **The relay's uWSGI has exactly one listener, `socket = 0.0.0.0:5657` (uwsgi protocol). No `http =` listener.** | The relay's byte path (PR 4) and its control API (PR 7, `/proxy/relay/…`) are both plain Django views reached through nginx `uwsgi_pass` — the directive family `CLAUDE.md` records as load-bearing for `uwsgi_buffering off`. D9 routes Django's control calls through nginx as well, so nothing ever dials a raw HTTP port on the relay. This diverges from the brief's tentative "add `http = 127.0.0.1:5658`". |
 | **D6** | **`get_dvr_stream_base_url()`'s AIO/dev/debug branch changes from `http://127.0.0.1:5656` to `http://127.0.0.1:{DISPATCHARR_PORT:-9191}`** (nginx); the modular and explicit-override branches are unchanged. | The DVR fetches `/proxy/ts/stream/<uuid>` exactly like a player. Once PR 5 puts that route behind the authorize hop, a recording that bypasses nginx bypasses authorization. `apps/channels/tests/test_dvr_port_resolution.py`'s four `5656` assertions change in the same PR. |
@@ -433,7 +434,7 @@ The Main ruleset requires `E2E result`, `Lifecycle result`, `Backend result`, `F
 | **D12** | **`apps/proxy/api_urls.py` (new) is mounted in `apps/api/urls.py` as `path('relay/', include(('apps.proxy.api_urls', 'relay'), namespace='relay'))` → `/api/relay/…`.** `apps/proxy/relay_urls.py` (new) is mounted in `apps/proxy/urls.py` as `path('relay/', include('apps.proxy.relay_urls'))` → `/proxy/relay/…`. | Matches `CLAUDE.md` § Conventions ("routes in the app's `api_urls.py`"); both files land inside `apps/proxy/`, covered by the existing `apps.proxy.tests` label. Note the CI cost: touching `apps/api/urls.py` is aliased to `__all__`, so PR 6 runs all 16 backend labels. |
 | **D13** | **`Channel.get_stream()` and `release_stream()` keep their signature and Redis-key ownership.** PR 6 adds an HTTP wrapper the relay calls instead of calling `get_stream()` directly; Django still runs the ORM query and the `reserve_profile_slot` `INCR`. | The counter is shared with VOD and catch-up, which reserve from Django-side request handlers. A live-only relay cannot own a counter three surfaces share (ADR 0005). |
 | **D14** | **The `relay` role runs no nginx.** Its health is observed through supervisord (`supervisorctl status relay-uwsgi`) and, end to end, through the `api` role's nginx. | The `api`/`all` roles already run nginx in every shape. A second nginx on `relay` would resolve the same `$relay_upstream` map with nothing behind it but itself. |
-| **D15** | **Nothing flushes Redis, in any role, ever.** `scripts/wait_for_redis.py` becomes wait-only: both `redis_client.flushdb()` and `_flush_non_celery_keys` are deleted (PR 3), along with the `exec-pre` that ran them and the entrypoint's modular call. In the `all` role supervisord's `[program:redis]` runs `redis-server --save "" --appendonly no`, so AIO Redis starts empty without a flush step. | A flush is destructive to *live* state, not just stale state, and under the split there is no role that can be sure it holds neither. `_flush_non_celery_keys` (`scripts/wait_for_redis.py:20-35`) deletes every key not prefixed `celery`/`_kombu`/`unacked` — the relay's metadata, chunks, client sets and lease, plus `channel_stream:*`, `profile_connections:*` and the timeshift and VOD session keys. Running it in the `api` one-shot would wipe a running relay's channels on every modular `web` start, which is exactly the Django deploy this phase exists to make harmless. **Stale keys need no flush**: the ownership lease is `set(..., ex=ttl)` (`server.py:474`), the channel-stopping key is `setex` at 30 or 60 s, and the metadata hash carries `REDIS_TTL_DEFAULT` = 3600 s refreshed only while the channel lives (`server.py:766`, `constants.py:8`) — so a dead relay's keys expire on their own. What TTLs cannot catch, `ProxyServer._cleanup_failed_init` (`server.py:937`) does: an unowned channel stuck in `initializing` is torn down by the next init, pinned by `CleanupFailedInitTests` in `apps/proxy/live_proxy/tests/test_ghost_session_cleanup.py:55-102`. |
+| **D15** | **Nothing flushes Redis, in any role, ever — except the coverage harness's own throwaway instance, out of scope by construction.** `scripts/wait_for_redis.py` becomes wait-only: both `redis_client.flushdb()` and `_flush_non_celery_keys` are deleted (PR 3), along with the `exec-pre` that ran them and the entrypoint's modular call. In the `all` role supervisord's `[program:redis]` runs `redis-server --save "" --appendonly no`, so AIO Redis starts empty without a flush step. `scripts/ci_coverage_backend.sh:26`'s `redis-cli … flushall` between backend test labels is not a deployment flush — the same kind of thing `.claude/hooks/*.sh` do against the hook's own Redis — and is carved out of this decision explicitly rather than left for the Done grep to trip over. | A flush is destructive to *live* state, not just stale state, and under the split there is no role that can be sure it holds neither. `_flush_non_celery_keys` (`scripts/wait_for_redis.py:20-35`) deletes every key not prefixed `celery`/`_kombu`/`unacked` — the relay's metadata, chunks, client sets and lease, plus `channel_stream:*`, `profile_connections:*` and the timeshift and VOD session keys. Running it in the `api` one-shot would wipe a running relay's channels on every modular `web` start, which is exactly the Django deploy this phase exists to make harmless. **Stale keys need no flush**: the ownership lease is `set(..., ex=ttl)` (`server.py:474`), the channel-stopping key is `setex` at 30 or 60 s, and the metadata hash carries `REDIS_TTL_DEFAULT` = 3600 s refreshed only while the channel lives (`server.py:766`, `constants.py:8`) — so a dead relay's keys expire on their own. What TTLs cannot catch, `ProxyServer._cleanup_failed_init` (`server.py:937`) does: an unowned channel stuck in `initializing` is torn down by the next init, pinned by `CleanupFailedInitTests` in `apps/proxy/live_proxy/tests/test_ghost_session_cleanup.py:55-102`. |
 | **D16** | **PR sequence is nine items: PR 0 is this spec's docs-only branch (`docs/phase1-spec`), PRs 1-8 are the code changes on `migration/phase1-*`.** | `migration/**` bypasses the E2E and lifecycle path filters (`lifecycle-tests.yml:119-124`), which every code PR here needs; the docs PR must *not* be on that branch prefix so the heavy jobs skip. |
 
 ## Architecture
@@ -887,10 +888,12 @@ modular, Redis — and supervisord has not started anything when the entrypoint 
 resolve it, and each exists because a simpler arrangement provably does not boot:
 
 1. **The `all` role starts Postgres exactly as today** (`entrypoint.sh:253-258`,
-   `pg_ctl start -w -t 300` then the `pg_isready` loop), runs the one-shot against it, then
-   **`pg_ctl -D $POSTGRES_DIR stop -m fast`** before `exec supervisord`. Without the stop,
-   supervisord's `[program:postgres]` starts a second postmaster against a data directory whose
-   `postmaster.pid` belongs to the entrypoint's instance; it fails, retries, and lands in `FATAL`.
+   `pg_ctl start -w -t 300` then the `pg_isready` loop), runs the one-shot against it — migrate,
+   collectstatic, the hardware-acceleration check — then, immediately before the ladder,
+   **`su - "$POSTGRES_USER" -c "$PG_BINDIR/pg_ctl -D ${POSTGRES_DIR} stop -m fast -w"`**, in the
+   `all` role only. Without the stop, supervisord's `[program:postgres]` starts a second postmaster
+   against a data directory whose `postmaster.pid` belongs to the entrypoint's instance; it fails,
+   retries, and lands in `FATAL`. `-w` so the entrypoint does not race supervisord's own start.
    After the stop, supervisord's foreground `postgres` is the only instance in the container.
 2. **No role flushes Redis, and the `all` one-shot does not wait for it either.** AIO Redis does
    not exist until supervisord starts it, so a wait in that one-shot counts 30 retries × 2 s and
@@ -902,33 +905,44 @@ resolve it, and each exists because a simpler arrangement provably does not boot
    `scripts/wait_for_redis.py` becomes wait-only (D15). Programs that need Redis wait for it in
    their own command (rule 3).
 3. **`priority=` is start order, not a readiness barrier**, so every program that needs a store
-   waits for it in its own `command=`. Both uWSGI programs run through a small wrapper
-   (`docker/supervisord.d/wait-for-stores.sh`) that loops on `pg_isready` and then runs
-   `python /app/scripts/wait_for_redis.py` — wait-only after this PR, so no flag is needed —
-   before `exec`ing uWSGI; Celery retries its broker itself and needs no wrapper. `startretries=20` and `startsecs=5` on both, so a slow
-   Postgres cannot exhaust the retries and drive a program to `FATAL`.
+   waits for it in its own `command=`. **All five long-lived programs — both uWSGI and the three
+   Celery — run through a small wrapper** (`docker/supervisord.d/wait-for-stores.sh`) that loops on
+   `pg_isready` (giving up after 60 attempts at 2s intervals and exiting 1) and then runs
+   `python3 /app/scripts/wait_for_redis.py` — wait-only after this PR, so no flag is needed — before
+   `exec`ing the real command. "Celery retries its broker itself and needs no wrapper" is true of
+   Redis only: `django_celery_beat`'s `DatabaseScheduler` queries PostgreSQL inside
+   `setup_schedule()` at startup, and the workers load Django settings and hit the database too, so
+   nothing about Celery retries a missing Postgres on its own. `startretries=20` and `startsecs=5`
+   on all five, so a slow Postgres cannot exhaust the retries and drive a program to `FATAL`.
 
-- `docker/entrypoint.sh`: add `export DISPATCHARR_ROLE=${DISPATCHARR_ROLE:-all}` with a `case`
-  validating it against the four values, and **role-gate the one-shot work**:
+- `docker/entrypoint.sh`: when `DISPATCHARR_ROLE` is unset, derive it from `DISPATCHARR_ENV` —
+  `api` when `DISPATCHARR_ENV=modular`, `all` otherwise — then validate the result with a `case`
+  against the four values, then reject `all`+modular and `api`/`relay`/`worker`+non-modular as
+  impossible pairings, and **role-gate the one-shot work**:
   - `all`: PUID/PGID, PG init/upgrade, start Postgres as today, `migrate`, `collectstatic`, the
-    nginx `sed`, then `pg_ctl stop -m fast` (rule 1 above). No Redis wait (rule 2).
+    nginx `sed`, the hardware-acceleration check, sourcing `docker/init/99-init-dev.sh` first when
+    `DISPATCHARR_ENV = dev`, then `su - "$POSTGRES_USER" -c "$PG_BINDIR/pg_ctl -D ${POSTGRES_DIR}
+    stop -m fast -w"` (rule 1 above). No Redis wait (rule 2).
   - `api`: PUID/PGID, generate-or-read `/data/jwt`, `migrate`, `collectstatic`, the nginx `sed`.
     It may wait for external Redis if a fast failure message is wanted, but it **must not flush**;
     `api-uwsgi`'s own wrapper waits anyway (rule 3).
   - `relay`, `worker`: PUID/PGID and the TLS key fixup, then wait for `/data/jwt` and for
     `manage.py migrate --check`, lifting the two loops from `entrypoint.celery.sh:12-24` and
     `:45-58` verbatim. No nginx `sed`, no `migrate`, no `collectstatic`.
-- **The supervisord config is selected by a three-input ladder, not by role alone.** `dev` and
-  `debug` are `DISPATCHARR_ENV`/`DISPATCHARR_DEBUG` values, not roles, and D2 commits to covering
-  them: dev runs vite and **no nginx** (`entrypoint.sh:300-313` — vite serves 9191 and proxies
-  `/api` to 5656), and debug runs a different uWSGI ini. `exec supervisord -n -c
-  /app/docker/supervisord/${DISPATCHARR_ROLE}.conf` cannot say any of that. The entrypoint
-  therefore computes `SUPERVISORD_CONF` with the same ladder it already uses for `uwsgi_file` at
-  `:332-345`, in the same order:
+- **The supervisord config is selected by a two-input ladder, not by role alone.** `dev` is a
+  `DISPATCHARR_ENV` value, not a role, and D2 commits to covering it: dev runs vite and **no
+  nginx** (`entrypoint.sh:300-313` — vite serves 9191 and proxies `/api` to 5656). `exec
+  supervisord -n -c /app/docker/supervisord/${DISPATCHARR_ROLE}.conf` cannot say that on its own.
+  `DISPATCHARR_DEBUG` is not one of the two inputs: it chooses only the uWSGI ini (`uwsgi.debug.ini`
+  instead of the role's own) and the emptied `DISPATCHARR_UWSGI_EXTRA_ARGS`, because
+  `docker-compose.debug.yml` sets `DISPATCHARR_ENV=dev` as well as `DISPATCHARR_DEBUG=true`, and the
+  pre-supervisord entrypoint already keyed its vite-instead-of-nginx branch on `DISPATCHARR_ENV =
+  dev` alone — a debug-first ladder would give debug nginx and no vite, breaking what debug does
+  today. The entrypoint therefore computes `SUPERVISORD_CONF` with the same two inputs it already
+  resolves in bash for `uwsgi_file` at `:332-345`:
 
   | Condition | Conf |
   |---|---|
-  | `DISPATCHARR_DEBUG = true` | `all-debug.conf` |
   | `DISPATCHARR_ENV = dev` | `all-dev.conf` |
   | otherwise, by `DISPATCHARR_ROLE` | `all.conf`, `api.conf`, `relay.conf`, `worker.conf` |
 
@@ -936,46 +950,91 @@ resolve it, and each exists because a simpler arrangement provably does not boot
   array at `:177-184` so `docker exec` shells see it.
 - `docker/init/03-init-dispatcharr.sh` is sourced unconditionally at `entrypoint.sh:250`, so the
   role gate on the nginx work has to live **inside** that script, around the `NGINX_PORT` `sed` at
-  `:64` and the IPv6 strip at `:67-72`, not at the call site. The `/app` ownership and data-dir
-  chown steps in the same script stay unconditional — every role needs them.
-- `docker/supervisord/{all,all-dev,all-debug,api,relay,worker}.conf` — six files, one per rung of
-  the ladder above. Each carries `[supervisord]` (`nodaemon=true`, `logfile=/run/supervisord.log`,
+  `:64` and the IPv6 strip at `:67-72`, not at the call site. The `mkdir` of `DATA_DIRS` and the
+  `/app` ownership fix stay unconditional — every role needs them. The per-directory `DATA_DIRS`
+  chown loop is gated to roles `all`/`api`: worker and relay may run under a different PUID/PGID
+  and the worker writes as root, so an unconditional chown there would fight the api's ownership.
+  The non-recursive `/data` top-level chown stays unconditional for now; narrowing it to the same
+  gate is deferred to the worker-as-root follow-up.
+- `docker/supervisord/{all,all-dev,api,relay,worker}.conf` — five rung files, one per row of the
+  ladder above (a sixth, `debug`-only rung is unnecessary: `docker-compose.debug.yml` sets
+  `DISPATCHARR_ENV=dev`, so debug shares `all-dev.conf`, see D2), plus a
+  sixth file, `docker/supervisord/supervisorctl.conf`, carrying only `[supervisorctl]
+  serverurl=unix:///run/supervisor.sock` — the `-c` target for every `supervisorctl` invocation, so
+  a caller never has to know the container's role (see the readiness bullet below). Each rung file
+  carries `[supervisord]` (`nodaemon=true`, `logfile=/run/supervisord.log`,
   `logfile_maxbytes=1MB`, `logfile_backups=1`, `pidfile=/run/supervisord.pid`,
   `childlogdir=/run`), `[unix_http_server] file=/run/supervisor.sock`,
   `[rpcinterface:supervisor]`, `[supervisorctl] serverurl=unix:///run/supervisor.sock`, and one
-  `[include] files = …` naming its programs explicitly. Six files rather than one file with
-  `%(ENV_…)s` in `[include]`: supervisor 4.3.0 *does* expand environment variables there
-  (`supervisor/options.py:578-588` merges `environ_expansions` into the dictionary
-  `[include] files` is expanded against, though the reference documents only `here` and
+  `[include] files = …` naming its programs explicitly. `supervisorctl.conf` carries none of that —
+  only the `[supervisorctl]` section — so it does not affect the read-only-rootfs grep. Five rung
+  files rather than one file with `%(ENV_…)s` in `[include]`: supervisor 4.3.0 *does* expand
+  environment variables there (`supervisor/options.py:578-588` merges `environ_expansions` into the
+  dictionary `[include] files` is expanded against, though the reference documents only `here` and
   `host_node_name`), but no single environment variable names the rung — the selector is
-  role × env × debug, the same three inputs `entrypoint.sh:332-345` already resolves in bash for
-  the uWSGI ini. Doing it the same way twice is cheaper to read than encoding a ladder in a glob.
+  role × env, the same two inputs `entrypoint.sh:332-345` already resolves in bash for the uWSGI
+  ini. Doing it the same way twice is cheaper to read than encoding a ladder in a glob.
 - `docker/supervisord.d/*.conf` — one `[program:…]` per file, `command=` given in full so no
   daemonising form slips in, and each named by the conf files that include it:
 
   | Program | Included by | `command=` | Notes |
   |---|---|---|---|
-  | `postgres` | `all`, `all-dev`, `all-debug` | `postgres -D %(ENV_POSTGRES_DIR)s -c port=%(ENV_POSTGRES_PORT)s` | Foreground. Not `pg_ctl start`, which daemonises and would leave supervisord supervising the wrong process. `stopsignal=INT` — Postgres's fast shutdown, clean and well inside the 45 s grace period; `-m immediate` (`QUIT`) is what the old entrypoint used only because it had 8 seconds. `stopwaitsecs=30`. |
-  | `redis` | `all`, `all-debug` | `redis-server --save "" --appendonly no` | AIO only. Non-persistent, which is what removes the boot flush (rule 2). `stopsignal=TERM`, `stopwaitsecs=5`. |
-  | `redis-dev` | `all-dev` | `redis-server --save "" --appendonly no --protected-mode no` | Same program with one more flag, because `uwsgi.dev.ini:11` already runs `redis-server --protected-mode no` and dropping that flag would break dev tooling, not just relax it: `docker-compose.dev.yml:60` points `redis-commander` at `dispatcharr:6379` over the compose network, and protected mode refuses every non-loopback connection (the `DENIED` trap `CLAUDE.md` records). A separate program rather than a conditional flag, so the one rung that lowers a security default says so in its own file. |
-  | `api-uwsgi` | `all`, `all-dev`, `all-debug`, `api` | `nice -n %(ENV_UWSGI_NICE_LEVEL)s /app/docker/supervisord.d/wait-for-stores.sh %(ENV_VIRTUAL_ENV)s/bin/uwsgi --ini <selected ini>` | `<selected ini>` is the value `entrypoint.sh:332-345` already computes, exported for supervisord to read. `startretries=20`, `startsecs=5`, `stopwaitsecs=10`. |
-  | `daphne` | `all`, `all-dev`, `all-debug`, `api` | `daphne -b 0.0.0.0 -p 8001 dispatcharr.asgi:application` | `stopwaitsecs=10`. |
-  | `celery-default` | `all`, `all-dev`, `all-debug`, `worker` | `nice -n %(ENV_CELERY_NICE_LEVEL)s celery -A dispatcharr worker -Q celery -n default@%%h --autoscale=6,1` | `%%h`, because `%` is supervisord's expansion character. `stopwaitsecs=30` — a task in flight. **`CELERY_NICE_LEVEL` becomes absolute**: see below. |
-  | `celery-dvr` | `all`, `all-dev`, `all-debug`, `worker` | `nice -n %(ENV_CELERY_NICE_LEVEL)s celery -A dispatcharr worker -Q dvr -n dvr@%%h --pool=threads --concurrency=20` | `stopwaitsecs=30`. |
-  | `celery-beat` | `all`, `all-dev`, `all-debug`, `worker` | `nice -n %(ENV_CELERY_NICE_LEVEL)s celery -A dispatcharr beat` | `stopwaitsecs=10`. |
-  | `nginx` | `all`, `all-debug`, `api` | `nginx -g 'daemon off;'` | Without `daemon off` nginx forks and exits, and supervisord restarts it forever. Highest `priority`, so it starts last and is signalled first on shutdown — signalled, not waited for; see below. `stopsignal=QUIT` is nginx's own graceful-shutdown signal. |
-  | `vite` | `all-dev` | `npm run dev` (`directory=/app/frontend`) | Only rung with vite, and the only one **without** `nginx`: today `entrypoint.sh:300-313` starts vite instead of nginx in dev, and vite serves 9191 itself. `all-debug` keeps nginx, matching today. |
+  | `postgres` | `all`, `all-dev` | `%(ENV_PG_BINDIR)s/postgres -D %(ENV_POSTGRES_DIR)s -c port=%(ENV_POSTGRES_PORT)s` | Foreground. Not `pg_ctl start`, which daemonises and would leave supervisord supervising the wrong process. `%(ENV_PG_BINDIR)s/`, because PGDG installs the server binary only under `/usr/lib/postgresql/17/bin`, which is not on `PATH` — every other call site (`entrypoint.sh:256`, `02-postgres.sh`) already uses `$PG_BINDIR`, and a bare `postgres` would not resolve and the program would go `FATAL`. `stopsignal=INT` — Postgres's fast shutdown, clean and well inside the 160 s grace period; `-m immediate` (`QUIT`) is what the old entrypoint used only because it had 8 seconds. `stopwaitsecs=30`. |
+  | `redis` | `all` | `redis-server --save "" --appendonly no` | AIO only. Non-persistent, which is what removes the boot flush (rule 2). `stopsignal=TERM`, `stopwaitsecs=5`. |
+  | `redis-dev` | `all-dev` | `redis-server --save "" --appendonly no --protected-mode no` | Same program with one more flag, because `uwsgi.dev.ini:11` already runs `redis-server --protected-mode no` and dropping that flag would break dev tooling, not just relax it: `docker-compose.dev.yml:60` points `redis-commander` at `dispatcharr:6379` over the compose network, and protected mode refuses every non-loopback connection (the `DENIED` trap `CLAUDE.md` records). A separate program rather than a conditional flag, so the one rung that lowers a security default says so in its own file. Now shared by `debug` too, since there is no separate debug rung and `docker-compose.debug.yml` sets `DISPATCHARR_ENV=dev` (D2). |
+  | `api-uwsgi` | `all`, `all-dev`, `api` | `nice -n %(ENV_UWSGI_NICE_LEVEL)s setpriv --reuid=%(ENV_POSTGRES_USER)s --regid=%(ENV_POSTGRES_USER)s --init-groups /app/docker/supervisord.d/wait-for-stores.sh %(ENV_VIRTUAL_ENV)s/bin/uwsgi --ini <selected ini>` | `<selected ini>` is the value `entrypoint.sh:332-345` already computes, exported for supervisord to read. `setpriv`, not `user=` — see below. `startretries=20`, `startsecs=5`, `stopwaitsecs=10`. |
+  | `daphne` | `all`, `all-dev`, `api` | `daphne -b 0.0.0.0 -p 8001 dispatcharr.asgi:application` | `stopwaitsecs=10`. |
+  | `celery-default` | `all`, `all-dev`, `worker` | `nice -n %(ENV_CELERY_NICE_LEVEL)s setpriv --reuid=%(ENV_DISPATCHARR_CELERY_USER)s --regid=%(ENV_DISPATCHARR_CELERY_USER)s --init-groups /app/docker/supervisord.d/wait-for-stores.sh celery -A dispatcharr worker -Q celery -n default@%%h --autoscale=6,1 -l %(ENV_CELERY_LOG_LEVEL)s` | `%%h`, because `%` is supervisord's expansion character. `stopwaitsecs=30` — a task in flight. **`CELERY_NICE_LEVEL` becomes absolute**: see below. `setpriv` and `-l` — see below. |
+  | `celery-dvr` | `all`, `all-dev`, `worker` | `nice -n %(ENV_CELERY_NICE_LEVEL)s setpriv --reuid=%(ENV_DISPATCHARR_CELERY_USER)s --regid=%(ENV_DISPATCHARR_CELERY_USER)s --init-groups /app/docker/supervisord.d/wait-for-stores.sh celery -A dispatcharr worker -Q dvr -n dvr@%%h --pool=threads --concurrency=20 -l %(ENV_CELERY_LOG_LEVEL)s` | `stopwaitsecs=30`. |
+  | `celery-beat` | `all`, `all-dev`, `worker` | `nice -n %(ENV_CELERY_NICE_LEVEL)s setpriv --reuid=%(ENV_DISPATCHARR_CELERY_USER)s --regid=%(ENV_DISPATCHARR_CELERY_USER)s --init-groups /app/docker/supervisord.d/wait-for-stores.sh celery -A dispatcharr beat -l %(ENV_CELERY_LOG_LEVEL)s` | `stopwaitsecs=10`. |
+  | `nginx` | `all`, `api` | `nginx -g 'daemon off;'` | Without `daemon off` nginx forks and exits, and supervisord restarts it forever. Highest `priority`, so it starts last and is signalled first on shutdown — signalled, not waited for; see below. `stopsignal=QUIT` is nginx's own graceful-shutdown signal. |
+  | `vite` | `all-dev` | `npm run dev` (`directory=/app/frontend`) | Only rung with vite, and the only one **without** `nginx`: today `entrypoint.sh:300-313` starts vite instead of nginx in dev, and vite serves 9191 itself. `docker-compose.debug.yml` sets `DISPATCHARR_ENV=dev` as well as `DISPATCHARR_DEBUG=true`, so `debug` shares this rung too and gets vite and no nginx — which is what it has today. |
 
-  Every program also carries `user=%(ENV_POSTGRES_USER)s` where the entrypoint used `su -`,
-  `stdout_logfile=/dev/stdout`, `stdout_logfile_maxbytes=0` and `redirect_stderr=true` so
-  container logs keep working, and a `priority=` that starts the stores first and nginx last.
-- **`priority=` orders signals on shutdown, not waits.** Verified against the supervisor 4.3.0
-  source: `ProcessGroup.stop_all` (`supervisor/process.py:813-828`) sorts by priority, reverses,
-  and calls `proc.stop()` on each in one pass; `Subprocess.stop` (`:379-383`) sends the signal and
-  returns immediately. So nginx is *signalled* before the relay, but every program's
-  `stopwaitsecs` runs concurrently. The consequence that matters is the grace period: the container
-  needs to cover the **longest** single `stopwaitsecs` (Postgres at 30 s), not their sum, which is
-  why 45 s is enough for a program set whose stop windows add up to more than two minutes.
+  `api-uwsgi` and the three Celery programs replace `user=%(ENV_POSTGRES_USER)s` with
+  `setpriv --reuid=… --regid=… --init-groups` inside `command=`, run after `nice`: supervisord's
+  `user=` calls `setuid()` **before** exec, which drops `CAP_SYS_NICE`, so `nice -n -5` then fails
+  with "cannot set niceness: Permission denied" — both compose files document
+  `UWSGI_NICE_LEVEL=-5` / a negative `CELERY_NICE_LEVEL` with `cap_add: SYS_NICE`, and
+  `check_no_permission_errors` in `test-puid-pgid.sh` greps for exactly that string. Running `nice`
+  as root and dropping privileges afterwards with `setpriv` preserves the nice value, which is
+  inherited across the credential change — what `entrypoint.sh:359` already did with
+  `nice … su -`. `postgres`, `redis`, `redis-dev`, `daphne` and `vite` keep
+  `user=%(ENV_POSTGRES_USER)s` where the entrypoint used `su -`; `nginx` stays root. Every program
+  still carries `stdout_logfile=/dev/stdout`, `stdout_logfile_maxbytes=0` and
+  `redirect_stderr=true` so container logs keep working, and a `priority=` that starts the stores
+  first and nginx last.
+- **The Celery programs `setpriv` to a role-specific user, not always `$POSTGRES_USER`.** The
+  entrypoint exports `DISPATCHARR_CELERY_USER` = `$POSTGRES_USER` for roles `all`/`api` and `root`
+  for role `worker`, plus a matching `DISPATCHARR_CELERY_HOME`, and the Celery programs `setpriv`
+  to it — so modular Celery still runs as root. AIO's Celery already ran as `$POSTGRES_USER`
+  (inherited from uWSGI's `su -`), but `entrypoint.celery.sh` never used `su -`, so modular Celery
+  ran as root and existing installs have root-owned files under `/data/recordings`, `/data/m3us`,
+  `/data/epgs`, `/data/uploads` and `/data/plugins`; `03-init-dispatcharr.sh`'s chown is
+  non-recursive, so silently switching the worker role to PUID would break DVR writes on upgrade.
+  Behaviour-preserving now; dropping the worker to PUID needs a one-time recursive chown of those
+  directories, recorded as a follow-up rather than done here.
+- **The entrypoint also exports `CELERY_LOG_LEVEL`, preserving each shape's previous verbosity.**
+  `info` for role `worker` — what `entrypoint.celery.sh` passed on all three commands — and
+  `warning` for `all`/`api`, where Celery ran as an `attach-daemon` with no `-l` and so took
+  celery's own default. Each of `celery-default.conf`, `celery-dvr.conf` and `celery-beat.conf`
+  passes `-l %(ENV_CELERY_LOG_LEVEL)s`, so the one export covers all three.
+- **Shutdown is sequential per priority group, not concurrent, so the grace period is the sum of
+  every `stopwaitsecs`, not the largest.** Verified against the supervisor 4.3.0 source, not
+  inferred: `Supervisor.ordered_stop_groups_phase_1` (`supervisord.py:156-159`) stops only
+  `stop_groups[-1]` — the single highest-priority group still running — and
+  `ordered_stop_groups_phase_2` (`:161-172`) pushes that group back onto the queue until every
+  process in it has actually stopped, before the next group is signalled. Each `[program:x]` is its
+  own group (no two programs here share a `priority`), so groups stop one at a time, each waiting
+  out its own `stopwaitsecs` before the next is even signalled. Measured against a throwaway
+  three-program config at priorities 100/200/900, each ignoring `TERM` with `stopwaitsecs=3`: **9.4
+  s** to fully stop, not 3 s — the phase-1/phase-2 walk, not `ProcessGroup.stop_all` alone. The
+  budget for this PR's nine programs is therefore the **sum**: 10 (nginx) + 10 (beat) + 30 (dvr) +
+  30 (default) + 10 (daphne) + 10 (api-uwsgi) + 5 (redis) + 30 (postgres) = **135 s**, and **155 s**
+  once PR 4 adds `relay-uwsgi` at 20 s. The realistic worst case is far smaller — roughly 90 s,
+  because only the two Celery workers actually consume their window on a warm shutdown with a task
+  in flight, while nginx, daphne, uWSGI, Redis and PostgreSQL each exit in about a second — but 90 s
+  is still twice the smaller figure an earlier draft of this spec assumed, which was sized for the
+  single longest `stopwaitsecs` rather than the sum.
 - **`CELERY_NICE_LEVEL` has to stop being a relative offset.** `entrypoint.sh:128` exports it as
   `CELERY_NICE_ABSOLUTE - UWSGI_NICE_LEVEL` (`:124`, `:123`) because Celery is an `attach-daemon`
   of an already-niced uWSGI and `nice` composes with the parent's value. Under supervisord every
@@ -988,13 +1047,17 @@ resolve it, and each exists because a simpler arrangement provably does not boot
 - **Fix the readiness contract the bash suites depend on.** `docker/tests/test-puid-pgid.sh:171`
   and `:291` and `docker/tests/test-tls-postgres.sh:146` and `:249` all match the literal
   `uwsgi started with PID`, produced only by `docker/entrypoint.sh:360`, which this PR deletes.
-  All four move to `docker exec <name> supervisorctl -c <role conf> status api-uwsgi` reporting
-  `RUNNING`. That is the same signal as supervisord's `success: … entered RUNNING state` log line
-  but in a documented, version-stable form — the log text is supervisor-internal, while
-  `supervisorctl status`'s output is in the reference — and it is role-aware, so the modular
-  scenarios can wait on the program they actually care about. The existing `docker ps` liveness
-  check ahead of the loop already covers the container-exited-before-supervisord case. Without
-  this change every scenario in both suites times out.
+  All four move to `docker exec <name> supervisorctl -c /app/docker/supervisord/supervisorctl.conf
+  status api-uwsgi` reporting `RUNNING`. That is the same signal as supervisord's `success: …
+  entered RUNNING state` log line but in a documented, version-stable form — the log text is
+  supervisor-internal, while `supervisorctl status`'s output is in the reference. The
+  `supervisorctl.conf` target, not a rung conf, is what makes the call role-agnostic: passing a
+  rung file works (supervisor's `ClientOptions` reads only the `[supervisorctl]` section), but it
+  forces the caller to know the container's role, which `test_modular_mode` must not assume now
+  that its role is defaulted rather than passed (D3). The scenarios still name the program they
+  actually care about. The existing `docker ps` liveness check ahead of the loop already covers the
+  container-exited-before-supervisord case. Without this change every scenario in both suites times
+  out.
 - **`docker/entrypoint.celery.sh` deleted**; `docker/docker-compose.yml`'s `celery` service drops
   its `entrypoint:` override and sets `DISPATCHARR_ROLE=worker`.
   `docker/tests/test-tls-postgres.sh:923` drops the `--entrypoint` override for
@@ -1006,11 +1069,14 @@ resolve it, and each exists because a simpler arrangement provably does not boot
   `exec-pre` Redis flush is gone entirely (rule 2). Leaving them would start Redis, Celery and
   Daphne twice and would flush Redis on every uWSGI restart. `uwsgi.debug.ini` additionally drops
   `honour-stdin = true` (`:72`) — see D2.
-- `stop_grace_period: 45s` on `docker/docker-compose.aio.yml`'s one service **and on the modular
-  `web` and `relay` services** in `docker/docker-compose.yml`. Docker's 10-second default would
-  SIGKILL supervisord partway through the relay's `stopwaitsecs=20` (PR 4) and Postgres's 30;
-  setting it on every service that runs supervisord keeps PR 4 to code. The `celery` service gets
-  it too, since `celery-default`/`celery-dvr` carry `stopwaitsecs=30`.
+- `stop_grace_period: 160s` on `docker/docker-compose.aio.yml`'s one service **and on the modular
+  `web` and `celery` services** in `docker/docker-compose.yml` — `relay`, and its own grace period,
+  arrive in PR 4. Docker's 10-second default would SIGKILL supervisord partway through the
+  sequential per-group stop; `160s` is the smallest round value that covers the 135 s arithmetic
+  ceiling now and the 155 s ceiling PR 4 adds, so PR 3 can set it once and PR 4 stays code-only.
+  Past 160 s Docker `SIGKILL`s, no worse than today's 8-second bash ceiling. Setting it on every
+  service that runs supervisord keeps PR 4 to code. The `celery` service gets it because
+  `celery-default`/`celery-dvr` carry `stopwaitsecs=30`.
 - `docker/tests/test-puid-pgid.sh`: `test_fresh_default` gains an assertion that
   `docker exec … supervisorctl -c … status` reports every program of role `all` as `RUNNING` and
   none as `FATAL` or `BACKOFF`.
@@ -1025,8 +1091,9 @@ resolve it, and each exists because a simpler arrangement provably does not boot
   `BACKOFF`, in `test_fresh_default` and in `test_modular_mode` (the assertion that would catch a
   uWSGI program losing its race with Postgres or Redis, which `priority=` alone does not prevent);
   `grep -rn "flushdb\|flushall\|_flush_non_celery_keys" scripts/ apps/ core/ dispatcharr/ docker/`
-  returns nothing outside test files, which is the check that D15 actually landed rather than
-  moving the flush somewhere quieter;
+  returns nothing outside test files and `scripts/ci_coverage_backend.sh:26` (D15's explicit
+  carve-out — the coverage harness's own throwaway Redis, not a deployment flush), which is the
+  check that D15 actually landed rather than moving the flush somewhere quieter;
   `E2E result` green in full mode (the AIO container still boots and serves the whole Playwright
   matrix); `test_readonly_rootfs` reports the same outcome it does today, a `log_skip`
   (`e2e/README.md:780-783` records the current 135/0/1 result — the scenario cannot currently pass,
@@ -1059,12 +1126,15 @@ resolve it, and each exists because a simpler arrangement provably does not boot
   `export DISPATCHARR_RELAY_GEVENT=${DISPATCHARR_RELAY_GEVENT:-1600}`, each added to the
   `variables=()` array at `:177-184`.
 - New supervisord program `relay-uwsgi`, the same shape as `api-uwsgi` in PR 3's table —
-  `nice -n %(ENV_UWSGI_NICE_LEVEL)s`, the `wait-for-stores.sh` wrapper, `startretries=20`,
+  `nice -n %(ENV_UWSGI_NICE_LEVEL)s`, `setpriv`, the `wait-for-stores.sh` wrapper, `startretries=20`,
   `startsecs=5` — with `--ini /app/docker/uwsgi.relay.ini` and `stopwaitsecs=20`, the longest of
   any program and the number PR 8's bounded-restart ceiling is derived from. It is included by
-  `all.conf`, `all-dev.conf`, `all-debug.conf` and `relay.conf`; `api.conf` (`api-uwsgi`, `daphne`,
-  `nginx`) and `relay.conf` (`relay-uwsgi` only, D14) start being used as whole files for the first
-  time here.
+  `all.conf`, `all-dev.conf` and `relay.conf` (there is no separate debug rung — PR 3's five-rung
+  design, D2); `api.conf` (`api-uwsgi`, `daphne`, `nginx`) and `relay.conf` (`relay-uwsgi` only,
+  D14) start being used as whole files for the first time here. `docker/init/04-check-hwaccel.sh`
+  runs in the `all` and `api` roles only (PR 3's one-shot gate); the `relay` role, which is what
+  will actually spawn ffmpeg from PR 4 on, gets no hardware-acceleration report. Recorded here so
+  the gap is a deliberate PR 4 decision rather than a rediscovery.
 - `docker/nginx.conf`: the full location table in § Architecture, minus the `auth_request` block
   and minus the `map`. PR 4 writes `upstream relay_py { server RELAY_UPSTREAM; }` and
   `uwsgi_pass relay_py;` directly — there is no `X-Relay-Name` header to key a `map` on until PR 5,
@@ -1318,7 +1388,7 @@ Phase 0's § Carried, not fixed table, with a status column now that Phase 1 exi
 | The relay's own stores bind to loopback or an internal network by default, never `0.0.0.0`, with no default credential. | **Still carried.** `docker/docker-compose.yml:191`'s `5436:5432` publish as `dispatch`/`secret` is deliberately untouched by PR 4. | — |
 | `Host`/origin validated, deny-by-default, not conditioned on a debug flag. | **Still carried.** `ALLOWED_HOSTS=["*"]`, `CORS_ALLOW_ALL_ORIGINS=True`, `CSRF_TRUSTED_ORIGINS=["http://*","https://*"]` untouched. | — |
 | Any credential the relay stores or compares is hashed or constant-time compared, never plaintext-equality. | **Partially met.** The XC password compare becomes `hmac.compare_digest` (PR 5) and the internal token is `hmac.compare_digest`-checked from day one (PR 5/6). XC passwords remain **plaintext at rest** in `custom_properties["xc_password"]` — out of scope (ADR 0005). | PR 5, PR 6 |
-| A request timeout and a drain-on-shutdown from day one. | **Met as a timeout, bounded rather than graceful as a shutdown.** `harakiri = 120` on the API (PR 4) is the first request timeout this codebase has run in production. The relay gets a bounded restart via supervisord `stopwaitsecs=20` inside a 45s `stop_grace_period` (PR 3/4), not a drain: in-flight streams still drop and players reconnect, exactly as the route page's "Honest limits" states. | PR 3, PR 4 |
+| A request timeout and a drain-on-shutdown from day one. | **Met as a timeout, bounded rather than graceful as a shutdown.** `harakiri = 120` on the API (PR 4) is the first request timeout this codebase has run in production. The relay gets a bounded restart via supervisord `stopwaitsecs=20` inside a 160s `stop_grace_period` (PR 3/4) — sized to the sum of every program's `stopwaitsecs`, since supervisord's shutdown walk is sequential per priority group, not concurrent — not a drain: in-flight streams still drop and players reconnect, exactly as the route page's "Honest limits" states. | PR 3, PR 4 |
 | The relay's stream endpoint is authorized by a Django-minted, short-lived, signed URL; the UUID alone is not a capability. | **Reworded per ADR 0005, and met in the reworded form.** No signed URL exists or is planned for Phase 1; the UUID stays the public, cacheable identifier. Authorization is Django's decision, made once per tune (PR 5), never per byte. | PR 5 |
 | The relay's logging never emits a provider URL or header set except through the redaction helpers. | **Met, and extended.** No new logging site bypasses `redact_url`/`redact_headers`, and PR 5 additionally redacts the DVR ffmpeg argv, which would otherwise print the internal token past a guard that does not match it. | PR 5 |
 | *(new)* Every long-lived stream surface authorizes through one function; a channel with `hidden_from_output` or `is_adult` is not streamable by UUID alone. | **Met.** `authorize_stream`, both callers (PR 5). Closes #87 and #95. | PR 5 |

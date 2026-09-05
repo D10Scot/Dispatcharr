@@ -5,6 +5,12 @@ services:
     #   dockerfile: Dockerfile
     image: ghcr.io/dispatcharr/dispatcharr:latest
     restart: unless-stopped
+    # supervisord stops its programs one priority group at a time, waiting
+    # for each before signalling the next, so the budget is the sum of
+    # their stopwaitsecs (nginx, three Celery programs, daphne, uwsgi,
+    # Redis, PostgreSQL) rather than the largest. Docker's 10s default
+    # would SIGKILL partway through PostgreSQL's fast shutdown.
+    stop_grace_period: 160s
     container_name: dispatcharr
     ports:
       - 9191:9191

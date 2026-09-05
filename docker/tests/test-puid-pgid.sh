@@ -155,7 +155,28 @@ cleanup_scenario() {
 # Ensure cleanup on script exit
 trap 'cleanup_scenario' EXIT
 
-# Wait for container startup (looks for uwsgi or a known failure)
+# Ask a container's supervisord for status. The -c target is a
+# serverurl-only file, not a rung, so this makes no claim about which role
+# the container is running — which matters because test_modular_mode below
+# deliberately does not set one.
+supervisorctl_status() {
+    local name="$1" program="${2:-}"
+    docker exec "$name" supervisorctl \
+        -c /app/docker/supervisord/supervisorctl.conf status $program 2>/dev/null
+}
+
+# Wait for container startup (api-uwsgi RUNNING under supervisord, or a
+# known failure).
+#
+# RUNNING is a weaker claim than the "uwsgi started with PID" line it
+# replaces: api-uwsgi runs through wait-for-stores.sh, and startsecs=5
+# means "this process stayed alive five seconds", so on a slow Postgres
+# the program is RUNNING while the wrapper is still waiting and uWSGI has
+# not been exec'd. That is enough for every assertion in this file — they
+# read logs the entrypoint wrote before supervisord started, or reach
+# PostgreSQL through docker exec — and no scenario here issues an HTTP
+# request. A test that needs uWSGI to be serving must poll the port, not
+# this.
 wait_for_ready() {
     local name="$1"
     local timeout="${2:-$STARTUP_TIMEOUT}"
@@ -167,8 +188,8 @@ wait_for_ready() {
             echo "  Container $name exited unexpectedly"
             return 1
         fi
-        # Success: uwsgi started
-        if log_matches "$name" "uwsgi started with PID"; then
+        # Success: api-uwsgi is RUNNING under supervisord
+        if supervisorctl_status "$name" api-uwsgi | grep -q "RUNNING"; then
             return 0
         fi
         # Known fatal: our error handler
@@ -288,9 +309,11 @@ check_migrations_done() {
     _capture_logs "$container" "$tmplog"
     if grep -qE "Running migrations|No migrations to apply|Operations to perform|static files copied|Applying .+\.\.\. OK" "$tmplog"; then
         log_pass "Django migrations completed"
-    elif grep -q "uwsgi started with PID" "$tmplog"; then
-        # uwsgi starts AFTER migrations — if it's running, migrations succeeded
-        log_pass "Django migrations completed (confirmed via uwsgi startup)"
+    elif supervisorctl_status "$container" api-uwsgi | grep -q "RUNNING"; then
+        # supervisord does not start until the entrypoint's migrate has
+        # returned, so an api-uwsgi program that exists at all means
+        # migrations succeeded
+        log_pass "Django migrations completed (confirmed via api-uwsgi startup)"
     else
         log_fail "Django migrations did not complete"
     fi
@@ -364,6 +387,14 @@ dump_logs_on_fail() {
         docker logs "$container" 2>&1 \
             | grep -vE 'has a collation version mismatch|The database was created using collation version|Rebuild all objects in this database that use the default collation' \
             | tail -200 | sed 's/^/  | /'
+        echo -e "  ${RED}--- supervisord log ---${NC}"
+        # supervisord's own state transitions go to /run/supervisord.log,
+        # not to container stdout, so `docker logs` alone cannot explain a
+        # program that went FATAL or BACKOFF.
+        docker exec "$container" cat /run/supervisord.log 2>/dev/null \
+            | tail -60 | sed 's/^/  | /' || echo "  | (unavailable)"
+        echo -e "  ${RED}--- supervisorctl status ---${NC}"
+        supervisorctl_status "$container" | sed 's/^/  | /' || true
         echo -e "  ${RED}--- End logs ---${NC}"
     fi
 }
@@ -430,6 +461,32 @@ test_fresh_default() {
             log_pass "Ownership sentinel created (1000:1000)"
         else
             log_fail "Ownership sentinel: expected 1000:1000, got ${sentinel_val:-<missing>}"
+        fi
+
+        # Every program of the `all` role RUNNING, none FATAL or BACKOFF.
+        # This is the assertion that catches a uwsgi, daphne or celery
+        # program losing its race with Postgres or Redis: priority= orders
+        # the start signals but is not a readiness barrier, so only each
+        # program's own wait-for-stores.sh wrapper prevents it.
+        local status_output
+        status_output=$(supervisorctl_status "$name")
+        if [ -z "$status_output" ]; then
+            log_fail "supervisorctl status returned nothing"
+        elif echo "$status_output" | grep -qE "FATAL|BACKOFF"; then
+            log_fail "supervisorctl status shows FATAL/BACKOFF:"
+            echo "$status_output" | sed 's/^/    /'
+        else
+            local missing=""
+            for prog in postgres redis api-uwsgi daphne celery-default celery-dvr celery-beat nginx; do
+                echo "$status_output" | grep -qE "^${prog}[[:space:]]+RUNNING" || missing="$missing $prog"
+            done
+            if [ -n "$missing" ]; then
+                log_fail "supervisorctl status: not RUNNING:$missing"
+                echo "$status_output" | sed 's/^/    /'
+            else
+                log_pass "supervisorctl status: all eight programs of role 'all' RUNNING"
+                echo "$status_output" | sed 's/^/    /'
+            fi
         fi
     else
         log_fail "Container failed to start"
@@ -1013,6 +1070,11 @@ test_modular_mode() {
         sleep 2; ((elapsed+=2))
     done
 
+    # No DISPATCHARR_ROLE on purpose. A modular container that names no
+    # role must default to `api` — which is what every deployment written
+    # before that variable existed looks like. If the default regressed to
+    # `all`, all.conf's [program:postgres] would start against an
+    # uninitialised /data/db and the status assertion below would catch it.
     docker run -d --name "$name" --network "$net" \
         -e DISPATCHARR_ENV=modular \
         -e POSTGRES_HOST="$pg_name" \
@@ -1039,6 +1101,35 @@ test_modular_mode() {
             "Modular mode detected"
         check_no_permission_errors "$name"
         check_migrations_done "$name"
+
+        check_log_contains "$name" "DISPATCHARR_ROLE=api" \
+            "Modular container defaulted to role api"
+
+        # The api rung has no postgres or redis program at all, so this
+        # asserts the role split as well as the health of what it runs.
+        local status_output
+        status_output=$(supervisorctl_status "$name")
+        if [ -z "$status_output" ]; then
+            log_fail "supervisorctl status returned nothing"
+        elif echo "$status_output" | grep -qE "FATAL|BACKOFF"; then
+            log_fail "supervisorctl status shows FATAL/BACKOFF:"
+            echo "$status_output" | sed 's/^/    /'
+        elif echo "$status_output" | grep -qE "^(postgres|redis|celery-)"; then
+            log_fail "supervisorctl status: role api must run no local stores or Celery:"
+            echo "$status_output" | sed 's/^/    /'
+        else
+            local missing=""
+            for prog in api-uwsgi daphne nginx; do
+                echo "$status_output" | grep -qE "^${prog}[[:space:]]+RUNNING" || missing="$missing $prog"
+            done
+            if [ -n "$missing" ]; then
+                log_fail "supervisorctl status: not RUNNING:$missing"
+                echo "$status_output" | sed 's/^/    /'
+            else
+                log_pass "supervisorctl status: all three programs of role 'api' RUNNING"
+                echo "$status_output" | sed 's/^/    /'
+            fi
+        fi
     else
         log_fail "Modular mode failed to start"
     fi
