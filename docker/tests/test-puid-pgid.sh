@@ -1221,11 +1221,14 @@ test_role_split() {
     # The relay's own entrypoint waits on `migrate --check`, which only the
     # api container ever satisfies, so it sits waiting until api has
     # migrated. That is fine: DNS resolves as soon as the container exists.
+    #
+    # relay → Django calls arrive in PR 6; the spec's shape names it now.
     docker run -d --name "$relay_name" --network "$net" \
         -e DISPATCHARR_ENV=modular -e DISPATCHARR_ROLE=relay \
         -e POSTGRES_HOST="$pg_name" -e POSTGRES_PORT=5432 \
         -e POSTGRES_USER=dispatch -e POSTGRES_PASSWORD=secret -e POSTGRES_DB=dispatcharr \
         -e REDIS_HOST="$redis_name" \
+        -e DISPATCHARR_WEB_HOST="$api_name" \
         -v "${vol}:/data" \
         "$IMAGE_NAME" >/dev/null
 
