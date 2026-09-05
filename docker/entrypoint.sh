@@ -218,6 +218,17 @@ else
     export DISPATCHARR_UWSGI_EXTRA_ARGS=""
 fi
 
+# uWSGI's own $(VAR) expansion reads these from its process environment
+# (not %(ENV_x)s — that is supervisord's own syntax, irrelevant to what
+# the uwsgi binary itself expands). Exported unconditionally, in every
+# role, for the same reason DISPATCHARR_UWSGI_INI is: an unset $(VAR) in
+# an ini uWSGI does not even load is harmless, but a role that does load
+# it (relay-uwsgi reads DISPATCHARR_RELAY_GEVENT; api-uwsgi reads the
+# other two) must never see an empty expansion.
+export DISPATCHARR_API_HARAKIRI=${DISPATCHARR_API_HARAKIRI:-120}
+export DISPATCHARR_API_MAX_REQUESTS=${DISPATCHARR_API_MAX_REQUESTS:-5000}
+export DISPATCHARR_RELAY_GEVENT=${DISPATCHARR_RELAY_GEVENT:-1600}
+
 # Translate Dispatcharr POSTGRES_SSL_* env vars into libpq-recognized PGSSL*
 # env vars. Called once before any external PostgreSQL connection; all child
 # processes (psql, pg_dump, pg_isready, createdb, dropdb) inherit these
@@ -265,6 +276,7 @@ variables=(
     CELERY_NICE_LEVEL UWSGI_NICE_LEVEL DJANGO_SECRET_KEY
     PG_BINDIR DISPATCHARR_HOME DISPATCHARR_CELERY_USER DISPATCHARR_CELERY_HOME CELERY_LOG_LEVEL
     DISPATCHARR_UWSGI_INI DISPATCHARR_UWSGI_EXTRA_ARGS
+    DISPATCHARR_API_HARAKIRI DISPATCHARR_API_MAX_REQUESTS DISPATCHARR_RELAY_GEVENT
 )
 
 # Optional variables, only propagate when set to avoid noisy warnings
