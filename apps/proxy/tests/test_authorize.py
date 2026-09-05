@@ -474,8 +474,19 @@ class PrincipalResolutionTests(AuthorizeBase):
         self.assertEqual(result.user_id, str(self.standard.id))
 
     def test_session_user_is_read_when_no_drf_credential_is_presented(self):
+        # A real session, not `request.user` set by hand: _session_user
+        # reads django.contrib.auth.get_user(request) directly, because the
+        # nginx-facing view's own dispatch (`@authentication_classes([])`
+        # still runs DRF's perform_authentication) clobbers request.user to
+        # AnonymousUser before authorize_stream ever runs — setting
+        # request.user here would prove nothing about that path (Task 4
+        # review finding 2).
+        from django.contrib.auth import login
+        from django.contrib.sessions.backends.db import SessionStore
+
         request = self._request()
-        request.user = self.standard
+        request.session = SessionStore()
+        login(request, self.standard, backend="django.contrib.auth.backends.ModelBackend")
         with patch.object(authorize, "network_access_allowed", return_value=True):
             result = authorize_stream(request, SURFACE_LIVE, identifier=str(self.channel.uuid))
         self.assertEqual(result.user_id, str(self.standard.id))

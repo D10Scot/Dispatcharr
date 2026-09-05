@@ -1,4 +1,5 @@
 import os
+import re
 import ssl
 from pathlib import Path
 from datetime import timedelta
@@ -29,7 +30,20 @@ SECRET_KEY = os.environ.get("DJANGO_SECRET_KEY")
 # relay exists in Phase 1 and the value is always "py"; nginx maps it to
 # an upstream group, so Phase 2's canary is a map entry rather than a code
 # change on either side (ADR 0005).
+#
+# Validated, not just defaulted: it is echoed verbatim into a response
+# header on every tune (apps/proxy/authorize_views.py), so a CR/LF in the
+# environment variable would raise BadHeaderError and 500 every stream, and
+# any value other than the nginx map's literal "py" would silently miss the
+# map and land on its `default relay_py` fallback instead of the operator's
+# intended upstream. Fail at boot, not on the first request.
 RELAY_DEFAULT_NAME = os.environ.get("DISPATCHARR_RELAY_DEFAULT_NAME", "py")
+if not re.fullmatch(r"[A-Za-z0-9_-]+", RELAY_DEFAULT_NAME):
+    raise ImproperlyConfigured(
+        f"DISPATCHARR_RELAY_DEFAULT_NAME={RELAY_DEFAULT_NAME!r} is invalid — it becomes an "
+        "HTTP header value (X-Relay-Name) and an nginx `map` key, so it must match "
+        "[A-Za-z0-9_-]+."
+    )
 
 REDIS_HOST = os.environ.get("REDIS_HOST", "localhost")
 REDIS_PORT = int(os.environ.get("REDIS_PORT", 6379))

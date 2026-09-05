@@ -257,11 +257,24 @@ def _drf_user(http_request):
 
 
 def _session_user(http_request):
-    """request.user when Django's AuthenticationMiddleware resolved one."""
-    user = getattr(http_request, "user", None)
-    if user is not None and getattr(user, "is_authenticated", False):
-        return user
-    return None
+    """The principal a session cookie carries, read from the session directly.
+
+    Not `http_request.user`: both callers reach this after `_drf_user`, and
+    reading `drf_request.user` with no authenticator matching mirrors
+    AnonymousUser onto `http_request.user` as a side effect of DRF's own
+    `Request.user` setter — for the nginx subrequest view specifically, that
+    clobber happens in `@api_view`'s own `dispatch()` (`authentication_classes([])`
+    still runs `perform_authentication`), before this module's `_drf_user`
+    ever gets a turn, so `_drf_user`'s own restore-on-miss does not reach it.
+    `django.contrib.auth.get_user` re-resolves straight from the session,
+    independent of whatever `request.user` currently holds.
+    """
+    if not hasattr(http_request, "session"):
+        return None
+    from django.contrib.auth import get_user
+
+    user = get_user(http_request)
+    return user if getattr(user, "is_authenticated", False) else None
 
 
 def _catchup_session_user(identifier, session_id):

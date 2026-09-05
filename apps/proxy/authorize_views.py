@@ -2,8 +2,10 @@
 
 1. authorize_view — what nginx calls with `auth_request` at the internal
    location `= /_dispatcharr/authorize`, once per tune, before it proxies
-   a single byte to the relay. It answers 2xx/401/403/404/429 and, on a
-   200, carries the decision in five X-Relay-* response headers, which
+   a single byte to the relay. It answers only 2xx, 401 or 403, carrying
+   the true status in X-Authorize-Status on every denial (nginx's
+   auth_request module cannot transport a 404 or 429 as itself). On a
+   200, it carries the decision in five X-Relay-* response headers, which
    nginx copies into variables with auth_request_set (the only context in
    which a subrequest's response headers are readable) and re-emits toward
    the relay as uwsgi_param HTTP_X_RELAY_* values.
@@ -22,7 +24,7 @@ from rest_framework import serializers
 from rest_framework.decorators import api_view, authentication_classes, permission_classes
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 from apps.accounts.models import User
 from apps.proxy.authorize import (
@@ -97,8 +99,8 @@ def result_from_headers(request, surface: str) -> AuthorizeResult:
 
     user_id = (request.META.get(META_RELAY_USER) or "").strip()
     user = None
-    if user_id:
-        user = User.objects.filter(id=user_id).first()
+    if user_id.isdigit():
+        user = User.objects.filter(id=int(user_id)).first()
     return AuthorizeResult(
         surface=surface,
         channel_uuid=(request.META.get(META_RELAY_CHANNEL) or "").strip(),
@@ -219,7 +221,15 @@ def authorize_view(request):
     http_request.GET = _query_dict(split.query)
 
     try:
-        match = resolve(split.path)
+        # X-Original-URI is nginx's $request_uri — the raw, percent-encoded
+        # request line — while the inline path resolves Django's
+        # path_info ($document_uri via uwsgi_params), which nginx has
+        # already decoded. An XC credential segment carrying a reserved
+        # character (a literal %40/%23/% or a space) would otherwise
+        # authorize inline but 401 through this view. unquote is the
+        # decode step that carries credentials; nginx's own // collapsing
+        # and .. resolution on $document_uri has no bearing on identity.
+        match = resolve(unquote(split.path))
     except Resolver404:
         return subrequest_error_response(AuthorizeDenied(404, "Not found"))
 

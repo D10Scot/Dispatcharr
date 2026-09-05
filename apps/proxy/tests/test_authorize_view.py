@@ -1,5 +1,6 @@
 """The nginx-facing view, and the trust marker the relay checks."""
 
+import uuid
 from unittest.mock import patch
 
 from django.test import Client, TestCase, override_settings
@@ -22,6 +23,18 @@ class AuthorizeViewTests(TestCase):
         cls.limited = User.objects.create_user(
             username="pr5-view-limited", password="x", user_level=1, stream_limit=1
         )
+        cls.admin = User.objects.create_user(
+            username="pr5-view-admin", password="x", user_level=User.UserLevel.ADMIN
+        )
+        cls.token_user = User.objects.create_user(
+            username="pr5-view-token", password="x"
+        )
+        # A username/password pair with characters that must be
+        # percent-encoded on a request line ('@', '#') — the fixture for
+        # the X-Original-URI decode fix.
+        cls.xc_user = User.objects.create_user(username="u@x", password="unused")
+        cls.xc_user.custom_properties = {"xc_password": "p#w"}
+        cls.xc_user.save()
 
     def setUp(self):
         self.client = Client()
@@ -116,6 +129,71 @@ class AuthorizeViewTests(TestCase):
 
         schema = SchemaGenerator().get_schema(request=None, public=True)
         self.assertIn("/_dispatcharr/authorize", schema["paths"])
+
+    def test_a_percent_encoded_xc_credential_decodes_before_resolving(self):
+        # X-Original-URI is nginx's $request_uri — the raw, percent-encoded
+        # request line — unlike the inline path's already-decoded path_info.
+        # A username/password carrying a reserved character must still
+        # resolve to the right user, not 401 on the encoded literal.
+        response = self._get(f"/live/u%40x/p%23w/{self.channel.id}")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response["X-Relay-User"], str(self.xc_user.id))
+
+    def test_a_session_principal_reaches_authorize_stream_through_the_view(self):
+        # @authentication_classes([]) means DRF's own perform_authentication
+        # clobbers request.user to AnonymousUser before authorize_stream
+        # runs; _session_user must re-resolve from the session directly
+        # (apps/proxy/authorize.py) rather than trust request.user.
+        self.client.force_login(self.admin)
+        response = self._get(f"/proxy/ts/stream/{self.hidden.uuid}")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response["X-Relay-User"], str(self.admin.id))
+
+    def test_a_query_param_jwt_authorizes_through_the_view(self):
+        from rest_framework_simplejwt.tokens import RefreshToken
+
+        token = str(RefreshToken.for_user(self.token_user).access_token)
+        response = self._get(f"/proxy/ts/stream/{self.channel.uuid}?token={token}")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response["X-Relay-User"], str(self.token_user.id))
+
+    def test_a_malformed_bearer_token_is_401_not_anonymous(self):
+        response = self._get(
+            f"/proxy/ts/stream/{self.channel.uuid}",
+            HTTP_AUTHORIZATION="Bearer garbage",
+        )
+        self.assertEqual(response.status_code, 401)
+
+    def test_every_untested_surface_shape_resolves_through_the_view(self):
+        # _surface_for has eight branches; the tests above exercise
+        # stream_ts and stream_xc (via /live/). One table for the rest, so
+        # this parser — the piece of the hop most likely to drift when a
+        # urlconf changes — is pinned rather than merely hand-verified.
+        vod_id_a = uuid.uuid4()
+        vod_id_b = uuid.uuid4()
+        cases = [
+            # Bad XC creds 401s before any channel/content lookup, so none
+            # of these need a real channel/content record to test the
+            # surface resolution itself.
+            (f"/nobody/wrongpass/{self.channel.id}", 401),  # bare 3-segment XC form
+            (f"/timeshift/nobody/wrongpass/0/0/{self.channel.id}.ts", 401),
+            (
+                f"/streaming/timeshift.php?username=nobody&password=wrongpass&stream={self.channel.id}.ts",
+                401,
+            ),  # query-identity block: no path kwargs at all
+            (f"/proxy/catchup/{self.channel.uuid}", 401),  # no principal, no session_id
+            (f"/proxy/catchup/{self.channel.uuid}?session_id=bogus", 401),
+            (f"/movie/nobody/wrongpass/1.mp4", 401),
+            (f"/series/nobody/wrongpass/1.mp4", 401),
+            # VOD: anonymous is allowed (not in _PRINCIPAL_REQUIRED, not a
+            # channel surface), so both layouts should authorize.
+            (f"/proxy/vod/movie/{vod_id_a}/sess1", 200),
+            (f"/proxy/vod/movie/{vod_id_b}/sess1/{self.channel.id}/", 200),
+        ]
+        for uri, expected_status in cases:
+            with self.subTest(uri=uri):
+                response = self._get(uri)
+                self.assertEqual(response.status_code, expected_status)
 
 
 class ResolveAuthorizationTests(TestCase):
