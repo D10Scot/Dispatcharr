@@ -95,6 +95,24 @@ function parseLocationBlocks(config: string): LocationBlock[] {
  * shape. PR 4 is the process split this test was written to survive — its
  * location filter now covers every location that split introduced, not just
  * the original single `/proxy/` block.
+ *
+ * PR 5 (the authorize hop, ADR 0005) adds two more load-bearing properties
+ * to the same location table, pinned by the two tests below rather than a
+ * new file: every relay-bound location runs `auth_request
+ * /_dispatcharr/authorize` and reads back all six `auth_request_set`
+ * variables — five carrying the hop's decision (`$relay_channel`,
+ * `$relay_output`, `$relay_client`, `$relay_user`, `$relay_name`), the
+ * sixth (`$authorize_status`) carrying the real status code the
+ * `ngx_http_auth_request_module` cannot transport itself (it allows on 2xx
+ * and denies with 401/403 verbatim, but calls every other subrequest status
+ * an error) — plus the `error_page 403 = @authorize_denied` that restores
+ * it. Every location that is *not* behind the hop instead carries the
+ * `dispatcharr_api_params.conf` blanking include and issues no
+ * `auth_request` at all. Neither property is meaningful alone: a relay-bound
+ * location that ran the hop but never blanked a client's own headers
+ * elsewhere would still let a request into a non-relay-bound Django view
+ * carry a forged `X-Relay-Channel`, since both processes share one urlconf
+ * (D1). The pair together is what makes the trust marker unforgeable.
  */
 
 /**
@@ -169,5 +187,145 @@ test(
         `location block "${block.header}" does not set uwsgi_buffering off:\n${block.body.join('\n')}`
       ).toBe(true);
     }
+  }
+);
+
+/**
+ * The five variables the hop's answer travels in. Order-independent: the
+ * assertion is set membership, so reordering the block in nginx.conf is
+ * not a failure.
+ */
+const AUTH_REQUEST_SET_VARS = [
+  '$relay_name',
+  '$relay_channel',
+  '$relay_output',
+  '$relay_client',
+  '$relay_user',
+  // The sixth carries the status the module cannot transport: a 404 or
+  // 429 decision arrives as 403 and error_page turns it back.
+  '$authorize_status',
+];
+
+test(
+  'every relay-bound location authorizes through the hop',
+  { tag: '@contract' },
+  async () => {
+    const { stdout } = await execFileAsync('docker', ['exec', CONTAINER_NAME, 'nginx', '-T']);
+    const blocks = parseLocationBlocks(stdout);
+    const relayBlocks = blocks.filter((b) => RELAY_BOUND_TARGETS.includes(b.target));
+
+    // Same vacuous-pass guard as the buffering test above: an empty array
+    // would pass every loop below while proving nothing.
+    expect(
+      relayBlocks.map((b) => b.target).sort(),
+      `expected every relay-bound location in nginx -T's output; found: ${blocks.map((b) => b.header).join(', ')}`
+    ).toEqual([...RELAY_BOUND_TARGETS].sort());
+
+    for (const block of relayBlocks) {
+      expect(
+        block.body.some((line) => /^\s*auth_request\s+\/_dispatcharr\/authorize\s*;/.test(line)),
+        `location "${block.header}" does not issue the authorize subrequest:\n${block.body.join('\n')}`
+      ).toBe(true);
+
+      for (const variable of AUTH_REQUEST_SET_VARS) {
+        expect(
+          block.body.some((line) =>
+            new RegExp(`^\\s*auth_request_set\\s+\\${variable}\\s`).test(line)
+          ),
+          `location "${block.header}" does not set ${variable} from the subrequest`
+        ).toBe(true);
+      }
+
+      // The marker: a literal "1" here would let anyone who can reach the
+      // relay's port hand it a hand-written X-Relay-Channel. The sed'd
+      // value is a 64-character hex digest, and the placeholder itself
+      // reaching a running container means 03-init-dispatcharr.sh did not
+      // substitute it — which would 403 every tune.
+      const marker = block.body.find((line) =>
+        /uwsgi_param\s+HTTP_X_DISPATCHARR_AUTHORIZED/.test(line)
+      );
+      expect(marker, `location "${block.header}" sets no trust marker`).toBeTruthy();
+      expect(marker).toMatch(/"[0-9a-f]{64}"/);
+
+      // Without this, a 404 or 429 decision reaches the viewer as 500:
+      // the auth_request module denies verbatim on 401 and 403 only.
+      expect(
+        block.body.some((line) =>
+          /^\s*error_page\s+403\s*=\s*@authorize_denied\s*;/.test(line)
+        ),
+        `location "${block.header}" does not restore the hop's real status`
+      ).toBe(true);
+    }
+
+    // The named location the error_page above points at. A dangling
+    // error_page target is a 500 on every denial, which is the failure
+    // this whole block exists to prevent.
+    const denied = blocks.find((b) => b.target === '@authorize_denied');
+    expect(denied, 'no location @authorize_denied').toBeTruthy();
+    expect(denied!.body.some((line) => /\$authorize_status\s*=\s*404/.test(line))).toBe(true);
+    expect(denied!.body.some((line) => /\$authorize_status\s*=\s*429/.test(line))).toBe(true);
+    expect(denied!.body.some((line) => /^\s*return\s+403\s*;/.test(line))).toBe(true);
+
+    // The authorize location itself must exist and be internal, or every
+    // subrequest above is a 404 that nginx reports as a 500.
+    const authorize = blocks.find((b) => b.target === '/_dispatcharr/authorize');
+    expect(authorize, 'no = /_dispatcharr/authorize location').toBeTruthy();
+    expect(authorize!.body.some((line) => /^\s*internal\s*;/.test(line))).toBe(true);
+  }
+);
+
+test(
+  'every location outside the hop blanks the trust params',
+  { tag: '@contract' },
+  async () => {
+    const { stdout } = await execFileAsync('docker', ['exec', CONTAINER_NAME, 'nginx', '-T']);
+    const blocks = parseLocationBlocks(stdout);
+
+    // Both processes run one urlconf (spec D1), so a stream view is
+    // reachable through any Django-bound location. Each of these must
+    // therefore overwrite the five params a client could otherwise send.
+    const blanked = [
+      '/',
+      '/api/',
+      '/output/',
+      '/hdhr',
+      '/proxy/',
+      '/proxy/relay/',
+      '/proxy/ts/status',
+      '/proxy/vod/stats/',
+      '/proxy/vod/stop_client/',
+      '/proxy/catchup/stats/',
+      '/proxy/catchup/programs/',
+      '/proxy/catchup/stop_client/',
+      '/_dispatcharr/authorize',
+    ];
+
+    for (const target of blanked) {
+      const block = blocks.find((b) => b.target === target);
+      expect(block, `no location for ${target}`).toBeTruthy();
+      expect(
+        block!.body.some((line) => /dispatcharr_api_params\.conf\s*;/.test(line)),
+        `location "${block!.header}" does not include the blanking params`
+      ).toBe(true);
+      expect(
+        block!.body.some((line) => /^\s*auth_request\s+\//.test(line)),
+        `location "${block!.header}" must not run the authorize subrequest`
+      ).toBe(false);
+    }
+
+    // The nested recordings-file location never surfaces as its own block
+    // (parseLocationBlocks walks by brace depth from each header, so its
+    // lines are part of /api/'s body). Assert on that body instead: it is
+    // relay-bound, and it must carry neither an auth_request nor a
+    // $relay_upstream pass.
+    const api = blocks.find((b) => b.target === '/api/')!;
+    // Match the location header, not the word in the comment above it: a
+    // deleted nested location with its explanatory comment left behind
+    // would otherwise still pass.
+    expect(
+      api.body.some((line) => /location\s+~\s+\^\/api\/channels\/recordings/.test(line)),
+      'the nested recordings-file location is gone from ^~ /api/'
+    ).toBe(true);
+    expect(api.body.some((line) => /^\s*auth_request\s+\//.test(line))).toBe(false);
   }
 );
