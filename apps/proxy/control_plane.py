@@ -21,8 +21,11 @@ import json
 import logging
 import os
 import time
+from urllib.parse import urlsplit
 
 import requests
+from django.core.exceptions import ImproperlyConfigured
+from django.http.request import split_domain_port
 
 from apps.proxy.internal_auth import (
     HEADER_INTERNAL,
@@ -55,26 +58,71 @@ class ControlPlaneRefused(Exception):
         super().__init__(f"{path} refused with {status}")
 
 
+# Set once we have logged the ImproperlyConfigured message for this
+# process. Mirrors _events_down below: every misconfigured call still
+# raises (the caller must not degrade on it), but the process only writes
+# the explanation to the log once instead of once per tune.
+_host_validation_warned = False
+
+
+def _validated(url, var_name=None, raw_value=None):
+    """Reject a URL whose host Django's own get_host() would reject.
+
+    Uses Django's own split_domain_port -- exactly what HttpRequest.get_host()
+    calls -- so the client and the server can never disagree about what
+    counts as a valid Host header. It returns ('', '') for anything
+    host_validation_re rejects (notably: an underscore anywhere in the
+    host), and get_host() raises DisallowedHost for that BEFORE
+    ALLOWED_HOSTS is even consulted. A relay that sent such a URL as an
+    HTTP request would just get an opaque 400 with no indication why;
+    failing here, at the source of the value, points at the actual
+    variable and value responsible.
+
+    No network access -- this is a regex check on a string that is already
+    in hand, safe to run on every call.
+    """
+    global _host_validation_warned
+    domain, _port = split_domain_port(urlsplit(url).netloc)
+    if domain:
+        return url
+    subject = f"{var_name}={raw_value}" if var_name else f"the control-plane URL {url!r}"
+    message = (
+        f"{subject} produces a Host header Django's get_host() rejects "
+        "before ALLOWED_HOSTS is consulted (host_validation_re allows only "
+        "letters, digits, dots and hyphens -- no underscores). Use a "
+        "hostname made of those characters."
+    )
+    if not _host_validation_warned:
+        logger.error(message)
+        _host_validation_warned = True
+    raise ImproperlyConfigured(message)
+
+
 def get_control_plane_base_url():
     """Where Django answers, for this deployment shape (D9).
 
     The same four-branch formula as get_dvr_stream_base_url()
     (apps/channels/tasks.py), with its own override variable: explicit,
     then modular by service name, then dev (no nginx — uWSGI's own http
-    listener), then AIO through nginx on DISPATCHARR_PORT.
+    listener), then AIO through nginx on DISPATCHARR_PORT. Every branch
+    builds its URL and validates it the same way before returning, so a
+    misconfigured host fails loudly here rather than as an opaque 400 on
+    the first tune.
     """
     explicit = os.environ.get("DISPATCHARR_INTERNAL_API_BASE_URL")
     if explicit:
-        return explicit.rstrip("/")
+        return _validated(
+            explicit.rstrip("/"), "DISPATCHARR_INTERNAL_API_BASE_URL", explicit
+        )
     env = os.environ.get("DISPATCHARR_ENV", "aio").lower()
     if env == "modular":
         host = os.environ.get("DISPATCHARR_WEB_HOST", "web")
         port = os.environ.get("DISPATCHARR_PORT", "9191")
-        return f"http://{host}:{port}"
+        return _validated(f"http://{host}:{port}", "DISPATCHARR_WEB_HOST", host)
     if env == "dev":
-        return "http://127.0.0.1:5656"
+        return _validated("http://127.0.0.1:5656")
     port = os.environ.get("DISPATCHARR_PORT", "9191")
-    return f"http://127.0.0.1:{port}"
+    return _validated(f"http://127.0.0.1:{port}")
 
 
 def _post(path, payload):

@@ -9,6 +9,7 @@ import json
 import os
 from unittest import mock
 
+from django.core.exceptions import ImproperlyConfigured
 from django.test import RequestFactory, SimpleTestCase, override_settings
 
 from apps.proxy import control_plane
@@ -92,6 +93,78 @@ class BaseUrlTests(SimpleTestCase):
             os.environ.pop("DISPATCHARR_PORT", None)
             self.assertEqual(
                 control_plane.get_control_plane_base_url(), "http://127.0.0.1:9191"
+            )
+
+
+class HostValidationTests(SimpleTestCase):
+    """The Host header Django would refuse must never leave the relay.
+
+    Task 14 found this the hard way: docker/tests/test-puid-pgid.sh's
+    role_split scenario named its API container "puid_test_role_api" and
+    the modular branch built that verbatim into a Host header, which
+    Django's get_host() rejects before ALLOWED_HOSTS is even consulted
+    (host_validation_re excludes underscores) -- a bare 400 with nothing
+    in the API log pointing at the real cause.
+    """
+
+    def setUp(self):
+        control_plane._host_validation_warned = False
+        self.addCleanup(setattr, control_plane, "_host_validation_warned", False)
+
+    def test_an_underscored_web_host_is_rejected_loudly(self):
+        with mock.patch.dict(
+            os.environ,
+            {"DISPATCHARR_ENV": "modular", "DISPATCHARR_WEB_HOST": "puid_test_role_api"},
+            clear=False,
+        ):
+            os.environ.pop("DISPATCHARR_INTERNAL_API_BASE_URL", None)
+            with self.assertRaises(ImproperlyConfigured) as ctx:
+                control_plane.get_control_plane_base_url()
+        message = str(ctx.exception)
+        self.assertIn("DISPATCHARR_WEB_HOST", message)
+        self.assertIn("puid_test_role_api", message)
+
+    def test_a_hyphenated_web_host_is_accepted(self):
+        with mock.patch.dict(
+            os.environ,
+            {"DISPATCHARR_ENV": "modular", "DISPATCHARR_WEB_HOST": "puid-test-role-api"},
+            clear=False,
+        ):
+            os.environ.pop("DISPATCHARR_INTERNAL_API_BASE_URL", None)
+            os.environ.pop("DISPATCHARR_PORT", None)
+            self.assertEqual(
+                control_plane.get_control_plane_base_url(),
+                "http://puid-test-role-api:9191",
+            )
+
+    def test_an_underscored_explicit_base_url_is_rejected_loudly(self):
+        with mock.patch.dict(
+            os.environ,
+            {"DISPATCHARR_INTERNAL_API_BASE_URL": "http://bad_host:9191"},
+            clear=False,
+        ):
+            with self.assertRaises(ImproperlyConfigured) as ctx:
+                control_plane.get_control_plane_base_url()
+        self.assertIn("DISPATCHARR_INTERNAL_API_BASE_URL", str(ctx.exception))
+
+    def test_an_ipv6_explicit_base_url_is_accepted_unchanged(self):
+        with mock.patch.dict(
+            os.environ,
+            {"DISPATCHARR_INTERNAL_API_BASE_URL": "http://[::1]:9191/"},
+            clear=False,
+        ):
+            self.assertEqual(
+                control_plane.get_control_plane_base_url(), "http://[::1]:9191"
+            )
+
+    def test_an_ipv4_explicit_base_url_is_accepted_unchanged(self):
+        with mock.patch.dict(
+            os.environ,
+            {"DISPATCHARR_INTERNAL_API_BASE_URL": "http://10.0.0.5:9191/"},
+            clear=False,
+        ):
+            self.assertEqual(
+                control_plane.get_control_plane_base_url(), "http://10.0.0.5:9191"
             )
 
 
@@ -328,6 +401,22 @@ class NextSourceTests(_ControlPlaneTestCase):
 
         with self.assertRaises(control_plane.ControlPlaneUnavailable):
             control_plane.next_source("some-uuid")
+
+    def test_next_source_with_a_bad_host_raises_improperly_configured_with_no_call(self):
+        # A misconfigured host must fail before any HTTP call is attempted,
+        # and as ImproperlyConfigured specifically -- never
+        # ControlPlaneUnavailable, which would fire the degraded fallback
+        # instead of failing loudly (see HostValidationTests).
+        control_plane._host_validation_warned = False
+        self.addCleanup(setattr, control_plane, "_host_validation_warned", False)
+        with mock.patch.dict(
+            os.environ,
+            {"DISPATCHARR_INTERNAL_API_BASE_URL": "http://bad_host:9191"},
+            clear=False,
+        ):
+            with self.assertRaises(ImproperlyConfigured):
+                control_plane.next_source("some-uuid")
+        self.requests.request.assert_not_called()
 
 
 class ReleaseSourceTests(_ControlPlaneTestCase):
