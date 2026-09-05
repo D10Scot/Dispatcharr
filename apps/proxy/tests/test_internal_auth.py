@@ -63,6 +63,24 @@ class InternalAuthTests(SimpleTestCase):
             internal_auth.request_is_relay_trusted(_Req(HTTP_X_DISPATCHARR_AUTHORIZED=1))
         )
 
+    def test_a_non_ascii_header_value_is_rejected_not_raised(self):
+        # WSGI/uWSGI hand header values to Django as latin-1 decoded str, so
+        # a byte >= 0x80 can reach here from a client that hits uwsgi's
+        # :5656 (published in dev/debug) or the relay's own :5657 directly
+        # (any compose peer). hmac.compare_digest raises TypeError on
+        # non-ASCII str — the predicate must return False, not raise.
+        non_ascii = "é" + "a" * 63
+        self.assertFalse(
+            internal_auth.request_is_relay_trusted(
+                _Req(HTTP_X_DISPATCHARR_AUTHORIZED=non_ascii)
+            )
+        )
+        self.assertFalse(
+            internal_auth.request_is_internal(
+                _Req(HTTP_X_DISPATCHARR_INTERNAL=non_ascii)
+            )
+        )
+
 
 class InternalHeaderRedactionTests(SimpleTestCase):
     def test_redact_headers_masks_both_internal_tokens(self):

@@ -21,6 +21,13 @@ Both roles derive the same values because docker/entrypoint.sh generates
 /data/jwt once and every role reads it from the same volume — a deployment
 fact, which is why docker/docker-compose.yml's relay service mounts
 ./data:/data.
+
+Wire contract: the HMAC key is the UTF-8 bytes of DJANGO_SECRET_KEY exactly
+as docker/entrypoint.sh:138 exports it (`tr -d '\r\n' < /data/jwt`); the
+nginx-side RELAY_TRUST_TOKEN computed in docker/init/03-init-dispatcharr.sh
+must read the same environment variable and encode it the same way, or the
+two sides derive different tokens and every nginx-authorized tune falls
+through to the inline path.
 """
 
 import hashlib
@@ -58,7 +65,10 @@ META_ORIGINAL_URI = "HTTP_X_ORIGINAL_URI"
 
 
 def _token(context: bytes) -> str:
-    secret = (settings.SECRET_KEY or "").encode()
+    # settings.SECRET_KEY access itself raises ImproperlyConfigured on an
+    # empty or missing key (Django 6), so there is no empty-secret case to
+    # guard against here.
+    secret = settings.SECRET_KEY.encode()
     return hmac.new(secret, context, hashlib.sha256).hexdigest()
 
 
@@ -73,7 +83,12 @@ def internal_principal_token() -> str:
 
 
 def _matches(value, expected: str) -> bool:
-    if not isinstance(value, str) or not value or not expected:
+    # WSGI/uWSGI hand header values to Django as latin-1 decoded str, so a
+    # byte >= 0x80 from a client reaching uwsgi's :5656 (published in
+    # dev/debug) or the relay's own :5657 directly (any compose peer) can
+    # land here. hmac.compare_digest raises on non-ASCII str, so exclude it
+    # before comparing rather than let a malformed header turn into a 500.
+    if not isinstance(value, str) or not value or not expected or not value.isascii():
         return False
     return hmac.compare_digest(value, expected)
 
