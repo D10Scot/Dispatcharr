@@ -1,9 +1,10 @@
 name: Pages
 
-# Assembles the static engineering-metrics dashboard (dashboard/) plus the
-# append-only metrics history (metrics-data branch) into a site artifact and
-# publishes it to GitHub Pages. metrics-data stays pure data; this workflow
-# is the only place dashboard code and metrics history are combined.
+# Builds one site.json from the metrics-data checkout plus the curated
+# files on main, then assembles it with the static dashboard (dashboard/)
+# into a site artifact and publishes it to GitHub Pages. metrics-data stays
+# pure data; this workflow is the only place dashboard code and metrics
+# history are combined.
 #
 # Deliberately does not use `workflow_run` to chain off the Metrics workflow:
 # zizmor's dangerous-triggers audit flags workflow_run as fundamentally
@@ -57,6 +58,7 @@ jobs:
         # runner image (mirrors lint.yml's metrics-tests job).
         working-directory: main
         run: |
+          set -euo pipefail
           python3 -m venv .venv
           .venv/bin/python -m pip install --require-hashes -r metrics/requirements.txt
 
