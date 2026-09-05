@@ -69,6 +69,11 @@ SENSITIVE_HEADERS = frozenset(
         "x-api-key",
         "proxy-authorization",
         "set-cookie",
+        # Phase 1 D11: both are HMACs of SECRET_KEY. Neither is a provider
+        # credential, which is what this set was written for, but both
+        # would let a reader of a DEBUG log forge the relay's trust marker.
+        "x-dispatcharr-authorized",
+        "x-dispatcharr-internal",
     }
 )
 
@@ -82,6 +87,12 @@ URL_VALUED_META_KEYS = frozenset(
         "query-string",
         "raw-uri",
         "request-uri",
+        # X-Original-URI, the URI nginx forwards to the authorize hop. It is
+        # the whole request line of the thing being authorized, XC
+        # credentials included, so it belongs in the family that goes
+        # through redact_url rather than the one that is blanked — the path
+        # is the useful part of a log line about a tune.
+        "x-original-uri",
     }
 )
 
