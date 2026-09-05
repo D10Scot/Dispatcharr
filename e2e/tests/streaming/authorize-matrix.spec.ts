@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 
-import { test, expect, StreamStatusError, SEEDED_USER_PASSWORD } from '../../fixtures';
-import type { Seeder } from '../../fixtures';
+import { test, expect, StreamStatusError } from '../../fixtures';
+import type { ApiClient, Seeder } from '../../fixtures';
 import { catchupTimestamp, lockedProfile, seedCatchupChannel } from './helpers';
 
 /**
@@ -230,37 +230,41 @@ test(
 );
 
 /**
- * A single Standard-level user with `hide_adult_content` set, shared by the
- * two native-route `is_adult` tests below.
+ * An API key for a single Standard-level user with `hide_adult_content` set,
+ * shared by the two native-route `is_adult` tests below.
  *
- * Seeding is unthrottled (`seed.user()` is a plain POST), but minting a JWT
- * for it is not: `POST /api/accounts/token/` is capped at 3/minute for the
- * whole suite (e2e/README.md "The login throttle"), and the pre-provisioned
- * `standard`/`streamer` roster principals may not be mutated — a
- * `hide_adult_content` write on a shared row would corrupt any other test
- * driving it concurrently. `makeUserClient`'s own guidance is "budget it at
- * one per run"; memoizing the seed here and asking `asUser` for the exact
- * same credentials from both tests keeps this file's login cost at one,
- * since `fixtures/auth.ts`'s token cache is keyed on username+password and
- * both tests in this file run in the same worker (the `streaming` project
- * leaves `fullyParallel` at its inherited `false`, so one spec file never
- * splits across workers) — the second `asUser` call is a cache hit, not a
- * second login.
+ * Seeding is unthrottled (`seed.user()` is a plain POST), and so is minting
+ * this key: `POST /api/accounts/api-keys/generate/` carries no throttle
+ * class, unlike `POST /api/accounts/token/`, which is capped at 3/minute for
+ * the whole suite (e2e/README.md "The login throttle") and is what a JWT
+ * route (`asUser`) would spend. The pre-provisioned `standard`/`streamer`
+ * roster principals may not be mutated — a `hide_adult_content` write on a
+ * shared row would corrupt any other test driving it concurrently — so this
+ * still seeds its own user, exactly as the JWT version did; only the
+ * credential handed to `streamClient` changes, from a `?token=` JWT to an
+ * `X-API-Key` header, because `apps/proxy/authorize.py`'s `_AUTHENTICATOR_CLASSES`
+ * accepts `ApiKeyAuthentication` on both `/proxy/ts/stream/` and
+ * `/proxy/catchup/`. Memoizing the seed+key here keeps this file's cost at
+ * one admin-authenticated POST pair rather than two logins.
  */
-let adultHiderCredentials: Promise<{ username: string; password: string }> | undefined;
-function adultHiderUser(seed: Seeder): Promise<{ username: string; password: string }> {
-  if (!adultHiderCredentials) {
-    adultHiderCredentials = seed
+let adultHiderKey: Promise<string> | undefined;
+function adultHiderApiKey(seed: Seeder, api: ApiClient): Promise<string> {
+  if (!adultHiderKey) {
+    adultHiderKey = seed
       .user({ user_level: 1, custom_properties: { hide_adult_content: true } })
-      .then((user) => ({ username: user.username, password: SEEDED_USER_PASSWORD }));
+      .then(async (user) => {
+        const res = await api.post('/api/accounts/api-keys/generate/', { user_id: user.id });
+        const { key } = await api.json<{ key: string }>(res, 'adultHiderApiKey');
+        return key;
+      });
   }
-  return adultHiderCredentials;
+  return adultHiderKey;
 }
 
 test(
-  'an adult channel is refused on the native stream route to a hide_adult_content JWT viewer',
+  'an adult channel is refused on the native stream route to a hide_adult_content viewer',
   { tag: '@contract' },
-  async ({ upstream, seed, api, asUser, streamClient }) => {
+  async ({ upstream, seed, api, streamClient }) => {
     // The native counterpart to the XC-live is_adult row above (#87): the
     // spec (design.md:1353-1354) requires is_adult 403 on
     // /proxy/ts/stream/<uuid> as well as on the XC roots, and until this
@@ -276,38 +280,36 @@ test(
       channel: { is_adult: true },
     });
 
-    const { username, password } = await adultHiderUser(seed);
-    const viewer = await asUser(username, password);
-    const token = await viewer.freshAccessToken();
+    const apiKey = await adultHiderApiKey(seed, api);
 
     await expectRefused(
       streamClient,
-      `/proxy/ts/stream/${channel.uuid}?token=${token}`,
+      `/proxy/ts/stream/${channel.uuid}`,
       403,
-      'an adult channel must not stream to a hide_adult_content viewer by UUID'
+      'an adult channel must not stream to a hide_adult_content viewer by UUID',
+      { 'X-API-Key': apiKey }
     );
   }
 );
 
 test(
-  'an adult channel is refused on the native catch-up route to a hide_adult_content JWT viewer',
+  'an adult channel is refused on the native catch-up route to a hide_adult_content viewer',
   { tag: '@contract' },
-  async ({ upstream, seed, api, waitFor, asUser, streamClient }) => {
+  async ({ upstream, seed, api, waitFor, streamClient }) => {
     // The native counterpart to the XC-timeshift is_adult row above: same
     // spec requirement, /proxy/catchup/<uuid> instead of /proxy/ts/stream/.
     const { channel } = await seedCatchupChannel({ upstream, seed, api, waitFor });
     await api.patch(`/api/channels/channels/${channel.id}/`, { is_adult: true });
 
-    const { username, password } = await adultHiderUser(seed);
-    const viewer = await asUser(username, password);
-    const token = await viewer.freshAccessToken();
+    const apiKey = await adultHiderApiKey(seed, api);
     const start = catchupTimestamp(new Date(Date.now() - 2 * 60 * 60 * 1000));
 
     await expectRefused(
       streamClient,
-      `/proxy/catchup/${channel.uuid}?token=${token}&start=${start}`,
+      `/proxy/catchup/${channel.uuid}?start=${start}`,
       403,
-      'an adult channel must not serve its archive to a hide_adult_content viewer'
+      'an adult channel must not serve its archive to a hide_adult_content viewer',
+      { 'X-API-Key': apiKey }
     );
   }
 );
