@@ -86,10 +86,12 @@ if [ "$(id -u)" = "0" ]; then
     # Fix data directories (non-recursive to avoid touching user files).
     # Failures are collected rather than fatal — directories may be on
     # external mounts (NFS, SMB/CIFS, FUSE) that reject chown.
-    # Only all/api chown /data: worker and relay containers may run under a
-    # different PUID/PGID and never ran this script before supervisord
-    # (entrypoint.celery.sh never called 03-init), so letting them chown
-    # shared /data would fight the api's ownership.
+    # Only all/api chown the DATA_DIRS: worker and relay containers may run
+    # under a different PUID/PGID and never ran this script before
+    # supervisord (entrypoint.celery.sh never called 03-init), so letting
+    # them chown shared /data would fight the api's ownership. The
+    # non-recursive /data top-level chown below is still unconditional
+    # (narrowing it to this same gate is a follow-up).
     if [[ "${DISPATCHARR_ROLE:-all}" == "all" || "${DISPATCHARR_ROLE:-all}" == "api" ]]; then
         for dir in "${DATA_DIRS[@]}"; do
             if [ -d "$dir" ] && [ "$(stat -c '%u:%g' "$dir" 2>/dev/null)" != "$PUID:$PGID" ]; then

@@ -908,15 +908,17 @@ resolve it, and each exists because a simpler arrangement provably does not boot
    waits for it in its own `command=`. **All five long-lived programs — both uWSGI and the three
    Celery — run through a small wrapper** (`docker/supervisord.d/wait-for-stores.sh`) that loops on
    `pg_isready` (giving up after 60 attempts at 2s intervals and exiting 1) and then runs
-   `python /app/scripts/wait_for_redis.py` — wait-only after this PR, so no flag is needed — before
+   `python3 /app/scripts/wait_for_redis.py` — wait-only after this PR, so no flag is needed — before
    `exec`ing the real command. "Celery retries its broker itself and needs no wrapper" is true of
    Redis only: `django_celery_beat`'s `DatabaseScheduler` queries PostgreSQL inside
    `setup_schedule()` at startup, and the workers load Django settings and hit the database too, so
    nothing about Celery retries a missing Postgres on its own. `startretries=20` and `startsecs=5`
    on all five, so a slow Postgres cannot exhaust the retries and drive a program to `FATAL`.
 
-- `docker/entrypoint.sh`: add `export DISPATCHARR_ROLE=${DISPATCHARR_ROLE:-all}` with a `case`
-  validating it against the four values, and **role-gate the one-shot work**:
+- `docker/entrypoint.sh`: when `DISPATCHARR_ROLE` is unset, derive it from `DISPATCHARR_ENV` —
+  `api` when `DISPATCHARR_ENV=modular`, `all` otherwise — then validate the result with a `case`
+  against the four values, then reject `all`+modular and `api`/`relay`/`worker`+non-modular as
+  impossible pairings, and **role-gate the one-shot work**:
   - `all`: PUID/PGID, PG init/upgrade, start Postgres as today, `migrate`, `collectstatic`, the
     nginx `sed`, the hardware-acceleration check, sourcing `docker/init/99-init-dev.sh` first when
     `DISPATCHARR_ENV = dev`, then `su - "$POSTGRES_USER" -c "$PG_BINDIR/pg_ctl -D ${POSTGRES_DIR}
@@ -948,8 +950,12 @@ resolve it, and each exists because a simpler arrangement provably does not boot
   array at `:177-184` so `docker exec` shells see it.
 - `docker/init/03-init-dispatcharr.sh` is sourced unconditionally at `entrypoint.sh:250`, so the
   role gate on the nginx work has to live **inside** that script, around the `NGINX_PORT` `sed` at
-  `:64` and the IPv6 strip at `:67-72`, not at the call site. The `/app` ownership and data-dir
-  chown steps in the same script stay unconditional — every role needs them.
+  `:64` and the IPv6 strip at `:67-72`, not at the call site. The `mkdir` of `DATA_DIRS` and the
+  `/app` ownership fix stay unconditional — every role needs them. The per-directory `DATA_DIRS`
+  chown loop is gated to roles `all`/`api`: worker and relay may run under a different PUID/PGID
+  and the worker writes as root, so an unconditional chown there would fight the api's ownership.
+  The non-recursive `/data` top-level chown stays unconditional for now; narrowing it to the same
+  gate is deferred to the worker-as-root follow-up.
 - `docker/supervisord/{all,all-dev,api,relay,worker}.conf` — five rung files, one per row of the
   ladder above (a sixth, `debug`-only rung is unnecessary: `docker-compose.debug.yml` sets
   `DISPATCHARR_ENV=dev`, so debug shares `all-dev.conf`, see D2), plus a
@@ -1007,6 +1013,11 @@ resolve it, and each exists because a simpler arrangement provably does not boot
   non-recursive, so silently switching the worker role to PUID would break DVR writes on upgrade.
   Behaviour-preserving now; dropping the worker to PUID needs a one-time recursive chown of those
   directories, recorded as a follow-up rather than done here.
+- **The entrypoint also exports `CELERY_LOG_LEVEL`, preserving each shape's previous verbosity.**
+  `info` for role `worker` — what `entrypoint.celery.sh` passed on all three commands — and
+  `warning` for `all`/`api`, where Celery ran as an `attach-daemon` with no `-l` and so took
+  celery's own default. Each of `celery-default.conf`, `celery-dvr.conf` and `celery-beat.conf`
+  passes `-l %(ENV_CELERY_LOG_LEVEL)s`, so the one export covers all three.
 - **Shutdown is sequential per priority group, not concurrent, so the grace period is the sum of
   every `stopwaitsecs`, not the largest.** Verified against the supervisor 4.3.0 source, not
   inferred: `Supervisor.ordered_stop_groups_phase_1` (`supervisord.py:156-159`) stops only
@@ -1059,12 +1070,13 @@ resolve it, and each exists because a simpler arrangement provably does not boot
   Daphne twice and would flush Redis on every uWSGI restart. `uwsgi.debug.ini` additionally drops
   `honour-stdin = true` (`:72`) — see D2.
 - `stop_grace_period: 160s` on `docker/docker-compose.aio.yml`'s one service **and on the modular
-  `web` and `relay` services** in `docker/docker-compose.yml`. Docker's 10-second default would
-  SIGKILL supervisord partway through the sequential per-group stop; `160s` is the smallest round
-  value that covers the 135 s arithmetic ceiling now and the 155 s ceiling PR 4 adds, so PR 3 can
-  set it once and PR 4 stays code-only. Past 160 s Docker `SIGKILL`s, no worse than today's
-  8-second bash ceiling. Setting it on every service that runs supervisord keeps PR 4 to code. The
-  `celery` service gets it too, since `celery-default`/`celery-dvr` carry `stopwaitsecs=30`.
+  `web` and `celery` services** in `docker/docker-compose.yml` — `relay`, and its own grace period,
+  arrive in PR 4. Docker's 10-second default would SIGKILL supervisord partway through the
+  sequential per-group stop; `160s` is the smallest round value that covers the 135 s arithmetic
+  ceiling now and the 155 s ceiling PR 4 adds, so PR 3 can set it once and PR 4 stays code-only.
+  Past 160 s Docker `SIGKILL`s, no worse than today's 8-second bash ceiling. Setting it on every
+  service that runs supervisord keeps PR 4 to code. The `celery` service gets it because
+  `celery-default`/`celery-dvr` carry `stopwaitsecs=30`.
 - `docker/tests/test-puid-pgid.sh`: `test_fresh_default` gains an assertion that
   `docker exec … supervisorctl -c … status` reports every program of role `all` as `RUNNING` and
   none as `FATAL` or `BACKOFF`.
