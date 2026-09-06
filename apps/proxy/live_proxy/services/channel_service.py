@@ -391,9 +391,9 @@ class ChannelService:
             # but no url. Since Phase 1 PR 7 the two admin views that used
             # to take this path (change_stream, next_stream) resolve the
             # source in Django and always send a url, and the relay's own
-            # advance handler does the same for that reason -- so this
-            # branch now serves any other in-relay caller of
-            # change_stream_url.
+            # advance handler (apps/proxy/relay_views.py) does the same for
+            # that reason -- so no caller reaches this branch today (ruling
+            # 11); it is left in place rather than removed here.
             from apps.proxy.next_source import resolve_source
 
             answer = resolve_source(channel_id, target_stream_id=target_stream_id, reason="operator")

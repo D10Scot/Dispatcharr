@@ -13,8 +13,11 @@ from django.test import TestCase
 from rest_framework.test import APIClient
 
 from apps.accounts.models import User
+from apps.channels.models import Channel, ChannelStream, Stream
+from apps.m3u.models import M3UAccount
 from apps.proxy import relay_client
 from apps.proxy.live_proxy import views
+from core.models import StreamProfile
 
 
 class AdminControlViewTests(TestCase):
@@ -36,6 +39,100 @@ class AdminControlViewTests(TestCase):
         patcher = mock.patch.object(views, "close_old_connections")
         patcher.start()
         self.addCleanup(patcher.stop)
+
+    def _make_channel_with_streams(self):
+        """A real Channel with two Streams in order, as
+        apps/proxy/tests/test_next_source_api.py's RelayApiTestCase builds
+        them. next_stream calls get_stream_object(channel_id), which looks
+        the channel up by uuid, and walks channel.streams in
+        channelstream__order, so both need to be real rows."""
+        profile = StreamProfile.objects.create(
+            name="admin-control-profile",
+            command="ffmpeg",
+            parameters="-i {streamUrl}",
+        )
+        account = M3UAccount.objects.create(
+            name="admin-control-account",
+            account_type="STD",
+            username="user",
+            password="pass",
+            max_streams=5,
+        )
+        stream_a = Stream.objects.create(
+            name="Admin Control Stream A",
+            url="http://example.com/admin-control-a.ts",
+            m3u_account=account,
+            stream_profile=profile,
+            stream_hash="admin-control-hash-a",
+        )
+        stream_b = Stream.objects.create(
+            name="Admin Control Stream B",
+            url="http://example.com/admin-control-b.ts",
+            m3u_account=account,
+            stream_profile=profile,
+            stream_hash="admin-control-hash-b",
+        )
+        channel = Channel.objects.create(
+            channel_number=9301,
+            name="Admin Control Channel",
+            stream_profile=profile,
+        )
+        ChannelStream.objects.create(channel=channel, stream=stream_a, order=0)
+        ChannelStream.objects.create(channel=channel, stream=stream_b, order=1)
+        return channel, stream_a, stream_b
+
+    def test_next_stream_404s_when_the_relay_holds_no_current_stream(self):
+        channel, _stream_a, _stream_b = self._make_channel_with_streams()
+        with mock.patch.object(
+            relay_client, "get_channel", return_value=None
+        ), mock.patch.object(relay_client, "advance") as advanced:
+            response = self.client.post(f"/proxy/ts/next_stream/{channel.uuid}")
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(
+            response.json(), {"error": "No current stream found for channel"}
+        )
+        advanced.assert_not_called()
+
+    def test_next_stream_resolves_in_django_and_applies_on_the_relay_without_reset_tried(self):
+        channel, stream_a, stream_b = self._make_channel_with_streams()
+        running = {"stream_id": stream_a.id, "m3u_profile_id": 3}
+        source = {
+            "url": "http://provider.example/b.ts",
+            "user_agent": "test-agent",
+            "m3u_profile_id": 7,
+            "stream_name": "Stream B",
+        }
+        with mock.patch.object(
+            relay_client, "get_channel", return_value=running
+        ), mock.patch(
+            "apps.proxy.next_source.resolve_source",
+            return_value={"source": source, "error": None},
+        ) as resolve_source_mock, mock.patch.object(
+            relay_client, "advance",
+            return_value={"status": "success", "success": True, "direct_update": True},
+        ) as advanced:
+            response = self.client.post(f"/proxy/ts/next_stream/{channel.uuid}")
+
+        self.assertEqual(response.status_code, 200)
+        resolve_source_mock.assert_called_once_with(
+            str(channel.uuid), target_stream_id=stream_b.id, reason="operator"
+        )
+        advanced.assert_called_once()
+        _args, kwargs = advanced.call_args
+        self.assertEqual(kwargs["stream_id"], stream_b.id)
+        self.assertNotIn("reset_tried", kwargs)
+        body = response.json()
+        self.assertEqual(body["previous_stream_id"], stream_a.id)
+        self.assertEqual(body["new_stream_id"], stream_b.id)
+
+    def test_next_stream_is_503_when_the_relay_cannot_answer(self):
+        channel, _stream_a, _stream_b = self._make_channel_with_streams()
+        with mock.patch.object(
+            relay_client, "get_channel",
+            side_effect=relay_client.RelayUnavailable("down"),
+        ):
+            response = self.client.post(f"/proxy/ts/next_stream/{channel.uuid}")
+        self.assertEqual(response.status_code, 503)
 
     def test_status_collection_returns_the_relay_s_payload(self):
         payload = {"channels": [{"channel_id": "abc"}], "count": 1}

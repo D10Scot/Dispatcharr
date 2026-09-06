@@ -864,10 +864,9 @@ def stream_xc(request, username, password, channel_id):
 def change_stream(request, channel_id):
     """Change stream URL for existing channel with enhanced diagnostics"""
     proxy_server = ProxyServer.get_instance()
+    from apps.proxy import relay_client
 
     try:
-        from apps.proxy import relay_client
-
         data = json.loads(request.body)
         new_url = data.get("url")
         user_agent = data.get("user_agent")
@@ -1052,9 +1051,9 @@ def channel_status(request, channel_id=None):
 @permission_classes([IsAdmin])
 def stop_channel(request, channel_id):
     """Stop a channel and release all associated resources using PubSub events"""
-    try:
-        from apps.proxy import relay_client
+    from apps.proxy import relay_client
 
+    try:
         logger.info(f"Request to stop channel {channel_id} received")
 
         result = relay_client.stop_channel(channel_id)
@@ -1088,9 +1087,9 @@ def stop_channel(request, channel_id):
 @permission_classes([IsAdmin])
 def stop_client(request, channel_id):
     """Stop a specific client connection using existing client management"""
-    try:
-        from apps.proxy import relay_client
+    from apps.proxy import relay_client
 
+    try:
         # Parse request body to get client ID
         data = json.loads(request.body)
         client_id = data.get("client_id")
@@ -1131,10 +1130,9 @@ def stop_client(request, channel_id):
 def next_stream(request, channel_id):
     """Switch to the next available stream for a channel"""
     proxy_server = ProxyServer.get_instance()
+    from apps.proxy import relay_client
 
     try:
-        from apps.proxy import relay_client
-
         logger.info(
             f"Request to switch to next stream for channel {channel_id} received"
         )
@@ -1153,11 +1151,11 @@ def next_stream(request, channel_id):
         profile_id = (running or {}).get("m3u_profile_id")
         if current_stream_id:
             logger.info(
-                f"Found current stream ID {current_stream_id} in Redis for channel {channel_id}"
+                f"Found current stream ID {current_stream_id} from the relay for channel {channel_id}"
             )
             if profile_id:
                 logger.info(
-                    f"Found M3U profile ID {profile_id} in Redis for channel {channel_id}"
+                    f"Found M3U profile ID {profile_id} from the relay for channel {channel_id}"
                 )
 
         if not current_stream_id:
