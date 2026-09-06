@@ -169,7 +169,11 @@ class ChannelSnapshot:
     second read budget, and a raise here would turn a relay hiccup into
     a failed tune. present=False sends _stream_assignment_is_reusable to
     its stream_profile fallback, which reuses the existing assignment --
-    the outcome that cannot leak a provider slot.
+    an outcome that leaks a provider slot only when stream_profile:<id>
+    is ALSO already gone: in that case the fallback returns False,
+    get_stream() calls _release_stale_stream_assignment() and re-reserves,
+    which can leak (models.py:536, "profile_connections may leak") exactly
+    as it already could before this module existed.
     """
 
     present: bool

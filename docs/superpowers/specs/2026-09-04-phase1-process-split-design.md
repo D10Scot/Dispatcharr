@@ -1622,14 +1622,20 @@ make, recorded here rather than re-derived by PR 8 or Phase 2:
    `stream_profile:*` through that class, at twenty-six sites, so the import is now the
    legitimate accessor for keys it owns. `ChannelState` did go, with the reuse check.
    `models_module_level_live_proxy_imports` stays at **2** either way.
-10. **Two relay-key accesses survive in the control plane, tracked as issue #190.**
-    `_release_stale_stream_assignment()` reads `ChannelMetadataField.M3U_PROFILE` from the
-    relay's metadata hash and `Channel.release_stream()` both reads it and `hdel`s two fields
-    — a control-plane *write*, which § Requirements' "every other relay key was already
-    single-writer" does not anticipate. The **read** needs no contract change: PR 6's
-    `ReleaseRequestSerializer` already carries `stream_id` and `m3u_profile_id`. The **`hdel`**
-    is the obstacle — it stops a duplicate release `DECR`ing the provider counter twice, and
-    its natural home is the relay's own release call sites, which D10 keeps out of Phase 1.
+10. **A control-plane write to the relay metadata hash on every successful
+    `Channel.release_stream()`, plus two fallback-path reads (`release_stream()`'s recovery
+    branch and `_release_stale_stream_assignment()`), tracked as issue #190.** The whole-branch
+    review corrected this ruling: the `hdel` at the end of `release_stream()`'s normal path
+    (primary key found, profile resolved) runs unconditionally on **every** successful release,
+    not only in a rare recovery branch — it is not a fallback. `release_stream()`'s own
+    fallback (primary keys already gone) is a separate, second `hdel`, and
+    `_release_stale_stream_assignment()` (called from `get_stream()`, not from
+    `release_stream()`) only reads `ChannelMetadataField.M3U_PROFILE`, with no write of its
+    own. None of this is anticipated by § Requirements' "every other relay key was already
+    single-writer". The **reads** need no contract change: PR 6's `ReleaseRequestSerializer`
+    already carries `stream_id` and `m3u_profile_id`. The **`hdel`s** are the obstacle — they
+    stop a duplicate release `DECR`ing the provider counter twice, and their natural home is
+    the relay's own release call sites, which D10 keeps out of Phase 1.
 11. **`POST /proxy/relay/channels/<id>/advance` carries a fully-resolved source.** Django
     resolves the candidate with `next_source.resolve_source` in the API process, where the
     ORM is, and always sends `url`, so `ChannelService.change_stream_url`'s
@@ -1649,9 +1655,14 @@ make, recorded here rather than re-derived by PR 8 or Phase 2:
     narrowed by `?fields=state` (ruling 20). An unreachable relay yields
     `ChannelSnapshot(present=False, …)`, which sends `_stream_assignment_is_reusable` to its
     Django-owned `stream_profile:<id>` fallback and **reuses** the assignment — no release, no
-    re-reservation, so the provider counter cannot move. Not a deadlock: the relay runs
-    `gevent = 1600` and the inner handler reads Redis only. It fires on a re-tune, not on
-    every tune.
+    re-reservation, so the provider counter cannot move. **That holds only while
+    `stream_profile:<id>` survives** (whole-branch review, Minor): if it is gone too while the
+    channel is genuinely still running, the fallback returns `False` and `get_stream()` calls
+    `_release_stale_stream_assignment()` and re-reserves — net zero on the counter, except on
+    the branch where no profile id can be recovered at all, which leaks exactly as it already
+    could before PR 7 (`apps/channels/models.py:536`, the "profile_connections may leak"
+    warning). Not a deadlock: the relay runs `gevent = 1600` and the inner handler reads Redis
+    only. It fires on a re-tune, not on every tune.
 14. **`dev` has two shapes.** Under a bare `manage.py runserver 5656` one process serves
     everything, so a re-tune is three self-calls deep and works only because `runserver` is
     threaded by default — `--nothreading` hangs it. Inside Docker the `all-dev` rung starts
@@ -1689,6 +1700,26 @@ make, recorded here rather than re-derived by PR 8 or Phase 2:
     therefore render as nulls rather than be skipped: DRF's `Field.get_attribute` checks
     `default`, then `allow_null`, and only then `required` (3.17.1). The full payloads are
     unaffected, since both info builders assign all four unconditionally.
+21. **`get_user_active_connections` has four callers, not the one (`check_user_stream_limits`)
+    the plan and this section originally described.** The whole-branch review found three
+    more: `apps/timeshift/views.py`'s `_session_has_active_timeshift_stream`,
+    `_preempt_playback_streams` and `_terminate_previous_timeshift_sessions`, which iterate
+    the result looking only for `type == 'timeshift'` entries and discard the live half
+    entirely. One of those runs under `_serve_catchup`, a **relay-served** view, so before
+    the fix a catch-up tune made up to two synchronous HTTP calls **to itself** — out through
+    the `api` container's nginx and back into the relay — to fetch a live client list it
+    always threw away, exactly the cross-process dependency on a streaming path D10 exists to
+    prevent. Fixed: `get_user_active_connections(user_id, include_live=True)` gained a keyword
+    the three timeshift helpers pass as `False`, skipping `_live_connections()` (and its relay
+    call) entirely; the default stays `True` so no other caller changes behaviour by accident.
+    The fourth caller, `apps/output/views.py`'s `xc_get_info` (the Xtream `player_api.php`
+    handshake, called on every XC session), is **left unchanged and still asks for live**:
+    `active_cons` is the account's live connection count and would be wrong for an ordinary
+    live viewer without it. That call still reaches `GET /proxy/relay/channels?clients=all` on
+    every handshake, and that route's `get_basic_channel_info` runs
+    `ClientManager.remove_ghost_clients` — an `SREM` write across every running channel — which
+    the old direct Redis scan never triggered. Not a regression in what `active_cons` reports,
+    but a new, real side effect of every XC handshake this PR introduces.
 
 ### PR 7 — `migration/phase1-control-api`
 
@@ -1789,7 +1820,7 @@ Phase 0's § Carried, not fixed table, with a status column now that Phase 1 exi
 | The relay's logging never emits a provider URL or header set except through the redaction helpers. | **Met, and extended.** No new logging site bypasses `redact_url`/`redact_headers`, and PR 5 additionally redacts the DVR ffmpeg argv, which would otherwise print the internal token past a guard that does not match it. | PR 5 |
 | *(new)* Every long-lived stream surface authorizes through one function; a channel with `hidden_from_output` or `is_adult` is not streamable by UUID alone. | **Met.** `authorize_stream`, both callers (PR 5). Closes #87 and #95. | PR 5 |
 | *(new)* The relay performs zero ORM writes. | **Met.** The `stream.save(...)` and all 13 `log_system_event` calls move to Django via the events batch. | PR 6 |
-| *(new)* The relay's Redis keys have exactly one writer, and no control-plane code reads them. | **Met, with one named exception.** `channel_stream:*`/`stream_profile:*` get a single writer in PR 6; every other relay key was already single-writer. PR 7 removes the control plane's *reads* too, including the live branch of `get_user_active_connections`, which moves to `GET /proxy/relay/channels`. The timeshift and VOD branches of that same scan keep reading Redis — those key families are written by Django-side handlers, so they are not relay state and are not in scope for this row. Amendment S11 ruling 10: `Channel.release_stream()` and `_release_stale_stream_assignment()` still read — and `hdel` — the relay's metadata hash on their fallback paths, so "every other relay key was already single-writer" is not quite true of the metadata hash. The read needs no contract change (PR 6's release body already carries `stream_id` and `m3u_profile_id`); the `hdel` belongs on the relay's own release call sites, which D10 keeps out of this phase. Named and tracked as issue #190 rather than fixed here, since PR 7's section names three sites and not these. | PR 6, PR 7 |
+| *(new)* The relay's Redis keys have exactly one writer, and no control-plane code reads them. | **Met, with one named exception.** `channel_stream:*`/`stream_profile:*` get a single writer in PR 6; every other relay key was already single-writer. PR 7 removes the control plane's *reads* too, including the live branch of `get_user_active_connections`, which moves to `GET /proxy/relay/channels`. The timeshift and VOD branches of that same scan keep reading Redis — those key families are written by Django-side handlers, so they are not relay state and are not in scope for this row. Amendment S11 ruling 10 (corrected by the whole-branch review): `Channel.release_stream()` writes to the relay's metadata hash on every successful release — an unconditional `hdel`, not a fallback — plus two fallback-path reads (`release_stream()`'s own recovery branch and the separate `_release_stale_stream_assignment()`, called from `get_stream()`), so "every other relay key was already single-writer" is not quite true of the metadata hash. The reads need no contract change (PR 6's release body already carries `stream_id` and `m3u_profile_id`); the `hdel`s belong on the relay's own release call sites, which D10 keeps out of this phase. Named and tracked as issue #190 rather than fixed here, since PR 7's section names three sites and not these. | PR 6, PR 7 |
 | *(new)* A restart of the control plane does not disturb a running stream. | **Met.** Nothing flushes Redis in any role (D15): `scripts/wait_for_redis.py` becomes wait-only, and AIO's Redis starts empty because it is non-persistent, not because anything wipes it. A modular `web` or `worker` restart therefore leaves a running relay's keys untouched, and PR 8's bounded-restart scenario asserts it. | PR 3, PR 8 |
 | *(new)* Django and the relay authenticate each other on every internal call, and the relay never trusts an unauthenticated header. | **Met.** Two context-separated HMACs of `SECRET_KEY`, `hmac.compare_digest` on both, covering relay→Django, Django→relay, the DVR and the nginx trust marker (D11). | PR 5, PR 6, PR 7 |
 
