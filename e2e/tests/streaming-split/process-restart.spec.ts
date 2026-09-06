@@ -58,7 +58,6 @@ import {
   test,
   expect,
   StreamStatusError,
-  TS_PACKET_SIZE,
   expectTsAligned,
 } from '../../fixtures';
 import type { Instance, M3uAccount } from '../../fixtures';
@@ -84,16 +83,22 @@ const RUNNING_TIMEOUT_MS = 60_000;
  * the restart command is issued, not from when it returns.
  *
  * What this ceiling covers is the *process*: the relay serving tunes again.
- * A viewer reconnecting to the SAME channel is a different question with a
- * worse answer — `_channel_setup_needed` (apps/proxy/live_proxy/views.py)
- * returns "no setup needed" for a channel whose metadata still says `active`
- * without consulting the dead owner's heartbeat, so the reconnecting client
- * attaches as a follower to a channel nobody owns, and only
- * `_check_orphaned_metadata`'s 30s sweep can clear it — and that sweep
- * declines to clean a channel that still has a live client, which a retrying
- * reconnect keeps supplying. Recorded in `e2e/COVERAGE.md` and filed rather
- * than asserted here; this test tunes a channel that was not running when the
- * relay went away.
+ * Whether a viewer reconnecting to the SAME channel is bounded too is an open
+ * question this test does not answer. Read on its own, the code says it should
+ * be worse: `_channel_setup_needed` (apps/proxy/live_proxy/views.py) returns
+ * "no setup needed" for a channel whose metadata still says `active` without
+ * consulting the dead owner's heartbeat, so a reconnecting client would attach
+ * as a follower to a channel nobody owns until `_check_orphaned_metadata`'s
+ * 30s sweep clears it — and that sweep declines to clean a channel that still
+ * has a live client. One hand measurement against this stack did not show
+ * that: the first probe issued after the blocking restart returned delivered
+ * 1880+ aligned TS bytes, inside the sweep interval. So either the mechanism
+ * does not bite after a graceful stop (`stopsignal=TERM`, `stopwaitsecs=20`,
+ * `die-on-term`, which lets the dying process run its own client-disconnect
+ * and channel cleanup — unlike the `kill -9` the reading implicitly assumes),
+ * or the sweep ran early on that run. Recorded in `e2e/COVERAGE.md` and filed
+ * as an open question, not asserted as a defect; this test tunes a channel
+ * that was not running when the relay went away.
  */
 const RELAY_RESTART_CEILING_MS = 30_000;
 
@@ -332,10 +337,15 @@ test(
     });
 
     await streamClient.open(`/proxy/ts/stream/${running.uuid}`);
-    expectTsAligned(await streamClient.readPackets(1));
-    // Printed for Task 11's hand-run same-channel reconnect measurement, which
-    // needs a channel this project left streaming and has no other way to
-    // learn its uuid.
+    // 200, not 1: matches Scenario A's precondition idiom. The TS generator
+    // emits a synthetic 'error' packet and a keepalive while a channel is
+    // still coming up (apps/proxy/live_proxy/output/ts/generator.py:200-241,380),
+    // and `expectTsAligned` only checks 188-byte alignment and the sync byte,
+    // so either one passes it.
+    expectTsAligned(await streamClient.readPackets(200));
+    // Printed for the hand-run same-channel reconnect measurement recorded in
+    // `e2e/COVERAGE.md`, which needs a channel this project left streaming
+    // and has no other way to learn its uuid.
     console.log(`[relay-restart] channel ${running.uuid} is streaming before the restart`);
 
     const before = await api.json<M3uAccount>(
@@ -377,21 +387,33 @@ test(
         message: 'the relay never served a tune after the restart',
       })
       .toBe('ok');
+    // 200, not 1: create_ts_packet (apps/proxy/live_proxy/utils.py:82-100)
+    // returns a valid-looking 188-byte packet for a synthetic 'error' or
+    // 'keepalive' TS packet too, which the generator emits on every abort
+    // path while a channel is coming up — so a single packet cannot tell a
+    // real tune apart from one that failed to start. `client` is opened for
+    // the first time above, not reused across the restart the way Scenario
+    // A's `streamClient` is, so there is nothing stale in its buffer to
+    // `drain()` first — every byte it ever reads arrived after the restart
+    // by construction. `readPackets` itself is the load-bearing assertion:
+    // it throws if the stream ends before 200 packets arrive, so a channel
+    // that never truly starts fails loudly instead of passing on one
+    // synthetic packet. The extra bytes cost well under a second at this
+    // scenario's rate against a 30s ceiling.
     const packet = await withDeadline(
-      client.readPackets(1),
+      client.readPackets(200),
       60_000,
-      'the first TS packet after the relay restart'
+      'the first 200 TS packets after the relay restart'
     );
     const elapsedMs = Date.now() - restartBegan;
     console.log(
-      `[relay-restart] first TS byte ${elapsedMs}ms after the restart began ` +
+      `[relay-restart] first TS bytes ${elapsedMs}ms after the restart began ` +
         `(ceiling ${RELAY_RESTART_CEILING_MS}ms)`
     );
-    expect(packet.byteLength).toBe(TS_PACKET_SIZE);
     expectTsAligned(packet);
     expect(
       elapsedMs,
-      `the relay served its first byte ${elapsedMs}ms after the restart began; the ceiling is ` +
+      `the relay served its first bytes ${elapsedMs}ms after the restart began; the ceiling is ` +
         `${RELAY_RESTART_CEILING_MS}ms (stopwaitsecs=20 + startsecs=5)`
     ).toBeLessThanOrEqual(RELAY_RESTART_CEILING_MS);
     await client.close();
