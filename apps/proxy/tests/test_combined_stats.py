@@ -14,7 +14,7 @@ from apps.proxy.live_proxy.channel_status import build_live_channel_stats_data
 class BuildLiveChannelStatsDataTests(TestCase):
     @patch("apps.proxy.live_proxy.channel_status.ChannelStatus.get_basic_channel_info")
     def test_builds_channel_list_from_metadata_scan(self, mock_get_info):
-        mock_get_info.side_effect = lambda ch_id: {"channel_id": ch_id}
+        mock_get_info.side_effect = lambda ch_id, **kwargs: {"channel_id": ch_id}
 
         redis = MagicMock()
         redis.scan.return_value = (
