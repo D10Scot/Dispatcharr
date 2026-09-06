@@ -53,3 +53,4 @@ milestones:
   - {sha: 58bfba1e856e7db973b62a7e3c32b7e7bb40a97f, label: Credentials redacted, kind: incident, phase: phase0, pr: 154, summary: "Provider credentials no longer logged at INFO; regression guard in hook and CI."}
   - {sha: 75a68555b931e7d088bfbbd859b35e6e27064312, label: Phase 0 done, kind: phase-done, phase: phase0, pr: 155, summary: "All six items merged; the ruleset requires four result aggregates."}
   - {sha: 37dbf734c2f440b67613c90311ae283f07810a6f, label: Phase 1 spec, kind: phase-start, phase: phase1, pr: 164, summary: "Process split and the relay contract: sixteen decisions, eight PRs, ADR 0005."}
+  - {sha: 7685ec504810dff55d7e65dfc9d037c060278be0, label: Phase 1 done, kind: phase-done, phase: phase1, pr: 196, summary: "Eight PRs merged: relay its own process, one authorization function, zero ORM writes from the relay, single-writer Redis keys, HMAC-bound tokens both directions; two named exceptions remain, #190 and #193."}

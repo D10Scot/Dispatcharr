@@ -602,10 +602,18 @@ test(
     // during the restart itself rather than surviving it — `wait-for-stores.sh`
     // runs `wait_for_redis.py` on relay-uwsgi's own start, the only place a
     // reintroduced flush could bite, and a refresh that finished before that
-    // point would never exercise it. If this fires reliably, the fix is
-    // more contention — raise `SLOW_REFRESH_DECOY_COUNT`, not loosen this
-    // assertion, since the spec asks for a task that survives the relay's
-    // start path, not one that merely predates it.
+    // point would never exercise it. If this fires reliably, the fix is more
+    // contention, but `SLOW_REFRESH_DECOY_COUNT` cannot move on its own: the
+    // decoys' create-time `.delay()` calls above (near-instant, but real
+    // queue entries) sit ahead of the tracked account's own create-time
+    // settle at `seed.upstreamM3UAccount(slowScenario)`, which waits on
+    // `fixtures/wait.ts`'s fixed 30s/20s "did the refresh start / settle"
+    // budgets — raising the count deepens that same queue and can blow those
+    // budgets before this assertion ever runs. Move the count together with
+    // those budgets, or batch the decoy seeding so it no longer shares one
+    // queue with the create-time settle; do not loosen this assertion, since
+    // the spec asks for a task that survives the relay's start path, not one
+    // that merely predates it.
     const midRestart = await refreshState();
     expect(
       midRestart,
