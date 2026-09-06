@@ -910,6 +910,15 @@ def change_stream(request, channel_id):
             new_url = stream_info["url"]
             user_agent = stream_info["user_agent"]
             m3u_profile_id = stream_info.get("m3u_profile_id")
+            # Always None: the Source contract (S10 point 3, apps/proxy/
+            # next_source.py's _source_from_info) carries seven fields and
+            # stream_name is not one of them. The name is resolved by primary
+            # key on the relay side instead -- ChannelService.
+            # _update_channel_metadata and initialize_channel both fall back
+            # to Stream.objects.filter(id=stream_id) when the caller passes
+            # none, and the spec's ORM-reads table keeps exactly those two
+            # lookups in the relay. Passing the key through and letting the
+            # relay resolve it is the intended path, not an omission.
             stream_name = stream_info.get("stream_name")
         elif not new_url:
             return JsonResponse(
@@ -1232,6 +1241,15 @@ def next_stream(request, channel_id):
             user_agent=stream_info["user_agent"],
             stream_id=next_stream_id,
             m3u_profile_id=stream_info.get("m3u_profile_id"),
+            # Always None: the Source contract (S10 point 3, apps/proxy/
+            # next_source.py's _source_from_info) carries seven fields and
+            # stream_name is not one of them. The name is resolved by primary
+            # key on the relay side instead -- ChannelService.
+            # _update_channel_metadata and initialize_channel both fall back
+            # to Stream.objects.filter(id=stream_id) when the caller passes
+            # none, and the spec's ORM-reads table keeps exactly those two
+            # lookups in the relay. Passing the key through and letting the
+            # relay resolve it is the intended path, not an omission.
             stream_name=stream_info.get("stream_name"),
         )
 

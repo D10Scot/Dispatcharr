@@ -808,7 +808,7 @@ posts a `channel_error` event once Django answers again. An existing stream is u
 | `/proxy/relay/channels/<uuid>` | `GET` | `channel_status`'s Redis reads |
 | `/proxy/relay/channels/<uuid>` | `DELETE` | `stop_channel` |
 | `/proxy/relay/channels/<uuid>/clients/<client_id>` | `DELETE` | `stop_client` |
-| `/proxy/relay/channels/<uuid>/advance` | `POST` `{stream_id?}` | `change_stream` / `next_stream` |
+| `/proxy/relay/channels/<uuid>/advance` | `POST` `{url, user_agent?, stream_id?, m3u_profile_id?, stream_name?, reset_tried?}` | `change_stream` / `next_stream` |
 
 The existing `IsAdmin` views (`channel_status`, `stop_channel`, `stop_client`, `change_stream`,
 `next_stream`, `/proxy/stats/`) keep their URLs, names and permission class and become thin
@@ -1554,6 +1554,135 @@ not make, recorded here rather than re-derived by PR 7 or Phase 2:
     this PR adds is the first traffic in that harness to carry a container name as an HTTP Host
     header rather than only a DNS name, where an underscore is legal.
 
+**Amendment S11 (PR 7 control API).** The tree required twenty decisions this section did not
+make, recorded here rather than re-derived by PR 8 or Phase 2:
+
+1. **`get_relay_control_base_url()`'s modular branch reads `DISPATCHARR_WEB_HOST`, not
+   `DISPATCHARR_RELAY_HOST`.** D9's text names the latter, but `docker/uwsgi.relay.ini` gives
+   the relay one listener — `socket = 0.0.0.0:$(DISPATCHARR_RELAY_PORT)`, the uwsgi protocol,
+   which `requests` cannot dial — and D14 gives the `relay` role no nginx, so nothing answers
+   HTTP in that container at all. D5 already stated the resolution ("D9 routes Django's
+   control calls through nginx as well"). Both internal directions therefore resolve to the
+   **api role's** nginx, which routes `^~ /proxy/relay/` to the `relay_py` upstream, and
+   differ only in their override variable: `DISPATCHARR_RELAY_BASE_URL` for Django→relay,
+   `DISPATCHARR_INTERNAL_API_BASE_URL` for relay→Django. `DISPATCHARR_RELAY_HOST` keeps its
+   one job, the `RELAY_UPSTREAM` `sed`.
+2. **`location ^~ /proxy/relay/` must not be `internal;`.** Django dials it as an ordinary
+   HTTP client — from the `worker` role across the compose network and from the `api` role
+   through its own nginx — and `internal;` serves a location only for a subrequest or an
+   `X-Accel-Redirect`. It keeps the blanking include and `uwsgi_pass relay_py;`, gains an
+   explicit `uwsgi_read_timeout 30s;`, stays outside the authorize hop (S8), and is pinned by
+   a fourth test in `e2e/tests/streaming-greybox/nginx-stream-buffering.spec.ts`.
+3. **`GET /proxy/relay/channels` takes `?clients=all`.** `get_basic_channel_info` caps its
+   client list at ten, which is right for the stats payload and wrong for
+   `get_user_active_connections`, whose job is counting a user's connections against
+   `stream_limit`. `build_live_channel_stats_data` and `get_basic_channel_info` gain a
+   `client_limit` keyword defaulting to 10; `/proxy/stats/` and `/proxy/ts/status` keep
+   today's payload byte for byte.
+4. **`ffmpeg_speed` and `state` are normalised on the detailed side, invisibly to the UI.**
+   Nothing in `frontend/src/` reads `/proxy/ts/status/<id>` — `API.getChannelStats` takes a
+   uuid and ignores it — so only `e2e/fixtures/types.ts` and
+   `e2e/tests/streaming/stream-profiles.spec.ts` needed updating. `owner`'s identical
+   `'unknown'` default and `source_fps`' identical string-vs-float split are carried, not
+   fixed: this section names two fields.
+5. **The detailed payload gains `width`, `height` and `video_bitrate` as raw strings**,
+   because `run_recording`'s metadata capture moves onto it (ruling 12 below) and reads
+   eleven fields of which the builder emitted eight. Raw strings like their siblings, so the
+   DVR keeps its own casting and `Recording.custom_properties["stream_info"]` is unchanged.
+6. **`core/utils.py`'s event enrichment keeps its direct Redis read.** This section says it
+   should call `relay_client`, but PR 6 made `channel_stream:*`/`stream_profile:*`
+   **Django-owned** keys that the relay merely reads; asking the relay for their value would
+   invert that ownership. The bullet predates PR 6. Neither literal appears in
+   `core/utils.py`, so the Done grep is unaffected.
+7. **The Done grep grows an exclusion pipe.** It also matches two `StreamProfile`
+   model-attribute accesses in `apps/channels/models.py` (`if self.stream_profile:` and
+   `if not stream_profile:`) that will never go away, so "returns nothing" is unreachable as
+   written. The form used from PR 7 on is
+   `… | grep -v tests | grep -v "self.stream_profile:\|not stream_profile:"` → empty. Every
+   genuine `live:channel:` literal in that directory set lived inside
+   `_pick_channel_to_preempt`, which PR 7 deletes.
+8. **`_pick_channel_to_preempt` never returned a channel, three ways over.**
+   `apps/channels/models.py` imports no `time`, so its cooldown check raised `NameError`; the
+   `live:profile:{id}:channels` index it prefers is written nowhere in the tree; and its scan
+   fallback `int()`s a segment of `live:channel:{uuid}:metadata`, which is a UUID. (Its
+   commented-out `return` was also a 3-tuple where `get_stream()` is a 4-tuple.) Deleted with
+   the commented-out `return`. **Channel preemption stays unimplemented** — unchanged, not
+   decided here.
+9. **The `models.py:6-7` audit's answer is "no", contradicting this section's stated
+   recommendation.** `RedisKeys` could go only by relocating PR 6's two four-line helpers to
+   a Django-owned module, and doing so would not remove the trap while `ChannelMetadataField`
+   remains (ruling 10). PR 6 made this module the sole writer of `channel_stream:*` and
+   `stream_profile:*` through that class, at twenty-six sites, so the import is now the
+   legitimate accessor for keys it owns. `ChannelState` did go, with the reuse check.
+   `models_module_level_live_proxy_imports` stays at **2** either way.
+10. **Two relay-key accesses survive in the control plane, tracked as issue #190.**
+    `_release_stale_stream_assignment()` reads `ChannelMetadataField.M3U_PROFILE` from the
+    relay's metadata hash and `Channel.release_stream()` both reads it and `hdel`s two fields
+    — a control-plane *write*, which § Requirements' "every other relay key was already
+    single-writer" does not anticipate. The **read** needs no contract change: PR 6's
+    `ReleaseRequestSerializer` already carries `stream_id` and `m3u_profile_id`. The **`hdel`**
+    is the obstacle — it stops a duplicate release `DECR`ing the provider counter twice, and
+    its natural home is the relay's own release call sites, which D10 keeps out of Phase 1.
+11. **`POST /proxy/relay/channels/<id>/advance` carries a fully-resolved source.** Django
+    resolves the candidate with `next_source.resolve_source` in the API process, where the
+    ORM is, and always sends `url`, so `ChannelService.change_stream_url`'s
+    `if not new_url and target_stream_id:` branch — the one holding a function-local
+    `resolve_source` import — is never entered from the relay. That branch's only two callers
+    are the views PR 7 rewrote, so it is unreachable in practice; left in place, because it
+    is relay-internal code this phase does not rewrite.
+12. **Three worker-role and API-role reads move that this section does not name**:
+    `next_stream`'s `RedisKeys.channel_metadata` read (that view runs in the API process after
+    PR 4's routing, so it was the control plane reading a relay key, invisible to the Done
+    grep's directory list), and `run_recording`'s metadata capture in
+    `apps/channels/tasks.py` (the `dvr` Celery worker). § Requirements' "PR 7 removes the
+    control plane's *reads* too" is what requires both.
+13. **The tune-path reads nest one HTTP hop inside another.** `Channel.get_stream()` runs
+    inside `next_source.resolve_source()`, which the relay reached with a 5 s read timeout and
+    one retry, so `relay_client`'s tune budget is `(1, 2)` with **no retry** and the read is
+    narrowed by `?fields=state` (ruling 20). An unreachable relay yields
+    `ChannelSnapshot(present=False, …)`, which sends `_stream_assignment_is_reusable` to its
+    Django-owned `stream_profile:<id>` fallback and **reuses** the assignment — no release, no
+    re-reservation, so the provider counter cannot move. Not a deadlock: the relay runs
+    `gevent = 1600` and the inner handler reads Redis only. It fires on a re-tune, not on
+    every tune.
+14. **`dev` has two shapes.** Under a bare `manage.py runserver 5656` one process serves
+    everything, so a re-tune is three self-calls deep and works only because `runserver` is
+    threaded by default — `--nothreading` hangs it. Inside Docker the `all-dev` rung starts
+    **both** `api-uwsgi` and `relay-uwsgi` and no nginx, so `:5656` is the API uWSGI and
+    `/proxy/relay/…` is served by the API process: status reads and stops still work (one
+    Redis, and `ChannelService` reaches the owner over `live:events:`), but `reset_tried` is a
+    silent no-op there.
+15. **Issue #181's second ask is met without a sixth trust header.** `AuthorizeResult` gains
+    `is_internal` as an inline-only field beside `user` and `trusted`; `result_from_headers`
+    sets it the same way, because nginx forwards `X-Dispatcharr-Internal` unchanged on
+    relay-bound locations (it is not one of the five names the blanking include clears). A
+    sixth `X-Relay-*` header would mean a seventh `auth_request_set` line in nine locations
+    for a computation that cannot diverge.
+16. **The five routes are tagged `internal` in the schema**, matching PR 6's three, so
+    `/api/schema/` distinguishes them from endpoints a player or the SPA may call.
+17. **The bound internal token signs `request.get_full_path()`, not `request.path`.** PR 6's
+    three routes take no query parameter, so the two strings were always equal there; ruling 3
+    adds one, and an unsigned query string is a value a replay inside the ±120 s window could
+    flip. One line on each side, backward compatible with every call PR 6 shipped.
+18. **`advance` carries `reset_tried`, restoring behaviour PR 4 silently broke.**
+    `/proxy/ts/change_stream/` has always cleared the running `StreamManager`'s
+    `tried_stream_ids`; PR 4's routing put that view on the `api` role, where
+    `stream_managers` is always empty, so the reset had been dead since. It moves to the relay
+    view. A flag, not unconditional: `next_stream` has never reset it and must not start.
+19. **`Channel._channel_proxy_is_active` is deleted rather than rewritten.** Its predicate is
+    exactly what `relay_client.channel_snapshot()` answers and its only caller was
+    `_stream_assignment_is_reusable`; a wrapper would cost a second round trip or leave a
+    method with no caller, and would keep `ChannelState` imported into `models.py`.
+20. **The tune-path read asks `?fields=state`, and has its own serializer.** Answering it
+    with `get_detailed_channel_info` would sample buffer chunk keys, `SCAN` on a miss, walk
+    every client and run two ORM name fallbacks under a two-second budget. `channel_view`
+    answers the narrow form with one `EXISTS` and one `HGET`, rendered through a two-field
+    `RelayChannelStateSerializer` — **not** a partial render of the detail serializer, whose
+    `url`, `stream_profile` and `owner` are `required=False, allow_null=True` and would
+    therefore render as nulls rather than be skipped: DRF's `Field.get_attribute` checks
+    `default`, then `allow_null`, and only then `required` (3.17.1). The full payloads are
+    unaffected, since both info builders assign all four unconditionally.
+
 ### PR 7 — `migration/phase1-control-api`
 
 - `apps/proxy/relay_urls.py` / `relay_views.py` (D12): the five routes in § Architecture,
@@ -1653,7 +1782,7 @@ Phase 0's § Carried, not fixed table, with a status column now that Phase 1 exi
 | The relay's logging never emits a provider URL or header set except through the redaction helpers. | **Met, and extended.** No new logging site bypasses `redact_url`/`redact_headers`, and PR 5 additionally redacts the DVR ffmpeg argv, which would otherwise print the internal token past a guard that does not match it. | PR 5 |
 | *(new)* Every long-lived stream surface authorizes through one function; a channel with `hidden_from_output` or `is_adult` is not streamable by UUID alone. | **Met.** `authorize_stream`, both callers (PR 5). Closes #87 and #95. | PR 5 |
 | *(new)* The relay performs zero ORM writes. | **Met.** The `stream.save(...)` and all 13 `log_system_event` calls move to Django via the events batch. | PR 6 |
-| *(new)* The relay's Redis keys have exactly one writer, and no control-plane code reads them. | **Met.** `channel_stream:*`/`stream_profile:*` get a single writer in PR 6; every other relay key was already single-writer. PR 7 removes the control plane's *reads* too, including the live branch of `get_user_active_connections`, which moves to `GET /proxy/relay/channels`. The timeshift and VOD branches of that same scan keep reading Redis — those key families are written by Django-side handlers, so they are not relay state and are not in scope for this row. | PR 6, PR 7 |
+| *(new)* The relay's Redis keys have exactly one writer, and no control-plane code reads them. | **Met, with one named exception.** `channel_stream:*`/`stream_profile:*` get a single writer in PR 6; every other relay key was already single-writer. PR 7 removes the control plane's *reads* too, including the live branch of `get_user_active_connections`, which moves to `GET /proxy/relay/channels`. The timeshift and VOD branches of that same scan keep reading Redis — those key families are written by Django-side handlers, so they are not relay state and are not in scope for this row. Amendment S11 ruling 10: `Channel.release_stream()` and `_release_stale_stream_assignment()` still read — and `hdel` — the relay's metadata hash on their fallback paths, so "every other relay key was already single-writer" is not quite true of the metadata hash. The read needs no contract change (PR 6's release body already carries `stream_id` and `m3u_profile_id`); the `hdel` belongs on the relay's own release call sites, which D10 keeps out of this phase. Named and tracked as issue #190 rather than fixed here, since PR 7's section names three sites and not these. | PR 6, PR 7 |
 | *(new)* A restart of the control plane does not disturb a running stream. | **Met.** Nothing flushes Redis in any role (D15): `scripts/wait_for_redis.py` becomes wait-only, and AIO's Redis starts empty because it is non-persistent, not because anything wipes it. A modular `web` or `worker` restart therefore leaves a running relay's keys untouched, and PR 8's bounded-restart scenario asserts it. | PR 3, PR 8 |
 | *(new)* Django and the relay authenticate each other on every internal call, and the relay never trusts an unauthenticated header. | **Met.** Two context-separated HMACs of `SECRET_KEY`, `hmac.compare_digest` on both, covering relay→Django, Django→relay, the DVR and the nginx trust marker (D11). | PR 5, PR 6, PR 7 |
 
@@ -1712,7 +1841,7 @@ Filled in as PRs merge. Empty at spec-writing time.
 | Process split | — | — |
 | Authorize hop | #176 | — |
 | Next-source + events | #188 | — |
-| Control API | — | — |
+| Control API | pending | — |
 | Django-down + docs | — | — |
 
 ## Risks
