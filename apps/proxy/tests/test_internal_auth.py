@@ -1,8 +1,13 @@
 """The two internal HMACs (Phase 1 D11) and the predicates that check them."""
 
-from django.test import SimpleTestCase, override_settings
+from django.test import RequestFactory, SimpleTestCase, TestCase, override_settings
 
 from apps.proxy import internal_auth
+from apps.proxy.internal_auth import (
+    META_INTERNAL_REQUEST,
+    build_internal_request_header,
+    request_is_internal_request,
+)
 
 
 class _Req:
@@ -117,3 +122,47 @@ class InternalHeaderRedactionTests(SimpleTestCase):
         rendered = str(masked)
         self.assertNotIn("thepass", rendered)
         self.assertIn("/live/", rendered)
+
+
+class BoundTokenCoversTheQueryStringTests(TestCase):
+    """PR 7: the bound token signs the full path, query string included.
+
+    PR 6 signed request.path, which no caller of /api/relay/... could
+    tell apart from the full path -- none of its three routes takes a
+    query parameter. PR 7's GET /proxy/relay/channels does
+    (?clients=all, which decides whether the response carries every
+    client or the stats surface's first ten), and an unsigned query
+    string is a parameter a replay inside the 120s window could flip.
+    request.get_full_path() equals request.path when there is no query,
+    so PR 6's already-shipped calls verify unchanged.
+    """
+
+    def test_a_signature_for_the_bare_path_does_not_clear_a_query_string(self):
+        header = build_internal_request_header("GET", "/proxy/relay/channels", b"")
+        request = RequestFactory().get(
+            "/proxy/relay/channels",
+            {"clients": "all"},
+            **{META_INTERNAL_REQUEST: header},
+        )
+        self.assertFalse(request_is_internal_request(request))
+
+    def test_a_signature_for_the_full_path_clears_it(self):
+        header = build_internal_request_header(
+            "GET", "/proxy/relay/channels?clients=all", b""
+        )
+        request = RequestFactory().get(
+            "/proxy/relay/channels",
+            {"clients": "all"},
+            **{META_INTERNAL_REQUEST: header},
+        )
+        self.assertTrue(request_is_internal_request(request))
+
+    def test_a_path_with_no_query_is_unchanged_from_pr_6(self):
+        header = build_internal_request_header("POST", "/api/relay/events", b"{}")
+        request = RequestFactory().post(
+            "/api/relay/events",
+            data=b"{}",
+            content_type="application/json",
+            **{META_INTERNAL_REQUEST: header},
+        )
+        self.assertTrue(request_is_internal_request(request))
