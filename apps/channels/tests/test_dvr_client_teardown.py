@@ -60,3 +60,14 @@ class StopDvrClientsTests(TestCase):
             side_effect=relay_client.RelayUnavailable("down"),
         ):
             self.assertEqual(api_views._stop_dvr_clients("abc"), 0)
+
+    def test_a_misconfigured_relay_also_stops_nothing_and_does_not_raise(self):
+        # Final review round, minor: mirrors the RelayUnavailable test
+        # above for the ImproperlyConfigured branch _stop_dvr_clients
+        # gained beside it.
+        from django.core.exceptions import ImproperlyConfigured
+
+        exc = ImproperlyConfigured("DISPATCHARR_RELAY_BASE_URL is bad")
+        exc.var_name = "DISPATCHARR_RELAY_BASE_URL"
+        with mock.patch.object(relay_client, "get_channel", side_effect=exc):
+            self.assertEqual(api_views._stop_dvr_clients("abc"), 0)

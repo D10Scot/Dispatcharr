@@ -106,6 +106,27 @@ class RelayClientTransportTests(SimpleTestCase):
             with self.assertRaises(relay_client.RelayUnavailable):
                 relay_client._request("GET", "/proxy/relay/channels", timeout=(1, 2))
 
+    def test_only_the_transport_failure_is_marked_relay_wide(self):
+        # Final review round: a 5xx, a redirect and a garbled 2xx body
+        # are per-request outcomes from a relay that answered at least
+        # once; only a requests.RequestException means the relay could
+        # not be reached at all. stop_channels() uses this to decide
+        # whether one failure justifies aborting the rest of a batch.
+        with mock.patch.object(requests, "request", return_value=_Response(502)):
+            try:
+                relay_client._request("GET", "/proxy/relay/channels", timeout=(1, 2))
+                self.fail("expected RelayUnavailable")
+            except relay_client.RelayUnavailable as exc:
+                self.assertFalse(exc.transport)
+        with mock.patch.object(
+            requests, "request", side_effect=requests.ConnectionError("nope")
+        ):
+            try:
+                relay_client._request("GET", "/proxy/relay/channels", timeout=(1, 2))
+                self.fail("expected RelayUnavailable")
+            except relay_client.RelayUnavailable as exc:
+                self.assertTrue(exc.transport)
+
     def test_nothing_is_retried(self):
         # A retried advance switches twice; a retried tune-path read
         # blows the relay's own 5s next-source budget (ruling 13).
@@ -287,29 +308,54 @@ class RelayClientCallTests(SimpleTestCase):
         self.assertEqual(seen, ["a", "b", "c"])
         self.assertEqual(stopped, ["a", "c"])
 
-    def test_stop_channels_stops_after_the_first_unavailable_relay(self):
+    def test_stop_channels_stops_after_the_first_unreachable_relay(self):
         # Kimi's PR #194 review, question 2: a whole-provider M3U delete
         # can pass hundreds of identifiers. Once the relay itself cannot
-        # answer, every remaining identifier would pay the same
-        # ADMIN_TIMEOUT round trip and fail the same way, so the loop
-        # stops on the first RelayUnavailable rather than visiting the
-        # rest, and reports what it actually stopped.
+        # be reached at all (a connection-level failure, transport=True),
+        # every remaining identifier would pay the same round trip and
+        # fail the same way, so the loop stops on the first one rather
+        # than visiting the rest, and reports what it actually stopped.
         seen = []
 
-        def _unavailable_on_the_second(identifier, **kwargs):
+        def _unreachable_on_the_second(identifier, **kwargs):
             seen.append(identifier)
             if identifier == "b":
-                raise relay_client.RelayUnavailable("down")
+                raise relay_client.RelayUnavailable("down", transport=True)
             return {"status": "success"}
 
         with mock.patch.object(
-            relay_client, "stop_channel", side_effect=_unavailable_on_the_second
+            relay_client, "stop_channel", side_effect=_unreachable_on_the_second
         ):
             with self.assertLogs(relay_client.logger, level="WARNING") as caught:
                 stopped = relay_client.stop_channels(iter(["a", "b", "c", "d"]))
         self.assertEqual(seen, ["a", "b"])
         self.assertEqual(stopped, ["a"])
         self.assertEqual(len(caught.output), 1)
+
+    def test_stop_channels_continues_past_a_per_request_relay_unavailable(self):
+        # Final review round: RelayUnavailable is also raised for a
+        # redirect, a 5xx or a garbled 2xx body -- per-request outcomes
+        # from a relay that DID answer (a single stuck channel past
+        # ADMIN_TIMEOUT, one worker recycle). Aborting the whole batch
+        # over one of those would strand channels that would have
+        # stopped fine; transport=False (the default) keeps the loop
+        # going, same as a RelayRefused.
+        seen = []
+
+        def _garbled_on_the_second(identifier, **kwargs):
+            seen.append(identifier)
+            if identifier == "b":
+                raise relay_client.RelayUnavailable(
+                    "/proxy/relay/channels/b answered 2xx with a non-JSON body"
+                )
+            return {"status": "success"}
+
+        with mock.patch.object(
+            relay_client, "stop_channel", side_effect=_garbled_on_the_second
+        ):
+            stopped = relay_client.stop_channels(iter(["a", "b", "c"]))
+        self.assertEqual(seen, ["a", "b", "c"])
+        self.assertEqual(stopped, ["a", "c"])
 
     def test_stop_channels_stops_after_a_misconfigured_relay(self):
         # Same bound as RelayUnavailable: a misconfigured base URL fails

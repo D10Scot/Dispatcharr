@@ -79,7 +79,21 @@ ADVANCE_TIMEOUT = (2, 20)
 
 
 class RelayUnavailable(Exception):
-    """The relay could not be reached, or answered 5xx, or redirected."""
+    """The relay could not be reached, or answered 5xx, or redirected.
+
+    `transport` is True only for the requests.RequestException branch in
+    _request() -- a connection failure, which really is relay-wide. A
+    redirect, a 5xx and a garbled 2xx body are per-request outcomes from
+    a relay that answered at least once (a stuck single channel, one
+    worker recycle, a full listen queue); they default to False.
+    stop_channels() below uses the distinction: only a transport failure
+    justifies aborting a whole batch (final review round, "the bound
+    over-aborts" -- a per-request failure must not strand channels that
+    would have stopped fine)."""
+
+    def __init__(self, message, *, transport=False):
+        self.transport = transport
+        super().__init__(message)
 
 
 class RelayRefused(Exception):
@@ -136,7 +150,9 @@ def _request(method, path, *, timeout, payload=None, params=None):
         # state"), and this line must name "the identifier and the status
         # code only, never the URL it dialled." `from exc` keeps the full
         # detail on the chained traceback for anyone reading logs directly.
-        raise RelayUnavailable(f"{path} unreachable: {type(exc).__name__}") from exc
+        raise RelayUnavailable(
+            f"{path} unreachable: {type(exc).__name__}", transport=True
+        ) from exc
     if 300 <= response.status_code < 400:
         raise RelayUnavailable(f"{path} redirected with {response.status_code}")
     if response.status_code >= 500:
@@ -260,18 +276,26 @@ def stop_channels(identifiers):
     channels in one request can report how many it actually reached.
 
     A whole-provider M3U delete can pass hundreds of identifiers here in
-    one call (Kimi's PR #194 review, question 2). RelayRefused is a
-    per-channel answer -- a 404 for a channel already stopped, a 403 a
-    SECRET_KEY mismatch would also give every other identifier, but the
-    existing contract already treats a refusal as one channel's problem
-    -- so it logs and the loop continues. RelayUnavailable and
-    ImproperlyConfigured are not: they mean every remaining identifier
-    would pay the same ADMIN_TIMEOUT (2, 5)s round trip (or fail
-    instantly, misconfigured) for a relay that cannot answer any of
-    them, so a few hundred identifiers would otherwise turn a single
+    one call (Kimi's PR #194 review, question 2). Only a connection-level
+    failure -- RelayUnavailable(transport=True), meaning the relay could
+    not be reached at all -- justifies aborting the rest of the batch:
+    every remaining identifier would pay the same round trip and fail
+    the same way, so a few hundred identifiers would otherwise turn one
     DELETE into minutes of blocked cleanup for no additional
-    information. Stop on the first one, log once, and return what was
-    stopped so far.
+    information. ImproperlyConfigured is the same shape: a bad base URL
+    fails identically for every remaining identifier before a request is
+    even attempted. Everything else is a per-channel outcome, not a
+    relay-wide one, and keeps the loop going: RelayRefused (a 404 for a
+    channel already stopped, a 403 a SECRET_KEY mismatch would also give
+    every other identifier, but the existing contract already treats a
+    refusal as one channel's problem); and a RelayUnavailable that is
+    NOT a transport failure -- a redirect, a 5xx or a garbled 2xx body,
+    which mean the relay answered at least once and this one request
+    failed (a single stuck channel past ADMIN_TIMEOUT, one worker
+    recycle, a full listen queue) (final review round: the earlier,
+    coarser bound could abort a batch over one slow or transient
+    per-channel failure that would have succeeded on retry with the
+    next identifier).
     """
     stopped = []
     for identifier in identifiers:
@@ -287,9 +311,19 @@ def stop_channels(identifiers):
             )
             continue
         except RelayUnavailable as exc:
+            if not exc.transport:
+                # The relay answered at least once; this one request
+                # failed for a reason specific to it. Per-channel, like
+                # RelayRefused.
+                logger.warning(
+                    "Failed to stop proxy session for channel %s: %s",
+                    identifier,
+                    exc,
+                )
+                continue
             logger.warning(
-                "Relay could not answer while stopping proxy sessions; "
-                "stopping after %d of the identifiers given: %s",
+                "Relay could not be reached while stopping proxy "
+                "sessions; stopping after %d of the identifiers given: %s",
                 len(stopped),
                 exc,
             )

@@ -33,6 +33,20 @@ class FetchChannelStatsTests(TestCase):
             tasks.fetch_channel_stats()
         pushed.assert_not_called()
 
+    def test_a_misconfigured_relay_also_pushes_nothing(self):
+        # Final review round, minor: mirrors the RelayUnavailable test
+        # above for the ImproperlyConfigured branch fetch_channel_stats
+        # gained beside it.
+        from django.core.exceptions import ImproperlyConfigured
+
+        exc = ImproperlyConfigured("DISPATCHARR_RELAY_BASE_URL is bad")
+        exc.var_name = "DISPATCHARR_RELAY_BASE_URL"
+        with mock.patch.object(
+            relay_client, "list_channels", side_effect=exc
+        ), mock.patch.object(tasks, "send_websocket_update") as pushed:
+            tasks.fetch_channel_stats()
+        pushed.assert_not_called()
+
     def test_core_tasks_no_longer_imports_a_relay_module_at_module_level(self):
         import inspect
 

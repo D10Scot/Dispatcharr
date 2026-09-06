@@ -332,6 +332,20 @@ class LiveConnectionsComeFromTheRelayTests(TestCase):
             connections = utils.get_user_active_connections(5)
         self.assertEqual([c for c in connections if c["type"] == "live"], [])
 
+    def test_a_misconfigured_relay_also_contributes_no_live_connections(self):
+        # Final review round, minor: mirrors the RelayUnavailable test
+        # above for the ImproperlyConfigured branch _live_connections
+        # gained beside it.
+        from django.core.exceptions import ImproperlyConfigured
+
+        from apps.proxy import relay_client, utils
+
+        exc = ImproperlyConfigured("DISPATCHARR_RELAY_BASE_URL is bad")
+        exc.var_name = "DISPATCHARR_RELAY_BASE_URL"
+        with mock.patch.object(relay_client, "list_channels", side_effect=exc):
+            connections = utils.get_user_active_connections(5)
+        self.assertEqual([c for c in connections if c["type"] == "live"], [])
+
     def test_terminating_a_live_client_goes_through_the_relay(self):
         from apps.proxy import relay_client, utils
 
@@ -354,6 +368,25 @@ class LiveConnectionsComeFromTheRelayTests(TestCase):
             relay_client, "stop_client",
             side_effect=relay_client.RelayUnavailable("down"),
         ):
+            freed = utils.attempt_stream_termination(
+                5,
+                "requester",
+                [{"media_id": "abc", "client_id": "c1", "connected_at": 1.0,
+                  "type": "live"}],
+            )
+        self.assertFalse(freed)
+
+    def test_a_misconfigured_relay_also_denies_the_new_stream(self):
+        # Final review round, minor: mirrors the RelayUnavailable test
+        # above for the ImproperlyConfigured branch
+        # attempt_stream_termination gained beside it.
+        from django.core.exceptions import ImproperlyConfigured
+
+        from apps.proxy import relay_client, utils
+
+        exc = ImproperlyConfigured("DISPATCHARR_RELAY_BASE_URL is bad")
+        exc.var_name = "DISPATCHARR_RELAY_BASE_URL"
+        with mock.patch.object(relay_client, "stop_client", side_effect=exc):
             freed = utils.attempt_stream_termination(
                 5,
                 "requester",

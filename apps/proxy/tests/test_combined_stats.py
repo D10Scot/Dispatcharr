@@ -125,3 +125,26 @@ class CombinedStatsApiTests(TestCase):
         self.assertEqual(body["live"], {"channels": [], "count": 0})
         self.assertIn("vod", body)
         self.assertIn("catchup", body)
+
+    def test_a_misconfigured_relay_also_empties_only_the_live_section(self):
+        # Final review round, minor: mirrors the RelayUnavailable test
+        # above for the ImproperlyConfigured branch combined_stats
+        # gained beside it. combined_stats degrades -- 200, not 500 --
+        # unlike the five admin views, which is what the CLAUDE.md fix
+        # in this same round exists to say correctly.
+        from django.core.exceptions import ImproperlyConfigured
+
+        from apps.proxy import relay_client
+
+        exc = ImproperlyConfigured("DISPATCHARR_RELAY_BASE_URL is bad")
+        exc.var_name = "DISPATCHARR_RELAY_BASE_URL"
+        with patch.object(relay_client, "list_channels", side_effect=exc):
+            request = self.factory.get("/proxy/stats/")
+            force_authenticate(request, user=self.admin)
+            response = stats_views.combined_stats(request)
+
+        body = json.loads(response.content)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(body["live"], {"channels": [], "count": 0})
+        self.assertIn("vod", body)
+        self.assertIn("catchup", body)
