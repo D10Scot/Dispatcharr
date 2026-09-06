@@ -116,6 +116,16 @@ async function expectRunning(
 }
 
 /**
+ * Bounds the `open()` call inside `openOutcome`. `expect.poll`'s own timeout
+ * does not cancel an in-flight callback — it only stops scheduling a *next*
+ * one — so an `open()` that never settles would otherwise run to the
+ * project's 600s test timeout instead of to either poll's stated budget, and
+ * would leave `api-uwsgi` stopped for whatever test the project runs next
+ * (see the `afterEach` below).
+ */
+const OPEN_OUTCOME_DEADLINE_MS = 30_000;
+
+/**
  * Open a stream and report the outcome as a string.
  *
  * Nothing is rethrown. `expect.poll` fails the test on the first throw from
@@ -131,13 +141,30 @@ async function openOutcome(
   path: string
 ): Promise<string> {
   try {
-    await client.open(path);
+    await withDeadline(client.open(path), OPEN_OUTCOME_DEADLINE_MS, `opening ${path}`);
     return 'ok';
   } catch (error) {
     if (error instanceof StreamStatusError) return `HTTP ${error.status}`;
     return String(error);
   }
 }
+
+/**
+ * Backstop, not the primary cleanup — the primary is the `try`/`finally`
+ * inside the first test below. A Playwright timeout abandons a test body
+ * without running its `finally` (only `afterEach` hooks still run), so
+ * without this an abandoned run would leave `api-uwsgi` stopped for the rest
+ * of the project and the second test would fail naming something unrelated.
+ * Checks the actual status rather than trusting a variable the abandoned body
+ * never got to set, and is a no-op — one cheap `supervisorctl status` call —
+ * for the second test, which never touches `api-uwsgi`.
+ */
+test.afterEach(async ({ instance }) => {
+  const status = await instance.supervisorctl(['status', 'api-uwsgi']);
+  if (!/RUNNING/.test(status.stdout)) {
+    await instance.supervisorctl(['start', 'api-uwsgi']);
+  }
+});
 
 test(
   'a running stream outlives the API process, and a new tune answers 500 until it is back',
@@ -171,7 +198,13 @@ test(
     });
 
     await streamClient.open(`/proxy/ts/stream/${running.uuid}`);
-    expectTsAligned(await streamClient.readPackets(1));
+    // 200, not 1: the TS generator emits a synthetic 'error' packet and a
+    // keepalive while a channel is still coming up
+    // (apps/proxy/live_proxy/output/ts/generator.py:200-241,380), and
+    // `expectTsAligned` only checks 188-byte alignment and the sync byte, so
+    // either one passes it. Matches the failover project's own precondition
+    // idiom (`tests/streaming-failover/mid-stream-switch.spec.ts:24`).
+    expectTsAligned(await streamClient.readPackets(200));
 
     let stopped = false;
     try {
@@ -192,12 +225,25 @@ test(
 
       // (a) The established stream is undisturbed. Nothing on the byte path
       // calls Django once a stream runs.
+      //
+      // Drained first: readPackets() pumps the underlying reader in whatever
+      // chunk size fetch delivers, which can be far larger than what was
+      // asked for, so bytes already sitting in the client's buffer from the
+      // precondition read above could satisfy the read below with nothing
+      // new crossing the wire — a run in which stopping api-uwsgi killed the
+      // established stream outright would still pass it. Draining means the
+      // read can only succeed by pumping fresh bytes from the still-open
+      // relay connection while the outage is in progress. `readPackets`
+      // itself is the assertion that matters here: it throws if the stream
+      // ends, and only returns once it pumped enough live bytes to satisfy
+      // the count — a bare byte-length check afterwards would be a
+      // tautology.
+      streamClient.drain();
       const during = await withDeadline(
         streamClient.readPackets(20),
         60_000,
         'the already-open stream during the API outage'
       );
-      expect(during.byteLength).toBe(20 * TS_PACKET_SIZE);
       expectTsAligned(during);
 
       // (b) A new tune is refused, and the refusal is nginx's own 500.
@@ -238,12 +284,19 @@ test(
     // relay's channel state in Redis alone. If any start path still flushed
     // DB 0, this channel's metadata, chunks and client set would have gone
     // with it and these packets would never arrive.
+    //
+    // Drained first, and more load-bearing here than at (a): the client has
+    // been idle across the `expectRunning` poll and the readiness-route poll
+    // above (up to 60s each), so its buffer is certainly holding leftovers by
+    // now. Without draining, this read proves nothing a flushed Redis DB 0
+    // would have disturbed — it would just hand back bytes that arrived
+    // before the restart.
+    streamClient.drain();
     const after = await withDeadline(
       streamClient.readPackets(20),
       60_000,
       'the already-open stream after the API process came back'
     );
-    expect(after.byteLength).toBe(20 * TS_PACKET_SIZE);
     expectTsAligned(after);
     await streamClient.close();
   }
