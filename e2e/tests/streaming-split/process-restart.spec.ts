@@ -75,6 +75,28 @@ const API_PROBE = '/api/accounts/initialize-superuser/';
 /** supervisord reports RUNNING once a program has stayed alive `startsecs=5`. */
 const RUNNING_TIMEOUT_MS = 60_000;
 
+/**
+ * The spec's ceiling for a bounded relay restart, and its own justification:
+ * "`stopwaitsecs=20` plus process start has to fit inside it or the restart is
+ * not bounded in any useful sense". `docker/supervisord.d/relay-uwsgi.conf`
+ * carries `stopwaitsecs=20` and `startsecs=5`, so 25s is the configured worst
+ * case and 30s is the budget it has to fit inside. Measured from the moment
+ * the restart command is issued, not from when it returns.
+ *
+ * What this ceiling covers is the *process*: the relay serving tunes again.
+ * A viewer reconnecting to the SAME channel is a different question with a
+ * worse answer — `_channel_setup_needed` (apps/proxy/live_proxy/views.py)
+ * returns "no setup needed" for a channel whose metadata still says `active`
+ * without consulting the dead owner's heartbeat, so the reconnecting client
+ * attaches as a follower to a channel nobody owns, and only
+ * `_check_orphaned_metadata`'s 30s sweep can clear it — and that sweep
+ * declines to clean a channel that still has a live client, which a retrying
+ * reconnect keeps supplying. Recorded in `e2e/COVERAGE.md` and filed rather
+ * than asserted here; this test tunes a channel that was not running when the
+ * relay went away.
+ */
+const RELAY_RESTART_CEILING_MS = 30_000;
+
 async function expectRunning(
   instance: Instance,
   program: string,
@@ -224,5 +246,126 @@ test(
     expect(after.byteLength).toBe(20 * TS_PACKET_SIZE);
     expectTsAligned(after);
     await streamClient.close();
+  }
+);
+
+test(
+  'a relay restart is bounded, and leaves a Celery task queued across it to finish',
+  { tag: '@contract' },
+  async ({ instance, api, seed, upstream, streamClient, baseURL }) => {
+    await expectRunning(instance, 'api-uwsgi', 'api-uwsgi was not RUNNING before this test began');
+    await expectRunning(instance, 'relay-uwsgi', 'relay-uwsgi was not RUNNING before this test began');
+
+    const scenario = await upstream.scenario({
+      channels: [
+        { id: 1, name: 'split relay running', tvgId: 'split-relay-running.e2e', logo: null },
+        { id: 2, name: 'split relay after', tvgId: 'split-relay-after.e2e', logo: null },
+      ],
+      rate: 20,
+    });
+    const proxy = await lockedProfile(api, 'Proxy');
+    // An M3U account is the Celery half: refreshing one is a real queued task
+    // whose completion is visible over REST. Seeded (and refreshed) before
+    // anything else so the create-time group refresh has settled and the
+    // account's task lock is free by the time the test triggers its own.
+    const account = await seed.upstreamM3UAccount(scenario);
+    const { channel: running } = await seed.upstreamChannel(scenario, {
+      channelIds: [1],
+      streamProfileId: proxy.id,
+    });
+    const { channel: after } = await seed.upstreamChannel(scenario, {
+      channelIds: [2],
+      streamProfileId: proxy.id,
+    });
+
+    await streamClient.open(`/proxy/ts/stream/${running.uuid}`);
+    expectTsAligned(await streamClient.readPackets(1));
+    // Printed for Task 11's hand-run same-channel reconnect measurement, which
+    // needs a channel this project left streaming and has no other way to
+    // learn its uuid.
+    console.log(`[relay-restart] channel ${running.uuid} is streaming before the restart`);
+
+    const before = await api.json<M3uAccount>(
+      await api.get(`/api/m3u/accounts/${account.id}/`),
+      `M3U account ${account.id} before the relay restart`
+    );
+
+    const triggered = await api.post(`/api/m3u/refresh/${account.id}/`, {});
+    expect(
+      triggered.status(),
+      'the refresh must be queued before the restart, or there is nothing to survive it'
+    ).toBe(202);
+
+    const restartBegan = Date.now();
+    await instance.supervisorctl(['restart', 'relay-uwsgi']);
+    console.log(
+      `[relay-restart] supervisorctl restart returned after ${Date.now() - restartBegan}ms`
+    );
+
+    // The running stream died with the process it was served by. Closing the
+    // client here is bookkeeping, not an assertion: nothing processed its
+    // disconnect, so its entry stays in the channel's client set until the
+    // relay's own ghost-client sweep removes it.
+    await streamClient.close();
+
+    await expectRunning(instance, 'relay-uwsgi', 'relay-uwsgi did not return to RUNNING');
+
+    // The bounded half: a tune the relay has never served answers with real,
+    // aligned TS bytes inside the ceiling.
+    const client = newStreamClient(baseURL!);
+    await expect
+      .poll(async () => openOutcome(client, `/proxy/ts/stream/${after.uuid}`), {
+        // Deliberately above the ceiling. The assertion below is on the
+        // measured number, so an over-budget restart fails with the number it
+        // took rather than with a bare poll timeout — the shape
+        // `tests/streaming/time-to-first-byte.spec.ts` uses.
+        timeout: 120_000,
+        intervals: [1_000],
+        message: 'the relay never served a tune after the restart',
+      })
+      .toBe('ok');
+    const packet = await withDeadline(
+      client.readPackets(1),
+      60_000,
+      'the first TS packet after the relay restart'
+    );
+    const elapsedMs = Date.now() - restartBegan;
+    console.log(
+      `[relay-restart] first TS byte ${elapsedMs}ms after the restart began ` +
+        `(ceiling ${RELAY_RESTART_CEILING_MS}ms)`
+    );
+    expect(packet.byteLength).toBe(TS_PACKET_SIZE);
+    expectTsAligned(packet);
+    expect(
+      elapsedMs,
+      `the relay served its first byte ${elapsedMs}ms after the restart began; the ceiling is ` +
+        `${RELAY_RESTART_CEILING_MS}ms (stopwaitsecs=20 + startsecs=5)`
+    ).toBeLessThanOrEqual(RELAY_RESTART_CEILING_MS);
+    await client.close();
+
+    // D15's Celery half: the task dispatched a moment before the restart still
+    // ran to completion. A blind flush on any start path would take the broker
+    // and the result backend with it — they share Redis DB 0 with the relay's
+    // channel state. `updated_at` is bumped only by a successful refresh, so
+    // it discriminates "the task ran" from "the row was already successful".
+    await expect
+      .poll(
+        async () => {
+          const body = await api.json<M3uAccount>(
+            await api.get(`/api/m3u/accounts/${account.id}/`),
+            `M3U account ${account.id} after the relay restart`
+          );
+          return `${body.status}:${body.updated_at === before.updated_at ? 'unchanged' : 'bumped'}`;
+        },
+        {
+          timeout: 120_000,
+          intervals: [2_000],
+          message:
+            'the refresh queued before the restart never completed. If it sits at the ' +
+            'pre-trigger status forever, the create-time task lock was still held when it ' +
+            'was triggered (D10Scot/Dispatcharr#59) rather than the restart having eaten it',
+        }
+      )
+      .toBe('success:bumped');
   }
 );
