@@ -59,13 +59,14 @@ one up. CI binds the same way.
 
 | Project | What it is for |
 |---|---|
-| `bootstrap` | Creates the superuser, pre-warms the `IntervalSchedule` row (see below) and writes auth state. Runs automatically as a dependency of `seeded`, `streaming`, `streaming-failover`, `streaming-greybox`, `frontend` and `dvr` — every project that shares the default container. `guards` needs no container at all; `pristine`, `lifecycle`, `lifecycle-upgrade`, `lifecycle-restore` and `lifecycle-scheduling` each need an instance bootstrap has not touched |
+| `bootstrap` | Creates the superuser, pre-warms the `IntervalSchedule` row (see below) and writes auth state. Runs automatically as a dependency of `seeded`, `streaming`, `streaming-failover`, `streaming-greybox`, `streaming-split`, `frontend` and `dvr` — every project that shares the default container. `guards` needs no container at all; `pristine`, `lifecycle`, `lifecycle-upgrade`, `lifecycle-restore` and `lifecycle-scheduling` each need an instance bootstrap has not touched |
 | `guards` | Static analysis over this suite's own source. **No container, no browser, no fixtures** — it runs in about a second and needs nothing running. Home for every enforcement spec: the tag taxonomy, the grey-box capability allowlists, the `data-testid` contract, the instance-wide settings-write allowlist and the `pageErrors` check (which moved here from `tests/frontend/`) |
 | `pristine` | Needs an instance with **no superuser**: first-run setup, and global `CoreSettings` changes |
 | `seeded` | The default. Shared instance, parallel workers, API-seeded data |
 | `streaming` | Byte-level tests. Long timeouts, fewer workers |
 | `streaming-failover` | Failover behaviour: dead-air and buffering watchdogs. Long timeouts, fewer workers |
 | `streaming-greybox` | Tests that reach past the API into Redis or the container directly (e.g. counting live `ffmpeg` processes). Long timeouts, one worker — **must be run alone locally**: in CI each matrix job gets its own container, but locally all projects can share one, and this project observes container-wide state that whatever else is running would disturb |
+| `streaming-split` | The two uWSGI processes restarted independently: `supervisorctl stop api-uwsgi` with a stream running, and `supervisorctl restart relay-uwsgi` with a Celery task queued. Long timeouts, one worker, no retries — **must be run alone locally**: in CI each matrix job gets its own container, but locally all projects share one, and this project takes the API process away for the length of a test. It keeps its container (unlike the four lifecycle projects), so it depends on `bootstrap` like its streaming siblings |
 | `frontend` | The nine product surfaces in a browser: does the page mount, and does a write driven through its UI reach the server. Two workers, file-level parallelism, 120s |
 | `dvr` | Real DVR recordings end to end — scheduling through `run_recording`, comskip's `dvr_settings` toggle, and finalisation under `/data/recordings`. Long timeouts, one worker — **must be run alone locally**: in CI each matrix job gets its own container, but locally all projects can share one, and this project mutates container-wide state (the `dvr_settings` row, the recordings directory) that whatever else is running would disturb |
 | `lifecycle` | Restarts the container mid-test. **Runs alone** — it destroys the container every other project shares. No `bootstrap` dependency: it provisions its own admin |
@@ -92,14 +93,16 @@ one up. CI binds the same way.
 
 `streaming` runs at `workers: 2` — its byte-level reads are slow but do not
 touch anything another test in the same project could observe.
-`streaming-failover` and `streaming-greybox` both pin `workers: 1` instead,
-each for its own container-wide hazard: `failover-buffering.spec.ts` mutates
-the global `proxy_settings` row for the duration of its run, and
-`output-profile-sharing.spec.ts` counts every `ffmpeg` process running in the
-container (`pgrep -x ffmpeg`) via `greyboxRedis()`. Neither observable is
-scoped to its own channel, so a second worker running anything else in the
-same project would race it — see each project's `workers` comment in
-`playwright.config.ts` for the full reasoning. A future grey-box test that
+`streaming-failover`, `streaming-greybox` and `streaming-split` all pin
+`workers: 1` instead, each for its own container-wide hazard:
+`failover-buffering.spec.ts` mutates the global `proxy_settings` row for the
+duration of its run, `output-profile-sharing.spec.ts` counts every `ffmpeg`
+process running in the container (`pgrep -x ffmpeg`) via `greyboxRedis()`,
+and `streaming-split`'s tests stop and restart a supervisord program
+(`api-uwsgi` or `relay-uwsgi`) that the whole container shares. None of
+these hazards is scoped to its own channel, so a second worker running
+anything else in the same project would race it — see each project's
+`workers` comment in `playwright.config.ts` for the full reasoning. A future grey-box test that
 mutates Redis directly, the way the deleted ownership-lease flagship did (see
 `COVERAGE.md`), would be the same class of risk in `streaming-greybox`, which
 is why that project doesn't trust every future test to be independently safe
@@ -717,24 +720,33 @@ are the calls that stop meaning anything once the relay is its own process. That
 today: `streaming-failover/failover-buffering.spec.ts` is on the allowlist (it mutates the global
 `proxy_settings` row) and is tagged `@contract`. `tests/guards/tags.spec.ts` and
 `tests/guards/capabilities.spec.ts` each check their own rule and neither cross-checks the other, so
-this passes both guards while contradicting the ADR's stated consequence. Recorded here rather than
-retagged unilaterally — resolving it either way (loosen the ADR's claim, or retag the file and add a
-cross-check guard) is a call for whoever owns ADR-0002 next, not a side effect of this goal's tests.
+this passes both guards while contradicting the ADR's stated consequence. Two more files now sit in
+the same position, each arguing its case in its own header rather than silently:
+`streaming-greybox/nginx-stream-buffering.spec.ts` (on `SUBPROCESS`, because it reads the resolved
+nginx config, while what it pins — `uwsgi_buffering off` on every relay-bound location — is a
+promise any reimplementation must keep) and `streaming-split/process-restart.spec.ts` (on
+`CONTAINER_LIFECYCLE`, because `supervisorctl` is the only vocabulary for "the API process is down",
+while what it pins — an established stream is undisturbed by the control plane going away, and a
+relay restart is bounded — is exactly what a Go relay in Phase 2 must also keep). All three are
+recorded here rather than retagged unilaterally: resolving the tension either way (loosen the ADR's
+claim, or retag the files and add a cross-check guard) is a call for whoever owns ADR-0002 next, not
+a side effect of the goal or phase that happened to add the third.
 
 ## CI
 
 `.github/workflows/e2e-tests.yml` builds the AIO image once, then runs
 `pristine`, `seeded`, `streaming`, `streaming-failover`, `streaming-greybox`,
-`lifecycle`, `frontend` and `dvr` as a matrix, each against its own fresh
-container, each gated on `npm run typecheck` before tests run.
+`streaming-split`, `lifecycle`, `frontend` and `dvr` as a matrix, each against
+its own fresh container, each gated on `npm run typecheck` before tests run.
 
 **That project list is no longer hardcoded in the `test` job** — it is built by
 the `changes` job and consumed as `fromJSON(needs.changes.outputs.projects)`,
 so full mode can extend it. **If you add another project to
-`playwright.config.ts`, add it to both `projects` lists in that job** (unless
+`playwright.config.ts`, add it to the `projects` list in that job** (unless
 it belongs in `lifecycle-tests.yml` instead — see `lifecycle-upgrade` below).
-Nothing wires new projects in automatically, and a project in neither place
-gets no CI coverage and no failure signal.
+There is one list, read by both modes; `streaming-split` was the first project
+added after it stopped being two. Nothing wires new projects in automatically,
+and a project in neither place gets no CI coverage and no failure signal.
 
 `guards` is the one project deliberately **not** in that matrix: it needs no
 container, so it has its own job that skips the image download and the

@@ -175,6 +175,59 @@ export default defineConfig({
       use: { storageState: 'playwright/.auth/admin.json' },
     },
     {
+      // Owns one supervisord program at a time: `supervisorctl stop api-uwsgi`
+      // and `supervisorctl restart relay-uwsgi` inside the shared container.
+      // Its own project, not a spec under `streaming-greybox`, for the reason
+      // the lifecycle projects have their own: in CI every matrix project gets
+      // its own container, so a project is the only unit that confines an
+      // outage. A greybox spec would stop the API process inside a container
+      // two other specs are using, and `streaming-greybox`'s single worker
+      // protects against overlap *within* that project only — it says nothing
+      // about a spec that leaves `api-uwsgi` stopped after a timeout.
+      //
+      // Unlike the lifecycle projects this one keeps its container, so it can
+      // take `bootstrap`'s admin state: nothing here replaces the instance the
+      // persisted token describes.
+      name: 'streaming-split',
+      testDir: './tests/streaming-split',
+      dependencies: ['bootstrap'],
+      // 600s, and derived rather than copied from the three streaming
+      // projects' 300s. Each test here is a chain of sequential poll budgets,
+      // and the sum is what has to fit. Scenario B's post-restart chain is
+      // 385s: 25s in the restart, 60s waiting for RUNNING, 120s polling for a
+      // tune, 60s on the first packet, 120s on the refresh. 600s is that 385s
+      // plus ~215s of margin for what precedes it — two `expectRunning`
+      // pre-checks at 60s each, `seed.upstreamM3UAccount`, which wraps a
+      // refresh wait of its own, and (as of the whole-branch fix round)
+      // settling `SLOW_REFRESH_DECOY_COUNT` decoy M3U accounts before
+      // Scenario B's timed phase — measured at ~20-60s in `task-4-report.md`,
+      // itself inside this margin. That margin is not the sum of those worst
+      // cases (they total ~350s, so the theoretical worst case is ~735s); it
+      // is deliberately sized for one thing going wrong at a time, because a
+      // run in which the pre-checks AND the seeding AND the restart all take
+      // their maxima has already failed for a reason no timeout will clarify.
+      // The over-budget case that matters is the ordinary one — a restart
+      // taking 40s or 60s instead of 25s — and it lands near 350s, well
+      // inside this budget, so the assertion fails with the measured
+      // `elapsedMs` rather than with a bare "Test timeout of Ns exceeded".
+      // Sized above the poll budgets for the same reason `lifecycle` sizes
+      // itself above the `instance` fixture's subprocess timeouts.
+      timeout: 600_000,
+      // One worker and no intra-file parallelism: each test stops a program
+      // the whole container shares, which is container-wide state in exactly
+      // the sense `streaming-failover` and `dvr` serialise for.
+      workers: 1,
+      fullyParallel: false,
+      // Attempt 1 mutates container-wide process state. A retry beginning
+      // while the previous attempt's `finally` is still bringing `api-uwsgi`
+      // back would measure the restart of a process that was already
+      // restarting — the same reason `pristine` and `lifecycle` set this.
+      retries: 0,
+      // Required. `adminPage` is an alias of `page`; the admin identity comes
+      // from this line, not from the fixture.
+      use: { storageState: 'playwright/.auth/admin.json' },
+    },
+    {
       name: 'frontend',
       testDir: './tests/frontend',
       dependencies: ['bootstrap'],

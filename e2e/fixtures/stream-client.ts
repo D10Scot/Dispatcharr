@@ -203,6 +203,47 @@ export class StreamClient {
     return out;
   }
 
+  /**
+   * Bytes currently held in the client's own buffer — already received from
+   * the socket but not yet handed to a caller. Exposed so a test can tell
+   * "bytes that arrived just now" apart from "bytes that were already
+   * sitting here" — see `drain()`, which is the other half of that proof.
+   */
+  get bufferedByteCount(): number {
+    return this.bufferedBytes;
+  }
+
+  /**
+   * Discards whatever whole TS packets are currently buffered, and returns
+   * how many bytes that was.
+   *
+   * `readPackets`/`readBytes` pump the underlying reader in whatever chunk
+   * size the runtime's fetch implementation delivers, which is not aligned to
+   * what was asked for and can be far larger — a `readPackets(1)` can leave
+   * many kilobytes sitting in `chunks` after taking its one packet out. A
+   * test that wants to prove "bytes are still arriving right now" (across a
+   * restart, an outage, or any other event) cannot just call `readPackets`
+   * again afterwards: a small read can be satisfied entirely out of bytes
+   * that arrived before the event, proving nothing about it. Draining first
+   * means the next read can only succeed by pumping fresh data.
+   *
+   * Only whole packets, via `takeBytes` — never a bare `chunks = []`. A raw
+   * HTTP/TCP delivery has no relationship to a 188-byte TS packet boundary,
+   * so what's buffered can end mid-packet; alignment across the client's
+   * whole lifetime holds only because every byte ever removed leaves via
+   * `takeBytes` in a multiple of 188 (the underlying stream itself starts at
+   * a sync byte). Discarding a partial trailing packet here would shift every
+   * later read a few bytes into the following packet instead of onto its
+   * sync byte — proved by the first version of this method, which used a bare
+   * `chunks = []` and failed `expectTsAligned` on the very next read.
+   */
+  drain(): number {
+    const wanted = this.bufferedBytes - (this.bufferedBytes % TS_PACKET_SIZE);
+    if (wanted === 0) return 0;
+    this.takeBytes(wanted);
+    return wanted;
+  }
+
   /** Exactly `count` TS packets (count * 188 bytes). */
   async readPackets(count: number): Promise<Buffer> {
     const wanted = count * TS_PACKET_SIZE;

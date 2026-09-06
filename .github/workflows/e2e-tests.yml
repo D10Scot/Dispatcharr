@@ -95,7 +95,7 @@ jobs:
           # `lifecycle-tests.yml`'s `upgrade-migrations` job does, and that job
           # already runs the project on every `migration/**` branch. Listing it
           # here too ran it without the baseline and failed every full run.
-          projects='["pristine","seeded","streaming","streaming-failover","streaming-greybox","lifecycle","frontend","dvr"]'
+          projects='["pristine","seeded","streaming","streaming-failover","streaming-greybox","streaming-split","lifecycle","frontend","dvr"]'
           echo "projects=$projects" >> "$GITHUB_OUTPUT"
 
           if [ "$full" = "true" ] || [ "$EVENT_NAME" != "pull_request" ]; then
@@ -199,9 +199,11 @@ jobs:
     runs-on: ubuntu-latest
     needs: [changes, build]
     if: needs.changes.outputs.e2e == 'true'
-    # Comfortably over the streaming project's 300s per-test timeout, and far
-    # under the 6-hour default a container that never becomes ready would take.
-    timeout-minutes: 30
+    # Comfortably over streaming-split's 600s-per-test timeout (its two scenarios,
+    # plus the image download, docker load, the container-ready loop and
+    # npx playwright install), and far under the 6-hour default a container that
+    # never becomes ready would take.
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       # Built by the `changes` job so a mode can extend it without editing here.

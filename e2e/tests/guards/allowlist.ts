@@ -34,7 +34,7 @@ export type Capability = {
 
 export const CONTAINER_LIFECYCLE: Capability = {
   name: 'the `instance` fixture (container lifecycle)',
-  why: 'Restarts, replaces and upgrades the container — the subject of the lifecycle projects, and meaningless once the relay is a separate process.',
+  why: 'Restarts, replaces and upgrades the container, or stops and starts one supervisord program inside it — the subject of the lifecycle and streaming-split projects, and meaningless once the relay is a separate process.',
   allow: [
     // The two lifecycle specs are the container's lifecycle, by definition.
     // `fixtures/instance.ts` owns the fixture and `fixtures/index.ts` wires it
@@ -45,6 +45,13 @@ export const CONTAINER_LIFECYCLE: Capability = {
     'tests/lifecycle/backup-restore.spec.ts',
     // Owns and resets a container: leaves an enabled hourly beat task behind.
     'tests/lifecycle/refresh-scheduling.spec.ts',
+    // Stops and starts one supervisord program at a time (`api-uwsgi`,
+    // `relay-uwsgi`) through `instance.supervisorctl()`. It never calls
+    // `up`/`restart`/`recreate`/`down`, so it neither replaces nor destroys
+    // the container — but taking the API process away is container-wide state
+    // in the same sense, which is why it has its own project and its own CI
+    // container.
+    'tests/streaming-split/process-restart.spec.ts',
   ],
 };
 
