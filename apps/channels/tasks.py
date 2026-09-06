@@ -2445,7 +2445,7 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
             from apps.proxy.live_proxy.constants import ChannelMetadataField
 
             # Phase 1 PR 7: this runs in the dvr Celery worker, which has
-            # no business reading live:channel:<uuid>:metadata directly.
+            # no business reading the channel's metadata hash directly.
             # The relay's detailed payload uses the same key names --
             # ChannelMetadataField's values are exactly the JSON keys --
             # so the eleven fields below and the casts they carry are
