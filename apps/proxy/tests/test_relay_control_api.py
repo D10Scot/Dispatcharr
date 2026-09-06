@@ -1,0 +1,351 @@
+"""The five /proxy/relay/... routes (Phase 1 PR 7, D12).
+
+Served by the relay process, gated by IsInternalRelay -- the two internal
+HMAC headers, never a principal. nginx routes them to the relay_py
+upstream and adds nothing: the token is the whole gate (D9), and the
+location is deliberately outside the authorize hop, since
+authorize_stream() would 404 a URI naming no channel (spec Amendment S8).
+"""
+
+import json
+from unittest import mock
+
+from django.test import TestCase
+from rest_framework.test import APIClient
+
+from apps.accounts.models import User
+from apps.proxy import relay_views
+from apps.proxy.internal_auth import (
+    HEADER_INTERNAL,
+    HEADER_INTERNAL_REQUEST,
+    build_internal_request_header,
+    internal_principal_token,
+)
+
+
+def _signed(method, path, body=b""):
+    return {
+        "HTTP_X_DISPATCHARR_INTERNAL": internal_principal_token(),
+        "HTTP_X_DISPATCHARR_INTERNAL_REQUEST": build_internal_request_header(
+            method, path, body
+        ),
+    }
+
+
+class RelayControlGateTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+
+    def test_an_unsigned_request_is_refused(self):
+        self.assertEqual(self.client.get("/proxy/relay/channels").status_code, 403)
+
+    def test_the_static_token_alone_is_not_enough(self):
+        response = self.client.get(
+            "/proxy/relay/channels",
+            HTTP_X_DISPATCHARR_INTERNAL=internal_principal_token(),
+        )
+        self.assertEqual(response.status_code, 403)
+
+    def test_an_admin_session_is_not_a_way_in(self):
+        admin = User.objects.create_user(
+            username="a", password="p", user_level=User.UserLevel.ADMIN
+        )
+        self.client.force_authenticate(user=admin)
+        self.assertEqual(self.client.get("/proxy/relay/channels").status_code, 403)
+
+    def test_a_signature_for_a_different_path_does_not_open_this_one(self):
+        headers = _signed("GET", "/proxy/relay/channels/other")
+        self.assertEqual(
+            self.client.get("/proxy/relay/channels", **headers).status_code, 403
+        )
+
+    def test_a_correctly_signed_request_is_admitted(self):
+        # ProxyServer.get_instance() is patched here and in every list
+        # test below: channels_view reaches it for the Redis client, and
+        # leaving it unpatched builds a real singleton that outlives the
+        # test. The advance tests already patch it for the same reason.
+        with mock.patch.object(
+            relay_views, "build_live_channel_stats_data",
+            return_value={"channels": [], "count": 0},
+        ), mock.patch.object(
+            relay_views.ProxyServer, "get_instance",
+            return_value=mock.Mock(redis_client=mock.Mock(), stream_managers={}),
+        ):
+            response = self.client.get(
+                "/proxy/relay/channels", **_signed("GET", "/proxy/relay/channels")
+            )
+        self.assertEqual(response.status_code, 200)
+
+
+class RelayChannelListTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        patcher = mock.patch.object(
+            relay_views.ProxyServer, "get_instance",
+            return_value=mock.Mock(redis_client=mock.Mock(), stream_managers={}),
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _channel(self, **overrides):
+        data = {
+            "channel_id": "abc",
+            "state": "active",
+            "url": "http://provider.example/live",
+            "stream_profile": "3",
+            "owner": "worker-1",
+            "buffer_index": 7,
+            "client_count": 2,
+            "uptime": 12.5,
+            "started_at": 1000.0,
+            "clients": [
+                {
+                    "client_id": "c1",
+                    "user_agent": "vlc",
+                    "output_format": "mpegts",
+                    "output_profile_id": None,
+                    "user_id": "5",
+                    "connected_at": 1000.0,
+                    "ip_address": "10.0.0.1",
+                }
+            ],
+        }
+        data.update(overrides)
+        return data
+
+    def test_the_payload_is_channels_and_count(self):
+        with mock.patch.object(
+            relay_views, "build_live_channel_stats_data",
+            return_value={"channels": [self._channel()], "count": 1},
+        ):
+            response = self.client.get(
+                "/proxy/relay/channels", **_signed("GET", "/proxy/relay/channels")
+            )
+        body = response.json()
+        self.assertEqual(body["count"], 1)
+        self.assertEqual(body["channels"][0]["channel_id"], "abc")
+        self.assertEqual(body["channels"][0]["clients"][0]["client_id"], "c1")
+
+    def test_an_absent_optional_field_stays_absent_rather_than_null(self):
+        # stream_id and avg_bitrate_kbps are assigned inside conditionals
+        # in get_basic_channel_info, so the wire has to be able to omit
+        # them -- CLAUDE.md section Observing a channel.
+        with mock.patch.object(
+            relay_views, "build_live_channel_stats_data",
+            return_value={"channels": [self._channel()], "count": 1},
+        ):
+            response = self.client.get(
+                "/proxy/relay/channels", **_signed("GET", "/proxy/relay/channels")
+            )
+        channel = response.json()["channels"][0]
+        self.assertNotIn("stream_id", channel)
+        self.assertNotIn("avg_bitrate_kbps", channel)
+
+    def test_clients_all_asks_for_an_uncapped_client_list(self):
+        path = "/proxy/relay/channels?clients=all"
+        with mock.patch.object(
+            relay_views, "build_live_channel_stats_data",
+            return_value={"channels": [], "count": 0},
+        ) as built:
+            response = self.client.get(path, **_signed("GET", path))
+        self.assertEqual(response.status_code, 200)
+        self.assertIsNone(built.call_args.kwargs["client_limit"])
+
+    def test_the_default_keeps_the_stats_cap(self):
+        with mock.patch.object(
+            relay_views, "build_live_channel_stats_data",
+            return_value={"channels": [], "count": 0},
+        ) as built:
+            self.client.get(
+                "/proxy/relay/channels", **_signed("GET", "/proxy/relay/channels")
+            )
+        self.assertEqual(built.call_args.kwargs["client_limit"], 10)
+
+
+class RelayChannelDetailTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+
+    def test_a_known_channel_returns_its_detailed_info(self):
+        path = "/proxy/relay/channels/abc"
+        with mock.patch.object(
+            relay_views.ChannelStatus, "get_detailed_channel_info",
+            return_value={
+                "channel_id": "abc",
+                "state": None,
+                "url": "",
+                "stream_profile": "",
+                "owner": "unknown",
+                "buffer_index": 0,
+                "clients": [],
+                "client_count": 0,
+                "buffer_stats": {"chunks": 0, "diagnostics": {}},
+                "ffmpeg_speed": 1.02,
+                "width": "1920",
+            },
+        ):
+            response = self.client.get(path, **_signed("GET", path))
+        body = response.json()
+        self.assertEqual(response.status_code, 200)
+        self.assertIsNone(body["state"])
+        self.assertEqual(body["ffmpeg_speed"], 1.02)
+        self.assertEqual(body["width"], "1920")
+
+    def test_an_unknown_channel_is_a_404(self):
+        path = "/proxy/relay/channels/nope"
+        with mock.patch.object(
+            relay_views.ChannelStatus, "get_detailed_channel_info", return_value=None
+        ):
+            response = self.client.get(path, **_signed("GET", path))
+        self.assertEqual(response.status_code, 404)
+
+    def test_fields_state_answers_from_two_redis_calls_and_no_detail_walk(self):
+        # Ruling 20: the tune path asks one question, so it must not pay
+        # for buffer-chunk sampling and two ORM name fallbacks. The
+        # exact-equality assertion is the point -- it is what fails if
+        # the branch ever renders through RelayChannelDetailSerializer,
+        # whose four allow_null fields would add url/stream_profile/
+        # owner as nulls this answer knows nothing about.
+        path = "/proxy/relay/channels/abc?fields=state"
+        redis = mock.Mock()
+        redis.exists.return_value = 1
+        redis.hget.return_value = "active"
+        with mock.patch.object(
+            relay_views.ProxyServer, "get_instance",
+            return_value=mock.Mock(redis_client=redis),
+        ), mock.patch.object(
+            relay_views.ChannelStatus, "get_detailed_channel_info"
+        ) as detailed:
+            response = self.client.get(path, **_signed("GET", path))
+        detailed.assert_not_called()
+        self.assertEqual(
+            response.json(), {"channel_id": "abc", "state": "active"}
+        )
+
+    def test_fields_state_404s_when_the_relay_holds_no_metadata(self):
+        path = "/proxy/relay/channels/abc?fields=state"
+        redis = mock.Mock()
+        redis.exists.return_value = 0
+        with mock.patch.object(
+            relay_views.ProxyServer, "get_instance",
+            return_value=mock.Mock(redis_client=redis),
+        ):
+            response = self.client.get(path, **_signed("GET", path))
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(
+            response.json(), {"channel_id": "abc", "state": None}
+        )
+
+    def test_delete_stops_the_channel(self):
+        path = "/proxy/relay/channels/abc"
+        with mock.patch.object(
+            relay_views.ChannelService, "stop_channel",
+            return_value={"status": "success", "previous_state": {"state": "active"}},
+        ) as stopped:
+            response = self.client.delete(path, **_signed("DELETE", path))
+        stopped.assert_called_once_with("abc")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["status"], "success")
+
+    def test_delete_reports_the_relay_s_own_not_found(self):
+        path = "/proxy/relay/channels/abc"
+        with mock.patch.object(
+            relay_views.ChannelService, "stop_channel",
+            return_value={"status": "error", "message": "Channel not found"},
+        ):
+            response = self.client.delete(path, **_signed("DELETE", path))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["status"], "error")
+        self.assertEqual(response.json()["message"], "Channel not found")
+
+
+class RelayClientAndAdvanceTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+
+    def test_deleting_a_client_calls_stop_client(self):
+        path = "/proxy/relay/channels/abc/clients/c1"
+        with mock.patch.object(
+            relay_views.ChannelService, "stop_client",
+            return_value={"status": "success", "locally_processed": True},
+        ) as stopped:
+            response = self.client.delete(path, **_signed("DELETE", path))
+        stopped.assert_called_once_with("abc", "c1")
+        self.assertEqual(response.json()["locally_processed"], True)
+
+    def test_advance_passes_a_fully_resolved_source_through(self):
+        # Ruling 11: the relay resolves nothing. new_url is always
+        # present, so change_stream_url never takes its next_source
+        # branch from here.
+        path = "/proxy/relay/channels/abc/advance"
+        payload = {
+            "stream_id": 42,
+            "url": "http://provider.example/next",
+            "user_agent": "Dispatcharr",
+            "m3u_profile_id": 3,
+            "stream_name": "Two",
+        }
+        body = json.dumps(payload).encode()
+        with mock.patch.object(
+            relay_views.ChannelService, "change_stream_url",
+            return_value={"status": "success", "success": True, "direct_update": True},
+        ) as changed:
+            response = self.client.post(
+                path, data=body, content_type="application/json",
+                **_signed("POST", path, body),
+            )
+        changed.assert_called_once_with(
+            "abc",
+            "http://provider.example/next",
+            "Dispatcharr",
+            42,
+            3,
+            stream_name="Two",
+        )
+        self.assertEqual(response.json()["success"], True)
+
+    def test_advance_requires_a_url(self):
+        path = "/proxy/relay/channels/abc/advance"
+        body = json.dumps({"stream_id": 42}).encode()
+        response = self.client.post(
+            path, data=body, content_type="application/json",
+            **_signed("POST", path, body),
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_advance_reports_an_unconfirmed_switch_without_inventing_a_status(self):
+        path = "/proxy/relay/channels/abc/advance"
+        payload = {"stream_id": 42, "url": "http://p/x", "user_agent": "d"}
+        body = json.dumps(payload).encode()
+        with mock.patch.object(
+            relay_views.ChannelService, "change_stream_url",
+            return_value={
+                "status": "success", "success": False, "confirmed": False,
+                "message": "not confirmed", "direct_update": False,
+            },
+        ):
+            response = self.client.post(
+                path, data=body, content_type="application/json",
+                **_signed("POST", path, body),
+            )
+        body_json = response.json()
+        self.assertEqual(response.status_code, 200)
+        self.assertIs(body_json["success"], False)
+        self.assertIs(body_json["confirmed"], False)
+
+
+class RelaySchemaTests(TestCase):
+    def test_the_five_routes_appear_in_the_openapi_schema(self):
+        from drf_spectacular.generators import SchemaGenerator
+
+        schema = SchemaGenerator().get_schema(request=None, public=True)
+        for path in (
+            "/proxy/relay/channels",
+            "/proxy/relay/channels/{identifier}",
+            "/proxy/relay/channels/{identifier}/clients/{client_id}",
+            "/proxy/relay/channels/{identifier}/advance",
+        ):
+            self.assertIn(path, schema["paths"])
+        detail = schema["paths"]["/proxy/relay/channels/{identifier}"]
+        self.assertIn("get", detail)
+        self.assertIn("delete", detail)
