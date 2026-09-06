@@ -257,6 +257,11 @@
  *                          multiplier — the VOD reader, since a VOD body is
  *                          an MP4 with no packet structure
  *   collectFor(ms) → Promise<Buffer>       everything arriving within ms
+ *   drain() → number                       discards whatever whole TS packets
+ *                          are currently buffered and returns how many bytes
+ *                          that was — call before a timed read that must prove
+ *                          the bytes it gets back just arrived, not that they
+ *                          were already sitting in the client's own buffer
  *   close() → Promise<void>                the fixture does this at teardown
  *
  * `upstream: UpstreamClient` — controls G2's fake upstream provider, the
