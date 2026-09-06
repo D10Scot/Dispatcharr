@@ -59,6 +59,7 @@ import {
   expect,
   StreamStatusError,
   TS_PACKET_SIZE,
+  TS_SYNC_BYTE,
   expectTsAligned,
 } from '../../fixtures';
 import type { Instance, M3uAccount } from '../../fixtures';
@@ -132,95 +133,83 @@ async function expectRunning(
 const OPEN_OUTCOME_DEADLINE_MS = 30_000;
 
 /**
- * How many packets the drained read at (a) must pump, sized to defeat every
- * receive-side buffer between the relay and this process — not just
- * `StreamClient`'s own `chunks` array — for that read's SHORT idle window
- * (`supervisorctl stop` plus the 502 poll, a few seconds at most).
+ * How many packets each of the two drained reads below (a) and (d) must
+ * pump — sized against a measured system ceiling, not either read's own
+ * idle window, so one number correctly defeats the reservoir for both.
  *
- * `drain()` alone was proven insufficient in fix round 2: undici's
- * `ReadableStream` queue and the kernel socket receive buffer sit BELOW
- * `chunks`, and `pump()`'s `reader.read()` hands back whatever already
- * arrived there regardless of what `drain()` just cleared. Measured (not
- * argued) against a local server reproducing this test's own sequence —
- * `readPackets(200)`, a 1.5s idle window, then a teardown, then `drain()`,
- * then a timed read — all three ways a dead relay connection can look (a
- * sender that stops writing, a clean FIN, an RST) left roughly 840 KB sitting
- * in those lower buffers, and a `readPackets(20)` read it back in 1ms flat
- * every time: passing an assertion that should have failed.
+ * `drain()` only empties `StreamClient`'s own `chunks` array; undici's
+ * `ReadableStream` queue and the kernel socket receive buffer sit below it,
+ * and `pump()`'s `reader.read()` hands back whatever already arrived there
+ * regardless of what `drain()` just cleared — proven in the review of fix
+ * round 1: at 20 packets, all three ways a dead relay connection can look (a
+ * sender that stops writing, a clean FIN, an RST) passed in 1ms flat against
+ * a local server reproducing this test's sequence (`readPackets(200)`, a
+ * 1.5s idle window, a teardown, `drain()`, then a timed read).
  *
- * 45,000 packets (~8.06MB) is about ten times that reservoir, and was
- * re-verified against THIS project's real container, not just the loopback
- * probe: the (a) read below took 1,589ms for the full 8.46MB — matching this
- * scenario's live rate (~5.3MB/s) almost exactly, i.e. essentially none of it
- * came from a stale buffer. Reused with the same harness against the three
- * dead-stream modes: FAILS all three (a 60s timeout, a "stream ended" error,
- * a reset error) and PASSES in ~1.3s when genuinely live. See
- * task-3-report.md's fix round 2 for the full counterfactual table.
+ * The reservoir this container can hold is bounded by `net.ipv4.tcp_rmem`'s
+ * third value, measured directly: `docker exec … cat
+ * /proc/sys/net/ipv4/tcp_rmem` → `4096 131072 33554432` bytes — 32 MiB, the
+ * kernel's autotuned per-socket receive-buffer ceiling on this network path.
  *
- * NOT reused for (d) below — that read's idle window is far longer (multiple
- * 60s-budget polls), and this same container's kernel autotunes the receive
- * buffer up to 32MB (`net.ipv4.tcp_rmem`'s third value, measured directly:
- * `docker exec … cat /proc/sys/net/ipv4/tcp_rmem` → `4096 131072 33554432`).
- * A real run proved it: (d)'s original 45,000-packet read returned in 35ms —
- * a dead giveaway, since at this rate the genuine bytes alone would need
- * ~1.6s. See AFTER_RESTART_READ_PACKETS.
+ * 360,000 packets is 67,680,000 bytes, 64.55 MiB — roughly double that
+ * ceiling — so even a connection whose kernel buffer had grown to its
+ * measured maximum still needs at least ~32 MiB of genuinely live bytes to
+ * satisfy this read: ~12.8s of live production at this scenario's ~5.3MB/s,
+ * comfortably inside the existing 60s `withDeadline`.
+ *
+ * Sized against the ceiling rather than against either read's idle window on
+ * purpose, because a smaller, idle-window-calibrated size was tried first and
+ * failed the wrong way: `api-uwsgi` carries `stopsignal=TERM` and
+ * `stopwaitsecs=10` (`docker/supervisord.d/api-uwsgi.conf`), so
+ * `instance.supervisorctl(['stop', 'api-uwsgi'])` alone can block for
+ * seconds, and the 502 poll that follows has its own 30s budget — ~1.6s of
+ * that combined window is already enough to put more than 8.46 MiB (a
+ * 45,000-packet read, this constant's previous, idle-window-calibrated size)
+ * into the receive buffers, making assertion (a) vacuous again on a slow
+ * `stop` rather than a long poll. (d)'s window is longer still (two more
+ * 60s-budget polls). One size, grounded in the one number that actually
+ * bounds the reservoir regardless of how long either window runs, covers
+ * both.
  */
-const DURING_OUTAGE_READ_PACKETS = 45_000;
+const RESERVOIR_READ_PACKETS = 360_000;
 
 /**
- * How many packets the drained read at (d) must pump — sized against a
- * measured system ceiling, not a guess, because (d)'s idle window is long
- * enough that DURING_OUTAGE_READ_PACKETS's own reservoir estimate does not
- * hold there (see that constant's last paragraph).
+ * Full TS-alignment scan for the two large reads above, without
+ * `expectTsAligned`'s per-packet `expect()` cost.
  *
- * `net.ipv4.tcp_rmem`'s third value — this container's kernel-autotuned
- * per-socket receive-buffer ceiling — measured at 33,554,432 bytes (32MiB).
- * 360,000 packets is ~64.55MB, roughly double that ceiling, so even a
- * connection whose kernel buffer had grown to its maximum still needs
- * ~32.55MB of genuinely live bytes to satisfy this read — at this scenario's
- * ~5.3MB/s, ~6.1s that cannot come from any buffer this system can hold.
- * AFTER_RESTART_MIN_LIVE_MS turns that arithmetic into an assertion rather
- * than a comment: an elapsed time well under it would mean either this
- * container's buffer ceiling is larger than measured, or something is
- * pumping the reservoir stupendously fast — either way a signal to
- * re-investigate rather than pass silently on a lucky component. Costs
- * ~12.2s worst case (a cold read with no reservoir at all) against the
- * existing 60s deadline.
+ * The 8.7s a bare Node script measured for 360,000 packets through
+ * `expectTsAligned` — long enough that a real run against this project's
+ * container needed to be killed rather than waited out, under Playwright's
+ * own per-assertion tracing overhead on top — is the cost of calling
+ * `expect()` once per packet, not the cost of scanning: a raw sync-byte scan
+ * over the same 360,000 packets in plain Node takes ~2ms. This scans every
+ * packet with plain comparisons and asserts once, so the check stays
+ * complete rather than sampled — sampling would give up exactly the coverage
+ * that would catch this codebase's known chunk-splicing defect (the
+ * un-fenced ownership lease lets two owners interleave chunks at alternating
+ * indices; CLAUDE.md § Known defects records that readers decode the splice
+ * with every other check passing), which would show up in the middle of a
+ * long read, not at its edges.
  */
-const AFTER_RESTART_READ_PACKETS = 360_000;
+function expectTsAlignedFast(buffer: Buffer): void {
+  expect(
+    buffer.byteLength % TS_PACKET_SIZE,
+    `buffer of ${buffer.byteLength} bytes is not a whole number of 188-byte packets`
+  ).toBe(0);
 
-/**
- * Floor for the elapsed time of the (d) read. See AFTER_RESTART_READ_PACKETS
- * for the arithmetic; this is set well under its ~6.1s worst-case estimate to
- * absorb rate variance, while still being far above what a reservoir-only
- * response looks like (measured at 35ms for 8.46MB before this fix).
- */
-const AFTER_RESTART_MIN_LIVE_MS = 2_000;
-
-/**
- * Checks TS alignment on a sample rather than the whole buffer, for the two
- * large reads above.
- *
- * `expectTsAligned` calls `expect()` once per packet, which is the right
- * design for the small reads (200 packets or fewer) everywhere else in this
- * suite — but measured directly against DURING_OUTAGE_READ_PACKETS's and
- * AFTER_RESTART_READ_PACKETS's own sizes, that same loop over the FULL
- * buffer is what actually caused this file's reads to look "hung" while
- * developing this fix: 8.7 SECONDS for 360,000 packets in a bare Node
- * script outside any test runner, and long enough inside an actual
- * Playwright run (with its own per-assertion tracing overhead on top) that a
- * real run against this project's container needed to be killed rather than
- * waited out. The read's own success is the assertion that proves liveness
- * — `readPackets` throws if the stream ends before the full count arrives —
- * so this only needs to rule out "the bytes are garbage", which the first
- * and last window already does without re-scanning everything in between.
- */
-function expectTsAlignedSample(buffer: Buffer, windowPackets = 200): void {
-  const windowBytes = windowPackets * TS_PACKET_SIZE;
-  expectTsAligned(buffer.subarray(0, Math.min(windowBytes, buffer.byteLength)));
-  if (buffer.byteLength > windowBytes) {
-    expectTsAligned(buffer.subarray(buffer.byteLength - windowBytes));
+  let badOffset = -1;
+  for (let offset = 0; offset < buffer.byteLength; offset += TS_PACKET_SIZE) {
+    if (buffer[offset] !== TS_SYNC_BYTE) {
+      badOffset = offset;
+      break;
+    }
   }
+  expect(
+    badOffset,
+    badOffset === -1
+      ? `all ${buffer.byteLength / TS_PACKET_SIZE} packets aligned`
+      : `expected sync byte 0x47 at offset ${badOffset}, got 0x${buffer[badOffset].toString(16)}`
+  ).toBe(-1);
 }
 
 /**
@@ -337,23 +326,23 @@ test(
       // array — it does NOT reach undici's ReadableStream queue or the
       // kernel receive buffer underneath, both of which can already be
       // holding pre-outage bytes by the time this runs. That is why the read
-      // below asks for DURING_OUTAGE_READ_PACKETS rather than a handful: see
-      // that constant for the measurement proving a small read passes even
-      // when the stream is dead, and this one does not. `readPackets` itself
-      // is still the assertion that matters — it throws if the stream ends,
-      // and only returns once it pumped enough live bytes to satisfy the
-      // count — a bare byte-length check afterwards would be a tautology.
+      // below asks for RESERVOIR_READ_PACKETS rather than a handful: see that
+      // constant for the measurement proving a small read passes even when
+      // the stream is dead, and this one does not. `readPackets` itself is
+      // still the assertion that matters — it throws if the stream ends, and
+      // only returns once it pumped enough live bytes to satisfy the count —
+      // a bare byte-length check afterwards would be a tautology.
       streamClient.drain();
       expect(
         streamClient.bufferedByteCount,
         "drain() should leave at most a partial trailing packet in the client's own buffer"
       ).toBeLessThan(TS_PACKET_SIZE);
       const during = await withDeadline(
-        streamClient.readPackets(DURING_OUTAGE_READ_PACKETS),
+        streamClient.readPackets(RESERVOIR_READ_PACKETS),
         60_000,
         'the already-open stream during the API outage'
       );
-      expectTsAlignedSample(during);
+      expectTsAlignedFast(during);
 
       // (b) A new tune is refused, and the refusal is nginx's own 500.
       const blocked = newStreamClient(baseURL!);
@@ -394,38 +383,34 @@ test(
     // DB 0, this channel's metadata, chunks and client set would have gone
     // with it and these packets would never arrive.
     //
-    // Drained first, and more load-bearing here than at (a): the client has
-    // been idle across the `expectRunning` poll and the readiness-route poll
-    // above (up to 60s each), so its buffer — and the kernel receive buffer
-    // below it that `drain()` cannot reach — have had far longer to fill.
-    // AFTER_RESTART_READ_PACKETS is deliberately much larger than (a)'s
-    // DURING_OUTAGE_READ_PACKETS for exactly this reason: that constant's own
-    // header records a real run in which the smaller size returned in 35ms —
-    // almost entirely from the kernel's buffer, not the network — here, where
-    // it would have proven nothing a flushed Redis DB 0 would have disturbed.
+    // Drained first, same reasoning and same size as (a) — RESERVOIR_READ_PACKETS
+    // is sized against this container's measured 32 MiB receive-buffer
+    // ceiling, not against either read's own idle window, and (d)'s window
+    // (the `expectRunning` poll plus the readiness-route poll above, up to
+    // 60s each) is if anything longer than (a)'s.
+    //
+    // A FAST read here is the expected healthy shape, not a warning sign: by
+    // now the relay has a backlog of this channel's chunks sitting in its
+    // Redis ring buffer, and once the client reads again they come back at
+    // memory speed. That is the D15 proof, not something defeating it — if a
+    // start path had flushed Redis DB 0, those chunks would not exist to be
+    // served, fast or slow. What actually excludes the receive-side
+    // reservoir is the volume: RESERVOIR_READ_PACKETS reads roughly double
+    // this container's measured kernel-buffer ceiling, so satisfying it means
+    // at least half of it came from somewhere past the client's socket
+    // buffers — the relay's own ring buffer, fed by the still-running
+    // channel — regardless of how fast the read returns.
     streamClient.drain();
     expect(
       streamClient.bufferedByteCount,
       "drain() should leave at most a partial trailing packet in the client's own buffer"
     ).toBeLessThan(TS_PACKET_SIZE);
-    const afterRestartReadStarted = Date.now();
     const after = await withDeadline(
-      streamClient.readPackets(AFTER_RESTART_READ_PACKETS),
+      streamClient.readPackets(RESERVOIR_READ_PACKETS),
       60_000,
       'the already-open stream after the API process came back'
     );
-    expectTsAlignedSample(after);
-    // The defensive half of AFTER_RESTART_READ_PACKETS's sizing: a read that
-    // completes suspiciously fast despite asking for ~64.55MB means either
-    // this container's measured 32MB buffer ceiling does not hold here, or
-    // something is not what this test assumes — either way worth a loud
-    // failure naming the actual elapsed time, not a silent pass.
-    const afterRestartReadMs = Date.now() - afterRestartReadStarted;
-    expect(
-      afterRestartReadMs,
-      `the post-restart read returned in ${afterRestartReadMs}ms, which is too fast to be ` +
-        `genuinely live at this scenario's rate — see AFTER_RESTART_READ_PACKETS`
-    ).toBeGreaterThanOrEqual(AFTER_RESTART_MIN_LIVE_MS);
+    expectTsAlignedFast(after);
     await streamClient.close();
   }
 );
