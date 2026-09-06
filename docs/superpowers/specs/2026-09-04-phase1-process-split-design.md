@@ -1841,7 +1841,7 @@ Filled in as PRs merge. Empty at spec-writing time.
 | Process split | — | — |
 | Authorize hop | #176 | — |
 | Next-source + events | #188 | — |
-| Control API | pending | — |
+| Control API | #194 | — |
 | Django-down + docs | — | — |
 
 ## Risks
