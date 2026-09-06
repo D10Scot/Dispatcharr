@@ -2509,7 +2509,7 @@ def _session_has_active_timeshift_stream(user, session_id):
     if user is None or not session_id:
         return False
     try:
-        for conn in get_user_active_connections(user.id):
+        for conn in get_user_active_connections(user.id, include_live=False):
             if conn.get("type") != "timeshift":
                 continue
             if conn.get("client_id") == session_id:
@@ -2524,7 +2524,7 @@ def _preempt_playback_streams(redis_client, session_id, user):
     if redis_client is None or not session_id or user is None:
         return
     try:
-        for conn in get_user_active_connections(user.id):
+        for conn in get_user_active_connections(user.id, include_live=False):
             if conn.get("type") != "timeshift":
                 continue
             if conn.get("client_id") != session_id:
@@ -2555,7 +2555,7 @@ def _terminate_previous_timeshift_sessions(
     channel_prefix = f"{channel_id}_"
     displaced = False
     try:
-        for conn in get_user_active_connections(user.id):
+        for conn in get_user_active_connections(user.id, include_live=False):
             if conn.get("type") != "timeshift":
                 continue
             conn_media_id = str(conn.get("media_id") or "")

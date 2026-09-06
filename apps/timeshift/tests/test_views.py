@@ -1646,7 +1646,7 @@ class TimeshiftTakeoverTests(TestCase):
             views._terminate_previous_timeshift_sessions(
                 self.redis, self.user, 8, "8_2026-06-09-20-00", "current",
             )
-        conns_mock.assert_called_once_with(5)
+        conns_mock.assert_called_once_with(5, include_live=False)
         # Takeover defers slot release to the displaced generator's stop path;
         # it only drops stats and signals the stop key.
         release_mock.assert_not_called()
@@ -5572,3 +5572,75 @@ class RollupSelfHealDbTests(TestCase):
         channel.refresh_from_db()
         self.assertTrue(channel.is_catchup)
         self.assertEqual(channel.catchup_days, 7)
+
+
+class _EmptyScanRedis:
+    """Just enough of the redis-py surface for get_user_active_connections'
+    timeshift/VOD scans to find nothing, so a real (non-mocked) call to it
+    exercises the live branch honestly instead of masking it."""
+
+    def scan_iter(self, match=None, count=None):
+        return iter(())
+
+
+class TimeshiftHelpersDoNotAskTheRelayTests(TestCase):
+    """Whole-branch fix round: _session_has_active_timeshift_stream,
+    _preempt_playback_streams and _terminate_previous_timeshift_sessions
+    only ever look at type == 'timeshift' entries, so turning a catch-up
+    tune -- a relay-served path -- into a synchronous relay self-call for a
+    live client list they discard is pure waste. They must call
+    get_user_active_connections(user_id, include_live=False) and never
+    reach relay_client.list_channels at all."""
+
+    def setUp(self):
+        self.user = MagicMock(id=5)
+        self.redis = _EmptyScanRedis()
+
+    def test_session_has_active_stream_does_not_ask_the_relay(self):
+        from apps.proxy import relay_client
+
+        with patch("apps.proxy.utils.RedisClient.get_client",
+                   return_value=self.redis), \
+             patch.object(relay_client, "list_channels") as listed:
+            result = views._session_has_active_timeshift_stream(self.user, "sess")
+
+        listed.assert_not_called()
+        self.assertFalse(result)
+
+    def test_preempt_playback_streams_does_not_ask_the_relay(self):
+        from apps.proxy import relay_client
+
+        with patch("apps.proxy.utils.RedisClient.get_client",
+                   return_value=self.redis), \
+             patch.object(relay_client, "list_channels") as listed:
+            views._preempt_playback_streams(self.redis, "sess", self.user)
+
+        listed.assert_not_called()
+
+    def test_terminate_previous_sessions_does_not_ask_the_relay(self):
+        from apps.proxy import relay_client
+
+        with patch("apps.proxy.utils.RedisClient.get_client",
+                   return_value=self.redis), \
+             patch.object(relay_client, "list_channels") as listed:
+            views._terminate_previous_timeshift_sessions(
+                self.redis, self.user, 8, "8_2026-06-08-17-30", "sess",
+            )
+
+        listed.assert_not_called()
+
+    def test_the_default_still_asks_the_relay_for_live_clients(self):
+        # Sanity check the other side of the flag: check_user_stream_limits
+        # (apps/proxy/utils.py) calls get_user_active_connections with no
+        # include_live argument, and that call must still reach the relay --
+        # a live-only viewer must still count against their stream limit.
+        from apps.proxy import relay_client
+        from apps.proxy.utils import get_user_active_connections
+
+        with patch("apps.proxy.utils.RedisClient.get_client",
+                   return_value=self.redis), \
+             patch.object(relay_client, "list_channels",
+                          return_value={"channels": [], "count": 0}) as listed:
+            get_user_active_connections(5)
+
+        listed.assert_called_once()

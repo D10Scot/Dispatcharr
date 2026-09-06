@@ -295,7 +295,7 @@ def _live_connections(user_id):
     return connections
 
 
-def get_user_active_connections(user_id):
+def get_user_active_connections(user_id, include_live=True):
     """Return active stream connections for a single user.
 
     Pass `user_id=None` to return all active connections across the system.
@@ -304,9 +304,19 @@ def get_user_active_connections(user_id):
     relay over GET /proxy/relay/channels?clients=all; the timeshift and
     VOD key families are written by Django-side handlers, are not relay
     state, and keep being read here.
+
+    Pass `include_live=False` when the caller only wants the timeshift/VOD
+    half -- three timeshift call sites iterate this looking only for
+    `type == 'timeshift'` entries, and asking the relay for a live client
+    list they then discard turns every catch-up tune (a relay-served path)
+    into a synchronous relay-to-relay HTTP round trip for a value nobody
+    uses. `check_user_stream_limits` and `xc_get_info`'s `active_cons` both
+    genuinely need the live count -- a live-only viewer must still count
+    against their stream limit and show up in the XC handshake -- so they
+    keep the default.
     """
     redis_client = RedisClient.get_client()
-    connections = _live_connections(user_id)
+    connections = _live_connections(user_id) if include_live else []
 
     try:
         # Timeshift only: same key layout as the live family, different
