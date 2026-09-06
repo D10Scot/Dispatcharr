@@ -121,10 +121,20 @@ const RELAY_RESTART_CEILING_MS = 30_000;
  * instant as the tracked account, force it to wait through several
  * worker-queue waves.
  * Measured empirically (see the whole-branch fix round in
- * task-4-report.md): 30 decoys pushed the tracked account's completion to
- * ~20s, roughly 2-3x the restart's own duration — margin against reasonable
- * host-to-host variance in worker throughput, not a number tuned to just
- * clear it.
+ * task-4-report.md): 30 decoys, refreshed in the same instant as the
+ * tracked account, pushed its completion to ~20s, roughly 2-3x the
+ * restart's own duration — margin against reasonable host-to-host variance
+ * in worker throughput, not a number tuned to just clear it.
+ *
+ * The decoys are created inactive and activated only at the moment they are
+ * triggered (see the CI fix round below, same report), so this contention
+ * lands entirely inside the TIMED phase. **Raising `SLOW_REFRESH_DECOY_COUNT`
+ * alone is still not free**: activation is one PATCH per decoy (cheap,
+ * unqueued), but the `Promise.all` that fires it and the trigger batch are
+ * both still one HTTP round trip per decoy from the test process, and a much
+ * larger count would need that batching reconsidered — this number was
+ * chosen for margin over the restart, not stress-tested for how high it can
+ * go before request fan-out itself becomes the bottleneck.
  */
 const SLOW_REFRESH_CHANNEL_COUNT = 8_000;
 const SLOW_REFRESH_DECOY_COUNT = 30;
@@ -487,18 +497,26 @@ test(
         logo: null,
       })),
     });
-    // Settled — not just created — before the tracked account exists: an
-    // unsettled decoy's own create-time refresh would already be consuming
-    // worker slots that the tracked account's create-time settle
-    // (`waitForCreateTimeGroupRefreshToSettle`, capped at 20s) also needs,
-    // risking a false failure in setup rather than in the assertion this
-    // test is actually about. `Promise.all`, not a loop: each call already
-    // waits out its own settle, so awaiting them one at a time would
-    // multiply that wait by `SLOW_REFRESH_DECOY_COUNT` instead of letting
-    // Celery's workers absorb them together.
+    // Created inactive, via the bare `seed.m3uAccount()` — NOT
+    // `seed.upstreamM3UAccount()`, and NOT settled here. `M3UAccount`'s
+    // `post_save` handler fires `refresh_m3u_groups.delay()` on every
+    // create regardless of `is_active` (`apps/m3u/signals.py`), but that
+    // task's own first line is `M3UAccount.objects.get(id=…, is_active=True)`
+    // (`apps/m3u/tasks.py:1561`) — inactive, it raises `DoesNotExist` and
+    // returns immediately, so 30 concurrent creates cost 30 near-instant
+    // failed lookups, not 30 real catalogue parses. This is the fix CI's
+    // slow-host failure asked for: the first version of this test settled
+    // each decoy through its own create-time refresh before proceeding
+    // (`seed.upstreamM3UAccount`), which put SLOW_REFRESH_DECOY_COUNT
+    // catalogue parses on the SAME worker pool DURING setup — exactly the
+    // contention this test means to create, just at the wrong time, against
+    // fixed 30s/20s "did the refresh start / settle" budgets in
+    // `fixtures/wait.ts` that assume ordinary, uncontended setup. Decoys
+    // stay inactive, and therefore inert, all the way through channel
+    // seeding, tuning and the first packet read below.
     const decoys = await Promise.all(
       Array.from({ length: SLOW_REFRESH_DECOY_COUNT }, () =>
-        seed.upstreamM3UAccount(slowScenario)
+        seed.m3uAccount({ server_url: upstream.playlistUrl(slowScenario) })
       )
     );
     // An M3U account is the Celery half: refreshing one is a real queued task
@@ -543,6 +561,17 @@ test(
       );
       return `${body.status}:${body.updated_at === before.updated_at ? 'unchanged' : 'bumped'}`;
     }
+
+    // Activated the instant before triggering, not at creation: `is_active`
+    // going true on an UPDATE does not re-run the create-only `post_save`
+    // handler that dispatches `refresh_m3u_groups` (`if created and …` in
+    // `apps/m3u/signals.py`), so this PATCH queues nothing — it only makes
+    // `refresh_single_m3u_account`'s own `is_active=True` lookup succeed once
+    // triggered below, turning each decoy from an inert row into real
+    // catalogue work at exactly the moment this test wants contention.
+    await Promise.all(
+      decoys.map((d) => api.patch(`/api/m3u/accounts/${d.id}/`, { is_active: true }))
+    );
 
     // Every decoy and the tracked account fire in the SAME `Promise.all`,
     // tracked account last: submitted together, Celery's workers pull
