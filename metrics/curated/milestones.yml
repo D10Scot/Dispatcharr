@@ -52,3 +52,4 @@ milestones:
   - {sha: 0f41319ad6b0fd2cd943340f5cf2f3830b140dae, label: Phase 0 spec, kind: phase-start, phase: phase0, pr: 148, summary: "Six items and ADR 0004."}
   - {sha: 58bfba1e856e7db973b62a7e3c32b7e7bb40a97f, label: Credentials redacted, kind: incident, phase: phase0, pr: 154, summary: "Provider credentials no longer logged at INFO; regression guard in hook and CI."}
   - {sha: 75a68555b931e7d088bfbbd859b35e6e27064312, label: Phase 0 done, kind: phase-done, phase: phase0, pr: 155, summary: "All six items merged; the ruleset requires four result aggregates."}
+  - {sha: 37dbf734c2f440b67613c90311ae283f07810a6f, label: Phase 1 spec, kind: phase-start, phase: phase1, pr: 164, summary: "Process split and the relay contract: sixteen decisions, eight PRs, ADR 0005."}

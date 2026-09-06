@@ -853,7 +853,8 @@ runs in the API process (PR 5).
 | **Django down, existing viewer** | Unaffected. Nothing on the byte path calls Django once a stream runs; next-source fires only at failover. |
 | **Django down, new tune** | **Amendment S7:** the `auth_request` subrequest to an unreachable upstream is not a 2xx and not 401/403 either — `ngx_http_auth_request_module` treats it as "any other response code" and reports its own error, which is **500**, not `{502, 503, 504}` as this row previously stated (that range describes `uwsgi_pass` failing directly on a relay hop, not an `auth_request` subrequest failing). PR 8 decides whether to narrow the 500; this PR states it as measured. |
 | **Django down, failover on an existing stream** | Degraded fallback above — stale candidate list, unenforced, logged, `channel_error` posted on recovery. |
-| **Relay down, existing viewer** | Connection drops; retries get `502`/`504` until supervisord restarts `relay-uwsgi`, then a normal reconnect. Bounded, not invisible (route page, "Honest limits"). |
+| **Django down, everything else the relay needs** | Events are lost, not delayed: `emit_event` is fire-and-forget on a greenlet (`apps/proxy/control_plane.py`), so a transition during the outage never reaches `SystemEvent`; the transport logs once at the start of an outage and once on recovery ("Relay events reachable again after an outage"). The two synchronous calls, `next_source()` and `release_source()`, can each hold one greenlet for ~14 s — 2 × (2 s connect + 5 s read) + a 0.1 s retry delay (Amendment S10, point 8). `relay_client`'s budgets run the other way and do not apply here: (1, 2) on the tune path, (2, 5) for admin reads and stops, (2, 20) for `advance`, no retries anywhere. |
+| **Relay down, existing viewer** | Connection drops; retries get `502`/`504` until supervisord restarts `relay-uwsgi`. Bounded for the *process* — PR 8 measured a fresh tune served 7,559 ms after `supervisorctl restart relay-uwsgi` was issued, inside the 30 s the `stopwaitsecs=20` + `startsecs=5` budget has to fit within. **Open question, not asserted as a defect, for a viewer reconnecting to the same channel**: the code reads as if `_channel_setup_needed` (`apps/proxy/live_proxy/views.py`) returns "no setup needed" for a channel whose metadata still reads `active` without consulting the dead owner's heartbeat, so the reconnecting client would attach as a follower to a channel nobody owns; `ProxyServer.check_if_channel_exists`'s zombie check sits behind that early return, and `_check_orphaned_metadata`'s 30 s sweep declines to clean a channel that still has a live client — which a retrying reconnect keeps supplying, if the mechanism bites as read. A single hand measurement came in at ≤17s to 1880 delivered bytes, requiring delivered bytes rather than a 200; its clock starts before the same restart call as the fresh-tune figure above, and up to 10 s of the measuring probe's own timeout can only make the number look slower than the true first byte, never faster. So either the mechanism does not bite the way the code reads, or the 30 s sweep ran early on this run. Found by PR 8's own scenario and filed as an open question, issue #195, and left as a Phase 2 item: the fix is inside the relay, which this phase does not rewrite. |
 | **Relay down, new tune** | Authorize succeeds (Django is up), `uwsgi_pass` to `$relay_upstream` fails, nginx returns `502`/`504`; every player in the supported set retries a failed connect. |
 | **Relay up but overloaded** | Past `gevent` concurrency the worker stops accepting; `listen = 1024` absorbs a reconnect storm, beyond which nginx returns `502`. |
 | **nginx absent (dev `runserver`)** | The inline `authorize_stream` fallback (D8) runs in the stream view; `get_relay_control_base_url()`/`get_control_plane_base_url()` both resolve to the single dev process's own port. None of the split machinery activates. |
@@ -1786,6 +1787,43 @@ make, recorded here rather than re-derived by PR 8 or Phase 2:
     over-broad fix); stopping after the first `ImproperlyConfigured`; and the return value on a
     mix including a skipped falsy identifier.
 
+**Amendment S12 (PR 8 Django-down and docs).** Six decisions this section did not make:
+
+1. **A new project, `streaming-split`, not a spec under `streaming-greybox`.** This section offers
+   both. Only the project confines the hazard: in CI every matrix project gets its own container,
+   so a project is the unit that contains an `api-uwsgi` outage, and `streaming-greybox`'s single
+   worker protects against overlap *within* that project only. Unlike the four lifecycle projects
+   it keeps its container, so it depends on `bootstrap` and uses the ordinary fixtures; it never
+   calls `up`/`restart`/`recreate`/`down`, only `supervisorctl()`.
+2. **The 500 is not narrowed, and the reason is that nginx cannot narrow it.** A genuine 500 from
+   `/_dispatcharr/authorize` and an unreachable `api-uwsgi` arrive at the same `error_page` with
+   the same status, so any narrowing would relabel an authorize-view bug as "retry, this is
+   temporary" — which every player in the supported set would do, forever. The distinction is
+   available where it is useful, in the access log's `$upstream_status`. The cost of leaving it is
+   that a client sees 500 where 503 would read better; the mitigation is that the 500 is now
+   documented in `CLAUDE.md` and in § Error handling per hop rather than mysterious.
+3. **The ≤ 30 s ceiling is asserted against a fresh tune, not a same-channel reconnect**, because
+   the ceiling's own justification in this section is about the process. The same-channel
+   reconnect is worse than this section assumed and is recorded in § Error handling per hop, in
+   `e2e/COVERAGE.md` and as an issue: the tune path's active-state early return never consults the
+   dead owner's heartbeat, and the sweep that would clear the zombie declines to run while a
+   client is attached.
+4. **The Celery half of D15 is an M3U refresh discriminated by `updated_at`**, which is bumped only
+   by a successful refresh. The test does not pin the instant a message sat in the broker; it pins
+   that a task dispatched immediately before the restart still ran to completion across it, which
+   is what a blind `flushdb` on a start path would break.
+5. **The `phase-done` milestone cannot be added by the PR that earns it.**
+   `metrics/build/curated.py` requires every milestone `sha` to be a full first-parent commit on
+   `main`, and a merge commit cannot name itself, so the row goes into the PR body for whoever
+   merges — the same shape `docs/agents/metrics.md` prescribes for a `fixed_in` with no number
+   yet. The missing `phase-start` row for `phase1` (`37dbf734`, #164) is added by PR 8, since its
+   commit has existed since the spec landed.
+6. **§ Requirements gains a second named exception, `apps/proxy/tasks.py`'s
+   `fetch_channel_stats` (#193).** PR 7's Done grep names four control-plane directories and this
+   one lives inside `apps/proxy/`, so the grep was structurally unable to see it. It is the
+   disabled half of a duplicated beat entry; deleting it would touch `dispatcharr/settings.py` and
+   force all sixteen backend labels for a dead-code removal PR 8's section does not ask for.
+
 ### PR 7 — `migration/phase1-control-api`
 
 - `apps/proxy/relay_urls.py` / `relay_views.py` (D12): the five routes in § Architecture,
@@ -1878,20 +1916,23 @@ make, recorded here rather than re-derived by PR 8 or Phase 2:
 ## Requirements the relay meets or carries
 
 Phase 0's § Carried, not fixed table, with a status column now that Phase 1 exists to answer it.
+Every `Where` cell names the pull request and the commit it merged as, so a reader can go from a
+requirement to the diff that met it in one step; `—` means no PR touched the row and the
+requirement is carried forward unchanged.
 
 | Requirement | Status after Phase 1 | Where |
 |---|---|---|
 | The relay's own stores bind to loopback or an internal network by default, never `0.0.0.0`, with no default credential. | **Still carried.** `docker/docker-compose.yml:295`'s `5436:5432` publish as `dispatch`/`secret` is deliberately untouched by PR 4. | — |
 | `Host`/origin validated, deny-by-default, not conditioned on a debug flag. | **Still carried.** `ALLOWED_HOSTS=["*"]`, `CORS_ALLOW_ALL_ORIGINS=True`, `CSRF_TRUSTED_ORIGINS=["http://*","https://*"]` untouched. | — |
-| Any credential the relay stores or compares is hashed or constant-time compared, never plaintext-equality. | **Partially met.** The XC password compare becomes `hmac.compare_digest` (PR 5) and the internal token is `hmac.compare_digest`-checked from day one (PR 5/6). XC passwords remain **plaintext at rest** in `custom_properties["xc_password"]` — out of scope (ADR 0005). | PR 5, PR 6 |
-| A request timeout and a drain-on-shutdown from day one. | **Met as a timeout, bounded rather than graceful as a shutdown.** `harakiri = 120` on the API (PR 4) is the first request timeout this codebase has run in production. The relay gets a bounded restart via supervisord `stopwaitsecs=20` inside a 160s `stop_grace_period` (PR 3/4) — sized to the sum of every program's `stopwaitsecs`, since supervisord's shutdown walk is sequential per priority group, not concurrent — not a drain: in-flight streams still drop and players reconnect, exactly as the route page's "Honest limits" states. | PR 3, PR 4 |
-| The relay's stream endpoint is authorized by a Django-minted, short-lived, signed URL; the UUID alone is not a capability. | **Reworded per ADR 0005, and met in the reworded form.** No signed URL exists or is planned for Phase 1; the UUID stays the public, cacheable identifier. Authorization is Django's decision, made once per tune (PR 5), never per byte. | PR 5 |
-| The relay's logging never emits a provider URL or header set except through the redaction helpers. | **Met, and extended.** No new logging site bypasses `redact_url`/`redact_headers`, and PR 5 additionally redacts the DVR ffmpeg argv, which would otherwise print the internal token past a guard that does not match it. | PR 5 |
-| *(new)* Every long-lived stream surface authorizes through one function; a channel with `hidden_from_output` or `is_adult` is not streamable by UUID alone. | **Met.** `authorize_stream`, both callers (PR 5). Closes #87 and #95. | PR 5 |
-| *(new)* The relay performs zero ORM writes. | **Met.** The `stream.save(...)` and all 13 `log_system_event` calls move to Django via the events batch. | PR 6 |
-| *(new)* The relay's Redis keys have exactly one writer, and no control-plane code reads them. | **Met, with one named exception.** `channel_stream:*`/`stream_profile:*` get a single writer in PR 6; every other relay key was already single-writer. PR 7 removes the control plane's *reads* too, including the live branch of `get_user_active_connections`, which moves to `GET /proxy/relay/channels`. The timeshift and VOD branches of that same scan keep reading Redis — those key families are written by Django-side handlers, so they are not relay state and are not in scope for this row. Amendment S11 ruling 10 (corrected by the whole-branch review): `Channel.release_stream()` writes to the relay's metadata hash on every successful release — an unconditional `hdel`, not a fallback — plus two fallback-path reads (`release_stream()`'s own recovery branch and the separate `_release_stale_stream_assignment()`, called from `get_stream()`), so "every other relay key was already single-writer" is not quite true of the metadata hash. The reads need no contract change (PR 6's release body already carries `stream_id` and `m3u_profile_id`); the `hdel`s belong on the relay's own release call sites, which D10 keeps out of this phase. Named and tracked as issue #190 rather than fixed here, since PR 7's section names three sites and not these. | PR 6, PR 7 |
-| *(new)* A restart of the control plane does not disturb a running stream. | **Met.** Nothing flushes Redis in any role (D15): `scripts/wait_for_redis.py` becomes wait-only, and AIO's Redis starts empty because it is non-persistent, not because anything wipes it. A modular `web` or `worker` restart therefore leaves a running relay's keys untouched, and PR 8's bounded-restart scenario asserts it. | PR 3, PR 8 |
-| *(new)* Django and the relay authenticate each other on every internal call, and the relay never trusts an unauthenticated header. | **Met.** Two context-separated HMACs of `SECRET_KEY`, `hmac.compare_digest` on both, covering relay→Django, Django→relay, the DVR and the nginx trust marker (D11). | PR 5, PR 6, PR 7 |
+| Any credential the relay stores or compares is hashed or constant-time compared, never plaintext-equality. | **Partially met.** The XC password compare becomes `hmac.compare_digest` (PR 5) and the internal token is `hmac.compare_digest`-checked from day one (PR 5/6). XC passwords remain **plaintext at rest** in `custom_properties["xc_password"]` — out of scope (ADR 0005). | PR 5 (#176, ce25bd7e), PR 6 (#188, ce5c1d44) |
+| A request timeout and a drain-on-shutdown from day one. | **Met as a timeout, bounded rather than graceful as a shutdown.** `harakiri = 120` on the API (PR 4) is the first request timeout this codebase has run in production. The relay gets a bounded restart via supervisord `stopwaitsecs=20` inside a 160s `stop_grace_period` (PR 3/4) — sized to the sum of every program's `stopwaitsecs`, since supervisord's shutdown walk is sequential per priority group, not concurrent — not a drain: in-flight streams still drop and players reconnect, exactly as the route page's "Honest limits" states. | PR 3 (#173, 9c9100f0), PR 4 (#175, c9cf78a6) |
+| The relay's stream endpoint is authorized by a Django-minted, short-lived, signed URL; the UUID alone is not a capability. | **Reworded per ADR 0005, and met in the reworded form.** No signed URL exists or is planned for Phase 1; the UUID stays the public, cacheable identifier. Authorization is Django's decision, made once per tune (PR 5), never per byte. | PR 5 (#176, ce25bd7e) |
+| The relay's logging never emits a provider URL or header set except through the redaction helpers. | **Met, and extended.** No new logging site bypasses `redact_url`/`redact_headers`, and PR 5 additionally redacts the DVR ffmpeg argv, which would otherwise print the internal token past a guard that does not match it. | PR 5 (#176, ce25bd7e) |
+| *(new)* Every long-lived stream surface authorizes through one function; a channel with `hidden_from_output` or `is_adult` is not streamable by UUID alone. | **Met.** `authorize_stream`, both callers (PR 5). Closes #87 and #95. | PR 5 (#176, ce25bd7e) |
+| *(new)* The relay performs zero ORM writes. | **Met.** The `stream.save(...)` and all 13 `log_system_event` calls move to Django via the events batch. | PR 6 (#188, ce5c1d44) |
+| *(new)* The relay's Redis keys have exactly one writer, and no control-plane code reads them. | **Met, with two named exceptions.** `channel_stream:*`/`stream_profile:*` get a single writer in PR 6; every other relay key was already single-writer. PR 7 removes the control plane's *reads* too, including the live branch of `get_user_active_connections`, which moves to `GET /proxy/relay/channels`. The timeshift and VOD branches of that same scan keep reading Redis — those key families are written by Django-side handlers, so they are not relay state and are not in scope for this row. Amendment S11 ruling 10 (corrected by the whole-branch review): `Channel.release_stream()` writes to the relay's metadata hash on every successful release — an unconditional `hdel`, not a fallback — plus two fallback-path reads (`release_stream()`'s own recovery branch and the separate `_release_stale_stream_assignment()`, called from `get_stream()`), so "every other relay key was already single-writer" is not quite true of the metadata hash. The reads need no contract change (PR 6's release body already carries `stream_id` and `m3u_profile_id`); the `hdel`s belong on the relay's own release call sites, which D10 keeps out of this phase. Named and tracked as issue #190 rather than fixed here, since PR 7's section names three sites and not these. A second exception PR 7's Done grep could not see, because its directory list is `apps/channels/ apps/m3u/ core/ dispatcharr/`: `apps/proxy/tasks.py`'s `fetch_channel_stats` builds the live stats payload straight off Redis and runs in the `worker` role — control-plane code that happens to live inside `apps/proxy/`. It is the disabled half of a duplicated beat entry (`dispatcharr/settings.py`'s `CELERY_BEAT_SCHEDULE["fetch-channel-statuses"]` ships `"enabled": False`, and `core/tasks.py` carries the live one), so nothing runs it on a stock instance. Tracked as issue #193 and deliberately not deleted here: the removal would touch `dispatcharr/settings.py`, whose `_SHARED_PATH_PREFIXES` entry forces all sixteen backend labels for a dead-code change PR 8's section does not ask for. Phase 1 closes with both exceptions open, deliberately. Neither is a correctness defect — #190's `hdel` prevents a double `DECR` and #193's task is unscheduled — and both are relay-internal edits D10 keeps out of this phase. Phase 1's goal was the extraction, and the route page and `CLAUDE.md` both say stopping cleanly is a legitimate outcome; stopping with two named, tracked exceptions is what that looks like in a table, as against a "Met" that would have to be read as unqualified. | PR 6 (#188, ce5c1d44), PR 7 (#194, 63454ec4) |
+| *(new)* A restart of the control plane does not disturb a running stream. | **Met.** Nothing flushes Redis in any role (D15): `scripts/wait_for_redis.py` becomes wait-only, and AIO's Redis starts empty because it is non-persistent, not because anything wipes it. A modular `web` or `worker` restart therefore leaves a running relay's keys untouched, and PR 8's bounded-restart scenario asserts it. | PR 3 (#173, 9c9100f0), PR 8 (#<this PR>, <filled by Task 12>) |
+| *(new)* Django and the relay authenticate each other on every internal call, and the relay never trusts an unauthenticated header. | **Met.** Two context-separated HMACs of `SECRET_KEY`, `hmac.compare_digest` on both, covering relay→Django, Django→relay, the DVR and the nginx trust marker (D11). | PR 5 (#176, ce25bd7e), PR 6 (#188, ce5c1d44), PR 7 (#194, 63454ec4) |
 
 ## Testing
 
@@ -1938,18 +1979,20 @@ Per-PR `CLAUDE.md` corrections are listed under each PR. Additionally:
 
 ## Done log
 
-Filled in as PRs merge. Empty at spec-writing time.
+Filled in as PRs merge; the spec itself landed as #164 (`37dbf734`). PR 8's own row names the pull
+request and leaves the commit as "this PR" — a merge commit cannot name itself, so that cell is
+completed after the merge.
 
 | Item | PR | Merged |
 |---|---|---|
-| Supervisor dependency | — | — |
-| TTFB + SPA-three-segment tests | — | — |
-| Supervisord | — | — |
-| Process split | — | — |
-| Authorize hop | #176 | — |
-| Next-source + events | #188 | — |
-| Control API | #194 | — |
-| Django-down + docs | — | — |
+| Supervisor dependency | #167 | `936c742e` |
+| TTFB + SPA-three-segment tests | #169 | `fbc40265` |
+| Supervisord | #173 | `9c9100f0` |
+| Process split | #175 | `c9cf78a6` |
+| Authorize hop | #176 | `ce25bd7e` |
+| Next-source + events | #188 | `ce5c1d44` |
+| Control API | #194 | `63454ec4` |
+| Django-down + docs | #<this PR> | this PR |
 
 ## Risks
 

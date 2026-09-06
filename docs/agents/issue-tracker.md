@@ -39,7 +39,47 @@ When set to `yes`, PRs run through the same labels and states as issues, using t
 - **Read a PR**: `gh pr view <number> --repo D10Scot/Dispatcharr --comments`, and `gh pr diff <number> --repo D10Scot/Dispatcharr` for the diff.
 - **List external PRs for triage**: `gh pr list --repo D10Scot/Dispatcharr --state open --json number,title,body,labels,author,authorAssociation,comments` then keep only `authorAssociation` of `CONTRIBUTOR`, `FIRST_TIME_CONTRIBUTOR`, or `NONE` (drop `OWNER`/`MEMBER`/`COLLABORATOR`).
 - **Comment / label / close**: `gh pr comment <number> --repo D10Scot/Dispatcharr`, `gh pr edit <number> --repo D10Scot/Dispatcharr --add-label`/`--remove-label`, `gh pr close <number> --repo D10Scot/Dispatcharr`.
-- **Review threads** (not exposed by `gh pr view`): read with `gh api graphql` against `repository(owner: "D10Scot", name: "Dispatcharr")`, and resolve one with the `resolveReviewThread` mutation on its thread id.
+- **Review threads** (not exposed by `gh pr view`): read them with `gh api graphql`, and resolve one with the `resolveReviewThread` mutation on its thread id. This matters on every PR here, not only on triage: the Main ruleset turns on `required_review_thread_resolution`, so a PR merges only once every thread the review bot opened is resolved, and no `gh pr` subcommand lists them.
+
+  List the unresolved threads on a PR, newest comment first:
+
+  ```bash
+  gh api graphql -f query='
+    query($owner: String!, $name: String!, $number: Int!) {
+      repository(owner: $owner, name: $name) {
+        pullRequest(number: $number) {
+          reviewThreads(first: 100) {
+            nodes {
+              id
+              isResolved
+              path
+              line
+              comments(first: 1) { nodes { author { login } body } }
+            }
+          }
+        }
+      }
+    }' -f owner=D10Scot -f name=Dispatcharr -F number=<pr> \
+    --jq '.data.repository.pullRequest.reviewThreads.nodes[]
+          | select(.isResolved | not)
+          | {id, path, line, first: .comments.nodes[0].body}'
+  ```
+
+  `-f` sends a string and `-F` infers a type, so `number` must use `-F` or the API rejects it as a
+  `String!` where an `Int!` was declared. Then resolve one by its `id` (a `PRRT_`-prefixed node
+  id, not a number):
+
+  ```bash
+  gh api graphql -f query='
+    mutation($threadId: ID!) {
+      resolveReviewThread(input: {threadId: $threadId}) {
+        thread { id isResolved }
+      }
+    }' -f threadId=<PRRT_…>
+  ```
+
+  Resolve a thread only after acting on it. `unresolveReviewThread` takes the same input and
+  reopens one.
 
 GitHub shares one number space across issues and PRs, so a bare `#42` may be either: resolve with `gh pr view 42 --repo D10Scot/Dispatcharr` and fall back to `gh issue view 42 --repo D10Scot/Dispatcharr`.
 
