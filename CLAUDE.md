@@ -52,7 +52,7 @@ npm run lint   # ~112 pre-existing errors, disabled in CI. No format script: npx
 - Deliberate, matching CI: **Redis is flushed before every backend run** and **the whole package runs, not just the edited module**.
 - If Docker/the container is down the hook says so loudly and exits 0. **Then say the tests did not run — do not describe the work as verified.**
 
-`PreToolUse` on `Bash(git commit*)` gates commits on the tests covering whatever is **staged**, deriving labels from `scripts/ci_backend_test_labels.py`; anything under `frontend/` runs the whole frontend suite; `git commit -a` is handled. Infrastructure failures warn rather than block. Baseline **16/16** backend packages pass (~1,787 tests, ~34s). The gate derives its labels exactly as CI does, from the same function, so the two can never disagree. **Stage and commit in separate Bash calls** — the hook runs before the command, so one doing both is blocked. It matches on command text, so a heredoc — or a commit message — merely *containing* those two words trips it as well; write such files with the Write tool and commit with `-F <file>`.
+`PreToolUse` on `Bash(git commit*)` gates commits on the tests covering whatever is **staged**, deriving labels from `scripts/ci_backend_test_labels.py`; anything under `frontend/` runs the whole frontend suite; `git commit -a` is handled. Infrastructure failures warn rather than block. Baseline **16/16** backend packages pass (2,212 tests, 28.5s). The gate derives its labels exactly as CI does, from the same function, so the two can never disagree. **Stage and commit in separate Bash calls** — the hook runs before the command, so one doing both is blocked. It matches on command text, so a heredoc — or a commit message — merely *containing* those two words trips it as well; write such files with the Write tool and commit with `-F <file>`.
 
 ## Architecture
 
@@ -128,7 +128,7 @@ Operationally: no metrics, `/healthz`, readiness probe or structured logs. `die-
 
 ## Testing
 
-`dispatcharr/test_runner.py` expands a label-less `manage.py test` via `dispatcharr/test_discovery.py` (AST-parses `INSTALLED_APPS`). 16 labels; ~1,787 backend tests, ~6,128 frontend tests.
+`dispatcharr/test_runner.py` expands a label-less `manage.py test` via `dispatcharr/test_discovery.py` (AST-parses `INSTALLED_APPS`). 16 labels; 2,212 backend tests, 6,134 frontend tests.
 
 **CI never runs the suite in one process** — `backend-tests.yml` runs each label as its own matrix job in its own container. The full in-process run has historically **failed** with a different set each time while every failure passed in its shard: `SimpleTestCase` subclasses in `test_catchup_redirect.py` reach the DB and pass only when an earlier test warmed the `CoreSettings` cache. **A green CI run does not mean a green suite.** The frontend suite passes in default order but fails under `vitest --sequence.shuffle` — module mocks and store singletons leak.
 
