@@ -134,8 +134,9 @@ function parseLocationBlocks(config: string): LocationBlock[] {
  * stays on the API — it is the API's own short IsAdmin control routes, never
  * `uwsgi_pass relay_py`. `^~ /proxy/relay/` *is* relay-bound
  * (`uwsgi_pass relay_py`) but carries no `uwsgi_buffering off`, correctly:
- * it is PR 7's still-unmounted control API, which will serve short JSON
- * rather than a stream.
+ * it is the relay control API Phase 1 PR 7 mounted, and it serves short
+ * JSON rather than a stream. Its own properties are pinned by the fourth
+ * test in this file.
  *
  * A third is absent because it cannot appear: PR 4 also routes
  * `^/api/channels/recordings/\d+/file/$` to the relay, but that location is
@@ -328,5 +329,58 @@ test(
       'the nested recordings-file location is gone from ^~ /api/'
     ).toBe(true);
     expect(api.body.some((line) => /^\s*auth_request\s+\//.test(line))).toBe(false);
+  }
+);
+
+test(
+  'the relay control API is routed to the relay and gated by no nginx-level authorizer',
+  { tag: '@contract' },
+  async () => {
+    const { stdout } = await execFileAsync('docker', ['exec', CONTAINER_NAME, 'nginx', '-T']);
+    const blocks = parseLocationBlocks(stdout);
+    const block = blocks.find((b) => b.target === '/proxy/relay/');
+    expect(block, 'no ^~ /proxy/relay/ location found').toBeTruthy();
+
+    // Relay-bound: these five routes exist so no control-plane process
+    // reads a relay-owned Redis key, which only works if they reach the
+    // relay. A literal upstream group, not $relay_upstream: no
+    // subrequest runs here, so $relay_name is unset and a variable pass
+    // nothing feeds is a thing a reader has to disprove.
+    expect(
+      block!.body.some((line) => /^\s*uwsgi_pass\s+relay_py\s*;/.test(line)),
+      'the relay control API must reach the relay'
+    ).toBe(true);
+
+    // NOT internal;. Django dials these as an ordinary HTTP client --
+    // from the worker container across the compose network, and from
+    // the api container through this nginx -- and `internal;` would 404
+    // every one of those calls.
+    expect(
+      block!.body.some((line) => /^\s*internal\s*;/.test(line)),
+      'the relay control API must stay reachable by Django, which is an ordinary client here'
+    ).toBe(false);
+
+    // The token is the whole gate (D9): authorize_stream() would 404 a
+    // URI that names no channel, so the hop must not sit in front of it.
+    expect(
+      block!.body.some((line) => /^\s*auth_request\s+\//.test(line)),
+      'the relay control API must not run the authorize subrequest'
+    ).toBe(false);
+
+    // A client-supplied X-Relay-* header still never reaches the relay
+    // on this path.
+    expect(
+      block!.body.some((line) => /dispatcharr_api_params\.conf\s*;/.test(line)),
+      'the relay control API must still blank the trust params'
+    ).toBe(true);
+
+    // POST .../advance waits on the owner's confirmation for up to
+    // STREAM_SWITCH_CONFIRM_TIMEOUT = 15s; relay_client allows 20s.
+    // An explicit window above both keeps the client's timeout the one
+    // that fires rather than nginx's 60s default.
+    expect(
+      block!.body.some((line) => /^\s*uwsgi_read_timeout\s+30s\s*;/.test(line)),
+      'the relay control API needs a read timeout above the advance budget'
+    ).toBe(true);
   }
 );
