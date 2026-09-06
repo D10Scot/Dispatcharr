@@ -18,8 +18,14 @@ from django.test import RequestFactory, SimpleTestCase, override_settings
 from apps.proxy.internal_auth import internal_principal_token
 
 
-def _decision(user=None, client_id="client_test_1", channel_uuid=""):
-    """The authorize hop's answer, as the views now receive it."""
+def _decision(user=None, client_id="client_test_1", channel_uuid="", is_internal=False):
+    """The authorize hop's answer, as the views now receive it.
+
+    Phase 1 PR 7 (issue #181): is_internal is resolved once, by
+    authorize_stream/result_from_headers, and carried on the decision —
+    the view no longer re-reads X-Dispatcharr-Internal itself, so a test
+    exercising that branch must set it here rather than on the request.
+    """
     from apps.proxy.authorize import SURFACE_LIVE, AuthorizeResult
 
     return AuthorizeResult(
@@ -29,6 +35,7 @@ def _decision(user=None, client_id="client_test_1", channel_uuid=""):
         user_id=str(user.id) if user is not None else "",
         relay_name="py",
         user=user,
+        is_internal=is_internal,
     )
 
 
@@ -89,7 +96,10 @@ class InternalPrincipalRedirectProfileTests(SimpleTestCase):
     @patch("apps.proxy.live_proxy.views.generate_stream_url")
     @patch("apps.proxy.live_proxy.views.ChannelService")
     @patch("apps.proxy.live_proxy.views.get_stream_object")
-    @patch("apps.proxy.live_proxy.views.resolve_authorization", return_value=_decision())
+    @patch(
+        "apps.proxy.live_proxy.views.resolve_authorization",
+        return_value=_decision(is_internal=True),
+    )
     @patch("apps.proxy.live_proxy.views.ProxyServer")
     def test_internal_principal_streams_instead_of_redirecting(
         self,

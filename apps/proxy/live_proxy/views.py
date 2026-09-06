@@ -42,7 +42,6 @@ from apps.proxy.authorize import (
     resolve_output_profile,
 )
 from apps.proxy.authorize_views import authorize_error_response, resolve_authorization
-from apps.proxy.internal_auth import request_is_internal
 
 logger = get_logger()
 
@@ -443,9 +442,8 @@ def stream_ts(request, channel_id, user=None, force_output_format=None, decision
                     # profile and must be forced False here, or the
                     # Redirect profile's empty build_command() would be
                     # used to spawn a subprocess.
-                    internal_principal = request_is_internal(
-                        getattr(request, "_request", request)
-                    )
+                    # The decision already resolved this; issue #181.
+                    internal_principal = decision.is_internal
                     if stream_profile.is_redirect() and internal_principal:
                         logger.info(
                             f"[{client_id}] Internal principal on a Redirect-profile "
