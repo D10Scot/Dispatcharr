@@ -9,9 +9,13 @@
  *
  * Four capabilities, four allowlists, in `./allowlist.ts`. Everything on those
  * lists is normally `@characterization`: they are the calls that stop meaning
- * anything once the relay is its own process. The one exception documents
- * itself in-file — see `tests/streaming-greybox/nginx-stream-buffering.spec.ts`'s
- * own header for why it's `@contract` despite being `SUBPROCESS`-listed.
+ * anything once the relay is its own process. Two exceptions document
+ * themselves in-file — see `tests/streaming-greybox/nginx-stream-buffering.spec.ts`'s
+ * own header for why it's `@contract` despite being `SUBPROCESS`-listed, and
+ * `tests/streaming-split/process-restart.spec.ts`'s for why it's `@contract`
+ * despite being `CONTAINER_LIFECYCLE`-listed. `e2e/README.md`'s "Tags versus
+ * grey-box capabilities" paragraph records the open ADR-0002 follow-up behind
+ * both.
  *
  * Verified by mutation, and one of those mutations is the whole argument for
  * parsing over grep: adding `// we run pgrep here` as a **comment** to

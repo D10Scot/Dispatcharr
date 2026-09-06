@@ -358,7 +358,7 @@
  *   attachLogs(testInfo)   the fixture calls this itself on a failed test —
  *       you should not need to.
  *
- * `instance: Instance` — **lifecycle projects only.** Drives the container's
+ * `instance: Instance` — **lifecycle and `streaming-split` projects only.** Drives the container's
  * own lifecycle through `scripts/e2e_up.sh`: up/restart/recreate/down, plus
  * the `docker inspect` reads that prove the event happened and
  * `manage(argv)` for migration state. Destroys the container every other
@@ -562,7 +562,7 @@ export const test = base.extend<Fixtures>({
       await client.attachLogs(testInfo);
     }
   },
-  // Lifecycle projects only — `instance.ts`'s header says why, and it is not
+  // Lifecycle and `streaming-split` projects only — `instance.ts`'s header says why, and it is not
   // a style preference: this fixture destroys the container every other
   // project is sharing. Lazy like every fixture here, so a spec that does not
   // name it never constructs one.

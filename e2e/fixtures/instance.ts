@@ -4,7 +4,19 @@
  * ---------------------------------------------------------------------------
  * WHO MAY IMPORT THIS
  * ---------------------------------------------------------------------------
- * Only the two lifecycle projects — `e2e/tests/lifecycle/`. Nothing else.
+ * Only the four lifecycle projects — `e2e/tests/lifecycle/` — and the
+ * `streaming-split` project, which uses `supervisorctl()` alone. Nothing else.
+ *
+ * The two are not the same risk. A lifecycle spec stops, replaces and
+ * destroys the container every other project shares, and
+ * `scripts/e2e_up.sh`'s `destroy()` removes the shared network and the
+ * `e2e-upstream` provider with it. `streaming-split` never calls
+ * `up`/`restart`/`recreate`/`down` at all: it stops and starts one
+ * supervisord program inside a container that stays. That is a smaller blast
+ * radius and still a container-wide one — the API process is gone for every
+ * test sharing the instance while it is stopped — which is why it too runs in
+ * a project of its own with its own CI container, and why it is on the same
+ * allowlist.
  *
  * Every other project in this suite shares one container for the length of a
  * run. This fixture stops, replaces and destroys that container, and

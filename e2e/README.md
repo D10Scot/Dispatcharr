@@ -718,9 +718,17 @@ are the calls that stop meaning anything once the relay is its own process. That
 today: `streaming-failover/failover-buffering.spec.ts` is on the allowlist (it mutates the global
 `proxy_settings` row) and is tagged `@contract`. `tests/guards/tags.spec.ts` and
 `tests/guards/capabilities.spec.ts` each check their own rule and neither cross-checks the other, so
-this passes both guards while contradicting the ADR's stated consequence. Recorded here rather than
-retagged unilaterally — resolving it either way (loosen the ADR's claim, or retag the file and add a
-cross-check guard) is a call for whoever owns ADR-0002 next, not a side effect of this goal's tests.
+this passes both guards while contradicting the ADR's stated consequence. Two more files now sit in
+the same position, each arguing its case in its own header rather than silently:
+`streaming-greybox/nginx-stream-buffering.spec.ts` (on `SUBPROCESS`, because it reads the resolved
+nginx config, while what it pins — `uwsgi_buffering off` on every relay-bound location — is a
+promise any reimplementation must keep) and `streaming-split/process-restart.spec.ts` (on
+`CONTAINER_LIFECYCLE`, because `supervisorctl` is the only vocabulary for "the API process is down",
+while what it pins — an established stream is undisturbed by the control plane going away, and a
+relay restart is bounded — is exactly what a Go relay in Phase 2 must also keep). All three are
+recorded here rather than retagged unilaterally: resolving the tension either way (loosen the ADR's
+claim, or retag the files and add a cross-check guard) is a call for whoever owns ADR-0002 next, not
+a side effect of the goal or phase that happened to add the third.
 
 ## CI
 
