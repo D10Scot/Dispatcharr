@@ -4,7 +4,7 @@ from django.conf import settings
 from core.models import StreamProfile, CoreSettings
 from core.utils import RedisClient, custom_properties_as_dict
 from apps.proxy.live_proxy.redis_keys import RedisKeys
-from apps.proxy.live_proxy.constants import ChannelMetadataField, ChannelState
+from apps.proxy.live_proxy.constants import ChannelMetadataField
 import logging
 import uuid
 from django.utils import timezone
@@ -473,162 +473,6 @@ class Channel(models.Model):
 
         return stream_profile
 
-    def _pick_channel_to_preempt(
-        self,
-        profile_id,
-        requester_level,
-        redis_client,
-        exclude_channel_ids=None,
-        cooldown_seconds=30,
-    ):
-        """
-        Pick the lowest-impact channel to terminate on the given profile.
-        Returns: Optional[int] channel_id to preempt
-        """
-        exclude_channel_ids = set(exclude_channel_ids or [])
-        candidates = []
-
-        # 1) Try to get active channel IDs for this profile from an index set if available
-        ch_set_key = f"live:profile:{profile_id}:channels"
-        try:
-            ch_ids = { (int(x) if not isinstance(x, int) else x) for x in (redis_client.smembers(ch_set_key) or set()) }
-        except Exception:
-            ch_ids = set()
-
-        logger.debug("Candidate channels for preemption:")
-        logger.debug(ch_ids)
-
-        # 2) Fallback: scan metadata keys and filter by m3u_profile == profile_id
-        if not ch_ids:
-            cursor = 0
-            pattern = "live:channel:*:metadata"
-            while True:
-                cursor, keys = redis_client.scan(cursor=cursor, match=pattern, count=500)
-                if keys:
-                    # Prefer HGET m3u_profile if metadata is a hash
-                    pipe = redis_client.pipeline()
-                    for k in keys:
-                        pipe.hget(k, "m3u_profile")
-                    prof_vals = pipe.execute()
-                    for k, prof_val in zip(keys, prof_vals):
-                        try:
-                            pid = int(prof_val) if prof_val is not None else None
-                        except Exception:
-                            pid = None
-
-                        if pid == profile_id:
-                            parts = k.split(":")  # live:channel:{id}:metadata
-                            if len(parts) >= 4:
-                                try:
-                                    ch_ids.add(int(parts[2]))
-                                except Exception:
-                                    pass
-                if cursor == 0:
-                    break
-
-        logger.debug("Candidate channels for preemption:")
-        logger.debug(ch_ids)
-
-        if not ch_ids:
-            return None
-
-        # 3) Score candidates
-        for ch_id in ch_ids:
-            if ch_id in exclude_channel_ids:
-                continue
-
-            # Skip if recently preempted
-            last_preempt_key = f"live:channel:{ch_id}:last_preempt"
-            try:
-                last_preempt = float(redis_client.get(last_preempt_key) or 0.0)
-            except Exception:
-                last_preempt = 0.0
-            if last_preempt and (time.time() - last_preempt) < cooldown_seconds:
-                continue
-
-            # Clients and their levels
-            clients_key = f"live:channel:{ch_id}:clients"
-            member_ids = list(redis_client.smembers(clients_key) or [])
-            viewer_count = len(member_ids)
-            max_viewer_level = 0
-            if viewer_count:
-                pipe = redis_client.pipeline()
-                for cid in member_ids:
-                    pipe.hget(f"live:channel:{ch_id}:clients:{cid}", "user_level")
-                levels_raw = pipe.execute()
-                levels = []
-                for lv in levels_raw:
-                    try:
-                        levels.append(int(lv or 0))
-                    except Exception:
-                        levels.append(0)
-                max_viewer_level = max(levels or [0])
-
-            # Only preempt if requester strictly outranks this channel's viewers
-            if requester_level <= max_viewer_level:
-                continue
-
-            # Metadata (protected/recording/started_at_ts)
-            meta_key = f"live:channel:{ch_id}:metadata"
-            try:
-                protected, recording, started_at_ts = redis_client.hmget(
-                    meta_key, "protected", "recording", "started_at_ts"
-                )
-            except Exception:
-                protected = recording = started_at_ts = None
-
-            protected = str(protected or "0") in ("1", "true", "True")
-            recording = str(recording or "0") in ("1", "true", "True")
-            if protected or recording:
-                continue
-
-            try:
-                started_at_ts = float(started_at_ts) if started_at_ts is not None else None
-            except Exception:
-                started_at_ts = None
-            if started_at_ts is None:
-                started_at_ts = time.time()  # treat unknown as newest
-
-            # Score: lower is safer to terminate
-            has_viewers = 1 if viewer_count > 0 else 0
-            score = (has_viewers, max_viewer_level, viewer_count, started_at_ts)
-            candidates.append((score, ch_id))
-
-        logger.debug("Candidate channels after scoring:")
-        logger.debug(candidates)
-
-        if not candidates:
-            return None
-
-        candidates.sort(key=lambda x: x[0])
-        victim_id = candidates[0][1]
-
-        # Mark preempt timestamp to avoid thrashing
-        try:
-            redis_client.set(f"live:channel:{victim_id}:last_preempt", str(time.time()), ex=3600)
-        except Exception:
-            pass
-
-        return victim_id
-
-    def _channel_proxy_is_active(self, redis_client) -> bool:
-        """True when live proxy metadata shows this channel is still running."""
-        metadata_key = RedisKeys.channel_metadata(str(self.uuid))
-        if not redis_client.exists(metadata_key):
-            return False
-        state = redis_client.hget(metadata_key, ChannelMetadataField.STATE)
-        if state is None:
-            return False
-        if isinstance(state, bytes):
-            state = state.decode()
-        return state in (
-            ChannelState.ACTIVE,
-            ChannelState.WAITING_FOR_CLIENTS,
-            ChannelState.BUFFERING,
-            ChannelState.INITIALIZING,
-            ChannelState.CONNECTING,
-        )
-
     def _stream_assignment_is_reusable(self, redis_client, stream_id: int) -> bool:
         """
         Return True when an existing channel_stream assignment should be reused.
@@ -636,14 +480,22 @@ class Channel(models.Model):
         Reuse when the proxy is active, or when metadata is not written yet
         (between get_stream() reserving slots and initialize_channel() starting).
         When metadata exists but the proxy is inactive, the assignment is stale.
+
+        Phase 1 PR 7: whether the proxy is active is the relay's answer, not
+        a read of this channel's relay-owned metadata hash from here --
+        that hash belongs to the relay and this method runs in the API
+        process, inside Channel.get_stream(). One snapshot answers both
+        questions, so the tune path pays one round trip and not two. The
+        per-stream profile key is still read directly because PR 6 made
+        it Django's own key.
         """
-        if self._channel_proxy_is_active(redis_client):
+        from apps.proxy import relay_client
+
+        snapshot = relay_client.channel_snapshot(str(self.uuid))
+        if snapshot.active:
             return True
-
-        metadata_key = RedisKeys.channel_metadata(str(self.uuid))
-        if not redis_client.exists(metadata_key):
+        if not snapshot.present:
             return redis_client.get(RedisKeys.stream_profile(stream_id)) is not None
-
         return False
 
     def _release_stale_stream_assignment(self, redis_client, stream_id: int) -> None:
@@ -792,17 +644,14 @@ class Channel(models.Model):
                         True,
                     )  # Return newly assigned stream and matched profile
                 else:
-                    # At capacity: try to preempt a lower-impact channel on this profile
-                    victim_channel_id = self._pick_channel_to_preempt(
-                        profile_id=profile.id,
-                        requester_level=requester.user_level if requester else 100,
-                        redis_client=redis_client,
-                        exclude_channel_ids=None,
-                    )
-                    if victim_channel_id:
-                        logger.info(f"Preempting channel {victim_channel_id} for new stream on profile {profile.id}")
-                        # return self.id, profile.id, victim_channel_id
-
+                    # At capacity on this profile. A preemption attempt used to
+                    # run here and could never succeed: _pick_channel_to_preempt
+                    # scored candidates it never found (the profile index key it
+                    # reads is written nowhere, and its scan fallback int()s a
+                    # channel UUID), reached a cooldown check against a `time`
+                    # this module never imported, and returned into a commented-out
+                    # `return`. Deleted in Phase 1 PR 7. Channel preemption stays
+                    # unimplemented -- that is unchanged, not decided here.
                     has_streams_but_maxed_out = True
                     if failure_reason == "profile_full":
                         logger.info(
