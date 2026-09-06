@@ -202,6 +202,15 @@ class RelayAdvanceRequestSerializer(serializers.Serializer):
     stream_name = serializers.CharField(
         required=False, allow_blank=True, allow_null=True, default=None
     )
+    # /proxy/ts/change_stream/ has always cleared the running manager's
+    # tried_stream_ids so an operator's manual switch does not inherit a
+    # failover's exclusion list. That reset used to run in the same
+    # process as the manager; since PR 4's routing put the view on the
+    # API role, proxy_server.stream_managers there is always empty and
+    # the reset silently stopped happening. It moves here, where the
+    # manager is. next_stream never reset it and still does not, which
+    # is why this is a flag rather than unconditional.
+    reset_tried = serializers.BooleanField(required=False, default=False)
 
 
 class RelayAdvanceResponseSerializer(serializers.Serializer):

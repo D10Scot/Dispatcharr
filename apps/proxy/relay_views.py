@@ -233,6 +233,14 @@ def channel_advance_view(request, identifier):
     payload = RelayAdvanceRequestSerializer(data=request.data)
     payload.is_valid(raise_exception=True)
     source = payload.validated_data
+    if source["reset_tried"]:
+        manager = ProxyServer.get_instance().stream_managers.get(identifier)
+        if manager is not None:
+            manager.tried_stream_ids = set()
+            logger.debug(
+                f"Reset tried stream IDs for channel {identifier} during a "
+                f"manual stream change"
+            )
     # Positional exactly as change_stream_url declares them, with
     # new_url always present so its own next_source branch -- an ORM
     # query PR 6 took out of the relay process -- is never entered.

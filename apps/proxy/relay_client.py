@@ -45,7 +45,8 @@ UUID, which CLAUDE.md treats as a secret.
 
 import json
 import logging
-from urllib.parse import urlencode
+from dataclasses import dataclass
+from urllib.parse import quote, urlencode
 
 import requests
 
@@ -133,3 +134,156 @@ def _request(method, path, *, timeout, payload=None, params=None):
     if not isinstance(answer, dict):
         raise RelayUnavailable(f"{path} answered 2xx with a non-object body")
     return answer
+
+
+@dataclass(frozen=True)
+class ChannelSnapshot:
+    """What Channel.get_stream()'s reuse branch needs, in one round trip.
+
+    present   the relay holds a metadata hash for this identifier
+    active    ... and its state is one the tune path may reuse
+    reachable the relay answered at all
+
+    An unreachable relay reports (False, False, False) rather than
+    raising: this runs inside Channel.get_stream(), which the relay
+    itself reached over POST /api/relay/.../next-source with a five
+    second read budget, and a raise here would turn a relay hiccup into
+    a failed tune. present=False sends _stream_assignment_is_reusable to
+    its stream_profile fallback, which reuses the existing assignment --
+    the outcome that cannot leak a provider slot.
+    """
+
+    present: bool
+    active: bool
+    reachable: bool
+
+
+def list_channels(*, all_clients=False, timeout=ADMIN_TIMEOUT):
+    """Every channel the relay is running. Shape: {channels, count}."""
+    params = {"clients": "all"} if all_clients else None
+    return _request(
+        "GET", "/proxy/relay/channels", timeout=timeout, params=params
+    )
+
+
+def get_channel(identifier, *, timeout=ADMIN_TIMEOUT, fields=None):
+    """One channel's detailed status, or None when the relay has none.
+
+    A 404 is an answer -- "this channel is not running" -- not an
+    outage, so it becomes None. Every other refusal propagates: a 403
+    means the two roles disagree about SECRET_KEY, and swallowing it
+    would make every status read look like an idle system.
+
+    fields="state" asks for the two-field tune-path form (ruling 20).
+    It travels as a query parameter, which the bound token signs along
+    with the path (ruling 17).
+    """
+    path = f"/proxy/relay/channels/{quote(str(identifier), safe='')}"
+    params = {"fields": fields} if fields else None
+    try:
+        return _request("GET", path, timeout=timeout, params=params)
+    except RelayRefused as exc:
+        if exc.status == 404:
+            return None
+        raise
+
+
+def channel_snapshot(identifier, *, timeout=TUNE_TIMEOUT):
+    """The tune-path read. See ChannelSnapshot for the failure mode.
+
+    Asks for ?fields=state (ruling 20), so the relay answers with one
+    EXISTS and one HGET rather than get_detailed_channel_info's buffer
+    chunk sampling, client walk and two ORM name fallbacks -- which
+    would trip the two-second budget under load far more often than
+    this question warrants.
+    """
+    from apps.proxy.live_proxy.constants import ChannelState
+
+    reusable_states = (
+        ChannelState.ACTIVE,
+        ChannelState.WAITING_FOR_CLIENTS,
+        ChannelState.BUFFERING,
+        ChannelState.INITIALIZING,
+        ChannelState.CONNECTING,
+    )
+    try:
+        info = get_channel(identifier, timeout=timeout, fields="state")
+    except (RelayUnavailable, RelayRefused) as exc:
+        logger.warning(
+            "Relay could not answer for channel %s: %s", identifier, exc
+        )
+        return ChannelSnapshot(present=False, active=False, reachable=False)
+    if info is None:
+        return ChannelSnapshot(present=False, active=False, reachable=True)
+    return ChannelSnapshot(
+        present=True, active=info.get("state") in reusable_states, reachable=True
+    )
+
+
+def stop_channel(identifier, *, timeout=ADMIN_TIMEOUT):
+    """Stop a channel. Returns ChannelService.stop_channel's own dict."""
+    path = f"/proxy/relay/channels/{quote(str(identifier), safe='')}"
+    return _request("DELETE", path, timeout=timeout)
+
+
+def stop_channels(identifiers):
+    """Best-effort stop for each identifier. Never raises.
+
+    Same contract as ChannelService.stop_channels, which the three
+    Django-side callers relied on: proxy teardown runs before a DB
+    delete and must never block it.
+    """
+    for identifier in identifiers:
+        if not identifier:
+            continue
+        try:
+            stop_channel(str(identifier))
+        except Exception as exc:
+            logger.warning(
+                "Failed to stop proxy session for channel %s: %s",
+                identifier,
+                exc,
+            )
+
+
+def stop_client(identifier, client_id, *, timeout=ADMIN_TIMEOUT):
+    """Stop one client on one channel."""
+    path = (
+        f"/proxy/relay/channels/{quote(str(identifier), safe='')}"
+        f"/clients/{quote(str(client_id), safe='')}"
+    )
+    return _request("DELETE", path, timeout=timeout)
+
+
+def advance(
+    identifier,
+    *,
+    url,
+    user_agent=None,
+    stream_id=None,
+    m3u_profile_id=None,
+    stream_name=None,
+    reset_tried=False,
+):
+    """Switch a running channel to an already-resolved source.
+
+    url is required and always sent: Django resolved the candidate in
+    the API process, where the ORM is (ruling 11). ADVANCE_TIMEOUT's
+    20-second read budget covers ChannelService.change_stream_url's
+    non-owner path, which polls for the owner's confirmation for up to
+    STREAM_SWITCH_CONFIRM_TIMEOUT = 15s before answering.
+    """
+    path = f"/proxy/relay/channels/{quote(str(identifier), safe='')}/advance"
+    return _request(
+        "POST",
+        path,
+        timeout=ADVANCE_TIMEOUT,
+        payload={
+            "url": url,
+            "user_agent": user_agent,
+            "stream_id": stream_id,
+            "m3u_profile_id": m3u_profile_id,
+            "stream_name": stream_name,
+            "reset_tried": reset_tried,
+        },
+    )

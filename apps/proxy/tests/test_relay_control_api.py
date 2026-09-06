@@ -333,6 +333,42 @@ class RelayClientAndAdvanceTests(TestCase):
         self.assertIs(body_json["success"], False)
         self.assertIs(body_json["confirmed"], False)
 
+    def test_reset_tried_clears_the_local_manager_s_exclusion_list(self):
+        path = "/proxy/relay/channels/abc/advance"
+        payload = {"url": "http://p/x", "stream_id": 42, "reset_tried": True}
+        body = json.dumps(payload).encode()
+        manager = mock.Mock(tried_stream_ids={1, 2})
+        server = mock.Mock(stream_managers={"abc": manager})
+        with mock.patch.object(
+            relay_views.ProxyServer, "get_instance", return_value=server
+        ), mock.patch.object(
+            relay_views.ChannelService, "change_stream_url",
+            return_value={"status": "success", "success": True},
+        ):
+            self.client.post(
+                path, data=body, content_type="application/json",
+                **_signed("POST", path, body),
+            )
+        self.assertEqual(manager.tried_stream_ids, set())
+
+    def test_reset_tried_is_off_by_default(self):
+        path = "/proxy/relay/channels/abc/advance"
+        payload = {"url": "http://p/x", "stream_id": 42}
+        body = json.dumps(payload).encode()
+        manager = mock.Mock(tried_stream_ids={1, 2})
+        server = mock.Mock(stream_managers={"abc": manager})
+        with mock.patch.object(
+            relay_views.ProxyServer, "get_instance", return_value=server
+        ), mock.patch.object(
+            relay_views.ChannelService, "change_stream_url",
+            return_value={"status": "success", "success": True},
+        ):
+            self.client.post(
+                path, data=body, content_type="application/json",
+                **_signed("POST", path, body),
+            )
+        self.assertEqual(manager.tried_stream_ids, {1, 2})
+
 
 class RelaySchemaTests(TestCase):
     def test_the_five_routes_appear_in_the_openapi_schema(self):
