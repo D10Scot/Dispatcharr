@@ -1572,7 +1572,14 @@ make, recorded here rather than re-derived by PR 8 or Phase 2:
    through its own nginx — and `internal;` serves a location only for a subrequest or an
    `X-Accel-Redirect`. It keeps the blanking include and `uwsgi_pass relay_py;`, gains an
    explicit `uwsgi_read_timeout 30s;`, stays outside the authorize hop (S8), and is pinned by
-   a fourth test in `e2e/tests/streaming-greybox/nginx-stream-buffering.spec.ts`.
+   a fourth test in `e2e/tests/streaming-greybox/nginx-stream-buffering.spec.ts`. **Design note,
+   recorded rather than fixed:** the location inherits the server-level `client_max_body_size 0;`
+   and carries no `limit_req`/`limit_conn`, so with `uwsgi_request_buffering` at its default an
+   unauthenticated caller on the published port can make nginx buffer an unbounded POST body to
+   the `advance` route before Django's `IsInternalRelay` 403 ever runs. Unchanged from PR 4's
+   server-level default, but PR 7 turns that surface from "404s harmlessly" into a live control
+   API, so it is worth naming deliberately rather than leaving to be rediscovered. Adding a cap
+   here would be a fifth property beyond the four above, so it is not done in this PR.
 3. **`GET /proxy/relay/channels` takes `?clients=all`.** `get_basic_channel_info` caps its
    client list at ten, which is right for the stats payload and wrong for
    `get_user_active_connections`, whose job is counting a user's connections against

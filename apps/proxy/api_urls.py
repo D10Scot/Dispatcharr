@@ -3,8 +3,9 @@
 Mounted at /api/relay/ from apps/api/urls.py. Not part of the client API:
 IsInternalRelay, no principal, no IsAdmin. nginx serves them through the
 existing `location ^~ /api/` block, which carries the blanking include —
-it blanks the five X-Relay-* trust params and leaves the two internal
-headers alone, which is exactly right here.
+it blanks the four X-Relay-* params and the X-Dispatcharr-Authorized
+marker, and leaves the two internal headers alone, which is exactly
+right here.
 """
 
 from django.urls import path
