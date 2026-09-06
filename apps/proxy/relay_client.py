@@ -49,6 +49,7 @@ from dataclasses import dataclass
 from urllib.parse import quote, urlencode
 
 import requests
+from django.core.exceptions import ImproperlyConfigured
 
 from apps.proxy.internal_auth import (
     HEADER_INTERNAL,
@@ -253,18 +254,69 @@ def stop_channels(identifiers):
     Same contract as ChannelService.stop_channels, which the three
     Django-side callers relied on: proxy teardown runs before a DB
     delete and must never block it.
+
+    Returns the list of identifiers actually stopped (stop_channel
+    answered without raising), so a caller that deletes hundreds of
+    channels in one request can report how many it actually reached.
+
+    A whole-provider M3U delete can pass hundreds of identifiers here in
+    one call (Kimi's PR #194 review, question 2). RelayRefused is a
+    per-channel answer -- a 404 for a channel already stopped, a 403 a
+    SECRET_KEY mismatch would also give every other identifier, but the
+    existing contract already treats a refusal as one channel's problem
+    -- so it logs and the loop continues. RelayUnavailable and
+    ImproperlyConfigured are not: they mean every remaining identifier
+    would pay the same ADMIN_TIMEOUT (2, 5)s round trip (or fail
+    instantly, misconfigured) for a relay that cannot answer any of
+    them, so a few hundred identifiers would otherwise turn a single
+    DELETE into minutes of blocked cleanup for no additional
+    information. Stop on the first one, log once, and return what was
+    stopped so far.
     """
+    stopped = []
     for identifier in identifiers:
         if not identifier:
             continue
         try:
             stop_channel(str(identifier))
-        except Exception as exc:
+        except RelayRefused as exc:
             logger.warning(
                 "Failed to stop proxy session for channel %s: %s",
                 identifier,
                 exc,
             )
+            continue
+        except RelayUnavailable as exc:
+            logger.warning(
+                "Relay could not answer while stopping proxy sessions; "
+                "stopping after %d of the identifiers given: %s",
+                len(stopped),
+                exc,
+            )
+            break
+        except ImproperlyConfigured as exc:
+            logger.warning(
+                "Relay could not answer while stopping proxy sessions; "
+                "stopping after %d of the identifiers given: %s is "
+                "misconfigured",
+                len(stopped),
+                getattr(exc, "var_name", None) or "the relay base URL",
+            )
+            break
+        except Exception as exc:
+            # Not a relay-shaped failure (a bug in stop_channel itself,
+            # say) -- still must not block the caller's DB delete, and
+            # still per-identifier: one bad identifier says nothing
+            # about the rest.
+            logger.warning(
+                "Failed to stop proxy session for channel %s: %s",
+                identifier,
+                exc,
+            )
+            continue
+        else:
+            stopped.append(identifier)
+    return stopped
 
 
 def stop_client(identifier, client_id, *, timeout=ADMIN_TIMEOUT):

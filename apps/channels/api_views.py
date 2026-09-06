@@ -3222,12 +3222,24 @@ def _stop_dvr_clients(channel_uuid, recording_id=None):
 
     Returns the number of DVR clients stopped.
     """
+    from django.core.exceptions import ImproperlyConfigured
+
     from apps.proxy import relay_client
 
     try:
         channel_info = relay_client.get_channel(channel_uuid)
     except (relay_client.RelayUnavailable, relay_client.RelayRefused) as e:
         logger.debug(f"Relay could not list clients for channel {channel_uuid}: {e}")
+        return 0
+    except ImproperlyConfigured as exc:
+        # A misconfigured relay base URL cannot be fixed by aborting a
+        # DVR teardown; degrade exactly as an unreachable relay does
+        # above.
+        logger.debug(
+            "Relay could not list clients for channel %s: %s is misconfigured",
+            channel_uuid,
+            getattr(exc, "var_name", None) or "the relay base URL",
+        )
         return 0
     if not channel_info:
         return 0

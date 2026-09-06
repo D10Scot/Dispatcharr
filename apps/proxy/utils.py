@@ -189,6 +189,8 @@ def attempt_stream_termination(user_id, requesting_client_id, active_connections
 
         for t in targets:
             if t['type'] == 'live':
+                from django.core.exceptions import ImproperlyConfigured
+
                 from apps.proxy import relay_client
 
                 try:
@@ -200,6 +202,17 @@ def attempt_stream_termination(user_id, requesting_client_id, active_connections
                     logger.warning(
                         f"[stream limits][{requesting_client_id}] Relay could not "
                         f"stop client {t['client_id']}: {exc}"
+                    )
+                    return False
+                except ImproperlyConfigured as exc:
+                    # A misconfigured relay base URL cannot be fixed by
+                    # denying this one stream; degrade the same way as an
+                    # unreachable relay above.
+                    logger.warning(
+                        f"[stream limits][{requesting_client_id}] Relay could not "
+                        f"stop client {t['client_id']}: "
+                        f"{getattr(exc, 'var_name', None) or 'the relay base URL'} "
+                        "is misconfigured"
                     )
                     return False
                 if result.get("status") == "error":
@@ -255,6 +268,8 @@ def _live_connections(user_id):
     serving live clients, so a relay that is not answering has none.
     Failing closed would 429 every tune for the length of a restart.
     """
+    from django.core.exceptions import ImproperlyConfigured
+
     from apps.proxy import relay_client
 
     try:
@@ -268,6 +283,17 @@ def _live_connections(user_id):
     except (relay_client.RelayUnavailable, relay_client.RelayRefused) as exc:
         logger.warning(
             "[stream limits] the relay could not list channels: %s", exc
+        )
+        return []
+    except ImproperlyConfigured as exc:
+        # Unlike Channel.get_stream() this is a limit *check*, not the
+        # reservation itself: failing open here (see the docstring) is
+        # the same choice a misconfigured relay deserves as an
+        # unreachable one -- propagating would 429/500 every tune for a
+        # problem a retry cannot fix.
+        logger.warning(
+            "[stream limits] the relay could not list channels: %s is misconfigured",
+            getattr(exc, "var_name", None) or "the relay base URL",
         )
         return []
 

@@ -90,6 +90,25 @@ class StreamAssignmentReuseTests(TestCase):
                 self.channel._stream_assignment_is_reusable(redis, 7)
             )
 
+    def test_a_misconfigured_relay_propagates_out_of_get_stream(self):
+        # Kimi's PR #194 review, should-fix 1: the tune path is the one
+        # place ImproperlyConfigured must NOT be caught and turned into
+        # a fallback -- a misconfigured deployment fails visibly on the
+        # first tune (the same choice PR 6 made for the reverse
+        # direction, Amendment S10 point 5), rather than every tune
+        # silently reusing or re-reserving under a config error nobody
+        # sees. _stream_assignment_is_reusable() has no try/except of
+        # its own around channel_snapshot(), so this is a
+        # characterization of that absence.
+        from django.core.exceptions import ImproperlyConfigured
+
+        with mock.patch.object(
+            relay_client, "channel_snapshot",
+            side_effect=ImproperlyConfigured("DISPATCHARR_RELAY_BASE_URL is bad"),
+        ):
+            with self.assertRaises(ImproperlyConfigured):
+                self.channel._stream_assignment_is_reusable(_Redis(), 7)
+
 
 class PreemptionIsGoneTests(TestCase):
     def test_the_preemption_corpse_is_deleted(self):

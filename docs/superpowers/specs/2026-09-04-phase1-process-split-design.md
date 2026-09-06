@@ -1720,6 +1720,52 @@ make, recorded here rather than re-derived by PR 8 or Phase 2:
     `ClientManager.remove_ghost_clients` — an `SREM` write across every running channel — which
     the old direct Redis scan never triggered. Not a regression in what `active_cons` reports,
     but a new, real side effect of every XC handshake this PR introduces.
+22. **`ImproperlyConfigured` from `relay_client`'s base-URL resolution now has a policy on every
+    Django-side calling shape, not just PR 6's reverse direction (Kimi's PR #194 review,
+    should-fix 1).** `get_relay_control_base_url()` reaches `validated_base_url()`, which raises
+    for a bad `DISPATCHARR_RELAY_BASE_URL`/`DISPATCHARR_WEB_HOST` — before this fix no new PR 7
+    call site named it, so it fell through to whatever a bare `except Exception` happened to do.
+    Three shapes, mirroring `control_plane.py`'s `release_source()`/`post_events()` precedent for
+    the reverse direction:
+    - **Tune path** (`Channel._stream_assignment_is_reusable()`, called from `get_stream()`):
+      left to propagate. `channel_snapshot()`'s own `except` names only `(RelayUnavailable,
+      RelayRefused)`, not `ImproperlyConfigured`, and neither does its one caller — a
+      misconfigured deployment fails visibly on the first tune, same as PR 6's Amendment S10
+      point 5 for `next_source()`. Pinned by
+      `apps/proxy/tests/test_relay_client.py::test_a_misconfigured_relay_propagates_out_of_channel_snapshot`
+      and `apps/channels/tests/test_channel_stream_reuse.py::test_a_misconfigured_relay_propagates_out_of_get_stream`.
+    - **The five `apps/proxy/live_proxy/views.py` admin views** (`channel_status`,
+      `stop_channel`, `stop_client`, `change_stream`, `next_stream`): each gains an
+      `except ImproperlyConfigured` beside its `RelayRefused`/`RelayUnavailable` clauses,
+      answering `500 {"error": "Relay configuration error"}` — a **fixed** body, never `str(exc)`
+      and never the value `validated_base_url()` rejected — while the ERROR log names
+      `exc.var_name` (falling back to `"the relay base URL"`). A response body is not the place
+      for a value that already got its own once-per-process ERROR inside `validated_base_url()`.
+    - **Background, cleanup and read-degrade paths** — `apps/proxy/utils.py`'s
+      `attempt_stream_termination` and `_live_connections` (the live branch of
+      `get_user_active_connections`), `apps/proxy/stats_views.py`'s `combined_stats`,
+      `core/tasks.py`'s `fetch_channel_stats`, `apps/channels/api_views.py`'s
+      `_stop_dvr_clients` — each gains the same `except ImproperlyConfigured`, degrading exactly
+      as its neighbouring `except (RelayUnavailable, RelayRefused)` already does (return `False`,
+      `[]`, an empty stats section, or `0`, depending on the function), logging once with the
+      variable name, never raising. Two call sites already caught bare `Exception` around the
+      whole block before this fix (`apps/channels/api_views.py`'s `destroy()` inline DVR
+      teardown, `apps/channels/tasks.py`'s DVR stream-stats capture) and needed no change — they
+      already treated every exception, `ImproperlyConfigured` included, the same way.
+23. **`relay_client.stop_channels()` now bounds itself on the first `RelayUnavailable` or
+    `ImproperlyConfigured` (Kimi's PR #194 review, question 2).** A whole-provider M3U delete
+    (`apps/m3u/api_views.py`'s account `destroy()`) can pass hundreds of channel UUIDs in one
+    call; once the relay itself cannot answer, every remaining identifier would pay the same
+    `ADMIN_TIMEOUT (2, 5)`s round trip (or fail instantly, misconfigured) for a relay that
+    cannot answer any of them, turning one DELETE into minutes of blocked cleanup for no
+    additional information. `RelayRefused` is unaffected and keeps the loop going — a 404 for an
+    already-stopped channel or a 403 from a `SECRET_KEY` mismatch is a per-channel answer, the
+    existing contract three Django-side callers already relied on. `stop_channels()` now returns
+    the list of identifiers it actually stopped, so a caller that wants to report partial
+    progress can, though none of the three current callers reads it yet. Pinned by four tests in
+    `apps/proxy/tests/test_relay_client.py`: continuing past a `RelayRefused`, stopping after the
+    first `RelayUnavailable`, stopping after the first `ImproperlyConfigured`, and the return
+    value on a mix including a skipped falsy identifier.
 
 ### PR 7 — `migration/phase1-control-api`
 

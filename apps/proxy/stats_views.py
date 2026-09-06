@@ -3,6 +3,7 @@
 import logging
 import time
 
+from django.core.exceptions import ImproperlyConfigured
 from django.http import JsonResponse
 from rest_framework.decorators import api_view, permission_classes
 
@@ -33,6 +34,15 @@ def combined_stats(request):
         live = relay_client.list_channels()
     except (relay_client.RelayUnavailable, relay_client.RelayRefused) as e:
         logger.warning(f"Relay could not answer for combined stats: {e}")
+        live = {"channels": [], "count": 0}
+    except ImproperlyConfigured as exc:
+        # Same degrade as an unreachable relay: a misconfigured base URL
+        # cannot be fixed by aborting a stats read, and this is a
+        # background/cleanup-shaped read, not a client-issued command.
+        logger.warning(
+            "Relay could not answer for combined stats: %s is misconfigured",
+            getattr(exc, "var_name", None) or "the relay base URL",
+        )
         live = {"channels": [], "count": 0}
 
     return JsonResponse({

@@ -2,6 +2,7 @@ import json
 import time
 import re
 import pathlib
+from django.core.exceptions import ImproperlyConfigured
 from django.db import close_old_connections
 from django.http import (
     StreamingHttpResponse,
@@ -991,6 +992,17 @@ def change_stream(request, channel_id):
     except relay_client.RelayUnavailable as e:
         logger.error(f"Relay not available for change_stream: {e}")
         return JsonResponse({"error": "Relay not available"}, status=503)
+    except ImproperlyConfigured as exc:
+        # A response body is not the place for validated_base_url()'s
+        # message (it already redacted, but redacted still is not
+        # nothing) or for the value it blames -- only the fixed string
+        # below crosses the wire. The variable responsible goes to the
+        # log only.
+        logger.error(
+            "Relay configuration error for change_stream: %s is misconfigured",
+            getattr(exc, "var_name", None) or "the relay base URL",
+        )
+        return JsonResponse({"error": "Relay configuration error"}, status=500)
     except Exception as e:
         logger.error(f"Failed to change stream: {e}", exc_info=True)
         return JsonResponse({"error": str(e)}, status=500)
@@ -1046,6 +1058,12 @@ def channel_status(request, channel_id=None):
     except relay_client.RelayUnavailable as e:
         logger.error(f"Relay not available for status: {e}")
         return JsonResponse({"error": "Relay not available"}, status=503)
+    except ImproperlyConfigured as exc:
+        logger.error(
+            "Relay configuration error for channel_status: %s is misconfigured",
+            getattr(exc, "var_name", None) or "the relay base URL",
+        )
+        return JsonResponse({"error": "Relay configuration error"}, status=500)
     except Exception as e:
         logger.error(f"Error in channel_status: {e}", exc_info=True)
         return JsonResponse({"error": str(e)}, status=500)
@@ -1084,6 +1102,12 @@ def stop_channel(request, channel_id):
     except relay_client.RelayUnavailable as e:
         logger.error(f"Relay not available for the stop request: {e}")
         return JsonResponse({"error": "Relay not available"}, status=503)
+    except ImproperlyConfigured as exc:
+        logger.error(
+            "Relay configuration error for stop_channel: %s is misconfigured",
+            getattr(exc, "var_name", None) or "the relay base URL",
+        )
+        return JsonResponse({"error": "Relay configuration error"}, status=500)
     except Exception as e:
         logger.error(f"Failed to stop channel: {e}", exc_info=True)
         return JsonResponse({"error": str(e)}, status=500)
@@ -1126,6 +1150,12 @@ def stop_client(request, channel_id):
     except relay_client.RelayUnavailable as e:
         logger.error(f"Relay not available for the stop request: {e}")
         return JsonResponse({"error": "Relay not available"}, status=503)
+    except ImproperlyConfigured as exc:
+        logger.error(
+            "Relay configuration error for stop_client: %s is misconfigured",
+            getattr(exc, "var_name", None) or "the relay base URL",
+        )
+        return JsonResponse({"error": "Relay configuration error"}, status=500)
     except Exception as e:
         logger.error(f"Failed to stop client: {e}", exc_info=True)
         return JsonResponse({"error": str(e)}, status=500)
@@ -1297,6 +1327,12 @@ def next_stream(request, channel_id):
     except relay_client.RelayUnavailable as e:
         logger.error(f"Relay not available for next_stream: {e}")
         return JsonResponse({"error": "Relay not available"}, status=503)
+    except ImproperlyConfigured as exc:
+        logger.error(
+            "Relay configuration error for next_stream: %s is misconfigured",
+            getattr(exc, "var_name", None) or "the relay base URL",
+        )
+        return JsonResponse({"error": "Relay configuration error"}, status=500)
     except Exception as e:
         logger.error(f"Failed to switch to next stream: {e}", exc_info=True)
         return JsonResponse({"error": str(e)}, status=500)

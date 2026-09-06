@@ -275,3 +275,74 @@ class AdminControlViewTests(TestCase):
                 format="json",
             )
         self.assertEqual(response.status_code, 502)
+
+    # A misconfigured relay base URL (Kimi's PR #194 review, should-fix 1):
+    # every view answers 500 with a fixed body -- never str(exc), never the
+    # value validated_base_url() rejected -- and names the offending
+    # variable only in the log, never in the response.
+
+    def _misconfigured(self, var_name="DISPATCHARR_RELAY_BASE_URL"):
+        from django.core.exceptions import ImproperlyConfigured
+
+        exc = ImproperlyConfigured(f"{var_name} is not an http(s) URL")
+        exc.var_name = var_name
+        return exc
+
+    def test_status_detail_is_500_with_a_fixed_body_when_the_relay_is_misconfigured(self):
+        with mock.patch.object(
+            relay_client, "get_channel", side_effect=self._misconfigured()
+        ):
+            with self.assertLogs(views.logger, level="ERROR") as caught:
+                response = self.client.get("/proxy/ts/status/abc")
+        self.assertEqual(response.status_code, 500)
+        self.assertEqual(response.json(), {"error": "Relay configuration error"})
+        self.assertIn("DISPATCHARR_RELAY_BASE_URL", "\n".join(caught.output))
+
+    def test_stop_channel_is_500_with_a_fixed_body_when_the_relay_is_misconfigured(self):
+        with mock.patch.object(
+            relay_client, "stop_channel", side_effect=self._misconfigured()
+        ):
+            with self.assertLogs(views.logger, level="ERROR") as caught:
+                response = self.client.post("/proxy/ts/stop/abc")
+        self.assertEqual(response.status_code, 500)
+        self.assertEqual(response.json(), {"error": "Relay configuration error"})
+        self.assertIn("DISPATCHARR_RELAY_BASE_URL", "\n".join(caught.output))
+
+    def test_stop_client_is_500_with_a_fixed_body_when_the_relay_is_misconfigured(self):
+        with mock.patch.object(
+            relay_client, "stop_client", side_effect=self._misconfigured()
+        ):
+            with self.assertLogs(views.logger, level="ERROR") as caught:
+                response = self.client.post(
+                    "/proxy/ts/stop_client/abc",
+                    data={"client_id": "c1"},
+                    format="json",
+                )
+        self.assertEqual(response.status_code, 500)
+        self.assertEqual(response.json(), {"error": "Relay configuration error"})
+        self.assertIn("DISPATCHARR_RELAY_BASE_URL", "\n".join(caught.output))
+
+    def test_change_stream_is_500_with_a_fixed_body_when_the_relay_is_misconfigured(self):
+        with mock.patch.object(
+            relay_client, "advance", side_effect=self._misconfigured()
+        ):
+            with self.assertLogs(views.logger, level="ERROR") as caught:
+                response = self.client.post(
+                    "/proxy/ts/change_stream/abc",
+                    data={"url": "http://p/x"},
+                    format="json",
+                )
+        self.assertEqual(response.status_code, 500)
+        self.assertEqual(response.json(), {"error": "Relay configuration error"})
+        self.assertIn("DISPATCHARR_RELAY_BASE_URL", "\n".join(caught.output))
+
+    def test_next_stream_is_500_with_a_fixed_body_when_the_relay_is_misconfigured(self):
+        channel, _stream_a, _stream_b = self._make_channel_with_streams()
+        with mock.patch.object(
+            relay_client, "get_channel", side_effect=self._misconfigured()
+        ):
+            with self.assertLogs(views.logger, level="ERROR") as caught:
+                response = self.client.post(f"/proxy/ts/next_stream/{channel.uuid}")
+        self.assertEqual(response.status_code, 500)
+        self.assertEqual(response.json(), {"error": "Relay configuration error"})
+        self.assertIn("DISPATCHARR_RELAY_BASE_URL", "\n".join(caught.output))

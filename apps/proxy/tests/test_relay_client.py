@@ -253,27 +253,95 @@ class RelayClientCallTests(SimpleTestCase):
         self.assertEqual((snapshot.present, snapshot.active, snapshot.reachable),
                          (False, False, False))
 
-    def test_stop_channels_never_raises_and_visits_every_identifier(self):
+    def test_a_misconfigured_relay_propagates_out_of_channel_snapshot(self):
+        # Unlike RelayUnavailable/RelayRefused above, channel_snapshot's
+        # except clause does not name ImproperlyConfigured: a misconfigured
+        # deployment must fail visibly on the first tune (PR 6's Amendment
+        # S10 point 5, mirrored here for the reverse direction), not be
+        # swallowed into "the relay has nothing running."
+        from django.core.exceptions import ImproperlyConfigured
+
+        with mock.patch.object(
+            relay_client, "_request",
+            side_effect=ImproperlyConfigured("DISPATCHARR_RELAY_BASE_URL is bad"),
+        ):
+            with self.assertRaises(ImproperlyConfigured):
+                relay_client.channel_snapshot("x")
+
+    def test_stop_channels_never_raises_and_continues_past_a_refusal(self):
+        # A RelayRefused (a 404 for a channel already stopped, say) is a
+        # per-channel answer -- it says nothing about the rest -- so the
+        # loop keeps going, same as before this bound existed.
         seen = []
 
-        def _fail_on_the_second(identifier, **kwargs):
+        def _refuse_the_second(identifier, **kwargs):
+            seen.append(identifier)
+            if identifier == "b":
+                raise relay_client.RelayRefused(404, "/proxy/relay/channels/b")
+            return {"status": "success"}
+
+        with mock.patch.object(
+            relay_client, "stop_channel", side_effect=_refuse_the_second
+        ):
+            stopped = relay_client.stop_channels(iter(["a", "b", "c"]))
+        self.assertEqual(seen, ["a", "b", "c"])
+        self.assertEqual(stopped, ["a", "c"])
+
+    def test_stop_channels_stops_after_the_first_unavailable_relay(self):
+        # Kimi's PR #194 review, question 2: a whole-provider M3U delete
+        # can pass hundreds of identifiers. Once the relay itself cannot
+        # answer, every remaining identifier would pay the same
+        # ADMIN_TIMEOUT round trip and fail the same way, so the loop
+        # stops on the first RelayUnavailable rather than visiting the
+        # rest, and reports what it actually stopped.
+        seen = []
+
+        def _unavailable_on_the_second(identifier, **kwargs):
             seen.append(identifier)
             if identifier == "b":
                 raise relay_client.RelayUnavailable("down")
             return {"status": "success"}
 
         with mock.patch.object(
-            relay_client, "stop_channel", side_effect=_fail_on_the_second
+            relay_client, "stop_channel", side_effect=_unavailable_on_the_second
         ):
-            relay_client.stop_channels(iter(["a", "b", "c"]))
-        self.assertEqual(seen, ["a", "b", "c"])
+            with self.assertLogs(relay_client.logger, level="WARNING") as caught:
+                stopped = relay_client.stop_channels(iter(["a", "b", "c", "d"]))
+        self.assertEqual(seen, ["a", "b"])
+        self.assertEqual(stopped, ["a"])
+        self.assertEqual(len(caught.output), 1)
+
+    def test_stop_channels_stops_after_a_misconfigured_relay(self):
+        # Same bound as RelayUnavailable: a misconfigured base URL fails
+        # identically for every remaining identifier.
+        from django.core.exceptions import ImproperlyConfigured
+
+        seen = []
+
+        def _misconfigured_on_the_second(identifier, **kwargs):
+            seen.append(identifier)
+            if identifier == "b":
+                exc = ImproperlyConfigured("bad url")
+                exc.var_name = "DISPATCHARR_RELAY_BASE_URL"
+                raise exc
+            return {"status": "success"}
+
+        with mock.patch.object(
+            relay_client, "stop_channel", side_effect=_misconfigured_on_the_second
+        ):
+            with self.assertLogs(relay_client.logger, level="WARNING") as caught:
+                stopped = relay_client.stop_channels(iter(["a", "b", "c"]))
+        self.assertEqual(seen, ["a", "b"])
+        self.assertEqual(stopped, ["a"])
+        self.assertIn("DISPATCHARR_RELAY_BASE_URL", caught.output[0])
 
     def test_stop_channels_skips_a_falsy_identifier(self):
         with mock.patch.object(
             relay_client, "stop_channel", return_value={"status": "success"}
         ) as stopped:
-            relay_client.stop_channels([None, "", "a"])
+            result = relay_client.stop_channels([None, "", "a"])
         self.assertEqual(stopped.call_count, 1)
+        self.assertEqual(result, ["a"])
 
     def test_advance_sends_the_resolved_source_and_the_long_budget(self):
         with mock.patch.object(
