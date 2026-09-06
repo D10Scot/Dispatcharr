@@ -107,25 +107,45 @@ class RelayClientTransportTests(SimpleTestCase):
                 relay_client._request("GET", "/proxy/relay/channels", timeout=(1, 2))
 
     def test_only_the_transport_failure_is_marked_relay_wide(self):
-        # Final review round: a 5xx, a redirect and a garbled 2xx body
-        # are per-request outcomes from a relay that answered at least
-        # once; only a requests.RequestException means the relay could
-        # not be reached at all. stop_channels() uses this to decide
-        # whether one failure justifies aborting the rest of a batch.
+        # Final review round (twice): a 5xx, a redirect and a garbled 2xx
+        # body are per-request outcomes from a relay that answered at
+        # least once, so they must not be transport=True. The first fix
+        # marked every requests.RequestException as transport=True, which
+        # is wider than "connection level" -- ReadTimeout inherits
+        # Timeout -> RequestException but is NOT a ConnectionError, so a
+        # single channel's teardown stuck past ADMIN_TIMEOUT's read
+        # budget was wrongly marked relay-wide, exactly the case this
+        # round exists to fix. Only requests.ConnectionError (which
+        # ConnectTimeout subclasses) means the relay could not be reached
+        # at all. stop_channels() uses this to decide whether one failure
+        # justifies aborting the rest of a batch.
         with mock.patch.object(requests, "request", return_value=_Response(502)):
             try:
                 relay_client._request("GET", "/proxy/relay/channels", timeout=(1, 2))
                 self.fail("expected RelayUnavailable")
             except relay_client.RelayUnavailable as exc:
                 self.assertFalse(exc.transport)
-        with mock.patch.object(
-            requests, "request", side_effect=requests.ConnectionError("nope")
-        ):
-            try:
-                relay_client._request("GET", "/proxy/relay/channels", timeout=(1, 2))
-                self.fail("expected RelayUnavailable")
-            except relay_client.RelayUnavailable as exc:
-                self.assertTrue(exc.transport)
+        transport_cases = (
+            (requests.ConnectionError("nope"), True),
+            (requests.ConnectTimeout("nope"), True),
+            (requests.ReadTimeout("nope"), False),
+            (requests.exceptions.ChunkedEncodingError("nope"), False),
+        )
+        for side_effect, expected_transport in transport_cases:
+            with mock.patch.object(
+                requests, "request", side_effect=side_effect
+            ):
+                try:
+                    relay_client._request(
+                        "GET", "/proxy/relay/channels", timeout=(1, 2)
+                    )
+                    self.fail("expected RelayUnavailable")
+                except relay_client.RelayUnavailable as exc:
+                    self.assertIs(
+                        exc.transport, expected_transport,
+                        f"{type(side_effect).__name__} should have "
+                        f"transport={expected_transport}",
+                    )
 
     def test_nothing_is_retried(self):
         # A retried advance switches twice; a retried tune-path read
@@ -356,6 +376,28 @@ class RelayClientCallTests(SimpleTestCase):
             stopped = relay_client.stop_channels(iter(["a", "b", "c"]))
         self.assertEqual(seen, ["a", "b", "c"])
         self.assertEqual(stopped, ["a", "c"])
+
+    def test_stop_channels_continues_past_a_read_timeout_end_to_end(self):
+        # Final review round: drives the real _request() ->
+        # requests.ReadTimeout path (rather than a hand-built
+        # RelayUnavailable, as the test above does) end to end, on the
+        # second of four identifiers -- reproducing the reviewer's own
+        # measurement against the earlier, over-broad fix (visited
+        # ['a', 'b'], stopped ['a'], c and d stranded). c and d must now
+        # be visited and stopped.
+        seen = []
+
+        def _side_effect(method, url, **kwargs):
+            identifier = url.rsplit("/", 1)[-1]
+            seen.append(identifier)
+            if identifier == "b":
+                raise requests.ReadTimeout("nope")
+            return _Response(200, body=b'{"status": "success"}')
+
+        with mock.patch.object(requests, "request", side_effect=_side_effect):
+            stopped = relay_client.stop_channels(iter(["a", "b", "c", "d"]))
+        self.assertEqual(seen, ["a", "b", "c", "d"])
+        self.assertEqual(stopped, ["a", "c", "d"])
 
     def test_stop_channels_stops_after_a_misconfigured_relay(self):
         # Same bound as RelayUnavailable: a misconfigured base URL fails

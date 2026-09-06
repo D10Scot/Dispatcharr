@@ -1753,28 +1753,38 @@ make, recorded here rather than re-derived by PR 8 or Phase 2:
       teardown, `apps/channels/tasks.py`'s DVR stream-stats capture) and needed no change — they
       already treated every exception, `ImproperlyConfigured` included, the same way.
 23. **`relay_client.stop_channels()` now bounds itself, but only on a genuinely relay-wide
-    failure (Kimi's PR #194 review, question 2, corrected by the final review round).** A
-    whole-provider M3U delete (`apps/m3u/api_views.py`'s account `destroy()`) can pass hundreds
-    of channel UUIDs in one call. The first fix bounded the loop on any `RelayUnavailable`, but
-    `_request()` raises `RelayUnavailable` from five places and only a connection-level failure
-    (a `requests.RequestException`) is reliably relay-wide — a redirect, a 5xx and a garbled 2xx
-    body are per-request outcomes from a relay that answered at least once (a single channel's
-    teardown stuck past `ADMIN_TIMEOUT (2, 5)`s, one worker recycle on the single-worker relay, a
-    full listen queue), and the coarser bound could abort a whole batch over one of those,
-    stranding channels that would have stopped fine. `RelayUnavailable` gained a `transport`
-    flag, `True` only at the `requests.RequestException` raise site; `stop_channels()` now
-    aborts only on `transport=True` or `ImproperlyConfigured` — both mean every remaining
-    identifier would fail identically before a request is even attempted or answered. Every
-    other outcome is per-channel and keeps the loop going: `RelayRefused` (a 404 for an
-    already-stopped channel, a 403 from a `SECRET_KEY` mismatch — the existing contract three
-    Django-side callers already relied on) and a non-transport `RelayUnavailable`.
-    `stop_channels()` still returns the list of identifiers it actually stopped, so a caller
-    that wants to report partial progress can, though none of the three current callers reads it
-    yet. Pinned by six tests in `apps/proxy/tests/test_relay_client.py`: the transport flag set
-    correctly at both `_request()` raise sites, continuing past a `RelayRefused`, stopping after
-    the first transport failure, continuing past a per-request (non-transport) `RelayUnavailable`,
-    stopping after the first `ImproperlyConfigured`, and the return value on a mix including a
-    skipped falsy identifier.
+    failure (Kimi's PR #194 review, question 2, corrected twice by the final review rounds).**
+    A whole-provider M3U delete (`apps/m3u/api_views.py`'s account `destroy()`) can pass
+    hundreds of channel UUIDs in one call. The first fix bounded the loop on any
+    `RelayUnavailable`; `_request()` raises it from five places and only a connection-level
+    failure is reliably relay-wide, so that fix over-aborted. The second fix marked
+    `transport=True` on `except requests.RequestException`, which is wider than "connection
+    level" — `ReadTimeout` inherits `Timeout` → `RequestException` but is not a
+    `ConnectionError`, so a single channel's teardown stuck past `ADMIN_TIMEOUT (2, 5)`s still
+    raised a `transport=True` failure and still stranded every identifier after it, measured
+    directly against that commit. The fix that landed: `except requests.ConnectionError` (which
+    `ConnectTimeout` subclasses) sets `transport=True` and is checked **first**, narrower than
+    the `except requests.RequestException` beneath it, which leaves `transport=False` for
+    `ReadTimeout`, `ChunkedEncodingError` and everything else `RequestException` covers — all
+    per-request outcomes from a relay that answered at least once (one worker recycle on the
+    single-worker relay, a full listen queue), same as a redirect or a garbled 2xx body.
+    `stop_channels()` aborts only on `transport=True` or `ImproperlyConfigured` — both mean
+    every remaining identifier would fail identically before a request is even attempted or
+    answered. Every other outcome is per-channel and keeps the loop going: `RelayRefused` (a
+    404 for an already-stopped channel, a 403 from a `SECRET_KEY` mismatch — the existing
+    contract three Django-side callers already relied on) and a non-transport
+    `RelayUnavailable`. `stop_channels()` still returns the list of identifiers it actually
+    stopped, so a caller that wants to report partial progress can, though none of the three
+    current callers reads it
+    yet. Pinned by eight tests in `apps/proxy/tests/test_relay_client.py`: the transport flag
+    checked against all four `requests` exception shapes (`ConnectionError` and `ConnectTimeout`
+    True, `ReadTimeout` and `ChunkedEncodingError` False — the exact case that made this a
+    two-round fix); continuing past a `RelayRefused`; stopping after the first transport
+    failure; continuing past a per-request (non-transport) `RelayUnavailable` built directly;
+    continuing past a real `requests.ReadTimeout` driven end to end through `_request()` on the
+    second of four identifiers (reproducing the reviewer's own measurement against the
+    over-broad fix); stopping after the first `ImproperlyConfigured`; and the return value on a
+    mix including a skipped falsy identifier.
 
 ### PR 7 — `migration/phase1-control-api`
 

@@ -81,15 +81,17 @@ ADVANCE_TIMEOUT = (2, 20)
 class RelayUnavailable(Exception):
     """The relay could not be reached, or answered 5xx, or redirected.
 
-    `transport` is True only for the requests.RequestException branch in
-    _request() -- a connection failure, which really is relay-wide. A
-    redirect, a 5xx and a garbled 2xx body are per-request outcomes from
-    a relay that answered at least once (a stuck single channel, one
-    worker recycle, a full listen queue); they default to False.
-    stop_channels() below uses the distinction: only a transport failure
-    justifies aborting a whole batch (final review round, "the bound
-    over-aborts" -- a per-request failure must not strand channels that
-    would have stopped fine)."""
+    `transport` is True only for the requests.ConnectionError branch in
+    _request() -- a connection failure, which really is relay-wide.
+    ReadTimeout and every other RequestException, a redirect, a 5xx and
+    a garbled 2xx body are all per-request outcomes from a relay that
+    answered at least once (a stuck single channel, one worker recycle,
+    a full listen queue); they default to False. stop_channels() below
+    uses the distinction: only a transport failure justifies aborting a
+    whole batch (final review round, "the bound over-aborts", then
+    corrected again when the first fix marked every RequestException --
+    ReadTimeout included -- transport=True; a per-request failure must
+    not strand channels that would have stopped fine)."""
 
     def __init__(self, message, *, transport=False):
         self.transport = transport
@@ -142,7 +144,7 @@ def _request(method, path, *, timeout, payload=None, params=None):
             # deployment. Treated as an outage below instead.
             allow_redirects=False,
         )
-    except requests.RequestException as exc:
+    except requests.ConnectionError as exc:
         # type(exc).__name__ only, never str(exc): a requests exception's
         # own text carries the dialled host, port and full path with its
         # query string (e.g. "HTTPConnectionPool(host='web', port=80): Max
@@ -150,9 +152,22 @@ def _request(method, path, *, timeout, payload=None, params=None):
         # state"), and this line must name "the identifier and the status
         # code only, never the URL it dialled." `from exc` keeps the full
         # detail on the chained traceback for anyone reading logs directly.
+        #
+        # transport=True only here: ConnectionError -- which ConnectTimeout
+        # subclasses -- means the relay could not be reached at all, so
+        # every remaining identifier in a stop_channels() batch would fail
+        # the same way. The wider RequestException catch below, ReadTimeout
+        # included, means the relay was reached and this one request then
+        # failed (a single channel's teardown stuck past ADMIN_TIMEOUT's
+        # five-second read budget, a garbled response mid-stream), which
+        # says nothing about the next identifier -- final review round: an
+        # earlier version of this branch caught ReadTimeout here too and
+        # stranded channels a slow teardown would have let stop fine.
         raise RelayUnavailable(
             f"{path} unreachable: {type(exc).__name__}", transport=True
         ) from exc
+    except requests.RequestException as exc:
+        raise RelayUnavailable(f"{path} unreachable: {type(exc).__name__}") from exc
     if 300 <= response.status_code < 400:
         raise RelayUnavailable(f"{path} redirected with {response.status_code}")
     if response.status_code >= 500:
