@@ -1810,7 +1810,11 @@ make, recorded here rather than re-derived by PR 8 or Phase 2:
   `apps/proxy/`", because `apps/timeshift/`'s streaming views run in the relay process while its
   `stats_views.py` runs in the API — ownership here is per function, not per file);
   `apps.channels.tests` (including `test_ts_proxy_teardown.py`'s ten `ProxyServer` constructions),
-  `apps.m3u.tests`, `apps.proxy.tests`, `apps.proxy.live_proxy.tests` and `core.tests` green;
+  `apps.m3u.tests`, `apps.proxy.tests`, `apps.proxy.live_proxy.tests`, `apps.timeshift.tests` and
+  `core.tests` green — six labels, not five: the whole-branch review's fix round touched
+  `apps/timeshift/views.py` and put its regression tests in `apps/timeshift/tests/test_views.py`,
+  so `labels_for_changed_paths()` over this branch's changed paths selects `apps.timeshift.tests`
+  too, and it is the label carrying those new tests;
   `E2E result` green with `Stats.jsx`'s existing frontend coverage unchanged, since URLs,
   permissions and response shape are unchanged apart from the two type fixes.
 - **`CLAUDE.md` corrected:** § Structural constraints, the `channels/models.py:6-7` boot-cycle
