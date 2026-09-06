@@ -93,14 +93,16 @@ one up. CI binds the same way.
 
 `streaming` runs at `workers: 2` — its byte-level reads are slow but do not
 touch anything another test in the same project could observe.
-`streaming-failover` and `streaming-greybox` both pin `workers: 1` instead,
-each for its own container-wide hazard: `failover-buffering.spec.ts` mutates
-the global `proxy_settings` row for the duration of its run, and
-`output-profile-sharing.spec.ts` counts every `ffmpeg` process running in the
-container (`pgrep -x ffmpeg`) via `greyboxRedis()`. Neither observable is
-scoped to its own channel, so a second worker running anything else in the
-same project would race it — see each project's `workers` comment in
-`playwright.config.ts` for the full reasoning. A future grey-box test that
+`streaming-failover`, `streaming-greybox` and `streaming-split` all pin
+`workers: 1` instead, each for its own container-wide hazard:
+`failover-buffering.spec.ts` mutates the global `proxy_settings` row for the
+duration of its run, `output-profile-sharing.spec.ts` counts every `ffmpeg`
+process running in the container (`pgrep -x ffmpeg`) via `greyboxRedis()`,
+and `streaming-split`'s tests stop and restart a supervisord program
+(`api-uwsgi` or `relay-uwsgi`) that the whole container shares. None of
+these hazards is scoped to its own channel, so a second worker running
+anything else in the same project would race it — see each project's
+`workers` comment in `playwright.config.ts` for the full reasoning. A future grey-box test that
 mutates Redis directly, the way the deleted ownership-lease flagship did (see
 `COVERAGE.md`), would be the same class of risk in `streaming-greybox`, which
 is why that project doesn't trust every future test to be independently safe

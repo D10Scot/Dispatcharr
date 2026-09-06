@@ -199,7 +199,7 @@ export default defineConfig({
       // plus ~215s of margin for what precedes it — two `expectRunning`
       // pre-checks at 60s each and `seed.upstreamM3UAccount`, which wraps a
       // refresh wait of its own. That margin is not the sum of those worst
-      // cases (they total ~270s, so the theoretical worst case is ~655s); it
+      // cases (they total ~350s, so the theoretical worst case is ~735s); it
       // is deliberately sized for one thing going wrong at a time, because a
       // run in which the pre-checks AND the seeding AND the restart all take
       // their maxima has already failed for a reason no timeout will clarify.
