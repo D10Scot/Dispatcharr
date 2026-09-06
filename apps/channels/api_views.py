@@ -97,12 +97,12 @@ def _stop_proxy_sessions_for_channel_ids(channel_ids):
     """
     if not channel_ids:
         return
-    from apps.proxy.live_proxy.services.channel_service import ChannelService
+    from apps.proxy import relay_client
 
     uuids = list(
         Channel.objects.filter(id__in=channel_ids).values_list("uuid", flat=True)
     )
-    ChannelService.stop_channels(uuids)
+    relay_client.stop_channels(uuids)
 
 
 logger = logging.getLogger(__name__)
@@ -3222,23 +3222,22 @@ def _stop_dvr_clients(channel_uuid, recording_id=None):
 
     Returns the number of DVR clients stopped.
     """
-    from core.utils import RedisClient
-    from apps.proxy.live_proxy.redis_keys import RedisKeys
-    from apps.proxy.live_proxy.services.channel_service import ChannelService
+    from apps.proxy import relay_client
 
-    r = RedisClient.get_client()
-    if not r:
+    try:
+        channel_info = relay_client.get_channel(channel_uuid)
+    except (relay_client.RelayUnavailable, relay_client.RelayRefused) as e:
+        logger.debug(f"Relay could not list clients for channel {channel_uuid}: {e}")
         return 0
-    client_set_key = RedisKeys.clients(channel_uuid)
-    client_ids = r.smembers(client_set_key) or []
+    if not channel_info:
+        return 0
+
     stopped = 0
-    for raw_id in client_ids:
+    for client in channel_info.get("clients") or []:
         try:
-            cid = raw_id.decode("utf-8") if isinstance(raw_id, (bytes, bytearray)) else str(raw_id)
-            meta_key = RedisKeys.client_metadata(channel_uuid, cid)
-            ua = r.hget(meta_key, "user_agent")
-            ua_s = ua.decode("utf-8") if isinstance(ua, (bytes, bytearray)) else (ua or "")
-            if not (ua_s and "Dispatcharr-DVR" in ua_s):
+            cid = client.get("client_id")
+            ua_s = client.get("user_agent") or ""
+            if not (cid and "Dispatcharr-DVR" in ua_s):
                 continue
             # When a recording_id is specified, only stop the client for that recording.
             # Each run_recording task connects with User-Agent "Dispatcharr-DVR/recording-{id}",
@@ -3246,13 +3245,13 @@ def _stop_dvr_clients(channel_uuid, recording_id=None):
             if recording_id is not None and f"recording-{recording_id}" not in ua_s:
                 continue
             try:
-                ChannelService.stop_client(channel_uuid, cid)
+                relay_client.stop_client(channel_uuid, cid)
                 stopped += 1
             except Exception as inner_e:
                 logger.debug(f"Failed to stop DVR client {cid} for channel {channel_uuid}: {inner_e}")
         except Exception as inner:
             logger.debug(f"Error while checking client metadata: {inner}")
-    # Do not call ChannelService.stop_channel() here.
+    # Do not call relay_client.stop_channel() here.
     # Stopping the channel proxy would terminate the source connection which may
     # be shared with other recordings on the same channel.  The TS proxy server
     # already detects when client count reaches zero and tears down the channel
@@ -3797,41 +3796,38 @@ class RecordingViewSet(viewsets.ModelViewSet):
         try:
             channel_uuid = str(instance.channel.uuid)
             # Lazy imports to avoid module overhead if proxy isn't used
-            from core.utils import RedisClient
-            from apps.proxy.live_proxy.redis_keys import RedisKeys
-            from apps.proxy.live_proxy.services.channel_service import ChannelService
+            from apps.proxy import relay_client
 
-            r = RedisClient.get_client()
-            if r:
-                client_set_key = RedisKeys.clients(channel_uuid)
-                client_ids = r.smembers(client_set_key) or []
-                stopped = 0
-                for cid in client_ids:
-                    try:
-                        meta_key = RedisKeys.client_metadata(channel_uuid, cid)
-                        ua = r.hget(meta_key, "user_agent")
-                        # Identify DVR recording client by its user agent
-                        if ua and "Dispatcharr-DVR" in ua:
-                            try:
-                                ChannelService.stop_client(channel_uuid, cid)
-                                stopped += 1
-                            except Exception as inner_e:
-                                logger.debug(f"Failed to stop DVR client {cid} for channel {channel_uuid}: {inner_e}")
-                    except Exception as inner:
-                        logger.debug(f"Error while checking client metadata: {inner}")
-                if stopped:
-                    logger.info(f"Stopped {stopped} DVR client(s) for channel {channel_uuid} due to recording cancellation")
-                # If no clients remain after stopping DVR clients, proactively stop the channel
+            channel_info = relay_client.get_channel(channel_uuid)
+            stopped = 0
+            for client in (channel_info or {}).get("clients") or []:
                 try:
-                    remaining = r.scard(client_set_key) or 0
-                except Exception:
-                    remaining = 0
-                if remaining == 0:
-                    try:
-                        ChannelService.stop_channel(channel_uuid)
-                        logger.info(f"Stopped channel {channel_uuid} (no clients remain)")
-                    except Exception as sc_e:
-                        logger.debug(f"Unable to stop channel {channel_uuid}: {sc_e}")
+                    cid = client.get("client_id")
+                    ua = client.get("user_agent") or ""
+                    # Identify DVR recording client by its user agent
+                    if cid and "Dispatcharr-DVR" in ua:
+                        try:
+                            relay_client.stop_client(channel_uuid, cid)
+                            stopped += 1
+                        except Exception as inner_e:
+                            logger.debug(f"Failed to stop DVR client {cid} for channel {channel_uuid}: {inner_e}")
+                except Exception as inner:
+                    logger.debug(f"Error while checking client metadata: {inner}")
+            if stopped:
+                logger.info(f"Stopped {stopped} DVR client(s) for channel {channel_uuid} due to recording cancellation")
+            # If no clients remain after stopping DVR clients, proactively stop the channel
+            try:
+                remaining = (relay_client.get_channel(channel_uuid) or {}).get(
+                    "client_count", 0
+                )
+            except Exception:
+                remaining = 0
+            if remaining == 0:
+                try:
+                    relay_client.stop_channel(channel_uuid)
+                    logger.info(f"Stopped channel {channel_uuid} (no clients remain)")
+                except Exception as sc_e:
+                    logger.debug(f"Unable to stop channel {channel_uuid}: {sc_e}")
         except Exception as e:
             logger.debug(f"Unable to stop DVR clients for cancelled recording: {e}")
 

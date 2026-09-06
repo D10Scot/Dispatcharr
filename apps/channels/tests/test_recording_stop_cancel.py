@@ -277,39 +277,37 @@ class RunRecordingRaceGuardTests(TestCase):
 
 
 class StopDvrClientsTests(TestCase):
-    """_stop_dvr_clients() DVR client isolation."""
+    """_stop_dvr_clients() DVR client isolation.
+
+    Phase 1 PR 7 moved this read from RedisKeys.clients /
+    RedisKeys.client_metadata to relay_client.get_channel's detailed
+    payload -- see apps.channels.tests.test_dvr_client_teardown for the
+    relay-unavailable/no-channel cases this class does not repeat.
+    """
 
     def setUp(self):
         self.channel = Channel.objects.create(channel_number=95, name="DVR Clients Channel")
-        self._redis = "core.utils.RedisClient"
-        self._sc = "apps.proxy.live_proxy.services.channel_service.ChannelService.stop_client"
-        self._sch = "apps.proxy.live_proxy.services.channel_service.ChannelService.stop_channel"
+        self._gc = "apps.proxy.relay_client.get_channel"
+        self._sc = "apps.proxy.relay_client.stop_client"
+        self._sch = "apps.proxy.relay_client.stop_channel"
 
-    def _mock_redis(self, client_ids, ua_map):
-        r = MagicMock()
-        r.smembers.return_value = {c.encode() for c in client_ids}
-        def hget_side(key, field):
-            ks = key if isinstance(key, str) else key.decode("utf-8", errors="replace")
-            for cid, ua in ua_map.items():
-                if cid in ks:
-                    return ua.encode() if isinstance(ua, str) else ua
-            return b""
-        r.hget.side_effect = hget_side
-        return r
+    @staticmethod
+    def _channel(ua_map):
+        clients = [
+            {"client_id": cid, "user_agent": ua} for cid, ua in ua_map.items()
+        ]
+        return {"channel_id": "c", "client_count": len(clients), "clients": clients}
 
-    def test_returns_zero_when_redis_none(self):
-        with patch(self._redis) as rc:
-            rc.get_client.return_value = None
+    def test_returns_zero_when_relay_has_no_channel(self):
+        with patch(self._gc, return_value=None):
             self.assertEqual(_stop_dvr_clients(str(self.channel.uuid)), 0)
 
     def test_stops_only_matching_client_when_recording_id_given(self):
-        r = self._mock_redis(
-            ["client-a", "client-b"],
+        payload = self._channel(
             {"client-a": "Dispatcharr-DVR/recording-42",
              "client-b": "Dispatcharr-DVR/recording-99"},
         )
-        with patch(self._redis) as rc, patch(self._sc) as sc:
-            rc.get_client.return_value = r
+        with patch(self._gc, return_value=payload), patch(self._sc) as sc:
             result = _stop_dvr_clients(str(self.channel.uuid), recording_id=42)
         self.assertEqual(result, 1)
         stopped = [c[0][1] for c in sc.call_args_list]
@@ -317,40 +315,33 @@ class StopDvrClientsTests(TestCase):
         self.assertNotIn("client-b", stopped)
 
     def test_stops_all_dvr_clients_without_recording_id(self):
-        r = self._mock_redis(
-            ["client-a", "client-b"],
+        payload = self._channel(
             {"client-a": "Dispatcharr-DVR/recording-42",
              "client-b": "Dispatcharr-DVR/recording-99"},
         )
-        with patch(self._redis) as rc, patch(self._sc) as sc:
-            rc.get_client.return_value = r
+        with patch(self._gc, return_value=payload), patch(self._sc) as sc:
             result = _stop_dvr_clients(str(self.channel.uuid))
         self.assertEqual(result, 2)
 
     def test_skips_non_dvr_clients(self):
-        r = self._mock_redis(
-            ["viewer", "dvr-client"],
+        payload = self._channel(
             {"viewer": "Mozilla/5.0", "dvr-client": "Dispatcharr-DVR/recording-1"},
         )
-        with patch(self._redis) as rc, patch(self._sc) as sc:
-            rc.get_client.return_value = r
+        with patch(self._gc, return_value=payload), patch(self._sc) as sc:
             result = _stop_dvr_clients(str(self.channel.uuid))
         self.assertEqual(result, 1)
         stopped = [c[0][1] for c in sc.call_args_list]
         self.assertNotIn("viewer", stopped)
 
     def test_returns_zero_for_empty_channel(self):
-        r = MagicMock()
-        r.smembers.return_value = set()
-        with patch(self._redis) as rc, patch(self._sc) as sc:
-            rc.get_client.return_value = r
+        payload = self._channel({})
+        with patch(self._gc, return_value=payload), patch(self._sc) as sc:
             self.assertEqual(_stop_dvr_clients(str(self.channel.uuid)), 0)
         sc.assert_not_called()
 
     def test_never_calls_stop_channel(self):
         """Must not stop the whole channel proxy — only individual clients."""
-        r = self._mock_redis(["dvr-1"], {"dvr-1": "Dispatcharr-DVR/recording-1"})
-        with patch(self._redis) as rc, patch(self._sc), patch(self._sch) as sch:
-            rc.get_client.return_value = r
+        payload = self._channel({"dvr-1": "Dispatcharr-DVR/recording-1"})
+        with patch(self._gc, return_value=payload), patch(self._sc), patch(self._sch) as sch:
             _stop_dvr_clients(str(self.channel.uuid))
         sch.assert_not_called()

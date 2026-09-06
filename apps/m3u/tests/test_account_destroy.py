@@ -41,8 +41,7 @@ class M3UAccountDestroyTests(TestCase):
         # channel before the DB transaction; the real implementation is
         # exercised by integration tests, not unit tests.
         self._stop_patch = patch(
-            "apps.proxy.live_proxy.services.channel_service."
-            "ChannelService.stop_channel"
+            "apps.proxy.relay_client.stop_channel"
         )
         self._stop_patch.start()
         self.addCleanup(self._stop_patch.stop)

@@ -279,9 +279,7 @@ class M3UAccountViewSet(viewsets.ModelViewSet):
         """
         instance = self.get_object()
         from apps.channels.models import Channel
-        from apps.proxy.live_proxy.services.channel_service import (
-            ChannelService,
-        )
+        from apps.proxy import relay_client
 
         # Snapshot channels so proxy sessions can be stopped outside
         # the DB transaction. Teardown must not run inside the atomic
@@ -292,7 +290,7 @@ class M3UAccountViewSet(viewsets.ModelViewSet):
                 auto_created_by=instance,
             ).values_list("id", "uuid")
         )
-        ChannelService.stop_channels(
+        relay_client.stop_channels(
             channel_uuid for _, channel_uuid in channels_to_delete
         )
 
