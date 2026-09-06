@@ -62,7 +62,7 @@ class CombinedStatsApiTests(TestCase):
 
     @patch("apps.proxy.stats_views.build_timeshift_stats_data")
     @patch("apps.proxy.stats_views.build_vod_stats_data")
-    @patch("apps.proxy.stats_views.build_live_channel_stats_data")
+    @patch("apps.proxy.stats_views.relay_client.list_channels")
     @patch("apps.proxy.stats_views.RedisClient.get_client")
     def test_combined_stats_returns_all_sections(
         self,
@@ -108,3 +108,20 @@ class CombinedStatsApiTests(TestCase):
 
         self.assertEqual(response.status_code, 500)
         self.assertIn("error", json.loads(response.content))
+
+    def test_a_relay_outage_empties_only_the_live_section(self):
+        from apps.proxy import relay_client
+
+        with patch.object(
+            relay_client, "list_channels",
+            side_effect=relay_client.RelayUnavailable("down"),
+        ):
+            request = self.factory.get("/proxy/stats/")
+            force_authenticate(request, user=self.admin)
+            response = stats_views.combined_stats(request)
+
+        body = json.loads(response.content)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(body["live"], {"channels": [], "count": 0})
+        self.assertIn("vod", body)
+        self.assertIn("catchup", body)
