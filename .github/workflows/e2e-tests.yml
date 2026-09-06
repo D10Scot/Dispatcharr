@@ -95,7 +95,7 @@ jobs:
           # `lifecycle-tests.yml`'s `upgrade-migrations` job does, and that job
           # already runs the project on every `migration/**` branch. Listing it
           # here too ran it without the baseline and failed every full run.
-          projects='["pristine","seeded","streaming","streaming-failover","streaming-greybox","lifecycle","frontend","dvr"]'
+          projects='["pristine","seeded","streaming","streaming-failover","streaming-greybox","streaming-split","lifecycle","frontend","dvr"]'
           echo "projects=$projects" >> "$GITHUB_OUTPUT"
 
           if [ "$full" = "true" ] || [ "$EVENT_NAME" != "pull_request" ]; then

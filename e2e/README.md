@@ -59,13 +59,14 @@ one up. CI binds the same way.
 
 | Project | What it is for |
 |---|---|
-| `bootstrap` | Creates the superuser, pre-warms the `IntervalSchedule` row (see below) and writes auth state. Runs automatically as a dependency of `seeded`, `streaming`, `streaming-failover`, `streaming-greybox`, `frontend` and `dvr` — every project that shares the default container. `guards` needs no container at all; `pristine`, `lifecycle`, `lifecycle-upgrade`, `lifecycle-restore` and `lifecycle-scheduling` each need an instance bootstrap has not touched |
+| `bootstrap` | Creates the superuser, pre-warms the `IntervalSchedule` row (see below) and writes auth state. Runs automatically as a dependency of `seeded`, `streaming`, `streaming-failover`, `streaming-greybox`, `streaming-split`, `frontend` and `dvr` — every project that shares the default container. `guards` needs no container at all; `pristine`, `lifecycle`, `lifecycle-upgrade`, `lifecycle-restore` and `lifecycle-scheduling` each need an instance bootstrap has not touched |
 | `guards` | Static analysis over this suite's own source. **No container, no browser, no fixtures** — it runs in about a second and needs nothing running. Home for every enforcement spec: the tag taxonomy, the grey-box capability allowlists, the `data-testid` contract, the instance-wide settings-write allowlist and the `pageErrors` check (which moved here from `tests/frontend/`) |
 | `pristine` | Needs an instance with **no superuser**: first-run setup, and global `CoreSettings` changes |
 | `seeded` | The default. Shared instance, parallel workers, API-seeded data |
 | `streaming` | Byte-level tests. Long timeouts, fewer workers |
 | `streaming-failover` | Failover behaviour: dead-air and buffering watchdogs. Long timeouts, fewer workers |
 | `streaming-greybox` | Tests that reach past the API into Redis or the container directly (e.g. counting live `ffmpeg` processes). Long timeouts, one worker — **must be run alone locally**: in CI each matrix job gets its own container, but locally all projects can share one, and this project observes container-wide state that whatever else is running would disturb |
+| `streaming-split` | The two uWSGI processes restarted independently: `supervisorctl stop api-uwsgi` with a stream running, and `supervisorctl restart relay-uwsgi` with a Celery task queued. Long timeouts, one worker, no retries — **must be run alone locally**: in CI each matrix job gets its own container, but locally all projects share one, and this project takes the API process away for the length of a test. It keeps its container (unlike the four lifecycle projects), so it depends on `bootstrap` like its streaming siblings |
 | `frontend` | The nine product surfaces in a browser: does the page mount, and does a write driven through its UI reach the server. Two workers, file-level parallelism, 120s |
 | `dvr` | Real DVR recordings end to end — scheduling through `run_recording`, comskip's `dvr_settings` toggle, and finalisation under `/data/recordings`. Long timeouts, one worker — **must be run alone locally**: in CI each matrix job gets its own container, but locally all projects can share one, and this project mutates container-wide state (the `dvr_settings` row, the recordings directory) that whatever else is running would disturb |
 | `lifecycle` | Restarts the container mid-test. **Runs alone** — it destroys the container every other project shares. No `bootstrap` dependency: it provisions its own admin |
@@ -725,16 +726,17 @@ cross-check guard) is a call for whoever owns ADR-0002 next, not a side effect o
 
 `.github/workflows/e2e-tests.yml` builds the AIO image once, then runs
 `pristine`, `seeded`, `streaming`, `streaming-failover`, `streaming-greybox`,
-`lifecycle`, `frontend` and `dvr` as a matrix, each against its own fresh
-container, each gated on `npm run typecheck` before tests run.
+`streaming-split`, `lifecycle`, `frontend` and `dvr` as a matrix, each against
+its own fresh container, each gated on `npm run typecheck` before tests run.
 
 **That project list is no longer hardcoded in the `test` job** — it is built by
 the `changes` job and consumed as `fromJSON(needs.changes.outputs.projects)`,
 so full mode can extend it. **If you add another project to
-`playwright.config.ts`, add it to both `projects` lists in that job** (unless
+`playwright.config.ts`, add it to the `projects` list in that job** (unless
 it belongs in `lifecycle-tests.yml` instead — see `lifecycle-upgrade` below).
-Nothing wires new projects in automatically, and a project in neither place
-gets no CI coverage and no failure signal.
+There is one list, read by both modes; `streaming-split` was the first project
+added after it stopped being two. Nothing wires new projects in automatically,
+and a project in neither place gets no CI coverage and no failure signal.
 
 `guards` is the one project deliberately **not** in that matrix: it needs no
 container, so it has its own job that skips the image download and the
