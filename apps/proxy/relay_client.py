@@ -57,8 +57,20 @@ from apps.proxy.internal_auth import (
     internal_principal_token,
 )
 from apps.proxy.internal_base_url import resolve_base_url
+from apps.proxy.live_proxy.constants import ChannelState
 
 logger = logging.getLogger(__name__)
+
+# Django's escape_uri_path safe set, minus '/': what get_full_path()
+# reconstructs a path segment through on the server side, since nginx
+# passes PATH_INFO already decoded and Django re-escapes it before the
+# bound token is verified against it. quote(..., safe='') encodes more
+# than that (':', for one), so the two sides would sign and verify
+# different strings for the same identifier -- a spurious 403, not a
+# routing failure, because nginx's <str:...> converter never sees the
+# raw bytes either way. -_.~ are always safe in quote(), so they need
+# not be repeated here.
+_PATH_SEGMENT_SAFE = ":@&+$,!*'()"
 
 TUNE_TIMEOUT = (1, 2)
 ADMIN_TIMEOUT = (2, 5)
@@ -116,7 +128,14 @@ def _request(method, path, *, timeout, payload=None, params=None):
             allow_redirects=False,
         )
     except requests.RequestException as exc:
-        raise RelayUnavailable(f"{path} unreachable: {exc}") from exc
+        # type(exc).__name__ only, never str(exc): a requests exception's
+        # own text carries the dialled host, port and full path with its
+        # query string (e.g. "HTTPConnectionPool(host='web', port=80): Max
+        # retries exceeded with url: /proxy/relay/channels/<uuid>?fields=
+        # state"), and this line must name "the identifier and the status
+        # code only, never the URL it dialled." `from exc` keeps the full
+        # detail on the chained traceback for anyone reading logs directly.
+        raise RelayUnavailable(f"{path} unreachable: {type(exc).__name__}") from exc
     if 300 <= response.status_code < 400:
         raise RelayUnavailable(f"{path} redirected with {response.status_code}")
     if response.status_code >= 500:
@@ -178,7 +197,7 @@ def get_channel(identifier, *, timeout=ADMIN_TIMEOUT, fields=None):
     It travels as a query parameter, which the bound token signs along
     with the path (ruling 17).
     """
-    path = f"/proxy/relay/channels/{quote(str(identifier), safe='')}"
+    path = f"/proxy/relay/channels/{quote(str(identifier), safe=_PATH_SEGMENT_SAFE)}"
     params = {"fields": fields} if fields else None
     try:
         return _request("GET", path, timeout=timeout, params=params)
@@ -197,8 +216,6 @@ def channel_snapshot(identifier, *, timeout=TUNE_TIMEOUT):
     would trip the two-second budget under load far more often than
     this question warrants.
     """
-    from apps.proxy.live_proxy.constants import ChannelState
-
     reusable_states = (
         ChannelState.ACTIVE,
         ChannelState.WAITING_FOR_CLIENTS,
@@ -222,7 +239,7 @@ def channel_snapshot(identifier, *, timeout=TUNE_TIMEOUT):
 
 def stop_channel(identifier, *, timeout=ADMIN_TIMEOUT):
     """Stop a channel. Returns ChannelService.stop_channel's own dict."""
-    path = f"/proxy/relay/channels/{quote(str(identifier), safe='')}"
+    path = f"/proxy/relay/channels/{quote(str(identifier), safe=_PATH_SEGMENT_SAFE)}"
     return _request("DELETE", path, timeout=timeout)
 
 
@@ -249,8 +266,8 @@ def stop_channels(identifiers):
 def stop_client(identifier, client_id, *, timeout=ADMIN_TIMEOUT):
     """Stop one client on one channel."""
     path = (
-        f"/proxy/relay/channels/{quote(str(identifier), safe='')}"
-        f"/clients/{quote(str(client_id), safe='')}"
+        f"/proxy/relay/channels/{quote(str(identifier), safe=_PATH_SEGMENT_SAFE)}"
+        f"/clients/{quote(str(client_id), safe=_PATH_SEGMENT_SAFE)}"
     )
     return _request("DELETE", path, timeout=timeout)
 
@@ -273,7 +290,7 @@ def advance(
     non-owner path, which polls for the owner's confirmation for up to
     STREAM_SWITCH_CONFIRM_TIMEOUT = 15s before answering.
     """
-    path = f"/proxy/relay/channels/{quote(str(identifier), safe='')}/advance"
+    path = f"/proxy/relay/channels/{quote(str(identifier), safe=_PATH_SEGMENT_SAFE)}/advance"
     return _request(
         "POST",
         path,

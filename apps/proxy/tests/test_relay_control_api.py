@@ -8,13 +8,16 @@ authorize_stream() would 404 a URI naming no channel (spec Amendment S8).
 """
 
 import json
+import os
 from unittest import mock
+from urllib.parse import urlsplit
 
+import requests
 from django.test import TestCase
 from rest_framework.test import APIClient
 
 from apps.accounts.models import User
-from apps.proxy import relay_views
+from apps.proxy import relay_client, relay_views
 from apps.proxy.internal_auth import (
     HEADER_INTERNAL,
     HEADER_INTERNAL_REQUEST,
@@ -30,6 +33,16 @@ def _signed(method, path, body=b""):
             method, path, body
         ),
     }
+
+
+# The Django META names for the two headers relay_client._request signs
+# every call with -- reused rather than re-derived so the round trip below
+# carries exactly what relay_client sends, nothing guessed from a naming
+# convention.
+_HEADER_TO_META = {
+    HEADER_INTERNAL: "HTTP_X_DISPATCHARR_INTERNAL",
+    HEADER_INTERNAL_REQUEST: "HTTP_X_DISPATCHARR_INTERNAL_REQUEST",
+}
 
 
 class RelayControlGateTests(TestCase):
@@ -368,6 +381,154 @@ class RelayClientAndAdvanceTests(TestCase):
                 **_signed("POST", path, body),
             )
         self.assertEqual(manager.tried_stream_ids, {1, 2})
+
+
+class _FakeTransportResponse:
+    """Adapts a Django test-client response to what relay_client._request
+    reads off `requests.request`'s return value: .status_code, .content
+    and .json()."""
+
+    def __init__(self, django_response):
+        self.status_code = django_response.status_code
+        self.content = django_response.content
+
+    def json(self):
+        return json.loads(self.content)
+
+
+class RelayClientRoundTripTests(TestCase):
+    """Drives relay_client's six call methods through the real
+    /proxy/relay/... routes, with requests.request patched to an adapter
+    over APIClient rather than mocked away.
+
+    Every other test class exercises one side of this boundary against
+    itself: RelayClientCallTests (test_relay_client.py) mocks
+    relay_client._request, so the client's own literals -- the path, the
+    query parameters, the body shape -- are asserted only against
+    themselves; the classes above mock ChannelService/ProxyServer, so the
+    server's literals are asserted only against themselves. A renamed
+    query parameter or a path-encoding mismatch between the two sides
+    (fix round 1, findings 1 and 2) would pass every test in both files
+    and only fail here, where the client's own signed request is what
+    reaches the real view.
+    """
+
+    def setUp(self):
+        self.client = APIClient()
+        env_patcher = mock.patch.dict(
+            os.environ, {"DISPATCHARR_ENV": "aio"}, clear=True
+        )
+        env_patcher.start()
+        self.addCleanup(env_patcher.stop)
+
+        def fake_request(
+            method, url, *, data=None, headers=None, timeout=None,
+            allow_redirects=None,
+        ):
+            # Mirrors what nginx's location table hands the relay_py
+            # upstream: PATH_INFO plus the query string, decoded, with
+            # the two internal headers carried through unchanged.
+            parsed = urlsplit(url)
+            path = parsed.path
+            if parsed.query:
+                path = f"{path}?{parsed.query}"
+            extra = {
+                meta: (headers or {})[header]
+                for header, meta in _HEADER_TO_META.items()
+                if header in (headers or {})
+            }
+            call = getattr(self.client, method.lower())
+            if data:
+                response = call(
+                    path, data=data, content_type="application/json", **extra
+                )
+            else:
+                response = call(path, **extra)
+            return _FakeTransportResponse(response)
+
+        transport_patcher = mock.patch.object(
+            requests, "request", side_effect=fake_request
+        )
+        transport_patcher.start()
+        self.addCleanup(transport_patcher.stop)
+
+    def test_channel_snapshot_reaches_the_real_view_and_reports_present(self):
+        server = mock.Mock(redis_client=mock.Mock())
+        server.redis_client.exists.return_value = True
+        server.redis_client.hget.return_value = "active"
+        with mock.patch.object(
+            relay_views.ProxyServer, "get_instance", return_value=server
+        ):
+            snapshot = relay_client.channel_snapshot("abc")
+        self.assertEqual(
+            (snapshot.present, snapshot.active, snapshot.reachable),
+            (True, True, True),
+        )
+
+    def test_channel_snapshot_reaches_the_real_view_and_reports_absent(self):
+        server = mock.Mock(redis_client=mock.Mock())
+        server.redis_client.exists.return_value = False
+        with mock.patch.object(
+            relay_views.ProxyServer, "get_instance", return_value=server
+        ):
+            snapshot = relay_client.channel_snapshot("abc")
+        self.assertEqual(
+            (snapshot.present, snapshot.active, snapshot.reachable),
+            (False, False, True),
+        )
+
+    def test_channel_snapshot_reports_unreachable_on_a_real_gate_refusal(self):
+        # A real 403 from IsInternalRelay, not a mocked RelayRefused: this
+        # is what would have caught fix round 1's finding 1 -- a path
+        # encoding mismatch between the client and get_full_path() also
+        # surfaces as a 403 here, indistinguishable from this one.
+        with mock.patch.object(
+            relay_views.IsInternalRelay, "has_permission", return_value=False
+        ):
+            snapshot = relay_client.channel_snapshot("abc")
+        self.assertEqual(
+            (snapshot.present, snapshot.active, snapshot.reachable),
+            (False, False, False),
+        )
+
+    def test_list_channels_all_clients_reaches_the_view_with_no_limit(self):
+        with mock.patch.object(
+            relay_views, "build_live_channel_stats_data",
+            return_value={"channels": [], "count": 0},
+        ) as built, mock.patch.object(
+            relay_views.ProxyServer, "get_instance",
+            return_value=mock.Mock(redis_client=mock.Mock()),
+        ):
+            result = relay_client.list_channels(all_clients=True)
+        self.assertEqual(result, {"channels": [], "count": 0})
+        self.assertIsNone(built.call_args.kwargs["client_limit"])
+
+    def test_stop_client_reaches_the_real_view(self):
+        with mock.patch.object(
+            relay_views.ChannelService, "stop_client",
+            return_value={"status": "success", "locally_processed": True},
+        ) as stopped:
+            result = relay_client.stop_client("abc", "c 1")
+        stopped.assert_called_once_with("abc", "c 1")
+        self.assertEqual(result["locally_processed"], True)
+
+    def test_advance_reset_tried_reaches_the_real_view_and_clears_it(self):
+        manager = mock.Mock(tried_stream_ids={1, 2})
+        server = mock.Mock(stream_managers={"abc": manager})
+        with mock.patch.object(
+            relay_views.ProxyServer, "get_instance", return_value=server
+        ), mock.patch.object(
+            relay_views.ChannelService, "change_stream_url",
+            return_value={"status": "success", "success": True},
+        ) as changed:
+            result = relay_client.advance(
+                "abc", url="http://p/x", stream_id=42, reset_tried=True
+            )
+        changed.assert_called_once_with(
+            "abc", "http://p/x", None, 42, None, stream_name=None
+        )
+        self.assertEqual(manager.tried_stream_ids, set())
+        self.assertEqual(result["success"], True)
 
 
 class RelaySchemaTests(TestCase):

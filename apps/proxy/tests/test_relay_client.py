@@ -1,7 +1,12 @@
 """Django's side of the Django->relay boundary (Phase 1 PR 7, D9/D10).
 
-Only the transport here; the five call methods are tested in
-test_relay_control_api.py against the real routes.
+The transport (RelayClientTransportTests) and the six call methods
+(RelayClientCallTests) are both tested here, against a mocked
+_request/requests.request -- so a literal path or query parameter is
+asserted only against itself. test_relay_control_api.py's
+RelayClientRoundTripTests drives the same six methods through the real
+routes, which is what would catch a renamed query parameter or a path
+encoding the two sides disagree on (Phase 1 PR 7 fix round 1).
 """
 
 import os
@@ -136,6 +141,31 @@ class RelayClientTransportTests(SimpleTestCase):
         # 15s is STREAM_SWITCH_CONFIRM_TIMEOUT in ChannelService.
         self.assertGreater(relay_client.ADVANCE_TIMEOUT[1], 15)
 
+    def test_a_transport_error_s_message_never_names_the_dialled_host(self):
+        # requests.ConnectionError's own text carries host, port and the
+        # full path+query (e.g. "HTTPConnectionPool(host='web', port=80):
+        # Max retries exceeded with url: /proxy/relay/channels/<uuid>?
+        # fields=state"). The global constraint says relay_client's log
+        # lines name "the identifier and the status code only, never the
+        # URL it dialled" -- so the raised message must not embed that
+        # text (fix round 1, finding 3).
+        base_url = relay_client.get_relay_control_base_url()
+        with mock.patch.object(
+            requests, "request",
+            side_effect=requests.ConnectionError(
+                f"HTTPConnectionPool(host='web', port=80): Max retries "
+                f"exceeded with url: {base_url}/proxy/relay/channels"
+            ),
+        ):
+            with self.assertLogs(relay_client.logger, level="WARNING") as caught:
+                # channel_snapshot never raises (ruling 13): it logs and
+                # returns an unreachable snapshot instead.
+                relay_client.channel_snapshot("x")
+        logged = "\n".join(caught.output)
+        self.assertNotIn(base_url, logged)
+        self.assertNotIn("host=", logged)
+        self.assertNotIn("port=", logged)
+
 
 class RelayClientCallTests(SimpleTestCase):
     def setUp(self):
@@ -173,10 +203,20 @@ class RelayClientCallTests(SimpleTestCase):
             with self.assertRaises(relay_client.RelayRefused):
                 relay_client.get_channel("x")
 
-    def test_an_identifier_is_percent_encoded_into_the_path(self):
+    def test_an_identifier_is_encoded_the_way_django_will_reproduce_it(self):
+        # escape_uri_path's safe set (what get_full_path() reconstructs a
+        # path through, since nginx hands Django an already-decoded
+        # PATH_INFO) keeps ':' unescaped; quote(..., safe='') would encode
+        # it to %3A and sign a string the relay's own reconstruction never
+        # produces, refusing every such call with 403 (fix round 1,
+        # finding 1). A space is still not in that safe set, so it is
+        # still percent-encoded either way.
         with mock.patch.object(relay_client, "_request", return_value={}) as sent:
-            relay_client.get_channel("a/b")
-        self.assertEqual(sent.call_args.args[1], "/proxy/relay/channels/a%2Fb")
+            relay_client.get_channel("a:b")
+        self.assertEqual(sent.call_args.args[1], "/proxy/relay/channels/a:b")
+        with mock.patch.object(relay_client, "_request", return_value={}) as sent:
+            relay_client.get_channel("c 1")
+        self.assertEqual(sent.call_args.args[1], "/proxy/relay/channels/c%201")
 
     def test_channel_snapshot_reports_present_and_active(self):
         with mock.patch.object(
