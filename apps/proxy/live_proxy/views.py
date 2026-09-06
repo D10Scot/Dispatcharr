@@ -2,6 +2,7 @@ import json
 import time
 import re
 import pathlib
+from django.core.exceptions import ImproperlyConfigured
 from django.db import close_old_connections
 from django.http import (
     StreamingHttpResponse,
@@ -12,7 +13,6 @@ from django.http import (
 )
 from django.views.decorators.csrf import csrf_exempt
 from .server import ProxyServer
-from .channel_status import ChannelStatus, build_live_channel_stats_data
 from .output.ts.generator import create_stream_generator
 from .output.fmp4.generator import create_fmp4_stream_generator
 from dispatcharr.utils import get_client_ip, redact_url
@@ -43,7 +43,6 @@ from apps.proxy.authorize import (
     resolve_output_profile,
 )
 from apps.proxy.authorize_views import authorize_error_response, resolve_authorization
-from apps.proxy.internal_auth import request_is_internal
 
 logger = get_logger()
 
@@ -444,9 +443,8 @@ def stream_ts(request, channel_id, user=None, force_output_format=None, decision
                     # profile and must be forced False here, or the
                     # Redirect profile's empty build_command() would be
                     # used to spawn a subprocess.
-                    internal_principal = request_is_internal(
-                        getattr(request, "_request", request)
-                    )
+                    # The decision already resolved this; issue #181.
+                    internal_principal = decision.is_internal
                     if stream_profile.is_redirect() and internal_principal:
                         logger.info(
                             f"[{client_id}] Internal principal on a Redirect-profile "
@@ -865,6 +863,7 @@ def stream_xc(request, username, password, channel_id):
 def change_stream(request, channel_id):
     """Change stream URL for existing channel with enhanced diagnostics"""
     proxy_server = ProxyServer.get_instance()
+    from apps.proxy import relay_client
 
     try:
         data = json.loads(request.body)
@@ -895,11 +894,9 @@ def change_stream(request, channel_id):
             logger.info(
                 f"Stream ID {stream_id} provided, looking up stream info for channel {channel_id}"
             )
-            # This view runs in the API process today (PR 4's routing keeps
-            # /proxy/ts/change_stream/ on the API role); PR 7 turns it into
-            # a relay_client wrapper, at which point ChannelService.
-            # change_stream_url runs in the relay and PR 7 revisits this
-            # call (D10).
+            # Resolved here, in the API process, where the ORM is (ruling
+            # 11); the result is applied on the relay via
+            # relay_client.advance() below.
             from apps.proxy.next_source import resolve_source
 
             answer = resolve_source(channel_id, target_stream_id=stream_id, reason="operator")
@@ -914,6 +911,15 @@ def change_stream(request, channel_id):
             new_url = stream_info["url"]
             user_agent = stream_info["user_agent"]
             m3u_profile_id = stream_info.get("m3u_profile_id")
+            # Always None: the Source contract (S10 point 3, apps/proxy/
+            # next_source.py's _source_from_info) carries seven fields and
+            # stream_name is not one of them. The name is resolved by primary
+            # key on the relay side instead -- ChannelService.
+            # _update_channel_metadata and initialize_channel both fall back
+            # to Stream.objects.filter(id=stream_id) when the caller passes
+            # none, and the spec's ORM-reads table keeps exactly those two
+            # lookups in the relay. Passing the key through and letting the
+            # relay resolve it is the intended path, not an omission.
             stream_name = stream_info.get("stream_name")
         elif not new_url:
             return JsonResponse(
@@ -924,22 +930,21 @@ def change_stream(request, channel_id):
             f"Attempting to change stream for channel {channel_id} to {redact_url(new_url)}"
         )
 
-        # Use the service layer instead of direct implementation
-        # Pass stream_id to ensure proper connection tracking
-        result = ChannelService.change_stream_url(
-            channel_id, new_url, user_agent, stream_id, m3u_profile_id, stream_name=stream_name
+        # Phase 1 PR 7: the switch is applied by the relay, which is the
+        # process that holds the StreamManager. reset_tried carries the
+        # tried_stream_ids clear that used to happen here -- PR 4's
+        # routing moved this view to the API process, where
+        # proxy_server.stream_managers is always empty, so the reset had
+        # silently stopped happening.
+        result = relay_client.advance(
+            channel_id,
+            url=new_url,
+            user_agent=user_agent,
+            stream_id=stream_id,
+            m3u_profile_id=m3u_profile_id,
+            stream_name=stream_name,
+            reset_tried=True,
         )
-
-        # Get the stream manager before updating URL
-        stream_manager = proxy_server.stream_managers.get(channel_id)
-
-        # If we have a stream manager, reset its tried_stream_ids when manually changing streams
-        if stream_manager:
-            # Reset tried streams when manually switching URL via API
-            stream_manager.tried_stream_ids = set()
-            logger.debug(
-                f"Reset tried stream IDs for channel {channel_id} during manual stream change"
-            )
 
         if result.get("status") == "error":
             return JsonResponse(
@@ -981,6 +986,23 @@ def change_stream(request, channel_id):
 
     except json.JSONDecodeError:
         return JsonResponse({"error": "Invalid JSON"}, status=400)
+    except relay_client.RelayRefused as e:
+        logger.error(f"Relay refused the change_stream request with {e.status}")
+        return JsonResponse({"error": "Relay refused the request"}, status=502)
+    except relay_client.RelayUnavailable as e:
+        logger.error(f"Relay not available for change_stream: {e}")
+        return JsonResponse({"error": "Relay not available"}, status=503)
+    except ImproperlyConfigured as exc:
+        # A response body is not the place for validated_base_url()'s
+        # message (it already redacted, but redacted still is not
+        # nothing) or for the value it blames -- only the fixed string
+        # below crosses the wire. The variable responsible goes to the
+        # log only.
+        logger.error(
+            "Relay configuration error for change_stream: %s is misconfigured",
+            getattr(exc, "var_name", None) or "the relay base URL",
+        )
+        return JsonResponse({"error": "Relay configuration error"}, status=500)
     except Exception as e:
         logger.error(f"Failed to change stream: {e}", exc_info=True)
         return JsonResponse({"error": str(e)}, status=500)
@@ -993,41 +1015,55 @@ def channel_status(request, channel_id=None):
     Returns status information about channels with detail level based on request:
     - /status/ returns basic summary of all channels
     - /status/{channel_id} returns detailed info about specific channel
+
+    Phase 1 PR 7: the answer comes from the relay over
+    GET /proxy/relay/channels[/<id>] rather than from this process's own
+    Redis reads. The URL, the IsAdmin gate and the JSON are unchanged;
+    the two new statuses below exist because "the relay did not answer"
+    is a thing that can now happen and 500 would say nothing useful.
     """
-    proxy_server = ProxyServer.get_instance()
+    # Function-local (D10): this module also hosts stream_ts and
+    # stream_xc, which run in the relay process, and relay_client is
+    # Django's side of that boundary.
+    from apps.proxy import relay_client
 
     try:
-        # Check if Redis is available
-        if not proxy_server.redis_client:
-            return JsonResponse({"error": "Redis connection not available"}, status=500)
-
-        # Handle single channel or all channels
         if channel_id:
-            # Detailed info for specific channel
-            channel_info = ChannelStatus.get_detailed_channel_info(channel_id)
-            if channel_info:
-                return JsonResponse(channel_info)
-            else:
+            channel_info = relay_client.get_channel(channel_id)
+            if channel_info is None:
                 return JsonResponse(
                     {"error": f"Channel {channel_id} not found"}, status=404
                 )
-        else:
-            live_stats = build_live_channel_stats_data(proxy_server.redis_client)
+            return JsonResponse(channel_info)
 
-            # Send WebSocket update with the stats
-            # Format it the same way the original Celery task did
-            send_websocket_update(
-                "updates",
-                "update",
-                {
-                    "success": True,
-                    "type": "channel_stats",
-                    "stats": json.dumps(live_stats),
-                }
-            )
+        live_stats = relay_client.list_channels()
 
-            return JsonResponse(live_stats)
+        # Send WebSocket update with the stats
+        # Format it the same way the original Celery task did
+        send_websocket_update(
+            "updates",
+            "update",
+            {
+                "success": True,
+                "type": "channel_stats",
+                "stats": json.dumps(live_stats),
+            }
+        )
 
+        return JsonResponse(live_stats)
+
+    except relay_client.RelayRefused as e:
+        logger.error(f"Relay refused a status request with {e.status}")
+        return JsonResponse({"error": "Relay refused the request"}, status=502)
+    except relay_client.RelayUnavailable as e:
+        logger.error(f"Relay not available for status: {e}")
+        return JsonResponse({"error": "Relay not available"}, status=503)
+    except ImproperlyConfigured as exc:
+        logger.error(
+            "Relay configuration error for channel_status: %s is misconfigured",
+            getattr(exc, "var_name", None) or "the relay base URL",
+        )
+        return JsonResponse({"error": "Relay configuration error"}, status=500)
     except Exception as e:
         logger.error(f"Error in channel_status: {e}", exc_info=True)
         return JsonResponse({"error": str(e)}, status=500)
@@ -1040,11 +1076,12 @@ def channel_status(request, channel_id=None):
 @permission_classes([IsAdmin])
 def stop_channel(request, channel_id):
     """Stop a channel and release all associated resources using PubSub events"""
+    from apps.proxy import relay_client
+
     try:
         logger.info(f"Request to stop channel {channel_id} received")
 
-        # Use the service layer instead of direct implementation
-        result = ChannelService.stop_channel(channel_id)
+        result = relay_client.stop_channel(channel_id)
 
         if result.get("status") == "error":
             return JsonResponse(
@@ -1059,6 +1096,18 @@ def stop_channel(request, channel_id):
             }
         )
 
+    except relay_client.RelayRefused as e:
+        logger.error(f"Relay refused the stop request with {e.status}")
+        return JsonResponse({"error": "Relay refused the request"}, status=502)
+    except relay_client.RelayUnavailable as e:
+        logger.error(f"Relay not available for the stop request: {e}")
+        return JsonResponse({"error": "Relay not available"}, status=503)
+    except ImproperlyConfigured as exc:
+        logger.error(
+            "Relay configuration error for stop_channel: %s is misconfigured",
+            getattr(exc, "var_name", None) or "the relay base URL",
+        )
+        return JsonResponse({"error": "Relay configuration error"}, status=500)
     except Exception as e:
         logger.error(f"Failed to stop channel: {e}", exc_info=True)
         return JsonResponse({"error": str(e)}, status=500)
@@ -1069,6 +1118,8 @@ def stop_channel(request, channel_id):
 @permission_classes([IsAdmin])
 def stop_client(request, channel_id):
     """Stop a specific client connection using existing client management"""
+    from apps.proxy import relay_client
+
     try:
         # Parse request body to get client ID
         data = json.loads(request.body)
@@ -1077,8 +1128,7 @@ def stop_client(request, channel_id):
         if not client_id:
             return JsonResponse({"error": "No client_id provided"}, status=400)
 
-        # Use the service layer instead of direct implementation
-        result = ChannelService.stop_client(channel_id, client_id)
+        result = relay_client.stop_client(channel_id, client_id)
 
         if result.get("status") == "error":
             return JsonResponse({"error": result.get("message")}, status=404)
@@ -1094,6 +1144,18 @@ def stop_client(request, channel_id):
 
     except json.JSONDecodeError:
         return JsonResponse({"error": "Invalid JSON"}, status=400)
+    except relay_client.RelayRefused as e:
+        logger.error(f"Relay refused the stop request with {e.status}")
+        return JsonResponse({"error": "Relay refused the request"}, status=502)
+    except relay_client.RelayUnavailable as e:
+        logger.error(f"Relay not available for the stop request: {e}")
+        return JsonResponse({"error": "Relay not available"}, status=503)
+    except ImproperlyConfigured as exc:
+        logger.error(
+            "Relay configuration error for stop_client: %s is misconfigured",
+            getattr(exc, "var_name", None) or "the relay base URL",
+        )
+        return JsonResponse({"error": "Relay configuration error"}, status=500)
     except Exception as e:
         logger.error(f"Failed to stop client: {e}", exc_info=True)
         return JsonResponse({"error": str(e)}, status=500)
@@ -1105,6 +1167,7 @@ def stop_client(request, channel_id):
 def next_stream(request, channel_id):
     """Switch to the next available stream for a channel"""
     proxy_server = ProxyServer.get_instance()
+    from apps.proxy import relay_client
 
     try:
         logger.info(
@@ -1114,32 +1177,23 @@ def next_stream(request, channel_id):
         # Check if the channel exists
         channel = get_stream_object(channel_id)
 
-        # First check if channel is active in Redis
-        current_stream_id = None
-        profile_id = None
-
-        if proxy_server.redis_client:
-            metadata_key = RedisKeys.channel_metadata(channel_id)
-            if proxy_server.redis_client.exists(metadata_key):
-                # Get current stream ID from Redis
-                stream_id_bytes = proxy_server.redis_client.hget(
-                    metadata_key, ChannelMetadataField.STREAM_ID
+        # Phase 1 PR 7: what is playing now comes from the relay, which
+        # owns the metadata hash. This view runs in the API process after
+        # PR 4's routing, so reading live:channel:<id>:metadata here was
+        # the control plane reading a relay key -- invisible to the
+        # spec's Done grep, which covers apps/channels, apps/m3u, core
+        # and dispatcharr, and exactly what this PR removes.
+        running = relay_client.get_channel(channel_id)
+        current_stream_id = (running or {}).get("stream_id")
+        profile_id = (running or {}).get("m3u_profile_id")
+        if current_stream_id:
+            logger.info(
+                f"Found current stream ID {current_stream_id} from the relay for channel {channel_id}"
+            )
+            if profile_id:
+                logger.info(
+                    f"Found M3U profile ID {profile_id} from the relay for channel {channel_id}"
                 )
-                if stream_id_bytes:
-                    current_stream_id = int(stream_id_bytes)
-                    logger.info(
-                        f"Found current stream ID {current_stream_id} in Redis for channel {channel_id}"
-                    )
-
-                    # Get M3U profile from Redis if available
-                    profile_id_bytes = proxy_server.redis_client.hget(
-                        metadata_key, ChannelMetadataField.M3U_PROFILE
-                    )
-                    if profile_id_bytes:
-                        profile_id = int(profile_id_bytes)
-                        logger.info(
-                            f"Found M3U profile ID {profile_id} in Redis for channel {channel_id}"
-                        )
 
         if not current_stream_id:
             # Channel is not running
@@ -1190,12 +1244,9 @@ def next_stream(request, channel_id):
             f"Rotating to next stream ID {next_stream_id} for channel {channel_id}"
         )
 
-        # Get full stream info including URL for the next stream. This view
-        # runs in the API process today (PR 4's routing keeps
-        # /proxy/ts/next_stream/ on the API role); PR 7 turns it into a
-        # relay_client wrapper, at which point ChannelService.
-        # change_stream_url runs in the relay and PR 7 revisits this call
-        # (D10).
+        # Get full stream info including URL for the next stream. Resolved
+        # here, in the API process, where the ORM is; the result is
+        # applied on the relay via relay_client.advance() below.
         from apps.proxy.next_source import resolve_source
 
         answer = resolve_source(channel_id, target_stream_id=next_stream_id, reason="operator")
@@ -1211,13 +1262,24 @@ def next_stream(request, channel_id):
                 status=404,
             )
 
-        # Now use the ChannelService to change the stream URL
-        result = ChannelService.change_stream_url(
+        # Now apply the switch on the relay. reset_tried is deliberately
+        # absent: next_stream has never cleared tried_stream_ids, and
+        # rotating to the next stream is what the exclusion list is for.
+        result = relay_client.advance(
             channel_id,
-            stream_info["url"],
-            stream_info["user_agent"],
-            next_stream_id,
-            stream_info.get("m3u_profile_id"),
+            url=stream_info["url"],
+            user_agent=stream_info["user_agent"],
+            stream_id=next_stream_id,
+            m3u_profile_id=stream_info.get("m3u_profile_id"),
+            # Always None: the Source contract (S10 point 3, apps/proxy/
+            # next_source.py's _source_from_info) carries seven fields and
+            # stream_name is not one of them. The name is resolved by primary
+            # key on the relay side instead -- ChannelService.
+            # _update_channel_metadata and initialize_channel both fall back
+            # to Stream.objects.filter(id=stream_id) when the caller passes
+            # none, and the spec's ORM-reads table keeps exactly those two
+            # lookups in the relay. Passing the key through and letting the
+            # relay resolve it is the intended path, not an omission.
             stream_name=stream_info.get("stream_name"),
         )
 
@@ -1259,6 +1321,18 @@ def next_stream(request, channel_id):
 
     except Http404:
         raise
+    except relay_client.RelayRefused as e:
+        logger.error(f"Relay refused the next_stream request with {e.status}")
+        return JsonResponse({"error": "Relay refused the request"}, status=502)
+    except relay_client.RelayUnavailable as e:
+        logger.error(f"Relay not available for next_stream: {e}")
+        return JsonResponse({"error": "Relay not available"}, status=503)
+    except ImproperlyConfigured as exc:
+        logger.error(
+            "Relay configuration error for next_stream: %s is misconfigured",
+            getattr(exc, "var_name", None) or "the relay base URL",
+        )
+        return JsonResponse({"error": "Relay configuration error"}, status=500)
     except Exception as e:
         logger.error(f"Failed to switch to next stream: {e}", exc_info=True)
         return JsonResponse({"error": str(e)}, status=500)

@@ -480,29 +480,34 @@ export type ChannelStatusClient = {
  * `if stream_id_bytes:` conditional within `get_detailed_channel_info` — with
  * no stream chosen yet the key is simply absent from the JSON, never `null`.
  *
- * `ffmpeg_speed` is a `string`, not a `number`: `get_detailed_channel_info`
- * assigns the raw Redis value with no numeric conversion; `decode_responses=True`
- * on the Redis client makes that a `str` (e.g. `"1.02"`), and the dict goes
- * straight into `JsonResponse` with no serializer to coerce it.
- * `get_basic_channel_info`, the function behind the *bare* `/proxy/ts/status`
- * collection endpoint, does convert via `float(ffmpeg_speed)` — the two
- * functions disagree about this field's type. That is a product inconsistency,
- * not a harness bug; a caller against *this* type must parse the string itself.
+ * `ffmpeg_speed` is a `number`. It used to be a `string` here and a `number` on
+ * the bare `/proxy/ts/status` collection endpoint, because
+ * `get_detailed_channel_info` passed the raw Redis value through while
+ * `get_basic_channel_info` wrapped it in `float()`. Phase 1 PR 7 put both
+ * behind one DRF serializer on `GET /proxy/relay/channels`, which meant they
+ * had to agree first. `state` moved the same way: `null` when the channel has
+ * never recorded one, rather than the string `'unknown'`. `owner` keeps its
+ * `'unknown'` default — the same bug, deliberately left, since the spec names
+ * two fields and not three.
  */
 export type ChannelStatus = {
   stream_id?: number;
   stream_name?: string;
   url: string | null;
-  state: string;
+  state: string | null;
   owner: string | null;
   client_count: number;
   buffer_index: number;
   total_bytes: number;
   avg_bitrate_kbps: number;
   clients: ChannelStatusClient[];
-  ffmpeg_speed?: string;
+  ffmpeg_speed?: number;
   video_codec?: string;
   resolution?: string;
+  /** Raw Redis strings, added in PR 7 for the DVR's `stream_info` capture. */
+  width?: string;
+  height?: string;
+  video_bitrate?: string;
 };
 
 /* ------------------------------------------------------------------------ *

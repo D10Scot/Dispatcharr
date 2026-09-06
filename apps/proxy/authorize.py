@@ -118,8 +118,16 @@ class AuthorizeDenied(Exception):
 @dataclass(frozen=True)
 class AuthorizeResult:
     """What the hop tells the relay. The five string fields are the five
-    X-Relay-* response headers, verbatim; `user` and `trusted` never cross
-    the wire and exist only for the inline caller."""
+    X-Relay-* response headers, verbatim; `user`, `trusted` and
+    `is_internal` never cross the wire and exist only for the caller.
+
+    is_internal is set on both paths rather than carried in a sixth
+    X-Relay-* header (issue #181): nginx forwards a client's
+    X-Dispatcharr-Internal unchanged on relay-bound locations, so
+    result_from_headers can answer it from the same header the hop
+    read, and a sixth auth_request_set line across nine locations buys
+    nothing.
+    """
 
     surface: str
     channel_uuid: str = ""
@@ -129,6 +137,7 @@ class AuthorizeResult:
     relay_name: str = ""
     user: object = None
     trusted: bool = False
+    is_internal: bool = False
 
 
 def mint_client_id() -> str:
@@ -294,8 +303,10 @@ def _catchup_session_user(identifier, session_id):
     return user
 
 
-def _resolve_principal(http_request, surface, username, password, identifier, session_id):
-    if request_is_internal(http_request):
+def _resolve_principal(
+    http_request, surface, username, password, identifier, session_id, is_internal
+):
+    if is_internal:
         return INTERNAL_PRINCIPAL
     if surface in _XC_SURFACES:
         user = resolve_xc_user(username, password)
@@ -405,8 +416,9 @@ def authorize_stream(
         raise AuthorizeDenied(403, "Forbidden")
 
     http_request = getattr(request, "_request", request)
+    is_internal = request_is_internal(http_request)
     principal = _resolve_principal(
-        http_request, surface, username, password, identifier, session_id
+        http_request, surface, username, password, identifier, session_id, is_internal
     )
     user = None if principal is INTERNAL_PRINCIPAL else principal
 
@@ -440,4 +452,5 @@ def authorize_stream(
         relay_name=settings.RELAY_DEFAULT_NAME,
         user=user,
         trusted=False,
+        is_internal=is_internal,
     )

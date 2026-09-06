@@ -12,7 +12,7 @@ from unittest import mock
 from django.core.exceptions import ImproperlyConfigured
 from django.test import RequestFactory, SimpleTestCase, override_settings
 
-from apps.proxy import control_plane
+from apps.proxy import control_plane, internal_base_url
 from apps.proxy.internal_auth import (
     HEADER_INTERNAL,
     HEADER_INTERNAL_REQUEST,
@@ -108,8 +108,8 @@ class HostValidationTests(SimpleTestCase):
     """
 
     def setUp(self):
-        control_plane._host_validation_warned = False
-        self.addCleanup(setattr, control_plane, "_host_validation_warned", False)
+        internal_base_url._host_validation_warned = False
+        self.addCleanup(setattr, internal_base_url, "_host_validation_warned", False)
 
     def test_an_underscored_web_host_is_rejected_loudly(self):
         with mock.patch.dict(
@@ -193,7 +193,7 @@ class HostValidationTests(SimpleTestCase):
             {"DISPATCHARR_INTERNAL_API_BASE_URL": "http://user:pw@bad_host:9191"},
             clear=False,
         ):
-            with self.assertLogs("apps.proxy.control_plane", level="ERROR") as logs:
+            with self.assertLogs("apps.proxy.internal_base_url", level="ERROR") as logs:
                 with self.assertRaises(ImproperlyConfigured) as ctx:
                     control_plane.get_control_plane_base_url()
         self.assertIn("DISPATCHARR_INTERNAL_API_BASE_URL", str(ctx.exception))
@@ -224,7 +224,7 @@ class HostValidationTests(SimpleTestCase):
             {"DISPATCHARR_INTERNAL_API_BASE_URL": "user:pw@web:9191"},
             clear=False,
         ):
-            with self.assertLogs("apps.proxy.control_plane", level="ERROR") as logs:
+            with self.assertLogs("apps.proxy.internal_base_url", level="ERROR") as logs:
                 with self.assertRaises(ImproperlyConfigured) as ctx:
                     control_plane.get_control_plane_base_url()
         self.assertIn("DISPATCHARR_INTERNAL_API_BASE_URL", str(ctx.exception))
@@ -243,7 +243,7 @@ class HostValidationTests(SimpleTestCase):
             clear=False,
         ):
             os.environ.pop("DISPATCHARR_INTERNAL_API_BASE_URL", None)
-            with self.assertLogs("apps.proxy.control_plane", level="ERROR") as logs:
+            with self.assertLogs("apps.proxy.internal_base_url", level="ERROR") as logs:
                 with self.assertRaises(ImproperlyConfigured) as ctx:
                     control_plane.get_control_plane_base_url()
         self.assertIn("DISPATCHARR_WEB_HOST", str(ctx.exception))
@@ -519,8 +519,8 @@ class NextSourceTests(_ControlPlaneTestCase):
         # and as ImproperlyConfigured specifically -- never
         # ControlPlaneUnavailable, which would fire the degraded fallback
         # instead of failing loudly (see HostValidationTests).
-        control_plane._host_validation_warned = False
-        self.addCleanup(setattr, control_plane, "_host_validation_warned", False)
+        internal_base_url._host_validation_warned = False
+        self.addCleanup(setattr, internal_base_url, "_host_validation_warned", False)
         with mock.patch.dict(
             os.environ,
             {"DISPATCHARR_INTERNAL_API_BASE_URL": "http://bad_host:9191"},
@@ -576,8 +576,8 @@ class ReleaseSourceTests(_ControlPlaneTestCase):
         # release_source() must not raise ImproperlyConfigured -- a
         # misconfigured control plane must not abort a channel teardown,
         # only be reported as "not released" like any other failed release.
-        control_plane._host_validation_warned = False
-        self.addCleanup(setattr, control_plane, "_host_validation_warned", False)
+        internal_base_url._host_validation_warned = False
+        self.addCleanup(setattr, internal_base_url, "_host_validation_warned", False)
         with mock.patch.dict(
             os.environ,
             {"DISPATCHARR_INTERNAL_API_BASE_URL": "http://bad_host:9191"},
@@ -603,8 +603,8 @@ class EmitEventTests(_ControlPlaneTestCase):
         # propagates out of a Celery worker's synchronous _spawn call, or
         # (on a gevent greenlet) prints an unhandled-exception traceback
         # per event instead of a one-line log.
-        control_plane._host_validation_warned = False
-        self.addCleanup(setattr, control_plane, "_host_validation_warned", False)
+        internal_base_url._host_validation_warned = False
+        self.addCleanup(setattr, internal_base_url, "_host_validation_warned", False)
         with mock.patch.dict(
             os.environ,
             {"DISPATCHARR_INTERNAL_API_BASE_URL": "http://bad_host:9191"},

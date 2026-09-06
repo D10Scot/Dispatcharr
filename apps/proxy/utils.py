@@ -7,7 +7,6 @@ from apps.timeshift.redis_keys import (
     parse_stats_channel_id,
 )
 from core.models import CoreSettings
-from apps.proxy.live_proxy.services.channel_service import ChannelService
 
 logger = logging.getLogger("proxy")
 
@@ -190,7 +189,32 @@ def attempt_stream_termination(user_id, requesting_client_id, active_connections
 
         for t in targets:
             if t['type'] == 'live':
-                result = ChannelService.stop_client(t['media_id'], t['client_id'])
+                from django.core.exceptions import ImproperlyConfigured
+
+                from apps.proxy import relay_client
+
+                try:
+                    result = relay_client.stop_client(t['media_id'], t['client_id'])
+                except (relay_client.RelayUnavailable, relay_client.RelayRefused) as exc:
+                    # Deny the new stream if we cannot stop the old one,
+                    # exactly as the timeshift branch below does when
+                    # Redis is unavailable.
+                    logger.warning(
+                        f"[stream limits][{requesting_client_id}] Relay could not "
+                        f"stop client {t['client_id']}: {exc}"
+                    )
+                    return False
+                except ImproperlyConfigured as exc:
+                    # A misconfigured relay base URL cannot be fixed by
+                    # denying this one stream; degrade the same way as an
+                    # unreachable relay above.
+                    logger.warning(
+                        f"[stream limits][{requesting_client_id}] Relay could not "
+                        f"stop client {t['client_id']}: "
+                        f"{getattr(exc, 'var_name', None) or 'the relay base URL'} "
+                        "is misconfigured"
+                    )
+                    return False
                 if result.get("status") == "error":
                     logger.warning(f"[stream limits][{requesting_client_id}] Failed to stop client {t['client_id']} on channel {t['media_id']}")
             elif t['type'] == 'timeshift':
@@ -229,44 +253,126 @@ def attempt_stream_termination(user_id, requesting_client_id, active_connections
         logger.error("[stream limits]" f"[{requesting_client_id}] Error during stream termination for user {user_id}: {e}")
         return False
 
-def get_user_active_connections(user_id):
+def _live_connections(user_id):
+    """The live half of get_user_active_connections, over HTTP.
+
+    live:channel:*:clients:* is relay-private state -- the family
+    Phase 3 moves out of Redis -- so the control plane asks the relay
+    for it rather than scanning it. all_clients=True because a cap
+    under-counts a user with more than ten clients on one channel,
+    which is exactly the case this function exists to catch, and
+    TUNE_TIMEOUT because authorize_stream calls this on every tune.
+
+    A relay that cannot answer contributes nothing and logs once. That
+    fails open, and open is correct here: the relay is the only process
+    serving live clients, so a relay that is not answering has none.
+    Failing closed would 429 every tune for the length of a restart.
+    """
+    from django.core.exceptions import ImproperlyConfigured
+
+    from apps.proxy import relay_client
+
+    try:
+        # TUNE_TIMEOUT, not the admin budget: check_user_stream_limits
+        # calls this from inside authorize_stream, so it is on the tune
+        # path for every stream-limited user, and Global Constraints put
+        # tune-path reads at (1, 2) with no retry.
+        payload = relay_client.list_channels(
+            all_clients=True, timeout=relay_client.TUNE_TIMEOUT
+        )
+    except (relay_client.RelayUnavailable, relay_client.RelayRefused) as exc:
+        logger.warning(
+            "[stream limits] the relay could not list channels: %s", exc
+        )
+        return []
+    except ImproperlyConfigured as exc:
+        # Unlike Channel.get_stream() this is a limit *check*, not the
+        # reservation itself: failing open here (see the docstring) is
+        # the same choice a misconfigured relay deserves as an
+        # unreachable one -- propagating would 429/500 every tune for a
+        # problem a retry cannot fix.
+        logger.warning(
+            "[stream limits] the relay could not list channels: %s is misconfigured",
+            getattr(exc, "var_name", None) or "the relay base URL",
+        )
+        return []
+
+    connections = []
+    for channel in payload.get("channels") or []:
+        media_id = channel.get("channel_id")
+        for client in channel.get("clients") or []:
+            raw_user_id = client.get("user_id")
+            if user_id is not None:
+                try:
+                    if raw_user_id is None or int(raw_user_id) != user_id:
+                        continue
+                except (TypeError, ValueError):
+                    continue
+            try:
+                connected_at = float(client.get("connected_at") or 0)
+            except (TypeError, ValueError):
+                continue
+            connections.append({
+                'media_id': media_id,
+                'client_id': client.get("client_id"),
+                'connected_at': connected_at,
+                'type': 'live',
+            })
+    return connections
+
+
+def get_user_active_connections(user_id, include_live=True):
     """Return active stream connections for a single user.
 
     Pass `user_id=None` to return all active connections across the system.
+
+    Phase 1 PR 7 split this by owner. The live connections come from the
+    relay over GET /proxy/relay/channels?clients=all; the timeshift and
+    VOD key families are written by Django-side handlers, are not relay
+    state, and keep being read here.
+
+    Pass `include_live=False` when the caller only wants the timeshift/VOD
+    half -- three timeshift call sites iterate this looking only for
+    `type == 'timeshift'` entries, and asking the relay for a live client
+    list they then discard turns every catch-up tune (a relay-served path)
+    into a synchronous relay-to-relay HTTP round trip for a value nobody
+    uses. `check_user_stream_limits` and `xc_get_info`'s `active_cons` both
+    genuinely need the live count -- a live-only viewer must still count
+    against their stream limit and show up in the XC handshake -- so they
+    keep the default.
     """
     redis_client = RedisClient.get_client()
-    connections = []
+    connections = _live_connections(user_id) if include_live else []
 
     try:
-        # Grab live and timeshift streams (same key layout, separate namespaces)
-        for pattern, conn_type in (
-            ("live:channel:*:clients:*", "live"),
-            ("timeshift:channel:*:clients:*", "timeshift"),
+        # Timeshift only: same key layout as the live family, different
+        # namespace and a different owner.
+        for key in redis_client.scan_iter(
+            match="timeshift:channel:*:clients:*", count=1000
         ):
-            for key in redis_client.scan_iter(match=pattern, count=1000):
-                parts = key.split(':')
-                if len(parts) >= 5:
-                    channel_id = parts[2]
-                    client_id = parts[4]
+            parts = key.split(':')
+            if len(parts) >= 5:
+                channel_id = parts[2]
+                client_id = parts[4]
 
-                    client_user_id, connected_at = redis_client.hmget(key, 'user_id', 'connected_at')
+                client_user_id, connected_at = redis_client.hmget(key, 'user_id', 'connected_at')
 
-                    logger.debug(f"[stream limits] user_id = {user_id}")
-                    logger.debug(f"[stream limits] channel_id = {channel_id}")
-                    logger.debug(f"[stream limits] client_id = {client_id}")
+                logger.debug(f"[stream limits] user_id = {user_id}")
+                logger.debug(f"[stream limits] channel_id = {channel_id}")
+                logger.debug(f"[stream limits] client_id = {client_id}")
 
-                    if user_id is None or (client_user_id and int(client_user_id) == user_id):
-                        try:
-                            logger.debug(f"[stream limits] Found {conn_type.upper()} connection for user {user_id} on channel {channel_id} with client ID {client_id}")
-                            connected_at = float(connected_at) if connected_at else 0
-                            connections.append({
-                                'media_id': channel_id,
-                                'client_id': client_id,
-                                'connected_at': connected_at,
-                                'type': conn_type,
-                            })
-                        except (ValueError, TypeError):
-                            pass
+                if user_id is None or (client_user_id and int(client_user_id) == user_id):
+                    try:
+                        logger.debug(f"[stream limits] Found TIMESHIFT connection for user {user_id} on channel {channel_id} with client ID {client_id}")
+                        connected_at = float(connected_at) if connected_at else 0
+                        connections.append({
+                            'media_id': channel_id,
+                            'client_id': client_id,
+                            'connected_at': connected_at,
+                            'type': 'timeshift',
+                        })
+                    except (ValueError, TypeError):
+                        pass
 
         # Grab VOD
         for key in redis_client.scan_iter(match="vod_persistent_connection:*", count=1000):

@@ -61,17 +61,12 @@ test('the FFmpeg profile spawns a subprocess and reports its progress', { tag: '
   // Without this the row is indistinguishable from the Proxy row — and this is
   // the first test in this repository of any kind that spawns a subprocess.
   //
-  // ffmpeg_speed arrives as a STRING. get_detailed_channel_info assigns the raw
-  // Redis value with no conversion, while the neighbouring
-  // get_basic_channel_info wraps it in float() — so the two endpoints disagree
-  // about this field's type. Passing the raw value to toBeGreaterThan throws a
-  // matcher error rather than failing an assertion, so parse it here.
+  // ffmpeg_speed is a number since Phase 1 PR 7 normalised the detailed and
+  // collection payloads to one type; it used to arrive here as a string and
+  // needed parsing.
   await expect
     .poll(
-      async () => {
-        const raw = (await readChannelStatus(api, channel.uuid)).ffmpeg_speed;
-        return raw === undefined ? 0 : Number.parseFloat(raw);
-      },
+      async () => (await readChannelStatus(api, channel.uuid)).ffmpeg_speed ?? 0,
       { timeout: 60_000 }
     )
     .toBeGreaterThan(0);

@@ -92,6 +92,43 @@ class ChannelGetStreamAssignmentTests(TestCase):
         self.redis.set(f"channel_stream:{self.channel.id}", self.stream.id)
         self.redis.set(f"stream_profile:{self.stream.id}", self.profile.id)
 
+    def _relay_snapshot(self):
+        """Answer channel_snapshot from the fake Redis these tests seed.
+
+        Phase 1 PR 7 moved "is the proxy running" off a direct metadata
+        read and onto GET /proxy/relay/channels/<uuid>?fields=state. The
+        metadata hash is still where the relay reads it and still what
+        these tests seed; only who reads it changed. Without this the
+        call leaves the process, is refused, and every state-dependent
+        assertion below silently becomes an assertion about a relay
+        outage instead.
+        """
+        from apps.proxy import relay_client
+
+        reusable = (
+            ChannelState.ACTIVE,
+            ChannelState.WAITING_FOR_CLIENTS,
+            ChannelState.BUFFERING,
+            ChannelState.INITIALIZING,
+            ChannelState.CONNECTING,
+        )
+
+        def _snapshot(identifier, **kwargs):
+            if not self.redis.exists(self.metadata_key):
+                return relay_client.ChannelSnapshot(
+                    present=False, active=False, reachable=True
+                )
+            state = self.redis.hget(
+                self.metadata_key, ChannelMetadataField.STATE
+            )
+            return relay_client.ChannelSnapshot(
+                present=True, active=state in reusable, reachable=True
+            )
+
+        return patch(
+            "apps.proxy.relay_client.channel_snapshot", side_effect=_snapshot
+        )
+
     @patch("apps.channels.models.RedisClient.get_client")
     @patch("apps.channels.models.reserve_profile_slot")
     def test_reuses_assignment_when_proxy_active(
@@ -104,7 +141,8 @@ class ChannelGetStreamAssignmentTests(TestCase):
             {ChannelMetadataField.STATE: ChannelState.ACTIVE},
         )
 
-        stream_id, profile_id, error, slot_reserved = self.channel.get_stream()
+        with self._relay_snapshot():
+            stream_id, profile_id, error, slot_reserved = self.channel.get_stream()
 
         self.assertEqual(stream_id, self.stream.id)
         self.assertEqual(profile_id, self.profile.id)
@@ -120,7 +158,8 @@ class ChannelGetStreamAssignmentTests(TestCase):
         mock_get_client.return_value = self.redis
         self._seed_assignment()
 
-        stream_id, profile_id, error, slot_reserved = self.channel.get_stream()
+        with self._relay_snapshot():
+            stream_id, profile_id, error, slot_reserved = self.channel.get_stream()
 
         self.assertEqual(stream_id, self.stream.id)
         self.assertEqual(profile_id, self.profile.id)
@@ -142,7 +181,8 @@ class ChannelGetStreamAssignmentTests(TestCase):
             {ChannelMetadataField.STATE: ChannelState.STOPPED},
         )
 
-        stream_id, profile_id, error, slot_reserved = self.channel.get_stream()
+        with self._relay_snapshot():
+            stream_id, profile_id, error, slot_reserved = self.channel.get_stream()
 
         mock_release.assert_called_once_with(self.profile.id, self.redis)
         mock_reserve.assert_called_once()
@@ -155,9 +195,10 @@ class ChannelGetStreamAssignmentTests(TestCase):
         mock_get_client.return_value = self.redis
         self._seed_assignment()
 
-        self.assertTrue(
-            self.channel._stream_assignment_is_reusable(self.redis, self.stream.id)
-        )
+        with self._relay_snapshot():
+            self.assertTrue(
+                self.channel._stream_assignment_is_reusable(self.redis, self.stream.id)
+            )
 
     @patch("apps.channels.models.RedisClient.get_client")
     def test_stream_assignment_not_reusable_when_stopped(self, mock_get_client):
@@ -168,6 +209,7 @@ class ChannelGetStreamAssignmentTests(TestCase):
             {ChannelMetadataField.STATE: ChannelState.STOPPED},
         )
 
-        self.assertFalse(
-            self.channel._stream_assignment_is_reusable(self.redis, self.stream.id)
-        )
+        with self._relay_snapshot():
+            self.assertFalse(
+                self.channel._stream_assignment_is_reusable(self.redis, self.stream.id)
+            )

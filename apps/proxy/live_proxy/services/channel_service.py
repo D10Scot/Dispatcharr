@@ -387,11 +387,13 @@ class ChannelService:
         # If no direct URL is provided but a target stream is, get URL from target stream
         stream_id = None
         if not new_url and target_stream_id:
-            # This runs in the API process today (PR 4's routing keeps
-            # change_stream_url's caller on the API role); PR 7 turns this
-            # view into a relay_client wrapper, at which point
-            # change_stream_url runs in the relay and PR 7 revisits this
-            # call (D10).
+            # Historically reached when a caller passed target_stream_id
+            # but no url. Since Phase 1 PR 7 the two admin views that used
+            # to take this path (change_stream, next_stream) resolve the
+            # source in Django and always send a url, and the relay's own
+            # advance handler (apps/proxy/relay_views.py) does the same for
+            # that reason -- so no caller reaches this branch today (ruling
+            # 11); it is left in place rather than removed here.
             from apps.proxy.next_source import resolve_source
 
             answer = resolve_source(channel_id, target_stream_id=target_stream_id, reason="operator")

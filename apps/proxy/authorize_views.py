@@ -52,6 +52,7 @@ from apps.proxy.internal_auth import (
     META_RELAY_CLIENT,
     META_RELAY_OUTPUT,
     META_RELAY_USER,
+    request_is_internal,
     request_is_relay_trusted,
 )
 
@@ -133,6 +134,11 @@ def result_from_headers(request, surface: str) -> AuthorizeResult:
         relay_name=settings.RELAY_DEFAULT_NAME,
         user=user,
         trusted=True,
+        # Same header, same check, one module. nginx does not blank
+        # X-Dispatcharr-Internal on a relay-bound location -- it is not
+        # one of the five names dispatcharr_api_params.conf clears -- so
+        # the DVR's token reaches the relay exactly as it reached the hop.
+        is_internal=request_is_internal(request),
     )
 
 

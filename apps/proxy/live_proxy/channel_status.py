@@ -38,7 +38,7 @@ class ChannelStatus:
 
         info = {
             'channel_id': channel_id,
-            'state': metadata.get(ChannelMetadataField.STATE, 'unknown'),
+            'state': metadata.get(ChannelMetadataField.STATE),
             'url': metadata.get(ChannelMetadataField.URL, ''),
             'stream_profile': metadata.get(ChannelMetadataField.STREAM_PROFILE, ''),
             'started_at': metadata.get(ChannelMetadataField.INIT_TIME, '0'),
@@ -316,6 +316,24 @@ class ChannelStatus:
         if resolution:
             info['resolution'] = resolution
 
+        # width, height and video_bitrate join the eight sibling fields
+        # already here because apps/channels/tasks.py's run_recording
+        # stores all eleven under Recording.custom_properties
+        # ["stream_info"], and PR 7 moves that read off Redis and onto
+        # this payload. Raw strings, exactly like their siblings, so the
+        # DVR keeps its own caster and the stored dict is unchanged.
+        width = metadata.get(ChannelMetadataField.WIDTH)
+        if width:
+            info['width'] = width
+
+        height = metadata.get(ChannelMetadataField.HEIGHT)
+        if height:
+            info['height'] = height
+
+        video_bitrate = metadata.get(ChannelMetadataField.VIDEO_BITRATE)
+        if video_bitrate:
+            info['video_bitrate'] = video_bitrate
+
         source_fps = metadata.get(ChannelMetadataField.SOURCE_FPS)
         if source_fps:
             info['source_fps'] = source_fps
@@ -346,9 +364,20 @@ class ChannelStatus:
 
 
         # Add FFmpeg performance stats
+        # A float, matching get_basic_channel_info. The two builders used
+        # to disagree about this field's type -- CLAUDE.md section
+        # Observing a channel -- which is not a difference a single DRF
+        # serializer can carry. An unparseable value is omitted rather
+        # than raised: the same shape as the int() parses above, and a
+        # malformed Redis value must not 500 an admin's status request.
         ffmpeg_speed = metadata.get(ChannelMetadataField.FFMPEG_SPEED)
         if ffmpeg_speed:
-            info['ffmpeg_speed'] = ffmpeg_speed
+            try:
+                info['ffmpeg_speed'] = float(ffmpeg_speed)
+            except (TypeError, ValueError):
+                logger.warning(
+                    f"Invalid ffmpeg_speed format in Redis: {ffmpeg_speed}"
+                )
 
         ffmpeg_fps = metadata.get(ChannelMetadataField.FFMPEG_FPS)
         if ffmpeg_fps:
@@ -387,8 +416,16 @@ class ChannelStatus:
             return None
 
     @staticmethod
-    def get_basic_channel_info(channel_id):
-        """Get basic channel information with Redis error handling"""
+    def get_basic_channel_info(channel_id, client_limit=10):
+        """Get basic channel information with Redis error handling.
+
+        client_limit caps the `clients` list: 10 is what the Stats page
+        and /proxy/stats/ have always shown, and None returns every
+        client, which is what get_user_active_connections needs to count
+        a user's connections without under-counting past ten on one
+        channel. `client_count` is a SCARD either way and is never
+        capped.
+        """
         proxy_server = ProxyServer.get_instance()
 
         try:
@@ -489,9 +526,12 @@ class ChannelStatus:
             if stale_client_ids:
                 client_count = max(0, client_count - len(stale_client_ids))
 
-            # Build concise client list (up to 10) from remaining live clients.
+            # Build concise client list (up to client_limit) from remaining live clients.
             if client_ids:
-                for client_id in list(client_ids)[:10]:
+                listed = list(client_ids)
+                if client_limit is not None:
+                    listed = listed[:client_limit]
+                for client_id in listed:
                     if client_id in stale_client_ids:
                         continue
 
@@ -576,8 +616,11 @@ class ChannelStatus:
             return None
 
 
-def build_live_channel_stats_data(redis_client):
-    """Scan Redis for live channel metadata and build the stats payload."""
+def build_live_channel_stats_data(redis_client, client_limit=10):
+    """Scan Redis for live channel metadata and build the stats payload.
+
+    client_limit is passed straight to get_basic_channel_info; see there.
+    """
     empty = {"channels": [], "count": 0}
     if not redis_client:
         return empty
@@ -594,7 +637,9 @@ def build_live_channel_stats_data(redis_client):
                 if not channel_id_match:
                     continue
                 ch_id = channel_id_match.group(1)
-                channel_info = ChannelStatus.get_basic_channel_info(ch_id)
+                channel_info = ChannelStatus.get_basic_channel_info(
+                    ch_id, client_limit=client_limit
+                )
                 if channel_info:
                     all_channels.append(channel_info)
 

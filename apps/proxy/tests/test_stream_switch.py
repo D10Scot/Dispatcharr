@@ -7,6 +7,7 @@ from django.test import TestCase
 from rest_framework.test import APIRequestFactory, force_authenticate
 
 from apps.accounts.models import User
+from apps.proxy import relay_client
 from apps.proxy.live_proxy import views as views_module
 from apps.proxy.live_proxy.constants import ChannelMetadataField
 from apps.proxy.live_proxy.redis_keys import RedisKeys
@@ -257,19 +258,19 @@ class ChangeStreamViewTests(TestCase):
              patch("apps.proxy.next_source.resolve_source",
                    return_value=resolved_answer) as resolve_source_mock, \
              patch.object(
-                 views_module.ChannelService, "change_stream_url",
-                 return_value={"success": True, "direct_update": True},
-             ) as change_stream_url_mock:
+                 relay_client, "advance",
+                 return_value={"status": "success", "success": True, "direct_update": True},
+             ) as advance_mock:
             response = change_stream(self._post({"stream_id": "12"}), CHANNEL_ID)
 
         self.assertEqual(response.status_code, 200)
         resolve_source_mock.assert_called_once_with(
             CHANNEL_ID, target_stream_id=12, reason="operator"
         )
-        change_stream_url_mock.assert_called_once()
-        args, _kwargs = change_stream_url_mock.call_args
-        self.assertEqual(args[3], 12)
-        self.assertIsInstance(args[3], int)
+        advance_mock.assert_called_once()
+        _args, kwargs = advance_mock.call_args
+        self.assertEqual(kwargs["stream_id"], 12)
+        self.assertIsInstance(kwargs["stream_id"], int)
 
         payload = json.loads(response.content)
         self.assertEqual(payload["stream_id"], 12)

@@ -644,7 +644,10 @@ def resolve_source(
     Returns {"source": <dict|None>, "alternates": [dict], "error": <str|None>}.
     Only "source" ever reserves or moves a slot; alternates are
     resolution only, which is what makes the relay's degraded fallback
-    unenforced by construction. This function adds no try/finally of its
+    unenforced by construction. May reserve a profile slot for the
+    returned source (`slot_reserved`); the double call from
+    `change_stream` -> `update_url` is the pre-move behaviour, idempotent
+    on both halves. This function adds no try/finally of its
     own: each moved helper still closes its own connections, and
     NextSourceDbCleanupTests asserts exactly one close on the initial path.
     """

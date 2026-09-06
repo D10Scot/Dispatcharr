@@ -19,13 +19,10 @@ direction, Django to relay, and it is PR 7's.
 
 import json
 import logging
-import os
 import time
-from urllib.parse import urlsplit
 
 import requests
 from django.core.exceptions import ImproperlyConfigured
-from django.http.request import split_domain_port
 
 from apps.proxy.internal_auth import (
     HEADER_INTERNAL,
@@ -33,7 +30,7 @@ from apps.proxy.internal_auth import (
     build_internal_request_header,
     internal_principal_token,
 )
-from dispatcharr.utils import redact_url
+from apps.proxy.internal_base_url import resolve_base_url
 
 logger = logging.getLogger(__name__)
 
@@ -59,136 +56,18 @@ class ControlPlaneRefused(Exception):
         super().__init__(f"{path} refused with {status}")
 
 
-# Set once we have logged the ImproperlyConfigured message for this
-# process. Mirrors _events_down below: the process only writes the
-# explanation to the log once, whichever entry point hits it first --
-# next_source() (and get_control_plane_base_url() directly) still
-# propagate ImproperlyConfigured on every call after that; release_source()
-# and post_events() catch it on every call too, but only the first one logs.
-_host_validation_warned = False
-
-
-def _var_only_subject(var_name):
-    # Used where the value itself must not be echoed at all -- a
-    # scheme-less or unparseable string can't be redacted reliably, so
-    # naming only the responsible variable is the safe option. dev/aio
-    # have no user-supplied hostname to blame.
-    return var_name if var_name else "the control-plane URL"
-
-
-def _subject_with_value(var_name, url):
-    # Only call this once the scheme is confirmed http/https: redact_url
-    # needs a parseable netloc to mask userinfo, and a scheme-less string
-    # can misparse (e.g. "user:pw@host" takes "user" as the scheme and
-    # never exposes a netloc at all, so redact_url would return it
-    # unchanged, password included). dev/aio's url is always the literal
-    # 127.0.0.1 form and never carries a caller-supplied credential.
-    return f"{var_name}={redact_url(url)}" if var_name else f"the control-plane URL {url!r}"
-
-
-def _raise_and_warn_once(message, var_name):
-    # var_name travels on the exception (not just baked into the message)
-    # so a catcher that must not repeat the message -- release_source(),
-    # which logs its own ERROR without the URL -- can still name which
-    # variable is responsible.
-    global _host_validation_warned
-    if not _host_validation_warned:
-        logger.error(message)
-        _host_validation_warned = True
-    exc = ImproperlyConfigured(message)
-    exc.var_name = var_name
-    raise exc
-
-
-def _validated(url, var_name=None):
-    """Reject a URL requests would turn into a Host header Django refuses.
-
-    Three checks, in order:
-
-    1. url must actually parse as a URL. urlsplit() raises a bare
-       ValueError (not caught anywhere else on this path) on malformed
-       input such as an unbalanced IPv6 bracket ("http://[::1:9191") --
-       caught here and re-raised as ImproperlyConfigured, naming only the
-       variable, so every entry point (release_source(), post_events(),
-       the tune path) sees one exception type instead of two.
-    2. The scheme must be http or https. get_control_plane_base_url()
-       only ever builds http:// URLs, so a scheme-less or malformed
-       explicit value (e.g. "web:9191", urlsplit scheme "web") has no
-       real host at all -- rejecting it with the host-shape message below
-       would blame underscores for a problem that has nothing to do with
-       them. The value is NOT echoed here, even redacted: a scheme-less
-       string can misparse in a way that defeats redact_url (see
-       _subject_with_value), so naming the variable is the only safe
-       option.
-    3. What requests actually puts on the wire as the Host header is the
-       netloc MINUS userinfo: requests turns "user:pw@host:9191" into
-       HTTP Basic auth and sends "Host: host:9191", never forwarding the
-       userinfo as part of the host. Validating the raw netloc (including
-       userinfo) would reject a URL Django would happily accept, and
-       validating it with Django's own split_domain_port -- exactly what
-       HttpRequest.get_host() calls -- means the client and the server can
-       never disagree about what counts as a valid Host header once
-       userinfo is out of the way. It returns ('', '') for anything
-       host_validation_re rejects (notably: an underscore anywhere in the
-       host), and get_host() raises DisallowedHost for that BEFORE
-       ALLOWED_HOSTS is even consulted. A relay that sent such a URL as an
-       HTTP request would just get an opaque 400 with no indication why;
-       failing here, at the source of the value, points at the actual
-       variable responsible. By this point the scheme is confirmed, so
-       the message echoes redact_url(url) -- the netloc parses reliably
-       and any userinfo is masked.
-
-    No network access -- this is string parsing on a value already in
-    hand, safe to run on every call.
-    """
-    try:
-        parsed = urlsplit(url)
-    except ValueError:
-        _raise_and_warn_once(
-            f"{_var_only_subject(var_name)} could not be parsed as a URL.",
-            var_name,
-        )
-    if parsed.scheme not in ("http", "https"):
-        _raise_and_warn_once(
-            f"{_var_only_subject(var_name)} is not an http(s) URL: "
-            "get_control_plane_base_url() only builds http:// URLs, and a "
-            "scheme-less or malformed value has no host requests can send.",
-            var_name,
-        )
-    host_for_wire = parsed.netloc.rpartition("@")[2]
-    domain, _port = split_domain_port(host_for_wire)
-    if domain:
-        return url
-    _raise_and_warn_once(
-        f"{_subject_with_value(var_name, url)} must be an http(s) URL "
-        "whose host is letters, digits, dots and hyphens.",
-        var_name,
-    )
-
-
 def get_control_plane_base_url():
     """Where Django answers, for this deployment shape (D9).
 
-    The same four-branch formula as get_dvr_stream_base_url()
-    (apps/channels/tasks.py), with its own override variable: explicit,
-    then modular by service name, then dev (no nginx — uWSGI's own http
-    listener), then AIO through nginx on DISPATCHARR_PORT. Every branch
-    builds its URL and validates it the same way before returning, so a
-    misconfigured host fails loudly here rather than as an opaque 400 on
-    the first tune.
+    One line, because the formula now lives in internal_base_url beside
+    relay_client's mirror image of it -- see that module's docstring for
+    why both directions resolve to the same nginx.
     """
-    explicit = os.environ.get("DISPATCHARR_INTERNAL_API_BASE_URL")
-    if explicit:
-        return _validated(explicit.rstrip("/"), "DISPATCHARR_INTERNAL_API_BASE_URL")
-    env = os.environ.get("DISPATCHARR_ENV", "aio").lower()
-    if env == "modular":
-        host = os.environ.get("DISPATCHARR_WEB_HOST", "web")
-        port = os.environ.get("DISPATCHARR_PORT", "9191")
-        return _validated(f"http://{host}:{port}", "DISPATCHARR_WEB_HOST")
-    if env == "dev":
-        return _validated("http://127.0.0.1:5656")
-    port = os.environ.get("DISPATCHARR_PORT", "9191")
-    return _validated(f"http://127.0.0.1:{port}")
+    return resolve_base_url(
+        override_var="DISPATCHARR_INTERNAL_API_BASE_URL",
+        modular_host_var="DISPATCHARR_WEB_HOST",
+        modular_host_default="web",
+    )
 
 
 def _post(path, payload):
@@ -330,10 +209,10 @@ def release_source(identifier, *, stream_id=None, m3u_profile_id=None, channel_p
     already knows what it was tearing down.
 
     A misconfigured host is different, and deliberately NOT raised here:
-    "fail loudly on the first tune" (see _validated()'s docstring and the
-    design spec's Amendment S10 point 10) belongs to the tune path, where
-    a viewer is about to be told to try again. release_source() runs from
-    a channel-stop cleanup path instead --
+    "fail loudly on the first tune" (see internal_base_url.validated_base_url()'s
+    docstring and the design spec's Amendment S10 point 10) belongs to the
+    tune path, where a viewer is about to be told to try again.
+    release_source() runs from a channel-stop cleanup path instead --
     aborting that cannot fix the configuration, and only leaks state (the
     channel's Redis keys, its ownership lease and a still-running ffmpeg
     holding a provider slot). It is also reachable in the worker role,
@@ -341,8 +220,8 @@ def release_source(identifier, *, stream_id=None, m3u_profile_id=None, channel_p
     happen there at all before a release is attempted. So
     ImproperlyConfigured is caught here, logged once per call (naming the
     variable only -- the offending value already got its once-per-process
-    ERROR inside _validated) and treated as "not released": every caller
-    already handles a False return the same way it handles the two
+    ERROR inside validated_base_url) and treated as "not released": every
+    caller already handles a False return the same way it handles the two
     control-plane exceptions.
     """
     path = f"/api/relay/channels/{identifier}/release"

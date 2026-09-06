@@ -27,7 +27,7 @@ class ChannelDeleteStopStreamAPITests(TestCase):
         )
 
     @patch(
-        "apps.proxy.live_proxy.services.channel_service.ChannelService.stop_channels"
+        "apps.proxy.relay_client.stop_channels"
     )
     def test_delete_without_stop_stream_leaves_proxy_running(self, mock_stop_channels):
         url = f"/api/channels/channels/{self.channel.id}/"
@@ -38,7 +38,7 @@ class ChannelDeleteStopStreamAPITests(TestCase):
         mock_stop_channels.assert_not_called()
 
     @patch(
-        "apps.proxy.live_proxy.services.channel_service.ChannelService.stop_channels"
+        "apps.proxy.relay_client.stop_channels"
     )
     def test_delete_with_stop_stream_stops_before_delete(self, mock_stop_channels):
         url = f"/api/channels/channels/{self.channel.id}/?stop_stream=true"
@@ -53,7 +53,7 @@ class ChannelDeleteStopStreamAPITests(TestCase):
         self.assertEqual(stopped, [channel_uuid])
 
     @patch(
-        "apps.proxy.live_proxy.services.channel_service.ChannelService.stop_channels"
+        "apps.proxy.relay_client.stop_channels"
     )
     def test_bulk_delete_without_stop_stream(self, mock_stop_channels):
         other = Channel.objects.create(
@@ -72,7 +72,7 @@ class ChannelDeleteStopStreamAPITests(TestCase):
         mock_stop_channels.assert_not_called()
 
     @patch(
-        "apps.proxy.live_proxy.services.channel_service.ChannelService.stop_channels"
+        "apps.proxy.relay_client.stop_channels"
     )
     def test_bulk_delete_with_stop_stream(self, mock_stop_channels):
         other = Channel.objects.create(

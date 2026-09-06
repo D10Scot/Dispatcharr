@@ -293,7 +293,7 @@ class ChannelDeleteStopsProxyTests(TestCase):
         )
 
         with patch(
-            "apps.proxy.live_proxy.services.channel_service.ChannelService.stop_channel"
+            "apps.proxy.relay_client.stop_channel"
         ) as mock_stop:
             channel.delete()
 
@@ -317,7 +317,7 @@ class ChannelDeleteStopsProxyTests(TestCase):
         channel_uuid = str(channel.uuid)
 
         with patch(
-            "apps.proxy.live_proxy.services.channel_service.ChannelService.stop_channels"
+            "apps.proxy.relay_client.stop_channels"
         ) as mock_stop:
             deleted = _delete_channels_stopping_streams([channel])
 
@@ -345,7 +345,7 @@ class ChannelDeleteStopsProxyTests(TestCase):
         channel_id = channel.id
 
         with patch(
-            "apps.proxy.live_proxy.services.channel_service.ChannelService.stop_channel",
+            "apps.proxy.relay_client.stop_channel",
             side_effect=Exception("proxy is down"),
         ):
             deleted = _delete_channels_stopping_streams([channel])

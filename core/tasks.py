@@ -7,7 +7,6 @@ import re
 import time
 import os
 from core.utils import RedisClient, send_websocket_update, acquire_task_lock, release_task_lock
-from apps.proxy.live_proxy.channel_status import build_live_channel_stats_data
 from apps.m3u.models import M3UAccount
 from apps.epg.models import EPGSource
 from apps.m3u.tasks import refresh_single_m3u_account
@@ -422,10 +421,28 @@ def _rebuild_programme_indices():
 
 
 def fetch_channel_stats():
-    redis_client = RedisClient.get_client()
+    # Function-local: this task runs in the worker role, and importing a
+    # relay module at module level made every Celery child load it.
+    from django.core.exceptions import ImproperlyConfigured
+
+    from apps.proxy import relay_client
 
     try:
-        live_stats = build_live_channel_stats_data(redis_client)
+        live_stats = relay_client.list_channels()
+    except (relay_client.RelayUnavailable, relay_client.RelayRefused) as e:
+        # Push nothing rather than an empty payload: the Stats page
+        # clears its rows on one, and a restarting relay is not an idle
+        # system.
+        logger.warning(f"Relay could not answer for channel stats: {e}")
+        return
+    except ImproperlyConfigured as exc:
+        # A beat task cannot fix a misconfigured relay base URL by
+        # aborting; degrade exactly as an unreachable relay does above.
+        logger.warning(
+            "Relay could not answer for channel stats: %s is misconfigured",
+            getattr(exc, "var_name", None) or "the relay base URL",
+        )
+        return
     except Exception as e:
         logger.error(f"Error in channel_status: {e}", exc_info=True)
         return

@@ -1,5 +1,6 @@
 """Tests for per-user stream limit enforcement in apps.proxy.utils."""
 
+from unittest import mock
 from unittest.mock import MagicMock, patch
 
 from django.test import TestCase
@@ -196,24 +197,6 @@ class AttemptStreamTerminationTests(TestCase):
         )
         self.assertIn(programme_stop, self.redis.store)
 
-    def test_live_termination_still_uses_channel_service(self):
-        connections = [{
-            "media_id": "42",
-            "client_id": "live_client_1",
-            "connected_at": 1000.0,
-            "type": "live",
-        }]
-        with patch("apps.proxy.utils.CoreSettings.get_user_limits_settings",
-                   return_value=self._limits_settings()), \
-             patch("apps.proxy.utils.ChannelService.stop_client",
-                   return_value={"status": "ok"}) as stop_mock:
-            ok = attempt_stream_termination(
-                self.user_id, self.requesting_client_id, connections,
-            )
-
-        self.assertTrue(ok)
-        stop_mock.assert_called_once_with("42", "live_client_1")
-
 
 class TimeshiftAdminStopTests(TestCase):
     def setUp(self):
@@ -283,3 +266,131 @@ class TimeshiftAdminStopTests(TestCase):
         programme_stop = RedisKeys.client_stop(self.programme_vid, self.client_id)
         self.assertEqual(self.redis.store.get(programme_stop), _STOP_REASON_ADMIN)
         self.assertIn(self.programme_vid, result["stop_channel_ids"])
+
+
+class LiveConnectionsComeFromTheRelayTests(TestCase):
+    def test_live_connections_are_read_over_http_not_scanned(self):
+        from apps.proxy import relay_client, utils
+
+        payload = {
+            "channels": [
+                {
+                    "channel_id": "abc",
+                    "clients": [
+                        {"client_id": "c1", "user_id": "5", "connected_at": 1000.0},
+                        {"client_id": "c2", "user_id": "9", "connected_at": 1001.0},
+                    ],
+                }
+            ],
+            "count": 1,
+        }
+        with mock.patch.object(
+            relay_client, "list_channels", return_value=payload
+        ) as listed:
+            connections = utils.get_user_active_connections(5)
+        # Uncapped: a cap would under-count a user with more than ten
+        # clients on one channel and let them past their stream limit.
+        self.assertIs(listed.call_args.kwargs["all_clients"], True)
+        live = [c for c in connections if c["type"] == "live"]
+        self.assertEqual(
+            live,
+            [{"media_id": "abc", "client_id": "c1", "connected_at": 1000.0,
+              "type": "live"}],
+        )
+
+    def test_user_id_none_returns_every_live_client(self):
+        from apps.proxy import relay_client, utils
+
+        payload = {
+            "channels": [
+                {
+                    "channel_id": "abc",
+                    "clients": [
+                        {"client_id": "c1", "user_id": "5", "connected_at": 1.0},
+                        {"client_id": "c2", "user_id": "9", "connected_at": 2.0},
+                    ],
+                }
+            ],
+            "count": 1,
+        }
+        with mock.patch.object(relay_client, "list_channels", return_value=payload):
+            connections = utils.get_user_active_connections(None)
+        self.assertEqual(
+            len([c for c in connections if c["type"] == "live"]), 2
+        )
+
+    def test_an_unreachable_relay_contributes_no_live_connections(self):
+        # A relay that cannot answer is a relay serving no live clients,
+        # so failing open is both correct and safe. Failing closed would
+        # 429 every tune for the length of a relay restart.
+        from apps.proxy import relay_client, utils
+
+        with mock.patch.object(
+            relay_client, "list_channels",
+            side_effect=relay_client.RelayUnavailable("down"),
+        ):
+            connections = utils.get_user_active_connections(5)
+        self.assertEqual([c for c in connections if c["type"] == "live"], [])
+
+    def test_a_misconfigured_relay_also_contributes_no_live_connections(self):
+        # Final review round, minor: mirrors the RelayUnavailable test
+        # above for the ImproperlyConfigured branch _live_connections
+        # gained beside it.
+        from django.core.exceptions import ImproperlyConfigured
+
+        from apps.proxy import relay_client, utils
+
+        exc = ImproperlyConfigured("DISPATCHARR_RELAY_BASE_URL is bad")
+        exc.var_name = "DISPATCHARR_RELAY_BASE_URL"
+        with mock.patch.object(relay_client, "list_channels", side_effect=exc):
+            connections = utils.get_user_active_connections(5)
+        self.assertEqual([c for c in connections if c["type"] == "live"], [])
+
+    def test_terminating_a_live_client_goes_through_the_relay(self):
+        from apps.proxy import relay_client, utils
+
+        with mock.patch.object(
+            relay_client, "stop_client", return_value={"status": "success"}
+        ) as stopped:
+            freed = utils.attempt_stream_termination(
+                5,
+                "requester",
+                [{"media_id": "abc", "client_id": "c1", "connected_at": 1.0,
+                  "type": "live"}],
+            )
+        stopped.assert_called_once_with("abc", "c1")
+        self.assertTrue(freed)
+
+    def test_a_relay_that_cannot_stop_denies_the_new_stream(self):
+        from apps.proxy import relay_client, utils
+
+        with mock.patch.object(
+            relay_client, "stop_client",
+            side_effect=relay_client.RelayUnavailable("down"),
+        ):
+            freed = utils.attempt_stream_termination(
+                5,
+                "requester",
+                [{"media_id": "abc", "client_id": "c1", "connected_at": 1.0,
+                  "type": "live"}],
+            )
+        self.assertFalse(freed)
+
+    def test_a_misconfigured_relay_also_denies_the_new_stream(self):
+        # Final review round, minor: mirrors the RelayUnavailable test
+        # above for the ImproperlyConfigured branch
+        # attempt_stream_termination gained beside it.
+        from django.core.exceptions import ImproperlyConfigured
+
+        from apps.proxy import relay_client, utils
+
+        exc = ImproperlyConfigured("DISPATCHARR_RELAY_BASE_URL is bad")
+        exc.var_name = "DISPATCHARR_RELAY_BASE_URL"
+        with mock.patch.object(relay_client, "stop_client", side_effect=exc):
+            freed = utils.attempt_stream_termination(
+                5,
+                "requester",
+                [{"media_id": "abc", "client_id": "c1", "connected_at": 1.0,
+                  "type": "live"}],
+            )
+        self.assertFalse(freed)

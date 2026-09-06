@@ -533,3 +533,46 @@ class PrincipalResolutionTests(AuthorizeBase):
             with self.assertRaises(AuthorizeDenied) as caught:
                 self._allow(SURFACE_LIVE, identifier=self.hash_stream.stream_hash)
         self.assertEqual(caught.exception.status, 429)
+
+
+class AuthorizeResultCarriesTheInternalFlagTests(AuthorizeBase):
+    """Issue #181: the stream view was re-reading the raw header.
+
+    The decision already resolved the internal principal; asking the same
+    question twice, in a second module, is the duplication #181 objects
+    to. The flag is inline-only, like `user` and `trusted` -- nginx
+    forwards X-Dispatcharr-Internal unchanged on relay-bound locations,
+    so result_from_headers answers it from the same header the hop did.
+    """
+
+    def _tune(self, **meta):
+        request = self._request(**meta)
+        with patch.object(authorize, "network_access_allowed", return_value=True):
+            return authorize_stream(
+                request, SURFACE_LIVE, identifier=str(self.channel.uuid)
+            )
+
+    def test_an_internal_caller_is_flagged_on_the_inline_path(self):
+        decision = self._tune(
+            HTTP_X_DISPATCHARR_INTERNAL=internal_auth.internal_principal_token()
+        )
+        self.assertIs(decision.is_internal, True)
+
+    def test_an_ordinary_caller_is_not(self):
+        decision = self._tune()
+        self.assertIs(decision.is_internal, False)
+
+    def test_a_forged_token_is_not(self):
+        decision = self._tune(HTTP_X_DISPATCHARR_INTERNAL="0" * 64)
+        self.assertIs(decision.is_internal, False)
+
+    def test_the_nginx_path_reaches_the_same_answer(self):
+        from apps.proxy.authorize_views import result_from_headers
+
+        request = self._request(
+            HTTP_X_DISPATCHARR_INTERNAL=internal_auth.internal_principal_token(),
+            HTTP_X_RELAY_CHANNEL=str(self.channel.uuid),
+        )
+        self.assertIs(
+            result_from_headers(request, SURFACE_LIVE).is_internal, True
+        )

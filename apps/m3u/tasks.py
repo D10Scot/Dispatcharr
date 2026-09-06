@@ -53,13 +53,13 @@ def _delete_channels_stopping_streams(channels):
     Manual UI deletes leave this optional via the stop_stream API flag.
     """
     from apps.channels.models import Channel
-    from apps.proxy.live_proxy.services.channel_service import ChannelService
+    from apps.proxy import relay_client
 
     channel_list = list(channels)
     if not channel_list:
         return 0
     try:
-        ChannelService.stop_channels(
+        relay_client.stop_channels(
             getattr(channel, "uuid", None) for channel in channel_list
         )
     except Exception as e:

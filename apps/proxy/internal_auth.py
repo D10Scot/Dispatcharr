@@ -153,7 +153,11 @@ def internal_request_token(method: str, path: str, body: bytes, timestamp: int) 
 
 
 def build_internal_request_header(method: str, path: str, body: bytes) -> str:
-    """The full header value a caller sends. Used by control_plane and PR 7."""
+    """The full header value a caller sends. Used by control_plane and PR 7.
+
+    `path` is the full path the caller will request, query string
+    included — `request.get_full_path()` on the other side.
+    """
     timestamp = int(time.time())
     return f"v1.{timestamp}.{internal_request_token(method, path, body, timestamp)}"
 
@@ -173,6 +177,10 @@ def request_is_internal_request(request) -> bool:
     if abs(int(time.time()) - timestamp) > INTERNAL_REQUEST_WINDOW_SECONDS:
         return False
     expected = internal_request_token(
-        request.method, request.path, request.body, timestamp
+        # get_full_path(), not path: the query string is part of what a
+        # caller is asking for, so it has to be part of what the token
+        # binds (PR 7). They are the same string when there is no query,
+        # which is why every call PR 6 shipped verifies unchanged.
+        request.method, request.get_full_path(), request.body, timestamp
     )
     return _matches(parts[2], expected)

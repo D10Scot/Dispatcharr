@@ -14,7 +14,7 @@ from apps.proxy.live_proxy.channel_status import build_live_channel_stats_data
 class BuildLiveChannelStatsDataTests(TestCase):
     @patch("apps.proxy.live_proxy.channel_status.ChannelStatus.get_basic_channel_info")
     def test_builds_channel_list_from_metadata_scan(self, mock_get_info):
-        mock_get_info.side_effect = lambda ch_id: {"channel_id": ch_id}
+        mock_get_info.side_effect = lambda ch_id, **kwargs: {"channel_id": ch_id}
 
         redis = MagicMock()
         redis.scan.return_value = (
@@ -62,7 +62,7 @@ class CombinedStatsApiTests(TestCase):
 
     @patch("apps.proxy.stats_views.build_timeshift_stats_data")
     @patch("apps.proxy.stats_views.build_vod_stats_data")
-    @patch("apps.proxy.stats_views.build_live_channel_stats_data")
+    @patch("apps.proxy.stats_views.relay_client.list_channels")
     @patch("apps.proxy.stats_views.RedisClient.get_client")
     def test_combined_stats_returns_all_sections(
         self,
@@ -108,3 +108,43 @@ class CombinedStatsApiTests(TestCase):
 
         self.assertEqual(response.status_code, 500)
         self.assertIn("error", json.loads(response.content))
+
+    def test_a_relay_outage_empties_only_the_live_section(self):
+        from apps.proxy import relay_client
+
+        with patch.object(
+            relay_client, "list_channels",
+            side_effect=relay_client.RelayUnavailable("down"),
+        ):
+            request = self.factory.get("/proxy/stats/")
+            force_authenticate(request, user=self.admin)
+            response = stats_views.combined_stats(request)
+
+        body = json.loads(response.content)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(body["live"], {"channels": [], "count": 0})
+        self.assertIn("vod", body)
+        self.assertIn("catchup", body)
+
+    def test_a_misconfigured_relay_also_empties_only_the_live_section(self):
+        # Final review round, minor: mirrors the RelayUnavailable test
+        # above for the ImproperlyConfigured branch combined_stats
+        # gained beside it. combined_stats degrades -- 200, not 500 --
+        # unlike the five admin views, which is what the CLAUDE.md fix
+        # in this same round exists to say correctly.
+        from django.core.exceptions import ImproperlyConfigured
+
+        from apps.proxy import relay_client
+
+        exc = ImproperlyConfigured("DISPATCHARR_RELAY_BASE_URL is bad")
+        exc.var_name = "DISPATCHARR_RELAY_BASE_URL"
+        with patch.object(relay_client, "list_channels", side_effect=exc):
+            request = self.factory.get("/proxy/stats/")
+            force_authenticate(request, user=self.admin)
+            response = stats_views.combined_stats(request)
+
+        body = json.loads(response.content)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(body["live"], {"channels": [], "count": 0})
+        self.assertIn("vod", body)
+        self.assertIn("catchup", body)
