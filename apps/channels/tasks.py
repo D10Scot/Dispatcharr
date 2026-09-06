@@ -2439,55 +2439,59 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
         cp["bytes_written"] = bytes_written
         cp["remux_success"] = remux_success
 
-        # Try to get stream stats from TS proxy Redis metadata
+        # Try to get stream stats from the relay's status payload
         try:
-            from core.utils import RedisClient
-            from apps.proxy.live_proxy.redis_keys import RedisKeys
+            from apps.proxy import relay_client
             from apps.proxy.live_proxy.constants import ChannelMetadataField
 
-            r = RedisClient.get_client()
-            if r is not None:
-                metadata_key = RedisKeys.channel_metadata(str(channel.uuid))
-                md = r.hgetall(metadata_key)
-                if md:
-                    def _d(bkey, cast=str):
-                        v = md.get(bkey)
-                        try:
-                            if v is None:
-                                return None
-                            s = v
-                            return cast(s) if cast is not str else s
-                        except Exception:
+            # Phase 1 PR 7: this runs in the dvr Celery worker, which has
+            # no business reading live:channel:<uuid>:metadata directly.
+            # The relay's detailed payload uses the same key names --
+            # ChannelMetadataField's values are exactly the JSON keys --
+            # so the eleven fields below and the casts they carry are
+            # unchanged, and Recording.custom_properties["stream_info"]
+            # comes out identical. width, height and video_bitrate were
+            # added to that payload for this call.
+            md = relay_client.get_channel(str(channel.uuid)) or {}
+            if md:
+                def _d(bkey, cast=str):
+                    v = md.get(bkey)
+                    try:
+                        if v is None:
                             return None
+                        s = v
+                        return cast(s) if cast is not str else s
+                    except Exception:
+                        return None
 
-                    stream_info = {}
-                    # Video fields
-                    for key, caster in [
-                        (ChannelMetadataField.VIDEO_CODEC, str),
-                        (ChannelMetadataField.RESOLUTION, str),
-                        (ChannelMetadataField.WIDTH, float),
-                        (ChannelMetadataField.HEIGHT, float),
-                        (ChannelMetadataField.SOURCE_FPS, float),
-                        (ChannelMetadataField.PIXEL_FORMAT, str),
-                        (ChannelMetadataField.VIDEO_BITRATE, float),
-                    ]:
-                        val = _d(key, caster)
-                        if val is not None:
-                            stream_info[key] = val
+                stream_info = {}
+                # Video fields
+                for key, caster in [
+                    (ChannelMetadataField.VIDEO_CODEC, str),
+                    (ChannelMetadataField.RESOLUTION, str),
+                    (ChannelMetadataField.WIDTH, float),
+                    (ChannelMetadataField.HEIGHT, float),
+                    (ChannelMetadataField.SOURCE_FPS, float),
+                    (ChannelMetadataField.PIXEL_FORMAT, str),
+                    (ChannelMetadataField.VIDEO_BITRATE, float),
+                ]:
+                    val = _d(key, caster)
+                    if val is not None:
+                        stream_info[key] = val
 
-                    # Audio fields
-                    for key, caster in [
-                        (ChannelMetadataField.AUDIO_CODEC, str),
-                        (ChannelMetadataField.SAMPLE_RATE, float),
-                        (ChannelMetadataField.AUDIO_CHANNELS, str),
-                        (ChannelMetadataField.AUDIO_BITRATE, float),
-                    ]:
-                        val = _d(key, caster)
-                        if val is not None:
-                            stream_info[key] = val
+                # Audio fields
+                for key, caster in [
+                    (ChannelMetadataField.AUDIO_CODEC, str),
+                    (ChannelMetadataField.SAMPLE_RATE, float),
+                    (ChannelMetadataField.AUDIO_CHANNELS, str),
+                    (ChannelMetadataField.AUDIO_BITRATE, float),
+                ]:
+                    val = _d(key, caster)
+                    if val is not None:
+                        stream_info[key] = val
 
-                    if stream_info:
-                        cp["stream_info"] = stream_info
+                if stream_info:
+                    cp["stream_info"] = stream_info
         except Exception as e:
             logger.debug(f"Unable to capture stream stats for recording: {e}")
 
