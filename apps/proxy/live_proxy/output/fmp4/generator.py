@@ -9,8 +9,7 @@ zero-clients → stop_channel shutdown chain works for all client types.
 
 import time
 import gevent
-from apps.channels.models import Channel, Stream
-from core.utils import log_system_event
+from apps.proxy.control_plane import emit_event
 from django.db import close_old_connections
 from ...server import ProxyServer
 from ...redis_keys import RedisKeys
@@ -105,7 +104,7 @@ class FMP4StreamGenerator:
                 return
 
             try:
-                log_system_event(
+                emit_event(
                     'client_connect',
                     channel_id=self.channel_id,
                     channel_name=self.channel_name,
@@ -374,11 +373,12 @@ class FMP4StreamGenerator:
                                 and ConfigHelper.channel_shutdown_delay() <= 0
                             ):
                                 try:
+                                    from apps.proxy import control_plane
+
                                     try:
-                                        obj = Channel.objects.get(uuid=self.channel_id)
-                                    except (Channel.DoesNotExist, Exception):
-                                        obj = Stream.objects.get(stream_hash=self.channel_id)
-                                    obj.release_stream()
+                                        control_plane.release_source(self.channel_id)
+                                    except (control_plane.ControlPlaneRefused, control_plane.ControlPlaneUnavailable) as exc:
+                                        logger.warning(f"Could not release the slot for {self.channel_id}: {exc}")
                                 except Exception as e:
                                     logger.error(
                                         f"[{self.client_id}] Error releasing stream: {e}"

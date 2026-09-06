@@ -9,15 +9,15 @@ import gevent
 import re
 from django.db import connection, close_old_connections
 from apps.proxy.config import TSConfig as Config
-from apps.channels.models import Channel, Stream
-from core.utils import log_system_event
+from apps.proxy.control_plane import emit_event
 from .buffer import StreamBuffer
 from ..utils import detect_stream_type, get_logger
 from ..redis_keys import RedisKeys
 from ..constants import ChannelState, EventType, StreamType, ChannelMetadataField, TS_PACKET_SIZE
 from ..config_helper import ConfigHelper
-from ..url_utils import get_alternate_streams, get_stream_info_for_switch, get_stream_object
+from ..url_utils import get_stream_object
 from ..utils import resolve_channel_display_name
+from dispatcharr.utils import redact_url
 
 logger = get_logger()
 
@@ -90,6 +90,10 @@ class StreamManager:
         # Add tracking for tried streams and current stream
         self.current_stream_id = stream_id
         self.tried_stream_ids = set()
+        # This manager failed over blind against the cached alternates list
+        # (control plane unreachable). Per-manager, not channel state: lost
+        # with the process on purpose (Phase 1 PR 6).
+        self._failover_degraded = False
 
         if stream_id:
             self.tried_stream_ids.add(stream_id)
@@ -392,7 +396,7 @@ class StreamManager:
             health_thread = threading.Thread(target=self._monitor_health, daemon=True)
             health_thread.start()
 
-            logger.info(f"Starting stream for URL: {self.url} for channel {self.channel_id}")
+            logger.info(f"Starting stream for URL: {redact_url(self.url)} for channel {self.channel_id}")
 
             # Main stream switching loop - we'll try different streams if needed
             while self.running and stream_switch_attempts <= max_stream_switches:
@@ -438,7 +442,7 @@ class StreamManager:
                 self.stream_type = detect_stream_type(self.url)
                 if self.transcode == False and self.stream_type in (StreamType.HLS, StreamType.RTSP, StreamType.UDP):
                     stream_type_name = "HLS" if self.stream_type == StreamType.HLS else ("RTSP/RTP" if self.stream_type == StreamType.RTSP else "UDP")
-                    logger.info(f"Detected {stream_type_name} stream: {self.url} for channel {self.channel_id}")
+                    logger.info(f"Detected {stream_type_name} stream: {redact_url(self.url)} for channel {self.channel_id}")
                     logger.info(f"{stream_type_name} streams require FFmpeg for channel {self.channel_id}")
                     # Enable transcoding for HLS, RTSP/RTP, and UDP streams
                     self.transcode = True
@@ -462,7 +466,7 @@ class StreamManager:
                     attempt = self.retry_count + 1
                     logger.info(
                         f"Connection attempt {attempt}/{self.max_retries} "
-                        f"for URL: {self.url} for channel {self.channel_id}"
+                        f"for URL: {redact_url(self.url)} for channel {self.channel_id}"
                     )
 
                     # Handle connection based on whether we transcode or not
@@ -480,7 +484,7 @@ class StreamManager:
                             # Log reconnection event if this is a retry (not first attempt)
                             if self.retry_count > 0:
                                 try:
-                                    log_system_event(
+                                    emit_event(
                                         'channel_reconnect',
                                         channel_id=self.channel_id,
                                         channel_name=self.channel_name,
@@ -531,18 +535,18 @@ class StreamManager:
                         if failures >= self.max_retries:
                             url_failed = True
                             logger.warning(
-                                f"Maximum retry attempts ({self.max_retries}) reached for URL: {self.url} "
+                                f"Maximum retry attempts ({self.max_retries}) reached for URL: {redact_url(self.url)} "
                                 f"for channel: {self.channel_id}"
                             )
 
                             # Log connection error event
                             try:
-                                log_system_event(
+                                emit_event(
                                     'channel_error',
                                     channel_id=self.channel_id,
                                     channel_name=self.channel_name,
                                     error_type='connection_failed',
-                                    url=self.url[:100] if self.url else None,
+                                    url=redact_url(self.url)[:100] if self.url else None,
                                     attempts=self.max_retries
                                 )
                             except Exception as e:
@@ -567,13 +571,13 @@ class StreamManager:
 
                             # Log connection error event with exception details
                             try:
-                                log_system_event(
+                                emit_event(
                                     'channel_error',
                                     channel_id=self.channel_id,
                                     channel_name=self.channel_name,
                                     error_type='connection_exception',
                                     error_message=str(e)[:200],
-                                    url=self.url[:100] if self.url else None,
+                                    url=redact_url(self.url)[:100] if self.url else None,
                                     attempts=self.max_retries
                                 )
                             except Exception as log_error:
@@ -590,14 +594,14 @@ class StreamManager:
 
                 # If URL failed and we're still running, try switching to another stream
                 if url_failed and self.running:
-                    logger.info(f"URL {self.url} failed after {self.retry_count} attempts, trying next stream for channel: {self.channel_id}")
+                    logger.info(f"URL {redact_url(self.url)} failed after {self.retry_count} attempts, trying next stream for channel: {self.channel_id}")
 
                     # Try to switch to next stream
                     switch_result = self._try_next_stream()
                     if switch_result:
                         # Successfully switched to a new stream, continue with the new URL
                         stream_switch_attempts += 1
-                        logger.info(f"Successfully switched to new URL: {self.url} (switch attempt {stream_switch_attempts}/{max_stream_switches}) for channel: {self.channel_id}")
+                        logger.info(f"Successfully switched to new URL: {redact_url(self.url)} (switch attempt {stream_switch_attempts}/{max_stream_switches}) for channel: {self.channel_id}")
                         self._clear_connection_failure_history()
                         # Continue outer loop with new URL - DON'T add a break statement here
                     else:
@@ -1149,7 +1153,7 @@ class StreamManager:
 
                                 # Log failover event
                                 try:
-                                    log_system_event(
+                                    emit_event(
                                         'channel_failover',
                                         channel_id=self.channel_id,
                                         channel_name=self.channel_name,
@@ -1168,7 +1172,7 @@ class StreamManager:
 
                     # Log system event for buffering
                     try:
-                        log_system_event(
+                        emit_event(
                             'channel_buffering',
                             channel_id=self.channel_id,
                             channel_name=self.channel_name,
@@ -1229,7 +1233,7 @@ class StreamManager:
     def _establish_http_connection(self):
         """Establish HTTP connection using thread-based reader (same as transcode path)"""
         try:
-            logger.debug(f"Using HTTP streamer thread to connect to stream: {self.url}")
+            logger.debug(f"Using HTTP streamer thread to connect to stream: {redact_url(self.url)}")
 
             # Check if we already have active HTTP connections
             if self.current_response or self.current_session:
@@ -1414,41 +1418,15 @@ class StreamManager:
     def update_url(self, new_url, stream_id=None, m3u_profile_id=None):
         """Update stream URL and reconnect with proper cleanup for both HTTP and transcode sessions"""
         if new_url == self.url:
-            logger.info(f"URL unchanged: {new_url}")
+            logger.info(f"URL unchanged: {redact_url(new_url)}")
             return False
 
-        logger.info(f"Switching stream URL from {self.url} to {new_url} for channel {self.channel_id}")
+        logger.info(f"Switching stream URL from {redact_url(self.url)} to {redact_url(new_url)} for channel {self.channel_id}")
 
-        # Import both models for proper resource management
-        from apps.channels.models import Stream, Channel
-        from django.db import connection
-
-        # Update stream profile if we're switching streams
-        if self.current_stream_id and stream_id and self.current_stream_id != stream_id:
-            try:
-                # Get the channel by UUID
-                channel = Channel.objects.get(uuid=self.channel_id)
-
-                # Get stream to find its profile
-                #new_stream = Stream.objects.get(pk=stream_id)
-
-                # Use the new method to update the profile and manage connection counts
-                if m3u_profile_id:
-                    success = channel.update_stream_profile(m3u_profile_id)
-                    if success:
-                        logger.debug(f"Updated m3u profile for channel {self.channel_id} to use profile from stream {stream_id}")
-                    else:
-                        logger.warning(f"Failed to update stream profile for channel {self.channel_id}")
-
-            except Exception as e:
-                logger.error(f"Error updating stream profile for channel {self.channel_id}: {e}")
-
-            finally:
-                # Always close database connection after profile update
-                try:
-                    connection.close()
-                except Exception:
-                    pass
+        # The provider slot moves in Django now, inside the next-source answer
+        # that named this stream (Phase 1 PR 6, spec § PR 6: "input/manager.py's
+        # update_stream_profile moves into Django's next-source handling, where
+        # the credential-slot move already belongs"). Nothing to do here.
 
         # CRITICAL: Set a flag to prevent immediate reconnection with old URL
         self.url_switching = True
@@ -1473,9 +1451,14 @@ class StreamManager:
             self._last_bitrate_db_save_time = 0
             self._bitrate_warmup_samples = 10
 
-            # Update stream ID if provided
+            # Update stream ID if provided. Coerced here too (belt and
+            # suspenders alongside the callers that already coerce): every
+            # id that ends up in current_stream_id/tried_stream_ids has to
+            # be an int, since _try_next_stream sorts them together with
+            # ids Django hands back (Phase 1 PR 6 fix wave B).
             if stream_id:
                 old_stream_id = self.current_stream_id
+                stream_id = int(stream_id)
                 self.current_stream_id = stream_id
                 # Add stream ID to tried streams for proper tracking
                 self.tried_stream_ids.add(stream_id)
@@ -1494,11 +1477,11 @@ class StreamManager:
 
             # Log stream switch event
             try:
-                log_system_event(
+                emit_event(
                     'stream_switch',
                     channel_id=self.channel_id,
                     channel_name=self.channel_name,
-                    new_url=new_url[:100] if new_url else None,
+                    new_url=redact_url(new_url)[:100] if new_url else None,
                     stream_id=stream_id
                 )
             except Exception as e:
@@ -1626,7 +1609,7 @@ class StreamManager:
 
                     # Log reconnection event
                     try:
-                        log_system_event(
+                        emit_event(
                             'channel_reconnect',
                             channel_id=self.channel_id,
                             channel_name=self.channel_name,
@@ -1983,102 +1966,209 @@ class StreamManager:
             logger.error(f"Error in buffer check for channel {self.channel_id}: {e}")
             return False
 
+    # Fields _try_next_stream indexes into unconditionally once an entry is
+    # picked (source["stream_profile"]["id"] included) -- an entry missing
+    # any of these is a corrupt or truncated cache write, not a candidate.
+    _CACHED_ALTERNATE_REQUIRED_FIELDS = (
+        "stream_id", "url", "user_agent", "transcode", "m3u_profile_id",
+    )
+
+    def _pick_cached_alternate(self, alternates, exclude):
+        """First cached candidate not already tried and not the current URL.
+
+        Degraded-fallback only: `alternates` is the resolved-Source list
+        `read_cached_alternates` returns, stale from the last time Django
+        answered and never re-checked for capacity here.
+        """
+        for entry in alternates:
+            if not isinstance(entry, dict):
+                continue
+            if any(field not in entry for field in self._CACHED_ALTERNATE_REQUIRED_FIELDS):
+                continue
+            if not isinstance(entry.get("stream_profile"), dict) or "id" not in entry["stream_profile"]:
+                continue
+            if entry["stream_id"] in exclude:
+                continue
+            if entry["url"] == self.url:
+                continue
+            return entry
+        return None
+
     def _try_next_stream(self):
-        """
-        Try to switch to the next available stream for this channel.
-        Will iterate through multiple alternate streams if needed to find one with a different URL.
+        """Ask Django for the next stream and adopt it.
 
-        Returns:
-            bool: True if successfully switched to a new stream, False otherwise
+        Phase 1 PR 6: this used to be get_alternate_streams() plus a
+        get_stream_info_for_switch() per candidate, looping until one
+        resolved to a URL different from the current one. Django does the
+        whole traversal now — current_url is what lets it, since rejecting a
+        candidate that resolves to the URL already playing was the only
+        reason the loop had to be here.
         """
+        from apps.proxy import control_plane
+        from ..url_utils import read_cached_alternates
+
         try:
-            logger.info(f"Trying to find alternative stream for channel {self.channel_id}, current stream ID: {self.current_stream_id}")
+            exclude = set(self.tried_stream_ids)
+            if self.current_stream_id:
+                exclude.add(self.current_stream_id)
 
-            # Get alternate streams excluding the current one
-            alternate_streams = get_alternate_streams(self.channel_id, self.current_stream_id)
-            logger.info(f"Found {len(alternate_streams)} potential alternate streams for channel {self.channel_id}")
-
-            # Filter out streams we've already tried
-            untried_streams = [s for s in alternate_streams if s['stream_id'] not in self.tried_stream_ids]
-            if untried_streams:
-                ids_to_try = ', '.join([str(s['stream_id']) for s in untried_streams])
-                logger.info(f"Found {len(untried_streams)} untried streams for channel {self.channel_id}: [{ids_to_try}]")
-            else:
-                logger.warning(f"No untried streams available for channel {self.channel_id}, tried: {self.tried_stream_ids}")
-
-            if not untried_streams:
-                # Check if we have streams but they've all been tried
-                if alternate_streams and len(self.tried_stream_ids) > 0:
-                    logger.warning(f"All {len(alternate_streams)} alternate streams have been tried for channel {self.channel_id}")
+            # exclude can mix an int (from Django) with a not-yet-coerced
+            # string id -- sorted() over mixed types raises TypeError, which
+            # used to tear the whole channel down on the next automatic
+            # failover (Phase 1 PR 6 fix wave B, final-review Blocking
+            # finding). Every producer of these ids is coerced at its own
+            # boundary now; this is the last line of defense.
+            try:
+                exclude_stream_ids = sorted({int(s) for s in exclude})
+            except (TypeError, ValueError):
+                logger.error(
+                    f"Non-integer stream id in the exclude set for channel "
+                    f"{self.channel_id}: {sorted(str(s) for s in exclude)}"
+                )
                 return False
 
-            for next_stream in untried_streams:
-                stream_id = next_stream['stream_id']
-                profile_id = next_stream['profile_id']  # This is the M3U profile ID we need
+            degraded = False
+            try:
+                answer = control_plane.next_source(
+                    self.channel_id,
+                    exclude_stream_ids=exclude_stream_ids,
+                    current_url=self.url,
+                    current_stream_id=self.current_stream_id,
+                    reason="failover",
+                )
+                source = answer.get("source")
+            except control_plane.ControlPlaneRefused as exc:
+                # Django answered, and said no: a deleted channel, a bad token, a
+                # SECRET_KEY mismatch between roles. Never degrade on a refusal —
+                # the cached list would keep a deleted channel streaming, and a
+                # token fault would make every failover on the deployment degrade
+                # forever instead of failing once, loudly. Today's equivalent is
+                # get_alternate_streams catching Http404 and returning [].
+                logger.error(
+                    f"Control plane refused the failover for channel "
+                    f"{self.channel_id} with {exc.status}"
+                )
+                return False
+            except control_plane.ControlPlaneUnavailable as exc:
+                # Degraded fallback: the candidate list cached at channel start.
+                # Stale, unenforced, and no slot moves — refusing to fail over at
+                # all is worse for the viewer, and the channel_error event below
+                # makes it visible after the fact.
+                logger.warning(
+                    f"Control plane unreachable during failover for channel "
+                    f"{self.channel_id}: {exc}; using the cached candidate list "
+                    f"unenforced"
+                )
+                degraded = True
+                source = self._pick_cached_alternate(read_cached_alternates(self.channel_id), exclude)
 
-                # Add to tried streams
-                self.tried_stream_ids.add(stream_id)
+            if not source:
+                logger.error(f"No alternate stream available for channel {self.channel_id}")
+                return False
 
-                # Get stream info including URL using the profile_id we already have
-                logger.info(f"Trying next stream ID {stream_id} with profile ID {profile_id} for channel {self.channel_id}")
-                stream_info = get_stream_info_for_switch(self.channel_id, stream_id)
+            # Validate the live source the same way the degraded path already
+            # validates a cached one (_pick_cached_alternate): a
+            # version-skewed Django answering a source missing a key must
+            # not turn a failover into a main-loop teardown (Phase 1 PR 6
+            # fix wave B, final-review Minor finding).
+            missing_fields = [
+                field for field in self._CACHED_ALTERNATE_REQUIRED_FIELDS
+                if field not in source
+            ]
+            if missing_fields:
+                logger.error(
+                    f"Control plane source for channel {self.channel_id} is "
+                    f"missing {missing_fields}"
+                )
+                return False
+            if not isinstance(source.get("stream_profile"), dict) or "id" not in source["stream_profile"]:
+                logger.error(
+                    f"Control plane source for channel {self.channel_id} is "
+                    f"missing stream_profile.id"
+                )
+                return False
 
-                if 'error' in stream_info or not stream_info.get('url'):
-                    logger.error(f"Error getting info for stream {stream_id} for channel {self.channel_id}: {stream_info.get('error', 'No URL')}")
-                    continue  # Try next stream instead of giving up
+            stream_id = source["stream_id"]
+            profile_id = source["m3u_profile_id"]
+            self.tried_stream_ids.add(stream_id)
+            logger.info(
+                f"Switching channel {self.channel_id} to stream {stream_id} "
+                f"with M3U profile {profile_id}"
+            )
 
-                # Update URL and user agent
-                new_url = stream_info['url']
-                new_user_agent = stream_info['user_agent']
-                new_transcode = stream_info['transcode']
+            if not self.update_url(source["url"], stream_id, profile_id):
+                # Unreachable once Django took the failover branch: current_url
+                # is what keeps it from answering with the URL already playing;
+                # the only other False is update_url's own except (Phase 1 PR 6
+                # review round 1 -- next_source.py's resolve_source routes on
+                # current_url/reason, not just exclude_stream_ids, so this holds
+                # even when nothing has been tried yet).
+                logger.error(
+                    f"Failed to update URL for stream {stream_id} on channel "
+                    f"{self.channel_id}"
+                )
+                return False
 
-                # Check if the new URL is the same as current URL
-                # This can happen when current_stream_id is None and we accidentally select the same stream
-                if new_url == self.url:
-                    logger.warning(f"Stream ID {stream_id} generates the same URL as current stream ({new_url}). "
-                                 f"Skipping this stream and trying next alternative.")
-                    continue  # Try next stream instead of giving up
+            self.current_stream_id = stream_id
+            self.user_agent = source["user_agent"]
+            self.transcode = source["transcode"]
 
-                logger.info(f"Switching from URL {self.url} to {new_url} for channel {self.channel_id}")
+            if hasattr(self.buffer, "redis_client") and self.buffer.redis_client:
+                try:
+                    self.buffer.redis_client.hset(
+                        RedisKeys.channel_metadata(self.channel_id),
+                        mapping={
+                            ChannelMetadataField.URL: source["url"],
+                            ChannelMetadataField.USER_AGENT: source["user_agent"],
+                            ChannelMetadataField.STREAM_PROFILE: str(source["stream_profile"]["id"]),
+                            ChannelMetadataField.M3U_PROFILE: str(profile_id),
+                            ChannelMetadataField.STREAM_ID: str(stream_id),
+                            ChannelMetadataField.STREAM_SWITCH_TIME: str(time.time()),
+                            ChannelMetadataField.STREAM_SWITCH_REASON: "max_retries_exceeded",
+                        },
+                    )
+                except Exception as e:
+                    # The switch already happened (update_url returned True):
+                    # a metadata-write failure here must not unwind it and
+                    # report the failover as failed.
+                    logger.error(
+                        f"Failed to write switch metadata for channel "
+                        f"{self.channel_id} to stream {stream_id}: {e}"
+                    )
 
-                # Just update the URL, don't stop the channel or release resources
-                switch_result = self.update_url(new_url, stream_id, profile_id)
-                if not switch_result:
-                    logger.error(f"Failed to update URL for stream ID {stream_id} for channel {self.channel_id}")
-                    continue  # Try next stream
+            if degraded:
+                self._failover_degraded = True
+            elif self._failover_degraded:
+                # Django is answering again: say, once, that an earlier failover
+                # ran blind on the cached list and may have exceeded max_streams.
+                self._failover_degraded = False
+                emit_event(
+                    "channel_error",
+                    channel_id=self.channel_id,
+                    channel_name=self.channel_name,
+                    reason="degraded_failover",
+                )
 
-                # Update stream ID tracking
-                self.current_stream_id = stream_id
-
-                # Store the new user agent and transcode settings
-                self.user_agent = new_user_agent
-                self.transcode = new_transcode
-
-                # Update stream metadata in Redis - use the profile_id we got from get_alternate_streams
-                if hasattr(self.buffer, 'redis_client') and self.buffer.redis_client:
-                    metadata_key = RedisKeys.channel_metadata(self.channel_id)
-                    self.buffer.redis_client.hset(metadata_key, mapping={
-                        ChannelMetadataField.URL: new_url,
-                        ChannelMetadataField.USER_AGENT: new_user_agent,
-                        ChannelMetadataField.STREAM_PROFILE: stream_info['stream_profile'],
-                        ChannelMetadataField.M3U_PROFILE: str(profile_id),  # Use the profile_id from get_alternate_streams
-                        ChannelMetadataField.STREAM_ID: str(stream_id),
-                        ChannelMetadataField.STREAM_SWITCH_TIME: str(time.time()),
-                        ChannelMetadataField.STREAM_SWITCH_REASON: "max_retries_exceeded"
-                    })
-
-                    # Log the switch
-                    logger.info(f"Stream metadata updated for channel {self.channel_id} to stream ID {stream_id} with M3U profile {profile_id}")
-
-                logger.info(f"Successfully switched to stream ID {stream_id} with URL {new_url} for channel {self.channel_id}")
-                return True
-
-            # If we get here, we tried all streams but none worked
-            logger.error(f"Tried {len(untried_streams)} alternate streams but none were suitable for channel {self.channel_id}")
-            return False
-
+            logger.info(
+                f"Successfully switched channel {self.channel_id} to stream {stream_id}"
+            )
+            return True
         except Exception as e:
-            logger.error(f"Error trying next stream for channel {self.channel_id}: {e}", exc_info=True)
+            # Defensive boundary restored: pre-PR, this whole method's body
+            # was one `except Exception: return False` (git show
+            # ce25bd7e:apps/proxy/live_proxy/input/manager.py). Losing it
+            # changed the failure mode from "no failover" to "Stream error"
+            # -> full channel teardown, since the two call sites (:431,
+            # :600) sit inside run()'s single try (Phase 1 PR 6 fix wave B,
+            # final-review Blocking finding). Never put a URL in this
+            # message -- exc_info carries the traceback for anyone who
+            # needs it; scripts/check_credential_logging.py enforces the
+            # rest of the tree the same way.
+            logger.error(
+                f"Unexpected error trying next stream for channel "
+                f"{self.channel_id}: {type(e).__name__}",
+                exc_info=True,
+            )
             return False
 
     # Add a new helper method to safely reset the URL switching state

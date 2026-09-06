@@ -1,7 +1,7 @@
 """Tests for failover stream rotation order."""
 from django.test import TestCase
 
-from apps.proxy.live_proxy.url_utils import order_alternates_from_current
+from apps.proxy.next_source import order_alternates_from_current
 
 
 class AlternateStreamOrderTests(TestCase):

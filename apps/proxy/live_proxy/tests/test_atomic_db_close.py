@@ -9,10 +9,9 @@ from apps.channels.models import Channel, ChannelGroup
 
 class CleanRedisKeysUsesStandardCloseTests(SimpleTestCase):
     @patch("apps.proxy.live_proxy.server.close_old_connections")
-    @patch("apps.proxy.live_proxy.server.Stream.objects.get", side_effect=Exception("no stream"))
-    @patch("apps.proxy.live_proxy.server.Channel.objects.get", side_effect=Exception("no channel"))
+    @patch("apps.proxy.control_plane.release_source", return_value=False)
     def test_clean_redis_keys_uses_close_old_connections(
-        self, _channel_get, _stream_get, mock_close
+        self, _release_source, mock_close
     ):
         from apps.proxy.live_proxy.server import ProxyServer
 
@@ -31,16 +30,17 @@ class CleanRedisKeysUsesStandardCloseTests(SimpleTestCase):
         self.assertGreaterEqual(mock_close.call_count, 1)
 
 
-class UpdateStreamStatsUsesStandardCloseTests(SimpleTestCase):
-    @patch("apps.proxy.live_proxy.services.channel_service.close_old_connections")
-    @patch("apps.channels.models.Stream.objects.get", side_effect=Exception("missing"))
-    def test_update_stream_stats_uses_close_old_connections(self, _stream_get, mock_close):
+class UpdateStreamStatsPostsAnEventTests(SimpleTestCase):
+    @patch("apps.proxy.control_plane.emit_event")
+    def test_update_stream_stats_posts_rather_than_writes(self, mock_emit):
         from apps.proxy.live_proxy.services.channel_service import ChannelService
 
-        result = ChannelService._update_stream_stats_in_db(123, ffmpeg_output_bitrate=1.0)
-
-        self.assertFalse(result)
-        mock_close.assert_called_once()
+        self.assertTrue(
+            ChannelService._update_stream_stats_in_db(123, ffmpeg_output_bitrate=1.0)
+        )
+        mock_emit.assert_called_once_with(
+            "stream_stats", stream_id=123, ffmpeg_output_bitrate=1.0
+        )
 
 
 class ChannelDeleteDoesNotAutoStopTests(TestCase):

@@ -756,6 +756,7 @@ def dispatch_event_system(event_type, channel_id=None, channel_name=None, **deta
         from apps.channels.models import Channel, Stream
         from core.models import StreamProfile
         from core.utils import RedisClient
+        from apps.proxy.live_proxy.redis_keys import RedisKeys
 
         payload = dict(details)
 
@@ -775,7 +776,7 @@ def dispatch_event_system(event_type, channel_id=None, channel_name=None, **deta
         if not stream_id and channel_obj:
             try:
                 redis = RedisClient.get_client()
-                sid = redis.get(f"channel_stream:{channel_obj.id}")
+                sid = redis.get(RedisKeys.channel_stream(channel_obj.id))
                 if sid:
                     stream_id = int(sid)
             except Exception:
@@ -808,7 +809,7 @@ def dispatch_event_system(event_type, channel_id=None, channel_name=None, **deta
         try:
             if stream_id:
                 redis = RedisClient.get_client()
-                pid = redis.get(f"stream_profile:{stream_id}")
+                pid = redis.get(RedisKeys.stream_profile(stream_id))
                 if pid:
                     profile = StreamProfile.objects.filter(id=int(pid)).first()
                     profile_used = profile.name if profile else None

@@ -431,27 +431,20 @@ class StopChannelTeardownTests(TestCase):
 
 
 class CleanRedisKeysOrderTests(TestCase):
-    @patch("apps.proxy.live_proxy.server.Stream.objects.get")
-    @patch("apps.proxy.live_proxy.server.Channel.objects.get")
+    @patch("apps.proxy.control_plane.release_source", return_value=True)
     def test_clean_redis_keys_releases_profile_slot_before_live_keys_deleted(
-        self, mock_channel_get, mock_stream_get
+        self, mock_release
     ):
-        from apps.channels.models import Channel, Stream
-
         with patch("apps.proxy.live_proxy.server.RedisClient.get_client", return_value=MagicMock()):
             server = ProxyServer()
         server.redis_client = MagicMock()
         call_order = []
 
-        channel = MagicMock()
-        channel.release_stream.return_value = True
-
-        def channel_get(uuid):
+        def release_source(identifier, **kwargs):
             call_order.append("release")
-            return channel
+            return True
 
-        mock_channel_get.side_effect = channel_get
-        mock_stream_get.side_effect = Stream.DoesNotExist
+        mock_release.side_effect = release_source
 
         channel_key = f"live:channel:{CHANNEL_ID}:input:buffer:index".encode()
 
@@ -466,26 +459,20 @@ class CleanRedisKeysOrderTests(TestCase):
         server._clean_redis_keys(CHANNEL_ID)
 
         self.assertEqual(call_order, ["release", "redis", "redis"])
-        channel.release_stream.assert_called_once()
+        mock_release.assert_called_once()
         server.redis_client.delete.assert_called_once_with(channel_key)
 
-    @patch("apps.m3u.connection_pool.release_profile_slot")
-    @patch("apps.proxy.live_proxy.server.Stream.objects.get")
-    @patch("apps.proxy.live_proxy.server.Channel.objects.get")
+    @patch("apps.proxy.control_plane.release_source", return_value=True)
     def test_clean_redis_keys_releases_profile_from_metadata_when_channel_gone(
-        self, mock_channel_get, mock_stream_get, mock_release_slot
+        self, mock_release
     ):
         """Delete-without-stop leaves Redis session; later stop must free the slot."""
-        from apps.channels.models import Channel, Stream
-
         with patch(
             "apps.proxy.live_proxy.server.RedisClient.get_client",
             return_value=MagicMock(),
         ):
             server = ProxyServer()
         server.redis_client = MagicMock()
-        mock_channel_get.side_effect = Channel.DoesNotExist
-        mock_stream_get.side_effect = Stream.DoesNotExist
 
         def hget(key, field):
             mapping = {
@@ -500,9 +487,27 @@ class CleanRedisKeysOrderTests(TestCase):
 
         server._clean_redis_keys(CHANNEL_ID)
 
-        mock_release_slot.assert_called_once_with(50, server.redis_client)
-        server.redis_client.delete.assert_any_call("channel_stream:224")
-        server.redis_client.delete.assert_any_call("stream_profile:2243070")
+        mock_release.assert_called_once_with(
+            CHANNEL_ID, stream_id=2243070, m3u_profile_id=50, channel_pk=224
+        )
+
+    @patch("apps.proxy.control_plane.release_source", return_value=True)
+    def test_clean_redis_keys_releases_via_control_plane_when_redis_client_is_none(
+        self, mock_release
+    ):
+        """Redis unreachable at boot (__init__ leaves redis_client None) must
+        not stop the control-plane release from happening, and must not
+        raise out of _clean_redis_keys' bare try/finally."""
+        with patch("apps.proxy.live_proxy.server.RedisClient.get_client", return_value=MagicMock()):
+            server = ProxyServer()
+        server.redis_client = None
+
+        total_deleted = server._clean_redis_keys(CHANNEL_ID)
+
+        mock_release.assert_called_once_with(
+            CHANNEL_ID, stream_id=None, m3u_profile_id=None, channel_pk=None
+        )
+        self.assertEqual(total_deleted, 0)
 
 
 class LocalUpstreamActivityTests(TestCase):

@@ -13,8 +13,7 @@ from ..server import ProxyServer
 from ..redis_keys import RedisKeys
 from ..constants import EventType, ChannelState, ChannelMetadataField, REDIS_TTL_MEDIUM
 from ..config_helper import ConfigHelper
-from ..url_utils import get_stream_info_for_switch
-from core.utils import log_system_event
+from dispatcharr.utils import redact_url
 from .log_parsers import LogParserFactory
 
 logger = logging.getLogger("live_proxy")
@@ -150,26 +149,33 @@ class ChannelService:
             if ChannelService._channel_proxy_is_active(
                 proxy_server.redis_client, channel_id
             ):
-                from apps.channels.models import Channel
+                from apps.proxy import control_plane
 
-                channel = Channel.objects.filter(uuid=channel_id).first()
-                if channel and not proxy_server.redis_client.get(
-                    f"channel_stream:{channel.id}"
-                ):
-                    sid, pid, error, slot_reserved = channel.get_stream()
-                    if error:
+                try:
+                    answer = control_plane.next_source(channel_id, reason="resume")
+                except (control_plane.ControlPlaneRefused, control_plane.ControlPlaneUnavailable) as exc:
+                    # Both end the re-reservation, and neither is fatal: the channel is
+                    # still running on the slot it already holds. Only the reasons differ,
+                    # which is why the exception object goes in the message.
+                    logger.warning(
+                        f"Could not re-reserve stream for {channel_id} after shutdown "
+                        f"cancel: {exc}"
+                    )
+                else:
+                    source = answer.get("source")
+                    if source is None:
                         logger.warning(
-                            f"Could not re-reserve stream for {channel_id} "
-                            f"after shutdown cancel: {error}"
+                            f"Could not re-reserve stream for {channel_id} after shutdown "
+                            f"cancel: {answer.get('error')}"
                         )
-                    elif slot_reserved and sid and pid:
+                    elif source["slot_reserved"]:
                         proxy_server.redis_client.hset(metadata_key, mapping={
-                            ChannelMetadataField.STREAM_ID: str(sid),
-                            ChannelMetadataField.M3U_PROFILE: str(pid),
+                            ChannelMetadataField.STREAM_ID: str(source["stream_id"]),
+                            ChannelMetadataField.M3U_PROFILE: str(source["m3u_profile_id"]),
                         })
                         logger.info(
                             f"Re-reserved profile slot for {channel_id} "
-                            f"(stream={sid}, profile={pid})"
+                            f"(stream={source['stream_id']}, profile={source['m3u_profile_id']})"
                         )
         finally:
             close_old_connections()
@@ -381,7 +387,15 @@ class ChannelService:
         # If no direct URL is provided but a target stream is, get URL from target stream
         stream_id = None
         if not new_url and target_stream_id:
-            stream_info = get_stream_info_for_switch(channel_id, target_stream_id)
+            # This runs in the API process today (PR 4's routing keeps
+            # change_stream_url's caller on the API role); PR 7 turns this
+            # view into a relay_client wrapper, at which point
+            # change_stream_url runs in the relay and PR 7 revisits this
+            # call (D10).
+            from apps.proxy.next_source import resolve_source
+
+            answer = resolve_source(channel_id, target_stream_id=target_stream_id, reason="operator")
+            stream_info = answer["source"] or {"error": answer["error"]}
             if 'error' in stream_info:
                 return {
                     'status': 'error',
@@ -455,11 +469,11 @@ class ChannelService:
             if new_url == old_url:
                 # update_url() returns False for same URL; still success so metadata refreshes
                 success = True
-                logger.info(f"Channel {channel_id} already using URL {new_url}, refreshing metadata only")
+                logger.info(f"Channel {channel_id} already using URL {redact_url(new_url)}, refreshing metadata only")
             else:
                 # Update the stream
                 success = manager.update_url(new_url, stream_id, m3u_profile_id)
-                logger.info(f"Stream URL changed from {old_url} to {new_url}, result: {success}")
+                logger.info(f"Stream URL changed from {redact_url(old_url)} to {redact_url(new_url)}, result: {success}")
 
             # Update Redis metadata based on the actual outcome.
             # On success, write the new values. On failure, restore whatever URL
@@ -848,36 +862,23 @@ class ChannelService:
 
     @staticmethod
     def _update_stream_stats_in_db(stream_id, **stats):
-        """Update stream stats in database"""
-        try:
-            from apps.channels.models import Stream
-            from django.utils import timezone
+        """Post the stats; Django writes the row.
 
-            stream = Stream.objects.get(id=stream_id)
+        Phase 1 PR 6: this was the relay's only ORM write -- a Stream update
+        setting its stream_stats and stream_stats_updated_at fields --
+        called from three hot-path sites. The merge semantics -- a None value
+        never overwrites an existing key -- move with it to
+        core/relay_events.py. stream_stats is deliberately not in
+        apps/connect/models.py's SUPPORTED_EVENTS and writes no SystemEvent
+        row: input/manager.py flushes every 30s and
+        parse_and_store_stream_info fires on every parsed codec line, and
+        log_system_event trims to max_system_events (100 by default), so a
+        row per stats line would evict every real event.
+        """
+        from apps.proxy.control_plane import emit_event
 
-            # Get existing stats or create new dict
-            current_stats = stream.stream_stats or {}
-
-            # Update with new stats
-            for key, value in stats.items():
-                if value is not None:
-                    current_stats[key] = value
-
-            # Save updated stats and timestamp
-            stream.stream_stats = current_stats
-            stream.stream_stats_updated_at = timezone.now()
-            stream.save(update_fields=['stream_stats', 'stream_stats_updated_at'])
-
-            logger.debug(f"Updated stream stats in database for stream {stream_id}: {stats}")
-            return True
-
-        except Exception as e:
-            logger.error(f"Error updating stream stats in database for stream {stream_id}: {e}")
-            return False
-
-        finally:
-            # Release geventpool checkout after ORM.
-            close_old_connections()
+        emit_event("stream_stats", stream_id=stream_id, **stats)
+        return True
 
     # Helper methods for Redis operations
 

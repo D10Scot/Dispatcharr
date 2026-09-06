@@ -35,6 +35,14 @@ function scheduleRecordingFetch() {
   }, 400);
 }
 
+// Exported for tests: WebSocket.jsx has no vitest coverage, and a case in
+// a switch inside a provider's onmessage cannot be reached without a live
+// socket. Phase 1 PR 6 starts the coverage here rather than adding an
+// untested branch to the largest untested file in the tree.
+export function handleRelayEvent(payload) {
+  useChannelsStore.getState().applyRelayEvent(payload);
+}
+
 export const WebsocketProvider = ({ children }) => {
   const [isReady, setIsReady] = useState(false);
   const [val, setVal] = useState(null);
@@ -314,6 +322,10 @@ export const WebsocketProvider = ({ children }) => {
 
             case 'channel_stats':
               setChannelStats(JSON.parse(parsedEvent.data.stats));
+              break;
+
+            case 'relay_event':
+              handleRelayEvent(parsedEvent.data);
               break;
 
             case 'vod_stats':

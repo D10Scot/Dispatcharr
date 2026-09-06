@@ -4,11 +4,15 @@ import json
 from unittest.mock import MagicMock, patch
 
 from django.test import TestCase
+from rest_framework.test import APIRequestFactory, force_authenticate
 
+from apps.accounts.models import User
+from apps.proxy.live_proxy import views as views_module
 from apps.proxy.live_proxy.constants import ChannelMetadataField
 from apps.proxy.live_proxy.redis_keys import RedisKeys
 from apps.proxy.live_proxy.services import channel_service as cs_module
 from apps.proxy.live_proxy.services.channel_service import ChannelService
+from apps.proxy.live_proxy.views import change_stream
 
 
 class FakeRedis:
@@ -194,3 +198,78 @@ class NonOwnerPathTests(TestCase):
 
         self.assertEqual(deleted_before_publish, [True])
         self.assertFalse(result["success"])
+
+
+class ChangeStreamViewTests(TestCase):
+    """Fix wave B, final-review Blocking finding: the Stats card's Select
+    yields a string stream_id, and change_stream used to pass it straight
+    through to update_url/tried_stream_ids. Mixed with the int ids Django
+    hands back, that crashes the next automatic failover's sorted(exclude)
+    call and tears the whole channel down. The view must coerce at the
+    boundary: reject a non-integer with 400, and hand the service an int."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.admin = User.objects.create(
+            username="change-stream-admin",
+            user_level=User.UserLevel.ADMIN,
+        )
+
+    def setUp(self):
+        self.factory = APIRequestFactory()
+
+    def _post(self, payload):
+        request = self.factory.post(
+            f"/proxy/ts/change_stream/{CHANNEL_ID}",
+            data=json.dumps(payload),
+            content_type="application/json",
+        )
+        force_authenticate(request, user=self.admin)
+        return request
+
+    def test_a_non_integer_stream_id_is_rejected_with_400(self):
+        proxy = make_proxy_server(FakeRedis(), owner=True)
+
+        with patch.object(views_module.ProxyServer, "get_instance", return_value=proxy):
+            response = change_stream(self._post({"stream_id": "abc"}), CHANNEL_ID)
+
+        self.assertEqual(response.status_code, 400)
+        payload = json.loads(response.content)
+        self.assertIn("error", payload)
+        # No exception text echoed back to the client.
+        self.assertNotIn("abc", payload["error"])
+        self.assertNotIn("invalid literal", payload["error"])
+
+    def test_stream_id_is_coerced_to_int_before_reaching_the_service(self):
+        proxy = make_proxy_server(FakeRedis(), owner=True)
+        resolved_answer = {
+            "source": {
+                "url": NEW_URL,
+                "user_agent": "test-agent",
+                "m3u_profile_id": 7,
+                "stream_name": "Alt Feed",
+            },
+            "alternates": [],
+            "error": None,
+        }
+
+        with patch.object(views_module.ProxyServer, "get_instance", return_value=proxy), \
+             patch("apps.proxy.next_source.resolve_source",
+                   return_value=resolved_answer) as resolve_source_mock, \
+             patch.object(
+                 views_module.ChannelService, "change_stream_url",
+                 return_value={"success": True, "direct_update": True},
+             ) as change_stream_url_mock:
+            response = change_stream(self._post({"stream_id": "12"}), CHANNEL_ID)
+
+        self.assertEqual(response.status_code, 200)
+        resolve_source_mock.assert_called_once_with(
+            CHANNEL_ID, target_stream_id=12, reason="operator"
+        )
+        change_stream_url_mock.assert_called_once()
+        args, _kwargs = change_stream_url_mock.call_args
+        self.assertEqual(args[3], 12)
+        self.assertIsInstance(args[3], int)
+
+        payload = json.loads(response.content)
+        self.assertEqual(payload["stream_id"], 12)

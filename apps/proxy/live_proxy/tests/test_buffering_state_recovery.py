@@ -66,7 +66,7 @@ class BufferingTimeoutFailoverStateTests(TestCase):
 
         with patch("apps.proxy.live_proxy.input.manager.time") as mock_time:
             mock_time.time.return_value = 10.0
-            with patch("apps.proxy.live_proxy.input.manager.log_system_event"):
+            with patch("apps.proxy.live_proxy.input.manager.emit_event"):
                 sm._parse_ffmpeg_stats(
                     "frame=100 fps=30 q=28.0 size=1024kB time=00:00:03.00 "
                     "bitrate=500.0kbits/s speed=0.5x"
@@ -90,7 +90,7 @@ class BufferingTimeoutFailoverStateTests(TestCase):
 
         with patch("apps.proxy.live_proxy.input.manager.time") as mock_time:
             mock_time.time.return_value = 10.0
-            with patch("apps.proxy.live_proxy.input.manager.log_system_event"):
+            with patch("apps.proxy.live_proxy.input.manager.emit_event"):
                 sm._parse_ffmpeg_stats(
                     "frame=100 fps=30 q=28.0 size=1024kB time=00:00:03.00 "
                     "bitrate=500.0kbits/s speed=0.5x"
@@ -117,7 +117,7 @@ class BufferingTimeoutFailoverStateTests(TestCase):
 
         with patch("apps.proxy.live_proxy.input.manager.time") as mock_time:
             mock_time.time.return_value = 10.0
-            with patch("apps.proxy.live_proxy.input.manager.log_system_event"):
+            with patch("apps.proxy.live_proxy.input.manager.emit_event"):
                 sm._parse_ffmpeg_stats(
                     "frame=100 fps=30 q=28.0 size=1024kB time=00:00:03.00 "
                     "bitrate=500.0kbits/s speed=0.5x"

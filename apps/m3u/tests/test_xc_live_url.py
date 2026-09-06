@@ -1,11 +1,17 @@
-"""Tests for XC stream URL normalization and on-demand URL building."""
+"""Tests for XC stream URL normalization and on-demand URL building.
+
+_resolve_live_stream_url moved to apps/proxy/next_source.py in Phase 1
+PR 6 along with the rest of source resolution; it has no re-export in
+apps.proxy.live_proxy.url_utils (private, leading underscore), so this
+import points at its new home.
+"""
 
 from django.test import TestCase
 
 from apps.channels.models import Stream
 from apps.m3u.models import M3UAccount, M3UAccountProfile
 from apps.m3u.tasks import get_transformed_credentials
-from apps.proxy.live_proxy.url_utils import _resolve_live_stream_url
+from apps.proxy.next_source import _resolve_live_stream_url
 from apps.vod.models import Episode, M3UEpisodeRelation, M3UMovieRelation, Movie, Series
 from core.xtream_codes import normalize_server_url
 

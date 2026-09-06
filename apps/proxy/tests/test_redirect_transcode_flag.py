@@ -8,10 +8,17 @@ get_stream_info_for_switch, which computed True for a Redirect profile —
 so the first automatic failover during a recording of a Redirect-profile
 channel rebuilt the locked Redirect profile's empty command/parameters and
 every reconnect spawned an empty executable. Both derivation points in
-apps/proxy/live_proxy/url_utils.py (generate_stream_url's channel-preview
-branch, which feeds the initial tune, and get_stream_info_for_switch, which
-feeds every later switch) must agree that Redirect means transcode=False,
-same as Proxy.
+apps/proxy/next_source.py (resolve_initial_source's channel-preview branch,
+which feeds the initial tune, and get_stream_info_for_switch, which feeds
+every later switch) must agree that Redirect means transcode=False, same
+as Proxy.
+
+Phase 1 PR 6: moved here whole from
+apps/proxy/live_proxy/tests/test_redirect_transcode_flag.py when the
+derivation it pins moved to apps/proxy/next_source.py. Only the import,
+the patch targets and the first test's assertions (a Source dict instead
+of the 6-tuple, because generate_stream_url becomes an HTTP call in Task 7
+and this pin must keep testing the derivation, not the transport) changed.
 """
 
 from unittest.mock import patch
@@ -20,10 +27,7 @@ from django.test import TestCase
 
 from apps.channels.models import Channel, ChannelStream, Stream
 from apps.m3u.models import M3UAccount, M3UAccountProfile
-from apps.proxy.live_proxy.url_utils import (
-    generate_stream_url,
-    get_stream_info_for_switch,
-)
+from apps.proxy.next_source import get_stream_info_for_switch, resolve_initial_source
 from core.models import StreamProfile
 
 
@@ -89,29 +93,22 @@ class RedirectTranscodeFlagTests(TestCase):
     # eager-mode Celery signals. Patched out here so this test can exercise
     # the real ORM-backed derivation without breaking every test that runs
     # after it in the same process.
-    @patch("apps.proxy.live_proxy.url_utils.close_old_connections")
+    @patch("apps.proxy.next_source.close_old_connections")
     @patch("apps.channels.models.reserve_profile_slot", return_value=(True, 1, None))
     @patch("apps.channels.models.RedisClient.get_client")
     def test_initial_tune_reports_transcode_false(
         self, mock_get_client, _mock_reserve, _mock_close_old_connections
     ):
-        """generate_stream_url is what the view's initial tune reads."""
+        """resolve_initial_source is what the view's initial tune reads."""
         mock_get_client.return_value = FakeRedirectRedis()
 
-        (
-            stream_url,
-            user_agent,
-            transcode,
-            profile_id,
-            slot_reserved,
-            error,
-        ) = generate_stream_url(str(self.channel.uuid))
+        answer = resolve_initial_source(str(self.channel.uuid))
 
-        self.assertIsNone(error)
-        self.assertFalse(transcode)
-        self.assertEqual(profile_id, self.redirect_profile.id)
+        self.assertIsNone(answer["error"])
+        self.assertFalse(answer["source"]["transcode"])
+        self.assertEqual(answer["source"]["stream_profile"]["id"], self.redirect_profile.id)
 
-    @patch("apps.proxy.live_proxy.url_utils.close_old_connections")
+    @patch("apps.proxy.next_source.close_old_connections")
     @patch("core.utils.RedisClient.get_client")
     @patch("apps.channels.models.reserve_profile_slot", return_value=(True, 1, None))
     @patch("apps.channels.models.RedisClient.get_client")

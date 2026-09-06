@@ -130,3 +130,32 @@ class RedisKeys:
         """Sorted set mapping fragment receive-timestamps to fragment indices."""
         return f"live:channel:{channel_id}:output:{fmt}:buffer:chunk_timestamps"
 
+    @staticmethod
+    def channel_source_cache(channel_id):
+        """Resolved failover candidates, cached at channel start.
+
+        Read by two callers, neither of which reserves anything or moves
+        the provider slot: views.py's stream_ts, trying the next candidate
+        when a Redirect profile's primary URL fails validation at tune
+        time (unconditionally, not just on an outage); and
+        input/manager.py's _try_next_stream degraded fallback, only when
+        the control plane is unreachable at failover time (Phase 1 PR 6).
+        Both treat the list as stale and unenforced.
+        """
+        return f"live:channel:{channel_id}:source_cache"
+
+    # Written only by apps/channels/models.py — Channel.get_stream(),
+    # release_stream(), update_stream_profile() — and reached only through
+    # apps/proxy/next_source.py since Phase 1 PR 6. They were hand-rolled
+    # f-strings on both sides of the boundary, which is what made them
+    # split-brain; naming them here is what makes a second writer visible.
+    @staticmethod
+    def channel_stream(channel_pk):
+        """Stream id currently assigned to this channel (numeric channel pk)."""
+        return f"channel_stream:{channel_pk}"
+
+    @staticmethod
+    def stream_profile(stream_id):
+        """M3U account profile id serving this stream."""
+        return f"stream_profile:{stream_id}"
+

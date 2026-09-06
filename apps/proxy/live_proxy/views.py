@@ -30,7 +30,6 @@ from .services.channel_service import ChannelService
 from core.utils import send_websocket_update
 from .url_utils import (
     generate_stream_url,
-    get_stream_info_for_switch,
     get_stream_object,
 )
 from .utils import get_logger
@@ -174,6 +173,8 @@ def stream_ts(request, channel_id, user=None, force_output_format=None, decision
             return authorize_error_response(exc)
     if user is None:
         user = decision.user
+
+    from apps.proxy import control_plane
 
     client_user_agent = None
     proxy_server = ProxyServer.get_instance()
@@ -380,8 +381,14 @@ def stream_ts(request, channel_id, user=None, force_output_format=None, decision
                             )
 
                     if stream_url is None:
-                        if slot_reserved and not channel.release_stream():
-                            logger.debug(f"[{client_id}] release_stream found no keys during failed init cleanup")
+                        if slot_reserved:
+                            try:
+                                released = control_plane.release_source(channel_id)
+                            except (control_plane.ControlPlaneRefused, control_plane.ControlPlaneUnavailable) as exc:
+                                logger.warning(f"Could not release the slot for {channel_id}: {exc}")
+                                released = False
+                            if not released:
+                                logger.debug(f"[{client_id}] release_stream found no keys during failed init cleanup")
 
                         # Get the specific error message if available
                         wait_duration = f"{int(time.time() - wait_start_time)}s"
@@ -397,21 +404,23 @@ def stream_ts(request, channel_id, user=None, force_output_format=None, decision
                             {"error": error_msg, "waited": wait_duration}, status=503
                         )  # 503 Service Unavailable is appropriate here
 
-                    # generate_stream_url() called get_stream() which allocated a connection
-                    # slot (INCR'd profile_connections) - track this for cleanup on error
+                    # generate_stream_url() asked Django (control_plane.next_source),
+                    # which called get_stream() and allocated a connection slot
+                    # (INCR'd profile_connections) - track this for cleanup on error
                     if needs_initialization and slot_reserved:
                         connection_allocated = True
 
-                    # Read stream assignment from Redis (already set by generate_stream_url → get_stream).
-                    # Avoid calling get_stream() again (INCR profile counter)
+                    # Read stream assignment from Redis (already set by Django's
+                    # next-source answer, via Channel.get_stream()).
+                    # Avoid asking again (INCR profile counter)
                     # It could double-allocate if the keys were cleared by a concurrent release.
                     stream_id = None
                     m3u_profile_id = None
                     if proxy_server.redis_client:
-                        stream_id_bytes = proxy_server.redis_client.get(f"channel_stream:{channel.id}")
+                        stream_id_bytes = proxy_server.redis_client.get(RedisKeys.channel_stream(channel.id))
                         if stream_id_bytes:
                             stream_id = int(stream_id_bytes)
-                            profile_id_bytes = proxy_server.redis_client.get(f"stream_profile:{stream_id}")
+                            profile_id_bytes = proxy_server.redis_client.get(RedisKeys.stream_profile(stream_id))
                             if profile_id_bytes:
                                 m3u_profile_id = int(profile_id_bytes)
                     logger.info(
@@ -445,12 +454,13 @@ def stream_ts(request, channel_id, user=None, force_output_format=None, decision
                         )
                         transcode = False
                     elif stream_profile.is_redirect():
-                        # Validate the stream URL before redirecting
-                        from .url_utils import (
-                            validate_stream_url,
-                            get_alternate_streams,
-                            get_stream_info_for_switch,
-                        )
+                        # Phase 1 PR 6: the alternates were resolved by
+                        # Django on the next-source call a few lines above
+                        # and cached in Redis; the relay no longer
+                        # re-queries for them. Validation of each URL stays
+                        # here, because it is an HTTP probe of the
+                        # provider, not a database question.
+                        from .url_utils import validate_stream_url, read_cached_alternates
 
                         # Try initial URL
                         logger.info(f"[{client_id}] Validating redirect URL: {redact_url(stream_url)}")
@@ -467,33 +477,18 @@ def stream_ts(request, channel_id, user=None, force_output_format=None, decision
                             # Track tried streams to avoid loops
                             tried_streams = {stream_id}
 
-                            # Get alternate streams
-                            alternates = get_alternate_streams(channel_id, stream_id)
-
-                            # Try each alternate until one works
-                            for alt in alternates:
+                            for alt in read_cached_alternates(channel_id):
                                 if alt["stream_id"] in tried_streams:
                                     continue
 
                                 tried_streams.add(alt["stream_id"])
 
-                                # Get stream info
-                                alt_info = get_stream_info_for_switch(
-                                    channel_id, alt["stream_id"]
-                                )
-                                if "error" in alt_info:
-                                    logger.warning(
-                                        f"[{client_id}] Error getting alternate stream info: {alt_info['error']}"
-                                    )
-                                    continue
-
-                                # Validate the alternate URL
                                 logger.info(
-                                    f"[{client_id}] Trying alternate stream #{alt['stream_id']}: {alt_info['url']}"
+                                    f"[{client_id}] Trying alternate stream #{alt['stream_id']}"
                                 )
                                 is_valid, final_url, status_code, message = validate_stream_url(
-                                    alt_info["url"],
-                                    user_agent=alt_info["user_agent"],
+                                    alt["url"],
+                                    user_agent=alt["user_agent"],
                                     timeout=(5, 5),
                                 )
 
@@ -507,8 +502,14 @@ def stream_ts(request, channel_id, user=None, force_output_format=None, decision
                                         f"[{client_id}] Alternate stream #{alt['stream_id']} failed validation: {message}"
                                     )
                         # Release stream lock before redirecting only if we reserved a slot
-                        if connection_allocated and not channel.release_stream():
-                            logger.warning(f"[{client_id}] Failed to release stream before redirect")
+                        if connection_allocated:
+                            try:
+                                released = control_plane.release_source(channel_id)
+                            except (control_plane.ControlPlaneRefused, control_plane.ControlPlaneUnavailable) as exc:
+                                logger.warning(f"Could not release the slot for {channel_id}: {exc}")
+                                released = False
+                            if not released:
+                                logger.warning(f"[{client_id}] Failed to release stream before redirect")
                         connection_allocated = False
                         # Final decision based on validation results
                         if is_valid:
@@ -536,7 +537,12 @@ def stream_ts(request, channel_id, user=None, force_output_format=None, decision
                     # Initialize channel with the stream's user agent (not the client's)
                     if ChannelService.is_channel_unavailable_for_new_clients(channel_id):
                         if connection_allocated:
-                            if not channel.release_stream():
+                            try:
+                                released = control_plane.release_source(channel_id)
+                            except (control_plane.ControlPlaneRefused, control_plane.ControlPlaneUnavailable) as exc:
+                                logger.warning(f"Could not release the slot for {channel_id}: {exc}")
+                                released = False
+                            if not released:
                                 logger.warning(f"[{client_id}] Failed to release stream before teardown reject")
                             connection_allocated = False
                         logger.info(
@@ -557,7 +563,12 @@ def stream_ts(request, channel_id, user=None, force_output_format=None, decision
 
                     if not success:
                         if connection_allocated:
-                            if not channel.release_stream():
+                            try:
+                                released = control_plane.release_source(channel_id)
+                            except (control_plane.ControlPlaneRefused, control_plane.ControlPlaneUnavailable) as exc:
+                                logger.warning(f"Could not release the slot for {channel_id}: {exc}")
+                                released = False
+                            if not released:
                                 logger.warning(f"[{client_id}] Failed to release stream after init failure")
                             connection_allocated = False
                         return JsonResponse(
@@ -782,10 +793,12 @@ def stream_ts(request, channel_id, user=None, force_output_format=None, decision
         logger.error(f"Error in stream_ts: {e}", exc_info=True)
         if connection_allocated and channel is not None:
             try:
-                if not channel.release_stream():
-                    logger.warning(f"[{client_id}] Failed to release stream in exception handler")
-            except Exception:
-                pass
+                released = control_plane.release_source(channel_id)
+            except (control_plane.ControlPlaneRefused, control_plane.ControlPlaneUnavailable) as exc:
+                logger.warning(f"Could not release the slot for {channel_id}: {exc}")
+                released = False
+            if not released:
+                logger.warning(f"[{client_id}] Failed to release stream in exception handler")
         # Client may have been pre-registered (before ensure_output_profile /
         # get_buffer / generator setup) to protect against the non-owner
         # cleanup thread. If setup then failed with an unhandled exception,
@@ -861,12 +874,36 @@ def change_stream(request, channel_id):
         m3u_profile_id = None
         stream_name = None
 
+        # Coerce at the boundary: the Stats card's Select yields a string id
+        # and, in the split deployment, this travels to the relay as JSON
+        # and lands in tried_stream_ids/current_stream_id, which
+        # _try_next_stream later sorts alongside int ids from Django --
+        # sorted({int, str}) raises TypeError and tears the channel down on
+        # the next automatic failover (Phase 1 PR 6 fix wave B, final-review
+        # Blocking finding). Reject a non-integer here instead of failing
+        # later, opaquely, in the relay's main loop.
+        if stream_id is not None:
+            try:
+                stream_id = int(stream_id)
+            except (TypeError, ValueError):
+                return JsonResponse(
+                    {"error": "stream_id must be an integer"}, status=400
+                )
+
         # If stream_id is provided, get the URL and user_agent from it
         if stream_id:
             logger.info(
                 f"Stream ID {stream_id} provided, looking up stream info for channel {channel_id}"
             )
-            stream_info = get_stream_info_for_switch(channel_id, stream_id)
+            # This view runs in the API process today (PR 4's routing keeps
+            # /proxy/ts/change_stream/ on the API role); PR 7 turns it into
+            # a relay_client wrapper, at which point ChannelService.
+            # change_stream_url runs in the relay and PR 7 revisits this
+            # call (D10).
+            from apps.proxy.next_source import resolve_source
+
+            answer = resolve_source(channel_id, target_stream_id=stream_id, reason="operator")
+            stream_info = answer["source"] or {"error": answer["error"]}
 
             if "error" in stream_info:
                 return JsonResponse(
@@ -1153,8 +1190,16 @@ def next_stream(request, channel_id):
             f"Rotating to next stream ID {next_stream_id} for channel {channel_id}"
         )
 
-        # Get full stream info including URL for the next stream
-        stream_info = get_stream_info_for_switch(channel_id, next_stream_id)
+        # Get full stream info including URL for the next stream. This view
+        # runs in the API process today (PR 4's routing keeps
+        # /proxy/ts/next_stream/ on the API role); PR 7 turns it into a
+        # relay_client wrapper, at which point ChannelService.
+        # change_stream_url runs in the relay and PR 7 revisits this call
+        # (D10).
+        from apps.proxy.next_source import resolve_source
+
+        answer = resolve_source(channel_id, target_stream_id=next_stream_id, reason="operator")
+        stream_info = answer["source"] or {"error": answer["error"]}
 
         if "error" in stream_info:
             return JsonResponse(

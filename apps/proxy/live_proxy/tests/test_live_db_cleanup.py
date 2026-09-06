@@ -163,46 +163,6 @@ class StreamTsDbCleanupTests(SimpleTestCase):
 
 class UrlUtilsDbCleanupTests(SimpleTestCase):
     @patch("apps.proxy.live_proxy.url_utils.close_old_connections")
-    @patch("apps.proxy.live_proxy.url_utils.get_stream_object")
-    def test_generate_stream_url_closes_db(self, mock_get_object, mock_close):
-        channel = MagicMock()
-        channel.get_stream.return_value = (None, None, "no streams", False)
-        mock_get_object.return_value = channel
-
-        from apps.proxy.live_proxy.url_utils import generate_stream_url
-
-        result = generate_stream_url("channel-uuid")
-
-        self.assertIsNone(result[0])
-        mock_close.assert_called_once()
-
-    @patch("apps.proxy.live_proxy.url_utils.close_old_connections")
-    @patch("apps.proxy.live_proxy.url_utils.get_stream_object")
-    def test_get_alternate_streams_closes_db(self, mock_get_object, mock_close):
-        channel = MagicMock()
-        channel.streams.all.return_value.order_by.return_value.exists.return_value = False
-        mock_get_object.return_value = channel
-
-        from apps.proxy.live_proxy.url_utils import get_alternate_streams
-
-        result = get_alternate_streams("channel-uuid", current_stream_id=1)
-
-        self.assertEqual(result, [])
-        mock_close.assert_called_once()
-
-    @patch("apps.proxy.live_proxy.url_utils.close_old_connections")
-    @patch("apps.proxy.live_proxy.url_utils.get_object_or_404")
-    def test_get_stream_info_for_switch_closes_db_on_error(self, mock_get_404, mock_close):
-        mock_get_404.side_effect = RuntimeError("db error")
-
-        from apps.proxy.live_proxy.url_utils import get_stream_info_for_switch
-
-        result = get_stream_info_for_switch("channel-uuid", target_stream_id=99)
-
-        self.assertIn("error", result)
-        mock_close.assert_called_once()
-
-    @patch("apps.proxy.live_proxy.url_utils.close_old_connections")
     @patch("apps.proxy.live_proxy.url_utils.M3UAccountProfile.objects.get")
     def test_get_connections_left_closes_db(self, mock_get, mock_close):
         mock_get.side_effect = Exception("not found")
@@ -312,8 +272,12 @@ class InitializeChannelDbCleanupTests(SimpleTestCase):
 
 
 class StreamManagerDbCleanupTests(SimpleTestCase):
-    @patch("apps.proxy.live_proxy.input.manager.Channel.objects")
-    def test_stream_manager_init_uses_passed_name_without_orm(self, mock_channel_objects):
+    def test_stream_manager_init_uses_passed_name_without_orm(self):
+        # Phase 1 PR 6, Task 8: manager.py no longer imports Channel at all
+        # -- the only ORM read update_url() used to make moved into Django's
+        # next-source answer -- so there is nothing left in this module for
+        # __init__ to reach the ORM through. The assertion that matters is
+        # the one below: a passed channel_name is used as-is.
         from apps.proxy.live_proxy.input.manager import StreamManager
 
         buffer = MagicMock()
@@ -331,7 +295,6 @@ class StreamManagerDbCleanupTests(SimpleTestCase):
         )
 
         self.assertEqual(manager.channel_name, "Test Channel")
-        mock_channel_objects.filter.assert_not_called()
 
     @patch("apps.proxy.live_proxy.input.manager.close_old_connections")
     def test_read_stderr_closes_db_on_exit(self, mock_close):
@@ -352,8 +315,12 @@ class GeneratorAndStatusDbCleanupTests(SimpleTestCase):
     def setUp(self):
         self.factory = RequestFactory()
 
-    @patch("apps.proxy.live_proxy.output.ts.generator.Channel.objects")
-    def test_ts_generator_init_uses_passed_name_without_orm(self, mock_channel_objects):
+    def test_ts_generator_init_uses_passed_name_without_orm(self):
+        # Phase 1 PR 6, Task 9: generator.py no longer imports Channel/Stream
+        # at all -- release_stream() moved behind control_plane.release_source()
+        # -- so there is nothing left in this module for __init__ to reach the
+        # ORM through. The assertion that matters is the one below: a passed
+        # channel_name is used as-is.
         from apps.proxy.live_proxy.output.ts.generator import StreamGenerator
 
         gen = StreamGenerator(
@@ -365,7 +332,6 @@ class GeneratorAndStatusDbCleanupTests(SimpleTestCase):
         )
 
         self.assertEqual(gen.channel_name, "CNN")
-        mock_channel_objects.filter.assert_not_called()
 
     @patch("apps.proxy.live_proxy.channel_status.close_old_connections")
     @patch("apps.proxy.live_proxy.channel_status.ProxyServer")

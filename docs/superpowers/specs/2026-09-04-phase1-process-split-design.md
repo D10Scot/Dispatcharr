@@ -1419,15 +1419,19 @@ resolve it, and each exists because a simpler arrangement provably does not boot
   three callers (`input/manager.py:1104,1407`, `channel_service.py:775`) post rather than write.
   This is the point at which the relay reaches zero ORM writes.
 - `channel_stream:{id}` / `stream_profile:{stream_id}` added to `RedisKeys`; the relay's writes to
-  both are deleted, leaving `Channel.get_stream()`/`release_stream()` as the only writers.
+  both are deleted, leaving Django as the only writer — `Channel.get_stream()`/`release_stream()`
+  plus the channel-deleted fallback that moves into `next_source.release_source()` (ruling 8),
+  which runs in the API process, never in the relay.
 - `apps/connect/models.py`: `channel_buffering` added to `SUPPORTED_EVENTS`.
 - WebSocket `relay_event` push on `channel_failover`/`stream_switch`/`client_disconnect`, emitted
   from the Django events view beside the existing `send_websocket_update` call pattern
   (`live_proxy/views.py:967`); `frontend/src/WebSocket.jsx` handles the new type and updates the
   channels store.
 - New E2E `@contract` spec in `streaming-failover`: after a `dead-air` fault,
-  `GET /api/core/system-events/` (`core/api_urls.py:29`) contains `channel_failover`, and the
-  WebSocket receives `relay_event`.
+  `GET /api/core/system-events/` (`core/api_urls.py:29`) contains `stream_switch`, and the
+  WebSocket receives `relay_event`. `channel_failover` is reachable only from
+  `_parse_ffmpeg_stats`'s buffering-timeout branch (`apps/proxy/live_proxy/input/manager.py:1157`),
+  which the Proxy profile never runs — a dead-air fault does not go through that branch.
 - Unit tests: control-plane client timeout, retry and degraded-fallback behaviour with `requests`
   mocked; the next-source view reserves a slot exactly once per call; the events view turns a batch
   into the right `SystemEvent` rows.
@@ -1439,6 +1443,116 @@ resolve it, and each exists because a simpler arrangement provably does not boot
   with the `log_system_event` sites named; § Known defects, the `channel_stream:*`/`stream_profile:*`
   split-brain description (now Django-only); § Observing a channel, "No WebSocket event exists for
   stream switch, failover or client teardown" (now `relay_event`).
+
+**Amendment S10 (PR 6 next-source and events).** The tree required ten decisions this section did
+not make, recorded here rather than re-derived by PR 7 or Phase 2:
+
+1. The follow-up bullet above is resolved by binding the token, not deferring it: a second header,
+   `X-Dispatcharr-Internal-Request` (`v1.<unix_seconds>.<hexdigest>` over
+   `method\npath\ntimestamp\nsha256hex(body)`, accepted inside a ±120s window), gates the three new
+   routes on top of the existing static `X-Dispatcharr-Internal`. Both are required on
+   `/api/relay/…`. The DVR keeps the static token only — its ffmpeg `-headers` line is re-sent
+   unchanged on every reconnect for the life of a recording, and a 120-second window would 403 a
+   mid-recording reconnect.
+2. The event-batch writes (`log_system_event()` calls and the `stream.save()`) live in
+   `core/relay_events.py`, not in `apps/proxy/api_views.py`, even though D12 puts the routes inside
+   `apps/proxy/`: the Done grep above forbids a write there, and
+   `scripts/metrics/collect_architecture.py` counts every write under `apps/proxy/` into
+   `proxy_orm_writes`, a phase-1 headline metric with target 0. Splitting view from write satisfies
+   both.
+3. The contract carries three fields this section's field list omits, each named with the caller
+   that needs it: the next-source request carries `current_url` so Django, not the relay, can skip a
+   candidate that resolves to the stream already running (`_try_next_stream`'s existing
+   reject-current-URL rule, preserved in one round trip instead of N); the response carries
+   `slot_reserved` so `stream_ts`'s five release paths (`views.py:383,510,539,560,785`, pre-PR
+   lines) can tell a reused assignment from a new reservation and avoid double-releasing; and the
+   response carries `alternates` — the candidate list resolved once at tune time, each entry already carrying `url`,
+   `user_agent`, `transcode` and the profile ids — because the degraded fallback below is only usable
+   without Django if the cached list needs no further resolution.
+4. Every relay-side `release_stream()` call becomes `control_plane.release_source()`, not only the
+   six rows in the § ORM reads table (`server.py:2363,2373`, `output/ts/generator.py:618,620` and
+   `output/fmp4/generator.py:378,380`): `views.py:383,510,539,560,785` (pre-PR lines) call the same
+   method on a `Channel` the relay loaded, and leaving them would contradict this PR's own
+   "one writer" requirement — which means one *process* (Django), not one file: ruling 8's
+   `server.py:2335,2342` deletes (the channel-deleted-mid-playback fallback) move into
+   `next_source.py`'s `release_source()` rather than disappearing, so the two Redis
+   `.delete()` calls that satisfy that fallback live in a second Django-side module, not in
+   `apps/channels/models.py` alongside `get_stream()`/`release_stream()`/`update_stream_profile()`/
+   `_release_stale_stream_assignment()`. Both modules run only in the API process; neither runs in
+   the relay.
+5. "No candidate available" answers `200 {"source": null, "error": "<reason>"}`, never a 4xx; `404`
+   is reserved for an identifier that resolves to neither a `Channel` nor a `Stream`. The client's
+   `_post` raises `ControlPlaneRefused` on every other 4xx — a separate exception from
+   `ControlPlaneUnavailable`, not a subclass of it — and only `ControlPlaneUnavailable` (5xx, a
+   timeout, a connection error, or a 3xx, which is never followed) fires the degraded fallback below.
+   Without the split, a channel deleted mid-playback (404 at failover) or a `SECRET_KEY` mismatch
+   between the api and relay roles (403) would each read as a Django outage and degrade silently
+   instead of failing loudly.
+6. **`channel_stream:*` semantics are unchanged.** `Channel.update_stream_profile()`
+   (`apps/channels/models.py:933-1003`) reads `channel_stream:{id}` to find the channel's *original*
+   stream and rewrites `stream_profile:{original}`; it never writes `channel_stream` itself, so after
+   a failover that key still names the first stream tuned, and `release_stream()`, `get_stream()`'s
+   reuse branch and `core/utils.py`'s event enrichment all read the chain that way on purpose. PR 6
+   moves *where* `update_stream_profile()` is called from — into `next_source.resolve_source()`, for
+   the returned source only — and changes nothing about what it does. Fixing the chain would mean
+   deleting the stale `stream_profile:{old}` and re-deriving three readers, a relay-internals change
+   this phase forbids. Recorded here so PR 8 or Phase 2 revisits it deliberately rather than
+   discovering it.
+7. The bound token in point 1 carries no nonce, so a captured internal call can be replayed inside
+   the ±120s window. Accepted: the effect is bounded because a replayed `next-source` is idempotent
+   once point 5's 404 mapping lands (`Channel.get_stream()` reuses a live assignment and reports
+   `slot_reserved=False`), the worst case is a replayed `release` after a new tune re-reserved
+   (under-counts one provider slot until that channel's next release), and an attacker positioned to
+   capture on the internal network already holds the static token. Stated in
+   `internal_auth.internal_request_token`'s docstring as well as here.
+8. The two synchronous control-plane calls (`next_source()`, `release_source()`) can occupy one
+   greenlet for up to ~14s during a Django outage — 2 × (2s connect + 5s read) + 0.1s retry delay,
+   since `_try_next_stream` runs on the channel's main-loop greenlet and each generator's release
+   runs inside the client response's `finally`. Other greenlets are unaffected; this is a cooperative
+   yield, not a blocked hub. Stated because it is the number PR 8's Django-down scenario measures
+   against.
+9. A dead-air failover's event is `stream_switch`, not `channel_failover`, a pre-existing fact this
+   spec stated wrong in two places until the PR 6 implementation corrected it. `stream_switch` fires
+   from `update_url()` (`apps/proxy/live_proxy/input/manager.py:1476`), which every failover trigger
+   (dead-air, connect-failure, buffering-timeout) calls once a next stream is chosen.
+   `channel_failover` fires only from `_parse_ffmpeg_stats`'s buffering-timeout branch
+   (`input/manager.py:1157`) — reachable exclusively while parsing ffmpeg stderr, which the Proxy
+   stream profile never produces. The new `streaming-failover` E2E spec (PR 6) therefore asserts
+   `stream_switch` for its `dead-air` fault, not `channel_failover`.
+10. Verifying this PR uncovered a real failure this section did not anticipate: a `DISPATCHARR_WEB_HOST`
+    or `DISPATCHARR_INTERNAL_API_BASE_URL` containing an underscore (`docker/tests/test-puid-pgid.sh`'s
+    `test_role_split()` named its containers `puid_test_role_api` etc. and passed that name straight
+    through as `DISPATCHARR_WEB_HOST`) reaches `get_control_plane_base_url()`, which sends it verbatim
+    as a Host header — Django's own `get_host()` rejects any Host containing an underscore before
+    `ALLOWED_HOSTS` is even consulted, so the relay's call fails with an opaque 400 pointing at
+    nothing. Three fixes, all landed:
+    (a) `control_plane.py`'s `_validated()` checks every branch (explicit, modular, dev, aio) with
+    Django's own `split_domain_port` — the same function `get_host()` calls, fed the netloc with any
+    userinfo stripped first, since that is what `requests` actually puts on the wire as the Host
+    header — and raises `ImproperlyConfigured` at resolve time, naming the offending variable (and,
+    for the explicit override, a credential-redacted form of the value), before any HTTP call is
+    attempted. Point 5's "fail loudly, don't degrade through the fallback a genuine Django outage
+    uses" reasoning applies only on the tune path: `get_control_plane_base_url()` and `next_source()`
+    let `ImproperlyConfigured` propagate, so a misconfigured deployment fails visibly on the first
+    tune. `release_source()` and `post_events()` are different — the first runs from a channel-stop
+    cleanup path, where aborting cannot fix the configuration and would instead leak the channel's
+    Redis keys, its ownership lease and a still-running ffmpeg holding a provider slot (reachable in
+    the worker role, which stops channels but never tunes, and in a relay restarted after the tune);
+    the second is `emit_event`'s transport, called from thirteen sites across the relay on every
+    interesting transition, none of which can raise without an unhandled-greenlet traceback per event
+    (and, on the synchronous `_spawn` branch, an exception into a caller that assumes `emit_event`
+    never raises). Both catch `ImproperlyConfigured` themselves, log once per call naming only the
+    variable, and return `False`, which every caller already treats the same as an unreachable
+    control plane.
+    (b) This section's own D9 enumerates only explicit → modular → AIO and omits the `dev` →
+    `http://127.0.0.1:5656` branch the code has always had; D6 already establishes that branch for
+    the DVR formula D9 states it borrows, so D9 was restating D6's shape rather than inventing a
+    fourth one, and both are now consistent with what `control_plane.py:74-75` and `CLAUDE.md`'s
+    Commands section document.
+    (c) `docker/tests/test-puid-pgid.sh`'s `test_role_split()` containers, network and volume are
+    hyphenated (`puid-test-role-api`, etc.) instead of underscored, because the relay→Django hop
+    this PR adds is the first traffic in that harness to carry a container name as an HTTP Host
+    header rather than only a DNS name, where an underscore is legal.
 
 ### PR 7 — `migration/phase1-control-api`
 
@@ -1555,7 +1669,7 @@ Phase 0's § Carried, not fixed table, with a status column now that Phase 1 exi
 - **Authorize matrix** (`streaming`, `@contract`, PR 5) — `hidden_from_output` and `is_adult` 403 on every
   relay-served surface, anonymous-plus-valid-UUID still streams, forged trust headers 403.
 - **Failover produces events** (`streaming-failover`, `@contract`, PR 6) — `dead-air` fault →
-  `channel_failover` in `GET /api/core/system-events/` and a `relay_event` WebSocket message.
+  `stream_switch` in `GET /api/core/system-events/` and a `relay_event` WebSocket message.
 - **Django down / bounded relay restart** (`streaming-split`, `@contract`, PR 8, N ≤ 30 s) — plus
   the unrelated-stream and queued-Celery-task assertions that pin D15.
 - **Unit tests**: the authorize matrix and `_dvr_redact_cmd` (PR 5); control-plane client
@@ -1597,7 +1711,7 @@ Filled in as PRs merge. Empty at spec-writing time.
 | Supervisord | — | — |
 | Process split | — | — |
 | Authorize hop | #176 | — |
-| Next-source + events | — | — |
+| Next-source + events | #188 | — |
 | Control API | — | — |
 | Django-down + docs | — | — |
 

@@ -1165,14 +1165,21 @@ test_role_split() {
         return
     fi
 
-    local net="${TEST_PREFIX}_role_net"
-    local pg_name="${TEST_PREFIX}_role_pg"
-    local redis_name="${TEST_PREFIX}_role_redis"
-    local upstream_name="${TEST_PREFIX}_role_upstream"
-    local api_name="${TEST_PREFIX}_role_api"
-    local relay_name="${TEST_PREFIX}_role_relay"
-    local worker_name="${TEST_PREFIX}_role_worker"
-    local vol="${TEST_PREFIX}_role_data"
+    # Hyphenated, not "${TEST_PREFIX}_role_...": since Phase 1 PR 6 the
+    # relay sends DISPATCHARR_WEB_HOST as the literal Host header on its
+    # calls to Django, and Django's get_host() rejects any Host containing
+    # an underscore (host_validation_re / split_domain_port) before
+    # ALLOWED_HOSTS is even consulted -- an underscored container name here
+    # would 400 every relay->Django call this scenario exercises.
+    local role_prefix="${TEST_PREFIX//_/-}-role"
+    local net="${role_prefix}-net"
+    local pg_name="${role_prefix}-pg"
+    local redis_name="${role_prefix}-redis"
+    local upstream_name="${role_prefix}-upstream"
+    local api_name="${role_prefix}-api"
+    local relay_name="${role_prefix}-relay"
+    local worker_name="${role_prefix}-worker"
+    local vol="${role_prefix}-data"
     cleanup_scenario
 
     docker network create "$net" >/dev/null 2>&1
