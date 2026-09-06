@@ -104,6 +104,31 @@ const RUNNING_TIMEOUT_MS = 60_000;
  */
 const RELAY_RESTART_CEILING_MS = 30_000;
 
+/**
+ * How many filler channels the Celery scenario's dedicated M3U catalogue
+ * carries, and how many decoy `M3UAccount`s share it.
+ *
+ * A single account's own refresh cannot be made to outlast the restart by
+ * catalogue size alone: the fake provider's `POST /scenarios` caps the
+ * request body at 1 MiB (`e2e-upstream/src/server.ts`), which tops out
+ * around 10,000 channels, and measured against this container even an
+ * 8,000-channel refresh completes in ~2-3s — nowhere near
+ * `RELAY_RESTART_CEILING_MS`'s ~7-9s measured restart duration. What
+ * reliably takes longer is **queueing behind other work**: Celery's
+ * `default` queue autoscales to 6 workers
+ * (`docker/supervisord.d/celery-default.conf`), so `SLOW_REFRESH_DECOY_COUNT`
+ * accounts against the same 8,000-channel catalogue, refreshed in the same
+ * instant as the tracked account, force it to wait through several
+ * worker-queue waves.
+ * Measured empirically (see the whole-branch fix round in
+ * task-4-report.md): 30 decoys pushed the tracked account's completion to
+ * ~20s, roughly 2-3x the restart's own duration — margin against reasonable
+ * host-to-host variance in worker throughput, not a number tuned to just
+ * clear it.
+ */
+const SLOW_REFRESH_CHANNEL_COUNT = 8_000;
+const SLOW_REFRESH_DECOY_COUNT = 30;
+
 async function expectRunning(
   instance: Instance,
   program: string,
@@ -146,16 +171,27 @@ const OPEN_OUTCOME_DEADLINE_MS = 30_000;
  * a local server reproducing this test's sequence (`readPackets(200)`, a
  * 1.5s idle window, a teardown, `drain()`, then a timed read).
  *
- * The reservoir this container can hold is bounded by `net.ipv4.tcp_rmem`'s
- * third value, measured directly: `docker exec … cat
- * /proc/sys/net/ipv4/tcp_rmem` → `4096 131072 33554432` bytes — 32 MiB, the
- * kernel's autotuned per-socket receive-buffer ceiling on this network path.
+ * The evidence that this size defeats every reservoir in the path is the
+ * counterfactual table above (fix round 1's review), not a sysctl reading:
+ * at 20 packets, all three ways a dead relay connection can look (a sender
+ * that stops writing, a clean FIN, an RST) passed in 1ms flat; at this
+ * constant's size the stall case instead fails at the 60s deadline, FIN and
+ * RST still fail fast (10ms, 4ms), and a live stream still passes (1,292ms).
  *
- * 360,000 packets is 67,680,000 bytes, 64.55 MiB — roughly double that
- * ceiling — so even a connection whose kernel buffer had grown to its
- * measured maximum still needs at least ~32 MiB of genuinely live bytes to
- * satisfy this read: ~12.8s of live production at this scenario's ~5.3MB/s,
- * comfortably inside the existing 60s `withDeadline`.
+ * `net.ipv4.tcp_rmem`'s third value — `docker exec … cat
+ * /proc/sys/net/ipv4/tcp_rmem` → `4096 131072 33554432` bytes, 32 MiB — is
+ * cited below only as an order-of-magnitude sanity check, not as the bound
+ * this constant is sized against: it is the *container's* autotuned
+ * receive-buffer ceiling, the wrong side of the connection from where stale
+ * bytes actually accumulate. The reservoirs that matter are client-side —
+ * the Playwright process's own host kernel receive buffer and undici's
+ * `ReadableStream` queue — plus the container's `tcp_wmem` send buffer, and
+ * none of those three was measured directly.
+ *
+ * 360,000 packets is 67,680,000 bytes, 64.55 MiB — roughly double the sysctl
+ * figure above, for scale — needing ~12.8s of live production at this
+ * scenario's ~5.3MB/s to satisfy, comfortably inside the existing 60s
+ * `withDeadline`.
  *
  * Sized against the ceiling rather than against either read's idle window on
  * purpose, because a smaller, idle-window-calibrated size was tried first and
@@ -375,7 +411,11 @@ test(
         message: 'no tune succeeded after api-uwsgi came back',
       })
       .toBe('ok');
-    expectTsAligned(await withDeadline(resumed.readPackets(1), 30_000, 'the resumed tune'));
+    // 200, not 1: the same reason as the two preconditions above — a channel
+    // that answers with one synthetic 'error' or 'keepalive' packet and then
+    // dies would otherwise pass "a new tune succeeds again" on 188 bytes that
+    // prove nothing.
+    expectTsAligned(await withDeadline(resumed.readPackets(200), 30_000, 'the resumed tune'));
     await resumed.close();
 
     // (d) D15, the observable form: restarting the control plane left the
@@ -430,11 +470,42 @@ test(
       rate: 20,
     });
     const proxy = await lockedProfile(api, 'Proxy');
+    // The Celery half needs a refresh that is provably still running the
+    // instant the blocking restart returns — a two-channel catalogue's
+    // refresh finished inside that ~7s window in measurement, which made the
+    // in-flight assertion below fail (correctly: the task had already
+    // completed, so nothing about surviving the restart was under test).
+    // `SLOW_REFRESH_CHANNEL_COUNT`/`SLOW_REFRESH_DECOY_COUNT`'s own comment
+    // has the reasoning and the measurements; the streaming scenario above
+    // stays small on purpose since scenario size has no bearing on tune
+    // latency.
+    const slowScenario = await upstream.scenario({
+      channels: Array.from({ length: SLOW_REFRESH_CHANNEL_COUNT }, (_, i) => ({
+        id: i + 1,
+        name: `slow-refresh-filler-${i + 1}`,
+        tvgId: `slow-refresh-filler-${i + 1}.e2e`,
+        logo: null,
+      })),
+    });
+    // Settled — not just created — before the tracked account exists: an
+    // unsettled decoy's own create-time refresh would already be consuming
+    // worker slots that the tracked account's create-time settle
+    // (`waitForCreateTimeGroupRefreshToSettle`, capped at 20s) also needs,
+    // risking a false failure in setup rather than in the assertion this
+    // test is actually about. `Promise.all`, not a loop: each call already
+    // waits out its own settle, so awaiting them one at a time would
+    // multiply that wait by `SLOW_REFRESH_DECOY_COUNT` instead of letting
+    // Celery's workers absorb them together.
+    const decoys = await Promise.all(
+      Array.from({ length: SLOW_REFRESH_DECOY_COUNT }, () =>
+        seed.upstreamM3UAccount(slowScenario)
+      )
+    );
     // An M3U account is the Celery half: refreshing one is a real queued task
     // whose completion is visible over REST. Seeded (and refreshed) before
     // anything else so the create-time group refresh has settled and the
     // account's task lock is free by the time the test triggers its own.
-    const account = await seed.upstreamM3UAccount(scenario);
+    const account = await seed.upstreamM3UAccount(slowScenario);
     const { channel: running } = await seed.upstreamChannel(scenario, {
       channelIds: [1],
       streamProfileId: proxy.id,
@@ -461,17 +532,57 @@ test(
       `M3U account ${account.id} before the relay restart`
     );
 
-    const triggered = await api.post(`/api/m3u/refresh/${account.id}/`, {});
+    // Discriminates "the task ran" from "the row was already successful":
+    // `updated_at` is bumped only by a successful refresh (apps/m3u/tasks.py),
+    // so a status/timestamp pair unchanged from `before` means this specific
+    // trigger has not yet completed, however many refreshes came before it.
+    async function refreshState(): Promise<string> {
+      const body = await api.json<M3uAccount>(
+        await api.get(`/api/m3u/accounts/${account.id}/`),
+        `M3U account ${account.id} refresh state`
+      );
+      return `${body.status}:${body.updated_at === before.updated_at ? 'unchanged' : 'bumped'}`;
+    }
+
+    // Every decoy and the tracked account fire in the SAME `Promise.all`,
+    // tracked account last: submitted together, Celery's workers pull
+    // roughly in submission order, so the tracked refresh queues behind
+    // whichever decoys land on a worker first rather than racing them for
+    // the very first slot. This is the exact shape measured in the
+    // calibration this constant's comment cites — firing the tracked
+    // account from a separate, later call would not reproduce it.
+    const triggerResponses = await Promise.all([
+      ...decoys.map((d) => api.post(`/api/m3u/refresh/${d.id}/`, {})),
+      api.post(`/api/m3u/refresh/${account.id}/`, {}),
+    ]);
+    const triggered = triggerResponses[triggerResponses.length - 1];
     expect(
-      triggered.status(),
-      'the refresh must be queued before the restart, or there is nothing to survive it'
-    ).toBe(202);
+      triggerResponses.every((res) => res.status() === 202),
+      'every refresh — decoys and the tracked account alike — must be queued, or the tracked ' +
+        'refresh is not actually contending for a worker slot'
+    ).toBe(true);
 
     const restartBegan = Date.now();
     await instance.supervisorctl(['restart', 'relay-uwsgi']);
     console.log(
       `[relay-restart] supervisorctl restart returned after ${Date.now() - restartBegan}ms`
     );
+
+    // In-flight proof, taken the instant the blocking restart call returns:
+    // without this, the poll below can pass even if the task completed
+    // during the restart itself rather than surviving it — `wait-for-stores.sh`
+    // runs `wait_for_redis.py` on relay-uwsgi's own start, the only place a
+    // reintroduced flush could bite, and a refresh that finished before that
+    // point would never exercise it. If this fires reliably, the fix is
+    // more contention — raise `SLOW_REFRESH_DECOY_COUNT`, not loosen this
+    // assertion, since the spec asks for a task that survives the relay's
+    // start path, not one that merely predates it.
+    const midRestart = await refreshState();
+    expect(
+      midRestart,
+      `the refresh had already reached '${midRestart}' by the moment the restart returned, so ` +
+        'the poll below would prove nothing about surviving the relay start path'
+    ).not.toBe('success:bumped');
 
     // The running stream died with the process it was served by. Closing the
     // client here is bookkeeping, not an assertion: nothing processed its
@@ -526,29 +637,20 @@ test(
     ).toBeLessThanOrEqual(RELAY_RESTART_CEILING_MS);
     await client.close();
 
-    // D15's Celery half: the task dispatched a moment before the restart still
-    // ran to completion. A blind flush on any start path would take the broker
-    // and the result backend with it — they share Redis DB 0 with the relay's
-    // channel state. `updated_at` is bumped only by a successful refresh, so
-    // it discriminates "the task ran" from "the row was already successful".
+    // D15's Celery half: the task dispatched a moment before the restart —
+    // and confirmed still in flight the instant the restart returned, above —
+    // still ran to completion afterwards. A blind flush on any start path
+    // would take the broker and the result backend with it — they share
+    // Redis DB 0 with the relay's channel state.
     await expect
-      .poll(
-        async () => {
-          const body = await api.json<M3uAccount>(
-            await api.get(`/api/m3u/accounts/${account.id}/`),
-            `M3U account ${account.id} after the relay restart`
-          );
-          return `${body.status}:${body.updated_at === before.updated_at ? 'unchanged' : 'bumped'}`;
-        },
-        {
-          timeout: 120_000,
-          intervals: [2_000],
-          message:
-            'the refresh queued before the restart never completed. If it sits at the ' +
-            'pre-trigger status forever, the create-time task lock was still held when it ' +
-            'was triggered (D10Scot/Dispatcharr#59) rather than the restart having eaten it',
-        }
-      )
+      .poll(refreshState, {
+        timeout: 120_000,
+        intervals: [2_000],
+        message:
+          'the refresh queued before the restart never completed. If it sits at the ' +
+          'pre-trigger status forever, the create-time task lock was still held when it ' +
+          'was triggered (D10Scot/Dispatcharr#59) rather than the restart having eaten it',
+      })
       .toBe('success:bumped');
   }
 );
