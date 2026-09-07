@@ -1,8 +1,60 @@
 {
  "detail": null,
- "fetched_at": "2026-09-06T10:19:41+00:00",
+ "fetched_at": "2026-09-07T11:40:14+00:00",
  "kind": "pull_requests",
  "records": [
+  {
+   "additions": 15,
+   "author": "Dionmm",
+   "author_type": "User",
+   "changed_files": 3,
+   "closed_at": "2026-09-06T12:31:59Z",
+   "created_at": "2026-09-06T12:20:51Z",
+   "deletions": 6,
+   "files": [
+    "docs/superpowers/specs/2026-09-04-phase1-process-split-design.md",
+    "e2e/tests/streaming-split/process-restart.spec.ts",
+    "metrics/curated/milestones.yml"
+   ],
+   "head_ref": "docs/phase1-closeout",
+   "id": 198,
+   "merged_at": "2026-09-06T12:31:59Z",
+   "title": "Phase 1 close-out: the ledger, the Done log, and one comment",
+   "updated_at": "2026-09-06T12:32:00Z"
+  },
+  {
+   "additions": 2888,
+   "author": "Dionmm",
+   "author_type": "User",
+   "changed_files": 17,
+   "closed_at": "2026-09-06T12:15:00Z",
+   "created_at": "2026-09-06T10:58:44Z",
+   "deletions": 57,
+   "files": [
+    ".github/workflows/e2e-tests.yml",
+    "CLAUDE.md",
+    "docs/agents/issue-tracker.md",
+    "docs/superpowers/plans/2026-09-06-phase1-pr8-django-down-and-docs.md",
+    "docs/superpowers/specs/2026-09-04-phase1-process-split-design.md",
+    "e2e/COVERAGE.md",
+    "e2e/README.md",
+    "e2e/fixtures/index.ts",
+    "e2e/fixtures/instance.ts",
+    "e2e/fixtures/stream-client.ts",
+    "e2e/package.json",
+    "e2e/playwright.config.ts",
+    "e2e/tests/guards/allowlist.ts",
+    "e2e/tests/guards/capabilities.spec.ts",
+    "e2e/tests/streaming-split/process-restart.spec.ts",
+    "metrics/curated/defects.yml",
+    "metrics/curated/milestones.yml"
+   ],
+   "head_ref": "migration/phase1-django-down-and-docs",
+   "id": 196,
+   "merged_at": "2026-09-06T12:15:00Z",
+   "title": "Phase 1 PR 8: Django-down, a bounded relay restart, and the phase's documents",
+   "updated_at": "2026-09-06T12:15:02Z"
+  },
   {
    "additions": 9498,
    "author": "Dionmm",

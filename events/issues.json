@@ -1,8 +1,162 @@
 {
  "detail": null,
- "fetched_at": "2026-09-06T10:20:25+00:00",
+ "fetched_at": "2026-09-07T11:41:00+00:00",
  "kind": "issues",
  "records": [
+  {
+   "closed_at": null,
+   "created_at": "2026-09-07T05:25:45Z",
+   "id": 202,
+   "label_events": [
+    {
+     "at": "2026-09-07T05:25:47Z",
+     "event": "labeled",
+     "label": "bug"
+    },
+    {
+     "at": "2026-09-07T05:25:47Z",
+     "event": "labeled",
+     "label": "fuzzing"
+    },
+    {
+     "at": "2026-09-07T05:25:47Z",
+     "event": "labeled",
+     "label": "agentic-workflows"
+    }
+   ],
+   "labels": [
+    "bug",
+    "fuzzing",
+    "agentic-workflows"
+   ],
+   "state": "open",
+   "title": "[fuzz-hardening] test(epg): Hypothesis property tests for XMLTV parsing, metadata extraction, and SD helpers",
+   "updated_at": "2026-09-07T05:25:45Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-09-06T16:36:48Z",
+   "id": 201,
+   "label_events": [
+    {
+     "at": "2026-09-06T16:36:50Z",
+     "event": "labeled",
+     "label": "agentic-workflows"
+    }
+   ],
+   "labels": [
+    "agentic-workflows"
+   ],
+   "state": "open",
+   "title": "[issue-fix] fix(e2e): stop --down/--reset deleting the shared e2e-upstream provider",
+   "updated_at": "2026-09-06T16:36:48Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-09-06T16:11:56Z",
+   "id": 200,
+   "label_events": [
+    {
+     "at": "2026-09-06T16:11:58Z",
+     "event": "labeled",
+     "label": "agentic-workflows"
+    }
+   ],
+   "labels": [
+    "agentic-workflows"
+   ],
+   "state": "open",
+   "title": "[fuzz-hardening] test(m3u): Hypothesis property tests for exp_date parsing and server-URL normalization",
+   "updated_at": "2026-09-06T16:11:56Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-09-06T16:11:53Z",
+   "id": 199,
+   "label_events": [
+    {
+     "at": "2026-09-06T16:11:54Z",
+     "event": "labeled",
+     "label": "bug"
+    },
+    {
+     "at": "2026-09-06T16:11:54Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    },
+    {
+     "at": "2026-09-06T16:11:54Z",
+     "event": "labeled",
+     "label": "fuzzing"
+    },
+    {
+     "at": "2026-09-06T16:11:55Z",
+     "event": "labeled",
+     "label": "type:reliability"
+    },
+    {
+     "at": "2026-09-06T16:11:55Z",
+     "event": "labeled",
+     "label": "priority:p1"
+    }
+   ],
+   "labels": [
+    "bug",
+    "needs-triage",
+    "fuzzing",
+    "type:reliability",
+    "priority:p1"
+   ],
+   "state": "open",
+   "title": "[domain-fuzz] M3U profile save() and admin page crash on provider-controlled out-of-range exp_date (uncaught OverflowError)",
+   "updated_at": "2026-09-06T16:11:53Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-09-06T11:46:21Z",
+   "id": 197,
+   "label_events": [
+    {
+     "at": "2026-09-06T11:46:22Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    }
+   ],
+   "labels": [
+    "needs-triage"
+   ],
+   "state": "open",
+   "title": "e2e: hold a refresh in flight with a slow-playlist fault instead of thirty decoy accounts",
+   "updated_at": "2026-09-06T11:46:21Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-09-06T10:36:13Z",
+   "id": 195,
+   "label_events": [
+    {
+     "at": "2026-09-06T10:36:15Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    },
+    {
+     "at": "2026-09-06T10:40:51Z",
+     "event": "unlabeled",
+     "label": "needs-triage"
+    },
+    {
+     "at": "2026-09-06T10:40:52Z",
+     "event": "labeled",
+     "label": "wontfix"
+    }
+   ],
+   "labels": [
+    "wontfix"
+   ],
+   "state": "open",
+   "title": "Open question: does a same-channel reconnect after a relay restart wait for the 30s orphan sweep?",
+   "updated_at": "2026-09-06T11:09:07Z"
+  },
   {
    "closed_at": null,
    "created_at": "2026-09-06T07:21:45Z",
@@ -131,7 +285,7 @@
    ],
    "state": "open",
    "title": "[aw] Issue triage produced no safe outputs",
-   "updated_at": "2026-09-06T00:21:23Z"
+   "updated_at": "2026-09-06T11:51:05Z"
   },
   {
    "closed_at": null,
@@ -1406,7 +1560,7 @@
    "updated_at": "2026-08-30T20:42:17Z"
   },
   {
-   "closed_at": null,
+   "closed_at": "2026-09-06T10:36:44Z",
    "created_at": "2026-08-30T20:24:33Z",
    "id": 95,
    "label_events": [
@@ -1429,9 +1583,9 @@
    "labels": [
     "ready-for-agent"
    ],
-   "state": "open",
+   "state": "closed",
    "title": "hide_adult_content is not applied on the catch-up path: an adult channel is unlistable but still streamable",
-   "updated_at": "2026-08-30T20:28:13Z"
+   "updated_at": "2026-09-06T10:36:44Z"
   },
   {
    "closed_at": null,
@@ -1582,7 +1736,7 @@
    "updated_at": "2026-08-30T16:43:07Z"
   },
   {
-   "closed_at": null,
+   "closed_at": "2026-09-06T10:36:41Z",
    "created_at": "2026-08-30T14:20:05Z",
    "id": 87,
    "label_events": [
@@ -1608,9 +1762,9 @@
     }
    ],
    "labels": [],
-   "state": "open",
+   "state": "closed",
    "title": "stream_xc omits the is_adult and hidden_from_output filters every listing path applies",
-   "updated_at": "2026-09-05T18:00:55Z"
+   "updated_at": "2026-09-06T10:36:41Z"
   },
   {
    "closed_at": null,
@@ -2507,18 +2661,22 @@
      "at": "2026-08-28T17:05:52Z",
      "event": "labeled",
      "label": "priority:p2"
+    },
+    {
+     "at": "2026-09-07T00:27:26Z",
+     "event": "unlabeled",
+     "label": "needs-triage"
     }
    ],
    "labels": [
     "bug",
-    "needs-triage",
     "fuzzing",
     "type:performance",
     "priority:p2"
    ],
    "state": "open",
    "title": "[domain-fuzz] Bound fMP4 catch-up reads for lagging clients",
-   "updated_at": "2026-08-28T17:05:51Z"
+   "updated_at": "2026-09-07T00:27:26Z"
   },
   {
    "closed_at": null,
