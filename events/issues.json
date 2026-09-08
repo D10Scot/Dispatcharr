@@ -1,8 +1,266 @@
 {
  "detail": null,
- "fetched_at": "2026-09-07T11:41:00+00:00",
+ "fetched_at": "2026-09-08T10:40:00+00:00",
  "kind": "issues",
  "records": [
+  {
+   "closed_at": null,
+   "created_at": "2026-09-08T05:32:56Z",
+   "id": 212,
+   "label_events": [
+    {
+     "at": "2026-09-08T05:32:57Z",
+     "event": "labeled",
+     "label": "bug"
+    },
+    {
+     "at": "2026-09-08T05:32:58Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    },
+    {
+     "at": "2026-09-08T05:32:58Z",
+     "event": "labeled",
+     "label": "fuzzing"
+    },
+    {
+     "at": "2026-09-08T05:32:58Z",
+     "event": "labeled",
+     "label": "type:crash"
+    },
+    {
+     "at": "2026-09-08T05:32:58Z",
+     "event": "labeled",
+     "label": "priority:p2"
+    }
+   ],
+   "labels": [
+    "bug",
+    "needs-triage",
+    "fuzzing",
+    "type:crash",
+    "priority:p2"
+   ],
+   "state": "open",
+   "title": "[domain-fuzz] xc_get_epg: unguarded int() on ?limit= crashes; negative limit breaks queryset slice",
+   "updated_at": "2026-09-08T05:32:56Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-09-08T05:32:55Z",
+   "id": 211,
+   "label_events": [
+    {
+     "at": "2026-09-08T05:32:57Z",
+     "event": "labeled",
+     "label": "bug"
+    },
+    {
+     "at": "2026-09-08T05:32:57Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    },
+    {
+     "at": "2026-09-08T05:32:57Z",
+     "event": "labeled",
+     "label": "fuzzing"
+    },
+    {
+     "at": "2026-09-08T05:32:57Z",
+     "event": "labeled",
+     "label": "type:crash"
+    },
+    {
+     "at": "2026-09-08T05:32:57Z",
+     "event": "labeled",
+     "label": "priority:p1"
+    }
+   ],
+   "labels": [
+    "bug",
+    "needs-triage",
+    "fuzzing",
+    "type:crash",
+    "priority:p1"
+   ],
+   "state": "open",
+   "title": "[domain-fuzz] Custom dummy EPG: out-of-range time/date capture crashes /output/epg mid-stream",
+   "updated_at": "2026-09-08T05:32:55Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-09-08T05:32:53Z",
+   "id": 210,
+   "label_events": [
+    {
+     "at": "2026-09-08T05:32:55Z",
+     "event": "labeled",
+     "label": "agentic-workflows"
+    }
+   ],
+   "labels": [
+    "agentic-workflows"
+   ],
+   "state": "open",
+   "title": "[fuzz-hardening] test(output): property-based tests for output-API pure helpers",
+   "updated_at": "2026-09-08T05:32:53Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-09-07T18:35:13Z",
+   "id": 209,
+   "label_events": [
+    {
+     "at": "2026-09-07T18:35:14Z",
+     "event": "labeled",
+     "label": "agentic-workflows"
+    }
+   ],
+   "labels": [
+    "agentic-workflows"
+   ],
+   "state": "open",
+   "title": "[issue-fix] e2e_up.sh: don't remove shared e2e-upstream on --down/--reset of an overridden stack",
+   "updated_at": "2026-09-07T18:35:13Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-09-07T18:09:09Z",
+   "id": 208,
+   "label_events": [
+    {
+     "at": "2026-09-07T18:09:10Z",
+     "event": "labeled",
+     "label": "agentic-workflows"
+    }
+   ],
+   "labels": [
+    "agentic-workflows"
+   ],
+   "state": "open",
+   "title": "[aw] Domain fuzz campaign failed",
+   "updated_at": "2026-09-07T18:09:09Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-09-07T15:21:32Z",
+   "id": 207,
+   "label_events": [
+    {
+     "at": "2026-09-07T15:21:34Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    },
+    {
+     "at": "2026-09-07T15:21:34Z",
+     "event": "labeled",
+     "label": "priority:p1"
+    }
+   ],
+   "labels": [
+    "needs-triage",
+    "priority:p1"
+   ],
+   "state": "open",
+   "title": "[codeql] py/clear-text-logging-sensitive-data: Clear-text logging of sensitive information (apps/timeshift/views.py:3207)",
+   "updated_at": "2026-09-07T15:21:32Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-09-07T15:21:30Z",
+   "id": 206,
+   "label_events": [
+    {
+     "at": "2026-09-07T15:21:31Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    },
+    {
+     "at": "2026-09-07T15:21:31Z",
+     "event": "labeled",
+     "label": "priority:p1"
+    }
+   ],
+   "labels": [
+    "needs-triage",
+    "priority:p1"
+   ],
+   "state": "open",
+   "title": "[codeql] py/clear-text-logging-sensitive-data: Clear-text logging of sensitive information (dispatcharr/utils.py:330)",
+   "updated_at": "2026-09-07T15:21:30Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-09-07T15:21:27Z",
+   "id": 205,
+   "label_events": [
+    {
+     "at": "2026-09-07T15:21:28Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    },
+    {
+     "at": "2026-09-07T15:21:28Z",
+     "event": "labeled",
+     "label": "priority:p1"
+    }
+   ],
+   "labels": [
+    "needs-triage",
+    "priority:p1"
+   ],
+   "state": "open",
+   "title": "[codeql] js/insecure-randomness: Insecure randomness (frontend/src/components/forms/User.jsx:109)",
+   "updated_at": "2026-09-07T15:21:27Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-09-07T15:21:25Z",
+   "id": 204,
+   "label_events": [
+    {
+     "at": "2026-09-07T15:21:26Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    },
+    {
+     "at": "2026-09-07T15:21:27Z",
+     "event": "labeled",
+     "label": "priority:p1"
+    }
+   ],
+   "labels": [
+    "needs-triage",
+    "priority:p1"
+   ],
+   "state": "open",
+   "title": "[codeql] js/insecure-randomness: Insecure randomness (frontend/src/components/forms/User.jsx:77)",
+   "updated_at": "2026-09-07T15:21:25Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-09-07T15:21:22Z",
+   "id": 203,
+   "label_events": [
+    {
+     "at": "2026-09-07T15:21:24Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    },
+    {
+     "at": "2026-09-07T15:21:24Z",
+     "event": "labeled",
+     "label": "priority:p1"
+    }
+   ],
+   "labels": [
+    "needs-triage",
+    "priority:p1"
+   ],
+   "state": "open",
+   "title": "[codeql] js/incomplete-url-substring-sanitization: Incomplete URL substring sanitization (frontend/src/components/__tests__/PluginDetailPanel.test.jsx:351)",
+   "updated_at": "2026-09-07T15:21:22Z"
+  },
   {
    "closed_at": null,
    "created_at": "2026-09-07T05:25:45Z",
@@ -2619,18 +2877,28 @@
      "at": "2026-08-28T17:05:53Z",
      "event": "labeled",
      "label": "priority:p3"
+    },
+    {
+     "at": "2026-09-08T00:49:03Z",
+     "event": "labeled",
+     "label": "ready-for-agent"
+    },
+    {
+     "at": "2026-09-08T00:49:04Z",
+     "event": "unlabeled",
+     "label": "needs-triage"
     }
    ],
    "labels": [
     "bug",
-    "needs-triage",
+    "ready-for-agent",
     "fuzzing",
     "type:correctness",
     "priority:p3"
    ],
    "state": "open",
    "title": "[domain-fuzz] Reject non-finite values from FFmpeg stats output",
-   "updated_at": "2026-08-28T17:05:51Z"
+   "updated_at": "2026-09-08T00:49:04Z"
   },
   {
    "closed_at": null,
