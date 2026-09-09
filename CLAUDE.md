@@ -14,6 +14,7 @@ Four investigation documents and two phase specs hold the detail behind every su
 - Splitting the Planes (extraction proposal) — https://claude.ai/code/artifact/149fb554-d140-4e13-abaf-2416429b2e3f
 - Phase 0 spec (harden in place, six PRs) — `docs/superpowers/specs/2026-09-03-phase0-harden-in-place-design.md`
 - Phase 1 spec (process split, eight PRs) — `docs/superpowers/specs/2026-09-04-phase1-process-split-design.md`. The decisions D1–D16, the nginx location contract, the per-hop error table and Amendments S1–S12 are all there; it is the authority on anything the split touches, and `docs/adr/0005-the-relay-is-chosen-by-name-once-per-tune.md` is the ADR it rests on.
+- Relay parity matrix (Phase 2 Gate 1 — every externally-observable live-path behaviour, its `file:line` and what pins it) — `docs/relay-parity-matrix.md`
 
 Verified at `fd413f0c` (v0.29.0); line numbers drift.
 
