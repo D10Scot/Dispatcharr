@@ -45,6 +45,63 @@
  *
  * No container, no browser: every file is read straight off disk with
  * `node:fs/promises`, the same shape `upstream-contract.spec.ts` uses.
+ *
+ * Verified by mutation, all fourteen, each reverted before the next:
+ *   1. Renaming the header's `Notes` column to `Note` failed every check with
+ *      "has no header row naming the five columns", printing the canonical
+ *      header; and adding a SECOND five-column header (a worked example in a
+ *      fenced block) failed every check too, with "has 2 lines naming the five
+ *      matrix columns (lines 97, 155)" — refused rather than guessed at.
+ *   2. Padding one cell (`| 27  |`) failed ONLY the canonical-line check,
+ *      naming the line and printing both spellings — the whole reason the
+ *      parser tolerates padding instead of dying on it.
+ *   3. Moving row 6 out of 2a-4's block into 2a-5's failed ONLY the contiguity
+ *      check, printing the owner sequence with 2a-4 in two separate runs
+ *      ("2a-4 → 2a-3 → 2a-6 → 2a-5 → 2a-4 → 2b-3").
+ *   4. Widening row 27's citation to `server.py:138-99999` failed the citation
+ *      check naming row 27 and "runs past the end of the file, which has 2570
+ *      lines".
+ *   5. Misspelling row 11's cited test title failed the pin check, printing
+ *      the literal titles that file does declare; adding the misspelling as a
+ *      COMMENT in that spec kept it red, which is the whole argument for
+ *      parsing over grep.
+ *   6. Re-marking row 12 `white-box-only` failed the allowlist check, reporting
+ *      [12, 26, 27] against [26, 27] — the marker cannot be used to make an
+ *      inconvenient row stop counting without a stated reason in this file.
+ *   7. Deleting a PINNED row (24) failed ONLY the completeness check, with
+ *      "Missing: 24". Every other check passes on a table that is simply
+ *      shorter, which is why that check exists.
+ *   8. A stray prose line mid-table, a row that lost its leading "|", and a
+ *      missing "<!-- end of matrix -->" each failed EVERY check, naming the
+ *      line. Before the terminator, all three silently ended the table where
+ *      they sat and every check below went blind.
+ *   9. A second five-column header — a worked example in a fenced block —
+ *      failed EVERY check with "has 2 lines naming the five matrix columns",
+ *      refused rather than guessed at.
+ *  10. "owed: 2a-9" failed ONLY the pin check, listing the five legal PR ids
+ *      (2a-3, 2a-4, 2a-5, 2a-6, 2b-3).
+ *  11. GATE_1_CLOSED flipped early failed ONLY the Gate 1 check ("cannot
+ *      silently reopen"), and pinning every owed row with the flag still false
+ *      failed the same check from the other side ("you just closed the last
+ *      one. Flip GATE_1_CLOSED to true"), telling that PR to flip it. Both
+ *      branches, so the one that matters at the end of the phase is not first
+ *      exercised by the PR that depends on it.
+ *  12. Deleting the HIGHEST row (27) failed completeness with "does not carry
+ *      exactly rows 1..27" and "Missing: 27" — and the white-box allowlist
+ *      check failed too, because 27 is on it. That second failure is the
+ *      accident ruling 12 replaced, not the mechanism: derived from the data
+ *      this deletion would have passed, because the maximum moved down with
+ *      it.
+ *  13. A row appended BELOW the terminator, and the terminator moved above the
+ *      white-box block, each failed EVERY check naming the offending line.
+ *      Before this the appended row was simply invisible.
+ *  14. Two controls, both behaving: row 28 added properly mid-table with
+ *      HIGHEST_ROW_ID raised to 28 passes all seven, printing "28 rows — 5
+ *      pinned, 21 owed, 2 white-box-only"; the same edit without raising it
+ *      fails completeness alone, with "Above HIGHEST_ROW_ID: 28 — adding a
+ *      row is a deliberate edit in two places". The first is why "the last
+ *      row carries the highest id" was rejected — it would have failed a
+ *      correct edit.
  */
 import { test, expect } from '@playwright/test';
 import {
