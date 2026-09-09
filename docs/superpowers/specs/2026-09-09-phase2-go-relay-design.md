@@ -31,7 +31,7 @@ Four stages, two of them legitimate stopping points in their own right:
 1. **2a — pin the behaviour (Python).** A parity matrix naming every externally-observable live-path
    behaviour with its source line and its pinning test, guarded so an unpinned row fails CI; a real-
    subprocess test harness the backend suite has never had; and coverage on the live path raised from
-   a measured 44% to a gated ≥80% combined with the Phase 1 boundary modules, already near 92%
+   a measured 43.1% to a gated ≥80% combined with the ten Phase 1 boundary modules, already at 92.1%
    (§ Stage 2a's Gate 2 has the exact module list and count).
 2. **2b — complete the contract (Python).** The ORM reads Phase 1 knowingly left in the relay
    (its own § "ORM reads that remain" table) close: into the next-source payload, a new control-plane
@@ -182,57 +182,129 @@ restated here as a single list, in the idiom of Phase 1's § "What the code says
 
 ## Verified facts this design rests on
 
-**Coverage, measured on `a948cd8a`, 857 tests green** (`coverage run --source=apps/proxy` over
-`apps.proxy.tests apps.proxy.live_proxy.tests apps.channels.tests`):
+**Coverage, measured on `a948cd8a`, 857 tests green, one process per test label exactly as
+`backend-tests.yml` runs them** (`coverage run --parallel-mode --include=…` over
+`apps.proxy.tests`, `apps.proxy.live_proxy.tests` and `apps.channels.tests`, each label in its own
+process, `coverage combine`d afterwards). **Every figure in this section is corrected in the round-6
+amendments (§ A1):** an independent re-derivation at the same commit — run twice to identical
+totals, with a 16-label control run that moved `live_proxy` by zero statements — supersedes this
+spec's first measurement. The old figures (3,818 missed / 44%, a nine-module 1,040/87, a combined
+7,870/3,905/50.4%, "~77%, about +2,250") are withdrawn wherever they appeared.
 
 | Scope | Statements | Missed | Coverage |
 |---|---|---|---|
-| `apps/proxy/live_proxy/**` | 6,830 | 3,818 | **44%** |
-| The nine Phase 1 boundary modules (`authorize.py` 94%, `control_plane.py` 97%, `internal_auth.py` 100%, `internal_base_url.py` 100%, `next_source.py` 78%, `permissions.py` 100%, `relay_client.py` 97%, `relay_serializers.py` 100%, `relay_views.py` 100%) | 1,040 | 87 | **92%** |
-| Combined denominator | 7,870 | 3,905 | **50.4%** |
+| `apps/proxy/live_proxy/**` (non-test) | 6,830 | 3,886 | **43.1%** |
+| The **ten** `apps/proxy/*.py` relay modules (`authorize.py` 93.6%, `authorize_views.py` 96.3%, `control_plane.py` 96.8%, `internal_auth.py` 100%, `internal_base_url.py` 100%, `next_source.py` 78.4%, `permissions.py` 100%, `relay_client.py` 97.3%, `relay_serializers.py` 100%, `relay_views.py` 100%) | 1,148 | 91 | **92.1%** |
+| Combined denominator | 7,978 | 3,977 | **50.2%** |
 
-The combined figure is flattered by the boundary modules; **the gate's real target is `live_proxy`
-itself, which has to climb from 44% to ~77%** (about +2,250 statements) for the combined ≥80% to
-hold. `vod_proxy` and the dead `hls_proxy` are outside the denominator by design — D1 below excludes
-them from scope entirely, so they should not count toward the gate that unlocks Go work on the live
-path. Worst files, missed-statement count first: `server.py` 1490/937 (37%), `input/manager.py`
-1248/771 (38%), `services/channel_service.py` 500/262 (48%), `output/ts/generator.py` 377/241 (36%),
-`output/fmp4/manager.py` 304/253 (17%), `output/profile/manager.py` 223/185 (17%),
-`output/fmp4/generator.py` 219/195 (11%), `input/buffer.py` 248/166 (33%), `input/http_streamer.py`
-101/101 (**0%**), `output/fmp4/buffer.py` 116/102 (12%), `utils.py` 142/102 (28%),
-`services/log_parsers.py` 235/73 (69%), `client_manager.py` 262/70 (73%), `views.py` 608/204 (66%),
-`channel_status.py` 375/76 (80%). The five largest gaps — `server.py`, `input/manager.py`,
-`channel_service.py`, `output/ts/generator.py`, `output/fmp4/manager.py` — total 2,464 missed
-statements; closing them approximately **is** the gate.
+`authorize_views.py` (108 statements, 4 missed) is **in** the denominator — the first draft omitted
+it from this table while including it in the Gate 2 invocation, and § Stage 2a's Gate 2 records that
+inconsistency as closed rather than open.
+
+**The measurement shape is part of the number.** Running the same three labels — or the whole suite
+— in a *single* process reports about **68 fewer missed statements** (`server.py` 937 rather than
+977, `client_manager.py` 70 rather than 98), reproduced exactly across five run shapes. The cause is
+wall-clock time, not test selection: the relay's daemon threads
+(`ProxyServer._start_cleanup_thread.cleanup_task`, `_start_event_listener.event_listener`,
+`ClientManager._start_heartbeat_thread.heartbeat_task` — and `apps/channels/tests/
+test_ts_proxy_teardown.py` builds a real `ProxyServer` ten times) keep ticking while *unrelated*
+tests run, so a 33-second single process credits lines no test asserts, while three per-label
+processes of a few seconds each do not. **The gate is therefore measured one process per test label,
+because that is what `backend-tests.yml` does** — a gate set against the single-process figure would
+be un-meetable by the very pipeline meant to enforce it, and the 68 extra statements are not test
+coverage in any case: no test asserts anything about them. Every figure here carries a
+**±70-statement (~1pp) thread-timing band**; a later measurement landing at 44% is inside the noise,
+not a win, and one landing at 42% is not automatically a regression.
+
+**The gate, in exact numbers.** 80% of 7,978 is 6,382.4, so **6,383 covered statements** against
+today's 4,001 — a shortfall of **2,382**. The ten `apps/proxy/*.py` files are already at 92.1% and
+can contribute at most 91 more, so essentially all of the shortfall has to come from the relay
+itself: **`apps/proxy/live_proxy/**` has to climb from 43.1% to 78.0%** (5,326 of 6,830, i.e. +2,382
+statements), or to 76.6% if the ten are simultaneously driven to 100% — a spread too small to plan
+around. `vod_proxy` and the dead `hls_proxy` are outside the denominator by design — D1 below
+excludes them from scope entirely, so they should not count toward the gate that unlocks Go work on
+the live path. Worst files, missed-statement count first: `server.py` 1490/977 (34.4%),
+`input/manager.py` 1248/771 (38.2%), `services/channel_service.py` 500/262 (47.6%),
+`output/ts/generator.py` 377/241 (36.1%), `output/fmp4/manager.py` 304/253 (16.8%),
+`output/profile/manager.py` 223/185 (17.0%), `output/fmp4/generator.py` 219/195 (**11.0%**, the
+lowest-covered file in the denominator), `input/buffer.py` 248/166 (33.1%), `input/http_streamer.py`
+101/101 (**0.0%**), `output/fmp4/buffer.py` 116/102 (12.1%), `utils.py` 142/102 (28.2%),
+`services/log_parsers.py` 235/73 (68.9%), `client_manager.py` 262/98 (62.6%), `views.py` 608/204
+(66.4%), `channel_status.py` 375/76 (79.7%). The five largest gaps — `server.py`,
+`input/manager.py`, `channel_service.py`, `output/ts/generator.py`, `output/fmp4/manager.py` —
+total **2,504** missed statements, 63% of the whole 3,977-statement gap; closing them approximately
+**is** the gate.
 
 **Test inventory, three buckets, all measured against `a948cd8a`.**
 
-1. **PORTABLE** — real HTTP through nginx: 31 Playwright spec files (22 `streaming/`, 6
-   `streaming-failover/`, 3 `streaming-greybox/`), ~67 `test(` occurrences.
+1. **PORTABLE** — real HTTP through nginx: **32** Playwright spec files (22 `streaming/`, 6
+   `streaming-failover/`, 1 `streaming-split/`, 3 `streaming-greybox/`), ~69 `test(` occurrences —
+   corrected in the round-6 amendments alongside § A1, which found `streaming-split/`
+   (`process-restart.spec.ts`) omitted from the first draft's count of 31.
 2. **VIEW-LEVEL** — `RequestFactory`/`Client`/`APIClient` against Python view functions: behavioural,
    but never leaves the Python process. 14 files, ~203 test functions.
 3. **WHITE-BOX** — imports relay internals directly: 22 files, ~361 test functions.
 
 **564 Python test functions cover the live path, and not one survives a rewrite into another
 language.** Subtracting the 3 greybox specs 2d rewrites in place (they assert nginx configuration,
-which still exists and still needs asserting, just pointed at a different upstream), roughly **61
+which still exists and still needs asserting, just pointed at a different upstream), roughly **63
 tests** — the PORTABLE bucket minus those three — are what stands between this project and an
 unverified byte-path rewrite before 2a adds anything. This is the fact that makes 2a's existence
 non-optional rather than a nice-to-have, and it leads § Testing below for that reason.
 
-**Reachability, which drives 2a's PR order.** Not every missed statement costs the same to reach.
-`channel_service.py` is ~90% reachable by a Django test-client request driving an in-process fake
-upstream with real Redis — no subprocess needed, because switch/stop/metadata logic is pure Python
-and Redis calls. `output/ts/generator.py` is ~80-85% reachable the same way. `server.py` is
-~70-75% reachable — bring-up, the event listener loop and zombie detection are Redis- and
-Django-test-client-shaped; only the parts that spawn ffmpeg are not. `input/manager.py` is only
-~40-50% reachable without a real subprocess: the transcode connection setup, the stderr reader and
-the health/reconnect loops are shaped around a real ffmpeg process's stdout/stderr, and mocking that
-shape teaches nothing a Go implementer can reuse. `output/fmp4/manager.py` is only ~20-30% reachable
-the same way. Those last two hold roughly **1,024 missed statements between them** — the single
-biggest reason 2a is not "write more Django tests" but "build a subprocess-capable harness first, then
-write tests against it." `CLAUDE.md` § Testing already records the gap this fills: "No backend unit
-test spawns a subprocess."
+**Reachability, which drives 2a's PR order — re-derived in the round-6 amendments (§ A2), because
+the first draft's account was directionally right and numerically loose in a way that changes what
+2a-2 has to build.** Not every missed statement costs the same to reach. `channel_service.py` is
+~90% reachable by a Django test-client request driving an in-process fake upstream with real Redis —
+no subprocess needed, because switch/stop/metadata logic is pure Python and Redis calls.
+`output/ts/generator.py` is ~80-85% reachable the same way. `server.py` is ~70-75% reachable —
+bring-up, the event listener loop and zombie detection are Redis- and Django-test-client-shaped;
+only the parts that spawn ffmpeg are not. `input/manager.py` is only ~40-50% reachable without a
+real subprocess: the transcode connection setup, the stderr reader and the health/reconnect loops
+are shaped around a real ffmpeg process's stdout/stderr, and mocking that shape teaches nothing a Go
+implementer can reuse. `output/fmp4/manager.py` is only ~20-30% reachable the same way. Those two
+hold **1,024 missed statements between them** — the single biggest reason 2a is not "write more
+Django tests" but "build a subprocess-capable harness first, then write tests against it."
+`CLAUDE.md` § Testing already records the gap this fills: "No backend unit test spawns a
+subprocess," and that is **confirmed** at `a948cd8a`: grepping every `test_*.py` under `apps/`,
+`core/` and `tests/` for `posix_spawn`, `subprocess.Popen`, `subprocess.run`, `subprocess.check*`
+and `import subprocess` returns exactly one file, `tests/test_credential_logging_guard.py`, which
+shells out to a lint script — **zero backend tests spawn a media subprocess**.
+
+**How much of the gap is genuinely subprocess-gated: ≈827 statements, not "roughly a thousand."**
+`input/manager.py`'s `_establish_transcode_connection` (110), `_read_stderr` (47),
+`_log_stderr_content` (22), `_parse_ffmpeg_stats` (28), `_monitor_health` (37), `_attempt_reconnect`
+(36) and `_wait_for_existing_processes_to_close` (19) total 299; all of `output/fmp4/manager.py`
+(253); all of `output/profile/manager.py` (185); and ~90 in `utils.py`'s `posix_spawn_proc`/`_Proc`.
+Adding the fMP4 output surface, which needs fragments a remuxer produced — `output/fmp4/generator.py`
+195 plus `output/fmp4/buffer.py` 102 — gives **≈1,124**. The three `input/manager.py` regions this
+section names above (transcode setup, stderr reader, health/reconnect loops) total **483-552** on
+their own; the 1,024 figure is the whole of both files, and ~143 of it (`_establish_http_connection`
+26, `fetch_chunk` 56, `_close_socket` 61) is the raw-HTTP Proxy-profile path, which needs a socket
+or a local HTTP server, not a subprocess.
+
+**The finding that changes 2a-2's shape: two of the three spawn sites already sit behind one
+function.** `output/fmp4/manager.py:129` and `:402` and `output/profile/manager.py:88` all obtain
+their process from `posix_spawn_proc(...)` (`apps/proxy/live_proxy/utils.py:130`), which returns a
+`_Proc` exposing `stdin`/`stdout`/`stderr`/`poll`/`wait`/`terminate`/`kill`. Substituting an object
+of that shape at that single seam makes **438** of the 827 statements unit-testable **with no
+forking at all**. `input/manager.py` is the hard case: its spawn is an inline `os.posix_spawn` at
+`:793` with a hand-rolled Popen-compatible wrapper class at `:813`, wired to file descriptors the
+manager built itself (stdin from `/dev/null`, stdout dup2'd onto a pipe it already owns as
+`self.socket`), so it shares no seam with the helper and there is nothing to patch but
+`os.posix_spawn` globally.
+
+**The consequence, stated plainly: the 80% gate is reachable, but not by pure-mock unit tests.** It
+needs either **(a)** a process fake at `posix_spawn_proc` *plus* the equivalent seam extracted in
+`input/manager.py`, or **(b)** real-subprocess tests admitted to the backend suite for the first
+time. Option (a) implies a **production-code change inside a stage otherwise scoped to tests**. That
+change is small — give `input/manager.py`'s spawn a named helper alongside the one the other two
+managers already call, generalized for the file actions it needs, instead of a bare `os.posix_spawn`
+at the call site — and it is explicitly **not** the "simplify this back to `Popen`" `CLAUDE.md`
+forbids: `os.posix_spawn` is retained exactly as it is, only the call site moves behind a name.
+**This is an open decision for 2a-2's plan, flagged to the user rather than settled here**; 2a-2's
+row in § The seven PRs records it as such, and nothing downstream in this spec assumes either
+answer.
 
 **The internal contract, every route, header and timeout as shipped.** `apps/proxy/relay_client.py`
 (411 lines) and `apps/proxy/control_plane.py` (337 lines), both read in full — see § The contract for
@@ -316,13 +388,13 @@ not the pinned values, since patches land monthly:**
 
 | # | Decision | Why |
 |---|---|---|
-| **D1** | **Scope: live TS only.** The Go relay serves `/proxy/ts/stream/<id>` and the XC live roots (`live/<user>/<pass>/<id>`, bare `<user>/<pass>/<id>`). The Python relay keeps `/proxy/vod/`, `/proxy/catchup/` and `/streaming/timeshift.php`; `apps/proxy/vod_proxy/` and `apps/timeshift/` are untouched. | § What the code says confirms the XC live roots are already routing-distinguishable from VOD/catch-up with no shared regex to split, so this is a location-table decision, not a routing redesign. It also matches where the coverage and defect weight actually is: `live_proxy` is 44% covered and holds every failover trigger and the ownership lease; `vod_proxy` (35.6%, `CLAUDE.md`) is a separate, simpler shape — stateless, one upstream per session, no ring buffer — that gains nothing from Go's concurrency model and would only enlarge this phase. |
+| **D1** | **Scope: live TS only.** The Go relay serves `/proxy/ts/stream/<id>` and the XC live roots (`live/<user>/<pass>/<id>`, bare `<user>/<pass>/<id>`). The Python relay keeps `/proxy/vod/`, `/proxy/catchup/` and `/streaming/timeshift.php`; `apps/proxy/vod_proxy/` and `apps/timeshift/` are untouched. | § What the code says confirms the XC live roots are already routing-distinguishable from VOD/catch-up with no shared regex to split, so this is a location-table decision, not a routing redesign. It also matches where the coverage and defect weight actually is: `live_proxy` is 43.1% covered and holds every failover trigger and the ownership lease; `vod_proxy` (35.6%, `CLAUDE.md`) is a separate, simpler shape — stateless, one upstream per session, no ring buffer — that gains nothing from Go's concurrency model and would only enlarge this phase. |
 | **D2** | **The ring buffer lives in process memory from day one.** Live video bytes never enter Redis. Ownership becomes `map[uuid]*Channel` behind a `sync.RWMutex`; the lease, the follower path, `_ensure_owner_or_stop`, the 10-second process-local cache and the three fail-open paths (`server.py`'s `_execute_redis_command` swallowing to `None`, `release_ownership`'s non-atomic GET→compare→DELETE, `extend_ownership`'s non-atomic GET→EXPIRE) are **deleted, not ported**. | A Go relay is one process per host by construction (no gevent single-worker precedent to preserve), so there is never a second writer to fence against — the un-fenced lease `CLAUDE.md` records as a real defect (`StreamBuffer.add_chunk()` writes with no ownership check) has no analogue to carry forward. Porting a Redis-backed buffer into Go only to delete it in Phase 3 wastes a release cycle proving a data structure this design already knows it will remove. **Consequence, stated plainly**: Phase 3's live half is absorbed here. Phase 3 shrinks to deleting the Python ring-buffer code (2d does that), rewriting the greybox quarantine (2d does that too), and whatever Redis coupling VOD/catch-up still carry — unrelated to this spec, a smaller Phase 3 than the route page originally sized. |
 | **D3** | **Hard cutover, no coexistence.** No per-channel canary, no second relay-name map entry live at once. One release flips the live nginx locations from `relay_py` to `relay_go`; `apps/proxy/live_proxy/` is deleted inside this phase (2d); rollback is a container image rollback, not a per-channel flag. | ADR 0005 built the `$relay_name` header and the nginx `map` explicitly so "Phase 2's canary... becomes a second map entry... not a code change on either side" — a real, ready mechanism this decision declines to use. The reason: a canary needs the *old* relay's ownership lease and ring buffer to coexist correctly with channels the *new* relay owns, on the same Redis DB, for the whole canary window — exactly the fenceless-lease and split-brain-key hazards `CLAUDE.md` already documents as live defects, now doubled by having two independent implementations of the owner-election protocol running against the same keys. D2's "buffer in memory, not Redis" makes a byte-level handoff between the two relays for one in-flight channel impossible to do safely in the time this phase has, and a channel-level canary (some channels on Python, some on Go, split by the map) still shares the provider-slot counter and the failover event stream with whichever relay is *not* serving a given channel. Cost, stated honestly: a production defect in the Go relay reverts the whole live path for every viewer, not one channel — the trade this phase makes deliberately, once, rather than carrying dual-implementation risk through a canary window of unknown length. |
 | **D4** | **No live client keys need to exist in Redis at all**, because `GET /proxy/relay/channels?clients=all` already serves that need and the Go relay must implement it anyway. | `apps/proxy/utils.py:256-283`'s `_live_connections(user_id)` — the live half of `get_user_active_connections`, called by `authorize_stream` on every tune via `check_user_stream_limits` — already calls `relay_client.list_channels(all_clients=True, timeout=relay_client.TUNE_TIMEOUT)`, i.e. it already asks the relay over HTTP rather than scanning `live:channel:*:clients:*` directly; that scan was removed in Phase 1 PR 7. Verified by reading the function in full: it fails open (a relay that cannot answer contributes nothing, logged once) and is documented as deliberately so — "the relay is the only process serving live clients, so a relay that is not answering has none." The Go relay reproducing this route byte-for-byte (§ The contract) closes the loop with zero new Redis state. |
-| **D5** | **Strict behavioural parity, defects included** — the three failover triggers and thresholds, threshold snapshotting at channel start, the monotonic never-reset chunk index, the ~5s-behind-live join, 188-byte TS realignment, the cumulative `speed=` average's ~55s arming delay, `MAX_STREAM_SWITCHES` not bounding buffering-triggered switches, and fMP4's `_is_timeout()` lacking the TS generator's `url_switching` exemption. These get filed as issues against the parity matrix, not fixed in transit. Two named exceptions: **(1) process-lifecycle hygiene** — Go spawns ffmpeg with `SysProcAttr{Setpgid: true, Pdeathsig: syscall.SIGKILL}`, closing the orphaned-ffmpeg-holds-a-provider-slot defect (`CLAUDE.md` § Operationally: "`os.posix_spawn` runs with no `setsid`/`PDEATHSIG`"), because no test asserts the current behaviour and it is process hygiene, not streaming behaviour a client can observe. **(2) The dev authorize path** — with no nginx, there is no `auth_request`; a Go relay cannot call `apps/proxy/authorize.py`'s `authorize_stream` in-process (it is Python). When the trust marker is absent, the Go relay makes an HTTP call to a new Django endpoint, `POST /_dispatcharr/authorize-internal` — its own path, not the existing nginx-facing one, for a reason § The contract states in full — reaching the same `authorize_stream()` decision function over HTTP instead of a Python import. | A rewrite that also changed behaviour would make every regression ambiguous between "the port is wrong" and "the fix changed something." Parity is what makes the ~61 portable tests (§ Verified facts) a meaningful safety net rather than a moving target. The two exceptions are chosen narrowly: neither is externally observable streaming behaviour a Playwright spec could assert differently, and the second is required by D2/D3's own shape (dev has no nginx, and Go has no Django import path), not a discretionary fix folded in for convenience. |
+| **D5** | **Strict behavioural parity, defects included** — the three failover triggers and thresholds, threshold snapshotting at channel start, the monotonic never-reset chunk index, the ~5s-behind-live join, 188-byte TS realignment, the cumulative `speed=` average's ~55s arming delay, `MAX_STREAM_SWITCHES` not bounding buffering-triggered switches, and fMP4's `_is_timeout()` lacking the TS generator's `url_switching` exemption. These get filed as issues against the parity matrix, not fixed in transit. Two named exceptions: **(1) process-lifecycle hygiene** — Go spawns ffmpeg with `SysProcAttr{Setpgid: true, Pdeathsig: syscall.SIGKILL}`, closing the orphaned-ffmpeg-holds-a-provider-slot defect (`CLAUDE.md` § Operationally: "`os.posix_spawn` runs with no `setsid`/`PDEATHSIG`"), because no test asserts the current behaviour and it is process hygiene, not streaming behaviour a client can observe. **(2) The dev authorize path** — with no nginx, there is no `auth_request`; a Go relay cannot call `apps/proxy/authorize.py`'s `authorize_stream` in-process (it is Python). When the trust marker is absent, the Go relay makes an HTTP call to a new Django endpoint, `POST /_dispatcharr/authorize-internal` — its own path, not the existing nginx-facing one, for a reason § The contract states in full — reaching the same `authorize_stream()` decision function over HTTP instead of a Python import. | A rewrite that also changed behaviour would make every regression ambiguous between "the port is wrong" and "the fix changed something." Parity is what makes the ~63 portable tests (§ Verified facts) a meaningful safety net rather than a moving target. The two exceptions are chosen narrowly: neither is externally observable streaming behaviour a Playwright spec could assert differently, and the second is required by D2/D3's own shape (dev has no nginx, and Go has no Django import path), not a discretionary fix folded in for convenience. |
 | **D6** | **Ships drain-on-SIGTERM, `/healthz`, `/readyz`, wired to supervisord `stopwaitsecs` and a Docker `HEALTHCHECK`. No Prometheus metrics.** | `CLAUDE.md` § Operationally records the current relay's shutdown as bounded-not-graceful (`die-on-term`, no drain) and the deployment as having no readiness probe at all — both real gaps this phase can close in a language where a drain loop and a health endpoint are a few dozen lines, not a gevent-compatibility exercise. Metrics are declined because nothing scrapes them today and the metrics dashboard (`metrics/curated/`) is engineering data assembled from git/CI/issue history, not a runtime target — adding a `/metrics` endpoint with no consumer is exactly the scope-widening `CLAUDE.md` warns against. |
-| **D7** | **Two coverage gates, not one, and the second blocks the first line of Go code.** Gate 1: the parity matrix is 100% pinned, enforced by a guard test. Gate 2: ≥80% statement coverage on `apps/proxy/live_proxy/**` plus the Phase 1 boundary modules (§ Stage 2a names the exact ten), measured by `scripts/coverage_live_path.sh` and enforced as a ratchet floor file, in `lint.yml`'s idiom for zizmor's zero-findings rule. **No PR in stage 2c may merge until both gates are green**, recorded as CI-enforced in 2c's own PRs, not left to review discipline. | The 61 portable tests alone are not enough to catch a subtle regression in, say, the buffering detector's cumulative-average arithmetic — `log_parsers.py` is 69% covered and 235 statements of exactly the logic a byte-for-byte port has to get right. Gating Go's *start* on coverage, not just its *finish*, is what stops "write the matrix, then start porting while coverage catches up" — a sequencing this phase's own §2a reachability numbers show is expensive to do after the fact (the two hardest files to cover, `input/manager.py` and `fmp4/manager.py`, are exactly the two a Go implementer needs most while porting). |
+| **D7** | **Two coverage gates, not one, and the second blocks the first line of Go code.** Gate 1: the parity matrix is 100% pinned, enforced by a guard test. Gate 2: ≥80% statement coverage on `apps/proxy/live_proxy/**` plus the Phase 1 boundary modules (§ Stage 2a names the exact ten), measured by `scripts/coverage_live_path.sh` and enforced as a ratchet floor file, in `lint.yml`'s idiom for zizmor's zero-findings rule. **No PR in stage 2c may merge until both gates are green**, recorded as CI-enforced in 2c's own PRs, not left to review discipline. | The 63 portable tests alone are not enough to catch a subtle regression in, say, the buffering detector's cumulative-average arithmetic — `log_parsers.py` is 69% covered and 235 statements of exactly the logic a byte-for-byte port has to get right. Gating Go's *start* on coverage, not just its *finish*, is what stops "write the matrix, then start porting while coverage catches up" — a sequencing this phase's own §2a reachability numbers show is expensive to do after the fact (the two hardest files to cover, `input/manager.py` and `fmp4/manager.py`, are exactly the two a Go implementer needs most while porting). |
 
 ## Architecture
 
@@ -748,28 +820,45 @@ and a test reference before the guard test (below) passes.
 | 9 | 188-byte TS packet realignment before a chunk is written | `input/buffer.py` | New |
 | 10 | Multi-client upstream sharing (one ffmpeg, N client readers) | `server.py`, `client_manager.py` | Existing (`streaming` project) — cite exact spec file in matrix PR |
 | 11 | Output Profile process sharing per `(channel, profile)` | `output/profile/manager.py` | Existing — cite exact spec file |
-| 12 | fMP4 `_is_timeout()` lacks TS generator's `url_switching` exemption; fMP4 viewers can drop at 40s during a slow failover | `output/fmp4/generator.py` vs `output/ts/generator.py` | New — filed as issue, reproduced |
+| 12 | fMP4 `_is_timeout()` lacks TS generator's `url_switching` exemption; fMP4 viewers can drop at 40s during a slow failover | `output/fmp4/generator.py:339` vs `output/ts/generator.py:574-585` | New — filed as issue, reproduced. **Owned by 2a-6, not 2a-4** (round-6 amendments, § A5) |
 | 13 | Client registration and the ghost-client cases | `client_manager.py`, `ClientManager.remove_ghost_clients` | Partial existing (`test_ts_proxy_ghost_clients`) — extend |
 | 14 | Status payload exact field set/types: `owner` is `null` on the **list** endpoint and the string `'unknown'` on the **detail** endpoint (not the reverse); `ffmpeg_speed` a float on both; `source_fps` a string on detail and a float on list (unlike `ffmpeg_speed`, still split, carried not fixed) | `channel_status.py` | New, unit-level (view-level bucket is fine here) |
 | 15 | `stream_xc` authorizes once and hands its `decision` into `stream_ts` so the tune is not re-authorized and a second client id is not minted for the same connection | `apps/proxy/live_proxy/views.py:161-165` (comment), `:825` (the call) | New — this spec's first draft missed this second call site entirely |
 | 16 | `/proxy/ts/stream/<stream_hash>` (no channel at all — the admin single-stream preview) applies the STREAMS ACL and the per-user stream limit when a principal resolved, and **no channel check of any kind**, because there is no channel to check | `apps/proxy/next_source.py:69-79` `get_stream_object`'s `Stream.stream_hash` fallback; ADR 0005 Consequences | New — a distinct authorization shape from every other row, currently unaddressed by 2b's contract (§ Stage 2b) |
 | 17 | `ip_address` on both status endpoints is the real client address, not nginx's own or empty — derived, in every deployment shape, from `X-Relay-Client-IP` set by whichever authorize response the Go relay trusted (nginx's `auth_request` hop in production; the direct `POST /_dispatcharr/authorize-internal` response in the nginx-less dev shape — § The contract's response spec), never from `REMOTE_ADDR`/`X-Forwarded-For` read directly at the relay, because the flipped production locations' own `proxy_set_header` lines discard the server-level forwarding headers those would otherwise need (§ Stage 2d) | `dispatcharr/utils.py:342-370` `get_client_ip`; `client_manager.py:215-230`; `relay_serializers.py:29`, `:79` | New — no current test isolates `ip_address` from the rest of the client-registration payload |
 | 18 | What the status payload's `stream_name`/`m3u_profile_name` contain when the metadata hash was never written one — phrased as a question 2b-3 must answer, not an assumed "always present," so whatever 2b-3's inspection concludes (§ Stage 2b, § NM2/Q3 in the round-2 review), 2c is held to the same answer | `channel_status.py:74`, `:92`; `zero_orm_allowlist.py` once 2b-3 lands | New — 2b-3 records the answer as part of closing this row, not before |
-| 19-26 | Every row of the Phase 1 authorize matrix (`docs/superpowers/specs/2026-09-04-…md`, § "The authorize matrix", 7 principal rows × 6 columns) | `apps/proxy/authorize.py` | Existing (`streaming`, `@contract`, PR 5) — matrix cites them, does not re-test |
+| 19 | Authorize matrix, **Internal** principal (DVR, and any caller with a valid `X-Dispatcharr-Internal`): STREAMS ACL applied; `user_level`, profile membership, `hidden_from_output`, `is_adult`/`hide_adult_content` and the stream limit all **bypassed**; never redirected | `apps/proxy/authorize.py:309-310`, `:376-377`, `:436-442`; Phase 1 spec § "The authorize matrix" (`docs/superpowers/specs/2026-09-04-…md:705-713`) | **New** — no `e2e/tests/` spec pins this row (round-6 amendments, § A4). `dvr/recording-execution.spec.ts` drives the internal principal's happy path but asserts bytes, not one bypass column |
+| 20 | Authorize matrix, **Admin** (`user_level >= 10`, any authenticator): ACL applied, every channel check bypassed, **stream limit enforced** | `apps/proxy/authorize.py`; Phase 1 matrix row 2 | **New** — no `e2e/tests/` spec pins this row (§ A4). The "bypasses everything *except* the stream limit" asymmetry is the whole content of the row and is untested |
+| 21 | Authorize matrix, **XC credentials** (`<user>/<pass>` path segments, `hmac.compare_digest`): everything enforced, 403 on `hidden_from_output` and on adult-vs-`hide_adult_content` | `apps/proxy/authorize.py`'s `resolve_xc_user`; Phase 1 matrix row 3 | Existing — `e2e/tests/streaming/authorize-matrix.spec.ts` (`@contract`, PR 5); matrix cites, does not re-test |
+| 22 | Authorize matrix, **JWT / API key / query-param JWT** (non-admin): as row 21 | `apps/proxy/authorize.py`; Phase 1 matrix row 4 | Existing — `authorize-matrix.spec.ts` (`@contract`, PR 5); matrix cites, does not re-test |
+| 23 | Authorize matrix, **Session** (non-admin, `request.user` when authenticated): as row 21, resolved from the session rather than a header — and `_session_user` reads the session directly, not `http_request.user` | `apps/proxy/authorize.py:268-276`; Phase 1 matrix row 5 | **New** — no `e2e/tests/` spec pins this row (§ A4); it is also the row the dev fallback's `cookie` body field exists to serve (§ The contract) |
+| 24 | Authorize matrix, **Anonymous** (bare `/proxy/ts/stream/<uuid>`): ACL applied, ordinary channel still streams, `hidden_from_output` **403s** | `apps/proxy/authorize.py`; Phase 1 matrix row 6 | Existing — `authorize-matrix.spec.ts`'s first two tests (`@contract`, PR 5) |
+| 25 | Authorize matrix, **stream-by-hash** (`/proxy/ts/stream/<stream_hash>`, any principal): ACL applied, **no channel check of any kind**, stream limit enforced when a principal resolved | `apps/proxy/next_source.py:69-79`; Phase 1 matrix row 7 | **New** — no `e2e/tests/` spec pins this row (§ A4). Distinct from row 16, which states the *shape*; this row is the matrix cell that has to stay true after 2b extends `next-source`'s identifier resolution |
+| 26 | **White-box-only, not held to parity:** the exact greenlet/thread topology inside `server.py` — 27 `threading.Thread`s sharing one OS thread under gevent's monkey-patch | `server.py` | **None, deliberately** — D2 replaces it with goroutines; recorded so the guard test sees a decision, not an omission |
+| 27 | **White-box-only, not held to parity:** `_execute_redis_command`'s specific exception-swallowing shape (one of the lease's three fail-open paths) | `server.py`'s `_execute_redis_command` | **None, deliberately** — deleted outright by D2 rather than reproduced |
 
-Behaviour **not** observable from outside is marked white-box-only and honestly recorded as
-behaviour the Go relay is **not** held to — e.g. the exact greenlet/thread topology inside
-`server.py`, or `_execute_redis_command`'s specific exception-swallowing shape, both deleted outright
-by D2 rather than reproduced.
+**Twenty-seven rows, not twenty-four — corrected in the round-6 amendments (§ A3).** The first
+draft's table ran 1-18 plus a collapsed `19-26` standing for the Phase 1 authorize matrix's *seven*
+principal rows: eight ids for seven rows, and 18 + 7 = 25 regardless of how they are numbered. The
+seven are expanded above, one row each, against the Phase 1 spec's own authorize matrix
+(`2026-09-04-phase1-process-split-design.md:705-713`), which has exactly seven; and the two
+white-box-only rows this section's own prose already named are now rows in the table rather than
+prose beside it, since the guard test parses the table and prose is invisible to it. **Behaviour not
+observable from outside is a row that says so**, naming what the Go relay is deliberately **not**
+held to, rather than an absence the guard cannot distinguish from an oversight.
 
 A guard test under `e2e/tests/guards/` (new file, `parity-matrix.spec.ts`, following the same
 "assertion, not convention" pattern `allowlist.ts`/`capabilities.spec.ts` already use for the Redis
 importer allowlist) parses `docs/relay-parity-matrix.md`'s table and fails, naming the offending row,
-if any row lacks both a `file:line` citation and a test reference. This matrix is the load-bearing
+if any row lacks both a `file:line` citation and a test reference. **A row explicitly marked
+white-box-only (rows 26 and 27) satisfies the test-reference half by carrying that marker** —
+added in the round-6 amendments alongside § A3, since those rows are now in the table and a guard
+that cannot tell "deliberately not held to parity" from "nobody wrote the test yet" would either
+fail forever or have to be weakened for every row. This matrix is the load-bearing
 artifact of the whole phase: 2a's own checklist, 2c's implementation spec (each Go PR closes a named
 set of rows), and 2d's cutover checklist (every row must show a passing Go-side equivalent before the
 nginx flip). PR 2c-9 replaces the matrix's Python test-reference column with a Go one, once every row
-has one.
+that is held to parity has one.
 
 ### Gate 2 — 80% statement coverage
 
@@ -781,10 +870,12 @@ of those; the files are `apps/proxy/authorize.py` and so on, addressable only as
 added `apps/proxy/authorize_views` — the module holding `result_from_headers` and
 `resolve_authorization`, exactly what correction (iii) (§ What the code says) is about — to a
 ten-entry list, while § Verified facts' baseline table names only **nine** Phase 1 boundary modules
-and does not include `authorize_views.py` at all. The published 44%/92%/50.4% figures are therefore
-not what the gate as first specified would have computed, and this spec does not have a measured
-number for `authorize_views.py` alone to publish honestly in its place — inventing one would repeat
-the exact kind of error this fix round exists to correct.
+and does not include `authorize_views.py` at all. The published 44%/92%/50.4% figures were therefore
+not what the gate as first specified would have computed. **Closed in the round-6 amendments
+(§ A1): the module is measured, the denominator is ten everywhere, and the figures § Verified facts
+now publishes are the ones this exact invocation produces** — `authorize_views.py` is 108
+statements, 4 missed, **96.3%**; the ten together are 1,148 / 91 / **92.1%**; the combined
+denominator is 7,978 / 3,977 / **50.2%**. There is no longer an open item here.
 
 **Corrected shape:**
 
@@ -793,13 +884,13 @@ coverage run --include='apps/proxy/live_proxy/*,apps/proxy/authorize.py,apps/pro
   manage.py test apps.proxy.tests apps.proxy.live_proxy.tests apps.channels.tests
 ```
 
-`authorize_views.py` is added to the denominator (ten boundary modules, not nine) because it is a
-real part of the internal contract 2c must reproduce; **its own baseline percentage is an open item
-for the PR that first runs this script**, not a number this spec asserts. `vod_proxy` and
-`hls_proxy` stay outside `--include`, matching D1's scope line. The "~77% for `live_proxy` itself"
-target in § Verified facts is arithmetic against the nine-module baseline that *is* measured;
-re-run once `authorize_views.py` is added and record the corrected combined percentage in the PR
-that lands this script, rather than trusting this spec's arithmetic to still hold exactly.
+`authorize_views.py` is in the denominator (ten boundary modules, not nine) because it is a real
+part of the internal contract 2c must reproduce, and it is **measured**, at 96.3% (§ A1). `vod_proxy`
+and `hls_proxy` stay outside `--include`, matching D1's scope line. **The target § Verified facts
+now states — `live_proxy` from 43.1% to 78.0%, +2,382 statements against a 7,978-statement
+denominator — is arithmetic against the ten-module baseline this exact `--include=` list produces**,
+not against a nine-module one, so 2a-2's first run of the script should reproduce it to within the
+±70-statement thread-timing band and any larger divergence is a finding, not a rounding difference.
 
 **Also corrected: running the three labels together in one `coverage run` is the one configuration
 `CLAUDE.md` § Testing documents as historically unreliable** — "CI never runs the suite in one
@@ -808,7 +899,11 @@ every failure passed in its shard... A green CI run does not mean a green suite.
 that reproduces exactly that failure mode would block Go PRs on flakes unrelated to the PR being
 reviewed. **The gate instead runs per-label, in the existing per-label matrix jobs
 `backend-tests.yml` already runs, each with `coverage run --include=... --parallel-mode`, and
-combines the three `.coverage` files with `coverage combine` in an aggregate step** — the same shape
+combines the three `.coverage` files with `coverage combine` in an aggregate step**. **§ A1 supplies
+a second, independent reason for the same shape**: a single process gives the relay's daemon threads
+~33 seconds of loop iterations while unrelated tests run, and coverage then credits ~68 statements no
+test asserts — so the single-process number is both flakier *and* higher, and a floor set against it
+could not be met by the per-label pipeline enforcing it. This is the same shape
 `Backend result` already aggregates by, rather than a fourth, separate in-process run.
 
 The result writes a floor file, `scripts/coverage_live_path.floor` — a ratchet in `lint.yml`'s
@@ -817,7 +912,14 @@ job recomputes coverage, fails if it drops below the committed floor, and separa
 diff lowers the floor file's own committed value without also proving (in the same run) that the
 newly-computed percentage supports it — i.e. the floor can rise in the same PR that earns the rise,
 but can never simply be edited down. `scripts/coverage_live_path.sh`'s exit code is 1 on either
-failure, with the failing percentage and the floor both printed. **No PR in stage 2c may merge until
+failure, with the failing percentage and the floor both printed. **The ratchet needs no tolerance for
+§ A1's ±70-statement band, and the script must say why** — added in the round-6 amendments: within
+the per-label shape the measurement is *exactly* reproducible (three runs across three different
+label sets agreed to the statement), so the band applies **between** shapes, not between runs of
+this one. The consequence for the ratchet is therefore not a tolerance but a guard: the script
+refuses to write or compare a floor produced by any other shape — a single-process run reports ~68
+fewer missed statements and would silently ratchet the floor up to a number CI can never reach
+again. **No PR in stage 2c may merge until
 this job reports ≥80% and Gate 1's guard test is green** — stated as a CI precondition on 2c's first
 PR, not review discretion.
 
@@ -840,6 +942,23 @@ throwaway**: the Go relay needs an equivalent in its own suite (2c's own fault-i
 and having already named the fault vocabulary in Python fixtures gives the Go author a spec to copy
 rather than invent from `input/manager.py`'s prose alone.
 
+**What the harness must decide, and it is 2a-2's decision to make, not this spec's — the round-6
+amendments' § A2.** "Real subprocess" is one of two ways to reach the ≈827 subprocess-gated
+statements, and the reachability analysis in § Verified facts shows the other one is cheaper for
+**438** of them: `output/fmp4/manager.py` and `output/profile/manager.py` both obtain their process
+from `posix_spawn_proc(...)` (`apps/proxy/live_proxy/utils.py:130`), so a fake exposing
+`stdin`/`stdout`/`stderr`/`poll`/`wait`/`terminate` at that one seam covers both files with no fork
+at all. `input/manager.py` has no such seam — an inline `os.posix_spawn` at `:793` with its own
+`_SpawnedProcess` wrapper at `:813` — so it is reachable only by a real subprocess, by patching
+`os.posix_spawn` globally, or by **extracting the same seam**, which is a production-code change
+inside a stage otherwise scoped to tests (small, `posix_spawn` retained, not the `Popen`
+simplification `CLAUDE.md` forbids). **2a-2's plan chooses among the three and says why**; this spec
+records that the 80% gate is unreachable by pure-mock unit tests under any of them, which is the
+part that does not depend on the choice. Whichever way 2a-2 goes, the harness still has to spawn a
+real process for the ffmpeg-stderr rows the parity matrix names (rows 1-6), so its existence is not
+in question — only how much of `input/manager.py`, `fmp4/manager.py` and `profile/manager.py` it is
+asked to carry.
+
 **Composition rule for every 2a test, stated because it is the difference between a test that helps
 2c and one that only moves a number:** write tests that drive the relay through its **HTTP surface**
 against **real dependencies** — the fake upstream, real Redis, real ffmpeg — never against mocks of
@@ -858,13 +977,22 @@ table shape.
 
 | PR | Branch | What it does | Gate | Depends on |
 |---|---|---|---|---|
-| 2a-1 | `migration/phase2a-parity-matrix` | `docs/relay-parity-matrix.md` (Gate 1's 24 rows above, and any further rows found while writing it) plus `e2e/tests/guards/parity-matrix.spec.ts`, the guard test that fails naming any row lacking a `file:line` citation or a test reference. | Guard test green | — |
-| 2a-2 | `migration/phase2a-subprocess-harness` | The real-subprocess, real-fake-upstream test harness (§ "The subprocess harness" above); no relay tests yet, just the harness and a smoke test proving it spawns a real process and serves real bytes. **Also, corrected in this fix round (§ NM3 in the round-2 review): `scripts/coverage_live_path.sh` itself** — the runnable `--include=` invocation from Gate 2, with no floor file and no CI-blocking wiring yet — so 2a-3…2a-6 have a real, reproducible command to quote a number from instead of an ad-hoc local run each. | Harness's own smoke test green under `coverage`; `scripts/coverage_live_path.sh` runs and prints a percentage | 2a-1 (so new tests can cite matrix rows as they land) |
+| 2a-1 | `migration/phase2a-parity-matrix` | `docs/relay-parity-matrix.md` (Gate 1's **27** rows above — corrected from 24 in the round-6 amendments, § A3 — and any further rows found while writing it) plus `e2e/tests/guards/parity-matrix.spec.ts`, the guard test that fails naming any row lacking a `file:line` citation or a test reference, and which accepts the white-box-only marker on rows 26-27 in place of a test reference. | Guard test green | — |
+| 2a-2 | `migration/phase2a-subprocess-harness` | The real-subprocess, real-fake-upstream test harness (§ "The subprocess harness" above); no relay tests yet, just the harness and a smoke test proving it spawns a real process and serves real bytes. **Also, corrected in this fix round (§ NM3 in the round-2 review): `scripts/coverage_live_path.sh` itself** — the runnable `--include=` invocation from Gate 2, with no floor file and no CI-blocking wiring yet — so 2a-3…2a-6 have a real, reproducible command to quote a number from instead of an ad-hoc local run each. **Open decision this PR's plan must settle, flagged to the user (round-6 amendments, § A2): whether the ≈827 subprocess-gated statements are reached by a process fake at `posix_spawn_proc` (438 of them, no forking) plus an extracted seam in `input/manager.py` — a small production-code change inside a test-scoped stage, `posix_spawn` retained — or by real subprocesses throughout.** The plan states the choice and its reasoning; this spec does not pre-empt it. | Harness's own smoke test green under `coverage`; `scripts/coverage_live_path.sh` runs, prints a percentage, and reproduces § Verified facts' 50.2% to within the ±70-statement band; the seam decision recorded in the PR description either way | 2a-1 (so new tests can cite matrix rows as they land) |
 | 2a-3 | `migration/phase2a-ts-generator-coverage` | Tests against `output/ts/generator.py` and `services/channel_service.py`'s switch/stop paths, using the harness; closes matrix rows 7-10, 13. | `coverage_live_path.sh` (created in 2a-2) shows a measured increase on these two files | 2a-2 |
-| 2a-4 | `migration/phase2a-manager-coverage` | Tests against `input/manager.py`'s transcode connection setup, stderr reader and health/reconnect loops — the ~1,024-missed-statement pair's larger half; closes matrix rows 1-6, 12. | `coverage_live_path.sh` shows a measured increase on `input/manager.py` | 2a-2 |
-| 2a-5 | `migration/phase2a-server-coverage` | Tests against `server.py`'s bring-up, event listener loop and zombie detection. | `coverage_live_path.sh` shows a measured increase on `server.py` | 2a-2 |
-| 2a-6 | `migration/phase2a-fmp4-coverage` | Tests against `output/fmp4/manager.py` and `output/profile/manager.py` — the least-reachable, least-covered pair; closes matrix row 11. | `coverage_live_path.sh` shows a measured increase on both files | 2a-4 (shares harness patterns with the manager work) |
+| 2a-4 | `migration/phase2a-manager-coverage` | Tests against `input/manager.py`'s transcode connection setup, stderr reader and health/reconnect loops — 771 of the ~1,024-missed-statement pair, of which 299 are strictly subprocess-gated and ~143 (the raw-HTTP Proxy path) need only a socket; closes matrix rows **1-6** — **row 12 moves to 2a-6** (round-6 amendments, § A5), since row 12 is fMP4's `_is_timeout` and this PR's subject is `input/manager.py`. | `coverage_live_path.sh` shows a measured increase on `input/manager.py` | 2a-2 |
+| 2a-5 | `migration/phase2a-server-and-authorize-coverage` | Tests against `server.py`'s bring-up, event listener loop and zombie detection — **plus the eight matrix rows no other PR owns, assigned here in the round-6 amendments (§ A4)**: rows **14-17** (the status payload's exact field set and types; the `stream_xc`→`stream_ts` decision hand-off; the stream-by-hash authorization shape; `ip_address`'s provenance) and rows **19, 20, 23, 25** (the Internal, Admin, Session and stream-by-hash authorize-matrix principals, none of which any `e2e/tests/` spec pins today). Rows 14-17 and 19-25 are view-level and authorize-shaped rather than byte-path, which is why they land beside `server.py`'s bring-up work rather than in a harness-heavy PR — and 2a-5 is correspondingly **the largest of the four coverage PRs, not the smallest**, which the first draft implied by giving it no rows at all. | `coverage_live_path.sh` shows a measured increase on `server.py`; matrix rows 14-17 and 19, 20, 23, 25 each carry a test reference the guard test accepts | 2a-2 |
+| 2a-6 | `migration/phase2a-fmp4-coverage` | Tests against `output/fmp4/manager.py`, `output/profile/manager.py` **and `output/fmp4/generator.py`** — the least-reachable, least-covered group; closes matrix rows 11 **and 12**. **`output/fmp4/generator.py` is added to this PR's scope in the round-6 amendments (§ A5): at 195 missed of 219 (11.0%) it is the lowest-covered file in the whole Gate 2 denominator, and the first draft named it in no 2a PR at all** — a file owned by nobody, in a stage whose gate is a coverage number. Row 12's fix belongs here too, since `_is_timeout` lives in that file (`output/fmp4/generator.py:339`). | `coverage_live_path.sh` shows a measured increase on **all three** files | 2a-4 (shares harness patterns with the manager work) |
 | 2a-7 | `migration/phase2a-coverage-gate` | The floor file, the `backend-tests.yml` per-label `coverage run --parallel-mode` + `coverage combine` CI wiring around the script 2a-2 already created (Gate 2 above), and the gate turning green and CI-blocking at ≥80%. | The gate itself, green and enforced in CI — this is the phase's first hard blocker turning off | 2a-3, 2a-4, 2a-5, 2a-6 |
+
+**Every row is owned, and the roll-call is part of the amendment (round-6, § A4/A5) because "owned
+by nobody" was the actual defect it fixed:** rows **1-6** → 2a-4; **7-10, 13** → 2a-3; **11, 12** →
+2a-6; **14-17, 19, 20, 23, 25** → 2a-5; **18** → 2b-3 (the row is phrased as a question 2b-3
+answers); **21, 22, 24** → existing `authorize-matrix.spec.ts` tests the matrix cites rather than
+re-tests; **26, 27** → nothing, deliberately, being white-box-only. Twenty-seven rows, seven owners,
+no gaps. The same rule applies to files: `output/fmp4/generator.py` was in the Gate 2 denominator
+and in no PR's scope until § A5 put it in 2a-6's, and any future row or file added to this spec
+carries an owner in the same edit.
 
 **2a's own legitimate stopping point** (§ Goal) is after 2a-7: the matrix is 100% pinned, the
 subprocess harness exists as a durable capability, and coverage sits at ≥80% — value that survives
