@@ -3464,6 +3464,40 @@ matrix when Prettier runs from the root and **does nothing** when it runs from `
 exactly where `CLAUDE.md:36` says to run it. Hence two files. Neither changes the frontend tree:
 `prettier --check 'src/**/*.jsx'` reports 54 files with and without both, the same file list.
 
+**The outward sweep — every claim this plan makes about the tree, re-verified against `a948cd8a`
+(2026-09-10). Clean; nothing was fixed.** Recorded so the next reviewer does not re-run it, and
+because a clean result on the last unchecked class is worth stating:
+
+- **23 distinct repo citations**, bounds-checked against both the worktree and `a948cd8a`. All
+  resolve. The single out-of-range hit is `server.py:138-99999`, which is Task 6 step 2's
+  *deliberate* mutation and is supposed to fail.
+- **22 content assertions** — every citation where this plan claims the line *says* something, read
+  and matched: row 14's four payload asymmetries and their two serializer fields, row 17's five, rows
+  26/27's two `server.py` anchors, row 11's three, row 16's definition and its permanent re-export at
+  `url_utils.py:25`, and the three citations the spec's round-6 amendment added for rows 19 and 23.
+  22/22. **This is the pass that would have caught row 17**, which was a content error, not a bounds
+  error.
+- **Workflow anchors** — `:107` (`pattern=`), `:22` (the `paths:` entry), `:58-60` (the `outputs:`
+  block), `:336` (the `guards` gate) and `:118`/`:172`/`:201` (the three jobs sharing `outputs.e2e`,
+  which is why ruling 9's fix is five edits and not two). All correct.
+- **Versions and baselines** — Prettier `3.9.6`; `authorize-matrix.spec.ts` declares ten tests;
+  `e2e/tests/guards/` held six `.spec.ts` files at `a948cd8a`.
+- **Negative claims** — `grep -rl "X-Dispatcharr-Internal" e2e/` returns nothing;
+  `stream_hash|streamHash` under `e2e/tests/` hits only `seeded/auto-channel-sync.spec.ts`;
+  `authorize-matrix.spec.ts` mentions a session nowhere. Ruling 13 stands.
+- **Preconditions for tasks not yet run**, checked against the *current* tree rather than the base,
+  because that is what they will meet: `e2e/COVERAGE.md`'s Guards table still ends at
+  `upstream-contract.spec.ts` (`:519`), `e2e/README.md:63` still carries the enumeration Task 7
+  extends, and `CLAUDE.md:16` is still the Phase 1 spec bullet Task 7 appends after. None of the
+  three has been touched since `a948cd8a`.
+
+**Two claims are not mechanically verifiable here, both already caveated where they are used.** The
+Prettier baseline of 54 files needs `frontend/node_modules`, which a fresh worktree does not have —
+Task 2 step 9c says to install first and to compare your own before-and-after rather than chase the
+number. And row 20's "no test pins the admin bypass" is a claim about what a test *asserts*, not a
+grep: it rests on reading `authorize-matrix.spec.ts`'s ten titles and on the spec's round-6 amendment
+stating it independently.
+
 Task 6's mutation work is still owed in full — the prototype proved the checks fire on a synthetic
 table; Task 6 proves they fire on the real document, and its recorded messages are what
 `e2e/COVERAGE.md` cites.
