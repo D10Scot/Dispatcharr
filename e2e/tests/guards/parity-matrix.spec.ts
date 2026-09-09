@@ -53,7 +53,10 @@ import {
   citationsIn,
   MATRIX_REL,
   parseMatrix,
+  parsePin,
+  PRS,
   readMatrix,
+  testRefProblem,
 } from './parity-matrix';
 
 // @characterization: every test in this file asserts facts about this
@@ -131,5 +134,44 @@ test('every row cites source that resolves', { tag: '@characterization' }, async
     'A citation that no longer resolves is a row nobody can act on. Re-locate the behaviour and ' +
       'update the line numbers; the tree wins, not the matrix.\n' +
       findings.join('\n'),
+  ).toEqual([]);
+});
+
+test('every pin resolves', { tag: '@characterization' }, async () => {
+  const rows = parseMatrix(await readMatrix());
+  const findings: string[] = [];
+
+  for (const row of rows) {
+    const where = `${MATRIX_REL}:${row.line} (row ${row.id})`;
+    const pin = parsePin(row.pin);
+    if (pin === undefined) {
+      findings.push(
+        `${where} — Pin cell ${JSON.stringify(row.pin)} is none of the three legal forms: one ` +
+          'or more backticked `path::symbol` test references, "owed: <pr>" naming the PR that ' +
+          'owes a test, or "white-box-only".',
+      );
+      continue;
+    }
+    if (pin.kind === 'owed') {
+      if (!PRS.includes(pin.pr)) {
+        findings.push(
+          `${where} — "owed: ${pin.pr}" names a PR that is not in this phase's vocabulary ` +
+            `(${PRS.join(', ')}). A typo here resolves silently otherwise. Add the PR to PRS in ` +
+            'e2e/tests/guards/parity-matrix.ts if it is a real new owner.',
+        );
+      }
+      continue;
+    }
+    if (pin.kind !== 'test') continue;
+    for (const ref of pin.refs) {
+      const problem = await testRefProblem(ref);
+      if (problem !== undefined) findings.push(`${where} — ${problem}`);
+    }
+  }
+
+  expect(
+    findings,
+    'A pin that does not resolve is a row claiming cover it does not have — the one failure ' +
+      'mode this matrix exists to prevent.\n' + findings.join('\n'),
   ).toEqual([]);
 });

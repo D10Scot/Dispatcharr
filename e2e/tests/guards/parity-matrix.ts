@@ -17,7 +17,8 @@
  */
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
-import { REPO_ROOT } from './ast';
+import * as ts from 'typescript';
+import { findTestCalls, REPO_ROOT } from './ast';
 
 /** Repo-relative, for error messages a reader can paste into an editor. */
 export const MATRIX_REL = 'docs/relay-parity-matrix.md';
@@ -374,4 +375,135 @@ export async function citationProblem(citation: Citation): Promise<string | unde
     return `${rel}:${start}-${end} runs past the end of the file, which has ${count} lines`;
   }
   return undefined;
+}
+
+/** A single `path::symbol` reference out of a Pin cell. */
+export type TestRef = { file: string; symbol: string };
+
+export type Pin =
+  | { kind: 'test'; refs: TestRef[] }
+  | { kind: 'owed'; pr: string }
+  | { kind: 'white-box-only' };
+
+/**
+ * The PR ids an `owed:` marker may name.
+ *
+ * A fixed vocabulary, not per-row state: no PR edits this to close a row, so
+ * it is not a contention point (ruling 11e). It exists because `owed: 2a-6`
+ * written where `owed: 2a-5` was meant otherwise resolves fine, and the block
+ * contiguity check only catches it if it happens to split a run.
+ */
+export const PRS: readonly string[] = ['2a-3', '2a-4', '2a-5', '2a-6', '2b-3'];
+
+const OWED_RE = /^owed: (\S+)$/;
+
+/**
+ * `` `path::symbol` ``. The path is a non-space run up to the first `::`; the
+ * symbol is everything after it up to the closing backtick, spaces included,
+ * because a Playwright title is a sentence. A Python reference may carry a
+ * class (`path::TestFoo::test_bar`); `symbolOf` takes the last segment.
+ *
+ * Global, because a Pin cell holds a LIST of references (ruling 3) — several
+ * of the matrix's own rows are two-sided behaviours. The symbol is
+ * `[^`]+` rather than `.+` so two references in one cell cannot be swallowed
+ * into one mangled match, which is exactly what the anchored single-reference
+ * form did.
+ */
+const TEST_REF_RE = /`([^\s`]+?)::([^`]+)`/g;
+
+export function parsePin(cell: string): Pin | undefined {
+  // Enclosing backticks are optional on the two bare forms and required on a
+  // test reference, so both `owed: 2a-4` and owed: 2a-4 parse. Found while
+  // prototyping this guard: the format section writes these tokens as inline
+  // code, and a Markdown author's hand backticks them in the table too. A
+  // format that fails on the more natural of two spellings is a format people
+  // get wrong, so it accepts both rather than policing punctuation.
+  const bare = cell.replace(/^`(.*)`$/, '$1').trim();
+  if (bare === 'white-box-only') return { kind: 'white-box-only' };
+
+  const owed = OWED_RE.exec(bare);
+  if (owed !== null) return { kind: 'owed', pr: owed[1] };
+
+  const matches = [...cell.matchAll(TEST_REF_RE)];
+  if (matches.length > 0) {
+    // Nothing outside the references but separators. Without this a cell
+    // reading `` `a.spec.ts::t` and owed: 2a-5 `` — "partly pinned, the rest
+    // still owed" — parses as fully pinned and the owed half is discarded
+    // silently, which is the one direction this guard must never round in.
+    const leftover = matches
+      .reduce((rest, m) => rest.replace(m[0], ''), cell)
+      .replace(/[\s,;·—-]+/g, '');
+    if (leftover !== '') return undefined;
+    return { kind: 'test', refs: matches.map((m) => ({ file: m[1], symbol: m[2] })) };
+  }
+
+  return undefined;
+}
+
+function symbolOf(ref: TestRef): string {
+  const parts = ref.symbol.split('::');
+  return parts[parts.length - 1];
+}
+
+function escapeRe(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * A spec file's *literal* test titles, read with the compiler API.
+ *
+ * Parsed, not grepped, for `ast.ts`'s reason: a title quoted in a comment is
+ * trivia to the parser and a match to a text scan, and a guard that accepts a
+ * title from a comment accepts a row pinned by a test that does not exist. A
+ * parameterised title built from a template is not a literal and so cannot be
+ * cited; inline the title, or cite a different test.
+ */
+function literalTitles(src: string, rel: string): string[] {
+  const titles: string[] = [];
+  for (const call of findTestCalls(src, rel)) {
+    const first = call.args[0];
+    if (first !== undefined && ts.isStringLiteralLike(first)) titles.push(first.text);
+  }
+  return titles;
+}
+
+/** A human-readable reason, or `undefined` when the reference resolves. */
+export async function testRefProblem(ref: TestRef): Promise<string | undefined> {
+  let src: string;
+  try {
+    src = await readFile(path.join(REPO_ROOT, ref.file), 'utf8');
+  } catch {
+    return `pin names no such file: ${ref.file}`;
+  }
+
+  const symbol = symbolOf(ref);
+
+  if (ref.file.endsWith('.spec.ts')) {
+    const titles = literalTitles(src, ref.file);
+    if (titles.includes(symbol)) return undefined;
+    return (
+      `${ref.file} declares no test titled ${JSON.stringify(symbol)}. Literal titles found: ` +
+      (titles.length === 0 ? '(none)' : titles.map((t) => JSON.stringify(t)).join(', '))
+    );
+  }
+
+  if (ref.file.endsWith('.py')) {
+    return new RegExp(String.raw`^[ \t]*def\s+${escapeRe(symbol)}\s*\(`, 'm').test(src)
+      ? undefined
+      : `${ref.file} has no "def ${symbol}("`;
+  }
+
+  if (ref.file.endsWith('.go')) {
+    return new RegExp(String.raw`^func\s+(?:\([^)]*\)\s*)?${escapeRe(symbol)}\s*\(`, 'm').test(src)
+      ? undefined
+      : `${ref.file} has no "func ${symbol}("`;
+  }
+
+  // Fails closed, in `ast.ts`'s discipline: a shape this guard cannot read is
+  // a failure, never a pass. 2c-9 re-points this matrix at Go tests, which is
+  // why `.go` is already here.
+  return (
+    `${ref.file} has an extension this guard cannot verify. It reads .spec.ts (literal test ` +
+    'titles), .py (def) and .go (func); anything else must be added to testRefProblem first.'
+  );
 }
