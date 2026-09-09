@@ -36,13 +36,13 @@ no container: `cd e2e && npx playwright test --project=guards parity-matrix`.
 
   2. CELLS ARE NEVER PADDED TO ALIGN COLUMNS. Every table line is exactly
      "| " + cells joined by " | " + " |", with no trailing whitespace. Padding
-     means one growing cell re-aligns the whole column, all four PRs rewrite
+     means one growing cell re-aligns the whole column, all five PRs rewrite
      every line, and every merge conflicts on the entire file. THE TABLE LOOKS
      RAGGED IN RAW TEXT AND THAT IS INTENTIONAL. Do not run a Markdown table
      formatter over this file.
 
   3. NO STORED COUNTS. No "18 of 27 pinned" line, no per-block subtotal, no
-     "last updated" stamp - every one of the four PRs would bump it and conflict
+     "last updated" stamp - every one of the five PRs would bump it and conflict
      four ways over a number the guard computes in a millisecond. The guard
      PRINTS the pinned / owed / white-box counts on every run.
 
@@ -106,7 +106,7 @@ check then fails it.
     file, so a renamed test fails here;
   - `owed: <pr>` — no test yet, and the named PR owes one. `<pr>` is a Phase 2 PR id from the
     guard's `PRS` vocabulary. **This cell is the only place owed-ness is recorded**, so closing a
-    row is one line in one file — which is the point, because six PRs close rows in this table;
+    row is one line in one file — which is the point, because five PRs close rows in this table;
   - `white-box-only` — behaviour no client can observe, recorded honestly as behaviour **the Go
     relay is not held to**. This is an allowlist, not a keyword: the row id must also appear in the
     guard's `WHITE_BOX_ONLY` list with a `why`, and the `Notes` cell must say why here too.
@@ -147,6 +147,17 @@ PR's first, which is the distance git needs to merge them cleanly.
 
 | # | Behaviour | Source | Pin | Notes |
 |---|---|---|---|---|
+<!-- block: owed by 2a-4 -->
+| 1 | Buffering failover trigger: ffmpeg's reported `speed=` below `buffering_speed`, sustained longer than `buffering_timeout` (15s default), calls `_try_next_stream()` | `apps/proxy/live_proxy/input/manager.py:1064-1066`, `apps/proxy/live_proxy/input/manager.py:1122-1191` | `owed: 2a-4` | `_parse_ffmpeg_stats` parses `speed=` and runs the buffering check in the same method (`input/manager.py:1058-1204`); the two citations are the extraction and the comparison/timeout logic within it |
+| 2 | Dead-air failover trigger: no data for longer than the inactivity threshold, observed on three consecutive 5-second health checks | `apps/proxy/live_proxy/input/manager.py:1503-1507`, `apps/proxy/live_proxy/input/manager.py:1509-1560` | `owed: 2a-4` | `health_check_interval` defaults to 5s, `_health_inactivity_threshold()` defaults to 10s; the flag `_monitor_health` sets is consumed by the main loop's `_try_next_stream()` call, not called directly here |
+| 3 | Connect-failure trigger: `MAX_RETRIES` (3) connection failures inside `RETRY_WINDOW_SECONDS` (1800) exhausts the source; the counter resets after a window with no failure | `apps/proxy/live_proxy/input/manager.py:50-52`, `apps/proxy/live_proxy/input/manager.py:182-192`, `apps/proxy/config.py:9-10` | `owed: 2a-4` | `_record_connection_failure()` is the window-reset logic; `MAX_RETRIES`/`RETRY_WINDOW_SECONDS` are the defaults `ConfigHelper.max_retries()`/`retry_window_seconds()` read |
+| 4 | `speed=` is ffmpeg's cumulative average since process start, not an instantaneous rate, so a front-loaded lead must burn off before the buffering detector can arm — roughly 55 seconds measured | `apps/proxy/live_proxy/input/manager.py:1064-1066`, `apps/proxy/live_proxy/input/manager.py:1122` | `owed: 2a-4` | The cumulative-average behaviour is ffmpeg's own, not visible in this Python code; ~55s measured for a front-loaded lead to burn off before the comparison at `:1122` can trip, versus the ~25s dead-air watchdog which usually wins the race |
+| 5 | Buffering thresholds are snapshotted in `StreamManager.__init__`; changing `proxy_settings` mid-stream does not reach a running channel | `apps/proxy/live_proxy/input/manager.py:60-61` | `owed: 2a-4` | The two `self.` assignments run once, in `__init__`; a `proxy_settings` change while a channel is running does not reach them |
+| 6 | `MAX_STREAM_SWITCHES` does not bound buffering-triggered switches: those come from the stderr reader, which calls `_try_next_stream()` without passing through the main loop's counter | `apps/proxy/live_proxy/input/manager.py:388-402`, `apps/proxy/live_proxy/input/manager.py:1134-1138` | `owed: 2a-4` | Reproduced, not fixed, per spec D5 (preserve known defects rather than silently fix during the port); also recorded in CLAUDE.md's Known defects. The stderr-path call at `:1134-1138` never touches `stream_switch_attempts`, the counter the main loop at `:388-402` checks |
+<!-- block: owed by 2a-3 -->
+| 7 | The chunk index is monotonic for the channel's life and is never reset by a stream switch, which is why a switch does not disturb connected clients | `apps/proxy/live_proxy/input/buffer.py:65-133`, `apps/proxy/live_proxy/input/buffer.py:136-168` | `owed: 2a-3` | `add_chunk` advances the index with a Redis `INCR`; `reset_buffer_position()`, called on a stream switch, clears only `_write_buffer`/`_partial_packet` and never touches `self.index` |
+| 8 | A new client joins roughly 5 seconds behind live, positioned through the `chunk_timestamps` sorted set rather than at the newest chunk | `apps/proxy/live_proxy/input/buffer.py:478-513`, `apps/proxy/live_proxy/output/ts/generator.py:255-270` | `owed: 2a-3` | `new_client_behind_seconds` defaults to 5. Positioning happens once, at client setup; a separate, unrelated mechanism elsewhere in the same file recovers a client whose next expected chunk has already expired, and is not part of this behaviour |
+| 9 | Data is realigned to 188-byte TS packet boundaries before a chunk is written; a partial trailing packet is carried into the next chunk | `apps/proxy/live_proxy/input/buffer.py:79-91`, `apps/proxy/live_proxy/constants.py:122` | `owed: 2a-3` | `TS_PACKET_SIZE = 188`; the arithmetic computes the largest multiple of 188 in the combined buffer and carries the remainder forward as `_partial_packet` |
 <!-- block: owed by 2a-5 -->
 | 14 | Status payload field types differ by endpoint: `owner` is `null` on the list endpoint and the literal string `unknown` on the detail endpoint, `ffmpeg_speed` is a float on both, and `source_fps` is a float on list but a string on detail | `apps/proxy/live_proxy/channel_status.py:45`, `apps/proxy/live_proxy/channel_status.py:460`, `apps/proxy/live_proxy/channel_status.py:339`, `apps/proxy/live_proxy/channel_status.py:595`, `apps/proxy/relay_serializers.py:59`, `apps/proxy/relay_serializers.py:129` | `owed: 2a-5` | Neither serializer supplies a `default=`, so the builder's value reaches the wire unchanged. A test that checks the string against only one of the two endpoints proves nothing about the other |
 <!-- block: already pinned -->

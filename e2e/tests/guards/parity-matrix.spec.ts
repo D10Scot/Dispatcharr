@@ -47,7 +47,14 @@
  * `node:fs/promises`, the same shape `upstream-contract.spec.ts` uses.
  */
 import { test, expect } from '@playwright/test';
-import { canonicalLineOffenders, MATRIX_REL, parseMatrix, readMatrix } from './parity-matrix';
+import {
+  canonicalLineOffenders,
+  citationProblem,
+  citationsIn,
+  MATRIX_REL,
+  parseMatrix,
+  readMatrix,
+} from './parity-matrix';
 
 // @characterization: every test in this file asserts facts about this
 // repository's own source tree — file paths, Markdown column layout, test
@@ -94,5 +101,35 @@ test('the matrix table is one canonical line per row', { tag: '@characterization
       'four conflict on the whole file instead of on the one row each changed. The table looks ' +
       'ragged in raw text and that is intended — do not run a Markdown table formatter over ' +
       'it.\n' + offenders.join('\n'),
+  ).toEqual([]);
+});
+
+test('every row cites source that resolves', { tag: '@characterization' }, async () => {
+  const rows = parseMatrix(await readMatrix());
+  const findings: string[] = [];
+
+  for (const row of rows) {
+    const citations = citationsIn(row.source);
+    if (citations.length === 0) {
+      findings.push(
+        `${MATRIX_REL}:${row.line} (row ${row.id}) — Source cell carries no citation. ` +
+          'Every row names the Python source it was derived from, as `path:line` or ' +
+          '`path:start-end` in backticks.',
+      );
+      continue;
+    }
+    for (const citation of citations) {
+      const problem = await citationProblem(citation);
+      if (problem !== undefined) {
+        findings.push(`${MATRIX_REL}:${row.line} (row ${row.id}) — ${problem}`);
+      }
+    }
+  }
+
+  expect(
+    findings,
+    'A citation that no longer resolves is a row nobody can act on. Re-locate the behaviour and ' +
+      'update the line numbers; the tree wins, not the matrix.\n' +
+      findings.join('\n'),
   ).toEqual([]);
 });

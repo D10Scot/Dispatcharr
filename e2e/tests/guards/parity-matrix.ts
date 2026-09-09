@@ -318,3 +318,60 @@ export function canonicalLineOffenders(markdown: string): string[] {
 
   return offenders;
 }
+
+export type Citation = { path: string; start: number; end: number };
+
+/**
+ * `` `path:12` `` and `` `path:12-40` ``. Backticked, so prose that happens to
+ * read like a path never matches — the same "code, not comments" discipline
+ * `ast.ts` argues for at the TypeScript level, at the level Markdown offers.
+ */
+const CITATION_RE = /`([^`\s]+):([1-9]\d*)(?:-([1-9]\d*))?`/g;
+
+export function citationsIn(source: string): Citation[] {
+  const out: Citation[] = [];
+  for (const match of source.matchAll(CITATION_RE)) {
+    const start = Number(match[2]);
+    // Truthiness, not `!== undefined`: `RegExpMatchArray`'s index signature is
+    // `string`, so comparing an absent group to `undefined` is a type error
+    // under `strict`. A `(\d+)` capture is never the empty string, so an
+    // absent end-of-range is the only falsy case.
+    out.push({ path: match[1], start, end: match[3] ? Number(match[3]) : start });
+  }
+  return out;
+}
+
+/**
+ * `null` means "no such file". Cached because a 27-row matrix cites the same
+ * half-dozen large files many times over, and `server.py` alone is 2,500
+ * lines.
+ */
+const lineCounts = new Map<string, number | null>();
+
+async function lineCountOf(rel: string): Promise<number | null> {
+  const cached = lineCounts.get(rel);
+  if (cached !== undefined) return cached;
+  let count: number | null;
+  try {
+    count = (await readFile(path.join(REPO_ROOT, rel), 'utf8')).split('\n').length;
+  } catch {
+    count = null;
+  }
+  lineCounts.set(rel, count);
+  return count;
+}
+
+/** A human-readable reason, or `undefined` when the citation resolves. */
+export async function citationProblem(citation: Citation): Promise<string | undefined> {
+  const { path: rel, start, end } = citation;
+  const count = await lineCountOf(rel);
+  if (count === null) return `no such file: ${rel}`;
+  if (start < 1 || start > count) {
+    return `${rel}:${start} is outside the file, which has ${count} lines`;
+  }
+  if (end < start) return `${rel}:${start}-${end} ends before it starts`;
+  if (end > count) {
+    return `${rel}:${start}-${end} runs past the end of the file, which has ${count} lines`;
+  }
+  return undefined;
+}
