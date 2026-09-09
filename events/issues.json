@@ -1,8 +1,104 @@
 {
  "detail": null,
- "fetched_at": "2026-09-08T10:40:00+00:00",
+ "fetched_at": "2026-09-09T10:49:29+00:00",
  "kind": "issues",
  "records": [
+  {
+   "closed_at": null,
+   "created_at": "2026-09-09T05:24:47Z",
+   "id": 216,
+   "label_events": [
+    {
+     "at": "2026-09-09T05:24:48Z",
+     "event": "labeled",
+     "label": "bug"
+    },
+    {
+     "at": "2026-09-09T05:24:48Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    },
+    {
+     "at": "2026-09-09T05:24:48Z",
+     "event": "labeled",
+     "label": "fuzzing"
+    },
+    {
+     "at": "2026-09-09T05:24:49Z",
+     "event": "labeled",
+     "label": "type:correctness"
+    },
+    {
+     "at": "2026-09-09T05:24:49Z",
+     "event": "labeled",
+     "label": "priority:p2"
+    }
+   ],
+   "labels": [
+    "bug",
+    "needs-triage",
+    "fuzzing",
+    "type:correctness",
+    "priority:p2"
+   ],
+   "state": "open",
+   "title": "[domain-fuzz] Catch-up treats every Range as an EOF probe on archives \u22642 MB \u2014 mid-file seeks on busy pool get 503",
+   "updated_at": "2026-09-09T05:24:47Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-09-09T05:24:45Z",
+   "id": 215,
+   "label_events": [
+    {
+     "at": "2026-09-09T05:24:47Z",
+     "event": "labeled",
+     "label": "agentic-workflows"
+    }
+   ],
+   "labels": [
+    "agentic-workflows"
+   ],
+   "state": "open",
+   "title": "[fuzz-hardening] test(timeshift): Hypothesis property tests for pool decisions and response headers",
+   "updated_at": "2026-09-09T05:24:45Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-09-08T17:35:23Z",
+   "id": 214,
+   "label_events": [
+    {
+     "at": "2026-09-08T17:35:25Z",
+     "event": "labeled",
+     "label": "agentic-workflows"
+    }
+   ],
+   "labels": [
+    "agentic-workflows"
+   ],
+   "state": "open",
+   "title": "[issue-fix] fix(e2e): e2e_up.sh --down/--reset no longer removes a shared upstream",
+   "updated_at": "2026-09-08T17:35:23Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-09-08T17:09:08Z",
+   "id": 213,
+   "label_events": [
+    {
+     "at": "2026-09-08T17:09:10Z",
+     "event": "labeled",
+     "label": "agentic-workflows"
+    }
+   ],
+   "labels": [
+    "agentic-workflows"
+   ],
+   "state": "open",
+   "title": "[aw] Domain fuzz campaign produced no safe outputs",
+   "updated_at": "2026-09-08T17:09:08Z"
+  },
   {
    "closed_at": null,
    "created_at": "2026-09-08T05:32:56Z",
@@ -2532,7 +2628,7 @@
    ],
    "state": "open",
    "title": "[aw] Detection Runs",
-   "updated_at": "2026-09-05T23:48:31Z"
+   "updated_at": "2026-09-09T00:48:40Z"
   },
   {
    "closed_at": null,
@@ -2768,7 +2864,7 @@
    ],
    "state": "open",
    "title": "[domain-fuzz] Catch-up stats position freezes at 0:00 when playback_base_secs is 0.0 or the URL timestamp predates EPG start",
-   "updated_at": "2026-08-29T11:19:29Z"
+   "updated_at": "2026-09-09T00:48:02Z"
   },
   {
    "closed_at": "2026-08-29T12:40:33Z",
