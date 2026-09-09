@@ -285,6 +285,19 @@ test('white-box-only rows are confined to an allowlist', { tag: '@characterizati
     'A white-box-only row must justify itself in its Notes cell, not only in the guard. See ' +
       'docs/adr/0002-e2e-test-taxonomy.md on why an unobservable pin needs a stated reason.',
   ).toEqual([]);
+
+  // The Notes check above catches an empty justification in the document;
+  // this catches the same gap in the guard's own allowlist, which the Notes
+  // check cannot see. An entry with why: '' would otherwise satisfy toEqual
+  // above while stating nothing.
+  const unexplained = WHITE_BOX_ONLY.filter((row) => row.why.trim() === '').map(
+    (row) => `WHITE_BOX_ONLY[id=${row.id}]`,
+  );
+  expect(
+    unexplained,
+    'Every WHITE_BOX_ONLY entry must carry a non-empty `why` — the allowlist half of the ' +
+      'justification this test requires from the matrix half above.',
+  ).toEqual([]);
 });
 
 test('Gate 1: the matrix is fully pinned when the flag says so', { tag: '@characterization' }, async () => {

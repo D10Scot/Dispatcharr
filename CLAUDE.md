@@ -6,7 +6,7 @@ Fork. `origin` = `D10Scot/Dispatcharr` (push here); `upstream` = `Dispatcharr/Di
 
 Purpose: **extract the streaming relay from the Django web workers into its own process** (control/data plane split), not a rewrite. Phase 0 harden in place → 1 extract the boundary, still Python → 2 optionally Go → 3 remove Redis from the data path. **Stopping after Phase 1 is a legitimate outcome. Resist widening scope — that is the main way this fails.**
 
-Four investigation documents and two phase specs hold the detail behind every summary here — **read the relevant one before deep work rather than re-deriving it**:
+Four investigation documents, two phase specs and the relay parity matrix hold the detail behind every summary here — **read the relevant one before deep work rather than re-deriving it**:
 
 - Teardown (line-by-line behaviour) — https://claude.ai/code/artifact/7e7330e2-2fad-4e9d-a0b3-22be18c568ae
 - Due diligence (gaps, defects, governance) — https://claude.ai/code/artifact/6dddf987-6135-480c-8b77-c5ad621a8c06

@@ -20,11 +20,6 @@ on:
       - 'version.py'
       - 'manage.py'
       - '.github/workflows/e2e-tests.yml'
-      # The parity matrix (Phase 2 Gate 1) is guarded by the `guards` project,
-      # so a matrix-only edit has to reach it. Every other `docs/` path stays
-      # out: this is the heaviest workflow in the repo and a docs merge must
-      # not trigger an image build.
-      - 'docs/relay-parity-matrix.md'
   # No `paths:` filter here, deliberately. The Main ruleset requires the
   # `E2E result` check on every PR — the aggregate job at the bottom of this
   # file, not the matrix jobs themselves, which cannot be required: when
@@ -119,12 +114,18 @@ jobs:
           fi
 
           # The guards project is static analysis over this repo's own source —
-          # no image, no container, about a second. It must run whenever
-          # anything it reads changes, including the parity matrix on its own,
-          # without dragging the AIO build and the Playwright matrix along for
-          # a docs edit.
+          # no image, no container, about a second. It must run on a
+          # docs-only diff to the parity matrix, which the e2e pattern above
+          # does not cover, but it must ALSO run on every PR e2e already
+          # would: parity-matrix.spec.ts resolves every citation and pin
+          # against apps/ and apps/channels/tests, and testid.spec.ts reads
+          # frontend/src — a PR that shifts those lines is exactly the PR
+          # that breaks a guard, and is exactly the PR guards must not skip.
+          # So `guards` is a strict superset of `e2e`, never a disjoint
+          # sibling of it.
           if [ "$full" = "true" ] || [ "$EVENT_NAME" != "pull_request" ] \
-             || printf '%s\n' "$changed" | grep -qE '^(docs/relay-parity-matrix\.md$|e2e/)'; then
+             || printf '%s\n' "$changed" | grep -qE "$pattern" \
+             || printf '%s\n' "$changed" | grep -qE '^docs/relay-parity-matrix\.md$'; then
             echo "guards=true" >> "$GITHUB_OUTPUT"
           else
             echo "guards=false" >> "$GITHUB_OUTPUT"
