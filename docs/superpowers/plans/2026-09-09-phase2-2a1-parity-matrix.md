@@ -76,7 +76,7 @@ Copied from the spec; every task's requirements implicitly include this section.
   task starts to need a product edit, stop and report — that is a different PR.
 - **Every `test()` carries exactly one inline tag** in a details object written literally at the
   call site. `e2e/tests/guards/tags.spec.ts` fails a tag passed by reference, two tags, or none.
-  All five tests in this PR carry `{ tag: '@characterization' }` (§ Design ruling 8).
+  All seven tests in this PR carry `{ tag: '@characterization' }` (§ Design ruling 8).
 - **`e2e/COVERAGE.md` gets its row in the same PR as the test** (`e2e/README.md` rule 10,
   `CLAUDE.md` § Testing).
 - **`git add` and `git commit` run in separate Bash calls**, and the commit message is written with
@@ -100,21 +100,23 @@ Copied from the spec; every task's requirements implicitly include this section.
 Each settles something the spec leaves open, or states in a way the tree contradicts. They are
 binding on the executor; a reviewer checks the plan against them rather than re-deriving them.
 
-### 1. The matrix is one GFM table with a fixed five-column header, and the guard finds it by exact string match
+### 1. The matrix is one GFM table with a fixed five-column header, and the guard finds it by column names
 
-The document may carry any amount of prose. Exactly one line in it equals
+The document may carry any amount of prose. The table starts at the first line whose cells, split on
+`|` and trimmed, are exactly `#`, `Behaviour`, `Source`, `Pin`, `Notes`; the table is the run of
+`|`-leading lines after that line and its delimiter row. The guard throws — naming the file and the
+canonical header — if no such line exists, if the delimiter row is missing, or if a row does not
+split into exactly five cells.
 
-```
-| # | Behaviour | Source | Pin | Notes |
-```
+**Matching on trimmed cell names, not on the header line character for character**, is deliberate
+and is ruling 11's requirement: a parser that dies on `| #   | Behaviour |` reports "no matrix
+header", which tells an author nothing about the padding that actually caused it. The parser is
+tolerant; a *named* test (ruling 11) rejects padding and says why. That split — parse loosely, assert
+precisely — is what makes the failure message useful.
 
-character for character, and the table is the run of `|`-leading lines after that line and its
-delimiter row. The guard throws — naming the file and the expected header — if that line is absent,
-if the delimiter row is missing, or if a row does not split into exactly five cells.
-
-Why exact-match and not a Markdown parser: no Markdown parser is available without adding a
-dependency (a Global Constraint forbids one), and a hand-rolled loose parser is the thing that
-silently accepts a malformed row. An exact header is a format the guard can be trusted about.
+Why not a Markdown parser: none is available without adding a dependency (a Global Constraint
+forbids one), and a hand-rolled loose parser that guesses at structure is the thing that silently
+accepts a malformed row. This one guesses at nothing — five named columns or it throws.
 
 **A cell may not contain a literal `|`.** The five-cell requirement enforces this by construction —
 a stray pipe splits the row into six cells and fails, naming the line. This is stated in the
@@ -122,9 +124,12 @@ document's own § Format so an author is told before the guard tells them.
 
 ### 2. Five columns: `#`, `Behaviour`, `Source`, `Pin`, `Notes`
 
-- **`#`** — a decimal integer, unique across the table, strictly ascending. Row ids are the phase's
-  addressing scheme (2c PRs "close rows 7–10, 13"), so they must be stable: **an id is never reused
-  and never renumbered.** A deleted row's id is retired.
+- **`#`** — a decimal integer, unique across the table. Row ids are the phase's addressing scheme
+  (2c PRs "close rows 7–10, 13"), so they must be stable: **an id is never reused and never
+  renumbered.** A deleted row's id is retired. **Ids are not in ascending file order and must not be
+  sorted into it** — file order groups rows by the PR that owes them (ruling 11), and re-sorting the
+  table by id destroys that property. A new row takes the next free id and is appended to the end of
+  its owning PR's block.
 - **`Behaviour`** — one sentence naming the externally-observable behaviour. Prose; the guard only
   requires it to be non-empty.
 - **`Source`** — one or more citations, each a backticked `` `path:line` `` or
@@ -258,13 +263,74 @@ a false claim that some client can observe the file.
 ### 10. Two files, not one
 
 `e2e/tests/guards/parity-matrix.ts` holds the parser, the types and the two pinned lists;
-`e2e/tests/guards/parity-matrix.spec.ts` holds the five tests. This is the split the directory
+`e2e/tests/guards/parity-matrix.spec.ts` holds the seven tests. This is the split the directory
 already has (`ast.ts` and `allowlist.ts` are helper modules; the `.spec.ts` files are assertions),
 and it is what lets 2a-3 … 2a-6 edit one small list without touching a test body.
 
 **Do not put the lists in `allowlist.ts`.** That file is the grey-box capability allowlist,
 `capabilities.spec.ts`'s data, and its `Capability` type does not fit. A second concern in it makes
 both harder to read.
+
+### 11. The format is designed for four concurrent editors, and the guard enforces that
+
+**This is the constraint that shapes every other format decision, and it arrived after the first
+draft of this plan.** 2a-3, 2a-4, 2a-5 and 2a-6 all depend only on 2a-2 and touch disjoint *source*
+files, so they will be developed in parallel as stacked PRs on 2a-2's branch. All four fill in test
+references **in this one file**, so their merges contend on it. Four properties make that contention
+trivial; the guard asserts three of them, because a property nobody checks is a property the first
+person to run a Markdown formatter destroys.
+
+**(a) One row is one line, and no line's content depends on any other line.** No wrapped rows, no
+multi-line cells, no continuation syntax. Closing a row is a one-line diff, so two PRs closing
+different rows produce no conflict at all. *Enforced by construction*: the parser reads one row per
+line and there is no continuation syntax to get wrong.
+
+**(b) Cells are never padded to align columns.** Every table line — header, delimiter and rows —
+is exactly `| ` + cells joined by ` | ` + ` |`, with no trailing whitespace. Padding is the failure
+mode this rule exists for: one cell growing by a character re-aligns the whole column, so all four
+PRs rewrite all twenty-seven lines and every merge conflicts on the entire file. The table looks
+ragged in raw text. **That is the intended appearance, not a defect to tidy.** *Enforced by a named
+test* (`the matrix table is one canonical line per row`) which fails naming the padded line, so
+someone who runs a formatter learns exactly what they did rather than seeing "no matrix header".
+
+**(c) The document stores no derived aggregate.** No "18 of 27 rows pinned" counter, no per-block
+subtotal, no "last updated" line. Any such number is incremented by every one of the four PRs and
+conflicts four ways, for a fact the guard can compute in a millisecond. *Enforced by review plus the
+file's own header comment*; the guard **prints** the pinned/owed/white-box counts on every run, so
+the number is available without being stored. If you find yourself wanting a count in the document,
+that is the guard's output, not the document's content.
+
+**(d) File order groups rows by the PR that owes them, not by id.** The spec's 2a table scatters
+ownership across the id sequence — 2a-4 owns 1–6 and 12, 2a-3 owns 7–10 and 13 — so id order
+interleaves the owners and turns every merge into an interleaved conflict. Block order makes each
+PR's edits contiguous, adjacent-line at worst. The blocks, in file order:
+
+| Block | Rows, in this order | Owner |
+|---|---|---|
+| 1 | 1, 2, 3, 4, 5, 6, 12 | owed by 2a-4 |
+| 2 | 7, 8, 9, 13 | owed by 2a-3 |
+| 3 | 14, 15, 16, 17 | owed by 2a-5 |
+| 4 | 18 | owed by 2b-3 |
+| 5 | 10, 11, 19, 20, 21, 22, 23, 24, 25 | already pinned |
+| 6 | 26, 27 | white-box-only |
+
+*Enforced by a named test* (`rows owed by one PR are contiguous`): it takes the owed rows **in file
+order**, maps each to its PR, and fails if any PR's label appears in two separate runs. Rows that are
+already pinned are skipped, so a PR that closes part of its block does not break the property for the
+rest — which is what makes the check survive the whole 2a sequence rather than only its first PR.
+
+An HTML comment marks each block in the file. The parser skips blank lines and HTML-comment lines
+*inside* the table run — the one piece of tolerance the parser has beyond trimming — so the blocks
+are visible in raw text. It still stops at any other non-`|` line, so a row that loses its leading
+pipe truncates the table and surfaces as a missing row in the `OWED` check rather than passing
+silently.
+
+**Row 12 sits in 2a-4's block because the spec puts it there** ("2a-4 … closes matrix rows 1-6, 12"),
+even though row 12 is about `output/fmp4/generator.py` and 2a-4's stated subject is
+`input/manager.py`. That reads like a slip in the spec, and 2a-6 is the more natural owner. It is not
+this PR's call to make: whichever PR closes it edits one cell and deletes one id, and the contiguity
+check tolerates a row moving between blocks as long as the owed labels stay in single runs. Reported
+rather than silently re-assigned.
 
 ---
 
@@ -278,12 +344,16 @@ both harder to read.
 - [ ] **Every row's `Pin` cell is one of the three legal forms, and resolves** — a real test symbol,
       an `owed: <pr>` marker whose id is in `OWED`, or `white-box-only` with a non-empty `Notes`
       cell and an id in `WHITE_BOX_ONLY`.
-- [ ] **`e2e/tests/guards/parity-matrix.spec.ts` is green**, five tests:
+- [ ] **Every table line is canonical** — `| ` + cells joined by ` | ` + ` |`, no padding, no
+      trailing whitespace — and **file order groups rows by owning PR**, six blocks in the order
+      ruling 11d gives. Both are asserted; both exist because four 2a PRs edit this file at once.
+- [ ] **The document stores no derived count** — the guard prints them.
+- [ ] **`e2e/tests/guards/parity-matrix.spec.ts` is green**, seven tests:
       `npx playwright test --project=guards parity-matrix`
-- [ ] **The whole `guards` project is green**, including `tags.spec.ts`, which now sees five more
+- [ ] **The whole `guards` project is green**, including `tags.spec.ts`, which now sees seven more
       declarations: `npx playwright test --project=guards`
 - [ ] **`cd e2e && npx tsc --noEmit` is clean.**
-- [ ] **Each of the guard's five checks is verified by mutation**, and the mutations are recorded in
+- [ ] **Each of the guard's seven checks is verified by mutation**, and the mutations are recorded in
       the spec file's header comment — the discipline every other guard in the directory follows
       and states in its own header (Task 6).
 - [ ] **`e2e/COVERAGE.md`'s Guards table carries a row for the new guard**, with its "Proved by"
@@ -398,7 +468,7 @@ cd /Users/dion/git/Dispatcharr/.worktrees/phase2-2a1/e2e && npx playwright test 
 Expected: `npm ci` completes; `tsc` prints nothing and exits 0; Playwright reports all guards
 passing (7 spec files today: `tags`, `capabilities`, `testid`, `global-mutation`,
 `pageerrors-enforcement`, `upstream-contract`, plus whatever else the directory holds). **Record the
-passing test count** — Task 8 checks it went up by exactly five.
+passing test count** — Task 8 checks it went up by exactly seven.
 
 If any of the three fails on an untouched tree, stop and report: this PR cannot be verified on a
 base that is already red.
@@ -441,8 +511,10 @@ in the task report.
 **Interfaces:**
 - Consumes: `REPO_ROOT` from `e2e/tests/guards/ast.ts`.
 - Produces: `MATRIX_REL: string`, `MATRIX_PATH: string`, `MATRIX_HEADER: string`,
+  `COLUMNS: readonly string[]`,
   `type MatrixRow = { id: number; behaviour: string; source: string; pin: string; notes: string;
-  line: number }`, `parseMatrix(markdown: string): MatrixRow[]`, `readMatrix(): Promise<string>`.
+  line: number }`, `parseMatrix(markdown: string): MatrixRow[]`, `readMatrix(): Promise<string>`,
+  `canonicalLineOffenders(markdown: string): string[]`.
   Tasks 3–5 add to this same module and never change these signatures.
 
 - [ ] **Step 1: Write the failing test.**
@@ -461,20 +533,34 @@ Create `e2e/tests/guards/parity-matrix.spec.ts`:
  * checks is the thing `tests/guards/allowlist.ts` already says decays
  * silently: "a convention plus a README decays silently. This does not."
  *
- * Five checks, in `./parity-matrix`:
- *   1. the table parses — found by its exact header, five cells a row, ids
- *      unique and ascending;
- *   2. every `Source` citation resolves to a real file and a line inside it;
- *   3. every `Pin` resolves — a real test symbol, an `owed:` marker naming a
+ * Seven checks, in `./parity-matrix`:
+ *   1. the table parses — found by its five column names, five cells a row,
+ *      ids unique;
+ *   2. every table line is canonical: `| ` + cells joined by ` | ` + ` |`,
+ *      no padding, no trailing whitespace;
+ *   3. every `Source` citation resolves to a real file and a line inside it;
+ *   4. every `Pin` resolves — a real test symbol, an `owed:` marker naming a
  *      real PR, or `white-box-only`;
- *   4. `white-box-only` rows are exactly the allowlisted ones, each with a
+ *   5. `white-box-only` rows are exactly the allowlisted ones, each with a
  *      justification in its `Notes` cell;
- *   5. unpinned rows are exactly the ones the guard still owes.
+ *   6. unpinned rows are exactly the ones the guard still owes;
+ *   7. rows owed by one PR are contiguous in file order.
  *
- * Checks 4 and 5 duplicate a fact between the document and this directory on
+ * Checks 5 and 6 duplicate a fact between the document and this directory on
  * purpose, in `capabilities.spec.ts`'s idiom and for its reason: `toEqual`,
  * not `toContain`, so that closing a row and opening one are both deliberate
  * edits, and the list cannot rot in either direction.
+ *
+ * Checks 2 and 7 exist because FOUR pull requests edit this file at once.
+ * 2a-3, 2a-4, 2a-5 and 2a-6 depend only on 2a-2 and touch disjoint source
+ * files, so they are developed in parallel and their merges contend on the
+ * matrix and nothing else. Padding cells to align columns makes one growing
+ * cell rewrite twenty-seven lines, so all four conflict on the whole file;
+ * ordering rows by id instead of by owning PR interleaves the four PRs' edits
+ * instead of keeping each one's contiguous. Both properties are invisible —
+ * a Markdown formatter destroys the first in one keystroke and looks like
+ * tidying — so both are asserted rather than written down. The matrix's own
+ * header comment says the same thing to whoever opens the file.
  *
  * What this guard does NOT prove: that a citation points at the *right* code.
  * `input/buffer.py:82` is checked to be a line that exists, never to be the
@@ -485,7 +571,7 @@ Create `e2e/tests/guards/parity-matrix.spec.ts`:
  * `node:fs/promises`, the same shape `upstream-contract.spec.ts` uses.
  */
 import { test, expect } from '@playwright/test';
-import { MATRIX_REL, parseMatrix, readMatrix } from './parity-matrix';
+import { canonicalLineOffenders, MATRIX_REL, parseMatrix, readMatrix } from './parity-matrix';
 
 // @characterization: every test in this file asserts facts about this
 // repository's own source tree — file paths, Markdown column layout, test
@@ -496,19 +582,17 @@ test('the parity matrix parses', { tag: '@characterization' }, async () => {
   const rows = parseMatrix(await readMatrix());
 
   const ids = rows.map((r) => r.id);
+  const duplicates = ids.filter((id, i) => ids.indexOf(id) !== i);
   expect(
-    new Set(ids).size,
+    duplicates,
     `${MATRIX_REL} reuses a row id. Ids are this phase's addressing scheme — 2c PRs close ` +
-      '"rows 7-10, 13" — so an id is never reused and never renumbered. Ids seen: ' +
-      ids.join(', '),
-  ).toBe(ids.length);
-
-  const outOfOrder = ids.filter((id, i) => i > 0 && id <= ids[i - 1]);
-  expect(
-    outOfOrder,
-    `${MATRIX_REL} has rows out of ascending id order. Append new rows at the end with the ` +
-      'next free id; never renumber.',
+      '"rows 7-10, 13" — so an id is never reused and never renumbered. A new row takes the ' +
+      "next free id and is appended to the end of its owning PR's block.",
   ).toEqual([]);
+
+  // Deliberately NOT an ascending-order check. File order groups rows by the
+  // PR that owes them, not by id — see the header, and the contiguity check
+  // below, which is the property that actually matters.
 
   const empty = rows.filter((r) => r.behaviour === '').map((r) => `${MATRIX_REL}:${r.line}`);
   expect(
@@ -517,12 +601,26 @@ test('the parity matrix parses', { tag: '@characterization' }, async () => {
       'externally-observable live-path behaviour, in one sentence.',
   ).toEqual([]);
 });
+
+test('the matrix table is one canonical line per row', { tag: '@characterization' }, async () => {
+  const offenders = canonicalLineOffenders(await readMatrix());
+
+  expect(
+    offenders,
+    'Every table line is exactly "| " + cells joined by " | " + " |", with no padding and no ' +
+      'trailing whitespace. Four pull requests (2a-3 … 2a-6) fill in test references in this ' +
+      'one file concurrently; padding a cell to align a column rewrites every line, so all ' +
+      'four conflict on the whole file instead of on the one row each changed. The table looks ' +
+      'ragged in raw text and that is intended — do not run a Markdown table formatter over ' +
+      'it.\n' + offenders.join('\n'),
+  ).toEqual([]);
+});
 ```
 
 - [ ] **Step 2: Run it to verify it fails.**
 
 Run: `cd /Users/dion/git/Dispatcharr/.worktrees/phase2-2a1/e2e && npx playwright test --project=guards parity-matrix`
-Expected: FAIL — `Cannot find module './parity-matrix'`.
+Expected: FAIL — both tests error with `Cannot find module './parity-matrix'`.
 
 - [ ] **Step 3: Write the minimal helper module.**
 
@@ -555,11 +653,28 @@ export const MATRIX_REL = 'docs/relay-parity-matrix.md';
 
 export const MATRIX_PATH = path.join(REPO_ROOT, MATRIX_REL);
 
+/** The five column names, in order. The table is found by matching these. */
+export const COLUMNS: readonly string[] = ['#', 'Behaviour', 'Source', 'Pin', 'Notes'];
+
 /**
- * The one line this module finds the table by, character for character.
- * Changing it means changing every guard below; do not reformat it.
+ * The canonical spelling of the header, for error messages and for the
+ * no-padding check. The table is located by COLUMNS, not by this string, so a
+ * padded header still parses — and then fails the padding check with a message
+ * that names the real problem instead of "no matrix header".
  */
-export const MATRIX_HEADER = '| # | Behaviour | Source | Pin | Notes |';
+export const MATRIX_HEADER = canonicalLine(COLUMNS);
+
+/**
+ * The one legal spelling of a table line: `| ` + cells joined by ` | ` + ` |`.
+ *
+ * Cells are never padded to align columns, because four pull requests edit
+ * this table concurrently and a padded column turns a one-cell edit into a
+ * twenty-seven-line diff that conflicts four ways. `canonicalLineOffenders`
+ * enforces it.
+ */
+export function canonicalLine(cells: readonly string[]): string {
+  return `| ${cells.join(' | ')} |`;
+}
 
 export type MatrixRow = {
   id: number;
@@ -591,14 +706,28 @@ function splitRow(line: string): string[] {
     .map((cell) => cell.trim());
 }
 
+/** A blank line, or an HTML comment. Both are allowed inside the table run. */
+function isTableFiller(line: string): boolean {
+  const t = line.trim();
+  return t === '' || (t.startsWith('<!--') && t.endsWith('-->'));
+}
+
+function findHeaderIndex(lines: readonly string[]): number {
+  return lines.findIndex((line) => {
+    if (!line.trimStart().startsWith('|')) return false;
+    const cells = splitRow(line);
+    return cells.length === COLUMNS.length && cells.every((c, i) => c === COLUMNS[i]);
+  });
+}
+
 export function parseMatrix(markdown: string): MatrixRow[] {
   const lines = markdown.split('\n');
-  const headerIndex = lines.findIndex((line) => line.trim() === MATRIX_HEADER);
+  const headerIndex = findHeaderIndex(lines);
   if (headerIndex === -1) {
     throw new Error(
-      `${MATRIX_REL} has no line equal to the matrix header:\n  ${MATRIX_HEADER}\n` +
-        'Every guard here finds the table by that exact line. Do not reformat it, and do not ' +
-        'add or rename a column without updating e2e/tests/guards/parity-matrix.ts.',
+      `${MATRIX_REL} has no header row naming the five columns:\n  ${MATRIX_HEADER}\n` +
+        'Every guard here finds the table by those five names. Do not add, rename or reorder a ' +
+        'column without updating COLUMNS in e2e/tests/guards/parity-matrix.ts.',
     );
   }
 
@@ -613,6 +742,11 @@ export function parseMatrix(markdown: string): MatrixRow[] {
   const rows: MatrixRow[] = [];
   for (let i = headerIndex + 2; i < lines.length; i++) {
     const raw = lines[i];
+    // Blank lines and HTML comments separate the owner blocks (ruling 11d) and
+    // do not end the table. Anything else that is not a row does — including a
+    // row that lost its leading pipe, which then shows up as a missing id in
+    // the OWED check rather than being silently accepted here.
+    if (isTableFiller(raw)) continue;
     if (!raw.trimStart().startsWith('|')) break;
 
     const location = `${MATRIX_REL}:${i + 1}`;
@@ -644,6 +778,50 @@ export function parseMatrix(markdown: string): MatrixRow[] {
 
   return rows;
 }
+
+/**
+ * Table lines whose raw text is not the canonical spelling of their own cells.
+ *
+ * Catches padding (`| #   |`), a missing space after a pipe, and trailing
+ * whitespace — every way a Markdown formatter turns a one-line edit into a
+ * whole-file diff. Returns `file:line — the line`, one per offender, so the
+ * message says which line and what it looks like.
+ *
+ * The delimiter row is checked against its own canonical spelling rather than
+ * against `canonicalLine`, since its cells are dashes, not content.
+ *
+ * Throws — rather than returning `[]` — when there is no table to check. Found
+ * by mutation while writing this plan: renaming a column made every other
+ * check fail and this one PASS, which is exactly the "silently skips a shape it
+ * cannot read" hole `ast.ts`'s own header warns about. A check that reports
+ * "no offenders" because it found nothing to look at is worse than no check.
+ */
+export function canonicalLineOffenders(markdown: string): string[] {
+  const lines = markdown.split('\n');
+  const headerIndex = findHeaderIndex(lines);
+  if (headerIndex === -1) {
+    throw new Error(
+      `${MATRIX_REL} has no header row naming the five columns:\n  ${MATRIX_HEADER}\n` +
+        'There is no table to check for padding. Fix the header first.',
+    );
+  }
+
+  const offenders: string[] = [];
+  const canonicalDelimiter = `|${COLUMNS.map(() => '---').join('|')}|`;
+
+  for (let i = headerIndex; i < lines.length; i++) {
+    const raw = lines[i];
+    if (i > headerIndex + 1 && isTableFiller(raw)) continue;
+    if (!raw.trimStart().startsWith('|')) break;
+
+    const expected = i === headerIndex + 1 ? canonicalDelimiter : canonicalLine(splitRow(raw));
+    if (raw !== expected) {
+      offenders.push(`  ${MATRIX_REL}:${i + 1} — is ${JSON.stringify(raw)}, should be ${JSON.stringify(expected)}`);
+    }
+  }
+
+  return offenders;
+}
 ```
 
 - [ ] **Step 4: Run it to verify it fails for the next reason.**
@@ -653,9 +831,10 @@ Expected: FAIL — `ENOENT … docs/relay-parity-matrix.md`.
 
 - [ ] **Step 5: Create the matrix document with its prose and three rows.**
 
-These three rows are the format's worked examples: a pinned row, an owed row, and a
-`white-box-only` row. Tasks 3–5 add the other twenty-four around them. **Write them literally** —
-every value here was verified in Task 1 step 3.
+These three rows are the format's worked examples: an owed row, a pinned row and a
+`white-box-only` row, each already inside its block comment. Tasks 3–5 add the other twenty-four
+around them. **Write them literally** — every value here was verified in Task 1 step 3, and every
+table line is already in the canonical no-padding spelling Task 2's second check requires.
 
 Create `docs/relay-parity-matrix.md`:
 
@@ -682,13 +861,54 @@ relay for the whole of Phase 2 and are not rows here.
 Enforced by `e2e/tests/guards/parity-matrix.spec.ts`, in the `guards` Playwright project. It needs
 no container: `cd e2e && npx playwright test --project=guards parity-matrix`.
 
+<!--
+  READ THIS BEFORE EDITING THE TABLE BELOW.
+
+  Four pull requests edit this file at the same time. 2a-3, 2a-4, 2a-5 and 2a-6
+  depend only on 2a-2 and touch disjoint source files, so they are developed in
+  parallel and the ONLY thing their merges contend on is this table. Four
+  properties keep that contention trivial. Three of them are asserted by
+  e2e/tests/guards/parity-matrix.spec.ts, because a property nobody checks is a
+  property the next person to run a Markdown formatter destroys.
+
+  1. ONE ROW IS ONE LINE. No wrapped rows, no multi-line cells. Closing a row is
+     a one-line diff, so two PRs closing different rows do not conflict at all.
+
+  2. CELLS ARE NEVER PADDED TO ALIGN COLUMNS. Every table line is exactly
+     "| " + cells joined by " | " + " |", with no trailing whitespace. Padding
+     means one growing cell re-aligns the whole column, all four PRs rewrite
+     every line, and every merge conflicts on the entire file. THE TABLE LOOKS
+     RAGGED IN RAW TEXT AND THAT IS INTENTIONAL. Do not run a Markdown table
+     formatter over this file.
+
+  3. NO STORED COUNTS. No "18 of 27 pinned" line, no per-block subtotal, no
+     "last updated" stamp - every one of the four PRs would bump it and conflict
+     four ways over a number the guard computes in a millisecond. The guard
+     PRINTS the pinned / owed / white-box counts on every run.
+
+  4. ROW ORDER GROUPS BY OWNING PR, NOT BY ID. The spec scatters ownership
+     across the id sequence (2a-4 owns 1-6 and 12, 2a-3 owns 7-10 and 13), so id
+     order interleaves the four PRs' edits. Block order keeps each PR's edits
+     contiguous. DO NOT SORT THIS TABLE BY ID. The HTML comments between blocks
+     mark the boundaries; the guard skips them, and blank lines, inside the
+     table.
+
+  A new row takes the next free id and is appended to the end of its owning
+  PR's block. An id is never reused and never renumbered: 2c PRs address rows by
+  number ("closes rows 7-10, 13").
+-->
+
 ## Format
 
-The guard finds the table by the exact line `| # | Behaviour | Source | Pin | Notes |`. Do not
-reformat that line, and do not add or rename a column without changing
-`e2e/tests/guards/parity-matrix.ts` in the same commit.
+The guard finds the table by its five column names — `#`, `Behaviour`, `Source`, `Pin`, `Notes` —
+trimmed. Do not add, rename or reorder a column without changing
+`e2e/tests/guards/parity-matrix.ts` in the same commit. The header's canonical spelling is
+`| # | Behaviour | Source | Pin | Notes |`, and every table line must be canonical the same way
+(see the comment above): the parser tolerates padding so that it can tell you about it, and a named
+check then fails it.
 
-- **`#`** — a decimal integer. Unique, strictly ascending, never reused, never renumbered.
+- **`#`** — a decimal integer. Unique, never reused, never renumbered. **Not in ascending file
+  order** — rows are grouped by the PR that owes them.
 - **`Behaviour`** — one sentence naming the externally-observable behaviour.
 - **`Source`** — one or more backticked, repo-relative citations: `` `path:line` `` or
   `` `path:start-end` ``. The guard checks that each file exists and each range lies inside it. It
@@ -714,17 +934,23 @@ line.
 
 ## The matrix
 
+Blocks, in file order: rows owed by 2a-4, then 2a-3, then 2a-5, then 2b-3, then the rows already
+pinned, then the `white-box-only` rows. Add a row to the end of its own block.
+
 | # | Behaviour | Source | Pin | Notes |
 |---|---|---|---|---|
-| 11 | One transcode process runs per active `(channel, profile)` pair across the cluster: a second client on the same Output Profile attaches to the existing process's buffer instead of spawning its own | `apps/proxy/live_proxy/output/profile/manager.py:67-122`, `apps/proxy/live_proxy/output/profile/manager.py:312-321` | `e2e/tests/streaming-greybox/output-profile-sharing.spec.ts::two clients on one output profile share a single transcode` | Ten AC3 clients cost one ffmpeg. 2a-6 may re-pin this to a harness test; the existing e2e spec stands until it does |
+<!-- block: owed by 2a-5 -->
 | 14 | Status payload field types differ by endpoint: `owner` is `null` on the list endpoint and the literal string `unknown` on the detail endpoint, `ffmpeg_speed` is a float on both, and `source_fps` is a float on list but a string on detail | `apps/proxy/live_proxy/channel_status.py:45`, `apps/proxy/live_proxy/channel_status.py:460`, `apps/proxy/live_proxy/channel_status.py:339`, `apps/proxy/live_proxy/channel_status.py:595`, `apps/proxy/relay_serializers.py:59`, `apps/proxy/relay_serializers.py:129` | `owed: 2a-5` | Neither serializer supplies a `default=`, so the builder's value reaches the wire unchanged. A test that checks the string against only one of the two endpoints proves nothing about the other |
+<!-- block: already pinned -->
+| 11 | One transcode process runs per active `(channel, profile)` pair across the cluster: a second client on the same Output Profile attaches to the existing process's buffer instead of spawning its own | `apps/proxy/live_proxy/output/profile/manager.py:67-122`, `apps/proxy/live_proxy/output/profile/manager.py:312-321` | `e2e/tests/streaming-greybox/output-profile-sharing.spec.ts::two clients on one output profile share a single transcode` | Ten AC3 clients cost one ffmpeg. 2a-6 may re-pin this to a harness test; the existing e2e spec stands until it does |
+<!-- block: white-box-only -->
 | 27 | Not held to: `_execute_redis_command` swallows every Redis exception to `None` after one reconnect attempt, so a caller cannot distinguish "key absent" from "Redis unreachable" | `apps/proxy/live_proxy/server.py:138-159` | `white-box-only` | Deleted, not ported: spec D2 removes Redis from the live path entirely, so there is no analogous call in the Go relay to swallow anything. One of the three fail-open paths `CLAUDE.md` records as a live defect |
 ````
 
 - [ ] **Step 6: Run the test to verify it passes.**
 
 Run: `cd /Users/dion/git/Dispatcharr/.worktrees/phase2-2a1/e2e && npx playwright test --project=guards parity-matrix`
-Expected: PASS, 1 test.
+Expected: PASS, 2 tests.
 
 Note there is no row-count self-check yet — it arrives in Task 5, once all 27 rows exist. A
 threshold asserted now would be a number to churn three times.
@@ -756,8 +982,13 @@ docs(phase2): the parity matrix's format, and the guard that parses it
 Gate 1 of the Phase 2 spec needs a matrix that later PRs can address by row
 number and fill in without reformatting. This lands the format and its
 parser: an exact five-column header the guard finds by string match, ids that
-are unique, ascending and never reused, and three worked rows covering the
-three Pin forms.
+are unique and never reused, and three worked rows covering the three Pin
+forms.
+
+Four 2a PRs will edit this table concurrently, so the format is built for that:
+one row per line, no column padding, no stored counts, and file order grouped
+by owning PR rather than by id. Two of the guard's checks exist to keep those
+properties from being tidied away.
 
 The parser lives beside the tests rather than inside them, for the reason
 allowlist.ts lives beside capabilities.spec.ts: closing a row should be a
@@ -900,7 +1131,7 @@ export async function citationProblem(citation: Citation): Promise<string | unde
 - [ ] **Step 4: Run the test to verify it passes on the three existing rows.**
 
 Run: `cd /Users/dion/git/Dispatcharr/.worktrees/phase2-2a1/e2e && npx playwright test --project=guards parity-matrix`
-Expected: PASS, 2 tests. All three rows' citations resolve — they were verified in Task 1 step 3.
+Expected: PASS, 3 tests. All three rows' citations resolve — they were verified in Task 1 step 3.
 
 - [ ] **Step 5: Locate and add rows 1–9.**
 
@@ -909,7 +1140,27 @@ Each row below gives the behaviour text to write, the PR that owes it (§ Design
 have the right construct, and cite the span — a whole function where the behaviour is a function, a
 tight range where it is a few lines. Do not cite a whole file.
 
-Insert them **before** row 11, keeping the table in ascending id order.
+**Insert them as two new blocks at the top of the table**, before the `<!-- block: owed by 2a-5 -->`
+comment Task 2 wrote, each with its own block comment (ruling 11d). The result, in file order:
+
+```
+| # | Behaviour | Source | Pin | Notes |
+|---|---|---|---|---|
+<!-- block: owed by 2a-4 -->
+| 1 | … | 2 | … | 3 | … | 4 | … | 5 | … | 6 | …          (one per line; 12 joins them in Task 4)
+<!-- block: owed by 2a-3 -->
+| 7 | … | 8 | … | 9 | …                                   (13 joins them in Task 4)
+<!-- block: owed by 2a-5 -->
+| 14 | …
+<!-- block: already pinned -->
+| 11 | …
+<!-- block: white-box-only -->
+| 27 | …
+```
+
+**Not in id order** — the ids in a block are whatever the spec assigned to that PR, and sorting the
+table by id is the one edit ruling 11d forbids. Every new line is canonical: `| ` + cells joined by
+` | ` + ` |`, no padding, no trailing space.
 
 | # | Behaviour to write | Pin | How to find the Source |
 |---|---|---|---|
@@ -930,7 +1181,7 @@ actually read.
 - [ ] **Step 6: Run the test to verify the nine new rows resolve.**
 
 Run: `cd /Users/dion/git/Dispatcharr/.worktrees/phase2-2a1/e2e && npx playwright test --project=guards parity-matrix`
-Expected: PASS, 2 tests. A failure here names the row and the citation; fix the citation, not the
+Expected: PASS, 3 tests. A failure here names the row and the citation; fix the citation, not the
 guard.
 
 The `owed:` markers are **not** checked yet — that arrives in Tasks 4 and 5. A typo in one passes
@@ -1141,13 +1392,21 @@ export async function testRefProblem(
 - [ ] **Step 4: Run the test to verify it passes on the twelve existing rows.**
 
 Run: `cd /Users/dion/git/Dispatcharr/.worktrees/phase2-2a1/e2e && npx playwright test --project=guards parity-matrix`
-Expected: PASS, 3 tests. Row 11's title reference resolves through `findTestCalls`; rows 1–9's
+Expected: PASS, 4 tests. Row 11's title reference resolves through `findTestCalls`; rows 1–9's
 `owed:` markers parse; row 27's `white-box-only` parses.
 
 - [ ] **Step 5: Locate and add rows 10, 12–18.**
 
-Rows 10 and 11 are pinned by tests that already exist. Rows 12–18 are owed. Insert each in ascending
-id order.
+Rows 10 and 11 are pinned by tests that already exist. Rows 12–18 are owed. **Each goes at the end
+of its own block** (ruling 11d), never in id order:
+
+- **12** → end of the `owed by 2a-4` block, after row 6.
+- **13** → end of the `owed by 2a-3` block, after row 9.
+- **15, 16, 17** → end of the `owed by 2a-5` block, after row 14.
+- **18** → a new `<!-- block: owed by 2b-3 -->` between the 2a-5 block and the pinned block.
+- **10** → the `already pinned` block, before row 11.
+
+Row 11 already exists from Task 2 — leave it where it is.
 
 | # | Behaviour to write | Pin | How to find the Source |
 |---|---|---|---|
@@ -1166,7 +1425,7 @@ the numbering reads continuously.
 - [ ] **Step 6: Run the tests to verify the new rows resolve.**
 
 Run: `cd /Users/dion/git/Dispatcharr/.worktrees/phase2-2a1/e2e && npx playwright test --project=guards parity-matrix`
-Expected: PASS, 3 tests. Row 10's title is resolved through the compiler API, so a typo in it fails
+Expected: PASS, 4 tests. Row 10's title is resolved through the compiler API, so a typo in it fails
 here and names the literal titles the file does declare.
 
 - [ ] **Step 7: Typecheck, run the whole guards project, and commit.**
@@ -1209,11 +1468,12 @@ cd /Users/dion/git/Dispatcharr/.worktrees/phase2-2a1 && git commit -F <SCRATCH>/
 
 **Files:**
 - Modify: `e2e/tests/guards/parity-matrix.ts` (append the two lists)
-- Modify: `e2e/tests/guards/parity-matrix.spec.ts` (append two tests, raise the self-check)
+- Modify: `e2e/tests/guards/parity-matrix.spec.ts` (append three tests, raise the self-check)
 - Modify: `docs/relay-parity-matrix.md` (nine rows)
 
 **Interfaces:**
-- Consumes: everything Tasks 2–4 produced.
+- Consumes: everything Tasks 2–4 produced, including `parsePin`, whose `{ kind: 'owed'; pr }` is
+  what the contiguity check reads.
 - Produces: `type WhiteBoxRow = { id: number; why: string }`,
   `WHITE_BOX_ONLY: readonly WhiteBoxRow[]`, `OWED: readonly number[]`. **These two constants are
   what 2a-3 … 2a-6, 2b-3 and every 2c PR edit.** Their names and shapes are fixed here.
@@ -1255,13 +1515,18 @@ outcome is observable at a client-facing surface by definition, so `white-box-on
 | 25 | Authorize matrix — **Stream-by-hash** (`/proxy/ts/stream/<stream_hash>`), any principal: the ACL applies and the stream limit is enforced when a principal resolved; no channel check applies | as above; if none exists, `owed: 2a-5` (see row 16, the same shape from the other side) |
 | 26 | Not held to: the greenlet and OS-thread topology inside `server.py` — three `threading.Thread(daemon=True)` supervisors sharing one OS thread with the request greenlets, and `_spawn_on_hub`'s cross-thread scheduling onto the gevent hub | `white-box-only` |
 
+**Placement:** rows 19–25 go at the end of the `already pinned` block, after row 11 — or, if one is
+owed, at the end of the `owed by 2a-5` block instead, so the block a row lives in always matches the
+PR that owes it (ruling 11d, and the contiguity check in step 2 enforces exactly this). Row 26 goes
+in the `white-box-only` block, before row 27.
+
 Row 26's Source: `apps/proxy/live_proxy/server.py:161-172` (`_spawn_on_hub`, verified) plus the
 `threading.Thread(...)` sites — `grep -n "threading.Thread" apps/proxy/live_proxy/server.py` (three
 at `a948cd8a`: `:467`, `:851`, `:2192`). Cite `_spawn_on_hub`'s span and at least one thread site.
 Notes: deleted, not ported — the Go relay's concurrency model is goroutines and a `sync.RWMutex`
 (spec D2), and no client can observe which greenlet did what.
 
-- [ ] **Step 2: Write the two failing tests.**
+- [ ] **Step 2: Write the three failing tests.**
 
 Append to `e2e/tests/guards/parity-matrix.spec.ts`, extending the import to add
 `{ OWED, WHITE_BOX_ONLY }`:
@@ -1318,6 +1583,46 @@ test('unpinned rows are exactly the ones still owed', { tag: '@characterization'
       'e2e/tests/guards/parity-matrix.ts. Opening one is the same edit in reverse, and cannot ' +
       'happen silently. Gate 1 is met when OWED is empty.',
   ).toEqual([...OWED].sort((a, b) => a - b));
+
+  // The counts live here, computed, rather than in the document, where four
+  // concurrent PRs would each bump them and conflict four ways over a number
+  // that takes a millisecond to derive.
+  const kinds = rows.map((row) => parsePin(row.pin)?.kind);
+  console.log(
+    `parity matrix: ${rows.length} rows — ` +
+      `${kinds.filter((k) => k === 'test').length} pinned, ` +
+      `${kinds.filter((k) => k === 'owed').length} owed, ` +
+      `${kinds.filter((k) => k === 'white-box-only').length} white-box-only.`,
+  );
+});
+
+test('rows owed by one PR are contiguous', { tag: '@characterization' }, async () => {
+  const rows = parseMatrix(await readMatrix());
+
+  // Owed rows only, in FILE order. Pinned rows are skipped rather than
+  // breaking a run, so a PR that closes part of its block does not fail this
+  // check for the rows it left — which is what makes the property survive the
+  // whole 2a sequence instead of only its first PR.
+  const owners: { pr: string; id: number }[] = [];
+  for (const row of rows) {
+    const pin = parsePin(row.pin);
+    if (pin?.kind === 'owed') owners.push({ pr: pin.pr, id: row.id });
+  }
+
+  const runs: string[] = [];
+  for (const { pr } of owners) {
+    if (runs[runs.length - 1] !== pr) runs.push(pr);
+  }
+
+  const split = runs.filter((pr, i) => runs.indexOf(pr) !== i);
+  expect(
+    split,
+    'Rows owed by one PR must be contiguous in file order. 2a-3, 2a-4, 2a-5 and 2a-6 edit this ' +
+      'table concurrently; interleaving their rows interleaves their diffs and turns every ' +
+      'merge into a conflict. Order in the file is by owning block, NOT by id — do not sort ' +
+      `this table. Owner sequence read from the file: ${runs.join(' → ')}. Rows, in file ` +
+      `order: ${owners.map((o) => `${o.id}(${o.pr})`).join(', ')}.`,
+  ).toEqual([]);
 });
 ```
 
@@ -1381,7 +1686,7 @@ export const OWED: readonly number[] = [
 - [ ] **Step 5: Run the tests to verify they pass.**
 
 Run: `cd /Users/dion/git/Dispatcharr/.worktrees/phase2-2a1/e2e && npx playwright test --project=guards parity-matrix`
-Expected: PASS, 5 tests.
+Expected: PASS, 7 tests.
 
 A mismatch on `OWED` prints both sets — reconcile by fixing whichever is wrong. A row whose `owed:`
 marker was mistyped in Task 3 surfaces here as an id present in `OWED` but absent from the matrix's
@@ -1395,9 +1700,22 @@ grep -c '^| [0-9]' docs/relay-parity-matrix.md
 grep -o '^| [0-9]*' docs/relay-parity-matrix.md | tr -d '| ' | sort -n | tr '\n' ' '
 ```
 
-Expected: `27`, and `1 2 3 … 27` with no gaps and no repeats. A gap means a row was missed; a repeat
-means the first test would have caught it, so a repeat here means the table was edited after the
-last run — re-run step 5.
+Expected: `27`, and `1 2 3 … 27` with no gaps and no repeats. **`sort -n` is doing the sorting —
+the file itself is not in id order and must not be** (ruling 11d). A gap means a row was missed; a
+repeat means the first test would have caught it, so a repeat here means the table was edited after
+the last run — re-run step 5.
+
+Confirm the block structure too:
+
+```bash
+cd /Users/dion/git/Dispatcharr/.worktrees/phase2-2a1
+grep -n "^<!-- block: \|^| [0-9]" docs/relay-parity-matrix.md | sed 's/\(:.\{0,40\}\).*/\1/'
+```
+
+Expected: six `<!-- block: … -->` lines, in the order `owed by 2a-4`, `owed by 2a-3`,
+`owed by 2a-5`, `owed by 2b-3`, `already pinned`, `white-box-only`, with the rows of each block
+between them. The step 5 contiguity check asserts the same thing; this is the human-readable view
+of it.
 
 - [ ] **Step 7: Typecheck, run the whole guards project, and commit.**
 
@@ -1406,7 +1724,7 @@ cd /Users/dion/git/Dispatcharr/.worktrees/phase2-2a1/e2e && npx tsc --noEmit
 cd /Users/dion/git/Dispatcharr/.worktrees/phase2-2a1/e2e && npx playwright test --project=guards
 ```
 
-Expected: silent; all green, five more tests than Task 1 step 2 recorded.
+Expected: silent; all green, seven more tests than Task 1 step 2 recorded.
 
 Message to `<SCRATCH>/msg-task5.txt`:
 
@@ -1421,6 +1739,11 @@ Both markers are allowlists compared with toEqual, not keywords: marking a
 row white-box-only, and leaving one unpinned, each take a deliberate edit in
 two places. That is what makes "no test yet" a ratchet rather than a
 permanently green answer — Gate 1 is met when OWED is empty.
+
+A third check keeps each owing PR's rows contiguous in file order, and the
+pinned/owed/white-box counts are printed by the guard rather than stored in
+the document. Four 2a PRs edit this table at once; an interleaved order or a
+stored counter would make all four conflict on every merge.
 
 Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01Pr6xFBkeJHvguMJ6PweBMu
@@ -1441,7 +1764,7 @@ cd /Users/dion/git/Dispatcharr/.worktrees/phase2-2a1 && git commit -F <SCRATCH>/
 **Files:**
 - Modify: `e2e/tests/guards/parity-matrix.spec.ts` (header comment only — no assertion changes)
 
-**Interfaces:** none. Produces the five mutation results Task 7 writes into `e2e/COVERAGE.md`.
+**Interfaces:** none. Produces the seven mutation results Task 7 writes into `e2e/COVERAGE.md`.
 
 Every guard in this directory records in its own header that it was verified by mutation, and says
 what the mutation was and what it printed. `capabilities.spec.ts` makes the argument: a guard that
@@ -1455,11 +1778,38 @@ has never been seen to fail is a guard nobody knows works. This task does that f
 Edit `docs/relay-parity-matrix.md`: change the table header's `Notes` to `Note`.
 
 Run: `cd /Users/dion/git/Dispatcharr/.worktrees/phase2-2a1/e2e && npx playwright test --project=guards parity-matrix`
-Expected: every check fails with `has no line equal to the matrix header`, printing the expected
-header. **Record the message.**
+Expected: every check fails with `has no header row naming the five columns`, printing the
+canonical header. **Record the message.**
 
-Revert: restore `Notes`. Re-run; expected PASS, 5 tests. Confirm with
+Revert: restore `Notes`. Re-run; expected PASS, 7 tests. Confirm with
 `git diff --stat docs/relay-parity-matrix.md` — empty.
+
+- [ ] **Step 1b: Pad one cell. Expect the canonical-line check to fail, and only it.**
+
+Edit `docs/relay-parity-matrix.md`: in row 27, change `| 27 |` to `| 27  |` — one extra space, the
+single edit a Markdown table formatter makes twenty-seven of.
+
+Run: `cd /Users/dion/git/Dispatcharr/.worktrees/phase2-2a1/e2e && npx playwright test --project=guards parity-matrix`
+Expected: **only** `the matrix table is one canonical line per row` fails, naming
+`docs/relay-parity-matrix.md:<line>` and printing both the padded line and its canonical spelling.
+Every other check stays green — which is the point of parsing tolerantly and asserting precisely:
+padding is reported as padding, not as "no matrix header". **Record the message.**
+
+Revert and re-run; expected PASS, 7 tests.
+
+- [ ] **Step 1c: Move one owed row out of its block. Expect the contiguity check to fail, and only it.**
+
+Edit `docs/relay-parity-matrix.md`: cut the `| 12 | …` line out of the `owed by 2a-4` block and paste
+it at the end of the `owed by 2a-3` block, after row 13. Nothing about the row's content changes, so
+its citation and pin still resolve.
+
+Run the same command.
+Expected: **only** `rows owed by one PR are contiguous` fails, printing the owner sequence read from
+the file (`2a-4 → 2a-3 → 2a-4` — or whatever your table produces) and the owed rows in file order.
+**Record the message.** This is the mutation that proves someone cannot re-sort the table by id, or
+drop a row into the wrong block, without being told.
+
+Revert and re-run; expected PASS, 7 tests.
 
 - [ ] **Step 2: Mutate a citation. Expect check 2 to fail.**
 
@@ -1470,7 +1820,7 @@ Run the same command.
 Expected: `every row cites source that resolves` fails, naming `row 27` and
 `runs past the end of the file, which has <N> lines`. **Record the message and `<N>`.**
 
-Revert and re-run; expected PASS, 5 tests.
+Revert and re-run; expected PASS, 7 tests.
 
 - [ ] **Step 3: Mutate a test title. Expect check 3 to fail.**
 
@@ -1486,7 +1836,7 @@ Then make the second half of this check's argument, which is the one that justif
 grep: put the fake title in a **comment** in that spec file and leave the matrix mutated. Expected:
 still FAIL — a title in a comment is not a declaration. **Record that it stayed red.**
 
-Revert both; re-run; expected PASS, 5 tests.
+Revert both; re-run; expected PASS, 7 tests.
 
 - [ ] **Step 4: Mutate the white-box marker. Expect check 4 to fail.**
 
@@ -1498,7 +1848,7 @@ against `[26, 27]`, and `unpinned rows are exactly the ones still owed` reportin
 **Record both.** That both fire together is the point: the marker cannot be used to quietly drop a
 row from the ratchet.
 
-Revert and re-run; expected PASS, 5 tests.
+Revert and re-run; expected PASS, 7 tests.
 
 - [ ] **Step 5: Close a row without telling the guard. Expect check 5 to fail.**
 
@@ -1511,27 +1861,34 @@ Expected: only `unpinned rows are exactly the ones still owed` fails, reporting 
 `OWED` and absent from the matrix. **Record it.** This is the mutation that proves a row cannot be
 declared closed by editing one file.
 
-Revert and re-run; expected PASS, 5 tests.
+Revert and re-run; expected PASS, 7 tests.
 
-- [ ] **Step 6: Record the five mutations in the header comment.**
+- [ ] **Step 6: Record the seven mutations in the header comment.**
 
 Append to the block comment at the top of `e2e/tests/guards/parity-matrix.spec.ts`, immediately
 before the closing `*/`, using **the messages you actually saw**, not the ones this plan predicts:
 
 ```
- * Verified by mutation, all five, each reverted before the next:
+ * Verified by mutation, all seven, each reverted before the next:
  *   1. Renaming the header's `Notes` column to `Note` failed every check with
- *      "has no line equal to the matrix header", printing the expected line.
- *   2. Widening row 27's citation to `server.py:138-99999` failed check 2
- *      naming row 27 and "<the message you saw>".
- *   3. Misspelling row 11's cited test title failed check 3, printing the
- *      literal titles that file does declare; adding the misspelling as a
+ *      "has no header row naming the five columns", printing the canonical
+ *      header.
+ *   2. Padding one cell (`| 27  |`) failed ONLY the canonical-line check,
+ *      naming the line and printing both spellings — the whole reason the
+ *      parser tolerates padding instead of dying on it.
+ *   3. Moving row 12 from 2a-4's block into 2a-3's failed ONLY the contiguity
+ *      check, printing the owner sequence it read from the file.
+ *   4. Widening row 27's citation to `server.py:138-99999` failed the citation
+ *      check naming row 27 and "<the message you saw>".
+ *   5. Misspelling row 11's cited test title failed the pin check, printing
+ *      the literal titles that file does declare; adding the misspelling as a
  *      COMMENT in that spec kept it red, which is the whole argument for
  *      parsing over grep.
- *   4. Re-marking row 12 `white-box-only` failed checks 4 and 5 together —
- *      the marker cannot be used to drop a row out of the ratchet.
- *   5. Pinning row 13 to a real, resolvable test without deleting 13 from
- *      OWED failed check 5 alone: a row cannot be closed by editing one file.
+ *   6. Re-marking row 12 `white-box-only` failed the allowlist and the ratchet
+ *      together — the marker cannot be used to drop a row out of the ratchet.
+ *   7. Pinning row 13 to a real, resolvable test without deleting 13 from
+ *      OWED failed the ratchet alone: a row cannot be closed by editing one
+ *      file.
 ```
 
 Run: `cd /Users/dion/git/Dispatcharr/.worktrees/phase2-2a1/e2e && npx tsc --noEmit`
@@ -1554,11 +1911,17 @@ Message to `<SCRATCH>/msg-task6.txt`:
 test(phase2): record the parity guard's five mutation verifications
 
 Every guard in this directory records what it was seen to fail on, because a
-guard nobody has watched fail is a guard nobody knows works. Five mutations,
-each reverted: a renamed column, an out-of-range citation, a misspelled test
-title (and the same misspelling in a comment, which stayed red), a
-white-box-only marker used to drop a row from the ratchet, and a row closed
-in the matrix without being closed in the guard.
+guard nobody has watched fail is a guard nobody knows works. Seven mutations,
+each reverted: a renamed column, a padded cell, an owed row moved out of its
+block, an out-of-range citation, a misspelled test title (and the same
+misspelling in a comment, which stayed red), a white-box-only marker used to
+drop a row from the ratchet, and a row closed in the matrix without being
+closed in the guard.
+
+The padding and block mutations each failed exactly one check and left the
+other six green — the two properties that keep four concurrent 2a PRs from
+conflicting on every merge, and the two a Markdown formatter would otherwise
+destroy silently.
 
 Comment only; no assertion changed.
 
@@ -1595,7 +1958,7 @@ Expected: one hit, the last row of the Guards (G11) table. Add this row immediat
 `<the message you saw>` replaced from Task 6:
 
 ```markdown
-| `tests/guards/parity-matrix.spec.ts` | `docs/relay-parity-matrix.md` stays machine-readable: the table is found by its exact header, ids are unique and ascending, every `Source` citation resolves to a real file and a line inside it, every `Pin` is a resolvable test symbol / an `owed: <pr>` marker / `white-box-only`, and the white-box and owed sets are `toEqual` allowlists in `tests/guards/parity-matrix.ts`. Phase 2's Gate 1 | Renaming the `Notes` column failed every check; a citation widened past end-of-file failed naming the row; a misspelled cited test title failed, and stayed red with the misspelling added as a **comment**; a `white-box-only` marker used to drop a row failed the allowlist and the ratchet together; a row closed in the matrix but not in `OWED` failed the ratchet alone |
+| `tests/guards/parity-matrix.spec.ts` | `docs/relay-parity-matrix.md` stays machine-readable and stays cheap for four concurrent editors: the table is found by its five column names, ids are unique, every table line is canonical (`\| ` + cells + ` \|`, no padding — four 2a PRs edit this file at once and an aligned column makes every merge conflict on the whole file), every `Source` citation resolves to a real file and a line inside it, every `Pin` is a resolvable test symbol / an `owed: <pr>` marker / `white-box-only`, rows owed by one PR are contiguous in file order, and the white-box and owed sets are `toEqual` allowlists in `tests/guards/parity-matrix.ts`. Phase 2's Gate 1 | Renaming the `Notes` column failed every check; padding one cell failed naming the line and printing both spellings; a citation widened past end-of-file failed naming the row; a misspelled cited test title failed, and stayed red with the misspelling added as a **comment**; a `white-box-only` marker used to drop a row failed the allowlist and the ratchet together; a row closed in the matrix but not in `OWED` failed the ratchet alone; moving one owed row out of its block failed the contiguity check naming the PR |
 ```
 
 Verify the table still parses:
@@ -1653,7 +2016,7 @@ Message to `<SCRATCH>/msg-task7.txt`:
 ```
 docs(phase2): the parity matrix in COVERAGE, README and CLAUDE.md
 
-COVERAGE.md's Guards table gets the new guard and the five mutations that
+COVERAGE.md's Guards table gets the new guard and the seven mutations that
 proved it. README's guards enumeration names it — and, while there, the
 e2e-upstream contract check it had already been missing. CLAUDE.md lists the
 matrix beside the specs, because every later Phase 2 PR cites it and a
@@ -1687,7 +2050,7 @@ cd /Users/dion/git/Dispatcharr/.worktrees/phase2-2a1/e2e && npx tsc --noEmit
 cd /Users/dion/git/Dispatcharr/.worktrees/phase2-2a1/e2e && npx playwright test --project=guards
 ```
 
-Expected: clean tree; `tsc` silent; every guard green, **exactly five more passing tests than Task 1
+Expected: clean tree; `tsc` silent; every guard green, **exactly seven more passing tests than Task 1
 step 2 recorded**. A different delta means a test was added or lost somewhere unintended — find out
 which before continuing.
 
@@ -1745,7 +2108,7 @@ exemption, ghost clients, the status payload's per-endpoint field types, the
 19-25 one per Phase 1 authorize-matrix principal, citing the tests PR 5 already
 shipped; 26-27 the two behaviours the Go relay is deliberately not held to.
 
-**`e2e/tests/guards/parity-matrix.spec.ts`** — five checks in the `guards`
+**`e2e/tests/guards/parity-matrix.spec.ts`** — seven checks in the `guards`
 project, which needs no container. The table parses; every citation resolves to
 a real file and a line inside it; every pin is a resolvable test symbol
 (`.spec.ts` titles read through the TypeScript compiler API, so a title in a
@@ -1754,7 +2117,16 @@ two are `toEqual` allowlists, not keywords — closing a row and marking one
 unobservable are each deliberate edits in two files. Gate 1 is met when `OWED`
 is empty.
 
-Verified by mutation, five times, each reverted; the spec file's header records
+**Two of the seven exist because four PRs will edit this file at once.** 2a-3
+through 2a-6 all fill in test references here, so the format is built for
+concurrent editing: one row per line, cells never padded to align columns (a
+named check fails the padded line, so a formatter run says what it did instead
+of breaking the parse), no stored aggregate that all four would bump — the guard
+prints the counts instead — and file order grouped by owning PR rather than by
+id, which a second named check enforces so nobody re-sorts the table and
+silently destroys the property.
+
+Verified by mutation, seven times, each reverted; the spec file's header records
 what each one printed.
 
 Two things the spec gets wrong, followed the code instead and reported rather
@@ -1822,6 +2194,13 @@ they are owed, which is its whole job.
 **Known divergences from the spec, both reported in the PR body:** the row count (ruling 6) and the
 2a-5 assignment (ruling 7).
 
+**Revised after the first draft**, when the orchestrator supplied a constraint the spec does not
+carry: 2a-3 through 2a-6 are stacked PRs developed in parallel, so four of them edit
+`docs/relay-parity-matrix.md` concurrently. That produced ruling 11 and two of the guard's seven
+checks (canonical lines, owner contiguity), removed the ascending-id requirement in favour of block
+order, made the header match on column names rather than on the literal line, and moved the row
+counts out of the document into the guard's printed output.
+
 **The guard's code in this plan was prototyped and run before the plan was finished**, in a
 throwaway copy under `e2e/tests/guards/` that was deleted afterwards, against a three-row matrix
 holding exactly the example rows in Task 2 step 5. What that run established, so the executor knows
@@ -1838,6 +2217,25 @@ which parts are already known-good and which are still their own to prove:
 - **One design bug was found this way and is fixed in the plan**: `parsePin` originally required the
   two bare forms to be unbackticked, and a Markdown author's hand backticks them. See ruling 3.
 
-Task 6's mutation work is still owed in full — the prototype proved the checks *can* fire on
-synthetic input; Task 6 proves they fire on the real document, and its recorded messages are what
+**Re-prototyped after ruling 11 was added**, this time against a full twenty-seven-row table with
+the six blocks, sixteen owed rows, nine pinned and two white-box — the shape the finished matrix
+has. All seven checks pass on it, and the count line prints
+`parity matrix: 27 rows — 9 pinned, 16 owed, 2 white-box-only`. Three further mutations were run:
+
+- Padding one cell (`| 27  |`) failed **only** check 2, naming
+  `docs/relay-parity-matrix.md:39` and printing both the padded line and its canonical spelling.
+- Moving row 12 from 2a-4's block into 2a-3's failed **only** check 7, printing
+  `2a-4 → 2a-3 → 2a-4 → 2a-5 → 2b-3` and the owed rows in file order.
+- Closing row 8 — the *middle* of 2a-3's block — by pinning it to a real test and deleting 8 from
+  `OWED` kept all seven green and the count moved to `10 pinned, 15 owed`. That is the design claim
+  ruling 11d makes (a partially-closed block does not break contiguity), checked rather than
+  asserted.
+
+- **A second design bug was found and fixed**: renaming a column made six checks fail and
+  `canonicalLineOffenders` **pass**, because it returned `[]` when it could not find the table — the
+  "silently skips a shape it cannot read" hole `ast.ts`'s own header warns about. It now throws, and
+  the renamed-column mutation fails all seven.
+
+Task 6's mutation work is still owed in full — the prototype proved the checks fire on a synthetic
+table; Task 6 proves they fire on the real document, and its recorded messages are what
 `e2e/COVERAGE.md` cites.
