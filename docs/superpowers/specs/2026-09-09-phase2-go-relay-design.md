@@ -511,15 +511,44 @@ the trust-mismatch failure mode as a risk this fix closes rather than leaves ope
   `network_access_allowed(http_request, _acl_key(surface), user)`). If the Go relay POSTs from its
   own process, Django would evaluate the STREAMS ACL against the *relay's* address, not the
   client's — wrong in exactly the deployments (nginx-less dev) this fallback exists for, since there
-  is no `auth_request` subrequest inheriting the original request's headers to save it. The Go relay
-  must forward `X-Forwarded-For`/`X-Real-IP` set to the *client's* address, mirroring what
-  `docker/nginx.conf`'s server block already sets for the normal path.
-- **The principal is resolved from the request itself** — ADR 0005's accepted set (Xtream
-  credentials, JWT, API key, query-param JWT, session, or anonymous) lives in the `Authorization`
-  header, cookies, the query string, or the URL path. The Go relay must forward the client's
-  `Authorization` and `Cookie` headers, the query string, and the XC path segments verbatim, plus
-  `X-Original-URI` naming the original request's full path — the same header `authorize_view`
-  already reads for the nginx-facing form (`apps/proxy/internal_auth.py`'s `META_ORIGINAL_URI`).
+  is no `auth_request` subrequest inheriting the original request's headers to save it. The client's
+  real address travels as `client_ip` in the signed request body — see below, not as a header —
+  mirroring what `docker/nginx.conf`'s server block already gives the normal path for free.
+- **The principal is resolved from the request itself, and every piece of it belongs in the signed
+  request body, not in a header — corrected in this fix round (§ M-R3-1 in the round-3 review).**
+  ADR 0005's accepted set (Xtream credentials, JWT, API key, query-param JWT, session, or anonymous)
+  lives in the `Authorization` header, cookies, the query string, or the URL path today; the Go
+  relay's first draft of this call forwarded those as literal headers on the internal POST. **That is
+  a real hole, not a simplification**: the bound token (`internal_auth.py:126-152`,
+  `internal_request_token`) signs exactly five fields — the literal context, method, path, timestamp,
+  and `sha256(body)` — and headers are not among them. A single captured
+  `X-Dispatcharr-Internal-Request` token for `POST /_dispatcharr/authorize-internal` would have
+  stayed valid for 120 seconds against **any** combination of forwarded headers, since only the
+  outer envelope (method + path + timestamp + an empty body's hash) was ever bound — swap the
+  `Authorization` header or the URI on a replayed request and the signature does not notice, because
+  none of that material was ever inside what `sha256(body)` covers. That is the same authorization
+  oracle the gating bullet below exists to prevent, reintroduced one layer down through an unsigned
+  side-channel.
+
+  **Fix: no identity-bearing material may travel as a header on this route. The question being
+  asked is the POST body, in full, so `sha256(body)` binds it.** Body shape:
+
+  ```json
+  {
+    "uri": "/live/user/pass/12345?token=...",
+    "authorization": "Bearer ...",
+    "cookie": "sessionid=...",
+    "client_ip": "203.0.113.7"
+  }
+  ```
+
+  `uri` is the equivalent of `X-Original-URI` — the full path, query string included, that
+  `authorize_view`'s nginx-facing form already resolves a surface from (`_surface_for`,
+  `authorize_views.py`); `authorization`/`cookie` carry exactly the two headers ADR 0005's principal
+  set can arrive in that a URL doesn't already carry (a `null` field, not an absent one, when the
+  client sent neither); `client_ip` is the address the ACL and, in production, `X-Relay-Client-IP`
+  both need. Changing any one of these now changes `sha256(body)`, which changes the required token
+  — a captured token for one question cannot be replayed against a different one.
 - **The route must be gated, not open — and gating it is now the *only* protection it has, since it
   no longer sits behind nginx's `internal;` location the way the existing GET/HEAD view does.**
   `authorize_view` today is `AllowAny` but is reachable only through nginx's `internal;` location —
@@ -531,12 +560,39 @@ the trust-mismatch failure mode as a risk this fix closes rather than leaves ope
   `X-Dispatcharr-Internal-Request`) the `/proxy/relay/…`/`/api/relay/…` contract already uses, and
   which 2c's Go relay implements from its first PR regardless — so this route costs no new
   authentication mechanism, only a new permission-class assignment, but that assignment is load-
-  bearing in a way it would not have been on the shielded path.
+  bearing in a way it would not have been on the shielded path, which is exactly why the body-signing
+  fix above matters: `IsInternalRelay` alone proves "a deployment insider is calling," not "calling
+  about the question they claim to be calling about" — the bound token has to cover both.
 - **Registration is unconditional, not dev-gated.** The route is registered in every deployment
   shape (there is no code-level way to know at Django's boot time whether the *relay* it will talk
   to has nginx in front of it), and is simply never called in practice once nginx is present, because
   the Go relay's own `request_is_relay_trusted()`-equivalent check short-circuits before this call is
   made.
+- **The response, fully specified — added in this fix round (§ M-R3-2 in the round-3 review; this
+  spec's earlier draft left it unstated entirely).** Two shapes, matching `authorize_view`'s own two
+  outcomes exactly, because this route is the inline path's HTTP successor, not the nginx-subrequest
+  path's:
+  - **200 (authorized):** the same `X-Relay-*` response headers `authorize_view` already sets
+    (`authorize_views.py:307-311` — `HEADER_RELAY_CHANNEL`, `_OUTPUT`, `_CLIENT`, `_USER`, `_NAME`),
+    plus 2b-2's two additions, `X-Relay-Output-Format` and `X-Relay-Client-IP` — seven headers total,
+    the same seven any relay-bound nginx location carries after 2b-2. This is also the dev shape's
+    only source for `ip_address` (closing parity row 17's stated gap: there is no hop-set header to
+    read in this shape otherwise, so `X-Relay-Client-IP` on *this* response is where it comes from).
+  - **Denial: the true status, not the collapsed one — `authorize_error_response`
+    (`authorize_views.py:76-80`), never `subrequest_error_response` (`:82-100`).** Phase 1's own
+    spec is explicit about why the two exist and do not converge: `subrequest_error_response`'s
+    403-collapse-plus-`X-Authorize-Status` shape (Amendment S7,
+    `docs/superpowers/specs/2026-09-04-…md`) exists **only** because
+    `ngx_http_auth_request_module` can transport a 2xx, a 401 or a 403 and nothing else, so a 404 or
+    a 429 has to travel as 403 with the real code recovered by `error_page 403 = @authorize_denied`.
+    A direct POST has no such transport constraint — nothing is asking `auth_request` to carry
+    anything — so collapsing here would be inventing a limitation that does not exist and handing
+    the Go relay a 403 where production would answer 404 (an unknown channel in a cached playlist)
+    or 429 (over the stream limit), a real parity violation under D5. `authorize_error_response`'s
+    true-status shape is what the *existing* inline fallback already uses today
+    (`resolve_authorization`'s non-trusted branch calls `authorize_stream` directly and lets
+    `AuthorizeDenied` propagate with its real status), so this is not a new choice — it is the one
+    this route already implies by being the inline path's successor, made explicit.
 
 ### Error handling per hop
 
@@ -635,7 +691,7 @@ and a test reference before the guard test (below) passes.
 | 14 | Status payload exact field set/types: `owner` is `null` on the **list** endpoint and the string `'unknown'` on the **detail** endpoint (not the reverse); `ffmpeg_speed` a float on both; `source_fps` a string on detail and a float on list (unlike `ffmpeg_speed`, still split, carried not fixed) | `channel_status.py` | New, unit-level (view-level bucket is fine here) |
 | 15 | `stream_xc` authorizes once and hands its `decision` into `stream_ts` so the tune is not re-authorized and a second client id is not minted for the same connection | `apps/proxy/live_proxy/views.py:161-165` (comment), `:825` (the call) | New — this spec's first draft missed this second call site entirely |
 | 16 | `/proxy/ts/stream/<stream_hash>` (no channel at all — the admin single-stream preview) applies the STREAMS ACL and the per-user stream limit when a principal resolved, and **no channel check of any kind**, because there is no channel to check | `apps/proxy/next_source.py:69-79` `get_stream_object`'s `Stream.stream_hash` fallback; ADR 0005 Consequences | New — a distinct authorization shape from every other row, currently unaddressed by 2b's contract (§ Stage 2b) |
-| 17 | `ip_address` on both status endpoints is the real client address, not nginx's own or empty — derived post-cutover from `X-Relay-Client-IP` (resolved once at the authorize hop via `get_client_ip`), not from `REMOTE_ADDR`/`X-Forwarded-For` at the relay, because the flipped locations' own `proxy_set_header` lines discard the server-level forwarding headers those would otherwise need (§ Stage 2d, new in this fix round) | `dispatcharr/utils.py:342-370` `get_client_ip`; `client_manager.py:215-230`; `relay_serializers.py:29`, `:79` | New — no current test isolates `ip_address` from the rest of the client-registration payload |
+| 17 | `ip_address` on both status endpoints is the real client address, not nginx's own or empty — derived, in every deployment shape, from `X-Relay-Client-IP` set by whichever authorize response the Go relay trusted (nginx's `auth_request` hop in production; the direct `POST /_dispatcharr/authorize-internal` response in the nginx-less dev shape — § The contract's response spec), never from `REMOTE_ADDR`/`X-Forwarded-For` read directly at the relay, because the flipped production locations' own `proxy_set_header` lines discard the server-level forwarding headers those would otherwise need (§ Stage 2d) | `dispatcharr/utils.py:342-370` `get_client_ip`; `client_manager.py:215-230`; `relay_serializers.py:29`, `:79` | New — no current test isolates `ip_address` from the rest of the client-registration payload |
 | 18 | What the status payload's `stream_name`/`m3u_profile_name` contain when the metadata hash was never written one — phrased as a question 2b-3 must answer, not an assumed "always present," so whatever 2b-3's inspection concludes (§ Stage 2b, § NM2/Q3 in the round-2 review), 2c is held to the same answer | `channel_status.py:74`, `:92`; `zero_orm_allowlist.py` once 2b-3 lands | New — 2b-3 records the answer as part of closing this row, not before |
 | 19-26 | Every row of the Phase 1 authorize matrix (`docs/superpowers/specs/2026-09-04-…md`, § "The authorize matrix", 7 principal rows × 6 columns) | `apps/proxy/authorize.py` | Existing (`streaming`, `@contract`, PR 5) — matrix cites them, does not re-test |
 
@@ -873,8 +929,15 @@ proxy bytes, parse ffmpeg stderr with regexes, speak two small JSON contracts �
 server and an HMAC library the stdlib doesn't already provide.
 
 **The two invariants, the phase's checkable success criteria.** *The Go binary links no Postgres
-driver.* This falls out of 2b entirely — once the contract carries everything 2b's table names, the
-Go relay has no ORM-shaped question left to ask, so there is nothing to import a driver for. *The Go
+driver.* This falls out of 2b **conditionally, not unconditionally — a qualification added in this
+fix round (§ m-R3-2 in the round-3 review, catching a sentence this spec's own 2b-3 allowlist had
+already made imprecise)**: once the contract carries everything 2b's table names *and every site 2b-3's
+allowlist still names has either a contract field or a written reason the Go relay never needs to ask
+it*, the Go relay has no ORM-shaped question left to ask, so there is nothing to import a driver for.
+A non-empty `zero_orm_allowlist.py` at the end of 2b is therefore not a loose end 2c can ignore — it
+is a punch list `2c-1` must clear (a contract field for each allowlisted site, or a documented reason
+it needs none) **before** its first line of Go, stated as an explicit precondition on 2c-1 below, not
+left implicit in "2b-3 (Gate 2 green)," which a non-empty allowlist already satisfies. *The Go
 binary links no Redis client.* Walked key-family by key-family against `apps/proxy/live_proxy/
 redis_keys.py` — **corrected in this fix round to cover all 25 methods** (§ Verified facts: 18
 `live:channel:{id}:*` methods plus 7 `output_*` ones; the first draft's walk covered roughly half
@@ -921,7 +984,7 @@ of what the ten pre-existing workflows pin.
 
 | PR | Branch | What it does | Gate | Depends on |
 |---|---|---|---|---|
-| 2c-1 | `migration/phase2c-skeleton` | `relay/` skeleton: module init, `main.go`, `httpapi`/`control`/`channel`/`buffer`/`ffmpeg` package stubs, `docker/supervisord.d/relay-go.conf`, the Dockerfile builder stage, `go-tests.yml` (build + lint + `go vet`, no coverage gate yet — nothing to cover), `/healthz`/`/readyz` returning static 200s, a dev-only route flag so this PR is inert in every non-dev deployment. | `go build ./...`, `golangci-lint run`, `go vet ./...` all green; zizmor clean on `go-tests.yml` from its first commit; **and, added in this fix round, the Go toolchain and action pins are re-resolved at PR time, not carried forward from this spec's 2026-09-09 values** — `go.dev/dl`, `docker buildx imagetools inspect` against the current `golang` tag, and fresh `gh api .../commits/<tag> --jq .sha` lookups for `golangci-lint-action`/`setup-go`/`checkout`, committed with whatever the tool returns on the day this PR is opened | 2b-3 (Gate 2 green) |
+| 2c-1 | `migration/phase2c-skeleton` | `relay/` skeleton: module init, `main.go`, `httpapi`/`control`/`channel`/`buffer`/`ffmpeg` package stubs, `docker/supervisord.d/relay-go.conf`, the Dockerfile builder stage, `go-tests.yml` (build + lint + `go vet`, no coverage gate yet — nothing to cover), `/healthz`/`/readyz` returning static 200s, a dev-only route flag so this PR is inert in every non-dev deployment. **Precondition, added in this fix round (§ m-R3-2): if `zero_orm_allowlist.py` is non-empty, this PR's own description names, for every entry, either the contract field that closes it or the written reason the Go relay never asks that question — the "no Postgres driver" invariant is conditional on this, not automatic (§ Stage 2c's invariant text).** | `go build ./...`, `golangci-lint run`, `go vet ./...` all green; zizmor clean on `go-tests.yml` from its first commit; the allowlist reconciliation above stated explicitly, not silently assumed; **and, added in this fix round, the Go toolchain and action pins are re-resolved at PR time, not carried forward from this spec's 2026-09-09 values** — `go.dev/dl`, `docker buildx imagetools inspect` against the current `golang` tag, and fresh `gh api .../commits/<tag> --jq .sha` lookups for `golangci-lint-action`/`setup-go`/`checkout`, committed with whatever the tool returns on the day this PR is opened | 2b-3 (Gate 2 green **and** the allowlist reconciliation above) |
 | 2c-2 | `migration/phase2c-vertical-slice` | The Proxy stream-profile architecture only (no ffmpeg spawn yet): one client, in-memory ring buffer, MPEG-TS passthrough for a single upstream. Proves the buffer/fan-out shape end to end before ffmpeg complexity is added. | New Go tests pass with `-race`; parity matrix rows 7, 9 (chunk monotonicity, 188-byte realignment) get a Go column | 2c-1 |
 | 2c-3 | `migration/phase2c-fanout` | Multi-client fan-out, join-5s-behind, the client registry, `?clients=all` on `GET /proxy/relay/channels` | Rows 8, 10, 13 get a Go column | 2c-2 |
 | 2c-4 | `migration/phase2c-ffmpeg` | ffmpeg spawn via `os/exec` + `syscall.SysProcAttr{Setpgid, Pdeathsig}` (D5 exception 1), the `log_parsers.py` port | Row 4 (the `speed=` arming delay) gets a Go column with its own real-ffmpeg test, mirroring 2a's harness | 2c-3 |
@@ -1030,8 +1093,13 @@ proxy_set_header X-Relay-Client-IP "";       # 2b's seventh header (NB1, this fi
 ```
 
 used only by `/proxy/relay/`, which is Django-bound but no longer `uwsgi_pass`. The three byte-path
-locations don't need this file at all — they *set* the five (seven, after 2b-2) `X-Relay-*` headers from
-`auth_request_set` variables via `proxy_set_header X-Relay-* $relay_*;`, they don't blank them; the
+locations don't need this file at all — they *set* the marker plus four (six, after 2b-2) `X-Relay-*`
+headers from `auth_request_set` variables via `proxy_set_header X-Relay-* $relay_*;` — corrected
+count in this fix round (§ m-R3-3 in the round-3 review): the trust marker is not itself one of the
+`X-Relay-*` family, so the two counts (`auth_request_set` variables, six today and eight after
+2b-2's two headers, since `$relay_name` is `auth_request_set`-only and never forwarded; and the
+forwarded `X-Relay-*` params, four today and six after) differ by one throughout this section. They
+don't blank them; the
 client-header-override guarantee there survives cutover by the same nginx mechanism
 (`proxy_set_header` unconditionally sets the outgoing header, same as the `HTTP_`-prefixed
 `uwsgi_param` rule did), but the **mechanism changed**, so the E2E test that sends a forged marker
@@ -1066,10 +1134,14 @@ address (or empty) for every live client on both status endpoints, while VOD/cat
 `uwsgi_pass`) keep reporting correctly — invisible in dev, invisible in a smoke test, wrong in
 production.
 
-**Fix, two parts.** (1) Each of the three flipped locations re-declares all six server-level
-`proxy_set_header` lines alongside its own `X-Relay-*` ones — the `proxy_pass` twin of the
-`include uwsgi_params;` repetition `nginx.conf` already performs per location for the same reason.
-(2) For `ip_address` specifically, rather than teaching the Go relay `get_client_ip`'s trusted-proxy
+**Fix, two parts.** (1) Each of the **three byte-path** flipped locations re-declares all six
+server-level `proxy_set_header` lines alongside its own `X-Relay-*` ones — the `proxy_pass` twin of
+the `include uwsgi_params;` repetition `nginx.conf` already performs per location for the same
+reason. **`/proxy/relay/`, the fourth flipped location, deliberately needs none of the six** — added
+in this fix round, since the same replace-not-merge rule applies to it too and the exemption is
+otherwise unstated: its client is Django, not a viewer, and the Go control API reads neither a
+forwarded address nor a forwarded `Host` from that location; losing `Host: $host` on a JSON API
+between two internal processes is inert. (2) For `ip_address` specifically, rather than teaching the Go relay `get_client_ip`'s trusted-proxy
 semantics (a second configuration surface — `LOCAL_NETWORK_CIDRS`/`DISPATCHARR_TRUSTED_PROXIES` —
 the Go process would need to read and keep in sync with Django's), **the authorize hop resolves it
 once, the same way it already resolves `output_format` for 2b**: a seventh `X-Relay-*` header,
