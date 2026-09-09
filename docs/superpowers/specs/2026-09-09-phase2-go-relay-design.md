@@ -568,8 +568,8 @@ the trust-mismatch failure mode as a risk this fix closes rather than leaves ope
   request object it is handed**, and `_resolve_principal`'s first two lines (`:309-310`) are
   `if is_internal: return INTERNAL_PRINCIPAL` — before any credential, channel flag or stream limit
   is even looked at (`_apply_channel_checks` returns immediately for an internal principal,
-  `authorize.py:374-375`; the stream-limit block never runs because `user` is `None`,
-  `authorize.py:435-440`; the XC credential check is never reached). `IsInternalRelay` **requires**
+  `authorize.py:376-377`; the stream-limit block never runs because `user` is `None`,
+  `authorize.py:436-442`; the XC credential check is never reached). `IsInternalRelay` **requires**
   the Go relay to send `X-Dispatcharr-Internal` on this very POST — it is one of the two headers the
   gating bullet below mandates. If the Django view then calls `authorize_stream` with the incoming
   request unchanged, `request_is_internal` reads that same header and returns `True` for **every**
@@ -595,6 +595,22 @@ the trust-mismatch failure mode as a risk this fix closes rather than leaves ope
   the same replay binding as `uri`/`client_ip`/`headers` — a captured token cannot be replayed to
   turn a client tune into an internal one, closing the same class of hole `M-R3-1`'s fix closed for
   the rest of the question.
+
+  **Consolidating this and the two bullets above (round-5 review, MINOR 1): the view builds the
+  entire request it hands to `authorize_stream` from the body, and inherits nothing from the
+  transport request.** `REMOTE_ADDR` comes from `client_ip`; the path and query string
+  `_surface_for` resolves the surface from — and that `authorize_views.py:299` also reads
+  `session_id` off of, for the catch-up surface — come from `uri`; the three credential headers
+  come from `headers`; `HTTP_X_DISPATCHARR_INTERNAL` comes from `internal`. Every one of
+  `authorize_stream`'s inputs is a body field, none is read off the incoming POST — adjusting only
+  the one field named above and passing the rest of the transport request through unchanged would
+  silently reopen the ACL bullet's own hole (`REMOTE_ADDR` back to the Go relay's own address) even
+  after the internal-principal bypass is closed, which is exactly the partial fix this sentence
+  exists to rule out. One related detail worth carrying at implementation time, not in this spec:
+  `_session_user` (`authorize.py:268-276`) reads the session directly rather than through
+  `http_request.user`, deliberately, so the synthesised request needs Django's session machinery
+  run over the body's `cookie` value — simpler than relying on middleware, not harder, and the
+  reason that function is shaped the way it is.
 - **The route must be gated, not open — and gating it is now the *only* protection it has, since it
   no longer sits behind nginx's `internal;` location the way the existing GET/HEAD view does.**
   `authorize_view` today is `AllowAny` but is reachable only through nginx's `internal;` location —
