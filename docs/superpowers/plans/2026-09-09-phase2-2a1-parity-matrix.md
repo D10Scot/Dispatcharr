@@ -71,9 +71,13 @@ Copied from the spec; every task's requirements implicitly include this section.
   this PR (§ Design ruling 9). If one ever is, it gets zizmor-clean before the commit, and any new
   `uses:` is a 40-char SHA with a version comment resolved by
   `gh api repos/<owner>/<repo>/commits/<tag> --jq .sha` after confirming the publisher.
-- **This PR changes no product code.** Nothing under `apps/`, `core/`, `dispatcharr/`, `frontend/`,
-  `docker/`, `scripts/` or `metrics/` is edited. The diff is `docs/`, `e2e/` and `CLAUDE.md`. If a
-  task starts to need a product edit, stop and report — that is a different PR.
+- **This PR changes no product code.** Nothing under `apps/`, `core/`, `dispatcharr/`, `docker/` or
+  `scripts/` is edited, and nothing under `frontend/` except one `.prettierignore`. Beyond `docs/`,
+  `e2e/` and `CLAUDE.md` the diff carries four infrastructure files this PR's own work requires
+  (`.github/workflows/e2e-tests.yml`, `.claude/hooks/run-affected-tests.sh`, `.prettierignore`,
+  `frontend/.prettierignore` — ruling 9) and one ledger correction (`metrics/curated/defects.yml` —
+  ruling 9's exception). **If a task starts to need a product edit, stop and report** — that is a
+  different PR.
 - **Every `test()` carries exactly one inline tag** in a details object written literally at the
   call site. `e2e/tests/guards/tags.spec.ts` fails a tag passed by reference, two tags, or none.
   All seven tests in this PR carry `{ tag: '@characterization' }` (§ Design ruling 8).
@@ -358,7 +362,7 @@ Note the direction of the ADR's asymmetry — ambiguity resolves to `@contract` 
 apply: there is no ambiguity here. A `@contract` tag on a test that reads `docs/` off disk would be
 a false claim that some client can observe the file.
 
-### 9. No workflow change, no metrics change
+### 9. What this PR touches beyond `docs/` and `e2e/`, and why none of it is scope creep
 
 - **`e2e-tests.yml`: two lines change, and the first draft of this plan was wrong to rule it out.**
   The `guards` project does have its own container-less CI job (`e2e/README.md` § CI: "`guards` is
@@ -380,12 +384,28 @@ a false claim that some client can observe the file.
   gate. Task 2 adds a `docs/relay-parity-matrix.md` case that runs the `guards` project, in the same
   shape as the existing `e2e/*.ts` typecheck branch — blocking when it can run, a loud `note` when
   `e2e/node_modules` is missing.
-- **`metrics/curated/`:** unchanged. `CLAUDE.md` § Agent skills requires a metrics update from a PR
-  that closes a ledger issue, adds a `test.fail()` pin, merges a goal, or ticks a Done log. This PR
-  does none of the four: it closes no issue, adds no `test.fail()`, is not a goal merge, and the
-  Phase 2 Done log lives in the spec on the PR 0 branch, not here. The spec's own § Documentation
-  puts the phase's `metrics/curated/` work in `migration/phase2d-docs`. Task 8 verifies the diff
-  names nothing under `metrics/`.
+- **`metrics/curated/defects.yml`: two fields, and why that is not the metrics work this ruling
+  disclaims.** `CLAUDE.md` § Agent skills requires a metrics update from a PR that closes a ledger
+  issue, adds a `test.fail()` pin, merges a goal, or ticks a Done log. **None of those four fires
+  here, and that half of this ruling stands unchanged**: this PR closes no issue, adds no
+  `test.fail()`, is not a goal merge, and the Phase 2 Done log lives in the spec on the PR 0 branch.
+  The spec's § Documentation still puts the phase's *metrics work* — the `phase-start` and
+  `phase-done` milestones — in `migration/phase2d-docs`, and that is still not this PR's to do.
+
+  **What changed is that this PR's own actions invalidated two rows of the ledger.** Rows 6 and 12
+  are the two D5 defects the matrix records as reproduced-not-fixed; filing them produced issues
+  **#221** and **#222**, at which point `defects.yml`'s `max-stream-switches-unbounded` and
+  `fmp4-timeout-no-switch-exemption` still read `issue: null` — false *because of this PR*. The
+  correction is two fields, `null` → `221` and `null` → `222`. `status` stays `open` and `test` stays
+  `null`, so no ledger issue closes and no pin is claimed.
+
+  **The distinction, stated so a later PR can apply it:** correcting the ledger's own data as a
+  consequence of what this PR did is finishing the change, not widening it — a PR that leaves the
+  ledger describing a world its own commits ended is not smaller, it is wrong. Doing the metrics
+  *work* — adding a metric, a milestone, a Done-log tick — belongs to `phase2d-docs` and would still
+  be scope creep here. Validate with
+  `python -m metrics.build --validate-only --curated metrics/curated`; expect
+  `ok: 46 metrics, 32 milestones, 27 defects`.
 - **`CLAUDE.md`:** one line added (Task 7). `docs/relay-parity-matrix.md` becomes a load-bearing
   top-level document that every later Phase 2 PR cites, and `CLAUDE.md` § Repository and direction
   is where this fork lists exactly that kind of document. A matrix nobody can find is not
@@ -729,7 +749,8 @@ the defect the sequencing audit found in Task 2, and the two codes tell those tw
 - [ ] **`e2e/README.md` § Projects' `guards` enumeration names the parity matrix guard.**
 - [ ] **`CLAUDE.md` § Repository and direction names `docs/relay-parity-matrix.md`.**
 - [ ] **`git diff --name-only main...HEAD` names nothing under `apps/`, `core/`, `dispatcharr/`,
-      `frontend/`, `docker/`, `scripts/` or `metrics/`.**
+      `docker/` or `scripts/`, and nothing under `frontend/` except `.prettierignore`.** The twelve
+      files the diff does carry are listed in Task 8 step 2, each with the task that added it.
 - [ ] **The PR is open** against `main`, with the plan committed on the branch.
 
 ---
@@ -806,6 +827,9 @@ e2e/
 .claude/hooks/
   run-affected-tests.sh                       MODIFY  one case running the guards project when
                                                       the matrix is edited
+metrics/curated/
+  defects.yml                                 MODIFY  two `issue:` fields, null -> 221 and 222,
+                                                      stale because this PR filed them (ruling 9)
 CLAUDE.md                                     MODIFY  one line in § Repository and direction
 ```
 
@@ -814,8 +838,8 @@ Touched and reverted, not in the diff: `e2e/tests/streaming-greybox/output-profi
 reverts it; Task 6 step 7's `git status --short` is what catches a failure to).
 
 Nothing else. In particular: no `e2e/playwright.config.ts` change (no new project), no
-`e2e/package.json` change (no new script, no new dependency), no `metrics/` change — § Design
-ruling 9.
+`e2e/package.json` change (no new script, no new dependency), and no `metrics/` change beyond the two
+ledger fields ruling 9's exception covers — § Design ruling 9.
 
 ---
 
@@ -3253,7 +3277,7 @@ which before continuing.
 git diff --name-only main...HEAD
 ```
 
-Expected, exactly these **eleven**:
+Expected, exactly these **twelve**:
 
 ```
 .claude/hooks/run-affected-tests.sh
@@ -3267,6 +3291,7 @@ e2e/README.md
 e2e/tests/guards/parity-matrix.spec.ts
 e2e/tests/guards/parity-matrix.ts
 frontend/.prettierignore
+metrics/curated/defects.yml
 ```
 
 **The four infrastructure files are deliberate, and each is Task 2's own work.** An earlier draft of
@@ -3280,12 +3305,16 @@ so reverting one to satisfy the constraint would break the criterion it exists t
 | `.claude/hooks/run-affected-tests.sh` | no hook matched a Markdown file, so editing the matrix ran no check locally | Step 10 |
 | `.prettierignore` | `prettier --write` from the repo root pads the table | Step 9b |
 | `frontend/.prettierignore` | Prettier resolves `--ignore-path` from the working directory, so the root file does **not** cover `CLAUDE.md:36`'s `cd frontend && npx prettier --write` | Step 9b |
+| `metrics/curated/defects.yml` | two `issue:` fields this PR's own issue-filing made stale — `null` → 221, `null` → 222 (ruling 9's exception) | Task 6 |
 
 **What the check still excludes, which is its real point:** nothing under `apps/`, `core/`,
-`dispatcharr/`, `docker/`, `scripts/` or `metrics/`, and nothing under `frontend/` except that one
-ignore file. **This PR changes no product code and no frontend source.** A `.py`, a `.jsx` or a
-`metrics/curated/` edit appearing here would still be wrong, and that judgement has not changed —
-only the list of infrastructure files this PR legitimately carries.
+`dispatcharr/`, `docker/` or `scripts/`, and nothing under `frontend/` except that one ignore file.
+**This PR changes no product code and no frontend source.** A `.py` or a `.jsx` appearing here would
+still be wrong, and so would a *new* metric, milestone or Done-log tick — that work is
+`phase2d-docs`'s. What `metrics/curated/defects.yml` carries is not that: it is two fields this PR's
+own issue-filing falsified, and correcting them is finishing the change rather than widening it
+(ruling 9). Only the list of files this PR legitimately carries has moved; the judgement about what
+does not belong has not.
 
 - [ ] **Step 3: Run the commit gate once against the full branch.**
 
@@ -3371,9 +3400,20 @@ and because row 18 can only close in 2b-3, 2b-3 is the only PR that can own it.
 The guard's `GATE_1_CLOSED` flag is written so that whichever PR closes the last
 owed row is told, by a failing assertion, to flip it in the same commit.
 
-No product code. No new dependency. No `metrics/` change — the spec puts this
-phase's `metrics/curated/` work in `migration/phase2d-docs`, and none of
-`CLAUDE.md`'s four triggers fires here.
+No product code, no new dependency, and no frontend source. Four
+infrastructure files come with the guard because it would not otherwise be
+reachable: `e2e-tests.yml` so the `guards` job fires on a docs-only diff, the
+edit hook so a matrix edit is checked locally, and two `.prettierignore`s
+because Prettier resolves its ignore file from the working directory and pads
+pipe tables by default.
+
+`metrics/curated/defects.yml` carries two fields, `issue: null` → 221 and 222
+on the two D5 defects rows 6 and 12 record. Filing those issues is what made
+the ledger stale, so correcting it is part of this change rather than an
+extension of it; `status` stays `open` and `test` stays `null`, so no ledger
+issue closes and no pin is claimed. The phase's actual metrics work — the
+`phase-start` and `phase-done` milestones — remains `migration/phase2d-docs`'s,
+and none of `CLAUDE.md`'s four triggers fires here.
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
 
@@ -3415,7 +3455,8 @@ and the guard under `e2e/tests/guards/` following `allowlist.ts`/`capabilities.s
 (rulings 4, 5 and 10; Tasks 2–6). The 2a PR table's row for 2a-1 asks for those two artefacts and
 sets the gate at "guard test green" (Done criteria, Task 8 step 1). § Documentation asks for
 `docs/relay-parity-matrix.md` created on this branch (Task 2), `e2e/COVERAGE.md` updated in the same
-PR as the test (Task 7 step 1), and puts `metrics/curated/` in `migration/phase2d-docs` (ruling 9,
+PR as the test (Task 7 step 1), and puts the phase's *metrics work* in `migration/phase2d-docs`
+while this PR corrects the two ledger fields its own issue-filing falsified (ruling 9,
 verified by Task 8 step 2). The spec's white-box paragraph is ruling 4 and rows 26–27.
 
 **Not covered here, deliberately:** Gate 2 (coverage) is 2a-2 and 2a-7; the subprocess harness is
