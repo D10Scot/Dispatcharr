@@ -31,8 +31,9 @@ Four stages, two of them legitimate stopping points in their own right:
 1. **2a — pin the behaviour (Python).** A parity matrix naming every externally-observable live-path
    behaviour with its source line and its pinning test, guarded so an unpinned row fails CI; a real-
    subprocess test harness the backend suite has never had; and coverage on the live path raised from
-   a measured 44% to a gated ≥80% combined with the nine Phase 1 boundary modules already at 92%.
-2. **2b — complete the contract (Python).** The dozen ORM reads Phase 1 knowingly left in the relay
+   a measured 44% to a gated ≥80% combined with the Phase 1 boundary modules, already near 92%
+   (§ Stage 2a's Gate 2 has the exact module list and count).
+2. **2b — complete the contract (Python).** The ORM reads Phase 1 knowingly left in the relay
    (its own § "ORM reads that remain" table) close: into the next-source payload, a new control-plane
    field, or deleted as dead. Ends with a guard test asserting zero ORM reads survive in the live
    relay.
@@ -319,9 +320,9 @@ not the pinned values, since patches land monthly:**
 | **D2** | **The ring buffer lives in process memory from day one.** Live video bytes never enter Redis. Ownership becomes `map[uuid]*Channel` behind a `sync.RWMutex`; the lease, the follower path, `_ensure_owner_or_stop`, the 10-second process-local cache and the three fail-open paths (`server.py`'s `_execute_redis_command` swallowing to `None`, `release_ownership`'s non-atomic GET→compare→DELETE, `extend_ownership`'s non-atomic GET→EXPIRE) are **deleted, not ported**. | A Go relay is one process per host by construction (no gevent single-worker precedent to preserve), so there is never a second writer to fence against — the un-fenced lease `CLAUDE.md` records as a real defect (`StreamBuffer.add_chunk()` writes with no ownership check) has no analogue to carry forward. Porting a Redis-backed buffer into Go only to delete it in Phase 3 wastes a release cycle proving a data structure this design already knows it will remove. **Consequence, stated plainly**: Phase 3's live half is absorbed here. Phase 3 shrinks to deleting the Python ring-buffer code (2d does that), rewriting the greybox quarantine (2d does that too), and whatever Redis coupling VOD/catch-up still carry — unrelated to this spec, a smaller Phase 3 than the route page originally sized. |
 | **D3** | **Hard cutover, no coexistence.** No per-channel canary, no second relay-name map entry live at once. One release flips the live nginx locations from `relay_py` to `relay_go`; `apps/proxy/live_proxy/` is deleted inside this phase (2d); rollback is a container image rollback, not a per-channel flag. | ADR 0005 built the `$relay_name` header and the nginx `map` explicitly so "Phase 2's canary... becomes a second map entry... not a code change on either side" — a real, ready mechanism this decision declines to use. The reason: a canary needs the *old* relay's ownership lease and ring buffer to coexist correctly with channels the *new* relay owns, on the same Redis DB, for the whole canary window — exactly the fenceless-lease and split-brain-key hazards `CLAUDE.md` already documents as live defects, now doubled by having two independent implementations of the owner-election protocol running against the same keys. D2's "buffer in memory, not Redis" makes a byte-level handoff between the two relays for one in-flight channel impossible to do safely in the time this phase has, and a channel-level canary (some channels on Python, some on Go, split by the map) still shares the provider-slot counter and the failover event stream with whichever relay is *not* serving a given channel. Cost, stated honestly: a production defect in the Go relay reverts the whole live path for every viewer, not one channel — the trade this phase makes deliberately, once, rather than carrying dual-implementation risk through a canary window of unknown length. |
 | **D4** | **No live client keys need to exist in Redis at all**, because `GET /proxy/relay/channels?clients=all` already serves that need and the Go relay must implement it anyway. | `apps/proxy/utils.py:256-283`'s `_live_connections(user_id)` — the live half of `get_user_active_connections`, called by `authorize_stream` on every tune via `check_user_stream_limits` — already calls `relay_client.list_channels(all_clients=True, timeout=relay_client.TUNE_TIMEOUT)`, i.e. it already asks the relay over HTTP rather than scanning `live:channel:*:clients:*` directly; that scan was removed in Phase 1 PR 7. Verified by reading the function in full: it fails open (a relay that cannot answer contributes nothing, logged once) and is documented as deliberately so — "the relay is the only process serving live clients, so a relay that is not answering has none." The Go relay reproducing this route byte-for-byte (§ The contract) closes the loop with zero new Redis state. |
-| **D5** | **Strict behavioural parity, defects included** — the three failover triggers and thresholds, threshold snapshotting at channel start, the monotonic never-reset chunk index, the ~5s-behind-live join, 188-byte TS realignment, the cumulative `speed=` average's ~55s arming delay, `MAX_STREAM_SWITCHES` not bounding buffering-triggered switches, and fMP4's `_is_timeout()` lacking the TS generator's `url_switching` exemption. These get filed as issues against the parity matrix, not fixed in transit. Two named exceptions: **(1) process-lifecycle hygiene** — Go spawns ffmpeg with `SysProcAttr{Setpgid: true, Pdeathsig: syscall.SIGKILL}`, closing the orphaned-ffmpeg-holds-a-provider-slot defect (`CLAUDE.md` § Operationally: "`os.posix_spawn` runs with no `setsid`/`PDEATHSIG`"), because no test asserts the current behaviour and it is process hygiene, not streaming behaviour a client can observe. **(2) The dev authorize path** — with no nginx, there is no `auth_request`; a Go relay cannot call `apps/proxy/authorize.py`'s `authorize_stream` in-process (it is Python). When the trust marker is absent, the Go relay makes an HTTP call to a new Django endpoint, `POST /_dispatcharr/authorize` — the same view nginx's subrequest hits — with the original request URI, so it is still exactly one decision function, reached over HTTP instead of a Python import. | A rewrite that also changed behaviour would make every regression ambiguous between "the port is wrong" and "the fix changed something." Parity is what makes the ~61 portable tests (§ Verified facts) a meaningful safety net rather than a moving target. The two exceptions are chosen narrowly: neither is externally observable streaming behaviour a Playwright spec could assert differently, and the second is required by D2/D3's own shape (dev has no nginx, and Go has no Django import path), not a discretionary fix folded in for convenience. |
+| **D5** | **Strict behavioural parity, defects included** — the three failover triggers and thresholds, threshold snapshotting at channel start, the monotonic never-reset chunk index, the ~5s-behind-live join, 188-byte TS realignment, the cumulative `speed=` average's ~55s arming delay, `MAX_STREAM_SWITCHES` not bounding buffering-triggered switches, and fMP4's `_is_timeout()` lacking the TS generator's `url_switching` exemption. These get filed as issues against the parity matrix, not fixed in transit. Two named exceptions: **(1) process-lifecycle hygiene** — Go spawns ffmpeg with `SysProcAttr{Setpgid: true, Pdeathsig: syscall.SIGKILL}`, closing the orphaned-ffmpeg-holds-a-provider-slot defect (`CLAUDE.md` § Operationally: "`os.posix_spawn` runs with no `setsid`/`PDEATHSIG`"), because no test asserts the current behaviour and it is process hygiene, not streaming behaviour a client can observe. **(2) The dev authorize path** — with no nginx, there is no `auth_request`; a Go relay cannot call `apps/proxy/authorize.py`'s `authorize_stream` in-process (it is Python). When the trust marker is absent, the Go relay makes an HTTP call to a new Django endpoint, `POST /_dispatcharr/authorize-internal` — its own path, not the existing nginx-facing one, for a reason § The contract states in full — reaching the same `authorize_stream()` decision function over HTTP instead of a Python import. | A rewrite that also changed behaviour would make every regression ambiguous between "the port is wrong" and "the fix changed something." Parity is what makes the ~61 portable tests (§ Verified facts) a meaningful safety net rather than a moving target. The two exceptions are chosen narrowly: neither is externally observable streaming behaviour a Playwright spec could assert differently, and the second is required by D2/D3's own shape (dev has no nginx, and Go has no Django import path), not a discretionary fix folded in for convenience. |
 | **D6** | **Ships drain-on-SIGTERM, `/healthz`, `/readyz`, wired to supervisord `stopwaitsecs` and a Docker `HEALTHCHECK`. No Prometheus metrics.** | `CLAUDE.md` § Operationally records the current relay's shutdown as bounded-not-graceful (`die-on-term`, no drain) and the deployment as having no readiness probe at all — both real gaps this phase can close in a language where a drain loop and a health endpoint are a few dozen lines, not a gevent-compatibility exercise. Metrics are declined because nothing scrapes them today and the metrics dashboard (`metrics/curated/`) is engineering data assembled from git/CI/issue history, not a runtime target — adding a `/metrics` endpoint with no consumer is exactly the scope-widening `CLAUDE.md` warns against. |
-| **D7** | **Two coverage gates, not one, and the second blocks the first line of Go code.** Gate 1: the parity matrix is 100% pinned, enforced by a guard test. Gate 2: ≥80% statement coverage on `apps/proxy/live_proxy/**` plus the nine Phase 1 boundary modules, measured by `scripts/coverage_live_path.sh` and enforced as a ratchet floor file, in `lint.yml`'s idiom for zizmor's zero-findings rule. **No PR in stage 2c may merge until both gates are green**, recorded as CI-enforced in 2c's own PRs, not left to review discipline. | The 61 portable tests alone are not enough to catch a subtle regression in, say, the buffering detector's cumulative-average arithmetic — `log_parsers.py` is 69% covered and 235 statements of exactly the logic a byte-for-byte port has to get right. Gating Go's *start* on coverage, not just its *finish*, is what stops "write the matrix, then start porting while coverage catches up" — a sequencing this phase's own §2a reachability numbers show is expensive to do after the fact (the two hardest files to cover, `input/manager.py` and `fmp4/manager.py`, are exactly the two a Go implementer needs most while porting). |
+| **D7** | **Two coverage gates, not one, and the second blocks the first line of Go code.** Gate 1: the parity matrix is 100% pinned, enforced by a guard test. Gate 2: ≥80% statement coverage on `apps/proxy/live_proxy/**` plus the Phase 1 boundary modules (§ Stage 2a names the exact ten), measured by `scripts/coverage_live_path.sh` and enforced as a ratchet floor file, in `lint.yml`'s idiom for zizmor's zero-findings rule. **No PR in stage 2c may merge until both gates are green**, recorded as CI-enforced in 2c's own PRs, not left to review discipline. | The 61 portable tests alone are not enough to catch a subtle regression in, say, the buffering detector's cumulative-average arithmetic — `log_parsers.py` is 69% covered and 235 statements of exactly the logic a byte-for-byte port has to get right. Gating Go's *start* on coverage, not just its *finish*, is what stops "write the matrix, then start porting while coverage catches up" — a sequencing this phase's own §2a reachability numbers show is expensive to do after the fact (the two hardest files to cover, `input/manager.py` and `fmp4/manager.py`, are exactly the two a Go implementer needs most while porting). |
 
 ## Architecture
 
@@ -359,9 +360,9 @@ once per tune              ┌──────────▼─────�
         /               ┌────────────────────────────┐
         /api/            │  api-uwsgi — unchanged        │
         /output/, /hdhr/  │  authorize_stream() unchanged  │
-   ┌───►│  now also calls POST /_dispatcharr/authorize   │
-   │    │  itself when the Go relay's dev fallback needs  │
-   │    │  it (D5)                                         │
+   ┌───►│  now also serves POST /_dispatcharr/            │
+   │    │  authorize-internal, its own new path, for the   │
+   │    │  Go relay's dev fallback (D5, § The contract)     │
    │    └────────────┬──────────────────┬─────────────────┘
    │  auth_request     │ POST /api/relay/…│ POST /api/relay/…
    │  (unchanged        │ (unchanged        │ (unchanged wire
@@ -474,15 +475,37 @@ relay must reproduce exactly, per D5:
 
 ### The dev fallback (D5, exception 2)
 
-New route, Django side: `POST /_dispatcharr/authorize` (distinct from the existing `GET/HEAD`
-`= /_dispatcharr/authorize` nginx-facing view, which `apps/proxy/authorize_views.py`'s
-`authorize_view` already serves) — same `authorize_stream()` call, reached over HTTP because a Go
-process cannot import Python. Used only when the Go equivalent of `request_is_relay_trusted()` finds
-no valid `X-Dispatcharr-Authorized` marker, i.e. only in `dev`/`debug` or any nginx-less deployment
-shape — on every ordinary nginx-fronted tune this route is never called, matching the Python relay's
-own inline-fallback frequency today. This spec's first draft under-specified what the call needs;
+New route, Django side: **`POST /_dispatcharr/authorize-internal`** — its own path, not
+`/_dispatcharr/authorize`, corrected in this fix round (§ NM4 in the round-2 review: reusing the
+existing path would have been silently unreachable in every nginx-fronted deployment, see below) —
+same `authorize_stream()` call, reached over HTTP because a Go process cannot import Python. Used
+only when the Go equivalent of `request_is_relay_trusted()` finds no valid `X-Dispatcharr-Authorized`
+marker, i.e. only in `dev`/`debug` or any nginx-less deployment shape — on every ordinary
+nginx-fronted tune this route is never called, matching the Python relay's own inline-fallback
+frequency today. This spec's first draft under-specified what the call needs;
 `authorize_stream` (`apps/proxy/authorize.py`) takes far more than a URI, and each gap below is a
 real hole if left unaddressed, not a simplification:
+
+**Why the distinct path matters, and what it protects.** `docker/nginx.conf:116` declares
+`location = /_dispatcharr/authorize { internal; ... }` — an **exact-match** location, which wins
+outright over every prefix and regex location (`nginx.conf:58-61`'s own comment states the rule),
+and `internal;` makes it unreachable to any external client, pinned by
+`nginx-stream-buffering.spec.ts:273-276`. A `POST` to the *same path* is 404'd by nginx before
+Django ever sees it, in every nginx-fronted deployment — the method does not matter, only the
+location match does. That is harmless for the fallback's intended use (nginx-less dev has no nginx
+to 404 it). It is not harmless for the failure mode Phase 1 deliberately made safe: when nginx's
+rendered `RELAY_TRUST_TOKEN` and a relay's own derived token disagree — a `SECRET_KEY` mismatch
+between roles, or `/data/jwt` rotated under a non-idempotent `03-init-dispatcharr.sh` restart —
+`request_is_relay_trusted()` returns `False` and, today, the Python relay's tune falls through to an
+inline `authorize_stream` call, warning once per process
+(`apps/proxy/authorize_views.py`'s `_TRUST_MISMATCH_WARNED`). The outcome today is fail-safe but
+silent: streams keep working. Reusing `/_dispatcharr/authorize` for the Go fallback would turn that
+same mismatch into every live tune failing outright post-cutover (the Go relay's own HTTP fallback
+would also 404), trading a currently-degraded mode for a total outage on a fault the repo has
+already named a flag for. A distinct, non-`internal` path sidesteps the shadowing entirely and lets
+the Go relay's fallback work in every shape exactly as designed, preserving today's degrade behaviour
+rather than spending it. `2c-8`'s scope (§ Stage 2c) names this route explicitly, and § Risks records
+the trust-mismatch failure mode as a risk this fix closes rather than leaves open.
 
 - **The network ACL is evaluated against the request's own address** (`authorize.py:425`,
   `network_access_allowed(http_request, _acl_key(surface), user)`). If the Go relay POSTs from its
@@ -497,14 +520,18 @@ real hole if left unaddressed, not a simplification:
   `Authorization` and `Cookie` headers, the query string, and the XC path segments verbatim, plus
   `X-Original-URI` naming the original request's full path — the same header `authorize_view`
   already reads for the nginx-facing form (`apps/proxy/internal_auth.py`'s `META_ORIGINAL_URI`).
-- **The route must be gated, not open.** `authorize_view` today is `AllowAny` but is reachable only
-  through nginx's `internal;` location — there is no client path to it at all in production. A new
-  `POST /_dispatcharr/authorize` with no permission class would be an authorization oracle: anyone
-  who can reach Django could enumerate which channel UUIDs exist and which are hidden or adult, by
-  probing this route directly. It is gated by `IsInternalRelay` — the same two-header check
-  (`X-Dispatcharr-Internal` + `X-Dispatcharr-Internal-Request`) the `/proxy/relay/…`/`/api/relay/…`
-  contract already uses, and which 2c's Go relay implements from its first PR regardless — so this
-  route costs no new authentication mechanism, only a new permission-class assignment.
+- **The route must be gated, not open — and gating it is now the *only* protection it has, since it
+  no longer sits behind nginx's `internal;` location the way the existing GET/HEAD view does.**
+  `authorize_view` today is `AllowAny` but is reachable only through nginx's `internal;` location —
+  there is no client path to it at all in production. The new `POST /_dispatcharr/authorize-internal`
+  has no such nginx shield by design (that is the whole point of giving it a distinct path — see
+  above), so a route with no permission class would be a real authorization oracle: anyone who can
+  reach Django could enumerate which channel UUIDs exist and which are hidden or adult, by probing it
+  directly. It is gated by `IsInternalRelay` — the same two-header check (`X-Dispatcharr-Internal` +
+  `X-Dispatcharr-Internal-Request`) the `/proxy/relay/…`/`/api/relay/…` contract already uses, and
+  which 2c's Go relay implements from its first PR regardless — so this route costs no new
+  authentication mechanism, only a new permission-class assignment, but that assignment is load-
+  bearing in a way it would not have been on the shielded path.
 - **Registration is unconditional, not dev-gated.** The route is registered in every deployment
   shape (there is no code-level way to know at Django's boot time whether the *relay* it will talk
   to has nginx in front of it), and is simply never called in practice once nginx is present, because
@@ -524,13 +551,26 @@ read in full.
 | Response | Outcome | Retried? |
 |---|---|---|
 | 2xx, valid JSON object body | Success | — |
-| 2xx, non-JSON body | `ControlPlaneUnavailable` | Yes (part of the 2-attempt budget) |
-| 2xx, JSON but not an object (a list, string, `null`) | `ControlPlaneUnavailable` | Yes |
-| 3xx | `ControlPlaneUnavailable` — **never followed** (`allow_redirects=False`) | Yes, but pointless: "misconfiguration doesn't fix itself inside the 120s signing window" |
+| 2xx, non-JSON body | `ControlPlaneUnavailable` | **No — corrected in this fix round** |
+| 2xx, JSON but not an object (a list, string, `null`) | `ControlPlaneUnavailable` | **No — corrected in this fix round** |
+| 3xx | `ControlPlaneUnavailable` — **never followed** (`allow_redirects=False`) | **No — corrected in this fix round** |
 | 4xx, and it is `next-source`'s 404 specifically | Mapped to `{"source": null, "alternates": [], "error": "identifier not found"}` — **not an error** (channel deleted mid-playback) | — |
 | 4xx, every other case (a 400, or a 403 from a `SECRET_KEY` mismatch between the api and relay roles) | `ControlPlaneRefused(status, path)` — **not a subclass of `ControlPlaneUnavailable`**; `except ControlPlaneUnavailable` must not catch it | **No** — "a 404... or a 403... must fail the switch loudly instead of making every failover on the deployment degrade silently forever" |
 | 5xx, or a transport exception (`requests.RequestException`) | `ControlPlaneUnavailable` | Yes |
 | 200 with a non-dict `source` or non-list `alternates` (`next_source`'s own validation, after `_post` already returned a dict) | `ControlPlaneUnavailable` | — (validation runs after `_post` returns; no further HTTP attempt) |
+
+**Only a 5xx or a transport exception consumes the retry budget's second attempt; every other
+non-2xx outcome raises immediately on the first.** Corrected in this fix round — this spec's first
+draft marked the non-JSON, non-object and 3xx rows "Yes" (the 3xx row hedged "Yes, but pointless"),
+reading the code's own comment about *why* retrying a 3xx is pointless and then recording the
+opposite of what the code actually does with that reasoning. Verified against
+`apps/proxy/control_plane.py:83-146`: only the transport-exception branch (`:99-100`, catching
+`requests.RequestException`) and the 5xx branch (`:139`) assign `last = …` and fall through to the
+loop's `time.sleep(RETRY_DELAY)` at `:141-143`. The non-JSON-2xx raise (`:102-110`), the
+non-object-2xx raise (`:111-119`) and the 3xx raise (`:121-127`) all `raise` directly inside the
+`for attempt in range(ATTEMPTS)` loop, exiting it on the first pass. A Go client built to the
+uncorrected table would burn a second full `(2, 5)` budget — up to 7 extra seconds of dead air —
+on a misconfigured deployment before falling back; the corrected table is what 2c-5 implements.
 
 Only `ControlPlaneUnavailable` triggers the degraded, unenforced fallback to the channel-start-cached
 candidate list (§ Stage 2c); `ControlPlaneRefused` must propagate and fail the switch. `release_source`
@@ -595,7 +635,9 @@ and a test reference before the guard test (below) passes.
 | 14 | Status payload exact field set/types: `owner` is `null` on the **list** endpoint and the string `'unknown'` on the **detail** endpoint (not the reverse); `ffmpeg_speed` a float on both; `source_fps` a string on detail and a float on list (unlike `ffmpeg_speed`, still split, carried not fixed) | `channel_status.py` | New, unit-level (view-level bucket is fine here) |
 | 15 | `stream_xc` authorizes once and hands its `decision` into `stream_ts` so the tune is not re-authorized and a second client id is not minted for the same connection | `apps/proxy/live_proxy/views.py:161-165` (comment), `:825` (the call) | New — this spec's first draft missed this second call site entirely |
 | 16 | `/proxy/ts/stream/<stream_hash>` (no channel at all — the admin single-stream preview) applies the STREAMS ACL and the per-user stream limit when a principal resolved, and **no channel check of any kind**, because there is no channel to check | `apps/proxy/next_source.py:69-79` `get_stream_object`'s `Stream.stream_hash` fallback; ADR 0005 Consequences | New — a distinct authorization shape from every other row, currently unaddressed by 2b's contract (§ Stage 2b) |
-| 17-24 | Every row of the Phase 1 authorize matrix (`docs/superpowers/specs/2026-09-04-…md`, § "The authorize matrix", 7 principal rows × 6 columns) | `apps/proxy/authorize.py` | Existing (`streaming`, `@contract`, PR 5) — matrix cites them, does not re-test |
+| 17 | `ip_address` on both status endpoints is the real client address, not nginx's own or empty — derived post-cutover from `X-Relay-Client-IP` (resolved once at the authorize hop via `get_client_ip`), not from `REMOTE_ADDR`/`X-Forwarded-For` at the relay, because the flipped locations' own `proxy_set_header` lines discard the server-level forwarding headers those would otherwise need (§ Stage 2d, new in this fix round) | `dispatcharr/utils.py:342-370` `get_client_ip`; `client_manager.py:215-230`; `relay_serializers.py:29`, `:79` | New — no current test isolates `ip_address` from the rest of the client-registration payload |
+| 18 | What the status payload's `stream_name`/`m3u_profile_name` contain when the metadata hash was never written one — phrased as a question 2b-3 must answer, not an assumed "always present," so whatever 2b-3's inspection concludes (§ Stage 2b, § NM2/Q3 in the round-2 review), 2c is held to the same answer | `channel_status.py:74`, `:92`; `zero_orm_allowlist.py` once 2b-3 lands | New — 2b-3 records the answer as part of closing this row, not before |
+| 19-26 | Every row of the Phase 1 authorize matrix (`docs/superpowers/specs/2026-09-04-…md`, § "The authorize matrix", 7 principal rows × 6 columns) | `apps/proxy/authorize.py` | Existing (`streaming`, `@contract`, PR 5) — matrix cites them, does not re-test |
 
 Behaviour **not** observable from outside is marked white-box-only and honestly recorded as
 behaviour the Go relay is **not** held to — e.g. the exact greenlet/thread topology inside
@@ -699,12 +741,12 @@ table shape.
 | PR | Branch | What it does | Gate | Depends on |
 |---|---|---|---|---|
 | 2a-1 | `migration/phase2a-parity-matrix` | `docs/relay-parity-matrix.md` (Gate 1's 24 rows above, and any further rows found while writing it) plus `e2e/tests/guards/parity-matrix.spec.ts`, the guard test that fails naming any row lacking a `file:line` citation or a test reference. | Guard test green | — |
-| 2a-2 | `migration/phase2a-subprocess-harness` | The real-subprocess, real-fake-upstream test harness (§ "The subprocess harness" above); no relay tests yet, just the harness and a smoke test proving it spawns a real process and serves real bytes. | Harness's own smoke test green under `coverage` | 2a-1 (so new tests can cite matrix rows as they land) |
-| 2a-3 | `migration/phase2a-ts-generator-coverage` | Tests against `output/ts/generator.py` and `services/channel_service.py`'s switch/stop paths, using the harness; closes matrix rows 7-10, 13. | `coverage_live_path.sh` shows a measured increase on these two files | 2a-2 |
-| 2a-4 | `migration/phase2a-manager-coverage` | Tests against `input/manager.py`'s transcode connection setup, stderr reader and health/reconnect loops — the ~1,024-missed-statement pair's larger half; closes matrix rows 1-6, 12. | Measured increase on `input/manager.py` | 2a-2 |
-| 2a-5 | `migration/phase2a-server-coverage` | Tests against `server.py`'s bring-up, event listener loop and zombie detection. | Measured increase on `server.py` | 2a-2 |
-| 2a-6 | `migration/phase2a-fmp4-coverage` | Tests against `output/fmp4/manager.py` and `output/profile/manager.py` — the least-reachable, least-covered pair; closes matrix row 11. | Measured increase on both files | 2a-4 (shares harness patterns with the manager work) |
-| 2a-7 | `migration/phase2a-coverage-gate` | `scripts/coverage_live_path.sh`, its floor file, the `backend-tests.yml` per-label `coverage run --parallel-mode` + `coverage combine` wiring (Gate 2 above), and the gate turning green at ≥80%. | The gate itself, green — this is the phase's first hard blocker turning off | 2a-3, 2a-4, 2a-5, 2a-6 |
+| 2a-2 | `migration/phase2a-subprocess-harness` | The real-subprocess, real-fake-upstream test harness (§ "The subprocess harness" above); no relay tests yet, just the harness and a smoke test proving it spawns a real process and serves real bytes. **Also, corrected in this fix round (§ NM3 in the round-2 review): `scripts/coverage_live_path.sh` itself** — the runnable `--include=` invocation from Gate 2, with no floor file and no CI-blocking wiring yet — so 2a-3…2a-6 have a real, reproducible command to quote a number from instead of an ad-hoc local run each. | Harness's own smoke test green under `coverage`; `scripts/coverage_live_path.sh` runs and prints a percentage | 2a-1 (so new tests can cite matrix rows as they land) |
+| 2a-3 | `migration/phase2a-ts-generator-coverage` | Tests against `output/ts/generator.py` and `services/channel_service.py`'s switch/stop paths, using the harness; closes matrix rows 7-10, 13. | `coverage_live_path.sh` (created in 2a-2) shows a measured increase on these two files | 2a-2 |
+| 2a-4 | `migration/phase2a-manager-coverage` | Tests against `input/manager.py`'s transcode connection setup, stderr reader and health/reconnect loops — the ~1,024-missed-statement pair's larger half; closes matrix rows 1-6, 12. | `coverage_live_path.sh` shows a measured increase on `input/manager.py` | 2a-2 |
+| 2a-5 | `migration/phase2a-server-coverage` | Tests against `server.py`'s bring-up, event listener loop and zombie detection. | `coverage_live_path.sh` shows a measured increase on `server.py` | 2a-2 |
+| 2a-6 | `migration/phase2a-fmp4-coverage` | Tests against `output/fmp4/manager.py` and `output/profile/manager.py` — the least-reachable, least-covered pair; closes matrix row 11. | `coverage_live_path.sh` shows a measured increase on both files | 2a-4 (shares harness patterns with the manager work) |
+| 2a-7 | `migration/phase2a-coverage-gate` | The floor file, the `backend-tests.yml` per-label `coverage run --parallel-mode` + `coverage combine` CI wiring around the script 2a-2 already created (Gate 2 above), and the gate turning green and CI-blocking at ≥80%. | The gate itself, green and enforced in CI — this is the phase's first hard blocker turning off | 2a-3, 2a-4, 2a-5, 2a-6 |
 
 **2a's own legitimate stopping point** (§ Goal) is after 2a-7: the matrix is 100% pinned, the
 subprocess harness exists as a durable capability, and coverage sits at ≥80% — value that survives
@@ -721,11 +763,11 @@ Phase 1's table (written forward-looking at PR 4, now three PRs stale per the br
 |---|---|---|
 | `input/manager.py:737`, `StreamProfile.objects.get(name='ffmpeg', locked=True)` on the force-ffmpeg reconnect path | `StreamProfile` | Fold the locked ffmpeg profile's `{id, command, args}` into the `next-source` response, alongside the existing `stream_profile` payload — `POST /api/relay/channels/<id>/next-source` already carries a `stream_profile` object (§ The contract's Python precedent, `control_plane.py`'s `next_source()`), so this is a second key on an existing response, not a new route. |
 | `services/channel_service.py:324,331,911`, `Channel`/`Stream` name fallbacks used when no name was supplied at init or after a switch | `Channel`, `Stream` | Both names are already resolved during `next-source`/`advance` — Django has them at hand when it builds the response. Add `channel_name`/`stream_name` as non-optional fields on both response bodies so the relay never has to guess. |
-| `channel_status.py:74`, `Stream` name fallback when Redis has no stream name; `channel_status.py:92`, `M3UAccountProfile` name fallback | `Stream`, `M3UAccountProfile` | **Corrected in this fix round — not a confident deletion.** This spec's first draft claimed the metadata hash would always carry a name after the `channel_name`/`stream_name` addition above, making these fallbacks unreachable and safe to delete outright. That claim was never verified against `channel_service.py`'s actual write paths (does *every* channel-init and every switch write a name, with no code path that leaves the hash without one?), and asserting it without that proof is exactly the failure mode the review flagged elsewhere in this document (§ M18 in the review this fix round responds to): a third, undeclared parity exception arriving quietly inside "contract completion." The honest fix: **carry the names on the response as above, and leave the Redis-hash fallback reads in place as a defensive read for whatever path does not (yet, provably) always write one.** This still closes 2b's goal for the *common* case (the hash has a name, and the read is now redundant with the response the relay already received) without asserting a global invariant the tree does not yet prove. The zero-ORM guard test below is scoped to catch this pair specifically if they are not, in fact, closed by the time 2b's PR lands — see the guard-test correction below. |
+| `channel_status.py:74`, `Stream` name fallback when Redis has no stream name; `channel_status.py:92`, `M3UAccountProfile` name fallback | `Stream`, `M3UAccountProfile` | **Corrected in this fix round — not a confident deletion.** This spec's first draft claimed the metadata hash would always carry a name after the `channel_name`/`stream_name` addition above, making these fallbacks unreachable and safe to delete outright. That claim was never verified against `channel_service.py`'s actual write paths (does *every* channel-init and every switch write a name, with no code path that leaves the hash without one?), and asserting it without that proof is exactly the failure mode the review flagged elsewhere in this document (§ M18 in the review this fix round responds to): a third, undeclared parity exception arriving quietly inside "contract completion." The honest fix: **carry the names on the response as above, and leave the Redis-hash fallback reads in place as a defensive read for whatever path does not (yet, provably) always write one.** This still closes 2b's goal for the *common* case (the hash has a name, and the read is now redundant with the response the relay already received) without asserting a global invariant the tree does not yet prove. **This is compatible with 2c's "no Postgres driver" invariant, and it is worth one sentence saying why (§ Q3 in the round-2 review): the surviving fallback, if any, is Python code that is deleted wholesale in `migration/phase2d-delete-live-proxy`, not a shape the Go relay reimplements — the Go relay has the name in memory from 2b-1's `next-source` response and never needs a "Redis has no name, ask the DB" branch at all, so a Python-side fallback surviving to the end of 2b says nothing about what the Go binary links at the end of 2c.** What it *can* mean, if the fallback is ever actually exercised, is that Python and Go answer the status payload's `stream_name`/`m3u_profile_name` differently on that path — a genuine parity question, not an ORM-invariant risk, and it is parity-matrix row 18's job to hold 2c to whatever 2b-3 finds rather than leave it silently unaddressed. The zero-ORM guard test below (now with its allowlist, § NM2) is scoped to catch the ORM-read half specifically if any read is not, in fact, closed by the time 2b's PR lands. |
 | `url_utils.py:247`, `get_connections_left(m3u_profile_id)` — `M3UAccountProfile.objects.get(id=m3u_profile_id)` | `M3UAccountProfile` | **New row, added in this fix round** — this spec's first draft incorrectly claimed this function was already deleted (§ What the code says). `grep -rn "get_connections_left" apps/proxy/` finds no caller outside `test_live_db_cleanup.py:167-172`'s own test. 2b's fix: delete the function and its test unless a real caller surfaces during 2b's own audit, in which case fold its answer into the `next-source`/`advance` response the same way as the `StreamProfile` row above. |
 | `next_source.py:69-79`'s `get_stream_object`, `Stream.objects.select_related(...).get(stream_hash=id)` fallback used by the single-stream admin-preview surface (parity matrix row 16) | `Stream` | **New row, added in this fix round** (§ M15 in the review). `/proxy/ts/stream/<stream_hash>` has no `Channel` to resolve via `next-source`'s existing channel-uuid path. 2b extends `next-source`'s identifier resolution to accept either shape and answer the same payload either way — the relay already sends whatever identifier arrived in the URL; Django's resolution (`Channel` first, `Stream.stream_hash` fallback) is exactly what `get_stream_object` already does, moved to the contract side unchanged. |
 | `views.py:152`, `OutputProfile.objects.filter(id=..., is_active=True).first()` so `build_command()` can be called | `OutputProfile` | Phase 1's Amendment S3 left this in deliberately — "the header contract cannot carry a built ffmpeg command." A control-plane **response body** can, unlike a header. **Decided in this fix round** (this spec's first draft left two shapes open with no decision, an implementer-facing gap flagged in review as m23): fold the built command and its args list into `next-source`'s response when `X-Relay-Output` names a profile, rather than a separate route — `next-source` already runs once per tune with the ORM open, and a separate `GET /api/relay/output-profiles/<id>/command` route would be a second round trip for data available at the same moment. |
-| `apps/proxy/authorize_views.py:112-141`'s `User.objects.filter(id=int(user_id)).first()` inside `result_from_headers`, run on **every** trusted tune inside the relay process, from both `stream_ts` (`views.py:168`) and `stream_xc` (`views.py:825`) (§ What the code says) | `User` | The relay never needs the `User` row itself — only `user.custom_properties.get('output_format')` (`_resolve_output_format`, `live_proxy/views.py:112-131`) and the value `add_client` stores for display. Carry `output_format` as a resolved string on the trusted response — a sixth `X-Relay-*` header, `X-Relay-Output-Format`, set by `authorize_view` (which already resolved the `User` row to answer `output_profile_id`) — and store the raw `user_id` string for display/registration without ever re-querying it. Closes the last ORM read on the ordinary tune path. **Blast radius, named explicitly (§ M10 in the review):** this sixth header touches `docker/dispatcharr_api_params.conf` (currently exactly five `uwsgi_param HTTP_X_… "";` lines — becomes six), all nine relay-bound `docker/nginx.conf` locations (each needs a sixth `auth_request_set`/`uwsgi_param` pair, or `proxy_set_header` post-2d-flip on the three that move), `e2e/tests/streaming-greybox/nginx-stream-buffering.spec.ts`'s `AUTH_REQUEST_SET_VARS` set (six today — five `$relay_*` plus `$authorize_status` — becomes seven), and `apps/proxy/authorize_views.py`'s `result_from_headers` docstring/`internal_auth.py`'s `HEADER_RELAY_*`/`META_RELAY_*` pairs (a sixth name each). All four are part of this 2b PR's file list, not a follow-up. |
+| `apps/proxy/authorize_views.py:112-141`'s `User.objects.filter(id=int(user_id)).first()` inside `result_from_headers`, run on **every** trusted tune inside the relay process, from both `stream_ts` (`views.py:168`) and `stream_xc` (`views.py:825`) (§ What the code says) | `User` | The relay never needs the `User` row itself — only `user.custom_properties.get('output_format')` (`_resolve_output_format`, `live_proxy/views.py:112-131`) and the value `add_client` stores for display. Carry `output_format` as a resolved string on the trusted response — a sixth `X-Relay-*` header, `X-Relay-Output-Format`, set by `authorize_view` (which already resolved the `User` row to answer `output_profile_id`) — and store the raw `user_id` string for display/registration without ever re-querying it. Closes the last ORM read on the ordinary tune path. **Blast radius, named explicitly (§ M10 in the review):** this sixth header touches `docker/dispatcharr_api_params.conf` (currently exactly five `uwsgi_param HTTP_X_… "";` lines — becomes six), all nine relay-bound `docker/nginx.conf` locations (each needs a sixth `auth_request_set`/`uwsgi_param` pair, or `proxy_set_header` post-2d-flip on the three that move), `e2e/tests/streaming-greybox/nginx-stream-buffering.spec.ts`'s `AUTH_REQUEST_SET_VARS` set (six today — five `$relay_*` plus `$authorize_status` — becomes seven), and `apps/proxy/authorize_views.py`'s `result_from_headers` docstring/`internal_auth.py`'s `HEADER_RELAY_*`/`META_RELAY_*` pairs (a sixth name each). All four are part of this 2b PR's file list, not a follow-up. **A seventh header, `X-Relay-Client-IP`, joins it in the same PR** — found later in this fix round (§ Stage 2d's NB1 finding): the Go relay cannot derive the true client address from `REMOTE_ADDR`/forwarded headers the way the Python relay can, so `authorize_view` resolves it once via `get_client_ip(request)` and carries it the same way as `X-Relay-Output-Format`, in the same four files, bringing every one of this row's counts up by one more (seven `uwsgi_param`/`auth_request_set` lines, eight `AUTH_REQUEST_SET_VARS` entries). Bundled here rather than into 2d because it is a contract addition like the others, even though only the Go relay reads it — the Python relay ignores it exactly as it ignores today's five. |
 
 **Also folded into the contract, not a read but the trap that motivates finishing this table:**
 `proxy_settings` (`apps/proxy/config.py`'s `BaseConfig._proxy_settings_cache`, 10-second
@@ -747,15 +789,28 @@ shape recurs at `views.py:900`, `:1250` (`from apps.proxy.next_source import res
 `services/channel_service.py:397`. None of these calls contains the literal substring `.objects.`
 at its call site — only inside `next_source.py`'s own function bodies, outside the grep's directory
 — so the naive grep would report success while the relay still executes ORM queries in-process on
-every tune. **Corrected guard, two parts:** (1) a static check that greps
-`apps/proxy/live_proxy/**` **and** every function `next_source.py` exports that `live_proxy` still
-imports in-process, failing if any such function contains `.objects.` or `get_object_or_404(`
-(the second grep shape the naive pattern also misses); (2) a runtime check — a test that monkeypatches
-the Django DB connection to raise on any query, drives a full tune end to end through the relay's
-HTTP surface using 2a's subprocess harness, and asserts it completes without the DB ever being
-touched. The runtime check is the one that actually proves "zero ORM reads" rather than "the ORM
-happens not to appear on this line"; the static check is a fast first pass that can be wrong in
-either direction on its own.
+every tune. **Corrected guard, two parts, with an explicit allowlist — a third correction in this
+fix round, because the two-part guard as first specified could not pass while 2b-3 also,
+deliberately, leaves a read in place (§ Stage 2b's `channel_status.py:74`/`:92` row; see NM2 in the
+round-2 review).** (1) A static check that greps `apps/proxy/live_proxy/**` **and** every function
+`next_source.py` exports that `live_proxy` still imports in-process, failing if any such function
+contains `.objects.` or `get_object_or_404(` (the second grep shape the naive pattern also misses)
+— **unless the exact `file:line` is named in a comment-cited allowlist**,
+`apps/proxy/live_proxy/tests/zero_orm_allowlist.py`, the same shape
+`e2e/tests/guards/allowlist.ts` already uses for the Redis importer allowlist: each entry names the
+site, cites the PR and reasoning that left it in place, and the guard fails on any **new** site
+while tolerating the ones already on the list. An empty allowlist is the target; a non-empty one is
+not a failure of this PR, only an honestly-recorded fact for whoever next touches that file. (2) A
+runtime check — a test that monkeypatches the Django DB connection to raise on any query and drives
+**both** a full tune **and a status read** (`GET /proxy/relay/channels/<id>` without `?fields=state`,
+which is what actually reaches `get_detailed_channel_info` and the two fallback reads in question)
+end to end through the relay's HTTP surface using 2a's subprocess harness, asserting each completes
+without the DB ever being touched *except* for sites named in the same allowlist. Corrected from
+this spec's first draft, which drove only a tune — the fallback reads under discussion are on the
+**status** path, not the tune path, so a tune-only runtime check would never execute them regardless
+of whether they survive. The runtime check is the one that actually proves "zero ORM reads" (net of
+the allowlist) rather than "the ORM happens not to appear on this line"; the static check is a fast
+first pass that can be wrong in either direction on its own.
 
 ### The three PRs
 
@@ -764,8 +819,8 @@ either direction on its own.
 | PR | Branch | What it does | Gate | Depends on |
 |---|---|---|---|---|
 | 2b-1 | `migration/phase2b-names-and-profiles` | `channel_name`/`stream_name`/`m3u_profile_name` on `next-source`'s and `advance`'s responses; the `StreamProfile` fallback folded into `next-source`; `get_connections_left` deleted (or folded in, if a caller surfaces); `next-source`'s identifier resolution extended to accept a `stream_hash` (parity row 16); `proxy_settings` added to `next-source`'s response. | 2b's own zero-ORM guard test (part 1, static) shows a measured reduction in surviving sites | 2a-7 (Gate 2 must be green before 2c starts, and 2b's own coverage matters to that number too) |
-| 2b-2 | `migration/phase2b-output-profile-and-user` | `OutputProfile.build_command()`'s output folded into `next-source`'s response when `X-Relay-Output` is set; the new `X-Relay-Output-Format` header end to end (`authorize_view`, `dispatcharr_api_params.conf`, all nine nginx locations, the greybox spec's `AUTH_REQUEST_SET_VARS`, `internal_auth.py`'s name pairs) — the full blast-radius file list from the table above, in one PR. | Existing forged-header `@contract` test still 403s with the new header in place; `nginx-stream-buffering.spec.ts`'s test 2 updated and green | 2b-1 |
-| 2b-3 | `migration/phase2b-zero-orm-guard` | The two-part guard test (static + runtime); deletes whichever `channel_status.py:74`/`:92` fallback reads turn out, on inspection during this PR, to be provably unreachable — and leaves in place, with a comment citing this decision, whichever do not. | Both guard-test parts green; **2b's honest close criterion is "the guard passes," not "the table above is empty"** | 2b-1, 2b-2 |
+| 2b-2 | `migration/phase2b-output-profile-and-user` | `OutputProfile.build_command()`'s output folded into `next-source`'s response when `X-Relay-Output` is set; the new `X-Relay-Output-Format` **and** `X-Relay-Client-IP` headers end to end (`authorize_view`, `dispatcharr_api_params.conf`, all nine nginx locations, the greybox spec's `AUTH_REQUEST_SET_VARS`, `internal_auth.py`'s name pairs) — the full blast-radius file list from the table above, both headers in one PR since they touch the same files. | Existing forged-header `@contract` test still 403s with both headers in place; `nginx-stream-buffering.spec.ts`'s test 2 updated and green | 2b-1 |
+| 2b-3 | `migration/phase2b-zero-orm-guard` | The two-part guard test (static + runtime) plus `zero_orm_allowlist.py`; deletes whichever `channel_status.py:74`/`:92` fallback reads turn out, on inspection during this PR, to be provably unreachable — and, for whichever do not, adds them to the allowlist with a comment citing this decision rather than leaving them to fail the guard silently. **Corrected in this fix round (§ NM2 in the round-2 review): the previous gate — "both guard-test parts green" — could not be met by a PR whose own scope keeps a read in place, since the static guard would fail on it by construction. The allowlist is what makes "leave a read in place, deliberately" and "the guard passes" compatible.** | Both guard-test parts green **against the allowlist** — an empty allowlist is the best outcome but not the gate; a non-empty, comment-cited one still passes | 2b-1, 2b-2 |
 
 ## Stage 2c — build the Go relay
 
@@ -873,7 +928,7 @@ of what the ten pre-existing workflows pin.
 | 2c-5 | `migration/phase2c-failover` | The three failover triggers, control-plane client (`next-source`/`release`/`events`, both HMAC headers, the exact timeout table), the degraded fallback to the cached candidate list | Rows 1, 2, 3, 5, 6 get a Go column | 2c-4 |
 | 2c-6 | `migration/phase2c-fmp4` | fMP4 output format, including row 12's known timeout gap, reproduced not fixed | Row 12 gets a Go column | 2c-5 |
 | 2c-7 | `migration/phase2c-output-profile` | Output Profile shared transcode per `(channel, profile)` | Row 11 gets a Go column | 2c-6 |
-| 2c-8 | `migration/phase2c-control-drain` | Remaining control routes (single-channel `GET`/`DELETE`, `advance`), SIGTERM drain (D6), the dev-only `POST /_dispatcharr/authorize` fallback (D5 exception 2, now fully specified — § The contract) | Every remaining un-Go'd matrix row gets a column | 2c-7 |
+| 2c-8 | `migration/phase2c-control-drain` | Remaining control routes (single-channel `GET`/`DELETE`, `advance`), SIGTERM drain (D6), the dev-only `POST /_dispatcharr/authorize-internal` fallback (D5 exception 2, now fully specified — § The contract, including why it needs its own nginx-unshielded path and `IsInternalRelay` gating) | Every remaining un-Go'd matrix row gets a column | 2c-7 |
 | 2c-9 | `migration/phase2c-go-coverage-gate` | `go test ./... -race -cover` wired into a new `scripts/coverage_live_path_go.floor` ratchet, raised to ≥80%; parity matrix's Python test-reference column gains its Go counterpart on every row | A new `go-tests.yml` **`Go result`** aggregate green, built in the four-part shape `CLAUDE.md` § Testing prescribes for every requireable check (no `paths:` filter on `pull_request`, a cheap always-running change detector, an `if: always()` aggregate with the three branches, a skipped heavy job on a required run failing the aggregate) — **note, added in this fix round, that making `Go result` an actually-required check on the Main ruleset is a repo-settings action, the same class this spec already flags for Renovate elsewhere, not something this PR's commit alone accomplishes** | 2c-8, matrix 100% Go-columned |
 
 ## Stage 2d — cutover, and its trap
@@ -971,10 +1026,11 @@ proxy_set_header X-Relay-Output "";
 proxy_set_header X-Relay-Client "";
 proxy_set_header X-Relay-User "";
 proxy_set_header X-Relay-Output-Format "";   # 2b's sixth header
+proxy_set_header X-Relay-Client-IP "";       # 2b's seventh header (NB1, this fix round)
 ```
 
 used only by `/proxy/relay/`, which is Django-bound but no longer `uwsgi_pass`. The three byte-path
-locations don't need this file at all — they *set* the five (six, after 2b) `X-Relay-*` headers from
+locations don't need this file at all — they *set* the five (seven, after 2b-2) `X-Relay-*` headers from
 `auth_request_set` variables via `proxy_set_header X-Relay-* $relay_*;`, they don't blank them; the
 client-header-override guarantee there survives cutover by the same nginx mechanism
 (`proxy_set_header` unconditionally sets the outgoing header, same as the `HTTP_`-prefixed
@@ -982,6 +1038,49 @@ client-header-override guarantee there survives cutover by the same nginx mechan
 and a forged `X-Relay-Channel` for a hidden channel (Phase 1 PR 5's `@contract` test) must be
 re-pointed at the new location and re-verified to still 403, not assumed to carry over because the
 outcome used to be the same.
+
+**A second consequence of that same `proxy_set_header` array-directive rule — found in this fix
+round, and it is precisely the class of trap § Stage 2d exists to catch, arriving through the very
+mechanism this section just used to fix B4/B6.** `docker/nginx.conf`'s `server` block declares six
+`proxy_set_header` directives at `:51-56` (`X-Real-IP`, `X-Forwarded-For`, `X-Forwarded-Host`,
+`X-Forwarded-Proto`, `Host`, `X-Forwarded-Port`). The moment any of the three byte-path locations
+declares its own `proxy_set_header X-Relay-Channel $relay_channel;` (which this design requires),
+**all six server-level ones are discarded for that location** — the identical replace-not-merge
+inheritance rule `docker/dispatcharr_api_params.conf`'s own header comment already documents for
+`uwsgi_param` ("a location that declares any `uwsgi_param` of its own inherits none from the
+enclosing level"), one rule with two directive-family faces, not two coincidences. The Go relay then
+sees `Host: relay_go`, no `X-Real-IP`, no `X-Forwarded-For`.
+
+That is a parity break, not just hygiene, because the client IP is externally observable:
+`apps/proxy/live_proxy/views.py:195`'s `client_ip = get_client_ip(request)` →
+`client_manager.py:215-230`'s `add_client(..., client_ip, ...)` → `"ip_address": client_ip` → the
+wire on **both** status endpoints (`relay_serializers.py:29`, `RelayChannelClientSerializer
+.ip_address`; `:79`, `RelayDetailClientSerializer.ip_address`). `get_client_ip`
+(`dispatcharr/utils.py:342-370`) honours `X-Real-IP`/`X-Forwarded-For` only when `REMOTE_ADDR` is a
+trusted proxy (`LOCAL_NETWORK_CIDRS`/`DISPATCHARR_TRUSTED_PROXIES`); today, under `uwsgi_pass`,
+`REMOTE_ADDR` already carries the real client address (`proxy_set_header` has no effect on
+`uwsgi_pass` at all), so the forwarded headers are irrelevant and this never bites. After the flip,
+nginx *is* the Go relay's peer, so the client's address can only arrive in a forwarded header —
+exactly the headers the location just discarded. Uncaught, `ip_address` silently becomes nginx's own
+address (or empty) for every live client on both status endpoints, while VOD/catch-up (still
+`uwsgi_pass`) keep reporting correctly — invisible in dev, invisible in a smoke test, wrong in
+production.
+
+**Fix, two parts.** (1) Each of the three flipped locations re-declares all six server-level
+`proxy_set_header` lines alongside its own `X-Relay-*` ones — the `proxy_pass` twin of the
+`include uwsgi_params;` repetition `nginx.conf` already performs per location for the same reason.
+(2) For `ip_address` specifically, rather than teaching the Go relay `get_client_ip`'s trusted-proxy
+semantics (a second configuration surface — `LOCAL_NETWORK_CIDRS`/`DISPATCHARR_TRUSTED_PROXIES` —
+the Go process would need to read and keep in sync with Django's), **the authorize hop resolves it
+once, the same way it already resolves `output_format` for 2b**: a seventh `X-Relay-*` header,
+`X-Relay-Client-IP`, set by `authorize_view` from `get_client_ip(request)` and carried through
+exactly like the other six — one more line in the same four files 2b-2 already touches for
+`X-Relay-Output-Format`, not a new mechanism. Parity-matrix row 17, new in this fix round: `ip_address`
+on both status endpoints, sourced from `X-Relay-Client-IP` rather than `REMOTE_ADDR` post-cutover.
+Other simple (non-array) directives — `client_max_body_size 0;` (`:49`), `proxy_read_timeout 300;`
+(`:48`) — inherit normally and need no re-declaration; naming which directive family is and is not
+affected is what stops an implementer over-correcting by repeating directives that were never at
+risk.
 
 **`e2e/tests/streaming-greybox/nginx-stream-buffering.spec.ts` (386 lines) is a four-test file, and
 this spec's first draft's account of it was wrong in two ways: it described a single set assertion
@@ -1000,9 +1099,11 @@ cutover.** Corrected, per test:
 - **Test 2** (`'every relay-bound location authorizes through the hop'`) asserts, on the same nine
   blocks, `auth_request /_dispatcharr/authorize;`, the six `AUTH_REQUEST_SET_VARS` as they stand
   today (`$relay_name`, `$relay_channel`, `$relay_output`, `$relay_client`, `$relay_user`,
-  `$authorize_status`) — 2b's `X-Relay-Output-Format` addition makes this **seven**, not a change
-  this rewrite itself performs but one 2b's own PR must remember to carry into this same array — a
-  line matching `/uwsgi_param\s+HTTP_X_DISPATCHARR_AUTHORIZED/` whose
+  `$authorize_status`) — 2b-2's two new headers (`X-Relay-Output-Format`, `X-Relay-Client-IP`) make
+  this **eight** by the time this PR runs, since 2b precedes 2d in the phase's own dependency order;
+  not a change this rewrite performs, but confirmation the array 2b-2 edited already carries both
+  before this test's own edits land — a line matching `/uwsgi_param\s+HTTP_X_DISPATCHARR_AUTHORIZED/`
+  whose
   value matches `/"[0-9a-f]{64}"/`, and `error_page 403 = @authorize_denied;`. The three flipped
   locations no longer carry a `uwsgi_param` line at all. **Rewrite**: split the marker assertion by
   directive family — `uwsgi_param HTTP_X_DISPATCHARR_AUTHORIZED` on the six staying locations,
@@ -1135,6 +1236,18 @@ Filled in as PRs merge; this spec lands as its own PR 0.
 
 ## Risks
 
+- **A `SECRET_KEY`/`/data/jwt` mismatch between roles is a real, previously-seen fault this phase
+  must not turn into a harder failure than it is today — found and closed in the round-2 fix
+  (§ The contract's dev-fallback section).** Today, a trust-marker mismatch degrades the Python
+  relay to its inline `authorize_stream` fallback silently — streams keep working, one WARNING is
+  logged. This phase's dev fallback originally reused the existing `/_dispatcharr/authorize` path,
+  which nginx's `internal;` location shadows in every nginx-fronted deployment — meaning the same
+  mismatch would have made the Go relay's own fallback 404 and every live tune fail outright,
+  trading a silent degrade for a total outage. Closed by giving the fallback its own
+  `/_dispatcharr/authorize-internal` path, gated by `IsInternalRelay` instead of nginx's `internal;`
+  shield. Recorded here because it is exactly the class of regression this phase's parity discipline
+  (D5) exists to prevent, and it was found only by re-deriving the nginx location-matching rules
+  against the actual config rather than assuming the new route "just works" the way the old one did.
 - **2a can stall the phase, and it is the least rewarding stage to work on** — writing tests against
   code nobody is about to delete feels like overhead when the destination is a rewrite. Mitigated
   structurally, not by discipline: 2a's value survives abandoning Go entirely (§ Goal), so the risk is
@@ -1194,7 +1307,7 @@ Filled in as PRs merge; this spec lands as its own PR 0.
   language.
 - **Role-scoped urlconfs.** Phase 1's D1 keeps one urlconf everywhere on the Python side; this phase
   doesn't touch Django's urlconf shape at all except the one new route § The contract names
-  (`POST /_dispatcharr/authorize`, the dev fallback) and the URL-preserving relocation § Stage 2d's
+  (`POST /_dispatcharr/authorize-internal`, the dev fallback) and the URL-preserving relocation § Stage 2d's
   deletion order performs.
 - **HDHomeRun authorization.** `apps/hdhr/api_views.py`'s separate, still-unfixed defect (`CLAUDE.md`
   § Known defects) — untouched, a different surface than anything this phase moves.
