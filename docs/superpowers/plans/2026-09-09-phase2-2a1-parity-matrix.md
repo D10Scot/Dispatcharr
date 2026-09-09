@@ -533,8 +533,23 @@ ruling 11d fixed for the block markers, and not one to leave standing twice.
    places, with the guard naming the mismatch if you do half of it.
 
 2. **Nothing below the terminator may parse as a matrix row.** `scanTable` scans the remainder of the
-   file and throws on any five-cell line whose first cell is a number. Deliberately narrow: an
-   unrelated table later in the document stays legal, because only a *matrix-shaped* row is refused.
+   file and throws on any five-cell line whose first cell is a number.
+
+   **That is narrower than refusing every table, but broader than "a stray matrix row", and the plan
+   says so rather than claiming a precision it does not have.** A five-column table with a numeric
+   first column below the terminator is refused — and that is an ordinary Markdown construct, a
+   numbered list of steps or an indexed reference table. So is a fenced worked example of a matrix
+   row, which a `## Format` section is a natural place to want. Four-column tables, and five-column
+   tables with a non-numeric first cell, are unaffected. The document's § Format states the
+   constraint so an author meets it before the guard does, and the error message carries a second
+   clause for the false-positive case, where "you added a row in the wrong place" would be wrong
+   advice.
+
+   **Fence-tracking is deliberately not the fix**, though it looks like the principled one: the
+   duplicate-header refusal *relies* on a header inside a fenced block being visible, which is what
+   stops a worked example in § Format being parsed as the matrix. Teaching the scanner about fences
+   would make that example legal and silently retire a mutation this plan has proved. Treating fenced
+   content as real content everywhere is consistent; this constraint is its price.
 
 3. **Rejected: "the last row before the terminator carries the highest id."** It would close the same
    holes, and it fights ruling 11d. A new row goes at the end of **its owning PR's block**, not at the
@@ -1180,7 +1195,10 @@ export function scanTable(markdown: string): TableScan {
       throw new Error(
         `${MATRIX_REL}:${i + 1} looks like a matrix row but sits BELOW the ` +
           `"${MATRIX_END_MARKER}" line, where no check would ever see it: ${JSON.stringify(raw)}. ` +
-          "A new row goes at the end of its owning PR's block, never after the terminator.",
+          "A new row goes at the end of its owning PR's block, never after the terminator — or, " +
+          'if this is not a matrix row at all, give it a different shape (a column count other ' +
+          'than five, or a non-numeric first cell) or move it above the header. This scan cannot ' +
+          'tell a five-column numbered table from a stray row, and refuses both.',
       );
     }
   }
@@ -1363,9 +1381,15 @@ no container: `cd e2e && npx playwright test --project=guards parity-matrix`.
      is what makes the distance two. Deleting the markers to "tidy up"
      reintroduces exactly the conflicts the block order exists to prevent.
 
-  5. THE TABLE ENDS AT `<!-- end of matrix -->`. Keep that line. Without it a
-     stray line in the middle of the table silently truncates it and every
-     check below goes blind.
+  5. THE TABLE ENDS AT `<!-- end of matrix -->`. Keep that line, and DO NOT PUT
+     A ROW BELOW IT — a row down there is invisible to every check here, and the
+     guard refuses one, naming it. Without the terminator at all, a stray line
+     in the middle of the table truncates it and every check below goes blind.
+
+     Below the terminator this file must also not contain a five-column table
+     with a numeric first column, nor a fenced example of a matrix row: the
+     guard cannot tell either from a stray row, and refuses both. That is a
+     deliberate trade — see § Format.
 
   A new row takes the next free id and is appended to the end of its owning
   PR's block. An id is never reused and never renumbered: 2c PRs address rows by
@@ -1416,6 +1440,20 @@ truncation is indistinguishable from the end of the table: a stray prose line in
 ends it there and every check goes blind to everything below. With one, the walk knows it stopped
 early and says which line did it — which is also how a row that lost its leading `|` is reported as
 itself rather than as a missing id.
+
+**Do not put a row below the terminator.** A row down there is invisible to every check, so the guard
+refuses one. **And know what that costs**, because it is broader than "a stray matrix row": below the
+terminator this file must not contain **a five-column table whose first column is numeric**, nor **a
+fenced example of a matrix row**. The guard cannot tell either from a row someone appended in the
+wrong place, and a numbered five-column table is an ordinary Markdown construct — a numbered list of
+steps, an indexed reference table — so this is a real constraint on what else this document may say,
+not a theoretical one. Four-column tables and five-column tables with a non-numeric first column are
+unaffected.
+
+The alternative — teaching the scanner about fenced blocks — is **deliberately not taken**. The
+duplicate-header refusal relies on a header inside a fenced block being visible: that is what stops a
+worked example in this very section being parsed as the matrix. Treating fenced content as real
+content everywhere is the consistent choice, and this constraint is its price.
 
 ## The matrix
 
@@ -1631,6 +1669,18 @@ Create `/Users/dion/git/Dispatcharr/.worktrees/phase2-2a1/frontend/.prettierigno
 
 - [ ] **Step 9c: Prove both files work and that neither changes the frontend tree.**
 
+**First, make sure there is a Prettier to run.** `frontend/node_modules` is **absent in a fresh
+worktree** — § Test environment installs only `e2e/node_modules` — so `npx --no-install prettier`
+here resolves from the npx cache or a parent `node_modules`, if at all. It is not the `frontend/`
+devDependency this step is about, and on a machine without that cache it reports no binary:
+
+```bash
+cd /Users/dion/git/Dispatcharr/.worktrees/phase2-2a1/frontend && npx --no-install prettier --version
+```
+
+Expected: `3.9.6`. **If it prints nothing, run `cd /Users/dion/git/Dispatcharr/.worktrees/phase2-2a1/frontend && npm install` first** — without it this whole step is unrunnable, and a step that
+silently does not run is worse than one that fails.
+
 ```bash
 cd /Users/dion/git/Dispatcharr/.worktrees/phase2-2a1
 cp docs/relay-parity-matrix.md /tmp/matrix-before.md
@@ -1655,8 +1705,15 @@ npx --no-install prettier --check 'src/**/*.jsx' 2>&1 | tail -1
 ```
 
 Expected: `Code style issues found in 54 files` — **the same count as before this PR**, because
-neither ignore file names anything under `frontend/src/`. Measured at `a948cd8a`: 54 with and without
-both files. A different number means an ignore pattern is matching more than the matrix; narrow it.
+neither ignore file names anything under `frontend/src/`. A different number means an ignore pattern
+is matching more than the matrix; narrow it.
+
+**Two caveats on that 54.** It was measured with `frontend/node_modules` installed, so it is only
+reachable after the `npm install` above. And it was measured against the **main checkout**, of
+necessity — a fresh worktree has no `frontend/node_modules` to measure with. Treat it as the expected
+value and, if your own baseline differs, **compare your own before-and-after rather than chasing the
+number**: what this step proves is that the two ignore files change nothing for the frontend tree,
+not that the tree has exactly 54 unformatted files.
 
 **Belt and braces, on purpose.** These files stop `prettier --write` and format-on-save. They do not
 stop `--no-ignore`, or a different formatter, or someone aligning the columns by hand — which is why
