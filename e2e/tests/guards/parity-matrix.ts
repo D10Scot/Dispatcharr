@@ -507,3 +507,64 @@ export async function testRefProblem(ref: TestRef): Promise<string | undefined> 
     'titles), .py (def) and .go (func); anything else must be added to testRefProblem first.'
   );
 }
+
+export type WhiteBoxRow = { id: number; why: string };
+
+/**
+ * Rows no test can pin, because no client can observe them.
+ *
+ * Compared with `toEqual`, in `allowlist.ts`'s idiom and for its reason: this
+ * marker is the one word that can make an inconvenient row stop counting, so
+ * both adding and removing one must be a deliberate edit with a stated
+ * reason. Both entries here are deleted outright by the spec's D2 rather than
+ * reproduced in Go — that is what makes them honest to record rather than
+ * convenient to hide.
+ */
+export const WHITE_BOX_ONLY: readonly WhiteBoxRow[] = [
+  {
+    id: 26,
+    why:
+      "server.py's greenlet and OS-thread topology. The Go relay's concurrency model is " +
+      'goroutines behind a sync.RWMutex (spec D2); no client can observe which greenlet did ' +
+      'what, and the threads themselves are deleted, not ported.',
+  },
+  {
+    id: 27,
+    why:
+      '_execute_redis_command swallowing every Redis exception to None. D2 removes Redis from ' +
+      'the live path entirely, so the Go relay has no analogous call to swallow anything.',
+  },
+];
+
+/**
+ * The highest row id the matrix carries. Bounded here rather than derived from
+ * the table, and the difference matters in both directions.
+ *
+ * Derived, the check was `1..max(ids)` — which a **tail** deletion satisfies,
+ * because dropping the highest row just lowers the maximum. Bounded, deleting
+ * the highest row fails, and so does adding row 28 without saying so here.
+ *
+ * It is a stored number and that is deliberate (ruling 12): it lives beside
+ * `WHITE_BOX_ONLY` and `PRS` rather than in the matrix, and **no PR edits it to
+ * close a row** — rows are added only by a deliberate extension of the matrix,
+ * which is exactly the edit that should take two places and a stated reason.
+ */
+export const HIGHEST_ROW_ID = 27;
+
+/**
+ * Gate 1's own switch. Flipped to `true` by the PR that closes the last owed
+ * row. That is 2b-3: row 18 is the only row that cannot close inside stage 2a,
+ * so 2b-3 is the last PR in the phase that closes one.
+ *
+ * There is deliberately no list of owed row ids here. A row is owed if and
+ * only if its own `Pin` cell says so, which is what makes closing one a
+ * one-line edit in one file: 2a-3, 2a-4, 2a-5, 2a-6 and 2b-3 all edit
+ * this matrix, and a shared list of ids would put every one of their deletions
+ * on the same line of this file (ruling 5, ruling 11e).
+ *
+ * The guard asserts "at least one row is still owed" while this is `false`, so
+ * the PR that closes the last row is told to flip it rather than discovering
+ * later that Gate 1 was met and nobody noticed; and "no row is owed" once it is
+ * `true`, so Gate 1 cannot silently reopen.
+ */
+export const GATE_1_CLOSED = false;

@@ -51,11 +51,14 @@ import {
   canonicalLineOffenders,
   citationProblem,
   citationsIn,
+  GATE_1_CLOSED,
+  HIGHEST_ROW_ID,
   MATRIX_REL,
   parseMatrix,
   parsePin,
   PRS,
   readMatrix,
+  WHITE_BOX_ONLY,
   testRefProblem,
 } from './parity-matrix';
 
@@ -80,10 +83,32 @@ test('the parity matrix parses', { tag: '@characterization' }, async () => {
   // PR that owes them, not by id — see the header, and the contiguity check
   // below, which is the property that actually matters.
 
-  // Ruling 12's id-completeness assertion belongs here and is added in Task 5,
-  // once HIGHEST_ROW_ID exists and the table actually holds rows 1..27. It
-  // cannot live here yet: this task's document has three worked rows (11, 14,
-  // 27), and no value of HIGHEST_ROW_ID makes that set equal 1..N.
+  // Ruling 12. Ids are never renumbered and a row that stops applying is
+  // retired IN PLACE, keeping its id — so the id set is exactly
+  // 1..HIGHEST_ROW_ID, and a gap means a row was deleted. Without this a pinned
+  // row can be dropped in silence: every other check has nothing left to
+  // complain about.
+  //
+  // Bounded rather than derived, in both directions: `1..max(ids)` is satisfied
+  // by deleting the HIGHEST row, because the maximum moves down with it.
+  // HIGHEST_ROW_ID is a stored number and ruling 12 says why that is the right
+  // kind — it lives beside WHITE_BOX_ONLY and PRS, not in the contended
+  // document, and no PR edits it to close a row.
+  const sorted = [...ids].sort((a, b) => a - b);
+  const expected = Array.from({ length: HIGHEST_ROW_ID }, (_, i) => i + 1);
+  const missing = expected.filter((id) => !sorted.includes(id));
+  const unexpected = sorted.filter((id) => id > HIGHEST_ROW_ID);
+  expect(
+    sorted,
+    `${MATRIX_REL} does not carry exactly rows 1..${HIGHEST_ROW_ID}. Ids run 1..N with no gaps: a ` +
+      'row is never deleted, only retired in place with its Notes saying so, because 2c and 2d ' +
+      'address rows by number and a row that vanishes takes its obligation with it.\n' +
+      (missing.length ? `  Missing: ${missing.join(', ')}\n` : '') +
+      (unexpected.length
+        ? `  Above HIGHEST_ROW_ID: ${unexpected.join(', ')} — adding a row is a deliberate edit in ` +
+          'two places; raise HIGHEST_ROW_ID in e2e/tests/guards/parity-matrix.ts in the same diff.\n'
+        : ''),
+  ).toEqual(expected);
 
   const empty = rows.filter((r) => r.behaviour === '').map((r) => `${MATRIX_REL}:${r.line}`);
   expect(
@@ -173,5 +198,97 @@ test('every pin resolves', { tag: '@characterization' }, async () => {
     findings,
     'A pin that does not resolve is a row claiming cover it does not have — the one failure ' +
       'mode this matrix exists to prevent.\n' + findings.join('\n'),
+  ).toEqual([]);
+});
+
+test('white-box-only rows are confined to an allowlist', { tag: '@characterization' }, async () => {
+  const rows = parseMatrix(await readMatrix());
+
+  const marked = rows.filter((row) => parsePin(row.pin)?.kind === 'white-box-only');
+  const actual = marked.map((row) => row.id).sort((a, b) => a - b);
+  const allowed = WHITE_BOX_ONLY.map((row) => row.id).sort((a, b) => a - b);
+
+  // `toEqual`, not `toContain`: un-marking a row must also be a deliberate
+  // edit, or the list rots in the other direction — capabilities.spec.ts's
+  // own argument, applied to the one marker that can make an inconvenient row
+  // stop counting.
+  expect(
+    actual,
+    'A row marked white-box-only is behaviour the Go relay is NOT held to, so marking one is a ' +
+      'deliberate edit in two places: the matrix, and WHITE_BOX_ONLY in ' +
+      'e2e/tests/guards/parity-matrix.ts, where it must carry a `why`. Say in the diff why no ' +
+      'client can observe it.',
+  ).toEqual(allowed);
+
+  const unjustified = marked
+    .filter((row) => row.notes === '')
+    .map((row) => `${MATRIX_REL}:${row.line} (row ${row.id})`);
+  expect(
+    unjustified,
+    'A white-box-only row must justify itself in its Notes cell, not only in the guard. See ' +
+      'docs/adr/0002-e2e-test-taxonomy.md on why an unobservable pin needs a stated reason.',
+  ).toEqual([]);
+});
+
+test('Gate 1: the matrix is fully pinned when the flag says so', { tag: '@characterization' }, async () => {
+  const rows = parseMatrix(await readMatrix());
+  const owed = rows.filter((row) => parsePin(row.pin)?.kind === 'owed');
+  const ids = owed.map((row) => row.id).sort((a, b) => a - b);
+
+  if (GATE_1_CLOSED) {
+    expect(
+      ids,
+      'GATE_1_CLOSED is true, so no row may carry an "owed:" pin. Gate 1 — the spec\'s own ' +
+        'definition of "the behaviour is pinned" — cannot silently reopen. If a row genuinely ' +
+        'needs to go back to owed, flip GATE_1_CLOSED in the same diff and say why.',
+    ).toEqual([]);
+  } else {
+    expect(
+      ids.length,
+      'No row is owed any more — you just closed the last one. Flip GATE_1_CLOSED to true in ' +
+        'e2e/tests/guards/parity-matrix.ts, in this same commit: Gate 1 is met, and from here ' +
+        'the guard asserts it stays met. This is the phase\'s first hard blocker turning off.',
+    ).toBeGreaterThan(0);
+  }
+
+  // The counts live here, computed, rather than in the document, where four
+  // concurrent PRs would each bump them and conflict four ways over a number
+  // that takes a millisecond to derive (ruling 11c).
+  const kinds = rows.map((row) => parsePin(row.pin)?.kind);
+  console.log(
+    `parity matrix: ${rows.length} rows — ` +
+      `${kinds.filter((k) => k === 'test').length} pinned, ` +
+      `${kinds.filter((k) => k === 'owed').length} owed, ` +
+      `${kinds.filter((k) => k === 'white-box-only').length} white-box-only.`,
+  );
+});
+
+test('rows owed by one PR are contiguous', { tag: '@characterization' }, async () => {
+  const rows = parseMatrix(await readMatrix());
+
+  // Owed rows only, in FILE order. Pinned rows are skipped rather than
+  // breaking a run, so a PR that closes part of its block does not fail this
+  // check for the rows it left — which is what makes the property survive the
+  // whole 2a sequence instead of only its first PR.
+  const owners: { pr: string; id: number }[] = [];
+  for (const row of rows) {
+    const pin = parsePin(row.pin);
+    if (pin?.kind === 'owed') owners.push({ pr: pin.pr, id: row.id });
+  }
+
+  const runs: string[] = [];
+  for (const { pr } of owners) {
+    if (runs[runs.length - 1] !== pr) runs.push(pr);
+  }
+
+  const split = runs.filter((pr, i) => runs.indexOf(pr) !== i);
+  expect(
+    split,
+    'Rows owed by one PR must be contiguous in file order. Five PRs close rows in this table ' +
+      'and three of them run in parallel; interleaving their rows interleaves their diffs and ' +
+      'turns every '  +
+      'merge into a conflict. Order in the file is by owning block, NOT by id — do not sort ' +
+      `this table. Owner sequence read from the file: ${runs.join(' → ')}. Rows, in file ` +
+      `order: ${owners.map((o) => `${o.id}(${o.pr})`).join(', ')}.`,
   ).toEqual([]);
 });
