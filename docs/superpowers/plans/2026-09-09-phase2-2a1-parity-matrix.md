@@ -207,9 +207,9 @@ There is no second list to keep in step.
 The first draft of this plan carried one — `export const OWED: readonly number[]` in
 `parity-matrix.ts` — and specified closing a row as "a two-line diff: change the Pin cell, delete the
 id from `OWED`". **That defeated ruling 11 at the second file.** Ruling 11 spends sixty lines making
-the matrix conflict-free for its concurrent editors and then put every id those six PRs delete on
+the matrix conflict-free for its concurrent editors and then put every id those seven PRs delete on
 *one shared line of the other file they all edit*: 2a-3 deleting `7, 8, 9, 13` and 2a-4 deleting
-`1, 2, 3, 4, 5, 6, 12` are edits to the same line, a guaranteed conflict on every pair, every time.
+`1, 2, 3, 4, 5, 6` are edits to the same line, a guaranteed conflict on every pair, every time.
 Deriving owed-ness from the table makes closing a row **one line in one file**, which is what ruling
 11 was for.
 
@@ -236,8 +236,8 @@ that assertion fails, telling that PR to flip the flag in the same commit. Once 
 asserts **zero** rows are owed, and Gate 1 can never silently reopen. One line, edited exactly once
 in the phase, by one PR — not a four-way contention point.
 
-**`PRS` is the one small shared list that remains** (`['2a-3', '2a-4', '2a-8', '2b-1', '2b-2',
-'2b-3']`): the vocabulary an `owed:` marker may name. It exists because `owed: 2a-6` written where
+**`PRS` is the one small shared list that remains** (`['2a-3', '2a-4', '2a-6', '2a-8', '2b-1',
+'2b-2', '2b-3']`): the vocabulary an `owed:` marker may name. It exists because `owed: 2a-6` written where
 `owed: 2a-8` was meant otherwise resolves fine and only fails if it happens to break a block run. It
 is a fixed vocabulary, not per-row state — adding an owner is a deliberate edit, and no PR edits it
 to close a row.
@@ -384,9 +384,9 @@ both harder to read.
 
 **This is the constraint that shapes every other format decision, and it arrived after the first
 draft of this plan.** 2a-3, 2a-4 and 2a-8 all depend only on 2a-2 and touch disjoint *source* files,
-so they will be developed in parallel as stacked PRs on 2a-2's branch; 2b-1, 2b-2 and 2b-3 each close
-a row as well (ruling 7). **Six PRs fill in test references in this one file**, three of them at the
-same time, so their merges contend on it and on nothing else. Four properties make that contention
+so they will be developed in parallel as stacked PRs on 2a-2's branch; 2a-6, 2b-1, 2b-2 and 2b-3
+each close a row as well. **Seven PRs fill in test references in this one file**, several of them at
+the same time, so their merges contend on it and on nothing else. Four properties make that contention
 trivial. **Two of the four are asserted by named tests** — a property nobody checks is a property the
 first person to run a Markdown formatter destroys — one holds by construction, and one is held by
 review plus the file's own header comment. A fifth, (e), is what ruling 5 is for.
@@ -412,20 +412,35 @@ the number is available without being stored. If you find yourself wanting a cou
 that is the guard's output, not the document's content.
 
 **(d) File order groups rows by the PR that owes them, not by id.** The spec's 2a table scatters
-ownership across the id sequence — 2a-4 owns 1–6 and 12, 2a-3 owns 7–10 and 13 — so id order
-interleaves the owners and turns every merge into an interleaved conflict. Block order makes each
-PR's edits contiguous, adjacent-line at worst. The blocks, in file order:
+ownership across the id sequence — 2a-4 owns 1–6, 2a-3 owns 7–10 and 13 — so id order interleaves the
+owners and turns every merge into an interleaved conflict. Block order makes each PR's edits
+contiguous.
+
+**"Contiguous, adjacent-line at worst" would not have been good enough, and the block markers are
+what save it.** Measured in a scratch repo rather than assumed: git conflicts on two edits **one**
+line apart and merges cleanly at **two**, and that holds for modify-vs-modify (`CONFLICT` at
+distance 0 and 1, `CLEAN` at 2 and 3), modify-vs-delete and delete-vs-delete alike. Closing a row is
+a *modify* — ruling 5 removed the only deletion — so two PRs closing rows in **adjacent blocks**
+would conflict if the last row of one block sat directly above the first row of the next. The
+`<!-- block: … -->` line between them is what makes that distance two. **The markers are load-bearing
+for merge safety, not decoration the parser happens to skip**, and the matrix's own header comment
+says so in those words: deleting them to tidy the file reintroduces precisely the conflicts the block
+order exists to prevent. (Within a block adjacency is harmless — a block has exactly one owner, so
+every edit in it comes from the same PR.)
+
+The blocks, in file order:
 
 | Block | Rows, in this order | Owner |
 |---|---|---|
-| 1 | 1, 2, 3, 4, 5, 6, 12 | owed by 2a-4 |
+| 1 | 1, 2, 3, 4, 5, 6 | owed by 2a-4 |
 | 2 | 7, 8, 9, 13 | owed by 2a-3 |
-| 3 | 14, 15, 19, 20, 23, 25 | owed by 2a-8 (ruling 7) |
-| 4 | 16 | owed by 2b-1 (ruling 7) |
-| 5 | 17 | owed by 2b-2 (ruling 7) |
-| 6 | 18 | owed by 2b-3 (the spec's own) |
-| 7 | 10, 11, 21, 22, 24 | already pinned |
-| 8 | 26, 27 | white-box-only |
+| 3 | 12 | owed by 2a-6 |
+| 4 | 14, 15, 19, 20, 23, 25 | owed by 2a-8 (ruling 7) |
+| 5 | 16 | owed by 2b-1 (ruling 7) |
+| 6 | 17 | owed by 2b-2 (ruling 7) |
+| 7 | 18 | owed by 2b-3 (the spec's own) |
+| 8 | 10, 11, 21, 22, 24 | already pinned |
+| 9 | 26, 27 | white-box-only |
 
 *Enforced by a named test* (`rows owed by one PR are contiguous`): it takes the owed rows **in file
 order**, maps each to its PR, and fails if any PR's label appears in two separate runs. Rows that are
@@ -446,12 +461,13 @@ from the row's own `Pin` cell, so closing a row is one line in one file. What is
 `PRS` (a fixed vocabulary) and `GATE_1_CLOSED` (flipped once, by one PR) — is none of it per-row
 state and none of it a four-way contention point.
 
-**Row 12 sits in 2a-4's block because the spec puts it there** ("2a-4 … closes matrix rows 1-6, 12"),
-even though row 12 is about `output/fmp4/generator.py` and 2a-4's stated subject is
-`input/manager.py`. That reads like a slip in the spec, and 2a-6 is the more natural owner. It is not
-this PR's call to make: whichever PR closes it edits one cell and deletes one id, and the contiguity
-check tolerates a row moving between blocks as long as the owed labels stay in single runs. Reported
-rather than silently re-assigned.
+**Row 12 is owed by 2a-6, not by the 2a-4 the spec names.** The spec's 2a table says "2a-4 … closes
+matrix rows 1-6, 12", but row 12 is the difference between `output/fmp4/generator.py:339`'s
+`_is_timeout` and `output/ts/generator.py:574-585`'s, and 2a-4's stated subject is
+`input/manager.py`. 2a-6 is the PR that works on the fMP4 side. The first draft of this plan
+reported the mismatch and followed the spec anyway; the orchestrator has ruled it to 2a-6 and is
+amending the spec, so the matrix is written to the ruling. It gets its own one-row block, and `PRS`
+carries `2a-6`.
 
 ### 12. The id set is `1..N`, and the guard asserts it
 
@@ -528,7 +544,7 @@ pinned, not nine**; two are white-box. The line the guard prints at 2a-1 is
 - [ ] **The whole `guards` project is green**, including `tags.spec.ts`, which now sees seven more
       declarations: `npx playwright test --project=guards`
 - [ ] **`cd e2e && npx tsc --noEmit` is clean.**
-- [ ] **Each of the guard's seven checks is verified by mutation**, and the mutations are recorded in
+- [ ] **Each of the guard's seven checks is verified by mutation** (eight mutations), and the mutations are recorded in
       the spec file's header comment — the discipline every other guard in the directory follows
       and states in its own header (Task 6).
 - [ ] **`e2e/COVERAGE.md`'s Guards table carries a row for the new guard**, with its "Proved by"
@@ -740,9 +756,9 @@ Create `e2e/tests/guards/parity-matrix.spec.ts`:
  * edits, and the list cannot rot in either direction.
  *
  * Checks 2 and 7 exist because FOUR pull requests edit this file at once.
- * 2a-3, 2a-4 and 2a-8 depend only on 2a-2 and touch disjoint source files, so
- * they are developed in parallel; 2b-1, 2b-2 and 2b-3 each close a row too.
- * Their merges contend on the matrix and nothing else. Padding cells to align columns makes one growing
+ * 2a-3, 2a-4, 2a-6 and 2a-8 depend only on 2a-2 and touch disjoint source
+ * files, so they are developed in parallel; 2b-1, 2b-2 and 2b-3 each close a
+ * row too. Their merges contend on the matrix and nothing else. Padding cells to align columns makes one growing
  * cell rewrite twenty-seven lines, so all four conflict on the whole file;
  * ordering rows by id instead of by owning PR interleaves the four PRs' edits
  * instead of keeping each one's contiguous. Both properties are invisible —
@@ -837,8 +853,8 @@ Create `e2e/tests/guards/parity-matrix.ts`:
  * pinned against.
  *
  * Separate from `parity-matrix.spec.ts` for the reason `allowlist.ts` is
- * separate from `capabilities.spec.ts`: 2a-3, 2a-4, 2a-8, 2b-1, 2b-2, 2b-3 and
- * every 2c PR each close a matrix row, and closing one is a ONE-line diff in
+ * separate from `capabilities.spec.ts`: 2a-3, 2a-4, 2a-6, 2a-8, 2b-1, 2b-2,
+ * 2b-3 and every 2c PR each close a matrix row, and closing one is a ONE-line diff in
  * ONE file — change that row's Pin cell — not an edit inside a test body and
  * not a deletion from a shared list of ids that all six would contend on.
  *
@@ -924,8 +940,11 @@ function isHeaderLine(line: string): boolean {
  * table: this document's own "Format" section explains the format in prose, and
  * the natural next edit anyone makes to it is a worked example in a fenced
  * block — which would then be parsed instead of the matrix, silently, with
- * every check downstream enforcing nothing. There is exactly one matrix table
- * in this file, so a second is refused rather than guessed at.
+ * every check downstream enforcing nothing. Matching on trimmed column names
+ * rather than on the literal header line makes that MORE likely, not less: a
+ * padded example header binds where an exact-string match would have missed it.
+ * "Parse loosely, assert precisely" only holds if the loose parse still refuses
+ * to bind to two things.
  */
 function findHeaderIndex(lines: readonly string[]): number {
   const matches = lines.flatMap((line, i) => (isHeaderLine(line) ? [i] : []));
@@ -941,20 +960,24 @@ function findHeaderIndex(lines: readonly string[]): number {
 }
 
 /**
+ * The line that ends the table.
+ *
+ * An explicit terminator, because otherwise a truncation is indistinguishable
+ * from a legitimate end: the table stops at the first line that is not a row,
+ * so a stray prose line in the middle of it ends the table there and every
+ * walker goes blind to everything below. With a terminator the walk knows it
+ * stopped early and says so, naming the line.
+ */
+export const MATRIX_END_MARKER = '<!-- end of matrix -->';
+
+/**
  * Lines inside the table run that are not rows: blanks, and HTML comments,
  * including multi-line ones.
  *
  * Multi-line matters. The matrix opens with a thirty-line
  * `<!-- READ THIS BEFORE EDITING -->` block, so that is the file's idiom, and
- * an author extending a one-line block marker into a two-line note is doing
- * the obvious thing. A single-line-only rule silently truncates the table
- * there — every row after the comment simply disappears, which is ruling 12's
- * hole reached from the other direction.
- *
- * Returns the filler state to carry to the next line: `'row'` when this line
- * should be parsed as a row, `'skip'` when it is filler, `'open'` when it is
- * filler that leaves a comment unterminated, and `'end'` when the table stops
- * here.
+ * an author extending a one-line block marker into a two-line note is doing the
+ * obvious thing. A single-line-only rule truncates the table there.
  */
 type LineKind = 'row' | 'skip' | 'open' | 'end';
 
@@ -967,7 +990,28 @@ function classifyTableLine(line: string, insideComment: boolean): LineKind {
   return 'end';
 }
 
-export function parseMatrix(markdown: string): MatrixRow[] {
+export type TableScan = {
+  headerLine: number;
+  headerRaw: string;
+  delimiterLine: number;
+  delimiterRaw: string;
+  rows: { line: number; raw: string }[];
+};
+
+/**
+ * The one walk over the table region. Every check below uses it, and none has
+ * its own idea of where the table starts or stops.
+ *
+ * This exists because two independent walkers went blind in different places
+ * and in different ways: one returned `[]` when it could not find what it was
+ * looking for — a check that passes because it found nothing to look at — and
+ * both stopped at the first stray line, so a padded row *underneath* a stray
+ * prose line was reported by nobody. Every structural failure now throws, from
+ * one place, naming the line: a missing or duplicated header, a malformed
+ * delimiter, a row that is not five cells, a table that stops before its
+ * terminator, and a table with no terminator at all.
+ */
+export function scanTable(markdown: string): TableScan {
   const lines = markdown.split('\n');
   const headerIndex = findHeaderIndex(lines);
   if (headerIndex === -1) {
@@ -978,29 +1022,33 @@ export function parseMatrix(markdown: string): MatrixRow[] {
     );
   }
 
-  const delimiter = lines[headerIndex + 1] ?? '';
+  const delimiterRaw = lines[headerIndex + 1] ?? '';
   // The column count is checked too, not just the shape: `|---|---|` under a
   // five-column header is a well-formed delimiter for the wrong table.
   if (
-    !/^\s*\|(?:\s*:?-+:?\s*\|)+\s*$/.test(delimiter) ||
-    splitRow(delimiter).length !== COLUMNS.length
+    !/^\s*\|(?:\s*:?-+:?\s*\|)+\s*$/.test(delimiterRaw) ||
+    splitRow(delimiterRaw).length !== COLUMNS.length
   ) {
     throw new Error(
       `${MATRIX_REL}:${headerIndex + 2} should be the table's ${COLUMNS.length}-column delimiter ` +
-        `row (|---|---|---|---|---|), found ${JSON.stringify(delimiter)}.`,
+        `row (|---|---|---|---|---|), found ${JSON.stringify(delimiterRaw)}.`,
     );
   }
 
-  const rows: MatrixRow[] = [];
+  const rows: { line: number; raw: string }[] = [];
   let insideComment = false;
+  let terminated = false;
+
   for (let i = headerIndex + 2; i < lines.length; i++) {
     const raw = lines[i];
-    // Blanks and HTML comments separate the owner blocks (ruling 11d) and do
-    // not end the table. Anything else that is not a row does — including a row
-    // that lost its leading pipe, which then shows up as a missing id in
-    // ruling 12's completeness check rather than being silently accepted here.
+    const location = `${MATRIX_REL}:${i + 1}`;
+
+    if (!insideComment && raw.trim() === MATRIX_END_MARKER) {
+      terminated = true;
+      break;
+    }
+
     const kind = classifyTableLine(raw, insideComment);
-    if (kind === 'end') break;
     if (kind === 'open') {
       insideComment = true;
       continue;
@@ -1009,27 +1057,33 @@ export function parseMatrix(markdown: string): MatrixRow[] {
       insideComment = false;
       continue;
     }
+    if (kind === 'end') {
+      throw new Error(
+        `${location} ends the table before its "${MATRIX_END_MARKER}" line: ` +
+          `${JSON.stringify(raw)}. Everything below it would be invisible to every check here, ` +
+          'which is why the table has an explicit terminator rather than stopping wherever it ' +
+          'happens to stop. A row that lost its leading "|" looks exactly like this.',
+      );
+    }
 
-    const location = `${MATRIX_REL}:${i + 1}`;
     const cells = splitRow(raw);
-    if (cells.length !== 5) {
+    if (cells.length !== COLUMNS.length) {
       throw new Error(
-        `${location} has ${cells.length} cells, expected 5 (# | Behaviour | Source | Pin | ` +
-          'Notes). A literal "|" inside a cell splits the row; this table does not allow one.',
+        `${location} has ${cells.length} cells, expected ${COLUMNS.length} ` +
+          '(# | Behaviour | Source | Pin | Notes). A literal "|" inside a cell splits the row; ' +
+          'this table does not allow one.',
       );
     }
 
-    const [idCell, behaviour, source, pin, notes] = cells;
-    if (!/^\d+$/.test(idCell)) {
-      throw new Error(
-        `${location} has ${JSON.stringify(idCell)} in the # column; a row id is a decimal ` +
-          'integer, unique and never reused.',
-      );
-    }
-
-    rows.push({ id: Number(idCell), behaviour, source, pin, notes, line: i + 1 });
+    rows.push({ line: i + 1, raw });
   }
 
+  if (!terminated) {
+    throw new Error(
+      `${MATRIX_REL} has no "${MATRIX_END_MARKER}" line after the table. Without it a truncation ` +
+        'is indistinguishable from the end of the table, and every check stops early in silence.',
+    );
+  }
   if (rows.length === 0) {
     throw new Error(
       `${MATRIX_REL} has the matrix header but no rows under it. That is this module being ` +
@@ -1037,7 +1091,26 @@ export function parseMatrix(markdown: string): MatrixRow[] {
     );
   }
 
-  return rows;
+  return {
+    headerLine: headerIndex + 1,
+    headerRaw: lines[headerIndex],
+    delimiterLine: headerIndex + 2,
+    delimiterRaw,
+    rows,
+  };
+}
+
+export function parseMatrix(markdown: string): MatrixRow[] {
+  return scanTable(markdown).rows.map(({ line, raw }) => {
+    const [idCell, behaviour, source, pin, notes] = splitRow(raw);
+    if (!/^\d+$/.test(idCell)) {
+      throw new Error(
+        `${MATRIX_REL}:${line} has ${JSON.stringify(idCell)} in the # column; a row id is a ` +
+          'decimal integer, unique and never reused.',
+      );
+    }
+    return { id: Number(idCell), behaviour, source, pin, notes, line };
+  });
 }
 
 /**
@@ -1051,46 +1124,26 @@ export function parseMatrix(markdown: string): MatrixRow[] {
  * The delimiter row is checked against its own canonical spelling rather than
  * against `canonicalLine`, since its cells are dashes, not content.
  *
- * Throws — rather than returning `[]` — when there is no table to check. Found
- * by mutation while writing this plan: renaming a column made every other
- * check fail and this one PASS, which is exactly the "silently skips a shape it
- * cannot read" hole `ast.ts`'s own header warns about. A check that reports
- * "no offenders" because it found nothing to look at is worse than no check.
+ * It walks nothing itself: `scanTable` decides what the table is, so this check
+ * cannot disagree with the parse about where the table stops, and cannot go
+ * quietly blind below a stray line.
  */
 export function canonicalLineOffenders(markdown: string): string[] {
-  const lines = markdown.split('\n');
-  const headerIndex = findHeaderIndex(lines);
-  if (headerIndex === -1) {
-    throw new Error(
-      `${MATRIX_REL} has no header row naming the five columns:\n  ${MATRIX_HEADER}\n` +
-        'There is no table to check for padding. Fix the header first.',
-    );
-  }
-
-  const offenders: string[] = [];
+  const scan = scanTable(markdown);
   const canonicalDelimiter = `|${COLUMNS.map(() => '---').join('|')}|`;
-  let insideComment = false;
+  const offenders: string[] = [];
 
-  for (let i = headerIndex; i < lines.length; i++) {
-    const raw = lines[i];
-    if (i > headerIndex + 1) {
-      const kind = classifyTableLine(raw, insideComment);
-      if (kind === 'end') break;
-      if (kind === 'open') {
-        insideComment = true;
-        continue;
-      }
-      if (kind === 'skip') {
-        insideComment = false;
-        continue;
-      }
-    }
-
-    const expected = i === headerIndex + 1 ? canonicalDelimiter : canonicalLine(splitRow(raw));
+  const check = (line: number, raw: string, expected: string): void => {
     if (raw !== expected) {
-      offenders.push(`  ${MATRIX_REL}:${i + 1} — is ${JSON.stringify(raw)}, should be ${JSON.stringify(expected)}`);
+      offenders.push(
+        `  ${MATRIX_REL}:${line} — is ${JSON.stringify(raw)}, should be ${JSON.stringify(expected)}`,
+      );
     }
-  }
+  };
+
+  check(scan.headerLine, scan.headerRaw, MATRIX_HEADER);
+  check(scan.delimiterLine, scan.delimiterRaw, canonicalDelimiter);
+  for (const { line, raw } of scan.rows) check(line, raw, canonicalLine(splitRow(raw)));
 
   return offenders;
 }
@@ -1136,10 +1189,10 @@ no container: `cd e2e && npx playwright test --project=guards parity-matrix`.
 <!--
   READ THIS BEFORE EDITING THE TABLE BELOW.
 
-  Six pull requests fill in test references in this table: 2a-3, 2a-4 and 2a-8
-  (developed in parallel — they depend only on 2a-2 and touch disjoint source
-  files), plus 2b-1, 2b-2 and 2b-3. The ONLY thing their merges contend on is
-  this table. Four
+  Seven pull requests fill in test references in this table: 2a-3, 2a-4, 2a-6
+  and 2a-8 (developed in parallel — they depend only on 2a-2 and touch disjoint
+  source files), plus 2b-1, 2b-2 and 2b-3. The ONLY thing their merges contend
+  on is this table. Four
   properties keep that contention trivial. Three of them are asserted by
   e2e/tests/guards/parity-matrix.spec.ts, because a property nobody checks is a
   property the next person to run a Markdown formatter destroys.
@@ -1160,11 +1213,21 @@ no container: `cd e2e && npx playwright test --project=guards parity-matrix`.
      PRINTS the pinned / owed / white-box counts on every run.
 
   4. ROW ORDER GROUPS BY OWNING PR, NOT BY ID. The spec scatters ownership
-     across the id sequence (2a-4 owns 1-6 and 12, 2a-3 owns 7-10 and 13), so id
-     order interleaves the four PRs' edits. Block order keeps each PR's edits
-     contiguous. DO NOT SORT THIS TABLE BY ID. The HTML comments between blocks
-     mark the boundaries; the guard skips them, and blank lines, inside the
-     table.
+     across the id sequence (2a-4 owns 1-6, 2a-3 owns 7-10 and 13), so id order
+     interleaves the PRs' edits. Block order keeps each PR's edits contiguous.
+     DO NOT SORT THIS TABLE BY ID.
+
+     THE `<!-- block: -->` MARKER LINES ARE NOT DECORATION. Measured: git
+     conflicts on two edits ONE line apart and merges cleanly at TWO, for
+     modify-vs-modify, modify-vs-delete and delete-vs-delete alike. Closing a
+     row is a modify, so the last row of one block and the first row of the
+     next would conflict if they were adjacent — the marker line between them
+     is what makes the distance two. Deleting the markers to "tidy up"
+     reintroduces exactly the conflicts the block order exists to prevent.
+
+  5. THE TABLE ENDS AT `<!-- end of matrix -->`. Keep that line. Without it a
+     stray line in the middle of the table silently truncates it and every
+     check below goes blind.
 
   A new row takes the next free id and is appended to the end of its owning
   PR's block. An id is never reused and never renumbered: 2c PRs address rows by
@@ -1205,15 +1268,21 @@ check then fails it.
   parse — and required on the test reference.
 - **`Notes`** — prose. Required non-empty on a `white-box-only` row.
 
-**No cell may contain a literal `|`.** A stray pipe splits the row and the guard fails naming the
-line. (Note for a future reader of a failing run: a six-cell row makes `parseMatrix` throw, so six of
-the seven checks go red — but the canonical-line check does not call `parseMatrix` and stays green.
-That green means "this line's spacing is fine", not "this line is fine".)
+**No cell may contain a literal `|`.** A stray pipe splits the row into six cells and the guard
+fails naming the line.
+
+**The table ends at a literal `<!-- end of matrix -->` line, and needs one.** Without a terminator a
+truncation is indistinguishable from the end of the table: a stray prose line in the middle silently
+ends it there and every check goes blind to everything below. With one, the walk knows it stopped
+early and says which line did it — which is also how a row that lost its leading `|` is reported as
+itself rather than as a missing id.
 
 ## The matrix
 
-Blocks, in file order: rows owed by 2a-4, then 2a-3, then 2a-8, then 2b-1, 2b-2 and 2b-3, then the
-rows already pinned, then the `white-box-only` rows. Add a row to the end of its own block.
+Blocks, in file order: rows owed by 2a-4, then 2a-3, 2a-6, 2a-8, 2b-1, 2b-2 and 2b-3, then the rows
+already pinned, then the `white-box-only` rows. Add a row to the end of its own block, and keep the
+`<!-- block: … -->` line above it — it is what puts two lines between one PR's last row and the next
+PR's first, which is the distance git needs to merge them cleanly.
 
 | # | Behaviour | Source | Pin | Notes |
 |---|---|---|---|---|
@@ -1223,6 +1292,7 @@ rows already pinned, then the `white-box-only` rows. Add a row to the end of its
 | 11 | One transcode process runs per active `(channel, profile)` pair across the cluster: a second client on the same Output Profile attaches to the existing process's buffer instead of spawning its own | `apps/proxy/live_proxy/output/profile/manager.py:67-122`, `apps/proxy/live_proxy/output/profile/manager.py:312-321` | `e2e/tests/streaming-greybox/output-profile-sharing.spec.ts::two clients on one output profile share a single transcode` | Ten AC3 clients cost one ffmpeg. 2a-6 may re-pin this to a harness test; the existing e2e spec stands until it does |
 <!-- block: white-box-only -->
 | 27 | Not held to: `_execute_redis_command` swallows every Redis exception to `None` after one reconnect attempt, so a caller cannot distinguish "key absent" from "Redis unreachable" | `apps/proxy/live_proxy/server.py:138-159` | `white-box-only` | Deleted, not ported: spec D2 removes Redis from the live path entirely, so there is no analogous call in the Go relay to swallow anything. One of the three fail-open paths `CLAUDE.md` records as a live defect |
+<!-- end of matrix -->
 ````
 
 - [ ] **Step 6: Run the test to verify it passes.**
@@ -1525,7 +1595,7 @@ comment Task 2 wrote, each with its own block comment (ruling 11d). The result, 
 | # | Behaviour | Source | Pin | Notes |
 |---|---|---|---|---|
 <!-- block: owed by 2a-4 -->
-| 1 | … | 2 | … | 3 | … | 4 | … | 5 | … | 6 | …          (one per line; 12 joins them in Task 4)
+| 1 | … | 2 | … | 3 | … | 4 | … | 5 | … | 6 | …          (one per line)
 <!-- block: owed by 2a-3 -->
 | 7 | … | 8 | … | 9 | …                                   (13 joins them in Task 4)
 <!-- block: owed by 2a-8 -->
@@ -1688,7 +1758,7 @@ export type Pin =
  * written where `owed: 2a-8` was meant otherwise resolves fine, and the block
  * contiguity check only catches it if it happens to split a run.
  */
-export const PRS: readonly string[] = ['2a-3', '2a-4', '2a-8', '2b-1', '2b-2', '2b-3'];
+export const PRS: readonly string[] = ['2a-3', '2a-4', '2a-6', '2a-8', '2b-1', '2b-2', '2b-3'];
 
 const OWED_RE = /^owed: (\S+)$/;
 
@@ -1805,7 +1875,9 @@ Expected: PASS, 4 tests. Row 11's title reference resolves through `findTestCall
 Rows 10 and 11 are pinned by tests that already exist. Rows 12–18 are owed. **Each goes at the end
 of its own block** (ruling 11d), never in id order:
 
-- **12** → end of the `owed by 2a-4` block, after row 6.
+- **12** → a new `<!-- block: owed by 2a-6 -->` after the 2a-3 block. **Not** 2a-4's block: the
+  spec says 2a-4 but row 12 is `output/fmp4/generator.py` versus `output/ts/generator.py`, and
+  2a-4's subject is `input/manager.py`. Ruled to 2a-6 (ruling 11d); the spec is being amended.
 - **13** → end of the `owed by 2a-3` block, after row 9.
 - **15** → end of the `owed by 2a-8` block, after row 14.
 - **16** → a new `<!-- block: owed by 2b-1 -->` after the 2a-8 block.
@@ -1822,7 +1894,7 @@ Row 11 already exists from Task 2 — leave it where it is.
 | # | Behaviour to write | Pin | How to find the Source |
 |---|---|---|---|
 | 10 | Multi-client upstream sharing: three clients on one channel share exactly one upstream connection, and closing every client releases it | `` `e2e/tests/streaming/shared-upstream.spec.ts::three clients share exactly one upstream connection` `` | `grep -n "def add_client\|_registered_clients" apps/proxy/live_proxy/client_manager.py` — `add_client` and its duplicate guard (around `:215-245`); and the owner election in `grep -n "def.*owner\|nx=True" apps/proxy/live_proxy/server.py` (around `:505-530`). Cite both. Verify the title with `grep -n "three clients share exactly one upstream connection" e2e/tests/streaming/shared-upstream.spec.ts` |
-| 12 | The fMP4 generator's `_is_timeout()` lacks the TS generator's `url_switching` exemption, so an fMP4 viewer can be dropped mid-failover while a TS viewer on the same channel is not | `owed: 2a-4` | `grep -n "_is_timeout" apps/proxy/live_proxy/output/fmp4/generator.py` (around `:339`) and `grep -n "_is_timeout\|url_switching" apps/proxy/live_proxy/output/ts/generator.py` (around `:574-590`). Cite both, because the row is the *difference* between them. **Filed as an issue and reproduced, not fixed** (spec D5) — say so in Notes |
+| 12 | The fMP4 generator's `_is_timeout()` lacks the TS generator's `url_switching` exemption, so an fMP4 viewer can be dropped mid-failover while a TS viewer on the same channel is not | `owed: 2a-6` | `grep -n "_is_timeout" apps/proxy/live_proxy/output/fmp4/generator.py` (around `:339`) and `grep -n "_is_timeout\|url_switching" apps/proxy/live_proxy/output/ts/generator.py` (around `:574-590`). Cite both, because the row is the *difference* between them. **Filed as an issue and reproduced, not fixed** (spec D5) — say so in Notes |
 | 13 | Client registration is idempotent per client id, and a client whose heartbeat stops for `GHOST_CLIENT_MULTIPLIER` × the heartbeat interval is removed as a ghost | `owed: 2a-3` | `grep -n "ghost\|GHOST_CLIENT_MULTIPLIER\|def remove_ghost_clients" apps/proxy/live_proxy/client_manager.py` — the sweep (around `:110-130`) and `remove_ghost_clients` (around `:434-470`). Cite both. Notes: extends the existing `apps/channels/tests/test_ts_proxy_ghost_clients.py`, which is the partial cover the spec records |
 | 14 | *(already written in Task 2)* | `owed: 2a-8` | — |
 | 15 | `stream_xc` authorizes once and passes its `decision` into `stream_ts`, so an XC tune is not authorized twice and does not mint a second client id for one connection | `owed: 2a-8` | `grep -n "decision=decision\|def stream_ts\|def stream_xc" apps/proxy/live_proxy/views.py` — the `if decision is None:` guard and its comment inside `stream_ts` (spec cites `:161-165`; at `a948cd8a` the comment is at `:162-166` — **verify and cite what you read**), the `resolve_authorization` call inside `stream_xc` (spec cites `:825`; verified correct at `a948cd8a`), and the `stream_ts(...)` hand-off (around `:845-851`). Cite all three |
@@ -2037,7 +2109,7 @@ test('rows owed by one PR are contiguous', { tag: '@characterization' }, async (
   const split = runs.filter((pr, i) => runs.indexOf(pr) !== i);
   expect(
     split,
-    'Rows owed by one PR must be contiguous in file order. Six PRs close rows in this table ' +
+    'Rows owed by one PR must be contiguous in file order. Seven PRs close rows in this table ' +
       'and three of them run in parallel; interleaving their rows interleaves their diffs and ' +
       'turns every '  +
       'merge into a conflict. Order in the file is by owning block, NOT by id — do not sort ' +
@@ -2140,9 +2212,10 @@ cd /Users/dion/git/Dispatcharr/.worktrees/phase2-2a1
 grep -n "^<!-- block: \|^| [0-9]" docs/relay-parity-matrix.md | sed 's/\(:.\{0,40\}\).*/\1/'
 ```
 
-Expected: eight `<!-- block: … -->` lines, in the order `owed by 2a-4`, `owed by 2a-3`,
-`owed by 2a-8`, `owed by 2b-1`, `owed by 2b-2`, `owed by 2b-3`, `already pinned`, `white-box-only`,
-with the rows of each block between them. The step 5 contiguity check asserts the same thing; this is the human-readable view
+Expected: nine `<!-- block: … -->` lines, in the order `owed by 2a-4`, `owed by 2a-3`,
+`owed by 2a-6`, `owed by 2a-8`, `owed by 2b-1`, `owed by 2b-2`, `owed by 2b-3`, `already pinned`,
+`white-box-only`, with the rows of each block between them, and one `<!-- end of matrix -->` after
+the last row. The step 5 contiguity check asserts the same thing; this is the human-readable view
 of it.
 
 - [ ] **Step 7: Typecheck, run the whole guards project, and commit.**
@@ -2192,7 +2265,7 @@ cd /Users/dion/git/Dispatcharr/.worktrees/phase2-2a1 && git commit -F <SCRATCH>/
 **Files:**
 - Modify: `e2e/tests/guards/parity-matrix.spec.ts` (header comment only — no assertion changes)
 
-**Interfaces:** none. Produces the seven mutation results Task 7 writes into `e2e/COVERAGE.md`.
+**Interfaces:** none. Produces the eight mutation results Task 7 writes into `e2e/COVERAGE.md`.
 
 Every guard in this directory records in its own header that it was verified by mutation, and says
 what the mutation was and what it printed. `capabilities.spec.ts` makes the argument: a guard that
@@ -2233,15 +2306,15 @@ Revert and re-run; expected PASS, 7 tests.
 
 - [ ] **Step 1c: Move one owed row out of its block. Expect the contiguity check to fail, and only it.**
 
-Edit `docs/relay-parity-matrix.md`: cut the `| 12 | …` line out of the `owed by 2a-4` block and paste
-it at the end of the `owed by 2a-3` block, after row 13. Nothing about the row's content changes, so
-its citation and pin still resolve.
+Edit `docs/relay-parity-matrix.md`: cut the `| 6 | …` line out of the `owed by 2a-4` block and paste
+it at the end of the `owed by 2a-8` block, after row 25. Nothing about the row's content changes, so
+its citation and pin still resolve — only its position does.
 
 Run the same command.
 Expected: **only** `rows owed by one PR are contiguous` fails, printing the owner sequence read from
-the file (`2a-4 → 2a-3 → 2a-4` — or whatever your table produces) and the owed rows in file order.
-**Record the message.** This is the mutation that proves someone cannot re-sort the table by id, or
-drop a row into the wrong block, without being told.
+the file — `2a-4` in two separate runs — and the owed rows in file order. **Record the message.**
+This is the mutation that proves someone cannot re-sort the table by id, or drop a row into the wrong
+block, without being told.
 
 Revert and re-run; expected PASS, 7 tests.
 
@@ -2274,7 +2347,7 @@ Revert both; re-run; expected PASS, 7 tests.
 
 - [ ] **Step 4: Mutate the white-box marker. Expect check 4 to fail.**
 
-Edit `docs/relay-parity-matrix.md`: change row 12's Pin from `owed: 2a-4` to `white-box-only`.
+Edit `docs/relay-parity-matrix.md`: change row 12's Pin from `owed: 2a-6` to `white-box-only`.
 
 Run the same command.
 Expected: `white-box-only rows are confined to an allowlist` fails, reporting `[12, 26, 27]` against
@@ -2283,6 +2356,25 @@ is no list of owed ids any more — and the allowlist is now the whole defence: 
 applied without a matching entry and a stated `why` in `parity-matrix.ts`.
 
 Revert and re-run; expected PASS, 7 tests.
+
+- [ ] **Step 4b: Truncate the table with a stray line. Expect every check to fail, naming that line.**
+
+Edit `docs/relay-parity-matrix.md`: insert a line of prose — `A note about the block below.` — between
+two rows in the middle of the table, and separately delete the leading `|` from one row.
+
+Run the same command.
+Expected, for each: **every check fails** with `ends the table before its "<!-- end of matrix -->"
+line`, naming the offending line and quoting it. **Record both.** This is the mutation the explicit
+terminator exists for: without it the table simply ended at that line, the parse silently lost every
+row below, and the padding check went blind to them too — a padded row underneath a stray line was
+reported by nobody.
+
+Then delete the `<!-- end of matrix -->` line itself. Expected: every check fails — with
+`has no "<!-- end of matrix -->" line after the table` if nothing follows the table, or with
+`ends the table before its "<!-- end of matrix -->" line` naming the **first line of prose after the
+table**, if something does. Both are correct and both are loud; record whichever you see.
+
+Revert all three; re-run; expected PASS, 7 tests.
 
 - [ ] **Step 5: Delete a pinned row. Expect only the completeness check to fail.**
 
@@ -2297,13 +2389,13 @@ silent — every other check passes on a table that is simply shorter.
 
 Revert and re-run; expected PASS, 7 tests.
 
-- [ ] **Step 6: Record the seven mutations in the header comment.**
+- [ ] **Step 6: Record the eight mutations in the header comment.**
 
 Append to the block comment at the top of `e2e/tests/guards/parity-matrix.spec.ts`, immediately
 before the closing `*/`, using **the messages you actually saw**, not the ones this plan predicts:
 
 ```
- * Verified by mutation, all seven, each reverted before the next:
+ * Verified by mutation, all eight, each reverted before the next:
  *   1. Renaming the header's `Notes` column to `Note` failed every check with
  *      "has no header row naming the five columns", printing the canonical
  *      header; and adding a SECOND five-column header (a worked example in a
@@ -2312,8 +2404,8 @@ before the closing `*/`, using **the messages you actually saw**, not the ones t
  *   2. Padding one cell (`| 27  |`) failed ONLY the canonical-line check,
  *      naming the line and printing both spellings — the whole reason the
  *      parser tolerates padding instead of dying on it.
- *   3. Moving row 12 from 2a-4's block into 2a-3's failed ONLY the contiguity
- *      check, printing the owner sequence it read from the file.
+ *   3. Moving row 6 out of 2a-4's block into 2a-8's failed ONLY the contiguity
+ *      check, printing the owner sequence with 2a-4 in two separate runs.
  *   4. Widening row 27's citation to `server.py:138-99999` failed the citation
  *      check naming row 27 and "<the message you saw>".
  *   5. Misspelling row 11's cited test title failed the pin check, printing
@@ -2326,6 +2418,10 @@ before the closing `*/`, using **the messages you actually saw**, not the ones t
  *   7. Deleting a PINNED row (24) failed ONLY the completeness check, with
  *      "Missing: 24". Every other check passes on a table that is simply
  *      shorter, which is why that check exists.
+ *   8. A stray prose line mid-table, a row that lost its leading "|", and a
+ *      missing "<!-- end of matrix -->" each failed EVERY check, naming the
+ *      line. Before the terminator, all three silently ended the table where
+ *      they sat and every check below went blind.
 ```
 
 Run: `cd /Users/dion/git/Dispatcharr/.worktrees/phase2-2a1/e2e && npx tsc --noEmit`
@@ -2348,7 +2444,7 @@ Message to `<SCRATCH>/msg-task6.txt`:
 test(phase2): record the parity guard's five mutation verifications
 
 Every guard in this directory records what it was seen to fail on, because a
-guard nobody has watched fail is a guard nobody knows works. Seven mutations,
+guard nobody has watched fail is a guard nobody knows works. Eight mutations,
 each reverted: a renamed column, a padded cell, an owed row moved out of its
 block, an out-of-range citation, a misspelled test title (and the same
 misspelling in a comment, which stayed red), a white-box-only marker used to
@@ -2504,7 +2600,7 @@ Message to `<SCRATCH>/msg-task7.txt`:
 ```
 docs(phase2): the parity matrix in COVERAGE, README and CLAUDE.md
 
-COVERAGE.md's Guards table gets the new guard and the seven mutations that
+COVERAGE.md's Guards table gets the new guard and the eight mutations that
 proved it. README's guards enumeration names it — and, while there, the
 e2e-upstream contract check it had already been missing. CLAUDE.md lists the
 matrix beside the specs, because every later Phase 2 PR cites it and a
@@ -2625,7 +2721,7 @@ whole column would all have skipped it. `docs/relay-parity-matrix.md` joins
 zero findings), and `.claude/hooks/run-affected-tests.sh` gains a case so
 editing the matrix runs the guard locally too.
 
-Verified by mutation, seven times, each reverted; the spec file's header records
+Verified by mutation, eight times, each reverted; the spec file's header records
 what each one printed.
 
 **Three things the spec gets wrong, followed the code instead and reported
@@ -2791,6 +2887,29 @@ claim. Five more mutations, all reverted:
 
 The two multi-line comments are themselves the M2 regression check: all twenty-seven rows parse
 through them, where the single-line-only rule truncated the table at the first one.
+
+**Re-prototyped a fourth time after the second review round**, against the nine-block layout with
+row 12 in its own 2a-6 block, an explicit `<!-- end of matrix -->` terminator and prose after it. All
+seven checks pass, printing `parity matrix: 27 rows — 5 pinned, 20 owed, 2 white-box-only`. What the
+new shared walker buys, measured:
+
+- A stray prose line mid-table, and a row that lost its leading `|`, each fail **all seven** checks
+  naming the line and quoting it (`docs/relay-parity-matrix.md:23 ends the table before its
+  "<!-- end of matrix -->" line: "A note about the block below."`). Before the terminator, both
+  silently ended the table where they sat.
+- **The blindness case is closed**: a padded row *below* a stray line used to be reported by nobody —
+  the parse stopped, the padding walker stopped at the same place, and the run was green on that
+  count. It now fails all seven, naming the stray line.
+- Deleting the terminator fails everything too.
+- Moving row 6 out of 2a-4's block into 2a-8's fails **only** the contiguity check, printing
+  `2a-4 → 2a-3 → 2a-6 → 2a-8 → 2a-4 → 2b-1 → 2b-2 → 2b-3` — 2a-4 in two runs.
+- Deleting **pinned** row 24 fails **only** the completeness check, with `Missing: 24`.
+
+**The adjacent-line claim was measured, not taken on trust**, in a throwaway git repo: two edits one
+line apart conflict; two lines apart merge cleanly. That holds for modify-vs-modify (`CONFLICT` at
+distance 0 and 1, `CLEAN` at 2 and 3), modify-vs-delete and delete-vs-delete. Since ruling 5 made
+closing a row a *modify*, the modify-vs-modify row is the one that matters, and it is why the
+`<!-- block: -->` marker lines are recorded as load-bearing rather than decorative.
 
 Task 6's mutation work is still owed in full — the prototype proved the checks fire on a synthetic
 table; Task 6 proves they fire on the real document, and its recorded messages are what
