@@ -1,0 +1,8 @@
+# The Phase 2 parity matrix is machine-read by
+# e2e/tests/guards/parity-matrix.spec.ts. Its table is deliberately NOT
+# column-aligned: several PRs edit it concurrently, and padding one cell
+# rewrites every line, so every merge conflicts on the whole file. Prettier's
+# Markdown formatter pads pipe tables by default, so it must not touch this
+# one. See docs/superpowers/plans/2026-09-09-phase2-2a1-parity-matrix.md,
+# ruling 11.
+docs/relay-parity-matrix.md
