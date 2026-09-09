@@ -531,24 +531,70 @@ the trust-mismatch failure mode as a risk this fix closes rather than leaves ope
   side-channel.
 
   **Fix: no identity-bearing material may travel as a header on this route. The question being
-  asked is the POST body, in full, so `sha256(body)` binds it.** Body shape:
+  asked is the POST body, in full, so `sha256(body)` binds it.** Body shape — **two fields added in
+  a second correction this same fix round (§ round-4 review), both load-bearing, not polish**:
 
   ```json
   {
     "uri": "/live/user/pass/12345?token=...",
-    "authorization": "Bearer ...",
-    "cookie": "sessionid=...",
-    "client_ip": "203.0.113.7"
+    "client_ip": "203.0.113.7",
+    "internal": false,
+    "headers": {
+      "authorization": "Bearer ...",
+      "cookie": "sessionid=...",
+      "x-api-key": null
+    }
   }
   ```
 
   `uri` is the equivalent of `X-Original-URI` — the full path, query string included, that
   `authorize_view`'s nginx-facing form already resolves a surface from (`_surface_for`,
-  `authorize_views.py`); `authorization`/`cookie` carry exactly the two headers ADR 0005's principal
-  set can arrive in that a URL doesn't already carry (a `null` field, not an absent one, when the
-  client sent neither); `client_ip` is the address the ACL and, in production, `X-Relay-Client-IP`
-  both need. Changing any one of these now changes `sha256(body)`, which changes the required token
-  — a captured token for one question cannot be replayed against a different one.
+  `authorize_views.py`); `client_ip` is the address the ACL and, in production, `X-Relay-Client-IP`
+  both need. `headers` carries every credential-bearing header `authorize_stream`'s authenticator
+  union can consume — **not two, but three: `authorization`, `cookie`, and `x-api-key`**, corrected
+  from this round's first pass, which named only the first two and missed that
+  `ApiKeyAuthentication` (`apps/accounts/authentication.py:46-85`) checks `X-API-Key` **before**
+  falling back to an `Authorization: ApiKey …` header — a client authenticating that way would
+  silently resolve to anonymous in the nginx-less shape and to its real user in production, the
+  exact cross-shape divergence D5 exists to prevent. Shaping it as a `headers` sub-object rather
+  than three flat fields is deliberate: a fourth credential header discovered later is a field, not
+  a body-shape redesign. Every field in `headers` is `null`, not absent, when the client sent
+  nothing for it.
+
+  **`internal` is the fifth field, and it closes a BLOCKING finding, not a stylistic one — reusing
+  the transport's own `X-Dispatcharr-Internal` header to answer "is this an internal principal" is a
+  total authorization bypass, verified against `authorize.py`.** `authorize_stream`
+  (`authorize.py:417-419`) reads `is_internal = request_is_internal(http_request)` off **the same
+  request object it is handed**, and `_resolve_principal`'s first two lines (`:309-310`) are
+  `if is_internal: return INTERNAL_PRINCIPAL` — before any credential, channel flag or stream limit
+  is even looked at (`_apply_channel_checks` returns immediately for an internal principal,
+  `authorize.py:374-375`; the stream-limit block never runs because `user` is `None`,
+  `authorize.py:435-440`; the XC credential check is never reached). `IsInternalRelay` **requires**
+  the Go relay to send `X-Dispatcharr-Internal` on this very POST — it is one of the two headers the
+  gating bullet below mandates. If the Django view then calls `authorize_stream` with the incoming
+  request unchanged, `request_is_internal` reads that same header and returns `True` for **every**
+  tune in **every** nginx-less deployment, unconditionally — `hidden_from_output`,
+  `hide_adult_content`, channel-profile membership and the XC credential check all vanish, silently,
+  because everything simply authorizes. The header answers two different questions in Phase 1's own
+  design — "this caller is part of the deployment" (the static token) and "this *request*, from the
+  *client*, is internal" (what `authorize_stream` actually asks) — and this route, by construction,
+  collapses them onto one transport header that can only ever answer the first.
+
+  **Fix: the internal-principal question travels in the body too, and the view must build the
+  request it hands to `authorize_stream` from the body's `internal` field, never pass its own
+  incoming request through unchanged.** The Go relay sets `internal: true` only when it is relaying
+  the DVR's own request (the DVR's `run_recording` fetch already carries the static
+  `X-Dispatcharr-Internal` header with no bound counterpart, per ADR 0005 — `internal_auth.py:45-49`
+  — and the Go relay, which verifies that header the same way `request_is_relay_trusted`-equivalent
+  logic does elsewhere in this design, can tell), and `false` for every ordinary client tune. The
+  view constructs a request (or a lightweight object presenting the same `.META` interface) whose
+  `HTTP_X_DISPATCHARR_INTERNAL` is set from `internal_principal_token()` when the body says `true`
+  and is **absent** when it says `false` — never copied from the transport request's own header,
+  which exists only to satisfy `IsInternalRelay` and must never leak into the question
+  `authorize_stream` answers. Being in the body, `internal` is inside `sha256(body)`, so it inherits
+  the same replay binding as `uri`/`client_ip`/`headers` — a captured token cannot be replayed to
+  turn a client tune into an internal one, closing the same class of hole `M-R3-1`'s fix closed for
+  the rest of the question.
 - **The route must be gated, not open — and gating it is now the *only* protection it has, since it
   no longer sits behind nginx's `internal;` location the way the existing GET/HEAD view does.**
   `authorize_view` today is `AllowAny` but is reachable only through nginx's `internal;` location —
@@ -984,7 +1030,7 @@ of what the ten pre-existing workflows pin.
 
 | PR | Branch | What it does | Gate | Depends on |
 |---|---|---|---|---|
-| 2c-1 | `migration/phase2c-skeleton` | `relay/` skeleton: module init, `main.go`, `httpapi`/`control`/`channel`/`buffer`/`ffmpeg` package stubs, `docker/supervisord.d/relay-go.conf`, the Dockerfile builder stage, `go-tests.yml` (build + lint + `go vet`, no coverage gate yet — nothing to cover), `/healthz`/`/readyz` returning static 200s, a dev-only route flag so this PR is inert in every non-dev deployment. **Precondition, added in this fix round (§ m-R3-2): if `zero_orm_allowlist.py` is non-empty, this PR's own description names, for every entry, either the contract field that closes it or the written reason the Go relay never asks that question — the "no Postgres driver" invariant is conditional on this, not automatic (§ Stage 2c's invariant text).** | `go build ./...`, `golangci-lint run`, `go vet ./...` all green; zizmor clean on `go-tests.yml` from its first commit; the allowlist reconciliation above stated explicitly, not silently assumed; **and, added in this fix round, the Go toolchain and action pins are re-resolved at PR time, not carried forward from this spec's 2026-09-09 values** — `go.dev/dl`, `docker buildx imagetools inspect` against the current `golang` tag, and fresh `gh api .../commits/<tag> --jq .sha` lookups for `golangci-lint-action`/`setup-go`/`checkout`, committed with whatever the tool returns on the day this PR is opened | 2b-3 (Gate 2 green **and** the allowlist reconciliation above) |
+| 2c-1 | `migration/phase2c-skeleton` | `relay/` skeleton: module init, `main.go`, `httpapi`/`control`/`channel`/`buffer`/`ffmpeg` package stubs, `docker/supervisord.d/relay-go.conf`, the Dockerfile builder stage, `go-tests.yml` (build + lint + `go vet`, no coverage gate yet — nothing to cover), `/healthz`/`/readyz` returning static 200s, a dev-only route flag so this PR is inert in every non-dev deployment. **Precondition, added in this fix round (§ m-R3-2): if `zero_orm_allowlist.py` is non-empty, this PR's own description names, for every entry, either the contract field that closes it or the written reason the Go relay never asks that question — the "no Postgres driver" invariant is conditional on this, not automatic (§ Stage 2c's invariant text). Stated plainly rather than left to imply more rigour than exists (round-4 review, nm-R4-2): unlike D7's coverage gates, this precondition is enforced by the PR description and its reviewer, not by CI — deciding whether a written reason for skipping a contract field is a *good* reason is not a grep, so no mechanical check for it is proposed here. The mechanical backstop is downstream, at 2c-9: a driver import would still fail the build/`go.sum`-empty check regardless of whether this precondition was honoured, which is why an unmechanised precondition here is an accepted gap rather than a silent one.** | `go build ./...`, `golangci-lint run`, `go vet ./...` all green; zizmor clean on `go-tests.yml` from its first commit; the allowlist reconciliation above stated explicitly, not silently assumed; **and, added in this fix round, the Go toolchain and action pins are re-resolved at PR time, not carried forward from this spec's 2026-09-09 values** — `go.dev/dl`, `docker buildx imagetools inspect` against the current `golang` tag, and fresh `gh api .../commits/<tag> --jq .sha` lookups for `golangci-lint-action`/`setup-go`/`checkout`, committed with whatever the tool returns on the day this PR is opened | 2b-3 (Gate 2 green **and** the allowlist reconciliation above) |
 | 2c-2 | `migration/phase2c-vertical-slice` | The Proxy stream-profile architecture only (no ffmpeg spawn yet): one client, in-memory ring buffer, MPEG-TS passthrough for a single upstream. Proves the buffer/fan-out shape end to end before ffmpeg complexity is added. | New Go tests pass with `-race`; parity matrix rows 7, 9 (chunk monotonicity, 188-byte realignment) get a Go column | 2c-1 |
 | 2c-3 | `migration/phase2c-fanout` | Multi-client fan-out, join-5s-behind, the client registry, `?clients=all` on `GET /proxy/relay/channels` | Rows 8, 10, 13 get a Go column | 2c-2 |
 | 2c-4 | `migration/phase2c-ffmpeg` | ffmpeg spawn via `os/exec` + `syscall.SysProcAttr{Setpgid, Pdeathsig}` (D5 exception 1), the `log_parsers.py` port | Row 4 (the `speed=` arming delay) gets a Go column with its own real-ffmpeg test, mirroring 2a's harness | 2c-3 |
