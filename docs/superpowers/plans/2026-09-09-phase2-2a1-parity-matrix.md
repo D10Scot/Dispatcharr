@@ -133,7 +133,8 @@ document's own § Format so an author is told before the guard tells them.
   — file order groups rows by the PR that owes them (ruling 11), and re-sorting the table by id
   destroys that property. A new row takes the next free id and is appended to the end of its owning
   PR's block.
-- **`Behaviour`** — one sentence naming the externally-observable behaviour. Prose; the guard only
+- **`Behaviour`** — one sentence naming the externally-observable behaviour **as it is today**, never
+  as a later PR will make it (§ ruling 14). Prose; the guard only
   requires it to be non-empty.
 - **`Source`** — one or more citations, each a backticked `` `path:line` `` or
   `` `path:start-end` ``, repo-relative. The guard resolves every one: the file must exist and the
@@ -606,6 +607,38 @@ filed issue both say so.
 Consequences, corrected throughout this plan: **twenty rows are owed, not sixteen**; **five are
 pinned, not nine**; two are white-box. The line the guard prints at 2a-1 is
 `parity matrix: 27 rows — 5 pinned, 20 owed, 2 white-box-only`.
+
+### 14. A Behaviour cell describes today, and the spec is not a safe source for it
+
+Row 17 shipped into this plan describing `ip_address` as "derived from `X-Relay-Client-IP` as set by
+whichever authorize response the relay trusted, never from `REMOTE_ADDR` or `X-Forwarded-For` read at
+the relay". **`git grep "X-Relay-Client-IP"` across the whole repository returns hits in `docs/`
+only.** The header does not exist. What does exist is `dispatcharr/utils.py:342-370`'s
+`get_client_ip(request)` — called once at `apps/proxy/live_proxy/views.py:195`, before both
+`add_client()` sites — whose docstring says proxy headers are honoured *only when `REMOTE_ADDR` is a
+trusted proxy*, i.e. it reads exactly what the row said it never reads.
+
+**The row was describing 2b-2's work as the present.** That inverts what a parity row is for. The
+matrix exists so a later change can be shown not to have broken what was already true; a row written
+about the world 2b-2 will create pins nothing, and the test it eventually gets is shaped to the new
+implementation instead of the old one. This plan's own Task 4 note says rows 16 and 17 are pinned
+*ahead* of 2b-1/2b-2 precisely because those PRs change those mechanisms — "pin first, then move" —
+and row 17 then described the destination rather than the origin.
+
+**Where it came from, because that is the reusable part.** The spec's Gate 1 table writes several
+rows forward-looking, about what the **Go relay** must do; its row 17 says "derived, in every
+deployment shape, from `X-Relay-Client-IP` set by whichever authorize response the Go relay trusted".
+That is a correct statement of a future obligation and a wrong statement of present behaviour, and it
+was carried into this plan verbatim. **Carry the spec's citations, which resolve; write the Behaviour
+from what the cited code does.** The spec's sentence belongs in Notes, as the change the row must
+survive.
+
+**Swept, twice, across all 27 rows.** Every identifier-shaped token in every Behaviour cell was
+grepped against `apps core dispatcharr docker scripts frontend`; and every cell was scanned for
+forward-looking language (`will`, `once 2…`, `the Go relay`, `2b-…`). **Row 17 was the only hit on
+either pass**, and row 16 — its sibling, pinned ahead of 2b-1 for the same reason — is clean:
+`get_stream_object`'s `Stream.stream_hash` fallback exists today at `apps/proxy/next_source.py:69-79`.
+Task 5 step 6 runs the sweep so a reworded cell is re-checked.
 
 ---
 
@@ -1409,7 +1442,20 @@ check then fails it.
   this table**: one that stops applying is retired *in place*, keeping its id and saying so in its
   Notes. The guard asserts the ids run `1..N` with no gaps, so deleting a row fails loudly. **Not in
   ascending file order** — rows are grouped by the PR that owes them.
-- **`Behaviour`** — one sentence naming the externally-observable behaviour.
+- **`Behaviour`** — one sentence naming the externally-observable behaviour **as it is today**.
+  **Not as a later PR will make it.** A parity row exists so a change can be shown not to break what
+  was already true; a row describing the mechanism 2b or 2c will build inverts that, and the test it
+  eventually gets is shaped to the new implementation rather than pinning the old one.
+
+  **The spec is not a safe source for this cell.** Several of its Gate 1 rows are written
+  forward-looking, about what the *Go relay* must do. Row 17's reached this plan intact and had to be
+  rewritten: it named a header (`X-Relay-Client-IP`) that 2b-2 has not built, and denied
+  `get_client_ip`, the mechanism that actually runs. Carry the spec's *citations*, which resolve;
+  write the Behaviour from what the cited code does. The spec's sentence belongs in **Notes**, as the
+  change this row must survive.
+
+  **The check is mechanical**: `git grep` the tree for each mechanism the cell names. **If the only
+  hits are under `docs/`, the row describes something that does not exist yet.**
 - **`Source`** — one or more backticked, repo-relative citations: `` `path:line` `` or
   `` `path:start-end` ``. The guard checks that each file exists and each range lies inside it. It
   cannot check that the range is the *right* code; that is what review is for.
@@ -2270,13 +2316,13 @@ Row 11 already exists from Task 2 — leave it where it is.
 
 | # | Behaviour to write | Pin | How to find the Source |
 |---|---|---|---|
-| 10 | Multi-client upstream sharing: three clients on one channel share exactly one upstream connection, and closing every client releases it | `` `e2e/tests/streaming/shared-upstream.spec.ts::three clients share exactly one upstream connection` `` | `grep -n "def add_client\|_registered_clients" apps/proxy/live_proxy/client_manager.py` — `add_client` and its duplicate guard (around `:215-245`); and the owner election in `grep -n "def.*owner\|nx=True" apps/proxy/live_proxy/server.py` (around `:505-530`). Cite both. Verify the title with `grep -n "three clients share exactly one upstream connection" e2e/tests/streaming/shared-upstream.spec.ts` |
+| 10 | Multi-client upstream sharing: three clients on one channel share exactly one upstream connection, and closing every client releases it | `` `e2e/tests/streaming/shared-upstream.spec.ts::three clients share exactly one upstream connection` ``, `` `e2e/tests/streaming/shared-upstream.spec.ts::closing every client releases the upstream` `` — **both**, because the Behaviour asserts both halves and ruling 3 uses this row as its worked example for list-valued pins (`:4` and `:49`) | `grep -n "def add_client\|_registered_clients" apps/proxy/live_proxy/client_manager.py` — `add_client` and its duplicate guard (around `:215-245`); and the owner election in `grep -n "def.*owner\|nx=True" apps/proxy/live_proxy/server.py` (around `:505-530`). Cite both. Verify the title with `grep -n "three clients share exactly one upstream connection" e2e/tests/streaming/shared-upstream.spec.ts` |
 | 12 | The fMP4 generator's `_is_timeout()` lacks the TS generator's `url_switching` exemption, so an fMP4 viewer can be dropped mid-failover while a TS viewer on the same channel is not | `owed: 2a-6` | `grep -n "_is_timeout" apps/proxy/live_proxy/output/fmp4/generator.py` (around `:339`) and `grep -n "_is_timeout\|url_switching" apps/proxy/live_proxy/output/ts/generator.py` (around `:574-590`). Cite both, because the row is the *difference* between them. **Filed as an issue and reproduced, not fixed** (spec D5) — say so in Notes |
-| 13 | Client registration is idempotent per client id, and a client whose heartbeat stops for `GHOST_CLIENT_MULTIPLIER` × the heartbeat interval is removed as a ghost | `owed: 2a-3` | `grep -n "ghost\|GHOST_CLIENT_MULTIPLIER\|def remove_ghost_clients" apps/proxy/live_proxy/client_manager.py` — the sweep (around `:110-130`) and `remove_ghost_clients` (around `:434-470`). Cite both. Notes: extends the existing `apps/channels/tests/test_ts_proxy_ghost_clients.py`, which is the partial cover the spec records |
+| 13 | Client registration is idempotent per client id, and a client whose heartbeat stops for `GHOST_CLIENT_MULTIPLIER` × the heartbeat interval is removed as a ghost | `owed: 2a-3` | `grep -n "ghost\|GHOST_CLIENT_MULTIPLIER\|def remove_ghost_clients" apps/proxy/live_proxy/client_manager.py` — **three spans, not two**: `client_manager.py:215-221` for the idempotency half (`add_client`'s `_registered_clients` guard, which the Behaviour's first clause is about), the sweep (around `:110-130`), and `remove_ghost_clients` (around `:434-470`). Notes: extends the existing `apps/channels/tests/test_ts_proxy_ghost_clients.py`, which is the partial cover the spec records |
 | 14 | *(already written in Task 2)* | `owed: 2a-5` | — |
 | 15 | `stream_xc` authorizes once and passes its `decision` into `stream_ts`, so an XC tune is not authorized twice and does not mint a second client id for one connection | `owed: 2a-5` | `grep -n "decision=decision\|def stream_ts\|def stream_xc" apps/proxy/live_proxy/views.py` — the `if decision is None:` guard and its comment inside `stream_ts` (spec cites `:161-165`; at `a948cd8a` the comment is at `:162-166` — **verify and cite what you read**), the `resolve_authorization` call inside `stream_xc` (spec cites `:825`; verified correct at `a948cd8a`), and the `stream_ts(...)` hand-off (around `:845-851`). Cite all three |
 | 16 | `/proxy/ts/stream/<stream_hash>` — the admin single-stream preview, with no channel at all — applies the STREAMS ACL and the per-user stream limit when a principal resolved, and no channel check of any kind, because there is no channel to check | `owed: 2a-5` | `apps/proxy/next_source.py:69-79`, `get_stream_object`'s `Stream.stream_hash` fallback — the spec's citation, verified exact at `a948cd8a`. Confirm with `sed -n '69,79p' apps/proxy/next_source.py` and cite it. Add the authorize side: `grep -n "stream_hash\|SURFACE_LIVE" apps/proxy/authorize.py` |
-| 17 | `ip_address` on both status endpoints is the real client address, derived from `X-Relay-Client-IP` as set by whichever authorize response the relay trusted, never from `REMOTE_ADDR` or `X-Forwarded-For` read at the relay | `owed: 2a-5` | The spec's citations, all verified at `a948cd8a`: `dispatcharr/utils.py:342-370` (`get_client_ip`), `apps/proxy/live_proxy/client_manager.py:215-230` (`add_client`'s `ip_address`), `apps/proxy/relay_serializers.py:29`, `apps/proxy/relay_serializers.py:79`. Confirm each with `sed -n` before copying |
+| 17 | `ip_address` on both status endpoints is the client address resolved by `get_client_ip(request)`, called once at `apps/proxy/live_proxy/views.py:195` before either `add_client()` site, reading `REMOTE_ADDR` and honouring `X-Real-IP`/`X-Forwarded-For` **only when `REMOTE_ADDR` is a trusted proxy** | `owed: 2a-5` | The spec's row 17 describes the **post-2b-2** mechanism, not this one — carry the behaviour above instead, and put the spec's sentence in Notes. Citations, all verified at `a948cd8a`: `dispatcharr/utils.py:342-370` (`get_client_ip`, whose docstring is the trusted-proxy rule), `apps/proxy/live_proxy/views.py:195` (the single call site), `apps/proxy/live_proxy/client_manager.py:215-230` (`add_client`'s `ip_address`), `apps/proxy/relay_serializers.py:29`, `apps/proxy/relay_serializers.py:79`. **Notes cell must read**: 2b-2 replaces that source with `X-Relay-Client-IP`, set by the authorize hop; the invariant this row pins is that `ip_address` stays the real client address across that change |
 | 18 | What the status payload's `stream_name` and `m3u_profile_name` contain when the channel metadata hash was never written one | `owed: 2b-3` | `apps/proxy/live_proxy/channel_status.py:74` and `:92` — the two ORM name fallbacks, both verified at `a948cd8a` (`sed -n '70,95p' apps/proxy/live_proxy/channel_status.py`). Notes: **phrased as a question 2b-3 must answer**, not an assumed "always present"; whatever 2b-3 concludes when it deletes these reads is the answer 2c is then held to |
 
 Row 14 already exists from Task 2 — leave it where it is; the table row above is a placeholder so
