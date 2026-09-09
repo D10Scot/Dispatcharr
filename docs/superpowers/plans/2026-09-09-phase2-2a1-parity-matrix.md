@@ -673,6 +673,18 @@ carrying the pre-correction "not exported" phrasing that review 2's MINOR 3 repl
 first escapee was found two rounds ago and this is its sibling, which is what a catalogue-then-sweep
 finds and a spot-fix does not.
 
+**Two more of the same family, found at Task 8 and folded in here rather than given a ruling of their
+own.** Both are steps predicting output that nobody had run:
+
+- **Task 8 step 3** said to "record that it ran and said so". With nothing staged the commit gate says
+  *nothing*: `pre-commit-tests.sh:56`'s `[ -n "$PATHS" ] || exit 0` returns before a label resolves.
+  **Silence is the pass**, and a step that tells an implementer to look for a message the code cannot
+  emit sends them hunting for a fault that is not there.
+- **Task 7 step 1** predicted one `grep` hit for `upstream-contract.spec.ts` in `e2e/COVERAGE.md`;
+  there are two — unrelated prose at `:52` and the Guards row at `:519`. The insertion point was never
+  ambiguous, but "expected: one hit" against an answer of two is exactly the kind of small wrongness
+  that makes an implementer stop and re-read.
+
 **One more correction of the same family, three places:** these are `TS2305` ("module has no exported
 member"), not `TS2304` ("cannot find name"). The names *are* imported; it is the module that lacks
 them. `TS2304` is right only where a symbol is used without being imported at all — which is exactly
@@ -3112,7 +3124,8 @@ cd /Users/dion/git/Dispatcharr/.worktrees/phase2-2a1 && git commit -F <SCRATCH>/
 cd /Users/dion/git/Dispatcharr/.worktrees/phase2-2a1 && grep -n "upstream-contract.spec.ts" e2e/COVERAGE.md
 ```
 
-Expected: one hit, the last row of the Guards (G11) table. Add this row immediately after it, with
+Expected: **two hits, and the second is the one you want.** `:52` is unrelated prose in an earlier
+table; `:519` is the Guards (G11) table's last row. Add the new row immediately after **`:519`**, with
 `<the message you saw>` replaced from Task 6:
 
 ```markdown
@@ -3237,12 +3250,15 @@ which before continuing.
 - [ ] **Step 2: Prove the diff touched no product code.**
 
 ```bash
-cd /Users/dion/git/Dispatcharr/.worktrees/phase2-2a1 && git diff --name-only main...HEAD
+git diff --name-only main...HEAD
 ```
 
-Expected, exactly:
+Expected, exactly these **eleven**:
 
 ```
+.claude/hooks/run-affected-tests.sh
+.github/workflows/e2e-tests.yml
+.prettierignore
 CLAUDE.md
 docs/relay-parity-matrix.md
 docs/superpowers/plans/2026-09-09-phase2-2a1-parity-matrix.md
@@ -3250,10 +3266,26 @@ e2e/COVERAGE.md
 e2e/README.md
 e2e/tests/guards/parity-matrix.spec.ts
 e2e/tests/guards/parity-matrix.ts
+frontend/.prettierignore
 ```
 
-**Nothing under `apps/`, `core/`, `dispatcharr/`, `frontend/`, `docker/`, `scripts/`, `metrics/` or
-`.github/`.** If any of those appears, that file does not belong in this PR.
+**The four infrastructure files are deliberate, and each is Task 2's own work.** An earlier draft of
+this step listed seven and forbade `.github/` and `frontend/` outright — text that predated both the
+ruling 9 fix and the two-ignore-file finding. Every one of the four is required by a Done criterion,
+so reverting one to satisfy the constraint would break the criterion it exists to serve:
+
+| File | Why it is here | Added by |
+|---|---|---|
+| `.github/workflows/e2e-tests.yml` | the `guards` job could not fire on a docs-only diff; it gets its own detector output, gate and `e2e-result` leg (ruling 9) | Step 8 |
+| `.claude/hooks/run-affected-tests.sh` | no hook matched a Markdown file, so editing the matrix ran no check locally | Step 10 |
+| `.prettierignore` | `prettier --write` from the repo root pads the table | Step 9b |
+| `frontend/.prettierignore` | Prettier resolves `--ignore-path` from the working directory, so the root file does **not** cover `CLAUDE.md:36`'s `cd frontend && npx prettier --write` | Step 9b |
+
+**What the check still excludes, which is its real point:** nothing under `apps/`, `core/`,
+`dispatcharr/`, `docker/`, `scripts/` or `metrics/`, and nothing under `frontend/` except that one
+ignore file. **This PR changes no product code and no frontend source.** A `.py`, a `.jsx` or a
+`metrics/curated/` edit appearing here would still be wrong, and that judgement has not changed —
+only the list of infrastructure files this PR legitimately carries.
 
 - [ ] **Step 3: Run the commit gate once against the full branch.**
 
@@ -3262,8 +3294,13 @@ CLAUDE_HOOK_REPO_ROOT=/Users/dion/git/Dispatcharr/.worktrees/phase2-2a1 \
   /Users/dion/git/Dispatcharr/.worktrees/phase2-2a1/.claude/hooks/pre-commit-tests.sh --git-hook
 ```
 
-Expected: nothing staged, so nothing to run — the gate's correct answer for a diff with no backend
-or frontend paths. Record that it ran and said so.
+Expected: **exit 0 and no output at all.** With nothing staged, `PATHS` is empty and
+`pre-commit-tests.sh:56`'s `[ -n "$PATHS" ] || exit 0` returns before any label resolves — so the gate
+prints nothing. **Silence is the pass**, not a sign it failed to run; record that, and do not go
+looking for a message it was never going to emit (§ ruling 15: a step that predicts output must say
+what the code actually emits, and here the answer is nothing).
+
+If you want positive confirmation it ran, `echo $?` after it — `0`.
 
 - [ ] **Step 4: Push and open the pull request.**
 
