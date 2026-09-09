@@ -506,13 +506,52 @@ Ruling 2 already forbids the only thing that would make this expensive: ids are 
 a row that stops applying is retired **in place**, keeping its id. So the id set is exactly
 `1..max(ids)`, and `the parity matrix parses` asserts it directly, naming the missing ids.
 
-**The check is one-sided, and the plan says which side.** `N` is derived from the largest id present,
-so a gap in the middle fails and a **tail** deletion — dropping the highest rows — does not: the
-maximum simply becomes smaller and `1..max` still holds. Today that hole is closed *by accident*,
-because the two highest ids are 26 and 27 and both are pinned by `WHITE_BOX_ONLY`'s `toEqual`, which
-fails the moment either disappears. **That accident ends the day a row 28 is added**, which ruling 6
-explicitly invites. Whoever adds row 28 must either re-check this or pin the maximum some other way;
-it is recorded here so the coverage is a decision rather than a coincidence. It is
+**The first draft of this check derived `N` from the data, and that left the tail unanchored in three
+ways.** Measured, not reasoned: deleting the **highest** row passed, because `max` moved down with it
+and `1..max` still held; a row appended **after** the terminator was invisible, so twenty-seven rows
+parsed and row 28 simply did not exist; and an early terminator above the white-box block truncated
+the table to twenty-five rows with completeness *passing* — caught only because `WHITE_BOX_ONLY`'s
+`toEqual` happens to hold the two highest ids. That third one made **the white-box block's position at
+the end of the table load-bearing and written down nowhere** — precisely the class of accident
+ruling 11d fixed for the block markers, and not one to leave standing twice.
+
+**Two of the three are closed outright; the third candidate fix is rejected. Each with its reason:**
+
+1. **`HIGHEST_ROW_ID` replaces the derived maximum.** `expected` is `1..HIGHEST_ROW_ID`, a constant in
+   `parity-matrix.ts`, so the check is two-sided: deleting the highest row fails, and adding row 28
+   without saying so fails too. That closes the deletion hole **and** retires the white-box accident —
+   truncation now fails on its own account, not because of where a different list happens to point.
+
+   **Yes, this is a stored number, and B1 deleted one.** The two are not the same thing, and the
+   distinction is worth stating rather than glossing. `toBeGreaterThan(20)` was a *threshold* that did
+   not assert the property — 26 rows passed it with a row missing — and whose message blamed the
+   parser. `HIGHEST_ROW_ID` asserts the property exactly and names the mismatch. Ruling 11c bans
+   stored aggregates **in the document**, because five PRs would each bump one; this lives in the
+   guard, beside `WHITE_BOX_ONLY` and `PRS`, and **no PR edits it to close a row** — rows are added
+   only by a deliberate extension of the matrix. It is the same reasoning that made `white-box-only`
+   an allowlist rather than a keyword: the edit that should be deliberate is made deliberate, in two
+   places, with the guard naming the mismatch if you do half of it.
+
+2. **Nothing below the terminator may parse as a matrix row.** `scanTable` scans the remainder of the
+   file and throws on any five-cell line whose first cell is a number. Deliberately narrow: an
+   unrelated table later in the document stays legal, because only a *matrix-shaped* row is refused.
+
+3. **Rejected: "the last row before the terminator carries the highest id."** It would close the same
+   holes, and it fights ruling 11d. A new row goes at the end of **its owning PR's block**, not at the
+   end of the table — so row 28 added to 2a-4's block, which is the first block, would fail a
+   correct edit. A check that fires on the right action is the failure mode this directory's own
+   guards are built to avoid, and it would also freeze the white-box block's position as a rule
+   rather than a convention, buying nothing that `HIGHEST_ROW_ID` does not buy without the
+   constraint.
+
+**What stays open afterwards, stated rather than left to be discovered.** Two things, both real:
+
+- **Moving a *pinned* row between blocks is undetected.** The contiguity check reads owed rows only,
+  so a pinned row has no owner to be contiguous with. It costs nothing today — pinned rows are not
+  edited by concurrent PRs — but a later PR re-pinning one could park it anywhere.
+- **A row's *content* can be rewritten while its id and pin stay valid.** The guard checks that a
+  citation resolves and a pin exists, never that either still describes the Behaviour cell beside it.
+  That is the same limit ruling 5 states about relevance, and it has the same answer: review. It is
 zero-maintenance — the maximum id supplies `N`, so adding a row needs no edit anywhere — and it is
 not a stored aggregate (ruling 11c), because it is computed from the ids themselves. It replaces the
 `toBeGreaterThan(20)` magic number, whose message ("That is this guard being broken, not the matrix
@@ -558,6 +597,8 @@ pinned, not nine**; two are white-box. The line the guard prints at 2a-1 is
 - [ ] **The `guards` CI job fires on a diff that touches only `docs/relay-parity-matrix.md`** —
       the file is in `e2e-tests.yml`'s `push` `paths:` and in the `changes` job's pattern — and
       zizmor still reports **zero findings** on that workflow.
+- [ ] **`prettier --write` cannot rewrite the matrix**, from the repo root or from `frontend/`, and
+      the frontend tree's own Prettier result is unchanged (54 files, before and after).
 - [ ] **Editing the matrix runs the guard locally** — `.claude/hooks/run-affected-tests.sh` has a
       `docs/relay-parity-matrix.md` case, demonstrated firing (Task 2 step 10).
 - [ ] **Every row's `Source` cell carries at least one `file:line` citation that resolves** against
@@ -574,7 +615,7 @@ pinned, not nine**; two are white-box. The line the guard prints at 2a-1 is
 - [ ] **The whole `guards` project is green**, including `tags.spec.ts`, which now sees seven more
       declarations: `npx playwright test --project=guards`
 - [ ] **`cd e2e && npx tsc --noEmit` is clean.**
-- [ ] **Each of the guard's seven checks is verified by mutation** (eleven mutations), and the mutations are recorded in
+- [ ] **Each of the guard's seven checks is verified by mutation** (fourteen mutations), and the mutations are recorded in
       the spec file's header comment — the discipline every other guard in the directory follows
       and states in its own header (Task 6).
 - [ ] **`e2e/COVERAGE.md`'s Guards table carries a row for the new guard**, with its "Proved by"
@@ -637,13 +678,18 @@ not run automatically**. Run them yourself.
 ## File Structure
 
 ```
+.prettierignore                               NEW     one line: the matrix, with why
+frontend/
+  .prettierignore                             NEW     ../docs/relay-parity-matrix.md — Prettier
+                                                      resolves ignores from the working directory,
+                                                      and CLAUDE.md runs it from here
 docs/
   relay-parity-matrix.md                      NEW     prose + § Format + the 27-row table
   superpowers/plans/
     2026-09-09-phase2-2a1-parity-matrix.md    PRESENT this file, committed by the planning pass
 e2e/
   tests/guards/parity-matrix.ts               NEW     parser, types, WHITE_BOX_ONLY, PRS,
-                                                      GATE_1_CLOSED
+                                                      HIGHEST_ROW_ID, GATE_1_CLOSED
   tests/guards/parity-matrix.spec.ts          NEW     five @characterization tests
   COVERAGE.md                                 MODIFY  one row in the Guards (G11) table
   README.md                                   MODIFY  § Projects' guards row names the new guard
@@ -836,13 +882,19 @@ test('the parity matrix parses', { tag: '@characterization' }, async () => {
   // Zero-maintenance and not a stored aggregate (ruling 11c): the maximum id
   // supplies N, so adding a row needs no edit anywhere.
   const sorted = [...ids].sort((a, b) => a - b);
-  const expected = Array.from({ length: sorted[sorted.length - 1] }, (_, i) => i + 1);
+  const expected = Array.from({ length: HIGHEST_ROW_ID }, (_, i) => i + 1);
+  const missing = expected.filter((id) => !sorted.includes(id));
+  const unexpected = sorted.filter((id) => id > HIGHEST_ROW_ID);
   expect(
     sorted,
-    `${MATRIX_REL} is missing row ids. Ids run 1..N with no gaps: a row is never deleted, only ` +
-      'retired in place with its Notes saying so, because 2c and 2d address rows by number and a ' +
-      'row that vanishes takes its obligation with it. Missing: ' +
-      expected.filter((id) => !sorted.includes(id)).join(', '),
+    `${MATRIX_REL} does not carry exactly rows 1..${HIGHEST_ROW_ID}. Ids run 1..N with no gaps: a ` +
+      'row is never deleted, only retired in place with its Notes saying so, because 2c and 2d ' +
+      'address rows by number and a row that vanishes takes its obligation with it.\n' +
+      (missing.length ? `  Missing: ${missing.join(', ')}\n` : '') +
+      (unexpected.length
+        ? `  Above HIGHEST_ROW_ID: ${unexpected.join(', ')} — adding a row is a deliberate edit in ` +
+          'two places; raise HIGHEST_ROW_ID in e2e/tests/guards/parity-matrix.ts in the same diff.\n'
+        : ''),
   ).toEqual(expected);
 
   const empty = rows.filter((r) => r.behaviour === '').map((r) => `${MATRIX_REL}:${r.line}`);
@@ -1067,14 +1119,14 @@ export function scanTable(markdown: string): TableScan {
 
   const rows: { line: number; raw: string }[] = [];
   let insideComment = false;
-  let terminated = false;
+  let terminatorIndex = -1;
 
   for (let i = headerIndex + 2; i < lines.length; i++) {
     const raw = lines[i];
     const location = `${MATRIX_REL}:${i + 1}`;
 
     if (!insideComment && raw.trim() === MATRIX_END_MARKER) {
-      terminated = true;
+      terminatorIndex = i;
       break;
     }
 
@@ -1108,11 +1160,29 @@ export function scanTable(markdown: string): TableScan {
     rows.push({ line: i + 1, raw });
   }
 
-  if (!terminated) {
+  if (terminatorIndex === -1) {
     throw new Error(
       `${MATRIX_REL} has no "${MATRIX_END_MARKER}" line after the table. Without it a truncation ` +
         'is indistinguishable from the end of the table, and every check stops early in silence.',
     );
+  }
+
+  // Nothing below the terminator may be a matrix row. Without this a row
+  // appended after it is simply invisible: twenty-seven rows parse, every check
+  // is green, and row 28 does not exist. Deliberately narrow — an unrelated
+  // table later in the document stays legal, because only a five-cell line
+  // whose first cell is a number is refused.
+  for (let i = terminatorIndex + 1; i < lines.length; i++) {
+    const raw = lines[i];
+    if (!raw.trimStart().startsWith('|')) continue;
+    const cells = splitRow(raw);
+    if (cells.length === COLUMNS.length && /^\d+$/.test(cells[0])) {
+      throw new Error(
+        `${MATRIX_REL}:${i + 1} looks like a matrix row but sits BELOW the ` +
+          `"${MATRIX_END_MARKER}" line, where no check would ever see it: ${JSON.stringify(raw)}. ` +
+          "A new row goes at the end of its owning PR's block, never after the terminator.",
+      );
+    }
   }
   if (rows.length === 0) {
     throw new Error(
@@ -1208,6 +1278,16 @@ table line is already in the canonical no-padding spelling Task 2's second check
 > it. If `the matrix table is one canonical line per row` is red on your first run, that is what
 > happened. **Fix the file, not the guard.** Loosening that check deletes the property ruling 11
 > exists for, and it will not be obvious for months.
+>
+> Steps 9b and 9c add two `.prettierignore` files so the common case cannot happen at all. They do
+> not cover `--no-ignore`, another formatter, or hand-alignment — hence this note, and hence the
+> guard.
+
+**A note for the 2c-9 planner, recorded here because this is where the format is defined.** One
+relevance-adjacent check becomes possible only in that PR: when 2c-9 re-points the `Pin` column at Go
+tests, a row whose pin is `.go` while its `Source` still cites only `.py` is a row that was
+re-pointed without being re-derived. Cheap, static, and it has nothing to check until then — see
+ruling 5 for why no relevance check is possible now.
 >
 > Two runners-up, at the steps where they happen. **Citing a span you did not open** (Tasks 3–5): the
 > guard proves a range *resolves*, never that it is right, so a range guessed from a `grep` hit
@@ -1506,6 +1586,83 @@ at zero and that is a ratchet (`CLAUDE.md` § Test hooks). This edit adds no `us
 no supply-chain pin is involved. If zizmor is not installed the hook and this step both say so —
 **then say the lint did not run rather than describing the workflow as clean.**
 
+- [ ] **Step 9b: Make the padding hazard impossible, not merely discouraged.**
+
+Task 2 step 5's note tells the implementer never to run a Markdown formatter over the matrix.
+**Documentation loses to muscle memory and to format-on-save**, so make the common case impossible as
+well. There is no `.prettierignore` anywhere in this repo today; there is a `frontend/prettier.config.js`
+and Prettier 3.9.6 as a `frontend/` devDependency.
+
+**Two files, because one does not cover the idiom `CLAUDE.md` prescribes.** Measured, not assumed —
+Prettier resolves `--ignore-path` relative to the **current working directory**, so a repo-root
+ignore file is invisible when Prettier runs from `frontend/`, which is exactly where `CLAUDE.md:36`
+tells you to run it:
+
+| Run from | Ignore file | Result on the matrix |
+|---|---|---|
+| repo root | none | **padded** |
+| `frontend/` | none | **padded** |
+| repo root | root `.prettierignore` | untouched |
+| `frontend/` | root `.prettierignore` | **padded** |
+| `frontend/` | `frontend/.prettierignore` naming `../docs/relay-parity-matrix.md` | untouched |
+
+Create `/Users/dion/git/Dispatcharr/.worktrees/phase2-2a1/.prettierignore`:
+
+```
+# The Phase 2 parity matrix is machine-read by
+# e2e/tests/guards/parity-matrix.spec.ts. Its table is deliberately NOT
+# column-aligned: several PRs edit it concurrently, and padding one cell
+# rewrites every line, so every merge conflicts on the whole file. Prettier's
+# Markdown formatter pads pipe tables by default, so it must not touch this
+# one. See docs/superpowers/plans/2026-09-09-phase2-2a1-parity-matrix.md,
+# ruling 11.
+docs/relay-parity-matrix.md
+```
+
+Create `/Users/dion/git/Dispatcharr/.worktrees/phase2-2a1/frontend/.prettierignore`:
+
+```
+# Prettier resolves its ignore file relative to the working directory, so the
+# repo-root .prettierignore does not apply when Prettier runs from here — which
+# is where CLAUDE.md's "npx prettier --write" is documented to run. The parity
+# matrix must not be column-aligned; see the root .prettierignore.
+../docs/relay-parity-matrix.md
+```
+
+- [ ] **Step 9c: Prove both files work and that neither changes the frontend tree.**
+
+```bash
+cd /Users/dion/git/Dispatcharr/.worktrees/phase2-2a1
+cp docs/relay-parity-matrix.md /tmp/matrix-before.md
+npx --no-install prettier --write docs/relay-parity-matrix.md
+diff -q /tmp/matrix-before.md docs/relay-parity-matrix.md && echo "root: UNTOUCHED"
+```
+
+```bash
+cd /Users/dion/git/Dispatcharr/.worktrees/phase2-2a1/frontend
+npx --no-install prettier --write ../docs/relay-parity-matrix.md
+cd /Users/dion/git/Dispatcharr/.worktrees/phase2-2a1 && diff -q /tmp/matrix-before.md docs/relay-parity-matrix.md && echo "frontend: UNTOUCHED"
+```
+
+Both must print `UNTOUCHED` and `git diff --stat docs/relay-parity-matrix.md` must be empty. **If
+either rewrites the file, the ignore file is not being read** — check which directory you ran from.
+
+Then confirm the frontend tree is unaffected, which is the one side effect worth ruling out:
+
+```bash
+cd /Users/dion/git/Dispatcharr/.worktrees/phase2-2a1/frontend
+npx --no-install prettier --check 'src/**/*.jsx' 2>&1 | tail -1
+```
+
+Expected: `Code style issues found in 54 files` — **the same count as before this PR**, because
+neither ignore file names anything under `frontend/src/`. Measured at `a948cd8a`: 54 with and without
+both files. A different number means an ignore pattern is matching more than the matrix; narrow it.
+
+**Belt and braces, on purpose.** These files stop `prettier --write` and format-on-save. They do not
+stop `--no-ignore`, or a different formatter, or someone aligning the columns by hand — which is why
+the imperative note stays at Task 2 step 5 and in the matrix's own header, and why the guard's
+canonical-line check is the thing that actually enforces it.
+
 - [ ] **Step 10: Make the guard reachable — the local edit hook.**
 
 Nothing in `.claude/hooks/run-affected-tests.sh` matches `*.md`, so editing the matrix runs no check
@@ -1592,7 +1749,7 @@ Claude-Session: https://claude.ai/code/session_01Pr6xFBkeJHvguMJ6PweBMu
 ```
 
 ```bash
-cd /Users/dion/git/Dispatcharr/.worktrees/phase2-2a1 && git add docs/relay-parity-matrix.md e2e/tests/guards/parity-matrix.ts e2e/tests/guards/parity-matrix.spec.ts .github/workflows/e2e-tests.yml .claude/hooks/run-affected-tests.sh
+cd /Users/dion/git/Dispatcharr/.worktrees/phase2-2a1 && git add docs/relay-parity-matrix.md e2e/tests/guards/parity-matrix.ts e2e/tests/guards/parity-matrix.spec.ts .github/workflows/e2e-tests.yml .claude/hooks/run-affected-tests.sh .prettierignore frontend/.prettierignore
 ```
 
 ```bash
@@ -2109,7 +2266,7 @@ cd /Users/dion/git/Dispatcharr/.worktrees/phase2-2a1 && git commit -F <SCRATCH>/
 ### Task 5: The white-box allowlist, the Gate 1 flag, and rows 19–27
 
 **Files:**
-- Modify: `e2e/tests/guards/parity-matrix.ts` (append `WHITE_BOX_ONLY` and `GATE_1_CLOSED`)
+- Modify: `e2e/tests/guards/parity-matrix.ts` (append `WHITE_BOX_ONLY`, `HIGHEST_ROW_ID`, `GATE_1_CLOSED`)
 - Modify: `e2e/tests/guards/parity-matrix.spec.ts` (append three tests, raise the self-check)
 - Modify: `docs/relay-parity-matrix.md` (nine rows)
 
@@ -2117,7 +2274,7 @@ cd /Users/dion/git/Dispatcharr/.worktrees/phase2-2a1 && git commit -F <SCRATCH>/
 - Consumes: everything Tasks 2–4 produced, including `parsePin`, whose `{ kind: 'owed'; pr }` is
   what the contiguity check reads.
 - Produces: `type WhiteBoxRow = { id: number; why: string }`,
-  `WHITE_BOX_ONLY: readonly WhiteBoxRow[]`, `GATE_1_CLOSED: boolean`. **Neither is per-row state**
+  `WHITE_BOX_ONLY: readonly WhiteBoxRow[]`, `HIGHEST_ROW_ID: number`, `GATE_1_CLOSED: boolean`. **Neither is per-row state**
   — `WHITE_BOX_ONLY` is edited only when a row becomes unobservable, and `GATE_1_CLOSED` is flipped
   once, by 2b-3. Their names and shapes are fixed here.
 
@@ -2195,7 +2352,7 @@ Notes: deleted, not ported — the Go relay's concurrency model is goroutines an
 - [ ] **Step 2: Write the three failing tests.**
 
 Append to `e2e/tests/guards/parity-matrix.spec.ts`, extending the import to add
-`{ GATE_1_CLOSED, WHITE_BOX_ONLY }`:
+`{ GATE_1_CLOSED, HIGHEST_ROW_ID, WHITE_BOX_ONLY }`:
 
 ```ts
 test('white-box-only rows are confined to an allowlist', { tag: '@characterization' }, async () => {
@@ -2300,7 +2457,7 @@ transpiled CommonJS as `TypeError: (0 , _parityMatrix.WHITE_BOX_ONLY) is not a f
 `undefined` read — not as a TypeScript diagnostic. Verified by probe. `npx tsc --noEmit` is where the
 type error appears; the Playwright run is where the runtime one does.
 
-- [ ] **Step 4: Add the allowlist and the Gate 1 flag.**
+- [ ] **Step 4: Add the allowlist, the row bound and the Gate 1 flag.**
 
 Append to `e2e/tests/guards/parity-matrix.ts`. **Neither is a list of owed row ids** — ruling 5
 deleted that, and owed-ness is read from each row's own `Pin` cell.
@@ -2333,6 +2490,21 @@ export const WHITE_BOX_ONLY: readonly WhiteBoxRow[] = [
       'the live path entirely, so the Go relay has no analogous call to swallow anything.',
   },
 ];
+
+/**
+ * The highest row id the matrix carries. Bounded here rather than derived from
+ * the table, and the difference matters in both directions.
+ *
+ * Derived, the check was `1..max(ids)` — which a **tail** deletion satisfies,
+ * because dropping the highest row just lowers the maximum. Bounded, deleting
+ * the highest row fails, and so does adding row 28 without saying so here.
+ *
+ * It is a stored number and that is deliberate (ruling 12): it lives beside
+ * `WHITE_BOX_ONLY` and `PRS` rather than in the matrix, and **no PR edits it to
+ * close a row** — rows are added only by a deliberate extension of the matrix,
+ * which is exactly the edit that should take two places and a stated reason.
+ */
+export const HIGHEST_ROW_ID = 27;
 
 /**
  * Gate 1's own switch. Flipped to `true` by the PR that closes the last owed
@@ -2442,7 +2614,7 @@ cd /Users/dion/git/Dispatcharr/.worktrees/phase2-2a1 && git commit -F <SCRATCH>/
 **Files:**
 - Modify: `e2e/tests/guards/parity-matrix.spec.ts` (header comment only — no assertion changes)
 
-**Interfaces:** none. Produces the eleven mutation results Task 7 writes into `e2e/COVERAGE.md`.
+**Interfaces:** none. Produces the fourteen mutation results Task 7 writes into `e2e/COVERAGE.md`.
 
 Every guard in this directory records in its own header that it was verified by mutation, and says
 what the mutation was and what it printed. `capabilities.spec.ts` makes the argument: a guard that
@@ -2587,13 +2759,40 @@ share exactly one upstream connection` `` in all twenty. Expected: only the Gate
 `No row is owed any more — you just closed the last one. Flip GATE_1_CLOSED to true`. **Record it** —
 this is what tells 2b-3 it has finished the job. Revert all twenty; `git diff --stat` must be empty.
 
-- [ ] **Step 6: Record the eleven mutations in the header comment.**
+- [ ] **Step 5c: The tail — three mutations that were silent before ruling 12.**
+
+**Delete the highest row.** Remove row 27's line. Expected: `the parity matrix parses` fails with
+`does not carry exactly rows 1..27` and `Missing: 27` (the white-box allowlist fails too, because 27
+is on it — that second failure is the *accident* ruling 12 replaced, not the mechanism). Revert.
+
+**Append a row after the terminator.** Add
+a row shaped like any other — id 28, a resolving citation, `owed: 2a-4` — immediately **below** the
+`<!-- end of matrix -->` line. Expected: every check fails with `looks like a matrix row but sits
+BELOW the "<!-- end of matrix -->" line`, quoting it. **Record it** — before this, that row was simply
+invisible: twenty-seven rows parsed and every check was green. Revert.
+
+**Move the terminator above the white-box block.** Expected: every check fails, naming row 26 as a
+row below the terminator. Revert.
+
+Then the two controls, which matter as much as the mutations — a check that fires on a correct edit
+is worse than no check:
+
+- **Add row 28 properly** at the end of the `owed by 2a-4` block — in the *middle* of the table, which
+  is where a new row belongs — and raise `HIGHEST_ROW_ID` to 28. Expected: **all seven pass**, and the
+  printed line reads `28 rows — 5 pinned, 21 owed, 2 white-box-only`. This is why ruling 12 rejected
+  "the last row carries the highest id": that rule would have failed this correct edit.
+- **The same edit without raising `HIGHEST_ROW_ID`.** Expected: only `the parity matrix parses` fails,
+  with `Above HIGHEST_ROW_ID: 28 — adding a row is a deliberate edit in two places`.
+
+Revert both; `git diff --stat` must be empty for the matrix and for `parity-matrix.ts`.
+
+- [ ] **Step 6: Record the fourteen mutations in the header comment.**
 
 Append to the block comment at the top of `e2e/tests/guards/parity-matrix.spec.ts`, immediately
 before the closing `*/`, using **the messages you actually saw**, not the ones this plan predicts:
 
 ```
- * Verified by mutation, all eleven, each reverted before the next:
+ * Verified by mutation, all fourteen, each reverted before the next:
  *   1. Renaming the header's `Notes` column to `Note` failed every check with
  *      "has no header row naming the five columns", printing the canonical
  *      header; and adding a SECOND five-column header (a worked example in a
@@ -2629,6 +2828,17 @@ before the closing `*/`, using **the messages you actually saw**, not the ones t
  *      failed the same check from the other side, telling that PR to flip it.
  *      Both branches, so the one that matters at the end of the phase is not
  *      first exercised by the PR that depends on it.
+ *  12. Deleting the HIGHEST row (27) failed completeness with "does not carry
+ *      exactly rows 1..27". Derived from the data this passed, because the
+ *      maximum moved down with it.
+ *  13. A row appended BELOW the terminator, and the terminator moved above the
+ *      white-box block, each failed EVERY check naming the offending line.
+ *      Before this the appended row was simply invisible.
+ *  14. Two controls, both behaving: row 28 added properly mid-table with
+ *      HIGHEST_ROW_ID raised passes all seven; the same edit without raising
+ *      it fails completeness alone, naming what to do. The first is why
+ *      "the last row carries the highest id" was rejected — it would have
+ *      failed a correct edit.
 ```
 
 Run: `cd /Users/dion/git/Dispatcharr/.worktrees/phase2-2a1/e2e && npx tsc --noEmit`
@@ -2648,10 +2858,10 @@ committing.
 Message to `<SCRATCH>/msg-task6.txt`:
 
 ```
-test(phase2): record the parity guard's eleven mutation verifications
+test(phase2): record the parity guard's fourteen mutation verifications
 
 Every guard in this directory records what it was seen to fail on, because a
-guard nobody has watched fail is a guard nobody knows works. Eleven mutations,
+guard nobody has watched fail is a guard nobody knows works. Fourteen mutations,
 each reverted: a renamed column, a padded cell, an owed row moved out of its
 block, an out-of-range citation, a misspelled test title (and the same
 misspelling in a comment, which stayed red), a white-box-only marker used to
@@ -2778,7 +2988,7 @@ Message to `<SCRATCH>/msg-task7.txt`:
 ```
 docs(phase2): the parity matrix in COVERAGE, README and CLAUDE.md
 
-COVERAGE.md's Guards table gets the new guard and the eleven mutations that
+COVERAGE.md's Guards table gets the new guard and the fourteen mutations that
 proved it. README's guards enumeration names it — and, while there, the
 e2e-upstream contract check it had already been missing. CLAUDE.md lists the
 matrix beside the specs, because every later Phase 2 PR cites it and a
@@ -3090,6 +3300,22 @@ found unexercised were run against it and each fails alone: `owed: 2a-9` names t
 still false fails "Flip GATE_1_CLOSED to true". The mixed-form Pin cell
 (`` `…::title` and owed: 2b-3 ``) is now rejected as none of the three legal forms, and the
 legitimate two-reference cell still resolves.
+
+**Re-prototyped a sixth time, with the tail anchored** — `HIGHEST_ROW_ID` replacing the derived
+maximum, and `scanTable` refusing any matrix-shaped line below the terminator. Baseline green,
+printing `27 rows — 5 pinned, 20 owed, 2 white-box-only`. The three previously-silent tail holes each
+fail now: deleting row 27 fails completeness by name; a row appended below the terminator fails every
+check quoting it; an early terminator above the white-box block does the same. **Both controls pass
+too**, which is the half that decided the design — row 28 added properly *mid-table* with the bound
+raised is green on all seven, and the same edit without raising it fails completeness alone. The
+rejected candidate ("the last row carries the highest id") would have failed that first control,
+which is the empirical reason it was rejected rather than an argued one.
+
+**The Prettier ignore scoping was measured, not assumed** (Task 2 steps 9b/9c). Prettier resolves
+`--ignore-path` relative to the working directory, so a repo-root `.prettierignore` protects the
+matrix when Prettier runs from the root and **does nothing** when it runs from `frontend/` — which is
+exactly where `CLAUDE.md:36` says to run it. Hence two files. Neither changes the frontend tree:
+`prettier --check 'src/**/*.jsx'` reports 54 files with and without both, the same file list.
 
 Task 6's mutation work is still owed in full — the prototype proved the checks fire on a synthetic
 table; Task 6 proves they fire on the real document, and its recorded messages are what
