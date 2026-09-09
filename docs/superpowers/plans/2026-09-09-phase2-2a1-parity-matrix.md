@@ -806,9 +806,14 @@ in the task report.
 **Interfaces:**
 - Consumes: `REPO_ROOT` from `e2e/tests/guards/ast.ts`.
 - Produces: `MATRIX_REL: string`, `MATRIX_PATH: string`, `MATRIX_HEADER: string`,
-  `COLUMNS: readonly string[]`,
+  `COLUMNS: readonly string[]`, `MATRIX_END_MARKER: string`,
+  `canonicalLine(cells: readonly string[]): string`,
   `type MatrixRow = { id: number; behaviour: string; source: string; pin: string; notes: string;
-  line: number }`, `parseMatrix(markdown: string): MatrixRow[]`, `readMatrix(): Promise<string>`,
+  line: number }`,
+  `type TableScan = { headerLine: number; headerRaw: string; delimiterLine: number;
+  delimiterRaw: string; rows: { line: number; raw: string }[] }`,
+  `scanTable(markdown: string): TableScan` — the one walk over the table region, which both checks
+  below consume — `parseMatrix(markdown: string): MatrixRow[]`, `readMatrix(): Promise<string>`,
   `canonicalLineOffenders(markdown: string): string[]`.
   Tasks 3–5 add to this same module and never change these signatures.
 
@@ -889,28 +894,10 @@ test('the parity matrix parses', { tag: '@characterization' }, async () => {
   // PR that owes them, not by id — see the header, and the contiguity check
   // below, which is the property that actually matters.
 
-  // Ruling 12. Ids are never renumbered and a row that stops applying is
-  // retired IN PLACE, keeping its id — so the id set is exactly 1..max, and a
-  // gap means a row was deleted. Without this a pinned row can be dropped in
-  // silence: every other check has nothing left to complain about.
-  //
-  // Zero-maintenance and not a stored aggregate (ruling 11c): the maximum id
-  // supplies N, so adding a row needs no edit anywhere.
-  const sorted = [...ids].sort((a, b) => a - b);
-  const expected = Array.from({ length: HIGHEST_ROW_ID }, (_, i) => i + 1);
-  const missing = expected.filter((id) => !sorted.includes(id));
-  const unexpected = sorted.filter((id) => id > HIGHEST_ROW_ID);
-  expect(
-    sorted,
-    `${MATRIX_REL} does not carry exactly rows 1..${HIGHEST_ROW_ID}. Ids run 1..N with no gaps: a ` +
-      'row is never deleted, only retired in place with its Notes saying so, because 2c and 2d ' +
-      'address rows by number and a row that vanishes takes its obligation with it.\n' +
-      (missing.length ? `  Missing: ${missing.join(', ')}\n` : '') +
-      (unexpected.length
-        ? `  Above HIGHEST_ROW_ID: ${unexpected.join(', ')} — adding a row is a deliberate edit in ` +
-          'two places; raise HIGHEST_ROW_ID in e2e/tests/guards/parity-matrix.ts in the same diff.\n'
-        : ''),
-  ).toEqual(expected);
+  // Ruling 12's id-completeness assertion belongs here and is added in Task 5,
+  // once HIGHEST_ROW_ID exists and the table actually holds rows 1..27. It
+  // cannot live here yet: this task's document has three worked rows (11, 14,
+  // 27), and no value of HIGHEST_ROW_ID makes that set equal 1..N.
 
   const empty = rows.filter((r) => r.behaviour === '').map((r) => `${MATRIX_REL}:${r.line}`);
   expect(
@@ -2041,9 +2028,13 @@ cd /Users/dion/git/Dispatcharr/.worktrees/phase2-2a1 && git commit -F <SCRATCH>/
 
 **Interfaces:**
 - Consumes: everything Tasks 2 and 3 produced.
-- Produces: `type Pin = { kind: 'test'; file: string; symbol: string } | { kind: 'owed'; pr: string }
-  | { kind: 'white-box-only' }`, `parsePin(cell: string): Pin | undefined`,
-  `testRefProblem(pin: Extract<Pin, { kind: 'test' }>): Promise<string | undefined>`.
+- Produces: `type TestRef = { file: string; symbol: string }`,
+  `type Pin = { kind: 'test'; refs: TestRef[] } | { kind: 'owed'; pr: string }
+  | { kind: 'white-box-only' }`, `PRS: readonly string[]`,
+  `parsePin(cell: string): Pin | undefined`,
+  `testRefProblem(ref: TestRef): Promise<string | undefined>`.
+  **Note the shapes**: a test pin carries a *list* of references (ruling 3), so `testRefProblem`
+  takes one `TestRef` and the caller loops — it does not take the `Pin`.
 
 - [ ] **Step 1: Write the failing test.**
 
@@ -2324,16 +2315,18 @@ cd /Users/dion/git/Dispatcharr/.worktrees/phase2-2a1 && git commit -F <SCRATCH>/
 
 **Files:**
 - Modify: `e2e/tests/guards/parity-matrix.ts` (append `WHITE_BOX_ONLY`, `HIGHEST_ROW_ID`, `GATE_1_CLOSED`)
-- Modify: `e2e/tests/guards/parity-matrix.spec.ts` (append three tests, raise the self-check)
+- Modify: `e2e/tests/guards/parity-matrix.spec.ts` (append three tests, and complete
+  `the parity matrix parses` with ruling 12's id-completeness assertion, which Task 2 deferred)
 - Modify: `docs/relay-parity-matrix.md` (nine rows)
 
 **Interfaces:**
 - Consumes: everything Tasks 2–4 produced, including `parsePin`, whose `{ kind: 'owed'; pr }` is
   what the contiguity check reads.
 - Produces: `type WhiteBoxRow = { id: number; why: string }`,
-  `WHITE_BOX_ONLY: readonly WhiteBoxRow[]`, `HIGHEST_ROW_ID: number`, `GATE_1_CLOSED: boolean`. **Neither is per-row state**
-  — `WHITE_BOX_ONLY` is edited only when a row becomes unobservable, and `GATE_1_CLOSED` is flipped
-  once, by 2b-3. Their names and shapes are fixed here.
+  `WHITE_BOX_ONLY: readonly WhiteBoxRow[]`, `HIGHEST_ROW_ID: number`, `GATE_1_CLOSED: boolean`.
+  **None of the three is per-row state** — `WHITE_BOX_ONLY` is edited only when a row becomes
+  unobservable, `HIGHEST_ROW_ID` only when the matrix deliberately grows, and `GATE_1_CLOSED` is
+  flipped once, by 2b-3. Their names and shapes are fixed here.
 
 - [ ] **Step 1: Add rows 19–26.**
 
@@ -2406,10 +2399,46 @@ at `a948cd8a`: `:467`, `:851`, `:2192`). Cite `_spawn_on_hub`'s span and at leas
 Notes: deleted, not ported — the Go relay's concurrency model is goroutines and a `sync.RWMutex`
 (spec D2), and no client can observe which greenlet did what.
 
-- [ ] **Step 2: Write the three failing tests.**
+- [ ] **Step 2: Complete the test from Task 2, then write the three new ones.**
 
-Append to `e2e/tests/guards/parity-matrix.spec.ts`, extending the import to add
-`{ GATE_1_CLOSED, HIGHEST_ROW_ID, WHITE_BOX_ONLY }`:
+First, **add ruling 12's id-completeness assertion to `the parity matrix parses`** — the test written
+in Task 2, which left a comment marking where this goes. It waits until now for a reason worth
+stating: it asserts the id set is exactly `1..HIGHEST_ROW_ID`, and until this task's rows land the
+table holds a handful of worked examples whose ids are not `1..N`, so no value of the constant could
+satisfy it. Insert it immediately after the duplicate-id check, before the empty-Behaviour check,
+replacing the placeholder comment Task 2 left:
+
+```ts
+  // Ruling 12. Ids are never renumbered and a row that stops applying is
+  // retired IN PLACE, keeping its id — so the id set is exactly
+  // 1..HIGHEST_ROW_ID, and a gap means a row was deleted. Without this a pinned
+  // row can be dropped in silence: every other check has nothing left to
+  // complain about.
+  //
+  // Bounded rather than derived, in both directions: `1..max(ids)` is satisfied
+  // by deleting the HIGHEST row, because the maximum moves down with it.
+  // HIGHEST_ROW_ID is a stored number and ruling 12 says why that is the right
+  // kind — it lives beside WHITE_BOX_ONLY and PRS, not in the contended
+  // document, and no PR edits it to close a row.
+  const sorted = [...ids].sort((a, b) => a - b);
+  const expected = Array.from({ length: HIGHEST_ROW_ID }, (_, i) => i + 1);
+  const missing = expected.filter((id) => !sorted.includes(id));
+  const unexpected = sorted.filter((id) => id > HIGHEST_ROW_ID);
+  expect(
+    sorted,
+    `${MATRIX_REL} does not carry exactly rows 1..${HIGHEST_ROW_ID}. Ids run 1..N with no gaps: a ` +
+      'row is never deleted, only retired in place with its Notes saying so, because 2c and 2d ' +
+      'address rows by number and a row that vanishes takes its obligation with it.\n' +
+      (missing.length ? `  Missing: ${missing.join(', ')}\n` : '') +
+      (unexpected.length
+        ? `  Above HIGHEST_ROW_ID: ${unexpected.join(', ')} — adding a row is a deliberate edit in ` +
+          'two places; raise HIGHEST_ROW_ID in e2e/tests/guards/parity-matrix.ts in the same diff.\n'
+        : ''),
+  ).toEqual(expected);
+```
+
+Then append the three new tests below, **adding** `GATE_1_CLOSED`, `HIGHEST_ROW_ID` and
+`WHITE_BOX_ONLY` to the existing import — add, never replace:
 
 ```ts
 test('white-box-only rows are confined to an allowlist', { tag: '@characterization' }, async () => {
@@ -2508,11 +2537,13 @@ test('rows owed by one PR are contiguous', { tag: '@characterization' }, async (
 - [ ] **Step 3: Run them to verify they fail.**
 
 Run: `cd /Users/dion/git/Dispatcharr/.worktrees/phase2-2a1/e2e && npx playwright test --project=guards parity-matrix`
-Expected: FAIL. Playwright transpiles TypeScript but does not typecheck it, and `e2e/package.json`
-declares no `"type": "module"`, so a missing named export surfaces at **run time** from the
-transpiled CommonJS as `TypeError: (0 , _parityMatrix.WHITE_BOX_ONLY) is not a function` or an
-`undefined` read — not as a TypeScript diagnostic. Verified by probe. `npx tsc --noEmit` is where the
-type error appears; the Playwright run is where the runtime one does.
+Expected: FAIL, and **all seven** rather than only the three new ones — the completeness assertion
+lands in a test the others share a module with, so the three missing exports break it for every one.
+Playwright transpiles TypeScript but does not typecheck it, and `e2e/package.json` declares no
+`"type": "module"`, so this surfaces at **run time** from the transpiled CommonJS as
+`TypeError: (0 , _parityMatrix.WHITE_BOX_ONLY) is not a function` or an `undefined` read — not as a
+TypeScript diagnostic. Verified by probe. `npx tsc --noEmit` is where the three `TS2304` errors
+appear; the Playwright run is where the runtime one does.
 
 - [ ] **Step 4: Add the allowlist, the row bound and the Gate 1 flag.**
 
