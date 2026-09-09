@@ -640,6 +640,44 @@ either pass**, and row 16 — its sibling, pinned ahead of 2b-1 for the same rea
 `get_stream_object`'s `Stream.stream_hash` fallback exists today at `apps/proxy/next_source.py:69-79`.
 Task 5 step 6 runs the sweep so a reworded cell is re-checked.
 
+### 15. A missing export is `undefined`, not an error — so a predicted failure must say what the consumer does with it
+
+Task 5 step 3 predicted "FAIL, and **all seven**". **Two fail.** The plan reasoned that three missing
+exports would break the module for every test sharing it, which is how a *module* resolution failure
+behaves — and is not how a missing *named* export behaves. Playwright transpiles TypeScript without
+typechecking it, so destructuring a name the module does not export yields `undefined` and no error at
+all. Whether a test then fails depends entirely on what it does with that `undefined`:
+
+| The consumer does | Result |
+|---|---|
+| calls it — `citationsIn(x)`, `parsePin(x)` | `TypeError: … is not a function` — **fails loudly** |
+| reads a property — `WHITE_BOX_ONLY.map(…)` | `TypeError: Cannot read properties of undefined` — **fails** |
+| uses it as a length — `Array.from({ length: HIGHEST_ROW_ID })` | `[]`, so the assertion fails on a **diff**, not an error |
+| **tests it as a boolean — `if (GATE_1_CLOSED)`** | **falsy: takes the other branch and may PASS** |
+
+That last row is the one that bit, and it is not a defect: `GATE_1_CLOSED` missing reads as `false`,
+the test takes its `else` branch, and twenty rows genuinely are owed — so it passes for the right
+reason. A step that predicted it failing would have taught the implementer to distrust a correct
+result.
+
+**The rule for every step that predicts a failure**: say how many tests fail out of how many, name
+them, and say *what kind* of failure each is — a thrown `TypeError`, a failed assertion, or nothing at
+all. "It will fail" is not a prediction an implementer can check against.
+
+**Swept over all five failure-predicting steps.** Task 2 step 2 (module genuinely absent — both tests,
+correct) and Task 2 step 4 (`ENOENT` from `readMatrix` — both tests, now stated) were right. **Two
+more were wrong in the same way as Task 5's** and are fixed here: Task 3 step 2 and Task 4 step 2 each
+predicted a bare "not exported" with no count, where in fact **one test of three, and one of four,
+fails** — the rest never touch the new exports. Task 4 step 2 was also the **third** place still
+carrying the pre-correction "not exported" phrasing that review 2's MINOR 3 replaced elsewhere; the
+first escapee was found two rounds ago and this is its sibling, which is what a catalogue-then-sweep
+finds and a spot-fix does not.
+
+**One more correction of the same family, three places:** these are `TS2305` ("module has no exported
+member"), not `TS2304` ("cannot find name"). The names *are* imported; it is the module that lacks
+them. `TS2304` is right only where a symbol is used without being imported at all — which is exactly
+the defect the sequencing audit found in Task 2, and the two codes tell those two cases apart.
+
 ---
 
 ## Done criteria
@@ -1300,7 +1338,8 @@ export function canonicalLineOffenders(markdown: string): string[] {
 - [ ] **Step 4: Run it to verify it fails for the next reason.**
 
 Run: `cd /Users/dion/git/Dispatcharr/.worktrees/phase2-2a1/e2e && npx playwright test --project=guards parity-matrix`
-Expected: FAIL — `ENOENT … docs/relay-parity-matrix.md`.
+Expected: FAIL, **both tests** — each calls `readMatrix()` first, so each gets
+`ENOENT … docs/relay-parity-matrix.md`.
 
 - [ ] **Step 5: Create the matrix document with its prose and three rows.**
 
@@ -1913,11 +1952,15 @@ test('every row cites source that resolves', { tag: '@characterization' }, async
 - [ ] **Step 2: Run it to verify it fails.**
 
 Run: `cd /Users/dion/git/Dispatcharr/.worktrees/phase2-2a1/e2e && npx playwright test --project=guards parity-matrix`
-Expected: FAIL — `Cannot find module` is gone, and the failure is now a **run-time** one:
-Playwright transpiles TypeScript without typechecking it, so a missing named export surfaces from the
-transpiled CommonJS as `TypeError: (0 , _parityMatrix.citationsIn) is not a function`, not as a
-TypeScript diagnostic. `npx tsc --noEmit` is where the `TS2304` errors for `citationsIn` and
-`citationProblem` appear.
+Expected: FAIL — **one test of three**, `every row cites source that resolves`. The other two do not
+touch the new exports and pass.
+
+`Cannot find module` is gone; the failure is now a **run-time** one. Playwright transpiles TypeScript
+without typechecking it, so a missing named export is not an error at import — it is `undefined`. This
+one is *called* (`citationsIn(row.source)`), so `undefined` becomes
+`TypeError: (0 , _parityMatrix.citationsIn) is not a function`. `npx tsc --noEmit` is where it appears
+as a type error, `TS2305` ("has no exported member") rather than `TS2304`, because the name **is**
+imported — it is the module that lacks it.
 
 - [ ] **Step 3: Implement the citation resolver.**
 
@@ -2144,7 +2187,12 @@ test('every pin resolves', { tag: '@characterization' }, async () => {
 - [ ] **Step 2: Run it to verify it fails.**
 
 Run: `cd /Users/dion/git/Dispatcharr/.worktrees/phase2-2a1/e2e && npx playwright test --project=guards parity-matrix`
-Expected: FAIL — `parsePin` and `testRefProblem` are not exported from `./parity-matrix`.
+Expected: FAIL — **one test of four**, `every pin resolves`. The other three do not touch the new
+exports and pass.
+
+`parsePin(row.pin)` is called, so the missing export is `undefined` at the call and the failure is
+`TypeError: (0 , _parityMatrix.parsePin) is not a function` — a run-time error, not a compile one.
+`npx tsc --noEmit` reports `TS2305` for `parsePin`, `PRS` and `testRefProblem`.
 
 - [ ] **Step 3: Implement the pin resolver.**
 
@@ -2596,13 +2644,26 @@ test('rows owed by one PR are contiguous', { tag: '@characterization' }, async (
 - [ ] **Step 3: Run them to verify they fail.**
 
 Run: `cd /Users/dion/git/Dispatcharr/.worktrees/phase2-2a1/e2e && npx playwright test --project=guards parity-matrix`
-Expected: FAIL, and **all seven** rather than only the three new ones — the completeness assertion
-lands in a test the others share a module with, so the three missing exports break it for every one.
-Playwright transpiles TypeScript but does not typecheck it, and `e2e/package.json` declares no
-`"type": "module"`, so this surfaces at **run time** from the transpiled CommonJS as
-`TypeError: (0 , _parityMatrix.WHITE_BOX_ONLY) is not a function` or an `undefined` read — not as a
-TypeScript diagnostic. Verified by probe. `npx tsc --noEmit` is where the three `TS2304` errors
-appear; the Playwright run is where the runtime one does.
+Expected: **2 fail, 5 pass** — and which two, and why the Gate 1 test is not one of them, is the
+whole point of this step. A missing export is `undefined`, not an error, so what fails depends
+entirely on what each consumer *does* with `undefined` (§ ruling 15):
+
+- **`the parity matrix parses` fails on its assertion, not with an error.** `HIGHEST_ROW_ID` is
+  `undefined`, so `Array.from({ length: undefined })` is `[]`, `expected` is empty, and the 27 real
+  ids do not equal it. You get a diff, not a `TypeError`.
+- **`white-box-only rows are confined to an allowlist` fails with a `TypeError`** — `WHITE_BOX_ONLY`
+  is `undefined` and the test calls `.map` on it: `Cannot read properties of undefined (reading 'map')`.
+- **`Gate 1: the matrix is fully pinned when the flag says so` PASSES, and that is correct.**
+  `GATE_1_CLOSED` is `undefined`, `if (undefined)` is falsy, so the test takes its `else` branch —
+  `expect(ids.length).toBeGreaterThan(0)` — and twenty rows genuinely are owed at this point. **Do not
+  "fix" this.** A boolean flag that is missing reads as `false`, and `false` is the state this matrix
+  is actually in.
+- The remaining four tests touch none of the three exports and pass.
+
+`npx tsc --noEmit` is the other half, and it shows six errors, not three: **three `TS2305`** ("module
+has no exported member") for the three imports, plus **three cascading `TS7006`** implicit-`any`
+errors from `WHITE_BOX_ONLY` being untyped once its declaration is missing. All six clear at Step 4.
+`TS2305` rather than `TS2304` because the names **are** imported — it is the module that lacks them.
 
 - [ ] **Step 4: Add the allowlist, the row bound and the Gate 1 flag.**
 
