@@ -72,7 +72,12 @@ task's requirements implicitly include this section.
   body, or a discovery count that does not match what you just wrote, means the container
   is mounted at the wrong tree — **or** that its Redis has gone MISCONF (fixed in
   PR #238; a container created before that merges needs
-  `redis-cli CONFIG SET save ""` inside it).
+  `redis-cli CONFIG SET save ""` inside it). A third signature with the same root:
+  `ModuleNotFoundError: No module named 'hypothesis'` (or `coverage`) from the two
+  `test_property_*` modules means the container came from upstream's image rather than
+  the fork's — PR #238 changed the default. **Never treat any of the three as a bad run
+  to repeat: they invalidate a coverage measurement rather than degrade it** (Task 1
+  Step 4).
 - **Never pass `--settings=dispatcharr.settings` to `test`.** It targets the production
   database.
 - **Composition rule** (spec § The subprocess harness, final paragraph; restated in
@@ -407,6 +412,15 @@ edits.
 - [ ] **Step 2.** Guard against the MISCONF signature before you measure:
       `docker exec dispatcharr-testrunner-2a6 redis-cli CONFIG SET save ""` and
       `docker exec dispatcharr-testrunner-2a6 redis-cli ping` (expect `PONG`).
+- [ ] **Step 2a.** Prove the container can actually run the measurement, before you take
+      one. Both imports must succeed:
+      `docker exec dispatcharr-testrunner-2a6 /dispatcharrpy/bin/python -c 'import coverage, hypothesis; print(coverage.__version__, hypothesis.__version__)'`.
+      If either fails, the container was created from **upstream's** image, which carries
+      neither; PR #238 changed `.claude/hooks/start-test-container.sh` to default to the
+      fork's image, which does. **Re-create the container** rather than pip-installing
+      into it — a hand-patched container is a measurement nobody else can reproduce.
+      This check exists because a missing `hypothesis` does not announce itself as a
+      missing dependency: it announces itself as 61 extra missed statements. See Step 4.
 - [ ] **Step 3.** Confirm the tracer core is what this branch expects, then stop thinking
       about it. Run
       `docker exec dispatcharr-testrunner-2a6 grep -n 'SHAPE_ID=\|COVERAGE_CORE' /repo/scripts/coverage_live_path.sh`.
@@ -419,7 +433,23 @@ edits.
       data file stamped by a different core, so a hand-set variable can only take a
       measurement away from you.
 - [ ] **Step 4.** Take the baseline, three runs, each into its own data directory so the
-      per-run JSON survives (`--report` consumes the `.coverage.*` files):
+      per-run JSON survives (`--report` consumes the `.coverage.*` files).
+
+      **A non-zero exit from any label INVALIDATES the whole measurement — it is not a
+      warning to note and move past.** A label that errors never runs its tests, and every
+      statement those tests would have covered is counted as *missed*, so the printed
+      percentage is not a worse measurement of the same thing but a measurement of a
+      different thing. Measured on one tree: **3,230 missed with two modules failing to
+      import against 3,169 with them importing** — a 61-statement phantom, larger than the
+      51-statement spread this plan tells you to tolerate, and in the same direction a
+      real regression would move. The cause was that the container image carried neither
+      `coverage` nor `hypothesis`, so `test_property_log_parsers.py` and
+      `test_property_ts_realignment.py` failed at import. The script now says so before
+      the figures (`coverage_live_path: THE FIGURES BELOW ARE INVALID — a failed label`,
+      `scripts/coverage_live_path.sh:175`) and exits 1 — that improvement is on this
+      branch via the `6e292d53` merge. **Check the exit code of every run, and discard any
+      run that did not exit 0.** Do not average a bad run in, and do not report a figure
+      taken from one.
       ```
       for i in 1 2 3; do
         docker exec -e COVERAGE_LIVE_PATH_DATA_DIR=/tmp/2a6-base-$i \
@@ -490,6 +520,20 @@ tapped(test, channel, query="")           # context manager yielding a StreamTap
       merge cleanly. Re-run that diff before you edit; if 2a-3 has by then changed
       `build_real_ts_asset` itself, fall back to a local builder in `output_support.py`
       and say so in the PR description.
+
+      **And check `synthetic_ts`'s current shape rather than this plan's description of
+      it.** 2a-3 has a payload change in flight for it — a packet index, because its row-8
+      test could not tell positions apart beyond 256 packets. Read the function before
+      relying on what any document says its bytes are. Where that does and does not bite,
+      stated precisely so the check is cheap: **Tasks 4, 5 and 6 are not exposed at all** —
+      they replace the payload outright with `fragmentable_upstream_payload()`, a real
+      ffmpeg encode, because a synthetic stream cannot be remuxed to fMP4 (§ F1). **Task 3
+      does use the default `synthetic_ts` payload**, and its only assertion over those
+      bytes is `assert_ts_aligned`, which checks the 0x47 sync byte at a 188-byte stride —
+      a property any packet-index change must preserve to be useful to 2a-3 either. So the
+      expected exposure is nil; confirm that rather than assume it, and if Task 3 ever
+      grows an assertion about payload *content*, this is the paragraph that stops it
+      being written against a stale description.
 
       Change the signature to
       `def build_real_ts_asset(seconds: float = 2.0, *, keyframe_interval: int | None = None) -> bytes:`
@@ -1325,7 +1369,13 @@ do not delete a `<!-- block: … -->` marker.** `HIGHEST_ROW_ID` stays 28 (§ R6
 - [ ] **Step 1.** Take the after-side measurement, three runs, same container, same
       unmodified script (which fixes the core at sysmon), into `/tmp/2a6-after-{1,2,3}`.
       Record `TOTAL` statements (**7978 every time**), `TOTAL` `Miss`, and the four output
-      files' `Miss`.
+      files' `Miss`. **Check each run's exit code and discard any that is non-zero** — per
+      Task 1 Step 4, a failed label makes the figures a measurement of something else, and
+      the phantom it produces (61 statements, measured) is larger than the spread this
+      plan tolerates. This bites harder on the after side than the baseline: your own new
+      tests are now in `apps.proxy.live_proxy.tests`, so a genuine failure in one of them
+      would both fail the label *and* inflate `Miss` — read the exit code first and the
+      figures second.
 - [ ] **Step 2.** State the gate as a **separated interval**, which is immune to the
       51-statement spread: the **maximum** after-side `Miss` must be strictly below the
       **minimum** baseline `Miss`. Report both as `min-max`. If the intervals overlap, the
@@ -1411,9 +1461,10 @@ do not delete a `<!-- block: … -->` marker.** `HIGHEST_ROW_ID` stays 28 (§ R6
       `guards` project.
 - [ ] `metrics/curated/defects.yml`: #222 `pinned` with its test path; the new dead-branch
       defect added; `python -m metrics.build --validate-only` green.
-- [ ] A coverage measurement, three runs a side, same container, same tracer core, whose
-      after-side maximum `Miss` is strictly below the baseline minimum, reported as
-      intervals with per-file missed-line-set diffs — not as differenced totals.
+- [ ] A coverage measurement, three runs a side, same container, same tracer core, **every
+      run exited 0**, whose after-side maximum `Miss` is strictly below the baseline
+      minimum, reported as intervals with per-file missed-line-set diffs — not as
+      differenced totals.
 - [ ] The `apps.proxy.live_proxy` label's wall time reported before and after, and under
       45 s.
 - [ ] The PR description names: the tracer core and how it was chosen; the expected row-11
