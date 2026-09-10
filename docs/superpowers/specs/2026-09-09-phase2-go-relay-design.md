@@ -1022,7 +1022,7 @@ it, being the owner of the last owed row.
 upstream — no new capability needed. `input/manager.py` (~40-50% reachable) and
 `output/fmp4/manager.py` (~20-30%) do not: their uncovered code is shaped around a real subprocess's
 stdout/stderr, and `CLAUDE.md` § Testing records the backend suite as never having had this
-capability at all ("No backend unit test spawns a subprocess"). **2a's PR 3 builds a harness that
+capability at all ("No backend unit test spawns a subprocess"). **2a-2 builds a harness that
 spawns real subprocesses and serves real TS bytes from an in-process fake upstream** — a small,
 canned-content Python HTTP server (`socketserver`/`http.server`, no external dependency), *not* a
 reuse of the `e2e-upstream` Docker image: the backend test runner is itself a container, and nested
@@ -1036,18 +1036,21 @@ belong to surfaces D1 leaves in Python and are recorded as not ported rather tha
 **The harness also carries a captured real-ffmpeg stderr corpus, and 2a-2's capture measured row 4's
 arming delay rather than estimating it.** Driving the production command
 (`ffmpeg -i {streamUrl} -c:v copy -c:a copy -f mpegts pipe:1`, default `info` logging) with ffmpeg
-**8.1.2** against an upstream held to **0.25x real time**, the cumulative `speed=` starts at 10.7x,
+**8.1.2** against an upstream held to **0.25x real time**, the cumulative `speed=` starts above 10x,
 first dips below 1.0 after **~18 seconds** of wall clock and stays below from **~20 seconds** on,
-ending at 0.85x. That is the "front-loaded lead must burn off" behaviour row 4 names, observed; it
+ending below 0.9x. (A capture is a timing measurement: the shape reproduces, the digits do not, so
+nothing may hardcode one — 2a-2's tests derive every literal from the corpus they captured.) That is
+the "front-loaded lead must burn off" behaviour row 4 names, observed; it
 independently corroborates the ~55 s figure `CLAUDE.md` quotes, and it is **the reason a live ffmpeg
 cannot drive rows 1 and 4 inside a test budget** — those rows replay the captured records at a
 cadence the test chooses. **Every stderr line the stand-in emits is a real capture**; a hand-written
 progress line is legitimate only for a shape real ffmpeg cannot be made to emit on demand, and
 carries its reason. This matters more than it looks: ffmpeg 8.1.2 appends an `elapsed=` field after
 `speed=`, uses `Lsize=` on the final record, space-pads a short speed (`speed= 1.1x`), separates
-records with a carriage return rather than a newline, and emits scientific notation
-(`speed=1.82e+03x`) — four of which a hand-written fixture would have got wrong, and the fifth of
-which is a real defect the capture found (parity-matrix row 28, issue #227). **This harness is not
+records with a carriage return rather than a newline **except the last when the process exits
+normally**, and emits scientific notation (`speed=…e+03x`) — four of which a hand-written fixture
+would have got wrong, and the fifth of which is a real defect the capture found (parity-matrix
+row 28, issue #227). **This harness is not
 throwaway**: the Go relay needs an equivalent in its own suite (2c's own fault-injection fixtures),
 and having already named the fault vocabulary in Python fixtures gives the Go author a spec to copy
 rather than invent from `input/manager.py`'s prose alone.
@@ -1566,7 +1569,7 @@ remainder of Phase 3.
   reporting *no owed row left*, which happens in 2b-3. The distinction is the difference between
   "every behaviour is owned" and "every behaviour is pinned," and this phase needs both, in that
   order.
-- **The subprocess harness's own tests** (2a PR 3 onward) — real ffmpeg, real fake-upstream HTTP
+- **The subprocess harness's own tests** (2a-2 onward) — real ffmpeg, real fake-upstream HTTP
   server, real Redis; these are what move `input/manager.py` and `output/fmp4/manager.py` off their
   20-50% floor and are the tests 2c's Go implementer reads first.
 - **`scripts/coverage_live_path.sh`'s ratchet** (2a-7, then 2c-9's Go equivalent) — CI-enforced,
