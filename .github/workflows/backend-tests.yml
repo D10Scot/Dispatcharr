@@ -162,6 +162,132 @@ jobs:
           TEST_LABEL: ${{ matrix.label }}
         run: bash scripts/ci_bootstrap_backend.sh "$TEST_LABEL" -v2
 
+  # Gate 2 (Phase 2 spec, Stage 2a). One Django test label per container -- the shape
+  # the `test` matrix above already uses, and the shape stage 2a's isolation probe
+  # measured. The labels are hard-coded rather than taken from plan.outputs.labels
+  # BECAUSE that list is diff-gated: a PR touching only apps/epg/ would measure a
+  # different label set and the floor would compare quantities that are not comparable.
+  # See docs/superpowers/plans/2026-09-10-phase2-2a7-coverage-gate.md, Task 6.
+  coverage-label:
+    name: Coverage ${{ matrix.label }}
+    needs: plan
+    if: needs.plan.outputs.has_tests == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        label: [apps.proxy.tests, apps.proxy.live_proxy.tests, apps.channels.tests]
+    container:
+      image: ${{ needs.plan.outputs.base_image }} # zizmor: ignore[unpinned-images]
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: --entrypoint ""
+    env:
+      DISPATCHARR_ENV: aio
+      DJANGO_SECRET_KEY: ci-test-secret-key
+      POSTGRES_DB: dispatcharr
+      POSTGRES_USER: dispatch
+      POSTGRES_PASSWORD: secret
+      DISPATCHARR_LOG_LEVEL: WARNING
+      # metrics.yml sets this for the same reason: it picks up `coverage` and
+      # `hypothesis` from uv.lock before the base image is next rebuilt. Both are in
+      # pyproject.toml's MAIN dependency list, not a dev group, precisely because CI
+      # installs with --no-dev (pyproject.toml:41-45).
+      SYNC_PYTHON_DEPS: 'true'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: Verify the measurement can be trusted
+        run: |
+          set -euo pipefail
+          export PATH="/dispatcharrpy/bin:$PATH"
+          # An import failure here does not fail a label loudly -- it fails two test
+          # modules, the label reports errors, and ~61 statements they would have
+          # covered are silently counted as missed, moving the number the way a
+          # regression moves.
+          python -c "import coverage, hypothesis; print(coverage.__version__, hypothesis.__version__)"
+
+      - name: Measure one label
+        env:
+          GITHUB_WORKSPACE: ${{ github.workspace }}
+          COVERAGE_LIVE_PATH_DATA_DIR: /tmp/gate-data
+          CI_BACKEND_RUNNER: bash scripts/coverage_live_path.sh --label ${{ matrix.label }}
+        run: bash scripts/ci_bootstrap_backend.sh
+
+      - name: Upload this label's coverage data
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: gate-data-${{ matrix.label }}
+          path: /tmp/gate-data
+          include-hidden-files: true
+          retention-days: 1
+
+  coverage-gate:
+    name: Coverage gate
+    needs: [plan, coverage-label]
+    if: needs.plan.outputs.has_tests == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    container:
+      image: ${{ needs.plan.outputs.base_image }} # zizmor: ignore[unpinned-images]
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: --entrypoint ""
+    env:
+      SYNC_PYTHON_DEPS: 'true'
+    steps:
+      - name: Install git
+        # The base image ships no git, so actions/checkout falls back to a tarball with
+        # no .git/ and the floor comparison below cannot fetch the base ref. Unversioned
+        # apt is the base image's own convention (CLAUDE.md, build reproducibility).
+        run: apt-get update && apt-get install -y --no-install-recommends git
+
+      - name: Checkout code
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Download every label's coverage data
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: gate-data-*
+          path: /tmp/gate-parts
+
+      - name: Compare against the floor
+        run: |
+          set -euo pipefail
+          export PATH="/dispatcharrpy/bin:$PATH"
+          bash scripts/coverage_live_path.sh --gate /tmp/gate-parts
+
+      - name: Refuse a floor edited downward
+        if: always()
+        env:
+          BASE_REF: ${{ github.base_ref || github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          # `missing` is a MAXIMUM and lower is better, so a RAISED value is the
+          # regression. Read that twice; the polarity is the opposite of a percentage's.
+          git fetch --depth=1 origin "$BASE_REF"
+          if ! OLD_FILE=$(git show "origin/${BASE_REF}:scripts/coverage_live_path.floor"); then
+            echo "no floor on the base ref; nothing to compare"
+            exit 0
+          fi
+          OLD=$(printf '%s\n' "$OLD_FILE" | grep -E '^missing=' | cut -d= -f2)
+          NEW=$(grep -E '^missing=' scripts/coverage_live_path.floor | cut -d= -f2)
+          echo "floor: base=$OLD head=$NEW"
+          if [ "$NEW" -gt "$OLD" ]; then
+            echo "The floor was raised ($OLD -> $NEW): more missed statements are now permitted."
+            echo "A floor may rise only in a PR that earns and explains the rise."
+            exit 1
+          fi
+
   # The one check in this workflow that may be required. It always reports,
   # because it is not gated on anything — see the comment on the triggers.
   #
@@ -171,10 +297,15 @@ jobs:
   # the only case in which a skip is legitimate. Branch 3 below therefore
   # demands `success` and nothing else: a skipped matrix on a run that DID
   # select labels means the shards never ran, and must not report green.
+  #
+  # Gate 2's coverage-gate job is folded into the same three-branch logic: a
+  # docs-only PR skips test, coverage-label and coverage-gate together
+  # (has_tests=false), legitimately; otherwise coverage-gate must also be
+  # exactly `success`, alongside test.
   backend-result:
     name: Backend result
     runs-on: ubuntu-latest
-    needs: [plan, test]
+    needs: [plan, test, coverage-gate]
     if: always()
     timeout-minutes: 5
     steps:
@@ -182,9 +313,10 @@ jobs:
         env:
           PLAN_RESULT: ${{ needs.plan.result }}
           TEST_RESULT: ${{ needs.test.result }}
+          GATE_RESULT: ${{ needs.coverage-gate.result }}
           TESTS_REQUIRED: ${{ needs.plan.outputs.has_tests }}
         run: |
-          echo "plan=$PLAN_RESULT test=$TEST_RESULT tests-required=$TESTS_REQUIRED"
+          echo "plan=$PLAN_RESULT test=$TEST_RESULT gate=$GATE_RESULT tests-required=$TESTS_REQUIRED"
           if [ "$PLAN_RESULT" != "success" ]; then
             echo "Test planning itself failed — cannot prove the suite was unnecessary."
             exit 1
@@ -195,6 +327,10 @@ jobs:
           fi
           if [ "$TEST_RESULT" != "success" ]; then
             echo "Backend suite was required and did not fully succeed."
+            exit 1
+          fi
+          if [ "$GATE_RESULT" != "success" ]; then
+            echo "Coverage gate was required and did not succeed."
             exit 1
           fi
           echo "Backend suite passed."
