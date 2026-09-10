@@ -460,7 +460,7 @@ Modify:
 |---|---|
 | `CLAUDE.md` | § Testing: "No backend unit test spawns a subprocess" becomes false with this PR. Correct it in the same PR, per the project's standing convention. |
 | `metrics/curated/defects.yml` | One new entry for **#226**, the librist image defect this PR works around. **Already added by the planning pass** (validated: `ok: 46 metrics, 32 milestones, 28 defects`) — do not add it again; check it is there and leave it alone. |
-| `docs/relay-parity-matrix.md` | Row 28 — the scientific-notation `speed=` parse (**#227**), `owed: 2a-4`, placed inside `2a-4`'s block. **Already added by the planning pass.** |
+| `docs/relay-parity-matrix.md` | Row 28 — the scientific-notation `speed=` parse (**#227**), `owed: 2a-4`, appended to the **end** of `2a-4`'s block. **Already added by the planning pass.** |
 | `e2e/tests/guards/parity-matrix.ts` | `HIGHEST_ROW_ID` 27 → 28, the second half of that same edit. **Already done.** |
 
 Not touched, deliberately: `e2e/COVERAGE.md` (no Playwright *test* is added — the guards project
@@ -476,9 +476,14 @@ needs if it ever adds another row:
   Adding a row without bumping it fails the completeness test by design.
 - **The table is ordered by owning block, not by id — do not sort it.** A separate guard
   (`parity-matrix.spec.ts:336`) fails if one PR's owed rows are not contiguous in file order, and
-  `2a-4` already owns rows 1-6. Row 28 therefore sits **between rows 6 and 7**, inside `2a-4`'s
-  block, with the id 28. The completeness check compares the *sorted* ids against `1..28`, so file
-  position and id are deliberately independent.
+  `2a-4` already owns rows 1-6. Row 28 therefore sits **between rows 6 and 7** — that is, **appended
+  to the end of `2a-4`'s block**, immediately before the `2a-3` block begins — with the id 28. The
+  completeness check compares the *sorted* ids against `1..28`, so file position and id are
+  deliberately independent. **A new row goes at the END of its owning PR's block, not merely
+  somewhere inside it**: the guard only *enforces* contiguity, so a mid-block insertion would also
+  pass, but appending is the convention the guard's own failure message documents and the one that
+  keeps a row's arrival a single-line addition rather than a hunk in the middle of someone else's
+  rows.
 
 **On the ledger.** This PR closes no ledger issue, adds no `test.fail()` pin, merges no goal and
 ticks no Done log — but it *does* discover and work around a defect, and `docs/agents/metrics.md`'s
@@ -505,6 +510,7 @@ def synthetic_ts(packets: int = 512, pid: int = 0x100) -> bytes: ...
 def assert_ts_aligned(data: bytes) -> None: ...          # raises AssertionError
 def build_real_ts_asset(seconds: float = 2.0) -> bytes: ...   # Task 6; needs real ffmpeg
 def require_real_ffmpeg() -> str: ...                     # Task 6; returns the ffmpeg path or raises SkipTest
+def ffmpeg_env() -> dict: ...                             # Task 6; os.environ plus LD_LIBRARY_PATH (#226)
 
 # harness/faults.py
 PORTED_FAULTS: tuple[str, ...]
@@ -3155,7 +3161,11 @@ shape. Do not treat it as a tolerance on this number: a denominator that is not 
 … time python manage.py test --keepdb apps.proxy.live_proxy -v1
 ```
 
-Compare against `git stash`-ing the branch's test files, or against the same command on `main`.
+Compare against the same command at **`e62ab428`**, this branch's base — `git diff e62ab428..HEAD`
+and `git stash` both work, but name the SHA rather than `main`. A local `main` ref can sit behind
+the branch point (it did during review, at `a948cd8a`, which would have put 2a-1's nine files in the
+diff and made this measurement meaningless), and refs drift while a SHA does not. This PR's whole
+subject is measurements that reproduce; the command that takes them should reproduce too.
 Budget is **≤ 6 s added** (§ Keeping the suite fast). If it is over, the usual cause is a
 `wait_until` timeout being reached rather than a predicate holding — a timeout that fires is a
 failing test, but a *slow* predicate is a design problem. Report the number either way.
@@ -3287,7 +3297,7 @@ the work as verified.**
 - [ ] No file outside § File structure is modified — in particular no production module, no
       workflow, no `pyproject.toml`, no `uv.lock`, and nothing under `e2e/` beyond the
       `HIGHEST_ROW_ID` bump.
-- [ ] `docs/relay-parity-matrix.md` carries row 28 inside `2a-4`'s block, `HIGHEST_ROW_ID` is 28,
+- [ ] `docs/relay-parity-matrix.md` carries row 28 at the end of `2a-4`'s block, `HIGHEST_ROW_ID` is 28,
       and `cd e2e && npm run test:guards` prints
       `parity matrix: 28 rows — 5 pinned, 21 owed, 2 white-box-only` with 16 tests passing.
 - [ ] `metrics/curated/defects.yml` carries the #226 entry and
