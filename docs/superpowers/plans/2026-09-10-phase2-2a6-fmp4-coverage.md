@@ -54,13 +54,30 @@ task's requirements implicitly include this section.
 - **Branch:** `migration/phase2a-fmp4-coverage`, stacked on
   `migration/phase2a-manager-coverage` (2a-4, PR #236) at `8ec02d45`, which is itself
   stacked on `migration/phase2a-subprocess-harness` (2a-2, PR #229). Worktree
-  `/Users/dion/git/Dispatcharr/.worktrees/phase2-2a6-plan`. **Run every command from
+  `/Users/dion/git/Dispatcharr/.worktrees/phase2-2a6`. **Run every command from
   there, with absolute paths.** Other agents are live in the sibling `.worktrees/*`
   directories; do not `cd` into one and never write outside your own.
 - **Container:** your own, never the shared one. Start it with
-  `DISPATCHARR_TEST_CONTAINER=dispatcharr-testrunner-2a6 DISPATCHARR_TEST_DB_VOLUME=dispatcharr-hookdb-2a6 CLAUDE_HOOK_REPO_ROOT=/Users/dion/git/Dispatcharr/.worktrees/phase2-2a6-plan bash /Users/dion/git/Dispatcharr/.worktrees/phase2-2a6-plan/.claude/hooks/start-test-container.sh`.
+  `DISPATCHARR_TEST_CONTAINER=dispatcharr-testrunner-2a6 DISPATCHARR_TEST_DB_VOLUME=dispatcharr-hookdb-2a6 DISPATCHARR_TEST_IMAGE=ghcr.io/d10scot/dispatcharr:latest CLAUDE_HOOK_REPO_ROOT=/Users/dion/git/Dispatcharr/.worktrees/phase2-2a6 bash /Users/dion/git/Dispatcharr/.worktrees/phase2-2a6/.claude/hooks/start-test-container.sh`.
   Re-pointing `dispatcharr-testrunner` contaminates another agent's in-flight
-  measurement; we have paid for that once.
+  measurement; we have paid for that once. `DISPATCHARR_TEST_IMAGE` is not optional
+  here — the default upstream image carries neither `coverage` nor `hypothesis` (§ Step
+  2a below).
+- **The container recipe you actually need, reconstructed by hand because the hook
+  script's own bring-up left a container with no database (see the MISCONF/no-database
+  finding this task records):** every `docker exec` that runs `manage.py` needs
+  `-e TEST_USE_SQLITE= -e POSTGRES_HOST=/var/run/postgresql -e POSTGRES_DB=dispatcharr
+  -e POSTGRES_USER=dispatch -e POSTGRES_PASSWORD=secret -e REDIS_HOST=localhost
+  -e REDIS_PORT=6379 -e REDIS_DB=0 -e DJANGO_SECRET_KEY=hook-test-secret
+  -e DISPATCHARR_LOG_LEVEL=WARNING` — this is `run-affected-tests.sh`'s own `dexec()`
+  recipe, and nothing in the image sets these by default (`docker inspect`'s `Config.Env`
+  carries none of them). **`--keepdb` is required on every `manage.py test` invocation**,
+  not just `scripts/coverage_live_path.sh`'s own internal ones: that script's runs leave
+  `test_dispatcharr` behind, and a bare `manage.py test` without `--keepdb` against an
+  already-existing test database prompts interactively (`EOFError: EOF when reading a
+  line`) rather than running anything. `scripts/run_metrics_tests.sh` and
+  `python -m metrics.build --validate-only` (Task 8) want `git` on `PATH`, which the test
+  container does not have — run those two on the host instead, from this worktree.
 - **`PostToolUse` hook output is advisory and is frequently a false positive here.**
   Hooks are spawned by the harness, not by your shell, so `DISPATCHARR_TEST_CONTAINER`
   never reaches them: an edit-triggered run always uses the shared
@@ -404,7 +421,7 @@ edits.
 **Interfaces:** `scripts/coverage_live_path.sh`, `scripts/coverage_live_path.coveragerc`
 
 - [ ] **Step 1.** Start your own container:
-      `DISPATCHARR_TEST_CONTAINER=dispatcharr-testrunner-2a6 DISPATCHARR_TEST_DB_VOLUME=dispatcharr-hookdb-2a6 CLAUDE_HOOK_REPO_ROOT=/Users/dion/git/Dispatcharr/.worktrees/phase2-2a6-plan bash /Users/dion/git/Dispatcharr/.worktrees/phase2-2a6-plan/.claude/hooks/start-test-container.sh`
+      `DISPATCHARR_TEST_CONTAINER=dispatcharr-testrunner-2a6 DISPATCHARR_TEST_DB_VOLUME=dispatcharr-hookdb-2a6 CLAUDE_HOOK_REPO_ROOT=/Users/dion/git/Dispatcharr/.worktrees/phase2-2a6 bash /Users/dion/git/Dispatcharr/.worktrees/phase2-2a6/.claude/hooks/start-test-container.sh`
       Confirm it is mounted at *this* worktree:
       `docker exec dispatcharr-testrunner-2a6 ls /repo/docs/superpowers/plans/ | grep 2a6`
       must print `2026-09-10-phase2-2a6-fmp4-coverage.md`. If it does not, stop — every
@@ -1081,6 +1098,14 @@ TS through), and the fMP4 remux's child is the bare `ffmpeg` from PATH (real).
       grep the captured relay logs for `[output:fmp4:p` —
       `… -v2 2>&1 | grep -c '\[output:fmp4:p'` must be ≥ 1. If it is 0 the assertions
       above are passing for the wrong reason and the query string is not being honoured.
+      **This grep is a reach-check trap at the hooks' own default log level.**
+      `server.py`'s `ensure_output_profile` logs `[output:{fmt}]` at `logger.info`, and
+      `DISPATCHARR_LOG_LEVEL=WARNING` — the level every `dexec()` recipe in this repo
+      uses by default — suppresses it, so the grep returns 0 there even though the
+      compound path ran correctly. That reads exactly like "the path is never reached",
+      which is the wrong conclusion. Run this one check with
+      `-e DISPATCHARR_LOG_LEVEL=INFO` added to the `docker exec`; the routine test runs
+      that don't need to read this log stay at `WARNING`.
 - [ ] **Step 4.** Stage, then commit separately:
       `test(phase2): an fMP4 client layered on an Output Profile`.
 
@@ -1323,7 +1348,7 @@ do not delete a `<!-- block: … -->` marker.** `HIGHEST_ROW_ID` stays 28 (§ R6
       so every line in the spawn log is an Output Profile transcode. Both stand — the e2e
       spec proves the same claim through nginx in a container.`
 - [ ] **Step 3.** Run the guard:
-      `cd /Users/dion/git/Dispatcharr/.worktrees/phase2-2a6-plan/e2e && npx playwright test --project=guards parity-matrix`.
+      `cd /Users/dion/git/Dispatcharr/.worktrees/phase2-2a6/e2e && npx playwright test --project=guards parity-matrix`.
       Expect green. The guard prints a `… pinned, … owed, … white-box-only` census on
       every run: row 12 moves one row from `owed` to `pinned`, and row 11 was already
       pinned so it moves nothing. Read the printed line rather than predicting it — the
