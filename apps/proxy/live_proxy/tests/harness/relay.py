@@ -77,6 +77,25 @@ class _TunedStream:
 class RelayHarnessTestCase(LiveServerTestCase):
     """Base class for every stage-2a relay test."""
 
+    # Do NOT set `available_apps` here to narrow TransactionTestCase's
+    # per-test table flush -- it was tried and measured to do nothing: the
+    # 0.7-1.1s a harness test costs is the test BODY (a real subprocess spawn,
+    # a real HTTP round trip through LiveServerTestCase, wait_until polling
+    # for real Redis-mediated state), not the between-test flush
+    # `available_apps` targets. Django's TransactionTestCase._pre_setup fires
+    # emit_post_migrate_signal on every test when `available_apps` is set (it
+    # must, since teardown then inhibits post_migrate to avoid re-seeding the
+    # full app set), and that per-test cost cancels the saving. The minimal
+    # correct set is eight apps, not three, because authorize_stream's
+    # anonymous-tune path calls get_user_model(), which needs apps.accounts
+    # registered -- anything narrower 500s. Worse than merely unhelpful:
+    # restricting the app registry stops those apps' tables being FLUSHED,
+    # not being WRITTEN TO through an already-imported model class, so a row
+    # written to an app outside the set would silently persist across every
+    # later test instead of being cleaned up -- a hazard with no offsetting
+    # benefit. See the plan's "Keeping the suite fast" section for the
+    # measurements.
+
     def setUp(self):
         super().setUp()
         self._env_backup = {
