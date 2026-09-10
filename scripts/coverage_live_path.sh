@@ -221,6 +221,21 @@ gate() {
 
 write_floor() {
   local stmts missing pct old
+  # The repo is bind-mounted read-only inside the standard test-hook container
+  # (CLAUDE.md, Test hooks), so a plain `python ... open(path, "w")` a few lines
+  # below would die with `OSError: [Errno 30] Read-only file system` -- a trace
+  # that names Python, not the actual problem. Check first and say what is wrong
+  # and what to do about it: run this from a writable checkout (a maintainer's own
+  # clone, or a scratch container with /repo mounted rw), not from the read-only
+  # dev container --gate itself runs from every day.
+  if [ ! -w "$FLOOR_FILE" ]; then
+    echo "coverage_live_path: $FLOOR_FILE is not writable from here." >&2
+    echo "coverage_live_path: this is very likely the read-only /repo mount the standard" >&2
+    echo "coverage_live_path: test-hook container uses (CLAUDE.md, Test hooks) -- --gate reads" >&2
+    echo "coverage_live_path: fine from there, but --write-floor needs a writable checkout:" >&2
+    echo "coverage_live_path: your own clone, or a scratch container with /repo mounted rw." >&2
+    return 1
+  fi
   read -r stmts missing pct < <(read_totals) || return 1
   old="$(floor_value missing)"
   if [ "$missing" -gt "$old" ] && [ "${COVERAGE_LIVE_PATH_ALLOW_REGRESSION:-}" != "1" ]; then
