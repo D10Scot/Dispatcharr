@@ -211,6 +211,38 @@ Three things about these numbers, all of which have cost this programme time bef
    - **no test in this PR may deliberately target `cleanup_task` (`server.py:1880-2196`),
      `_recover_stuck_channel_stops` (`:1773-1798`) or `refresh_channel_registry` (`:2427-2447`).**
      They are the noise source. Leave them missed. § Deliberate non-goals says so again.
+**Every number in this section is C-tracer basis, and the stage is moving to `sysmon`.**
+`scripts/coverage_live_path.sh` at this branch's base (`2a826e07`) sets no `COVERAGE_CORE`, the
+rcfile sets none, and the test image's environment carries none — verified, not assumed. 2a-2
+adopted `COVERAGE_CORE=sysmon` in `9c865538`, which is **not** an ancestor of this branch.
+**When this branch is rebased onto a 2a-2 that carries `9c865538`, every baseline below shifts and
+must be re-taken before it is quoted.** Measured here, one session, same tree, both cores:
+
+| | C tracer | sysmon | delta |
+|---|---|---|---|
+| Gate total | 7,978 / **3,208** / 59.79% | 7,978 / **3,112** / 60.99% | **−96 missed** |
+| `server.py` | 1,490 / **844** / 43.4% | 1,490 / **796** / 46.6% | **−48 missed** |
+
+**Half the whole delta lands in this one file, and all of it lands in exactly two functions:**
+`cleanup_task` 161 → 130 and `event_listener` 120 → 108 (plus `check_if_channel_exists` 35 → 34
+and four statements in the tail). That is the expected signature — sysmon recovers statements
+executing after a `gevent.sleep()`, and those two `while True` loops are the file's sleepers.
+**No function changed bucket**: the classification below transfers between cores unchanged, only
+three counts shrink. Blocked-or-unreachable is **283 under ctrace, 252 under sysmon**.
+
+**And the files this PR's eight row-tests target do not move at all under either core** —
+`authorize.py` 12, `authorize_views.py` 4, `next_source.py` 64, `views.py` 187,
+`channel_status.py` 66, `client_manager.py` 92, `url_utils.py` 60, identical to the statement. So
+the row-test yield estimates below are core-independent; only the `server.py` figures are not.
+
+**`apps/proxy/utils.py` is NOT in the Gate 2 denominator.** `scripts/coverage_live_path.coveragerc`'s
+`[report] include` names `apps/proxy/live_proxy/*` plus ten `apps/proxy/*.py` modules, and
+`utils.py` is not one of them — so `check_user_stream_limits`, `get_user_active_connections` and
+`_live_connections` are outside the gate entirely. **Task 4's stream-limit test exercises the whole
+D4 loop and none of that half counts.** Do not read a small Task 4 coverage movement as a failed
+test; the test is pinning rows 20 and 25, and its coverage contribution is incidental by
+construction.
+
 **Where `server.py`'s missed statements actually are — a complete attribution, not a sample.**
 Produced by AST-walking the module and mapping **every** missed line to its innermost enclosing
 `def`, so the rows sum to the file's total exactly. Fifty functions carry at least one missed
