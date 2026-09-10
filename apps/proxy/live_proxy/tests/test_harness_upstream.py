@@ -1,9 +1,13 @@
 """Tests for the 2a subprocess harness's fake upstream, asset and faults."""
 
+import urllib.error
+import urllib.request
+
 from django.test import SimpleTestCase
 
 from .harness.asset import TS_PACKET_SIZE, TS_SYNC_BYTE, assert_ts_aligned, synthetic_ts
 from .harness.faults import NOT_PORTED, PORTED_FAULTS, FaultStore
+from .harness.upstream import FakeUpstream
 
 
 class SyntheticAssetTests(SimpleTestCase):
@@ -68,3 +72,92 @@ class FaultVocabularyTests(SimpleTestCase):
 
     def test_config_of_an_unarmed_fault_is_empty(self):
         self.assertEqual(FaultStore().config_of("slow-trickle"), {})
+
+
+class FakeUpstreamTests(SimpleTestCase):
+    def test_serves_ts_bytes(self):
+        with FakeUpstream(payload=synthetic_ts(packets=32)) as up:
+            with urllib.request.urlopen(up.url, timeout=5) as response:
+                self.assertEqual(response.status, 200)
+                self.assertEqual(response.headers["Content-Type"], "video/mp2t")
+                body = response.read(32 * TS_PACKET_SIZE)
+        assert_ts_aligned(body)
+
+    def test_loops_the_payload_rather_than_ending(self):
+        with FakeUpstream(payload=synthetic_ts(packets=4)) as up:
+            with urllib.request.urlopen(up.url, timeout=5) as response:
+                body = response.read(4 * TS_PACKET_SIZE * 3)
+        self.assertEqual(len(body), 4 * TS_PACKET_SIZE * 3)
+        assert_ts_aligned(body)
+
+    def test_counts_requests(self):
+        with FakeUpstream(payload=synthetic_ts(packets=2)) as up:
+            self.assertEqual(up.request_count, 0)
+            for _ in range(2):
+                with urllib.request.urlopen(up.url, timeout=5) as response:
+                    response.read(TS_PACKET_SIZE)
+            self.assertEqual(up.request_count, 2)
+
+    def test_not_found_fault_answers_404(self):
+        with FakeUpstream() as up:
+            up.faults.arm("not-found")
+            with self.assertRaises(urllib.error.HTTPError) as caught:
+                urllib.request.urlopen(up.url, timeout=5)
+            self.assertEqual(caught.exception.code, 404)
+
+    def test_auth_failure_fault_answers_401(self):
+        with FakeUpstream() as up:
+            up.faults.arm("auth-failure")
+            with self.assertRaises(urllib.error.HTTPError) as caught:
+                urllib.request.urlopen(up.url, timeout=5)
+            self.assertEqual(caught.exception.code, 401)
+
+    def test_connection_limit_fault_answers_429(self):
+        with FakeUpstream() as up:
+            up.faults.arm("connection-limit")
+            with self.assertRaises(urllib.error.HTTPError) as caught:
+                urllib.request.urlopen(up.url, timeout=5)
+            self.assertEqual(caught.exception.code, 429)
+
+    def test_redirect_chain_fault_lands_on_the_stream(self):
+        with FakeUpstream(payload=synthetic_ts(packets=2)) as up:
+            up.faults.arm("redirect-chain", depth=3)
+            with urllib.request.urlopen(up.url, timeout=5) as response:
+                body = response.read(2 * TS_PACKET_SIZE)
+        assert_ts_aligned(body)
+        # One request for each hop plus the final one that serves bytes.
+        self.assertEqual(up.request_count, 4)
+
+    def test_non_ts_bytes_fault_answers_200_with_html(self):
+        with FakeUpstream() as up:
+            up.faults.arm("non-ts-bytes")
+            with urllib.request.urlopen(up.url, timeout=5) as response:
+                self.assertEqual(response.status, 200)
+                body = response.read()
+        self.assertNotEqual(body[:1], b"\x47")
+        self.assertIn(b"<html", body.lower())
+
+    def test_disconnect_fault_truncates_after_the_configured_bytes(self):
+        with FakeUpstream(payload=synthetic_ts(packets=64)) as up:
+            up.faults.arm("disconnect", after_bytes=4 * TS_PACKET_SIZE)
+            with urllib.request.urlopen(up.url, timeout=5) as response:
+                body = response.read()
+        self.assertEqual(len(body), 4 * TS_PACKET_SIZE)
+
+    def test_dead_air_fault_sends_headers_and_no_body(self):
+        with FakeUpstream(payload=synthetic_ts(packets=8)) as up:
+            up.faults.arm("dead-air")
+            response = urllib.request.urlopen(up.url, timeout=5)
+            try:
+                self.assertEqual(response.status, 200)
+                response.fp.raw._sock.settimeout(0.5)
+                with self.assertRaises(OSError):
+                    response.read(TS_PACKET_SIZE)
+            finally:
+                response.close()
+
+    def test_every_ported_fault_can_be_armed_on_a_running_server(self):
+        with FakeUpstream() as up:
+            for fault in PORTED_FAULTS:
+                up.faults.arm(fault)
+                up.faults.clear(fault)
