@@ -44,7 +44,17 @@ export PATH="/dispatcharrpy/bin:$PATH"
 PG_VERSION="$(ls /usr/lib/postgresql/ | sort -V | tail -n 1)"
 export PG_VERSION PG_BINDIR="/usr/lib/postgresql/${PG_VERSION}/bin"
 
-redis-server --daemonize yes --protected-mode no --bind 127.0.0.1 --port 6379 >/dev/null 2>&1 || true
+# --save "" --appendonly no matches how supervisord runs Redis in the AIO
+# image (docker/supervisord.d/redis.conf) and is load-bearing here, not
+# cosmetic: this shell's cwd is /repo, which is bind-mounted read-only, so
+# a default-schedule bgsave tries to write /repo/dump.rdb, fails MISCONF,
+# and stop-writes-on-bgsave-error (default yes) then refuses EVERY
+# subsequent write for the life of the container. The symptom is a test run
+# that fails with no FAIL:/ERROR: body, which reads exactly like a container
+# mounted at the wrong tree. --dir keeps any future persistence off the
+# read-only mount even if the save schedule comes back.
+redis-server --daemonize yes --protected-mode no --bind 127.0.0.1 --port 6379 \
+  --save "" --appendonly no --dir /var/tmp >/dev/null 2>&1 || true
 
 . /repo/docker/init/01-user-setup.sh >/dev/null 2>&1
 chown "$PUID:$PGID" "$POSTGRES_DIR"; chmod 700 "$POSTGRES_DIR"
