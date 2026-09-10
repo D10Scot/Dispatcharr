@@ -66,9 +66,18 @@ redis-server --daemonize yes --protected-mode no --bind 127.0.0.1 --port 6379 \
 chown "$PUID:$PGID" "$POSTGRES_DIR"; chmod 700 "$POSTGRES_DIR"
 . /repo/docker/init/02-postgres.sh >/dev/null 2>&1
 prepare_pg_socket_dir
-PG_START_OUT="$(su - "$POSTGRES_USER" -c "$PG_BINDIR/pg_ctl -D ${POSTGRES_DIR} start -w -t 120 -o '-c port=${POSTGRES_PORT}'" 2>&1)" || {
+# `-l` is load-bearing, not tidiness. Without it the postmaster inherits this
+# command substitution's stdout, and `$( )` waits for EOF on that pipe — which
+# a daemonised postgres never gives, so the script blocks here forever with
+# PostgreSQL perfectly healthy. Diagnosed from /proc/<pid>/wchan reading
+# `anon_pipe_read` while stdin was /dev/null and the process had no children.
+# That is the hang behind issue #241: `ensure_app_database` below is never
+# reached, so the container comes up with no database.
+PG_START_LOG="/tmp/pg_ctl_start.log"
+PG_START_OUT="$(su - "$POSTGRES_USER" -c "$PG_BINDIR/pg_ctl -D ${POSTGRES_DIR} -l ${PG_START_LOG} start -w -t 120 -o '-c port=${POSTGRES_PORT}'" 2>&1)" || {
   echo "postgres failed to start:" >&2
   echo "$PG_START_OUT" >&2
+  cat "$PG_START_LOG" >&2 2>/dev/null || true
   tail -n 40 "${POSTGRES_DIR}"/log/*.log 2>/dev/null >&2 || true
   exit 1
 }
