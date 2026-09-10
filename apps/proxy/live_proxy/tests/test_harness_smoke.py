@@ -9,6 +9,8 @@ composition rule.
 
 import os
 
+from django.test import SimpleTestCase
+
 from .harness.asset import TS_PACKET_SIZE, assert_ts_aligned
 from .harness.process import StandInBin, stand_in_stream_profile
 from .harness.relay import RelayHarnessTestCase, wait_until
@@ -57,3 +59,33 @@ class HarnessSmokeTests(RelayHarnessTestCase):
             timeout=10,
             what="a SystemEvent row written through POST /api/relay/events",
         )
+
+
+class RealFfmpegTests(SimpleTestCase):
+    def test_real_ffmpeg_remuxes_the_harness_asset(self):
+        """The capability 2a-6 needs: bytes a real remuxer produced."""
+        import subprocess
+
+        from .harness.asset import build_real_ts_asset, ffmpeg_env, require_real_ffmpeg
+
+        executable = require_real_ffmpeg()
+        source = build_real_ts_asset(seconds=1.0)
+        assert_ts_aligned(source)
+
+        # The PRODUCTION command, minus its argv[0], so this test cannot drift
+        # from what output/fmp4/manager.py actually spawns. Hand-writing the
+        # argument list here loses `-bsf:a aac_adtstoasc`, and without it a real
+        # AAC-in-MPEG-TS input dies with "Malformed AAC bitstream detected ...
+        # Error muxing a packet" and exit 255 -- which is exactly the failure
+        # FFMPEG_REMUX_CMD's own comment at :31 says the filter exists to avoid.
+        from apps.proxy.live_proxy.output.fmp4.manager import FFMPEG_REMUX_CMD
+
+        completed = subprocess.run(
+            [executable] + list(FFMPEG_REMUX_CMD[1:]),
+            input=source,
+            capture_output=True,
+            env=ffmpeg_env(),
+            timeout=60,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr[:400])
+        self.assertIn(b"moof", completed.stdout)

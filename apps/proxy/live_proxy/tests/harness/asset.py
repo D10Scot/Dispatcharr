@@ -9,6 +9,11 @@ required -- the fMP4 path, which parses moof/moov boxes -- use
 build_real_ts_asset() instead; that is 2a-6's territory.
 """
 
+import os
+import shutil
+import subprocess
+import unittest
+
 TS_PACKET_SIZE = 188
 TS_SYNC_BYTE = 0x47
 
@@ -50,3 +55,88 @@ def assert_ts_aligned(data: bytes) -> None:
             raise AssertionError(
                 f"byte {offset} is {data[offset]:#04x}, not the sync byte {TS_SYNC_BYTE:#04x}"
             )
+
+
+# The relay's own production environment sets this (docker/entrypoint.sh:102).
+# Neither test context runs that entrypoint -- the hook container starts with
+# `--entrypoint sleep` and backend-tests.yml with `options: --entrypoint ""` --
+# and the image carries two librist (/usr/local/lib/librist.so.4.11.0, what
+# ffmpeg was linked against, and the distro's 4.3.1 that `vlc` pulls in), with
+# ld.so.conf putting the multiarch directory first. So an unqualified `ffmpeg`
+# in a test resolves 4.3.1 and dies with
+#   symbol lookup error: undefined symbol: rist_peer_config_defaults_set_versioned
+# Verified in dispatcharr-testrunner on 2026-09-10.
+#
+# Set here, in the CHILD's environment, rather than in
+# scripts/ci_bootstrap_backend.sh: this is test-local, works identically in the
+# hook container, in backend-tests.yml and on a developer's machine, and needs
+# no production-adjacent edit. It is a WORKAROUND, not the fix -- the root cause
+# is an image defect, tracked as D10Scot/Dispatcharr#226, whose own suggested
+# fixes are ordered image-first with exporting this variable in the two test
+# bootstraps as the last resort. If #226 lands, this whole helper becomes a
+# plain shutil.which plus a version probe.
+_FFMPEG_ENV = {"LD_LIBRARY_PATH": "/usr/local/lib"}
+
+
+def ffmpeg_env() -> dict:
+    """`os.environ` plus whatever a spawned ffmpeg needs to actually load."""
+    return {**os.environ, **_FFMPEG_ENV}
+
+
+def require_real_ffmpeg() -> str:
+    """The path to a WORKING ffmpeg, or skip the test saying why there isn't one.
+
+    Skips rather than fails: whether ffmpeg links correctly is a property of the
+    image the suite happens to run in, not of the code under test, and a red
+    suite on an image that links differently teaches nobody anything.
+    """
+    executable = shutil.which("ffmpeg")
+    if executable is None:
+        raise unittest.SkipTest("no ffmpeg on PATH")
+    try:
+        completed = subprocess.run(
+            [executable, "-hide_banner", "-version"],
+            capture_output=True,
+            env=ffmpeg_env(),
+            timeout=30,
+        )
+    except OSError as exc:
+        raise unittest.SkipTest(f"ffmpeg at {executable} could not be run: {exc}") from exc
+    if completed.returncode != 0:
+        raise unittest.SkipTest(
+            f"ffmpeg at {executable} exits {completed.returncode}: "
+            f"{completed.stderr.decode(errors='replace')[:200]}"
+        )
+    return executable
+
+
+def build_real_ts_asset(seconds: float = 2.0) -> bytes:
+    """A short, genuinely encoded MPEG-TS, for the tests that need a real remux.
+
+    Mirrors e2e-upstream/scripts/make-asset.sh, trimmed: no burned-in frame
+    counter (nothing here decodes video) and a much shorter duration. Nothing
+    downstream may hardcode the packet count -- an ffmpeg version drift is
+    expected to change it.
+    """
+    executable = require_real_ffmpeg()
+    completed = subprocess.run(
+        [
+            executable, "-hide_banner", "-loglevel", "error", "-y",
+            "-f", "lavfi", "-i", f"testsrc=size=320x180:rate=25:duration={seconds}",
+            "-f", "lavfi", "-i", f"sine=frequency=440:duration={seconds}",
+            "-c:v", "libx264", "-preset", "ultrafast", "-b:v", "400k", "-pix_fmt", "yuv420p",
+            "-c:a", "aac", "-b:a", "64k",
+            "-f", "mpegts", "pipe:1",
+        ],
+        capture_output=True,
+        env=ffmpeg_env(),
+        timeout=120,
+    )
+    if completed.returncode != 0:
+        raise AssertionError(
+            "ffmpeg failed to build the asset: "
+            + completed.stderr.decode(errors="replace")[:400]
+        )
+    data = completed.stdout
+    assert_ts_aligned(data)
+    return data
