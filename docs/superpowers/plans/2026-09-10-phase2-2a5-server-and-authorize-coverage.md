@@ -242,6 +242,48 @@ on them.
 
 ---
 
+## Two header sets in one PR, and the collapse that must not happen
+
+**This PR sends `X-Dispatcharr-Internal` in two places that require different things of it, and
+conflating them is the defect class that produced a total-auth-bypass during the spec's own
+review.** Keep these apart:
+
+| Where | What is checked | By what | Headers needed |
+|---|---|---|---|
+| `/proxy/relay/channels[…]` — Tasks 1, 2, 6, 7 | *is this caller part of the deployment **and** is this exact call, just now* | `IsInternalRelay`, a **permission class** (`apps/proxy/permissions.py:21-27`) | **Both** — static `X-Dispatcharr-Internal` **and** bound `X-Dispatcharr-Internal-Request` |
+| `GET /_dispatcharr/authorize` and the tune — Task 3, row 19 | *is this caller part of the deployment* | `authorize_stream`, a **decision function** (`apps/proxy/authorize.py:418` → `_resolve_principal:309-310`) | **Static only** |
+
+The header name is the same; the requirement is not. "The permission class requires two headers" is
+**not** the same claim as "the authorize decision requires two headers", and only the first is true.
+`internal_auth.py:44-49` gives the reason the streaming surface takes the weaker credential: the
+DVR's ffmpeg re-sends its `-headers` line on every reconnect for the life of a recording, so a
+120-second windowed token would 403 that reconnect.
+
+**The general form of the trap, which recurs three more times in this PR's own subject matter.** A
+view's `permission_classes` / `authentication_classes` describe what DRF does; they say almost
+nothing about what `authorize_stream` then decides. Three live instances, each of which a task here
+depends on getting right:
+
+1. **`stream_ts` and `stream_xc` are `@permission_classes([AllowAny])`** (`views.py:158-160`,
+   `:817-819`) and are nonetheless fully authorized — by `resolve_authorization`, inside the view
+   body. "AllowAny" here means "DRF does not gate this", not "this is ungated". Rows 15, 16, 20, 25.
+2. **`authorize_view` is `@authentication_classes([])` and DRF still authenticates.**
+   `@api_view`'s own `dispatch()` runs `perform_authentication` regardless, which sets
+   `request.user` to `AnonymousUser` **before** `authorize_stream` ever runs. That is precisely why
+   `_session_user` (`authorize.py:268-287`) reads
+   `django.contrib.auth.get_user(http_request)` rather than `http_request.user`, and why
+   `_drf_user` (`:227-265`) restores `http_request.user` on a miss. **Row 23 turns entirely on
+   this**: a test asserting the session principal must assert `X-Relay-User` carries the id, which
+   is only true because the session is re-read from the session store.
+3. **"the authenticator set produced no user" has two opposite meanings.** `_drf_user` raises
+   `AuthorizeDenied(401)` for a credential an authenticator explicitly *rejected* (a malformed
+   Bearer token, an unknown API key) and returns `None` for one merely *declined* (nothing
+   presented). A port that maps both to "anonymous" turns a rejected credential into a successful
+   anonymous tune of any ordinary channel.
+
+**If a task starts to reason from a view's decorators about who the caller is, stop.** Read
+`authorize_stream` instead.
+
 ## The three HTTP surfaces, and how to reach each
 
 ### 1. The tune — `GET /proxy/ts/stream/<identifier>`
@@ -992,11 +1034,27 @@ class AuthorizeMatrixOverHttpTests(RelayHarnessTestCase):
     # -- row 19: the Internal principal ---------------------------------
 
     def internal(self):
-        # The STATIC header only. authorize_stream's is_internal is
-        # request_is_internal() alone (authorize.py:418); the bound
-        # X-Dispatcharr-Internal-Request gates /proxy/relay/... and
-        # /api/relay/..., not this decision -- and the DVR deliberately
-        # sends only the static one (internal_auth.py:44-49).
+        """The STATIC header only, and the reason is the row.
+
+        authorize_stream's is_internal is request_is_internal() alone
+        (authorize.py:418, feeding _resolve_principal:309-310). The bound
+        X-Dispatcharr-Internal-Request gates the five /proxy/relay/... and
+        two /api/relay/... routes through IsInternalRelay
+        (permissions.py:21-27) -- it is NOT part of this decision.
+
+        WHY the streaming surface deliberately takes the weaker credential,
+        from internal_auth.py:44-49: the DVR's stream fetch sends only the
+        static header, because ffmpeg re-sends its -headers line on every
+        reconnect for the life of a recording, and a 120-second windowed
+        token would 403 that reconnect. A recording that survives an
+        upstream blip is the behaviour being bought.
+
+        This is exactly the kind of deliberate asymmetry a Go implementer
+        would "fix" while porting -- requiring both headers everywhere
+        looks strictly safer and silently breaks every long recording. The
+        matrix exists to stop that, so adding the bound header to this test
+        because it seems more correct would defeat the row.
+        """
         return {HEADER_INTERNAL: internal_principal_token()}
 
     def test_the_internal_principal_streams_a_channel_hidden_from_output(self):
@@ -1209,10 +1267,12 @@ the existing e2e spec stands until it does"). The matrix's header comment record
 rule: *git conflicts on two edits ONE line apart and merges cleanly at TWO.* So editing row 21 here
 would conflict with 2a-6 for a Notes-only change the guard never reads. The test is written; the
 row's line is left alone. **Say in the PR description that row 21's Notes still read "2a-5 owes a
-live-root equivalent instead" and that the obligation is discharged by
-`test_an_xc_user_with_hide_adult_content_is_refused_on_the_live_root`, so whichever PR next edits
-that block — 2b-3 is the natural one, being the last to touch this file — can correct the sentence
-in a diff that is already there.**
+live-root equivalent instead", that the obligation is discharged by
+`test_an_xc_user_with_hide_adult_content_is_refused_on_the_live_root`, and that **2b-3 is the
+expected corrector** — it is the last PR the spec has touching this file (it closes row 18, the
+final `owed:` row), so the sentence can be fixed in a diff that is already there. Name 2b-3
+explicitly rather than "whichever PR next edits that block": an obligation addressed to nobody in
+particular is how row 21 got into this state in the first place.**
 
 - [ ] **Step 5: Run the guard, then commit**
 
@@ -2476,8 +2536,8 @@ It must carry, at minimum:
   instead"; the test exists
   (`test_an_xc_user_with_hide_adult_content_is_refused_on_the_live_root`); its line was **not**
   edited because row 21 (`:185`) sits one line from row 11 (`:184`), which 2a-6 may re-pin, and
-  the matrix's own measured rule is that edits one line apart conflict. Whichever PR next edits
-  that block should correct the sentence.
+  the matrix's own measured rule is that edits one line apart conflict. **2b-3 is the expected
+  corrector**, being the last PR the spec has touching this file.
 - Anything dropped for budget, and why.
 
 - [ ] **Step 7: Clean up the container**
