@@ -1206,6 +1206,31 @@ denominator 7,978 in all nine, allowance 1,595:
 support for stating this gate in relative terms wherever possible: a tracer that drops statements
 after a greenlet switch drops them from *both* sides of a comparison.
 
+**But the agreement has a stated condition, and it has now been demonstrated rather than assumed:
+the cores agree on deltas EXCEPT where the newly-covered lines are themselves in the disputed set.**
+2a-5 reported `server.py` moving **−88** under the C tracer against a review measurement of
+**−122** — below its plan's own 100-140 band — with every test passing as designed. The two are the
+same work measured twice, and the demonstration is a set-difference on one tree, one run per core:
+**34 of the 34 divergent lines fall inside the two functions the cores disagree about**, none
+scattered — 12 at `299-332` in `event_listener`'s `STREAM_SWITCH` branch, which is precisely what
+2a-5's own switch tests exercise, and 22 at `1906-2137` in `cleanup_task`, the background daemon.
+The disagreement runs both ways but not symmetrically: 17 lines go the other direction, 10 of them
+in `_recover_stuck_channel_stops` and `refresh_channel_registry`'s skip-mid-shutdown branch — both
+already on this section's named-variance list — and 7 scattered singletons, i.e. ordinary noise in
+both tracers rather than a second mechanism.
+
+**So `server.py` is the special case *because* its delta sits in the sleepers**, and 2a-3's is not,
+because its targets lie outside them. The general rule keeps its force; it now carries the condition
+under which it fails, which is more useful than the unconditional version was.
+
+**And the arithmetic alone could not have settled this, which is the transferable part.** Writing
+`gap(t)` for the lines the C tracer fails to credit, `delta_sysmon − delta_C ≡ gap(after) −
+gap(base)` **identically** — so "the two deltas differ by 34" says only that the gap grew by 34, and
+is equally true if the tests had simply moved 34 fewer statements. **A quantity that is true under a
+hypothesis and under its negation is not evidence for either.** Only locating the 34 lines decided
+it, and the method was the same set-difference that settled the Output-Profile bucket: **diff the
+missed-line sets, do not difference the totals.**
+
 **Remaining supply, sysmon.** Two figures are carried for `server.py`, for two different questions,
 and they must not be interchanged: **257** is the reachable *pool* (what could be taken, and the
 right number for "can 80% be reached at all"), **124** is 2a-5's *target* (what its tasks intend to
