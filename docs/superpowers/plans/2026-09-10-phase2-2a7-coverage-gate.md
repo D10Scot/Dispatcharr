@@ -103,7 +103,8 @@ Task 1 merges all four coverage branches onto one tree and measures it at n≥12
 
 - **The 64-statement teardown block is sequence-induced.** Block-complete 64/64 in **10/10 isolated rounds** (a fresh container, and so a fresh Redis, per label) against **5/11 shared-container runs**; Fisher exact two-tailed **p = 0.0124**. The PostgreSQL volume was shared across every round, so PG data state is excluded as a cause; a per-container process census found no stray ffmpeg and no leftovers, so "load or leftovers from the preceding label" is excluded too. What remains — the Redis process and the container's accumulated state — is **not separated, and this plan does not guess at it.**
 - **Isolation does not make the total deterministic.** Isolated totals over ten rounds: `2841, 2837, 2834, 2834, 2831, 2831, 2827, 2825, 2797, 2797` — **spread 44**, against the shared shape's **47**. The spread barely moved. What changed is *which* region flaps: rounds 9-10 covered a **second, 28-line block** that rounds 1-8 all missed — `server.py` 2099-2112 (the cleanup loop's **non-owner** branch) and 2489-2566 (`_cleanup_local_resources`). Block one is the **owner's** coordinated stop; block two the **non-owner's** local cleanup. Same class of code, different path.
-- **Four variance sources are now known, and the list is still growing:** (1) `channel_service.py` 28-49 / 575-601 / 971-989 plus `server.py`'s owner-side teardown; (2) `server.py` 2099-2112 and 2489-2566, non-owner cleanup; (3) `input/manager.py`'s stderr-reader-thread join (:1739-1767); (4) **new** — `output/ts/generator.py` 227-230, `_wait_for_channel_ready`'s error/stopped/stopping branch, missed in 2 of 3 runs on a tree whose PR does not touch that file.
+- **Three variance sources are known:** (1) `channel_service.py` 28-49 / 575-601 / 971-989 plus `server.py`'s owner-side teardown; (2) `server.py` 2099-2112 and 2489-2566, non-owner cleanup; (3) `input/manager.py`'s stderr-reader-thread join (:1739-1767).
+- **`output/ts/generator.py` 227-230 is NOT a fourth source, and this plan said it was.** Corrected here rather than silently: `_wait_for_channel_ready`'s error/stopped/stopping branch is **missed in all 37 runs across five trees** — stable and permanent — **except on 2a-6's branch, where 2a-6's own tests introduce the flap.** It was reported to this plan as "missed in 2 of 3 runs on a tree whose PR does not touch that file", which read as a spontaneous fourth region and was written up as one. **Nothing may be sized against it.** But it is not irrelevant to 2a-7 either, and the reason is easy to miss: **the 2a-7 tree carries 2a-6's tests**, so this region is expected to flap there. Task 2 must classify it as *2a-6-introduced* rather than as a discovery, and the general-case variance list stays at three.
 - **Machine load is an uncontrolled confound.** Isolated rounds 9-10 — the two that fired the second region — ran in the quietest window. Result 1 was protected by interleaving three shared runs in that same window (2847 at 64/64, 2866 at 45/64, 2829 at 64/64 — still flapping while isolated rounds were not), making it a paired comparison. **Result 2 is not load-controlled**, and whether the second region is load-driven or merely rare is unknown.
 
 ### The ruling
@@ -114,7 +115,7 @@ A ratchet asks one question: *is today's `missing` greater than the committed fl
 
 > **A tolerance is a number nobody re-derives. A floor is a number the monotonicity check already polices.** Widening a tolerance is a one-character edit in a script no CI check inspects. Widening a floor is an edit to a committed file that `--gate` refuses downward and that the CI wiring compares against `origin/main` in the same run.
 
-**The evidence has strengthened this ruling since it was first drafted.** A fixed tolerance would have been sized at ~51 by the 2a-6 plan, at ≥66 by the shared-shape step, and at ~45 by the isolated shape — three numbers in three weeks, each correct for a shape or a tree that then changed, and **a fourth variance region appeared while this plan was being written.** A number that has to be re-derived every time the tree moves is a number that will be stale in the file. A worst-run floor absorbs whatever the spread is on the day, without anyone having to name it.
+**The evidence has strengthened this ruling since it was first drafted.** A fixed tolerance would have been sized at ~51 by the 2a-6 plan, at ≥66 by the shared-shape step, and at ~45 by the isolated shape — three numbers in three weeks, each correct for a shape or a tree that then changed. **And the region count itself moved twice while this plan was being written** — from one to two when the isolation probe's rounds 9-10 fired the non-owner cleanup, and from three back down again when `output/ts/generator.py` 227-230 turned out to be permanently missed rather than flapping. A number that has to be re-derived every time the tree moves is a number that will be stale in the file. A worst-run floor absorbs whatever the spread is on the day, without anyone having to name it.
 
 This **contradicts the spec**, which says "2a-7's ratchet carries a small tolerance, and three constraints on it". All three constraints survive: (i) sized to the measured residual on the gated tree; (ii) justified by the per-file attribution Task 2 produces; (iii) a movement outside it — a run worse than the worst of twelve — is a finding. Task 8 records the contradiction and the argument in the spec.
 
@@ -310,7 +311,7 @@ max(runs) >  1995  ->  recommend (a): ratchet at the measured level, reassign >=
 
 ## Task 2: Attribute the variance, per file and per line
 
-The spec requires the floor be "justified by per-file attribution, not picked". Four variance regions are known; the list is still growing, and this task's job is to say which of them move on **this** tree and whether a fifth has appeared.
+The spec requires the floor be "justified by per-file attribution, not picked". Three variance regions are known, plus one that 2a-6's own tests introduce; this task's job is to say which move on **this** tree and whether a genuinely new one has appeared.
 
 **Files:** none modified.
 
@@ -347,16 +348,16 @@ PY
 
 Each round's `live-path.json` is written by `report()` into `$COVERAGE_LIVE_PATH_DATA_DIR`; copy it out beside each round's data in Task 1 Step 5 if it is not there already.
 
-- [ ] **Step 2: Classify every moving region against the known four**
+- [ ] **Step 2: Classify every moving region**
 
-| # | Region | Path |
-|---|---|---|
-| 1 | `channel_service.py` 28-49, 575-601, 971-989 + `server.py` 252, 261, 359-426, 888, 1259-1260, 1802-1803, 2010-2042 | owner-side coordinated stop |
-| 2 | `server.py` 2099-2112, 2489-2566 | non-owner local cleanup |
-| 3 | `input/manager.py` 1739-1767 | stderr-reader-thread join |
-| 4 | `output/ts/generator.py` 227-230 | `_wait_for_channel_ready`'s error/stopped/stopping branch |
+| # | Region | Path | Status |
+|---|---|---|---|
+| 1 | `channel_service.py` 28-49, 575-601, 971-989 + `server.py` 252, 261, 359-426, 888, 1259-1260, 1802-1803, 2010-2042 | owner-side coordinated stop | general — sequence-induced, and this shape suppresses it |
+| 2 | `server.py` 2099-2112, 2489-2566 | non-owner local cleanup | general — fired in isolated rounds 9-10 only |
+| 3 | `input/manager.py` 1739-1767 | stderr-reader-thread join | general |
+| — | `output/ts/generator.py` 227-230 | `_wait_for_channel_ready`'s error/stopped/stopping branch | **NOT a general region.** Missed in all 37 runs across five trees; it flaps **only** on trees carrying 2a-6's tests, which this one does. Expect it, classify it as 2a-6-introduced, and size nothing against it. |
 
-**Anything outside these four is a new finding — report it before writing a floor.** Region 4 was found while this plan was being written, on a tree whose PR does not touch that file; the list growing again would be evidence that the worst-run ruling is right and that no fixed tolerance could have held.
+**Anything outside this table is a new finding — report it before writing a floor.** Note what the table's own history establishes: region 2 appeared at isolated round 9 after eight rounds had suggested a clean answer, and the `generator.py` row was written into an earlier revision of this plan as a fourth general region on a 2-of-3-run report before a 37-run count across five trees showed it was permanently missed instead. **Both directions of that error argue the same thing: a fixed tolerance sized on any snapshot of this table would have been wrong.**
 
 - [ ] **Step 3: Record the attribution table** in the scratchpad; it goes into the PR description verbatim.
 
@@ -1047,7 +1048,7 @@ Repeat Task 1 Step 6 verbatim against the branch with Tasks 3-6 committed, throu
 
 The floor's `missing` is `max(runs)`. Record the median too — the PR description states the headroom given away, as `max − median`.
 
-- [ ] **Step 3: Attribute, again** — repeat Task 2 Step 1's per-file/per-line diff on the final tree, and classify against the four known regions. **The PR description carries this table.** The spec requires the floor be justified by per-file attribution and that a later widening make the same case; a floor with no attribution beside it cannot be argued with later.
+- [ ] **Step 3: Attribute, again** — repeat Task 2 Step 1's per-file/per-line diff on the final tree, and classify against Task 2 Step 2's table. **The PR description carries this table.** The spec requires the floor be justified by per-file attribution and that a later widening make the same case; a floor with no attribution beside it cannot be argued with later.
 
 - [ ] **Step 4: Write it**
 
@@ -1132,8 +1133,13 @@ outside it — a run worse than the worst of twelve — is a finding. The argume
 preferring it over a number: a tolerance is a number nobody re-derives, while a floor is
 one the monotonicity check in `backend-tests.yml` compares against `origin/main` on every
 run. **The evidence for it is that the tolerance was sized at ~51, then >=66, then ~45 in
-three weeks, and a fourth variance region (`output/ts/generator.py` 227-230,
-`_wait_for_channel_ready`'s error branch) appeared while 2a-7's plan was being written.**
+three weeks, and that the variance-region count itself moved twice while 2a-7's plan was
+being written** — up, when the isolation probe's rounds 9-10 fired the non-owner cleanup
+that its first eight rounds never touched; and back down, when `output/ts/generator.py`
+227-230 was reported as a new flapping region on a 2-of-3-run observation and a 37-run
+count across five trees then showed it permanently missed everywhere except on trees
+carrying 2a-6's tests. **A tolerance sized on any snapshot of that list would have been
+wrong, and wrong in both directions.**
 
 **The gate runs one label per container.** Measured: the 64-line teardown block is
 block-complete in 10/10 isolated rounds against 5/11 shared-container runs (Fisher exact
@@ -1179,10 +1185,10 @@ container** (`scripts/coverage_live_path_isolated.sh` locally; `backend-tests.ym
 direction**. `--gate` compares against `scripts/coverage_live_path.floor` and exits 1 on
 a regression; `Backend result` requires it. **The floor's `missing` is set from the worst
 of ≥12 runs, so there is no tolerance parameter** — the measurement is bimodal, not
-noisy, and four regions are known to flap: the owner-side coordinated stop
+noisy, and three regions are known to flap: the owner-side coordinated stop
 (`channel_service.py` 28-49 and `server.py`'s sweep), the non-owner local cleanup
-(`server.py` 2099-2112, 2489-2566), the stderr-reader join (`input/manager.py`
-1739-1767) and `output/ts/generator.py` 227-230. Per-container isolation makes the first
+(`server.py` 2099-2112, 2489-2566) and the stderr-reader join (`input/manager.py`
+1739-1767). Per-container isolation makes the first
 block deterministic and does **not** make the total so (spread 44 vs 47). **A failed
 label invalidates a measurement rather than degrading it** — a tree missing `hypothesis`
 reported 3,230 where the same tree with it reported 3,169, a 61-statement inflation
@@ -1257,7 +1263,7 @@ Required, in this order:
 
 1. **The measurement and the verdict.** Task 1's number, the decision rule as it was committed *before* the measurement, and which branch it selected. Lead with where stage 2a landed against ≥80% and who owns the shortfall. A reader must not have to infer it.
 2. **Why the earlier projections were wrong** — 2a-4's 61-was-one-file, 2a-6's 483-was-a-probe, and the incommensurable-trees rule that outlives both.
-3. **The tolerance ruling** — worst-run floor, the stopping rule, the four variance regions, and **the measured headroom given away** as `max − median`.
+3. **The tolerance ruling** — worst-run floor, the stopping rule, the three general variance regions plus 2a-6's introduced one, and **the measured headroom given away** as `max − median`.
 4. **The shape ruling** — per-container, on correctness grounds, with the p-value *and* the spread that did not move, plus the counter-argument for the single-job shape and why it lost.
 5. **Task 2's and Task 7's per-file/per-line attribution tables.**
 6. **The two inherited rows**, named as inherited: row 29 from 2a-4, row 30 from 2a-5. Row 21's prose-only obligation was discharged by 2a-5 at `cbdc66c2` and is **not** 2a-7's — say so, so nobody looks for it.
