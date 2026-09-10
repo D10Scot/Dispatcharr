@@ -76,12 +76,21 @@ Task 1 merges all four coverage branches onto one tree and measures it at n≥12
 | `server.py::_cleanup_local_resources` | **62** | excludable (#230) — but see below, it is a live variance source |
 | `server.py::_check_orphaned_channels` | **24** | excludable (#230, no callers anywhere) |
 | `input/manager.py` dead cluster (#231) | **~62** (`_close_connection` 13, `_close_all_connections` 20, `_create_session` 7, ~2/3 of `stop`) | excludable |
-| `fmp4/manager.py::_handle_bsf_error` | **35 — and NOT dead** | **reject.** Reached whenever ffmpeg's stderr carries `aac_adtstoasc ... is not supported by the bitstream filter` (`output/fmp4/manager.py:373`), which 2a-2's `PATH` stand-in can print on demand. The brief's "~9 dead statements" was wrong in both count and kind. |
+| `fmp4/manager.py::_handle_bsf_error`'s dead region (**#244**) | **7** | **reject, but the issue stands** — see the correction below. Too small to argue about, inside a live function. |
 | `input/http_streamer.py` | 101 | **void.** 73% covered since 2a-4 (#236: 101 → 27). The spec's bracket row "+ `http_streamer.py`'s 101" is **spent** — the fourth instance of the already-banked shape the spec names three of, and the first carried in a *conclusion* rather than a supply table. |
 
 **~148 defensible statements, worth about 1.4 percentage points.** That cannot reach the gate in the pessimistic branch and is not needed in the optimistic one. Excluding merely-inconvenient code is the same hazard the rcfile's `[run] source`-not-`include` ruling exists to prevent, wearing a different coat. Leave the dead code in the denominator; the right disposal is **deletion**, which raises the floor for free and is in scope for `2a-8`/`2b-4`.
 
-**And note `_cleanup_local_resources` is not merely dead — it is one of the four measured variance sources** (the isolation probe caught `server.py` 2489-2566 flipping between rounds). Excluding it would remove a flapping region from the measurement, which is the shape of a fix that improves the number by making the gate blind. Another reason not to.
+**And note `_cleanup_local_resources` is not merely dead — it is one of the measured variance sources** (the isolation probe caught `server.py` 2489-2566 flipping between rounds). Excluding it would remove a flapping region from the measurement, which is the shape of a fix that improves the number by making the gate blind. Another reason not to.
+
+**A correction to an earlier revision of this plan, recorded because it would have got a valid issue closed.** That revision said `_handle_bsf_error` "is **35 statements and NOT dead**", and that the brief's "~9 dead statements" was "wrong in both count and kind". **That refuted a claim nobody made, and #244 stands.** The brief said *`_handle_bsf_error`'s ~9 dead statements* — a dead **region inside** the function, not a dead function — and both propositions are true at once:
+
+- The **function** is reachable, whenever ffmpeg's stderr carries `aac_adtstoasc ... is not supported by the bitstream filter` (`output/fmp4/manager.py:373`), which 2a-2's `PATH` stand-in can print on demand. That much was measured and is correct.
+- A **region inside it is dead by construction.** `self.running = True` at `:403` sits directly above `if not self.running:` at `:405`, with nothing between, so the body at `:406-413` can never execute. Measured with `coverage.parser.PythonParser`: the guard at `:405` is itself a statement and *does* execute; the unreachable body is `[407, 408, 409, 410, 411, 412, 413]` — **exactly 7 statements**, not ~9 and not 35.
+
+**The conclusion — not an exclusion candidate — survives, and for a better reason than the wrong one gave it:** 7 statements is not worth arguing about, and the function around them is live.
+
+**How the error happened is worth more than the correction.** The function's reachability was genuinely measured, with a real trigger condition — and then a claim about a *neighbouring* proposition, which had not been tested, was attached to it and carried forward as though the measurement covered both. The diagnosis was run; the corollary was asserted. This plan diagnoses that exact shape twice elsewhere (a quantity that reads as one kind of thing while being another; a mechanism asserted from reading), and it recurred here anyway, in the document describing it. **The defence is a habit, not a rule: after verifying something, name the adjacent claim you did NOT verify, out loud, before writing either down.** Every implementer of this plan should apply that to their own break checks.
 
 ### The decision the user owes: `apps/proxy/utils.py`
 
@@ -1113,16 +1122,23 @@ Three further corrections, each of the same family:
    effect (#236: 101 -> 27), so the bracket row that closes the gate by +91 no longer
    exists. Fourth instance of the already-banked shape, and the first carried in a
    *conclusion* rather than a supply table.
-2. **`_handle_bsf_error` is 35 statements and is NOT dead** — reached whenever ffmpeg's
-   stderr carries `aac_adtstoasc ... is not supported by the bitstream filter`
-   (`output/fmp4/manager.py:373`), which 2a-2's PATH stand-in can print on demand.
+2. **`_handle_bsf_error` holds a dead REGION inside a LIVE function — #244 stands, and
+   an earlier revision of 2a-7's plan wrongly reported it refuted.** The function is
+   reachable whenever ffmpeg's stderr carries `aac_adtstoasc ... is not supported by the
+   bitstream filter` (`output/fmp4/manager.py:373`), which 2a-2's PATH stand-in can
+   print on demand — and, separately and simultaneously, `self.running = True` at `:403`
+   sits directly above `if not self.running:` at `:405` with nothing between, so the
+   body at `:406-413` can never execute. Measured with `coverage.parser.PythonParser`:
+   the `:405` guard is a statement and does execute; the unreachable body is exactly
+   **7** statements. Not an exclusion candidate — but because 7 statements inside a live
+   function are not worth arguing about, not because the finding is wrong.
 3. **Excluding every provably-dead statement anyone has found moves the gate by ~1.4
    percentage points** (~148: `_cleanup_local_resources` 62, `_check_orphaned_channels`
    24, #231's `input/manager.py` cluster ~62). Denominator surgery cannot reach this
    gate, so it is not attempted; the dead code stays in the denominator to be *deleted*,
    which raises the floor for free. `_cleanup_local_resources` is additionally one of
-   the four measured variance regions, so excluding it would improve the number by
-   making the gate blind to a flapping region.
+   the measured variance regions, so excluding it would improve the number by making
+   the gate blind to a flapping region.
 
 **The ratchet carries no tolerance parameter, and the tolerance paragraph above is
 amended rather than met.** The floor's `missing` is set from the WORST of at least
