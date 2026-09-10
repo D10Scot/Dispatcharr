@@ -1,8 +1,199 @@
 {
  "detail": null,
- "fetched_at": "2026-09-09T10:49:29+00:00",
+ "fetched_at": "2026-09-10T10:42:19+00:00",
  "kind": "issues",
  "records": [
+  {
+   "closed_at": null,
+   "created_at": "2026-09-10T09:33:49Z",
+   "id": 228,
+   "label_events": [
+    {
+     "at": "2026-09-10T09:33:51Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    }
+   ],
+   "labels": [
+    "needs-triage"
+   ],
+   "state": "open",
+   "title": "The test-container default image is upstream's and lacks coverage and hypothesis",
+   "updated_at": "2026-09-10T09:33:49Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-09-10T08:11:18Z",
+   "id": 227,
+   "label_events": [
+    {
+     "at": "2026-09-10T08:11:20Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    }
+   ],
+   "labels": [
+    "needs-triage"
+   ],
+   "state": "open",
+   "title": "ffmpeg speed= in scientific notation is mis-parsed, under-reporting the displayed stream speed 1000x",
+   "updated_at": "2026-09-10T08:19:32Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-09-10T07:57:20Z",
+   "id": 226,
+   "label_events": [
+    {
+     "at": "2026-09-10T07:57:22Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    }
+   ],
+   "labels": [
+    "needs-triage"
+   ],
+   "state": "open",
+   "title": "ffmpeg is installed but unrunnable in the test containers: duplicate librist, ld.so.conf ordering",
+   "updated_at": "2026-09-10T07:57:20Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-09-10T00:13:03Z",
+   "id": 224,
+   "label_events": [],
+   "labels": [],
+   "state": "open",
+   "title": "e2e-tests.yml computes changed files from HEAD^1, so an earlier commit's changes stop gating on later pushes",
+   "updated_at": "2026-09-10T00:13:03Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-09-09T22:44:58Z",
+   "id": 222,
+   "label_events": [
+    {
+     "at": "2026-09-09T22:54:02Z",
+     "event": "labeled",
+     "label": "wontfix"
+    },
+    {
+     "at": "2026-09-09T23:33:34Z",
+     "event": "unlabeled",
+     "label": "wontfix"
+    }
+   ],
+   "labels": [],
+   "state": "open",
+   "title": "fMP4 generator's _is_timeout() lacks the TS generator's url_switching exemption \u2014 viewers dropped at 40s during a slow failover",
+   "updated_at": "2026-09-09T23:33:34Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-09-09T22:44:48Z",
+   "id": 221,
+   "label_events": [],
+   "labels": [],
+   "state": "open",
+   "title": "MAX_STREAM_SWITCHES does not bound buffering-triggered stream switches",
+   "updated_at": "2026-09-09T22:44:48Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-09-09T17:54:43Z",
+   "id": 220,
+   "label_events": [
+    {
+     "at": "2026-09-09T17:54:44Z",
+     "event": "labeled",
+     "label": "agentic-workflows"
+    }
+   ],
+   "labels": [
+    "agentic-workflows"
+   ],
+   "state": "open",
+   "title": "[aw] Failed jobs: Issue remediation",
+   "updated_at": "2026-09-09T17:54:43Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-09-09T17:54:41Z",
+   "id": 219,
+   "label_events": [
+    {
+     "at": "2026-09-09T17:54:42Z",
+     "event": "labeled",
+     "label": "agentic-workflows"
+    }
+   ],
+   "labels": [
+    "agentic-workflows"
+   ],
+   "state": "open",
+   "title": "[aw] Issue remediation produced no safe outputs",
+   "updated_at": "2026-09-09T17:54:41Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-09-09T17:07:43Z",
+   "id": 218,
+   "label_events": [
+    {
+     "at": "2026-09-09T17:07:45Z",
+     "event": "labeled",
+     "label": "agentic-workflows"
+    }
+   ],
+   "labels": [
+    "agentic-workflows"
+   ],
+   "state": "open",
+   "title": "[fuzz-hardening] test(m3u): Hypothesis property tests for M3U parsing and numbering surfaces",
+   "updated_at": "2026-09-09T17:07:43Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-09-09T17:07:38Z",
+   "id": 217,
+   "label_events": [
+    {
+     "at": "2026-09-09T17:07:39Z",
+     "event": "labeled",
+     "label": "bug"
+    },
+    {
+     "at": "2026-09-09T17:07:39Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    },
+    {
+     "at": "2026-09-09T17:07:40Z",
+     "event": "labeled",
+     "label": "fuzzing"
+    },
+    {
+     "at": "2026-09-09T17:07:40Z",
+     "event": "labeled",
+     "label": "type:crash"
+    },
+    {
+     "at": "2026-09-09T17:07:41Z",
+     "event": "labeled",
+     "label": "priority:p1"
+    }
+   ],
+   "labels": [
+    "bug",
+    "needs-triage",
+    "fuzzing",
+    "type:crash",
+    "priority:p1"
+   ],
+   "state": "open",
+   "title": "[domain-fuzz] M3U zip upload with non-UTF-8 playlist crashes fetch_m3u_lines with unhandled UnicodeDecodeError",
+   "updated_at": "2026-09-09T17:07:38Z"
+  },
   {
    "closed_at": null,
    "created_at": "2026-09-09T05:24:47Z",
@@ -2628,7 +2819,7 @@
    ],
    "state": "open",
    "title": "[aw] Detection Runs",
-   "updated_at": "2026-09-09T00:48:40Z"
+   "updated_at": "2026-09-09T17:54:39Z"
   },
   {
    "closed_at": null,
@@ -2853,18 +3044,28 @@
      "at": "2026-08-29T11:19:31Z",
      "event": "labeled",
      "label": "priority:p3"
+    },
+    {
+     "at": "2026-09-10T00:45:18Z",
+     "event": "labeled",
+     "label": "wontfix"
+    },
+    {
+     "at": "2026-09-10T00:45:18Z",
+     "event": "unlabeled",
+     "label": "needs-triage"
     }
    ],
    "labels": [
     "bug",
-    "needs-triage",
+    "wontfix",
     "fuzzing",
     "type:correctness",
     "priority:p3"
    ],
    "state": "open",
    "title": "[domain-fuzz] Catch-up stats position freezes at 0:00 when playback_base_secs is 0.0 or the URL timestamp predates EPG start",
-   "updated_at": "2026-09-09T00:48:02Z"
+   "updated_at": "2026-09-10T00:45:18Z"
   },
   {
    "closed_at": "2026-08-29T12:40:33Z",
