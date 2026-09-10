@@ -10,7 +10,13 @@ set -euo pipefail
 
 CONTAINER="${DISPATCHARR_TEST_CONTAINER:-dispatcharr-testrunner}"
 DB_VOLUME="${DISPATCHARR_TEST_DB_VOLUME:-dispatcharr-hookdb}"
-IMAGE="${DISPATCHARR_TEST_IMAGE:-ghcr.io/dispatcharr/dispatcharr:latest}"
+# The FORK's image, not upstream's. Upstream's carries neither `coverage` nor
+# `hypothesis`, so `scripts/coverage_live_path.sh` cannot run at all there and
+# the two `test_property_*` modules fail to IMPORT — the label reports errors
+# and 61 statements those tests would have covered are counted as missed. Both
+# verified by importing them in each image. `docker-build.yml` publishes this
+# tag on every push to main. Issue #228.
+IMAGE="${DISPATCHARR_TEST_IMAGE:-ghcr.io/d10scot/dispatcharr:latest}"
 REPO_ROOT="${CLAUDE_HOOK_REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 
 docker info >/dev/null 2>&1 || {
@@ -44,15 +50,34 @@ export PATH="/dispatcharrpy/bin:$PATH"
 PG_VERSION="$(ls /usr/lib/postgresql/ | sort -V | tail -n 1)"
 export PG_VERSION PG_BINDIR="/usr/lib/postgresql/${PG_VERSION}/bin"
 
-redis-server --daemonize yes --protected-mode no --bind 127.0.0.1 --port 6379 >/dev/null 2>&1 || true
+# --save "" --appendonly no matches how supervisord runs Redis in the AIO
+# image (docker/supervisord.d/redis.conf) and is load-bearing here, not
+# cosmetic: this shell's cwd is /repo, which is bind-mounted read-only, so
+# a default-schedule bgsave tries to write /repo/dump.rdb, fails MISCONF,
+# and stop-writes-on-bgsave-error (default yes) then refuses EVERY
+# subsequent write for the life of the container. The symptom is a test run
+# that fails with no FAIL:/ERROR: body, which reads exactly like a container
+# mounted at the wrong tree. --dir keeps any future persistence off the
+# read-only mount even if the save schedule comes back.
+redis-server --daemonize yes --protected-mode no --bind 127.0.0.1 --port 6379 \
+  --save "" --appendonly no --dir /var/tmp >/dev/null 2>&1 || true
 
 . /repo/docker/init/01-user-setup.sh >/dev/null 2>&1
 chown "$PUID:$PGID" "$POSTGRES_DIR"; chmod 700 "$POSTGRES_DIR"
 . /repo/docker/init/02-postgres.sh >/dev/null 2>&1
 prepare_pg_socket_dir
-PG_START_OUT="$(su - "$POSTGRES_USER" -c "$PG_BINDIR/pg_ctl -D ${POSTGRES_DIR} start -w -t 120 -o '-c port=${POSTGRES_PORT}'" 2>&1)" || {
+# `-l` is load-bearing, not tidiness. Without it the postmaster inherits this
+# command substitution's stdout, and `$( )` waits for EOF on that pipe — which
+# a daemonised postgres never gives, so the script blocks here forever with
+# PostgreSQL perfectly healthy. Diagnosed from /proc/<pid>/wchan reading
+# `anon_pipe_read` while stdin was /dev/null and the process had no children.
+# That is the hang behind issue #241: `ensure_app_database` below is never
+# reached, so the container comes up with no database.
+PG_START_LOG="/tmp/pg_ctl_start.log"
+PG_START_OUT="$(su - "$POSTGRES_USER" -c "$PG_BINDIR/pg_ctl -D ${POSTGRES_DIR} -l ${PG_START_LOG} start -w -t 120 -o '-c port=${POSTGRES_PORT}'" 2>&1)" || {
   echo "postgres failed to start:" >&2
   echo "$PG_START_OUT" >&2
+  cat "$PG_START_LOG" >&2 2>/dev/null || true
   tail -n 40 "${POSTGRES_DIR}"/log/*.log 2>/dev/null >&2 || true
   exit 1
 }
@@ -68,6 +93,21 @@ until su - "$POSTGRES_USER" -c "$PG_BINDIR/pg_isready -h ${POSTGRES_HOST} -p ${P
 done
 promote_app_role  >/dev/null 2>&1 || true
 ensure_app_database >/dev/null 2>&1 || true
+# Verify the OUTCOME, not the call's exit status. `promote_app_role` and
+# `ensure_app_database` are invoked above as `... >/dev/null 2>&1 || true`,
+# which throws away the message and the status together — and on a brand-new
+# DB volume that has been observed to leave no database while the script
+# still printed "==> ready" and exited 0 (issue #241). The first symptom then
+# arrives minutes later, from a test run, as an interactive password prompt
+# or "database dispatcharr does not exist", nowhere near the cause. So ask
+# Postgres directly whether the database is there, and fail here if not.
+if ! su - "$POSTGRES_USER" -c "psql -h ${POSTGRES_HOST} -p ${POSTGRES_PORT} -d ${POSTGRES_DB} -tAc 'SELECT 1'" >/dev/null 2>&1; then
+  echo "start-test-container: database '${POSTGRES_DB}' is missing — the container is NOT usable for tests." >&2
+  echo "start-test-container: see issue #241. Create it by hand with:" >&2
+  echo "  docker exec ${CONTAINER:-<container>} su - ${POSTGRES_USER} -c \\" >&2
+  echo "    \"createdb -p ${POSTGRES_PORT} --encoding=UTF8 ${POSTGRES_DB}\"" >&2
+  exit 1
+fi
 echo "redis:    $(redis-cli ping)"
 echo "postgres: $(su - dispatch -c "$PG_BINDIR/pg_isready -h /var/run/postgresql -p 5432")"
 INNER
