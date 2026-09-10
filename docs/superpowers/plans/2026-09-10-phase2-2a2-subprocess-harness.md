@@ -2217,6 +2217,17 @@ Arguments:
                          interval that lands every record comfortably inside the
                          tune, or one that clearly outlasts it; never one that
                          lands the last records at the boundary.
+                         **Fixed for this reason in 2a-2's own smoke tests**:
+                         `RelayHarnessTestCase.stand_in()` (harness/relay.py) is
+                         a `StandInBin` factory whose default is
+                         `stderr_interval=0.0` -- the whole corpus lands within
+                         microseconds of spawn, so the EMA branch is
+                         deterministically ENTERED on every run rather than
+                         landing near a boundary. Prefer `self.stand_in()` over
+                         raw `StandInBin()` in any `RelayHarnessTestCase`
+                         subclass; pass `stderr_interval` explicitly only when
+                         the test's own subject needs the corpus genuinely
+                         paced (matrix rows 1/4, the buffering detector).
   --stderr-loop          restart the corpus when it runs out, instead of going
                          quiet -- for a test that must outlive the capture
   --exit-after-bytes N   exit after copying N bytes
@@ -3229,11 +3240,25 @@ Three things must be true, and all three go in the PR description:
    way through.
 
    **Do not chase a small gap against a quoted figure.** Four unchanged runs on one unmodified tree
-   spanned 27 statements, confined to `input/manager.py` and `server.py` in the stop/teardown window
-   — partly a fixture racing its own teardown, partly the relay's own cleanup thread ticking while a
-   channel shuts down, which no test can quiesce. An early implementer lost time hunting a
-   seven-statement difference that was exactly this. Record what you measure, note the spread if you
-   run it more than once, and treat only a *denominator* change or a movement of a different order
+   spanned 27 statements, confined to `input/manager.py` and `server.py` in the stop/teardown window.
+   Half of that (the bitrate-EMA cadence, plus `test_the_control_plane_is_reachable_from_the_relay`
+   not waiting for its own spawned process to exit before the test ended) **was fixed in 2a-2 itself**
+   — see `RelayHarnessTestCase.stand_in()` and both smoke tests in `test_harness_smoke.py`. Eight runs
+   on the fixed tree narrowed the spread to `missing 3202-3221` (19 statements, still `missing
+   <n>` inside the 3200-3230 range above) — and diffing the coverage JSON between runs confirmed the
+   fix worked exactly as intended: `input/manager.py`'s bitrate-EMA lines never differ between any two
+   post-fix runs sampled. **What remains is a genuine, traced, two-thread race inside the relay
+   itself, not a harness defect**: `input/manager.py`'s `_close_socket()` joins
+   `self.stderr_reader_thread` only if `.is_alive()` still reads true (`:1739-1767`); but that thread
+   (`_read_stderr`, `:911-960`) polls `self.transcode_process.stderr`'s fd independently and exits on the
+   very same EOF that ends the main stream thread's `fetch_chunk()` loop — both fds close in the same
+   instant a child process exits, so which of the relay's two background threads notices and updates
+   its own state first is decided by OS thread scheduling, not by anything a test drives. This is the
+   same category as the cleanup-thread ticking already named below, not a new problem to solve: do not
+   try to synchronize with it from a test. An early implementer lost time hunting a seven-statement
+   difference that was exactly this, before the EMA half was fixed. Record what you measure, note the
+   spread if you run it more than once, and treat only a *denominator* change or a movement of a
+   different order
    as something to investigate. Sizing a tolerance for the ratchet is **2a-7's** job, on its own
    evidence.
 3. Nothing prints a `CoverageWarning`.
