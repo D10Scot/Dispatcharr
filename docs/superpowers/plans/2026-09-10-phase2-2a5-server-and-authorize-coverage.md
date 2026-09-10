@@ -326,7 +326,7 @@ conflict. If two of this PR's own modules need it, the second one repeats it.
 |---|---|---|---|
 | `apps/proxy/live_proxy/tests/test_relay_status_wire.py` | What the two status endpoints put on the wire: field set, types, and the `owner` asymmetry | 14 | 0 |
 | `apps/proxy/live_proxy/tests/test_client_ip_provenance.py` | Where `ip_address` in the status payload comes from | 17 | 1 |
-| `apps/proxy/live_proxy/tests/test_authorize_matrix_over_http.py` | The Internal, Admin and Session principals, decided over real HTTP at the hop | 19, 20, 23 (+ row 21's owed live-root adult cell) | 0 |
+| `apps/proxy/live_proxy/tests/test_authorize_matrix_over_http.py` | The Internal, Admin and Session principals, decided over real HTTP at the hop | 19, 20, 23 (+ a test row 21's Notes ask for, whose line is **not** edited) | 0 |
 | `apps/proxy/live_proxy/tests/test_stream_by_hash_authorization.py` | The stream-by-hash shape: no channel check, ACL and stream limit still applied — on the hop and on the byte path | 16, 25 (+ row 20's stream-limit cell) | 1 |
 | `apps/proxy/live_proxy/tests/test_xc_decision_handoff.py` | `stream_xc` authorizes once and hands its decision to `stream_ts` | 15 | 1 |
 | `apps/proxy/live_proxy/tests/test_server_registry.py` | `server.py`'s zombie detection and channel-existence registry | — (coverage) | 0 |
@@ -339,8 +339,10 @@ row: they exist for Gate 2, and § Deliberate non-goals explains what they leave
 
 **Modify:**
 
-- `docs/relay-parity-matrix.md` — eight one-line edits, each replacing an `owed: 2a-5` cell with a
-  test reference. **One row is one line; cells are never padded to align columns; do not run a
+- `docs/relay-parity-matrix.md` — **edits to exactly nine lines, all of them rows 14, 15, 16, 17,
+  19, 20, 23 and 25** (row 20's line twice, in Tasks 3 and 4), each replacing an `owed: 2a-5` cell
+  with a test reference; row 15's Notes cell is also narrowed in Task 5. **No line outside this
+  PR's own block is touched** — see Task 3 Step 4 for the one candidate that was dropped and why. **One row is one line; cells are never padded to align columns; do not run a
   Markdown formatter over this file.** Each row is closed in the task that lands its test, so the
   matrix and the tests never disagree at a task boundary. **Closing rows one at a time cannot
   break the guard's contiguity check** — `e2e/tests/guards/parity-matrix.spec.ts:336-364` collects
@@ -846,7 +848,7 @@ Subject: `test(phase2): pin ip_address's provenance on both status endpoints (ma
 
 **Files:**
 - Create: `apps/proxy/live_proxy/tests/test_authorize_matrix_over_http.py`
-- Modify: `docs/relay-parity-matrix.md` (rows 19, 20 and 23; row 21's Notes)
+- Modify: `docs/relay-parity-matrix.md` (rows 19, 20 and 23 — **and no other line**; see Step 4)
 
 **Interfaces:**
 - Consumes: `harness.relay.RelayHarnessTestCase`; `apps.accounts.models.User`;
@@ -911,17 +913,21 @@ directly — `SessionStore()` + `django.contrib.auth.login`, the recipe
 `apps/proxy/tests/test_authorize.py:483-492` already uses — and read `session.session_key`. Try
 `force_login` first and only fall back if it fails.
 
-**Also closed here: row 21's outstanding obligation.** Row 21 is already pinned by
-`e2e/tests/streaming/authorize-matrix.spec.ts`, but its Notes say the adult-filter half for the XC
-principal "is proven only by a catch-up-root test … so 2a-5 owes a live-root equivalent instead."
-This task discharges that with `test_an_xc_user_with_hide_adult_content_is_refused_on_the_live_root`
-and **updates row 21's Notes to say so** — the `Pin` cell is untouched, since the row is not `owed`.
+**Also written here: the test row 21's Notes ask 2a-5 for — but row 21's line is not edited.**
+Row 21 is **already pinned** (`e2e/tests/streaming/authorize-matrix.spec.ts`), so it carries no
+`owed:` marker and is outside Gate 1's accounting entirely. What it carries is a sentence in its
+**Notes** — "the adult-filter half for this principal is proven only by a catch-up-root test …
+so 2a-5 owes a live-root equivalent instead" — an obligation recorded where no check can see it.
+This task writes that test,
+`test_an_xc_user_with_hide_adult_content_is_refused_on_the_live_root`, and leaves row 21's line
+alone for the merge-conflict reason Step 4 gives.
 
 - [ ] **Step 1: Write the failing test**
 
 ```python
-"""The authorize matrix, decided over real HTTP (rows 19, 20, 23, and row 21's
-outstanding live-root cell).
+"""The authorize matrix, decided over real HTTP (rows 19, 20, 23, plus the
+live-root test row 21's Notes ask 2a-5 for -- row 21's own line is already
+pinned and is not edited by this PR).
 
 Driven at GET /_dispatcharr/authorize -- the subrequest nginx makes once per
 tune, whose five X-Relay-* response headers 2c's Go relay consumes verbatim.
@@ -1175,7 +1181,7 @@ fails with a 403. **Revert.** Then comment out `:379-385` (the admin early retur
 `test_an_admin_streams_a_channel_hidden_from_output` fails. **Revert**, and confirm
 `git diff apps/proxy/authorize.py` is empty.
 
-- [ ] **Step 4: Close rows 19, 20 and 23, and update row 21's Notes**
+- [ ] **Step 4: Close rows 19, 20 and 23**
 
 Row 19's `Pin` cell:
 
@@ -1196,21 +1202,17 @@ Row 23's `Pin` cell:
 `apps/proxy/live_proxy/tests/test_authorize_matrix_over_http.py::test_a_session_principal_streams_an_ordinary_channel`, `apps/proxy/live_proxy/tests/test_authorize_matrix_over_http.py::test_a_session_principal_is_refused_a_hidden_channel`
 ```
 
-Row 21 keeps its `Pin` cell exactly as it is. In its `Notes`, replace the trailing clause
-
-```
-so 2a-5 owes a live-root equivalent instead
-```
-
-with
-
-```
-2a-5 discharged that in test_an_xc_user_with_hide_adult_content_is_refused_on_the_live_root
-```
-
-The guard checks `Source` citations, never `Notes`, so this is a documentation edit — but leaving
-"owes" in place after it has been paid is exactly the stale sentence this programme keeps tripping
-on.
+**Row 21's line is NOT edited — deliberately, and this is a change from an earlier draft of this
+plan.** Row 21 is at `docs/relay-parity-matrix.md:185` and row 11 is at `:184` — **one line
+apart** — and row 11's own Notes invite 2a-6 to re-pin it ("2a-6 may re-pin this to a harness test;
+the existing e2e spec stands until it does"). The matrix's header comment records the measured
+rule: *git conflicts on two edits ONE line apart and merges cleanly at TWO.* So editing row 21 here
+would conflict with 2a-6 for a Notes-only change the guard never reads. The test is written; the
+row's line is left alone. **Say in the PR description that row 21's Notes still read "2a-5 owes a
+live-root equivalent instead" and that the obligation is discharged by
+`test_an_xc_user_with_hide_adult_content_is_refused_on_the_live_root`, so whichever PR next edits
+that block — 2b-3 is the natural one, being the last to touch this file — can correct the sentence
+in a diff that is already there.**
 
 - [ ] **Step 5: Run the guard, then commit**
 
@@ -2470,6 +2472,12 @@ It must carry, at minimum:
      reflected in a migration` on this branch. It did during planning. If it reproduces from a
      clean `main` checkout too, it is pre-existing and belongs in an issue, not this PR; if it does
      not, something on this stack introduced it and the PR must not merge until it is understood.
+- **Row 21's status, in one sentence**: its Notes still say "2a-5 owes a live-root equivalent
+  instead"; the test exists
+  (`test_an_xc_user_with_hide_adult_content_is_refused_on_the_live_root`); its line was **not**
+  edited because row 21 (`:185`) sits one line from row 11 (`:184`), which 2a-6 may re-pin, and
+  the matrix's own measured rule is that edits one line apart conflict. Whichever PR next edits
+  that block should correct the sentence.
 - Anything dropped for budget, and why.
 
 - [ ] **Step 7: Clean up the container**
