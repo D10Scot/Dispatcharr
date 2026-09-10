@@ -79,10 +79,10 @@ requirements implicitly include this section.
   Markdown formatter over the file. Closing a row is a one-line diff.
 - **Test-suite cost: build all eight tests and state the cost. Do not cut a test to
   meet a time budget.** `apps.proxy.live_proxy.tests` is **179 tests in 7.006 s** on
-  this branch (measured, § F1); this PR is predicted to add 9-11 s, which does not fit
-  inside what the ≤15 s stage budget leaves after 2a-2's ~3.96 s. **That ceiling is
-  deferred, not breached by accident** — see § Rulings (a). Measure with `--durations`,
-  report the number plainly, and leave the contingency drop order in § F9 untaken.
+  this branch (measured, § F1). This PR adds **≈8.5 s** (measured on a review container,
+  § F9). **The ≤15 s stage ceiling is withdrawn** and replaced by per-PR measurement with
+  a reconsideration trigger at 45 s on this label — see § Rulings (a). Measure with
+  `--durations`, state the number, and do not optimise further.
 - **Attribution:** every commit message ends with
 
   ```
@@ -103,15 +103,15 @@ Three questions this plan raised were put to the orchestrator and answered. They
 recorded here because they change what the implementer does, not merely what the PR
 description says.
 
-**(a) The ≤15 s stage ceiling is deferred; build all eight tests.** The ceiling was a
-guard against making the commit hook unusable, not a goal. Cutting tests to meet a time
-budget *in the PR whose purpose is coverage* is backwards, and the drop order in § F9
-proves it — it costs either the Proxy path (the largest coverage item here) or row 5's
-falsifiability. The lever this plan identified, `available_apps` on
-`RelayHarnessTestCase`, has been dispatched to 2a-2, which owns that base class; a saving
-there multiplies across all four coverage PRs. **The ceiling will be set from that
-evidence.** Keep § F9's drop order in the plan, clearly marked as a contingency that was
-not taken.
+**(a) The ≤15 s stage ceiling is withdrawn; build all eight tests.** The ceiling was a
+guard against making the commit hook unusable, not a goal, and cutting tests to meet a
+time budget *in the PR whose purpose is coverage* is backwards — the drop order in § F9
+costs either the Proxy path (the largest coverage item here) or row 5's falsifiability.
+It is replaced by **per-PR measurement with a reconsideration trigger at 45 s on the
+`apps.proxy.live_proxy` label**. At the measured ≈8.5 s this PR is comfortably inside
+that. The lever this plan identified, `available_apps` on `RelayHarnessTestCase`, went to
+2a-2, which owns that base class. Keep § F9's drop order, marked as a contingency that
+was not taken.
 
 **(b) `COVERAGE_CORE=sysmon` is adopted, and the four coverage PRs re-take their
 baselines under it.** § Findings F2's under-count and the shape guard's failure to stamp
@@ -292,17 +292,28 @@ genuinely different URL serving the same bytes. `ChannelStream.order`
 
 ### F7 — `TransactionTestCase`'s flush leaves `proxy_settings` poisoned
 
-`TransactionTestCase._fixture_teardown` TRUNCATEs; it fires **no** `post_delete`. So a
-test that writes `proxy_settings` and does nothing else leaves
-`BaseConfig._proxy_settings_cache` holding its thresholds for up to
-`_proxy_settings_cache_ttl = 10` seconds (`apps/proxy/config.py:23`) — long enough to
-reach several later tests in the same label, including `test_harness_smoke`'s. **Every
-settings write in this PR registers a cleanup that deletes the row (firing
-`post_delete`) and clears the process-local copy.** § Findings F3 says where this
-belongs long term.
+Two separate mechanisms, and both need the same explicit call.
+
+**Writing.** `get_proxy_settings` is a classmethod caching on `cls`
+(`apps/proxy/config.py:32-51`), and every relay reader binds the **subclass** —
+`from apps.proxy.config import TSConfig as Config` at `config_helper.py:5` and
+`input/manager.py:11` — so the cached dict lands on `TSConfig` as a shadowing class
+attribute. `CoreSettings`' `post_save` receiver clears **`BaseConfig`**
+(`core/models.py:360-361`), which never touches that shadow. **Saving the row therefore
+does not make the new value visible to the relay at all**; the 10-second
+`_proxy_settings_cache_ttl` (`apps/proxy/config.py:24`) is the sole expiry. Filed as
+**#232** (§ Findings F6).
+
+**Clearing.** `TransactionTestCase._fixture_teardown` TRUNCATEs and fires **no**
+`post_delete`, so a test that writes `proxy_settings` leaves its thresholds cached into
+later tests in the same label — `test_harness_smoke`'s included.
+
+**Both are handled the same way: `set_proxy_settings` calls
+`TSConfig.clear_proxy_settings_cache()` after the write, and registers a cleanup that
+deletes the row and calls it again.** § Findings F3 says where this belongs long term.
 
 No existing test writes the group — `test_proxy_settings.py` patches
-`TSConfig.get_proxy_settings` instead — so there is no prior idiom to copy.
+`TSConfig.get_proxy_settings` instead — which is why #232 had never been provoked.
 
 ### F8 — What this PR does **not** pin, stated up front
 
@@ -323,10 +334,18 @@ No existing test writes the group — `test_proxy_settings.py` patches
 ### F9 — The cost this PR adds, predicted
 
 Eight tests, of which every one is a real tune: **~0.7 s fixed each (F1) plus the real
-time the behaviour under test takes.** Predicted ≈ **9-11 s** added to
-`apps.proxy.live_proxy.tests`, taking the label from 7.0 s to ~16-18 s and stage 2a
-from ~4 s to ~13-15 s **before 2a-3, 2a-5 and 2a-6 add anything**. Task 6 measures the
-real number and the PR description states it.
+time the behaviour under test takes.** This plan first predicted 9-11 s; **a review
+implementation measured 12.66 s**, on a container roughly 15 % slower than the one § F1's
+figures came from, and **almost all of the overshoot was one test**. Row 2 alone cost
+**5.47 s**, because `_process_stream_data` re-checks `needs_stream_switch` only between
+`fetch_chunk` calls and a `fetch_chunk` on a dead-air pipe blocks in `select()` for the
+whole `CHUNK_TIMEOUT` — 5 s as shipped. Patching that down to 0.2 (same config-lever
+class as the other two in that chain, and re-read per call rather than snapshotted)
+brings row 2 to **1.32 s** and the PR to **≈8.5 s**, still green.
+
+**≈8.5 s is the number to expect and to state.** The ≤15 s ceiling that framed the
+earlier drafts is withdrawn (§ Rulings (a)); the trigger is now 45 s on this label, and
+8.5 s is comfortably inside it. Do not optimise further — measure, report, move on.
 
 **All eight are built (§ Rulings (a)).** The drop order below is recorded as a
 contingency and **was not taken**; it is here so that a later decision to cut knows what
@@ -494,9 +513,10 @@ def corpus_elapsed(name, index):
 
 def _reset_proxy_settings():
     # Deleting the row fires post_delete (core/signals.py:11-13), which invalidates the
-    # Redis group cache AND BaseConfig's process-local copy (core/models.py:356-363).
-    # clear_proxy_settings_cache() again is belt and braces for the case where the row
-    # was never created.
+    # Redis group cache. It also calls BaseConfig.clear_proxy_settings_cache()
+    # (core/models.py:360-361), which is the WRONG class and clears nothing a relay
+    # reader will see -- issue #232 -- so the explicit call below is what actually
+    # drops the process-local copy.
     CoreSettings.objects.filter(key=PROXY_SETTINGS_KEY).delete()
     TSConfig.clear_proxy_settings_cache()
 
@@ -504,16 +524,28 @@ def _reset_proxy_settings():
 def set_proxy_settings(test, **overrides):
     """Write proxy_settings the way an operator would, and prove the write landed.
 
-    The cleanup is not optional. TransactionTestCase's teardown TRUNCATEs and fires no
-    post_delete, so without it BaseConfig._proxy_settings_cache keeps this test's
-    thresholds for up to _proxy_settings_cache_ttl = 10 seconds (apps/proxy/config.py:23)
-    -- long enough to reach several later tests in the same label and give them a
-    buffering threshold they never asked for.
+    The explicit TSConfig.clear_proxy_settings_cache() below is REQUIRED, and the
+    reason is a production defect this helper's own read-back assertion found
+    (issue #232). `get_proxy_settings` is a classmethod that caches on `cls`
+    (apps/proxy/config.py:32-51), and every relay reader binds the SUBCLASS --
+    `from apps.proxy.config import TSConfig as Config` at config_helper.py:5 and
+    input/manager.py:11 -- so the cache lands on `TSConfig` as a shadowing class
+    attribute. CoreSettings' post_save receiver clears `BaseConfig`
+    (core/models.py:360-361), which never touches that shadow. So saving the row
+    does NOT make the new value visible; the 10-second TTL
+    (apps/proxy/config.py:24) is the only thing that expires it. Without this line
+    rows 1, 5 and 6 fail their own read-back whenever any test tuned a channel in
+    the previous ten seconds -- which, in file order, row 28 always has.
+
+    The cleanup is not optional either. TransactionTestCase's teardown TRUNCATEs and
+    fires no post_delete, so without it the cached dict keeps this test's thresholds
+    into later tests in the same label.
 
     The read-back assertion is what makes every test using this lever falsifiable: it
     goes through TSConfig.get_proxy_settings(), the exact reader StreamManager.__init__
     uses at input/manager.py:60-61, so a test that later observes "nothing buffered"
-    cannot be passing because the setting silently failed to apply.
+    cannot be passing because the setting silently failed to apply. It is also what
+    caught #232 rather than letting it pass as a mysterious flake.
     """
     test.addCleanup(_reset_proxy_settings)
     merged = dict(CoreSettings.get_proxy_settings())
@@ -521,6 +553,8 @@ def set_proxy_settings(test, **overrides):
     CoreSettings.objects.update_or_create(
         key=PROXY_SETTINGS_KEY, defaults={"value": merged}
     )
+    # See the docstring: the post_save receiver clears the wrong class (#232).
+    TSConfig.clear_proxy_settings_cache()
     live = TSConfig.get_proxy_settings()
     for name, value in overrides.items():
         test.assertEqual(live.get(name), value, f"proxy_settings.{name} did not apply")
@@ -678,7 +712,7 @@ from core.models import SystemEvent
 
 from .harness.ffmpeg_stderr import progress_lines
 from .harness.process import stand_in_stream_profile
-from .harness.relay import RelayHarnessTestCase
+from .harness.relay import RelayHarnessTestCase, wait_until
 from .manager_support import (
     API_MAX_BUFFERING_SPEED,
     API_MIN_BUFFERING_SPEED,
@@ -731,6 +765,12 @@ class FfmpegStderrFailoverTests(RelayHarnessTestCase):
                     until=lambda info: info.get("ffmpeg_speed") is not None,
                     drain=stream,
                 )
+            # Stop the channel BEFORE the stand_in context removes its temp directory.
+            # The relay's main loop keeps reconnecting after the client leaves, and a
+            # respawn from a deleted directory is harmless but fills the log with
+            # FileNotFoundError. Every test in this PR that tunes inside a stand_in
+            # block does this for the same reason.
+            self.stop_channel(channel)
 
         reported = snapshots[-1]["ffmpeg_speed"]
         self.assertAlmostEqual(reported, round(mantissa, 3), places=3)
@@ -742,10 +782,15 @@ class FfmpegStderrFailoverTests(RelayHarnessTestCase):
         )
 ```
 
-- [ ] **Step 3: Run it and watch it fail**
+- [ ] **Step 3: Run it**
 
-The support module does not exist yet on the branch you are editing only if you skipped
-Step 1; run the test to see it pass or to see the first real failure.
+**Do not wait for a red bar here.** This test pins a defect that already exists, so a
+correct implementation passes on the first run — that is what a characterization pin
+looks like, and hunting for a failure would waste the afternoon. What you are checking
+is that it runs at all: the stand-in spawns, the corpus reaches the parser, and the
+mantissa/exponent assertions hold against today's capture. The red-then-green cycle
+applies from Task 2 onward, where the tests drive behaviour the current suite never
+reaches.
 
 ```bash
 docker exec -w /repo dispatcharr-testrunner-2a4 bash -lc '
@@ -757,9 +802,8 @@ export PATH=/dispatcharrpy/bin:$PATH DISPATCHARR_ENV=aio POSTGRES_HOST=/var/run/
 python manage.py test --keepdb apps.proxy.live_proxy.tests.test_manager_stderr_failover -v2'
 ```
 
-Expected on a first run before the corpus check is right: a failure naming the
-assertion, never a hang. **If it hangs, the cause is a `_TunedStream.read` with no data
-to read — check that the stand-in is actually spawning (`shutil.which("ffmpeg")` inside
+Expected: `OK`, or a failure naming the assertion — never a hang. **If it hangs, the
+cause is a `_TunedStream.read` with no data to read — check that the stand-in is actually spawning (`shutil.which("ffmpeg")` inside
 the `stand_in` block) before changing anything else.**
 
 - [ ] **Step 4: Make it pass, then run the whole label**
@@ -879,12 +923,30 @@ Append to `FfmpegStderrFailoverTests`:
                     until=lambda info: info.get("stream_id") == alternate.id,
                     drain=stream,
                 )
+            self.stop_channel(channel)
 
         buffering = SystemEvent.objects.filter(
             channel_id=channel.uuid, event_type="channel_buffering"
         )
         self.assertTrue(buffering.exists(), "buffering never armed")
 
+        # Wait for the row, do not assume it. _try_next_stream writes STREAM_ID to the
+        # metadata hash at :2125 and RETURNS; the channel_failover emit is back up in
+        # _parse_ffmpeg_stats at :1156, after that return, and carries a synchronous
+        # HTTP POST plus an ORM write. So the stream_id the loop above waited for lands
+        # BEFORE the event row, and a bare .latest() here can raise DoesNotExist --
+        # which would read as a flaky pin rather than the ordering fact it is. (Row 2's
+        # stream_switch needs no such wait: it is emitted inside update_url at :1480,
+        # before the same metadata write. Row 3's channel_error needs none either: it is
+        # emitted at :544-551, before the finally block writes the ERROR state that ends
+        # the response body the test reads to completion.)
+        wait_until(
+            lambda: SystemEvent.objects.filter(
+                channel_id=channel.uuid, event_type="channel_failover"
+            ).exists(),
+            timeout=10,
+            what="the channel_failover event to reach Django",
+        )
         failover = SystemEvent.objects.filter(
             channel_id=channel.uuid, event_type="channel_failover"
         ).latest("timestamp")
@@ -944,6 +1006,19 @@ Read the captured log before changing a timeout.
             "the capture's own wall clock to the crossing is now under ten seconds; "
             "re-derive -- row 4's claim is that this delay is tens of seconds",
         )
+        # The invariant asserted below -- speed >= threshold implies state is not
+        # buffering -- is deterministic only while the capture never climbs back over
+        # the threshold after crossing it. If it did, _parse_ffmpeg_stats writes the
+        # recovered speed (:1206-1230) before it resets the state (:1201), and a
+        # snapshot taken in that window would show a high speed with state still
+        # buffering. Today's capture is monotone below 1.0 from the crossing on; assert
+        # that rather than trust it, the way row 1 asserts its own straddle.
+        self.assertLess(
+            max(values[crossing:]),
+            default_speed,
+            "the capture climbs back above the threshold after crossing it; this "
+            "test's invariant is no longer race-free -- re-derive (CAPTURE.md)",
+        )
 
         with self.stand_in(stderr_corpus="slow-trickle", stderr_interval=0.02):
             profile = stand_in_stream_profile()
@@ -957,6 +1032,7 @@ Read the captured log before changing a timeout.
                     until=lambda info: info.get("state") == ChannelState.BUFFERING,
                     drain=stream,
                 )
+            self.stop_channel(channel)
 
         leading = [
             info
@@ -1101,6 +1177,8 @@ Commit message: `test(phase2): rows 1 and 4 — the buffering trigger and the ar
                     until=lambda info: info.get("state") == ChannelState.BUFFERING,
                     drain=stream,
                 )
+            self.stop_channel(running)
+            self.stop_channel(started_after)
 ```
 
 - [ ] **Step 2: Run it to verify it fails**
@@ -1156,7 +1234,17 @@ asserts the read-back, so that failure would have been raised earlier and named 
                         until=lambda info: info.get("stream_id") == alternate.id,
                         drain=stream,
                     )
+                self.stop_channel(channel)
 
+        # Waited for, not assumed -- same ordering fact as row 1's test: the STREAM_ID
+        # write at :2125 precedes the emit at :1156.
+        wait_until(
+            lambda: SystemEvent.objects.filter(
+                channel_id=channel.uuid, event_type="channel_failover"
+            ).exists(),
+            timeout=10,
+            what="the channel_failover event to reach Django",
+        )
         failover = SystemEvent.objects.filter(
             channel_id=channel.uuid, event_type="channel_failover"
         ).latest("timestamp")
@@ -1211,7 +1299,7 @@ from core.models import SystemEvent
 
 from .harness.asset import TS_PACKET_SIZE, assert_ts_aligned
 from .harness.process import stand_in_stream_profile
-from .harness.relay import RelayHarnessTestCase
+from .harness.relay import RelayHarnessTestCase, wait_until
 from .manager_support import (
     API_MAX_BUFFERING_SPEED,
     add_alternate_stream,
@@ -1239,17 +1327,32 @@ class ConnectionFailoverTests(RelayHarnessTestCase):
         reconnects in place before it switches; `stable_time >= 30` is a bare literal at
         input/manager.py:1536 and connection_start_time is set inside
         _establish_transcode_connection, so reaching that branch costs 30 seconds of
-        wall clock -- against a stage budget of 15 seconds total -- or reaching into the
-        manager, which the composition rule forbids. This test drives the unstable
-        branch, which is the reachable one. The matrix row's Notes cell says the same.
+        wall clock in a label that runs in 7 -- or reaching into the manager, which the
+        composition rule forbids. Note what would fix that: apps/proxy/config.py:119
+        already defines MIN_STABLE_TIME_BEFORE_RECONNECT = 30 and NOTHING READS IT
+        (CLAUDE.md lists it as dead), so wiring the literal to the constant already
+        named for it would make this branch patchable like every other threshold, and
+        would unlock _attempt_reconnect and _wait_for_existing_processes_to_close with
+        it. That is a production change and is not this PR's to make. This test drives
+        the unstable branch, which is the reachable one; the matrix row's Notes cell
+        says the same.
         """
-        # Three unhealthy checks at 0.05s each, after 0.3s of silence: ~0.45s, versus
-        # the 15s the shipped defaults would cost. Both are plain class attributes read
-        # through getattr(Config, …) (input/manager.py:77, :1507), which is the
-        # production read path, not a seam.
+        # Three unhealthy checks at 0.05s each, after 0.3s of silence. All three are
+        # plain class attributes read through getattr(Config, …) / ConfigHelper.get
+        # (input/manager.py:77, :1507, :1774), which is the production read path, not
+        # a seam.
+        #
+        # CHUNK_TIMEOUT is the one that dominates, and the reason is not obvious:
+        # _process_stream_data re-checks needs_stream_switch only BETWEEN fetch_chunk
+        # calls, and a fetch_chunk on a dead-air pipe blocks in select() for the whole
+        # chunk_timeout (:1774, :1799). At the shipped 5s the health monitor raises the
+        # flag in ~0.45s and the main loop then waits out a full select before noticing
+        # -- measured at 5.47s for this one test. Dropping it to 0.2 brings the test to
+        # ~1.3s and changes nothing else: chunk_timeout is re-read on every fetch_chunk
+        # call, not snapshotted.
         with patch.object(TSConfig, "HEALTH_CHECK_INTERVAL", 0.05), patch.object(
             TSConfig, "CONNECTION_TIMEOUT", 0.3
-        ):
+        ), patch.object(TSConfig, "CHUNK_TIMEOUT", 0.2):
             with self.stand_in(
                 stderr_corpus=None, dead_air_after_bytes=60 * TS_PACKET_SIZE
             ):
@@ -1270,6 +1373,7 @@ class ConnectionFailoverTests(RelayHarnessTestCase):
                         until=lambda info: info.get("stream_id") == alternate.id,
                         timeout=20.0,
                     )
+                self.stop_channel(channel)
 
         self.assertTrue(
             SystemEvent.objects.filter(
@@ -1301,7 +1405,7 @@ One `Edit` for the Pin cell:
 A second `Edit`, on the same line, for the Notes cell:
 
 - old: ``Both are gated by a 30s `action_cooldown` |``
-- new: ``Both are gated by a 30s `action_cooldown`. The pin drives the unstable branch only: `stable_time >= 30` is a bare literal (`input/manager.py:1536`) that no setting compresses, so pinning the reconnect-first branch would cost 30s of wall clock against stage 2a's whole 15s budget |``
+- new: ``Both are gated by a 30s `action_cooldown`. The pin drives the unstable branch only: `stable_time >= 30` is a bare literal (`input/manager.py:1536`) that no setting compresses — `apps/proxy/config.py:119` defines `MIN_STABLE_TIME_BEFORE_RECONNECT = 30` and nothing reads it — so pinning the reconnect-first branch costs 30s of wall clock per run |``
 
 Still one line, still unpadded.
 
@@ -1449,8 +1553,18 @@ independently (`e2e/tests/guards/parity-matrix.ts:437`, `:490-493`).
 - [ ] **Step 6: Run the guard, then commit**
 
 Guard line expected: `28 rows — 12 pinned, 14 owed, 2 white-box-only.` **No row anywhere
-in the table still reads `owed: 2a-4`** — check with
-`grep -c 'owed: 2a-4' docs/relay-parity-matrix.md`, expected `0`.
+in the table still carries an `owed: 2a-4` Pin cell** — check the cell form, not the bare
+string:
+
+```bash
+grep -c '| `owed: 2a-4` |' docs/relay-parity-matrix.md   # expected 0
+grep -c 'owed: 2a-4' docs/relay-parity-matrix.md         # expected 1, NOT 0
+```
+
+The second returns 1 forever: line 118 is the Format section's own prose, "``owed:
+2a-4`` and `owed: 2a-4` both parse", explaining the syntax. It is documentation, not a
+row, and deleting it to make a grep tidy would remove the explanation of the marker this
+whole PR removes.
 
 Commit message: `test(phase2): row 3 — three connect failures exhaust the source, on the Proxy path`.
 
@@ -1476,13 +1590,15 @@ measure the baseline and the new number **back to back, in the same container, i
 same session** — a figure quoted from § F1 of this plan is a different session's number
 and is not a valid baseline.
 
-A container bind-mounts one tree read-only at `/repo`, so the baseline needs a **second
-worktree and a second container** — you cannot check the branch point out underneath the
+`$SCRATCH` below is **your session's scratchpad directory** (the harness names it in your
+system prompt) — not `/tmp`, and not anywhere inside the repository, which is mounted
+read-only. A container bind-mounts one tree read-only at `/repo`, so the baseline needs a
+**second worktree and a second container** — you cannot check the branch point out underneath the
 one you are working in:
 
 ```bash
-git -C /Users/dion/git/Dispatcharr worktree add /tmp/2a4-baseline 2a826e07
-CLAUDE_HOOK_REPO_ROOT=/tmp/2a4-baseline \
+git -C /Users/dion/git/Dispatcharr worktree add "$SCRATCH/2a4-baseline" 2a826e07
+CLAUDE_HOOK_REPO_ROOT="$SCRATCH/2a4-baseline" \
 DISPATCHARR_TEST_CONTAINER=dispatcharr-testrunner-2a4-base \
 DISPATCHARR_TEST_IMAGE=ghcr.io/d10scot/dispatcharr:latest \
 DISPATCHARR_TEST_DB_VOLUME=dispatcharr-hookdb-2a4-base \
@@ -1491,7 +1607,7 @@ DISPATCHARR_TEST_DB_VOLUME=dispatcharr-hookdb-2a4-base \
 
 Then run `bash scripts/coverage_live_path.sh` inside each container in turn — the
 baseline one and `dispatcharr-testrunner-2a4` — back to back, with the same image, in
-the same session. (`/tmp/2a4-baseline/.git` is a file pointing at the main repository,
+the same session. (`$SCRATCH/2a4-baseline/.git` is a file pointing at the main repository,
 which the baseline container does not mount; nothing the test run needs reads it.)
 
 Record: `TOTAL` statements (must be **7978** — the denominator is the check), `TOTAL`
@@ -1518,7 +1634,7 @@ Tear the baseline down when done:
 ```bash
 docker rm -f dispatcharr-testrunner-2a4-base
 docker volume rm dispatcharr-hookdb-2a4-base
-git -C /Users/dion/git/Dispatcharr worktree remove /tmp/2a4-baseline
+git -C /Users/dion/git/Dispatcharr worktree remove "$SCRATCH/2a4-baseline"
 ```
 
 - [ ] **Step 2: Measure the time cost**
@@ -1527,15 +1643,15 @@ git -C /Users/dion/git/Dispatcharr worktree remove /tmp/2a4-baseline
 python manage.py test --keepdb apps.proxy.live_proxy.tests --durations 15
 ```
 Record the total and the eight new tests' individual durations. Compare against § F1's
-**179 tests in 7.006 s**. **Check `--durations` before concluding any test is inherently
-slow** — twice in this programme the cost has been a library default rather than the
-work. If the total added exceeds ~5 s, say so plainly in the PR description with the
-per-test breakdown; § F9 names the drop order, but cutting is the user's call, not the
-implementer's.
+**179 tests in 7.006 s** and § F9's expected **≈8.5 s** added. **Check `--durations`
+before concluding any test is inherently slow** — three times in this programme the cost
+has been a library default or an unpatched timeout rather than the work, row 2's
+`CHUNK_TIMEOUT` being the third. State the number in the PR description; there is no
+ceiling to meet, only a 45 s reconsideration trigger on this label (§ Rulings (a)).
 
 - [ ] **Step 3: Update the defect ledger**
 
-Two edits to `metrics/curated/defects.yml`, both one line:
+Three edits to `metrics/curated/defects.yml`, each one line:
 
 1. `max-stream-switches-unbounded` (#221): `status: open` → `status: pinned`,
    `test: null` → `test: apps/proxy/live_proxy/tests/test_manager_stderr_failover.py`,
@@ -1549,6 +1665,15 @@ Two edits to `metrics/curated/defects.yml`, both one line:
 - {id: ffmpeg-speed-scientific-notation, title: "ffmpeg_speed is parsed with [0-9.]+, which stops at the e of a scientific-notation speed=, so a real speed=1.41e+03x is reported as 1.41", area: correctness, severity: low, status: pinned, source: null, issue: 227, test: apps/proxy/live_proxy/tests/test_manager_stderr_failover.py, fixed_in: null, carried_as: null, first_seen: 2026-09-10, status_changed: 2026-09-10}
 ```
 
+3. A new entry for **#232**, the cache-invalidation defect this PR's own read-back
+   assertion found (§ Findings F6). `status: open`, not `pinned`: this PR works around
+   it in `set_proxy_settings` rather than pinning it, and `open` needs only an `issue`
+   (`metrics/build/curated.py:312-313`):
+
+```yaml
+- {id: proxy-settings-cache-cleared-on-wrong-class, title: "CoreSettings' post_save receiver calls BaseConfig.clear_proxy_settings_cache(), which never clears the TSConfig attribute every relay reader populates, so a proxy_settings change is invisible to every process until the 10-second TTL expires", area: correctness, severity: medium, status: open, source: null, issue: 232, test: null, fixed_in: null, carried_as: null, first_seen: 2026-09-10, status_changed: 2026-09-10}
+```
+
 - [ ] **Step 4: Validate the ledger**
 
 **On the host, not in the container** — the build shells out to `git`, which the test
@@ -1557,9 +1682,9 @@ image does not carry (`FileNotFoundError: [Errno 2] No such file or directory: '
 ```bash
 cd /Users/dion/git/Dispatcharr/.worktrees/phase2-2a4 && uv run python -m metrics.build --validate-only
 ```
-Expected: `ok: 46 metrics, 32 milestones, 29 defects`. The same command prints
-`… 28 defects` on this branch today (verified), so the count moving by exactly one is
-the check.
+Expected: `ok: 46 metrics, 32 milestones, 30 defects`. The same command prints
+`… 28 defects` on this branch today (verified), so the count moving by exactly two —
+#227 and #232 — is the check.
 The `metrics/**` `PostToolUse` hook runs `scripts/run_metrics_tests.sh` and
 `python -m metrics.build --validate-only` on the edit itself; a green hook is not a
 substitute for reading the count.
@@ -1591,10 +1716,11 @@ It must carry, in this order:
 1. The coverage numbers from Step 1, before and after, per file, with the denominator
    7,978 shown as the shape check, **which tracer core produced them**, and the sentence
    that the gate is a **measured increase**, not a count.
-2. The time cost from Step 2, against the 7.006 s baseline. State it plainly: all eight
-   tests were built, the ≤15 s stage ceiling is deferred pending 2a-2's `available_apps`
-   measurement (§ Rulings (a)), and § F9's drop order was recorded and **not taken**.
-3. The five findings in § Findings below, each in a sentence or two.
+2. The time cost from Step 2, against the 7.006 s baseline and the ≈8.5 s expectation.
+   State plainly that all eight tests were built, that the ≤15 s ceiling is withdrawn in
+   favour of a 45 s reconsideration trigger on this label (§ Rulings (a)), and that
+   § F9's drop order was recorded and **not taken**.
+3. The six findings in § Findings below, each in a sentence or two — **F6 (#232) first**, being the only one that is a live production defect rather than a record.
 4. **F5's recommendation to 2a-7, spelled out**: the buffering detector is inert on the
    Proxy and Redirect profiles; it is a real externally-observable behaviour the Go relay
    must reproduce; it has no matrix row because adding one means bumping
@@ -1602,14 +1728,15 @@ It must carry, in this order:
    `apps/proxy/live_proxy/tests/test_manager_connection_failover.py::test_the_proxy_profile_streams_with_no_ffmpeg_and_no_stats`.
 5. The seven rows closed, by number, with their test symbols, and the note that row 2's
    Notes cell now records which half of that row is pinned.
-6. The two defect-ledger changes.
+6. The three defect-ledger changes.
 
 ---
 
 ## Findings against the spec and the harness, to carry into the PR description
 
-Five, all verified on this branch, none of which this PR fixes — every one of them lives
-in a file this PR is fenced out of.
+Six, all verified on this branch, none of which this PR fixes — every one of them lives
+in a file this PR is fenced out of. **F6 is the one that changes production behaviour**,
+and it is the only one this PR had to work around rather than merely record.
 
 **F1 — stage 2a's ≤15 s test-time ceiling is not reachable at four PRs.** Measured
 (§ F1): one `RelayHarnessTestCase` tune costs ~0.7 s before it waits for anything, the
@@ -1619,10 +1746,12 @@ consumes the remainder and leaves 2a-3, 2a-5 and 2a-6 with nothing. **The single
 lever is not in any of these PRs**: `RelayHarnessTestCase` is a `TransactionTestCase`,
 so every test flushes every table, and `available_apps` on the base class would narrow
 that flush — 2a-2's own plan names it and declines to reach for it unmeasured. **Resolved
-(§ Rulings (a)): all eight tests are built and the cost is stated; `available_apps` goes
-to 2a-2, which owns the base class; the ceiling is set from that measurement.** Cutting
-tests was rejected — in the PR whose purpose is coverage, both available cuts are worse
-than a slower commit hook.
+(§ Rulings (a)): the ceiling is withdrawn and replaced by per-PR measurement with a
+reconsideration trigger at 45 s on this label; all eight tests are built;
+`available_apps` goes to 2a-2, which owns the base class.** Cutting tests was rejected —
+in the PR whose purpose is coverage, both available cuts are worse than a slower commit
+hook. With the `CHUNK_TIMEOUT` lever in row 2, the measured cost is **≈8.5 s**, not the
+9-11 s this finding first predicted.
 
 **F2 — the Gate 2 measurement systematically under-counts, and the tracer is part of the
 measurement shape.** Statements executing after a `gevent.sleep()` are not recorded by
@@ -1655,6 +1784,24 @@ written. The comment is the first thing 2a-7's implementer will read.
 defects, so #227 was filed and then dropped. This PR adds it (Task 6 Step 3). Worth
 noting because the ledger is the input to a published dashboard: a defect that exists in
 the matrix and not in the ledger is invisible there.
+
+**F6 — `CoreSettings`' `post_save` receiver clears the proxy-settings cache on the wrong
+class, so a `proxy_settings` change reaches no relay reader until the 10-second TTL
+expires ([#232]).** `get_proxy_settings` is a classmethod caching on `cls`
+(`apps/proxy/config.py:32-51`); every relay reader binds the **subclass**
+(`from apps.proxy.config import TSConfig as Config`, `config_helper.py:5`,
+`input/manager.py:11`), so the cached dict lands on `TSConfig` as a shadowing class
+attribute. The receiver calls `BaseConfig.clear_proxy_settings_cache()`
+(`core/models.py:360-361`), which sets `BaseConfig`'s own attribute and leaves the
+shadow. **`CLAUDE.md` § Known defects overstates the position** — it says "saving clears
+the cache only in the worker that handled the write", but the write clears *no* worker's
+`TSConfig` cache, including its own; the 10-second `_proxy_settings_cache_ttl` is the
+sole expiry, in every process. Found by this PR's `set_proxy_settings` read-back
+assertion, which is the reason that assertion exists. `set_proxy_settings` works around
+it with one explicit `TSConfig.clear_proxy_settings_cache()` call; **the production fix
+is #232 and is not in this PR's scope.** The `CLAUDE.md` sentence is wrong today and
+should be corrected wherever that file is next legitimately edited — not here, it is out
+of bounds.
 
 **F5 — a real parity behaviour has no row: the buffering detector is inert on the Proxy
 and Redirect profiles.** `_parse_ffmpeg_stats` is the only writer of `ffmpeg_speed` and
@@ -1732,8 +1879,8 @@ not describe the work as verified.**
 - [ ] `scripts/coverage_live_path.sh` reports `statements 7978` and a **strictly lower**
       `Miss` for `apps/proxy/live_proxy/input/manager.py` than the same-session baseline
       at `2a826e07`.
-- [ ] `python -m metrics.build --validate-only` prints `ok: 46 metrics, 32 milestones,
-      29 defects`.
+- [ ] `uv run python -m metrics.build --validate-only` prints `ok: 46 metrics,
+      32 milestones, 30 defects`.
 - [ ] Only these files changed: `apps/proxy/live_proxy/tests/manager_support.py`,
       `apps/proxy/live_proxy/tests/test_manager_stderr_failover.py`,
       `apps/proxy/live_proxy/tests/test_manager_connection_failover.py`,
@@ -1746,10 +1893,10 @@ not describe the work as verified.**
 - [ ] The two defect-pinning tests (rows 6 and 28) say in their docstrings that they pin
       the wrong behaviour on purpose, and name the issue.
 - [ ] All eight tests exist. § F9's drop order was **not** taken (§ Rulings (a)).
-- [ ] The PR description carries the six items of Task 6 Step 7, including the five
+- [ ] The PR description carries the six items of Task 6 Step 7, including the six
       findings above, F5's spelled-out recommendation to 2a-7, and which tracer core
       produced the coverage numbers.
 - [ ] `dispatcharr-testrunner-2a4`, `dispatcharr-hookdb-2a4` and, if Task 6 started them,
       `dispatcharr-testrunner-2a4-base` / `dispatcharr-hookdb-2a4-base` are removed, along
-      with the `/tmp/2a4-baseline` worktree.
+      with the `$SCRATCH/2a4-baseline` worktree.
 - [ ] Nothing is pushed and no PR is opened.
