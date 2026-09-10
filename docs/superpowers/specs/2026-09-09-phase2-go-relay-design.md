@@ -1247,6 +1247,15 @@ source lines** becoming covered — at `1284-1417`, `1450-1562`, `1941-2003` and
 managers. Not a neighbouring region warming up: the bucket itself. **2a-5's safe supply is 257, and
 411 would double-count.**
 
+**A second already-banked figure, recorded because it looks like supply and is not.** 2a-3's
+re-measurement found `client_manager.py` at **92 → 52**, a 40-statement move nobody predicted or
+itemised. It is **already inside the 2,976**: 2a-3's five tests moved the whole gate by −139, of
+which only −47 was itemised to `ts/generator.py` and `channel_service.py`, leaving −92 unattributed,
+and this is part of it. **It explains where 2a-3's delta went; it adds nothing to the supply**, and a
+bracket row for it would double-count exactly as `server.py`'s 142 would. Since this is the second
+instance, state the rule: **a correctly-measured per-file delta is not supply if the run it came
+from is already the run the distance is measured from.**
+
 **Two corrections to figures quoted earlier in this section.** 2a-3's `channel_service.py`
 contribution is **169 → 145 (−24)** under sysmon, not the −55 its C-tracer pair suggested — anything
 crediting −55 is 31 too generous. And the authorize-row estimate is **89-158, centre ≈124**, its top
@@ -1289,8 +1298,9 @@ scope.** The one region identified so far is `input/manager.py:942-985` (`_read_
 `_parse_ffmpeg_stats`) — squarely inside 2a-4's scope — so the expected improvement is small. To be
 re-derived from measurement, not assumed.
 
-**Four errors of one family, which outlive every number above.** Each is a quantity that reads as
-one kind of thing while being another, and together they are the reason this section exists at all:
+**Five errors of one family, which outlive every number above.** The first four are quantities that
+read as one kind of thing while being another; the fifth is the same failure on a different surface,
+mechanisms asserted from reading. Together they are the reason this section exists at all:
 
 1. **A sum mistaken for a budget.** The withdrawn claim that *"closing the five largest gaps
    approximately **is** the gate"* was **count-derived** — 2,504 was a sum of missed statements —
@@ -1313,6 +1323,28 @@ one kind of thing while being another, and together they are the reason this sec
    simultaneously its current ones. The error was reasoning from what the harness *does* to what it
    must have *touched*, without checking. **Demanding the measurement rather than accepting the
    correction is why that is known rather than assumed.**
+
+**A fifth caution, on the same family's other surface: mechanisms asserted from reading.** The four
+above are quantities that read as one kind of thing while being another. This one is a *claim about
+what the code does*, formed by reading it, that execution contradicts. Three instances arrived in a
+single plan, each plausible on the page and each false in the run: a row's assertion that stayed
+green when the behaviour it names was deliberately broken (the client stalls, the renumbered index
+overtakes, the later assertion passes anyway); a byte-count explanation that did not match the logs;
+and a set of fallback branches credited for coverage they never receive, because the function above
+them never returns the value that would reach them — every log line reads
+`Time-based positioning: 5s behind -> index 0`, and the fallback message never appears.
+
+**Reading establishes a hypothesis; only running establishes a fact.** When a document claims a test
+reaches a particular branch, the cheap confirmation is a **grep of that run's `INFO` output**, not a
+re-read of the code — and where the claim is that a test *pins* a behaviour, the confirmation is to
+**break the behaviour and watch the test fail**. A test that stays green when its subject is broken
+is pinning nothing, and no amount of reading reveals that.
+
+**And the same discipline applies to the check itself.** An attempt to reproduce the first instance
+above failed *silently* — the break was never applied, the run came back green, and it was nearly
+reported as "cannot reproduce", which would have left the row both pinned and apparently
+second-sourced. **A verification that can pass without having run is worth no more than the reading
+it replaced**, so a break check confirms the break landed before it trusts the result.
 
 **And the limit of arithmetic checking, learned here.** Cross-checking the numbers caught (2): the
 rows did not sum to the stated total. It could not have caught (3) or (4), because a mislabelled or
