@@ -5,7 +5,7 @@ generator's client-positioning path through the admin HTTP surface -- which is
 what makes them portable: the Go relay serves the same two routes.
 """
 
-from .harness.asset import TS_PACKET_SIZE, TS_SYNC_BYTE, assert_ts_aligned, synthetic_ts
+from .harness.asset import TS_PACKET_SIZE, assert_ts_aligned, packet_index, synthetic_ts
 from .harness.control import ControlMixin, open_tune
 from .harness.process import stand_in_stream_profile
 from .harness.relay import RelayHarnessTestCase, wait_until
@@ -18,14 +18,12 @@ SECOND_PID = 0x200
 # Short enough that a test does not have to buffer five real seconds. The
 # DEFAULT is asserted separately below -- this is the compressed value.
 BEHIND_SECONDS = 0.5
-# numbered_ts()'s base pid, and how many packets it lays down. Comfortably
-# above any packet count PositioningTests produces within its own budget (a
-# couple of seconds at NOMINAL_BYTE_RATE's pacing, comfortably under 3,000
-# packets even with generous margin), so the payload the fake upstream loops
-# never wraps back to POSITION_BASE_PID mid-test -- see numbered_ts()'s
-# docstring for why that would make a packet's pid ambiguous with an
-# earlier one.
-POSITION_BASE_PID = 0x100
+# How many packets PositioningTests' own upstream payload lays down.
+# Comfortably above what the test produces within its own budget (a couple
+# of seconds at NOMINAL_BYTE_RATE's pacing, well under 3,000 packets with
+# margin), so the payload the fake upstream loops never wraps back to
+# packet index 0 mid-test -- see synthetic_ts()'s docstring for why a wrap
+# would make a packet's index ambiguous with an earlier one.
 POSITION_PACKETS = 6000
 
 
@@ -35,41 +33,6 @@ def pids(data):
         ((data[offset + 1] & 0x1F) << 8) | data[offset + 2]
         for offset in range(0, len(data) - TS_PACKET_SIZE + 1, TS_PACKET_SIZE)
     }
-
-
-def numbered_ts(packets: int = POSITION_PACKETS, base_pid: int = POSITION_BASE_PID) -> bytes:
-    """`packets` TS packets whose pid directly encodes the packet's position.
-
-    synthetic_ts()'s payload (harness/asset.py) is a function of `i % 256`
-    (every payload byte is `(i + j) % 256`) and so are packets `i` and
-    `i + 256` byte-for-byte identical -- fine for row 9's continuity check,
-    which only needs adjacent packets to differ, but useless for "how far
-    behind is this packet", which needs an unambiguous answer over a window
-    that can exceed 256 packets. See harness/README.md's "the unpaced
-    upstream" note for the companion trap this asset avoids on the timing
-    side. Here pid = base_pid + i instead: unique across the whole payload
-    (checked against the 13-bit pid space below), so a packet's pid IS its
-    position -- no periodicity, and (unlike elapsed read time in this
-    harness) nothing a fast, unthrottled read can hide.
-    """
-    if packets < 1:
-        raise ValueError("packets must be >= 1")
-    if base_pid + packets - 1 > 0x1FFF:
-        raise ValueError("base_pid + packets exceeds the 13-bit pid space")
-    out = bytearray()
-    for i in range(packets):
-        pid = base_pid + i
-        out.append(TS_SYNC_BYTE)
-        out.append((pid >> 8) & 0x1F)
-        out.append(pid & 0xFF)
-        out.append(0x10 | (i % 16))
-        out.extend(bytes((i + j) % 256 for j in range(TS_PACKET_SIZE - 4)))
-    return bytes(out)
-
-
-def packet_pid(packet: bytes) -> int:
-    """The pid of a single TS_PACKET_SIZE-byte packet, per numbered_ts()."""
-    return ((packet[1] & 0x1F) << 8) | packet[2]
 
 
 class SwitchTests(ControlMixin, RelayHarnessTestCase):
@@ -139,27 +102,35 @@ class PositioningTests(ControlMixin, RelayHarnessTestCase):
     def test_a_new_client_starts_behind_live(self):
         """Matrix row 8.
 
-        Row 8's claim is WHAT a joining client receives first, not how fast:
-        a client positioned `new_client_behind_seconds` back is served
-        content the already-connected client saw earlier, not whatever was
-        just produced. Two traps rule out the obvious assertions:
+        Row 8's claim is not just THAT a joining client starts behind live,
+        but roughly HOW MUCH: assert the quantity of already-produced
+        backlog the joiner is handed, not the time it takes to drain it. A
+        quantity distinguishes all three of _setup_streaming's code paths at
+        once -- positioned at the live head (backlog ~ 0 packets),
+        positioned through chunk_timestamps (backlog ~ the configured
+        window), or falling back to the oldest available chunk when there is
+        not yet enough buffered history (backlog ~ everything produced so
+        far, ordinarily many times the window).
 
-        Elapsed read time cannot show this in this harness. Reads here are
-        never throttled to production pacing (see harness/README.md, "the
-        unpaced upstream"): a positioned-behind client and a
-        positioned-at-head client both drain any requested amount
-        near-instantly, because the fake upstream races ahead of any client
-        and writes chunks to Redis long before they are asked for. An
-        earlier version of this test asserted on elapsed time and passed
-        against a genuinely broken positioning mechanism -- see the retracted
-        step in the 2a-3 plan for the measurements.
+        Elapsed read time cannot distinguish any of those in this harness.
+        The fake upstream genuinely IS paced (FakeUpstream writes at
+        rate * NOMINAL_BYTE_RATE), but the relay reads ahead of any client
+        into Redis and the generator serves a client from there, so a
+        client's own read is never throttled by that pacing and drains
+        near-instantly regardless of where it started (harness/README.md,
+        "Three traps for the tests that come next"). It is also a margin
+        problem, not a strictly impossible one: 60 packets is barely more
+        than one paced write burst, so an under-margined timing assertion
+        mostly does not fire against a real break rather than never firing
+        -- measured 1 red of 5 runs, which is worse in a suite than being
+        simply wrong, because it still looks like coverage.
 
-        "This content appeared somewhere earlier" is not enough either.
-        synthetic_ts()'s payload repeats every 256 packets, so the newest
-        packet is byte-identical to one already seen 256 packets ago --
-        content PRESENCE proves nothing about position. numbered_ts() gives
-        every packet a unique pid instead, so position is read directly off
-        the wire, the same way a client would encounter it.
+        Content PRESENCE alone is not enough either: synthetic_ts()'s old
+        payload repeated every 256 packets, so "this content appeared
+        somewhere earlier" was true even for the newest packet -- proving
+        nothing about position. Its packet_index() (harness/asset.py) is
+        unambiguous at any distance instead, so a packet's true position is
+        read directly off the wire, the same way a client encounters it.
         """
         from apps.proxy.config import TSConfig
         from apps.proxy.live_proxy.config_helper import ConfigHelper
@@ -171,64 +142,64 @@ class PositioningTests(ControlMixin, RelayHarnessTestCase):
         self.set_proxy_setting(new_client_behind_seconds=BEHIND_SECONDS)
         self.assertEqual(ConfigHelper.new_client_behind_seconds(), BEHIND_SECONDS)
 
-        bytes_per_second = NOMINAL_BYTE_RATE  # the numbered upstream's own rate is 1.0
+        bytes_per_second = NOMINAL_BYTE_RATE  # the positioning upstream's own rate is 1.0
+        packets_per_chunk = TSConfig.BUFFER_CHUNK_SIZE // TS_PACKET_SIZE
         chunks_for_the_window = int(
             BEHIND_SECONDS * bytes_per_second // TSConfig.BUFFER_CHUNK_SIZE
         )
-        packets_per_chunk = TSConfig.BUFFER_CHUNK_SIZE // TS_PACKET_SIZE
         packets_for_the_window = chunks_for_the_window * packets_per_chunk
 
-        numbered = FakeUpstream(payload=numbered_ts()).start()
-        self.addCleanup(numbered.stop)
+        positioned = FakeUpstream(payload=synthetic_ts(packets=POSITION_PACKETS)).start()
+        self.addCleanup(positioned.stop)
 
         with self.stand_in():
             profile = stand_in_stream_profile()
-            channel = self.make_channel(upstream_url=numbered.url, profile=profile)
+            channel = self.make_channel(upstream_url=positioned.url, profile=profile)
             with self.tuned(channel) as first:
                 first.read(4 * TS_PACKET_SIZE)
-                # Some real backlog to work with -- not load-bearing on its
-                # own, since the catch-up read below re-measures the buffer
-                # right before draining it rather than trusting this number.
+                # Three times the window, not one: the exact packet count
+                # this waits for is not load-bearing on its own, since the
+                # live-head estimate below is re-measured fresh right before
+                # the joiner connects rather than derived from this
+                # threshold -- but the MARGIN between "positioned through
+                # chunk_timestamps" and "fell back to the oldest available
+                # chunk" scales with how much has accumulated by the time
+                # the fallback would apply. At one window's worth of
+                # accumulation the fallback's "oldest available" chunk sits
+                # close enough to where correct positioning would also land
+                # that the two are barely distinguishable; three widens that
+                # gap comfortably past the margin below.
                 wait_until(
                     lambda: self.status(channel)[1].get("buffer_index", 0)
-                    >= chunks_for_the_window,
+                    >= 3 * chunks_for_the_window,
                     timeout=10,
-                    what="the behind-live window to accumulate in the ring buffer",
+                    what="three times the behind-live window to accumulate in the ring buffer",
                 )
 
-                # Catch `first` up to (almost) the current write head, measured
-                # NOW rather than reusing the wait_until threshold above:
-                # production never stops, so by the time this read would
-                # start, more exists than the threshold alone guarantees.
-                # Reading everything already produced -- known, not
-                # estimated, from this fresh status call -- keeps
-                # `last_pid_first_saw` as close to "the live head a moment
-                # ago" as this test can get, which is what makes the
-                # comparison below meaningful rather than comparing the
-                # joiner against a stale snapshot.
-                _, status_before_catchup = self.status(channel)
-                produced_packets = status_before_catchup["buffer_index"] * packets_per_chunk
-                # 10-packet margin: `buffer_index` counts chunks WRITTEN to
-                # Redis, and the bytes for the newest one may not have
-                # finished arriving over this HTTP connection yet.
-                catchup_packets = produced_packets - 4 - 10
-                caught_up = first.read(catchup_packets * TS_PACKET_SIZE)
-                assert_ts_aligned(caught_up)
-                last_pid_first_saw = packet_pid(caught_up[-TS_PACKET_SIZE:])
+                # The current write head, in packets, estimated from
+                # `buffer_index` (chunks WRITTEN) rather than from `first`'s
+                # own read position: `first` has not read anything since its
+                # initial 4 packets, so its stream position is stale, but
+                # production never stops, so a status call taken right
+                # before the joiner connects is the freshest reference this
+                # test can get.
+                _, status_before_joiner = self.status(channel)
+                live_index_estimate = status_before_joiner["buffer_index"] * packets_per_chunk
 
                 _, joiner = open_tune(self, channel)
                 joiner_first_packet = joiner.read(TS_PACKET_SIZE)
                 assert_ts_aligned(joiner_first_packet)
-                joiner_first_pid = packet_pid(joiner_first_packet)
+                joiner_start_index = packet_index(joiner_first_packet)
 
-            # Only the HTTP round trip for open_tune() and one more read
-            # separate `last_pid_first_saw` from the joiner's own connect
-            # moment, so the margin only needs to absorb that gap -- half
-            # the window is generous against it while still requiring a
-            # real, substantial distance: a near-head start (the broken
-            # mechanism) cannot pass by accident.
-            self.assertLess(
-                joiner_first_pid,
-                last_pid_first_saw - (packets_for_the_window // 2),
+            backlog_packets = live_index_estimate - joiner_start_index
+            # Two chunks' margin: `chunks_for_the_window` truncates towards
+            # zero (a real quantization, not slack added for comfort), and
+            # `live_index_estimate` is a moment old by the time the joiner
+            # actually connects. Both broken mechanisms miss by far more
+            # than this margin can absorb: live-head positioning gives a
+            # backlog near zero; the oldest-available fallback gives one
+            # near the whole accumulated buffer, many times the window.
+            self.assertAlmostEqual(
+                backlog_packets, packets_for_the_window, delta=2 * packets_per_chunk
             )
             self.stop_channel(channel)
