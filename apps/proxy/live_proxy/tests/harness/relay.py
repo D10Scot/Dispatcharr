@@ -24,6 +24,7 @@ from unittest.mock import patch
 from apps.proxy.live_proxy.redis_keys import RedisKeys
 from apps.proxy.live_proxy.server import ProxyServer
 
+from .process import StandInBin
 from .upstream import FakeUpstream
 
 
@@ -148,6 +149,31 @@ class RelayHarnessTestCase(LiveServerTestCase):
         ChannelStream.objects.create(channel=channel, stream=stream, order=0)
         self._channels.append(channel)
         return channel
+
+    def stand_in(self, **kwargs) -> StandInBin:
+        """A StandInBin whose default stderr pacing cannot race this class's tests.
+
+        input/manager.py's bitrate EMA (`_bitrate_warmup_samples = 10`, gating
+        the branch at :1096-1112 and the final-bitrate flush in `stop()` at
+        :1407-1415) is entered only on the stderr reader's 11th progress
+        record. The "normal" corpus -- StandInBin's own default -- has exactly
+        11 records, so at StandInBin's default pacing (stderr_interval=0.05)
+        that 11th record lands ~0.55s after spawn: close enough to a short
+        harness tune's own lifetime that whether record 11 is parsed before
+        the test calls stop_channel is a coin flip. Measured: four
+        back-to-back runs of the Task 7 gate gave `missing` a 27-statement
+        spread with this method absent. `stderr_interval=0.0` here writes the
+        whole corpus within microseconds of spawn -- so far ahead of the
+        network round-trip a `tuned()`/`tune()` call already costs that the
+        EMA branch is deterministically reached on every run, in the
+        "reached" direction, before any short tune ends. A test that wants
+        the corpus genuinely paced (matrix rows 1/4, the buffering detector)
+        passes stderr_interval explicitly and gets it -- this default only
+        protects a test that has no opinion on stderr timing, which is what
+        every test in this file is.
+        """
+        kwargs.setdefault("stderr_interval", 0.0)
+        return StandInBin(**kwargs)
 
     # -- driving the relay ---------------------------------------------
 

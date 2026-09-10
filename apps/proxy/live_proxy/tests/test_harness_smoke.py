@@ -12,13 +12,13 @@ import os
 from django.test import SimpleTestCase
 
 from .harness.asset import TS_PACKET_SIZE, assert_ts_aligned
-from .harness.process import StandInBin, stand_in_stream_profile
+from .harness.process import stand_in_stream_profile
 from .harness.relay import RelayHarnessTestCase, wait_until
 
 
 class HarnessSmokeTests(RelayHarnessTestCase):
     def test_a_tune_spawns_a_real_process_and_serves_real_ts_bytes(self):
-        with StandInBin():
+        with self.stand_in():
             profile = stand_in_stream_profile()
             channel = self.make_channel(upstream_url=self.upstream.url, profile=profile)
 
@@ -48,11 +48,29 @@ class HarnessSmokeTests(RelayHarnessTestCase):
         from core.models import SystemEvent
 
         before = SystemEvent.objects.count()
-        with StandInBin():
+        with self.stand_in():
             profile = stand_in_stream_profile()
             channel = self.make_channel(upstream_url=self.upstream.url, profile=profile)
-            self.tune(channel, read_bytes=4 * TS_PACKET_SIZE)
+
+            with self.tuned(channel) as stream:
+                stream.read(4 * TS_PACKET_SIZE)
+                pid = self.spawned_pid(channel)
+
+            # Wait for the spawned process to actually exit, matching the
+            # first test. Without this, whether input/manager.py's own EOF
+            # handling runs at all before this test's own cleanup (fetch_chunk's
+            # "Server closed connection" branch, _close_socket's stderr-reader
+            # join and transcode-flag clear, _process_stream_data's retry
+            # sleep) depends on a scheduling race between this thread and the
+            # stream manager's background thread, not on anything this test
+            # asserts -- and that race, not this test's own subject, is what
+            # used to make the Task 7 gate's coverage move between runs.
             self.stop_channel(channel)
+            wait_until(
+                lambda: not self.process_is_alive(pid),
+                timeout=10,
+                what=f"the spawned process {pid} to exit",
+            )
 
         wait_until(
             lambda: SystemEvent.objects.count() > before,
