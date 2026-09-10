@@ -1583,10 +1583,16 @@ Commit message: `test(phase2): row 3 — three connect failures exhaust the sour
 - [ ] **Step 1: Measure the coverage delta, both halves in one session**
 
 The gate is **a measured increase on `input/manager.py`**, never an exact statement
-count: identical runs of this script against one unchanged tree have spanned 19-27
-statements in `missing`, and the movement is concentrated in `input/manager.py` and
-`server.py` around a tune's teardown window (spec § Gate 2's ratchet paragraph). So
-measure the baseline and the new number **back to back, in the same container, in the
+count, and **the delta is quoted as a range across at least three runs of each side, not
+as a single figure.** The run-to-run spread is not a constant: it is **2 statements on
+the base tree, ~10 once 2a-3's tests are present, and ~51 once the fMP4 and Output
+Profile managers are exercised** — those start three background loops each, and whether a
+loop ticks inside a teardown window is not controllable from a test. Depending on merge
+order this PR's measurement may be taken on a tree near the loaded end, where a
+single-run delta of, say, 60 statements carries a ±51 band and means very little on its
+own. Three runs a side is what turns it into a claim.
+
+Measure the baseline and the new number **back to back, in the same container, in the
 same session** — a figure quoted from § F1 of this plan is a different session's number
 and is not a valid baseline.
 
@@ -1610,10 +1616,11 @@ baseline one and `dispatcharr-testrunner-2a4` — back to back, with the same im
 the same session. (`$SCRATCH/2a4-baseline/.git` is a file pointing at the main repository,
 which the baseline container does not mount; nothing the test run needs reads it.)
 
-Record: `TOTAL` statements (must be **7978** — the denominator is the check), `TOTAL`
-`Miss` before and after, and the `Miss` column for
-`apps/proxy/live_proxy/input/manager.py` and
-`apps/proxy/live_proxy/input/http_streamer.py`.
+Record, for each of the three runs a side: `TOTAL` statements (must be **7978** every
+time — the denominator is the check and does not vary), `TOTAL` `Miss`, and the `Miss`
+column for `apps/proxy/live_proxy/input/manager.py` and
+`apps/proxy/live_proxy/input/http_streamer.py`. Report each as `min-max`, and report the
+delta as the range it actually is.
 
 **Check the tracer core before you start (§ Rulings (b)).** `sysmon` has been adopted and
 2a-2 owns the change. If `scripts/coverage_live_path.sh` or its rcfile now selects it,
@@ -1623,8 +1630,13 @@ spread. Since both halves are taken back to back here, this costs nothing but re
 script first. Say in the PR description which core produced the numbers.
 
 **Expected direction and rough size, not a target:** `input/manager.py` from 498 missed
-down by somewhere in the region of 60-120; `http_streamer.py` from 101 down substantially,
-since nothing imports it today. **Do not treat a smaller movement as a failed task
+down by somewhere in the region of 60-120; **`http_streamer.py` from 101 missed to
+around 27** — measured, not guessed: driving `HTTPStreamReader` through the two call
+shapes this PR's Proxy tests use (`input/manager.py:1259-1266`'s construct-and-`start()`,
+and `:1685`'s `stop()`), on both the happy path and the 404 path, executes **74 of its
+101 statements**. That module is a **separate coverage entry from `input/manager.py`**
+and today reports `executed_lines: 0`, so its statements are disjoint from the 474 this
+PR's other work moves — they add, they do not double-count. **Do not treat a smaller movement as a failed task
 without first checking § F2** — the statements immediately following every
 `gevent.sleep()` in the paths these tests drive are executed but not recorded, and no
 test can turn them green under the committed rcfile.
