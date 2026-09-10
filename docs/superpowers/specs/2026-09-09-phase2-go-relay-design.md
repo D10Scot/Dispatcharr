@@ -1236,7 +1236,7 @@ remaining estimate, plus one file no PR owns. On the PRs' own predictions it fal
 The row that matters most is the fourth: full pools plus the soft expensive tail lands **10
 statements short of a distance whose own measurement range is 917-968**, i.e. **indistinguishable
 from closing**. Adding `http_streamer.py` — 101 statements, a whole file nothing imports, in nobody's
-scope — clears it decisively. That is a much narrower question than "widen into a 951-statement
+scope — clears it decisively. That is a much narrower question than "widen into a ~900-statement
 pool": it is *"does 2a-6 also take `http_streamer.py`, and do 2a-4 and 2a-5 take their full
 reachable sets rather than their planned targets?"*
 
@@ -1334,17 +1334,28 @@ and a set of fallback branches credited for coverage they never receive, because
 them never returns the value that would reach them — every log line reads
 `Time-based positioning: 5s behind -> index 0`, and the fallback message never appears.
 
-**Reading establishes a hypothesis; only running establishes a fact.** When a document claims a test
-reaches a particular branch, the cheap confirmation is a **grep of that run's `INFO` output**, not a
-re-read of the code — and where the claim is that a test *pins* a behaviour, the confirmation is to
-**break the behaviour and watch the test fail**. A test that stays green when its subject is broken
-is pinning nothing, and no amount of reading reveals that.
+**Reading establishes a hypothesis; only running establishes a fact — and there are two tiers of
+running, with different costs. State both, because conflating them gets the cheap check done and the
+expensive one skipped, which is precisely how the row-7 defect survived.**
 
-**And the same discipline applies to the check itself.** An attempt to reproduce the first instance
-above failed *silently* — the break was never applied, the run came back green, and it was nearly
-reported as "cannot reproduce", which would have left the row both pinned and apparently
-second-sourced. **A verification that can pass without having run is worth no more than the reading
-it replaced**, so a break check confirms the break landed before it trusts the result.
+- **A claim about which branch a test *reaches* is worth an `INFO` grep.** `INFO` prints the branch
+  taken, so one run answers it in seconds. Two of the three instances above — the byte-count
+  explanation and the never-reached fallbacks — fall here.
+- **A claim about what a test would *catch* is worth a break check.** No log distinguishes "the index
+  never rewound" from "it rewound and the read hid it"; only mutating the code and re-running
+  answers that. Minutes, not seconds. **Row 7 was in this tier**, which is why grepping would never
+  have found it.
+
+**A break check that passes is not evidence until you have confirmed the break applied.** The attempt
+to reproduce row 7's defect failed *silently*: the patch script printed nothing, the run came back
+green, and it was nearly reported as "cannot reproduce" — on a defect that was real, leaving the row
+both pinned and apparently second-sourced. The cheap habit is to `sed -n` the patched lines back out
+before running.
+
+**Better still, enforce it in the plan rather than the instruction: a plan step that says "watch it
+fail" is weaker than one that says what the failure reads.** A step quoting the expected failure text
+cannot be satisfied by an unapplied break, because the green run does not produce that text. That
+generalises past this stage and is worth carrying into every plan's Step 2.
 
 **And the limit of arithmetic checking, learned here.** Cross-checking the numbers caught (2): the
 rows did not sum to the stated total. It could not have caught (3) or (4), because a mislabelled or
@@ -1375,6 +1386,15 @@ with it whether the 142 Output-Profile bucket is spent — that single number de
 Widen the coverage PRs into the mid-sized files that lie outside their current scope — `views.py`,
 `channel_status.py`, `client_manager.py`, `input/buffer.py`, `log_parsers.py`, `utils.py`,
 `url_utils.py` — which hold several hundred missed statements between them and belong to no PR.
+**The pool is already smaller than a file-level count suggests: 2a-3 spends roughly 53 of it without
+naming either file in its gate** — `client_manager.py` 92 → 52 (zero spread on both sides) and
+`input/buffer.py` ~99 → ~86 — so it stands at **~898, not 951**, before anyone widens anything. That
+makes the option slightly cheaper and any margin computed against the full 951 slightly optimistic.
+**This is the third instance of the already-banked shape and the first caught before it entered a
+sum** rather than after. Nine of that 40 arrived as a side effect of a *correctness* fix — raising
+`GHOST_MULTIPLIER` so the sweep runs several passes, making a pin actually pin — which hints the pool
+may be more reachable than a file-level percentage implies. **A hypothesis, and this stage has
+established what becomes of those.**
 **The measured bracket narrows this option considerably**: full pools plus the soft tail land 10
 short, so the concrete question is whether 2a-6 also takes **`http_streamer.py` (101 statements,
 whole file, nothing imports it)** and whether 2a-4 and 2a-5 take their full reachable sets rather
