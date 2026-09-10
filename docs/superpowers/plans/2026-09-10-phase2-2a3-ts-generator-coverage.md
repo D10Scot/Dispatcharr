@@ -114,6 +114,14 @@ after TSConfig.clear   -> TSConfig._proxy_settings_cache = None
 
 ---
 
+## A materialised copy exists, and it predates this plan's fixes
+
+The review pass wrote every code block in the **first** version of this plan out to a working tree and ran it. If `<scratchpad>/rev3/` still exists in your session it holds `repo/` (this plan's three files plus the five matrix row edits), `assemble.py` (per-task reassembly), `breaks.sh` / `breaks2.sh` with their logs, and `run1.log` — the DEBUG run behind Task 3 Step 3's expected log lines. **`breaks2.sh` carries the row 7 break**, so you can watch it go red and then green rather than trusting Step 4's description.
+
+**Use it to transcribe, never to skip a step.** It is the pre-review state and carries the defects this plan now fixes — verified, not assumed: `test_relay_client_stream.py:126` has `DEAD_AIR_PACKETS = 200` and `:135` has `GHOST_MULTIPLIER = 0.1`; `harness/control.py:129-130` clears only `TSConfig`; and `test_relay_stream_switch.py` has no `right_after` read at all, so **row 7 is unpinned there**. Also missing, because both are prose-only steps: the README section (Task 2 Step 4) and the `CLAUDE.md` sentence (Task 3 Step 5). If the directory is gone, the plan's blocks are the source of truth — they are complete, and they are what was verified.
+
+---
+
 ## Sequencing note for the orchestrator
 
 This PR edits **row 10 at `docs/relay-parity-matrix.md:183`**, and **row 11 sits at `:184`**. The matrix's own comment records that git conflicts on edits one line apart and merges cleanly at two, so 2a-6's re-pin of row 11 — which its Notes invite — **must sequence after this PR merges**, or the two edits conflict. This PR's row 10 edit is spec-required (the `2a-3` row of § The seven PRs names row 10), so it is not the one to drop.
@@ -1290,7 +1298,7 @@ Do not push and do not open the PR unless the orchestrator asks.
 
 **Spec coverage.** The `2a-3` row of § The seven PRs asks for "tests against `output/ts/generator.py` and `services/channel_service.py`'s switch/stop paths, using the harness; closes matrix rows 7-10, 13", gated on a measured increase on those two files and on the five rows carrying accepted test references. Task 5 states that gate **relatively** — strictly fewer missed statements than a same-session baseline under the same tracer core — because an absolute figure has been invalidated three times during this stage.
 
-- `output/ts/generator.py`: fewer missed statements in every paired run (illustratively 119 → 96 under `sysmon`). Reached through `_setup_streaming`'s time-based positioning and its fallbacks (Task 4), `_check_resources`'s channel-stop, channel-state, client-stop and client-gone branches (Tasks 2 and 3), `_process_chunks`'s throttled stats and TTL refresh (every test that streams for over a second), and the expired-chunk jump (Task 2's fourth client).
+- `output/ts/generator.py`: fewer missed statements in every paired run (illustratively 119 → 96 under `sysmon`). Reached through `_setup_streaming`'s time-based positioning (Task 4), `_check_resources`'s channel-stop, channel-state, client-stop and client-gone branches (Tasks 2 and 3), `_process_chunks`'s throttled stats and TTL refresh (every test that streams for over a second), and the expired-chunk jump (Task 2's fourth client). **Not** `_setup_streaming`'s own fallbacks at `:271-292`: those need `find_chunk_index_by_time` to return `None`, and it never does here — its internal `zrange` fallback answers with the oldest chunk instead, which is why every `INFO` log in these tests reads `Time-based positioning: 5s behind -> index 0` rather than one of the fallback messages.
 - `services/channel_service.py`: fewer missed statements in every paired run (illustratively 169 → 145 under `sysmon`). `change_stream_url`'s owner branch, `_update_channel_metadata` and `_publish_stream_switch_event` (Task 4); `stop_client` and `stop_channel` (Task 2).
 - Rows 7, 8, 9, 13 lose their `owed: 2a-3` markers; row 10 gains a harness pin beside its two e2e ones. The guard prints `9 pinned, 17 owed, 2 white-box-only`.
 - Composition rule: every assertion is on a delivered byte, an HTTP status, a JSON field or the fake upstream's connection count. No test patches a relay internal; the only `patch.object` calls target `TSConfig` class attributes, which is the production configuration lever.
