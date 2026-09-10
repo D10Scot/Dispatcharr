@@ -22,31 +22,31 @@
 - **`TSConfig._proxy_settings_cache` is process-global with a 10-second TTL** (`apps/proxy/config.py:22-24`). Any test that writes `proxy_settings` must clear that cache when it writes *and* register `addCleanup(TSConfig.clear_proxy_settings_cache)`, or it leaks a setting into every test that runs in the next ten seconds. `ControlMixin.set_proxy_setting()` (Task 2) does both.
 - **No hard-coded measurement may appear in an assertion** (spec's ratchet paragraph; the programme's defect class 9). Every threshold in these tests is derived at run time from `NOMINAL_BYTE_RATE`, `FakeUpstream.rate`, `TSConfig.BUFFER_CHUNK_SIZE`, `TS_PACKET_SIZE` or a patched config value.
 - **Matrix editing rules** (`docs/relay-parity-matrix.md`, the HTML comment above the table): one row is one line; cells are never padded; no stored counts; **do not run a Markdown formatter over the file**; the table ends at `<!-- end of matrix -->`. This PR **adds no row**, so `HIGHEST_ROW_ID` in `e2e/tests/guards/parity-matrix.ts` stays at **28** and that file is not touched.
-- **`scripts/coverage_live_path.sh` is the only sanctioned measurement** and it runs per label. **Its header comment at `:22-24` is stale**: it claims "this script has no tolerance and needs none" because "within this shape the measurement is exactly reproducible". The spec withdrew that ruling at `0c7e19a4` (§ Gate 2, "the round-6 ruling that the ratchet needs *no tolerance at all* is withdrawn"). Do not read that comment as authority, and **do not fix it here** — the tolerance belongs to 2a-7, which owns the floor file. Quote **per-file** numbers from the report, never the global `missing`.
+- **`scripts/coverage_live_path.sh` is the only sanctioned measurement** and it runs per label. Quote **per-file** numbers from the report, never the global `missing`. **The tracer core is part of the measurement shape**: since `9c865538` the script sets `export COVERAGE_CORE=sysmon` itself and stamps `per-label/v2-${COVERAGE_CORE}`, because coverage's default C tracer drops every statement executing immediately after a greenlet switch. Do **not** set the core yourself and do **not** compare a number taken under one core with one taken under another — the shape guard refuses the mix, and where it cannot see the mix (two numbers in a PR description) it is the arithmetic that silently breaks. **Name the core beside every number you report.**
 - **Container isolation.** The shared `dispatcharr-testrunner` is used by other agents. Start your own:
   `DISPATCHARR_TEST_CONTAINER=dispatcharr-testrunner-2a3 DISPATCHARR_TEST_IMAGE=ghcr.io/d10scot/dispatcharr:latest DISPATCHARR_TEST_DB_VOLUME=dispatcharr-hookdb-2a3 .claude/hooks/start-test-container.sh`
   The image override is required — the script's default is upstream's image, which lacks `coverage` and `hypothesis` (issue #228). Remove the container and volume when you finish.
 - **`manage.py test` is not gevent-monkey-patched**, so the relay's workers are real pre-emptive OS threads under test (`harness/README.md` § Two environment facts).
 
-### The numbers this plan was written against
+### An illustrative measurement — not a target
 
-Measured in `dispatcharr-testrunner-2a3` on 2026-09-10, on the branch point `2a826e07`, with `scripts/coverage_live_path.sh` (all three labels, combined).
+**The gate is relative, and the figures below are an illustration of it, not a number to reconcile against.** Take your own baseline in your own session, under the core your `scripts/coverage_live_path.sh` sets, and require **strictly fewer missed statements** on the two named files than that baseline. An absolute figure written here is wrong the moment anything upstream moves, and during this stage it has moved three times: the harness landed, the tracer core changed, and 2a-6's probes changed what the pool looks like.
 
-| | statements | missing | coverage |
+One same-session pair, for shape only. Measured in `dispatcharr-testrunner-2a3` on 2026-09-10, all three labels combined, **tracer core `sysmon`** (`scripts/coverage_live_path.sh` at `9c865538`), three runs of each configuration:
+
+| File | Baseline (3 runs) | With this PR's five tests (3 runs) | Direction |
 |---|---|---|---|
-| Baseline, whole denominator | 7,978 | 3,207 | 59.80% |
-| With this PR's five tests | 7,978 | 3,035 | 61.96% |
+| `apps/proxy/live_proxy/output/ts/generator.py` (377 stmts) | 119 / 118 / 119 | **96 / 96 / 96** | **down** |
+| `apps/proxy/live_proxy/services/channel_service.py` (500 stmts) | 169 / 169 / 169 | **145 / 145 / 145** | **down** |
+| `apps/proxy/live_proxy/input/buffer.py` (248 stmts) | 99 | 87 / 85 / 84 | down |
+| `apps/proxy/live_proxy/client_manager.py` (262 stmts) | 92 | 61 / 61 / 61 | down |
+| whole denominator | 3,114 / 3,115 / 3,116 | 2,976 / 2,970 / 2,980 | down |
 
-Per file, missing statements:
+The denominator was 7,978 in all six runs. **That is the figure to check** — it is a property of the rcfile and moves only if the module list does. The `missing` column is a sample from a band, not a constant.
 
-| File | Baseline | With this PR | Delta |
-|---|---|---|---|
-| `apps/proxy/live_proxy/output/ts/generator.py` (377 stmts) | 120 (68%) | **97 (74%)** | **−23** |
-| `apps/proxy/live_proxy/services/channel_service.py` (500 stmts) | 200 (60%) | **145 (71%)** | **−55** |
-| `apps/proxy/live_proxy/input/buffer.py` (248 stmts) | 99 (60%) | 85 (66%) | −14 |
-| `apps/proxy/live_proxy/client_manager.py` (262 stmts) | 92 (65%) | 61 (77%) | −31 |
+**Why the relative form is not pedantry, in one number from this very table.** Under the previous C tracer the same two configurations gave `channel_service.py` **200 → 145**, a delta of −55. Under `sysmon` they give **169 → 145**, a delta of −24. The *after* value is identical by coincidence; the baseline is not, because sysmon credits 31 statements to the existing suite that the C tracer was dropping after greenlet switches. An executor holding "−55" as a target would have concluded this PR had regressed.
 
-The baseline `missing` of 3,207 sits inside the 3,202–3,221 band the programme has measured across eight runs of the same gate on this tree. **The denominator, 7,978, is the number to check; a differing `missing` is a question, not a defect.**
+Adopting `sysmon` widened the observed band rather than narrowing it, which is expected: the C tracer's systematic loss after a greenlet switch was also flattening the difference between "the relay's background housekeeping fired on this run" and "it did not". **The denominator, 7,978, is the number to check; a differing `missing` is a question, not a defect.**
 
 **Test-time cost, measured: +8.6 s on `apps.proxy.live_proxy.tests`** — 179 tests in 6.04 / 6.09 / 6.62 s becomes 184 tests in 14.60 / 14.80 / 14.81 / 15.48 / 15.54 s. Per-test method bodies (`--durations`) sum to ≈ 6.0 s; the remaining ≈ 2.6 s is `LiveServerTestCase` setUp plus `RelayHarnessTestCase`'s per-channel cleanup, which `--durations` does not count. **This exceeds an even share of the stage's ≤ 15 s ceiling** (2a-2 spent ≈ 3.96 s, leaving ≈ 11 s for four PRs). The overrun is reported to the orchestrator as a scope question, not absorbed silently: the floor for pinning all five rows with tests that mean anything is ≈ 7 s, because each row needs its own channel bring-up and a bring-up costs ≈ 0.6 s before the row's own behaviour is even reachable.
 
@@ -1073,7 +1073,11 @@ Claude-Session: https://claude.ai/code/session_01Pr6xFBkeJHvguMJ6PweBMu
 
 - [ ] **Step 1: Decide whether to re-measure the branch point**
 
-The baseline in § Global Constraints was taken at `2a826e07` in a container built exactly as Step 1 of Task 1 builds one. Reuse it, or re-measure by checking `2a826e07` out into a scratch worktree. If you re-measure, use a **different** `COVERAGE_LIVE_PATH_DATA_DIR` for each of the two measurements — `coverage combine` consumes its input files, so a second `--report` over the same directory finds nothing and says so.
+**Take your own baseline. Do not reuse the illustrative one in § Global Constraints** — it was measured on a different day under a named core, and the gate is relative, not absolute.
+
+Check the branch point out into a scratch worktree, or move your own test files aside, and run the gate there first. Use a **different** `COVERAGE_LIVE_PATH_DATA_DIR` for each of the two measurements — `coverage combine` consumes its input files, so a second `--report` over the same directory finds nothing and says so. Take **three runs of each side**: `missing` is a sample from a band, and one run of each cannot tell a real change from the band's width.
+
+Both measurements must come from the **same session, the same container and the same script**, so they carry the same tracer core. The script stamps the core into its shape id (`per-label/v2-${COVERAGE_CORE}`) and refuses to report over data written under another one — but that guard only sees data files, not two numbers you wrote into a PR description, so the discipline is yours to keep.
 
 - [ ] **Step 2: Run the gate on your branch**
 
@@ -1087,22 +1091,19 @@ docker exec -e TEST_USE_SQLITE= -e POSTGRES_HOST=/var/run/postgresql \
   'export PATH=/dispatcharrpy/bin:$PATH; cd /repo; scripts/coverage_live_path.sh'
 ```
 
-Expected, on the last line:
+The last line reports the whole denominator:
 
 ```
-coverage_live_path: statements 7978  missing 3035  coverage 61.96%
+coverage_live_path: statements 7978  missing <N>  coverage <P>%
 ```
 
-**The denominator, 7,978, is the check.** If it differs, the module list changed and that is a finding. The `missing` count moves by a couple of dozen statements between identical runs — the spec withdrew the no-tolerance ruling for exactly that reason — so a value near 3,035 is the expected outcome, not an exact one.
+**The denominator, 7,978, is the check.** It is a property of the rcfile and moves only if the module list does; if it differs, that is a finding, and it invalidates the comparison rather than merely changing it. **`<N>` is not a check** — it is a sample from a band, and no figure for it is written here on purpose.
 
-In the same report, the two files the gate names must show:
+**The gate, stated relatively:**
 
-```
-apps/proxy/live_proxy/output/ts/generator.py          377     97    74%
-apps/proxy/live_proxy/services/channel_service.py     500    145    71%
-```
+> On both `apps/proxy/live_proxy/output/ts/generator.py` and `apps/proxy/live_proxy/services/channel_service.py`, the branch shows **strictly fewer missed statements** than the same-session baseline, in **every** paired run.
 
-against a baseline of `120` and `200` missing. **Both must have decreased.** The gate is "a measured increase on these two files", not a target number.
+Requiring it of every pair rather than of the means is what makes three runs worth taking: these two files were measured with a **zero-wide** spread across three runs on each side, so a pair that fails is a real change, not the band. Record all six figures and **name the tracer core** in the PR description.
 
 - [ ] **Step 3: Measure the test-time cost**
 
@@ -1147,7 +1148,7 @@ docker volume rm dispatcharr-hookdb-2a3
 
 - [ ] **Step 6: Write the PR description**
 
-Include, verbatim, the per-file coverage table (baseline vs. branch, missing statements), the denominator, the three test-time figures against the branch point's, and the guard's pinned/owed line. State the test-time overrun against the stage's ≤ 15 s ceiling plainly rather than omitting it — 2a-2 spent ≈ 3.96 s and this PR spends ≈ 8.6 s, so ≈ 2.4 s remains for 2a-4, 2a-5 and 2a-6 combined, and that is a decision for the orchestrator, not something this PR can absorb.
+Include, verbatim, all six per-file figures (three baseline runs and three branch runs, missing statements, for both named files), **the tracer core the script used**, the denominator, the three test-time figures against the branch point's, and the guard's pinned/owed line. Give the coverage result as the *direction* the gate asks for — "strictly fewer in every paired run" — not as a percentage anyone downstream could mistake for a target. State the test-time overrun against the stage's ≤ 15 s ceiling plainly rather than omitting it — 2a-2 spent ≈ 3.96 s and this PR spends ≈ 8.6 s, so ≈ 2.4 s remains for 2a-4, 2a-5 and 2a-6 combined, and that is a decision for the orchestrator, not something this PR can absorb.
 
 Do not push and do not open the PR unless the orchestrator asks.
 
@@ -1155,10 +1156,10 @@ Do not push and do not open the PR unless the orchestrator asks.
 
 ## Self-review
 
-**Spec coverage.** The `2a-3` row of § The seven PRs asks for "tests against `output/ts/generator.py` and `services/channel_service.py`'s switch/stop paths, using the harness; closes matrix rows 7-10, 13", gated on a measured increase on those two files and on the five rows carrying accepted test references.
+**Spec coverage.** The `2a-3` row of § The seven PRs asks for "tests against `output/ts/generator.py` and `services/channel_service.py`'s switch/stop paths, using the harness; closes matrix rows 7-10, 13", gated on a measured increase on those two files and on the five rows carrying accepted test references. Task 5 states that gate **relatively** — strictly fewer missed statements than a same-session baseline under the same tracer core — because an absolute figure has been invalidated three times during this stage.
 
-- `output/ts/generator.py`: 120 → 97 missing. Reached through `_setup_streaming`'s time-based positioning and its fallbacks (Task 4), `_check_resources`'s channel-stop, channel-state, client-stop and client-gone branches (Tasks 2 and 3), `_process_chunks`'s throttled stats and TTL refresh (every test that streams for over a second), and the expired-chunk jump (Task 2's fourth client).
-- `services/channel_service.py`: 200 → 145 missing. `change_stream_url`'s owner branch, `_update_channel_metadata` and `_publish_stream_switch_event` (Task 4); `stop_client` and `stop_channel` (Task 2).
+- `output/ts/generator.py`: fewer missed statements in every paired run (illustratively 119 → 96 under `sysmon`). Reached through `_setup_streaming`'s time-based positioning and its fallbacks (Task 4), `_check_resources`'s channel-stop, channel-state, client-stop and client-gone branches (Tasks 2 and 3), `_process_chunks`'s throttled stats and TTL refresh (every test that streams for over a second), and the expired-chunk jump (Task 2's fourth client).
+- `services/channel_service.py`: fewer missed statements in every paired run (illustratively 169 → 145 under `sysmon`). `change_stream_url`'s owner branch, `_update_channel_metadata` and `_publish_stream_switch_event` (Task 4); `stop_client` and `stop_channel` (Task 2).
 - Rows 7, 8, 9, 13 lose their `owed: 2a-3` markers; row 10 gains a harness pin beside its two e2e ones. The guard prints `9 pinned, 17 owed, 2 white-box-only`.
 - Composition rule: every assertion is on a delivered byte, an HTTP status, a JSON field or the fake upstream's connection count. No test patches a relay internal; the only `patch.object` calls target `TSConfig` class attributes, which is the production configuration lever.
 
