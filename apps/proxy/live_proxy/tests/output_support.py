@@ -194,6 +194,23 @@ def tapped(test, channel, query=""):
     NEVER format response.text into an assertion message on a 200: the body of a
     live tune does not end and the read never returns (harness/relay.py's `tuned`
     carries the same warning, for the same reason).
+
+    COST TRAP, found measuring 2a-6's row-12 test: `finally: response.close()` below
+    does not return promptly if the response body was only partially consumed (which
+    every caller here does -- StreamTap reads it in a background thread via
+    `iter_content`, and a test rarely waits for it to end on its own). `requests`/
+    `urllib3` do not abort an in-flight streamed read on `.close()` in that case; the
+    call blocks until the SERVER ends the response on its own schedule. So exiting a
+    `with tapped(...)` block pays whatever the server-side generator's own timeout or
+    teardown costs, whether or not the test asserts anything about that response ever
+    ending. Measured: closing a TS-format tap whose channel had gone unhealthy cost
+    ~13.5s here, independent of and much larger than the ~7s the test's own pinned
+    wait cost -- confirmed by instrumentation, not the `stop_channel()` call at the
+    end of the test, which cost 0.14s. If a test's assertions are done with a tap
+    before its channel/response would naturally end, that cost still lands at the
+    `with` block's exit; there is no free way to skip it from inside this function
+    without changing close behaviour for every test that uses `tapped()`, which is
+    why 2a-6 documented the trap here rather than working around it in one test.
     """
     url = f"{test.live_server_url}/proxy/ts/stream/{channel.uuid}{query}"
     response = requests.get(url, stream=True, timeout=20)
