@@ -38,9 +38,10 @@ The seven PRs, row `2a-2`; § Verified facts this design rests on; § Testing.
 ## Branch base
 
 This branch is cut from `main` at `e62ab428` (2a-1, `docs/relay-parity-matrix.md` + its guard,
-merged as #223). It depends on 2a-1 only in the sense that later PRs cite matrix rows; **2a-2 owns
-no matrix row, closes none, and edits neither `docs/relay-parity-matrix.md` nor
-`e2e/tests/guards/parity-matrix.{ts,spec.ts}`.**
+merged as #223). **2a-2 closes no matrix row, but it does add one** — row 28, the
+scientific-notation `speed=` parse ([#227](https://github.com/D10Scot/Dispatcharr/issues/227)), which
+the corpus capture in Task 4 discovered. **Already added by the planning pass**, together with the
+`HIGHEST_ROW_ID` 27 → 28 bump the guard requires in the same diff; do not add it again.
 
 The spec this plan implements lives on a **different branch** (`.worktrees/phase2-spec`, Phase 2
 PR 0, open as #225) and is not present in this worktree. That is deliberate and does not block:
@@ -454,10 +455,25 @@ Modify:
 |---|---|
 | `CLAUDE.md` | § Testing: "No backend unit test spawns a subprocess" becomes false with this PR. Correct it in the same PR, per the project's standing convention. |
 | `metrics/curated/defects.yml` | One new entry for **#226**, the librist image defect this PR works around. **Already added by the planning pass** (validated: `ok: 46 metrics, 32 milestones, 28 defects`) — do not add it again; check it is there and leave it alone. |
+| `docs/relay-parity-matrix.md` | Row 28 — the scientific-notation `speed=` parse (**#227**), `owed: 2a-4`, placed inside `2a-4`'s block. **Already added by the planning pass.** |
+| `e2e/tests/guards/parity-matrix.ts` | `HIGHEST_ROW_ID` 27 → 28, the second half of that same edit. **Already done.** |
 
-Not touched, deliberately: `docs/relay-parity-matrix.md`, `e2e/**`, `e2e/COVERAGE.md` (no
-Playwright test is added), `.github/workflows/**`, `pyproject.toml`, `uv.lock`, `.coveragerc` (the
+Not touched, deliberately: `e2e/COVERAGE.md` (no Playwright *test* is added — the guards project
+still runs sixteen), `.github/workflows/**`, `pyproject.toml`, `uv.lock`, `.coveragerc` (the
 existing metrics rcfile stays exactly as it is).
+
+**On the matrix.** `docs/relay-parity-matrix.md` and `e2e/tests/guards/parity-matrix.ts` **are**
+touched, for row 28 — already done by the planning pass, guards green at
+`28 rows — 5 pinned, 21 owed, 2 white-box-only`. Two things the guard taught, which the executor
+needs if it ever adds another row:
+
+- **`HIGHEST_ROW_ID` is a stored number and must move in the same diff** (`parity-matrix.ts:552`).
+  Adding a row without bumping it fails the completeness test by design.
+- **The table is ordered by owning block, not by id — do not sort it.** A separate guard
+  (`parity-matrix.spec.ts:336`) fails if one PR's owed rows are not contiguous in file order, and
+  `2a-4` already owns rows 1-6. Row 28 therefore sits **between rows 6 and 7**, inside `2a-4`'s
+  block, with the id 28. The completeness check compares the *sorted* ids against `1..28`, so file
+  position and id are deliberately independent.
 
 **On the ledger.** This PR closes no ledger issue, adds no `test.fail()` pin, merges no goal and
 ticks no Done log — but it *does* discover and work around a defect, and `docs/agents/metrics.md`'s
@@ -2948,8 +2964,16 @@ failing test, but a *slow* predicate is a design problem. Report the number eith
 cd e2e && npx tsc --noEmit
 ```
 
-Expected: clean. This PR adds no TypeScript, so a failure here is a pre-existing condition, not
-yours — say so and move on.
+Expected: clean. The only TypeScript this PR touches is the one-line `HIGHEST_ROW_ID` constant, so
+a failure here is a pre-existing condition, not yours — say so and move on. Then run the guards,
+which is the check that actually covers the matrix edit:
+
+```bash
+cd e2e && npm run test:guards
+```
+
+Expected: 16 passed, and the line `parity matrix: 28 rows — 5 pinned, 21 owed, 2 white-box-only`.
+`e2e/node_modules` may be absent in a fresh worktree; `npm ci` in `e2e/` takes about a second.
 
 - [ ] **Step 6: Commit** (message to `/tmp/2a2-msg-7.txt`; separate `git add` / `git commit -F`).
 
@@ -3014,9 +3038,10 @@ production code, found by capturing real ffmpeg output — which is the whole ar
    speed rendered as `9.5e-05x` and parsed as **9.5**, which *would* suppress a buffering failover —
    is real in the regex but not reachable in practice: `speed = media_time / wall_time`, so
    `< 1e-4` needs the wall clock to run more than 10,000× ahead of the media, and no capture here
-   came close. Report it as a candidate parity-matrix row for **2a-4** (whose subject is
-   `input/manager.py` and rows 1-6), with the reachable half and the unreachable half distinguished.
-   **Do not fix it** — D5 is strict parity, defects included.
+   came close. **Filed as [#227](https://github.com/D10Scot/Dispatcharr/issues/227) and now
+   parity-matrix row 28**, `owed: 2a-4` — whose subject is `input/manager.py` and rows 1-6 — with
+   the reachable half and the unreachable half distinguished in the row's Notes. **Do not fix it** —
+   D5 is strict parity, defects included, so the Go relay must under-report the same way.
 
 ---
 
@@ -3057,7 +3082,11 @@ the work as verified.**
       `--shuffle 12345`.
 - [ ] `CLAUDE.md` no longer says no backend test spawns a subprocess.
 - [ ] No file outside § File structure is modified — in particular no production module, no
-      workflow, no `pyproject.toml`, no `uv.lock`, no `docs/relay-parity-matrix.md`, no `e2e/`.
+      workflow, no `pyproject.toml`, no `uv.lock`, and nothing under `e2e/` beyond the
+      `HIGHEST_ROW_ID` bump.
+- [ ] `docs/relay-parity-matrix.md` carries row 28 inside `2a-4`'s block, `HIGHEST_ROW_ID` is 28,
+      and `cd e2e && npm run test:guards` prints
+      `parity matrix: 28 rows — 5 pinned, 21 owed, 2 white-box-only` with 16 tests passing.
 - [ ] `metrics/curated/defects.yml` carries the #226 entry and
       `python -m metrics.build --validate-only` prints `ok: 46 metrics, 32 milestones, 28 defects`.
 - [ ] The PR description carries the five items of Task 7 Step 7.
