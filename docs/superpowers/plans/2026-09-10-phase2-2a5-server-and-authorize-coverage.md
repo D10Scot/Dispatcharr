@@ -97,15 +97,18 @@ Every task's requirements implicitly include this section.
   - **`CoreSettings` is one row per settings *group*, not per setting** (`core/models.py:201-208`,
     eight groups), and every group is instance-wide, so any write is blast radius. Do not write one
     unless a test genuinely needs it.
-  - **A `CoreSettings` group written by a test outlives the flush, in Redis.**
-    `CoreSettings._get_group` caches each group's JSON in the Django cache — which is Redis, DB 0,
-    the same instance the relay uses — and `CoreSettings` has **no `save()` override**
-    (`core/models.py:78` is `StreamProfile.save`, not this model's). So
-    `CoreSettings.objects.update_or_create(...)` writes the row and leaves the cache stale, and
-    `TransactionTestCase`'s flush removes the row from Postgres while leaving the cached copy in
-    Redis for every later test in the process. **Any test that writes a settings group must call
-    `CoreSettings.invalidate_group_cache(<KEY>)` immediately after the write and again from
-    `addCleanup`.** Task 3 is the only test in this PR that writes one, and it does both.
+  - **A `CoreSettings` group written by a test outlives the flush, in Redis — and the reason is
+    the flush, not the write.** `_get_group` caches each group's JSON in the Django cache, which is
+    Redis, DB 0, the same instance the relay uses. **The write itself is fine**:
+    `core/signals.py:11-15` is `@receiver(post_save, sender=CoreSettings)` calling
+    `invalidate_group_cache(instance.key)`, so `objects.update_or_create(...)` invalidates
+    correctly. **The flush is what breaks it** — `TransactionTestCase._fixture_teardown` truncates
+    with raw SQL and fires **no signals**, so the row vanishes from Postgres while the cached value
+    stays in Redis for every later test in the process, and every one of them then reads a setting
+    whose row no longer exists. **Any test that writes a settings group must call
+    `CoreSettings.invalidate_group_cache(<KEY>)` from `addCleanup`.** Calling it immediately after
+    the write as well is harmless and makes the intent obvious. **Tasks 3 and 4 both write one**
+    (`network_access` and `user_limit_settings` respectively) and both must do this.
   - **With no `network_access` group row at all, the STREAMS ACL is open.**
     `CoreSettings.get_network_access_settings()` (`core/models.py:720-722`) returns `{}` for a
     missing group, and `network_access_allowed` (`dispatcharr/utils.py:406-420`) falls back to
@@ -145,6 +148,19 @@ Every task's requirements implicitly include this section.
   ```
 
 ---
+
+## Start from the materialised copy, not from this document
+
+A review pass **materialised every test in this plan, ran them, and left the result in place** at
+`scratchpad/repo-2a5/`, with a container `dispatcharr-testrunner-rev5` mounting it at `/repo` and
+`dexec.sh` / `covrun.sh` helpers beside it. Eight probe files map to Tasks 1-8; **B1's and B2's
+fixes are already applied there**, and Task 8 has two green shapes to choose between.
+
+**Use it.** Transcribing ~1,200 lines of Python out of a Markdown document is a whole class of
+avoidable error, and the copy is the same code with the measurements already taken. Read this plan
+for *why* each test asserts what it does — that is what a materialised file cannot carry — and take
+the code from the copy. Where the two disagree, **the copy has been run and this document has
+not**: prefer the copy, and say in the PR description which task the disagreement was in.
 
 ## Running the tests
 
@@ -258,15 +274,18 @@ not a change).
 | **Blocked — must not be targeted** | **175** | `cleanup_task` `:1880-2190` (161), `_recover_stuck_channel_stops` `:1773-1797` (14). The gate's own non-determinism lives here. |
 | **Unreachable or white-box-only** | **108** | `_cleanup_local_resources` `:2487-2569` (61, issue #230); `_check_orphaned_metadata` `:2236-2321` (26, called only from `cleanup_task:2139`, so it inherits that non-determinism); `_execute_redis_command` `:138-159` (14, matrix row 27, declared white-box-only); `_check_orphaned_channels` `:2197-2234` (7, **no callers anywhere in the tree — dead code**). |
 | **Reachable, but 2a-6's subject** | **142** | `ensure_output_profile` (64), `ensure_output_format` (45), `stop_output_profile` (14), `stop_output_format` (10), `_parse_output_key` (7), `stop_all_output_*` (2). Reached from `views.py:731` and `:754` on a tune that resolves an Output Profile. **Do not target these here** — 2a-6 owns `output/profile/manager.py` and `output/fmp4/manager.py` and will move them as a side effect. |
-| **Reachable by this PR's surfaces** | **269** | `event_listener` `:178-465` (120), `initialize_channel` (51), `handle_client_disconnect` (47), `check_if_channel_exists` (35), `_clean_zombie_channel` (11), `_cleanup_failed_init` (3), `_clean_redis_keys` (2). |
+| **Reachable by this PR's surfaces** | **269** | `event_listener` `:178-465` (120), `initialize_channel` (51), `handle_client_disconnect` (47), `check_if_channel_exists` (35), `_clean_zombie_channel` (11), `_cleanup_failed_init` (3, **not reachable by Task 8** — a tune by channel uuid never enters `initialize_channel`, which holds this method's only two callers), `_clean_redis_keys` (2). |
 | **Reachable, but expensive per statement** | **150** | the ownership lease (`extend_ownership` 17, `try_acquire_ownership` 10, `release_ownership` 9, `get_channel_owner` 7); teardown edges (`_stop_local_stream_activity_locked` 9, `_wait_for_shutdown_delay` 8, `_broadcast_upstream_stop` 8, `check_inactive_channels` 7, `stop_channel` 6, `_release_stream_resources` 6, …); and ~28 functions carrying 1-6 each, almost all `except Exception: logger.error(...)` arms needing fault injection. |
 
 175 + 108 + 142 + 269 + 150 = **844**. The buckets are exhaustive.
 
-**What this PR actually takes: about 125 of the 269**, not all of it — Tasks 6, 7 and 8 target
-`check_if_channel_exists` (35), `_clean_zombie_channel` (11), `_clean_redis_keys` (2),
-`_cleanup_failed_init` (3) and roughly 74 of the event listener's 120 (CLIENT_STOP 13,
-CHANNEL_STOP 13, STREAM_SWITCH 48). `initialize_channel`'s 51 and `handle_client_disconnect`'s 47
+**What this PR actually takes: about 121 — a target, not a measurement — out of the 269 (ctrace)
+/ 257 (sysmon) pool.** Tasks 6 and 7 target `check_if_channel_exists` (35 ctrace / 34 sysmon),
+`_clean_zombie_channel` (11), `_clean_redis_keys` (2) and roughly 74 of the event listener's
+120/108 (CLIENT_STOP 13, CHANNEL_STOP 13, STREAM_SWITCH 48). **Task 8 contributes nothing to
+`server.py`** — it reaches `views.py:612-615`. A review pass that materialised these tests measured
+**−122, range −118…−126** across three runs, which is this target landing.
+`initialize_channel`'s 51 and `handle_client_disconnect`'s 47
 are reachable and deliberately left: both are teardown- and timing-adjacent, and § Deliberate
 non-goals would rather leave statements on the table than add a test whose answer depends on which
 thread wins.
@@ -276,14 +295,11 @@ Together they are **283** statements and they look like the biggest prize in the
 unreachable or dead, the other is precisely the region whose non-determinism the gate's tolerance
 exists to absorb. Aiming there buys a ratchet that reddens at random.
 
-3. **Budget. `≤ 15 s added across the whole of stage 2a` is a hard ceiling, and 2a-2 already spent
-   ~3.96 s of it.** Four coverage PRs share what is left. **2a-5's own budget is ≤ 3.5 s added
-   across `apps.proxy.live_proxy` and `apps.proxy` combined.** At a measured 0.64–1.09 s per tuning
-   test that is about **four to five tuning tests, total**, which is why this plan spends its tunes
-   deliberately and reaches most of its rows through surfaces that do not tune at all. Task 9 Step 3
-   measures the real number; § Keeping the suite fast says what to drop first if it is over. **Check
-   `--durations` before concluding a test is inherently slow** — twice in this stage the cost has
-   been a library default, not the work.
+3. **Budget: this PR adds ≈10.4 s, and that is accepted.** The fixed 15 s stage ceiling is
+   withdrawn; the trigger is the `apps.proxy.live_proxy` label crossing **45 s**, and this PR takes
+   it to ~17.3 s under the gate. § Keeping the suite fast has the breakdown and the one real lever
+   (`LiveServerTestCase` classes, ~0.4–0.5 s each). **Check `--durations` before concluding a test
+   is inherently slow** — twice in this stage the cost has been a library default, not the work.
 
 ---
 
@@ -443,11 +459,11 @@ conflict. If two of this PR's own modules need it, the second one repeats it.
 | `apps/proxy/live_proxy/tests/test_relay_status_wire.py` | What the two status endpoints put on the wire: field set, types, and the `owner` asymmetry | 14 | 0 |
 | `apps/proxy/live_proxy/tests/test_client_ip_provenance.py` | Where `ip_address` in the status payload comes from | 17 | 1 |
 | `apps/proxy/live_proxy/tests/test_authorize_matrix_over_http.py` | The Internal, Admin and Session principals, decided over real HTTP at the hop | 19, 20, 23 (+ a test row 21's Notes ask for, whose line is **not** edited) | 0 |
-| `apps/proxy/live_proxy/tests/test_stream_by_hash_authorization.py` | The stream-by-hash shape: no channel check, ACL and stream limit still applied — on the hop and on the byte path | 16, 25 (+ row 20's stream-limit cell) | 1 |
+| `apps/proxy/live_proxy/tests/test_stream_by_hash_authorization.py` | The stream-by-hash shape: no channel check, ACL and stream limit still applied — on the hop and on the byte path | 16, 25 (+ row 20's stream-limit cell) | **2** |
 | `apps/proxy/live_proxy/tests/test_xc_decision_handoff.py` | `stream_xc` authorizes once and hands its decision to `stream_ts` | 15 | 1 |
 | `apps/proxy/live_proxy/tests/test_server_registry.py` | `server.py`'s zombie detection and channel-existence registry | — (coverage) | 0 |
 | `apps/proxy/live_proxy/tests/test_server_event_listener.py` | `server.py`'s Redis event listener loop | — (coverage) | 1 |
-| `apps/proxy/live_proxy/tests/test_server_bringup_failures.py` | `server.py`'s bring-up failure and failed-init cleanup | — (coverage) | 1 (fails fast) |
+| `apps/proxy/live_proxy/tests/test_server_bringup_failures.py` | A tune whose source cannot be resolved releases its ownership (`views.py:612-615`, **not** `server.py`) | — | 1 (fails fast) |
 
 Eight modules, three of which share one subject (`server.py`) split by the behaviour each drives.
 Two of the eight — `test_server_registry.py` and `test_server_event_listener.py` — carry no matrix
@@ -506,23 +522,30 @@ not "we ran out of time".
 
 ## Keeping the suite fast
 
-- **Budget: ≤ 3.5 s added across `apps.proxy.live_proxy` + `apps.proxy`.** Measure in Task 9 Step 3
-  against `2a826e07` — name the SHA, not `main`; a local `main` ref can sit behind the branch point
-  and would put 2a-2's files in the diff.
-- **Tunes are the cost.** Measured 0.64–1.09 s each; everything else in this PR is tens of
-  milliseconds. This plan spends **four** tunes (Tasks 2, 4, 5, 7) plus one fast-failing tune
-  (Task 8). Do not add a fifth without removing one.
-- **If the budget is over, drop in this order**, and say so in the PR description:
-  1. Task 7's `test_a_stream_switch_event_from_another_worker_switches_the_running_channel` — the
-     most expensive single test, and the only one whose row-value is coverage rather than a matrix
-     pin. Losing it costs up to **48** `server.py` statements, not a row.
-  2. Task 4's held-open tune, replaced by seeding one client into the relay's own key vocabulary
-     (`RedisKeys.clients(...)` + `RedisKeys.client_metadata(...)`) so
-     `GET /proxy/relay/channels?clients=all` reports a live connection with no tune. **Second
-     choice, not first**: the held-open tune is the only end-to-end proof in the tree that the
-     stream-limit loop closes over real HTTP.
-  Do **not** economise by dropping the live server — it is what carries every assertion in this PR
-  and therefore every row that ports to Go.
+- **Budget: ≈ 10.4 s added, and that is the plan's number rather than an aspiration.** An earlier
+  draft promised ≤ 3.5 s. That figure was wrong and — worse — **its own drop list could not have
+  reached it**, which is the real defect: a plan must not promise a number its remedies cannot
+  deliver. Measured on a materialised copy of these tests, without coverage: **≈10.4 s for ~35
+  tests**; under the gate the `apps.proxy.live_proxy` label goes 179 tests / 7.6 s → 215 / 17.3 s.
+- **Where the 10.4 s actually goes**, none of which the earlier draft costed:
+  - `TransactionTestCase`'s flush is **~80–100 ms per test**, not "tens of milliseconds". At ~35
+    tests that alone is ~3.2 s, and it is unavoidable — the harness base class is a
+    `LiveServerTestCase`.
+  - Each `LiveServerTestCase` **class** costs **~0.4–0.5 s** to start and stop its server thread.
+    Nine classes ≈ 4 s. **This is the only real lever**: the cost is per class, not per file, so
+    folding two classes in one module into one saves half a second. Task 7's two classes are the
+    obvious candidate if you want it back.
+  - **Five tuning tests, not four.** The earlier draft wrote "four tunes (Tasks 2, 4, 5, 7)" while
+    Task 4 has **two** — and Task 4 now has two again after the B1 fix. At ~0.7 s each that is
+    ~3.5 s.
+- **The fixed 15 s stage ceiling is withdrawn.** The trigger is the `apps.proxy.live_proxy` label
+  crossing **45 s**; with 2a-4's ~8.5 s this PR is well inside it.
+- **Do not cut tests to hit a number.** Every test here pins a matrix row or a named `server.py`
+  region, and the two that would have been dropped first under the old list —
+  Task 7's stream-switch test and Task 4's held-open tune — are respectively the largest single
+  `server.py` gain (48 statements) and the only end-to-end proof in the tree that the stream-limit
+  loop closes over real HTTP. **Report the measured number in the PR description; do not trade
+  coverage for it.**
 - **The live server is already amortised per class by Django itself** (verified against Django
   6.0.8: `LiveServerTestCase.setUpClass` starts one server thread and registers
   `addClassCleanup`). Sharing across classes needs a custom runner and is not worth it. The residual
@@ -732,8 +755,12 @@ description:
    and confirm `test_owner_is_the_string_unknown_on_detail_and_null_on_list` fails. **Revert.**
 2. Add `default=None` to `relay_serializers.py:53` (`total_bytes`) and confirm
    `test_optional_fields_are_absent_entirely_rather_than_null` fails. **Revert.**
-3. Change `channel_status.py:339` to `float(source_fps)` and confirm
-   `test_source_fps_is_a_string_on_detail_and_a_float_on_list` fails. **Revert.**
+3. Change **`relay_serializers.py:129`** — detail's `source_fps` — from `CharField` to
+   `FloatField`, and confirm `test_source_fps_is_a_string_on_detail_and_a_float_on_list` fails.
+   **Revert.** **Not** the `float()` edit in `channel_status.py:339` an earlier draft of this plan
+   named: that cannot go red, because the detail serializer is a `CharField` and
+   `str(float("29.97"))` is `"29.97"` again, so the wire is unchanged. The serializer is where this
+   row's type actually lives.
 
 `git diff` must be empty of `apps/proxy/live_proxy/channel_status.py` and
 `apps/proxy/relay_serializers.py` before you commit.
@@ -925,8 +952,8 @@ this row pins, and asserting it would make the test depend on registration order
 <dexec> manage.py test --keepdb apps.proxy.live_proxy.tests.test_client_ip_provenance -v2 --durations 5
 ```
 
-Expected: PASS. Record the duration — it is one of this PR's four tunes and § Keeping the suite
-fast is measured against it.
+Expected: PASS. Record the duration — it is one of this PR's **five** tuning tests and § Keeping
+the suite fast is measured against it.
 
 - [ ] **Step 3: Prove it would fail if the behaviour regressed**
 
@@ -1363,9 +1390,13 @@ described above before assuming a code defect.
 - [ ] **Step 3: Prove the row-19 and row-20 bypasses would be caught**
 
 Comment out `authorize.py:376-377` (the `INTERNAL_PRINCIPAL` early return in
-`_apply_channel_checks`) and confirm `test_the_internal_principal_streams_a_channel_hidden_from_output`
-fails with a 403. **Revert.** Then comment out `:379-385` (the admin early return) and confirm
-`test_an_admin_streams_a_channel_hidden_from_output` fails. **Revert**, and confirm
+`_apply_channel_checks`) and confirm
+`test_the_internal_principal_streams_a_channel_hidden_from_output` fails. **It fails with a 500,
+not a 403** — `INTERNAL_PRINCIPAL` is a bare `object()` (`authorize.py:102`), so the next line's
+`user.user_level` raises `AttributeError` before any check runs. Red either way, which is what the
+falsification needs; do not "fix" the test to expect a 403. **Revert.** Then comment out `:379-385`
+(the admin early return) and confirm `test_an_admin_streams_a_channel_hidden_from_output` fails —
+that one really is a 403, the admin being a real `User`. **Revert**, and confirm
 `git diff apps/proxy/authorize.py` is empty.
 
 - [ ] **Step 4: Close rows 19, 20 and 23**
@@ -1494,9 +1525,12 @@ instead of streaming.
 import requests
 
 from apps.accounts.models import User
+from apps.proxy.live_proxy.redis_keys import RedisKeys
+from apps.proxy.live_proxy.server import ProxyServer
+from core.models import CoreSettings, USER_LIMITS_SETTINGS_KEY
 
 from .harness.process import stand_in_stream_profile
-from .harness.relay import RelayHarnessTestCase
+from .harness.relay import RelayHarnessTestCase, wait_until
 
 
 class StreamByHashAuthorizationTests(RelayHarnessTestCase):
@@ -1519,6 +1553,29 @@ class StreamByHashAuthorizationTests(RelayHarnessTestCase):
             headers={"X-Original-URI": uri, **headers},
             timeout=10,
         )
+
+    def assertDenied(self, response, real_status):
+        # Repeated from the Task 3 module rather than shared: these are two
+        # independent test modules and nothing crosses between them.
+        # subrequest_error_response (authorize_views.py:95-99) maps every
+        # non-401 status to 403 and puts the real one in the header, so
+        # asserting only the 403 would pass for the wrong reason.
+        self.assertIn(response.status_code, (401, 403))
+        self.assertEqual(response.headers.get("X-Authorize-Status"), str(real_status))
+
+    def a_client_stop_was_requested(self, identifier):
+        """True once the relay has been asked to stop ANY client on `identifier`.
+
+        Deliberately a scan rather than a named client id: the held client's
+        id is minted inside the hop and never reaches this test, and inventing
+        a way to learn it would be more machinery than the assertion is worth.
+        RedisKeys.client_stop(channel, client) is
+        live:channel:{channel}:client:{client}:stop, so the prefix is the
+        question "was anyone stopped here".
+        """
+        client = ProxyServer.get_instance().redis_client
+        pattern = f"live:channel:{identifier}:client:*:stop"
+        return any(True for _ in client.scan_iter(match=pattern, count=500))
 
     def test_a_stream_hash_tune_applies_no_channel_check(self):
         # Row 16. The hop resolves a Stream, so X-Relay-Channel is empty --
@@ -1547,9 +1604,20 @@ class StreamByHashAuthorizationTests(RelayHarnessTestCase):
             self.assertGreaterEqual(len(received), 20 * 188)
             self.assertEqual(received[0], 0x47, "the first byte is a TS sync byte")
 
-    def test_a_stream_hash_tune_enforces_the_stream_limit_for_a_principal(self):
-        # Rows 25 and 20's third cell in one measurement, because both need
-        # a live client and this PR can afford one held-open tune.
+    def test_the_stream_limit_terminates_the_held_client_and_admits_the_new_tune(self):
+        """The production default, which is NOT "the new tune is refused".
+
+        check_user_stream_limits (apps/proxy/utils.py:463-476) reads
+        terminate_on_limit_exceeded, whose default is True
+        (core/models.py:762-768). At the limit it therefore calls
+        attempt_stream_termination, which stops the held client and returns
+        True -- so the hop ADMITS the new tune and the old one is dropped.
+        "The stream limit is enforced" means "a slot is freed", not "you are
+        turned away", and rows 20 and 25 are held to the default.
+
+        Pinning only the refusal path would pin the branch operators do not
+        run.
+        """
         admin = User.objects.create_user(
             username="hash-admin",
             password="x",
@@ -1557,12 +1625,12 @@ class StreamByHashAuthorizationTests(RelayHarnessTestCase):
             stream_limit=1,
         )
         self.client.force_login(admin)
-        cookie = {"sessionid": self.client.cookies["sessionid"].value}
+        session = self.client.cookies["sessionid"].value
 
         with self.stand_in():
             held = requests.get(
                 f"{self.live_server_url}/proxy/ts/stream/{self.stream.stream_hash}",
-                cookies=cookie,
+                cookies={"sessionid": session},
                 stream=True,
                 timeout=20,
             )
@@ -1570,29 +1638,85 @@ class StreamByHashAuthorizationTests(RelayHarnessTestCase):
             self.assertEqual(held.status_code, 200)
             next(held.iter_content(chunk_size=188))
 
-            # The whole D4 loop runs for real here: authorize_stream ->
+            # The whole D4 loop runs for real: authorize_stream ->
             # check_user_stream_limits -> _live_connections ->
-            # relay_client.list_channels() -> a signed HTTP call to this
-            # same process's GET /proxy/relay/channels?clients=all.
+            # relay_client.list_channels() -> a signed HTTP call to this same
+            # process's GET /proxy/relay/channels?clients=all.
+            second = self.hop(
+                f"/proxy/ts/stream/{self.channel.uuid}",
+                **{"Cookie": f"sessionid={session}"},
+            )
+            self.assertEqual(
+                second.status_code, 200,
+                "the default frees a slot rather than refusing the tune",
+            )
+
+            # And the slot really was freed at the held client's expense:
+            # the relay has been asked to stop a client on that channel.
+            wait_until(
+                lambda: self.a_client_stop_was_requested(self.stream.stream_hash),
+                timeout=10,
+                what="the held client to be stopped to free the slot",
+            )
+
+        self.stop_channel(self.channel)
+
+    def test_the_stream_limit_refuses_when_termination_is_disabled(self):
+        """The other branch, which an operator selects deliberately.
+
+        With terminate_on_limit_exceeded False, check_user_stream_limits
+        returns False at :464-465 without terminating anything, and
+        authorize_stream raises AuthorizeDenied(429) -- which the nginx-facing
+        view can only carry as 403 plus X-Authorize-Status: 429.
+
+        user_limit_settings is a CoreSettings GROUP, so this write is
+        instance-wide and the flush does not undo the Redis cache (see
+        Global Constraints); addCleanup does.
+        """
+        CoreSettings.objects.update_or_create(
+            key=USER_LIMITS_SETTINGS_KEY,
+            defaults={"value": {"terminate_on_limit_exceeded": False}},
+        )
+        CoreSettings.invalidate_group_cache(USER_LIMITS_SETTINGS_KEY)
+        self.addCleanup(
+            CoreSettings.invalidate_group_cache, USER_LIMITS_SETTINGS_KEY
+        )
+
+        admin = User.objects.create_user(
+            username="hash-admin-strict",
+            password="x",
+            user_level=User.UserLevel.ADMIN,
+            stream_limit=1,
+        )
+        self.client.force_login(admin)
+        session = self.client.cookies["sessionid"].value
+
+        with self.stand_in():
+            held = requests.get(
+                f"{self.live_server_url}/proxy/ts/stream/{self.stream.stream_hash}",
+                cookies={"sessionid": session},
+                stream=True,
+                timeout=20,
+            )
+            self.addCleanup(held.close)
+            self.assertEqual(held.status_code, 200)
+            next(held.iter_content(chunk_size=188))
+
+            # Row 25: enforced for a principal on the by-hash surface.
             second = self.hop(
                 f"/proxy/ts/stream/{self.stream.stream_hash}",
-                **{"Cookie": f"sessionid={self.client.cookies['sessionid'].value}"},
+                **{"Cookie": f"sessionid={session}"},
             )
-            self.assertIn(second.status_code, (401, 403))
-            self.assertEqual(second.headers.get("X-Authorize-Status"), "429")
+            self.assertDenied(second, 429)
 
-            # Row 20: the admin's bypasses do not reach the stream limit --
-            # a slot they hold is the same provider slot. Same held client,
-            # a different identifier, so this is the limit and not a
-            # same-channel exemption.
+            # Row 20: an admin's bypasses do not reach the stream limit. Same
+            # held client, a different identifier, so this is the limit and
+            # not a same-channel exemption.
             channel_attempt = self.hop(
                 f"/proxy/ts/stream/{self.channel.uuid}",
-                **{"Cookie": f"sessionid={self.client.cookies['sessionid'].value}"},
+                **{"Cookie": f"sessionid={session}"},
             )
-            self.assertIn(channel_attempt.status_code, (401, 403))
-            self.assertEqual(
-                channel_attempt.headers.get("X-Authorize-Status"), "429"
-            )
+            self.assertDenied(channel_attempt, 429)
 
         self.stop_channel(self.channel)
 ```
@@ -1650,10 +1774,15 @@ redis-cli --scan --pattern 'live:channel:*:clients*'
 
 - [ ] **Step 3: Prove the limit assertion has teeth**
 
-Change the admin's `stream_limit` to `0` in the second test and confirm both 429 assertions fail
+Change the admin's `stream_limit` to `0` in
+`test_the_stream_limit_refuses_when_termination_is_disabled` and confirm both 429 assertions fail
 (the hop answers 200) — `check_user_stream_limits` returns early for a non-positive limit
-(`apps/proxy/utils.py:412`). **Revert to 1.** This one is a test-only edit, so no production diff to
-check.
+(`apps/proxy/utils.py:412`). **Revert to 1.** A test-only edit, so no production diff to check.
+
+Then prove the two tests really are opposite branches rather than one behaviour written twice:
+**delete the `terminate_on_limit_exceeded: False` write** from that test and confirm it now fails
+with a 200, because the default terminates a client and admits the tune. **Restore it.** If both
+tests pass with the setting removed, one of them is not asserting what its name says.
 
 - [ ] **Step 4: Close rows 16 and 25, and finish row 20's cell**
 
@@ -1666,13 +1795,13 @@ Row 16's `Pin` cell:
 Row 25's `Pin` cell:
 
 ```
-`apps/proxy/live_proxy/tests/test_stream_by_hash_authorization.py::test_a_stream_hash_tune_applies_no_channel_check`, `apps/proxy/live_proxy/tests/test_stream_by_hash_authorization.py::test_a_stream_hash_tune_enforces_the_stream_limit_for_a_principal`
+`apps/proxy/live_proxy/tests/test_stream_by_hash_authorization.py::test_a_stream_hash_tune_applies_no_channel_check`, `apps/proxy/live_proxy/tests/test_stream_by_hash_authorization.py::test_the_stream_limit_terminates_the_held_client_and_admits_the_new_tune`, `apps/proxy/live_proxy/tests/test_stream_by_hash_authorization.py::test_the_stream_limit_refuses_when_termination_is_disabled`
 ```
 
 Row 20's `Pin` cell — append the third reference to the two Task 3 wrote:
 
 ```
-, `apps/proxy/live_proxy/tests/test_stream_by_hash_authorization.py::test_a_stream_hash_tune_enforces_the_stream_limit_for_a_principal`
+, `apps/proxy/live_proxy/tests/test_stream_by_hash_authorization.py::test_the_stream_limit_terminates_the_held_client_and_admits_the_new_tune`
 ```
 
 **Reframe row 25's `Notes` cell the same way Task 3 Step 4 reframes rows 19, 20 and 23** — it
@@ -1974,6 +2103,12 @@ class ChannelRegistryTests(RelayHarnessTestCase):
         return bool(self.redis.exists(RedisKeys.channel_metadata(self.identifier)))
 
     def test_a_channel_whose_owner_still_heartbeats_is_reported_present(self):
+        # NOTE the shape of the assertion, and do not add a metadata check
+        # here: on the success path stop_channel goes on to run
+        # _clean_redis_keys (server.py:1831), which DELETES the hash. A
+        # `status: success` and a surviving metadata key are mutually
+        # exclusive by construction. previous_state is the field that proves
+        # the registry saw the channel, and it comes back in the body.
         worker = f"worker-{uuid_module.uuid4().hex[:8]}"
         heartbeat = RedisKeys.worker_heartbeat(worker)
         self.redis.setex(heartbeat, 30, "1")
@@ -1983,7 +2118,9 @@ class ChannelRegistryTests(RelayHarnessTestCase):
             ChannelMetadataField.OWNER: worker,
         })
 
-        self.assertEqual(self._stop()["status"], "success")
+        result = self._stop()
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(result["previous_state"], {"state": ChannelState.ACTIVE})
 
     def test_a_channel_whose_owner_stopped_heartbeating_is_cleaned_as_a_zombie(self):
         # No heartbeat key for the named owner: server.py:915-931 calls it a
@@ -2034,16 +2171,22 @@ class ChannelRegistryTests(RelayHarnessTestCase):
         self.assertEqual(self._stop()["status"], "error")
         self.assertFalse(self._metadata_exists())
 
-    def test_a_channel_recently_moved_to_an_unrecognised_state_is_left_alone(self):
+    def test_a_channel_recently_moved_to_an_unrecognised_state_is_reported_present(self):
         # The other side of the same branch (server.py:949-950): still in
-        # progress, so the answer is "present" and nothing is deleted.
+        # progress, so check_if_channel_exists answers True and the stop
+        # proceeds. previous_state carries the state it saw -- which is the
+        # only thing that distinguishes this from the stale case, since the
+        # stop then deletes the hash either way (server.py:1831).
         self._seed_metadata(**{
             ChannelMetadataField.STATE: "a-state-no-constant-defines",
             ChannelMetadataField.STATE_CHANGED_AT: str(time.time()),
         })
 
-        self.assertEqual(self._stop()["status"], "success")
-        self.assertTrue(self._metadata_exists())
+        result = self._stop()
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(
+            result["previous_state"], {"state": "a-state-no-constant-defines"}
+        )
 
     def test_orphaned_keys_without_metadata_are_cleaned_up(self):
         # server.py:951-967 -> _clean_redis_keys (:2391-2426). A clients
@@ -2065,11 +2208,14 @@ class ChannelRegistryTests(RelayHarnessTestCase):
 <dexec> manage.py test --keepdb apps.proxy.live_proxy.tests.test_server_registry -v2 --durations 10
 ```
 
-Expected: PASS, every test in the tens of milliseconds. If
-`test_a_channel_recently_moved_to_an_unrecognised_state_is_left_alone` is flaky, the cleanup thread
-reached the channel first — **do not add a sleep or a retry**. Give the test a state string that
-cannot collide and re-run; if it is still flaky, delete the test and say so in the PR description.
-A test whose answer depends on which thread won is worse than no test (§ Measured baselines).
+Expected: PASS. **If a success-path test fails on a metadata assertion, the diagnosis is not the
+cleanup thread** — an earlier draft of this plan said it was, and that was wrong in a way that
+would have sent you chasing a race that is not there. `ChannelService.stop_channel` calls
+`proxy_server.stop_channel`, whose `_clean_redis_keys` (`server.py:1831`) deletes the hash on the
+success path, so `status: "success"` and a surviving metadata key cannot both be true. Assert
+`previous_state` instead, as the two tests above do. The metadata assertions are correct **only**
+on the zombie and orphan tests, where `check_if_channel_exists` answered False and the deletion was
+the cleanup, not the stop.
 
 - [ ] **Step 3: Confirm the coverage moved**
 
@@ -2229,11 +2375,17 @@ class EventListenerTests(RelayHarnessTestCase):
             RedisKeys.events_channel(self.identifier), json.dumps(payload)
         )
 
-    def test_a_client_stop_event_from_another_worker_sets_the_clients_stop_key(self):
-        # Reached through the real admin surface: stop_client publishes only
-        # when the client is not registered on this worker
-        # (services/channel_service.py:676-683), which is exactly the
-        # cross-worker case.
+    def test_the_admin_stop_route_publishes_when_the_client_is_not_local(self):
+        """The HTTP half, and ONLY the HTTP half.
+
+        This test deliberately does NOT wait for the stop key, and an earlier
+        draft of this plan did: stop_client sets that key ITSELF, first thing
+        (services/channel_service.py:647-651), before it checks the channel
+        exists and long before it publishes anything. A wait_until on the key
+        therefore passes with the event listener dead, which makes it a test
+        of nothing. The listener's own branch is asserted below, by a route
+        that cannot be satisfied any other way.
+        """
         client_id = "client_on_some_other_worker"
         path = f"/proxy/relay/channels/{self.identifier}/clients/{client_id}"
         response = requests.delete(
@@ -2243,8 +2395,31 @@ class EventListenerTests(RelayHarnessTestCase):
         body = response.json()
         self.assertTrue(body["event_published"])
         self.assertFalse(body["locally_processed"])
+        self.assertTrue(body["stop_key_set"])
 
+    def test_a_client_stop_event_from_another_worker_sets_the_clients_stop_key(self):
+        """The listener's CLIENT_STOP branch (server.py:402-419).
+
+        Published directly rather than through the admin route, and that is
+        the point: the route sets the stop key itself before publishing, so
+        only an event that arrives WITHOUT the route running can prove the
+        listener set it. The payload mirrors
+        ChannelService._publish_client_stop_event (:992-1013) exactly; a
+        second relay worker puts precisely this on the channel.
+        """
+        client_id = "client_only_the_listener_can_stop"
         stop_key = RedisKeys.client_stop(self.identifier, client_id)
+        self.assertFalse(
+            self.redis.exists(stop_key), "the key must not exist before the event"
+        )
+
+        self._publish({
+            "event": EventType.CLIENT_STOP,
+            "channel_id": self.identifier,
+            "client_id": client_id,
+            "requester_worker_id": "some-other-worker",
+        })
+
         wait_until(
             lambda: bool(self.redis.exists(stop_key)),
             timeout=10,
@@ -2433,13 +2608,12 @@ Subject: `test(phase2): cover server.py's Redis event listener loop`.
   `RedisKeys`, `ProxyServer`, `apps.channels.models.Stream`.
 - Produces: nothing.
 
-**Coverage value: small, and say so.** At the baseline `_cleanup_failed_init`
-(`server.py:971-1021`) has only **3** missed statements — existing tests already reach most of it.
-This task is worth doing anyway, and its worth is the behaviour rather than the number: nothing in
-the tree asserts that a tune which cannot be served leaves no ownership key, no metadata hash and
-no local manager behind, and that assertion is one the Go relay is held to just as much. **Do not
-inflate its coverage claim in the PR description**, and if the time budget bites, this is the
-cheapest task to keep rather than the first to cut — it costs a fraction of a tune.
+**Coverage value on `server.py`: zero. Say so plainly.** This task reaches
+`views.py:612-615`, not `server.py` — see the recipe note below for why `_cleanup_failed_init` is
+never entered. Its worth is behavioural: nothing in the tree asserts that a tune which cannot be
+served releases its ownership rather than stranding it, and the Go relay is held to that just as
+much. **Do not claim `_cleanup_failed_init` coverage in the PR description**, and do not let
+Task 9's arithmetic count 3 statements this task does not close.
 
 **The path.** `stream_ts` acquires the init lock, calls `generate_stream_url` in a retry loop
 (`views.py:318-345`) and, when no URL comes back for a reason that is not a connection limit,
@@ -2448,44 +2622,65 @@ stops retrying immediately — so this test costs a fraction of a tune rather th
 releasing ownership without the stopping gate, dropping the local dicts and calling
 `_clean_redis_keys`.
 
-**How to make the source unresolvable without touching production code.**
-`resolve_initial_source` (`next_source.py:410-432`) returns
-`{"source": None, "error": "Stream has no M3U account"}` when the `Stream` has no `m3u_account`.
-`harness.relay.make_channel` always attaches one, so the test clears it on the row it created:
+**How to make the source unresolvable, and why the obvious recipe crashes.**
+
+**Do not write `stream.m3u_account = None; stream.save(...)`.** `Stream` carries a `pre_save`
+receiver, `apps/channels/signals.py:52-65`'s `set_default_m3u_account`, which on a falsy
+`m3u_account` calls `M3UAccount.get_custom_account()` and raises when there is none — and after
+`TransactionTestCase`'s flush there is none, because the locked custom account is migration-seeded.
+The field **is** nullable; checking that tells you nothing, because the signal is what fails. This
+is the same seeded-row trap § Global Constraints names, arriving through a receiver rather than a
+lookup.
+
+Two shapes that work, both measured at 12-14 ms. Pick either:
 
 ```python
-stream = channel.streams.first()
-stream.m3u_account = None
-stream.save(update_fields=["m3u_account"])
+# (a) bypass the signal: queryset.update() issues UPDATE and fires no signals
+from apps.channels.models import Stream
+Stream.objects.filter(id=channel.streams.first().id).update(m3u_account=None)
+
+# (b) leave the channel with no streams at all
+channel.channelstream_set.all().delete()
 ```
 
-Verify that `Stream.m3u_account` is nullable before relying on it —
-`grep -n "m3u_account = models" apps/channels/models.py`. If it is not, use the other unresolvable
-shape instead: delete the `ChannelStream` row so the channel has no streams at all, and read what
-`resolve_initial_source` answers for that. Either is fine; the test's subject is the relay's
-reaction, not which upstream defect provoked it.
+**And correct the mechanism story while you are here — the earlier draft of this task had it
+wrong.** The tune is by **channel uuid**, so `resolve_initial_source` takes the `Channel` branch,
+not the `Stream` branch, and `Channel.get_stream()` simply skips a stream it cannot resolve. So
+**`initialize_channel` is never entered and `_cleanup_failed_init` is never reached** — its only
+callers are `server.py:719` and `:874`, both inside `initialize_channel`. Ownership is released by
+`stream_ts`'s own `finally` at `views.py:612-615`.
+
+**Consequence for this task's claim: its `server.py` yield is 0, not 3.** It is still worth
+keeping, because it pins `views.py:614-615` — that a tune which cannot be served releases its
+ownership rather than stranding it — and nothing else in the tree asserts that. **Say so in the PR
+description rather than claiming `_cleanup_failed_init` coverage this test does not produce.**
 
 - [ ] **Step 1: Write the failing test**
 
 ```python
-"""server.py's bring-up failure path (Gate 2 coverage).
+"""A tune whose source cannot be resolved releases its ownership.
 
-A tune whose source cannot be resolved must not leave the channel
-half-built: stream_ts stops retrying as soon as the failure is not a
-connection limit (views.py:335-345) and _cleanup_failed_init
-(server.py:971-1021) releases ownership, drops the local dicts and cleans
-the Redis keys.
+stream_ts stops retrying as soon as the failure is not a connection limit
+(views.py:336-343) and its own finally block releases ownership at
+views.py:612-615. That release is the whole subject.
 
-Cheap on purpose: nothing spawns, because the failure happens before
-initialize_channel is ever reached.
+NOT _cleanup_failed_init. The tune is by channel uuid, so
+resolve_initial_source takes the Channel branch and Channel.get_stream()
+skips the unresolvable stream; initialize_channel is never entered, and
+_cleanup_failed_init's only callers (server.py:719 and :874) are inside it.
+This test's server.py yield is ZERO. It earns its place on views.py.
 
-NOT a matrix row -- ownership release is D2-deleted machinery. What ports is
-the observable: a tune that cannot be served answers an error and leaves
-nothing behind.
+NOT a matrix row -- the ownership lease is D2-deleted machinery. What ports
+is the observable: a tune that cannot be served answers an error and leaves
+nothing claiming the channel.
+
+Cheap on purpose: nothing spawns, because the failure happens before any
+subprocess is reached.
 """
 
 import requests
 
+from apps.channels.models import Stream
 from apps.proxy.live_proxy.redis_keys import RedisKeys
 from apps.proxy.live_proxy.server import ProxyServer
 
@@ -2502,9 +2697,13 @@ class BringUpFailureTests(RelayHarnessTestCase):
         )
         identifier = str(channel.uuid)
 
-        stream = channel.streams.first()
-        stream.m3u_account = None
-        stream.save(update_fields=["m3u_account"])
+        # queryset.update(), never instance.save(): Stream has a pre_save
+        # receiver (apps/channels/signals.py:52-65) that raises when it
+        # cannot find the migration-seeded custom M3UAccount, which the
+        # flush has already removed.
+        Stream.objects.filter(id=channel.streams.first().id).update(
+            m3u_account=None
+        )
 
         response = requests.get(
             f"{self.live_server_url}/proxy/ts/stream/{identifier}",
@@ -2595,17 +2794,28 @@ Three checks, in this order:
 
 1. **The denominator is 7,978.** It is a property of the rcfile's module list. Anything else is a
    finding — stop and report rather than continuing.
-2. **`server.py`'s missed count has fallen measurably from the 840–844 recorded in § Measured
-   baselines.** Take your own before-number in the same session rather than quoting either. The gate is "a measured increase", and the bar for "measured" is set by the noise:
-   eight runs on one unmodified tree moved `missing` by **19 statements**, and four of the moving
-   regions are in this very file. So a movement of a few dozen statements is not evidence; a
-   movement of **a hundred or more** is. **Expect the tasks above to close about 125 on
-   `server.py`**, derived from the complete attribution in § Measured baselines rather than
-   guessed: `check_if_channel_exists` 35 + `_clean_zombie_channel` 11 + `_clean_redis_keys` 2 +
-   `_cleanup_failed_init` 3 (Tasks 6 and 8) = 51, plus roughly 74 of the event listener's 120
-   (CLIENT_STOP 13, CHANNEL_STOP 13, STREAM_SWITCH 48) in Task 7. Anything from **100 to 140** is
-   the expected band; **below 80 means a task did not land what it claimed**, and above 160 means
-   something incidental moved and is worth attributing before you celebrate it. **Report the before and after as two numbers from
+2. **`server.py`'s missed count has fallen measurably.** **Take your own before-number in this
+   same session, on this same container, and compare against that** — never against a figure quoted
+   from this document. Every baseline here is C-tracer basis and this branch may by then be rebased
+   onto a `sysmon` 2a-2, which moves `server.py` by 48 statements on its own.
+
+   **The target is ≈121, and it is a target, not a measurement.** It is what Tasks 6 and 7 are
+   expected to close **out of a reachable pool of 257** (sysmon) — the gap is deliberate and
+   § Deliberate non-goals says why. Derivation: `check_if_channel_exists` 34 +
+   `_clean_zombie_channel` 11 + `_clean_redis_keys` 2 (Task 6) = 47, plus roughly 74 of the event
+   listener's 108 (CLIENT_STOP 13, CHANNEL_STOP 13, STREAM_SWITCH 48) in Task 7. **Task 8
+   contributes 0 to `server.py`** — it reaches `views.py:612-615` instead, for the reason its own
+   section gives.
+
+   **Expected band 100–140.** Below 80 means a task did not land what it claimed; above 160 means
+   something incidental moved and is worth attributing before you celebrate it. A movement of a few
+   dozen is not evidence either way: eight runs on one unmodified tree moved `missing` by 19
+   statements, and four of the moving regions are in this file.
+
+   **A reference measurement exists.** A review pass materialised these tests and measured
+   `server.py` **820/823/819 → 698/697/701 across three runs: −122, range −118…−126.** That is the
+   ≈121 target landing. If your number is far from it, the difference is in your tests, not in the
+   estimate. **Report the before and after as two numbers from
    runs taken in the same session, on the same container, and say how many runs you took.**
 3. **Zero `CoverageWarning` lines.**
 
@@ -2645,8 +2855,10 @@ each carry a test reference and none of them still says `owed: 2a-5`:
 grep -n '^| \(14\|15\|16\|17\|19\|20\|23\|25\) |' docs/relay-parity-matrix.md
 ```
 
-`grep -c 'owed: 2a-5' docs/relay-parity-matrix.md` must print `0`. The only `owed:` marker that may
-remain anywhere in the file is `owed: 2b-3` on row 18.
+`grep -c 'owed: 2a-5' docs/relay-parity-matrix.md` must print **`0`**. **That is the whole check.**
+Do not assert anything about the file's other `owed:` markers: on this branch there are also four
+`owed: 2a-3`, nine `owed: 2a-4`, one `owed: 2a-6` and one `owed: 2b-3`, and they stay until those
+PRs land. Gate 1 closing at 2b-3 is a statement about the end of the phase, not about this branch.
 
 - [ ] **Step 5: Confirm no production file changed**
 
@@ -2669,7 +2881,7 @@ It must carry, at minimum:
 - The falsification evidence from Task 1 Step 2, Task 2 Step 3, Task 3 Step 3, Task 4 Step 3 and
   **especially Task 5 Step 3** — the 403 that appears when `decision=decision` is removed.
 - § Deliberate non-goals, verbatim, so a reviewer does not have to ask.
-- The four findings and recommendations this PR is expected to surface, if they held up:
+- The five findings and recommendations this PR is expected to surface, if they held up:
   1. The event listener's "Non-owner worker cleaning local resources" arm (`server.py:382-389`) is
      unreachable for a non-owner, because every branch sits under `if self.am_i_owner(...)` at
      `:245`. Recorded, not fixed (D5).
@@ -2684,7 +2896,15 @@ It must carry, at minimum:
      **2a-7 should add the row**, citing that test; it runs after all four have merged, so its
      bump conflicts with nothing. (2b-3 is the fallback, being the last PR the spec has editing
      this file.) Same disposal 2a-4 used for its Proxy/Redirect finding.
-  4. Whether the container reports `Your models in app(s): 'core' have changes that are not yet
+  4. **Two production findings from the review pass's probes, as findings, not fixes.** (a) Every
+     hash-identified tune logs `Failed to log system event channel_start: ['"harness-hash-…" is
+     not a valid UUID.']` — the control plane's event serializer rejects a relay event whose
+     identifier is a `stream_hash`, so the admin single-stream preview raises no `channel_start`
+     event at all. (b) `try_acquire_ownership` (`server.py:507-513`) reads `SET NX`'s
+     None-on-contention as "Redis command failed — assuming ownership", which makes `:519-529`
+     dead code and makes contention **fail open** — a fourth fail-open shape alongside the three
+     `CLAUDE.md` records. Both filed, neither fixed (D5).
+  5. Whether the container reports `Your models in app(s): 'core' have changes that are not yet
      reflected in a migration` on this branch. It did during planning. If it reproduces from a
      clean `main` checkout too, it is pre-existing and belongs in an issue, not this PR; if it does
      not, something on this stack introduced it and the PR must not merge until it is understood.
