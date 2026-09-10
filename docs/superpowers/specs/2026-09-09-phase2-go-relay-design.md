@@ -1116,7 +1116,94 @@ which files move and why, exactly as the measurement above does, so a later wide
 the same case. (iii) A movement **outside** it is a finding to investigate, not noise to absorb —
 the tolerance exists to stop random reddening, not to hide a regression. **This spec deliberately
 states no number**: the residual belongs to the tree 2a-7 measures on, and a figure written here
-would be quoted long after it stopped being true. **No PR in stage 2c may merge until
+would be quoted long after it stopped being true. **What it must be sized against is a measurement
+under `COVERAGE_CORE=sysmon`, whose spread is wider than the C tracer's** — 63 statements across
+twelve runs, against the C tracer's 19. That is not a regression and the cause is understood: the C
+tracer systematically drops statements executing after a `gevent.sleep()`, and in doing so was also
+flattening the visible difference between the relay's background housekeeping firing during a run or
+not. Recovering those statements makes pre-existing timing variance visible, it does not create it —
+per-file diffs confine the extra spread to the sources § above already names. **2a-7 sizes against
+63, not 19.**
+
+#### Whether ≥80% is reachable by 2a-3 … 2a-6 as scoped — an open question for the user
+
+**The gate, stated as a count rather than a percentage.** 80% of the 7,978-statement denominator
+requires 6,383 covered, so the **maximum permitted `missing` is 1,595** (1,595 missing → 80.008%;
+1,596 → 79.995%). **This number is independent of coverage core and of every measurement below**,
+because the denominator is a property of the rcfile. Stating it as a count is deliberate: percentages
+are what hid the error this section records.
+
+**Every other figure here was taken under the C tracer and is pending re-measurement under sysmon.
+They are labelled, and they are not mixed** — a sum spanning two cores is exactly what the shape
+guard exists to refuse, and it would be a poor thing to commit into the spec that describes it.
+
+| Input | C-tracer value | Status |
+|---|---|---|
+| Distance to close | **3,035 → 1,440** (post-2a-3) | pending sysmon re-measurement |
+| 2a-4 `input/manager.py` | 498 missed; its planner predicts 60-120 | pending |
+| 2a-5 `server.py` | 840 missed, **222 forbidden-or-unreachable**; reachable remainder disputed at **150 / 217 / 618** | pending, and the dispute is unresolved |
+| 2a-6 `fmp4/manager.py` + `profile/manager.py` + `fmp4/generator.py` | **unmeasured**; ≤633 by their pre-harness sum | never measured post-harness |
+| 2a-5's authorize rows | **counted as zero** | see below |
+
+**2a-5's rows 14-17, 19, 20, 23 and 25 are authorize/view-level**, so their coverage lands in
+`authorize.py`, `authorize_views.py`, `views.py`, `channel_status.py` and `next_source.py` — inside
+the denominator but **outside `server.py`**. That yield is real, unmeasured, and counted as zero in
+every scenario below. It is the one input that could move the answer favourably without re-scoping
+anything.
+
+**The bracket, under the C tracer.** Distance 1,440:
+
+| Scenario | Supply | Result |
+|---|---|---|
+| `server.py` = 150, 2a-6 at ~25% | 368 | short **1,072** |
+| `server.py` = 217, 2a-6 at ~40% | 560 | short **880** |
+| `server.py` = 217, 2a-6 at **100%** | 970 | short **470** |
+| `server.py` = 618, 2a-6 at **100%** | 1,371 | short **69** |
+| **Absolute ceiling** — every in-scope file *and* the ten boundary modules driven to zero | 1,840 | closes +400 |
+
+**Two of those rows are impossible, not merely optimistic**: driving all three of 2a-6's files to
+zero contradicts this spec's own ~20-30% reachability estimate for two of them. And the sharpest
+form is the ceiling under the **217** reading: 498 + 217 + 633 + 91 = **1,439 against 1,440 — short
+by a single statement, with every file in scope at zero.** Under the **618** reading the same
+ceiling reaches 1,840 and closes. The unresolved 150/217/618 question therefore decides whether the
+gate is reachable *even in the impossible case*, which is why it is the first thing to settle.
+
+**Sysmon's ~90 recovered statements probably do not move this, and the reason is worth stating
+because it is counter-intuitive.** Both sides of the subtraction move together: recovering a
+statement lowers the total (shrinking the distance) *and* lowers an in-scope file's missed count
+(shrinking the supply). **The margin changes only by the portion recovered *outside* the four PRs'
+scope.** The one region identified so far is `input/manager.py:942-985` (`_read_stderr` /
+`_parse_ffmpeg_stats`) — squarely inside 2a-4's scope — so the expected improvement is small. To be
+re-derived from measurement, not assumed.
+
+**The reasoning error, which outlives every number above.** The withdrawn claim that *"closing the
+five largest gaps approximately **is** the gate"* was **count-derived** — 2,504 was a sum of missed
+statements — and therefore read as arithmetic. What it silently required was that **every missed
+statement be closeable**, and the reachability percentages that would have falsified it sat beside
+it as commentary, never connected to it. **A sum of missed statements is not a budget until each
+term is known to be reachable.** That is the transferable lesson, it is independent of which core
+measured what, and it is exactly the error available to repeat at 2a-7 when someone sizes the last
+stretch.
+
+**What would narrow the range**, in priority order: (i) 2a-6's three files measured post-harness
+under sysmon — now the dominant term, spanning 633 statements and appearing in every row; (ii) the
+150/217/618 reconciliation for `server.py`, worth 468; (iii) 2a-5's authorize-row yield, currently
+zero; (iv) per-file unreachability for `input/manager.py`, whose 498 ceiling assumes none.
+
+**The options, for the user to choose between — this spec states them and recommends none.**
+Widen the coverage PRs into the ~1,064 in-denominator statements that lie outside the four PRs'
+current scope; lower the gate to a measured achievable figure; or add a PR. **The gate's value is
+not changed here and no replacement is proposed.**
+
+**Two things this finding is not.** It does **not** invalidate 2a-3 … 2a-6: their other half —
+pinning parity-matrix rows so the behaviour survives a rewrite into Go — is untouched by coverage
+arithmetic, and § Goal already names 2a and 2b as legitimate stopping points whose value survives
+abandoning Go entirely. The gate is a precondition on **2c**, not on the work in flight. And it is
+not a failure of the plan: **stage 2a's ordering exists precisely so that a gate nobody can meet is
+discovered before a line of Go is written rather than after.** A mis-scoped gate surfacing here, with
+four PRs still unimplemented and the decision still open, is that ordering paying off.
+
+**No PR in stage 2c may merge until
 this job reports ≥80% and Gate 1 is met** — the latter meaning *no row still carries an `owed:`
 marker*, not merely that the guard test is green, which it is from 2a-1 onward by design (§ A6).
 Stated as a CI precondition on 2c's first PR, not review discretion; 2b-3 is the PR that satisfies
