@@ -453,11 +453,21 @@ Modify:
 | Path | Change |
 |---|---|
 | `CLAUDE.md` | § Testing: "No backend unit test spawns a subprocess" becomes false with this PR. Correct it in the same PR, per the project's standing convention. |
+| `metrics/curated/defects.yml` | One new entry for **#226**, the librist image defect this PR works around. **Already added by the planning pass** (validated: `ok: 46 metrics, 32 milestones, 28 defects`) — do not add it again; check it is there and leave it alone. |
 
 Not touched, deliberately: `docs/relay-parity-matrix.md`, `e2e/**`, `e2e/COVERAGE.md` (no
-Playwright test is added), `metrics/curated/**` (this PR closes no ledger issue, adds no
-`test.fail()` pin, merges no goal and ticks no Done log), `.github/workflows/**`, `pyproject.toml`,
-`uv.lock`, `.coveragerc` (the existing metrics rcfile stays exactly as it is).
+Playwright test is added), `.github/workflows/**`, `pyproject.toml`, `uv.lock`, `.coveragerc` (the
+existing metrics rcfile stays exactly as it is).
+
+**On the ledger.** This PR closes no ledger issue, adds no `test.fail()` pin, merges no goal and
+ticks no Done log — but it *does* discover and work around a defect, and `docs/agents/metrics.md`'s
+status table says an `open` entry needs `issue` **or** `source`, so an issue-sourced entry with
+`source: null` is legitimate (seven existing rows are exactly that shape). #226 is therefore in the
+ledger as `area: operational, severity: low, status: open, issue: 226`. **Severity `low` is a
+judgement**: production is unaffected because `docker/entrypoint.sh:102` exports the variable, so the
+defect only bites where that entrypoint does not run — the two test containers today, and a
+`docker exec` or a plugin spawning ffmpeg tomorrow. If a reviewer disagrees, `medium` is defensible;
+what is not defensible is leaving it out.
 
 ---
 
@@ -2664,12 +2674,14 @@ harness; do not reorder the tests.
 - Modify: `apps/proxy/live_proxy/tests/harness/asset.py` (append)
 - Modify: `apps/proxy/live_proxy/tests/test_harness_smoke.py` (append one test)
 
-**`<ISSUE>` in the code below is a real issue number, not a placeholder to leave in.** The
-orchestrator filed the two-librist image defect as an issue on `D10Scot/Dispatcharr` and supplies
-the number; it belongs in that comment and in `fixtures/ffmpeg_stderr/CAPTURE.md`. **If you reach
-this task without a number, ask for it before committing** — do not invent one, do not drop the
-sentence, and do not file the issue yourself (`gh` without `--repo D10Scot/Dispatcharr` resolves to
-upstream's public tracker).
+**The image defect is [#226](https://github.com/D10Scot/Dispatcharr/issues/226)** — "ffmpeg is
+installed but unrunnable in the test containers: duplicate librist, ld.so.conf ordering". It records
+that `which ffmpeg` succeeds while execution dies on `rist_peer_config_defaults_set_versioned`, that
+`docker/entrypoint.sh:102` is the only place `LD_LIBRARY_PATH` is exported, and that neither test
+environment runs that entrypoint. **Its own suggested fixes are ordered image-first, with exporting
+the variable in the two test bootstraps as the last resort** — so this helper is a local workaround
+and its comment must read that way, not as the fix. Cite #226 in the comment and in
+`fixtures/ffmpeg_stderr/CAPTURE.md`.
 
 **Interfaces:**
 - Consumes: nothing new.
@@ -2740,9 +2752,12 @@ import unittest
 #
 # Set here, in the CHILD's environment, rather than in
 # scripts/ci_bootstrap_backend.sh: this is test-local, works identically in the
-# hook container, in backend-tests.yml and on a developer's machine, needs no
-# production-adjacent edit, and does not pretend to fix what is really an image
-# defect. The root cause is tracked as D10Scot/Dispatcharr#<ISSUE>.
+# hook container, in backend-tests.yml and on a developer's machine, and needs
+# no production-adjacent edit. It is a WORKAROUND, not the fix -- the root cause
+# is an image defect, tracked as D10Scot/Dispatcharr#226, whose own suggested
+# fixes are ordered image-first with exporting this variable in the two test
+# bootstraps as the last resort. If #226 lands, this whole helper becomes a
+# plain shutil.which plus a version probe.
 _FFMPEG_ENV = {"LD_LIBRARY_PATH": "/usr/local/lib"}
 
 
@@ -3043,4 +3058,6 @@ the work as verified.**
 - [ ] `CLAUDE.md` no longer says no backend test spawns a subprocess.
 - [ ] No file outside § File structure is modified — in particular no production module, no
       workflow, no `pyproject.toml`, no `uv.lock`, no `docs/relay-parity-matrix.md`, no `e2e/`.
+- [ ] `metrics/curated/defects.yml` carries the #226 entry and
+      `python -m metrics.build --validate-only` prints `ok: 46 metrics, 32 milestones, 28 defects`.
 - [ ] The PR description carries the five items of Task 7 Step 7.
