@@ -1,0 +1,37 @@
+# Gate 2's measurement shape (Phase 2 spec, § Stage 2a > Gate 2). Self-contained
+# on purpose: run from the repository root, coverage would otherwise pick up
+# ./.coveragerc, whose `source = apps, core, dispatcharr` makes coverage ignore
+# any --include with a CoverageWarning and measure the whole tree.
+#
+# Why `source` and not `include`: `source` triggers coverage's unexecuted-file
+# walk, so a module no test imports is reported at 0% instead of vanishing from
+# the denominator. Measured at a948cd8a: with `include` and no `source` the
+# denominator is 7,877 rather than 7,978 -- the missing 101 statements are
+# apps/proxy/live_proxy/input/http_streamer.py, which nothing imports. A
+# denominator that shrinks when a file goes completely untested is the wrong
+# shape for a ratchet.
+[run]
+source = apps/proxy
+omit =
+    */tests/*
+parallel = True
+data_file = ${COVERAGE_LIVE_PATH_DATA_DIR}/.coverage
+
+# The ten Phase 1 boundary modules plus the relay, and nothing else: vod_proxy
+# and the dead hls_proxy stay out, matching D1's scope line.
+[report]
+include =
+    apps/proxy/live_proxy/*
+    apps/proxy/authorize.py
+    apps/proxy/authorize_views.py
+    apps/proxy/control_plane.py
+    apps/proxy/next_source.py
+    apps/proxy/relay_client.py
+    apps/proxy/relay_serializers.py
+    apps/proxy/relay_views.py
+    apps/proxy/permissions.py
+    apps/proxy/internal_auth.py
+    apps/proxy/internal_base_url.py
+omit =
+    */tests/*
+skip_empty = True
