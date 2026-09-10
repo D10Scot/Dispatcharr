@@ -71,9 +71,13 @@ Every task's requirements implicitly include this section.
   under `apps/channels/`, `core/`, `dispatcharr/`, `docker/`. See § The seam decision for why this
   PR needs none. **If a task starts to need a production edit, stop and report** — that is a change
   to the seam decision, not a detail.
-- **No workflow file is edited.** The CI wiring for the coverage gate, the floor file and the
-  blocking behaviour are **2a-7's**, explicitly (spec § The seven PRs). This PR ships the script and
-  nothing that runs it in CI. If a task appears to need a workflow edit, it is out of scope.
+- **No workflow file is edited** — settled, not assumed. The CI wiring for the coverage gate, the
+  floor file and the blocking behaviour are **2a-7's**, explicitly (spec § The seven PRs). A
+  non-blocking matrix step added here would have to be reworked into a blocking one at 2a-7 while
+  carrying the zizmor zero-findings ratchet through five intervening PRs, for a number 2a-3 … 2a-6
+  can get by running the script locally. **They run it and paste its output into their PR
+  descriptions**; Task 1's shape-stamping check is exactly what makes a pasted number trustworthy.
+  If a task appears to need a workflow edit, it is out of scope — stop and report.
 - **`CELERY_TASK_ALWAYS_EAGER` is off globally and stays off.** `post_save` on `M3UAccount` calls
   `.delay()`; the harness's fixtures create an `M3UAccount`, so the task is enqueued to the real
   Redis broker and never runs. That is correct and is what `apps/proxy/tests/test_next_source_resolution.py:115`
@@ -91,8 +95,11 @@ Every task's requirements implicitly include this section.
 - **`scripts/check_credential_logging.py` runs on every edited `*.py`, including test files** — it
   is given the edited path and has no test exclusion (`scripts/check_credential_logging.py:279-289`).
   The harness handles URLs constantly. **Do not pass a URL, path, header or credential to a
-  `logger.*`/`logging.*` call anywhere in this PR.** Use `print()` in the stand-in (it is a separate
-  process writing to a pipe the relay reads as stderr) and plain assertion messages in tests.
+  `logger.*` call anywhere in this PR.** `print()` is fine and is what the harness and
+  `scripts/capture_ffmpeg_stderr.py` use: the check matches only a receiver whose name ends in
+  `logger` calling one of `info`/`debug`/`warning`/`error`/`exception`, so a bare `print` or a
+  `logging.info` on the module is outside its scope — verified by reading the file, not assumed.
+  Stay inside `print()` anyway rather than relying on that gap.
 - **Commit trailers.** Every commit in this PR ends with:
 
   ```
@@ -165,6 +172,18 @@ Three reasons, in order of weight.
    stand-in closes the gap at the layer the gap is at: **the process boundary is real; only the
    program on the far side of it is chosen.**
 
+**The argument that outlasts this stage: the stand-in is language-agnostic, and the fake at the
+seam would not have been.** A `_Proc` fake is a Python object implementing a Python duck type; it
+dies with `apps/proxy/live_proxy/` in 2d and teaches 2c nothing it can run. The stand-in is an
+executable on `PATH` that speaks the ffmpeg contract — argv in, TS on stdout, progress on stderr,
+an exit code — so **2c's Go relay spawns it unchanged**, with `exec.Command("ffmpeg", …)` finding it
+by the same `PATH` mechanism, and the fault vocabulary and the stderr corpus transfer with it
+instead of being reimplemented in Go from `input/manager.py`'s prose. That is what the spec means by
+"this harness is not throwaway" and by "having already named the fault vocabulary in Python fixtures
+gives the Go author a spec to copy." It is a stronger reason for option (b) than the coverage
+arithmetic: the coverage argument says the fake reaches fewer statements, this one says the fake
+reaches none of stage 2c at all.
+
 **Why not (c), patching `os.posix_spawn` globally.** It is the same loss as (a) with an extra
 hazard: `os.posix_spawn` is process-global and the relay's spawns happen on background OS threads
 (`server.py:851` starts `stream_manager.run` on a `threading.Thread`), so a patch installed by one
@@ -187,6 +206,14 @@ is a real state in this repo's own containers today.
 > rate — because those must be exact and a real ffmpeg cannot be made exact on demand. The child
 > program is real `ffmpeg` when the test's subject is the *bytes a remuxer produces*. It is never a
 > Python object standing in for a process.
+>
+> **And every line the stand-in writes to stderr came out of a real ffmpeg.** The corpus in
+> `harness/fixtures/ffmpeg_stderr/` was captured from ffmpeg 8.1.2 against a real upstream (Task 4);
+> the stand-in replays it. A hand-written progress line is legitimate only for a shape real ffmpeg
+> cannot be made to emit on demand, and carries a comment saying which shape and why. Without that
+> rule, option (b) collapses straight back into the gap `CLAUDE.md` § Testing names — "ffmpeg
+> lifecycle and stderr parsing run only against hand-written strings there" — with rows 1-6
+> asserting that our parser parses our own fiction.
 
 ---
 
@@ -369,9 +396,19 @@ Task 5 removes the degrade by pointing `DISPATCHARR_INTERNAL_API_BASE_URL` at th
 The backend baseline is 2,212 tests in 28.5 s across 16 labels, and the commit hook runs whole
 packages. Budget and mechanism:
 
-- **Budget for this PR: ≤ 6 s added to the `apps.proxy.live_proxy` label.** Measure it in Task 7 and
-  record the number in the PR description. The whole of stage 2a is budgeted at ≤ 15 s added; if
-  this PR alone spends more than 6 s, stop and report rather than absorbing it.
+- **Budget for this PR: ≤ 6 s added to the `apps.proxy.live_proxy` label. ≤ 15 s added across all of
+  stage 2a is a hard ceiling, not a budget.** Measure this PR's number in Task 7 Step 4 and record
+  it in the PR description so 2a-7 can see the trend. If the ceiling is ever threatened, the answer
+  is fewer or faster harness tests — **never** dropping the live server, which is what carries
+  2a-3 … 2a-6's event assertions and therefore the rows that port to Go.
+- **The live server is already amortised per class, by Django itself.** Verified against the
+  installed Django **6.0.8**: `LiveServerTestCase.setUpClass` calls `_start_server_thread()` and
+  registers `addClassCleanup(cls._terminate_thread)`, so one server serves every test in a class and
+  there is no `setUpClass`-level sharing left to add inside a class. Sharing *across* classes is not
+  available without a custom runner, and is not worth it. The residual per-test cost is
+  `TransactionTestCase._fixture_teardown`'s table flush, not the server; if the ceiling is
+  threatened, the lever is `available_apps` on the harness base class to narrow that flush — measure
+  before reaching for it.
 - **No test sleeps for a fixed duration.** Every wait is a deadline poll:
   `harness.relay.wait_until(predicate, timeout, interval)` (Task 5), which returns as soon as the
   predicate holds and raises `AssertionError` naming the predicate when it does not.
@@ -399,6 +436,10 @@ Create:
 | `apps/proxy/live_proxy/tests/harness/asset.py` | Synthetic MPEG-TS asset + TS-shape assertions + the real-ffmpeg asset builder (Task 6). |
 | `apps/proxy/live_proxy/tests/harness/faults.py` | The ported fault vocabulary and its store. |
 | `apps/proxy/live_proxy/tests/harness/upstream.py` | `FakeUpstream` — threading HTTP server applying the faults. |
+| `apps/proxy/live_proxy/tests/harness/fixtures/ffmpeg_stderr/{normal,slow-trickle,truncation}.stderr` | Verbatim real-ffmpeg stderr captures. **Never hand-edited.** |
+| `apps/proxy/live_proxy/tests/harness/fixtures/ffmpeg_stderr/CAPTURE.md` | How the corpus was captured and how to regenerate it. |
+| `apps/proxy/live_proxy/tests/harness/ffmpeg_stderr.py` | Loading and splitting the corpus; the `SYNTHETIC` register of declared exceptions. |
+| `scripts/capture_ffmpeg_stderr.py` | Regenerates the corpus from a real ffmpeg. Not imported by any test. |
 | `apps/proxy/live_proxy/tests/harness/standin.py` | The stand-in program's body. **Imports nothing from this repository** — it runs as a separate process. |
 | `apps/proxy/live_proxy/tests/harness/process.py` | Installs `standin.py` as `ffmpeg` in a temp dir and puts it first on `PATH`; builds the matching `StreamProfile`. |
 | `apps/proxy/live_proxy/tests/harness/relay.py` | `RelayHarnessTestCase` — bring-up, fixtures, deadline polling, per-channel teardown. |
@@ -455,12 +496,20 @@ class FakeUpstream:
     def __enter__(self) -> "FakeUpstream": ...
     def __exit__(self, *exc) -> None: ...
 
+# harness/ffmpeg_stderr.py
+CORPUS_NAMES: tuple[str, ...]                 # ("normal", "slow-trickle", "truncation")
+SYNTHETIC: dict[str, tuple[str, str]]         # declared hand-written exceptions, with reasons
+def path(name: str) -> str: ...
+def load(name: str) -> bytes: ...
+def split(name: str) -> tuple[bytes, list[bytes]]: ...      # (preamble, progress records)
+def progress_lines(name: str) -> list[str]: ...
+
 # harness/process.py
 class StandInBin:
     path: str                # the temp directory placed first on PATH
-    def __init__(self, *, stderr_script: list[tuple[float, str]] | None = None,
-                 exit_after_bytes: int | None = None, exit_code: int = 0,
-                 dead_air_after_bytes: int | None = None) -> None: ...
+    def __init__(self, *, stderr_corpus: str | None = "normal", stderr_interval: float = 0.05,
+                 stderr_loop: bool = False, exit_after_bytes: int | None = None,
+                 exit_code: int = 0, dead_air_after_bytes: int | None = None) -> None: ...
     def __enter__(self) -> "StandInBin": ...
     def __exit__(self, *exc) -> None: ...
 def stand_in_stream_profile(name: str) -> "core.models.StreamProfile": ...
@@ -1445,34 +1494,270 @@ Two predictable snags, with their resolutions:
 
 ---
 
-## Task 4: The process stand-in, spawned through the production path
+## Task 4: The process stand-in, its real-ffmpeg stderr corpus, and the production spawn path
 
 **Files:**
+- Create: `apps/proxy/live_proxy/tests/harness/fixtures/ffmpeg_stderr/normal.stderr`
+- Create: `apps/proxy/live_proxy/tests/harness/fixtures/ffmpeg_stderr/slow-trickle.stderr`
+- Create: `apps/proxy/live_proxy/tests/harness/fixtures/ffmpeg_stderr/truncation.stderr`
+- Create: `apps/proxy/live_proxy/tests/harness/fixtures/ffmpeg_stderr/CAPTURE.md`
+- Create: `apps/proxy/live_proxy/tests/harness/ffmpeg_stderr.py`
 - Create: `apps/proxy/live_proxy/tests/harness/standin.py`
 - Create: `apps/proxy/live_proxy/tests/harness/process.py`
+- Create: `scripts/capture_ffmpeg_stderr.py`
 - Create: `apps/proxy/live_proxy/tests/test_harness_standin.py`
 
 **Interfaces:**
-- Consumes: `FakeUpstream` (Task 3), `TS_PACKET_SIZE`/`assert_ts_aligned` (Task 2).
-- Produces: `StandInBin` (context manager; attribute `path`; prepends itself to `os.environ["PATH"]`
-  on enter and restores on exit) and `stand_in_stream_profile(name) -> StreamProfile`. Task 5's
-  `RelayHarnessTestCase` uses both.
+- Consumes: `FakeUpstream` (Task 3), `TS_PACKET_SIZE`/`assert_ts_aligned` (Task 2),
+  `require_real_ffmpeg`/`ffmpeg_env` (Task 6 — but only `scripts/capture_ffmpeg_stderr.py` uses
+  them, and that script is not imported by any test, so Task 4 does not depend on Task 6; the
+  script sets `LD_LIBRARY_PATH` itself, in six lines, and Task 6's helper is the reusable version
+  of the same three checks).
+- Produces: `CORPUS_NAMES`, `load(name) -> bytes`, `split(name) -> (preamble, records)`,
+  `progress_lines(name) -> list[str]` and `SYNTHETIC` from `harness.ffmpeg_stderr`; `StandInBin`
+  (context manager; attribute `path`; prepends itself to `os.environ["PATH"]` on enter and restores
+  on exit) and `stand_in_stream_profile(name) -> StreamProfile` from `harness.process`. Task 5's
+  `RelayHarnessTestCase` uses `StandInBin` and `stand_in_stream_profile`; 2a-4 uses
+  `harness.ffmpeg_stderr` directly for the buffering-detector rows.
 
-**How the stand-in is reached.** `StandInBin.__enter__` writes two files into a fresh
-`tempfile.mkdtemp()`: `standin.py`, copied byte-for-byte from
-`apps/proxy/live_proxy/tests/harness/standin.py`, and an executable named **`ffmpeg`** whose whole
-body is a shebang plus three lines that `runpy.run_path` the copy. It then prepends the directory to
-`os.environ["PATH"]`. Copying rather than pointing at the in-tree file matters twice: the repository
-is bind-mounted **read-only** in the hook container, so the in-tree file cannot be given an exec
-bit at test time; and the temp copy keeps the child from importing anything from this repository,
-which is what makes it a genuine external program rather than a Python object wearing a costume.
+**Why the corpus exists, and why it is the load-bearing half of this task.** `CLAUDE.md` § Testing
+names the gap this stage is closing as "ffmpeg lifecycle and stderr parsing run only against
+hand-written strings there." A stand-in that replays *invented* `speed=` lines reproduces that gap
+exactly: rows 1-6 would assert that `log_parsers.py` parses our own fiction. Real ffmpeg does run
+once `LD_LIBRARY_PATH=/usr/local/lib` is set (F4), so the corpus is captured **once** from a real
+ffmpeg against a real upstream, committed as a fixture, and replayed by the stand-in at whatever
+cadence a test asks for. Realism comes from the capture; speed comes from the replay.
 
-- [ ] **Step 1: Write the failing test** — `test_harness_standin.py`:
+**The corpus was already captured while this plan was written**, so its content and its shape are
+facts, not a hope. Reproduce it with `scripts/capture_ffmpeg_stderr.py` (Step 3) if ffmpeg ever
+drifts; the numbers below are what ffmpeg 8.1.2 produced in `dispatcharr-testrunner` on 2026-09-10,
+driving the **production** ffmpeg command (`core/migrations/0003_preload_stream_profiles.py:10`:
+`ffmpeg -i {streamUrl} -c:v copy -c:a copy -f mpegts pipe:1`, no `-loglevel`, so default `info`)
+against a looping 8-second lavfi asset served over HTTP at a controlled rate:
+
+| Fixture | Capture | Size | Progress lines | What it carries |
+|---|---|---|---|---|
+| `normal.stderr` | upstream at 2.0× real time, 8 s | 4,450 B | 11 | banner, `Input #0, mpegts`, `Stream mapping:`, `Output #0, mpegts, to 'pipe:1'`, `Press [q] to stop`, then `speed=` decaying 11.5x → 2.84x |
+| `slow-trickle.stderr` | upstream at 0.25× real time, 45 s | 13,278 B | 76 | the same preamble, then a cumulative `speed=` that starts at **10.7x**, first dips below 1.0 at line 36 (`speed=0.99x`, `elapsed=0:00:18.21`) and is **continuously below 1.0 from line 38 to the end** (39 lines, ending `speed=0.85x` at `elapsed=0:00:38.43`) |
+| `truncation.stderr` | upstream at 2.0×, cut after 3 s of media | 2,618 B | 1 | `[http @ 0x…] Stream ends prematurely at 190068, should be 18446744073709551615`, `[in#0/mpegts @ 0x…] Error during demuxing: Input/output error`, and a final `Lsize=` line |
+
+**`slow-trickle.stderr` is the single most valuable artefact in this PR**, because it is empirical
+proof of parity-matrix row 4 — "`speed=` is a cumulative average since process start, taking ~55s to
+arm." Against a genuinely 0.25×-real-time upstream, real ffmpeg needed **18 seconds of wall clock**
+before the cumulative average first touched 1.0 and **20 seconds** before it stayed there. That is
+the arming delay, measured, and it is exactly why 2a-4 cannot drive row 1 or row 4 with a live
+ffmpeg inside a test budget: it has to replay these 76 records at its own cadence.
+
+**Details of the real format that a hand-written line would have got wrong**, all present in the
+corpus and all worth knowing before writing an assertion:
+
+- ffmpeg 8.1.2 appends an **`elapsed=0:00:00.50`** field after `speed=`, which older documented
+  examples (including the comment at `input/manager.py:1062`) do not show.
+- The **final** progress line uses `Lsize=`, not `size=`.
+- The speed field is **space-padded** when short: `speed= 1.1x`, with a space. The production regex
+  `re.search(r'speed=\s*([0-9.]+)x?', …)` (`input/manager.py:1065`) has the `\s*` and handles it;
+  two of the 76 lines in `slow-trickle.stderr` are of this form, so the corpus exercises it.
+- Records are separated by **`\r`, not `\n`** — ffmpeg rewrites one status line in place. Anything
+  splitting the corpus on `\n` alone gets one enormous line.
+- **A real ffmpeg emits `speed=` in scientific notation.** `truncation.stderr`'s only progress line
+  is `speed=1.82e+03x`. See § Findings, item 5: the production regex parses that as **1.82**.
+
+**How the stand-in is reached.** `StandInBin.__enter__` writes into a fresh `tempfile.mkdtemp()`:
+`standin.py`, copied byte-for-byte from `apps/proxy/live_proxy/tests/harness/standin.py`; the
+selected corpus fixture, also copied; and an executable named **`ffmpeg`** whose whole body is a
+shebang plus a few lines that `runpy.run_path` the copy. It then prepends the directory to
+`os.environ["PATH"]`. Copying rather than pointing at the in-tree files matters twice: the
+repository is bind-mounted **read-only** in the hook container, so the in-tree file cannot be given
+an exec bit at test time; and the temp copy keeps the child from importing anything from this
+repository, which is what makes it a genuine external program rather than a Python object wearing a
+costume.
+
+- [ ] **Step 1: Write `scripts/capture_ffmpeg_stderr.py` and capture the three fixtures**
+
+The script is committed so the corpus can be regenerated when ffmpeg drifts. It is not imported by
+any test and is not part of the harness package.
+
+```python
+#!/usr/bin/env python3
+"""Capture a real ffmpeg stderr corpus for the stage-2a subprocess harness.
+
+Run inside the backend test container:
+
+    docker exec -w /repo dispatcharr-testrunner bash -lc \
+      'export PATH=/dispatcharrpy/bin:$PATH; python scripts/capture_ffmpeg_stderr.py \
+         apps/proxy/live_proxy/tests/harness/fixtures/ffmpeg_stderr'
+
+Drives the PRODUCTION ffmpeg command -- core/migrations/0003_preload_stream_profiles.py's
+`ffmpeg -i {streamUrl} -c:v copy -c:a copy -f mpegts pipe:1`, no -loglevel, so the
+default `info` -- against a looping lavfi asset served over HTTP at a controlled
+rate, and writes each run's raw stderr bytes verbatim (\\r separators included).
+
+LD_LIBRARY_PATH is set for every child: the image carries two librist and the
+loader picks the wrong one without it, so an unqualified ffmpeg dies with
+`undefined symbol: rist_peer_config_defaults_set_versioned`. docker/entrypoint.sh
+sets this in production; no test context runs that entrypoint.
+"""
+
+import http.server
+import os
+import socketserver
+import subprocess
+import sys
+import threading
+import time
+
+FFMPEG_ENV = {**os.environ, "LD_LIBRARY_PATH": "/usr/local/lib"}
+ASSET_SECONDS = 8
+
+# name, seconds to run, upstream rate (x real time), truncate after N seconds of media
+RUNS = [
+    ("normal", 8, 2.0, None),
+    ("slow-trickle", 45, 0.25, None),
+    ("truncation", 10, 2.0, 3.0),
+]
+
+
+def build_asset():
+    done = subprocess.run(
+        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+         "-f", "lavfi", "-i", f"testsrc=size=320x180:rate=25:duration={ASSET_SECONDS}",
+         "-f", "lavfi", "-i", f"sine=frequency=440:duration={ASSET_SECONDS}",
+         "-c:v", "libx264", "-preset", "ultrafast", "-b:v", "400k", "-pix_fmt", "yuv420p",
+         "-c:a", "aac", "-b:a", "64k", "-f", "mpegts", "pipe:1"],
+        capture_output=True, env=FFMPEG_ENV, timeout=120,
+    )
+    if done.returncode != 0:
+        raise SystemExit("ffmpeg could not build the asset: "
+                         + done.stderr.decode(errors="replace")[:400])
+    return done.stdout
+
+
+def main(out_dir):
+    os.makedirs(out_dir, exist_ok=True)
+    asset = build_asset()
+    byte_rate = len(asset) / ASSET_SECONDS
+    print(f"asset: {len(asset)} bytes, {len(asset) // 188} packets, {int(byte_rate)} B/s")
+
+    mode = {"rate": 1.0, "truncate_at": None}
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def log_message(self, *args):
+            pass
+
+        def do_GET(self):  # noqa: N802
+            self.send_response(200)
+            self.send_header("Content-Type", "video/mp2t")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            rate = mode["rate"] * byte_rate
+            truncate_at = mode["truncate_at"]
+            sent = at = 0
+            started = time.monotonic()
+            try:
+                while True:
+                    if truncate_at is not None and sent >= truncate_at:
+                        self.connection.close()
+                        return
+                    want = 9400
+                    if truncate_at is not None:
+                        want = min(want, truncate_at - sent)
+                    piece = bytearray()
+                    while len(piece) < want:
+                        take = min(want - len(piece), len(asset) - at)
+                        piece += asset[at:at + take]
+                        at = (at + take) % len(asset)
+                    self.wfile.write(bytes(piece))
+                    sent += len(piece)
+                    due = started + sent / rate
+                    now = time.monotonic()
+                    if due > now:
+                        time.sleep(min(due - now, 0.2))
+            except OSError:
+                return
+
+    class Server(socketserver.ThreadingTCPServer):
+        daemon_threads = True
+        allow_reuse_address = True
+
+    server = Server(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    url = f"http://127.0.0.1:{server.server_address[1]}/live.ts"
+
+    for name, seconds, rate, truncate_seconds in RUNS:
+        mode["rate"] = rate
+        mode["truncate_at"] = None if truncate_seconds is None else int(byte_rate * truncate_seconds)
+        child = subprocess.Popen(
+            ["ffmpeg", "-i", url, "-c:v", "copy", "-c:a", "copy", "-f", "mpegts", "pipe:1"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, env=FFMPEG_ENV,
+        )
+        chunks = []
+
+        def drain(stream=child.stderr, sink=chunks):
+            while True:
+                block = stream.read(4096)
+                if not block:
+                    break
+                sink.append(block)
+
+        reader = threading.Thread(target=drain, daemon=True)
+        reader.start()
+        time.sleep(seconds)
+        if child.poll() is None:
+            child.terminate()
+        try:
+            child.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            child.kill()
+            child.wait()
+        reader.join(timeout=5)
+
+        data = b"".join(chunks)
+        path = os.path.join(out_dir, f"{name}.stderr")
+        with open(path, "wb") as handle:
+            handle.write(data)
+        print(f"{name}: {len(data)} bytes, {data.count(b'speed=')} progress records -> {path}")
+
+
+if __name__ == "__main__":
+    main(sys.argv[1] if len(sys.argv) > 1 else ".")
+```
+
+Run it, then write `fixtures/ffmpeg_stderr/CAPTURE.md`: the exact command above, the ffmpeg version
+the capture came from (`ffmpeg -version | head -1` with `LD_LIBRARY_PATH` set — it was
+**8.1.2** on 2026-09-10), the production command being driven and where that command comes from,
+and the table of sizes and progress-line counts from this task's preamble. **The fixtures are
+committed as captured — never hand-edited.** If a value in the table changes on regeneration, that
+is ffmpeg drift and the table is updated; it is not a reason to touch the bytes.
+
+- [ ] **Step 2: Sanity-check the corpus against the production regex**
+
+```bash
+docker exec -w /repo dispatcharr-testrunner bash -lc 'export PATH=/dispatcharrpy/bin:$PATH; python - <<"PY"
+import re
+rx = re.compile(r"speed=\s*([0-9.]+)x?")
+for name in ("normal", "slow-trickle", "truncation"):
+    raw = open(f"apps/proxy/live_proxy/tests/harness/fixtures/ffmpeg_stderr/{name}.stderr", "rb").read()
+    text = raw.decode("utf-8", "replace").replace("\r", "\n")
+    lines = [l for l in text.split("\n") if "speed=" in l]
+    values = [float(rx.search(l).group(1)) for l in lines]
+    print(name, len(lines), "records, speed", values[0] if values else None, "->", values[-1] if values else None)
+PY'
+```
+
+Expected, and these are the numbers the fixtures must carry: `normal 11 records, speed 11.5 -> 2.84`;
+`slow-trickle 76 records, speed 10.7 -> 0.85`; `truncation 1 records, speed 1.82 -> 1.82`. **The
+last one is the scientific-notation finding** (§ Findings item 5): the real line reads
+`speed=1.82e+03x` and the production regex yields `1.82`. Record what you see; do not fix it.
+
+- [ ] **Step 3: Write the failing test** — `test_harness_standin.py`:
 
 ```python
 """The stand-in is a real child process, spawned by the relay's own spawn helper."""
 
 import os
+import re
 import signal
 import time
 
@@ -1481,8 +1766,14 @@ from django.test import SimpleTestCase
 from apps.proxy.live_proxy.utils import posix_spawn_proc
 
 from .harness.asset import TS_PACKET_SIZE, assert_ts_aligned
+from .harness.ffmpeg_stderr import CORPUS_NAMES, load, progress_lines
 from .harness.process import StandInBin
 from .harness.upstream import FakeUpstream
+
+# The production regex, copied deliberately rather than imported: these tests
+# assert what the shipped parser sees, and importing it would make the
+# assertion move if the parser moved (input/manager.py:1065).
+SPEED_RE = re.compile(r"speed=\s*([0-9.]+)x?")
 
 
 def _read_exactly(stream, count, timeout=10.0):
@@ -1521,18 +1812,61 @@ class StandInSpawnTests(SimpleTestCase):
                 proc.wait(timeout=5)
         assert_ts_aligned(body)
 
-    def test_stderr_script_lines_arrive_in_order(self):
-        script = [(0.0, "frame=  1 fps=25 speed=1.00x"), (0.0, "frame= 26 fps=25 speed=0.42x")]
-        with FakeUpstream() as upstream, StandInBin(stderr_script=script):
+    def test_the_corpus_is_real_ffmpeg_output(self):
+        """Guard: the fixtures must carry a real ffmpeg preamble, not invented lines."""
+        for name in CORPUS_NAMES:
+            raw = load(name)
+            self.assertIn(b"ffmpeg version ", raw, name)
+            self.assertIn(b"Input #0, mpegts, from ", raw, name)
+            self.assertIn(b"Output #0, mpegts, to 'pipe:1'", raw, name)
+            self.assertIn(b"\r", raw, f"{name}: no CR separators; not a real ffmpeg capture")
+
+    def test_the_slow_trickle_corpus_actually_falls_below_one(self):
+        """Row 4's evidence: a real cumulative speed= that crosses 1.0 and stays."""
+        values = [float(SPEED_RE.search(l).group(1)) for l in progress_lines("slow-trickle")]
+        self.assertGreater(values[0], 5.0, "capture should start with a front-loaded lead")
+        self.assertLess(values[-1], 1.0, "capture should end below 1.0")
+        tail = values[-20:]
+        self.assertTrue(all(v < 1.0 for v in tail), f"tail not sustained below 1.0: {tail}")
+
+    def test_the_stand_in_replays_the_corpus_to_stderr_in_order(self):
+        with FakeUpstream() as upstream, StandInBin(
+            stderr_corpus="slow-trickle", stderr_interval=0.0
+        ):
             proc = posix_spawn_proc(["ffmpeg", "-i", upstream.url])
             try:
-                first = proc.stderr.readline()
-                second = proc.stderr.readline()
+                seen = b""
+                deadline = time.monotonic() + 10
+                while b"speed=0.85x" not in seen and time.monotonic() < deadline:
+                    seen += proc.stderr.read(4096) or b""
             finally:
                 proc.terminate()
                 proc.wait(timeout=5)
-        self.assertIn(b"speed=1.00x", first)
-        self.assertIn(b"speed=0.42x", second)
+        self.assertIn(b"ffmpeg version ", seen)
+        self.assertIn(b"speed=10.7x", seen)
+        self.assertIn(b"speed=0.85x", seen)
+        self.assertLess(
+            seen.index(b"speed=10.7x"), seen.index(b"speed=0.85x"), "records out of order"
+        )
+
+    def test_stderr_interval_paces_the_replay(self):
+        """A test buys the corpus's shape at its own cadence, not ffmpeg's 38 seconds."""
+        with FakeUpstream() as upstream, StandInBin(
+            stderr_corpus="normal", stderr_interval=0.05
+        ):
+            started = time.monotonic()
+            proc = posix_spawn_proc(["ffmpeg", "-i", upstream.url])
+            try:
+                seen = b""
+                deadline = time.monotonic() + 10
+                while seen.count(b"speed=") < 3 and time.monotonic() < deadline:
+                    seen += proc.stderr.read(4096) or b""
+                elapsed = time.monotonic() - started
+            finally:
+                proc.terminate()
+                proc.wait(timeout=5)
+        self.assertGreaterEqual(elapsed, 0.10, "three records arrived faster than 2 intervals")
+        self.assertLess(elapsed, 5.0, "replay is not being paced by stderr_interval")
 
     def test_exit_after_bytes_ends_the_process_with_the_given_code(self):
         with FakeUpstream() as upstream, StandInBin(
@@ -1571,10 +1905,68 @@ being gone means `posix_spawn_proc`'s own `_Proc.wait` (`apps/proxy/live_proxy/u
 and `_Proc.terminate` (`:226-230`), and the `_reap` they call, executed for real. A `_Proc` fake
 would have made every line of that unreachable by construction.
 
-- [ ] **Step 2: Run to verify failure** — expected
-      `ModuleNotFoundError: No module named 'apps.proxy.live_proxy.tests.harness.process'`.
+- [ ] **Step 4: Run to verify failure** — expected
+      `ModuleNotFoundError: No module named 'apps.proxy.live_proxy.tests.harness.ffmpeg_stderr'`.
+      That module is imported before `harness.process` in the test file, so it is the one that
+      fails first; `harness.process` is still missing too and fails on the next run.
 
-- [ ] **Step 3: Write `harness/standin.py`**
+- [ ] **Step 5: Write `harness/ffmpeg_stderr.py`**
+
+```python
+"""Access to the captured real-ffmpeg stderr corpus.
+
+The fixtures under fixtures/ffmpeg_stderr/ are verbatim captures from
+ffmpeg 8.1.2 -- see that directory's CAPTURE.md and
+scripts/capture_ffmpeg_stderr.py. Never hand-edit them: the whole point is
+that no line in them was written by us. Where a shape is needed that a real
+ffmpeg cannot be made to emit on demand, add it to SYNTHETIC below WITH the
+reason, so the exception is visible rather than mixed into the corpus.
+"""
+
+import os
+
+FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures", "ffmpeg_stderr")
+
+CORPUS_NAMES: tuple[str, ...] = ("normal", "slow-trickle", "truncation")
+
+# Lines real ffmpeg will not produce to order. Empty today, and every future
+# entry needs the "why real ffmpeg cannot" half of its reason, not just a
+# description of the shape.
+SYNTHETIC: dict[str, tuple[str, str]] = {}
+
+
+def path(name: str) -> str:
+    if name not in CORPUS_NAMES:
+        raise ValueError(f"unknown corpus {name!r}; expected one of {', '.join(CORPUS_NAMES)}")
+    return os.path.join(FIXTURES, f"{name}.stderr")
+
+
+def load(name: str) -> bytes:
+    """The capture, byte for byte, CR separators included."""
+    with open(path(name), "rb") as handle:
+        return handle.read()
+
+
+def split(name: str) -> tuple[bytes, list[bytes]]:
+    """(preamble, progress records).
+
+    ffmpeg writes the banner, the input analysis, the stream mapping and
+    `Press [q] to stop` as ordinary newline-terminated output, then rewrites a
+    single status line in place with CR. Splitting on CR therefore puts the
+    whole preamble in the first field and one progress record in each of the
+    rest -- which is also exactly how the relay's stderr reader sees them.
+    """
+    parts = load(name).split(b"\r")
+    return parts[0], [p for p in parts[1:] if p.strip()]
+
+
+def progress_lines(name: str) -> list[str]:
+    """The progress records as text, for assertions about speed=/time=/bitrate=."""
+    return [record.decode("utf-8", "replace") for record in split(name)[1] if "speed=" in
+            record.decode("utf-8", "replace")]
+```
+
+- [ ] **Step 6: Write `harness/standin.py`**
 
 ```python
 """The stand-in program. Runs as a SEPARATE PROCESS -- imports nothing from this
@@ -1587,11 +1979,22 @@ manager reads as self.socket, stderr is a pipe the stderr-reader thread drains
 (input/manager.py:793-803, :904) -- so the relay cannot tell the difference,
 while the test gets exact control of what the child says and when it stops.
 
+Everything it writes to stderr is a REAL ffmpeg capture replayed from a corpus
+fixture (harness/fixtures/ffmpeg_stderr/, captured by
+scripts/capture_ffmpeg_stderr.py). It writes the preamble immediately and then
+one progress record per --stderr-interval, so a test buys the corpus's real
+shape at its own cadence instead of ffmpeg's wall clock. Nothing here invents a
+progress line: see harness/ffmpeg_stderr.SYNTHETIC for the one place an
+exception may be declared, and why each one is unavoidable.
+
 Arguments, all optional except the URL, which is the last positional (the same
 place `-i {streamUrl}` puts it):
 
-  --stderr-script PATH   lines to write to stderr; one per line in the file,
-                         each "<delay-seconds>\\t<text>"
+  --stderr-corpus PATH   the captured .stderr file to replay
+  --stderr-interval S    seconds between progress records (default 0.05); the
+                         preamble is always written immediately
+  --stderr-loop          restart the corpus when it runs out, instead of going
+                         quiet -- for a test that must outlive the capture
   --exit-after-bytes N   exit after copying N bytes
   --exit-code N          the code to exit with (default 0)
   --dead-air-after-bytes N
@@ -1609,7 +2012,9 @@ _COPY_CHUNK = 8192
 
 def _parse(argv):
     options = {
-        "stderr_script": None,
+        "stderr_corpus": None,
+        "stderr_interval": 0.05,
+        "stderr_loop": False,
         "exit_after_bytes": None,
         "exit_code": 0,
         "dead_air_after_bytes": None,
@@ -1618,9 +2023,15 @@ def _parse(argv):
     i = 0
     while i < len(argv):
         arg = argv[i]
-        if arg == "--stderr-script":
-            options["stderr_script"] = argv[i + 1]
+        if arg == "--stderr-corpus":
+            options["stderr_corpus"] = argv[i + 1]
             i += 2
+        elif arg == "--stderr-interval":
+            options["stderr_interval"] = float(argv[i + 1])
+            i += 2
+        elif arg == "--stderr-loop":
+            options["stderr_loop"] = True
+            i += 1
         elif arg == "--exit-after-bytes":
             options["exit_after_bytes"] = int(argv[i + 1])
             i += 2
@@ -1641,20 +2052,31 @@ def _parse(argv):
     return options, positional
 
 
-def _pump_stderr(path):
-    entries = []
-    with open(path, "r", encoding="utf-8") as handle:
-        for line in handle:
-            line = line.rstrip("\n")
-            if not line:
-                continue
-            delay, _, text = line.partition("\t")
-            entries.append((float(delay), text))
-    for delay, text in entries:
-        if delay:
-            time.sleep(delay)
-        sys.stderr.write(text + "\n")
-        sys.stderr.flush()
+def _pump_stderr(path, interval, loop):
+    """Replay a captured ffmpeg stderr stream: preamble at once, then one
+    progress record per `interval`.
+
+    ffmpeg separates the preamble from the progress records with \\r and
+    rewrites one status line in place, so splitting on \\r yields the whole
+    preamble first and one record after that -- and writing them back with \\r
+    reproduces byte for byte what the relay's stderr reader saw from the real
+    process. os.write on fd 2 rather than sys.stderr because the records carry
+    no newline and text-mode buffering would hold them.
+    """
+    with open(path, "rb") as handle:
+        parts = handle.read().split(b"\r")
+    preamble, records = parts[0], [p for p in parts[1:] if p.strip()]
+    os.write(2, preamble)
+    while True:
+        for record in records:
+            if interval:
+                time.sleep(interval)
+            try:
+                os.write(2, b"\r" + record)
+            except OSError:
+                return
+        if not loop:
+            return
 
 
 def main(argv=None):
@@ -1664,9 +2086,11 @@ def main(argv=None):
         return 2
     url = positional[-1]
 
-    if options["stderr_script"]:
+    if options["stderr_corpus"]:
         threading.Thread(
-            target=_pump_stderr, args=(options["stderr_script"],), daemon=True
+            target=_pump_stderr,
+            args=(options["stderr_corpus"], options["stderr_interval"], options["stderr_loop"]),
+            daemon=True,
         ).start()
 
     copied = 0
@@ -1700,7 +2124,7 @@ if __name__ == "__main__":
     sys.exit(main())
 ```
 
-- [ ] **Step 4: Write `harness/process.py`**
+- [ ] **Step 7: Write `harness/process.py`**
 
 ```python
 """Install the stand-in as `ffmpeg`, first on PATH.
@@ -1728,6 +2152,9 @@ import stat
 import sys
 import tempfile
 
+from .ffmpeg_stderr import CORPUS_NAMES
+from .ffmpeg_stderr import path as corpus_path
+
 _STANDIN_SOURCE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "standin.py")
 
 
@@ -1737,12 +2164,21 @@ class StandInBin:
     def __init__(
         self,
         *,
-        stderr_script: list[tuple[float, str]] | None = None,
+        stderr_corpus: str | None = "normal",
+        stderr_interval: float = 0.05,
+        stderr_loop: bool = False,
         exit_after_bytes: int | None = None,
         exit_code: int = 0,
         dead_air_after_bytes: int | None = None,
     ) -> None:
-        self.stderr_script = stderr_script
+        if stderr_corpus is not None and stderr_corpus not in CORPUS_NAMES:
+            raise ValueError(
+                f"unknown corpus {stderr_corpus!r}; expected one of {', '.join(CORPUS_NAMES)} "
+                "or None for a silent stand-in"
+            )
+        self.stderr_corpus = stderr_corpus
+        self.stderr_interval = stderr_interval
+        self.stderr_loop = stderr_loop
         self.exit_after_bytes = exit_after_bytes
         self.exit_code = exit_code
         self.dead_air_after_bytes = dead_air_after_bytes
@@ -1753,8 +2189,13 @@ class StandInBin:
     def extra_parameters(self) -> str:
         """The stand-in flags a StreamProfile's `parameters` must carry, as a string."""
         parts = []
-        if self.stderr_script is not None:
-            parts += ["--stderr-script", os.path.join(self.path, "stderr.script")]
+        if self.stderr_corpus is not None:
+            parts += [
+                "--stderr-corpus", os.path.join(self.path, "corpus.stderr"),
+                "--stderr-interval", str(self.stderr_interval),
+            ]
+            if self.stderr_loop:
+                parts += ["--stderr-loop"]
         if self.exit_after_bytes is not None:
             parts += ["--exit-after-bytes", str(self.exit_after_bytes)]
         if self.exit_code:
@@ -1767,10 +2208,10 @@ class StandInBin:
         self.path = tempfile.mkdtemp(prefix="dispatcharr-standin-")
         shutil.copyfile(_STANDIN_SOURCE, os.path.join(self.path, "standin.py"))
 
-        if self.stderr_script is not None:
-            with open(os.path.join(self.path, "stderr.script"), "w", encoding="utf-8") as handle:
-                for delay, text in self.stderr_script:
-                    handle.write(f"{delay}\t{text}\n")
+        if self.stderr_corpus is not None:
+            shutil.copyfile(
+                corpus_path(self.stderr_corpus), os.path.join(self.path, "corpus.stderr")
+            )
 
         wrapper = os.path.join(self.path, "ffmpeg")
         body = (
@@ -1827,7 +2268,7 @@ the wrapper inserts the flags at `sys.argv[1:1]`, i.e. **before** the caller's o
 URL stays last and `_parse`'s `positional[-1]` still finds it. If a future flag ever needs to come
 after the URL, `_parse` must change, not this splice.
 
-- [ ] **Step 5: Run the tests to verify they pass** — expected 7 tests, `OK`.
+- [ ] **Step 8: Run the tests to verify they pass** — expected 9 tests, `OK`.
 
 Predictable snag: `test_exit_after_bytes_ends_the_process_with_the_given_code` asserts
 `proc.wait(timeout=10) == 3`. `_Proc.wait` at `apps/proxy/live_proxy/utils.py` calls
@@ -1836,9 +2277,16 @@ per-thread hub and works (F5). If it raises because no hub exists on the calling
 **finding about production code under test conditions** — record it in the PR description and use
 `os.waitpid` directly in that one assertion; do not patch `gevent`.
 
-- [ ] **Step 6: Run the whole package.** Expected `OK`.
+- [ ] **Step 9: Run the whole package.** Expected `OK`.
 
-- [ ] **Step 7: Commit** (message to `/tmp/2a2-msg-4.txt`; separate `git add` / `git commit -F`).
+- [ ] **Step 10: Commit**
+
+Stage all of it in one `git add` — `scripts/capture_ffmpeg_stderr.py`, the three `.stderr`
+fixtures, `CAPTURE.md`, `harness/ffmpeg_stderr.py`, `harness/standin.py`, `harness/process.py`,
+`test_harness_standin.py` — then commit in a separate Bash call with the message in
+`/tmp/2a2-msg-4.txt`. The message should say that the corpus is a verbatim capture and record the
+row-4 measurement it establishes (real ffmpeg's cumulative `speed=` first touched 1.0 at 18 s and
+settled below it at 20 s against a 0.25×-real-time upstream).
 
 ---
 
@@ -2216,10 +2664,18 @@ harness; do not reorder the tests.
 - Modify: `apps/proxy/live_proxy/tests/harness/asset.py` (append)
 - Modify: `apps/proxy/live_proxy/tests/test_harness_smoke.py` (append one test)
 
+**`<ISSUE>` in the code below is a real issue number, not a placeholder to leave in.** The
+orchestrator filed the two-librist image defect as an issue on `D10Scot/Dispatcharr` and supplies
+the number; it belongs in that comment and in `fixtures/ffmpeg_stderr/CAPTURE.md`. **If you reach
+this task without a number, ask for it before committing** — do not invent one, do not drop the
+sentence, and do not file the issue yourself (`gh` without `--repo D10Scot/Dispatcharr` resolves to
+upstream's public tracker).
+
 **Interfaces:**
 - Consumes: nothing new.
 - Produces: `require_real_ffmpeg() -> str` (returns the executable path, or raises
-  `unittest.SkipTest` naming why) and `build_real_ts_asset(seconds: float = 2.0) -> bytes`.
+  `unittest.SkipTest` naming why), `ffmpeg_env() -> dict` and
+  `build_real_ts_asset(seconds: float = 2.0) -> bytes`.
   **2a-6 depends on both** for the fMP4 work — `output/fmp4/generator.py` and
   `output/fmp4/buffer.py` parse `moof`/`moov` boxes only a real remux produces.
 
@@ -2275,10 +2731,18 @@ import unittest
 # The relay's own production environment sets this (docker/entrypoint.sh:102).
 # Neither test context runs that entrypoint -- the hook container starts with
 # `--entrypoint sleep` and backend-tests.yml with `options: --entrypoint ""` --
-# and the image carries two librist, so an unqualified `ffmpeg` in a test
-# resolves the distro's 4.3.1 and dies with
+# and the image carries two librist (/usr/local/lib/librist.so.4.11.0, what
+# ffmpeg was linked against, and the distro's 4.3.1 that `vlc` pulls in), with
+# ld.so.conf putting the multiarch directory first. So an unqualified `ffmpeg`
+# in a test resolves 4.3.1 and dies with
 #   symbol lookup error: undefined symbol: rist_peer_config_defaults_set_versioned
 # Verified in dispatcharr-testrunner on 2026-09-10.
+#
+# Set here, in the CHILD's environment, rather than in
+# scripts/ci_bootstrap_backend.sh: this is test-local, works identically in the
+# hook container, in backend-tests.yml and on a developer's machine, needs no
+# production-adjacent edit, and does not pretend to fix what is really an image
+# defect. The root cause is tracked as D10Scot/Dispatcharr#<ISSUE>.
 _FFMPEG_ENV = {"LD_LIBRARY_PATH": "/usr/local/lib"}
 
 
@@ -2394,7 +2858,10 @@ Cover, in this order, and no more:
 5. **Writing a test**: subclass `RelayHarnessTestCase`; enter a `StandInBin`; `make_channel`;
    `tune`; assert; `stop_channel`. Ten lines of real example, copied from the smoke test.
 6. **The fault vocabulary table** from Task 2, including the four not ported and why — this is what
-   2c's Go fixtures copy.
+   2c's Go fixtures copy; and **the stderr corpus**: what each of the three fixtures carries, that
+   they are verbatim captures that must never be hand-edited, how to regenerate them
+   (`scripts/capture_ffmpeg_stderr.py`), and that `harness/ffmpeg_stderr.SYNTHETIC` is the only
+   place a hand-written line may be declared, with its reason.
 7. **Time**: what is compressible and what is not (F8's three bullets), the deadline-polling rule,
    and the ≤ 15 s stage budget.
 8. **The two environment facts that bite**: ffmpeg needs `LD_LIBRARY_PATH=/usr/local/lib` in both
@@ -2477,7 +2944,12 @@ It must record, because the spec's gate for 2a-2 names them:
 
 1. **The seam decision and its reasoning** — option (b), real subprocesses throughout, reached
    through `StreamProfile.command` and `PATH` rather than through an extracted seam, with the three
-   reasons from § The seam decision and the 7 ms measurement.
+   reasons from § The seam decision, the portability argument (2c's Go relay spawns the stand-in
+   unchanged), and the 7 ms measurement.
+1a. **That every stderr line the stand-in emits is a real ffmpeg capture**, with the corpus table
+   from Task 4 and the row-4 measurement it establishes: against a genuinely 0.25×-real-time
+   upstream, real ffmpeg's cumulative `speed=` needed 18 s of wall clock to first touch 1.0 and 20 s
+   to stay below it.
 2. **`scripts/coverage_live_path.sh`'s first number**, and the fact that it reproduces the spec's
    7,978 / 3,977 / 50.2% baseline exactly under a self-contained rcfile.
 3. **The three findings against the spec** listed in § Findings against the spec below.
@@ -2490,7 +2962,8 @@ Do **not** push and do **not** open the PR from this session unless the orchestr
 
 ## Findings against the spec, to carry into the PR description
 
-Four, all verified, none blocking. The fourth is against `CLAUDE.md`, not the spec.
+Five, all verified, none blocking. The fourth is against `CLAUDE.md`; the fifth is a defect in
+production code, found by capturing real ffmpeg output — which is the whole argument for doing so.
 
 1. **§ Stage 2a › Gate 2's "Corrected shape" command does not produce the numbers printed beneath
    it** (F1). Run from the repository root it hits `./.coveragerc`, whose `source =` makes coverage
@@ -2514,6 +2987,21 @@ Four, all verified, none blocking. The fourth is against `CLAUDE.md`, not the sp
    `188 * 1361`, so the effective chunk is **255,868 bytes (~256 KB)** and the `5644` literal is
    dead. The consequence `CLAUDE.md` draws from it — "at a 54 KB/s trickle a chunk takes ~20s to
    roll" — is therefore roughly 4× too pessimistic (~4.7 s). Report it; do not fix it in this PR.
+5. **`ffmpeg_speed` is mis-parsed when ffmpeg reports `speed=` in scientific notation.** The
+   production regex is `re.search(r'speed=\s*([0-9.]+)x?', stats_line)`
+   (`apps/proxy/live_proxy/input/manager.py:1065`); `[0-9.]+` stops at the `e`. Against the real
+   line in `truncation.stderr` — `speed=1.82e+03x`, which ffmpeg 8.1.2 emitted unprompted on a
+   truncated input — it yields **1.82** instead of 1820, a 1000× under-report. **Bounded honestly:**
+   the failover consequence is nil, because a mis-parsed *high* speed is still above
+   `buffering_speed`'s 1.0 default and triggers nothing. What is wrong is the **displayed**
+   `ffmpeg_speed` on `GET /proxy/ts/status/<uuid>` and `GET /proxy/relay/channels`, which is
+   externally observable and therefore parity-matrix territory. The mirror-image case — a very small
+   speed rendered as `9.5e-05x` and parsed as **9.5**, which *would* suppress a buffering failover —
+   is real in the regex but not reachable in practice: `speed = media_time / wall_time`, so
+   `< 1e-4` needs the wall clock to run more than 10,000× ahead of the media, and no capture here
+   came close. Report it as a candidate parity-matrix row for **2a-4** (whose subject is
+   `input/manager.py` and rows 1-6), with the reachable half and the unreachable half distinguished.
+   **Do not fix it** — D5 is strict parity, defects included.
 
 ---
 
@@ -2545,7 +3033,8 @@ the work as verified.**
 
 - [ ] `scripts/coverage_live_path.sh` runs, prints `statements 7978`, and refuses to report over a
       data file it did not stamp.
-- [ ] `apps/proxy/live_proxy/tests/harness/` holds the seven modules and the README of § File
+- [ ] `apps/proxy/live_proxy/tests/harness/` holds the eight modules, the three committed corpus
+      fixtures with their `CAPTURE.md`, and the README of § File
       structure.
 - [ ] `test_harness_upstream.py`, `test_harness_standin.py` and `test_harness_smoke.py` are green,
       under `coverage`, in the run of Task 7 Step 3.
