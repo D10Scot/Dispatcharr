@@ -186,9 +186,11 @@ restated here as a single list, in the idiom of Phase 1's § "What the code says
 ## Verified facts this design rests on
 
 **Coverage, measured on `a948cd8a`, 857 tests green, one process per test label exactly as
-`backend-tests.yml` runs them** (`coverage run --parallel-mode --include=…` over
-`apps.proxy.tests`, `apps.proxy.live_proxy.tests` and `apps.channels.tests`, each label in its own
-process, `coverage combine`d afterwards). **Every figure in this section is corrected in the round-6
+`backend-tests.yml` runs them** (`coverage run` over `apps.proxy.tests`,
+`apps.proxy.live_proxy.tests` and `apps.channels.tests`, each label in its own process,
+`coverage combine`d afterwards, narrowed to the ten boundary modules plus `live_proxy` — see
+§ Stage 2a › Gate 2 for the exact rcfile, and for why `--include=` on the command line is **not**
+what produces these numbers). **Every figure in this section is corrected in the round-6
 amendments (§ A1):** an independent re-derivation at the same commit — run twice to identical
 totals, with a 16-label control run that moved `live_proxy` by zero statements — supersedes this
 spec's first measurement. The old figures (3,818 missed / 44%, a nine-module 1,040/87, a combined
@@ -895,20 +897,89 @@ now publishes are the ones this exact invocation produces** — `authorize_views
 statements, 4 missed, **96.3%**; the ten together are 1,148 / 91 / **92.1%**; the combined
 denominator is 7,978 / 3,977 / **50.2%**. There is no longer an open item here.
 
-**Corrected shape:**
+**Corrected again, by 2a-2's planning pass — which ran the invocation rather than reading it —
+because the "corrected shape" below was still not the shape that produces the numbers above.** Written as a bare `coverage run --include=…` and
+executed from the repository root — the only place `manage.py` resolves — coverage auto-discovers
+`./.coveragerc`, whose `source = apps, core, dispatcharr` (`.coveragerc:4`) makes it **ignore
+`--include` at measurement time** and say so:
+
+```
+coverage/inorout.py:513: CoverageWarning: --include is ignored because --source is set
+  (include-ignored)
+```
+
+The resulting data file holds **212 files / 38,418 statements / 30%**, not 7,978 / 3,977 / 50.2%.
+The published figures were reproducible only by accident of two things the snippet never mentions:
+`.coveragerc`'s own `omit = */tests/*`, which kept the twenty test modules out of the measurement,
+and a **report**-time `--include` filter, which is where the ten-module narrowing actually happened.
+The figures are right; the command under them never computed them.
+
+**The shape Gate 2 actually specifies is a self-contained rcfile, and `scripts/coverage_live_path.sh`
+(2a-2) owns it.** It must not depend on an ambient `./.coveragerc`, which also sets a `data_file`
+and a `[json] output` this gate does not want:
+
+```ini
+# scripts/coverage_live_path.coveragerc
+[run]
+source = apps/proxy
+omit =
+    */tests/*
+parallel = True
+data_file = ${COVERAGE_LIVE_PATH_DATA_DIR}/.coverage
+
+[report]
+include =
+    apps/proxy/live_proxy/*
+    apps/proxy/authorize.py
+    apps/proxy/authorize_views.py
+    apps/proxy/control_plane.py
+    apps/proxy/next_source.py
+    apps/proxy/relay_client.py
+    apps/proxy/relay_serializers.py
+    apps/proxy/relay_views.py
+    apps/proxy/permissions.py
+    apps/proxy/internal_auth.py
+    apps/proxy/internal_base_url.py
+omit =
+    */tests/*
+skip_empty = True
+```
+
+driven one label per process and combined:
 
 ```bash
-coverage run --include='apps/proxy/live_proxy/*,apps/proxy/authorize.py,apps/proxy/authorize_views.py,apps/proxy/control_plane.py,apps/proxy/next_source.py,apps/proxy/relay_client.py,apps/proxy/relay_serializers.py,apps/proxy/relay_views.py,apps/proxy/permissions.py,apps/proxy/internal_auth.py,apps/proxy/internal_base_url.py' \
-  manage.py test apps.proxy.tests apps.proxy.live_proxy.tests apps.channels.tests
+for L in apps.proxy.tests apps.proxy.live_proxy.tests apps.channels.tests; do
+  redis-cli flushall >/dev/null 2>&1 || true
+  python -m coverage run --rcfile=scripts/coverage_live_path.coveragerc manage.py test --keepdb "$L"
+done
+python -m coverage combine --rcfile=scripts/coverage_live_path.coveragerc
+python -m coverage report  --rcfile=scripts/coverage_live_path.coveragerc
 ```
+
+Measured at `a948cd8a` in the backend test container on 2026-09-10: **7,978 statements, 3,977
+missed, 50.150413637503135%**, zero coverage warnings, 15.2 s wall for all three labels — matching
+§ Verified facts to the statement and every per-file row with it.
+
+**`source` is load-bearing and `include` cannot replace it — this is a fact about what Gate 2
+measures, not a stylistic preference.** Measured at the same commit: with `[run] include =` and no
+`source`, the combined total is **7,877 / 3,876**, one hundred and one statements short. The 101 are
+`apps/proxy/live_proxy/input/http_streamer.py`, which no test imports. `source` triggers coverage's
+walk over source files that never executed and reports such a file at 0%; a measurement-time
+`include` filter only records files that actually execute, so a completely untested file drops out
+of the **denominator** rather than dragging the percentage down. A floor built that way rewards
+deleting the last test that imports a module, and would have quietly excluded the single worst file
+in this phase's own worst-file list. `--include` at **report** time is fine — the rcfile above uses
+it there — because by then every file `source` walked is already in the data.
 
 `authorize_views.py` is in the denominator (ten boundary modules, not nine) because it is a real
 part of the internal contract 2c must reproduce, and it is **measured**, at 96.3% (§ A1). `vod_proxy`
-and `hls_proxy` stay outside `--include`, matching D1's scope line. **The target § Verified facts
-now states — `live_proxy` from 43.1% to 78.0%, +2,382 statements against a 7,978-statement
-denominator — is arithmetic against the ten-module baseline this exact `--include=` list produces**,
-not against a nine-module one, so 2a-2's first run of the script should reproduce it to within the
-±70-statement thread-timing band and any larger divergence is a finding, not a rounding difference.
+and `hls_proxy` stay outside the `[report] include` list, matching D1's scope line — and outside
+`[run] source` too, which is `apps/proxy` rather than `apps` for that reason. **The target
+§ Verified facts now states — `live_proxy` from 43.1% to 78.0%, +2,382 statements against a
+7,978-statement denominator — is arithmetic against the ten-module baseline this exact rcfile
+produces**, not against a nine-module one, so 2a-2's first run of the script should reproduce it
+exactly (it did: 7,978 / 3,977 / 50.150413637503135%) and any divergence beyond the ±70-statement
+thread-timing band that separates measurement *shapes* is a finding, not a rounding difference.
 
 **Also corrected: running the three labels together in one `coverage run` is the one configuration
 `CLAUDE.md` § Testing documents as historically unreliable** — "CI never runs the suite in one
@@ -916,8 +987,9 @@ process... The full in-process run has historically failed with a different set 
 every failure passed in its shard... A green CI run does not mean a green suite." A coverage gate
 that reproduces exactly that failure mode would block Go PRs on flakes unrelated to the PR being
 reviewed. **The gate instead runs per-label, in the existing per-label matrix jobs
-`backend-tests.yml` already runs, each with `coverage run --include=... --parallel-mode`, and
-combines the three `.coverage` files with `coverage combine` in an aggregate step**. **§ A1 supplies
+`backend-tests.yml` already runs, each with `coverage run --rcfile=scripts/coverage_live_path.coveragerc`
+(whose `[run] parallel = True` supplies the parallel-mode suffix), and combines the resulting
+`.coverage.*` files with `coverage combine` in an aggregate step**. **§ A1 supplies
 a second, independent reason for the same shape**: a single process gives the relay's daemon threads
 ~33 seconds of loop iterations while unrelated tests run, and coverage then credits ~68 statements no
 test asserts — so the single-process number is both flakier *and* higher, and a floor set against it
@@ -998,7 +1070,7 @@ table shape.
 | PR | Branch | What it does | Gate | Depends on |
 |---|---|---|---|---|
 | 2a-1 | `migration/phase2a-parity-matrix` | `docs/relay-parity-matrix.md` (Gate 1's **27** rows above — corrected from 24 in the round-6 amendments, § A3 — and any further rows found while writing it) plus `e2e/tests/guards/parity-matrix.spec.ts`, the guard test that fails naming any row lacking a `file:line` citation or a test reference, and which accepts the white-box-only marker on rows 26-27, or an `owed: <PR id>` marker on a row not yet pinned, in place of a test reference. | Guard test green — **which is not Gate 1**: at 2a-1 most rows stand as `owed:`, deliberately, and the guard is asserting that every one of them is owned, cited and syntactically well-formed (§ A6) | — |
-| 2a-2 | `migration/phase2a-subprocess-harness` | The real-subprocess, real-fake-upstream test harness (§ "The subprocess harness" above); no relay tests yet, just the harness and a smoke test proving it spawns a real process and serves real bytes. **Also, corrected in this fix round (§ NM3 in the round-2 review): `scripts/coverage_live_path.sh` itself** — the runnable `--include=` invocation from Gate 2, with no floor file and no CI-blocking wiring yet — so 2a-3…2a-6 have a real, reproducible command to quote a number from instead of an ad-hoc local run each. **Open decision this PR's plan must settle, flagged to the user (round-6 amendments, § A2): whether the ≈827 subprocess-gated statements are reached by a process fake at `posix_spawn_proc` (438 of them, no forking) plus an extracted seam in `input/manager.py` — a small production-code change inside a test-scoped stage, `posix_spawn` retained — or by real subprocesses throughout.** The plan states the choice and its reasoning; this spec does not pre-empt it. | Harness's own smoke test green under `coverage`; `scripts/coverage_live_path.sh` runs, prints a percentage, and reproduces § Verified facts' 50.2% to within the ±70-statement band; the seam decision recorded in the PR description either way | 2a-1 (so new tests can cite matrix rows as they land) |
+| 2a-2 | `migration/phase2a-subprocess-harness` | The real-subprocess, real-fake-upstream test harness (§ "The subprocess harness" above); no relay tests yet, just the harness and a smoke test proving it spawns a real process and serves real bytes. **Also, corrected in this fix round (§ NM3 in the round-2 review): `scripts/coverage_live_path.sh` itself** — the runnable per-label invocation from Gate 2, together with `scripts/coverage_live_path.coveragerc`, with no floor file and no CI-blocking wiring yet — so 2a-3…2a-6 have a real, reproducible command to quote a number from instead of an ad-hoc local run each. **Open decision this PR's plan must settle, flagged to the user (round-6 amendments, § A2): whether the ≈827 subprocess-gated statements are reached by a process fake at `posix_spawn_proc` (438 of them, no forking) plus an extracted seam in `input/manager.py` — a small production-code change inside a test-scoped stage, `posix_spawn` retained — or by real subprocesses throughout.** The plan states the choice and its reasoning; this spec does not pre-empt it. | Harness's own smoke test green under `coverage`; `scripts/coverage_live_path.sh` runs, prints a percentage, and reproduces § Verified facts' 50.2% to within the ±70-statement band; the seam decision recorded in the PR description either way | 2a-1 (so new tests can cite matrix rows as they land) |
 | 2a-3 | `migration/phase2a-ts-generator-coverage` | Tests against `output/ts/generator.py` and `services/channel_service.py`'s switch/stop paths, using the harness; closes matrix rows 7-10, 13. | `coverage_live_path.sh` (created in 2a-2) shows a measured increase on these two files; and matrix rows 7-10 and 13 each carry a test reference the parity-matrix guard accepts (round-6 amendments, § A6) | 2a-2 |
 | 2a-4 | `migration/phase2a-manager-coverage` | Tests against `input/manager.py`'s transcode connection setup, stderr reader and health/reconnect loops — 771 of the ~1,024-missed-statement pair, of which 299 are strictly subprocess-gated and ~143 (the raw-HTTP Proxy path) need only a socket; closes matrix rows **1-6** — **row 12 moves to 2a-6** (round-6 amendments, § A5), since row 12 is fMP4's `_is_timeout` and this PR's subject is `input/manager.py`. | `coverage_live_path.sh` shows a measured increase on `input/manager.py`; and matrix rows 1-6 each carry a test reference the parity-matrix guard accepts (§ A6) | 2a-2 |
 | 2a-5 | `migration/phase2a-server-and-authorize-coverage` | Tests against `server.py`'s bring-up, event listener loop and zombie detection — **plus the eight matrix rows no other PR owns, assigned here in the round-6 amendments (§ A4)**: rows **14-17** (the status payload's exact field set and types; the `stream_xc`→`stream_ts` decision hand-off; the stream-by-hash authorization shape; `ip_address`'s provenance) and rows **19, 20, 23, 25** (the Internal, Admin, Session and stream-by-hash authorize-matrix principals, none of which any `e2e/tests/` spec pins today). Rows 14-17 and 19-25 are view-level and authorize-shaped rather than byte-path, which is why they land beside `server.py`'s bring-up work rather than in a harness-heavy PR — and 2a-5 is correspondingly **the largest of the four coverage PRs, not the smallest**, which the first draft implied by giving it no rows at all. | `coverage_live_path.sh` shows a measured increase on `server.py`; matrix rows 14, 15, 16, 17, 19, 20, 23 and 25 — all eight, enumerated rather than ranged, since this is the gate the 2a-8 question turned on — each carry a test reference the guard test accepts | 2a-2 |
