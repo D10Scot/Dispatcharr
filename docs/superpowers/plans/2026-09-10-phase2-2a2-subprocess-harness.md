@@ -366,9 +366,11 @@ Task 5 removes the degrade by pointing `DISPATCHARR_INTERNAL_API_BASE_URL` at th
   5644)`, which is `getattr(Config, 'BUFFER_CHUNK_SIZE', …)` — and `BaseConfig.BUFFER_CHUNK_SIZE`
   **exists**, at `apps/proxy/config.py:15`, as `188 * 1361` = 255,868 bytes. The `5644` fallback
   therefore never fires. This matters to every harness test: a client sees nothing until a whole
-  chunk closes (`input/buffer.py:97-100`), so a test that wants bytes quickly either lets the
-  upstream run at loopback speed (the harness default, `rate=None`) or patches the class attribute
-  down, e.g. `patch.object(TSConfig, 'BUFFER_CHUNK_SIZE', TS_PACKET_SIZE * 10)`. **This is a
+  chunk closes (`input/buffer.py:97-100`), so a test that wants bytes quickly needs the chunk to be
+  small. **`RelayHarnessTestCase` patches it down** to `TS_PACKET_SIZE * 10` = 1,880 bytes for
+  exactly that reason, which at the harness upstream's paced 250 KB/s closes a chunk in single-digit
+  milliseconds. Letting the upstream run unpaced would also hide the wait and is **not** the answer
+  — see `FakeUpstream`'s docstring for what `rate=None` did to Redis. **This is a
   `CLAUDE.md` inaccuracy, not a code defect** — report it, do not fix it here.
 - `max_unhealthy_checks = 3`, `action_cooldown = 30` and `stable_time >= 30` are **bare literals**
   in `_monitor_health` (`input/manager.py:1512`, `:1513`, `:1536`) and cannot be compressed. Budget
@@ -1620,8 +1622,11 @@ corpus and all worth knowing before writing an assertion:
 - The speed field is **space-padded** when short: `speed= 1.1x`, with a space. The production regex
   `re.search(r'speed=\s*([0-9.]+)x?', …)` (`input/manager.py:1065`) has the `\s*` and handles it;
   two of the 76 lines in `slow-trickle.stderr` are of this form, so the corpus exercises it.
-- Records are separated by **`\r`, not `\n`** — ffmpeg rewrites one status line in place. Anything
-  splitting the corpus on `\n` alone gets one enormous line.
+- Records are **terminated** by `\r` — ffmpeg rewrites one status line in place — **except the last,
+  which a gracefully-exiting ffmpeg terminates with `\n`**. So CR == records − 1, and a capture with
+  a single record (`truncation.stderr`) has no CR at all. Splitting on `\n` alone gets one enormous
+  line; splitting on `\r` alone gets the preamble and record 1 glued together and finds nothing in
+  `truncation`. Split on both, as `_read_stderr` does.
 - **A real ffmpeg emits `speed=` in scientific notation.** `truncation.stderr`'s only progress line
   reads `speed=<mantissa>e+03x` — `1.82e+03x` on one capture, `2.67e+03x` on another. See
   § Findings, item 5: the production regex stops at the `e` and parses only the mantissa.
@@ -1842,7 +1847,7 @@ from django.test import SimpleTestCase
 
 from apps.proxy.live_proxy.utils import posix_spawn_proc
 
-from .harness.asset import TS_PACKET_SIZE, assert_ts_aligned
+from .harness.asset import TS_PACKET_SIZE, assert_ts_aligned, synthetic_ts
 from .harness.ffmpeg_stderr import CORPUS_NAMES, load, progress_lines
 from .harness.process import StandInBin
 from .harness.upstream import FakeUpstream
@@ -2031,6 +2036,46 @@ class StandInSpawnTests(SimpleTestCase):
                 proc.terminate()
                 proc.wait(timeout=5)
 
+    def test_the_production_parameter_string_works_end_to_end(self):
+        """The exact command 2a-4 must drive: -i URL, then flags, then pipe:1.
+
+        This is the regression test for the `-i` branch's position in `_parse`.
+        With the generic `startswith("-")` branch first, `-i` is swallowed, the
+        URL lands in `positional`, and the fallback picks `positional[-1]` --
+        `pipe:1` -- so the child dies on `urlopen("pipe:1")` before writing a
+        byte. A bare `["ffmpeg", "-i", url]` cannot catch that, because there
+        the last positional IS the url.
+        """
+        with FakeUpstream() as upstream, StandInBin():
+            proc = posix_spawn_proc([
+                "ffmpeg", "-i", upstream.url,
+                "-c:v", "copy", "-c:a", "copy", "-f", "mpegts", "pipe:1",
+            ])
+            try:
+                body = _read_exactly(proc.stdout, 8 * TS_PACKET_SIZE)
+            finally:
+                proc.terminate()
+                proc.wait(timeout=5)
+        self.assertEqual(len(body), 8 * TS_PACKET_SIZE, "child produced no bytes")
+        assert_ts_aligned(body)
+
+    def test_pipe_0_reads_stdin(self):
+        """`-i pipe:0` copies stdin to stdout -- what the fMP4 and Output
+        Profile managers need from their child (2a-6)."""
+        payload = synthetic_ts(packets=8)
+        with StandInBin():
+            proc = posix_spawn_proc([
+                "ffmpeg", "-f", "mpegts", "-i", "pipe:0", "-c", "copy", "-f", "mp4", "pipe:1",
+            ])
+            try:
+                proc.stdin.write(payload)
+                proc.stdin.flush()
+                body = _read_exactly(proc.stdout, len(payload))
+            finally:
+                proc.terminate()
+                proc.wait(timeout=5)
+        self.assertEqual(body, payload)
+
     def test_terminate_reaps_the_child(self):
         with FakeUpstream() as upstream, StandInBin():
             proc = posix_spawn_proc(["ffmpeg", "-i", upstream.url])
@@ -2098,10 +2143,15 @@ def split(name: str) -> tuple[bytes, list[bytes]]:
     1. ffmpeg **terminates** a progress record with CR, it does not precede one.
        So `capture.split(b"\r")[0]` is the preamble AND record 1 stuck together,
        and every record index after that is off by one.
-    2. A capture whose process was not killed mid-record ends its last record
-       with LF, not CR -- `truncation.stderr` contains **zero** CR bytes, because
-       its one and only record is the final `Lsize=` line. Anything that treats
-       CR as the sole record separator finds no records in it at all.
+    2. A capture whose process exited **gracefully** ends its last record with
+       LF, not CR -- `truncation.stderr` contains **zero** CR bytes, because its
+       one and only record is the final `Lsize=` line. This holds for a SIGTERM
+       too, not just a clean end of input: `normal` and `slow-trickle` were both
+       SIGTERMed, log "Exiting normally, received signal 15.", and still end LF.
+       So CR == records - 1 for every capture here; only a SIGKILL landing
+       mid-record could leave CR == records, which this split also handles.
+       Anything treating CR as the sole separator finds no records in
+       `truncation` at all.
 
     `input/manager.py`'s `_read_stderr` takes whichever of CR or LF comes first
     as the line terminator, so splitting on both is not a convenience here --
@@ -2216,21 +2266,25 @@ def _parse(argv):
         elif arg == "--dead-air-after-bytes":
             options["dead_air_after_bytes"] = int(argv[i + 1])
             i += 2
+        elif arg == "-i":
+            # ffmpeg's own input flag. The value after it is the input, and this
+            # branch MUST stay above the generic `startswith("-")` one below:
+            # `-i` starts with a dash, so the generic branch would swallow it,
+            # push the URL into `positional`, and leave the fallback to pick
+            # `positional[-1]` -- which against the production parameter string
+            # (`-i {streamUrl} -c:v copy -c:a copy -f mpegts pipe:1`) is
+            # `pipe:1`, and `urlopen("pipe:1")` raises
+            # `URLError: unknown url type: pipe`. That ordering bug shipped once
+            # and passed the smoke test by coincidence, because with a bare
+            # `-i URL` the last positional happens to BE the URL; the two tests
+            # named in Step 3 exist so it cannot happen again.
+            options["input"] = argv[i + 1]
+            i += 2
         elif arg.startswith("-"):
             # Anything else -- ffmpeg's own flags, whatever the StreamProfile's
             # parameters carry -- is accepted and ignored, exactly so a test can
             # use a realistic parameter string.
             i += 1
-        elif arg == "-i":
-            # ffmpeg's own input flag. The value after it is the input, which is
-            # the ONLY positional this program cares about -- taking
-            # `positional[-1]` instead breaks against the production parameter
-            # string (`-i {streamUrl} -c:v copy -c:a copy -f mpegts pipe:1`),
-            # where the last positional is `pipe:1` and urlopen("pipe:1")
-            # raises `URLError: unknown url type: pipe`. 2a-4 has to drive that
-            # exact command, so this must handle it.
-            options["input"] = argv[i + 1]
-            i += 2
         else:
             positional.append(arg)
             i += 1
@@ -2268,7 +2322,14 @@ def _pump_stderr(path, interval, loop):
             if interval:
                 time.sleep(interval)
             try:
-                # Terminated, not prefixed -- what real ffmpeg puts on the wire.
+                # Terminated, not prefixed. Faithful for every record a real
+                # ffmpeg writes except its LAST, which a gracefully-exiting
+                # ffmpeg terminates with LF and follows with its epilogue
+                # ("Exiting normally, received signal 15."). Replaying every
+                # record CR-terminated and dropping the epilogue is deliberate:
+                # the replay loops, so there is no "last" record, and
+                # _read_stderr splits on either terminator anyway. Not
+                # byte-exact, and no test asserts that it is.
                 os.write(2, record + b"\r")
             except OSError:
                 return
@@ -2468,11 +2529,13 @@ def stand_in_stream_profile(name: str = "harness-stand-in"):
 ```
 
 Note the ordering trap `_defaults_for_wrapper` closes, and check it holds when you run the tests:
-the wrapper inserts the flags at `sys.argv[1:1]`, i.e. **before** the caller's own arguments, so the
-URL stays last and `_parse`'s `positional[-1]` still finds it. If a future flag ever needs to come
-after the URL, `_parse` must change, not this splice.
+the wrapper inserts its flags at `sys.argv[1:1]`, i.e. **before** the caller's own arguments. Each
+is a `--flag value` pair, so the splice cannot land between `-i` and its value — which is the part
+that matters, because `_parse` finds the input by reading the argument after `-i`, not by position.
+A future flag that had to come *after* the caller's arguments would need `_parse` to change, not
+this splice.
 
-- [ ] **Step 8: Run the tests to verify they pass** — expected 10 tests, `OK`.
+- [ ] **Step 8: Run the tests to verify they pass** — expected 14 tests, `OK`.
 
 Predictable snag: `test_exit_after_bytes_ends_the_process_with_the_given_code` asserts
 `proc.wait(timeout=10) == 3`. `_Proc.wait` at `apps/proxy/live_proxy/utils.py` calls
@@ -2858,10 +2921,10 @@ Snags to expect, each with a resolution rather than a guess:
   STREAMS ACL. If it 403s, print `response.text` — the decision names its own reason — and fix the
   **fixture**, not the authorization.
 - **The tune may 200 and then serve nothing for a moment.** A client sees nothing until the ring
-  buffer closes a whole ~256 KB chunk (F8's third bullet, `input/buffer.py:97-100`). At loopback
-  speed that is well under a second — F7's prototype reached chunk index 2 in 0.4 s — so a stall of
-  more than a couple of seconds is a real fault, not chunking. Read the relay's own log by running
-  with `DISPATCHARR_LOG_LEVEL=DEBUG`.
+  buffer closes a whole chunk (`input/buffer.py:97-100`). Under this base class that chunk is
+  **1,880 bytes**, not the ~256 KB default, and the upstream is paced at 250 KB/s — so the first
+  bytes are single-digit milliseconds away, and **any** stall beyond a fraction of a second is a
+  real fault rather than chunking. Read the relay's own log with `DISPATCHARR_LOG_LEVEL=DEBUG`.
 - **`M3UAccount.objects.create` enqueues a Celery task.** Expected and harmless: the broker is real
   Redis and nothing consumes it. Do not switch on eager mode (§ Global Constraints).
 
@@ -3147,9 +3210,13 @@ Three things must be true, and all three go in the PR description:
    "harness's own smoke test green under `coverage`" clause.
 2. The final line reads `coverage_live_path: statements 7978  missing <n>  coverage <p>%`. The
    denominator must still be **7,978**: this PR adds no production module, so a different
-   denominator means the rcfile changed shape. `missing` will be a little **below** 3,977 — the
-   harness tests execute real relay code — and `<p>` a little above 50.15%. Both are the expected
-   direction; record the exact numbers.
+   denominator means the rcfile changed shape. `missing` drops **substantially** — a reference run
+   of the finished harness reported `missing 3213  coverage 59.73%`, i.e. **764 statements** closed
+   against the 3,977 baseline, from a PR whose stated deliverable is a harness and one smoke test.
+   That is not a rounding difference and should not be described as a small increase: the
+   end-to-end tune exercises bring-up, the buffer, the client manager and the generator on its way
+   through. Record the exact numbers; a *smaller* movement is the thing worth investigating,
+   because it means the tune is not reaching as far as it should.
 3. Nothing prints a `CoverageWarning`.
 
 The spec's ±70-statement band is about comparing *different measurement shapes*, and this is the
