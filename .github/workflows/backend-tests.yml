@@ -203,6 +203,18 @@ jobs:
           persist-credentials: false
 
       - name: Verify the measurement can be trusted
+        # Explicit shell: needed here and is NOT redundant. A run: block inside a
+        # container: job defaults to sh (dash), not bash, and dash's `set` has no
+        # `-o pipefail` -- every set -euo pipefail step below the same trap, WITHOUT
+        # this line, dies on its own first line with "Illegal option -o pipefail"
+        # (exit 2, not the ModuleNotFoundError's exit 1 this step is checking for) --
+        # a two-line failure that reads like it's about Python and is not. The other
+        # set -euo pipefail steps in this file are fine for two DIFFERENT reasons,
+        # neither of which generalises to a new step: the `test` job's one run step
+        # invokes `bash scripts/...` directly rather than relying on the block's own
+        # shell, and the `plan` job carries no container: at all, so it gets bash for
+        # free on a bare ubuntu-latest runner. A new container-job step needs its own
+        # shell: bash, every time.
         shell: bash
         run: |
           set -euo pipefail
