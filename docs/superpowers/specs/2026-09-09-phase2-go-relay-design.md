@@ -977,9 +977,15 @@ and `hls_proxy` stay outside the `[report] include` list, matching D1's scope li
 `[run] source` too, which is `apps/proxy` rather than `apps` for that reason. **The target
 § Verified facts now states — `live_proxy` from 43.1% to 78.0%, +2,382 statements against a
 7,978-statement denominator — is arithmetic against the ten-module baseline this exact rcfile
-produces**, not against a nine-module one, so 2a-2's first run of the script should reproduce it
-exactly (it did: 7,978 / 3,977 / 50.150413637503135%) and any divergence beyond the ±70-statement
-thread-timing band that separates measurement *shapes* is a finding, not a rounding difference.
+produces**, not against a nine-module one. 2a-2's first run of the script reproduced it exactly
+(7,978 / 3,977 / 50.150413637503135%), and on a tree with no tune in it that exactness is expected:
+**the number to check is the denominator, 7,978, which is a property of the rcfile and moves only
+if the module list does.** The `missing` count is a different kind of quantity — see the ratchet
+paragraph below — and once stage 2a's harness exists it varies by a couple of dozen statements
+between identical runs. **Do not read a small divergence in `missing` as a defect**: an early
+implementer lost time chasing a seven-statement gap that was ordinary teardown timing. A changed
+denominator is a finding; a changed `missing` is a question, and the answer is usually per-file
+attribution.
 
 **Also corrected: running the three labels together in one `coverage run` is the one configuration
 `CLAUDE.md` § Testing documents as historically unreliable** — "CI never runs the suite in one
@@ -1002,14 +1008,49 @@ job recomputes coverage, fails if it drops below the committed floor, and separa
 diff lowers the floor file's own committed value without also proving (in the same run) that the
 newly-computed percentage supports it — i.e. the floor can rise in the same PR that earns the rise,
 but can never simply be edited down. `scripts/coverage_live_path.sh`'s exit code is 1 on either
-failure, with the failing percentage and the floor both printed. **The ratchet needs no tolerance for
-§ A1's ±70-statement band, and the script must say why** — added in the round-6 amendments: within
-the per-label shape the measurement is *exactly* reproducible (three runs across three different
-label sets agreed to the statement), so the band applies **between** shapes, not between runs of
-this one. The consequence for the ratchet is therefore not a tolerance but a guard: the script
-refuses to write or compare a floor produced by any other shape — a single-process run reports ~68
-fewer missed statements and would silently ratchet the floor up to a number CI can never reach
-again. **No PR in stage 2c may merge until
+failure, with the failing percentage and the floor both printed.
+
+**The shape guard stands, and it is not a tolerance.** The script refuses to write or compare a
+floor produced by any other measurement shape — a single-process run reports ~68 fewer missed
+statements and would silently ratchet the floor to a number the per-label pipeline could never
+reach again. That ruling is unaffected by everything below: a wrong *shape* is a different problem
+from run-to-run variance, with a different cause and a different remedy.
+
+**But the round-6 ruling that the ratchet needs *no tolerance at all* is withdrawn: it was measured
+on a suite in which no test tunes a channel, and stage 2a ends that by construction.** The claim
+was that within the per-label shape the measurement is *exactly* reproducible — "three runs across
+three different label sets agreed to the statement" — and that was true of the tree it was taken
+on. Once the subprocess harness exists, four unchanged runs of the same gate against one unmodified
+tree state (same image, same container, Redis flushed between runs) gave missed counts spanning
+**27 statements**, with the denominator identical every time and all three labels green every time.
+The variance is real, it is not a shape error, and a zero-tolerance ratchet sitting on top of it
+turns an unrelated PR red at random.
+
+**The attribution is what makes this bounded rather than alarming, and 2a-7 must reproduce it rather
+than inherit it.** In the measurement above the movement was confined to **two files —
+`input/manager.py` and `server.py` — in a handful of regions, every one of them inside the
+stop/teardown window of a tune.** Nothing moved in the tune path, the ring buffer, either
+generator, the client manager, or any of the ten Phase 1 boundary modules. Two causes, of which
+only the second is irreducible:
+
+1. **The harness racing its own teardown** — a fixture whose stderr cadence lands its last records
+   near the end of a short tune, so a counter crosses a warm-up threshold or does not. This is a
+   harness defect, is fixable, and must be fixed rather than tolerated: a test that measures
+   something different on alternate runs is not measuring anything.
+2. **The relay's own cleanup thread sampling a channel mid-shutdown.** It ticks on its own interval
+   (`CLEANUP_CHECK_INTERVAL`), independent of any test, so whether a tick lands inside a teardown
+   window is genuinely not controllable from a test. This is relay behaviour, not test flakiness.
+
+**So 2a-7's ratchet carries a small tolerance, and three constraints on it.** (i) It is sized to the
+*measured residual* after the harness's own races are removed — not to § A1's ±70-statement band,
+which is an order of magnitude larger and describes a different phenomenon entirely (measurement
+shape, not teardown timing); reusing that number here would be a coincidence of arithmetic, not an
+argument. (ii) It is **justified by per-file attribution, not picked**: the PR that sets it shows
+which files move and why, exactly as the measurement above does, so a later widening has to make
+the same case. (iii) A movement **outside** it is a finding to investigate, not noise to absorb —
+the tolerance exists to stop random reddening, not to hide a regression. **This spec deliberately
+states no number**: the residual belongs to the tree 2a-7 measures on, and a figure written here
+would be quoted long after it stopped being true. **No PR in stage 2c may merge until
 this job reports ≥80% and Gate 1 is met** — the latter meaning *no row still carries an `owed:`
 marker*, not merely that the guard test is green, which it is from 2a-1 onward by design (§ A6).
 Stated as a CI precondition on 2c's first PR, not review discretion; 2b-3 is the PR that satisfies
@@ -1091,7 +1132,7 @@ table shape.
 | PR | Branch | What it does | Gate | Depends on |
 |---|---|---|---|---|
 | 2a-1 | `migration/phase2a-parity-matrix` | `docs/relay-parity-matrix.md` (Gate 1's **27** rows above — corrected from 24 in the round-6 amendments, § A3 — and any further rows found while writing it) plus `e2e/tests/guards/parity-matrix.spec.ts`, the guard test that fails naming any row lacking a `file:line` citation or a test reference, and which accepts the white-box-only marker on rows 26-27, or an `owed: <PR id>` marker on a row not yet pinned, in place of a test reference. | Guard test green — **which is not Gate 1**: at 2a-1 most rows stand as `owed:`, deliberately, and the guard is asserting that every one of them is owned, cited and syntactically well-formed (§ A6) | — |
-| 2a-2 | `migration/phase2a-subprocess-harness` | The real-subprocess, real-fake-upstream test harness (§ "The subprocess harness" above); no relay tests yet, just the harness and a smoke test proving it spawns a real process and serves real bytes. **Also, corrected in this fix round (§ NM3 in the round-2 review): `scripts/coverage_live_path.sh` itself** — the runnable per-label invocation from Gate 2, together with `scripts/coverage_live_path.coveragerc`, with no floor file and no CI-blocking wiring yet — so 2a-3…2a-6 have a real, reproducible command to quote a number from instead of an ad-hoc local run each. **This PR's plan carried an open decision, and settled it** (it was: reach the ≈827 subprocess-gated statements by a process fake at `posix_spawn_proc` plus an extracted seam in `input/manager.py`, or by real subprocesses throughout). **Settled as real subprocesses throughout, with no production-code change and no extracted seam** — because a real subprocess need not be a real ffmpeg. `input/manager.py`'s command comes from a `StreamProfile` row (`core/models.py:137-160`) and `output/fmp4/manager.py:32`'s `FFMPEG_REMUX_CMD` starts with the bare string `"ffmpeg"`, which `posix_spawn_proc` resolves through `shutil.which` (`utils.py:152`), so a scripted stand-in installed on `PATH` as `ffmpeg` reaches every spawn site untouched — measured at 6.5-8.1 ms per spawn. The fake was declined because it makes `posix_spawn_proc`, `_Proc` and `_SpawnedProcess` unreachable by construction, and because a stand-in on `PATH` is language-agnostic: 2c's Go relay spawns it unchanged. | Harness's own smoke test green under `coverage`; `scripts/coverage_live_path.sh` runs, prints a percentage, and reproduces § Verified facts' 50.2% to within the ±70-statement band; the seam decision recorded in the PR description either way | 2a-1 (so new tests can cite matrix rows as they land) |
+| 2a-2 | `migration/phase2a-subprocess-harness` | The real-subprocess, real-fake-upstream test harness (§ "The subprocess harness" above); no relay tests yet, just the harness and a smoke test proving it spawns a real process and serves real bytes. **Also, corrected in this fix round (§ NM3 in the round-2 review): `scripts/coverage_live_path.sh` itself** — the runnable per-label invocation from Gate 2, together with `scripts/coverage_live_path.coveragerc`, with no floor file and no CI-blocking wiring yet — so 2a-3…2a-6 have a real, reproducible command to quote a number from instead of an ad-hoc local run each. **This PR's plan carried an open decision, and settled it** (it was: reach the ≈827 subprocess-gated statements by a process fake at `posix_spawn_proc` plus an extracted seam in `input/manager.py`, or by real subprocesses throughout). **Settled as real subprocesses throughout, with no production-code change and no extracted seam** — because a real subprocess need not be a real ffmpeg. `input/manager.py`'s command comes from a `StreamProfile` row (`core/models.py:137-160`) and `output/fmp4/manager.py:32`'s `FFMPEG_REMUX_CMD` starts with the bare string `"ffmpeg"`, which `posix_spawn_proc` resolves through `shutil.which` (`utils.py:152`), so a scripted stand-in installed on `PATH` as `ffmpeg` reaches every spawn site untouched — measured at 6.5-8.1 ms per spawn. The fake was declined because it makes `posix_spawn_proc`, `_Proc` and `_SpawnedProcess` unreachable by construction, and because a stand-in on `PATH` is language-agnostic: 2c's Go relay spawns it unchanged. | Harness's own smoke test green under `coverage`; `scripts/coverage_live_path.sh` runs, prints a percentage, and reproduces § Verified facts' denominator of 7,978 exactly — the denominator is the check, not the `missing` count, which varies run to run once a tune exists (see the ratchet paragraph in Gate 2); the seam decision recorded in the PR description either way | 2a-1 (so new tests can cite matrix rows as they land) |
 | 2a-3 | `migration/phase2a-ts-generator-coverage` | Tests against `output/ts/generator.py` and `services/channel_service.py`'s switch/stop paths, using the harness; closes matrix rows 7-10, 13. | `coverage_live_path.sh` (created in 2a-2) shows a measured increase on these two files; and matrix rows 7-10 and 13 each carry a test reference the parity-matrix guard accepts (round-6 amendments, § A6) | 2a-2 |
 | 2a-4 | `migration/phase2a-manager-coverage` | Tests against `input/manager.py`'s transcode connection setup, stderr reader and health/reconnect loops — 771 of the ~1,024-missed-statement pair, of which 299 are strictly subprocess-gated and ~143 (the raw-HTTP Proxy path) need only a socket; closes matrix rows **1-6** — **row 12 moves to 2a-6** (round-6 amendments, § A5), since row 12 is fMP4's `_is_timeout` and this PR's subject is `input/manager.py`. | `coverage_live_path.sh` shows a measured increase on `input/manager.py`; and matrix rows 1-6 each carry a test reference the parity-matrix guard accepts (§ A6) | 2a-2 |
 | 2a-5 | `migration/phase2a-server-and-authorize-coverage` | Tests against `server.py`'s bring-up, event listener loop and zombie detection — **plus the eight matrix rows no other PR owns, assigned here in the round-6 amendments (§ A4)**: rows **14-17** (the status payload's exact field set and types; the `stream_xc`→`stream_ts` decision hand-off; the stream-by-hash authorization shape; `ip_address`'s provenance) and rows **19, 20, 23, 25** (the Internal, Admin, Session and stream-by-hash authorize-matrix principals, none of which any `e2e/tests/` spec pins today). Rows 14-17 and 19-25 are view-level and authorize-shaped rather than byte-path, which is why they land beside `server.py`'s bring-up work rather than in a harness-heavy PR — and 2a-5 is correspondingly **the largest of the four coverage PRs, not the smallest**, which the first draft implied by giving it no rows at all. | `coverage_live_path.sh` shows a measured increase on `server.py`; matrix rows 14, 15, 16, 17, 19, 20, 23 and 25 — all eight, enumerated rather than ranged, since this is the gate the 2a-8 question turned on — each carry a test reference the guard test accepts | 2a-2 |
