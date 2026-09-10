@@ -19,9 +19,30 @@
 # per-label pipeline meant to enforce it, so this script refuses to report over
 # any data file it did not stamp itself -- and 2a-7's floor comparison hangs off
 # the same check, so a floor can never be written or compared against a foreign
-# shape either. Within this shape the measurement is exactly reproducible: the
-# spec's +/-70-statement thread-timing band applies BETWEEN shapes, not between
-# runs of this one, so this script has no tolerance and needs none.
+# shape either. THIS GUARD STANDS, unaffected by everything below it.
+#
+# What does NOT hold: that the measurement is exactly reproducible within the
+# shape. It was, for a suite with no tune in it -- and still is: the clean-tree
+# baseline this script reproduces (7,978 statements / 3,977 missing / 50.15%,
+# no harness test in the labels yet) has no process in it to race. Stage 2a
+# ends that by construction. Once a real tune is in the suite, `missing` is
+# the one figure here that does not reproduce, and a comment that says
+# otherwise is wrong the moment a test spawns a process. Measured on one tree,
+# 2026-09-10, across eight runs, after the harness's own contribution to the
+# variance was found and fixed: `missing` 3,202-3,221 (19 statements), same
+# 7,978 denominator every time. Per-file attribution traced the remainder to
+# the relay's OWN two background threads independently noticing a spawned
+# child's EOF and racing over which updates shared state first
+# (input/manager.py's stderr-reader-thread join, :1739-1767) and to its
+# 1-second cleanup tick sampling transient state mid-teardown
+# (server.py:1778-1784, :1814, :2436) -- not to this script, not to the
+# harness, and not the spec's +/-70-statement BETWEEN-SHAPES band, which is a
+# different phenomenon and an order of magnitude smaller than what is measured
+# here. THAT NUMBER IS A MEASUREMENT, NOT A PROMISE: it describes one tree on
+# one day, and nothing here asserts it holds on the next one. Sizing a
+# tolerance from it is 2a-7's job, on its own evidence against its own tree --
+# deliberately not this script's, which carries no tolerance number of its
+# own to go stale.
 set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
