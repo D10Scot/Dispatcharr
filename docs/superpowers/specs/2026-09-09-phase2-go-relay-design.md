@@ -1116,7 +1116,11 @@ which files move and why, exactly as the measurement above does, so a later wide
 the same case. (iii) A movement **outside** it is a finding to investigate, not noise to absorb —
 the tolerance exists to stop random reddening, not to hide a regression. **This spec deliberately
 states no number**: the residual belongs to the tree 2a-7 measures on, and a figure written here
-would be quoted long after it stopped being true. **What it must be sized against is a measurement
+would be quoted long after it stopped being true. **A disputed figure also must not be written in
+its most arresting form, and must not be relayed without its flag** — both halves, because this
+document has been wrong in both: a contested number was made the memorable sentence of a section,
+and was then repeated onward in exactly the form that stripped the hedge. A hedge that does not
+survive quotation is not a hedge. **What it must be sized against is a measurement
 under `COVERAGE_CORE=sysmon`, whose spread is wider than the C tracer's** — 63 statements across
 twelve runs, against the C tracer's 19. That is not a regression and the cause is understood: the C
 tracer systematically drops statements executing after a `gevent.sleep()`, and in doing so was also
@@ -1170,34 +1174,54 @@ Profile surface **142**, 2a-5's surfaces **269**, reachable-but-expensive **150*
 prose as noise but never counted — and **reachable is 561**, not 217 and not 618. The 142 stays in
 the pool: it is reachable through the ordinary tune path and 2a-6 moves it as a side effect.
 
-**The bracket, C-tracer basis throughout. Distance 1,440:**
+**SUPERSEDED IN TURN, by measurement rather than by argument.** The bracket published above rested
+on this spec's own "~20-30% reachable" estimate for the fmp4/Output-Profile group. **That group is
+the cheapest in the denominator, not the dearest.** Two probe tests of 0.72 s and 0.76 s — an
+ordinary tune carrying `?output_format=fmp4`, and another carrying `?output_profile=<id>` — move it
+by **483 of 735 statements (66%)**, and move the whole gate **3,204 → 2,629**, a **−575** from two
+tests. So the "realistic, short by 569-719" rows are withdrawn, and the decisive bound framed around
+`input/manager.py` is no longer the binding constraint.
 
-| Scenario | Supply | Result |
+**Why it is that cheap, recorded for 2a-6.** Both managers are selected by a plain query parameter
+on an ordinary tune — `_resolve_output_format` (`views.py:113-134`) → `ensure_output_format`
+(`server.py:1290`), and `resolve_output_profile` (`authorize.py:201`) → `ensure_output_profile`
+(`server.py:1402`). No trusted header, no second worker, no nginx. And `FFMPEG_REMUX_CMD`'s `argv[0]`
+is the bare string `"ffmpeg"`, so 2a-2's `PATH` stand-in reaches it untouched: **the seam decision
+paying off in a file group nobody chose it for.**
+
+**The bracket, restated. C-tracer throughout — the core the −575 was measured on.** On that core the
+baseline is 3,204 and the allowance 1,595, so the distance is **1,609**, which the two probes reduce
+to **1,034**. (The **1,510** figure quoted elsewhere is the *sysmon* distance and does not belong in
+this sum; the difference is 99 statements, larger than the closest margin below.)
+
+| Supply against the post-probe distance of 1,034 | Total | Result |
 |---|---|---|
-| realistic — 2a-4 at its predicted max, 2a-6's three files at ~30% | 721 | short **719** |
-| realistic, plus the whole 150-statement expensive tail closed | 871 | short **569** |
-| 2a-6's three files at **100%** *(impossible)* | 1,164 | short **276** |
-| **Absolute ceiling** — every in-scope file and the ten boundary modules to zero | 1,692 | **closes +252** |
+| PRs as scoped — 2a-5's 269 + 2a-4's ~254 + `http_streamer.py` 101 | 624 | short **410** |
+| + the group's harder residual at ~30% of 252 | 700 | short **334** |
+| + the 150-statement expensive tail *(cost judgement, not measured)* | 850 | short **184** |
+| **+ ~20% of the mid-sized pool** | 1,040 | **closes +6** |
+| ceiling — all of the above plus the whole mid-sized pool | 1,977 | closes +943 |
 
-**The corrected decisive bound, which does not depend on 2a-6's pending measurement.** Put every
-other term at an impossible maximum — 2a-5's full 269, 2a-6's three files driven to zero from their
-633 upper bound, 2a-6's 142, the entire 150 expensive tail, authorize rows at zero — and the result
-turns entirely on `input/manager.py`:
+**A double-count this table avoids, and any re-derivation must too.** `server.py`'s 142-statement
+"Output Profile" bucket **is** `ensure_output_profile` — precisely what probe 2 drives — so most of
+it is already inside the −575 and cannot be counted again. **2a-5's safe supply after the probes is
+269, not 411.** The 411 is correct before the probes and double-counts after them; it is the same
+shape as the label-travelling error below, a number that is right in one frame and wrong in another.
 
-| 2a-4 yield | Total | vs 1,440 |
-|---|---|---|
-| 60 — its planner's low | 1,254 | short **186** |
-| 120 — its planner's high | 1,314 | short **126** |
-| 498 — `input/manager.py` to **zero** *(impossible)* | 1,692 | closes +252 |
+**So, plainly: the ≥80% gate is achievable, and it is not achievable by 2a-3 … 2a-6 as currently
+scoped.** The four PRs land roughly **184-410 short** even counting the soft expensive tail, and
+about a fifth of the mid-sized pool closes the remainder. That is a far better position than the
+withdrawn rows suggested and it is still not "reachable as scoped" — the honest statement is that
+**the widening now needed is small and specific rather than open-ended**, which is a decision worth
+putting to the user with those numbers rather than a warning.
 
-**The ceiling closes only if `input/manager.py` goes to zero missing, and that file's own planner
-predicts 60-120 — a factor of four apart.** So the authorize-row yield would have to supply **≥126**
-(2a-4 high) or **≥186** (2a-4 low) *with every other term already impossible*.
-
-**That reverses the priority order, and the reversal is recorded so it is not re-derived.** 2a-5's
-authorize-row yield — rows 14-17, 19, 20, 23, 25, landing outside `server.py` and counted as zero
-throughout — is now the **first** unknown to measure, ahead of 2a-6's three files. It is the only
-term that can move the decisive bound without re-scoping, and the bound above is the reason.
+**And the finding that outlives every total here: no reachability estimate in this spec has survived
+measurement.** Three of the five have now been checked — `server.py` was badly optimistic, and its
+error hid the two largest-looking prizes being the two that cannot be taken; `input/manager.py` was
+optimistic; the fmp4/Output-Profile group was badly **pessimistic**, by a factor of about three, in
+the direction that made the whole picture look worse than it is. **Two wrong pessimistically, one
+optimistically, none right.** That is the argument for measuring the mid-sized pool before deciding
+how much of it to take, rather than estimating it as this spec estimated the other five.
 
 **A partial sysmon re-measurement exists and is deliberately NOT folded into the sums above**:
 total missed **3,105** (61.08%), giving a distance of **1,510**, with `input/manager.py` at **474**
@@ -1217,7 +1241,7 @@ scope.** The one region identified so far is `input/manager.py:942-985` (`_read_
 `_parse_ffmpeg_stats`) — squarely inside 2a-4's scope — so the expected improvement is small. To be
 re-derived from measurement, not assumed.
 
-**Three errors of one family, which outlive every number above.** Each is a quantity that reads as
+**Four errors of one family, which outlive every number above.** Each is a quantity that reads as
 one kind of thing while being another, and together they are the reason this section exists at all:
 
 1. **A sum mistaken for a budget.** The withdrawn claim that *"closing the five largest gaps
@@ -1230,15 +1254,23 @@ one kind of thing while being another, and together they are the reason this sec
    module, and carried an explicit "there is no ninth region" written with no basis.
 3. **A target dressed as a measurement.** The figure "~150" was never reachability at all — it was
    *what a set of tasks intended to close* — quoted in a sentence whose subject was reachability,
-   and it survived several rounds in that costume. Of the three this is the worst, and the reason is
-   worth stating: **a subset table looks like a subset if you check the sum; a target dressed as a
-   measurement does not look like anything.**
+   and it survived several rounds in that costume, including one reappearance under the heading
+   "reachable-and-safe" written by the same person who had just documented the error. Of the four
+   this is the worst, and the reason is worth stating: **a subset table looks like a subset if you
+   check the sum; a target dressed as a measurement does not look like anything.**
+4. **A figure asserted stale that was current.** The four fmp4/Output-Profile files were assumed to
+   have moved under the harness, on the reasoning that the other three had. They had moved by
+   **exactly zero** — no harness test passes `?output_format=fmp4` or attaches an Output Profile, so
+   nothing in that group is reachable from anything 2a-2 shipped, and its pre-harness figures were
+   simultaneously its current ones. The error was reasoning from what the harness *does* to what it
+   must have *touched*, without checking. **Demanding the measurement rather than accepting the
+   correction is why that is known rather than assumed.**
 
 **And the limit of arithmetic checking, learned here.** Cross-checking the numbers caught (2): the
-rows did not sum to the stated total. It could not have caught (3), because a mislabelled quantity
-is internally perfectly consistent — 150 is a real number that adds up fine. **Arithmetic checking
-catches a quantity that is inconsistent; only provenance checking catches one that is consistent and
-mislabelled.** A reader who has seen all three should start asking *where did this number come from
+rows did not sum to the stated total. It could not have caught (3) or (4), because a mislabelled or
+wrongly-attributed quantity is internally perfectly consistent — 150 is a real number that adds up
+fine. **Arithmetic checking catches a quantity that is inconsistent; only provenance checking
+catches one that is consistent and mislabelled.** A reader who has seen all three should start asking *where did this number come from
 and what does it count*, not only *do these numbers agree* — which is the habit that would have
 prevented every error in this section, including the published one.
 
@@ -1250,13 +1282,14 @@ of roughly 28 functions whose bodies are `except Exception: logger.error(...)` a
 injection. **That 150 is what the corrected ceiling leans on hardest**, so its softness is not a
 footnote: if the tail is dearer than judged, every row above moves the wrong way.
 
-**What would narrow the range**, in priority order — **revised, and the revision is the point**:
-(i) **2a-5's authorize-row yield**, counted as zero throughout and the only term that can move the
-decisive bound without re-scoping; (ii) 2a-6's three files measured post-harness under sysmon, still
-the largest single span; (iii) `server.py` and the fmp4/profile group re-taken under sysmon so the
-bracket can be restated on one core. The `server.py` reconciliation and `input/manager.py`'s
-unreachability, which headed this list in the published revision, are **done** — 561 reachable of
-844, and 247 reachable of 474 respectively.
+**What would narrow the range**, in priority order — **revised twice, and the revisions are the
+point**: (i) **the mid-sized pool measured rather than estimated**, since it is what the gate now
+turns on and it is the one group no PR owns; (ii) **2a-5's authorize-row yield**, counted as zero in
+every row; (iii) `server.py` re-taken under sysmon so the whole bracket can sit on one core, and
+with it whether the 142 Output-Profile bucket is spent — that single number decides between "short
+184" and "short 43". **Done, and no longer open:** `server.py`'s reachability (561 of 844),
+`input/manager.py`'s (247 of 474), and the fmp4/Output-Profile group's (66% of 735 from two probes)
+— the last of which headed this list in the published revision as the dominant unknown.
 
 **The options, for the user to choose between — this spec states them and recommends none.**
 Widen the coverage PRs into the mid-sized files that lie outside their current scope — `views.py`,
