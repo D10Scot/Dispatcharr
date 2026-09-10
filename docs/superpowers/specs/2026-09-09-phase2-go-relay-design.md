@@ -237,8 +237,19 @@ lowest-covered file in the denominator), `input/buffer.py` 248/166 (33.1%), `inp
 `services/log_parsers.py` 235/73 (68.9%), `client_manager.py` 262/98 (62.6%), `views.py` 608/204
 (66.4%), `channel_status.py` 375/76 (79.7%). The five largest gaps — `server.py`,
 `input/manager.py`, `channel_service.py`, `output/ts/generator.py`, `output/fmp4/manager.py` —
-total **2,504** missed statements, 63% of the whole 3,977-statement gap; closing them approximately
-**is** the gate.
+total **2,504** missed statements, 63% of the whole 3,977-statement gap. **The first draft's
+"closing them approximately **is** the gate" is withdrawn — the arithmetic does not survive
+`server.py`'s measured reachability.** The gate needs **+2,382**; the five-file pool is 2,504, a
+margin of only **122**; and `server.py` alone contributes **222** statements that are unreachable or
+must not be targeted (§ Reachability below). That leaves **2,282** — **100 short of the gate**,
+before anyone has measured how much of the other four files is unreachable.
+
+**The gate is still reachable; its stated strategy is not.** The rest of `live_proxy` holds
+**1,382** missed statements outside those five files, and the ten boundary modules another 91, so
+there is ample headroom — it is simply not where this paragraph said to look. **2a-7 must size the
+last stretch against measured per-file reachability, not against "the five biggest gaps"**, and any
+PR that claims a file's whole missed count as available headroom is repeating exactly the error this
+correction fixes.
 
 **Test inventory, three buckets, all measured against `a948cd8a`.**
 
@@ -262,9 +273,35 @@ the first draft's account was directionally right and numerically loose in a way
 2a-2 has to build.** Not every missed statement costs the same to reach. `channel_service.py` is
 ~90% reachable by a Django test-client request driving an in-process fake upstream with real Redis —
 no subprocess needed, because switch/stop/metadata logic is pure Python and Redis calls.
-`output/ts/generator.py` is ~80-85% reachable the same way. `server.py` is ~70-75% reachable —
-bring-up, the event listener loop and zombie detection are Redis- and Django-test-client-shaped;
-only the parts that spawn ffmpeg are not. `input/manager.py` is only ~40-50% reachable without a
+`output/ts/generator.py` is ~80-85% reachable the same way.
+
+**`server.py` is NOT ~70-75% reachable, and the estimate that said so is withdrawn — it was an
+estimate, and it did not survive contact with the file.** Measured region by region by 2a-5's
+planner, **222 of its missed statements are unreachable or must not be targeted at all**, and they
+are the two largest-looking prizes in the file:
+
+- **`cleanup_task` (161 missed) — the single biggest block in the file, and forbidden.** It is the
+  source of the coverage gate's own run-to-run variance (see § Gate 2's ratchet paragraph): it ticks
+  on its own interval and samples channels mid-shutdown. **A PR chasing it would make the
+  measurement less trustworthy while appearing to improve it** — the worst possible trade, because
+  the damage is invisible in the number that motivated the work.
+- **`_cleanup_local_resources` (61 missed) — unreachable**, except from `cleanup_task` itself and an
+  owner-only branch. Its non-owner cleanup arm sits under `if self.am_i_owner(channel_id):`, so a
+  non-owner returns before reaching the branch written to handle non-owners — filed as
+  [#230](https://github.com/D10Scot/Dispatcharr/issues/230). **These 61 are unreachable rather than
+  untested**, so a coverage PR aiming at them is aiming at nothing. Not to be fixed (D5, and
+  unreachable code is not observable behaviour); filed so 2d's deletion pass knows it is dead rather
+  than load-bearing.
+
+The reachable remainder is real but much smaller, and lives in the event listener loop,
+`initialize_channel`'s failure branches, `check_if_channel_exists` and `_clean_zombie_channel`.
+**The trap this replaces is specific**: "~70-75% reachable" points a reader at the biggest numbers
+in the file, and in `server.py` the two biggest numbers are the two that cannot be taken.
+
+**The other four figures in this paragraph are still estimates and have not been measured
+region-by-region.** Only `server.py` has. Treat `~90%`, `~80-85%`, `~40-50%` and `~20-30%` as
+untested guidance, not as budget: the one that *was* checked turned out to be wrong in the direction
+that matters, and 2a-7 must not size anything against the other four without measuring them first. `input/manager.py` is only ~40-50% reachable without a
 real subprocess: the transcode connection setup, the stderr reader and the health/reconnect loops
 are shaped around a real ffmpeg process's stdout/stderr, and mocking that shape teaches nothing a Go
 implementer can reuse. `output/fmp4/manager.py` is only ~20-30% reachable the same way. Those two
