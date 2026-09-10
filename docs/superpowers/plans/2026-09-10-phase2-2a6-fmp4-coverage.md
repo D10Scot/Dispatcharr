@@ -307,6 +307,19 @@ understates the defect.** Three findings, all read off the source:
   and #222. Amending a Notes cell is precedented — 2a-4's ruling (c): *"a half-pinned row
   that looks whole is worse than one that says which half is pinned"*.
 
+  **The amendment corrects the row's DESCRIPTION, not the defect, and nothing here makes
+  row 12 easier.** `output/fmp4/generator.py:339-346` is unchanged and stays unchanged:
+  the fMP4 generator still has no `url_switching` exemption, no health check and no
+  keepalive, D5 says reproduce rather than fix, and 2c-6 is held to the drop. What
+  changed is only that the row now names the gap that is always present — a TS viewer
+  held through a stall for up to `MAX_KEEPALIVE_DURATION` (300 s) against an fMP4 viewer
+  dropped at `stream_timeout + failover_grace_period` (40 s) — instead of naming only the
+  sub-millisecond `url_switching` window between `input/manager.py:1432` and `:1496`,
+  which no test can land inside. The defect got **wider**, not smaller: the original
+  wording described a race a viewer would almost never lose, and the reality is a
+  disconnect on every sustained stall. A reader who skims this must not come away
+  thinking the row was downgraded.
+
 **F9 — `FMP4RemuxManager._handle_bsf_error` contains an unreachable branch.** It sets
 `self.running = True` at `output/fmp4/manager.py:403` and then tests
 `if not self.running:` at `:405`, whose body (`:406-413`, the "stop() was called while we
@@ -466,8 +479,17 @@ tapped(test, channel, query="")           # context manager yielding a StreamTap
       `harness/` edit: the helper was written for this PR (its own docstring says *"that
       is 2a-6's territory"*), it is unusable for the fMP4 path without this (§ F3), and
       the alternative — a near-duplicate builder in `output_support.py` — leaves the trap
-      in place for the next caller. It is additive, at the end of a signature, in a file
-      2a-3 did not touch and 2a-5 has no reason to.
+      in place for the next caller. It is additive, at the end of a signature.
+
+      **Conflict check, done rather than assumed, and worth redoing at implementation
+      time**: `git diff HEAD...origin/migration/phase2a-ts-generator-coverage -- apps/proxy/live_proxy/tests/harness/`
+      shows 2a-3 (#239) touching only `README.md` and `control.py`, not `asset.py`. If
+      2a-3 later lands the `synthetic_ts` payload change it has been reported to be
+      making, it edits the **top** of `asset.py` while this edit is in
+      `build_real_ts_asset` at the **bottom**, roughly ninety lines apart — far enough to
+      merge cleanly. Re-run that diff before you edit; if 2a-3 has by then changed
+      `build_real_ts_asset` itself, fall back to a local builder in `output_support.py`
+      and say so in the PR description.
 
       Change the signature to
       `def build_real_ts_asset(seconds: float = 2.0, *, keyframe_interval: int | None = None) -> bytes:`
@@ -485,9 +507,10 @@ tapped(test, channel, query="")           # context manager yielding a StreamTap
       ```python
       """Levers the output-side (fMP4, Output Profile) behaviour tests pull.
 
-      Deliberately NOT under harness/: harness/ is 2a-2's deliverable and 2a-5 is still
-      in flight off the same base, so an edit there is a merge conflict for another PR.
-      2a-4's manager_support.py exists for the same reason and this file follows it.
+      Deliberately NOT under harness/: harness/ is 2a-2's deliverable and both 2a-3
+      (PR #239) and 2a-5 (PR #237) sit off the same base with harness/ edits of their
+      own, so an addition there is a merge conflict for another open PR. 2a-4's
+      manager_support.py exists for the same reason and this file follows it.
 
       Two child programs appear in this PR and the split is deliberate (harness/README.md
       § The stated rule): the stand-in wherever the subject is the relay's reaction to a
@@ -1239,10 +1262,13 @@ do not delete a `<!-- block: … -->` marker.** `HIGHEST_ROW_ID` stays 28 (§ R6
       - `Behaviour`: `The fMP4 generator's `_is_timeout()` disconnects a client on elapsed time since its last fragment alone — no stream-health check, no `url_switching` exemption and no keepalive — so an fMP4 viewer is dropped `stream_timeout + failover_grace_period` (40s by default) into a stall that leaves a TS viewer on the same channel connected`
       - `Source`: `` `apps/proxy/live_proxy/output/fmp4/generator.py:339-346`, `apps/proxy/live_proxy/output/ts/generator.py:574-595`, `apps/proxy/live_proxy/output/ts/generator.py:311-312`, `apps/proxy/live_proxy/output/ts/generator.py:366-389` ``
       - `Pin`: `` `apps/proxy/live_proxy/tests/test_fmp4_client_timeout.py::FMP4ClientTimeoutTests::test_a_stalled_fmp4_client_is_dropped_while_a_ts_client_is_not` ``
-      - `Notes`: keep the existing #222 / D5 sentence verbatim, then append: `The row's original wording named only the `url_switching` clause; 2a-6 found that clause to be near-unreachable — `url_switching` is set and cleared inside `update_url()`'s own body, which does no network I/O, while the TS generator only consults it after 40s of no data — and that the reachable divergence is larger: the TS generator disconnects only an unhealthy stream and, before that, sends keepalives that refresh `last_yield_time` for up to `MAX_KEEPALIVE_DURATION` (300s), which the fMP4 generator has no equivalent of. The pin drives the reachable form; the `url_switching` clause is carried in the citations, not tested.`
+      - `Notes`: keep the existing #222 / D5 sentence verbatim, then append: `The row's original wording named only the `url_switching` clause; 2a-6 found that clause to be near-unreachable — `url_switching` is set and cleared inside `update_url()`'s own body, which does no network I/O, while the TS generator only consults it after 40s of no data — and that the reachable divergence is larger: the TS generator disconnects only an unhealthy stream and, before that, sends keepalives that refresh `last_yield_time` for up to `MAX_KEEPALIVE_DURATION` (300s), which the fMP4 generator has no equivalent of. The pin drives the reachable form; the `url_switching` clause is carried in the citations, not tested. This widens the row rather than narrowing it — the original wording described a race a viewer would almost never lose, and the reality is a disconnect on every sustained stall — and it changes the description only: `_is_timeout()` is untouched, D5 still says reproduce rather than fix, and 2c-6 is held to the drop.`
       - Check every citation range exists: `ts/generator.py` is 684 lines and
         `fmp4/generator.py` is 404, so all four are inside their files.
       - **No cell may contain a literal `|`.**
+      - **Nothing in this step edits production code.** If the diff for Task 7 shows a
+        change under `apps/`, you have fixed the defect instead of describing it; revert
+        and re-read § F8.
 - [ ] **Step 2.** Re-pin row 11. Keep the e2e reference and append the harness one to the
       `Pin` cell, comma-separated (rows 10, 13 and 24 already carry multiple references):
       `` …output-profile-sharing.spec.ts::two clients on one output profile share a single transcode`, `apps/proxy/live_proxy/tests/test_output_profile_sharing.py::OutputProfileSharingTests::test_two_clients_on_one_output_profile_share_a_single_transcode` ``
@@ -1296,9 +1322,10 @@ do not delete a `<!-- block: … -->` marker.** `HIGHEST_ROW_ID` stays 28 (§ R6
 
 **Files:** none (measurement), plus the PR description
 
-- [ ] **Step 1.** Take the after-side measurement, three runs, same container, same core
-      as Task 1 Step 3, into `/tmp/2a6-after-{1,2,3}`. Record `TOTAL` statements (**7978
-      every time**), `TOTAL` `Miss`, and the four output files' `Miss`.
+- [ ] **Step 1.** Take the after-side measurement, three runs, same container, same
+      unmodified script (which fixes the core at sysmon), into `/tmp/2a6-after-{1,2,3}`.
+      Record `TOTAL` statements (**7978 every time**), `TOTAL` `Miss`, and the four output
+      files' `Miss`.
 - [ ] **Step 2.** State the gate as a **separated interval**, which is immune to the
       51-statement spread: the **maximum** after-side `Miss` must be strictly below the
       **minimum** baseline `Miss`. Report both as `min-max`. If the intervals overlap, the
@@ -1358,7 +1385,8 @@ do not delete a `<!-- block: … -->` marker.** `HIGHEST_ROW_ID` stays 28 (§ R6
       the Proxy/Redirect inert-buffering-detector row (§ R2, stays with 2a-7 — an
       `input/manager.py` behaviour), the rejected-vs-declined credential row (§ R3, an
       `authorize.py` behaviour), and row 21's prose-only obligation (§ R4, which row 21's
-      own Notes already assign to 2a-5, still unlanded).
+      own Notes assign to 2a-5 — open as PR #237, so the routes are amending it before it
+      merges or 2a-7 inheriting it, and § R4 argues for the first while it is still open).
 - [ ] **Step 4.** Record the §F3 finding prominently — `build_real_ts_asset()` as
       2a-2 shipped it produces a single `moof` and therefore zero flushed fragments — since
       that helper was written for this PR and the next reader of it will hit the same wall.
