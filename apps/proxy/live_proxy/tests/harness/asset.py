@@ -127,21 +127,39 @@ def require_real_ffmpeg() -> str:
     return executable
 
 
-def build_real_ts_asset(seconds: float = 2.0) -> bytes:
+def build_real_ts_asset(seconds: float = 2.0, *, keyframe_interval: int | None = None) -> bytes:
     """A short, genuinely encoded MPEG-TS, for the tests that need a real remux.
 
     Mirrors e2e-upstream/scripts/make-asset.sh, trimmed: no burned-in frame
     counter (nothing here decodes video) and a much shorter duration. Nothing
     downstream may hardcode the packet count -- an ffmpeg version drift is
     expected to change it.
+
+    `keyframe_interval` is `-g`: with libx264's default (250 frames) a 2-second asset
+    has one keyframe, so `-movflags frag_keyframe` produces a single `moof` for the
+    whole asset. That is NOT unusable through the fMP4 remux by itself -- a caller that
+    loops the payload (harness.upstream.FakeUpstream does) still gets more than one
+    fragment, because the next loop's own `moof` bounds the previous one, and
+    `FMP4RemuxManager._flush_complete_fragments` flushes on exactly that boundary.
+    Passing a value well below `seconds x rate` here is an IMPROVEMENT, not a
+    requirement: it trades one large fragment per loop (~95 KB at the defaults) for
+    several smaller ones (`-g 12` gives five per loop, ~22 KB each), which reaches
+    a client's first fragment sooner and exercises `_flush_complete_fragments` more
+    than once per loop. Measured against a real remux, both shapes work; see the
+    2a-6 plan's F3 for the numbers and the correction to an earlier draft of this
+    docstring, which overstated the case as an impossibility.
     """
     executable = require_real_ffmpeg()
+    encoder_args = ["-c:v", "libx264", "-preset", "ultrafast"]
+    if keyframe_interval is not None:
+        encoder_args += ["-g", str(keyframe_interval)]
+    encoder_args += ["-b:v", "400k"]
     completed = subprocess.run(
         [
             executable, "-hide_banner", "-loglevel", "error", "-y",
             "-f", "lavfi", "-i", f"testsrc=size=320x180:rate=25:duration={seconds}",
             "-f", "lavfi", "-i", f"sine=frequency=440:duration={seconds}",
-            "-c:v", "libx264", "-preset", "ultrafast", "-b:v", "400k", "-pix_fmt", "yuv420p",
+            *encoder_args, "-pix_fmt", "yuv420p",
             "-c:a", "aac", "-b:a", "64k",
             "-f", "mpegts", "pipe:1",
         ],
