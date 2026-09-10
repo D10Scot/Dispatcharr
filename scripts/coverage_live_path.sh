@@ -161,11 +161,24 @@ case "${1:-}" in
     for label in "${LABELS[@]}"; do
       run_label "$label" || failed+=("$label")
     done
-    report; rc=$?
+    # A failed label is announced BEFORE the figures, not after them. The old
+    # order printed a clean-looking total and only then said a label had died,
+    # and a total taken over a short suite is wrong in the direction that
+    # flatters nobody: a tree measured with `hypothesis` missing reported 3,230
+    # missing where the same tree with it present reported 3,169 — the two
+    # property-test modules fail to IMPORT, the label reports errors, and 61
+    # statements they would have covered are silently counted as missed. The
+    # exit code was always right; the risk is a reader copying the number above
+    # it. So say it first, and label the figures.
     if [ "${#failed[@]}" -gt 0 ]; then
       echo "coverage_live_path: label(s) failed under coverage: ${failed[*]}" >&2
+      echo "coverage_live_path: THE FIGURES BELOW ARE INVALID — a failed label" >&2
+      echo "coverage_live_path: under-runs the suite and inflates 'missing'." >&2
+      echo "coverage_live_path: fix the failure and re-measure; do not quote these." >&2
+      report || true
       exit 1
     fi
+    report; rc=$?
     exit $rc
     ;;
   *)
