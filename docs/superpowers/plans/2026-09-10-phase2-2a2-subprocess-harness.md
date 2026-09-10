@@ -413,10 +413,50 @@ packages. Budget and mechanism:
   installed Django **6.0.8**: `LiveServerTestCase.setUpClass` calls `_start_server_thread()` and
   registers `addClassCleanup(cls._terminate_thread)`, so one server serves every test in a class and
   there is no `setUpClass`-level sharing left to add inside a class. Sharing *across* classes is not
-  available without a custom runner, and is not worth it. The residual per-test cost is
-  `TransactionTestCase._fixture_teardown`'s table flush, not the server; if the ceiling is
-  threatened, the lever is `available_apps` on the harness base class to narrow that flush — measure
-  before reaching for it.
+  available without a custom runner, and is not worth it.
+- **`available_apps` was tried on `RelayHarnessTestCase` and measured to do nothing — do not
+  re-reach for it in a later PR without new evidence.** This plan named it as the lever if the
+  ceiling was ever threatened; it was threatened (2a-4 predicts 9-11s for eight tests) and the lever
+  was pulled and measured, properly this time.
+
+  *The correct minimal app set*, established empirically because it is not obvious and re-deriving
+  it is the expensive part: `apps.channels`, `apps.m3u`, `core`, `apps.connect`, `apps.accounts`,
+  `django.contrib.contenttypes`, `django.contrib.auth`, `django.contrib.sessions` — eight, by
+  `AppConfig.name` (the dotted import path `apps.set_available_apps()` checks membership against,
+  not the app *label*: `dispatcharr_channels`'s name is `apps.channels`). A narrower three-app list
+  (just `apps.channels`, `apps.m3u`, `core` — the apps `make_channel()` and `stand_in_stream_profile()`
+  touch directly) fails both smoke tests with a 500: `authorize_stream`'s anonymous-tune path calls
+  `get_user_model()`, which needs `apps.accounts` registered for `AUTH_USER_MODEL = "accounts.User"`
+  or raises `LookupError: No installed app with label 'accounts'`.
+
+  *The measurement, with the correct eight-app set*: no improvement. `apps.proxy.live_proxy.tests`
+  wall clock, three runs each: baseline 8.492s / 8.137s / 8.810s (avg 8.48s) vs. with
+  `available_apps` 8.540s / 8.177s / 8.464s (avg 8.39s) — indistinguishable from run-to-run noise.
+  Per-test `--durations` unchanged within noise (`test_a_tune_spawns_a_real_process…` 1.088s →
+  1.107s; `test_the_control_plane_is_reachable_from_the_relay` 0.648s → 0.740s). Coverage unaffected
+  (3,168, inside the established range) — confirmed, not assumed. Full `apps.proxy.live_proxy` +
+  `apps.channels` (620 tests) green in default order and under `--shuffle 12345` with the eight-app
+  set in place — it does not break anything, it simply does not help.
+
+  *Why, traced rather than guessed*: `TransactionTestCase._pre_setup` fires
+  `emit_post_migrate_signal` on **every test** when `available_apps` is set — it has to, because
+  teardown's flush inhibits `post_migrate` to avoid re-seeding the full app set, so setup must
+  re-create ContentTypes/Permissions for the restricted set instead. That per-test cost roughly
+  cancels whatever the narrower flush saves. More fundamentally: the 0.7-1.1s a harness test costs
+  is **the test body**, not fixture teardown — a real subprocess spawn, a real HTTP round trip
+  through `LiveServerTestCase`, and `wait_until` polling for real Redis-mediated state.
+  `available_apps` only ever targeted the between-test flush, which was never the dominant cost
+  here, so narrowing it cannot move the number that matters.
+
+  *The correctness surface not fully audited, and the actual reason to leave this alone even if a
+  future measurement found some benefit*: restricting the app registry stops those apps' tables
+  being **flushed**, not being **written to** — an already-imported model class outside the
+  available set can still `.objects.create()` successfully, and that row now silently persists
+  across every subsequent test in the run instead of being cleaned up. This PR's own fixtures did
+  not happen to trigger it, but nothing here checked every code path Task 5's `make_channel()` and
+  `stand_in_stream_profile()` reach transitively, and 2a-3 … 2a-6 will exercise more of the relay
+  than this PR does. A latent hazard with no offsetting benefit is a stronger reason to leave this
+  alone than "it didn't help" on its own.
 - **No test sleeps for a fixed duration.** Every wait is a deadline poll:
   `harness.relay.wait_until(predicate, timeout, interval)` (Task 5), which returns as soon as the
   predicate holds and raises `AssertionError` naming the predicate when it does not.
