@@ -1151,22 +1151,63 @@ the denominator but **outside `server.py`**. That yield is real, unmeasured, and
 every scenario below. It is the one input that could move the answer favourably without re-scoping
 anything.
 
-**The bracket, under the C tracer.** Distance 1,440:
+**WITHDRAWN, and visibly rather than silently, because an earlier revision of this section was
+published saying it.** That revision claimed the absolute ceiling was **"1,439 against 1,440 — short
+by a single statement"**, and concluded that the gate might be unreachable *even in the impossible
+case*. **Both are false.** The claim rested on reading `server.py`'s reachable remainder as **217**,
+a figure obtained by summing the rows of a table that was later shown to be a **subset** of the
+module — it never enumerated all of it, and the accompanying "there is no ninth region" was written
+with no basis. An exhaustive AST walk mapping every missed line to its innermost enclosing `def`
+now supersedes it. The retraction is left standing here rather than deleted: the wrong number was
+published, and a withdrawn claim that vanishes is worse than one visibly retracted.
+
+**`server.py`, measured exhaustively (C-tracer basis, 844 missed — the buckets sum to the total
+exactly):** blocked-or-must-not-target **175**, unreachable or white-box-only **108**, 2a-6's Output
+Profile surface **142**, 2a-5's surfaces **269**, reachable-but-expensive **150**. So
+**blocked-or-unreachable is 283** — 61 more than the 222 previously carried, because
+`_check_orphaned_metadata` (26), `_execute_redis_command` (14), `_check_orphaned_channels` (7, and
+**no callers anywhere** — new dead code) and `_recover_stuck_channel_stops` (14) had been named in
+prose as noise but never counted — and **reachable is 561**, not 217 and not 618. The 142 stays in
+the pool: it is reachable through the ordinary tune path and 2a-6 moves it as a side effect.
+
+**The bracket, C-tracer basis throughout. Distance 1,440:**
 
 | Scenario | Supply | Result |
 |---|---|---|
-| `server.py` = 150, 2a-6 at ~25% | 368 | short **1,072** |
-| `server.py` = 217, 2a-6 at ~40% | 560 | short **880** |
-| `server.py` = 217, 2a-6 at **100%** | 970 | short **470** |
-| `server.py` = 618, 2a-6 at **100%** | 1,371 | short **69** |
-| **Absolute ceiling** — every in-scope file *and* the ten boundary modules driven to zero | 1,840 | closes +400 |
+| realistic — 2a-4 at its predicted max, 2a-6's three files at ~30% | 721 | short **719** |
+| realistic, plus the whole 150-statement expensive tail closed | 871 | short **569** |
+| 2a-6's three files at **100%** *(impossible)* | 1,164 | short **276** |
+| **Absolute ceiling** — every in-scope file and the ten boundary modules to zero | 1,692 | **closes +252** |
 
-**Two of those rows are impossible, not merely optimistic**: driving all three of 2a-6's files to
-zero contradicts this spec's own ~20-30% reachability estimate for two of them. And the sharpest
-form is the ceiling under the **217** reading: 498 + 217 + 633 + 91 = **1,439 against 1,440 — short
-by a single statement, with every file in scope at zero.** Under the **618** reading the same
-ceiling reaches 1,840 and closes. The unresolved 150/217/618 question therefore decides whether the
-gate is reachable *even in the impossible case*, which is why it is the first thing to settle.
+**The corrected decisive bound, which does not depend on 2a-6's pending measurement.** Put every
+other term at an impossible maximum — 2a-5's full 269, 2a-6's three files driven to zero from their
+633 upper bound, 2a-6's 142, the entire 150 expensive tail, authorize rows at zero — and the result
+turns entirely on `input/manager.py`:
+
+| 2a-4 yield | Total | vs 1,440 |
+|---|---|---|
+| 60 — its planner's low | 1,254 | short **186** |
+| 120 — its planner's high | 1,314 | short **126** |
+| 498 — `input/manager.py` to **zero** *(impossible)* | 1,692 | closes +252 |
+
+**The ceiling closes only if `input/manager.py` goes to zero missing, and that file's own planner
+predicts 60-120 — a factor of four apart.** So the authorize-row yield would have to supply **≥126**
+(2a-4 high) or **≥186** (2a-4 low) *with every other term already impossible*.
+
+**That reverses the priority order, and the reversal is recorded so it is not re-derived.** 2a-5's
+authorize-row yield — rows 14-17, 19, 20, 23, 25, landing outside `server.py` and counted as zero
+throughout — is now the **first** unknown to measure, ahead of 2a-6's three files. It is the only
+term that can move the decisive bound without re-scoping, and the bound above is the reason.
+
+**A partial sysmon re-measurement exists and is deliberately NOT folded into the sums above**:
+total missed **3,105** (61.08%), giving a distance of **1,510**, with `input/manager.py` at **474**
+(≈178 unreachable, ≈49 must-not-target, ≈247 reachable — the buckets sum exactly). Restating the
+bracket needs `server.py` and the fmp4/profile group re-taken on the same core. **Mixing them would
+be the one error this document must not contain, being the document that explains why cores must not
+be mixed** — and the cores disagree about *which* lines, not merely how many: `server.py:1828-1831`
+is covered under sysmon and missed under the C tracer. Note also that the harness has already banked
+roughly a third of the original 2,382 shortfall, so the finding is "closer than this spec says, and
+may still not close", not "far away".
 
 **Sysmon's ~90 recovered statements probably do not move this, and the reason is worth stating
 because it is counter-intuitive.** Both sides of the subtraction move together: recovering a
@@ -1176,23 +1217,53 @@ scope.** The one region identified so far is `input/manager.py:942-985` (`_read_
 `_parse_ffmpeg_stats`) — squarely inside 2a-4's scope — so the expected improvement is small. To be
 re-derived from measurement, not assumed.
 
-**The reasoning error, which outlives every number above.** The withdrawn claim that *"closing the
-five largest gaps approximately **is** the gate"* was **count-derived** — 2,504 was a sum of missed
-statements — and therefore read as arithmetic. What it silently required was that **every missed
-statement be closeable**, and the reachability percentages that would have falsified it sat beside
-it as commentary, never connected to it. **A sum of missed statements is not a budget until each
-term is known to be reachable.** That is the transferable lesson, it is independent of which core
-measured what, and it is exactly the error available to repeat at 2a-7 when someone sizes the last
-stretch.
+**Three errors of one family, which outlive every number above.** Each is a quantity that reads as
+one kind of thing while being another, and together they are the reason this section exists at all:
 
-**What would narrow the range**, in priority order: (i) 2a-6's three files measured post-harness
-under sysmon — now the dominant term, spanning 633 statements and appearing in every row; (ii) the
-150/217/618 reconciliation for `server.py`, worth 468; (iii) 2a-5's authorize-row yield, currently
-zero; (iv) per-file unreachability for `input/manager.py`, whose 498 ceiling assumes none.
+1. **A sum mistaken for a budget.** The withdrawn claim that *"closing the five largest gaps
+   approximately **is** the gate"* was **count-derived** — 2,504 was a sum of missed statements —
+   and therefore read as arithmetic. What it silently required was that **every missed statement be
+   closeable**, and the reachability percentages that would have falsified it sat beside it as
+   commentary, never connected to it. **A sum of missed statements is not a budget until each term
+   is known to be reachable.**
+2. **A subset presented as a whole.** The region table whose rows summed to 217 never enumerated the
+   module, and carried an explicit "there is no ninth region" written with no basis.
+3. **A target dressed as a measurement.** The figure "~150" was never reachability at all — it was
+   *what a set of tasks intended to close* — quoted in a sentence whose subject was reachability,
+   and it survived several rounds in that costume. Of the three this is the worst, and the reason is
+   worth stating: **a subset table looks like a subset if you check the sum; a target dressed as a
+   measurement does not look like anything.**
+
+**And the limit of arithmetic checking, learned here.** Cross-checking the numbers caught (2): the
+rows did not sum to the stated total. It could not have caught (3), because a mislabelled quantity
+is internally perfectly consistent — 150 is a real number that adds up fine. **Arithmetic checking
+catches a quantity that is inconsistent; only provenance checking catches one that is consistent and
+mislabelled.** A reader who has seen all three should start asking *where did this number come from
+and what does it count*, not only *do these numbers agree* — which is the habit that would have
+prevented every error in this section, including the published one.
+
+**Hard versus soft, stated because the soft part is load-bearing.** Measured or mechanically
+derived: the 283, the bucket boundaries, both caller claims (grepped), `input/manager.py`'s
+178/49/247 split, and #230's unreachability (verified by indentation). **A judgement, not a
+measurement:** the line between "reachable" and "reachable but expensive" — the 150-statement tail
+of roughly 28 functions whose bodies are `except Exception: logger.error(...)` arms needing fault
+injection. **That 150 is what the corrected ceiling leans on hardest**, so its softness is not a
+footnote: if the tail is dearer than judged, every row above moves the wrong way.
+
+**What would narrow the range**, in priority order — **revised, and the revision is the point**:
+(i) **2a-5's authorize-row yield**, counted as zero throughout and the only term that can move the
+decisive bound without re-scoping; (ii) 2a-6's three files measured post-harness under sysmon, still
+the largest single span; (iii) `server.py` and the fmp4/profile group re-taken under sysmon so the
+bracket can be restated on one core. The `server.py` reconciliation and `input/manager.py`'s
+unreachability, which headed this list in the published revision, are **done** — 561 reachable of
+844, and 247 reachable of 474 respectively.
 
 **The options, for the user to choose between — this spec states them and recommends none.**
-Widen the coverage PRs into the ~1,064 in-denominator statements that lie outside the four PRs'
-current scope; lower the gate to a measured achievable figure; or add a PR. **The gate's value is
+Widen the coverage PRs into the mid-sized files that lie outside their current scope — `views.py`,
+`channel_status.py`, `client_manager.py`, `input/buffer.py`, `log_parsers.py`, `utils.py`,
+`url_utils.py` — which hold roughly **950 missed statements between them on the sysmon total, more
+than the whole fmp4/profile group and belonging to no PR**; lower the gate to a measured achievable
+figure; or add a PR. **The gate's value is
 not changed here and no replacement is proposed.**
 
 **Two things this finding is not.** It does **not** invalidate 2a-3 … 2a-6: their other half —
