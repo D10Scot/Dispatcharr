@@ -259,17 +259,21 @@ child.**
 `_find_moof_offset` fires at offset 1247 and a 1,247-byte init segment is stored. ffmpeg
 version in the image: **8.1.2**.
 
-**F3 — but `build_real_ts_asset()` as written yields exactly ONE `moof`, and
-`_flush_complete_fragments` therefore flushes ZERO fragments.** Measured: a 2-second
-`testsrc` encoded with `libx264 -preset ultrafast` and no `-g` has one keyframe, so
-`-movflags frag_keyframe` emits one fragment for the whole asset. `_flush_complete_fragments`
-(`output/fmp4/manager.py:252-287`) bounds the current fragment by *the next* `moof` and
-`break`s when there is none, so the single fragment is never written to the buffer. A test
-built naively on the harness's own fMP4 helper would see an init segment, zero chunks, and
-would look exactly like a plumbing failure. **Adding `-g 12` to the asset build fixes it:**
-the same asset then carries 5 `moof` boxes per loop, and three concatenated loops through
-the real remux gave 15 fragments of 11–27 KB. This is a correction to a harness helper
-written *for* this PR, and Task 2 Step 1 applies it.
+**F3 — `build_real_ts_asset()` as written yields exactly ONE `moof` per pass, and `-g` is
+an improvement, not a requirement (corrected — an earlier draft of this finding overstated
+it as an impossibility, and the PR's shipped docstrings repeated that overstatement until
+review caught it).** Measured: a 2-second `testsrc` encoded with `libx264 -preset ultrafast`
+and no `-g` has one keyframe, so `-movflags frag_keyframe` emits one fragment for the whole
+asset. `_flush_complete_fragments` (`output/fmp4/manager.py:252-287`) bounds the current
+fragment by *the next* `moof`, so a single pass through the remux flushes nothing — **but
+every caller here feeds the asset through a LOOPING upstream** (`harness.upstream.FakeUpstream`
+replays its payload), and the next loop's own `moof` bounds the previous loop's fragment just
+fine. Fed the exact `FFMPEG_REMUX_CMD` three concatenated loops with no `-g`: **3 fragments,
+one per loop, ~95 KB each** — not zero. A test built naively on the harness's own fMP4 helper
+would NOT see zero chunks; it would see fewer, larger, later ones. **`-g 12` is still worth
+keeping**: the same three loops with it gave **15 fragments of 11–27 KB**, i.e. five per loop
+instead of one — smaller fragments, and a client's first one arrives sooner. Task 2 Step 1
+applies `-g 12` as the improvement it actually is.
 
 **F4 — end-to-end remux latency, measured against a paced feed.** Writing a looped
 `-g 12` asset into the real `FFMPEG_REMUX_CMD` in 1,880-byte chunks paced at
@@ -303,14 +307,20 @@ remux's source is the profile's output buffer, not the raw TS buffer (`views.py:
 **F8 — row 12's stated mechanism is not the divergence that is reachable, and the row
 understates the defect.** Three findings, all read off the source:
 
-  1. `url_switching` is set True at the top of `update_url()`
-     (`input/manager.py:1432`) and cleared in that method's `finally`
-     (`:1496`). The body between them closes a socket, reassigns fields and emits an
-     event — **no network I/O**. The window is sub-millisecond in the common case, while
-     the TS generator only consults the flag *after* `stream_timeout +
-     failover_grace_period` (40 s by default) of no yielded data
-     (`output/ts/generator.py:583-588`). The exemption row 12 names is very nearly
-     unreachable in production, and is not a practical thing to provoke from a test.
+  1. **Corrected on review — the original version of this finding was wrong about the
+     `url_switching` window.** `url_switching` is set True at the top of `update_url()`
+     (`input/manager.py:1432`) and cleared in that method's `finally` (`:1496`), but the
+     body between them is NOT free of network I/O and is NOT sub-millisecond:
+     `_close_socket()` (`:1675`) does `proc.wait(timeout=0.5)` and, separately, joins the
+     stderr reader thread for up to `2.0` s (`stderr_join_timeout = 0.25 if self.stopping
+     else 2.0`, `:1735-1736`); and `emit_event('stream_switch', ...)` (`:1476-1482`) goes
+     through `control_plane._spawn` (`control_plane.py:329-335`), which calls its
+     function **synchronously** — a real HTTP POST to Django — whenever the process is
+     not gevent-monkey-patched, which is exactly the harness's own test process
+     (`manage.py test` is never patched, `harness/README.md`). So the window can carry
+     up to several seconds of real work, not sub-millisecond, and is reachable from a
+     test. That correction removes the argument this finding originally rested on, but
+     not its conclusion — see 2 and 3, which do not depend on the window's size at all.
   2. The divergence that *is* always present is larger and simpler: the TS generator
      returns True only when the stream manager is **unhealthy**
      (`ts/generator.py:584`) — the fMP4 version (`fmp4/generator.py:339-346`) returns True
@@ -325,6 +335,19 @@ understates the defect.** Three findings, all read off the source:
      fMP4 viewer is: dropped 40 s into a stall, against a TS viewer held for up to
      300 s.
 
+  **The argument the conclusion actually rests on, once point 1's original reasoning
+  is removed:** TS `_is_timeout()` needs BOTH 40 s with no yielded data AND the stream
+  manager unhealthy before it even looks at `url_switching` (`ts/generator.py:582-583`).
+  But the keepalive path (point 3) refreshes `last_yield_time` on every packet it sends
+  while the client sits at the buffer head on an unhealthy stream — which is exactly
+  the condition that would otherwise lead to that check. So in ordinary operation the
+  40-s-elapsed side of the AND rarely converges with "unhealthy" for long enough to
+  reach the `url_switching` branch at all: the keepalive machinery, not the size of the
+  `url_switching` window, is what shadows it. That holds regardless of whether the
+  window is sub-millisecond or carries several seconds of real I/O (point 1) — the
+  window's size was never the load-bearing fact, and this PR's pin does not depend on
+  it either way.
+
   Task 7 amends row 12's Behaviour and Notes to say this, keeping its id, its citations
   and #222. Amending a Notes cell is precedented — 2a-4's ruling (c): *"a half-pinned row
   that looks whole is worse than one that says which half is pinned"*.
@@ -336,9 +359,10 @@ understates the defect.** Three findings, all read off the source:
   changed is only that the row now names the gap that is always present — a TS viewer
   held through a stall for up to `MAX_KEEPALIVE_DURATION` (300 s) against an fMP4 viewer
   dropped at `stream_timeout + failover_grace_period` (40 s) — instead of naming only the
-  sub-millisecond `url_switching` window between `input/manager.py:1432` and `:1496`,
-  which no test can land inside. The defect got **wider**, not smaller: the original
-  wording described a race a viewer would almost never lose, and the reality is a
+  `url_switching` window between `input/manager.py:1432` and `:1496`, which the keepalive
+  path shadows in practice regardless of how long that window runs. The defect got
+  **wider**, not smaller: the original wording described a race a viewer would almost
+  never lose, and the reality is a
   disconnect on every sustained stall. A reader who skims this must not come away
   thinking the row was downgraded.
 
@@ -524,9 +548,11 @@ tapped(test, channel, query="")           # context manager yielding a StreamTap
 - [ ] **Step 1.** Add one optional keyword argument to `build_real_ts_asset` in
       `apps/proxy/live_proxy/tests/harness/asset.py`. This is the plan's one sanctioned
       `harness/` edit: the helper was written for this PR (its own docstring says *"that
-      is 2a-6's territory"*), it is unusable for the fMP4 path without this (§ F3), and
-      the alternative — a near-duplicate builder in `output_support.py` — leaves the trap
-      in place for the next caller. It is additive, at the end of a signature.
+      is 2a-6's territory"*), it is an IMPROVEMENT for the fMP4 path (§ F3 — smaller,
+      sooner fragments; the asset works without it too, since every caller loops the
+      payload), and the alternative — a near-duplicate builder in `output_support.py` —
+      leaves the trap in place for the next caller. It is additive, at the end of a
+      signature.
 
       **Conflict check, done rather than assumed, and worth redoing at implementation
       time**: `git diff HEAD...origin/migration/phase2a-ts-generator-coverage -- apps/proxy/live_proxy/tests/harness/`
@@ -558,10 +584,13 @@ tapped(test, channel, query="")           # context manager yielding a StreamTap
       `"-b:v", "400k"` when it is not None. Add to the docstring:
 
       > `keyframe_interval` is `-g`: with libx264's default (250 frames) a 2-second asset
-      > has one keyframe, so `-movflags frag_keyframe` produces a single `moof` and
-      > `FMP4RemuxManager._flush_complete_fragments` — which bounds a fragment by the
-      > *next* `moof` — never flushes one. Any caller feeding this through the fMP4 remux
-      > must pass a value well below `seconds × rate`.
+      > has one keyframe, so `-movflags frag_keyframe` produces a single `moof` for the
+      > whole asset. That is NOT unusable through the fMP4 remux by itself — a caller
+      > that loops the payload (`harness.upstream.FakeUpstream` does) still gets more
+      > than one fragment, because the next loop's own `moof` bounds the previous one.
+      > Passing a value well below `seconds × rate` here is an IMPROVEMENT, not a
+      > requirement: it trades one large fragment per loop for several smaller ones,
+      > which reaches a client's first fragment sooner. See the 2a-6 plan's F3.
 - [ ] **Step 2.** Create `apps/proxy/live_proxy/tests/output_support.py` with a module
       docstring saying what it is and why it is not in `harness/`:
 
@@ -607,12 +636,16 @@ tapped(test, channel, query="")           # context manager yielding a StreamTap
 
       @functools.lru_cache(maxsize=1)
       def fragmentable_upstream_payload() -> bytes:
-          """A real TS asset the fMP4 remux can turn into more than one fragment.
+          """A real TS asset the fMP4 remux can turn into more than one fragment per loop.
 
           gop=12 at 25 fps is a keyframe every ~0.48s, so one 2-second loop carries five
-          moof boxes -- measured, against ffmpeg 8.1.2. The default (no -g, one keyframe
-          per 250 frames) gives ONE moof for the whole asset and
-          _flush_complete_fragments then flushes nothing at all: see the 2a-6 plan's F3.
+          moof boxes -- measured, against ffmpeg 8.1.2. This is an IMPROVEMENT over the
+          default (no -g, one keyframe per 250 frames, ONE moof for the whole asset), not
+          a requirement: FakeUpstream loops its payload, so even the one-moof-per-loop
+          shape still gets flushed once per loop (the next loop's own moof bounds the
+          previous fragment). -g 12 instead gives five smaller fragments per loop
+          (~22 KB each, vs. ~95 KB for the whole loop unfragmented), which reaches a
+          client's first fragment sooner. See the 2a-6 plan's F3.
 
           Cached: building it costs about a second of real ffmpeg and every test in this
           PR wants the same bytes.
@@ -1455,16 +1488,24 @@ do not delete a `<!-- block: … -->` marker.** `HIGHEST_ROW_ID` stays 28 (§ R6
       shape 2a-2 used for #226: `status: open`, `test: null`, `area: correctness`,
       `severity: low`, `source: null`, the issue number, today's dates. Re-run
       `python -m metrics.build --validate-only`.
-- [ ] **Step 3.** Record in the PR description the three deferred obligations this PR
+- [ ] **Step 3.** Record in the PR description the deferred obligations this PR
       **declined**, with reasons, so 2a-7 inherits a decision rather than a silence:
       the Proxy/Redirect inert-buffering-detector row (§ R2, stays with 2a-7 — an
       `input/manager.py` behaviour), the rejected-vs-declined credential row (§ R3, an
-      `authorize.py` behaviour), and row 21's prose-only obligation (§ R4, which row 21's
+      `authorize.py` behaviour), row 21's prose-only obligation (§ R4, which row 21's
       own Notes assign to 2a-5 — open as PR #237, so the routes are amending it before it
-      merges or 2a-7 inheriting it, and § R4 argues for the first while it is still open).
+      merges or 2a-7 inheriting it, and § R4 argues for the first while it is still open),
+      and the spec's own open question to this PR (spec `:1265`, `:1424`): does 2a-6 take
+      `apps/proxy/live_proxy/input/http_streamer.py`? **Not taken. Still unowned.** Record
+      that one line so 2a-7 does not inherit the question silently, the same way the
+      other three declines are recorded.
 - [ ] **Step 4.** Record the §F3 finding prominently — `build_real_ts_asset()` as
-      2a-2 shipped it produces a single `moof` and therefore zero flushed fragments — since
-      that helper was written for this PR and the next reader of it will hit the same wall.
+      2a-2 shipped it produces a single `moof` per pass, and every caller here loops the
+      payload, so the asset works either way; `-g` (added by this PR) turns one large
+      fragment per loop into five smaller, sooner ones. State the improvement, not a false
+      impossibility — an earlier draft of this finding overstated it, and the correction
+      matters because the next reader of this helper will otherwise assume `-g` is load-
+      bearing when it is not.
 - [ ] **Step 5.** Stage, then commit separately:
       `chore(phase2): file the unreachable BSF-retry branch`.
 
