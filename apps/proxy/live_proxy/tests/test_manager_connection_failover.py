@@ -97,3 +97,100 @@ class ConnectionFailoverTests(RelayHarnessTestCase):
             ).exists(),
             "the stream_id moved without a stream_switch event",
         )
+
+    def test_three_connect_failures_exhaust_the_source(self):
+        """Row 3: MAX_RETRIES (3) consecutive connection failures exhaust the source
+        (input/manager.py:50-52, :182-192, :533-538, apps/proxy/config.py:9-10).
+
+        Driven on the PROXY stream profile, which is the same accounting on a cheaper
+        path: _establish_http_connection hands back a pipe immediately, HTTPStreamReader
+        gets the upstream's 404 and closes the write end, and fetch_chunk's EOF branch
+        ends the attempt exactly as a dead child would (input/manager.py:1826-1831).
+        Three attempts, the exponential backoff between them, then url_failed, the
+        channel_error event, and -- with no alternate stream -- the ERROR state, which
+        the client sees as an `Error:` TS packet rather than a hang
+        (output/ts/generator.py:229, utils.py:96-98).
+
+        The window-reset half of this row -- the counter resetting once a gap exceeds
+        RETRY_WINDOW_SECONDS -- is already pinned by
+        test_failover_retry_window.py::test_counter_resets_after_idle_period, which the
+        matrix row cites alongside this test. Reproducing it here would mean compressing
+        the window below the backoff so the channel could never exhaust at all, i.e.
+        asserting that a loop does not terminate.
+
+        MAX_RETRIES is patchable, and is deliberately NOT patched: the row names the
+        value 3, so the test pays the 0.75s of backoff rather than change the number
+        under test.
+        """
+        self.assertEqual(ConfigHelper.max_retries(), 3)
+        self.upstream.faults.arm("not-found")
+
+        channel = self.make_channel(
+            upstream_url=self.upstream.url, profile=proxy_stream_profile()
+        )
+        response = requests.get(
+            f"{self.live_server_url}/proxy/ts/stream/{channel.uuid}",
+            stream=True,
+            timeout=30,
+        )
+        self.assertEqual(response.status_code, 200)
+        body = read_until_end(response, timeout=20.0)
+
+        self.assertIn(b"Error:", body, "the client was not told why the tune failed")
+        self.assertGreaterEqual(
+            self.upstream.request_count,
+            3,
+            "fewer than MAX_RETRIES connection attempts reached the upstream",
+        )
+
+        error = SystemEvent.objects.filter(
+            channel_id=channel.uuid, event_type="channel_error"
+        ).latest("timestamp")
+        self.assertEqual(error.details.get("error_type"), "connection_failed")
+        self.assertEqual(error.details.get("attempts"), ConfigHelper.max_retries())
+
+    def test_the_proxy_profile_streams_with_no_ffmpeg_and_no_stats(self):
+        """The raw-HTTP Proxy path end to end -- no subprocess anywhere.
+
+        Closes no matrix row, and is here for two reasons. It is the only test in stage
+        2a that exercises input/http_streamer.py at all (101 statements, 0% on this
+        branch), together with _establish_http_connection and _close_socket's HTTP
+        branch -- roughly 143 statements of input/manager.py the spec's 2a-4 row calls
+        out as needing "only a socket".
+
+        And the negative it asserts is real, externally-visible parity: the buffering
+        detector is ffmpeg-exclusive. A Proxy-profile channel has no stderr, so
+        _parse_ffmpeg_stats never runs, ffmpeg_speed never appears on the status, and
+        buffering_speed/buffering_timeout are silently inert -- which is exactly what
+        CLAUDE.md's failover paragraph records and what nothing in the UI says. The
+        threshold is set to the API maximum here so the assertion is a real negative:
+        on the ffmpeg profile that same setting buffers on the second record (Task 3's
+        row-6 test), and here it does nothing at all.
+
+        The window is measured in ring-buffer chunks read, not in seconds, so it cannot
+        become a fixed sleep.
+        """
+        set_proxy_settings(
+            self, buffering_speed=API_MAX_BUFFERING_SPEED, buffering_timeout=0
+        )
+        channel = self.make_channel(
+            upstream_url=self.upstream.url, profile=proxy_stream_profile()
+        )
+        with self.tuned(channel) as stream:
+            served = stream.read(20 * TS_PACKET_SIZE)
+            assert_ts_aligned(served)
+            snapshots = sample_while(self, channel, chunks=40, drain=stream)
+
+        self.assertTrue(snapshots)
+        for info in snapshots:
+            self.assertNotIn(
+                "ffmpeg_speed",
+                info,
+                "the Proxy profile reported an ffmpeg speed; there is no ffmpeg",
+            )
+            self.assertNotEqual(info.get("state"), "buffering")
+        self.assertFalse(
+            SystemEvent.objects.filter(
+                channel_id=channel.uuid, event_type="channel_buffering"
+            ).exists()
+        )
