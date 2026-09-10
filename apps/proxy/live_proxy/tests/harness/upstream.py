@@ -99,6 +99,16 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _stream(self, upstream):
+        # This method paces WRITES into the relay's ring buffer (below), and
+        # that is the only pacing in the harness. A client's READ of a chunk
+        # this loop has already written is not paced to match -- it drains
+        # as fast as Redis and the network allow, whenever it happens. A
+        # test whose subject is a client's POSITION (behind live vs. at the
+        # head) cannot use elapsed read time to show it: both positions
+        # drain any requested amount near-instantly once the bytes exist.
+        # See harness/README.md, "Three traps for the tests that come
+        # next" -- this is the third one, and it looks like a passing test
+        # with its subject silently broken, not like a failure.
         payload = upstream.payload
         faults = upstream.faults
 
