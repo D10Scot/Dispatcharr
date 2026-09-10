@@ -188,7 +188,7 @@ Measured on this worktree at `2a826e07`, in the container above, on 2026-09-10:
 | Quantity | Value |
 |---|---|
 | `scripts/coverage_live_path.sh` total | **7,978 statements, 3,213 missing, 59.73%** |
-| `apps/proxy/live_proxy/server.py` | **1,490 statements, 840 missing, 44%** |
+| `apps/proxy/live_proxy/server.py` | **1,490 statements, 840–844 missing, 43.4–44%** (two runs of one tree) |
 | `apps.proxy.live_proxy` label | **179 tests, 6.787 s** (`real 0m7.893s`) |
 | A `RelayHarnessTestCase` test that tunes a channel and reads bytes | **0.64 – 1.09 s** |
 | A `SimpleTestCase` in the same file | 0.056 s |
@@ -211,25 +211,37 @@ Three things about these numbers, all of which have cost this programme time bef
    - **no test in this PR may deliberately target `cleanup_task` (`server.py:1880-2196`),
      `_recover_stuck_channel_stops` (`:1773-1798`) or `refresh_channel_registry` (`:2427-2447`).**
      They are the noise source. Leave them missed. § Deliberate non-goals says so again.
-**Where `server.py`'s 840 missed statements actually are — measured, and addressed to 2a-7 as much
-as to this PR.** The spec estimates `server.py` at "~70-75% reachable". That estimate does not
-survive contact with the file: 222 of the 840 are either the gate's own noise source or unreachable
-by construction, so the reachable-and-safe set is about 150, not about 450.
+**Where `server.py`'s missed statements actually are — a complete attribution, not a sample.**
+Produced by AST-walking the module and mapping **every** missed line to its innermost enclosing
+`def`, so the rows sum to the file's total exactly. Fifty functions carry at least one missed
+statement; they are grouped below by what it would cost to reach them. **An earlier draft of this
+plan carried an eight-row subset presented as if it were the whole file, and a "reachable ≈ 150"
+figure that was really "what Tasks 6-8 will close" — two different quantities. Both are corrected
+here.** Measured on this branch, `server.py` **1,490 statements / 844 missed / 43.4%** (an earlier
+run of the same tree gave 840; that four-statement difference is the documented run-to-run spread,
+not a change).
 
-| Region | Missed | Verdict |
+| Bucket | Missed | What is in it |
 |---|---|---|
-| `cleanup_task` `:1880-2196` | **161** | the gate's own noise source — **must not be targeted** |
-| `event_listener` `:178-470` | **120** | reachable (48 STREAM_SWITCH, 13 CHANNEL_STOP, 13 CLIENT_STOP) — Task 7 |
-| `_cleanup_local_resources` `:2487-2569` | **61** | **unreachable** except from `cleanup_task` and one branch only an owner can enter (§ Deliberate non-goals) |
-| `initialize_channel` `:604-880` | **51** | failure branches, partly 2a-4's shape |
-| `check_if_channel_exists` `:881-969` | **35** | reachable — Task 6 |
-| `_clean_zombie_channel` `:1022-1039` | **11** | reachable — Task 6 |
-| `_cleanup_failed_init` `:971-1021` | **3** | already covered — Task 8's coverage value is near zero, its behaviour value is not |
-| `_clean_redis_keys` `:2391-2426` | **2** | already covered |
+| **Blocked — must not be targeted** | **175** | `cleanup_task` `:1880-2190` (161), `_recover_stuck_channel_stops` `:1773-1797` (14). The gate's own non-determinism lives here. |
+| **Unreachable or white-box-only** | **108** | `_cleanup_local_resources` `:2487-2569` (61, issue #230); `_check_orphaned_metadata` `:2236-2321` (26, called only from `cleanup_task:2139`, so it inherits that non-determinism); `_execute_redis_command` `:138-159` (14, matrix row 27, declared white-box-only); `_check_orphaned_channels` `:2197-2234` (7, **no callers anywhere in the tree — dead code**). |
+| **Reachable, but 2a-6's subject** | **142** | `ensure_output_profile` (64), `ensure_output_format` (45), `stop_output_profile` (14), `stop_output_format` (10), `_parse_output_key` (7), `stop_all_output_*` (2). Reached from `views.py:731` and `:754` on a tune that resolves an Output Profile. **Do not target these here** — 2a-6 owns `output/profile/manager.py` and `output/fmp4/manager.py` and will move them as a side effect. |
+| **Reachable by this PR's surfaces** | **269** | `event_listener` `:178-465` (120), `initialize_channel` (51), `handle_client_disconnect` (47), `check_if_channel_exists` (35), `_clean_zombie_channel` (11), `_cleanup_failed_init` (3), `_clean_redis_keys` (2). |
+| **Reachable, but expensive per statement** | **150** | the ownership lease (`extend_ownership` 17, `try_acquire_ownership` 10, `release_ownership` 9, `get_channel_owner` 7); teardown edges (`_stop_local_stream_activity_locked` 9, `_wait_for_shutdown_delay` 8, `_broadcast_upstream_stop` 8, `check_inactive_channels` 7, `stop_channel` 6, `_release_stream_resources` 6, …); and ~28 functions carrying 1-6 each, almost all `except Exception: logger.error(...)` arms needing fault injection. |
 
-**A later PR chasing the last few points toward 80% must not aim at the top two rows.** Together
-they are 222 statements and they look like the biggest prize in the file; one of them cannot be
-reached at all, and the other is precisely the region whose non-determinism the gate's tolerance
+175 + 108 + 142 + 269 + 150 = **844**. The buckets are exhaustive.
+
+**What this PR actually takes: about 125 of the 269**, not all of it — Tasks 6, 7 and 8 target
+`check_if_channel_exists` (35), `_clean_zombie_channel` (11), `_clean_redis_keys` (2),
+`_cleanup_failed_init` (3) and roughly 74 of the event listener's 120 (CLIENT_STOP 13,
+CHANNEL_STOP 13, STREAM_SWITCH 48). `initialize_channel`'s 51 and `handle_client_disconnect`'s 47
+are reachable and deliberately left: both are teardown- and timing-adjacent, and § Deliberate
+non-goals would rather leave statements on the table than add a test whose answer depends on which
+thread wins.
+
+**A later PR chasing the last few points toward 80% must not aim at the first two buckets.**
+Together they are **283** statements and they look like the biggest prize in the file; one is
+unreachable or dead, the other is precisely the region whose non-determinism the gate's tolerance
 exists to absorb. Aiming there buys a ratchet that reddens at random.
 
 3. **Budget. `≤ 15 s added across the whole of stage 2a` is a hard ceiling, and 2a-2 already spent
@@ -2551,15 +2563,17 @@ Three checks, in this order:
 
 1. **The denominator is 7,978.** It is a property of the rcfile's module list. Anything else is a
    finding — stop and report rather than continuing.
-2. **`server.py`'s missed count has fallen measurably from the 840 recorded in § Measured
-   baselines.** The gate is "a measured increase", and the bar for "measured" is set by the noise:
+2. **`server.py`'s missed count has fallen measurably from the 840–844 recorded in § Measured
+   baselines.** Take your own before-number in the same session rather than quoting either. The gate is "a measured increase", and the bar for "measured" is set by the noise:
    eight runs on one unmodified tree moved `missing` by **19 statements**, and four of the moving
    regions are in this very file. So a movement of a few dozen statements is not evidence; a
-   movement of **a hundred or more** is. **Expect the tasks above to close 100–160 on
-   `server.py`**, derived rather than guessed: at the baseline, `check_if_channel_exists` +
-   `_clean_zombie_channel` + `_clean_redis_keys` hold 48 missed statements between them (Task 6),
-   the event listener holds 120 of which the three branches Task 7 drives account for 74, and
-   Task 8's `_cleanup_failed_init` holds only 3. **Report the before and after as two numbers from
+   movement of **a hundred or more** is. **Expect the tasks above to close about 125 on
+   `server.py`**, derived from the complete attribution in § Measured baselines rather than
+   guessed: `check_if_channel_exists` 35 + `_clean_zombie_channel` 11 + `_clean_redis_keys` 2 +
+   `_cleanup_failed_init` 3 (Tasks 6 and 8) = 51, plus roughly 74 of the event listener's 120
+   (CLIENT_STOP 13, CHANNEL_STOP 13, STREAM_SWITCH 48) in Task 7. Anything from **100 to 140** is
+   the expected band; **below 80 means a task did not land what it claimed**, and above 160 means
+   something incidental moved and is worth attributing before you celebrate it. **Report the before and after as two numbers from
    runs taken in the same session, on the same container, and say how many runs you took.**
 3. **Zero `CoverageWarning` lines.**
 
