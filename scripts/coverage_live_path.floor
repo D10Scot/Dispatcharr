@@ -14,9 +14,27 @@
 #
 # Written by:  scripts/coverage_live_path.sh --write-floor
 # Enforced by: scripts/coverage_live_path.sh --gate  (backend-tests.yml, job coverage-gate)
+#
+# PROVENANCE (Phase 2 PR 2a-7, Task 7). `missing` below is the WORST of 21 rounds
+# under the per-container/v1-sysmon shape, NOT the figure --write-floor's own run
+# happened to produce (2009) and NOT a median -- hand-set after the write, per the
+# plan's Task 7 Step 4. Tree: 41f8021a12e3210d50ee4871cbdfecc1647aa89c (2a-7's branch,
+# all four coverage PRs plus Tasks 1-7 committed). Measured 2026-09-10 against
+# dispatcharr-testrunner-2a7-{proxy,liveproxy,channels}, three containers, one label
+# each. Stopping rule (maximum unchanged for >=6 consecutive rounds, minimum 12) was
+# met at round 12 and held through round 20; rounds continued to 20 for margin, per
+# the same over-run judgement Task 1 used. Full sequence, in order:
+#   2041 2005 2026 2039 2024 2035 2008 2044 2013 2032 2028
+#   2026 2003 2026 2033 2025 2028 2028 2029 2023 2023
+# max=2044 (round 7)  min=2003 (round 12)  spread=41  n=21
+# The tree's denominator (7978) is unchanged from Task 1's merged-tree measurement,
+# but this is a DIFFERENT measurement, not a re-run of it: Task 1's floor candidate
+# was 2048 on the tree before Tasks 3/4 added two tests (row 29's and row 30's), and
+# this one is 2044 -- 4 statements lower, on a tree with slightly more covered, not a
+# discrepancy between two measurements of the same thing.
 shape=per-container/v1-sysmon
 statements=7978
-missing=99999
-percent=0.00
-measured=PLACEHOLDER
-runs=0
+missing=2044
+percent=74.38
+measured=2026-09-10
+runs=21
