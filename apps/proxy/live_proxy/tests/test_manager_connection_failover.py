@@ -152,7 +152,7 @@ class ConnectionFailoverTests(RelayHarnessTestCase):
     def test_the_proxy_profile_streams_with_no_ffmpeg_and_no_stats(self):
         """The raw-HTTP Proxy path end to end -- no subprocess anywhere.
 
-        Closes no matrix row, and is here for two reasons. It is the only test in stage
+        Pins matrix row 29 (added by 2a-7), and is here for two reasons. It is the only test in stage
         2a that exercises input/http_streamer.py at all (101 statements, 0% on this
         branch), together with _establish_http_connection and _close_socket's HTTP
         branch -- roughly 143 statements of input/manager.py the spec's 2a-4 row calls
