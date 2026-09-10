@@ -74,6 +74,33 @@ class MyTests(RelayHarnessTestCase):
             self.stop_channel(channel)
 ```
 
+## Driving the control surfaces
+
+```python
+from .harness.control import ControlMixin, nginx_headers, open_tune
+from .harness.relay import RelayHarnessTestCase
+
+
+class MyTests(ControlMixin, RelayHarnessTestCase):
+    def test_something(self):
+        with self.stand_in():
+            profile = stand_in_stream_profile()
+            channel = self.make_channel(upstream_url=self.upstream.url, profile=profile)
+            self.set_proxy_setting(new_client_behind_seconds=0.5)
+            with self.tuned(channel):
+                _, reader = open_tune(self, channel, headers=nginx_headers(channel, "my-client"))
+                reader.read(4 * 188)
+                status_code, body = self.status(channel)
+                self.change_stream(channel, other.url)
+                self.stop_client(channel, "my-client")
+                self.stop_channel_over_http(channel)
+```
+
+- The admin principal is a real `User` row with an `api_key`, sent as `X-API-Key`, created on first use and gone with the test's flush.
+- `nginx_headers()` is nginx's own contract, not a test seam — `X-Dispatcharr-Authorized` carries `HMAC(SECRET_KEY, "relay-trust")` and `resolve_authorization()` trusts `X-Relay-Client` only when it matches, which is the only way to choose a client id because `stream_ts` otherwise mints one.
+- `set_proxy_setting()` writes the whole group, clears `TSConfig._proxy_settings_cache` and registers the cleanup that clears it again, because that cache is a class attribute with a 10-second TTL and an override left behind leaks into unrelated tests.
+- `open_tune()` is not a context manager, because a test with several simultaneous clients needs them all open at once; the responses are closed by `addCleanup`.
+
 ## The fault vocabulary
 
 `e2e-upstream/src/faults.ts` declares twelve faults. Eight are live-TS faults
@@ -141,7 +168,7 @@ emit that shape on demand. It is empty today.
   and `gevent.sleep()` inside them still works — gevent creates a hub per
   thread.
 
-## Two traps for the tests that come next
+## Three traps for the tests that come next
 
 - **`TransactionTestCase` flushes every table after each test, including
   migration-seeded rows.** Once a `RelayHarnessTestCase` has run, the locked
@@ -152,6 +179,35 @@ emit that shape on demand. It is empty today.
   Redis — see `FakeUpstream`'s docstring. DB 0 is shared with the Celery
   broker and the Django cache, so an unpaced tune held open for a dead-air
   cycle or a buffering window takes the whole test process down with it.
+- **A client's read is not throttled to production pacing, even though
+  production itself genuinely is.** `FakeUpstream` really does pace its
+  writes (`rate * NOMINAL_BYTE_RATE`, `upstream.py`'s `_stream` -- see the
+  comment there). What makes an elapsed-time assertion unreliable is one
+  layer further in: the relay reads ahead of any client into Redis, and the
+  generator serves a client from Redis rather than from the upstream
+  connection directly, so a client's read is never throttled by that
+  pacing -- it finishes as fast as Redis and the network allow, regardless
+  of how recently the chunk was written or how far "behind live" the
+  client claims to be positioned. A test whose subject is POSITION rather
+  than throughput cannot rely on elapsed read time to show it: a client
+  positioned behind live and one positioned exactly at the head can both
+  drain a requested amount near-instantly, because both may be reading
+  data that already exists. **This is a margin problem more than an
+  absolute one, which is worse in a suite, not better**: an under-margined
+  timing assertion does not reliably fail *or* reliably pass against a
+  broken mechanism -- measured 1 red of 5 runs on one such assertion,
+  not 0 and not 5. A test that sometimes shows red still reads as
+  "covered" between those runs, which is a harder trap to notice than one
+  that is simply always green. Assert on WHAT is delivered instead --
+  content, a quantity, a sequence marker -- never on HOW FAST it arrives.
+  Content *presence* alone is not enough either if the payload has any
+  periodicity: `synthetic_ts()`'s old payload repeated every 256 packets,
+  so "this content appeared somewhere earlier" was true even for the
+  newest packet. Its `packet_index()` (`harness/asset.py`) embeds each
+  packet's true index instead, unambiguous at any distance, which is what
+  `test_a_new_client_starts_behind_live` (`test_relay_stream_switch.py`)
+  now asserts on -- the quantity of backlog a joining client is handed,
+  not the time it takes to receive it.
 
 ## What this harness deliberately does not do
 

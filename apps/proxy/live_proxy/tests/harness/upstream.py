@@ -99,6 +99,18 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _stream(self, upstream):
+        # This loop genuinely paces what it writes to the RELAY (below) --
+        # the relay is this server's HTTP client, reading this response one
+        # write at a time. But the relay buffers everything it reads into
+        # Redis, and a TEST CLIENT's read of the relay's own
+        # /proxy/ts/stream/ is served from Redis, not from this connection
+        # directly -- so that read is never throttled by the pacing here.
+        # It drains as fast as Redis and the network allow, whenever it
+        # happens, regardless of how far "behind live" the client is
+        # positioned. A test whose subject is a client's POSITION cannot use
+        # elapsed read time to show it reliably. See harness/README.md,
+        # "Three traps for the tests that come next" -- this is the third
+        # one.
         payload = upstream.payload
         faults = upstream.faults
 
