@@ -21,6 +21,26 @@
 # the same check, so a floor can never be written or compared against a foreign
 # shape either. THIS GUARD STANDS, unaffected by everything below it.
 #
+# THE TRACER CORE IS PART OF THE SHAPE TOO, for the same reason the per-label
+# vs. single-process split is: coverage's default C tracer (settrace-based)
+# loses every statement that executes immediately after a greenlet switch --
+# verified directly on this branch, not taken on report. A scratch test drove
+# a real stand-in replay through input/manager.py's _read_stderr, which calls
+# gevent.sleep(0) once per read to yield the hub (:940), then checked Redis
+# for ffmpeg_speed -- written only if _parse_ffmpeg_stats (:962, inside the
+# post-sleep loop) genuinely ran. It was there ('2.87'), independent of any
+# tracer, while the SAME test run under the C tracer marked lines 942-985
+# entirely missed. Re-run with COVERAGE_CORE=sysmon (Python's sys.monitoring,
+# CPython 3.12+ -- this repo requires >=3.13, so both the hook image and CI's
+# dynamically-resolved base image carry it) recovered exactly that block. The
+# opposite fix, `concurrency = gevent`, is wrong: this test process is not
+# gevent-monkey-patched (dispatcharr/gevent_patch.py is imported only by the
+# uWSGI ini files), so gevent mode stops tracing the relay's plain OS threads
+# altogether and reports FEWER statements covered, not more. sysmon is
+# therefore the correct tracer for this measurement, not merely a different
+# one, and is set here rather than left to the caller's environment.
+export COVERAGE_CORE=sysmon
+#
 # What does NOT hold: that the measurement is exactly reproducible within the
 # shape. It was, for a suite with no tune in it -- and still is: the clean-tree
 # baseline this script reproduces (7,978 statements / 3,977 missing / 50.15%,
@@ -28,17 +48,24 @@
 # ends that by construction. Once a real tune is in the suite, `missing` is
 # the one figure here that does not reproduce, and a comment that says
 # otherwise is wrong the moment a test spawns a process. Measured on one tree,
-# 2026-09-10, across eight runs, after the harness's own contribution to the
-# variance was found and fixed: `missing` 3,202-3,221 (19 statements), same
-# 7,978 denominator every time. Per-file attribution traced the remainder to
-# the relay's OWN two background threads independently noticing a spawned
-# child's EOF and racing over which updates shared state first
-# (input/manager.py's stderr-reader-thread join, :1739-1767) and to its
-# 1-second cleanup tick sampling transient state mid-teardown
-# (server.py:1778-1784, :1814, :2436) -- not to this script, not to the
-# harness, and not the spec's +/-70-statement BETWEEN-SHAPES band, which is a
-# different phenomenon and an order of magnitude smaller than what is measured
-# here. THAT NUMBER IS A MEASUREMENT, NOT A PROMISE: it describes one tree on
+# 2026-09-10, across twelve runs under sysmon (adopted above): `missing`
+# 3,115-3,178 (63 statements), same 7,978 denominator every time. Adopting
+# sysmon WIDENED the observed spread rather than narrowing it (a prior
+# C-tracer measurement, before sysmon, saw 3,202-3,221 -- 19 statements) --
+# expected, not a regression: the C tracer's systematic loss after a greenlet
+# switch was ALSO flattening the difference between "the relay's own
+# background housekeeping fired during this run" and "it did not", so
+# recovering the lost statements makes existing timing variance more visible,
+# not larger in kind. Per-file attribution under sysmon traces the spread to
+# the SAME already-known sources, now fully counted rather than partially
+# dropped: input/manager.py's stderr-reader-thread join (:1739-1767),
+# services/channel_service.py's mark_channel_stopping (:28-49), and
+# server.py's cleanup-thread sweep that calls it (_coordinated_stop_channel,
+# :1257, reached from check_inactive_channels, :1855, and inline at
+# :1998/:2042) -- not to this script, not to the harness, and not the spec's
+# +/-70-statement BETWEEN-SHAPES band, which is a different phenomenon and an
+# order of magnitude smaller than what is measured here. THAT NUMBER IS A
+# MEASUREMENT, NOT A PROMISE: it describes one tree on
 # one day, and nothing here asserts it holds on the next one. Sizing a
 # tolerance from it is 2a-7's job, on its own evidence against its own tree --
 # deliberately not this script's, which carries no tolerance number of its
@@ -56,9 +83,13 @@ LABELS=(apps.proxy.tests apps.proxy.live_proxy.tests apps.channels.tests)
 export COVERAGE_LIVE_PATH_DATA_DIR="${COVERAGE_LIVE_PATH_DATA_DIR:-/tmp/dispatcharr-coverage-live-path}"
 RC="$REPO_ROOT/scripts/coverage_live_path.coveragerc"
 SHAPE_DIR="$COVERAGE_LIVE_PATH_DATA_DIR/shape"
-# Bumped whenever the rcfile's denominator changes, so a stale data directory
-# from before the change is refused instead of silently combined.
-SHAPE_ID="per-label/v1"
+# Bumped whenever the rcfile's denominator OR the tracer core changes, so a
+# stale data directory from before either change is refused rather than
+# silently combined. v2 adds the tracer core to the shape itself -- a floor
+# written under one core and compared under the other is exactly the
+# un-meetable-floor failure this guard exists to prevent (see the tracer-core
+# note above), so the core name is part of the id, not a separate check.
+SHAPE_ID="per-label/v2-${COVERAGE_CORE}"
 
 run_label() {
   local label="$1"
@@ -91,7 +122,9 @@ report() {
   local stamp
   for stamp in "${stamps[@]}"; do
     if ! grep -q "^$SHAPE_ID " "$stamp"; then
-      echo "coverage_live_path: refusing to report -- $stamp is not measurement shape '$SHAPE_ID'." >&2
+      local recorded
+      recorded="$(cut -d' ' -f1 "$stamp" 2>/dev/null || echo '?')"
+      echo "coverage_live_path: refusing to report -- $stamp was written as shape '$recorded', this run is '$SHAPE_ID' (tracer core: ${COVERAGE_CORE})." >&2
       return 1
     fi
   done
