@@ -299,11 +299,31 @@ jobs:
           # with "detected dubious ownership" before it runs a single real command.
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           git fetch --depth=1 origin "$BASE_REF"
-          if ! OLD_FILE=$(git show "origin/${BASE_REF}:scripts/coverage_live_path.floor"); then
-            echo "no floor on the base ref; nothing to compare"
+          # Two questions, asked separately on purpose. `git show <ref>:<path>`
+          # fails identically whether the base ref is unreachable and whether the
+          # path is simply absent from it, and only the second is the bootstrap
+          # case this guard may forgive. Collapsing them lets a broken fetch, a
+          # renamed floor or a lost safe.directory exception report "nothing to
+          # compare" and pass green forever, with the floor unprotected and the
+          # check still reporting success -- a guard that cannot LOOK is not a
+          # guard that found nothing.
+          #
+          # FETCH_HEAD, not origin/$BASE_REF: the fetch above prints only
+          # "-> FETCH_HEAD", and whether it also moves the remote-tracking ref
+          # depends on the refspec actions/checkout left behind. FETCH_HEAD is
+          # unambiguously what was just fetched.
+          BASE=$(git rev-parse --verify FETCH_HEAD)   # can I look? failing here is a real error
+          # `--verify --quiet` is git's own "does this object exist" form: it
+          # exits non-zero and prints nothing when the path is not in the tree.
+          # That is an answer, not a discarded error message -- $BASE was verified
+          # above, so absence here can only mean the path.
+          OLD_BLOB=$(git rev-parse --verify --quiet "${BASE}:scripts/coverage_live_path.floor") || true
+          if [ -z "$OLD_BLOB" ]; then
+            echo "no floor on ${BASE_REF} (${BASE}); nothing to compare"
+            echo "Expected exactly once, on the PR that introduces the floor."
             exit 0
           fi
-          OLD=$(printf '%s\n' "$OLD_FILE" | grep -E '^missing=' | cut -d= -f2)
+          OLD=$(git cat-file blob "$OLD_BLOB" | grep -E '^missing=' | cut -d= -f2)
           NEW=$(grep -E '^missing=' scripts/coverage_live_path.floor | cut -d= -f2)
           echo "floor: base=$OLD head=$NEW"
           if [ "$NEW" -gt "$OLD" ]; then
