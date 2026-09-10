@@ -96,6 +96,34 @@ task's requirements implicitly include this section.
   mandatory break check. **A break check that passes is not evidence until you have
   confirmed the break applied** — `sed -n` the patched lines back out and look at them
   before running.
+- **A break check's lever must break the MECHANISM, not select a second documented
+  behaviour.** 2a-3's row 8 tried `new_client_behind_seconds = 0` as its lever; that
+  setting's own docstring says *"0 means start at live (buffer head)"*, so the "break"
+  chose a supported mode and proved nothing. Ask of every lever: does the code now do
+  something it is documented never to do?
+- **Every expected failure quoted in this plan is PREDICTED, not observed.** 2a-3's plan
+  carried a predicted `AssertionError` that was quoted, asserted and never actually seen,
+  and finding that out cost a full investigation. Record what the run really printed, and
+  if it differs from the quotation here, **say so in the PR description** rather than
+  editing the memory of it — a prediction that missed is a finding about this plan.
+- **No wall-clock assertion may be a pin.** A test that compares elapsed time against
+  what production pacing would cost is inert: the ring buffer holds a backlog, so a
+  client's read is served from Redis at memory speed regardless of what the upstream or
+  the positioning logic did. Row 8 was pinned on exactly such a comparison and stayed
+  green with its subject deliberately broken — `drained_in` 0.000342 s broken against
+  0.000168 s working, both two orders of magnitude under a 0.0226 s threshold. **The pin
+  is always the observable consequence** — which bytes arrived, whether a response ended,
+  how many processes were spawned, what a status field reads — and those are also the
+  only assertions that port to Go row-for-row. A clock may appear in this PR in exactly
+  two roles, both explicitly labelled where they occur: a **deadline** inside
+  `wait_until`, and a **lower bound** guarding against a false positive (Task 6 Step 3).
+  Neither is the pin.
+  *(One correction to the framing this arrived in, recorded because a mis-stated
+  mechanism propagates: `FakeUpstream` **is** paced — `rate` defaults to `1.0` and
+  `_Handler._stream` sleeps to hold it, `harness/upstream.py`. The reason elapsed-read
+  assertions are inert is not missing pacing but the buffered backlog between upstream
+  and client, which is true at any rate. Both plans reach the same rule; only the second
+  reason survives contact with the code.)*
 - **Gates are relative, never absolute.** Every coverage claim in this PR is stated as
   "strictly fewer missed statements than a same-session baseline taken in the same
   container under the same tracer core". Absolute figures rot; three of this spec's five
@@ -777,8 +805,10 @@ is exact rather than approximate.
       nothing exits 0 and leaves a green run that proves nothing — this grep is what makes
       the break check evidence. Then:
       `docker exec dispatcharr-testrunner-2a6 bash -lc 'cd /work && python manage.py test apps.proxy.live_proxy.tests.test_output_profile_sharing -v2'`.
-- [ ] **Step 5.** Read the failure and check it is the right one. With the short-circuit
-      gone the second client falls through to the stale-state branch, finds
+- [ ] **Step 5.** Read the failure and check it is the right one. **Predicted, not
+      observed — record what actually printed and replace this quotation if it differs.**
+      With the short-circuit gone the second client falls through to the stale-state
+      branch, finds
       `owner_val == self.worker_id` (one worker, one process), reaches
       `am_i_owner` → True and starts a **second** manager whose `_acquire_owner_lock`
       returns True on the `existing == self.worker_id` path
@@ -1074,6 +1104,13 @@ amends the row to say that.
                       timeout=self.TIMEOUT + self.GRACE + 5.0,
                       what="the fMP4 client to be disconnected by _is_timeout()",
                   )
+                  # NOT THE PIN, and a lower bound only. A wall-clock assertion can never
+                  # be a pin here (see Global Constraints): this one exists solely to
+                  # catch a FALSE POSITIVE -- a teardown that ended the response before
+                  # _is_timeout() could have. It fails in one direction and is silent in
+                  # the other, which is the only shape a clock is allowed to take in this
+                  # PR. The pin is the two assertions around it: the fMP4 response ended
+                  # and the TS response did not.
                   self.assertGreaterEqual(
                       fmp4_client.ended_at - quiet_since,
                       self.TIMEOUT + self.GRACE,
@@ -1112,29 +1149,54 @@ amends the row to say that.
       whether `CONNECTION_TIMEOUT` was accidentally compressed, or whether the stall ran
       long enough for the health monitor's three checks to fire; shorten the window rather
       than deleting the assertion.
-- [ ] **Step 6.** **Break check.** Give the fMP4 `_is_timeout()` the guard it lacks —
-      that is, apply the shape of the fix for #222 — and watch the pin fail. Rebuild the
-      writable copy as in Task 3 Step 4, then:
+- [ ] **Step 6.** **Break check — and read this paragraph before choosing a lever, because
+      the obvious one does not run.** The row pins a *defect*, so the break runs backwards:
+      the patch **adds** the missing behaviour and the test must go red. But **adding the
+      `url_switching` exemption specifically cannot serve as that lever here, and would
+      produce a green run that proves nothing.** The exemption only returns False when
+      `stream_manager.url_switching` is True, and this test provokes a *stall*, not a
+      switch — `url_switching` is False throughout, so the added branch never executes and
+      the client is dropped exactly as before. That is not a flaw in the test: it is § F8,
+      the finding that the flag is set and cleared inside `update_url()`'s own body with no
+      network I/O between, giving a sub-millisecond window a test cannot land inside. **A
+      lever that cannot fail is the very thing break checks exist to catch, so do not use
+      it.**
+
+      Use the guard that the reachable half of the divergence is missing — the TS
+      generator's health check (`output/ts/generator.py:584`), which is also the shape a
+      real fix for #222 would take. The channel is still healthy at the moment of the drop
+      (the stall lands ~5 s in, `CONNECTION_TIMEOUT` is 10 s and `_monitor_health` needs
+      three checks), so guarding on health makes the fMP4 client survive:
       ```
       docker exec dispatcharr-testrunner-2a6 bash -lc '
         rm -rf /work && cp -a /repo /work &&
         sed -i "s|^    def _is_timeout(self) -> bool:$|    def _is_timeout(self) -> bool:\\n        return False  # BREAK CHECK ONLY|" \
           /work/apps/proxy/live_proxy/output/fmp4/generator.py'
       ```
+      `return False` is that guard reduced to its effect, and is used rather than a
+      faithful health lookup because `FMP4StreamGenerator` holds no `stream_manager`
+      reference at all — which is itself part of why #222 exists. It breaks the
+      mechanism (the generator now does what it is documented never to do: hold a client
+      through an unbounded stall) rather than selecting a second documented mode.
+
       **Confirm the break applied before you run anything:**
       ```
       docker exec dispatcharr-testrunner-2a6 sed -n '339,342p' /work/apps/proxy/live_proxy/output/fmp4/generator.py
       ```
       must show `def _is_timeout(self) -> bool:` immediately followed by
       `return False  # BREAK CHECK ONLY`. Then run the test from `/work`.
-- [ ] **Step 7.** Read the failure. The expected text is `wait_until`'s, naming what it
-      was waiting for:
+- [ ] **Step 7.** Read the failure. **Predicted, not observed** — record what actually
+      printed. The expected text is `wait_until`'s, naming what it was waiting for:
       ```
       AssertionError: timed out after 7.0s waiting for the fMP4 client to be disconnected by _is_timeout()
       ```
-      Anything else — an `assertLogs` failure about no records, an earlier `wait_for_bytes`
-      timeout — means the test is not pinning the disconnect and must be fixed before this
-      task can be called done.
+      With `assertLogs` wrapping that region there is a second plausible shape: `assertLogs`
+      fails first, with `no logs of level WARNING or higher triggered on live_proxy.generator`,
+      because the break also removes the log record. Either is the right failure — both say
+      the drop did not happen. Anything *else* — an earlier `wait_for_bytes` timeout, a
+      non-200 tune — means the test is not pinning the disconnect and must be fixed before
+      this task can be called done. Whichever appeared, quote the real text in the PR
+      description and in this step, replacing the prediction.
 - [ ] **Step 8.** Discard the copy (`docker exec dispatcharr-testrunner-2a6 rm -rf /work`).
       Re-run from `/repo`; confirm `OK`.
 - [ ] **Step 9.** Stage, then commit separately:
@@ -1293,8 +1355,12 @@ do not delete a `<!-- block: … -->` marker.** `HIGHEST_ROW_ID` stays 28 (§ R6
 - [ ] Four new test files' worth of tests green in `dispatcharr-testrunner-2a6`, run from
       `/repo`, with the full three-label suite green alongside them.
 - [ ] Both `owed`-row break checks performed, each with the break **confirmed applied by
-      `sed -n` before the run**, each failing with the message this plan quotes, each
-      reverted and re-run green.
+      `sed -n` before the run**, each reverted and re-run green — and **the failure text
+      each one actually printed recorded in the PR description**, flagged where it differs
+      from this plan's prediction.
+- [ ] No assertion in this PR compares elapsed time against what production pacing would
+      cost. The one clock that survives review is Task 6 Step 3's lower bound, labelled in
+      the source as a false-positive guard rather than a pin.
 - [ ] `docs/relay-parity-matrix.md`: row 12 closed with a resolvable test reference and an
       amended Behaviour/Notes; row 11 carrying both pins. The guard green, run in the
       `guards` project.
