@@ -2206,7 +2206,17 @@ Arguments:
 
   --stderr-corpus PATH   the captured .stderr file to replay
   --stderr-interval S    seconds between progress records (default 0.05); the
-                         preamble is always written immediately
+                         preamble is always written immediately.
+                         CAUTION: the replay must not finish near the moment the
+                         tune ends. `input/manager.py` enters its bitrate EMA
+                         only after `_bitrate_warmup_samples` records, so a
+                         cadence that puts the crossing record at roughly the
+                         same instant as teardown makes a block of statements a
+                         coin flip between runs -- which shows up later as an
+                         unexplainable wobble in the coverage number. Pick an
+                         interval that lands every record comfortably inside the
+                         tune, or one that clearly outlasts it; never one that
+                         lands the last records at the boundary.
   --stderr-loop          restart the corpus when it runs out, instead of going
                          quiet -- for a test that must outlive the capture
   --exit-after-bytes N   exit after copying N bytes
@@ -3208,15 +3218,24 @@ Three things must be true, and all three go in the PR description:
 
 1. The three labels are green under `coverage` — including the new harness tests, which is the gate's
    "harness's own smoke test green under `coverage`" clause.
-2. The final line reads `coverage_live_path: statements 7978  missing <n>  coverage <p>%`. The
-   denominator must still be **7,978**: this PR adds no production module, so a different
-   denominator means the rcfile changed shape. `missing` drops **substantially** — a reference run
-   of the finished harness reported `missing 3213  coverage 59.73%`, i.e. **764 statements** closed
-   against the 3,977 baseline, from a PR whose stated deliverable is a harness and one smoke test.
-   That is not a rounding difference and should not be described as a small increase: the
-   end-to-end tune exercises bring-up, the buffer, the client manager and the generator on its way
-   through. Record the exact numbers; a *smaller* movement is the thing worth investigating,
-   because it means the tune is not reaching as far as it should.
+2. The final line reads `coverage_live_path: statements 7978  missing <n>  coverage <p>%`.
+   **The denominator is the check.** It must be **7,978**: this PR adds no production module, so a
+   different denominator means the rcfile changed shape, and that is a real finding.
+   **`missing` is not a check, and this is the one number in the PR that does not reproduce.**
+   Expect a large drop — reference runs of the finished harness landed around `missing 3200-3230`,
+   near 59.6-59.9%, i.e. roughly **750-780 statements** closed against the 3,977 baseline, from a PR
+   whose stated deliverable is a harness and one smoke test. The order of magnitude is the point:
+   the end-to-end tune exercises bring-up, the buffer, the client manager and the generator on its
+   way through.
+
+   **Do not chase a small gap against a quoted figure.** Four unchanged runs on one unmodified tree
+   spanned 27 statements, confined to `input/manager.py` and `server.py` in the stop/teardown window
+   — partly a fixture racing its own teardown, partly the relay's own cleanup thread ticking while a
+   channel shuts down, which no test can quiesce. An early implementer lost time hunting a
+   seven-statement difference that was exactly this. Record what you measure, note the spread if you
+   run it more than once, and treat only a *denominator* change or a movement of a different order
+   as something to investigate. Sizing a tolerance for the ratchet is **2a-7's** job, on its own
+   evidence.
 3. Nothing prints a `CoverageWarning`.
 
 The spec's ±70-statement band is about comparing *different measurement shapes*, and this is the
