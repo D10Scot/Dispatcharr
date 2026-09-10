@@ -398,7 +398,12 @@ The backend baseline is 2,212 tests in 28.5 s across 16 labels, and the commit h
 packages. Budget and mechanism:
 
 - **Budget for this PR: ≤ 6 s added to the `apps.proxy.live_proxy` label. ≤ 15 s added across all of
-  stage 2a is a hard ceiling, not a budget.** Measure this PR's number in Task 7 Step 4 and record
+  stage 2a is a hard ceiling, not a budget.** A first implementation measured **2.18 s → 13.60 s**
+  (138 → 175 tests) and blew it, for one reason: `serve_forever()`'s default `poll_interval` is
+  0.5 s and `shutdown()` waits one out, so every `FakeUpstream` test paid half a second of pure
+  teardown. `FakeUpstream.start` passes `0.01` for that reason (Task 3). Re-measure after fixing it;
+  the honest remainder is ~3-4 s. **Check `--durations` before concluding a test is inherently
+  slow** — twice now the cost has been a library default, not the work. Measure this PR's number in Task 7 Step 4 and record
   it in the PR description so 2a-7 can see the trend. If the ceiling is ever threatened, the answer
   is fewer or faster harness tests — **never** dropping the live server, which is what carries
   2a-3 … 2a-6's event assertions and therefore the rows that port to Go.
@@ -516,7 +521,7 @@ class FakeUpstream:
     url: str                 # e.g. "http://127.0.0.1:54321/live.ts"
     faults: FaultStore
     request_count: int
-    def __init__(self, payload: bytes | None = None, rate: float | None = None) -> None: ...
+    def __init__(self, payload: bytes | None = None, rate: float | None = 1.0) -> None: ...
     def start(self) -> "FakeUpstream": ...
     def stop(self) -> None: ...
     def __enter__(self) -> "FakeUpstream": ...
@@ -749,6 +754,9 @@ report() {
     fi
   done
 
+  # combine CONSUMES the .coverage.* files, so a second `--report` over the same
+  # directory finds no data and says so. Correct for the default run, which
+  # reports once; 2a-7's CI wiring must likewise combine exactly once per job.
   python -m coverage combine --rcfile="$RC" >/dev/null || return 1
   python -m coverage report --rcfile="$RC" || return 1
   python -m coverage json --rcfile="$RC" -o "$COVERAGE_LIVE_PATH_DATA_DIR/live-path.json" >/dev/null || return 1
@@ -1265,7 +1273,9 @@ class FakeUpstreamTests(SimpleTestCase):
                 up.faults.clear(fault)
 ```
 
-- [ ] **Step 2: Run to verify failure** — expected `ImportError: cannot import name 'FakeUpstream'`.
+- [ ] **Step 2: Run to verify failure** — expected
+      `ModuleNotFoundError: No module named 'apps.proxy.live_proxy.tests.harness.upstream'`
+      (the import fails at the module, before the name).
 
 - [ ] **Step 3: Write `harness/upstream.py`**
 
@@ -1439,16 +1449,22 @@ class _Server(http.server.ThreadingHTTPServer):
 class FakeUpstream:
     """A looping TS upstream on 127.0.0.1, with injectable faults.
 
-    `payload` defaults to 512 synthetic packets (~96 KB). `rate`, when set,
-    paces every response at that multiple of NOMINAL_BYTE_RATE even with no
-    slow-trickle fault armed -- the way a test asks for a steady, unhurried
-    stream rather than one that fills the ring buffer as fast as the loopback
-    allows.
+    `payload` defaults to 512 synthetic packets (~96 KB). `rate` paces every
+    response at that multiple of NOMINAL_BYTE_RATE even with no slow-trickle
+    fault armed, and **defaults to 1.0 rather than None on purpose**: at
+    loopback speed this server pushes about 34 MB/s into the ring buffer, which
+    was measured filling Redis to 2.17 GB across 8,863 chunk keys in ~50
+    seconds of a single held-open tune. Redis runs with `maxmemory 0` and DB 0
+    is shared with the Celery broker and the Django cache, so an unpaced tune
+    held open for a dead-air cycle or a buffering window -- which is precisely
+    what 2a-3 … 2a-6 will do -- takes the whole test process down with it.
+    `rate=None` restores the unpaced behaviour and is a deliberate,
+    short-tune-only choice.
     """
 
     dead_air_hold_seconds = 30.0
 
-    def __init__(self, payload: bytes | None = None, rate: float | None = None) -> None:
+    def __init__(self, payload: bytes | None = None, rate: float | None = 1.0) -> None:
         self.payload = payload if payload is not None else synthetic_ts(packets=512)
         if not self.payload:
             raise ValueError("payload must not be empty")
@@ -1469,8 +1485,12 @@ class FakeUpstream:
         self._server.upstream = self
         host, port = self._server.server_address[:2]
         self.url = f"http://{host}:{port}/live.ts"
+        # poll_interval, not the 0.5s default: serve_forever() sleeps that long
+        # between checks of its shutdown flag and shutdown() waits one out, so
+        # the default costs every single upstream test half a second of pure
+        # teardown -- measured at ~0.5s per test across the whole label.
         self._thread = threading.Thread(
-            target=self._server.serve_forever, name="fake-upstream", daemon=True
+            target=self._server.serve_forever, args=(0.01,), name="fake-upstream", daemon=True
         )
         self._thread.start()
         return self
@@ -1554,25 +1574,36 @@ once `LD_LIBRARY_PATH=/usr/local/lib` is set (F4), so the corpus is captured **o
 ffmpeg against a real upstream, committed as a fixture, and replayed by the stand-in at whatever
 cadence a test asks for. Realism comes from the capture; speed comes from the replay.
 
-**The corpus was already captured while this plan was written**, so its content and its shape are
-facts, not a hope. Reproduce it with `scripts/capture_ffmpeg_stderr.py` (Step 3) if ffmpeg ever
-drifts; the numbers below are what ffmpeg 8.1.2 produced in `dispatcharr-testrunner` on 2026-09-10,
-driving the **production** ffmpeg command (`core/migrations/0003_preload_stream_profiles.py:10`:
+**You will capture the corpus yourself in Step 1 — it is not on this branch.** A capture was made
+while this plan was written, which is where the shape below comes from, but those bytes were never
+committed and **no digit in them is reproducible**. The capture is a timing measurement: it depends
+on the machine, its load and the loopback, so the record count, the exact `speed=` values and the
+index at which the curve crosses 1.0 all move between runs. A second run of the very same script on
+a different machine gave `0.847` where the first gave `0.85`, crossed at record 35 rather than 36,
+and produced `speed=2.67e+03x` rather than `1.82e+03x` on the truncation run.
+
+**So every assertion in this task derives its literals from the corpus it just captured.** The table
+below is a *shape* — counts within a range, directions, which records exist — not a set of expected
+values, and nothing in Step 2 or Step 3 compares a captured digit against a number written here.
+Where a test needs "the last record's speed", it reads `progress_lines(name)[-1]`; where it needs
+"the first", `[0]`. What ffmpeg 8.1.2 produced in `dispatcharr-testrunner` on 2026-09-10, driving the
+**production** command (`core/migrations/0003_preload_stream_profiles.py:10`:
 `ffmpeg -i {streamUrl} -c:v copy -c:a copy -f mpegts pipe:1`, no `-loglevel`, so default `info`)
 against a looping 8-second lavfi asset served over HTTP at a controlled rate:
 
-| Fixture | Capture | Size | Progress lines | What it carries |
-|---|---|---|---|---|
-| `normal.stderr` | upstream at 2.0× real time, 8 s | 4,450 B | 11 | banner, `Input #0, mpegts`, `Stream mapping:`, `Output #0, mpegts, to 'pipe:1'`, `Press [q] to stop`, then `speed=` decaying 11.5x → 2.84x |
-| `slow-trickle.stderr` | upstream at 0.25× real time, 45 s | 13,278 B | 76 | the same preamble, then a cumulative `speed=` that starts at **10.7x**, first dips below 1.0 at line 36 (`speed=0.99x`, `elapsed=0:00:18.21`) and is **continuously below 1.0 from line 38 to the end** (39 lines, ending `speed=0.85x` at `elapsed=0:00:38.43`) |
-| `truncation.stderr` | upstream at 2.0×, cut after 3 s of media | 2,618 B | 1 | `[http @ 0x…] Stream ends prematurely at 190068, should be 18446744073709551615`, `[in#0/mpegts @ 0x…] Error during demuxing: Input/output error`, and a final `Lsize=` line |
+| Fixture | Capture | Shape to expect |
+|---|---|---|
+| `normal.stderr` | upstream at 2.0× real time, 8 s | a few KB; roughly 8-15 progress records; preamble carrying the banner, `Input #0, mpegts`, `Stream mapping:`, `Output #0, mpegts, to 'pipe:1'` and `Press [q] to stop`; `speed=` starts well above 1.0 and **decays monotonically-ish** without crossing it |
+| `slow-trickle.stderr` | upstream at 0.25× real time, 45 s | ~10-20 KB; roughly 60-90 records; the same preamble; `speed=` starts **above 5.0**, crosses below 1.0 somewhere in the middle third, and the **last record is below 1.0** — that crossing is the whole point of the fixture |
+| `truncation.stderr` | upstream at 2.0×, cut after 3 s of media | a few KB; **exactly one** progress record, LF-terminated, so this fixture contains **zero CR bytes**; preamble carrying `Stream ends prematurely at …` and `Error during demuxing: Input/output error`; the one record's `speed=` is in scientific notation (`speed=…e+03x`) |
 
 **`slow-trickle.stderr` is the single most valuable artefact in this PR**, because it is empirical
 proof of parity-matrix row 4 — "`speed=` is a cumulative average since process start, taking ~55s to
-arm." Against a genuinely 0.25×-real-time upstream, real ffmpeg needed **18 seconds of wall clock**
-before the cumulative average first touched 1.0 and **20 seconds** before it stayed there. That is
-the arming delay, measured, and it is exactly why 2a-4 cannot drive row 1 or row 4 with a live
-ffmpeg inside a test budget: it has to replay these 76 records at its own cadence.
+arm." Against a genuinely 0.25×-real-time upstream, real ffmpeg took **on the order of 18-20 seconds
+of wall clock** before the cumulative average first touched 1.0 and settled below it. That is the
+arming delay, measured rather than estimated, and it is exactly why 2a-4 cannot drive row 1 or row 4
+with a live ffmpeg inside a test budget: it has to replay these records at its own cadence. **The
+order of magnitude is the finding; the exact second is not, and no test asserts one.**
 
 **Details of the real format that a hand-written line would have got wrong**, all present in the
 corpus and all worth knowing before writing an assertion:
@@ -1586,7 +1617,8 @@ corpus and all worth knowing before writing an assertion:
 - Records are separated by **`\r`, not `\n`** — ffmpeg rewrites one status line in place. Anything
   splitting the corpus on `\n` alone gets one enormous line.
 - **A real ffmpeg emits `speed=` in scientific notation.** `truncation.stderr`'s only progress line
-  is `speed=1.82e+03x`. See § Findings, item 5: the production regex parses that as **1.82**.
+  reads `speed=<mantissa>e+03x` — `1.82e+03x` on one capture, `2.67e+03x` on another. See
+  § Findings, item 5: the production regex stops at the `e` and parses only the mantissa.
 
 **How the stand-in is reached.** `StandInBin.__enter__` writes into a fresh `tempfile.mkdtemp()`:
 `standin.py`, copied byte-for-byte from `apps/proxy/live_proxy/tests/harness/standin.py`; the
@@ -1754,28 +1786,40 @@ Run it, then write `fixtures/ffmpeg_stderr/CAPTURE.md`: the exact command above,
 the capture came from (`ffmpeg -version | head -1` with `LD_LIBRARY_PATH` set — it was
 **8.1.2** on 2026-09-10), the production command being driven and where that command comes from,
 and the table of sizes and progress-line counts from this task's preamble. **The fixtures are
-committed as captured — never hand-edited.** If a value in the table changes on regeneration, that
-is ffmpeg drift and the table is updated; it is not a reason to touch the bytes.
+committed as captured — never hand-edited.** Record the *shape* — record counts, CR presence, the
+direction the curve moves — and state plainly that the individual values are a timing measurement,
+reproducible only in shape. **Do not write "a changed value is ffmpeg drift, update the table":**
+the values move run to run on the same ffmpeg, so a table of digits would be wrong on its second
+reading and would invite someone to encode one in a test.
 
 - [ ] **Step 2: Sanity-check the corpus against the production regex**
 
 ```bash
 docker exec -w /repo dispatcharr-testrunner bash -lc 'export PATH=/dispatcharrpy/bin:$PATH; python - <<"PY"
 import re
+CR = b"\r"
 rx = re.compile(r"speed=\s*([0-9.]+)x?")
 for name in ("normal", "slow-trickle", "truncation"):
     raw = open(f"apps/proxy/live_proxy/tests/harness/fixtures/ffmpeg_stderr/{name}.stderr", "rb").read()
-    text = raw.decode("utf-8", "replace").replace("\r", "\n")
-    lines = [l for l in text.split("\n") if "speed=" in l]
-    values = [float(rx.search(l).group(1)) for l in lines]
-    print(name, len(lines), "records, speed", values[0] if values else None, "->", values[-1] if values else None)
+    lines = [l for l in raw.replace(CR, b"\n").split(b"\n") if b"speed=" in l]
+    values = [float(rx.search(l.decode("utf-8", "replace")).group(1)) for l in lines]
+    print(f"{name}: {len(raw)}B CR={raw.count(CR)} records={len(lines)} "
+          f"speed {values[0]} -> {values[-1]}")
 PY'
 ```
 
-Expected, and these are the numbers the fixtures must carry: `normal 11 records, speed 11.5 -> 2.84`;
-`slow-trickle 76 records, speed 10.7 -> 0.85`; `truncation 1 records, speed 1.82 -> 1.82`. **The
-last one is the scientific-notation finding** (§ Findings item 5): the real line reads
-`speed=1.82e+03x` and the production regex yields `1.82`. Record what you see; do not fix it.
+**Check the SHAPE, not the digits.** Every number in this output is a timing measurement and moves
+between machines and runs; nothing downstream may hardcode one. What must hold:
+
+- `normal`: several records, `CR > 0`, first value well above 1.0, last value still above 1.0.
+- `slow-trickle`: tens of records, `CR > 0`, **first value above 5.0 and last value below 1.0** —
+  that crossing is the fixture's whole purpose. If it did not cross, the capture ran too short or
+  the machine was too fast: raise the duration in `RUNS`, re-capture, and say so in `CAPTURE.md`.
+- `truncation`: **exactly one record and `CR == 0`** — the single `Lsize=` line is LF-terminated —
+  and that record's speed in scientific notation (`…e+03x`). **That is the shape behind
+  [#227](https://github.com/D10Scot/Dispatcharr/issues/227)** (§ Findings item 5): the real line
+  reads e.g. `speed=1.82e+03x` and the production regex yields `1.82`. The exponent is the finding;
+  the mantissa is noise. Record what you see; do not fix it.
 
 - [ ] **Step 3: Write the failing test** — `test_harness_standin.py`:
 
@@ -1784,6 +1828,7 @@ last one is the scientific-notation finding** (§ Findings item 5): the real lin
 
 import os
 import re
+import select
 import signal
 import time
 
@@ -1802,11 +1847,41 @@ from .harness.upstream import FakeUpstream
 SPEED_RE = re.compile(r"speed=\s*([0-9.]+)x?")
 
 
+def _read_ready(stream, count, deadline):
+    """One read that cannot outlive the deadline.
+
+    `stream` is an unbuffered pipe, so a bare `.read()` blocks until data
+    arrives -- which means a `while time.monotonic() < deadline` loop around it
+    only checks the clock BETWEEN reads and never while one is stuck. A wrong
+    literal then hangs the whole label instead of failing it. select() first,
+    so the deadline is real.
+    """
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        return b""
+    ready, _, _ = select.select([stream.fileno()], [], [], remaining)
+    if not ready:
+        return b""
+    return os.read(stream.fileno(), count)
+
+
 def _read_exactly(stream, count, timeout=10.0):
     out = b""
     deadline = time.monotonic() + timeout
-    while len(out) < count and time.monotonic() < deadline:
-        chunk = stream.read(count - len(out))
+    while len(out) < count:
+        chunk = _read_ready(stream, count - len(out), deadline)
+        if not chunk:
+            break
+        out += chunk
+    return out
+
+
+def _read_until(stream, needle, timeout=10.0):
+    """Read until `needle` appears, or the deadline passes. Never blocks past it."""
+    out = b""
+    deadline = time.monotonic() + timeout
+    while needle not in out:
+        chunk = _read_ready(stream, 4096, deadline)
         if not chunk:
             break
         out += chunk
@@ -1845,35 +1920,67 @@ class StandInSpawnTests(SimpleTestCase):
             self.assertIn(b"ffmpeg version ", raw, name)
             self.assertIn(b"Input #0, mpegts, from ", raw, name)
             self.assertIn(b"Output #0, mpegts, to 'pipe:1'", raw, name)
-            self.assertIn(b"\r", raw, f"{name}: no CR separators; not a real ffmpeg capture")
+            self.assertTrue(progress_lines(name), f"{name}: no progress records")
+
+    def test_a_multi_record_capture_uses_cr_termination(self):
+        """CR is how ffmpeg rewrites the status line -- but only between records.
+
+        Asserted on the two multi-record fixtures only. `truncation` has exactly
+        one record, LF-terminated, and therefore no CR at all; asserting CR on
+        every fixture is false for any capture, not just this one.
+        """
+        for name in ("normal", "slow-trickle"):
+            self.assertIn(b"\r", load(name), f"{name}: no CR; not a real multi-record capture")
+        self.assertEqual(len(progress_lines("truncation")), 1)
+        self.assertNotIn(b"\r", load("truncation"), "truncation should be a single LF-ended record")
 
     def test_the_slow_trickle_corpus_actually_falls_below_one(self):
-        """Row 4's evidence: a real cumulative speed= that crosses 1.0 and stays."""
+        """Row 4's evidence: a real cumulative speed= that crosses 1.0 and stays.
+
+        Every number here is READ FROM THE CAPTURE. The capture is a timing
+        measurement -- record count, the values themselves and the crossing
+        index all move between machines and runs -- so this asserts the shape
+        the fixture must have, never a digit a previous run happened to produce.
+        """
         values = [float(SPEED_RE.search(l).group(1)) for l in progress_lines("slow-trickle")]
+        self.assertGreaterEqual(len(values), 20, f"too few records to show a crossing: {len(values)}")
         self.assertGreater(values[0], 5.0, "capture should start with a front-loaded lead")
         self.assertLess(values[-1], 1.0, "capture should end below 1.0")
-        tail = values[-20:]
-        self.assertTrue(all(v < 1.0 for v in tail), f"tail not sustained below 1.0: {tail}")
+
+        below = [i for i, v in enumerate(values) if v < 1.0]
+        self.assertTrue(below, "capture never crosses below 1.0")
+        # Sustained, not a single dip: from the first index after which every
+        # remaining value stays under 1.0, there must be a real tail.
+        settled = len(values)
+        while settled > 0 and values[settled - 1] < 1.0:
+            settled -= 1
+        self.assertGreaterEqual(
+            len(values) - settled, 5, f"crossing is not sustained; tail = {values[settled:]}"
+        )
+        self.assertGreater(settled, 0, "capture starts below 1.0; there is no lead to burn off")
+
+    def test_the_truncation_corpus_carries_a_scientific_notation_speed(self):
+        """The shape behind #227 -- the exponent, not the mantissa."""
+        line = progress_lines("truncation")[0]
+        self.assertRegex(line, r"speed=\s*[0-9.]+e[+-][0-9]+x")
+        self.assertIn("Error during demuxing", load("truncation").decode("utf-8", "replace"))
 
     def test_the_stand_in_replays_the_corpus_to_stderr_in_order(self):
+        records = progress_lines("slow-trickle")
+        first, last = records[0].encode(), records[-1].encode()
         with FakeUpstream() as upstream, StandInBin(
             stderr_corpus="slow-trickle", stderr_interval=0.0
         ):
             proc = posix_spawn_proc(["ffmpeg", "-i", upstream.url])
             try:
-                seen = b""
-                deadline = time.monotonic() + 10
-                while b"speed=0.85x" not in seen and time.monotonic() < deadline:
-                    seen += proc.stderr.read(4096) or b""
+                seen = _read_until(proc.stderr, last, timeout=10)
             finally:
                 proc.terminate()
                 proc.wait(timeout=5)
         self.assertIn(b"ffmpeg version ", seen)
-        self.assertIn(b"speed=10.7x", seen)
-        self.assertIn(b"speed=0.85x", seen)
-        self.assertLess(
-            seen.index(b"speed=10.7x"), seen.index(b"speed=0.85x"), "records out of order"
-        )
+        self.assertIn(first, seen)
+        self.assertIn(last, seen)
+        self.assertLess(seen.index(first), seen.index(last), "records out of order")
 
     def test_stderr_interval_paces_the_replay(self):
         """A test buys the corpus's shape at its own cadence, not ffmpeg's 38 seconds."""
@@ -1885,8 +1992,11 @@ class StandInSpawnTests(SimpleTestCase):
             try:
                 seen = b""
                 deadline = time.monotonic() + 10
-                while seen.count(b"speed=") < 3 and time.monotonic() < deadline:
-                    seen += proc.stderr.read(4096) or b""
+                while seen.count(b"speed=") < 3:
+                    chunk = _read_ready(proc.stderr, 4096, deadline)
+                    if not chunk:
+                        break
+                    seen += chunk
                 elapsed = time.monotonic() - started
             finally:
                 proc.terminate()
@@ -1974,22 +2084,38 @@ def load(name: str) -> bytes:
 
 
 def split(name: str) -> tuple[bytes, list[bytes]]:
-    """(preamble, progress records).
+    """(preamble, progress records), split the way the relay itself splits.
 
-    ffmpeg writes the banner, the input analysis, the stream mapping and
-    `Press [q] to stop` as ordinary newline-terminated output, then rewrites a
-    single status line in place with CR. Splitting on CR therefore puts the
-    whole preamble in the first field and one progress record in each of the
-    rest -- which is also exactly how the relay's stderr reader sees them.
+    Two things about the real byte stream, both verified against the captures
+    rather than assumed, and both of which a naive `split(b"\r")` gets wrong:
+
+    1. ffmpeg **terminates** a progress record with CR, it does not precede one.
+       So `capture.split(b"\r")[0]` is the preamble AND record 1 stuck together,
+       and every record index after that is off by one.
+    2. A capture whose process was not killed mid-record ends its last record
+       with LF, not CR -- `truncation.stderr` contains **zero** CR bytes, because
+       its one and only record is the final `Lsize=` line. Anything that treats
+       CR as the sole record separator finds no records in it at all.
+
+    `input/manager.py`'s `_read_stderr` takes whichever of CR or LF comes first
+    as the line terminator, so splitting on both is not a convenience here --
+    it is what the code under test does. A record is then any line carrying
+    `speed=`, and the preamble is everything before the first one.
     """
-    parts = load(name).split(b"\r")
-    return parts[0], [p for p in parts[1:] if p.strip()]
+    raw = load(name)
+    lines = raw.replace(b"\r", b"\n").split(b"\n")
+
+    records = [line for line in lines if b"speed=" in line]
+    if not records:
+        return raw, []
+
+    first = raw.index(records[0])
+    return raw[:first], records
 
 
 def progress_lines(name: str) -> list[str]:
     """The progress records as text, for assertions about speed=/time=/bitrate=."""
-    return [record.decode("utf-8", "replace") for record in split(name)[1] if "speed=" in
-            record.decode("utf-8", "replace")]
+    return [record.decode("utf-8", "replace") for record in split(name)[1]]
 ```
 
 - [ ] **Step 6: Write `harness/standin.py`**
@@ -2013,8 +2139,14 @@ shape at its own cadence instead of ffmpeg's wall clock. Nothing here invents a
 progress line: see harness/ffmpeg_stderr.SYNTHETIC for the one place an
 exception may be declared, and why each one is unavoidable.
 
-Arguments, all optional except the URL, which is the last positional (the same
-place `-i {streamUrl}` puts it):
+The input is the value after `-i`, exactly as ffmpeg reads it, falling back to
+the last positional when no `-i` is present. `pipe:0` means "read stdin", which
+is how the fMP4 and Output Profile managers feed their child. Every other flag
+ffmpeg would take is accepted and ignored, so the PRODUCTION parameter string
+(`-i {streamUrl} -c:v copy -c:a copy -f mpegts pipe:1`) works unchanged --
+which it must, because 2a-4 drives exactly that.
+
+Arguments:
 
   --stderr-corpus PATH   the captured .stderr file to replay
   --stderr-interval S    seconds between progress records (default 0.05); the
@@ -2036,8 +2168,19 @@ import urllib.request
 _COPY_CHUNK = 8192
 
 
+class _StdinSource:
+    """Makes stdin look like the object urlopen returns: .read() and .close()."""
+
+    def read(self, count):
+        return os.read(0, count)
+
+    def close(self):
+        pass
+
+
 def _parse(argv):
     options = {
+        "input": None,
         "stderr_corpus": None,
         "stderr_interval": 0.05,
         "stderr_loop": False,
@@ -2072,9 +2215,21 @@ def _parse(argv):
             # parameters carry -- is accepted and ignored, exactly so a test can
             # use a realistic parameter string.
             i += 1
+        elif arg == "-i":
+            # ffmpeg's own input flag. The value after it is the input, which is
+            # the ONLY positional this program cares about -- taking
+            # `positional[-1]` instead breaks against the production parameter
+            # string (`-i {streamUrl} -c:v copy -c:a copy -f mpegts pipe:1`),
+            # where the last positional is `pipe:1` and urlopen("pipe:1")
+            # raises `URLError: unknown url type: pipe`. 2a-4 has to drive that
+            # exact command, so this must handle it.
+            options["input"] = argv[i + 1]
+            i += 2
         else:
             positional.append(arg)
             i += 1
+    if options["input"] is None and positional:
+        options["input"] = positional[-1]
     return options, positional
 
 
@@ -2090,15 +2245,25 @@ def _pump_stderr(path, interval, loop):
     no newline and text-mode buffering would hold them.
     """
     with open(path, "rb") as handle:
-        parts = handle.read().split(b"\r")
-    preamble, records = parts[0], [p for p in parts[1:] if p.strip()]
+        raw = handle.read()
+
+    # Same split as harness/ffmpeg_stderr.split(), duplicated because this file
+    # runs as a separate process and imports nothing from the repository.
+    # Records are CR-TERMINATED, and a capture may end its last one with LF, so
+    # both count as terminators -- exactly as input/manager.py's _read_stderr
+    # treats them.
+    lines = raw.replace(b"\r", b"\n").split(b"\n")
+    records = [line for line in lines if b"speed=" in line]
+    preamble = raw[: raw.index(records[0])] if records else raw
+
     os.write(2, preamble)
     while True:
         for record in records:
             if interval:
                 time.sleep(interval)
             try:
-                os.write(2, b"\r" + record)
+                # Terminated, not prefixed -- what real ffmpeg puts on the wire.
+                os.write(2, record + b"\r")
             except OSError:
                 return
         if not loop:
@@ -2107,10 +2272,10 @@ def _pump_stderr(path, interval, loop):
 
 def main(argv=None):
     options, positional = _parse(sys.argv[1:] if argv is None else argv)
-    if not positional:
-        sys.stderr.write("stand-in: no URL argument\n")
+    source = options["input"]
+    if not source:
+        sys.stderr.write("stand-in: no input; expected `-i <url>` or a positional\n")
         return 2
-    url = positional[-1]
 
     if options["stderr_corpus"]:
         threading.Thread(
@@ -2122,7 +2287,14 @@ def main(argv=None):
     copied = 0
     dead_air_at = options["dead_air_after_bytes"]
     exit_at = options["exit_after_bytes"]
-    response = urllib.request.urlopen(url, timeout=30)
+
+    if source == "pipe:0":
+        # The Output Profile and fMP4 managers feed their child on stdin
+        # (output/fmp4/manager.py's FFMPEG_REMUX_CMD is `-f mpegts -i pipe:0`),
+        # so the stand-in has to be able to be that child too. 2a-6 needs this.
+        response = _StdinSource()
+    else:
+        response = urllib.request.urlopen(source, timeout=30)
     try:
         while True:
             chunk = response.read(_COPY_CHUNK)
@@ -2294,7 +2466,7 @@ the wrapper inserts the flags at `sys.argv[1:1]`, i.e. **before** the caller's o
 URL stays last and `_parse`'s `positional[-1]` still finds it. If a future flag ever needs to come
 after the URL, `_parse` must change, not this splice.
 
-- [ ] **Step 8: Run the tests to verify they pass** — expected 9 tests, `OK`.
+- [ ] **Step 8: Run the tests to verify they pass** — expected 10 tests, `OK`.
 
 Predictable snag: `test_exit_after_bytes_ends_the_process_with_the_given_code` asserts
 `proc.wait(timeout=10) == 3`. `_Proc.wait` at `apps/proxy/live_proxy/utils.py` calls
@@ -2450,6 +2622,7 @@ import uuid as uuid_module
 
 import requests
 from django.test import LiveServerTestCase
+from unittest.mock import patch
 
 from apps.proxy.live_proxy.redis_keys import RedisKeys
 from apps.proxy.live_proxy.server import ProxyServer
@@ -2514,6 +2687,19 @@ class RelayHarnessTestCase(LiveServerTestCase):
         }
         os.environ["DISPATCHARR_INTERNAL_API_BASE_URL"] = self.live_server_url
         os.environ["DISPATCHARR_RELAY_BASE_URL"] = self.live_server_url
+
+        # A paced upstream (rate=1.0) plus a small chunk keeps two things true
+        # at once: Redis never takes 34 MB/s (see FakeUpstream's docstring), and
+        # a client still sees bytes in milliseconds rather than waiting out a
+        # ~256 KB chunk at 250 KB/s. TSConfig.BUFFER_CHUNK_SIZE is a plain class
+        # attribute read through ConfigHelper.get, so patching it is the
+        # production lever, not a mock.
+        from apps.proxy.config import TSConfig
+        from .asset import TS_PACKET_SIZE
+
+        patcher = patch.object(TSConfig, "BUFFER_CHUNK_SIZE", TS_PACKET_SIZE * 10)
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
         self.upstream = FakeUpstream().start()
         self.addCleanup(self.upstream.stop)
@@ -2584,11 +2770,15 @@ class RelayHarnessTestCase(LiveServerTestCase):
         url = f"{self.live_server_url}/proxy/ts/stream/{channel.uuid}"
         response = requests.get(url, stream=True, timeout=timeout)
         try:
-            self.assertEqual(
-                response.status_code,
-                200,
-                f"tune returned {response.status_code}: {response.text[:200]}",
-            )
+            # NEVER build this message eagerly. `Response.text` reads the whole
+            # body, and on a live streaming 200 the body does not end -- the
+            # `timeout` above is a socket timeout, not a wall-clock one, so
+            # bytes keep arriving and the read never returns. Formatting it as
+            # an assertEqual message hangs every passing tune forever, which
+            # under the commit hook pins the container rather than failing a
+            # test. Only a non-200 has a body worth reading.
+            if response.status_code != 200:
+                self.fail(f"tune returned {response.status_code}: {response.text[:200]}")
             yield _TunedStream(response, timeout=timeout)
         finally:
             response.close()
@@ -2719,23 +2909,25 @@ class RealFfmpegTests(SimpleTestCase):
         """The capability 2a-6 needs: bytes a real remuxer produced."""
         import subprocess
 
-        from .harness.asset import build_real_ts_asset, require_real_ffmpeg
+        from .harness.asset import build_real_ts_asset, ffmpeg_env, require_real_ffmpeg
 
         executable = require_real_ffmpeg()
         source = build_real_ts_asset(seconds=1.0)
         assert_ts_aligned(source)
 
+        # The PRODUCTION command, minus its argv[0], so this test cannot drift
+        # from what output/fmp4/manager.py actually spawns. Hand-writing the
+        # argument list here loses `-bsf:a aac_adtstoasc`, and without it a real
+        # AAC-in-MPEG-TS input dies with "Malformed AAC bitstream detected ...
+        # Error muxing a packet" and exit 255 -- which is exactly the failure
+        # FFMPEG_REMUX_CMD's own comment at :31 says the filter exists to avoid.
+        from apps.proxy.live_proxy.output.fmp4.manager import FFMPEG_REMUX_CMD
+
         completed = subprocess.run(
-            [
-                executable, "-hide_banner", "-loglevel", "error",
-                "-f", "mpegts", "-i", "pipe:0", "-c", "copy",
-                "-f", "mp4",
-                "-movflags", "frag_keyframe+delay_moov+default_base_moof",
-                "pipe:1",
-            ],
+            [executable] + list(FFMPEG_REMUX_CMD[1:]),
             input=source,
             capture_output=True,
-            env={**os.environ, "LD_LIBRARY_PATH": "/usr/local/lib"},
+            env=ffmpeg_env(),
             timeout=60,
         )
         self.assertEqual(completed.returncode, 0, completed.stderr[:400])
@@ -2897,9 +3089,19 @@ Cover, in this order, and no more:
    and the ≤ 15 s stage budget.
 8. **The two environment facts that bite**: ffmpeg needs `LD_LIBRARY_PATH=/usr/local/lib` in both
    test containers (F4); `manage.py test` is not gevent-monkey-patched (F5).
-9. **What the harness deliberately does not do**: no nginx (so no `auth_request`; the tune
-   authorizes inline), no second process for the control plane (one Django serves both ends), no
-   Docker.
+9. **Two traps for the tests that come next.**
+   - **`TransactionTestCase` flushes every table after each test, including migration-seeded rows.**
+     Once a `RelayHarnessTestCase` has run, the locked `ffmpeg` `StreamProfile` and the `CoreSettings`
+     groups are gone for the rest of the process. Nothing in 2a-2 depends on them and
+     `--shuffle 12345` stays green, but `input/manager.py:734`'s `force_ffmpeg` branch looks up
+     exactly that seeded profile (`StreamProfile.objects.get(name='ffmpeg', locked=True)`), so a
+     2a-4 test covering the HLS/RTSP/UDP path must create it rather than assume it. The general
+     rule: **a harness test creates every row it needs.**
+   - **Do not reach for `rate=None` on the upstream.** It measured 34 MB/s into Redis; see
+     `FakeUpstream`'s docstring for the numbers and why DB 0 makes it everyone's problem.
+10. **What the harness deliberately does not do**: no nginx (so no `auth_request`; the tune
+    authorizes inline), no second process for the control plane (one Django serves both ends), no
+    Docker.
 
 - [ ] **Step 2: Correct `CLAUDE.md`**
 
@@ -3029,8 +3231,9 @@ production code, found by capturing real ffmpeg output — which is the whole ar
 5. **`ffmpeg_speed` is mis-parsed when ffmpeg reports `speed=` in scientific notation.** The
    production regex is `re.search(r'speed=\s*([0-9.]+)x?', stats_line)`
    (`apps/proxy/live_proxy/input/manager.py:1065`); `[0-9.]+` stops at the `e`. Against the real
-   line in `truncation.stderr` — `speed=1.82e+03x`, which ffmpeg 8.1.2 emitted unprompted on a
-   truncated input — it yields **1.82** instead of 1820, a 1000× under-report. **Bounded honestly:**
+   line in `truncation.stderr` — of the form `speed=1.82e+03x`, which ffmpeg 8.1.2 emits unprompted
+   on a truncated input (the mantissa varies per capture; the exponent is the finding) — it yields
+   **1.82** instead of 1820, a 1000× under-report. **Bounded honestly:**
    the failover consequence is nil, because a mis-parsed *high* speed is still above
    `buffering_speed`'s 1.0 default and triggers nothing. What is wrong is the **displayed**
    `ffmpeg_speed` on `GET /proxy/ts/status/<uuid>` and `GET /proxy/relay/channels`, which is
