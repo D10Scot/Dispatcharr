@@ -289,6 +289,15 @@ jobs:
           set -euo pipefail
           # `missing` is a MAXIMUM and lower is better, so a RAISED value is the
           # regression. Read that twice; the polarity is the opposite of a percentage's.
+          #
+          # This container: job runs as root against a checkout owned by a different
+          # uid, and a RAW git invocation does not inherit the safe.directory exception
+          # actions/checkout quietly sets up for its own use -- only actions/checkout
+          # itself is covered. Any later step in a container: job that calls git
+          # directly (this one; not "Compare against the floor" above, which never
+          # touches git) needs its own safe.directory line, or git refuses everything
+          # with "detected dubious ownership" before it runs a single real command.
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
           git fetch --depth=1 origin "$BASE_REF"
           if ! OLD_FILE=$(git show "origin/${BASE_REF}:scripts/coverage_live_path.floor"); then
             echo "no floor on the base ref; nothing to compare"
