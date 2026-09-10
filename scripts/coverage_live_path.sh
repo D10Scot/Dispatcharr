@@ -2,9 +2,17 @@
 # Gate 2's measurement (Phase 2 spec, § Stage 2a > Gate 2): statement coverage
 # over apps/proxy/live_proxy/** plus the ten Phase 1 boundary modules.
 #
-#   scripts/coverage_live_path.sh                  run all three labels, then report
-#   scripts/coverage_live_path.sh --label <label>  run one label, leave its data file
-#   scripts/coverage_live_path.sh --report         combine and report what is there
+#   scripts/coverage_live_path.sh                       run all three labels, then report
+#   scripts/coverage_live_path.sh --label <label>       run one label, leave its data file
+#   scripts/coverage_live_path.sh --report [dir]        combine and report; over <dir> if given
+#   scripts/coverage_live_path.sh --combine-from <dir>  combine data collected elsewhere, then report
+#   scripts/coverage_live_path.sh --gate [dir]           compare against scripts/coverage_live_path.floor
+#   scripts/coverage_live_path.sh --write-floor [dir]    write the floor from this run (refuses a regression)
+#
+# [dir] on --report/--gate/--write-floor is scripts/coverage_live_path_isolated.sh's
+# combined data directory (one .coverage.* + one .shape file per label, gathered from
+# separate containers) -- omit it to report/gate/write-floor over whatever is already
+# in $COVERAGE_LIVE_PATH_DATA_DIR, as a bare in-container run leaves it.
 #
 # Postgres and Redis must already be up. In CI that means running through
 # scripts/ci_bootstrap_backend.sh with CI_BACKEND_RUNNER; locally it means the
@@ -89,7 +97,13 @@ SHAPE_DIR="$COVERAGE_LIVE_PATH_DATA_DIR/shape"
 # written under one core and compared under the other is exactly the
 # un-meetable-floor failure this guard exists to prevent (see the tracer-core
 # note above), so the core name is part of the id, not a separate check.
-SHAPE_ID="per-label/v2-${COVERAGE_CORE}"
+# per-container/v1 (2a-7): the gate now runs one label per CONTAINER rather
+# than one label per process within a shared container -- the shape
+# backend-tests.yml's matrix already uses, and the shape stage 2a's isolation
+# probe measured. A floor written under per-label/v2 must be refused rather
+# than compared against a per-container/v1 run: that is what the shape guard
+# below is for, and this is the first time it earns its keep.
+SHAPE_ID="per-container/v1-${COVERAGE_CORE}"
 
 run_label() {
   local label="$1"
@@ -101,6 +115,17 @@ run_label() {
   # must not leave a stamp claiming data that is not there.
   echo "$SHAPE_ID $label" > "$SHAPE_DIR/$(printf '%s' "$label" | tr '.' '_').shape"
   return $rc
+}
+
+combine_from() {
+  local src="$1"
+  [ -d "$src" ] || { echo "coverage_live_path: no such directory: $src" >&2; return 1; }
+  rm -rf "$COVERAGE_LIVE_PATH_DATA_DIR"; mkdir -p "$SHAPE_DIR"
+  # Each per-label run produced its own data dir with a .coverage.* file and a
+  # matching .shape stamp. Copying both preserves the existing stamp check across
+  # the container boundary: report() still refuses data it cannot account for.
+  find "$src" -name '.coverage.*' -exec cp {} "$COVERAGE_LIVE_PATH_DATA_DIR/" \;
+  find "$src" -name '*.shape'     -exec cp {} "$SHAPE_DIR/" \;
 }
 
 report() {
@@ -146,13 +171,102 @@ print(
 PY
 }
 
+FLOOR_FILE="$REPO_ROOT/scripts/coverage_live_path.floor"
+
+# Reads the figures report() just wrote, rather than re-deriving them, so --gate and
+# --write-floor can never drift from what a bare run prints.
+read_totals() {
+  python - "$COVERAGE_LIVE_PATH_DATA_DIR/live-path.json" <<'PY'
+import json, sys
+t = json.load(open(sys.argv[1]))["totals"]
+print(t["num_statements"], t["missing_lines"], f'{t["percent_covered"]:.2f}')
+PY
+}
+
+floor_value() { grep -E "^$1=" "$FLOOR_FILE" | head -1 | cut -d= -f2-; }
+
+gate() {
+  local stmts missing pct f_shape f_stmts f_missing
+  read -r stmts missing pct < <(read_totals) || return 1
+  f_shape="$(floor_value shape)"; f_stmts="$(floor_value statements)"
+  f_missing="$(floor_value missing)"
+
+  if [ "$f_shape" != "$SHAPE_ID" ]; then
+    echo "coverage_live_path: floor was written under shape '$f_shape'; this run is '$SHAPE_ID'." >&2
+    echo "coverage_live_path: these are not comparable. Re-baseline deliberately with --write-floor." >&2
+    return 1
+  fi
+  if [ "$f_stmts" != "$stmts" ]; then
+    echo "coverage_live_path: the denominator moved: floor $f_stmts, this run $stmts." >&2
+    echo "coverage_live_path: the module list in scripts/coverage_live_path.coveragerc changed." >&2
+    echo "coverage_live_path: that is a finding, not a regression. Re-baseline with --write-floor" >&2
+    echo "coverage_live_path: and say in the PR why the module list moved." >&2
+    return 1
+  fi
+  echo "coverage_live_path: floor missing=$f_missing  this run missing=$missing  coverage ${pct}%"
+  if [ "$missing" -gt "$f_missing" ]; then
+    echo "coverage_live_path: GATE FAILED -- $(( missing - f_missing )) more missed statements than the floor." >&2
+    echo "coverage_live_path: the floor is the worst of >=12 runs on the tree that set it, so this is" >&2
+    echo "coverage_live_path: outside the measured spread: a finding to investigate, not noise." >&2
+    echo "coverage_live_path: attribute it per FILE and then per LINE before widening anything --" >&2
+    echo "coverage_live_path: diff live-path.json's per-file missing_lines, do not difference totals." >&2
+    return 1
+  fi
+  if [ "$missing" -lt "$f_missing" ]; then
+    echo "coverage_live_path: $(( f_missing - missing )) FEWER missed than the floor. The floor is not"
+    echo "coverage_live_path: lowered automatically -- run --write-floor in the PR that earned it."
+  fi
+  return 0
+}
+
+write_floor() {
+  local stmts missing pct old
+  read -r stmts missing pct < <(read_totals) || return 1
+  old="$(floor_value missing)"
+  if [ "$missing" -gt "$old" ] && [ "${COVERAGE_LIVE_PATH_ALLOW_REGRESSION:-}" != "1" ]; then
+    echo "coverage_live_path: refusing to write a WORSE floor ($old -> $missing)." >&2
+    echo "coverage_live_path: a floor may rise only in the PR that earns and explains the rise, and" >&2
+    echo "coverage_live_path: may never simply be edited down. If this is a deliberate re-baseline" >&2
+    echo "coverage_live_path: (the module list moved, or the shape changed), set" >&2
+    echo "coverage_live_path: COVERAGE_LIVE_PATH_ALLOW_REGRESSION=1 and say why in the PR." >&2
+    return 1
+  fi
+  python - "$FLOOR_FILE" "$SHAPE_ID" "$stmts" "$missing" "$pct" "${COVERAGE_LIVE_PATH_RUNS:-0}" <<'PY'
+import re, sys, datetime
+path, shape, stmts, missing, pct, runs = sys.argv[1:7]
+src = open(path).read()
+for k, v in (("shape", shape), ("statements", stmts), ("missing", missing),
+             ("percent", pct), ("measured", datetime.date.today().isoformat()),
+             ("runs", runs)):
+    src = re.sub(rf"(?m)^{k}=.*$", f"{k}={v}", src)
+open(path, "w").write(src)
+print(f"coverage_live_path: floor written -- statements {stmts} missing {missing} coverage {pct}%")
+PY
+}
+
 case "${1:-}" in
   --report)
+    # An optional trailing directory lets scripts/coverage_live_path_isolated.sh's
+    # default mode (${1:---report}) call through uniformly with --gate/--write-floor,
+    # which both take the same optional dir below.
+    if [ $# -eq 2 ]; then combine_from "$2" || exit 1; fi
     report; exit $?
     ;;
   --label)
     [ $# -eq 2 ] || { echo "usage: $0 --label <django-test-label>" >&2; exit 2; }
     run_label "$2"; exit $?
+    ;;
+  --combine-from)
+    [ $# -eq 2 ] || { echo "usage: $0 --combine-from <dir>" >&2; exit 2; }
+    combine_from "$2" || exit 1
+    report; exit $?
+    ;;
+  --gate|--write-floor)
+    mode="$1"
+    if [ $# -eq 2 ]; then combine_from "$2" || exit 1; fi
+    report >/dev/null || exit 1
+    if [ "$mode" = "--gate" ]; then gate; else write_floor; fi
+    exit $?
     ;;
   "")
     rm -rf "$COVERAGE_LIVE_PATH_DATA_DIR"
@@ -182,6 +296,7 @@ case "${1:-}" in
     exit $rc
     ;;
   *)
-    echo "usage: $0 [--label <django-test-label> | --report]" >&2; exit 2
+    echo "usage: $0 [--label <label> | --report | --combine-from <dir> | --gate [dir] | --write-floor [dir]]" >&2
+    exit 2
     ;;
 esac

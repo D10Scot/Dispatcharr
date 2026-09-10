@@ -1,0 +1,22 @@
+# Gate 2's ratchet floor. See docs/superpowers/specs/2026-09-09-phase2-go-relay-design.md
+# (Stage 2a > Gate 2) and docs/superpowers/plans/2026-09-10-phase2-2a7-coverage-gate.md.
+#
+# `missing` is the ratchet -- a MAXIMUM, not a target, and lower is better. It is set
+# from the WORST run of at least twelve on the tree that earned it, which is why this
+# gate carries no separate tolerance parameter: the measured spread is already inside
+# the number. Four regions are known to flap (owner-side coordinated stop, non-owner
+# local cleanup, the stderr-reader join, _wait_for_channel_ready's error branch) and
+# the list has grown twice; a fixed tolerance would be stale on arrival.
+#
+# `shape` and `statements` are EQUALITY checks, not comparisons. A different measurement
+# shape or module list makes two numbers incomparable rather than better or worse, and
+# the gate says so instead of ratcheting.
+#
+# Written by:  scripts/coverage_live_path.sh --write-floor
+# Enforced by: scripts/coverage_live_path.sh --gate  (backend-tests.yml, job coverage-gate)
+shape=per-container/v1-sysmon
+statements=7978
+missing=99999
+percent=0.00
+measured=PLACEHOLDER
+runs=0
