@@ -32,6 +32,35 @@
 # was 2048 on the tree before Tasks 3/4 added two tests (row 29's and row 30's), and
 # this one is 2044 -- 4 statements lower, on a tree with slightly more covered, not a
 # discrepancy between two measurements of the same thing.
+#
+# HOW TO MOVE THIS FLOOR (read before running --write-floor). `--write-floor` writes
+# the figure from the run it JUST took -- one run, not the worst of N -- because the
+# floor policy (worst of >=12 rounds under a stopping rule; see the top of this file)
+# lives in the stopping-rule PROCEDURE, not in the script. The two are not the same
+# thing by design, and `--write-floor` cannot know it is being run for the Nth time in
+# a campaign versus once, so it never guesses at "worst so far" on your behalf. The
+# exact sequence, every time this floor legitimately moves:
+#   1. Run scripts/coverage_live_path_isolated.sh --report repeatedly (a fresh
+#      container per round -- see Task 1/7 of the coverage-gate plan) until the
+#      MAXIMUM `missing` has been unchanged for >=6 consecutive rounds, >=12 total.
+#      Record every round, in order -- a bare min/max cannot show the rule was met.
+#   2. Take max(runs). That number, not any single run's own figure, is what belongs
+#      in `missing` below.
+#   3. Run --write-floor once (writable checkout or a scratch rw container -- /repo is
+#      read-only in the standard test-hook container) to get the correct FILE FORMAT,
+#      shape and statements fields machine-produced.
+#   4. Hand-edit `missing` to max(runs) from step 2 if it differs from what
+#      --write-floor's own run produced (it usually will -- one run is rarely the
+#      worst of N), and recompute `percent` = (1 - missing/statements) * 100 to match.
+#      This hand-edit is the honest, documented step, not a workaround: teaching
+#      --write-floor to accept an explicit override was considered for this PR and
+#      declined, because the value would have to thread through both the regression
+#      check (which run's `missing` counts as "worse than the floor"?) and the percent
+#      computation (recomputed for which value?), which is more machinery-in-the-gate
+#      than this PR wants to risk for a maintainer action taken rarely and by hand.
+#   5. Re-run --gate from the ordinary READ-ONLY test-hook container -- the shape CI
+#      actually runs it in -- and confirm it exits 0 against the new floor before
+#      committing.
 shape=per-container/v1-sysmon
 statements=7978
 missing=2044
