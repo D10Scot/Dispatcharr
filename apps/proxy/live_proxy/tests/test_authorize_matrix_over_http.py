@@ -277,11 +277,25 @@ class AuthorizeMatrixOverHttpTests(RelayHarnessTestCase):
     # -- row 21's outstanding live-root cell -----------------------------
 
     def test_an_xc_user_with_hide_adult_content_is_refused_on_the_live_root(self):
-        # Row 21's Notes: the adult-filter half for the XC principal was
-        # proven only by a catch-up-root test, which is off this matrix's
-        # live-path scope and can never carry a 2d cutover obligation.
-        # This is the live-root equivalent that row owed 2a-5.
-        User.objects.create_user(
+        """Row 21's Notes: the adult-filter half for the XC principal was
+        proven only by a catch-up-root test, which is off this matrix's
+        live-path scope and can never carry a 2d cutover obligation. This
+        is the live-root equivalent that row owed 2a-5.
+
+        ASSERT THE RESOLVED IDENTITY, NEVER ONLY A STATUS. A status-only
+        assertion on the adult denial would pass even if resolve_xc_user
+        silently produced no principal, because the surface is a member of
+        _PRINCIPAL_REQUIRED (authorize.py:82-84) and an unresolved
+        credential there raises 401 before the adult check at :393-397
+        ever runs -- so in THIS case a bad credential cannot masquerade as
+        the adult-filter 403 by construction. But asserting only the
+        denial's status still leaves the claim "the XC principal was
+        correctly identified" unproven, so this test proves it directly:
+        the SAME credentials are shown to resolve to THIS user (a 200 with
+        X-Relay-User carrying their id) against an ordinary channel before
+        the adult channel is shown to deny them.
+        """
+        user = User.objects.create_user(
             username="row21-xc",
             password="x",
             user_level=1,
@@ -290,5 +304,16 @@ class AuthorizeMatrixOverHttpTests(RelayHarnessTestCase):
                 "hide_adult_content": True,
             },
         )
+
+        # Positive control: the credentials resolve to THIS user, not to
+        # nobody. Same identity, an ordinary channel -- 200, with
+        # X-Relay-User carrying the resolved user's id (authorize_views.py's
+        # HEADER_RELAY_USER = result.user_id).
+        control = self.hop(f"/live/row21-xc/xc-secret/{self.plain.id}")
+        self.assertEqual(control.status_code, 200)
+        self.assertEqual(control.headers["X-Relay-User"], str(user.id))
+
+        # The same resolved principal, the same credentials, now against
+        # the adult channel: denied for the adult filter specifically.
         response = self.hop(f"/live/row21-xc/xc-secret/{self.adult.id}")
         self.assertDenied(response, 403)
