@@ -139,14 +139,25 @@ task's requirements implicitly include this section.
   negation alike. **Diff the missed-line sets** (`coverage json`'s per-file
   `missing_lines`), which is how both of this spec's contested buckets were finally
   settled.
-- **Check the tracer core before you measure.** On this base branch
-  `scripts/coverage_live_path.sh` stamps `SHAPE_ID="per-label/v1"` and sets **no**
-  `COVERAGE_CORE` — the sysmon adoption the 2a-4 plan's ruling (b) dispatched to 2a-2 is
-  **not present here** (verified: `grep -rn COVERAGE_CORE scripts/` finds nothing on
-  `migration/phase2a-fmp4-coverage`, `…-manager-coverage`, `…-subprocess-harness` or
-  `main`). See Task 1 Step 3 for what to do in each case. **Never compare a figure taken
-  under one core against a floor or a baseline taken under the other**; the two differ by
-  about a hundred statements on this denominator, twice the run-to-run spread.
+- **The tracer core is sysmon, and the script sets it — there is nothing to decide.**
+  `migration/phase2a-subprocess-harness` was merged into this branch to bring in
+  `9c865538`, so `scripts/coverage_live_path.sh` now does `export COVERAGE_CORE=sysmon`
+  (`:42`) and stamps `SHAPE_ID="per-label/v2-${COVERAGE_CORE}"` (`:92`). Run it plainly
+  and do not set the variable yourself. **Do not edit the script** — 2a-2 owns it, that
+  ruling stands, and its shape guard now refuses to report over a data file stamped by
+  any other core.
+
+  *An earlier draft of this plan carried a two-branch fallback for a base where sysmon was
+  absent; the merge removed the need for it, and it is deleted rather than left as dead
+  instruction.* **Never compare a figure taken under one core against a baseline or floor
+  taken under the other**: the two differ by about a hundred statements on this
+  denominator, twice the run-to-run spread. That has a live consequence for review —
+  **2a-4 (#236) and 2a-5 (#237) both measured under the default C tracer**, because
+  `9c865538` is an ancestor of only `migration/phase2a-ts-generator-coverage` and their
+  branches were cut from an earlier 2a-2 head. Their PR bodies say so. **2a-6's numbers
+  are therefore not comparable with theirs**, are comparable with 2a-3's, and are the
+  basis 2a-7's floor will use. Say that in the PR description so no reviewer lines the
+  four PRs up in a table.
 - **Do not "simplify" `os.posix_spawn` back to `Popen`** — fork-based approaches hang in
   gevent's `_before_fork`.
 - **`gh` always with an explicit `--repo D10Scot/Dispatcharr`**; it otherwise resolves to
@@ -190,9 +201,10 @@ docs/superpowers/plans/2026-09-10-phase2-2a6-fmp4-coverage.md   this file
 ```
 
 **Why a new `output_support.py` rather than additions to `harness/`.** `harness/` is
-2a-2's deliverable and 2a-5 (`migration/phase2a-server-coverage`) is still in flight off
-the same base — it has no commits yet — so an edit inside `harness/` is a live merge
-risk. 2a-4 set the precedent with `tests/manager_support.py` for exactly this reason and
+2a-2's deliverable and 2a-5 (`migration/phase2a-server-and-authorize-coverage`, complete
+at `597e562a`, open as PR #237) and 2a-3 (`migration/phase2a-ts-generator-coverage`, open
+as PR #239 and **still adding to `harness/`** — a packet-index payload in `synthetic_ts`)
+both sit off the same base, so an edit inside `harness/` is a live merge risk. 2a-4 set the precedent with `tests/manager_support.py` for exactly this reason and
 this PR follows it. The **one** exception is `harness/asset.py`, argued in Task 2 Step 1.
 
 **What this PR imports rather than rewrites:** `harness.relay.RelayHarnessTestCase` and
@@ -337,14 +349,22 @@ block that 2c-6/2c-7 read as the fMP4/Output-Profile block. Nothing in
 an `apps/proxy/authorize.py` behaviour (`_drf_user`'s treatment of a credential an
 authenticator explicitly rejects). This PR touches no authorize surface.
 
-**R4 — row 21's prose-only obligation belongs to 2a-5, and this plan says so rather than
-leaving it drifting toward 2a-7.** Row 21's own Notes cell already names the owner: *"a
-pin is a 2d cutover obligation a `/timeshift/` test can never acquire, so 2a-5 owes a
-live-root equivalent instead"*. `migration/phase2a-server-coverage` has no commits yet, so
-2a-5 has not landed and can still take it. It is an XC-credential authorize behaviour with
-no output-side component; 2a-6 taking it would be misfiling. **Flagged, not dropped** —
-if 2a-5 lands without it, it falls to 2a-7 by default and 2a-7's plan should say so
-explicitly rather than inherit it silently.
+**R4 — row 21's prose-only obligation is not 2a-6's, and the choice is between amending
+2a-5 and handing it to 2a-7.** Row 21's own Notes cell names the owner: *"a pin is a 2d
+cutover obligation a `/timeshift/` test can never acquire, so 2a-5 owes a live-root
+equivalent instead"*. It is an XC-credential authorize behaviour with no output-side
+component; 2a-6 taking it would be misfiling.
+
+**Corrected:** an earlier draft of this section reasoned that 2a-5 could still take the
+obligation because `migration/phase2a-server-coverage` had no commits. **There is no such
+branch.** 2a-5 is `migration/phase2a-server-and-authorize-coverage`, it is complete at
+`597e562a` with four commits, and it is open and green as PR #237. So the two live routes
+are (a) amending #237 before it merges, or (b) 2a-7 inheriting it. **(a) is the better
+one** while #237 is still open: the row's obligation is an authorize behaviour, 2a-5 is the
+authorize PR, and its harness fixtures and the live-root drive it already builds are
+exactly what the equivalent test needs — 2a-7 would have to rebuild them to do the same
+work. If #237 merges first, it falls to 2a-7 by default, and **2a-7's plan must say it
+inherited it rather than absorb it silently.**
 
 **R5 — `output/fmp4/buffer.py` earns its place in scope, but gets no test of its own.**
 Every one of its statements that matters (`put_fragment`, `get_chunks`,
@@ -374,25 +394,22 @@ edits.
 - [ ] **Step 2.** Guard against the MISCONF signature before you measure:
       `docker exec dispatcharr-testrunner-2a6 redis-cli CONFIG SET save ""` and
       `docker exec dispatcharr-testrunner-2a6 redis-cli ping` (expect `PONG`).
-- [ ] **Step 3.** Decide the tracer core, once, and write the decision into the PR
-      description. Run
+- [ ] **Step 3.** Confirm the tracer core is what this branch expects, then stop thinking
+      about it. Run
       `docker exec dispatcharr-testrunner-2a6 grep -n 'SHAPE_ID=\|COVERAGE_CORE' /repo/scripts/coverage_live_path.sh`.
-      - If it prints `SHAPE_ID="per-label/v2-sysmon"` and a `COVERAGE_CORE=sysmon` line,
-        2a-2's sysmon change has landed on your base: use the script unmodified and say
-        "sysmon, from the script" in the PR description.
-      - If it prints `SHAPE_ID="per-label/v1"` and no `COVERAGE_CORE` (which is what this
-        base has today), **do not edit the script** — 2a-2 owns it and an edit here is a
-        merge risk. Instead export the core for both halves of the measurement, in the
-        same shell, every time:
-        `COVERAGE_CORE=sysmon bash /repo/scripts/coverage_live_path.sh`, and say
-        "sysmon, exported by hand over `per-label/v1`" in the PR description.
-      - Either way: **both halves of every comparison in this PR use the same core.**
-        Never mix.
+      It must print `export COVERAGE_CORE=sysmon` and
+      `SHAPE_ID="per-label/v2-${COVERAGE_CORE}"`. If it prints `per-label/v1` instead, the
+      2a-2 merge is missing from your checkout — re-merge
+      `migration/phase2a-subprocess-harness` rather than working around it, and **never
+      edit the script**, which 2a-2 owns. Do not set `COVERAGE_CORE` yourself in any
+      command: the script exports it, and the shape guard now refuses to report over a
+      data file stamped by a different core, so a hand-set variable can only take a
+      measurement away from you.
 - [ ] **Step 4.** Take the baseline, three runs, each into its own data directory so the
       per-run JSON survives (`--report` consumes the `.coverage.*` files):
       ```
       for i in 1 2 3; do
-        docker exec -e COVERAGE_CORE=sysmon -e COVERAGE_LIVE_PATH_DATA_DIR=/tmp/2a6-base-$i \
+        docker exec -e COVERAGE_LIVE_PATH_DATA_DIR=/tmp/2a6-base-$i \
           dispatcharr-testrunner-2a6 bash /repo/scripts/coverage_live_path.sh
       done
       ```
