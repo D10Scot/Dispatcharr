@@ -77,11 +77,12 @@ requirements implicitly include this section.
 - **Matrix edits obey `docs/relay-parity-matrix.md`'s own comment block:** one row is
   one line, cells are never padded, no stored counts, do not sort, do not run a
   Markdown formatter over the file. Closing a row is a one-line diff.
-- **Test-suite cost:** `apps.proxy.live_proxy.tests` is **179 tests in 7.006 s** on this
-  branch (measured, § F1). The spec's stage budget is **≤15 s added across all of
-  stage 2a**, of which 2a-2 spent ~3.96 s. This PR will not fit inside what remains —
-  see § F9 and § Findings F1. Measure with `--durations`, report the number, do not
-  silently blow past it.
+- **Test-suite cost: build all eight tests and state the cost. Do not cut a test to
+  meet a time budget.** `apps.proxy.live_proxy.tests` is **179 tests in 7.006 s** on
+  this branch (measured, § F1); this PR is predicted to add 9-11 s, which does not fit
+  inside what the ≤15 s stage budget leaves after 2a-2's ~3.96 s. **That ceiling is
+  deferred, not breached by accident** — see § Rulings (a). Measure with `--durations`,
+  report the number plainly, and leave the contingency drop order in § F9 untaken.
 - **Attribution:** every commit message ends with
 
   ```
@@ -93,6 +94,39 @@ requirements implicitly include this section.
   matches on command text, so a heredoc containing "git commit" trips it. **Stage and
   commit in separate `Bash` calls.**
 - **Do not push and do not open a PR.**
+
+---
+
+## Rulings this plan carries
+
+Three questions this plan raised were put to the orchestrator and answered. They are
+recorded here because they change what the implementer does, not merely what the PR
+description says.
+
+**(a) The ≤15 s stage ceiling is deferred; build all eight tests.** The ceiling was a
+guard against making the commit hook unusable, not a goal. Cutting tests to meet a time
+budget *in the PR whose purpose is coverage* is backwards, and the drop order in § F9
+proves it — it costs either the Proxy path (the largest coverage item here) or row 5's
+falsifiability. The lever this plan identified, `available_apps` on
+`RelayHarnessTestCase`, has been dispatched to 2a-2, which owns that base class; a saving
+there multiplies across all four coverage PRs. **The ceiling will be set from that
+evidence.** Keep § F9's drop order in the plan, clearly marked as a contingency that was
+not taken.
+
+**(b) `COVERAGE_CORE=sysmon` is adopted, and the four coverage PRs re-take their
+baselines under it.** § Findings F2's under-count and the shape guard's failure to stamp
+the tracer core are both dispatched to 2a-2, under one condition imposed there and not
+here: 2a-2 verifies on a concrete example that the extra credit is for **genuinely
+executed** lines before adopting, because a tracer that over-credits an 80 % gate would be
+worse than one that under-counts. **What this means for 2a-4:** measure the baseline and
+the new figure under **whatever tracer core `scripts/coverage_live_path.sh` selects at the
+time you implement**, and if that changed while this PR was in flight, re-take the
+baseline rather than reuse an older number. This is cheap here precisely because the gate
+is worded as a same-session back-to-back delta rather than an absolute count.
+
+**(c) Row 2's Notes cell is amended, as Task 4 Step 4 specifies.** Notes cells are not
+immutable; a half-pinned row that looks whole is worse than one that says which half is
+pinned, and the matrix's readers in 2c are the audience that matters.
 
 ---
 
@@ -158,12 +192,15 @@ although `_process_stream_data:1317-1328` is covered).
 2. **The measured increase will be materially smaller than the behaviour pinned.**
    Size the gate on the delta you measure, never on a statement count derived by
    reading the source.
-3. **Do not change the rcfile.** `concurrency = gevent` was measured on the real suite
-   and is *worse*: 3,877 missed instead of 3,216, because the test process is not
-   monkey-patched and gevent mode stops tracing the relay's plain OS threads.
-   `COVERAGE_CORE=sysmon` is better (3,114 missed, `input/manager.py` 474) but changing
-   the tracer changes the measurement shape for 2a-3, 2a-5, 2a-6 and 2a-7's floor.
-   § Findings F2 carries this to the PR description; it is 2a-7's decision.
+3. **Do not change the rcfile or the script.** `concurrency = gevent` was measured on
+   the real suite and is *worse*: 3,877 missed instead of 3,216, because the test
+   process is not monkey-patched and gevent mode stops tracing the relay's plain OS
+   threads. `COVERAGE_CORE=sysmon` is better (3,114 missed, `input/manager.py` 474) and
+   **has been adopted** — but the change belongs to 2a-2, which owns
+   `scripts/coverage_live_path.*`, and it is conditional on 2a-2 first verifying that
+   the extra credit is for genuinely executed lines (§ Rulings (b)). **What 2a-4 does
+   about it: measure under whatever core the script selects at implementation time, and
+   re-take the baseline if that changed while this PR was in flight.**
 
 ### F3 — The corpus, as it is on this branch
 
@@ -289,11 +326,19 @@ Eight tests, of which every one is a real tune: **~0.7 s fixed each (F1) plus th
 time the behaviour under test takes.** Predicted ≈ **9-11 s** added to
 `apps.proxy.live_proxy.tests`, taking the label from 7.0 s to ~16-18 s and stage 2a
 from ~4 s to ~13-15 s **before 2a-3, 2a-5 and 2a-6 add anything**. Task 6 measures the
-real number. Do not "fix" this by deleting tests on your own judgment; report it
-(§ Findings F1), and if the user chooses to cut, the drop order is:
-`test_the_proxy_profile_streams_with_no_ffmpeg_and_no_stats` first (it closes no matrix
-row, though it is the largest single coverage item in the PR), then row 5's second
-channel (which costs the test its falsifiability — say so if you do it).
+real number and the PR description states it.
+
+**All eight are built (§ Rulings (a)).** The drop order below is recorded as a
+contingency and **was not taken**; it is here so that a later decision to cut knows what
+each cut costs, not as licence to make one:
+
+1. `test_the_proxy_profile_streams_with_no_ffmpeg_and_no_stats` — closes no matrix row,
+   but is the largest single coverage item in the PR (~143 statements of
+   `input/manager.py` plus a 101-statement file at 0 %).
+2. Row 5's second channel — costs the test its falsifiability, which is the whole reason
+   it is there.
+
+Neither is a good trade against a slower commit hook, which is why neither was made.
 
 ### F10 — Routing and hooks
 
@@ -1454,6 +1499,13 @@ Record: `TOTAL` statements (must be **7978** — the denominator is the check), 
 `apps/proxy/live_proxy/input/manager.py` and
 `apps/proxy/live_proxy/input/http_streamer.py`.
 
+**Check the tracer core before you start (§ Rulings (b)).** `sysmon` has been adopted and
+2a-2 owns the change. If `scripts/coverage_live_path.sh` or its rcfile now selects it,
+both halves of this measurement must be taken under it — never one half under each; the
+two cores differ by ~102 statements on this denominator, four times the run-to-run
+spread. Since both halves are taken back to back here, this costs nothing but reading the
+script first. Say in the PR description which core produced the numbers.
+
 **Expected direction and rough size, not a target:** `input/manager.py` from 498 missed
 down by somewhere in the region of 60-120; `http_streamer.py` from 101 down substantially,
 since nothing imports it today. **Do not treat a smaller movement as a failed task
@@ -1537,13 +1589,20 @@ Commit message: `chore(phase2): 2a-4's defect ledger entries and the measured nu
 It must carry, in this order:
 
 1. The coverage numbers from Step 1, before and after, per file, with the denominator
-   7,978 shown as the shape check, and the sentence that the gate is a **measured
-   increase**, not a count.
-2. The time cost from Step 2, against the 7.006 s baseline and stage 2a's 15 s ceiling,
-   with a recommendation if it is exceeded.
+   7,978 shown as the shape check, **which tracer core produced them**, and the sentence
+   that the gate is a **measured increase**, not a count.
+2. The time cost from Step 2, against the 7.006 s baseline. State it plainly: all eight
+   tests were built, the ≤15 s stage ceiling is deferred pending 2a-2's `available_apps`
+   measurement (§ Rulings (a)), and § F9's drop order was recorded and **not taken**.
 3. The five findings in § Findings below, each in a sentence or two.
-4. The seven rows closed, by number, with their test symbols.
-5. The two defect-ledger changes.
+4. **F5's recommendation to 2a-7, spelled out**: the buffering detector is inert on the
+   Proxy and Redirect profiles; it is a real externally-observable behaviour the Go relay
+   must reproduce; it has no matrix row because adding one means bumping
+   `HIGHEST_ROW_ID` against four PRs in flight; 2a-7 should add it citing
+   `apps/proxy/live_proxy/tests/test_manager_connection_failover.py::test_the_proxy_profile_streams_with_no_ffmpeg_and_no_stats`.
+5. The seven rows closed, by number, with their test symbols, and the note that row 2's
+   Notes cell now records which half of that row is pinned.
+6. The two defect-ledger changes.
 
 ---
 
@@ -1559,9 +1618,11 @@ each a real tune plus the real time a timeout takes; the predicted total is 9-11
 consumes the remainder and leaves 2a-3, 2a-5 and 2a-6 with nothing. **The single largest
 lever is not in any of these PRs**: `RelayHarnessTestCase` is a `TransactionTestCase`,
 so every test flushes every table, and `available_apps` on the base class would narrow
-that flush — 2a-2's own plan names it and declines to reach for it unmeasured. The
-decision (raise the ceiling, or narrow the flush, or cut tests) belongs to the user;
-this plan states the cost rather than quietly exceeding it.
+that flush — 2a-2's own plan names it and declines to reach for it unmeasured. **Resolved
+(§ Rulings (a)): all eight tests are built and the cost is stated; `available_apps` goes
+to 2a-2, which owns the base class; the ceiling is set from that measurement.** Cutting
+tests was rejected — in the PR whose purpose is coverage, both available cuts are worse
+than a slower commit hook.
 
 **F2 — the Gate 2 measurement systematically under-counts, and the tracer is part of the
 measurement shape.** Statements executing after a `gevent.sleep()` are not recorded by
@@ -1571,10 +1632,17 @@ them: measured on this branch, the same three labels give **3,114 missed instead
 instead of 498, `server.py` at 797 instead of 845 and `channel_service.py` at 169 instead
 of 200, and all three labels still green. `concurrency = gevent` is the *wrong* fix and
 was measured as such (3,877 missed — the suite is not monkey-patched, so gevent mode
-stops tracing the relay's real OS threads). **`scripts/coverage_live_path.sh`'s shape
-guard does not stamp the tracer core**, so a floor written under one and compared under
-the other would be un-meetable in exactly the way the guard exists to prevent. This is
-2a-7's decision, and it is worth making before the floor is written.
+stops tracing the relay's real OS threads), which is worth stating on its own: it rules
+out the remedy most readers would try first, for a measured reason. **And
+`scripts/coverage_live_path.sh`'s shape guard does not stamp the tracer core**, so a
+floor written under one core and compared under the other is un-meetable in exactly the
+way the guard exists to prevent — the worse half of this finding.
+
+**Resolved (§ Rulings (b)): `sysmon` is adopted and the shape stamp gains the tracer
+core, both in 2a-2**, conditional on 2a-2 verifying on a concrete example that the extra
+credit is for genuinely executed lines — a tracer that *over*-credits an 80% gate would
+be worse than one that under-counts, so it is checked once rather than assumed. The four
+coverage PRs re-take their baselines under it.
 
 **F3 — `scripts/coverage_live_path.sh:22-25` is stale.** It says "Within this shape the
 measurement is exactly reproducible … so this script has no tolerance and needs none."
@@ -1596,9 +1664,11 @@ ignored for two of the three Stream Profile architectures — externally observa
 (`ffmpeg_speed` never appears on the status), recorded in `CLAUDE.md`, and something the
 Go relay must reproduce. Task 5's Proxy-path test asserts it, but it closes no row: adding
 one means bumping `HIGHEST_ROW_ID`, and 2a-3, 2a-5 and 2a-6 would all conflict on that
-constant. **Recommended as a row for 2a-7**, which lands after all four and can bump the
+constant. **Accepted as a row for 2a-7** (§ Rulings), which lands after all four and can bump the
 constant once, citing
 `test_manager_connection_failover.py::test_the_proxy_profile_streams_with_no_ffmpeg_and_no_stats`.
+**The PR description must name that test and the reason for the deferral explicitly**, so
+2a-7's planner inherits the recommendation instead of rediscovering the behaviour.
 
 ---
 
@@ -1675,7 +1745,11 @@ not describe the work as verified.**
       is asserted with a re-derive message.
 - [ ] The two defect-pinning tests (rows 6 and 28) say in their docstrings that they pin
       the wrong behaviour on purpose, and name the issue.
-- [ ] The PR description carries the seven items of Task 6 Step 7, including the five
-      findings above.
-- [ ] `dispatcharr-testrunner-2a4` and `dispatcharr-hookdb-2a4` are removed.
+- [ ] All eight tests exist. § F9's drop order was **not** taken (§ Rulings (a)).
+- [ ] The PR description carries the six items of Task 6 Step 7, including the five
+      findings above, F5's spelled-out recommendation to 2a-7, and which tracer core
+      produced the coverage numbers.
+- [ ] `dispatcharr-testrunner-2a4`, `dispatcharr-hookdb-2a4` and, if Task 6 started them,
+      `dispatcharr-testrunner-2a4-base` / `dispatcharr-hookdb-2a4-base` are removed, along
+      with the `/tmp/2a4-baseline` worktree.
 - [ ] Nothing is pushed and no PR is opened.
