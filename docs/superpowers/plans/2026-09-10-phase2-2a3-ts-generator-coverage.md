@@ -812,7 +812,7 @@ for i in 1 2; do
 done
 ```
 
-Expected: `Ran 182 tests`, `OK`, **both times**. The new test costs roughly **1.3 s**. Run it twice deliberately: this is the one test in the PR whose subject is a background thread's timing, and a single green run says less here than elsewhere.
+Expected: `Ran 182 tests`, `OK`, **both times**. The new test costs roughly **1.3 s** measured on host; **measured in the hook container it runs closer to 3.6 s**, both times, well inside its own 4.0 s budget (`(GHOST_MULTIPLIER + 2) * HEARTBEAT_SECONDS`) — the DEBUG trace in Step 3 shows the mechanism firing at "inactive for 2.4s" against a 2.0 s configured timeout, so the extra wall-clock time is container scheduling overhead, not the mechanism running late. Run it twice deliberately: this is the one test in the PR whose subject is a background thread's timing, and a single green run says less here than elsewhere.
 
 - [ ] **Step 3: Prove the mechanism is the one the row names**
 
@@ -1097,26 +1097,47 @@ Expected: `Ran 184 tests`, `OK`. `test_a_stream_switch_never_rewinds_the_chunk_i
 
 - [ ] **Step 3: Break-check the positioning test**
 
-This is the test most at risk of passing for a reason other than the one it names, so prove it fails when the behaviour is absent. Temporarily change the module constant to `BEHIND_SECONDS = 0` and run just this module:
+**WITHDRAWN, and visibly rather than silently, because an earlier revision of this step was published
+with it.** That revision claimed that setting `BEHIND_SECONDS = 0` and re-running the module would fail
+with `AssertionError: 0.109… not less than 0.0225…`. **This was never observed** — it was asserted, not
+reproduced; the materialised review copy at `scratchpad/rev3/` (`breaks.sh`, `breaks2.sh` and their
+`.log` files) contains no trace of this break having been run at all. The 2a-3 implementer ran it and
+got `OK`, not `FAILED`.
 
-```bash
-docker exec dispatcharr-testrunner-2a3 redis-cli flushall
-docker exec -e TEST_USE_SQLITE= -e POSTGRES_HOST=/var/run/postgresql \
-  -e POSTGRES_DB=dispatcharr -e POSTGRES_USER=dispatch -e POSTGRES_PASSWORD=secret \
-  -e REDIS_HOST=localhost -e REDIS_PORT=6379 -e REDIS_DB=0 \
-  -e DJANGO_SECRET_KEY=hook-test-secret -e DISPATCHARR_LOG_LEVEL=ERROR \
-  dispatcharr-testrunner-2a3 /dispatcharrpy/bin/python \
-  manage.py test --keepdb apps.proxy.live_proxy.tests.test_relay_stream_switch -v1
-```
+**The lever was wrong in kind, not just in degree.** `ConfigHelper.new_client_behind_seconds()`'s own
+docstring says `0 means start at live (buffer head)` (`config_helper.py:44-51`), and
+`_setup_streaming` (`output/ts/generator.py:262`) branches on it explicitly: `if behind_seconds > 0:`
+calls `find_chunk_index_by_time`; the `else` is a *second, documented* code path — `# 0 = start at
+live (buffer head)` — that never calls the resolver at all. Setting `BEHIND_SECONDS = 0` does not
+break row 8's mechanism; it routes around it into a different, equally-intentional behaviour. No
+value of this setting can ever falsify the test that derives its own window from the same setting.
 
-Expected: `FAILED (failures=1)` with
+**A genuine mechanism break was then tried, and it did not falsify the test either.** Forcing
+`_setup_streaming`'s `if behind_seconds > 0:` to `if False:` — a one-line change to production code,
+not to the test's configuration — makes every client start exactly at the live buffer head regardless
+of `new_client_behind_seconds`, confirmed by the log line changing from `Time-based positioning: 0.5s
+behind -> index 77 (buffer head at 143)` to `Starting at live (behind_seconds=0): index 143 (buffer
+head at 143)`. The unbroken test measured `drained_in=0.000168s`; the same test against this genuine
+break measured `drained_in=0.000342s` — statistically indistinguishable, both roughly two orders of
+magnitude under the `live_would_take / 2` threshold (`0.0226s`). **The test cannot tell a client
+positioned 66 chunks behind live from one sitting exactly at the head.** In this harness, reads from
+the ring buffer are never throttled to real production pacing: the fake upstream races ahead and
+writes chunks to Redis well before any client requests them, so a 60-packet read is served from
+already-buffered data regardless of where the client's `local_index` starts, and the "would take this
+long at live pace" comparison the test computes from `len(backlog) / bytes_per_second` never actually
+has to hold for a head-positioned client in this environment.
 
-```
-FAIL: test_a_new_client_starts_behind_live …
-AssertionError: 0.109… not less than 0.0225…
-```
-
-— the joining client took roughly five times longer than the half-of-live threshold, because at `behind_seconds = 0` it started at the buffer head and had to wait for the upstream. **Restore `BEHIND_SECONDS = 0.5` and re-run Step 2 before continuing.** The exact digits in the failure will differ; what matters is that the drain assertion is the one that fires.
+**Conclusion: row 8 is unpinned by construction, not merely missing a working break.** The task's test
+still asserts something true (a positioned client drains a real backlog fast), but it does not
+distinguish that from "any client drains anything fast, regardless of position" — the failure mode
+2a-3's own brief calls a test "pinning the wrong thing." Closing this row for real needs a different
+observable: one candidate is asserting on the delivered bytes' own sequence data (continuity counters,
+as `test_relay_client_stream.py`'s `continuity_counters` helper already does for row 9) to show the
+joiner's first received packet corresponds to content written *before* it connected, rather than
+timing a read against a wall clock. This plan does not implement that redesign; it stops here with the
+finding, since reshaping the test is a scope decision for whoever picks the row back up. **Do not
+restore Step 3 to its original form** — the module constant `BEHIND_SECONDS = 0.5` in the shipped test
+was never a break lever and should not be treated as one again.
 
 - [ ] **Step 4: Break-check the switch test — this one caught a real defect in an earlier draft**
 
