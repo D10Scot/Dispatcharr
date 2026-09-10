@@ -9,6 +9,8 @@ row-for-row (spec section "The subprocess harness", the composition rule).
 import time
 from unittest.mock import patch
 
+import requests
+
 from .harness.asset import TS_PACKET_SIZE, assert_ts_aligned
 from .harness.control import ControlMixin, nginx_headers, open_tune
 from .harness.process import stand_in_stream_profile
@@ -192,6 +194,16 @@ class GhostClientTests(ControlMixin, RelayHarnessTestCase):
                     try:
                         received += reader.read(TS_PACKET_SIZE)
                     except AssertionError:
+                        ended = True
+                        break
+                    except requests.exceptions.RequestException:
+                        # _TunedStream.read()'s own timeout is a socket
+                        # timeout, so under a regression close to `budget`
+                        # (this test's own deadline) the underlying read can
+                        # time out at the socket layer before the loop's
+                        # wall-clock check gets a turn -- a real end to the
+                        # stream, just not the AssertionError _TunedStream
+                        # raises for its OWN, longer deadline.
                         ended = True
                         break
                 ended_after = time.monotonic() - started
