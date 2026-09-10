@@ -1135,6 +1135,35 @@ class AuthorizeMatrixOverHttpTests(RelayHarnessTestCase):
     # -- row 23: Session, non-admin --------------------------------------
 
     def test_a_session_principal_streams_an_ordinary_channel(self):
+        """The identity assertion is the test. The 200 is not.
+
+        DO NOT TRIM THE X-Relay-User ASSERTION AS REDUNDANT. A 200 here
+        proves nothing, because an ORDINARY channel streams to an
+        ANONYMOUS request too (matrix row 24) -- so if the session
+        principal were lost entirely, this request would still answer 200
+        with bytes and this test would still pass. What would have
+        silently stopped applying is every user-scoped check: user_level,
+        Channel Profile membership, adult filtering and the stream limit.
+        The one visible symptom would be a hidden_from_output channel
+        still 403ing (it 403s for anonymous as well), so the working half
+        keeps working while the invisible half is gone -- the worst
+        failure signature an auth change can have.
+
+        Only X-Relay-User carrying this user's id proves the principal
+        survived. It survives because _session_user (authorize.py:268-287)
+        re-reads the session with django.contrib.auth.get_user(request)
+        instead of trusting http_request.user: @api_view's dispatch() runs
+        perform_authentication even under @authentication_classes([]) and
+        sets request.user to AnonymousUser BEFORE authorize_stream runs.
+        _drf_user restores it on a miss for the same reason (:227-265).
+
+        This is the assertion that catches the failure mode 2b's dev
+        fallback could introduce -- POST /_dispatcharr/authorize-internal
+        forwards a session cookie, and a receiving view that resolves the
+        principal from request.user rather than from the session store
+        would downgrade every session viewer to anonymous with no error
+        anywhere.
+        """
         user = User.objects.create_user(
             username="row23-standard", password="x", user_level=1
         )
@@ -1144,10 +1173,6 @@ class AuthorizeMatrixOverHttpTests(RelayHarnessTestCase):
             cookies={"sessionid": self.client.cookies["sessionid"].value},
         )
         self.assertEqual(response.status_code, 200)
-        # The principal really came from the session: _session_user reads
-        # django.contrib.auth.get_user(request) directly, because
-        # authorize_view's own DRF dispatch has already clobbered
-        # request.user to AnonymousUser (authorize.py:268-287).
         self.assertEqual(response.headers["X-Relay-User"], str(user.id))
 
     def test_a_session_principal_is_refused_a_hidden_channel(self):
@@ -1189,6 +1214,35 @@ class AuthorizeMatrixOverHttpTests(RelayHarnessTestCase):
         )
         self.assertDenied(response, 403)
 
+    # -- no row: a rejected credential is not an anonymous tune ----------
+
+    def test_a_rejected_credential_is_401_and_never_an_anonymous_tune(self):
+        """_drf_user's two meanings of "no user", asserted on the wire.
+
+        authorize.py:227-265 RAISES AuthorizeDenied(401) for a credential
+        an authenticator explicitly rejected (a malformed Bearer token, an
+        unknown API key) and RETURNS None for one merely declined (nothing
+        presented). A port that maps both to "anonymous" turns a rejected
+        credential into a successful anonymous tune of any ordinary
+        channel -- the same silent-downgrade shape as the session case
+        above.
+
+        PINS NO MATRIX ROW, deliberately: no row states this, and adding
+        one would bump HIGHEST_ROW_ID against three sibling PRs in flight.
+        Recommended for 2a-7 in this PR's description instead.
+        """
+        rejected = self.hop(
+            f"/proxy/ts/stream/{self.plain.uuid}",
+            headers={"Authorization": "Bearer not-a-token"},
+        )
+        self.assertDenied(rejected, 401)
+
+        # The other meaning of "no user": nothing presented at all, which
+        # is a legitimate anonymous tune of an ordinary channel (row 24).
+        declined = self.hop(f"/proxy/ts/stream/{self.plain.uuid}")
+        self.assertEqual(declined.status_code, 200)
+        self.assertEqual(declined.headers["X-Relay-User"], "")
+
     # -- row 21's outstanding live-root cell -----------------------------
 
     def test_an_xc_user_with_hide_adult_content_is_refused_on_the_live_root(self):
@@ -1224,7 +1278,8 @@ Two shapes in that file to be deliberate about:
 <dexec> manage.py test --keepdb apps.proxy.live_proxy.tests.test_authorize_matrix_over_http -v2 --durations 15
 ```
 
-Expected: PASS, and every test well under 100 ms — none of them tunes. If any is slow, something is
+Expected: PASS — twelve tests, every one well under 100 ms, because none of them tunes. If any is
+slow, something is
 initializing a channel that should not be; read `--durations` before changing anything.
 
 If `test_a_session_principal_streams_an_ordinary_channel` returns a 200 with an empty
@@ -2522,13 +2577,22 @@ It must carry, at minimum:
 - The falsification evidence from Task 1 Step 2, Task 2 Step 3, Task 3 Step 3, Task 4 Step 3 and
   **especially Task 5 Step 3** — the 403 that appears when `decision=decision` is removed.
 - § Deliberate non-goals, verbatim, so a reviewer does not have to ask.
-- The three findings this PR is expected to surface, if they held up:
+- The four findings and recommendations this PR is expected to surface, if they held up:
   1. The event listener's "Non-owner worker cleaning local resources" arm (`server.py:382-389`) is
      unreachable for a non-owner, because every branch sits under `if self.am_i_owner(...)` at
      `:245`. Recorded, not fixed (D5).
   2. Row 15's second clause has no externally observable consequence and is recorded rather than
      pinned.
-  3. Whether the container reports `Your models in app(s): 'core' have changes that are not yet
+  3. **A recommendation for 2a-7, not a row**: `_drf_user` (`apps/proxy/authorize.py:227-265`)
+     raises `AuthorizeDenied(401)` for a credential an authenticator *rejected* and returns `None`
+     for one merely *declined*. A Go port would flatten both to "anonymous", turning a rejected
+     credential into a successful anonymous tune. This PR pins it on the wire
+     (`test_a_rejected_credential_is_401_and_never_an_anonymous_tune`) but adds **no matrix row** —
+     a `HIGHEST_ROW_ID` bump would conflict with the three sibling coverage PRs in flight.
+     **2a-7 should add the row**, citing that test; it runs after all four have merged, so its
+     bump conflicts with nothing. (2b-3 is the fallback, being the last PR the spec has editing
+     this file.) Same disposal 2a-4 used for its Proxy/Redirect finding.
+  4. Whether the container reports `Your models in app(s): 'core' have changes that are not yet
      reflected in a migration` on this branch. It did during planning. If it reproduces from a
      clean `main` checkout too, it is pre-existing and belongs in an issue, not this PR; if it does
      not, something on this stack introduced it and the PR must not merge until it is understood.
