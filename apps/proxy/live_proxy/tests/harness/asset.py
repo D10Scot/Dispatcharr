@@ -136,10 +136,18 @@ def build_real_ts_asset(seconds: float = 2.0, *, keyframe_interval: int | None =
     expected to change it.
 
     `keyframe_interval` is `-g`: with libx264's default (250 frames) a 2-second asset
-    has one keyframe, so `-movflags frag_keyframe` produces a single `moof` and
-    `FMP4RemuxManager._flush_complete_fragments` -- which bounds a fragment by the
-    *next* `moof` -- never flushes one. Any caller feeding this through the fMP4 remux
-    must pass a value well below `seconds x rate`.
+    has one keyframe, so `-movflags frag_keyframe` produces a single `moof` for the
+    whole asset. That is NOT unusable through the fMP4 remux by itself -- a caller that
+    loops the payload (harness.upstream.FakeUpstream does) still gets more than one
+    fragment, because the next loop's own `moof` bounds the previous one, and
+    `FMP4RemuxManager._flush_complete_fragments` flushes on exactly that boundary.
+    Passing a value well below `seconds x rate` here is an IMPROVEMENT, not a
+    requirement: it trades one large fragment per loop (~95 KB at the defaults) for
+    several smaller ones (`-g 12` gives five per loop, ~22 KB each), which reaches
+    a client's first fragment sooner and exercises `_flush_complete_fragments` more
+    than once per loop. Measured against a real remux, both shapes work; see the
+    2a-6 plan's F3 for the numbers and the correction to an earlier draft of this
+    docstring, which overstated the case as an impossibility.
     """
     executable = require_real_ffmpeg()
     encoder_args = ["-c:v", "libx264", "-preset", "ultrafast"]

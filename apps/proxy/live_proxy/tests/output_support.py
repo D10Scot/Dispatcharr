@@ -56,12 +56,16 @@ _PAYLOAD_GOP = 12
 
 @functools.lru_cache(maxsize=1)
 def fragmentable_upstream_payload() -> bytes:
-    """A real TS asset the fMP4 remux can turn into more than one fragment.
+    """A real TS asset the fMP4 remux can turn into more than one fragment per loop.
 
     gop=12 at 25 fps is a keyframe every ~0.48s, so one 2-second loop carries five
-    moof boxes -- measured, against ffmpeg 8.1.2. The default (no -g, one keyframe
-    per 250 frames) gives ONE moof for the whole asset and
-    _flush_complete_fragments then flushes nothing at all: see the 2a-6 plan's F3.
+    moof boxes -- measured, against ffmpeg 8.1.2. This is an IMPROVEMENT over the
+    default (no -g, one keyframe per 250 frames, ONE moof for the whole asset), not
+    a requirement: FakeUpstream loops its payload, so even the one-moof-per-loop
+    shape still gets flushed once per loop (the next loop's own moof bounds the
+    previous fragment). -g 12 instead gives five smaller fragments per loop
+    (~22 KB each, vs. ~95 KB for the whole loop unfragmented), which reaches a
+    client's first fragment sooner. See the 2a-6 plan's F3.
 
     Cached: building it costs about a second of real ffmpeg and every test in this
     PR wants the same bytes.
@@ -198,19 +202,42 @@ def tapped(test, channel, query=""):
     COST TRAP, found measuring 2a-6's row-12 test: `finally: response.close()` below
     does not return promptly if the response body was only partially consumed (which
     every caller here does -- StreamTap reads it in a background thread via
-    `iter_content`, and a test rarely waits for it to end on its own). `requests`/
-    `urllib3` do not abort an in-flight streamed read on `.close()` in that case; the
-    call blocks until the SERVER ends the response on its own schedule. So exiting a
-    `with tapped(...)` block pays whatever the server-side generator's own timeout or
-    teardown costs, whether or not the test asserts anything about that response ever
+    `iter_content`, and a test rarely waits for it to end on its own).
+
+    The mechanism (corrected on review -- an earlier draft of this note blamed the
+    connection-pool release path waiting for EOF; that is not it): the background
+    StreamTap thread's `iter_content()` call is blocked inside an in-flight read,
+    holding whatever `requests`/`urllib3` uses to serialize access to that response's
+    buffered reader. The main thread's `response.close()` cannot proceed until that
+    read call returns and releases it -- which happens on the arrival of ANY new byte
+    on the connection, not specifically EOF. Demonstrated independently against a
+    quiet HTTP server that sent one chunk then six seconds of silence: `close()` took
+    5.50s, and the background reader then received the *second* chunk right after.
+    In the row-12 test the releasing byte is the TS client's own keepalive packet,
+    sent once the health monitor flips the channel unhealthy -- which is also why the
+    cost tracks the health monitor's own timing rather than any timeout `close()`
+    carries of its own.
+
+    Net effect unchanged from the first draft of this note: exiting a `with
+    tapped(...)` block pays whatever it costs for the underlying connection to
+    produce one more byte -- the server's own timeout, teardown, or keepalive
+    cadence -- whether or not the test asserts anything about that response ever
     ending. Measured: closing a TS-format tap whose channel had gone unhealthy cost
     ~13.5s here, independent of and much larger than the ~7s the test's own pinned
     wait cost -- confirmed by instrumentation, not the `stop_channel()` call at the
-    end of the test, which cost 0.14s. If a test's assertions are done with a tap
-    before its channel/response would naturally end, that cost still lands at the
-    `with` block's exit; there is no free way to skip it from inside this function
-    without changing close behaviour for every test that uses `tapped()`, which is
-    why 2a-6 documented the trap here rather than working around it in one test.
+    end of the test, which cost 0.14s on its own.
+
+    The fix that worked in practice, once found, was NOT inside this function: stop
+    the channel explicitly, while still inside the `with tapped(...)` block and after
+    every assertion that needed the response open has already run. That makes the
+    SERVER end the response immediately, so the `finally: response.close()` below has
+    nothing left to wait for when the block exits. See
+    `test_fmp4_client_timeout.py`'s `self.stop_channel(channel)` placement for the
+    worked example (21.5s to 8.5s on that test). There is still no way to make an
+    *unmodified* caller's `with tapped(...)` exit fast without that caller doing the
+    stopping itself -- `tapped()` cannot know when a test no longer needs the
+    response open, so this function still can't fix the trap generically, only
+    document it and the pattern that avoids it.
     """
     url = f"{test.live_server_url}/proxy/ts/stream/{channel.uuid}{query}"
     response = requests.get(url, stream=True, timeout=20)
