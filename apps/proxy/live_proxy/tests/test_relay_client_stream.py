@@ -197,14 +197,16 @@ class GhostClientTests(ControlMixin, RelayHarnessTestCase):
                         ended = True
                         break
                     except requests.exceptions.RequestException:
-                        # _TunedStream.read()'s own timeout is a socket
-                        # timeout, so under a regression close to `budget`
-                        # (this test's own deadline) the underlying read can
-                        # time out at the socket layer before the loop's
-                        # wall-clock check gets a turn -- a real end to the
-                        # stream, just not the AssertionError _TunedStream
-                        # raises for its OWN, longer deadline.
-                        ended = True
+                        # _TunedStream.read()'s own timeout is a SOCKET
+                        # timeout, not a sign the stream ended -- the
+                        # opposite: the relay is still holding the
+                        # connection open and sending nothing, exactly the
+                        # starved-but-not-swept client this row's regression
+                        # produces. `ended` stays False so the designed
+                        # assertion below fires; only exit this loop because
+                        # there is nothing left to usefully retry before
+                        # `budget` runs out.
+                        ended = False
                         break
                 ended_after = time.monotonic() - started
                 self.assertTrue(
