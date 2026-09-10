@@ -123,4 +123,15 @@ class FMP4ClientTimeoutTests(RelayHarnessTestCase):
                     "the TS client was dropped too -- there is no divergence to pin, "
                     "and either the health monitor fired or a teardown ended both",
                 )
-        self.stop_channel(channel)
+
+                # Stop the channel HERE, before the taps close, not after both `with`
+                # blocks exit: output_support.tapped()'s docstring names the cost --
+                # response.close() on a partially-consumed streamed response blocks
+                # until the SERVER ends it, which for the still-open TS response would
+                # otherwise mean paying its own ~20s teardown for nothing this test
+                # asserts. Every assertion above has already run, so stopping the
+                # channel here changes no window the pin depends on: it only makes the
+                # server end both responses immediately, so the tapped() context
+                # managers' own response.close() calls (right below, as this method
+                # returns) are fast because there is nothing left to wait for.
+                self.stop_channel(channel)
