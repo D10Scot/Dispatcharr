@@ -127,21 +127,31 @@ def require_real_ffmpeg() -> str:
     return executable
 
 
-def build_real_ts_asset(seconds: float = 2.0) -> bytes:
+def build_real_ts_asset(seconds: float = 2.0, *, keyframe_interval: int | None = None) -> bytes:
     """A short, genuinely encoded MPEG-TS, for the tests that need a real remux.
 
     Mirrors e2e-upstream/scripts/make-asset.sh, trimmed: no burned-in frame
     counter (nothing here decodes video) and a much shorter duration. Nothing
     downstream may hardcode the packet count -- an ffmpeg version drift is
     expected to change it.
+
+    `keyframe_interval` is `-g`: with libx264's default (250 frames) a 2-second asset
+    has one keyframe, so `-movflags frag_keyframe` produces a single `moof` and
+    `FMP4RemuxManager._flush_complete_fragments` -- which bounds a fragment by the
+    *next* `moof` -- never flushes one. Any caller feeding this through the fMP4 remux
+    must pass a value well below `seconds x rate`.
     """
     executable = require_real_ffmpeg()
+    encoder_args = ["-c:v", "libx264", "-preset", "ultrafast"]
+    if keyframe_interval is not None:
+        encoder_args += ["-g", str(keyframe_interval)]
+    encoder_args += ["-b:v", "400k"]
     completed = subprocess.run(
         [
             executable, "-hide_banner", "-loglevel", "error", "-y",
             "-f", "lavfi", "-i", f"testsrc=size=320x180:rate=25:duration={seconds}",
             "-f", "lavfi", "-i", f"sine=frequency=440:duration={seconds}",
-            "-c:v", "libx264", "-preset", "ultrafast", "-b:v", "400k", "-pix_fmt", "yuv420p",
+            *encoder_args, "-pix_fmt", "yuv420p",
             "-c:a", "aac", "-b:a", "64k",
             "-f", "mpegts", "pipe:1",
         ],
