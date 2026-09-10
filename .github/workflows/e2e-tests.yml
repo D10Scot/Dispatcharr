@@ -57,6 +57,7 @@ jobs:
     timeout-minutes: 5
     outputs:
       e2e: ${{ steps.filter.outputs.e2e }}
+      guards: ${{ steps.filter.outputs.guards }}
       projects: ${{ steps.filter.outputs.projects }}
     steps:
       - name: Checkout code
@@ -100,6 +101,7 @@ jobs:
 
           if [ "$full" = "true" ] || [ "$EVENT_NAME" != "pull_request" ]; then
             echo "e2e=true" >> "$GITHUB_OUTPUT"
+            echo "guards=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           changed=$(git diff --name-only HEAD^1 HEAD)
@@ -109,6 +111,24 @@ jobs:
             echo "e2e=true" >> "$GITHUB_OUTPUT"
           else
             echo "e2e=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          # The guards project is static analysis over this repo's own source —
+          # no image, no container, about a second. It must run on a
+          # docs-only diff to the parity matrix, which the e2e pattern above
+          # does not cover, but it must ALSO run on every PR e2e already
+          # would: parity-matrix.spec.ts resolves every citation and pin
+          # against apps/ and apps/channels/tests, and testid.spec.ts reads
+          # frontend/src — a PR that shifts those lines is exactly the PR
+          # that breaks a guard, and is exactly the PR guards must not skip.
+          # So `guards` is a strict superset of `e2e`, never a disjoint
+          # sibling of it.
+          if [ "$full" = "true" ] || [ "$EVENT_NAME" != "pull_request" ] \
+             || printf '%s\n' "$changed" | grep -qE "$pattern" \
+             || printf '%s\n' "$changed" | grep -qE '^docs/relay-parity-matrix\.md$'; then
+            echo "guards=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "guards=false" >> "$GITHUB_OUTPUT"
           fi
 
   build:
@@ -333,7 +353,7 @@ jobs:
     name: guards
     runs-on: ubuntu-latest
     needs: changes
-    if: needs.changes.outputs.e2e == 'true'
+    if: needs.changes.outputs.guards == 'true'
     timeout-minutes: 10
     steps:
       - name: Checkout code
@@ -372,17 +392,22 @@ jobs:
           TEST_RESULT: ${{ needs.test.result }}
           GUARDS_RESULT: ${{ needs.guards.result }}
           E2E_REQUIRED: ${{ needs.changes.outputs.e2e }}
+          GUARDS_REQUIRED: ${{ needs.changes.outputs.guards }}
         run: |
-          echo "changes=$CHANGES_RESULT upstream=$UPSTREAM_RESULT test=$TEST_RESULT guards=$GUARDS_RESULT e2e-required=$E2E_REQUIRED"
+          echo "changes=$CHANGES_RESULT upstream=$UPSTREAM_RESULT test=$TEST_RESULT guards=$GUARDS_RESULT e2e-required=$E2E_REQUIRED guards-required=$GUARDS_REQUIRED"
           if [ "$CHANGES_RESULT" != "success" ]; then
             echo "Change detection itself failed — cannot prove the suite was unnecessary."
+            exit 1
+          fi
+          if [ "$GUARDS_REQUIRED" = "true" ] && [ "$GUARDS_RESULT" != "success" ]; then
+            echo "The guards project was required and did not succeed."
             exit 1
           fi
           if [ "$E2E_REQUIRED" != "true" ]; then
             echo "No E2E-relevant paths changed; suite deliberately skipped."
             exit 0
           fi
-          if [ "$UPSTREAM_RESULT" != "success" ] || [ "$TEST_RESULT" != "success" ] || [ "$GUARDS_RESULT" != "success" ]; then
+          if [ "$UPSTREAM_RESULT" != "success" ] || [ "$TEST_RESULT" != "success" ]; then
             echo "E2E suite was required and did not fully succeed."
             exit 1
           fi

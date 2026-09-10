@@ -1,0 +1,5 @@
+# Prettier resolves its ignore file relative to the working directory, so the
+# repo-root .prettierignore does not apply when Prettier runs from here — which
+# is where CLAUDE.md's "npx prettier --write" is documented to run. The parity
+# matrix must not be column-aligned; see the root .prettierignore.
+../docs/relay-parity-matrix.md

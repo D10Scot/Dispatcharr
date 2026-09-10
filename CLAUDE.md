@@ -6,7 +6,7 @@ Fork. `origin` = `D10Scot/Dispatcharr` (push here); `upstream` = `Dispatcharr/Di
 
 Purpose: **extract the streaming relay from the Django web workers into its own process** (control/data plane split), not a rewrite. Phase 0 harden in place → 1 extract the boundary, still Python → 2 optionally Go → 3 remove Redis from the data path. **Stopping after Phase 1 is a legitimate outcome. Resist widening scope — that is the main way this fails.**
 
-Four investigation documents and two phase specs hold the detail behind every summary here — **read the relevant one before deep work rather than re-deriving it**:
+Four investigation documents, two phase specs and the relay parity matrix hold the detail behind every summary here — **read the relevant one before deep work rather than re-deriving it**:
 
 - Teardown (line-by-line behaviour) — https://claude.ai/code/artifact/7e7330e2-2fad-4e9d-a0b3-22be18c568ae
 - Due diligence (gaps, defects, governance) — https://claude.ai/code/artifact/6dddf987-6135-480c-8b77-c5ad621a8c06
@@ -14,6 +14,7 @@ Four investigation documents and two phase specs hold the detail behind every su
 - Splitting the Planes (extraction proposal) — https://claude.ai/code/artifact/149fb554-d140-4e13-abaf-2416429b2e3f
 - Phase 0 spec (harden in place, six PRs) — `docs/superpowers/specs/2026-09-03-phase0-harden-in-place-design.md`
 - Phase 1 spec (process split, eight PRs) — `docs/superpowers/specs/2026-09-04-phase1-process-split-design.md`. The decisions D1–D16, the nginx location contract, the per-hop error table and Amendments S1–S12 are all there; it is the authority on anything the split touches, and `docs/adr/0005-the-relay-is-chosen-by-name-once-per-tune.md` is the ADR it rests on.
+- Relay parity matrix (Phase 2 Gate 1 — every externally-observable live-path behaviour, its `file:line` and what pins it) — `docs/relay-parity-matrix.md`
 
 Verified at `fd413f0c` (v0.29.0); line numbers drift.
 

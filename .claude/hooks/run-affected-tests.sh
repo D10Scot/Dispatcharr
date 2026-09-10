@@ -223,6 +223,27 @@ case "$REL" in
     ;;
 esac
 
+# ------------------------------------------------------------ parity matrix ---
+# The Phase 2 parity matrix is machine-read by `e2e/tests/guards/parity-matrix.spec.ts`,
+# and nothing else in this hook matches a Markdown file — so without this, the
+# one document the guard exists to police is the one document it never runs on
+# locally. The `guards` project needs no container and no browser; it is about
+# a second.
+case "$REL" in
+  docs/relay-parity-matrix.md)
+    if [ -d e2e/node_modules ]; then
+      OUT="$(cd e2e && npx playwright test --project=guards parity-matrix 2>&1)"
+      if [ $? -ne 0 ]; then
+        block "parity-matrix guard after editing ${REL}" "$(printf '%s' "$OUT" | tail -30)"
+      else
+        printf '%s\n' "$OUT" | grep -E 'parity matrix: |passed' | head -2
+      fi
+    else
+      note "Did NOT run the parity-matrix guard — e2e/node_modules is missing. Run 'cd e2e && npm ci'."
+    fi
+    ;;
+esac
+
 # ------------------------------------------------------------------- tests ---
 case "$REL" in
   frontend/*.test.js|frontend/*.test.jsx)
