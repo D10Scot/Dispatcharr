@@ -10,7 +10,13 @@ set -euo pipefail
 
 CONTAINER="${DISPATCHARR_TEST_CONTAINER:-dispatcharr-testrunner}"
 DB_VOLUME="${DISPATCHARR_TEST_DB_VOLUME:-dispatcharr-hookdb}"
-IMAGE="${DISPATCHARR_TEST_IMAGE:-ghcr.io/dispatcharr/dispatcharr:latest}"
+# The FORK's image, not upstream's. Upstream's carries neither `coverage` nor
+# `hypothesis`, so `scripts/coverage_live_path.sh` cannot run at all there and
+# the two `test_property_*` modules fail to IMPORT — the label reports errors
+# and 61 statements those tests would have covered are counted as missed. Both
+# verified by importing them in each image. `docker-build.yml` publishes this
+# tag on every push to main. Issue #228.
+IMAGE="${DISPATCHARR_TEST_IMAGE:-ghcr.io/d10scot/dispatcharr:latest}"
 REPO_ROOT="${CLAUDE_HOOK_REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 
 docker info >/dev/null 2>&1 || {
