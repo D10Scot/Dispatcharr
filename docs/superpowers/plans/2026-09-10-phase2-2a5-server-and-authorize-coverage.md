@@ -211,6 +211,27 @@ Three things about these numbers, all of which have cost this programme time bef
    - **no test in this PR may deliberately target `cleanup_task` (`server.py:1880-2196`),
      `_recover_stuck_channel_stops` (`:1773-1798`) or `refresh_channel_registry` (`:2427-2447`).**
      They are the noise source. Leave them missed. § Deliberate non-goals says so again.
+**Where `server.py`'s 840 missed statements actually are — measured, and addressed to 2a-7 as much
+as to this PR.** The spec estimates `server.py` at "~70-75% reachable". That estimate does not
+survive contact with the file: 222 of the 840 are either the gate's own noise source or unreachable
+by construction, so the reachable-and-safe set is about 150, not about 450.
+
+| Region | Missed | Verdict |
+|---|---|---|
+| `cleanup_task` `:1880-2196` | **161** | the gate's own noise source — **must not be targeted** |
+| `event_listener` `:178-470` | **120** | reachable (48 STREAM_SWITCH, 13 CHANNEL_STOP, 13 CLIENT_STOP) — Task 7 |
+| `_cleanup_local_resources` `:2487-2569` | **61** | **unreachable** except from `cleanup_task` and one branch only an owner can enter (§ Deliberate non-goals) |
+| `initialize_channel` `:604-880` | **51** | failure branches, partly 2a-4's shape |
+| `check_if_channel_exists` `:881-969` | **35** | reachable — Task 6 |
+| `_clean_zombie_channel` `:1022-1039` | **11** | reachable — Task 6 |
+| `_cleanup_failed_init` `:971-1021` | **3** | already covered — Task 8's coverage value is near zero, its behaviour value is not |
+| `_clean_redis_keys` `:2391-2426` | **2** | already covered |
+
+**A later PR chasing the last few points toward 80% must not aim at the top two rows.** Together
+they are 222 statements and they look like the biggest prize in the file; one of them cannot be
+reached at all, and the other is precisely the region whose non-determinism the gate's tolerance
+exists to absorb. Aiming there buys a ratchet that reddens at random.
+
 3. **Budget. `≤ 15 s added across the whole of stage 2a` is a hard ceiling, and 2a-2 already spent
    ~3.96 s of it.** Four coverage PRs share what is left. **2a-5's own budget is ≤ 3.5 s added
    across `apps.proxy.live_proxy` and `apps.proxy` combined.** At a measured 0.64–1.09 s per tuning
@@ -243,6 +264,15 @@ on them.
 ---
 
 ## Two header sets in one PR, and the collapse that must not happen
+
+**Why this PR re-tests code that is already covered, in one sentence.** `apps/proxy/authorize.py`
+is at 93.6% and `apps/proxy/tests/test_authorize.py` has 48 tests, four of which are named after
+matrix rows this PR owns — and not one of them ports, because every one calls `authorize_stream()`
+directly through a `RequestFactory` and patches `network_access_allowed` (`:70`), `_drf_user`
+(`:104-105`) or `check_user_stream_limits` (`:120`). That is the spec's white-box bucket — 22 files,
+~361 test functions, none surviving a rewrite into another language — meeting the parity matrix for
+the first time. **"The tests exist and none of them port" is the fact that justifies stage 2a**, and
+it is the answer to anyone who asks why covered code is being tested again.
 
 **This PR sends `X-Dispatcharr-Internal` in two places that require different things of it, and
 conflating them is the defect class that produced a total-auth-bypass during the spec's own
@@ -1329,6 +1359,18 @@ final `owed:` row), so the sentence can be fixed in a diff that is already there
 explicitly rather than "whichever PR next edits that block": an obligation addressed to nobody in
 particular is how row 21 got into this state in the first place.**
 
+**Also reframe the `Notes` cell on each of rows 19, 20 and 23** — same line, so no extra conflict
+surface. Each currently opens `No \`e2e/tests/\` spec pins this principal — see ruling 13`, which
+reads as "nothing pins this row" and is false. Replace that clause, on each of the three, with:
+
+```
+No test that PORTS pinned this principal before 2a-5: apps/proxy/tests/test_authorize.py's row classes call authorize_stream() directly through a RequestFactory and patch network_access_allowed, _drf_user and check_user_stream_limits, so they assert one Python function calling another — see ruling 13
+```
+
+Keep whatever else the cell already says (row 23 carries a second sentence about `_session_user`;
+leave it). **Row 14's Notes carry no such clause and are not edited** — check before assuming, the
+reframe applies only where the clause is actually present.
+
 - [ ] **Step 5: Run the guard, then commit**
 
 ```bash
@@ -1588,6 +1630,10 @@ Row 20's `Pin` cell — append the third reference to the two Task 3 wrote:
 ```
 , `apps/proxy/live_proxy/tests/test_stream_by_hash_authorization.py::test_a_stream_hash_tune_enforces_the_stream_limit_for_a_principal`
 ```
+
+**Reframe row 25's `Notes` cell the same way Task 3 Step 4 reframes rows 19, 20 and 23** — it
+carries the identical `No \`e2e/tests/\` spec pins this principal` clause and the identical
+problem. Row 16's Notes carry no such clause and are not edited.
 
 - [ ] **Step 5: Run the guard, then commit**
 
