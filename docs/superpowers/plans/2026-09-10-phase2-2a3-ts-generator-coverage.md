@@ -10,16 +10,16 @@
 
 **Spec:** `docs/superpowers/specs/2026-09-09-phase2-go-relay-design.md` (in the `phase2-spec` worktree at `0c7e19a4`; PR #225). Read § Stage 2a — Gate 1, Gate 2, § The subprocess harness (especially its **Composition rule**), and the `2a-3` row of § The seven PRs.
 
-**Branch:** `migration/phase2a-ts-generator-coverage`, stacked on `migration/phase2a-subprocess-harness` at `2a826e07`.
+**Branch:** `migration/phase2a-ts-generator-coverage`, stacked on `migration/phase2a-subprocess-harness` at **`27c9e79c`**, that branch's head.
 
 ---
 
 ## Global Constraints
 
-- **The composition rule is not negotiable** (spec § The subprocess harness): drive the relay through its **HTTP surface** against **real dependencies** — the fake upstream, real Redis, the real spawned stand-in — **never against mocks of `server.py`'s or `input/manager.py`'s internals**. Ask of every assertion whether it still means something when the implementation underneath is Go. `unittest.mock.patch.object` on a **configuration class attribute** is not a mock of an internal: it is the production lever (`ConfigHelper.get` is `getattr(TSConfig, name, default)`, `apps/proxy/live_proxy/config_helper.py:16`), and the 2a-2 harness already uses it for `BUFFER_CHUNK_SIZE` (`harness/relay.py:98`).
+- **The composition rule is not negotiable** (spec § The subprocess harness): drive the relay through its **HTTP surface** against **real dependencies** — the fake upstream, real Redis, the real spawned stand-in — **never against mocks of `server.py`'s or `input/manager.py`'s internals**. Ask of every assertion whether it still means something when the implementation underneath is Go. `unittest.mock.patch.object` on a **configuration class attribute** is not a mock of an internal: it is the production lever (`ConfigHelper.get` is `getattr(TSConfig, name, default)`, `apps/proxy/live_proxy/config_helper.py:16`), and the 2a-2 harness already uses it for `BUFFER_CHUNK_SIZE` (`harness/relay.py:117`).
 - **These are characterization tests, so the TDD cycle inverts.** There is no red step from missing production code: the behaviour already exists. The discipline that replaces it is stated per test — *predict what the code does, run it, and if the prediction is wrong fix the prediction, never the code* — plus, where noted, an explicit **break check**: temporarily change one thing, confirm the test fails, revert.
 - **`TransactionTestCase` flushes every table after each test, including migration-seeded rows** (`harness/README.md` § Two traps). A harness test creates every row it needs. `stand_in_stream_profile()` and `self.make_channel()` already do this; `ControlMixin.admin_headers()` (Task 2) does it for the admin user.
-- **`TSConfig._proxy_settings_cache` is process-global with a 10-second TTL** (`apps/proxy/config.py:22-24`). Any test that writes `proxy_settings` must clear that cache when it writes *and* register `addCleanup(TSConfig.clear_proxy_settings_cache)`, or it leaks a setting into every test that runs in the next ten seconds. `ControlMixin.set_proxy_setting()` (Task 2) does both.
+- **A `proxy_settings` write has TWO caches behind it and leaks for the rest of the process if either survives.** `TSConfig._proxy_settings_cache` is process-local with a 10-second TTL (`apps/proxy/config.py:22-24`), and `CoreSettings` keeps the group in **Redis for 300 seconds** (`core/models.py:220-222`). `TransactionTestCase` flushes with TRUNCATE, which fires no `post_delete`, so the Redis entry outlives the row it came from and the process-local copy is refilled from it — measured: the DB row was empty and the next test class still read the override. It is not "the next ten seconds", it is until something invalidates it. `ControlMixin.set_proxy_setting()` (Task 2) clears both, on write and on cleanup, and **`CoreSettings.invalidate_group_cache` alone is not enough** — see its docstring and § Findings.
 - **No hard-coded measurement may appear in an assertion** (spec's ratchet paragraph; the programme's defect class 9). Every threshold in these tests is derived at run time from `NOMINAL_BYTE_RATE`, `FakeUpstream.rate`, `TSConfig.BUFFER_CHUNK_SIZE`, `TS_PACKET_SIZE` or a patched config value.
 - **Matrix editing rules** (`docs/relay-parity-matrix.md`, the HTML comment above the table): one row is one line; cells are never padded; no stored counts; **do not run a Markdown formatter over the file**; the table ends at `<!-- end of matrix -->`. This PR **adds no row**, so `HIGHEST_ROW_ID` in `e2e/tests/guards/parity-matrix.ts` stays at **28** and that file is not touched.
 - **`scripts/coverage_live_path.sh` is the only sanctioned measurement** and it runs per label. Quote **per-file** numbers from the report, never the global `missing`. **The tracer core is part of the measurement shape**: since `9c865538` the script sets `export COVERAGE_CORE=sysmon` itself and stamps `per-label/v2-${COVERAGE_CORE}`, because coverage's default C tracer drops every statement executing immediately after a greenlet switch. Do **not** set the core yourself and do **not** compare a number taken under one core with one taken under another — the shape guard refuses the mix, and where it cannot see the mix (two numbers in a PR description) it is the arithmetic that silently breaks. **Name the core beside every number you report.**
@@ -32,15 +32,15 @@
 
 **The gate is relative, and the figures below are an illustration of it, not a number to reconcile against.** Take your own baseline in your own session, under the core your `scripts/coverage_live_path.sh` sets, and require **strictly fewer missed statements** on the two named files than that baseline. An absolute figure written here is wrong the moment anything upstream moves, and during this stage it has moved three times: the harness landed, the tracer core changed, and 2a-6's probes changed what the pool looks like.
 
-One same-session pair, for shape only. Measured in `dispatcharr-testrunner-2a3` on 2026-09-10, all three labels combined, **tracer core `sysmon`** (`scripts/coverage_live_path.sh` at `9c865538`), three runs of each configuration:
+One same-session pair, for shape only. Measured in `dispatcharr-testrunner-2a3` on 2026-09-10 against **`27c9e79c`**, all three labels combined, **tracer core `sysmon`** (the core `scripts/coverage_live_path.sh` sets for itself since `9c865538`), three runs of each configuration:
 
 | File | Baseline (3 runs) | With this PR's five tests (3 runs) | Direction |
 |---|---|---|---|
-| `apps/proxy/live_proxy/output/ts/generator.py` (377 stmts) | 119 / 118 / 119 | **96 / 96 / 96** | **down** |
+| `apps/proxy/live_proxy/output/ts/generator.py` (377 stmts) | 119 / 119 / 119 | **95 / 96 / 96** | **down** |
 | `apps/proxy/live_proxy/services/channel_service.py` (500 stmts) | 169 / 169 / 169 | **145 / 145 / 145** | **down** |
-| `apps/proxy/live_proxy/input/buffer.py` (248 stmts) | 99 | 87 / 85 / 84 | down |
-| `apps/proxy/live_proxy/client_manager.py` (262 stmts) | 92 | 61 / 61 / 61 | down |
-| whole denominator | 3,114 / 3,115 / 3,116 | 2,976 / 2,970 / 2,980 | down |
+| `apps/proxy/live_proxy/input/buffer.py` (248 stmts) | 99 / 100 / 99 | 87 / 85 / 87 | down |
+| `apps/proxy/live_proxy/client_manager.py` (262 stmts) | 92 / 92 / 92 | 52 / 52 / 52 | down |
+| whole denominator | 3,116 / 3,117 / 3,112 | 2,973 / 2,966 / 2,967 | down |
 
 The denominator was 7,978 in all six runs. **That is the figure to check** — it is a property of the rcfile and moves only if the module list does. The `missing` column is a sample from a band, not a constant.
 
@@ -48,7 +48,7 @@ The denominator was 7,978 in all six runs. **That is the figure to check** — i
 
 Adopting `sysmon` widened the observed band rather than narrowing it, which is expected: the C tracer's systematic loss after a greenlet switch was also flattening the difference between "the relay's background housekeeping fired on this run" and "it did not". **The denominator, 7,978, is the number to check; a differing `missing` is a question, not a defect.**
 
-**Test-time cost, measured: +8.6 s on `apps.proxy.live_proxy.tests`** — 179 tests in 6.04 / 6.09 / 6.62 s becomes 184 tests in 14.60 / 14.80 / 14.81 / 15.48 / 15.54 s. Per-test method bodies (`--durations`) sum to ≈ 6.0 s; the remaining ≈ 2.6 s is `LiveServerTestCase` setUp plus `RelayHarnessTestCase`'s per-channel cleanup, which `--durations` does not count. **This exceeds an even share of the stage's ≤ 15 s ceiling** (2a-2 spent ≈ 3.96 s, leaving ≈ 11 s for four PRs). The overrun is reported to the orchestrator as a scope question, not absorbed silently: the floor for pinning all five rows with tests that mean anything is ≈ 7 s, because each row needs its own channel bring-up and a bring-up costs ≈ 0.6 s before the row's own behaviour is even reachable.
+**Test-time cost, measured: +10.9 s on `apps.proxy.live_proxy.tests`** — 179 tests in 6.04 / 6.09 / 6.62 s becomes 184 tests in 17.16 / 17.28 / 17.88 s. Per-test method bodies (`--durations`) sum to ≈ 6.0 s; the remaining ≈ 2.6 s is `LiveServerTestCase` setUp plus `RelayHarnessTestCase`'s per-channel cleanup, which `--durations` does not count. **This exceeds an even share of the stage's ≤ 15 s ceiling** (2a-2 spent ≈ 3.96 s, leaving ≈ 11 s for four PRs), and **the ceiling was subsequently withdrawn**. About 2.2 s of the total buys the ghost test its load-bearing premise — see Task 3 — and that trade was made deliberately: a pin that pins the wrong thing is worth less than the seconds it saves. Each row needs its own channel bring-up and a bring-up costs ≈ 0.6 s before the row's behaviour is reachable at all, so ≈ 7 s is the floor for five rows however they are arranged.
 
 ---
 
@@ -74,6 +74,7 @@ Not touched, deliberately:
 
 - **Any production file.** 2a-3 adds tests; the spec's open question about extracting a spawn seam was settled in 2a-2 as *no production change*, and nothing here reopens it.
 - **`e2e/tests/guards/parity-matrix.ts`** — no row is added or removed, so `HIGHEST_ROW_ID` (28), `PRS` and `WHITE_BOX_ONLY` are all unchanged. `GATE_1_CLOSED` stays `false`: seventeen rows are still owed after this PR.
+- **Any production file, including `input/buffer.py`** — Task 4 Step 4 edits it temporarily for a break check and restores it; nothing is committed.
 - **Any existing file under `apps/proxy/live_proxy/tests/harness/` except `README.md`** — in particular `relay.py`, whose `tuned()`/`tune()` gain no parameters. `control.py`'s `open_tune()` imports `_TunedStream` from `.relay` (same package) instead. This is deliberate contention avoidance: 2a-4, 2a-5 and 2a-6 develop in parallel against the same harness.
 - **`e2e/COVERAGE.md`** — no Playwright test is added or changed; the `guards` project's test count is unchanged.
 - **`metrics/curated/**`** — this PR closes no ledger issue, adds no `test.fail()` pin, merges no goal and ticks no Done log, so `docs/agents/metrics.md`'s rule does not fire.
@@ -86,11 +87,36 @@ Not touched, deliberately:
 
 | Row | Pinned by | Why it is a real pin |
 |---|---|---|
-| 7 | `SwitchTests::test_a_stream_switch_never_rewinds_the_chunk_index` | The *same open client connection* reads PID `0x100` before the switch and PID `0x200` after it, and `buffer_index` from `GET /proxy/ts/status/<uuid>` is strictly greater afterwards. If `reset_buffer_position()` reset `self.index`, `buffer_index` would drop; if a switch dropped clients, the second read would raise. |
+| 7 | `SwitchTests::test_a_stream_switch_never_rewinds_the_chunk_index` | `buffer_index` is read **immediately after `change_stream` returns**, before any further read, and must not have gone backwards — that assertion is what pins the row. The *same open client connection* then reads PID `0x200` where it had been reading `0x100`, which is the "does not disturb connected clients" half. **Break-checked**: adding `self.index = 0` and a delete of the index key to `reset_buffer_position` fails it with `AssertionError: 0 not greater than or equal to 74`. Without the immediate read the same break **passes** — see Task 4 Step 3. |
 | 8 | `PositioningTests::test_a_new_client_starts_behind_live` | A client that joined at the buffer head could only receive bytes as fast as the upstream produces them. This one drains 60 packets in less than half the wall clock live delivery would need. **Break-checked**: with `new_client_behind_seconds = 0` the assertion fails (`0.10996 not less than 0.02256`). |
 | 9 | `PacketStreamTests::test_the_delivered_stream_is_whole_packets_in_unbroken_order` | 400 delivered packets are 188-byte aligned and their continuity counters advance by exactly 1 mod 16 with no break. A realignment that dropped or duplicated bytes at a chunk boundary breaks the counter chain. The stand-in copies in 8,192-byte reads (`harness/standin.py:45`), which is **not** a multiple of 188, so partial packets genuinely occur. |
 | 10 | the two existing `shared-upstream.spec.ts` pins **plus** `ClientSetTests::test_the_client_set_from_three_sharing_clients_to_an_empty_channel` | `FakeUpstream.request_count` is 1 with three clients attached, and still 1 after the channel is stopped and every client's stream has ended. A second upstream connection would raise it. |
 | 13 | `ClientSetTests::…` (registration) **and** `GhostClientTests::test_a_client_whose_last_active_goes_stale_is_removed` | Registration: a second tune carrying an already-registered `X-Relay-Client` is answered **503 `{"error": "Failed to register client"}`** and `client_count` stays 3. Ghost: with the heartbeat interval at 1 s and `GHOST_CLIENT_MULTIPLIER` at 0.1, a client whose upstream has gone silent is dropped in ≈ 0.65 s — far inside the 4 s budget the test asserts, and far outside the only other disconnect path (`stream_timeout + failover_grace_period` = 40 s, which the test asserts is larger). |
+
+---
+
+## Findings — produced by writing this plan, owned by nobody yet
+
+Neither is fixed here: both are production changes, and 2a-3 adds tests.
+
+**1. `CoreSettings.invalidate_group_cache` cannot clear the relay's own settings cache.** For `proxy_settings` it calls `BaseConfig.clear_proxy_settings_cache()` (`core/models.py:356-363`), but `get_proxy_settings` assigns `cls._proxy_settings_cache` on whichever class it was reached through, and every proxy read goes through `TSConfig` (`config_helper.py:5`, `:49-51`). `TSConfig` therefore holds its own attribute shadowing `BaseConfig`'s, and clearing the parent leaves it untouched. Verified in a shell against this tree:
+
+```
+TSConfig own dict has cache?   True
+BaseConfig own dict has cache? True
+after BaseConfig.clear -> TSConfig._proxy_settings_cache = {'marker': 'tsconfig-copy'}
+after TSConfig.clear   -> TSConfig._proxy_settings_cache = None
+```
+
+`CLAUDE.md` § Known defects already says "saving clears the cache only in the worker that handled the write". This is narrower and worse: **it clears it in no worker that reads through `TSConfig`**, which is all of them on the proxy path. The 10-second TTL is what actually ends the staleness, so the observable effect matches the documented one and nobody has noticed. `ControlMixin.set_proxy_setting()` works around it by clearing `TSConfig` itself.
+
+**2. A repeated `X-Relay-Client` is refused with 503, not attached.** `add_client` returns `False` for an id it has already registered (`client_manager.py:215-221`) and `stream_ts` turns that into `503 {"error": "Failed to register client"}` (`views.py:712-722`). Unreachable in production, because the authorize hop mints a fresh id per tune (`authorize.py:434`), which is why it is pinned as behaviour here rather than filed. **It becomes reachable the moment anything reuses a client id across a reconnect** — worth carrying into 2c's brief, since a Go relay's reconnect handling is exactly where that would happen.
+
+---
+
+## Sequencing note for the orchestrator
+
+This PR edits **row 10 at `docs/relay-parity-matrix.md:183`**, and **row 11 sits at `:184`**. The matrix's own comment records that git conflicts on edits one line apart and merges cleanly at two, so 2a-6's re-pin of row 11 — which its Notes invite — **must sequence after this PR merges**, or the two edits conflict. This PR's row 10 edit is spec-required (the `2a-3` row of § The seven PRs names row 10), so it is not the one to drop.
 
 ---
 
@@ -210,7 +236,7 @@ to:
 
 Leave the `#`, `Behaviour`, `Source` and `Notes` cells byte-for-byte unchanged. Do not pad the cells. Do not let an editor reformat the table.
 
-- [ ] **Step 5: Run the parity guard**
+- [ ] **Step 6: Run the parity guard**
 
 ```bash
 cd /Users/dion/git/Dispatcharr/.worktrees/phase2-2a3/e2e
@@ -347,7 +373,7 @@ def open_tune(case, channel, *, headers=None, timeout=20.0, expect_status=200):
 
     NEVER read `response.text` on a 200: the body of a live stream does not end,
     and `timeout` is a socket timeout rather than a wall-clock one, so a status
-    message built eagerly hangs forever (harness/relay.py:196-202).
+    message built eagerly hangs forever (harness/relay.py:215-221).
     """
     response = requests.get(
         f"{case.live_server_url}/proxy/ts/stream/{channel.uuid}",
@@ -384,21 +410,45 @@ class ControlMixin:
         return self._admin_headers
 
     def set_proxy_setting(self, **overrides):
-        """Write the proxy_settings group and drop the process-local cache.
+        """Write the proxy_settings group and invalidate BOTH of its caches.
 
-        The cache is a CLASS attribute with a 10-second TTL (apps/proxy/config.py:22-24),
-        so without the cleanup this leaks the override into every test that runs
-        in the next ten seconds -- across modules.
+        There are two, and clearing only the process-local one leaves the
+        override in place for the rest of the test process. TransactionTestCase
+        flushes with TRUNCATE, which fires no post_delete, so CoreSettings'
+        Redis group cache (core/models.py:220-222, 300-second TTL) keeps
+        serving the value after the row it came from is gone -- and the
+        process-local copy is then refilled from the poisoned Redis entry.
+        Measured: the DB row was empty and the next test class still read the
+        override.
+
+        Both are cleared explicitly, and the second call is NOT redundant.
+        invalidate_group_cache deletes the Redis entry and bumps the version
+        key so an in-flight fill cannot re-poison it, and it does try to clear
+        the process-local copy -- but it calls
+        `BaseConfig.clear_proxy_settings_cache()` (core/models.py:356-363),
+        which cannot reach the relay's copy. `get_proxy_settings` assigns
+        `cls._proxy_settings_cache` on whichever class it was called through,
+        and every proxy read goes through `TSConfig` (config_helper.py:5), so
+        `TSConfig` holds its own attribute shadowing `BaseConfig`'s. Verified
+        in a shell: after `BaseConfig.clear_proxy_settings_cache()`,
+        `TSConfig._proxy_settings_cache` still held its value; after
+        `TSConfig.clear_proxy_settings_cache()` it was None. That is a
+        production defect, not a test-only quirk -- see the plan's Findings --
+        and until it is fixed a test must clear the subclass itself.
         """
         from apps.proxy.config import TSConfig
-        from core.models import CoreSettings
+        from core.models import PROXY_SETTINGS_KEY, CoreSettings
+
+        def _invalidate():
+            CoreSettings.invalidate_group_cache(PROXY_SETTINGS_KEY)
+            TSConfig.clear_proxy_settings_cache()
 
         CoreSettings.objects.update_or_create(
-            key="proxy_settings",
+            key=PROXY_SETTINGS_KEY,
             defaults={"value": {**PROXY_SETTINGS_DEFAULTS, **overrides}},
         )
-        TSConfig.clear_proxy_settings_cache()
-        self.addCleanup(TSConfig.clear_proxy_settings_cache)
+        _invalidate()
+        self.addCleanup(_invalidate)
 
     def status(self, channel):
         """GET /proxy/ts/status/<uuid> as an admin; return (status_code, body)."""
@@ -517,7 +567,7 @@ class ClientSetTests(ControlMixin, RelayHarnessTestCase):
             self.assertEqual(self.upstream.request_count, 1)
 ```
 
-Two things about the `assertRaises(AssertionError)` blocks, because they look weaker than they are. `_TunedStream.read` raises `AssertionError` in two ways (`harness/relay.py:60-74`): the response ended, or the deadline passed. Here the request is `4000 * TS_PACKET_SIZE` = 752,000 bytes, which the paced upstream (250 KB/s) could not deliver inside `_TunedStream`'s 20-second deadline anyway — so the raise *alone* would not prove the stream ended. What proves it is the pair of assertions that follow: `readers[1]`/`readers[2]` **do** get more bytes after the same call, and `client_count` drops to exactly 2. A stop that did nothing would leave `client_count` at 3 and fail there.
+A note on the `assertRaises(AssertionError)` blocks, because an earlier draft got the arithmetic backwards and undersold them. `_TunedStream.read` raises `AssertionError` two ways (`harness/relay.py:60-74`): the response ended, or the deadline passed. The request is `4000 * TS_PACKET_SIZE` = 752,000 bytes, and at the paced upstream's 250 KB/s that is **3.0 seconds** — comfortably inside `_TunedStream`'s 20-second deadline. So on a stream that is still being served the read *succeeds*, and the raise means the stream ended. **The assertion is a direct proof, not a weak one.** The assertions that follow — `readers[1]`/`readers[2]` still getting bytes, `client_count` dropping to exactly 2 — are corroboration that the stop was targeted rather than general, not the load-bearing part.
 
 - [ ] **Step 3: Run the package**
 
@@ -636,12 +686,13 @@ Claude-Session: https://claude.ai/code/session_01Pr6xFBkeJHvguMJ6PweBMu
 Add `import time` and `from unittest.mock import patch` to the top of `apps/proxy/live_proxy/tests/test_relay_client_stream.py` (stdlib first, then the `unittest.mock` import, then the existing `from .harness…` block), then append:
 
 ```python
-# The stand-in stops producing after this many packets while staying alive and
-# connected -- so the generator writes no more per-client stats, and the
-# client's `last_active` in Redis stops advancing. Large enough that the
-# channel reaches `active` before the silence begins; 20 packets was measured
-# too few and the tune aborted in initialization instead.
-DEAD_AIR_PACKETS = 200
+# How much the stand-in produces before going silent is DERIVED, not measured:
+# the channel has to hold at least `initial_behind_chunks()` chunks before a
+# client can be positioned in it, so anything less aborts in initialization
+# instead of reaching the ghost sweep -- which is a green test pinning the
+# wrong thing. Doubled for margin. See _dead_air_bytes() below, which reads
+# BUFFER_CHUNK_SIZE at call time because RelayHarnessTestCase patches it.
+DEAD_AIR_CHUNK_MARGIN = 2
 # Must be an int >= 1: the heartbeat loop sleeps `for _ in range(int(interval))`
 # in one-second steps (client_manager.py:82-85), so 1 is the shortest cycle
 # that exists and 0 would busy-loop.
@@ -650,10 +701,22 @@ HEARTBEAT_SECONDS = 1
 # on every heartbeat pass, so unlike the interval it is not snapshotted in
 # ClientManager.__init__ and can be pushed well below the generator's own
 # 1-second stats-write throttle.
-GHOST_MULTIPLIER = 0.1
+GHOST_MULTIPLIER = 2.0
 
 
 class GhostClientTests(ControlMixin, RelayHarnessTestCase):
+    @staticmethod
+    def _dead_air_bytes():
+        """Enough bytes to fill the buffer a client needs before it can attach."""
+        from apps.proxy.config import TSConfig
+        from apps.proxy.live_proxy.config_helper import ConfigHelper
+
+        return (
+            DEAD_AIR_CHUNK_MARGIN
+            * ConfigHelper.initial_behind_chunks()
+            * TSConfig.BUFFER_CHUNK_SIZE
+        )
+
     def test_a_client_whose_last_active_goes_stale_is_removed(self):
         """Matrix row 13's ghost half.
 
@@ -671,7 +734,10 @@ class GhostClientTests(ControlMixin, RelayHarnessTestCase):
         # only other thing that ends an idle client is the generator's own
         # inactivity timeout -- so assert that it is far larger, rather than
         # asserting a number somebody measured once.
-        budget = 4 * HEARTBEAT_SECONDS
+        # The ghost timeout is GHOST_MULTIPLIER x the interval; allow two more
+        # heartbeat cycles for the check that follows it to land. Derived, so
+        # changing the multiplier cannot leave the budget behind.
+        budget = (GHOST_MULTIPLIER + 2) * HEARTBEAT_SECONDS
         self.assertGreater(
             ConfigHelper.stream_timeout() + ConfigHelper.failover_grace_period(), budget
         )
@@ -679,16 +745,30 @@ class GhostClientTests(ControlMixin, RelayHarnessTestCase):
         with patch.object(TSConfig, "CLIENT_HEARTBEAT_INTERVAL", HEARTBEAT_SECONDS), patch.object(
             TSConfig, "GHOST_CLIENT_MULTIPLIER", GHOST_MULTIPLIER
         ):
-            with self.stand_in(dead_air_after_bytes=DEAD_AIR_PACKETS * TS_PACKET_SIZE):
+            with self.stand_in(dead_air_after_bytes=self._dead_air_bytes()):
                 profile = stand_in_stream_profile()
                 channel = self.make_channel(upstream_url=self.upstream.url, profile=profile)
                 _, reader = open_tune(self, channel, timeout=budget)
 
-                received, started = b"", time.monotonic()
-                with self.assertRaises(AssertionError):
-                    while True:
+                # Bounded by wall clock, not only by the read failing: on a
+                # stream that never ends this loop never ends either, and a
+                # hung test is a worse failure than a red one. `ended` records
+                # whether the stream actually stopped, which is the thing
+                # under test -- the deadline is only the escape hatch.
+                received, started, ended = b"", time.monotonic(), False
+                while time.monotonic() - started < budget:
+                    try:
                         received += reader.read(TS_PACKET_SIZE)
+                    except AssertionError:
+                        ended = True
+                        break
                 ended_after = time.monotonic() - started
+                self.assertTrue(
+                    ended,
+                    f"the client was still being served {ended_after:.2f}s after "
+                    f"its last_active stopped advancing; the ghost sweep never "
+                    f"removed it",
+                )
 
                 self.assertLess(ended_after, budget)
                 # The client received a real stream before it was dropped, not
@@ -702,10 +782,13 @@ class GhostClientTests(ControlMixin, RelayHarnessTestCase):
                 self.stop_channel(channel)
 ```
 
-Two things this test deliberately does **not** assert, each learned by measuring:
+**The dead air is load-bearing, and an earlier draft's was not.** That draft used `GHOST_MULTIPLIER = 0.1`, which puts the ghost timeout at 0.1 s — *shorter than the generator's own 1-second stats-write throttle* (`output/ts/generator.py:78`, `:499`), the only thing that advances `last_active` for a streaming client. Every client is therefore stale at every heartbeat check, and the test passed with a perfectly healthy stand-in: verified, `Ran 1 test in 1.625s OK`. It was pinning "the heartbeat thread removes clients", not "a client whose `last_active` stops advancing is removed". At `GHOST_MULTIPLIER = 2.0` the timeout is 2 s, comfortably above the throttle, and the same test **fails** against a healthy stand-in with *"the client was still being served 4.02s after its last_active stopped advancing"*. That is the difference between a premise and a decoration, and it costs about 2.2 s.
 
-- **Not an exact byte count.** Asserting `len(received) == DEAD_AIR_PACKETS * TS_PACKET_SIZE` passes when the test runs alone and fails about three times in four inside the full package, because where the joining client is positioned in the ring buffer depends on how much of the stand-in's output landed before `_setup_streaming` ran. Observed values in the package: 15,040 / 31,960 / 37,600 bytes.
-- **Not the channel's state or client count afterwards.** This client is the channel's only one, so `channel_shutdown_delay` (0 by default) lets the channel start tearing down the moment it goes — and then `GET /proxy/ts/status/<uuid>` answers **404**, not a payload with `client_count: 0`. An earlier draft asserted `client_count == 0` and failed intermittently with `KeyError: 'client_count'` for exactly that reason.
+Three things this test deliberately does **not** do, each learned by measuring:
+
+- **It does not loop unbounded.** `while True: received += reader.read(...)` ends only when a read fails, and on a healthy stream it never does — the test hangs rather than failing, which is strictly worse. The loop is bounded by `budget` and `ended` records whether the stream actually stopped, so the healthy case fails with a sentence instead of hanging.
+- **It does not assert an exact byte count.** How much the client drains before the sweep removes it varies with process warmth; observed 15,040 / 31,960 / 37,600 bytes in the full package. (An earlier draft blamed this on the generator's positioning fallbacks — **wrong**: `INFO` logs show `Time-based positioning: 5s behind -> index 0` on every run, so the client always starts at the oldest chunk and the fallbacks are never reached.)
+- **It does not assert the channel's state or client count afterwards.** This client is the channel's only one, so with `channel_shutdown_delay` at 0 the channel may start tearing down the moment it goes, and `GET /proxy/ts/status/<uuid>` then answers **404** rather than a payload with `client_count: 0`. An earlier draft asserted `client_count == 0` and failed intermittently with `KeyError: 'client_count'`.
 
 - [ ] **Step 2: Run the package, twice**
 
@@ -904,6 +987,23 @@ class SwitchTests(ControlMixin, RelayHarnessTestCase):
                 # is where update_url() and reset_buffer_position() are called.
                 self.assertIs(response.json()["owner"], True)
 
+                # Read the index NOW, before any further read can absorb the
+                # gap -- this assertion is the whole row and it has to happen
+                # here. A rewind restarts the new source's INCR at 1 while the
+                # client sits far above it, so the client simply receives
+                # nothing until the new numbering overtakes the old: about half
+                # a second at this pacing, which the 1500-packet read below
+                # swallows whole, after which the index has climbed past its
+                # old value again. Asserted at this point the rewind is a 0
+                # against an 80; asserted after the read it is invisible.
+                # Measured: with `self.index = 0` and a delete of the index key
+                # added to reset_buffer_position, the version of this test
+                # WITHOUT these three lines still passed.
+                _, right_after = self.status(channel)
+                self.assertGreaterEqual(
+                    right_after["buffer_index"], before["buffer_index"]
+                )
+
                 # The metadata write lands before the reconnect does, so
                 # waiting on the status url would wait for the wrong thing.
                 # Wait for the new upstream to actually be connected.
@@ -1010,7 +1110,39 @@ AssertionError: 0.109… not less than 0.0225…
 
 — the joining client took roughly five times longer than the half-of-live threshold, because at `behind_seconds = 0` it started at the buffer head and had to wait for the upstream. **Restore `BEHIND_SECONDS = 0.5` and re-run Step 2 before continuing.** The exact digits in the failure will differ; what matters is that the drain assertion is the one that fires.
 
-- [ ] **Step 4: Close matrix rows 7 and 8**
+- [ ] **Step 4: Break-check the switch test — this one caught a real defect in an earlier draft**
+
+Row 7's whole claim is that a switch does not rewind the index, so break exactly that. In `apps/proxy/live_proxy/input/buffer.py`, inside `reset_buffer_position`'s `with self.lock:` block, add two lines above `old_write_size = len(self._write_buffer)`:
+
+```python
+                if self.redis_client:
+                    self.redis_client.delete(self.buffer_index_key)
+                self.index = 0
+```
+
+Run just the switch class:
+
+```bash
+docker exec dispatcharr-testrunner-2a3 redis-cli flushall
+docker exec -e TEST_USE_SQLITE= -e POSTGRES_HOST=/var/run/postgresql \
+  -e POSTGRES_DB=dispatcharr -e POSTGRES_USER=dispatch -e POSTGRES_PASSWORD=secret \
+  -e REDIS_HOST=localhost -e REDIS_PORT=6379 -e REDIS_DB=0 \
+  -e DJANGO_SECRET_KEY=hook-test-secret -e DISPATCHARR_LOG_LEVEL=ERROR \
+  dispatcharr-testrunner-2a3 /dispatcharrpy/bin/python \
+  manage.py test --keepdb apps.proxy.live_proxy.tests.test_relay_stream_switch.SwitchTests -v1
+```
+
+Expected: `FAILED (failures=1)` with
+
+```
+AssertionError: 0 not greater than or equal to 74
+```
+
+The `0` is the deleted index key, which `channel_status.py:37-46` reports as `0` rather than omitting; the second number is whatever the index had reached. **Restore `buffer.py` and re-run Step 2 before continuing.**
+
+**Do not skip this step, and do not move the assertion.** An earlier draft of this plan asserted the index only *after* the 1500-packet read, and under the same break that version **passed** (`Ran 1 test in 2.976s OK`) while this one fails. The row would have shipped pinned to a test that could not observe the thing it names. That is the failure this stage exists to catch, and it was caught by review rather than by writing — which is the argument for running the break rather than reasoning about it.
+
+- [ ] **Step 5: Close matrix rows 7 and 8**
 
 On the line beginning `| 7 | `, replace `` `owed: 2a-3` `` with:
 
@@ -1026,7 +1158,7 @@ On the line beginning `| 8 | `, replace `` `owed: 2a-3` `` with:
 
 Both rows' `Source` and `Notes` cells are unchanged. Row 8's Notes already say `new_client_behind_seconds` defaults to 5 and that a separate expired-chunk recovery mechanism is *not* part of this behaviour — both still true: the test asserts the default is 5 before compressing it, and it waits for twice the window precisely so the expired-chunk branch is not the one exercised.
 
-- [ ] **Step 5: Run the parity guard**
+- [ ] **Step 6: Run the parity guard**
 
 ```bash
 cd /Users/dion/git/Dispatcharr/.worktrees/phase2-2a3/e2e
@@ -1037,7 +1169,7 @@ Expected: pass, `parity matrix: 28 rows — 9 pinned, 17 owed, 2 white-box-only.
 
 Nine pinned = the five that were pinned before this PR (10, 11, 21, 22, 24) plus 7, 8, 9, 13. Seventeen owed = twenty-one minus those four. `GATE_1_CLOSED` stays `false` and the guard's "the matrix is fully pinned when the flag says so" test takes its else branch, as it has since 2a-1.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 Stage:
 
@@ -1075,7 +1207,7 @@ Claude-Session: https://claude.ai/code/session_01Pr6xFBkeJHvguMJ6PweBMu
 
 **Take your own baseline. Do not reuse the illustrative one in § Global Constraints** — it was measured on a different day under a named core, and the gate is relative, not absolute.
 
-Check the branch point out into a scratch worktree, or move your own test files aside, and run the gate there first. Use a **different** `COVERAGE_LIVE_PATH_DATA_DIR` for each of the two measurements — `coverage combine` consumes its input files, so a second `--report` over the same directory finds nothing and says so. Take **three runs of each side**: `missing` is a sample from a band, and one run of each cannot tell a real change from the band's width.
+Check `27c9e79c` out into a scratch worktree, or move your own test files aside, and run the gate there first. Use a **different** `COVERAGE_LIVE_PATH_DATA_DIR` for each of the two measurements — `coverage combine` consumes its input files, so a second `--report` over the same directory finds nothing and says so. Take **three runs of each side**: `missing` is a sample from a band, and one run of each cannot tell a real change from the band's width.
 
 Both measurements must come from the **same session, the same container and the same script**, so they carry the same tracer core. The script stamps the core into its shape id (`per-label/v2-${COVERAGE_CORE}`) and refuses to report over data written under another one — but that guard only sees data files, not two numbers you wrote into a PR description, so the discipline is yours to keep.
 
@@ -1119,7 +1251,7 @@ for i in 1 2 3; do
 done
 ```
 
-Expected: `Ran 184 tests in 14.6–15.6s`, `OK`, three times. The branch point runs 179 tests in 6.0–6.6 s, so the added cost is **≈ 8.6 s**. Record the three figures in the PR description; do not round them into a claim that the stage budget is met.
+Expected: `Ran 184 tests in 17.1–17.9s`, `OK`, three times. The branch point runs 179 tests in 6.0–6.6 s, so the added cost is **≈ 10.9 s**. Record the three figures in the PR description; do not round them into a claim that the stage budget is met.
 
 - [ ] **Step 4: Run the two neighbouring labels**
 
@@ -1148,7 +1280,7 @@ docker volume rm dispatcharr-hookdb-2a3
 
 - [ ] **Step 6: Write the PR description**
 
-Include, verbatim, all six per-file figures (three baseline runs and three branch runs, missing statements, for both named files), **the tracer core the script used**, the denominator, the three test-time figures against the branch point's, and the guard's pinned/owed line. Give the coverage result as the *direction* the gate asks for — "strictly fewer in every paired run" — not as a percentage anyone downstream could mistake for a target. State the test-time overrun against the stage's ≤ 15 s ceiling plainly rather than omitting it — 2a-2 spent ≈ 3.96 s and this PR spends ≈ 8.6 s, so ≈ 2.4 s remains for 2a-4, 2a-5 and 2a-6 combined, and that is a decision for the orchestrator, not something this PR can absorb.
+Include, verbatim, all six per-file figures (three baseline runs and three branch runs, missing statements, for both named files), **the tracer core the script used**, the denominator, the three test-time figures against the branch point's, and the guard's pinned/owed line. Give the coverage result as the *direction* the gate asks for — "strictly fewer in every paired run" — not as a percentage anyone downstream could mistake for a target. State the test-time overrun against the stage's ≤ 15 s ceiling plainly rather than omitting it — 2a-2 spent ≈ 3.96 s and this PR spends ≈ 10.9 s. The ceiling has since been withdrawn; record the figure anyway so whoever sets its replacement has it.
 
 Do not push and do not open the PR unless the orchestrator asks.
 
