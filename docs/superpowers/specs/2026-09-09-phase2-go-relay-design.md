@@ -1127,7 +1127,10 @@ tracer systematically drops statements executing after a `gevent.sleep()`, and i
 flattening the visible difference between the relay's background housekeeping firing during a run or
 not. Recovering those statements makes pre-existing timing variance visible, it does not create it —
 per-file diffs confine the extra spread to the sources § above already names. **2a-7 sizes against
-63, not 19.**
+63, not 19** — and against a tree loaded with stage 2a's own tests, not the base: the spread is 2 on
+the base suite, 10 with 2a-3's tests, and **51** once 2a-6's probes are in, because the
+fMP4/Output-Profile managers start background loops of their own. The figure grows with the tests
+the gate is measured over, so 2a-7 measures it on the tree it will actually gate.
 
 #### Whether ≥80% is reachable by 2a-3 … 2a-6 as scoped — an open question for the user
 
@@ -1189,31 +1192,76 @@ on an ordinary tune — `_resolve_output_format` (`views.py:113-134`) → `ensur
 is the bare string `"ffmpeg"`, so 2a-2's `PATH` stand-in reaches it untouched: **the seam decision
 paying off in a file group nobody chose it for.**
 
-**The bracket, restated. C-tracer throughout — the core the −575 was measured on.** On that core the
-baseline is 3,204 and the allowance 1,595, so the distance is **1,609**, which the two probes reduce
-to **1,034**. (The **1,510** figure quoted elsewhere is the *sysmon* distance and does not belong in
-this sum; the difference is 99 statements, larger than the closest margin below.)
+**The bracket, on sysmon throughout — measured, not converted.** Three runs per configuration,
+denominator 7,978 in all nine, allowance 1,595:
 
-| Supply against the post-probe distance of 1,034 | Total | Result |
+| Configuration | missing (3 runs) | mid | spread | distance |
+|---|---|---|---|---|
+| base | 3,114 / 3,115 / 3,116 | 3,115 | 2 | 1,520 |
+| + 2a-3's five tests | 2,970 / 2,976 / 2,980 | 2,976 | 10 | 1,381 |
+| + the two 2a-6 probes | 2,512 / 2,540 / 2,563 | 2,540 | **51** | **945** |
+
+**The two cores agree on the deltas** — −577/−481 under sysmon against −575/−483 under the C tracer
+— while their absolute levels differ by about 90. That is the expected shape and it is independent
+support for stating this gate in relative terms wherever possible: a tracer that drops statements
+after a greenlet switch drops them from *both* sides of a comparison.
+
+**Remaining supply, sysmon.** Two figures are carried for `server.py`, for two different questions,
+and they must not be interchanged: **257** is the reachable *pool* (what could be taken, and the
+right number for "can 80% be reached at all"), **124** is 2a-5's *target* (what its tasks intend to
+close, and the right number for "what will its diff move"). The gap is deliberate:
+`initialize_channel` (51) and `handle_client_disconnect` (47) are reachable and **left on the table**
+as teardown- and timing-adjacent, on the principle that leaving statements beats a test whose answer
+depends on which thread wins.
+
+| Term | Realistic | Pool |
 |---|---|---|
-| PRs as scoped — 2a-5's 269 + 2a-4's ~254 + `http_streamer.py` 101 | 624 | short **410** |
-| + the group's harder residual at ~30% of 252 | 700 | short **334** |
-| + the 150-statement expensive tail *(cost judgement, not measured)* | 850 | short **184** |
-| **+ ~20% of the mid-sized pool** | 1,040 | **closes +6** |
-| ceiling — all of the above plus the whole mid-sized pool | 1,977 | closes +943 |
+| 2a-4 `input/manager.py` | 60-120 *(its own prediction)* | 247 reachable of 474 |
+| 2a-5 | 213-282 *(124 target + 89-158 rows)* | 346-415 *(257 + 89-158)* |
+| 2a-6 group residual | ~30-50% of the harder 254 | 254 |
+| `http_streamer.py` | — *(no PR owns it)* | 101 |
+| `server.py` expensive tail | — | 146 *(cost judgement, not measured)* |
 
-**A double-count this table avoids, and any re-derivation must too.** `server.py`'s 142-statement
-"Output Profile" bucket **is** `ensure_output_profile` — precisely what probe 2 drives — so most of
-it is already inside the −575 and cannot be counted again. **2a-5's safe supply after the probes is
-269, not 411.** The 411 is correct before the probes and double-counts after them; it is the same
-shape as the label-travelling error below, a number that is right in one frame and wrong in another.
+| Scenario against a distance of 945 | Total | Result |
+|---|---|---|
+| PRs as scoped, low | 349 | short **596** |
+| PRs as scoped, high | 529 | short **416** |
+| full reachable pools | 789 | short **156** |
+| + the 146 expensive tail | 935 | short **10** — *inside the 51-statement spread* |
+| + `http_streamer.py`'s 101 | 1,036 | **closes +91** |
+| + the 98 left on the table | 1,134 | closes +189 |
 
-**So, plainly: the ≥80% gate is achievable, and it is not achievable by 2a-3 … 2a-6 as currently
-scoped.** The four PRs land roughly **184-410 short** even counting the soft expensive tail, and
-about a fifth of the mid-sized pool closes the remainder. That is a far better position than the
-withdrawn rows suggested and it is still not "reachable as scoped" — the honest statement is that
-**the widening now needed is small and specific rather than open-ended**, which is a decision worth
-putting to the user with those numbers rather than a warning.
+**So, plainly, and in both directions. The ≥80% gate closes — on the optimistic branch of every
+remaining estimate, plus one file no PR owns. On the PRs' own predictions it falls 416-596 short.**
+The row that matters most is the fourth: full pools plus the soft expensive tail lands **10
+statements short of a distance whose own measurement range is 917-968**, i.e. **indistinguishable
+from closing**. Adding `http_streamer.py` — 101 statements, a whole file nothing imports, in nobody's
+scope — clears it decisively. That is a much narrower question than "widen into a 951-statement
+pool": it is *"does 2a-6 also take `http_streamer.py`, and do 2a-4 and 2a-5 take their full
+reachable sets rather than their planned targets?"*
+
+**The 142 question is settled, pessimistically, by set-difference rather than inference.**
+`server.py` goes 796 → ~723 across the probe runs, and diffing the missed-line *sets* shows **135
+source lines** becoming covered — at `1284-1417`, `1450-1562`, `1941-2003` and `2154-2183`, which
+**is** `ensure_output_format`/`ensure_output_profile` and the teardown paths that stop output
+managers. Not a neighbouring region warming up: the bucket itself. **2a-5's safe supply is 257, and
+411 would double-count.**
+
+**Two corrections to figures quoted earlier in this section.** 2a-3's `channel_service.py`
+contribution is **169 → 145 (−24)** under sysmon, not the −55 its C-tracer pair suggested — anything
+crediting −55 is 31 too generous. And the authorize-row estimate is **89-158, centre ≈124**, its top
+end corrected down by its own author; **no part of it lies in `apps/proxy/utils.py`**, which is
+outside the `[report] include` list and was therefore costed at zero, correctly — work there earns
+nothing toward this gate. Whether the ten boundary modules *should* include it is a separate
+question this spec has not asked: `apps/proxy/utils.py` holds the live half of
+`get_user_active_connections`, which D4 makes part of the contract the Go relay reproduces.
+
+**Variance is not uniform, and 2a-7 must size against the loaded tree.** Base spread **2**, with
+2a-3's tests **10**, with the probe configuration **51**. The variance arrives *with* the
+fMP4/Output-Profile managers, which start background loops of their own — `channel_service.py`
+swinging 169 → 201 → 169 across three runs is its visible edge, in the teardown window. **2a-7 will
+set its tolerance on a tree containing 2a-6's work, so the figure to size against is the loaded one
+— not the base's 2, and not necessarily the 63 measured on a tree without it.**
 
 **And the finding that outlives every total here: no reachability estimate in this spec has survived
 measurement.** Three of the five have now been checked — `server.py` was badly optimistic, and its
@@ -1294,8 +1342,11 @@ with it whether the 142 Output-Profile bucket is spent — that single number de
 **The options, for the user to choose between — this spec states them and recommends none.**
 Widen the coverage PRs into the mid-sized files that lie outside their current scope — `views.py`,
 `channel_status.py`, `client_manager.py`, `input/buffer.py`, `log_parsers.py`, `utils.py`,
-`url_utils.py` — which hold roughly **950 missed statements between them on the sysmon total, more
-than the whole fmp4/profile group and belonging to no PR**; lower the gate to a measured achievable
+`url_utils.py` — which hold several hundred missed statements between them and belong to no PR.
+**The measured bracket narrows this option considerably**: full pools plus the soft tail land 10
+short, so the concrete question is whether 2a-6 also takes **`http_streamer.py` (101 statements,
+whole file, nothing imports it)** and whether 2a-4 and 2a-5 take their full reachable sets rather
+than their planned targets — not an open-ended widening. Lower the gate to a measured achievable
 figure; or add a PR. **The gate's value is
 not changed here and no replacement is proposed.**
 
