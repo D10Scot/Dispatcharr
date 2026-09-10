@@ -192,14 +192,19 @@ class PositioningTests(ControlMixin, RelayHarnessTestCase):
                 joiner_start_index = packet_index(joiner_first_packet)
 
             backlog_packets = live_index_estimate - joiner_start_index
-            # Two chunks' margin: `chunks_for_the_window` truncates towards
-            # zero (a real quantization, not slack added for comfort), and
-            # `live_index_estimate` is a moment old by the time the joiner
-            # actually connects. Both broken mechanisms miss by far more
-            # than this margin can absorb: live-head positioning gives a
-            # backlog near zero; the oldest-available fallback gives one
-            # near the whole accumulated buffer, many times the window.
+            # Five chunks' margin (50 packets): `chunks_for_the_window`
+            # truncates towards zero (a real quantization, not slack added
+            # for comfort), `live_index_estimate` is a moment old by the
+            # time the joiner actually connects, and that moment can widen
+            # under load -- measured a 40-packet miss once under coverage
+            # instrumentation's own slowdown (2 chunks' margin was not
+            # enough there), so this margin is sized against that, not
+            # against the quiet case. Both broken mechanisms miss by far
+            # more than any realistic scheduling jitter can produce: live-
+            # head positioning gives a backlog near zero; the oldest-
+            # available fallback gives one near the whole accumulated
+            # buffer, many times the window.
             self.assertAlmostEqual(
-                backlog_packets, packets_for_the_window, delta=2 * packets_per_chunk
+                backlog_packets, packets_for_the_window, delta=5 * packets_per_chunk
             )
             self.stop_channel(channel)
