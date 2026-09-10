@@ -93,8 +93,12 @@ check then fails it.
 
 - **`#`** — a decimal integer. Unique, never reused, never renumbered. **A row is never removed from
   this table**: one that stops applying is retired *in place*, keeping its id and saying so in its
-  Notes. The guard asserts the ids run `1..N` with no gaps, so deleting a row fails loudly. **Not in
-  ascending file order** — rows are grouped by the PR that owes them.
+  Notes. The guard checks the id set against `HIGHEST_ROW_ID`, a constant stored in
+  `e2e/tests/guards/parity-matrix.ts` rather than derived from this file — `1..max(ids)` would be
+  satisfied by deleting the highest row, which is exactly the silent loss this exists to catch — so
+  deleting any row fails loudly, and adding one is a deliberate edit in two places: this table gains
+  the row, and `HIGHEST_ROW_ID` is raised in the same diff. **Not in ascending file order** — rows
+  are grouped by the PR that owes them.
 - **`Behaviour`** — one sentence naming the externally-observable behaviour.
 - **`Source`** — one or more backticked, repo-relative citations: `` `path:line` `` or
   `` `path:start-end` ``. The guard checks that each file exists and each range lies inside it. It
