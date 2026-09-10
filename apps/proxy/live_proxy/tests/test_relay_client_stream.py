@@ -6,6 +6,9 @@ a status field, a response status -- because that is what ports to a Go test
 row-for-row (spec section "The subprocess harness", the composition rule).
 """
 
+import time
+from unittest.mock import patch
+
 from .harness.asset import TS_PACKET_SIZE, assert_ts_aligned
 from .harness.control import ControlMixin, nginx_headers, open_tune
 from .harness.process import stand_in_stream_profile
@@ -113,3 +116,99 @@ class ClientSetTests(ControlMixin, RelayHarnessTestCase):
                 with self.assertRaises(AssertionError):
                     reader.read(4000 * TS_PACKET_SIZE)
             self.assertEqual(self.upstream.request_count, 1)
+
+
+# How much the stand-in produces before going silent is DERIVED, not measured:
+# the channel has to hold at least `initial_behind_chunks()` chunks before a
+# client can be positioned in it, so anything less aborts in initialization
+# instead of reaching the ghost sweep -- which is a green test pinning the
+# wrong thing. Doubled for margin. See _dead_air_bytes() below, which reads
+# BUFFER_CHUNK_SIZE at call time because RelayHarnessTestCase patches it.
+DEAD_AIR_CHUNK_MARGIN = 2
+# Must be an int >= 1: the heartbeat loop sleeps `for _ in range(int(interval))`
+# in one-second steps (client_manager.py:82-85), so 1 is the shortest cycle
+# that exists and 0 would busy-loop.
+HEARTBEAT_SECONDS = 1
+# ghost_timeout = heartbeat_interval * this (client_manager.py:116), read fresh
+# on every heartbeat pass, so unlike the interval it is not snapshotted in
+# ClientManager.__init__ and can be pushed well below the generator's own
+# 1-second stats-write throttle.
+GHOST_MULTIPLIER = 2.0
+
+
+class GhostClientTests(ControlMixin, RelayHarnessTestCase):
+    @staticmethod
+    def _dead_air_bytes():
+        """Enough bytes to fill the buffer a client needs before it can attach."""
+        from apps.proxy.config import TSConfig
+        from apps.proxy.live_proxy.config_helper import ConfigHelper
+
+        return (
+            DEAD_AIR_CHUNK_MARGIN
+            * ConfigHelper.initial_behind_chunks()
+            * TSConfig.BUFFER_CHUNK_SIZE
+        )
+
+    def test_a_client_whose_last_active_goes_stale_is_removed(self):
+        """Matrix row 13's ghost half.
+
+        The client stays connected and asks for more bytes throughout. What
+        ends its stream is the heartbeat thread noticing that its `last_active`
+        is older than GHOST_CLIENT_MULTIPLIER x the heartbeat interval
+        (client_manager.py:112-120), removing it, and the generator's next
+        resource check finding it gone (output/ts/generator.py:421-423).
+        """
+        from apps.proxy.config import TSConfig
+        from apps.proxy.live_proxy.config_helper import ConfigHelper
+
+        # Four heartbeat cycles. The assertion below is only meaningful if
+        # nothing ELSE could have ended the stream inside that window, and the
+        # only other thing that ends an idle client is the generator's own
+        # inactivity timeout -- so assert that it is far larger, rather than
+        # asserting a number somebody measured once.
+        # The ghost timeout is GHOST_MULTIPLIER x the interval; allow two more
+        # heartbeat cycles for the check that follows it to land. Derived, so
+        # changing the multiplier cannot leave the budget behind.
+        budget = (GHOST_MULTIPLIER + 2) * HEARTBEAT_SECONDS
+        self.assertGreater(
+            ConfigHelper.stream_timeout() + ConfigHelper.failover_grace_period(), budget
+        )
+
+        with patch.object(TSConfig, "CLIENT_HEARTBEAT_INTERVAL", HEARTBEAT_SECONDS), patch.object(
+            TSConfig, "GHOST_CLIENT_MULTIPLIER", GHOST_MULTIPLIER
+        ):
+            with self.stand_in(dead_air_after_bytes=self._dead_air_bytes()):
+                profile = stand_in_stream_profile()
+                channel = self.make_channel(upstream_url=self.upstream.url, profile=profile)
+                _, reader = open_tune(self, channel, timeout=budget)
+
+                # Bounded by wall clock, not only by the read failing: on a
+                # stream that never ends this loop never ends either, and a
+                # hung test is a worse failure than a red one. `ended` records
+                # whether the stream actually stopped, which is the thing
+                # under test -- the deadline is only the escape hatch.
+                received, started, ended = b"", time.monotonic(), False
+                while time.monotonic() - started < budget:
+                    try:
+                        received += reader.read(TS_PACKET_SIZE)
+                    except AssertionError:
+                        ended = True
+                        break
+                ended_after = time.monotonic() - started
+                self.assertTrue(
+                    ended,
+                    f"the client was still being served {ended_after:.2f}s after "
+                    f"its last_active stopped advancing; the ghost sweep never "
+                    f"removed it",
+                )
+
+                self.assertLess(ended_after, budget)
+                # The client received a real stream before it was dropped, not
+                # a single relay-minted error packet -- which is what an
+                # initialization abort looks like, and is how this test would
+                # otherwise pass for the wrong reason.
+                assert_ts_aligned(received)
+                self.assertGreaterEqual(len(received), TSConfig.BUFFER_CHUNK_SIZE)
+                self.assertEqual(((received[1] & 0x1F) << 8) | received[2], SOURCE_PID)
+
+                self.stop_channel(channel)
