@@ -549,7 +549,7 @@ export const WHITE_BOX_ONLY: readonly WhiteBoxRow[] = [
  * close a row** — rows are added only by a deliberate extension of the matrix,
  * which is exactly the edit that should take two places and a stated reason.
  */
-export const HIGHEST_ROW_ID = 29;
+export const HIGHEST_ROW_ID = 30;
 
 /**
  * Gate 1's own switch. Flipped to `true` by the PR that closes the last owed
