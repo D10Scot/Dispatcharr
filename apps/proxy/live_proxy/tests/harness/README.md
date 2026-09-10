@@ -74,6 +74,33 @@ class MyTests(RelayHarnessTestCase):
             self.stop_channel(channel)
 ```
 
+## Driving the control surfaces
+
+```python
+from .harness.control import ControlMixin, nginx_headers, open_tune
+from .harness.relay import RelayHarnessTestCase
+
+
+class MyTests(ControlMixin, RelayHarnessTestCase):
+    def test_something(self):
+        with self.stand_in():
+            profile = stand_in_stream_profile()
+            channel = self.make_channel(upstream_url=self.upstream.url, profile=profile)
+            self.set_proxy_setting(new_client_behind_seconds=0.5)
+            with self.tuned(channel):
+                _, reader = open_tune(self, channel, headers=nginx_headers(channel, "my-client"))
+                reader.read(4 * 188)
+                status_code, body = self.status(channel)
+                self.change_stream(channel, other.url)
+                self.stop_client(channel, "my-client")
+                self.stop_channel_over_http(channel)
+```
+
+- The admin principal is a real `User` row with an `api_key`, sent as `X-API-Key`, created on first use and gone with the test's flush.
+- `nginx_headers()` is nginx's own contract, not a test seam — `X-Dispatcharr-Authorized` carries `HMAC(SECRET_KEY, "relay-trust")` and `resolve_authorization()` trusts `X-Relay-Client` only when it matches, which is the only way to choose a client id because `stream_ts` otherwise mints one.
+- `set_proxy_setting()` writes the whole group, clears `TSConfig._proxy_settings_cache` and registers the cleanup that clears it again, because that cache is a class attribute with a 10-second TTL and an override left behind leaks into unrelated tests.
+- `open_tune()` is not a context manager, because a test with several simultaneous clients needs them all open at once; the responses are closed by `addCleanup`.
+
 ## The fault vocabulary
 
 `e2e-upstream/src/faults.ts` declares twelve faults. Eight are live-TS faults
