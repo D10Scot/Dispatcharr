@@ -84,6 +84,21 @@ until su - "$POSTGRES_USER" -c "$PG_BINDIR/pg_isready -h ${POSTGRES_HOST} -p ${P
 done
 promote_app_role  >/dev/null 2>&1 || true
 ensure_app_database >/dev/null 2>&1 || true
+# Verify the OUTCOME, not the call's exit status. `promote_app_role` and
+# `ensure_app_database` are invoked above as `... >/dev/null 2>&1 || true`,
+# which throws away the message and the status together — and on a brand-new
+# DB volume that has been observed to leave no database while the script
+# still printed "==> ready" and exited 0 (issue #241). The first symptom then
+# arrives minutes later, from a test run, as an interactive password prompt
+# or "database dispatcharr does not exist", nowhere near the cause. So ask
+# Postgres directly whether the database is there, and fail here if not.
+if ! su - "$POSTGRES_USER" -c "psql -h ${POSTGRES_HOST} -p ${POSTGRES_PORT} -d ${POSTGRES_DB} -tAc 'SELECT 1'" >/dev/null 2>&1; then
+  echo "start-test-container: database '${POSTGRES_DB}' is missing — the container is NOT usable for tests." >&2
+  echo "start-test-container: see issue #241. Create it by hand with:" >&2
+  echo "  docker exec ${CONTAINER:-<container>} su - ${POSTGRES_USER} -c \\" >&2
+  echo "    \"createdb -p ${POSTGRES_PORT} --encoding=UTF8 ${POSTGRES_DB}\"" >&2
+  exit 1
+fi
 echo "redis:    $(redis-cli ping)"
 echo "postgres: $(su - dispatch -c "$PG_BINDIR/pg_isready -h /var/run/postgresql -p 5432")"
 INNER
