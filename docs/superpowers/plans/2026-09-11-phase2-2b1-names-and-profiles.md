@@ -27,7 +27,8 @@
 - **Stage and commit in separate `Bash` calls.** The `PreToolUse` commit gate runs before the command, so one call doing both is blocked. A commit message containing the words `git commit` also trips it — write such a message with `Write` and commit with `-F <file>`.
 - **Do not edit** `scripts/coverage_live_path.sh`, `scripts/coverage_live_path.floor`, `scripts/coverage_live_path.coveragerc`, or `scripts/coverage_live_path_isolated.sh`. Another agent owns them (2b-0). Do not edit any other worktree.
 - **Do not edit `docs/relay-parity-matrix.md`.** Row 18 is `owed: 2b-3` and 2b-3 owns it. Row 16 is already pinned. This PR adds no row and closes none. If you believe a row needs changing, record it in the PR body instead.
-- **Dependency on 2b-0, stated and not depended upon internally.** `scripts/coverage_live_path.floor` carries `statements=7978` as an **equality** check, and this PR adds and removes production statements inside the Gate 2 denominator (`apps/proxy/live_proxy/**`, `apps/proxy/next_source.py`, `apps/proxy/relay_serializers.py`, `apps/proxy/relay_views.py`, `apps/proxy/control_plane.py`). `scripts/coverage_live_path.sh --gate` will therefore refuse with a *shape/statements mismatch*, not a coverage regression. 2b-0 is in flight to fix exactly that. **Assume 2b-0 has landed; do not read or rely on how it works.** If `--gate` refuses on the statements equality while this branch is open, record the refusal verbatim in the PR body and continue — it is not this PR's to fix, and it is not a coverage regression.
+- **2b runs fully sequentially** (orchestrator ruling): 2b-1's implementation does not start until 2b-0 has merged, so no two implementers contend for the shared `dispatcharr-testrunner`. The container check below is still correct and still required — other agents in the session may have re-pointed it.
+- **Dependency on 2b-0, stated and not depended upon internally.** `scripts/coverage_live_path.floor` carries `statements=7978` as an **equality** check, and this PR adds and removes production statements inside the Gate 2 denominator (`apps/proxy/live_proxy/**`, `apps/proxy/next_source.py`, `apps/proxy/relay_serializers.py`, `apps/proxy/relay_views.py`, `apps/proxy/control_plane.py`). `scripts/coverage_live_path.sh --gate` will therefore refuse with a *shape/statements mismatch*, not a coverage regression. 2b-0 is in flight to fix exactly that. **2b-0 has landed by the time this PR starts (2b is sequential); do not read or rely on how it works.** If `--gate` refuses on the statements equality while this branch is open, record the refusal verbatim in the PR body and continue — it is not this PR's to fix, and it is not a coverage regression.
 - `apps/proxy/serializers.py` and `apps/proxy/api_views.py` are **not** in the coverage denominator (`scripts/coverage_live_path.coveragerc` `[report] include`); `apps/proxy/next_source.py` **is**.
 - **Credential hygiene:** `scripts/check_credential_logging.py` runs on every `*.py` edit. Never log a URL, path, header or credential except through `redact_url` / `redact_headers`. Names (channel/stream/profile) are not credentials and may be logged plainly, as they already are.
 - **`apps/proxy/live_proxy/constants.py` is a leaf module** imported at module level by `apps/channels/models.py:6-7`. Adding a constant to `ChannelMetadataField` is safe; **adding an import to that file stops Django booting.** The edit hook runs `manage.py check` on it for this reason.
@@ -54,7 +55,7 @@ This section is part of the deliverable. The implementer inherits both halves.
 
 ### Three findings the spec's 2b table does not contain
 
-These are **out of scope for this PR** and must be written into the PR body rather than fixed here. They are recorded because the spec's table is the input to 2c's "a Go relay cannot execute any row in this table" claim, and the table is incomplete.
+These are **out of scope for this PR** and must be written into the PR body rather than fixed here, **and cited by issue number** — see § *Handing the three out-of-scope ORM findings forward* near the end of this plan. They are recorded because the spec's table is the input to 2c's "a Go relay cannot execute any row in this table" claim, and the table is incomplete.
 
 1. **`get_stream_object(...)` still executes in the relay process on the tune path and on the transcode path** — `views.py:189` (`stream_ts`), `views.py:1178` (`next_stream`, API process), `input/manager.py:731` (`_establish_transcode_connection`), `apps/proxy/authorize.py:344`. It is a `get_object_or_404` pair, i.e. an ORM read, and the spec's table treats it only as *Django's* resolution helper.
 2. **`channel.get_stream_profile()` is an ORM read that neither grep can see.** `views.py:430` and `input/manager.py:741`/`:745` call it on a model instance; there is no `.objects.` and no `get_object_or_404(` on those lines. The spec's part-1 static guard is structurally blind to it. **Only 2b-3's runtime check can catch it.** Say so in the PR body so 2b-3's author does not read a green static guard as "zero reads".
@@ -465,7 +466,9 @@ def _with_proxy_settings(answer):
     through TSConfig, whose own class attribute shadows the parent's
     (issue #232). The 10-second TTL is what actually ends the staleness.
 
-    Nothing in the PYTHON relay consumes this yet; see this PR's description.
+    Nothing in the PYTHON relay consumes this yet, deliberately -- see this
+    plan's § Self-review for the ruling and the reason, and this PR's
+    description.
     """
     from core.models import CoreSettings
 
@@ -1630,7 +1633,9 @@ Write it to a file and open the PR from the file (a body containing `git commit`
 6. **Every break check**: which production line was broken, which test went red, and the failure message — three per PIN group.
 7. **Any test that was downgraded from PIN to REACH** because its break check showed it had no teeth (Task 3 Step 9 item 2, Task 5 Step 5 item 2).
 8. **The coverage-gate outcome** from Step 4, verbatim.
-9. **What `proxy_settings` does not do yet**: it is on the response and in the schema, and **nothing in the Python relay reads it**. The consumer is the Go relay in 2c. Wiring `StreamManager.__init__` to prefer it would collapse the 10-second staleness window mid-phase and is not required by any 2b gate.
+9. **What `proxy_settings` does not do yet**: it is on the response and in the schema, and **nothing in the Python relay reads it**. The consumer is the Go relay in 2c. Wiring `StreamManager.__init__` to prefer it would collapse the 10-second staleness window in the Python relay mid-phase — a behaviour change no 2b gate asks for, and a perturbation of the timing of the very system whose coverage measurement 2b-4 still has to close. Orchestrator ruling; see § Self-review.
+10. **The advance-request ruling**, one line: the spec's "advance's responses" means the advance **request** body (`apps/proxy/relay_serializers.py:187-192`, `:202`), and the spec's wording is being corrected separately.
+11. **The issue number** covering the three out-of-scope ORM findings, from § Handing the three out-of-scope ORM findings forward.
 
 - [ ] **Step 6: Push the branch**
 
@@ -1668,11 +1673,37 @@ gh pr create --repo D10Scot/Dispatcharr --draft --base main \
 | `proxy_settings` on `next-source`'s response, channel-start-time values only | Task 2 |
 | Gate: a measured reduction in surviving sites | Tasks 1 and 7 (8 → 3) |
 
-**One reading the spec leaves open, resolved here and flagged for the reviewer.** The spec says "Add `channel_name`/`stream_name` as non-optional fields on **both response bodies**". There are two things called "advance" and neither has a response that helps the relay: `/proxy/relay/channels/<id>/advance` is a **Django→relay** call whose *request* carries the resolved source and whose *response* is the relay's own switch result, read by Django. Carrying names on that *response* would send them in the direction that already has the ORM. The reading taken here is that "advance" means the advance **request** body — which is where `RelayAdvanceRequestSerializer` already carries `stream_name`, and where `views.py`'s own comments say the value is "Always None" because the Source contract lacked the key. That is unambiguously the place the names are needed, and it is what closes `channel_service.py:911`. **If the reviewer reads the spec differently, this is the decision to challenge.**
+**The spec's "advance's responses" is a slip in the spec, and the orchestrator has ruled on it — do not re-litigate this.** The spec says "Add `channel_name`/`stream_name` as non-optional fields on **both response bodies**". There are two things called "advance" and **neither response points at the relay**: `/proxy/relay/channels/<id>/advance` is a **Django→relay** call whose *request* carries the resolved source and whose *response* is the relay's own switch result, read back by Django. Putting names on that response would send them in the direction that already has an open ORM.
+
+**Ruling: "advance" means the advance REQUEST body.** The evidence, verified against this tree at `ef3d3145`:
+
+- `apps/proxy/relay_serializers.py:187` — `class RelayAdvanceRequestSerializer(serializers.Serializer)`.
+- `apps/proxy/relay_serializers.py:188-192` — its docstring: *"`url` is required: Django resolves the candidate in the API process, where the ORM is, and the relay applies it."* That is the Django→relay direction stated by the contract itself.
+- `apps/proxy/relay_serializers.py:202` — `stream_name` is **already** a field on that request serializer. The key exists; what does not exist is a producer that fills it, because the `Source` contract had no `stream_name` to fill it from.
+
+That request body is the only direction that can close `services/channel_service.py:911`, which is the row the spec's own table assigns to this change. **The spec's wording is wrong and will be corrected separately** — do not edit the spec from this branch.
+
+**`proxy_settings` is deliberately not consumed by the Python relay — ruled, with the reason, not just the decision.** Task 2 puts it on the response, on `ProxySettingsSerializer` and in the drf-spectacular schema, and stops there. Wiring `StreamManager.__init__` to prefer it would collapse the 10-second staleness window *in the Python relay, mid-phase*, and that is a behaviour change **no 2b gate asks for**. It is also the wrong system to change now: Gate 2's coverage measurement over these same modules is already timing-sensitive — the floor file records four regions that flap between runs, and the shape rules exist because a `gevent.sleep()` boundary decides whether a statement is counted — so altering when a running channel picks up a settings change perturbs the very measurement 2b-4 has to close. The spec's stated purpose for this field is that **the Go relay** never reads `CoreSettings`, and the Go relay is 2c's.
 
 **Type consistency check:** `tune_extras` is spelled identically in Tasks 3, 4 and 6 and has exactly four keys in all of them. `ffmpeg_stream_profile` uses `args` (not `parameters`) on the wire in Task 2, in the hash in Task 3, and when reconstructing the model in Task 6. `ChannelMetadataField.M3U_PROFILE_NAME` and `.FFMPEG_STREAM_PROFILE` are defined once (Task 3) and referenced by those exact names in Tasks 4, 5 and 6.
 
 ---
+
+## Handing the three out-of-scope ORM findings forward
+
+§ *Three findings the spec's 2b table does not contain* (above) records three ORM reads that survive in the relay and that **no 2b PR removes**. The orchestrator has filed them as an issue on `D10Scot/Dispatcharr` so they cannot be lost. **Task 7's PR body must cite that issue by number.** Find it:
+
+```bash
+gh issue list --repo D10Scot/Dispatcharr --state open --search "get_stream_profile static guard blind"
+```
+
+Always with an explicit `--repo` — `gh` otherwise resolves to the upstream public tracker.
+
+The one that matters most, and the sentence to put in the PR body verbatim:
+
+> `channel.get_stream_profile()` at `apps/proxy/live_proxy/views.py:430` and `apps/proxy/live_proxy/input/manager.py:741`/`:745` is an ORM read with **no `.objects.` and no `get_object_or_404(` on its line**. 2b-3's part-1 static guard is structurally blind to it, so a green part-1 with this read live would be a false "zero ORM reads" — the same class of failure the spec already corrected the naive `grep -rn "\.objects\." apps/proxy/live_proxy/` for once, arriving by a different route. Only 2b-3's part-2 runtime check can see it.
+
+If 2b-3's author reads a green static guard as "done", that is the failure this paragraph exists to prevent. Say it in the PR body; do not leave it in this plan alone.
 
 ## Adjacent claims this plan did NOT verify
 
