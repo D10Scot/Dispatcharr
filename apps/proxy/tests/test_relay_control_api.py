@@ -314,6 +314,43 @@ class RelayClientAndAdvanceTests(TestCase):
             42,
             3,
             stream_name="Two",
+            channel_name=None,
+            m3u_profile_name=None,
+        )
+        self.assertEqual(response.json()["success"], True)
+
+    def test_advance_passes_channel_name_and_m3u_profile_name_through(self):
+        """PIN. Phase 2 PR 2b-1: the prior test always sends None for both
+        of these, which passes trivially whether or not the route actually
+        threads them through -- this sends real values on the wire."""
+        path = "/proxy/relay/channels/abc/advance"
+        payload = {
+            "stream_id": 42,
+            "url": "http://provider.example/next",
+            "user_agent": "Dispatcharr",
+            "m3u_profile_id": 3,
+            "stream_name": "Two",
+            "channel_name": "BBC Two",
+            "m3u_profile_name": "Provider A default",
+        }
+        body = json.dumps(payload).encode()
+        with mock.patch.object(
+            relay_views.ChannelService, "change_stream_url",
+            return_value={"status": "success", "success": True, "direct_update": True},
+        ) as changed:
+            response = self.client.post(
+                path, data=body, content_type="application/json",
+                **_signed("POST", path, body),
+            )
+        changed.assert_called_once_with(
+            "abc",
+            "http://provider.example/next",
+            "Dispatcharr",
+            42,
+            3,
+            stream_name="Two",
+            channel_name="BBC Two",
+            m3u_profile_name="Provider A default",
         )
         self.assertEqual(response.json()["success"], True)
 
@@ -525,7 +562,8 @@ class RelayClientRoundTripTests(TestCase):
                 "abc", url="http://p/x", stream_id=42, reset_tried=True
             )
         changed.assert_called_once_with(
-            "abc", "http://p/x", None, 42, None, stream_name=None
+            "abc", "http://p/x", None, 42, None, stream_name=None,
+            channel_name=None, m3u_profile_name=None,
         )
         self.assertEqual(manager.tried_stream_ids, set())
         self.assertEqual(result["success"], True)

@@ -879,6 +879,8 @@ def change_stream(request, channel_id):
         stream_id = data.get("stream_id")
         m3u_profile_id = None
         stream_name = None
+        channel_name = None
+        m3u_profile_name = None
 
         # Coerce at the boundary: the Stats card's Select yields a string id
         # and, in the split deployment, this travels to the relay as JSON
@@ -918,16 +920,13 @@ def change_stream(request, channel_id):
             new_url = stream_info["url"]
             user_agent = stream_info["user_agent"]
             m3u_profile_id = stream_info.get("m3u_profile_id")
-            # Always None: the Source contract (S10 point 3, apps/proxy/
-            # next_source.py's _source_from_info) carries seven fields and
-            # stream_name is not one of them. The name is resolved by primary
-            # key on the relay side instead -- ChannelService.
-            # _update_channel_metadata and initialize_channel both fall back
-            # to Stream.objects.filter(id=stream_id) when the caller passes
-            # none, and the spec's ORM-reads table keeps exactly those two
-            # lookups in the relay. Passing the key through and letting the
-            # relay resolve it is the intended path, not an omission.
+            # Phase 2 PR 2b-1: the Source carries the names now. Before this
+            # PR the key did not exist, so this was always None and the relay
+            # re-resolved the name by primary key
+            # (services/channel_service.py:911).
             stream_name = stream_info.get("stream_name")
+            channel_name = stream_info.get("channel_name")
+            m3u_profile_name = stream_info.get("m3u_profile_name")
         elif not new_url:
             return JsonResponse(
                 {"error": "Either url or stream_id must be provided"}, status=400
@@ -950,6 +949,8 @@ def change_stream(request, channel_id):
             stream_id=stream_id,
             m3u_profile_id=m3u_profile_id,
             stream_name=stream_name,
+            channel_name=channel_name,
+            m3u_profile_name=m3u_profile_name,
             reset_tried=True,
         )
 
@@ -1278,16 +1279,13 @@ def next_stream(request, channel_id):
             user_agent=stream_info["user_agent"],
             stream_id=next_stream_id,
             m3u_profile_id=stream_info.get("m3u_profile_id"),
-            # Always None: the Source contract (S10 point 3, apps/proxy/
-            # next_source.py's _source_from_info) carries seven fields and
-            # stream_name is not one of them. The name is resolved by primary
-            # key on the relay side instead -- ChannelService.
-            # _update_channel_metadata and initialize_channel both fall back
-            # to Stream.objects.filter(id=stream_id) when the caller passes
-            # none, and the spec's ORM-reads table keeps exactly those two
-            # lookups in the relay. Passing the key through and letting the
-            # relay resolve it is the intended path, not an omission.
+            # Phase 2 PR 2b-1: the Source carries the names now. Before this
+            # PR the key did not exist, so this was always None and the relay
+            # re-resolved the name by primary key
+            # (services/channel_service.py:911).
             stream_name=stream_info.get("stream_name"),
+            channel_name=stream_info.get("channel_name"),
+            m3u_profile_name=stream_info.get("m3u_profile_name"),
         )
 
         if result.get("status") == "error":

@@ -453,6 +453,8 @@ class RelayClientCallTests(SimpleTestCase):
                 "stream_id": 42,
                 "m3u_profile_id": 3,
                 "stream_name": "Two",
+                "channel_name": None,
+                "m3u_profile_name": None,
                 "reset_tried": True,
             },
         )

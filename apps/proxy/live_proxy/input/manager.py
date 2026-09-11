@@ -2115,17 +2115,25 @@ class StreamManager:
 
             if hasattr(self.buffer, "redis_client") and self.buffer.redis_client:
                 try:
+                    mapping = {
+                        ChannelMetadataField.URL: source["url"],
+                        ChannelMetadataField.USER_AGENT: source["user_agent"],
+                        ChannelMetadataField.STREAM_PROFILE: str(source["stream_profile"]["id"]),
+                        ChannelMetadataField.M3U_PROFILE: str(profile_id),
+                        ChannelMetadataField.STREAM_ID: str(stream_id),
+                        ChannelMetadataField.STREAM_SWITCH_TIME: str(time.time()),
+                        ChannelMetadataField.STREAM_SWITCH_REASON: "max_retries_exceeded",
+                    }
+                    # Phase 2 PR 2b-1: before this, the hash kept the PREVIOUS
+                    # stream's name after an automatic failover -- a stale
+                    # value, which is why channel_status.py:74's "no name in
+                    # Redis" fallback never fired for it.
+                    if source.get("stream_name"):
+                        mapping[ChannelMetadataField.STREAM_NAME] = source["stream_name"]
+                    if source.get("m3u_profile_name"):
+                        mapping[ChannelMetadataField.M3U_PROFILE_NAME] = source["m3u_profile_name"]
                     self.buffer.redis_client.hset(
-                        RedisKeys.channel_metadata(self.channel_id),
-                        mapping={
-                            ChannelMetadataField.URL: source["url"],
-                            ChannelMetadataField.USER_AGENT: source["user_agent"],
-                            ChannelMetadataField.STREAM_PROFILE: str(source["stream_profile"]["id"]),
-                            ChannelMetadataField.M3U_PROFILE: str(profile_id),
-                            ChannelMetadataField.STREAM_ID: str(stream_id),
-                            ChannelMetadataField.STREAM_SWITCH_TIME: str(time.time()),
-                            ChannelMetadataField.STREAM_SWITCH_REASON: "max_retries_exceeded",
-                        },
+                        RedisKeys.channel_metadata(self.channel_id), mapping=mapping
                     )
                 except Exception as e:
                     # The switch already happened (update_url returned True):

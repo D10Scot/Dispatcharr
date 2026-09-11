@@ -112,6 +112,31 @@ class TryNextStreamTests(TestCase):
         self.assertIn(ChannelMetadataField.STREAM_SWITCH_TIME, mapping)
         self.assertIn(ChannelMetadataField.STREAM_SWITCH_REASON, mapping)
 
+    def test_an_automatic_failover_writes_the_new_stream_name(self):
+        """PIN. Before Phase 2 PR 2b-1 this hset carried no STREAM_NAME, so
+        the status payload kept reporting the PREVIOUS stream's name after a
+        failover -- a stale value, not a missing one, so channel_status.py's
+        "no name in Redis" fallback never fired for it."""
+        sm = make_manager(current_stream_id=1, tried={1})
+        source = make_source(stream_id=2, url="http://next", profile_id=99, m3u_profile_id=55)
+        source["stream_name"] = "BBC Two HD"
+        source["m3u_profile_name"] = "Provider A default"
+        answer = {"source": source, "alternates": [], "error": None}
+
+        with patch("apps.proxy.control_plane.next_source", return_value=answer):
+            result = sm._try_next_stream()
+
+        self.assertTrue(result)
+        metadata_key = RedisKeys.channel_metadata(sm.channel_id)
+        hset_calls = [
+            call for call in sm.buffer.redis_client.hset.call_args_list
+            if call.args and call.args[0] == metadata_key
+        ]
+        self.assertEqual(len(hset_calls), 1)
+        mapping = hset_calls[0].kwargs["mapping"]
+        self.assertEqual(mapping[ChannelMetadataField.STREAM_NAME], "BBC Two HD")
+        self.assertEqual(mapping[ChannelMetadataField.M3U_PROFILE_NAME], "Provider A default")
+
     def test_no_source_left_returns_false(self):
         sm = make_manager()
         answer = {"source": None, "alternates": [], "error": "No alternate stream with available connections"}

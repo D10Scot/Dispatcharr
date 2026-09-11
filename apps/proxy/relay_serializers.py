@@ -202,6 +202,15 @@ class RelayAdvanceRequestSerializer(serializers.Serializer):
     stream_name = serializers.CharField(
         required=False, allow_blank=True, allow_null=True, default=None
     )
+    # Phase 2 PR 2b-1: Django resolved these while it chose the source, so the
+    # relay writes them into its metadata hash instead of re-querying
+    # (services/channel_service.py:911 in the spec's § Stage 2b table).
+    channel_name = serializers.CharField(
+        required=False, allow_blank=True, allow_null=True, default=None
+    )
+    m3u_profile_name = serializers.CharField(
+        required=False, allow_blank=True, allow_null=True, default=None
+    )
     # /proxy/ts/change_stream/ has always cleared the running manager's
     # tried_stream_ids so an operator's manual switch does not inherit a
     # failover's exclusion list. That reset used to run in the same

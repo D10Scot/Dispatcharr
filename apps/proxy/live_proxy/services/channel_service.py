@@ -8,7 +8,6 @@ import time
 import json
 import gevent
 from django.db import close_old_connections
-from apps.channels.models import Stream
 from ..server import ProxyServer
 from ..redis_keys import RedisKeys
 from ..constants import EventType, ChannelState, ChannelMetadataField, REDIS_TTL_MEDIUM
@@ -381,7 +380,8 @@ class ChannelService:
             close_old_connections()
 
     @staticmethod
-    def change_stream_url(channel_id, new_url=None, user_agent=None, target_stream_id=None, m3u_profile_id=None, stream_name=None):
+    def change_stream_url(channel_id, new_url=None, user_agent=None, target_stream_id=None, m3u_profile_id=None,
+                          stream_name=None, channel_name=None, m3u_profile_name=None):
         """
         Change the URL of an existing stream.
 
@@ -391,6 +391,9 @@ class ChannelService:
             user_agent: Optional user agent to update
             target_stream_id: Optional target stream ID to switch to
             m3u_profile_id: Optional M3U profile ID to update
+            stream_name: Optional stream name (avoids DB lookup if already known)
+            channel_name: Optional channel name (avoids DB lookup if already known)
+            m3u_profile_name: Optional M3U profile name (avoids DB lookup if already known)
 
         Returns:
             dict: Result information including success status and diagnostics
@@ -420,6 +423,8 @@ class ChannelService:
             user_agent = stream_info['user_agent']
             stream_id = target_stream_id
             stream_name = stream_info.get('stream_name')
+            channel_name = stream_info.get('channel_name')
+            m3u_profile_name = stream_info.get('m3u_profile_name')
             # Extract M3U profile ID from stream info if available
             if 'm3u_profile_id' in stream_info:
                 m3u_profile_id = stream_info['m3u_profile_id']
@@ -498,7 +503,10 @@ class ChannelService:
             if proxy_server.redis_client:
                 try:
                     if success:
-                        ChannelService._update_channel_metadata(channel_id, new_url, user_agent, stream_id, m3u_profile_id, stream_name)
+                        ChannelService._update_channel_metadata(
+                            channel_id, new_url, user_agent, stream_id, m3u_profile_id,
+                            stream_name, channel_name=channel_name, m3u_profile_name=m3u_profile_name,
+                        )
                     else:
                         ChannelService._update_channel_metadata(channel_id, manager.url, user_agent)
                     result['metadata_updated'] = True
@@ -898,7 +906,8 @@ class ChannelService:
     # Helper methods for Redis operations
 
     @staticmethod
-    def _update_channel_metadata(channel_id, url, user_agent=None, stream_id=None, m3u_profile_id=None, stream_name=None):
+    def _update_channel_metadata(channel_id, url, user_agent=None, stream_id=None, m3u_profile_id=None,
+                                 stream_name=None, channel_name=None, m3u_profile_name=None):
         """Update channel metadata in Redis"""
         try:
             proxy_server = ProxyServer.get_instance()
@@ -918,16 +927,14 @@ class ChannelService:
                 metadata[ChannelMetadataField.USER_AGENT] = user_agent
             if stream_id:
                 metadata[ChannelMetadataField.STREAM_ID] = str(stream_id)
-                if not stream_name:
-                    try:
-                        from apps.channels.models import Stream
-                        stream_name = Stream.objects.filter(id=stream_id).values_list('name', flat=True).first()
-                    except Exception as e:
-                        logger.warning(f"Failed to update stream name in Redis for stream {stream_id}: {e}")
                 if stream_name:
                     metadata[ChannelMetadataField.STREAM_NAME] = stream_name
             if m3u_profile_id:
                 metadata[ChannelMetadataField.M3U_PROFILE] = str(m3u_profile_id)
+            if channel_name:
+                metadata[ChannelMetadataField.CHANNEL_NAME] = channel_name
+            if m3u_profile_name:
+                metadata[ChannelMetadataField.M3U_PROFILE_NAME] = m3u_profile_name
 
             # Also update the stream switch time field
             metadata[ChannelMetadataField.STREAM_SWITCH_TIME] = str(time.time())

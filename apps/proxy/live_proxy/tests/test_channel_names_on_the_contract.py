@@ -102,3 +102,32 @@ class InitializeChannelStoresTheNamesTests(TestCase):
                     m3u_profile_name="Provider A default",
                     ffmpeg_stream_profile=None,
                 )
+
+
+class SwitchPathsCarryTheNamesTests(TestCase):
+    def test_change_stream_url_writes_the_supplied_names_without_a_query(self):
+        """PIN. services/channel_service.py:911's Stream.objects fallback is
+        what this replaces."""
+        from unittest.mock import MagicMock
+
+        proxy_server = MagicMock()
+        proxy_server.redis_client = MagicMock()
+        proxy_server.redis_client.type.return_value = "hash"
+        with patch(
+            "apps.proxy.live_proxy.services.channel_service.ProxyServer"
+        ) as cls:
+            cls.get_instance.return_value = proxy_server
+            with self.assertNumQueries(0):
+                ChannelService._update_channel_metadata(
+                    "chan-uuid", "http://u/new.ts", "UA",
+                    stream_id=11, m3u_profile_id=3,
+                    stream_name="BBC Two HD",
+                    channel_name="BBC Two",
+                    m3u_profile_name="Provider A default",
+                )
+        mapping = proxy_server.redis_client.hset.call_args.kwargs["mapping"]
+        self.assertEqual(mapping[ChannelMetadataField.STREAM_NAME], "BBC Two HD")
+        self.assertEqual(mapping[ChannelMetadataField.CHANNEL_NAME], "BBC Two")
+        self.assertEqual(
+            mapping[ChannelMetadataField.M3U_PROFILE_NAME], "Provider A default"
+        )
