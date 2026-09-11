@@ -119,6 +119,38 @@ class OwnerPathTests(TestCase):
         metadata = redis.hashes[RedisKeys.channel_metadata(CHANNEL_ID)]
         self.assertEqual(metadata[ChannelMetadataField.STREAM_ID], "144065")
 
+    def test_owner_switch_persists_channel_name_and_m3u_profile_name(self):
+        """PIN. Phase 2 PR 2b-1, review hop 9. Every other test in this class
+        calls change_stream_url with stream_name alone -- channel_name and
+        m3u_profile_name default to None, so nothing here could tell a
+        threaded value from a dropped one. This one supplies real, distinct
+        values for both."""
+        redis = FakeRedis()
+        proxy = make_proxy_server(redis, owner=True)
+
+        manager = MagicMock()
+        manager.url = "http://provider.example/stream/296622.ts"
+        manager.update_url.return_value = True
+        proxy.stream_managers[CHANNEL_ID] = manager
+
+        with patch.object(cs_module.ProxyServer, "get_instance", return_value=proxy), \
+             patch("django.db.close_old_connections"):
+            ChannelService.change_stream_url(
+                CHANNEL_ID, NEW_URL, "test-agent",
+                target_stream_id=144065, m3u_profile_id=7,
+                stream_name="Alt Feed",
+                channel_name="Real Hop 9 Channel Name",
+                m3u_profile_name="Real Hop 9 Profile Name",
+            )
+
+        metadata = redis.hashes[RedisKeys.channel_metadata(CHANNEL_ID)]
+        self.assertEqual(
+            metadata[ChannelMetadataField.CHANNEL_NAME], "Real Hop 9 Channel Name"
+        )
+        self.assertEqual(
+            metadata[ChannelMetadataField.M3U_PROFILE_NAME], "Real Hop 9 Profile Name"
+        )
+
 
 class NonOwnerPathTests(TestCase):
     def _run(self, owner_outcome):

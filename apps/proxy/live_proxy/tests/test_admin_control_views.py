@@ -125,6 +125,37 @@ class AdminControlViewTests(TestCase):
         self.assertEqual(body["previous_stream_id"], stream_a.id)
         self.assertEqual(body["new_stream_id"], stream_b.id)
 
+    def test_next_stream_passes_channel_name_and_m3u_profile_name_through(self):
+        """PIN. Phase 2 PR 2b-1, review hop 6. The test above never sets
+        channel_name/m3u_profile_name in its source fixture, so it cannot
+        tell a threaded value from a silently dropped one -- both look like
+        None. This one sends real, distinct values."""
+        channel, stream_a, stream_b = self._make_channel_with_streams()
+        running = {"stream_id": stream_a.id, "m3u_profile_id": 3}
+        source = {
+            "url": "http://provider.example/b.ts",
+            "user_agent": "test-agent",
+            "m3u_profile_id": 7,
+            "stream_name": "Stream B",
+            "channel_name": "Real Next Stream Channel Name",
+            "m3u_profile_name": "Real Next Stream Profile Name",
+        }
+        with mock.patch.object(
+            relay_client, "get_channel", return_value=running
+        ), mock.patch(
+            "apps.proxy.next_source.resolve_source",
+            return_value={"source": source, "error": None},
+        ), mock.patch.object(
+            relay_client, "advance",
+            return_value={"status": "success", "success": True, "direct_update": True},
+        ) as advanced:
+            response = self.client.post(f"/proxy/ts/next_stream/{channel.uuid}")
+
+        self.assertEqual(response.status_code, 200)
+        kwargs = advanced.call_args.kwargs
+        self.assertEqual(kwargs["channel_name"], "Real Next Stream Channel Name")
+        self.assertEqual(kwargs["m3u_profile_name"], "Real Next Stream Profile Name")
+
     def test_next_stream_is_503_when_the_relay_cannot_answer(self):
         channel, _stream_a, _stream_b = self._make_channel_with_streams()
         with mock.patch.object(
@@ -240,6 +271,36 @@ class AdminControlViewTests(TestCase):
         self.assertIs(advanced.call_args.kwargs["reset_tried"], True)
         self.assertEqual(advanced.call_args.kwargs["stream_id"], 42)
         self.assertEqual(response.json()["stream_id"], 42)
+
+    def test_change_stream_passes_channel_name_and_m3u_profile_name_through(self):
+        """PIN. Phase 2 PR 2b-1, review hop 6. The test above never sets
+        channel_name/m3u_profile_name in its source fixture, so it cannot
+        tell a threaded value from a silently dropped one -- both look like
+        None. This one sends real, distinct values."""
+        source = {
+            "url": "http://p/next",
+            "user_agent": "d",
+            "m3u_profile_id": 3,
+            "stream_name": "Two",
+            "channel_name": "Real Change Stream Channel Name",
+            "m3u_profile_name": "Real Change Stream Profile Name",
+        }
+        with mock.patch(
+            "apps.proxy.next_source.resolve_source",
+            return_value={"source": source, "error": None},
+        ), mock.patch.object(
+            relay_client, "advance",
+            return_value={"status": "success", "success": True, "direct_update": True},
+        ) as advanced:
+            response = self.client.post(
+                "/proxy/ts/change_stream/abc",
+                data={"stream_id": 42},
+                format="json",
+            )
+        self.assertEqual(response.status_code, 200)
+        kwargs = advanced.call_args.kwargs
+        self.assertEqual(kwargs["channel_name"], "Real Change Stream Channel Name")
+        self.assertEqual(kwargs["m3u_profile_name"], "Real Change Stream Profile Name")
 
     def test_change_stream_still_rejects_a_non_integer_stream_id(self):
         response = self.client.post(
