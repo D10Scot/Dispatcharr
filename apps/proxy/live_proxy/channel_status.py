@@ -87,17 +87,31 @@ class ChannelStatus:
                     m3u_profile_id = int(m3u_profile_id_bytes)
                     info['m3u_profile_id'] = m3u_profile_id
 
-                    try:
-                        from apps.m3u.models import M3UAccountProfile
-                        m3u_profile = M3UAccountProfile.objects.filter(
-                            id=m3u_profile_id
-                        ).first()
-                        if m3u_profile:
-                            info['m3u_profile_name'] = m3u_profile.name
-                    except (ImportError, DatabaseError) as e:
-                        logger.warning(
-                            f"Failed to get M3U profile name for ID {m3u_profile_id}: {e}"
+                    stored_name = metadata.get(ChannelMetadataField.M3U_PROFILE_NAME)
+                    if stored_name:
+                        info['m3u_profile_name'] = (
+                            stored_name.decode()
+                            if isinstance(stored_name, bytes)
+                            else stored_name
                         )
+                    else:
+                        # Phase 2 PR 2b-1 writes M3U_PROFILE_NAME at channel
+                        # init and on every switch, so this branch is now a
+                        # defensive read for whatever path does not (yet,
+                        # provably) write one. Deliberately NOT deleted here:
+                        # 2b-3 owns the question of whether it is reachable,
+                        # and parity-matrix row 18 is where the answer goes.
+                        try:
+                            from apps.m3u.models import M3UAccountProfile
+                            m3u_profile = M3UAccountProfile.objects.filter(
+                                id=m3u_profile_id
+                            ).first()
+                            if m3u_profile:
+                                info['m3u_profile_name'] = m3u_profile.name
+                        except (ImportError, DatabaseError) as e:
+                            logger.warning(
+                                f"Failed to get M3U profile name for ID {m3u_profile_id}: {e}"
+                            )
                 except ValueError:
                     logger.warning(
                         f"Invalid m3u_profile_id format in Redis: {m3u_profile_id_bytes}"

@@ -11,7 +11,11 @@ from unittest.mock import patch
 from django.test import TestCase
 
 from apps.proxy.live_proxy.constants import ChannelMetadataField
+from apps.proxy.live_proxy.server import ProxyServer
 from apps.proxy.live_proxy.services.channel_service import ChannelService
+from .harness.control import ControlMixin
+from .harness.process import stand_in_stream_profile
+from .harness.relay import RelayHarnessTestCase
 
 
 class InitializeChannelStoresTheNamesTests(TestCase):
@@ -131,3 +135,29 @@ class SwitchPathsCarryTheNamesTests(TestCase):
         self.assertEqual(
             mapping[ChannelMetadataField.M3U_PROFILE_NAME], "Provider A default"
         )
+
+
+class StatusPrefersTheStoredProfileNameTests(ControlMixin, RelayHarnessTestCase):
+    """PIN, end to end through the relay's own HTTP surface.
+
+    The hash is seeded with a name that DIFFERS from the row's, so a pass
+    cannot come from the ORM happening to return the same string. That is
+    the whole assertion: the status endpoint reads the hash, not the row.
+    """
+
+    def test_the_status_payload_reports_the_stored_profile_name(self):
+        self.redis = ProxyServer.get_instance().redis_client
+        self.assertIsNotNone(self.redis, "the harness needs a real Redis client")
+        with self.stand_in():
+            profile = stand_in_stream_profile()
+            channel = self.make_channel(upstream_url=self.upstream.url, profile=profile)
+            with self.tuned(channel):
+                self.redis.hset(
+                    f"live:channel:{channel.uuid}:metadata",
+                    ChannelMetadataField.M3U_PROFILE_NAME,
+                    "name-only-in-redis",
+                )
+                status_code, body = self.status(channel)
+            self.assertEqual(status_code, 200)
+            self.assertEqual(body["m3u_profile_name"], "name-only-in-redis")
+        self.stop_channel(channel)
