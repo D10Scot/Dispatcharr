@@ -283,8 +283,18 @@ class InitializeChannelStoresTheNamesTests(TestCase):
         self.assertIn(ChannelMetadataField.FFMPEG_STREAM_PROFILE, seen)
 
     def test_initialize_channel_runs_no_query_when_the_names_are_supplied(self):
-        """PIN. This is the whole point of the PR: with names in hand, the
-        relay's init path touches the ORM zero times."""
+        """PIN, precisely: this proves initialize_channel makes zero queries
+        when called with names supplied -- NOT that supplying names is what
+        makes the difference. Task 3 deleted the two ORM fallbacks
+        (Channel.objects/Stream.objects) outright rather than gating them
+        on missing names, so as of this PR initialize_channel makes zero
+        queries regardless of whether names are supplied (confirmed with
+        Django's CaptureQueriesContext against channel_name=None,
+        stream_name=None, m3u_profile_name=None, ffmpeg_stream_profile=None
+        during review: also 0). What this test actually guards against is
+        someone re-adding a query unconditionally to this method; it does
+        not, and was never able to, demonstrate the conditional relationship
+        its previous docstring implied."""
         proxy_server = self._redis()
         with patch(
             "apps.proxy.live_proxy.services.channel_service.ProxyServer"

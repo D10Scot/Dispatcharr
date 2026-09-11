@@ -285,6 +285,18 @@ class NextSourceRouteTests(RelayApiTestCase):
         """PIN. Phase 2 PR 2b-1: the wire, not just the resolver."""
         from core.models import CoreSettings
 
+        # get_or_create, not .get(), and done BEFORE the request below (the
+        # resolve happens inside that call): a TransactionTestCase run
+        # earlier in the same process can flush the migration-seeded locked
+        # 'ffmpeg' row away (manager_support.py:105's "Created rather than
+        # fetched" comment documents the same hazard;
+        # test_next_source_resolution.py hit this exact DoesNotExist during
+        # review and was fixed the same way).
+        ffmpeg_profile, _ = StreamProfile.objects.get_or_create(
+            name="ffmpeg", locked=True,
+            defaults={"command": "ffmpeg", "parameters": "-i {streamUrl}"},
+        )
+
         response = self._post(self.next_source_path(str(self.channel.uuid)), {})
         self.assertEqual(response.status_code, 200)
         body = response.json()
@@ -292,7 +304,23 @@ class NextSourceRouteTests(RelayApiTestCase):
         self.assertEqual(source["channel_name"], self.channel.name)
         self.assertEqual(source["stream_name"], self.stream_a.name)
         self.assertEqual(source["m3u_profile_name"], self.m3u_profile.name)
-        self.assertIn("ffmpeg_stream_profile", source)
+        # Value, not just presence: this route always has a real, non-None
+        # value available to check now that the profile above is
+        # guaranteed to exist -- assertIn alone would pass identically
+        # whether the wire carried that value or a wrongly serialized/
+        # dropped one, which matters here specifically because this is the
+        # wire layer (StreamProfileRefSerializer), the layer a Go client
+        # meets, not the resolver-level dict the equivalent
+        # apps.proxy.tests.test_next_source_resolution.py pin already
+        # covers.
+        self.assertEqual(
+            source["ffmpeg_stream_profile"],
+            {
+                "id": ffmpeg_profile.id,
+                "command": ffmpeg_profile.command,
+                "args": ffmpeg_profile.parameters,
+            },
+        )
         self.assertEqual(
             body["proxy_settings"]["buffering_timeout"],
             CoreSettings.get_proxy_settings()["buffering_timeout"],
