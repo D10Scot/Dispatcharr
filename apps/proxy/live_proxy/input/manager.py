@@ -6,6 +6,7 @@ import socket
 import requests
 import subprocess
 import gevent
+import json
 import re
 from django.db import connection, close_old_connections
 from apps.proxy.config import TSConfig as Config
@@ -707,6 +708,48 @@ class StreamManager:
 
             logger.info(f"Stream manager stopped for channel {self.channel_id}")
 
+    def _stored_ffmpeg_profile(self):
+        """The locked ffmpeg StreamProfile, from the metadata hash.
+
+        Phase 2 PR 2b-1. Django resolved it while answering next-source
+        (apps/proxy/next_source.py's _locked_ffmpeg_profile) and wrote it
+        here; the relay no longer queries for the locked 'ffmpeg'
+        StreamProfile in its own process on the force-ffmpeg reconnect path.
+
+        Returns an UNSAVED StreamProfile so build_command() -- which is
+        model behaviour, not data -- still runs. name and locked are set so
+        is_proxy()/is_redirect() answer False, which is what they answer for
+        a real locked 'ffmpeg' row. It is never saved; nothing here writes.
+        """
+        redis_client = getattr(self.buffer, "redis_client", None)
+        if not redis_client:
+            return None
+        try:
+            raw = redis_client.hget(
+                RedisKeys.channel_metadata(self.channel_id),
+                ChannelMetadataField.FFMPEG_STREAM_PROFILE,
+            )
+            if not raw:
+                return None
+            if isinstance(raw, bytes):
+                raw = raw.decode()
+            stored = json.loads(raw)
+            from core.models import StreamProfile
+
+            return StreamProfile(
+                id=stored["id"],
+                name="ffmpeg",
+                locked=True,
+                command=stored["command"],
+                parameters=stored["args"],
+            )
+        except Exception as exc:
+            logger.warning(
+                f"Could not read the stored ffmpeg profile for channel "
+                f"{self.channel_id}: {exc}"
+            )
+            return None
+
     def _establish_transcode_connection(self):
         """Establish a connection using transcoding"""
         try:
@@ -732,12 +775,13 @@ class StreamManager:
 
                 # Use FFmpeg specifically for HLS streams
                 if hasattr(self, 'force_ffmpeg') and self.force_ffmpeg:
-                    from core.models import StreamProfile
-                    try:
-                        stream_profile = StreamProfile.objects.get(name='ffmpeg', locked=True)
+                    stream_profile = self._stored_ffmpeg_profile()
+                    if stream_profile is not None:
                         logger.info("Using FFmpeg stream profile for unsupported proxy content (HLS/RTSP/UDP)")
-                    except StreamProfile.DoesNotExist:
-                        # Fall back to channel's profile if FFmpeg not found
+                    else:
+                        # Pre-2b-1 Django, or no locked ffmpeg profile installed.
+                        # Same fallback the StreamProfile.DoesNotExist branch used
+                        # to take.
                         stream_profile = channel.get_stream_profile()
                         logger.warning(f"FFmpeg profile not found, using channel default profile for channel: {self.channel_id}")
                 else:
