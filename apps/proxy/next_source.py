@@ -66,6 +66,26 @@ def _resolve_live_stream_url(stream, m3u_account, m3u_profile):
     )
 
 
+def _locked_ffmpeg_profile():
+    """The locked 'ffmpeg' StreamProfile, flattened, or None.
+
+    input/manager.py:737 used to run this query inside the relay process on
+    the force-ffmpeg reconnect path (HLS/RTSP/UDP upstreams detected at
+    connect time). Phase 2 PR 2b-1 folds it into every next-source answer
+    instead: Django is already holding an open ORM here, and the relay
+    cannot be.
+
+    None means "no locked ffmpeg profile is installed", which is what the
+    relay's own `except StreamProfile.DoesNotExist` branch already handled
+    by falling back to the channel's own profile. The key is always
+    present so the relay can tell "not installed" from "old Django".
+    """
+    profile = StreamProfile.objects.filter(name="ffmpeg", locked=True).first()
+    if profile is None:
+        return None
+    return {"id": profile.id, "command": profile.command, "args": profile.parameters}
+
+
 def get_stream_object(id: str):
     try:
         logger.info(f"Fetching channel ID {id}")
@@ -270,6 +290,8 @@ def get_stream_info_for_switch(channel_id: str, target_stream_id: Optional[int] 
             'stream_id': stream_id,
             'm3u_profile_id': m3u_profile_id,
             'stream_name': stream.name,
+            'channel_name': channel.name,
+            'm3u_profile_name': m3u_profile.name,
         }
     except Exception as e:
         if slot_reserved and channel is not None:
@@ -470,6 +492,10 @@ def resolve_initial_source(identifier):
                         },
                         "m3u_profile_id": profile_id,
                         "slot_reserved": slot_reserved,
+                        "channel_name": stream.name,
+                        "stream_name": stream.name,
+                        "m3u_profile_name": m3u_profile.name,
+                        "ffmpeg_stream_profile": _locked_ffmpeg_profile(),
                     },
                     "error": None,
                 }
@@ -528,6 +554,10 @@ def resolve_initial_source(identifier):
                     },
                     "m3u_profile_id": profile_id,
                     "slot_reserved": slot_reserved,
+                    "channel_name": channel.name,
+                    "stream_name": stream.name,
+                    "m3u_profile_name": m3u_profile.name,
+                    "ffmpeg_stream_profile": _locked_ffmpeg_profile(),
                 },
                 "error": None,
             }
@@ -564,6 +594,10 @@ def _source_from_info(info, *, slot_reserved):
         },
         "m3u_profile_id": info["m3u_profile_id"],
         "slot_reserved": slot_reserved,
+        "channel_name": info.get("channel_name"),
+        "stream_name": info.get("stream_name"),
+        "m3u_profile_name": info.get("m3u_profile_name"),
+        "ffmpeg_stream_profile": _locked_ffmpeg_profile(),
     }
 
 
@@ -595,6 +629,30 @@ def _commit(identifier, info):
     if isinstance(channel, Channel) and info.get("m3u_profile_id"):
         slot_reserved = bool(channel.update_stream_profile(info["m3u_profile_id"]))
     return _source_from_info(info, slot_reserved=slot_reserved)
+
+
+def _with_proxy_settings(answer):
+    """Channel-start-time proxy settings, on every next-source answer.
+
+    Spec § Stage 2b: "2b moves proxy_settings onto the next-source response
+    (channel-start-time values only, matching D5's 'thresholds snapshotted
+    at channel start' parity row)". Read through CoreSettings directly, not
+    apps/proxy/config.py's TSConfig, so the 10-second process-local cache is
+    not in the path. That cache is worse than merely stale: saving
+    proxy_settings clears it in NO worker on the proxy path, because
+    CoreSettings.invalidate_group_cache calls
+    BaseConfig.clear_proxy_settings_cache() while every proxy read goes
+    through TSConfig, whose own class attribute shadows the parent's
+    (issue #232). The 10-second TTL is what actually ends the staleness.
+
+    Nothing in the PYTHON relay consumes this yet, deliberately -- see this
+    plan's § Self-review for the ruling and the reason, and this PR's
+    description.
+    """
+    from core.models import CoreSettings
+
+    answer["proxy_settings"] = CoreSettings.get_proxy_settings()
+    return answer
 
 
 def resolve_source(
@@ -688,17 +746,19 @@ def resolve_source(
                 identifier, answer["source"]["stream_id"]
             )
         answer.setdefault("alternates", [])
-        return answer
+        return _with_proxy_settings(answer)
 
     if target_stream_id is not None:
         info = get_stream_info_for_switch(identifier, target_stream_id)
         if "error" in info:
-            return {"source": None, "alternates": [], "error": info["error"]}
-        return {
+            return _with_proxy_settings(
+                {"source": None, "alternates": [], "error": info["error"]}
+            )
+        return _with_proxy_settings({
             "source": _commit(identifier, info),
             "alternates": [],
             "error": None,
-        }
+        })
 
     # Failover: the ordered traversal, minus what the relay has tried and
     # minus anything resolving to the URL already playing. That last check
@@ -714,16 +774,16 @@ def resolve_source(
             continue
         if current_url and info["url"] == current_url:
             continue
-        return {
+        return _with_proxy_settings({
             "source": _commit(identifier, info),
             "alternates": [],
             "error": None,
-        }
-    return {
+        })
+    return _with_proxy_settings({
         "source": None,
         "alternates": [],
         "error": "No alternate stream with available connections",
-    }
+    })
 
 
 def release_source(identifier, *, stream_id=None, m3u_profile_id=None, channel_pk=None):

@@ -47,6 +47,16 @@ class SourceSerializer(serializers.Serializer):
     # what it reserved; without it, views.py's error paths double-release.
     slot_reserved = serializers.BooleanField()
     stream_profile = StreamProfileRefSerializer()
+    # Phase 2 PR 2b-1. Four values Django holds while it builds this answer
+    # and the relay used to re-query for in its own process
+    # (services/channel_service.py:324,331,911 and input/manager.py:737 in
+    # the spec's § Stage 2b table). Nullable, never absent: a null says
+    # "Django looked and there is nothing", which is a different fact from
+    # a missing key, and the relay's fallbacks branch on exactly that.
+    channel_name = serializers.CharField(allow_null=True)
+    stream_name = serializers.CharField(allow_null=True)
+    m3u_profile_name = serializers.CharField(allow_null=True)
+    ffmpeg_stream_profile = StreamProfileRefSerializer(allow_null=True)
 
 
 class NextSourceRequestSerializer(serializers.Serializer):
@@ -75,10 +85,27 @@ class NextSourceRequestSerializer(serializers.Serializer):
     include_alternates = serializers.BooleanField(required=False, default=False)
 
 
+class ProxySettingsSerializer(serializers.Serializer):
+    """CoreSettings.get_proxy_settings()'s seven keys (core/models.py:709-717).
+
+    Declared field by field rather than as a DictField so the contract is
+    in the drf-spectacular schema and a Go client can generate against it.
+    """
+
+    buffering_timeout = serializers.FloatField()
+    buffering_speed = serializers.FloatField()
+    redis_chunk_ttl = serializers.IntegerField()
+    channel_shutdown_delay = serializers.FloatField()
+    channel_init_grace_period = serializers.FloatField()
+    channel_client_wait_period = serializers.FloatField()
+    new_client_behind_seconds = serializers.FloatField()
+
+
 class NextSourceResponseSerializer(serializers.Serializer):
     source = SourceSerializer(allow_null=True)
     alternates = SourceSerializer(many=True)
     error = serializers.CharField(allow_null=True)
+    proxy_settings = ProxySettingsSerializer()
 
 
 class ReleaseRequestSerializer(serializers.Serializer):

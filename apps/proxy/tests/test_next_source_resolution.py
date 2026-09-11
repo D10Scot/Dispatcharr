@@ -427,9 +427,15 @@ class NextSourceProfileSwitchTests(TestCase):
 
 
 class NextSourceDbCleanupTests(SimpleTestCase):
+    @patch("core.models.CoreSettings.get_proxy_settings")
     @patch("apps.proxy.next_source.close_old_connections")
     @patch("apps.proxy.next_source.get_stream_object")
-    def test_resolve_source_closes_db(self, mock_get_object, mock_close):
+    def test_resolve_source_closes_db(self, mock_get_object, mock_close, mock_proxy_settings):
+        # Phase 2 PR 2b-1: every resolve_source() answer now carries
+        # proxy_settings, which is its own CoreSettings read
+        # (_with_proxy_settings). This test is a SimpleTestCase (no DB), so
+        # that read is mocked out -- it is not what this test is about.
+        mock_proxy_settings.return_value = {}
         channel = MagicMock()
         channel.get_stream.return_value = (None, None, "no streams", False)
         mock_get_object.return_value = channel
@@ -493,3 +499,76 @@ class ReleaseSourceMetadataFallbackTests(SimpleTestCase):
         redis_client.delete.assert_any_call("channel_stream:224")
         redis_client.delete.assert_any_call("stream_profile:2243070")
         mock_release_slot.assert_called_once_with(50, redis_client)
+
+
+class SourceCarriesNamesTests(NextSourceResolutionTests):
+    """PIN. Phase 2 PR 2b-1: every Source carries the names the relay used to
+    re-query for (spec § Stage 2b, the channel_service.py:324,331,911 row) and
+    the locked ffmpeg profile (the input/manager.py:737 row)."""
+
+    def test_the_initial_tune_source_carries_all_four_names(self):
+        from apps.proxy.next_source import resolve_source
+
+        answer = resolve_source(self.channel.uuid)
+        source = answer["source"]
+        self.assertEqual(source["channel_name"], self.channel.name)
+        self.assertEqual(source["stream_name"], self.stream_a.name)
+        self.assertEqual(source["m3u_profile_name"], self.m3u_profile.name)
+
+    def test_a_switch_source_carries_all_four_names(self):
+        from apps.proxy.next_source import resolve_source
+
+        answer = resolve_source(
+            self.channel.uuid, target_stream_id=self.stream_b.id, reason="operator"
+        )
+        source = answer["source"]
+        self.assertEqual(source["channel_name"], self.channel.name)
+        self.assertEqual(source["stream_name"], self.stream_b.name)
+        self.assertEqual(source["m3u_profile_name"], self.m3u_profile.name)
+
+    def test_a_previewed_stream_reports_its_own_name_as_the_channel_name(self):
+        # stream_ts computes channel_display_name as getattr(channel, "name", None)
+        # and a previewed Stream has .name, so this is the value the relay already
+        # displays for a hash tune -- carried, not invented.
+        from apps.proxy.next_source import resolve_source
+
+        answer = resolve_source(self.stream_a.stream_hash)
+        source = answer["source"]
+        self.assertEqual(source["channel_name"], self.stream_a.name)
+        self.assertEqual(source["stream_name"], self.stream_a.name)
+        self.assertEqual(source["m3u_profile_name"], self.m3u_profile.name)
+
+    def test_the_locked_ffmpeg_profile_is_carried_when_one_exists(self):
+        # core/migrations/0006 and 0007 seed a locked 'ffmpeg' profile in
+        # every test database -- creating a second one is possible (name is
+        # not a DB-unique constraint) but _locked_ffmpeg_profile()'s
+        # unfiltered .first() would then return whichever the DB orders
+        # first, not the one this test just made. Assert against the row
+        # that is actually guaranteed to exist instead of fabricating one.
+        from apps.proxy.next_source import resolve_source
+
+        ffmpeg = StreamProfile.objects.get(name="ffmpeg", locked=True)
+        source = resolve_source(self.channel.uuid)["source"]
+        self.assertEqual(
+            source["ffmpeg_stream_profile"],
+            {"id": ffmpeg.id, "command": ffmpeg.command, "args": ffmpeg.parameters},
+        )
+
+    def test_no_locked_ffmpeg_profile_is_a_null_key_not_a_missing_one(self):
+        from apps.proxy.next_source import resolve_source
+
+        # core/signals.py's prevent_deletion_if_locked blocks .delete() on a
+        # locked profile (pre_delete signal). QuerySet.update() sends no
+        # signals, so flipping locked=False is the way to make "no locked
+        # ffmpeg profile" true in a test DB without violating that guard.
+        StreamProfile.objects.filter(name="ffmpeg", locked=True).update(locked=False)
+        source = resolve_source(self.channel.uuid)["source"]
+        self.assertIn("ffmpeg_stream_profile", source)
+        self.assertIsNone(source["ffmpeg_stream_profile"])
+
+    def test_the_answer_carries_proxy_settings_as_resolved_now(self):
+        from core.models import CoreSettings
+        from apps.proxy.next_source import resolve_source
+
+        answer = resolve_source(self.channel.uuid)
+        self.assertEqual(answer["proxy_settings"], CoreSettings.get_proxy_settings())

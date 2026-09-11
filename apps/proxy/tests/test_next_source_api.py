@@ -281,6 +281,42 @@ class NextSourceRouteTests(RelayApiTestCase):
             str(self.channel.uuid), current_stream_id=self.stream_a.id
         )
 
+    def test_next_source_returns_the_four_names_and_proxy_settings(self):
+        """PIN. Phase 2 PR 2b-1: the wire, not just the resolver."""
+        from core.models import CoreSettings
+
+        response = self._post(self.next_source_path(str(self.channel.uuid)), {})
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        source = body["source"]
+        self.assertEqual(source["channel_name"], self.channel.name)
+        self.assertEqual(source["stream_name"], self.stream_a.name)
+        self.assertEqual(source["m3u_profile_name"], self.m3u_profile.name)
+        self.assertIn("ffmpeg_stream_profile", source)
+        self.assertEqual(
+            body["proxy_settings"]["buffering_timeout"],
+            CoreSettings.get_proxy_settings()["buffering_timeout"],
+        )
+
+    def test_next_source_resolves_a_stream_hash_identifier_over_http(self):
+        """PIN for parity-matrix row 16's Django half.
+
+        The single-stream admin preview (/proxy/ts/stream/<stream_hash>) has
+        no Channel, and the relay sends whatever identifier arrived in the
+        URL. next_source.get_stream_object already falls back from
+        Channel.uuid to Stream.stream_hash -- this pins that the ROUTE does
+        too, which nothing covered before: the existing coverage
+        (test_next_source_resolution.py::
+        test_a_stream_hash_identifier_resolves_the_stream_surface) calls
+        resolve_source directly and would still pass if the view rejected
+        the identifier shape.
+        """
+        response = self._post(self.next_source_path(self.stream_a.stream_hash), {})
+        self.assertEqual(response.status_code, 200)
+        source = response.json()["source"]
+        self.assertEqual(source["stream_id"], self.stream_a.id)
+        self.assertEqual(source["channel_name"], self.stream_a.name)
+
 
 class ReleaseRouteTests(RelayApiTestCase):
     def test_release_gives_the_slot_back(self):
