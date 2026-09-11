@@ -55,6 +55,31 @@ class ChangedPathRoutingTests(SimpleTestCase):
         self.assertIn("apps.proxy.live_proxy.tests", labels)
         self.assertIn("apps.channels.tests", labels)
 
+    def test_coverage_gate_script_change_runs_its_own_three_labels(self):
+        """Pins: scripts/coverage_live_path* had no alias and matched no app prefix.
+
+        _labels_under_installed_app_tree only matches a path under an app's own
+        filesystem prefix, and scripts/ isn't one -- so editing Gate 2's own
+        measurement script, rcfile, floor or floor companion used to select no
+        labels at all. CI's `plan` job (backend-tests.yml) reads that as
+        has_tests=false, and coverage-gate is gated on that same flag, so the
+        one job that runs the shape guard this script implements never ran for
+        the one kind of change most likely to need it -- exactly the gap #252's
+        module-list fix landed into unexercised.
+        """
+        expected = {"apps.proxy.tests", "apps.proxy.live_proxy.tests", "apps.channels.tests"}
+        self.assertLessEqual(expected, self.available)
+
+        for path in (
+            "scripts/coverage_live_path.sh",
+            "scripts/coverage_live_path.coveragerc",
+            "scripts/coverage_live_path.floor",
+            "scripts/coverage_live_path.floor.modules",
+            "scripts/coverage_live_path_isolated.sh",
+        ):
+            with self.subTest(path=path):
+                self.assertEqual(self._labels(path), expected)
+
     def test_unaliased_app_change_selects_only_its_own_tests(self):
         """Control: no alias means exactly one label, so the fixes stay narrow.
 
