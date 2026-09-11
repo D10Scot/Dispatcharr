@@ -1,6 +1,6 @@
 {
  "detail": "gh: Resource not accessible by integration (HTTP 403)",
- "fetched_at": "2026-09-10T10:41:30+00:00",
+ "fetched_at": "2026-09-11T10:40:18+00:00",
  "kind": "dependabot_alerts",
  "records": [],
  "repo": "D10Scot/Dispatcharr",
