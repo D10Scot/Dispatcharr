@@ -8,6 +8,14 @@
 #   scripts/coverage_live_path.sh --combine-from <dir>  combine data collected elsewhere, then report
 #   scripts/coverage_live_path.sh --gate [dir]           compare against scripts/coverage_live_path.floor
 #   scripts/coverage_live_path.sh --write-floor [dir]    write the floor from this run (refuses a regression)
+#   scripts/coverage_live_path.sh --write-floor --shape-only [dir]
+#                                                         re-baseline shape/modules/module_count/rcfile
+#                                                         ONLY -- leaves statements/missing/percent/
+#                                                         measured/runs byte-identical. For a module-list
+#                                                         or rcfile-only move where `missing` did not
+#                                                         change; see coverage_live_path.floor's own
+#                                                         HOW TO MOVE THIS FLOOR for which kind of move
+#                                                         this is and is not for.
 #
 # [dir] on --report/--gate/--write-floor is scripts/coverage_live_path_isolated.sh's
 # combined data directory (one .coverage.* + one .shape file per label, gathered from
@@ -310,9 +318,15 @@ gate() {
     echo "coverage_live_path: the module list moved: floor $f_modules ($(floor_value module_count) files)," >&2
     echo "coverage_live_path: this run $modules_hash ($modules_count files)." >&2
     echo "coverage_live_path: added:" >&2
-    LC_ALL=C comm -13 "$MODULES_FILE" <(printf '%s\n' "$modules_list") | sed 's/^/coverage_live_path:   + /' >&2
+    # hash_file_list() above sorted MODULES_FILE's lines before hashing, but comm
+    # reads the file AS WRITTEN and needs its own sortedness, not the hash's --
+    # a hand-reordered companion with the same set of lines still passes the hash
+    # (S1's check compares sorted content) and would then misalign this diff if
+    # fed to comm unsorted. Re-sort here, under the same C locale as $modules_list,
+    # so a reordered-but-otherwise-correct companion still diffs cleanly.
+    LC_ALL=C comm -13 <(LC_ALL=C sort "$MODULES_FILE") <(printf '%s\n' "$modules_list") | sed 's/^/coverage_live_path:   + /' >&2
     echo "coverage_live_path: removed:" >&2
-    LC_ALL=C comm -23 "$MODULES_FILE" <(printf '%s\n' "$modules_list") | sed 's/^/coverage_live_path:   - /' >&2
+    LC_ALL=C comm -23 <(LC_ALL=C sort "$MODULES_FILE") <(printf '%s\n' "$modules_list") | sed 's/^/coverage_live_path:   - /' >&2
     echo "coverage_live_path: that is a finding, not a regression. Re-baseline with --write-floor" >&2
     echo "coverage_live_path: and say in the PR why the module list moved." >&2
     return 1
@@ -367,8 +381,26 @@ gate() {
   return 0
 }
 
+# $1, if "1", is --shape-only: writes shape/modules/module_count/rcfile ONLY and
+# leaves statements/missing/percent/measured/runs byte-identical. See
+# coverage_live_path.floor's HOW TO MOVE THIS FLOOR for which kind of move this is
+# for. This is NOT the override that "HOW TO MOVE" step 4 declined: that request was
+# to accept an explicit `missing` VALUE, which has to thread through the regression
+# check below (which run's figure counts as "worse than the floor"?) and the percent
+# computation (recomputed against which value?) -- real machinery, declined on
+# purpose. --shape-only writes FEWER fields instead, so neither question has
+# anywhere to attach: it never touches `missing` or `percent` at all, and the
+# regression check below is skipped entirely rather than answered.
 write_floor() {
-  local stmts missing pct old
+  local shape_only="${1:-}"
+  # Explicit empty defaults, not bare `local stmts missing pct old`: this
+  # script runs under `set -u`, which (confirmed on this bash) treats a
+  # `local` declared with no value as UNSET, not empty -- and --shape-only
+  # skips the read_totals() call below entirely, so stmts/missing/pct must
+  # already be defined empty strings before they're read again (both in the
+  # "worse floor" check, guarded by shape_only, and unconditionally as
+  # arguments to the python call further down).
+  local stmts="" missing="" pct="" old=""
   # The repo is bind-mounted read-only inside the standard test-hook container
   # (CLAUDE.md, Test hooks), so a plain `python ... open(path, "w")` a few lines
   # below would die with `OSError: [Errno 30] Read-only file system` -- a trace
@@ -384,16 +416,24 @@ write_floor() {
     echo "coverage_live_path: your own clone, or a scratch container with /repo mounted rw." >&2
     return 1
   fi
-  read -r stmts missing pct < <(read_totals) || return 1
-  old="$(floor_value missing)"
-  if [ "$missing" -gt "$old" ] && [ "${COVERAGE_LIVE_PATH_ALLOW_REGRESSION:-}" != "1" ]; then
-    echo "coverage_live_path: refusing to write a WORSE floor ($old -> $missing)." >&2
-    echo "coverage_live_path: a floor may rise only in the PR that earns and explains the rise, and" >&2
-    echo "coverage_live_path: may never simply be edited down. If this is a deliberate re-baseline" >&2
-    echo "coverage_live_path: (the module list moved, or the shape changed), set" >&2
-    echo "coverage_live_path: COVERAGE_LIVE_PATH_ALLOW_REGRESSION=1 and say why in the PR." >&2
-    return 1
+
+  if [ -z "$shape_only" ]; then
+    read -r stmts missing pct < <(read_totals) || return 1
+    old="$(floor_value missing)"
+    if [ "$missing" -gt "$old" ] && [ "${COVERAGE_LIVE_PATH_ALLOW_REGRESSION:-}" != "1" ]; then
+      echo "coverage_live_path: refusing to write a WORSE floor ($old -> $missing)." >&2
+      echo "coverage_live_path: a floor may rise only in the PR that earns and explains the rise, and" >&2
+      echo "coverage_live_path: may never simply be edited down. If the module list or the rcfile" >&2
+      echo "coverage_live_path: changed and missing did NOT, use --write-floor --shape-only instead --" >&2
+      echo "coverage_live_path: it never writes missing/percent/measured/runs, so this check has" >&2
+      echo "coverage_live_path: nothing to refuse. COVERAGE_LIVE_PATH_ALLOW_REGRESSION=1 is for a" >&2
+      echo "coverage_live_path: genuine, explained ratchet increase only -- say why in the PR." >&2
+      return 1
+    fi
   fi
+  # --shape-only takes no measurement of `missing` at all (read_totals() is not
+  # even called above), which is the point: there is no new ratchet figure to
+  # compare, refuse, or accidentally accept, because none is being written.
 
   local modules_out modules_hash modules_count rc_hash_now
   modules_out="$(read_modules)" || return 1
@@ -426,26 +466,47 @@ write_floor() {
   # the same missing field and failed identically: a loop with a false
   # success message at its start. re.subn's match count tells the difference
   # between "replaced" and "line didn't exist"; when it didn't, APPEND the
-  # key=value line instead, so every field named below is always present in
-  # the file this function writes, regardless of what the file had before.
-  if ! python - "$FLOOR_FILE" "$SHAPE_ID" "$stmts" "$missing" "$pct" "${COVERAGE_LIVE_PATH_RUNS:-0}" "$modules_hash" "$modules_count" "$rc_hash_now" <<'PY'
+  # key=value line instead, so every field this call intends to write is
+  # always present in the file afterward, regardless of what the file had
+  # before. shape_only controls WHICH fields that set is -- the four shape
+  # fields always, the five measurement fields (statements included) only on
+  # a plain --write-floor.
+  if ! python - "$FLOOR_FILE" "$SHAPE_ID" "$modules_hash" "$modules_count" "$rc_hash_now" \
+    "$shape_only" "$stmts" "$missing" "$pct" "${COVERAGE_LIVE_PATH_RUNS:-0}" <<'PY'
 import re, sys, datetime
-path, shape, stmts, missing, pct, runs, modules, module_count, rcfile = sys.argv[1:10]
+path, shape, modules, module_count, rcfile, shape_only, stmts, missing, pct, runs = sys.argv[1:11]
 src = open(path).read()
-for k, v in (("shape", shape), ("statements", stmts), ("missing", missing),
-             ("percent", pct), ("measured", datetime.date.today().isoformat()),
-             ("runs", runs), ("modules", modules), ("module_count", module_count),
-             ("rcfile", rcfile)):
-    new_src, n = re.subn(rf"(?m)^{k}=.*$", f"{k}={v}", src)
+
+def set_field(src, k, v):
+    # count=1: reachable only by a deliberate hand edit (this script never
+    # produces a duplicate key= line itself), but re.subn's default replaces
+    # EVERY match, not just the first -- against a floor hand-edited into
+    # having two `k=` lines, that would silently coerce both to the same new
+    # value rather than leaving the duplication visible. One substitution,
+    # at the first line, is the honest behaviour for a file this function
+    # otherwise treats as one-key-per-line.
+    new_src, n = re.subn(rf"(?m)^{k}=.*$", f"{k}={v}", src, count=1)
     if n:
-        src = new_src
-    else:
-        if src and not src.endswith("\n"):
-            src += "\n"
-        src += f"{k}={v}\n"
+        return new_src
+    if src and not src.endswith("\n"):
+        src += "\n"
+    return src + f"{k}={v}\n"
+
+fields = [("shape", shape), ("modules", modules), ("module_count", module_count), ("rcfile", rcfile)]
+if not shape_only:
+    fields += [
+        ("statements", stmts), ("missing", missing), ("percent", pct),
+        ("measured", datetime.date.today().isoformat()), ("runs", runs),
+    ]
+for k, v in fields:
+    src = set_field(src, k, v)
 open(path, "w").write(src)
-print(f"coverage_live_path: floor written -- statements {stmts} missing {missing} coverage {pct}% "
-      f"modules {modules} ({module_count} files) rcfile {rcfile}")
+if shape_only:
+    print(f"coverage_live_path: floor shape re-baselined -- shape {shape} modules {modules} "
+          f"({module_count} files) rcfile {rcfile}; statements/missing/percent/measured/runs left untouched")
+else:
+    print(f"coverage_live_path: floor written -- statements {stmts} missing {missing} coverage {pct}% "
+          f"modules {modules} ({module_count} files) rcfile {rcfile}")
 PY
   then
     rm -f "$modules_tmp"
@@ -475,11 +536,24 @@ case "${1:-}" in
     combine_from "$2" || exit 1
     report; exit $?
     ;;
-  --gate|--write-floor)
-    mode="$1"
+  --gate)
     if [ $# -eq 2 ]; then combine_from "$2" || exit 1; fi
     report >/dev/null || exit 1
-    if [ "$mode" = "--gate" ]; then gate; else write_floor; fi
+    gate
+    exit $?
+    ;;
+  --write-floor)
+    shift
+    shape_only=""
+    if [ "${1:-}" = "--shape-only" ]; then shape_only=1; shift; fi
+    if [ $# -eq 1 ]; then
+      combine_from "$1" || exit 1
+    elif [ $# -gt 1 ]; then
+      echo "usage: $0 --write-floor [--shape-only] [dir]" >&2
+      exit 2
+    fi
+    report >/dev/null || exit 1
+    write_floor "$shape_only"
     exit $?
     ;;
   "")
@@ -510,7 +584,7 @@ case "${1:-}" in
     exit $rc
     ;;
   *)
-    echo "usage: $0 [--label <label> | --report | --combine-from <dir> | --gate [dir] | --write-floor [dir]]" >&2
+    echo "usage: $0 [--label <label> | --report | --combine-from <dir> | --gate [dir] | --write-floor [--shape-only] [dir]]" >&2
     exit 2
     ;;
 esac
