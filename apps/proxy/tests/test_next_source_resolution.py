@@ -84,10 +84,19 @@ class _FakePipeline:
             getattr(self.redis, op)(*args)
 
 
-class NextSourceResolutionTests(TestCase):
+class NextSourceFixture:
     """One channel, two streams on one M3U account with one active default
     profile (max_streams large enough not to interfere), except for the
-    profile-move case, which is its own class below with a second account."""
+    profile-move case, which is its own class below with a second account.
+
+    A plain mixin, not a TestCase subclass: SourceCarriesNamesTests used to
+    inherit NextSourceResolutionTests directly for this fixture, which also
+    inherited that class's own 11 test_* methods -- Django's test loader
+    discovers inherited test methods same as its own, so every one of them
+    ran twice, once under each class name, and any failure in the parent
+    would have been reported under both. `(NextSourceFixture, TestCase)` is
+    the shape that shares setUp without sharing tests.
+    """
 
     def setUp(self):
         self.redis = FakeControlPlaneRedis()
@@ -144,6 +153,8 @@ class NextSourceResolutionTests(TestCase):
         ChannelStream.objects.create(channel=self.channel, stream=self.stream_a, order=0)
         ChannelStream.objects.create(channel=self.channel, stream=self.stream_b, order=1)
 
+
+class NextSourceResolutionTests(NextSourceFixture, TestCase):
     def test_the_initial_call_reserves_a_slot_once(self):
         from apps.proxy.next_source import resolve_source
 
@@ -307,6 +318,27 @@ class NextSourceResolutionTests(TestCase):
         self.assertIn("transcode", alt)
         self.assertIn("m3u_profile_id", alt)
         self.assertFalse(alt["slot_reserved"])
+
+    def test_resolving_with_alternates_runs_the_locked_ffmpeg_query_once(self):
+        """PIN, against the N+1 a review round found: before this,
+        include_alternates=True ran _locked_ffmpeg_profile()'s StreamProfile
+        query once for the primary source (inside resolve_initial_source)
+        plus once per alternate (inside _resolve_alternates ->
+        _source_from_info) -- N+1 total. This fixture's one alternate
+        (stream_b) already distinguishes "ran once" (this test) from "ran
+        twice" (the pre-fix behaviour), which is what matters; a bigger
+        fixture would only make the same assertion's margin larger, not
+        change what it proves.
+        """
+        import apps.proxy.next_source as next_source_module
+        from apps.proxy.next_source import resolve_source
+
+        wrapped = MagicMock(wraps=next_source_module._locked_ffmpeg_profile)
+        with patch.object(next_source_module, "_locked_ffmpeg_profile", wrapped):
+            answer = resolve_source(str(self.channel.uuid), include_alternates=True)
+
+        self.assertEqual(len(answer["alternates"]), 1)
+        self.assertEqual(wrapped.call_count, 1)
 
     def test_include_alternates_on_a_previewed_stream_logs_nothing_and_returns_none(self):
         # Minor finding, fix wave B: generate_stream_url always sends
@@ -501,10 +533,15 @@ class ReleaseSourceMetadataFallbackTests(SimpleTestCase):
         mock_release_slot.assert_called_once_with(50, redis_client)
 
 
-class SourceCarriesNamesTests(NextSourceResolutionTests):
+class SourceCarriesNamesTests(NextSourceFixture, TestCase):
     """PIN. Phase 2 PR 2b-1: every Source carries the names the relay used to
     re-query for (spec § Stage 2b, the channel_service.py:324,331,911 row) and
-    the locked ffmpeg profile (the input/manager.py:737 row)."""
+    the locked ffmpeg profile (the input/manager.py:737 row).
+
+    Shares NextSourceResolutionTests' fixture via NextSourceFixture, not by
+    inheriting that class -- inheriting it would have re-run its 11 test_*
+    methods under this class's name too (a reviewer finding; see the
+    mixin's own docstring above)."""
 
     def test_the_initial_tune_source_carries_all_four_names(self):
         from apps.proxy.next_source import resolve_source

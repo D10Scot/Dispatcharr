@@ -78,18 +78,14 @@ class ForcedFfmpegProfileTests(SimpleTestCase):
         self.assertEqual(sm.stream_command, "channel-default-cmd")
         self.assertNotIn(HASH_MARKER, " ".join(sm.transcode_cmd))
 
-    def test_build_command_still_runs_for_the_stored_profile(self):
-        """PIN, against a real gap the first break-check below exposed: a
-        stored profile with locked=False would answer is_proxy()/
-        is_redirect() no differently (both check locked AND name), so that
-        alone can't be what keeps a Proxy/Redirect row's empty
-        build_command() from slipping through this path. This asserts the
-        built command is non-empty, which a real Proxy/Redirect profile's
-        build_command() never is."""
-        sm = _make_manager()
-        stored = json.dumps(
-            {"id": 9, "command": "ffmpeg", "args": "-i {streamUrl} -c copy -f mpegts pipe:1"}
-        ).encode()
-        self._run_with_stored(sm, stored)
-
-        self.assertTrue(sm.transcode_cmd)
+    # A third test asserting only assertTrue(sm.transcode_cmd) (non-empty)
+    # used to live here, with a docstring claiming it pinned the gap
+    # described in this module's Task 6 break-check 2 (a stored profile
+    # with locked=False slipping a Proxy/Redirect-shaped empty
+    # build_command() through this path). It did not: test_the_stored_
+    # profile_is_used_when_present's own HASH_MARKER assertion already
+    # requires a non-empty transcode_cmd (`HASH_MARKER in "".join([])` is
+    # False), so the dropped test pinned nothing beyond what that one
+    # already does. The gap itself is real and still open -- see the PR
+    # body's break-check 2 for the reasoning -- this was just a docstring
+    # overclaiming that a test closed it.

@@ -66,6 +66,12 @@ def _resolve_live_stream_url(stream, m3u_account, m3u_profile):
     )
 
 
+# Sentinel for "the caller did not pass a memoized locked-ffmpeg profile",
+# distinct from None -- None is itself a valid, meaningful return from
+# _locked_ffmpeg_profile() ("no locked profile installed").
+_UNRESOLVED_FFMPEG_PROFILE = object()
+
+
 def _locked_ffmpeg_profile():
     """The locked 'ffmpeg' StreamProfile, flattened, or None.
 
@@ -79,6 +85,14 @@ def _locked_ffmpeg_profile():
     relay's own `except StreamProfile.DoesNotExist` branch already handled
     by falling back to the channel's own profile. The key is always
     present so the relay can tell "not installed" from "old Django".
+
+    Callers inside this module that run once per resolve_source() call
+    (resolve_initial_source, _source_from_info, _resolve_alternates,
+    _commit) take a `locked_ffmpeg_profile` kwarg instead of calling this
+    directly, so resolve_source() can resolve it once and thread the same
+    value through every Source it builds -- see the N-alternates note on
+    resolve_source() itself. Call this function directly only from
+    resolve_source() (or a test).
     """
     profile = StreamProfile.objects.filter(name="ffmpeg", locked=True).first()
     if profile is None:
@@ -440,6 +454,16 @@ def resolve_initial_source(identifier):
     6-tuple, because Task 7 turns url_utils.generate_stream_url into an HTTP
     call and this is the answer that call carries.
 
+    Each branch below calls _locked_ffmpeg_profile() only at the point it
+    is actually about to build a successful Source, not eagerly at the top
+    of this function -- eager resolution would query on every call,
+    including the ones that end in "no stream available" and never build a
+    Source at all. NextSourceDbCleanupTests's SimpleTestCase pins that this
+    function makes no query until it has something to build. The caller
+    (resolve_source()) reuses the value this function resolved rather than
+    asking this function to accept and thread through a pre-resolved one --
+    see resolve_source()'s N-alternates note.
+
     Returns {"source": <dict|None>, "error": <str|None>}.
     """
     try:
@@ -574,13 +598,20 @@ def resolve_initial_source(identifier):
         close_old_connections()
 
 
-def _source_from_info(info, *, slot_reserved):
+def _source_from_info(info, *, slot_reserved, locked_ffmpeg_profile=_UNRESOLVED_FFMPEG_PROFILE):
     """Shape one Source dict from a get_stream_info_for_switch answer.
 
     `info['stream_profile']` is a core.models.StreamProfile id (the
     ffmpeg/proxy/redirect profile), not the M3U profile — the seven fields
     here are the SourceSerializer contract Task 6 adds.
+
+    locked_ffmpeg_profile: see resolve_source()'s N-alternates note --
+    _resolve_alternates calls this once per candidate, so a caller that
+    knows it in advance (that function, and _commit) should pass it rather
+    than let each call re-run the query.
     """
+    if locked_ffmpeg_profile is _UNRESOLVED_FFMPEG_PROFILE:
+        locked_ffmpeg_profile = _locked_ffmpeg_profile()
     stream_profile = StreamProfile.objects.get(id=info["stream_profile"])
     return {
         "stream_id": info["stream_id"],
@@ -597,22 +628,34 @@ def _source_from_info(info, *, slot_reserved):
         "channel_name": info.get("channel_name"),
         "stream_name": info.get("stream_name"),
         "m3u_profile_name": info.get("m3u_profile_name"),
-        "ffmpeg_stream_profile": _locked_ffmpeg_profile(),
+        "ffmpeg_stream_profile": locked_ffmpeg_profile,
     }
 
 
-def _resolve_alternates(identifier, current_stream_id):
-    """Resolve every alternate candidate without reserving anything."""
+def _resolve_alternates(identifier, current_stream_id, *, locked_ffmpeg_profile=_UNRESOLVED_FFMPEG_PROFILE):
+    """Resolve every alternate candidate without reserving anything.
+
+    locked_ffmpeg_profile is resolved once here (if not already passed in
+    by resolve_source()) and threaded to every _source_from_info() call in
+    the loop below, rather than letting each of the N candidates re-run
+    the same query -- see resolve_source()'s N-alternates note.
+    """
+    if locked_ffmpeg_profile is _UNRESOLVED_FFMPEG_PROFILE:
+        locked_ffmpeg_profile = _locked_ffmpeg_profile()
     alternates = []
     for candidate in get_alternate_streams(identifier, current_stream_id=current_stream_id):
         info = get_stream_info_for_switch(identifier, candidate["stream_id"])
         if "error" in info:
             continue
-        alternates.append(_source_from_info(info, slot_reserved=False))
+        alternates.append(
+            _source_from_info(
+                info, slot_reserved=False, locked_ffmpeg_profile=locked_ffmpeg_profile
+            )
+        )
     return alternates
 
 
-def _commit(identifier, info):
+def _commit(identifier, info, *, locked_ffmpeg_profile=_UNRESOLVED_FFMPEG_PROFILE):
     """Move the provider slot to the chosen candidate, then shape it.
 
     This is exactly the call input/manager.py's update_url made at :1437,
@@ -628,7 +671,9 @@ def _commit(identifier, info):
     slot_reserved = False
     if isinstance(channel, Channel) and info.get("m3u_profile_id"):
         slot_reserved = bool(channel.update_stream_profile(info["m3u_profile_id"]))
-    return _source_from_info(info, slot_reserved=slot_reserved)
+    return _source_from_info(
+        info, slot_reserved=slot_reserved, locked_ffmpeg_profile=locked_ffmpeg_profile
+    )
 
 
 def _with_proxy_settings(answer):
@@ -708,6 +753,23 @@ def resolve_source(
     on both halves. This function adds no try/finally of its
     own: each moved helper still closes its own connections, and
     NextSourceDbCleanupTests asserts exactly one close on the initial path.
+
+    N-alternates note (review round, #253-adjacent): _locked_ffmpeg_profile()
+    is the same StreamProfile query regardless of which candidate is being
+    shaped, so it must not run once per candidate. Before this, the
+    include_alternates=True branch below ran it N+1 times per tune (once
+    inside resolve_initial_source() for the primary source, then once more
+    per alternate inside _resolve_alternates() -> _source_from_info()) for
+    a value the relay never even reads off an alternate (the
+    degraded-fallback path writes no FFMPEG_STREAM_PROFILE). It now runs
+    exactly once: resolve_initial_source() still resolves it lazily, only
+    if it is actually building a Source (so a "no stream available" answer
+    still costs zero queries, unchanged from before), and the value it
+    resolved is reused for every alternate rather than re-queried.
+    test_resolving_with_alternates_runs_the_locked_ffmpeg_query_once below
+    pins the count. _commit()'s own single call (the target-stream and
+    failover branches) is unaffected -- it was never in a loop, so there
+    was nothing to fix there.
     """
     # Resolve the identifier FIRST, outside every try. Both moved
     # helpers end in `except Exception` (originally url_utils.py:161-163
@@ -731,6 +793,14 @@ def resolve_source(
     is_failover_request = current_url is not None or reason == "failover"
 
     if not excluded and target_stream_id is None and not is_failover_request:
+        # No pre-resolved locked_ffmpeg_profile here: resolve_initial_source
+        # queries it lazily, only if it is about to build a Source, so a
+        # "no stream available" answer costs no query at all -- eagerly
+        # resolving it here first would query on every call, including
+        # that one. When there IS a source and alternates are wanted, the
+        # value resolve_initial_source already computed is reused below
+        # instead of _resolve_alternates() resolving its own (see that
+        # function's docstring and resolve_source()'s N-alternates note).
         answer = resolve_initial_source(identifier)
         # A previewed Stream has no assigned alternates -- get_alternate_streams()
         # walks Channel.streams, which a bare Stream doesn't have -- so
@@ -743,7 +813,8 @@ def resolve_source(
             and isinstance(resolved_object, Channel)
         ):
             answer["alternates"] = _resolve_alternates(
-                identifier, answer["source"]["stream_id"]
+                identifier, answer["source"]["stream_id"],
+                locked_ffmpeg_profile=answer["source"]["ffmpeg_stream_profile"],
             )
         answer.setdefault("alternates", [])
         return _with_proxy_settings(answer)

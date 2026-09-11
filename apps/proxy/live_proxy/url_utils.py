@@ -29,7 +29,7 @@ _TUNE_EXTRA_KEYS = (
 )
 
 
-def _tune_extras(source):
+def tune_extras(source):
     """The four values Phase 2 PR 2b-1 added to the Source, defaulted to None.
 
     Always a dict with all four keys, so callers index rather than probe --
@@ -63,14 +63,14 @@ def generate_stream_url(channel_id):
             f"Control plane refused the tune for channel {channel_id}: "
             f"{exc.status}"
         )
-        return None, None, False, None, False, "Control plane refused this channel", _tune_extras(None)
+        return None, None, False, None, False, "Control plane refused this channel", tune_extras(None)
     except control_plane.ControlPlaneUnavailable as exc:
         logger.error(f"Control plane unreachable for channel {channel_id}: {exc}")
-        return None, None, False, None, False, "Control plane unreachable", _tune_extras(None)
+        return None, None, False, None, False, "Control plane unreachable", tune_extras(None)
 
     source = answer.get("source")
     if source is None:
-        return None, None, False, None, False, answer.get("error"), _tune_extras(None)
+        return None, None, False, None, False, answer.get("error"), tune_extras(None)
 
     _cache_alternates(channel_id, answer.get("alternates") or [])
     return (
@@ -80,7 +80,7 @@ def generate_stream_url(channel_id):
         source["stream_profile"]["id"],
         source["slot_reserved"],
         None,
-        _tune_extras(source),
+        tune_extras(source),
     )
 
 

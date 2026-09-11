@@ -31,7 +31,7 @@ from core.utils import send_websocket_update
 from .url_utils import (
     generate_stream_url,
     get_stream_object,
-    _tune_extras,
+    tune_extras as build_tune_extras,
 )
 from .utils import get_logger
 from uuid import UUID
@@ -312,7 +312,7 @@ def stream_ts(request, channel_id, user=None, force_output_format=None, decision
                     profile_value = None
                     slot_reserved = False
                     error_reason = None
-                    tune_extras = _tune_extras(None)
+                    tune_extras = build_tune_extras(None)
                     attempt = 0
                     should_retry = True
 
