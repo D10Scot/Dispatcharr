@@ -8,9 +8,22 @@
 # local cleanup, the stderr-reader join, _wait_for_channel_ready's error branch) and
 # the list has grown twice; a fixed tolerance would be stale on arrival.
 #
-# `shape` and `statements` are EQUALITY checks, not comparisons. A different measurement
+# `shape` and `modules` are EQUALITY checks, not comparisons. A different measurement
 # shape or module list makes two numbers incomparable rather than better or worse, and
-# the gate says so instead of ratcheting.
+# the gate says so instead of ratcheting. `modules` is a sha256 (first 12 hex chars) of
+# the sorted list of repo-relative paths in coverage's JSON `files` report -- i.e. of
+# WHICH files are in scope, not how big they are -- with the full sorted list committed
+# alongside this file in scripts/coverage_live_path.floor.modules so a --gate mismatch
+# can name the files added and removed, not just show two unequal hashes. `module_count`
+# is that list's length, printed for a human skimming the two numbers.
+#
+# `statements` is NOT compared -- it is recorded provenance only, printed alongside the
+# ratchet for information. It moves whenever ANY statement is added to or removed from
+# an ALREADY-INCLUDED module (measured: one three-line function added to
+# apps/proxy/control_plane.py took it 124 -> 127 statements) -- not only when the
+# rcfile's module list changes -- so comparing it for equality used to fire on ordinary
+# code changes to files already in scope. `modules` is what actually answers "did the
+# denominator's composition change", which is the question this guard exists to ask.
 #
 # Written by:  scripts/coverage_live_path.sh --write-floor
 # Enforced by: scripts/coverage_live_path.sh --gate  (backend-tests.yml, job coverage-gate)
@@ -84,7 +97,10 @@
 #      in `missing` below.
 #   3. Run --write-floor once (writable checkout or a scratch rw container -- /repo is
 #      read-only in the standard test-hook container) to get the correct FILE FORMAT,
-#      shape and statements fields machine-produced.
+#      shape, statements, modules and module_count fields machine-produced -- and
+#      scripts/coverage_live_path.floor.modules rewritten to match. Commit that file
+#      alongside this one; it is what lets a future --gate mismatch name files, not
+#      just hashes.
 #   4. Hand-edit `missing` to max(runs) from step 2 if it differs from what
 #      --write-floor's own run produced (it usually will -- one run is rarely the
 #      worst of N), and recompute `percent` = (1 - missing/statements) * 100 to match.
@@ -103,3 +119,5 @@ missing=2050
 percent=74.30
 measured=2026-09-11
 runs=15
+modules=8cb5c65dac3e
+module_count=38

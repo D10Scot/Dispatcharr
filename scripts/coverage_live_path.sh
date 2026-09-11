@@ -172,6 +172,12 @@ PY
 }
 
 FLOOR_FILE="$REPO_ROOT/scripts/coverage_live_path.floor"
+# The floor's module-list evidence: one repo-relative path per line, sorted,
+# sha256-hashed (first 12 hex chars) into the floor file's `modules=` field.
+# `modules=` is the fast equality check; this file is what lets a --gate
+# mismatch NAME the files that moved instead of just showing two hashes.
+# Written by --write-floor alongside FLOOR_FILE; committed together.
+MODULES_FILE="$REPO_ROOT/scripts/coverage_live_path.floor.modules"
 
 # Reads the figures report() just wrote, rather than re-deriving them, so --gate and
 # --write-floor can never drift from what a bare run prints.
@@ -183,26 +189,85 @@ print(t["num_statements"], t["missing_lines"], f'{t["percent_covered"]:.2f}')
 PY
 }
 
+# The resolved module list IS the denominator's real identity -- num_statements
+# moves whenever a statement is added to or removed from an ALREADY-INCLUDED
+# module (measured: one three-line function added to control_plane.py took it
+# 124 -> 127 statements), not only when scripts/coverage_live_path.coveragerc's
+# include list changes. Comparing statements for equality therefore fires on
+# ordinary code changes to files already in scope, not just on scope changes --
+# so the shape guard hashes the FILE SET (report()'s JSON `files` keys, which
+# are repo-relative paths matching the rcfile's include entries) instead.
+# Prints "<hash> <count>" on the first line, then the sorted list, one path per
+# line -- the same list --write-floor commits to MODULES_FILE and gate() diffs
+# against it on a mismatch.
+read_modules() {
+  python - "$COVERAGE_LIVE_PATH_DATA_DIR/live-path.json" <<'PY'
+import hashlib, json, sys
+files = sorted(json.load(open(sys.argv[1]))["files"].keys())
+digest = hashlib.sha256("\n".join(files).encode()).hexdigest()[:12]
+print(f"{digest} {len(files)}")
+for f in files:
+    print(f)
+PY
+}
+
 floor_value() { grep -E "^$1=" "$FLOOR_FILE" | head -1 | cut -d= -f2-; }
 
 gate() {
-  local stmts missing pct f_shape f_stmts f_missing
+  local stmts missing pct f_shape f_stmts f_missing f_modules
+  local modules_out modules_hash modules_count modules_list
   read -r stmts missing pct < <(read_totals) || return 1
   f_shape="$(floor_value shape)"; f_stmts="$(floor_value statements)"
-  f_missing="$(floor_value missing)"
+  f_missing="$(floor_value missing)"; f_modules="$(floor_value modules)"
 
   if [ "$f_shape" != "$SHAPE_ID" ]; then
     echo "coverage_live_path: floor was written under shape '$f_shape'; this run is '$SHAPE_ID'." >&2
     echo "coverage_live_path: these are not comparable. Re-baseline deliberately with --write-floor." >&2
     return 1
   fi
-  if [ "$f_stmts" != "$stmts" ]; then
-    echo "coverage_live_path: the denominator moved: floor $f_stmts, this run $stmts." >&2
-    echo "coverage_live_path: the module list in scripts/coverage_live_path.coveragerc changed." >&2
+
+  # A floor file with no `modules=` field predates this check. Treating an
+  # empty read as "no field to disagree with, so pass" would silently turn a
+  # real shape guard into a no-op -- the exact emptiness-as-success trap
+  # CLAUDE.md warns about for git queries, and it applies here too: fail
+  # loud and say why, rather than pass quietly on a floor that cannot answer.
+  if [ -z "$f_modules" ]; then
+    echo "coverage_live_path: floor has no modules= field (written before the module-list gate" >&2
+    echo "coverage_live_path: existed). Refusing to guess whether the module list matches --" >&2
+    echo "coverage_live_path: re-baseline with --write-floor to add it." >&2
+    return 1
+  fi
+
+  modules_out="$(read_modules)" || return 1
+  modules_hash="$(printf '%s' "$modules_out" | head -1 | cut -d' ' -f1)"
+  modules_count="$(printf '%s' "$modules_out" | head -1 | cut -d' ' -f2)"
+  modules_list="$(printf '%s' "$modules_out" | tail -n +2)"
+
+  if [ "$f_modules" != "$modules_hash" ]; then
+    echo "coverage_live_path: the module list moved: floor $f_modules ($(floor_value module_count) files)," >&2
+    echo "coverage_live_path: this run $modules_hash ($modules_count files)." >&2
+    if [ -f "$MODULES_FILE" ]; then
+      echo "coverage_live_path: added:" >&2
+      comm -13 "$MODULES_FILE" <(printf '%s\n' "$modules_list") | sed 's/^/coverage_live_path:   + /' >&2
+      echo "coverage_live_path: removed:" >&2
+      comm -23 "$MODULES_FILE" <(printf '%s\n' "$modules_list") | sed 's/^/coverage_live_path:   - /' >&2
+    else
+      echo "coverage_live_path: $MODULES_FILE is missing, so the specific files can't be named --" >&2
+      echo "coverage_live_path: the hash mismatch above is still real." >&2
+    fi
     echo "coverage_live_path: that is a finding, not a regression. Re-baseline with --write-floor" >&2
     echo "coverage_live_path: and say in the PR why the module list moved." >&2
     return 1
   fi
+
+  # `statements` is recorded provenance, not compared: it moves with any edit
+  # to an already-included module (see read_modules() above), so it cannot be
+  # the shape check. Printed here for information only.
+  echo "coverage_live_path: denominator: floor $f_stmts statements  this run $stmts statements (informational -- modules= above is the shape check)"
+  # `missing` is the ratchet -- a MAXIMUM. It is the correct invariant under a
+  # moving denominator: new COVERED code leaves it unchanged, new UNCOVERED
+  # code raises it (and correctly fails below), deleted dead code lowers it.
+  # It needs no denominator-equality check to mean what it claims.
   echo "coverage_live_path: floor missing=$f_missing  this run missing=$missing  coverage ${pct}%"
   if [ "$missing" -gt "$f_missing" ]; then
     echo "coverage_live_path: GATE FAILED -- $(( missing - f_missing )) more missed statements than the floor." >&2
@@ -246,16 +311,27 @@ write_floor() {
     echo "coverage_live_path: COVERAGE_LIVE_PATH_ALLOW_REGRESSION=1 and say why in the PR." >&2
     return 1
   fi
-  python - "$FLOOR_FILE" "$SHAPE_ID" "$stmts" "$missing" "$pct" "${COVERAGE_LIVE_PATH_RUNS:-0}" <<'PY'
+
+  local modules_out modules_hash modules_count
+  modules_out="$(read_modules)" || return 1
+  modules_hash="$(printf '%s' "$modules_out" | head -1 | cut -d' ' -f1)"
+  modules_count="$(printf '%s' "$modules_out" | head -1 | cut -d' ' -f2)"
+  # MODULES_FILE is the evidence gate() diffs against on a future mismatch --
+  # written alongside FLOOR_FILE so the two can never disagree about which
+  # module list a given `modules=` hash refers to.
+  printf '%s' "$modules_out" | tail -n +2 > "$MODULES_FILE"
+
+  python - "$FLOOR_FILE" "$SHAPE_ID" "$stmts" "$missing" "$pct" "${COVERAGE_LIVE_PATH_RUNS:-0}" "$modules_hash" "$modules_count" <<'PY'
 import re, sys, datetime
-path, shape, stmts, missing, pct, runs = sys.argv[1:7]
+path, shape, stmts, missing, pct, runs, modules, module_count = sys.argv[1:9]
 src = open(path).read()
 for k, v in (("shape", shape), ("statements", stmts), ("missing", missing),
              ("percent", pct), ("measured", datetime.date.today().isoformat()),
-             ("runs", runs)):
+             ("runs", runs), ("modules", modules), ("module_count", module_count)):
     src = re.sub(rf"(?m)^{k}=.*$", f"{k}={v}", src)
 open(path, "w").write(src)
-print(f"coverage_live_path: floor written -- statements {stmts} missing {missing} coverage {pct}%")
+print(f"coverage_live_path: floor written -- statements {stmts} missing {missing} coverage {pct}% "
+      f"modules {modules} ({module_count} files)")
 PY
 }
 
