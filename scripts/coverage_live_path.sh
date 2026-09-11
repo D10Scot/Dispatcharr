@@ -211,14 +211,49 @@ for f in files:
 PY
 }
 
+# Hashes a plain-text, one-path-per-line file the SAME way read_modules()
+# hashes coverage's JSON `files` list: sort the non-blank lines and sha256
+# the newline-joined result, truncated to 12 hex chars. Used to verify
+# MODULES_FILE against the floor's modules= field on every gate() run,
+# independent of the current coverage data -- FLOOR_FILE and MODULES_FILE
+# are written in two separate steps by write_floor() and can drift if one
+# write fails and the other doesn't, or if a hand-edit touches only one.
+# Prints "<hash> <count>".
+hash_file_list() {
+  python - "$1" <<'PY'
+import hashlib, sys
+with open(sys.argv[1]) as fh:
+    files = sorted(line.strip() for line in fh if line.strip())
+digest = hashlib.sha256("\n".join(files).encode()).hexdigest()[:12]
+print(f"{digest} {len(files)}")
+PY
+}
+
+# Hashes the rcfile's raw BYTES (not its resolved file set). `modules` answers
+# "did the set of files in scope change"; this answers "did the measurement
+# DEFINITION change even when it didn't" -- an `exclude_lines` addition or a
+# narrower `[report] omit` can shrink the denominator (and correspondingly
+# lower `missing`, since an excluded line is neither covered nor missed)
+# without adding or removing a single file from `modules`'s hash. That is the
+# cheapest possible way to make the ratchet easier, and a file-set hash alone
+# is blind to it. Prints a bare 12-hex-char digest.
+rc_hash() {
+  python - "$RC" <<'PY'
+import hashlib, sys
+print(hashlib.sha256(open(sys.argv[1], "rb").read()).hexdigest()[:12])
+PY
+}
+
 floor_value() { grep -E "^$1=" "$FLOOR_FILE" | head -1 | cut -d= -f2-; }
 
 gate() {
-  local stmts missing pct f_shape f_stmts f_missing f_modules
+  local stmts missing pct f_shape f_stmts f_missing f_modules f_rcfile
   local modules_out modules_hash modules_count modules_list
+  local companion_hash companion_count rc_hash_now
   read -r stmts missing pct < <(read_totals) || return 1
   f_shape="$(floor_value shape)"; f_stmts="$(floor_value statements)"
   f_missing="$(floor_value missing)"; f_modules="$(floor_value modules)"
+  f_rcfile="$(floor_value rcfile)"
 
   if [ "$f_shape" != "$SHAPE_ID" ]; then
     echo "coverage_live_path: floor was written under shape '$f_shape'; this run is '$SHAPE_ID'." >&2
@@ -226,15 +261,43 @@ gate() {
     return 1
   fi
 
-  # A floor file with no `modules=` field predates this check. Treating an
-  # empty read as "no field to disagree with, so pass" would silently turn a
-  # real shape guard into a no-op -- the exact emptiness-as-success trap
-  # CLAUDE.md warns about for git queries, and it applies here too: fail
-  # loud and say why, rather than pass quietly on a floor that cannot answer.
-  if [ -z "$f_modules" ]; then
-    echo "coverage_live_path: floor has no modules= field (written before the module-list gate" >&2
-    echo "coverage_live_path: existed). Refusing to guess whether the module list matches --" >&2
-    echo "coverage_live_path: re-baseline with --write-floor to add it." >&2
+  # A floor file with no `modules=`/`rcfile=` field predates one or both of
+  # these checks. Treating an empty read as "no field to disagree with, so
+  # pass" would silently turn a real shape guard into a no-op -- the exact
+  # emptiness-as-success trap CLAUDE.md warns about for git queries, and it
+  # applies here too: fail loud and say why, rather than pass quietly on a
+  # floor that cannot answer.
+  if [ -z "$f_modules" ] || [ -z "$f_rcfile" ]; then
+    echo "coverage_live_path: floor is missing modules= and/or rcfile= (written before" >&2
+    echo "coverage_live_path: one or both checks existed). Refusing to guess whether they" >&2
+    echo "coverage_live_path: match -- re-baseline with --write-floor to add them." >&2
+    return 1
+  fi
+
+  # S1: MODULES_FILE and the floor's modules= are written in two separate
+  # steps by write_floor() and can drift -- a failed write, an interrupted
+  # one, or a hand-edit touching only one of the pair. Verify the companion
+  # matches the floor's own claim about it BEFORE trusting the companion for
+  # anything below, on every run, independent of whether this run's own
+  # module list matches. A missing companion is refused for the same reason:
+  # a `modules=` hash with no evidence file behind it cannot be diffed for
+  # names on a future mismatch, silently degrading to "hash mismatch, no
+  # detail" exactly when detail matters most.
+  if [ ! -f "$MODULES_FILE" ]; then
+    echo "coverage_live_path: $MODULES_FILE is missing." >&2
+    echo "coverage_live_path: the floor's modules= field has no evidence file to verify itself" >&2
+    echo "coverage_live_path: against, or to name files from on a future mismatch. Re-baseline" >&2
+    echo "coverage_live_path: with --write-floor to regenerate it." >&2
+    return 1
+  fi
+  read -r companion_hash companion_count < <(hash_file_list "$MODULES_FILE") || return 1
+  if [ "$companion_hash" != "$f_modules" ]; then
+    echo "coverage_live_path: $MODULES_FILE ($companion_hash, $companion_count files) does not" >&2
+    echo "coverage_live_path: match the floor's own modules=$f_modules field." >&2
+    echo "coverage_live_path: the two are written in separate steps by --write-floor and have" >&2
+    echo "coverage_live_path: drifted -- this is a bug in how the floor was written, not a" >&2
+    echo "coverage_live_path: coverage finding. Re-run --write-floor to regenerate both together," >&2
+    echo "coverage_live_path: or restore the companion from the commit that set modules=$f_modules." >&2
     return 1
   fi
 
@@ -246,24 +309,44 @@ gate() {
   if [ "$f_modules" != "$modules_hash" ]; then
     echo "coverage_live_path: the module list moved: floor $f_modules ($(floor_value module_count) files)," >&2
     echo "coverage_live_path: this run $modules_hash ($modules_count files)." >&2
-    if [ -f "$MODULES_FILE" ]; then
-      echo "coverage_live_path: added:" >&2
-      comm -13 "$MODULES_FILE" <(printf '%s\n' "$modules_list") | sed 's/^/coverage_live_path:   + /' >&2
-      echo "coverage_live_path: removed:" >&2
-      comm -23 "$MODULES_FILE" <(printf '%s\n' "$modules_list") | sed 's/^/coverage_live_path:   - /' >&2
-    else
-      echo "coverage_live_path: $MODULES_FILE is missing, so the specific files can't be named --" >&2
-      echo "coverage_live_path: the hash mismatch above is still real." >&2
-    fi
+    echo "coverage_live_path: added:" >&2
+    LC_ALL=C comm -13 "$MODULES_FILE" <(printf '%s\n' "$modules_list") | sed 's/^/coverage_live_path:   + /' >&2
+    echo "coverage_live_path: removed:" >&2
+    LC_ALL=C comm -23 "$MODULES_FILE" <(printf '%s\n' "$modules_list") | sed 's/^/coverage_live_path:   - /' >&2
     echo "coverage_live_path: that is a finding, not a regression. Re-baseline with --write-floor" >&2
     echo "coverage_live_path: and say in the PR why the module list moved." >&2
     return 1
   fi
 
+  # S3: `modules` hashes WHICH files are in scope; it is blind to a change in
+  # HOW they're measured that touches no file's membership -- an
+  # exclude_lines addition or an omit narrowing can move `statements` (and
+  # correspondingly `missing`, since an excluded line is neither covered nor
+  # missed) without moving the file set. Hash the rcfile's own bytes to catch
+  # that. This check runs AFTER the modules check on purpose: editing the
+  # rcfile's include list changes both the file set and the rcfile's bytes,
+  # and the modules check above gives the more useful, file-named diagnosis
+  # for that (by far the common case) -- this one only has anything to add
+  # when modules matched anyway, i.e. the measurement DEFINITION moved while
+  # the file set did not.
+  rc_hash_now="$(rc_hash)" || return 1
+  if [ "$f_rcfile" != "$rc_hash_now" ]; then
+    echo "coverage_live_path: scripts/coverage_live_path.coveragerc's bytes changed: floor" >&2
+    echo "coverage_live_path: $f_rcfile, this run $rc_hash_now -- even though the module list" >&2
+    echo "coverage_live_path: (checked above) did not move. Likely an exclude_lines or omit edit:" >&2
+    echo "coverage_live_path: either can move the denominator without changing which files are in" >&2
+    echo "coverage_live_path: scope. Diff the rcfile against the commit that set modules=$f_modules" >&2
+    echo "coverage_live_path: to see what changed." >&2
+    echo "coverage_live_path: that is a finding, not a regression. Re-baseline with --write-floor" >&2
+    echo "coverage_live_path: and say in the PR why the measurement definition moved." >&2
+    return 1
+  fi
+
   # `statements` is recorded provenance, not compared: it moves with any edit
   # to an already-included module (see read_modules() above), so it cannot be
-  # the shape check. Printed here for information only.
-  echo "coverage_live_path: denominator: floor $f_stmts statements  this run $stmts statements (informational -- modules= above is the shape check)"
+  # the shape check -- `modules` and `rcfile` above are. Printed here for
+  # information only.
+  echo "coverage_live_path: denominator: floor $f_stmts statements  this run $stmts statements (informational -- modules=/rcfile= above are the shape checks)"
   # `missing` is the ratchet -- a MAXIMUM. It is the correct invariant under a
   # moving denominator: new COVERED code leaves it unchanged, new UNCOVERED
   # code raises it (and correctly fails below), deleted dead code lowers it.
@@ -312,27 +395,67 @@ write_floor() {
     return 1
   fi
 
-  local modules_out modules_hash modules_count
+  local modules_out modules_hash modules_count rc_hash_now
   modules_out="$(read_modules)" || return 1
   modules_hash="$(printf '%s' "$modules_out" | head -1 | cut -d' ' -f1)"
   modules_count="$(printf '%s' "$modules_out" | head -1 | cut -d' ' -f2)"
-  # MODULES_FILE is the evidence gate() diffs against on a future mismatch --
-  # written alongside FLOOR_FILE so the two can never disagree about which
-  # module list a given `modules=` hash refers to.
-  printf '%s' "$modules_out" | tail -n +2 > "$MODULES_FILE"
+  rc_hash_now="$(rc_hash)" || return 1
 
-  python - "$FLOOR_FILE" "$SHAPE_ID" "$stmts" "$missing" "$pct" "${COVERAGE_LIVE_PATH_RUNS:-0}" "$modules_hash" "$modules_count" <<'PY'
+  # S1 fix: write the new module list to a TEMP file first and only `mv` it
+  # over MODULES_FILE once the floor's own Python write below has succeeded.
+  # The previous order wrote MODULES_FILE first and FLOOR_FILE second, so a
+  # failure partway through the Python write (a bad substitution, a disk
+  # error) left the companion already updated to the NEW list while the
+  # floor's modules= field still held the OLD hash -- silently inconsistent,
+  # and gate()'s companion-consistency check above exists precisely to catch
+  # that inconsistency happening again. This ordering makes it not happen:
+  # if the floor write fails, MODULES_FILE is untouched and matches the floor
+  # that IS on disk; if it succeeds, both move together.
+  local modules_tmp="${MODULES_FILE}.tmp.$$"
+  printf '%s\n' "$modules_out" | tail -n +2 > "$modules_tmp" || {
+    rm -f "$modules_tmp"
+    echo "coverage_live_path: failed writing $modules_tmp; aborting before touching the floor." >&2
+    return 1
+  }
+
+  # S2 fix: re.sub cannot ADD a key that isn't already a `key=...` line in the
+  # floor file -- it can only replace an existing one. A floor written before
+  # this PR (or before any future new field) has no such line, so the old
+  # code silently substituted nothing, then printed a "floor written" success
+  # message for a write that had not happened, and the very next --gate saw
+  # the same missing field and failed identically: a loop with a false
+  # success message at its start. re.subn's match count tells the difference
+  # between "replaced" and "line didn't exist"; when it didn't, APPEND the
+  # key=value line instead, so every field named below is always present in
+  # the file this function writes, regardless of what the file had before.
+  if ! python - "$FLOOR_FILE" "$SHAPE_ID" "$stmts" "$missing" "$pct" "${COVERAGE_LIVE_PATH_RUNS:-0}" "$modules_hash" "$modules_count" "$rc_hash_now" <<'PY'
 import re, sys, datetime
-path, shape, stmts, missing, pct, runs, modules, module_count = sys.argv[1:9]
+path, shape, stmts, missing, pct, runs, modules, module_count, rcfile = sys.argv[1:10]
 src = open(path).read()
 for k, v in (("shape", shape), ("statements", stmts), ("missing", missing),
              ("percent", pct), ("measured", datetime.date.today().isoformat()),
-             ("runs", runs), ("modules", modules), ("module_count", module_count)):
-    src = re.sub(rf"(?m)^{k}=.*$", f"{k}={v}", src)
+             ("runs", runs), ("modules", modules), ("module_count", module_count),
+             ("rcfile", rcfile)):
+    new_src, n = re.subn(rf"(?m)^{k}=.*$", f"{k}={v}", src)
+    if n:
+        src = new_src
+    else:
+        if src and not src.endswith("\n"):
+            src += "\n"
+        src += f"{k}={v}\n"
 open(path, "w").write(src)
 print(f"coverage_live_path: floor written -- statements {stmts} missing {missing} coverage {pct}% "
-      f"modules {modules} ({module_count} files)")
+      f"modules {modules} ({module_count} files) rcfile {rcfile}")
 PY
+  then
+    rm -f "$modules_tmp"
+    echo "coverage_live_path: floor write failed; $MODULES_FILE left untouched." >&2
+    return 1
+  fi
+
+  # Only now, after the floor write succeeded, does the companion move --
+  # see the comment above modules_tmp.
+  mv "$modules_tmp" "$MODULES_FILE"
 }
 
 case "${1:-}" in

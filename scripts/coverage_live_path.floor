@@ -8,22 +8,38 @@
 # local cleanup, the stderr-reader join, _wait_for_channel_ready's error branch) and
 # the list has grown twice; a fixed tolerance would be stale on arrival.
 #
-# `shape` and `modules` are EQUALITY checks, not comparisons. A different measurement
-# shape or module list makes two numbers incomparable rather than better or worse, and
-# the gate says so instead of ratcheting. `modules` is a sha256 (first 12 hex chars) of
-# the sorted list of repo-relative paths in coverage's JSON `files` report -- i.e. of
-# WHICH files are in scope, not how big they are -- with the full sorted list committed
-# alongside this file in scripts/coverage_live_path.floor.modules so a --gate mismatch
-# can name the files added and removed, not just show two unequal hashes. `module_count`
-# is that list's length, printed for a human skimming the two numbers.
+# `shape`, `modules` and `rcfile` are EQUALITY checks, not comparisons. A different
+# measurement shape, module list or measurement DEFINITION makes two numbers
+# incomparable rather than better or worse, and the gate says so instead of ratcheting.
+#
+# `modules` is a sha256 (first 12 hex chars) of the sorted list of repo-relative paths
+# in coverage's JSON `files` report -- i.e. of WHICH files are in scope, not how big
+# they are -- with the full sorted list committed alongside this file in
+# scripts/coverage_live_path.floor.modules so a --gate mismatch can name the files
+# added and removed, not just show two unequal hashes. `module_count` is that list's
+# length, printed for a human skimming the two numbers. gate() verifies the companion
+# file against `modules` on EVERY run, independent of the current coverage data,
+# because the two are written in separate steps by --write-floor and could otherwise
+# drift silently -- see scripts/coverage_live_path.sh's hash_file_list().
+#
+# `rcfile` is a sha256 (first 12 hex chars) of scripts/coverage_live_path.coveragerc's
+# raw BYTES, not its resolved file set -- it exists because `modules` alone is blind to
+# an `exclude_lines` addition or an `[report] omit` narrowing, either of which can move
+# `statements` (and correspondingly `missing`, since an excluded line counts as neither
+# covered nor missed) without adding or removing a single file. That is the cheapest
+# possible way to make the ratchet easier, and this is what catches it. Tripping on a
+# comment-only edit to the rcfile is an accepted false positive: that file is edited
+# rarely and deliberately, and a spurious re-baseline there costs one --write-floor run,
+# not a fresh CI census (see HOW TO MOVE THIS FLOOR below).
 #
 # `statements` is NOT compared -- it is recorded provenance only, printed alongside the
 # ratchet for information. It moves whenever ANY statement is added to or removed from
 # an ALREADY-INCLUDED module (measured: one three-line function added to
 # apps/proxy/control_plane.py took it 124 -> 127 statements) -- not only when the
 # rcfile's module list changes -- so comparing it for equality used to fire on ordinary
-# code changes to files already in scope. `modules` is what actually answers "did the
-# denominator's composition change", which is the question this guard exists to ask.
+# code changes to files already in scope. `modules` and `rcfile` are what actually
+# answer "did the denominator's composition or definition change", which is the
+# question this guard exists to ask.
 #
 # Written by:  scripts/coverage_live_path.sh --write-floor
 # Enforced by: scripts/coverage_live_path.sh --gate  (backend-tests.yml, job coverage-gate)
@@ -76,13 +92,28 @@
 # this one is 2044 -- 4 statements lower, on a tree with slightly more covered, not a
 # discrepancy between two measurements of the same thing.
 #
-# HOW TO MOVE THIS FLOOR (read before running --write-floor). `--write-floor` writes
-# the figure from the run it JUST took -- one run, not the worst of N -- because the
-# floor policy (worst of >=12 rounds under a stopping rule; see the top of this file)
-# lives in the stopping-rule PROCEDURE, not in the script. The two are not the same
-# thing by design, and `--write-floor` cannot know it is being run for the Nth time in
-# a campaign versus once, so it never guesses at "worst so far" on your behalf. The
-# exact sequence, every time this floor legitimately moves:
+# HOW TO MOVE THIS FLOOR (read before running --write-floor).
+#
+# THESE ARE TWO DIFFERENT KINDS OF MOVE, and only one of them needs the campaign
+# below. A `missing` move changes what the ratchet PERMITS and can only be justified
+# by a real measurement of the spread -- that is steps 1-5. A `shape`/`modules`/
+# `rcfile`-only re-baseline (the module list or the rcfile changed, deliberately, and
+# `missing` is UNCHANGED from what the previous floor already recorded) is not a claim
+# about the spread at all -- it is telling the gate "the thing being measured is
+# different now, here is its new identity." That needs exactly ONE clean local or CI
+# run and a single --write-floor, same as step 3 below, WITHOUT steps 1, 2, 4 or 5's
+# multi-round census: there is no new `missing` value to earn through repeated
+# measurement, because none is being claimed. Say which kind of move this is in the PR
+# either way -- "re-baselined the module list, missing unchanged" is a one-line,
+# one-run PR; "raised the floor to N, campaign attached" is not.
+#
+# What follows is the multi-round procedure for when `missing` itself is moving.
+# `--write-floor` writes the figure from the run it JUST took -- one run, not the
+# worst of N -- because the floor policy (worst of >=12 rounds under a stopping rule;
+# see the top of this file) lives in the stopping-rule PROCEDURE, not in the script.
+# The two are not the same thing by design, and `--write-floor` cannot know it is
+# being run for the Nth time in a campaign versus once, so it never guesses at "worst
+# so far" on your behalf. The exact sequence, every time `missing` legitimately moves:
 #   1. Measure IN CI, not only locally: dispatch backend-tests.yml on the branch
 #      repeatedly and read `this run missing=` from each coverage-gate job, until the
 #      MAXIMUM has been unchanged for >=6 consecutive rounds, >=12 total. Record every
@@ -97,10 +128,11 @@
 #      in `missing` below.
 #   3. Run --write-floor once (writable checkout or a scratch rw container -- /repo is
 #      read-only in the standard test-hook container) to get the correct FILE FORMAT,
-#      shape, statements, modules and module_count fields machine-produced -- and
-#      scripts/coverage_live_path.floor.modules rewritten to match. Commit that file
-#      alongside this one; it is what lets a future --gate mismatch name files, not
-#      just hashes.
+#      shape, statements, modules, module_count and rcfile fields machine-produced --
+#      and scripts/coverage_live_path.floor.modules rewritten to match. Commit that
+#      file alongside this one; it is what lets a future --gate mismatch name files,
+#      not just hashes. This is also the ONLY step a module-list-only or rcfile-only
+#      re-baseline needs (see above) -- run it once, confirm --gate passes, commit.
 #   4. Hand-edit `missing` to max(runs) from step 2 if it differs from what
 #      --write-floor's own run produced (it usually will -- one run is rarely the
 #      worst of N), and recompute `percent` = (1 - missing/statements) * 100 to match.
@@ -121,3 +153,4 @@ measured=2026-09-11
 runs=15
 modules=8cb5c65dac3e
 module_count=38
+rcfile=3af0a78b9b6f
