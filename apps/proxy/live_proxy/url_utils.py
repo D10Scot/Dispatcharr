@@ -5,7 +5,6 @@ Utilities for handling stream URLs and transformations.
 import json
 
 from django.db import close_old_connections
-from apps.m3u.models import M3UAccountProfile
 from .redis_keys import RedisKeys
 from .utils import get_logger
 from dispatcharr.utils import redact_url
@@ -243,49 +242,3 @@ def validate_stream_url(url, user_agent=None, timeout=(5, 5)):
     finally:
         if 'session' in locals():
             session.close()
-
-def get_connections_left(m3u_profile_id: int) -> int:
-    """
-    Get the number of available connections left for an M3U profile.
-
-    Args:
-        m3u_profile_id: The ID of the M3U profile
-
-    Returns:
-        int: Number of connections available (0 if none available)
-    """
-    try:
-        from core.utils import RedisClient
-
-        # Get the M3U profile
-        m3u_profile = M3UAccountProfile.objects.get(id=m3u_profile_id)
-
-        # If max_streams is 0, it means unlimited
-        if m3u_profile.max_streams == 0:
-            return 999999  # Return a large number to indicate unlimited
-
-        # Get Redis client
-        redis_client = RedisClient.get_client()
-        if not redis_client:
-            logger.warning("Redis not available, assuming connections available")
-            return max(0, m3u_profile.max_streams - 1)  # Conservative estimate
-
-        # Check current connections for this specific profile
-        profile_connections_key = f"profile_connections:{m3u_profile_id}"
-        current_connections = int(redis_client.get(profile_connections_key) or 0)
-
-        # Calculate available connections
-        connections_left = max(0, m3u_profile.max_streams - current_connections)
-
-        logger.debug(f"M3U profile {m3u_profile_id}: {current_connections}/{m3u_profile.max_streams} used, {connections_left} available")
-
-        return connections_left
-
-    except M3UAccountProfile.DoesNotExist:
-        logger.error(f"M3U profile {m3u_profile_id} not found")
-        return 0
-    except Exception as e:
-        logger.error(f"Error getting connections left for M3U profile {m3u_profile_id}: {e}")
-        return 0
-    finally:
-        close_old_connections()
