@@ -1691,13 +1691,15 @@ That request body is the only direction that can close `services/channel_service
 
 ## Handing the three out-of-scope ORM findings forward
 
-§ *Three findings the spec's 2b table does not contain* (above) records three ORM reads that survive in the relay and that **no 2b PR removes**. The orchestrator has filed them as an issue on `D10Scot/Dispatcharr` so they cannot be lost. **Task 7's PR body must cite that issue by number.** Find it:
+§ *Three findings the spec's 2b table does not contain* (above) records three ORM reads that survive in the relay and that **no 2b PR removes**. They are filed as **[#253](https://github.com/D10Scot/Dispatcharr/issues/253)**, "2b-3: three ORM reads the Stage 2b table omits, one of which the static guard cannot see". **Task 7's PR body must cite `#253`.**
 
 ```bash
-gh issue list --repo D10Scot/Dispatcharr --state open --search "get_stream_profile static guard blind"
+gh issue view 253 --repo D10Scot/Dispatcharr
 ```
 
 Always with an explicit `--repo` — `gh` otherwise resolves to the upstream public tracker.
+
+**Cite the number, never a search.** An earlier draft of this section told the implementer to find the issue with `gh issue list --search "…"`. The search string was a guess at the title and returned **nothing** — and an empty `gh issue list` is indistinguishable from "no such issue exists", so the implementer would have read a fact about the query as a fact about the world and dropped the citation. That is the same shape as the failure the findings below describe, and the same shape as `CLAUDE.md`'s rule about never interpreting the emptiness of a silenced git query. A number is stable; a search is a guess that fails silently.
 
 The one that matters most, and the sentence to put in the PR body verbatim:
 
