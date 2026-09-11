@@ -31,6 +31,7 @@ from core.utils import send_websocket_update
 from .url_utils import (
     generate_stream_url,
     get_stream_object,
+    _tune_extras,
 )
 from .utils import get_logger
 from uuid import UUID
@@ -311,6 +312,7 @@ def stream_ts(request, channel_id, user=None, force_output_format=None, decision
                     profile_value = None
                     slot_reserved = False
                     error_reason = None
+                    tune_extras = _tune_extras(None)
                     attempt = 0
                     should_retry = True
 
@@ -324,6 +326,7 @@ def stream_ts(request, channel_id, user=None, force_output_format=None, decision
                             profile_value,
                             slot_reserved,
                             error_reason,
+                            tune_extras,
                         ) = generate_stream_url(channel_id)
 
                         if stream_url is not None:
@@ -373,6 +376,7 @@ def stream_ts(request, channel_id, user=None, force_output_format=None, decision
                             profile_value,
                             slot_reserved,
                             error_reason,
+                            tune_extras,
                         ) = generate_stream_url(channel_id)
                         if stream_url is not None:
                             logger.info(
@@ -556,7 +560,10 @@ def stream_ts(request, channel_id, user=None, force_output_format=None, decision
                         profile_value,
                         stream_id,
                         m3u_profile_id,
-                        channel_name=channel.name,
+                        channel_name=tune_extras["channel_name"] or channel.name,
+                        stream_name=tune_extras["stream_name"],
+                        m3u_profile_name=tune_extras["m3u_profile_name"],
+                        ffmpeg_stream_profile=tune_extras["ffmpeg_stream_profile"],
                     )
 
                     if not success:

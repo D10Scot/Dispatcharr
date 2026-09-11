@@ -539,15 +539,24 @@ class SourceCarriesNamesTests(NextSourceResolutionTests):
         self.assertEqual(source["m3u_profile_name"], self.m3u_profile.name)
 
     def test_the_locked_ffmpeg_profile_is_carried_when_one_exists(self):
-        # core/migrations/0006 and 0007 seed a locked 'ffmpeg' profile in
-        # every test database -- creating a second one is possible (name is
-        # not a DB-unique constraint) but _locked_ffmpeg_profile()'s
-        # unfiltered .first() would then return whichever the DB orders
-        # first, not the one this test just made. Assert against the row
-        # that is actually guaranteed to exist instead of fabricating one.
+        # core/migrations/0006 and 0007 seed a locked 'ffmpeg' profile, but a
+        # TransactionTestCase run earlier in the SAME process can have
+        # flushed it away already (manager_support.py:105's "Created rather
+        # than fetched" comment documents exactly this hazard). get_or_create
+        # is robust to both orderings: if the seeded row survived, this finds
+        # it (name+locked is not DB-unique, so a get() alone risks a second
+        # match if one ever collides; a filter().first() ordered by pk is
+        # what _locked_ffmpeg_profile() itself uses); if it was flushed away,
+        # this recreates it with the same shape a real deployment has.
         from apps.proxy.next_source import resolve_source
 
-        ffmpeg = StreamProfile.objects.get(name="ffmpeg", locked=True)
+        ffmpeg, _ = StreamProfile.objects.get_or_create(
+            name="ffmpeg", locked=True,
+            defaults={
+                "command": "ffmpeg",
+                "parameters": "-i {streamUrl} -c copy -f mpegts pipe:1",
+            },
+        )
         source = resolve_source(self.channel.uuid)["source"]
         self.assertEqual(
             source["ffmpeg_stream_profile"],
