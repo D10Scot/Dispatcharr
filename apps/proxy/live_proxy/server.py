@@ -266,6 +266,8 @@ class ProxyServer:
                                         event_stream_id = data.get("stream_id")
                                         event_m3u_profile_id = data.get("m3u_profile_id")
                                         event_stream_name = data.get("stream_name")
+                                        event_channel_name = data.get("channel_name")
+                                        event_m3u_profile_name = data.get("m3u_profile_name")
 
                                         # Coerce at this boundary too: this event
                                         # crosses the wire as JSON in the split
@@ -311,6 +313,8 @@ class ProxyServer:
                                                             channel_id, new_url, user_agent,
                                                             event_stream_id, event_m3u_profile_id,
                                                             event_stream_name,
+                                                            channel_name=event_channel_name,
+                                                            m3u_profile_name=event_m3u_profile_name,
                                                         )
                                                     except Exception as e:
                                                         logger.error(f"Error updating switch metadata for channel {channel_id}: {e}", exc_info=True)

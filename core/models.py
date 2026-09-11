@@ -705,8 +705,21 @@ class CoreSettings(models.Model):
     # Proxy Settings
     @classmethod
     def get_proxy_settings(cls):
-        """Get proxy settings."""
-        return cls._get_group(PROXY_SETTINGS_KEY, {
+        """Get proxy settings.
+
+        _get_group returns the STORED row verbatim once one exists
+        (core/migrations/0014_default_proxy_settings.py seeds one with only
+        five keys; 0026 later adds a sixth by editing that row in place) --
+        it does not backfill keys a later release added to this dict.
+        new_client_behind_seconds has no such migration, so every proxy_settings
+        row created before this key existed in code is permanently missing
+        it. Every existing caller (apps/proxy/config.py) reads through
+        `.get(key, default)` and never noticed. Phase 2 PR 2b-1's
+        ProxySettingsSerializer is the first caller to require every key, so
+        the gap is closed here: defaults fill only what the stored row is
+        missing, never overriding a value someone actually saved.
+        """
+        defaults = {
             "buffering_timeout": 15,
             "buffering_speed": 1.0,
             "redis_chunk_ttl": 60,
@@ -714,7 +727,8 @@ class CoreSettings(models.Model):
             "channel_init_grace_period": 60,
             "channel_client_wait_period": 5,
             "new_client_behind_seconds": 5,
-        })
+        }
+        return {**defaults, **cls._get_group(PROXY_SETTINGS_KEY, defaults)}
 
     @classmethod
     def get_network_access_settings(cls):

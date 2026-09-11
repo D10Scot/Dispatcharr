@@ -835,3 +835,73 @@ class GetClientIpTests(SimpleTestCase):
             os.environ.pop("DISPATCHARR_TRUSTED_PROXIES", None)
             request = self._request("::ffff:192.168.1.50")
             self.assertEqual(get_client_ip(request), "192.168.1.50")
+
+
+class ProxySettingsBackfillsMissingKeysTests(TestCase):
+    """Phase 2 PR 2b-1, review round: get_proxy_settings() merges code-level
+    defaults over the stored row so a row saved before new_client_behind_
+    seconds existed (core/migrations/0014's five keys, or 0026's six) still
+    answers all seven.
+
+    Deliberately does NOT compare against a second call to
+    get_proxy_settings() -- that is the tautological-oracle shape a review
+    found in apps/proxy/tests/test_next_source_resolution.py and
+    test_next_source_api.py: those two tests' expected value is computed by
+    calling the same function they are testing, so reverting the merge
+    fix entirely still left both green (confirmed live: `Ran 2 tests, OK`).
+    The oracle here is a literal, hand-written dict; the only thing that
+    can make this test pass is the merge actually supplying the missing
+    key.
+    """
+
+    def setUp(self):
+        from core.models import PROXY_SETTINGS_KEY
+
+        cache.clear()
+        self.addCleanup(cache.clear)
+        self.row, _ = CoreSettings.objects.get_or_create(
+            key=PROXY_SETTINGS_KEY, defaults={"name": "Proxy Settings", "value": {}}
+        )
+        # The pre-migration-0026 shape: six keys, new_client_behind_seconds
+        # deliberately absent. .save() (not .update()) so the post_save
+        # signal invalidates the Redis group cache correctly.
+        self.row.value = {
+            "buffering_timeout": 22,
+            "buffering_speed": 2.0,
+            "redis_chunk_ttl": 61,
+            "channel_shutdown_delay": 1,
+            "channel_init_grace_period": 62,
+            "channel_client_wait_period": 6,
+        }
+        self.row.save()
+
+    def test_the_merge_backfills_the_missing_key(self):
+        self.assertEqual(
+            CoreSettings.get_proxy_settings(),
+            {
+                "buffering_timeout": 22,
+                "buffering_speed": 2.0,
+                "redis_chunk_ttl": 61,
+                "channel_shutdown_delay": 1,
+                "channel_init_grace_period": 62,
+                "channel_client_wait_period": 6,
+                # The one key this test exists to pin: absent from the
+                # stored row, supplied only by the merge's code-level
+                # default.
+                "new_client_behind_seconds": 5,
+            },
+        )
+
+    def test_the_merge_never_overrides_a_value_actually_saved(self):
+        """A saved value, even one that happens to equal a default, is not
+        what this test is about -- test_the_merge_backfills_the_missing_key
+        already covers "supplies what's missing". This one is "never
+        touches what's present": every stored key keeps its stored value,
+        not the code-level default, even where they could be confused for
+        each other."""
+        self.assertEqual(
+            CoreSettings.get_proxy_settings()["buffering_timeout"], 22
+        )
+        self.assertNotEqual(
+            CoreSettings.get_proxy_settings()["buffering_timeout"], 15
+        )

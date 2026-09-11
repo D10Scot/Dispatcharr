@@ -3,9 +3,10 @@
 
 generate_stream_url() (apps/proxy/live_proxy/url_utils.py) is a thin
 wrapper around apps.proxy.control_plane.next_source(): these tests pin
-its exact 6-tuple on every control-plane outcome, and the two cache
-helpers (_cache_alternates / read_cached_alternates) it and the
-Redirect-alternates loop in views.py share.
+its exact 7-tuple on every control-plane outcome (Phase 2 PR 2b-1 widened
+it from 6 to carry the four Source names), and the two cache helpers
+(_cache_alternates / read_cached_alternates) it and the Redirect-alternates
+loop in views.py share.
 """
 
 import json
@@ -35,8 +36,14 @@ def make_source(stream_id=1, url="http://source", profile_id=7, m3u_profile_id=4
     }
 
 
+_NULL_EXTRAS = {
+    "channel_name": None, "stream_name": None,
+    "m3u_profile_name": None, "ffmpeg_stream_profile": None,
+}
+
+
 class GenerateStreamUrlControlPlaneBodyTests(SimpleTestCase):
-    def test_success_returns_the_6_tuple_and_caches_alternates(self):
+    def test_success_returns_the_7_tuple_and_caches_alternates(self):
         source = make_source()
         answer = {"source": source, "alternates": [{"stream_id": 2}], "error": None}
 
@@ -46,7 +53,7 @@ class GenerateStreamUrlControlPlaneBodyTests(SimpleTestCase):
 
         self.assertEqual(
             result,
-            ("http://source", "ua", True, 7, True, None),
+            ("http://source", "ua", True, 7, True, None, _NULL_EXTRAS),
         )
         mock_cache.assert_called_once_with("chan-1", [{"stream_id": 2}])
 
@@ -58,7 +65,7 @@ class GenerateStreamUrlControlPlaneBodyTests(SimpleTestCase):
 
         self.assertEqual(
             result,
-            (None, None, False, None, False, "No alternate stream with available connections"),
+            (None, None, False, None, False, "No alternate stream with available connections", _NULL_EXTRAS),
         )
 
     def test_control_plane_unavailable_returns_no_url_and_the_exact_message(self):
@@ -68,7 +75,7 @@ class GenerateStreamUrlControlPlaneBodyTests(SimpleTestCase):
 
         self.assertEqual(
             result,
-            (None, None, False, None, False, "Control plane unreachable"),
+            (None, None, False, None, False, "Control plane unreachable", _NULL_EXTRAS),
         )
 
     def test_control_plane_refused_returns_no_url_and_the_exact_message(self):
@@ -78,8 +85,43 @@ class GenerateStreamUrlControlPlaneBodyTests(SimpleTestCase):
 
         self.assertEqual(
             result,
-            (None, None, False, None, False, "Control plane refused this channel"),
+            (None, None, False, None, False, "Control plane refused this channel", _NULL_EXTRAS),
         )
+
+    def test_the_seventh_element_carries_the_names_and_the_ffmpeg_profile(self):
+        """PIN. generate_stream_url is the only thing between the next-source
+        answer and the relay's init call; a name dropped here is a name the
+        relay re-queries for."""
+        source = make_source()
+        source.update(
+            channel_name="BBC One",
+            stream_name="BBC One HD",
+            m3u_profile_name="Provider A default",
+            ffmpeg_stream_profile={"id": 9, "command": "ffmpeg", "args": "-i x"},
+        )
+        answer = {"source": source, "alternates": [], "error": None}
+        with patch("apps.proxy.control_plane.next_source", return_value=answer), \
+             patch("apps.proxy.live_proxy.url_utils._cache_alternates"):
+            result = generate_stream_url("chan-1")
+        self.assertEqual(
+            result[6],
+            {
+                "channel_name": "BBC One",
+                "stream_name": "BBC One HD",
+                "m3u_profile_name": "Provider A default",
+                "ffmpeg_stream_profile": {"id": 9, "command": "ffmpeg", "args": "-i x"},
+            },
+        )
+
+    def test_an_old_django_answering_without_the_names_gives_a_dict_of_nulls(self):
+        """PIN. The relay and the control plane are separately deployable
+        processes (D5); a next-source answer from a Django that predates this
+        PR must not KeyError on the byte path."""
+        answer = {"source": make_source(), "alternates": [], "error": None}
+        with patch("apps.proxy.control_plane.next_source", return_value=answer), \
+             patch("apps.proxy.live_proxy.url_utils._cache_alternates"):
+            result = generate_stream_url("chan-1")
+        self.assertEqual(result[6], _NULL_EXTRAS)
 
 
 class CacheAlternatesTests(SimpleTestCase):

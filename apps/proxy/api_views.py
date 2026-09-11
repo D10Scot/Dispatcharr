@@ -68,7 +68,9 @@ def next_source_view(request, identifier):
         # (control_plane.next_source) substitutes exactly this shape.
         return Response(
             NextSourceResponseSerializer(
-                {"source": None, "alternates": [], "error": "identifier not found"}
+                next_source._with_proxy_settings(
+                    {"source": None, "alternates": [], "error": "identifier not found"}
+                )
             ).data,
             status=status.HTTP_404_NOT_FOUND,
         )

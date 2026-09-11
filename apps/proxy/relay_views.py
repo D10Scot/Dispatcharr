@@ -251,5 +251,7 @@ def channel_advance_view(request, identifier):
         source["stream_id"],
         source["m3u_profile_id"],
         stream_name=source["stream_name"],
+        channel_name=source["channel_name"],
+        m3u_profile_name=source["m3u_profile_name"],
     )
     return Response(RelayAdvanceResponseSerializer(result).data)

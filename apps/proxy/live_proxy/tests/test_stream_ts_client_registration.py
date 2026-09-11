@@ -312,6 +312,8 @@ class StreamTsClientRegistrationTests(SimpleTestCase):
             "None",
             True,
             None,
+            {"channel_name": None, "stream_name": None,
+             "m3u_profile_name": None, "ffmpeg_stream_profile": None},
         )
 
         proxy_server, client_manager = self._active_proxy_server(am_i_owner=True)

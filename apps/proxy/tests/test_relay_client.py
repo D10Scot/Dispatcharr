@@ -453,12 +453,38 @@ class RelayClientCallTests(SimpleTestCase):
                 "stream_id": 42,
                 "m3u_profile_id": 3,
                 "stream_name": "Two",
+                "channel_name": None,
+                "m3u_profile_name": None,
                 "reset_tried": True,
             },
         )
         self.assertEqual(
             sent.call_args.kwargs["timeout"], relay_client.ADVANCE_TIMEOUT
         )
+
+    def test_advance_threads_real_channel_name_and_m3u_profile_name_into_the_payload(self):
+        """PIN. Phase 2 PR 2b-1, review hop 7. The test above never passes
+        non-None channel_name/m3u_profile_name, so its payload legitimately
+        carries None for both -- it cannot tell "threaded correctly" from
+        "hardcoded to None regardless of the caller's arguments". This one
+        supplies real, distinct values for both kwargs."""
+        with mock.patch.object(
+            relay_client, "_request", return_value={"status": "success"}
+        ) as sent:
+            relay_client.advance(
+                "abc",
+                url="http://p/next",
+                user_agent="d",
+                stream_id=42,
+                m3u_profile_id=3,
+                stream_name="Two",
+                channel_name="Real Channel Name",
+                m3u_profile_name="Real Profile Name",
+                reset_tried=True,
+            )
+        payload = sent.call_args.kwargs["payload"]
+        self.assertEqual(payload["channel_name"], "Real Channel Name")
+        self.assertEqual(payload["m3u_profile_name"], "Real Profile Name")
 
     def test_stop_client_encodes_both_segments(self):
         with mock.patch.object(relay_client, "_request", return_value={}) as sent:

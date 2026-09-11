@@ -31,6 +31,7 @@ from core.utils import send_websocket_update
 from .url_utils import (
     generate_stream_url,
     get_stream_object,
+    tune_extras as build_tune_extras,
 )
 from .utils import get_logger
 from uuid import UUID
@@ -311,6 +312,7 @@ def stream_ts(request, channel_id, user=None, force_output_format=None, decision
                     profile_value = None
                     slot_reserved = False
                     error_reason = None
+                    tune_extras = build_tune_extras(None)
                     attempt = 0
                     should_retry = True
 
@@ -324,6 +326,7 @@ def stream_ts(request, channel_id, user=None, force_output_format=None, decision
                             profile_value,
                             slot_reserved,
                             error_reason,
+                            tune_extras,
                         ) = generate_stream_url(channel_id)
 
                         if stream_url is not None:
@@ -373,6 +376,7 @@ def stream_ts(request, channel_id, user=None, force_output_format=None, decision
                             profile_value,
                             slot_reserved,
                             error_reason,
+                            tune_extras,
                         ) = generate_stream_url(channel_id)
                         if stream_url is not None:
                             logger.info(
@@ -548,6 +552,19 @@ def stream_ts(request, channel_id, user=None, force_output_format=None, decision
                         )
                         return _channel_stopping_response()
 
+                    # channel_name has an or-fallback because `channel` (a
+                    # Channel row, or a Stream row for the /<stream_hash>
+                    # preview case) is already fetched locally regardless of
+                    # Django's version. stream_name has no equivalent: it
+                    # names a specific Stream selected by stream_id, not a
+                    # property of the object already in hand, so a pre-2b-1
+                    # Django (tune_extras() -> all-None, url_utils.py:41) or
+                    # any other cause of a None here writes no STREAM_NAME
+                    # into the metadata hash at init. Not unrecoverable --
+                    # channel_status.py:74's ORM-by-stream_id fallback (keyed
+                    # off stream_id, independent of tune_extras) repairs it
+                    # on every status poll -- see the PR's "degrade story"
+                    # section for the repeated-query cost that implies.
                     success = ChannelService.initialize_channel(
                         channel_id,
                         stream_url,
@@ -556,7 +573,10 @@ def stream_ts(request, channel_id, user=None, force_output_format=None, decision
                         profile_value,
                         stream_id,
                         m3u_profile_id,
-                        channel_name=channel.name,
+                        channel_name=tune_extras["channel_name"] or channel.name,
+                        stream_name=tune_extras["stream_name"],
+                        m3u_profile_name=tune_extras["m3u_profile_name"],
+                        ffmpeg_stream_profile=tune_extras["ffmpeg_stream_profile"],
                     )
 
                     if not success:
@@ -872,6 +892,8 @@ def change_stream(request, channel_id):
         stream_id = data.get("stream_id")
         m3u_profile_id = None
         stream_name = None
+        channel_name = None
+        m3u_profile_name = None
 
         # Coerce at the boundary: the Stats card's Select yields a string id
         # and, in the split deployment, this travels to the relay as JSON
@@ -911,16 +933,13 @@ def change_stream(request, channel_id):
             new_url = stream_info["url"]
             user_agent = stream_info["user_agent"]
             m3u_profile_id = stream_info.get("m3u_profile_id")
-            # Always None: the Source contract (S10 point 3, apps/proxy/
-            # next_source.py's _source_from_info) carries seven fields and
-            # stream_name is not one of them. The name is resolved by primary
-            # key on the relay side instead -- ChannelService.
-            # _update_channel_metadata and initialize_channel both fall back
-            # to Stream.objects.filter(id=stream_id) when the caller passes
-            # none, and the spec's ORM-reads table keeps exactly those two
-            # lookups in the relay. Passing the key through and letting the
-            # relay resolve it is the intended path, not an omission.
+            # Phase 2 PR 2b-1: the Source carries the names now. Before this
+            # PR the key did not exist, so this was always None and the relay
+            # re-resolved the name by primary key
+            # (services/channel_service.py:911).
             stream_name = stream_info.get("stream_name")
+            channel_name = stream_info.get("channel_name")
+            m3u_profile_name = stream_info.get("m3u_profile_name")
         elif not new_url:
             return JsonResponse(
                 {"error": "Either url or stream_id must be provided"}, status=400
@@ -943,6 +962,8 @@ def change_stream(request, channel_id):
             stream_id=stream_id,
             m3u_profile_id=m3u_profile_id,
             stream_name=stream_name,
+            channel_name=channel_name,
+            m3u_profile_name=m3u_profile_name,
             reset_tried=True,
         )
 
@@ -1271,16 +1292,13 @@ def next_stream(request, channel_id):
             user_agent=stream_info["user_agent"],
             stream_id=next_stream_id,
             m3u_profile_id=stream_info.get("m3u_profile_id"),
-            # Always None: the Source contract (S10 point 3, apps/proxy/
-            # next_source.py's _source_from_info) carries seven fields and
-            # stream_name is not one of them. The name is resolved by primary
-            # key on the relay side instead -- ChannelService.
-            # _update_channel_metadata and initialize_channel both fall back
-            # to Stream.objects.filter(id=stream_id) when the caller passes
-            # none, and the spec's ORM-reads table keeps exactly those two
-            # lookups in the relay. Passing the key through and letting the
-            # relay resolve it is the intended path, not an omission.
+            # Phase 2 PR 2b-1: the Source carries the names now. Before this
+            # PR the key did not exist, so this was always None and the relay
+            # re-resolved the name by primary key
+            # (services/channel_service.py:911).
             stream_name=stream_info.get("stream_name"),
+            channel_name=stream_info.get("channel_name"),
+            m3u_profile_name=stream_info.get("m3u_profile_name"),
         )
 
         if result.get("status") == "error":

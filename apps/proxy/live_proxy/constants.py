@@ -61,6 +61,12 @@ class ChannelMetadataField:
     # Profile fields
     STREAM_PROFILE = "stream_profile"
     M3U_PROFILE = "m3u_profile"
+    M3U_PROFILE_NAME = "m3u_profile_name"
+    # The locked ffmpeg StreamProfile, JSON-encoded {"id", "command", "args"},
+    # written from the next-source answer so input/manager.py's force-ffmpeg
+    # path (HLS/RTSP/UDP upstreams) needs no StreamProfile query in the relay
+    # process. Phase 2 PR 2b-1.
+    FFMPEG_STREAM_PROFILE = "ffmpeg_stream_profile"
 
     # Status and error fields
     ERROR_MESSAGE = "error_message"

@@ -8,7 +8,6 @@ import time
 import json
 import gevent
 from django.db import close_old_connections
-from apps.channels.models import Channel, Stream
 from ..server import ProxyServer
 from ..redis_keys import RedisKeys
 from ..constants import EventType, ChannelState, ChannelMetadataField, REDIS_TTL_MEDIUM
@@ -274,7 +273,9 @@ class ChannelService:
         return new_state
 
     @staticmethod
-    def initialize_channel(channel_id, stream_url, user_agent, transcode=False, stream_profile_value=None, stream_id=None, m3u_profile_id=None, channel_name=None, stream_name=None):
+    def initialize_channel(channel_id, stream_url, user_agent, transcode=False, stream_profile_value=None,
+                           stream_id=None, m3u_profile_id=None, channel_name=None, stream_name=None,
+                           m3u_profile_name=None, ffmpeg_stream_profile=None):
         """
         Initialize a channel with the given parameters.
 
@@ -288,6 +289,9 @@ class ChannelService:
             m3u_profile_id: ID of the M3U profile being used
             channel_name: Channel name (avoids DB lookup if already known)
             stream_name: Stream name (avoids DB lookup if already known)
+            m3u_profile_name: M3U profile name (avoids DB lookup if already known)
+            ffmpeg_stream_profile: The locked ffmpeg StreamProfile, flattened
+                {"id", "command", "args"} (avoids DB lookup if already known)
 
         Returns:
             bool: Success status
@@ -295,12 +299,28 @@ class ChannelService:
         proxy_server = ProxyServer.get_instance()
 
         try:
+            names = {}
+            if channel_name:
+                names[ChannelMetadataField.CHANNEL_NAME] = channel_name
+            if stream_name:
+                names[ChannelMetadataField.STREAM_NAME] = stream_name
+            if m3u_profile_name:
+                names[ChannelMetadataField.M3U_PROFILE_NAME] = m3u_profile_name
+            if ffmpeg_stream_profile:
+                names[ChannelMetadataField.FFMPEG_STREAM_PROFILE] = json.dumps(
+                    ffmpeg_stream_profile
+                )
+
             if stream_id and proxy_server.redis_client:
                 metadata_key = RedisKeys.channel_metadata(channel_id)
                 # Check if metadata already exists
                 if proxy_server.redis_client.exists(metadata_key):
-                    # Just update the existing metadata with stream_id
-                    proxy_server.redis_client.hset(metadata_key, ChannelMetadataField.STREAM_ID, str(stream_id))
+                    # Just update the existing metadata with stream_id, and the
+                    # names -- BEFORE proxy_server.initialize_channel() starts
+                    # the StreamManager below, whose own threads read this hash.
+                    mapping = {ChannelMetadataField.STREAM_ID: str(stream_id)}
+                    mapping.update(names)
+                    proxy_server.redis_client.hset(metadata_key, mapping=mapping)
                     logger.info(f"Pre-set stream ID {stream_id} in Redis for channel {channel_id}")
                 else:
                     # Create initial metadata with essential values
@@ -308,6 +328,7 @@ class ChannelService:
                         ChannelMetadataField.STREAM_ID: str(stream_id),
                         "temp_init": str(time.time())
                     }
+                    initial_metadata.update(names)
                     proxy_server.redis_client.hset(metadata_key, mapping=initial_metadata)
                     proxy_server.redis_client.expire(metadata_key, REDIS_TTL_MEDIUM)
                     logger.info(f"Created initial metadata with stream_id {stream_id} for channel {channel_id}")
@@ -318,21 +339,6 @@ class ChannelService:
                     logger.debug(f"Verified stream_id {stream_id_value} is now set in Redis")
                 else:
                     logger.error(f"Failed to set stream_id {stream_id} in Redis before initialization")
-
-            if not channel_name:
-                try:
-                    channel_name = Channel.objects.filter(uuid=channel_id).values_list(
-                        'name', flat=True
-                    ).first()
-                except Exception as e:
-                    logger.warning(f"Failed to load channel name for {channel_id}: {e}")
-            if not stream_name and stream_id:
-                try:
-                    stream_name = Stream.objects.filter(id=stream_id).values_list(
-                        'name', flat=True
-                    ).first()
-                except Exception as e:
-                    logger.warning(f"Failed to load stream name for {stream_id}: {e}")
 
             # Now proceed with channel initialization
             success = proxy_server.initialize_channel(
@@ -359,6 +365,12 @@ class ChannelService:
                     update_data[ChannelMetadataField.CHANNEL_NAME] = channel_name
                 if stream_name:
                     update_data[ChannelMetadataField.STREAM_NAME] = stream_name
+                if m3u_profile_name:
+                    update_data[ChannelMetadataField.M3U_PROFILE_NAME] = m3u_profile_name
+                if ffmpeg_stream_profile:
+                    update_data[ChannelMetadataField.FFMPEG_STREAM_PROFILE] = json.dumps(
+                        ffmpeg_stream_profile
+                    )
 
                 if update_data:
                     proxy_server.redis_client.hset(metadata_key, mapping=update_data)
@@ -368,7 +380,8 @@ class ChannelService:
             close_old_connections()
 
     @staticmethod
-    def change_stream_url(channel_id, new_url=None, user_agent=None, target_stream_id=None, m3u_profile_id=None, stream_name=None):
+    def change_stream_url(channel_id, new_url=None, user_agent=None, target_stream_id=None, m3u_profile_id=None,
+                          stream_name=None, channel_name=None, m3u_profile_name=None):
         """
         Change the URL of an existing stream.
 
@@ -378,6 +391,9 @@ class ChannelService:
             user_agent: Optional user agent to update
             target_stream_id: Optional target stream ID to switch to
             m3u_profile_id: Optional M3U profile ID to update
+            stream_name: Optional stream name (avoids DB lookup if already known)
+            channel_name: Optional channel name (avoids DB lookup if already known)
+            m3u_profile_name: Optional M3U profile name (avoids DB lookup if already known)
 
         Returns:
             dict: Result information including success status and diagnostics
@@ -407,6 +423,8 @@ class ChannelService:
             user_agent = stream_info['user_agent']
             stream_id = target_stream_id
             stream_name = stream_info.get('stream_name')
+            channel_name = stream_info.get('channel_name')
+            m3u_profile_name = stream_info.get('m3u_profile_name')
             # Extract M3U profile ID from stream info if available
             if 'm3u_profile_id' in stream_info:
                 m3u_profile_id = stream_info['m3u_profile_id']
@@ -485,7 +503,10 @@ class ChannelService:
             if proxy_server.redis_client:
                 try:
                     if success:
-                        ChannelService._update_channel_metadata(channel_id, new_url, user_agent, stream_id, m3u_profile_id, stream_name)
+                        ChannelService._update_channel_metadata(
+                            channel_id, new_url, user_agent, stream_id, m3u_profile_id,
+                            stream_name, channel_name=channel_name, m3u_profile_name=m3u_profile_name,
+                        )
                     else:
                         ChannelService._update_channel_metadata(channel_id, manager.url, user_agent)
                     result['metadata_updated'] = True
@@ -501,8 +522,9 @@ class ChannelService:
         else:
             # Not the owner: publish the switch event. The owner will update metadata
             # after the actual switch attempt succeeds (or roll back on failure).
-            # All needed info (url, user_agent, stream_id, m3u_profile_id) is carried
-            # in the pubsub message, so there is no reason to pre-write metadata here.
+            # All needed info (url, user_agent, stream_id, m3u_profile_id, stream_name,
+            # channel_name, m3u_profile_name) is carried in the pubsub message, so
+            # there is no reason to pre-write metadata here.
             logger.debug(f"This worker is not the owner, publishing stream switch event for channel {channel_id}")
             if proxy_server.redis_client:
                 status_key = RedisKeys.switch_status(channel_id)
@@ -513,7 +535,8 @@ class ChannelService:
                     logger.warning(f"Could not clear switch status for channel {channel_id}: {e}")
 
                 ChannelService._publish_stream_switch_event(
-                    channel_id, new_url, user_agent, stream_id, m3u_profile_id, stream_name
+                    channel_id, new_url, user_agent, stream_id, m3u_profile_id, stream_name,
+                    channel_name=channel_name, m3u_profile_name=m3u_profile_name,
                 )
 
                 switch_status = None
@@ -885,7 +908,8 @@ class ChannelService:
     # Helper methods for Redis operations
 
     @staticmethod
-    def _update_channel_metadata(channel_id, url, user_agent=None, stream_id=None, m3u_profile_id=None, stream_name=None):
+    def _update_channel_metadata(channel_id, url, user_agent=None, stream_id=None, m3u_profile_id=None,
+                                 stream_name=None, channel_name=None, m3u_profile_name=None):
         """Update channel metadata in Redis"""
         try:
             proxy_server = ProxyServer.get_instance()
@@ -905,16 +929,14 @@ class ChannelService:
                 metadata[ChannelMetadataField.USER_AGENT] = user_agent
             if stream_id:
                 metadata[ChannelMetadataField.STREAM_ID] = str(stream_id)
-                if not stream_name:
-                    try:
-                        from apps.channels.models import Stream
-                        stream_name = Stream.objects.filter(id=stream_id).values_list('name', flat=True).first()
-                    except Exception as e:
-                        logger.warning(f"Failed to update stream name in Redis for stream {stream_id}: {e}")
                 if stream_name:
                     metadata[ChannelMetadataField.STREAM_NAME] = stream_name
             if m3u_profile_id:
                 metadata[ChannelMetadataField.M3U_PROFILE] = str(m3u_profile_id)
+            if channel_name:
+                metadata[ChannelMetadataField.CHANNEL_NAME] = channel_name
+            if m3u_profile_name:
+                metadata[ChannelMetadataField.M3U_PROFILE_NAME] = m3u_profile_name
 
             # Also update the stream switch time field
             metadata[ChannelMetadataField.STREAM_SWITCH_TIME] = str(time.time())
@@ -939,7 +961,8 @@ class ChannelService:
             close_old_connections()
 
     @staticmethod
-    def _publish_stream_switch_event(channel_id, new_url, user_agent=None, stream_id=None, m3u_profile_id=None, stream_name=None):
+    def _publish_stream_switch_event(channel_id, new_url, user_agent=None, stream_id=None, m3u_profile_id=None,
+                                      stream_name=None, channel_name=None, m3u_profile_name=None):
         """Publish a stream switch event to Redis pubsub"""
         proxy_server = ProxyServer.get_instance()
 
@@ -954,6 +977,8 @@ class ChannelService:
             "stream_id": stream_id,
             "m3u_profile_id": m3u_profile_id,
             "stream_name": stream_name,
+            "channel_name": channel_name,
+            "m3u_profile_name": m3u_profile_name,
             "requester": proxy_server.worker_id,
             "timestamp": time.time()
         }

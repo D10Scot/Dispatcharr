@@ -161,20 +161,6 @@ class StreamTsDbCleanupTests(SimpleTestCase):
         mock_close.assert_called_once()
 
 
-class UrlUtilsDbCleanupTests(SimpleTestCase):
-    @patch("apps.proxy.live_proxy.url_utils.close_old_connections")
-    @patch("apps.proxy.live_proxy.url_utils.M3UAccountProfile.objects.get")
-    def test_get_connections_left_closes_db(self, mock_get, mock_close):
-        mock_get.side_effect = Exception("not found")
-
-        from apps.proxy.live_proxy.url_utils import get_connections_left
-
-        result = get_connections_left(999)
-
-        self.assertEqual(result, 0)
-        mock_close.assert_called_once()
-
-
 class TsGeneratorDbCleanupTests(SimpleTestCase):
     @patch("apps.proxy.live_proxy.output.ts.generator.close_old_connections")
     @patch("apps.proxy.live_proxy.output.ts.generator.ProxyServer.get_instance")

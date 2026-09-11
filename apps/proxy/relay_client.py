@@ -385,6 +385,8 @@ def advance(
     stream_id=None,
     m3u_profile_id=None,
     stream_name=None,
+    channel_name=None,
+    m3u_profile_name=None,
     reset_tried=False,
 ):
     """Switch a running channel to an already-resolved source.
@@ -406,6 +408,8 @@ def advance(
             "stream_id": stream_id,
             "m3u_profile_id": m3u_profile_id,
             "stream_name": stream_name,
+            "channel_name": channel_name,
+            "m3u_profile_name": m3u_profile_name,
             "reset_tried": reset_tried,
         },
     )

@@ -47,6 +47,35 @@ class SourceSerializer(serializers.Serializer):
     # what it reserved; without it, views.py's error paths double-release.
     slot_reserved = serializers.BooleanField()
     stream_profile = StreamProfileRefSerializer()
+    # Phase 2 PR 2b-1. Four values Django holds while it builds this answer
+    # and the relay used to re-query for in its own process
+    # (services/channel_service.py:324,331,911 and input/manager.py:737 in
+    # the spec's § Stage 2b table).
+    #
+    # channel_name/stream_name/m3u_profile_name are NOT allow_null, on
+    # evidence, not by symmetry with ffmpeg_stream_profile below: every
+    # producer in next_source.py reads them off a Channel, Stream or
+    # M3UAccountProfile row already in hand (.name, never a dict .get()
+    # that could silently return None), and none of the three models'
+    # `name` fields carries null=True (apps/channels/models.py's Channel
+    # and Stream, apps/m3u/models.py's M3UAccountProfile) -- a review
+    # checked all three before this was decided. The "Django looked and
+    # found nothing" case this field type would exist to represent is
+    # handled one level up instead: when there is no Source to return at
+    # all, the *outer* `source` key on NextSourceResponseSerializer is
+    # null (already allow_null=True), and this whole sub-object is never
+    # serialized. A Go client should read these as required strings.
+    #
+    # ffmpeg_stream_profile stays allow_null=True: no producer treats
+    # "no locked ffmpeg profile installed" as an error, and it is a real
+    # reachable state (core/signals.py only blocks *deleting* a locked
+    # profile, not unlocking or renaming one) -- unlike the three names
+    # above, None here is a fact next_source.py's own
+    # _locked_ffmpeg_profile() can genuinely produce for a valid Source.
+    channel_name = serializers.CharField()
+    stream_name = serializers.CharField()
+    m3u_profile_name = serializers.CharField()
+    ffmpeg_stream_profile = StreamProfileRefSerializer(allow_null=True)
 
 
 class NextSourceRequestSerializer(serializers.Serializer):
@@ -75,10 +104,42 @@ class NextSourceRequestSerializer(serializers.Serializer):
     include_alternates = serializers.BooleanField(required=False, default=False)
 
 
+class RelayProxySettingsSerializer(serializers.Serializer):
+    """CoreSettings.get_proxy_settings()'s seven keys (core/models.py:709-717),
+    as the next-source contract renders them for the relay/a Go client.
+
+    Declared field by field rather than as a DictField so the contract is
+    in the drf-spectacular schema and a Go client can generate against it.
+
+    NOT core.serializers.ProxySettingsSerializer (the settings UI's own
+    validator for the same seven keys) -- drf-spectacular names OpenAPI
+    components by class name, and two classes named ProxySettingsSerializer
+    collided on one component until this was renamed. It was latent only
+    because core.serializers.ProxySettingsSerializer's own viewset
+    (core/api_views.py's ProxySettingsViewSet) is unrouted; the day someone
+    routes it, spectacular keeps whichever registers first, and the two
+    disagree on type: core's declares buffering_timeout, channel_shutdown_
+    delay and channel_init_grace_period as IntegerField (with validators),
+    this one as FloatField (this module renders whatever
+    CoreSettings.get_proxy_settings() returns, e.g. 15.0, verbatim) -- a Go
+    client generated against the wrong one gets json.Unmarshal refusing
+    15.0 into an int.
+    """
+
+    buffering_timeout = serializers.FloatField()
+    buffering_speed = serializers.FloatField()
+    redis_chunk_ttl = serializers.IntegerField()
+    channel_shutdown_delay = serializers.FloatField()
+    channel_init_grace_period = serializers.FloatField()
+    channel_client_wait_period = serializers.FloatField()
+    new_client_behind_seconds = serializers.FloatField()
+
+
 class NextSourceResponseSerializer(serializers.Serializer):
     source = SourceSerializer(allow_null=True)
     alternates = SourceSerializer(many=True)
     error = serializers.CharField(allow_null=True)
+    proxy_settings = RelayProxySettingsSerializer()
 
 
 class ReleaseRequestSerializer(serializers.Serializer):
