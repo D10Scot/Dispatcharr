@@ -126,7 +126,7 @@ restated here as a single list, in the idiom of Phase 1's § "What the code says
   `validate_stream_url`, and the one dead site named below.
 - **`url_utils.py`'s `get_connections_left` is live, not deleted — this spec's first draft was wrong
   about this and the error is withdrawn.** `apps/proxy/live_proxy/url_utils.py:247` defines
-  `get_connections_left(m3u_profile_id: int) -> int`, whose body at `:260` runs
+  `get_connections_left(m3u_profile_id: int) -> int`, whose body at `:261` runs
   `M3UAccountProfile.objects.get(id=m3u_profile_id)` before reading `profile_connections:{id}` from
   Redis. It is exercised by `apps/proxy/live_proxy/tests/test_live_db_cleanup.py:167-172`
   (`test_get_connections_left_closes_db`), and `grep -rn "get_connections_left" apps/proxy/` finds no
@@ -1641,13 +1641,20 @@ of whether they survive. The runtime check is the one that actually proves "zero
 the allowlist) rather than "the ORM happens not to appear on this line"; the static check is a fast
 first pass that can be wrong in either direction on its own.
 
-### The three PRs
+**Three ORM reads live in the relay that no 2b PR above removes are recorded separately, in
+[issue #253](https://github.com/D10Scot/Dispatcharr/issues/253), rather than folded into the table.**
+The most consequential is `channel.get_stream_profile()` (`live_proxy/views.py:430`,
+`input/manager.py:741`/`:744`): its call site contains neither `.objects.` nor `get_object_or_404(`,
+so it is invisible to the static half of the guard just described, and only the runtime check can
+catch it.
+
+### The four PRs
 
 **Added in this fix round**, matching 2c's PR-table shape (§ B7 in the review this responds to).
 
 | PR | Branch | What it does | Gate | Depends on |
 |---|---|---|---|---|
-| 2b-1 | `migration/phase2b-names-and-profiles` | `channel_name`/`stream_name`/`m3u_profile_name` on `next-source`'s and `advance`'s responses; the `StreamProfile` fallback folded into `next-source`; `get_connections_left` deleted (or folded in, if a caller surfaces); `next-source`'s identifier resolution extended to accept a `stream_hash` (parity row 16); `proxy_settings` added to `next-source`'s response. | 2b's own zero-ORM guard test (part 1, static) shows a measured reduction in surviving sites | 2a-7 (Gate 2 must be green before 2c starts, and 2b's own coverage matters to that number too) |
+| 2b-1 | `migration/phase2b-names-and-profiles` | `channel_name`/`stream_name`/`m3u_profile_name` on `next-source`'s response and `advance`'s **request** body (`RelayAdvanceRequestSerializer`, `relay_serializers.py:187`) — both directions point Django's names at the relay, never the reverse; the `StreamProfile` fallback folded into `next-source`; `get_connections_left` deleted (or folded in, if a caller surfaces); `next-source`'s identifier resolution extended to accept a `stream_hash` (parity row 16); `proxy_settings` added to `next-source`'s response. | 2b's own zero-ORM guard test (part 1, static) shows a measured reduction in surviving sites | 2a-7 (Gate 2 must be green before 2c starts, and 2b's own coverage matters to that number too) |
 | 2b-2 | `migration/phase2b-output-profile-and-user` | `OutputProfile.build_command()`'s output folded into `next-source`'s response when `X-Relay-Output` is set; the new `X-Relay-Output-Format` **and** `X-Relay-Client-IP` headers end to end (`authorize_view`, `dispatcharr_api_params.conf`, all nine nginx locations, the greybox spec's `AUTH_REQUEST_SET_VARS`, `internal_auth.py`'s name pairs) — the full blast-radius file list from the table above, both headers in one PR since they touch the same files. | Existing forged-header `@contract` test still 403s with both headers in place; `nginx-stream-buffering.spec.ts`'s test 2 updated and green | 2b-1 |
 | 2b-3 | `migration/phase2b-zero-orm-guard` | The two-part guard test (static + runtime) plus `zero_orm_allowlist.py`; deletes whichever `channel_status.py:74`/`:92` fallback reads turn out, on inspection during this PR, to be provably unreachable — and, for whichever do not, adds them to the allowlist with a comment citing this decision rather than leaving them to fail the guard silently. **Corrected in this fix round (§ NM2 in the round-2 review): the previous gate — "both guard-test parts green" — could not be met by a PR whose own scope keeps a read in place, since the static guard would fail on it by construction. The allowlist is what makes "leave a read in place, deliberately" and "the guard passes" compatible.** | Both guard-test parts green **against the allowlist** — an empty allowlist is the best outcome but not the gate; a non-empty, comment-cited one still passes; **and Gate 1 is met** — `e2e/tests/guards/parity-matrix.spec.ts` reports no row still marked `owed:`. **Added in the round-6 amendments (§ A6) because no PR's gate was Gate 1**: 2a-1's is "guard green" (which is green by design with rows still owed), 2a-3 through 2a-6's are coverage increases plus their own rows, and 2a-7's is Gate 2 — even though D7 makes Gate 1 a hard precondition on every 2c PR. 2b-3 owns row 18, the last owed row in the phase, so it is necessarily the PR that turns Gate 1 off; a precondition no PR is required to reach is not a precondition | 2b-1, 2b-2 |
 | 2b-4 | `migration/phase2b-coverage-80` | **Closes Gate 2's ≥80% requirement, reassigned here from 2a-7 (§ Stage 2a › Gate 2, amended).** Stage 2a ends measured at **74.30%** — 2,050 missing of 7,978, worst of 15 CI rounds — with the ratchet floor live in `backend-tests.yml`. This PR closes the remaining **455** statements and moves the floor to the 1,595 the gate allows. Scope it from a *measured* per-file reachability pass, not from an estimate: no reachability estimate in this document survived contact with stage 2a. | The floor file records ≤1,595 missing and `backend-tests.yml`'s `coverage-gate` job is green at it; **D7 blocks every 2c PR until then** | 2a-7 (the ratchet and the measurement it rests on) |
