@@ -1,0 +1,105 @@
+# Gate 2's ratchet floor. See docs/superpowers/specs/2026-09-09-phase2-go-relay-design.md
+# (Stage 2a > Gate 2) and docs/superpowers/plans/2026-09-10-phase2-2a7-coverage-gate.md.
+#
+# `missing` is the ratchet -- a MAXIMUM, not a target, and lower is better. It is set
+# from the WORST run of at least twelve on the tree that earned it, which is why this
+# gate carries no separate tolerance parameter: the measured spread is already inside
+# the number. Four regions are known to flap (owner-side coordinated stop, non-owner
+# local cleanup, the stderr-reader join, _wait_for_channel_ready's error branch) and
+# the list has grown twice; a fixed tolerance would be stale on arrival.
+#
+# `shape` and `statements` are EQUALITY checks, not comparisons. A different measurement
+# shape or module list makes two numbers incomparable rather than better or worse, and
+# the gate says so instead of ratcheting.
+#
+# Written by:  scripts/coverage_live_path.sh --write-floor
+# Enforced by: scripts/coverage_live_path.sh --gate  (backend-tests.yml, job coverage-gate)
+#
+# PROVENANCE (Phase 2 PR 2a-7, amended before merge -- measured in CI, where the
+# gate is enforced). `missing` below is the WORST of 15 rounds of
+# backend-tests.yml's own coverage-label + coverage-gate jobs, on this branch,
+# 2026-09-11. Full sequence, in order:
+#   2045 2035 2050 2048 2031 2024 2028 2033 2017 2019 2016 2045 2017 2035 2037
+# max=2050 (round 3)  min=2016 (round 11)  spread=34  n=15
+# The stopping rule (maximum unchanged for >=6 consecutive rounds, minimum 12) was
+# met at round 12 and held to 15.
+#
+# WHY THIS REPLACES THE 2044 BELOW, AND WHY 2044 WAS NOT WRONG. The earlier campaign
+# was a correct 21-round census that met the same stopping rule -- in LOCAL
+# containers. This gate runs in CI, and the first CI run on the merge-ready tree
+# measured 2045: one statement over a floor whose whole claim is that the spread is
+# already inside it. The floor was measured in one environment and enforced in
+# another, and the local maximum understated the CI distribution by 6. Re-measuring
+# HERE is the fix; widening 2044 by a tolerance would have been the tempting one,
+# and is exactly the parameter this file exists to avoid.
+#
+# It is variance, not a regression: the very next CI run measured 2035, comfortably
+# under 2044, and the census min is 2016 -- better than anything the local campaign
+# saw. Attributed per LINE across six of these runs (the method this file's own gate
+# message prescribes -- diff the missing-line SETS, never difference totals): 92
+# lines flap, 64 of them in server.py alone, with input/manager.py contributing 13
+# (including 1339-1340, the #231 pair) and fmp4/generator.py 4. That is the same
+# bimodal block-flipping the local campaign found, sampled in a noisier scheduler.
+#
+# ORIGINAL LOCAL CAMPAIGN, kept because it is the tree-to-tree comparison and the
+# denominator evidence, and because a floor that quietly forgets its earlier number
+# cannot be audited (Phase 2 PR 2a-7, Task 7).
+#
+# (Task 7, local). `missing` below is the WORST of 21 rounds
+# under the per-container/v1-sysmon shape, NOT the figure --write-floor's own run
+# happened to produce (2009) and NOT a median -- hand-set after the write, per the
+# plan's Task 7 Step 4. Tree: 41f8021a12e3210d50ee4871cbdfecc1647aa89c (2a-7's branch,
+# all four coverage PRs plus Tasks 1-7 committed). Measured 2026-09-10 against
+# dispatcharr-testrunner-2a7-{proxy,liveproxy,channels}, three containers, one label
+# each. Stopping rule (maximum unchanged for >=6 consecutive rounds, minimum 12) was
+# met at round 12 and held through round 20; rounds continued to 20 for margin, per
+# the same over-run judgement Task 1 used. Full sequence, in order:
+#   2041 2005 2026 2039 2024 2035 2008 2044 2013 2032 2028
+#   2026 2003 2026 2033 2025 2028 2028 2029 2023 2023
+# max=2044 (round 7)  min=2003 (round 12)  spread=41  n=21
+# The tree's denominator (7978) is unchanged from Task 1's merged-tree measurement,
+# but this is a DIFFERENT measurement, not a re-run of it: Task 1's floor candidate
+# was 2048 on the tree before Tasks 3/4 added two tests (row 29's and row 30's), and
+# this one is 2044 -- 4 statements lower, on a tree with slightly more covered, not a
+# discrepancy between two measurements of the same thing.
+#
+# HOW TO MOVE THIS FLOOR (read before running --write-floor). `--write-floor` writes
+# the figure from the run it JUST took -- one run, not the worst of N -- because the
+# floor policy (worst of >=12 rounds under a stopping rule; see the top of this file)
+# lives in the stopping-rule PROCEDURE, not in the script. The two are not the same
+# thing by design, and `--write-floor` cannot know it is being run for the Nth time in
+# a campaign versus once, so it never guesses at "worst so far" on your behalf. The
+# exact sequence, every time this floor legitimately moves:
+#   1. Measure IN CI, not only locally: dispatch backend-tests.yml on the branch
+#      repeatedly and read `this run missing=` from each coverage-gate job, until the
+#      MAXIMUM has been unchanged for >=6 consecutive rounds, >=12 total. Record every
+#      round, in order -- a bare min/max cannot show the rule was met. Local rounds via
+#      scripts/coverage_live_path_isolated.sh --report are still worth taking (they are
+#      far faster to iterate on, and they attribute a change per file), but they do NOT
+#      set the number: this floor was first set from a 21-round LOCAL census whose
+#      maximum the very first CI run exceeded. The floor must be measured where it is
+#      enforced. Note backend-tests.yml's concurrency group is per-ref with
+#      cancel-in-progress, so CI rounds on one branch are sequential, not parallel.
+#   2. Take max(runs). That number, not any single run's own figure, is what belongs
+#      in `missing` below.
+#   3. Run --write-floor once (writable checkout or a scratch rw container -- /repo is
+#      read-only in the standard test-hook container) to get the correct FILE FORMAT,
+#      shape and statements fields machine-produced.
+#   4. Hand-edit `missing` to max(runs) from step 2 if it differs from what
+#      --write-floor's own run produced (it usually will -- one run is rarely the
+#      worst of N), and recompute `percent` = (1 - missing/statements) * 100 to match.
+#      This hand-edit is the honest, documented step, not a workaround: teaching
+#      --write-floor to accept an explicit override was considered for this PR and
+#      declined, because the value would have to thread through both the regression
+#      check (which run's `missing` counts as "worse than the floor"?) and the percent
+#      computation (recomputed for which value?), which is more machinery-in-the-gate
+#      than this PR wants to risk for a maintainer action taken rarely and by hand.
+#   5. Re-run --gate from the ordinary READ-ONLY test-hook container -- the shape CI
+#      actually runs it in -- and confirm it exits 0 against the new floor before
+#      committing.
+shape=per-container/v1-sysmon
+statements=7978
+missing=2050
+percent=74.30
+measured=2026-09-11
+runs=15
