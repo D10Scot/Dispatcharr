@@ -522,8 +522,9 @@ class ChannelService:
         else:
             # Not the owner: publish the switch event. The owner will update metadata
             # after the actual switch attempt succeeds (or roll back on failure).
-            # All needed info (url, user_agent, stream_id, m3u_profile_id) is carried
-            # in the pubsub message, so there is no reason to pre-write metadata here.
+            # All needed info (url, user_agent, stream_id, m3u_profile_id, stream_name,
+            # channel_name, m3u_profile_name) is carried in the pubsub message, so
+            # there is no reason to pre-write metadata here.
             logger.debug(f"This worker is not the owner, publishing stream switch event for channel {channel_id}")
             if proxy_server.redis_client:
                 status_key = RedisKeys.switch_status(channel_id)
@@ -534,7 +535,8 @@ class ChannelService:
                     logger.warning(f"Could not clear switch status for channel {channel_id}: {e}")
 
                 ChannelService._publish_stream_switch_event(
-                    channel_id, new_url, user_agent, stream_id, m3u_profile_id, stream_name
+                    channel_id, new_url, user_agent, stream_id, m3u_profile_id, stream_name,
+                    channel_name=channel_name, m3u_profile_name=m3u_profile_name,
                 )
 
                 switch_status = None
@@ -959,7 +961,8 @@ class ChannelService:
             close_old_connections()
 
     @staticmethod
-    def _publish_stream_switch_event(channel_id, new_url, user_agent=None, stream_id=None, m3u_profile_id=None, stream_name=None):
+    def _publish_stream_switch_event(channel_id, new_url, user_agent=None, stream_id=None, m3u_profile_id=None,
+                                      stream_name=None, channel_name=None, m3u_profile_name=None):
         """Publish a stream switch event to Redis pubsub"""
         proxy_server = ProxyServer.get_instance()
 
@@ -974,6 +977,8 @@ class ChannelService:
             "stream_id": stream_id,
             "m3u_profile_id": m3u_profile_id,
             "stream_name": stream_name,
+            "channel_name": channel_name,
+            "m3u_profile_name": m3u_profile_name,
             "requester": proxy_server.worker_id,
             "timestamp": time.time()
         }

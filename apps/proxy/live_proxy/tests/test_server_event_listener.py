@@ -269,3 +269,61 @@ class StreamSwitchEventTests(RelayHarnessTestCase):
                 )
 
             self.stop_channel(channel)
+
+    def test_a_stream_switch_event_carries_channel_name_and_m3u_profile_name_into_metadata(self):
+        """PIN. pr-review bot finding, verified and confirmed blocking: this
+        is the consuming end of the follower-branch fix. A follower worker's
+        change_stream_url now publishes channel_name/m3u_profile_name on the
+        STREAM_SWITCH event (see test_stream_switch.py's
+        test_pubsub_event_carries_channel_name_and_m3u_profile_name for the
+        publish side); this test proves the owner's listener actually reads
+        them back off the event and writes them into the metadata hash,
+        rather than the event carrying them for nothing. Every existing test
+        in this class omits both fields from the published payload, so none
+        of them could distinguish "threaded" from "never wired up" on this
+        end."""
+        server = ProxyServer.get_instance()
+        with self.stand_in():
+            profile = stand_in_stream_profile()
+            channel = self.make_channel(
+                upstream_url=self.upstream.url, profile=profile
+            )
+            identifier = str(channel.uuid)
+
+            with self.tuned(channel) as stream:
+                stream.read(20 * 188)
+
+                new_url = f"{self.upstream.url}?switched=names"
+                server.redis_client.publish(
+                    RedisKeys.events_channel(identifier),
+                    json.dumps({
+                        "event": EventType.STREAM_SWITCH,
+                        "channel_id": identifier,
+                        "url": new_url,
+                        "user_agent": "harness",
+                        "stream_id": None,
+                        "m3u_profile_id": None,
+                        "stream_name": None,
+                        "channel_name": "Real Listener Channel Name",
+                        "m3u_profile_name": "Real Listener Profile Name",
+                        "requester": "some-other-worker",
+                    }),
+                )
+
+                metadata_key = RedisKeys.channel_metadata(identifier)
+
+                wait_until(
+                    lambda: server.redis_client.hget(
+                        metadata_key, ChannelMetadataField.CHANNEL_NAME
+                    ) == "Real Listener Channel Name",
+                    timeout=15,
+                    what="the listener to write channel_name from the event into the metadata hash",
+                )
+                self.assertEqual(
+                    server.redis_client.hget(
+                        metadata_key, ChannelMetadataField.M3U_PROFILE_NAME
+                    ),
+                    "Real Listener Profile Name",
+                )
+
+            self.stop_channel(channel)

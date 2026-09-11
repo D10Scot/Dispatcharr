@@ -187,6 +187,49 @@ class NonOwnerPathTests(TestCase):
         self.assertEqual(payload["stream_name"], "Alt Feed")
         self.assertEqual(payload["url"], NEW_URL)
 
+    def test_pubsub_event_carries_channel_name_and_m3u_profile_name(self):
+        """PIN. pr-review bot finding, verified and confirmed blocking: the
+        follower branch of change_stream_url published stream_name alone --
+        _publish_stream_switch_event had no parameters for channel_name/
+        m3u_profile_name at all, so an operator-initiated change_stream or
+        next_stream issued against a follower worker reached the owner with
+        both names unset. The owner's event handler then called
+        _update_channel_metadata with them None, leaving the pre-switch
+        m3u_profile_name in the hash -- the same stale-name shape fixed for
+        the automatic-failover path at input/manager.py:2162, reintroduced
+        here, and worse than before this PR because the ORM fallback that
+        used to paper over it (channel_service.py:343) is gone. Every other
+        test in this class calls change_stream_url with stream_name alone,
+        so none of them could catch a dropped channel_name/m3u_profile_name;
+        this one supplies real, distinct values for both."""
+        redis = FakeRedis()
+        proxy = make_proxy_server(redis, owner=False)
+        status_key = RedisKeys.switch_status(CHANNEL_ID)
+
+        original_publish = redis.publish
+
+        def publish_and_confirm(channel, message):
+            original_publish(channel, message)
+            redis.store[status_key] = "switched"
+
+        redis.publish = publish_and_confirm
+
+        with patch.object(cs_module.ProxyServer, "get_instance", return_value=proxy), \
+             patch.object(cs_module, "STREAM_SWITCH_CONFIRM_TIMEOUT", 0.3), \
+             patch.object(cs_module, "STREAM_SWITCH_POLL_INTERVAL", 0.05):
+            ChannelService.change_stream_url(
+                CHANNEL_ID, NEW_URL, "test-agent",
+                target_stream_id=144065, m3u_profile_id=7,
+                stream_name="Alt Feed",
+                channel_name="Real Follower Channel Name",
+                m3u_profile_name="Real Follower Profile Name",
+            )
+
+        self.assertEqual(len(redis.published), 1)
+        payload = json.loads(redis.published[0][1])
+        self.assertEqual(payload["channel_name"], "Real Follower Channel Name")
+        self.assertEqual(payload["m3u_profile_name"], "Real Follower Profile Name")
+
     def test_switch_confirmed_by_owner_reports_success(self):
         result, _ = self._run(owner_outcome="switched")
 

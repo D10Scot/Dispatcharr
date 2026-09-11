@@ -552,6 +552,19 @@ def stream_ts(request, channel_id, user=None, force_output_format=None, decision
                         )
                         return _channel_stopping_response()
 
+                    # channel_name has an or-fallback because `channel` (a
+                    # Channel row, or a Stream row for the /<stream_hash>
+                    # preview case) is already fetched locally regardless of
+                    # Django's version. stream_name has no equivalent: it
+                    # names a specific Stream selected by stream_id, not a
+                    # property of the object already in hand, so a pre-2b-1
+                    # Django (tune_extras() -> all-None, url_utils.py:41) or
+                    # any other cause of a None here writes no STREAM_NAME
+                    # into the metadata hash at init. Not unrecoverable --
+                    # channel_status.py:74's ORM-by-stream_id fallback (keyed
+                    # off stream_id, independent of tune_extras) repairs it
+                    # on every status poll -- see the PR's "degrade story"
+                    # section for the repeated-query cost that implies.
                     success = ChannelService.initialize_channel(
                         channel_id,
                         stream_url,
