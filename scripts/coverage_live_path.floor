@@ -15,7 +15,37 @@
 # Written by:  scripts/coverage_live_path.sh --write-floor
 # Enforced by: scripts/coverage_live_path.sh --gate  (backend-tests.yml, job coverage-gate)
 #
-# PROVENANCE (Phase 2 PR 2a-7, Task 7). `missing` below is the WORST of 21 rounds
+# PROVENANCE (Phase 2 PR 2a-7, amended before merge -- measured in CI, where the
+# gate is enforced). `missing` below is the WORST of 15 rounds of
+# backend-tests.yml's own coverage-label + coverage-gate jobs, on this branch,
+# 2026-09-11. Full sequence, in order:
+#   2045 2035 2050 2048 2031 2024 2028 2033 2017 2019 2016 2045 2017 2035 2037
+# max=2050 (round 3)  min=2016 (round 11)  spread=34  n=15
+# The stopping rule (maximum unchanged for >=6 consecutive rounds, minimum 12) was
+# met at round 12 and held to 15.
+#
+# WHY THIS REPLACES THE 2044 BELOW, AND WHY 2044 WAS NOT WRONG. The earlier campaign
+# was a correct 21-round census that met the same stopping rule -- in LOCAL
+# containers. This gate runs in CI, and the first CI run on the merge-ready tree
+# measured 2045: one statement over a floor whose whole claim is that the spread is
+# already inside it. The floor was measured in one environment and enforced in
+# another, and the local maximum understated the CI distribution by 6. Re-measuring
+# HERE is the fix; widening 2044 by a tolerance would have been the tempting one,
+# and is exactly the parameter this file exists to avoid.
+#
+# It is variance, not a regression: the very next CI run measured 2035, comfortably
+# under 2044, and the census min is 2016 -- better than anything the local campaign
+# saw. Attributed per LINE across six of these runs (the method this file's own gate
+# message prescribes -- diff the missing-line SETS, never difference totals): 92
+# lines flap, 64 of them in server.py alone, with input/manager.py contributing 13
+# (including 1339-1340, the #231 pair) and fmp4/generator.py 4. That is the same
+# bimodal block-flipping the local campaign found, sampled in a noisier scheduler.
+#
+# ORIGINAL LOCAL CAMPAIGN, kept because it is the tree-to-tree comparison and the
+# denominator evidence, and because a floor that quietly forgets its earlier number
+# cannot be audited (Phase 2 PR 2a-7, Task 7).
+#
+# (Task 7, local). `missing` below is the WORST of 21 rounds
 # under the per-container/v1-sysmon shape, NOT the figure --write-floor's own run
 # happened to produce (2009) and NOT a median -- hand-set after the write, per the
 # plan's Task 7 Step 4. Tree: 41f8021a12e3210d50ee4871cbdfecc1647aa89c (2a-7's branch,
@@ -40,10 +70,16 @@
 # thing by design, and `--write-floor` cannot know it is being run for the Nth time in
 # a campaign versus once, so it never guesses at "worst so far" on your behalf. The
 # exact sequence, every time this floor legitimately moves:
-#   1. Run scripts/coverage_live_path_isolated.sh --report repeatedly (a fresh
-#      container per round -- see Task 1/7 of the coverage-gate plan) until the
-#      MAXIMUM `missing` has been unchanged for >=6 consecutive rounds, >=12 total.
-#      Record every round, in order -- a bare min/max cannot show the rule was met.
+#   1. Measure IN CI, not only locally: dispatch backend-tests.yml on the branch
+#      repeatedly and read `this run missing=` from each coverage-gate job, until the
+#      MAXIMUM has been unchanged for >=6 consecutive rounds, >=12 total. Record every
+#      round, in order -- a bare min/max cannot show the rule was met. Local rounds via
+#      scripts/coverage_live_path_isolated.sh --report are still worth taking (they are
+#      far faster to iterate on, and they attribute a change per file), but they do NOT
+#      set the number: this floor was first set from a 21-round LOCAL census whose
+#      maximum the very first CI run exceeded. The floor must be measured where it is
+#      enforced. Note backend-tests.yml's concurrency group is per-ref with
+#      cancel-in-progress, so CI rounds on one branch are sequential, not parallel.
 #   2. Take max(runs). That number, not any single run's own figure, is what belongs
 #      in `missing` below.
 #   3. Run --write-floor once (writable checkout or a scratch rw container -- /repo is
@@ -63,7 +99,7 @@
 #      committing.
 shape=per-container/v1-sysmon
 statements=7978
-missing=2044
-percent=74.38
-measured=2026-09-10
-runs=21
+missing=2050
+percent=74.30
+measured=2026-09-11
+runs=15
