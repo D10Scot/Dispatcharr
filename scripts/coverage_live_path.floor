@@ -35,12 +35,15 @@
 #
 # `statements` is NOT compared -- it is recorded provenance only, printed alongside the
 # ratchet for information. It moves whenever ANY statement is added to or removed from
-# an ALREADY-INCLUDED module (measured: one three-line function added to
-# apps/proxy/control_plane.py took it 124 -> 127 statements) -- not only when the
-# rcfile's module list changes -- so comparing it for equality used to fire on ordinary
-# code changes to files already in scope. `modules` and `rcfile` are what actually
-# answer "did the denominator's composition or definition change", which is the
-# question this guard exists to ask.
+# an ALREADY-INCLUDED module (measured, statically, via PythonParser: one three-line
+# function added to apps/proxy/control_plane.py took it 124 -> 127 statements) -- not
+# only when the rcfile's module list changes -- so comparing it for equality would have
+# fired on ordinary code changes to files already in scope, not just on scope changes.
+# It never actually did: every 2a PR added only test files, which the rcfile omits, so
+# the denominator never moved in practice -- the bug was latent, caught before a 2b PR
+# that touches included production modules directly could trip it. `modules` and
+# `rcfile` are what actually answer "did the denominator's composition or definition
+# change", which is the question this guard exists to ask.
 #
 # Written by:  scripts/coverage_live_path.sh --write-floor
 # Enforced by: scripts/coverage_live_path.sh --gate  (backend-tests.yml, job coverage-gate)

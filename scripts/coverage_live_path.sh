@@ -201,17 +201,37 @@ PY
 # moves whenever a statement is added to or removed from an ALREADY-INCLUDED
 # module (measured: one three-line function added to control_plane.py took it
 # 124 -> 127 statements), not only when scripts/coverage_live_path.coveragerc's
-# include list changes. Comparing statements for equality therefore fires on
-# ordinary code changes to files already in scope, not just on scope changes --
-# so the shape guard hashes the FILE SET (report()'s JSON `files` keys, which
-# are repo-relative paths matching the rcfile's include entries) instead.
+# include list changes. Comparing statements for equality would therefore fire
+# on ordinary code changes to files already in scope, not just on scope
+# changes -- static, via PythonParser; no 2a PR ever tripped it in practice,
+# because every one added only test files, which the rcfile omits, so the
+# denominator never moved. The bug was latent, not observed -- and latent is
+# reason enough: 2b's first PR touches control_plane.py, relay_serializers.py
+# and relay_views.py directly. So the shape guard hashes the FILE SET
+# (report()'s JSON `files` keys, which are repo-relative paths matching the
+# rcfile's include entries) instead.
 # Prints "<hash> <count>" on the first line, then the sorted list, one path per
 # line -- the same list --write-floor commits to MODULES_FILE and gate() diffs
 # against it on a mismatch.
 read_modules() {
   python - "$COVERAGE_LIVE_PATH_DATA_DIR/live-path.json" <<'PY'
 import hashlib, json, sys
-files = sorted(json.load(open(sys.argv[1]))["files"].keys())
+
+path = sys.argv[1]
+try:
+    with open(path) as fh:
+        files = sorted(json.load(fh)["files"].keys())
+except FileNotFoundError:
+    print(f"coverage_live_path: read_modules: {path} does not exist.", file=sys.stderr)
+    print("coverage_live_path: read_modules: report() must run first and produce it.", file=sys.stderr)
+    sys.exit(1)
+except json.JSONDecodeError as exc:
+    print(f"coverage_live_path: read_modules: {path} is not valid JSON: {exc}", file=sys.stderr)
+    sys.exit(1)
+except KeyError:
+    print(f"coverage_live_path: read_modules: {path} has no \"files\" key -- not a "
+          f"coverage json report, or written by an incompatible coverage version.", file=sys.stderr)
+    sys.exit(1)
 digest = hashlib.sha256("\n".join(files).encode()).hexdigest()[:12]
 print(f"{digest} {len(files)}")
 for f in files:
