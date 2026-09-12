@@ -610,7 +610,7 @@ Stage `docker/dispatcharr_api_params.conf docker/nginx.conf e2e/tests/streaming-
 - Modify: `apps/proxy/live_proxy/client_manager.py:215-238`, `:267-275`
 - Modify: `apps/proxy/live_proxy/output/ts/generator.py:26-60`, `:126-135`, `:643-654`; `apps/proxy/live_proxy/output/fmp4/generator.py:28-67`, `:108-116`
 - Modify: `core/relay_events.py:131-190`
-- Test: `apps/proxy/live_proxy/tests/test_output_format_from_the_hop.py` (create), `apps/proxy/live_proxy/tests/test_stream_ts_client_registration.py` (extend), `core/tests/test_relay_events.py` (extend), `apps/proxy/tests/test_authorize_view.py` (extend again, Step 5b)
+- Test: `apps/proxy/live_proxy/tests/test_output_format_from_the_hop.py` (create), `apps/proxy/live_proxy/tests/test_authenticated_tune_identity.py` (create, Step 5c), `apps/proxy/live_proxy/tests/test_stream_ts_client_registration.py` (extend), `core/tests/test_relay_events.py` (extend), `apps/proxy/tests/test_authorize_view.py` (extend again, Step 5b)
 
 **Interfaces:**
 - Consumes: `AuthorizeResult.output_format`, `AuthorizeResult.user_id`, `AuthorizeResult.trusted` from Task 1.
@@ -1140,6 +1140,124 @@ class SurfaceSplitPremiseTests(TestCase):
 
 Check `SURFACE_VOD_XC` and `SURFACE_CATCHUP_XC` are exported from `apps/proxy/authorize.py` under those names before writing this (`grep -n '^SURFACE_' apps/proxy/authorize.py`); use whatever the module actually calls them.
 
+- [ ] **Step 5c: Write the failing test that an authenticated live tune reports the real identity**
+
+**This is the risk the surface split creates, and it is the one a missed consumer hides in.** With `user=None` on a live surface, every consumer Step 6 has not yet converted silently takes its *anonymous fallback* — `"0"` from `client_manager.py:234`, `"unknown"` from `:274` — for a **fully authenticated** viewer. Not a crash: a plausible wrong value, written into the client hash and the `client_connect` `SystemEvent`. Every existing test in the tree expects those fallbacks, so a missed consumer passes all of them.
+
+**One correction to where the two values live**, checked before writing this: `add_client`'s client hash carries `user_id` but **no `username`** (`client_manager.py:228-237`). `username` reaches only the CLIENT_CONNECTED pub/sub payload (`:274`, consumed by nobody — `server.py:246` logs receipt) and the generators' `emit_event`, which becomes `SystemEvent.details` verbatim (`core/utils.py:872-896` stores `**details` as JSON). So the two assertions land in two different places, and the test asserts each where it actually is.
+
+Create `apps/proxy/live_proxy/tests/test_authenticated_tune_identity.py`. Harness-based, not mocked: the point is the real hash and the real row.
+
+```python
+"""An authenticated live tune reports the real user, not the anonymous fallback.
+
+2b-2's surface split gives a live tune `decision.user is None`, so every
+consumer that still reads the object falls back to "0"/"unknown" for a
+fully authenticated viewer -- a plausible wrong value, not a crash, and
+one every pre-existing test in this tree already expects. This file is
+the pin that a converted consumer actually carries the identity through.
+
+The user's id and name are chosen so they cannot arise by accident:
+424242 is far above any sequence value and is not add_client's "0"
+fallback, and the username is not "unknown".
+"""
+
+import requests
+from django.contrib.auth import get_user_model
+
+from apps.proxy.internal_auth import (
+    HEADER_INTERNAL,
+    HEADER_INTERNAL_REQUEST,
+    build_internal_request_header,
+    internal_principal_token,
+    relay_trust_token,
+)
+from apps.proxy.live_proxy.redis_keys import RedisKeys
+
+from .harness.process import stand_in_stream_profile
+from .harness.relay import RelayHarnessTestCase, wait_until
+
+VIEWER_ID = 424242
+VIEWER_NAME = "2b2-authed-viewer"
+CLIENT_ID = "client_2b2_authed"
+
+
+class AuthenticatedTuneIdentityTests(RelayHarnessTestCase):
+    def test_the_client_hash_and_the_event_carry_the_real_user(self):
+        from core.models import SystemEvent
+
+        User = get_user_model()
+        viewer = User(id=VIEWER_ID, username=VIEWER_NAME)
+        viewer.set_password("x")
+        viewer.save()
+
+        with self.stand_in():
+            profile = stand_in_stream_profile()
+            channel = self.make_channel(
+                upstream_url=self.upstream.url, profile=profile
+            )
+            identifier = str(channel.uuid)
+
+            # Pre-state that differs from the expected post-state, on
+            # purpose: add_client writes with hset(mapping=...), which
+            # MERGES. Starting from an empty hash cannot tell "wrote the
+            # real id" from "dropped the key" -- both leave a hash with no
+            # wrong value in it. Seeded with the exact fallback the bug
+            # would produce, the two outcomes are distinguishable.
+            redis = self.redis_client()
+            redis.hset(
+                RedisKeys.client_metadata(identifier, CLIENT_ID),
+                mapping={"user_id": "0", "username": "unknown"},
+            )
+
+            response = requests.get(
+                f"{self.live_server_url}/proxy/ts/stream/{identifier}",
+                headers={
+                    "X-Dispatcharr-Authorized": relay_trust_token(),
+                    "X-Relay-Channel": identifier,
+                    "X-Relay-Client": CLIENT_ID,
+                    "X-Relay-User": str(VIEWER_ID),
+                    "X-Relay-Output": "",
+                    # mpegts IS the default, and that is fine here: the
+                    # format is not what this test pins, the identity is,
+                    # and the TS generator is the one that emits
+                    # client_connect (output/ts/generator.py:126-135).
+                    "X-Relay-Output-Format": "mpegts",
+                    "X-Relay-Client-IP": "203.0.113.9",
+                },
+                stream=True,
+                timeout=20,
+            )
+            self.addCleanup(response.close)
+            self.assertEqual(response.status_code, 200)
+            next(response.iter_content(chunk_size=188))
+
+            stored = redis.hgetall(RedisKeys.client_metadata(identifier, CLIENT_ID))
+            self.assertEqual(
+                stored.get("user_id"),
+                str(VIEWER_ID),
+                "the client hash kept the anonymous fallback for an "
+                "authenticated viewer -- a consumer of decision.user was "
+                "not converted (2b-2 task 3 step 6)",
+            )
+
+            # The username's real home: emit_event -> POST /api/relay/events
+            # -> core/relay_events.py resolves it from user_id -> the row's
+            # details JSON. Posted on its own greenlet, so wait for it.
+            wait_until(
+                lambda: SystemEvent.objects.filter(
+                    event_type="client_connect",
+                    details__username=VIEWER_NAME,
+                ).exists(),
+                timeout=15,
+                what="the client_connect event to name the real user",
+            )
+```
+
+**Two things to check against the harness before running it**, and fix the test rather than the production code if either differs: whether `RelayHarnessTestCase` exposes a Redis client under the name `self.redis_client()` (read the base class — `test_server_event_listener.py` reaches it as `ProxyServer.get_instance().redis_client`, which also works here), and whether `redis.hgetall` returns `str` or `bytes` keys in this configuration (the codebase's clients are `decode_responses=True`, but confirm rather than assume — a `bytes`-keyed dict makes `stored.get("user_id")` return `None` and the test fails for the wrong reason).
+
+**This test also pins Ruling R2 end to end** — it is the only test in the plan that drives the relay's `user_id` through `core/relay_events.py`'s enrichment into a real row. Step 3's `core/tests/test_relay_events.py` cases test that function in isolation; this one proves the relay actually calls it that way.
+
 - [ ] **Step 6: Thread the decision through the live path**
 
 In `apps/proxy/live_proxy/views.py`:
@@ -1307,7 +1425,9 @@ def _username_for(user_id):
 cd /Users/dion/git/Dispatcharr/.worktrees/phase2-2b2 && docker exec dispatcharr-testrunner \
   python /repo/manage.py test \
   apps.proxy.live_proxy.tests.test_output_format_from_the_hop \
+  apps.proxy.live_proxy.tests.test_authenticated_tune_identity \
   apps.proxy.live_proxy.tests.test_stream_ts_client_registration \
+  apps.proxy.tests.test_authorize_view \
   core.tests.test_relay_events -v2
 ```
 
@@ -1322,9 +1442,13 @@ cd /Users/dion/git/Dispatcharr/.worktrees/phase2-2b2 && docker exec dispatcharr-
 
 Expected: PASS, and **no VOD or timeshift test should change behaviour at all** — R1's surface split leaves `result_from_headers` byte-identical for every non-live surface. If one of them fails, the surface condition is wrong (most likely `SURFACE_LIVE_XC` omitted, or the `else` branch not restoring `user_id=str(user.id) if user is not None else ""`); fix the condition, never the caller.
 
-- [ ] **Step 12: Commit**
+- [ ] **Step 12: Commit — as ONE commit, deliberately**
 
-Stage `apps/proxy/authorize_views.py apps/proxy/live_proxy/views.py apps/proxy/live_proxy/client_manager.py apps/proxy/live_proxy/output/ts/generator.py apps/proxy/live_proxy/output/fmp4/generator.py core/relay_events.py` plus the three test files, then commit with `-F`. Message: `relay(phase2): the output format comes from the hop; no User row on a trusted tune (2b-2 task 3)`.
+**Do not split this task into a "split" commit and a "convert the consumers" commit.** Step 5 makes `decision.user` `None` on live surfaces; Steps 6-9 convert the consumers that read it. Between the two, an authenticated live tune reports `user_id="0"` and `username="unknown"` — a plausible wrong value written into the client hash and a `SystemEvent` row. CI only ever runs the PR head, so nothing would fail, which is exactly what makes such a commit bisect-hostile: a later `git bisect` over an unrelated identity bug would land on it and read as a real regression. Landing both in one commit means the window never exists in history.
+
+This is not a hazard the plan creates and then warns about — as written, Task 3 has exactly one commit and the window is absent by construction. The instruction exists because splitting a large task into tidier commits is a natural thing for an implementer to do unprompted, and here it would be wrong.
+
+Stage `apps/proxy/authorize_views.py apps/proxy/live_proxy/views.py apps/proxy/live_proxy/client_manager.py apps/proxy/live_proxy/output/ts/generator.py apps/proxy/live_proxy/output/fmp4/generator.py core/relay_events.py` plus the five test files (`test_output_format_from_the_hop.py`, `test_stream_ts_client_registration.py`, `test_authenticated_tune_identity.py`, `core/tests/test_relay_events.py`, `apps/proxy/tests/test_authorize_view.py`), then commit with `-F`. Message: `relay(phase2): the output format comes from the hop; no User row on a live tune (2b-2 task 3)`.
 
 ---
 
@@ -1823,6 +1947,8 @@ It must state, in its own words:
 - Lines 660–800's dev-shape response listing seven headers: this PR makes the seven exist. The `POST /_dispatcharr/authorize-internal` route itself is not in 2b-2's scope and is not added here.
 
 **Placeholder scan.** No "TBD", no "add appropriate handling", no "similar to Task N". Every code step carries the code. Two steps deliberately end in a judgement the implementer must make with evidence — Task 3 Step 2's branch confirmation and Task 4 Step 2's must-fail check — and both say exactly what evidence settles them.
+
+**The three inputs that separate every design considered here** are each driven by a test, which is what makes the surface split falsifiable rather than merely argued: **no principal** (the pre-existing suite, which expects `"0"`/`"unknown"`), **a principal** (Step 5c's authenticated tune, asserting a distinctive id in the client hash and a distinctive name in the `SystemEvent` row — the case every pre-existing test's expected value would hide), and **a principal whose row is gone** (Step 3b's live deleted-user tune and Step 5b's non-live one, which must answer differently and are asserted to).
 
 **The design that is NOT here.** An earlier draft resolved `AuthorizeResult.user` through a `_LazyUser` proxy. It is withdrawn: eleven of its fourteen consumers test `is None`/`is not None`, and `is` cannot be overloaded, so no dunder could have made it correct for them (Ruling R1's table). The surface split replaces it and touches none of the fourteen. If a reviewer or a later PR proposes a lazy object here, that table is the answer.
 
