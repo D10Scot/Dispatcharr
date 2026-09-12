@@ -338,10 +338,17 @@ class GeneratorAndStatusDbCleanupTests(SimpleTestCase):
         with patch(
             "apps.m3u.models.M3UAccountProfile.objects.filter"
         ) as mock_profile_filter:
-            mock_profile_filter.return_value.first.return_value = MagicMock(name="Profile A")
+            # configure_mock, not MagicMock(name=...): `name` is consumed
+            # by the Mock constructor, so MagicMock(name="Profile A").name
+            # is a child mock rather than the string, and the assertion
+            # below is what makes that visible instead of silent.
+            profile = MagicMock()
+            profile.configure_mock(name="Profile A")
+            mock_profile_filter.return_value.first.return_value = profile
             info = ChannelStatus.get_detailed_channel_info("channel-uuid")
 
         self.assertEqual(info["stream_name"], "Backup Feed")
+        self.assertEqual(info["m3u_profile_name"], "Profile A")
         mock_close.assert_called_once()
 
     @patch("apps.proxy.live_proxy.views.close_old_connections")
