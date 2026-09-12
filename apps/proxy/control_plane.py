@@ -186,7 +186,15 @@ def next_source(
         answer = _post(path, payload)
     except ControlPlaneRefused as exc:
         if exc.status == 404:
-            return {"source": None, "alternates": [], "error": "identifier not found"}
+            # Shape-complete so a caller can index the contract's keys
+            # without probing. proxy_settings is 2b-1's and is left as it
+            # stands; output_profiles is added with the key itself.
+            return {
+                "source": None,
+                "alternates": [],
+                "error": "identifier not found",
+                "output_profiles": {},
+            }
         raise
     # _post already guarantees a dict; guard the two fields _try_next_stream
     # actually indexes into, so a malformed 200 (Django's serializer

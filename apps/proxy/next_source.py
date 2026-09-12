@@ -700,6 +700,36 @@ def _with_proxy_settings(answer):
     return answer
 
 
+def _with_output_profiles(answer):
+    """Every active OutputProfile's built argv, on every next-source answer.
+
+    Spec § Stage 2b, the `views.py:152` row: "A control-plane response
+    body can [carry a built ffmpeg command], unlike a header."
+
+    Deviation from that row, recorded in the 2b-2 plan as Ruling R3: the
+    spec says "when X-Relay-Output names a profile", i.e. one profile per
+    request. next-source is a per-CHANNEL call (initial tune, failover,
+    resume); the profile is resolved per CLIENT, and the client that did
+    not initialize the channel never makes a next-source call at all
+    (apps/proxy/live_proxy/views.py:712). One profile per request
+    therefore cannot answer any client's question but the first's, so the
+    whole active set travels instead and a Go relay caches it per channel.
+
+    Nothing in the PYTHON relay consumes this, deliberately: doing so
+    would need either a per-client route (the spec rejects one) or a
+    Redis cache with staleness semantics nothing has specified.
+    apps/proxy/live_proxy/views.py:152's ORM read therefore stays, and
+    2b-3 owns the decision to allowlist or close it.
+    """
+    from core.models import OutputProfile
+
+    answer["output_profiles"] = {
+        str(profile.id): {"id": profile.id, "argv": profile.build_command()}
+        for profile in OutputProfile.objects.filter(is_active=True)
+    }
+    return answer
+
+
 def resolve_source(
     identifier,
     *,
@@ -817,19 +847,19 @@ def resolve_source(
                 locked_ffmpeg_profile=answer["source"]["ffmpeg_stream_profile"],
             )
         answer.setdefault("alternates", [])
-        return _with_proxy_settings(answer)
+        return _with_output_profiles(_with_proxy_settings(answer))
 
     if target_stream_id is not None:
         info = get_stream_info_for_switch(identifier, target_stream_id)
         if "error" in info:
-            return _with_proxy_settings(
+            return _with_output_profiles(_with_proxy_settings(
                 {"source": None, "alternates": [], "error": info["error"]}
-            )
-        return _with_proxy_settings({
+            ))
+        return _with_output_profiles(_with_proxy_settings({
             "source": _commit(identifier, info),
             "alternates": [],
             "error": None,
-        })
+        }))
 
     # Failover: the ordered traversal, minus what the relay has tried and
     # minus anything resolving to the URL already playing. That last check
@@ -845,16 +875,16 @@ def resolve_source(
             continue
         if current_url and info["url"] == current_url:
             continue
-        return _with_proxy_settings({
+        return _with_output_profiles(_with_proxy_settings({
             "source": _commit(identifier, info),
             "alternates": [],
             "error": None,
-        })
-    return _with_proxy_settings({
+        }))
+    return _with_output_profiles(_with_proxy_settings({
         "source": None,
         "alternates": [],
         "error": "No alternate stream with available connections",
-    })
+    }))
 
 
 def release_source(identifier, *, stream_id=None, m3u_profile_id=None, channel_pk=None):
