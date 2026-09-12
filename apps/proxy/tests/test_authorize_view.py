@@ -331,3 +331,102 @@ class ResolveAuthorizationTests(TestCase):
         )
         self.assertEqual(response.status_code, 429)
         self.assertIn(b"Stream limit exceeded", response.content)
+
+
+class RelayOutputFormatAndClientIpHeaderTests(TestCase):
+    """The hop resolves output_format and client_ip once and says so.
+
+    Non-default values throughout: 'fmp4' is never the default
+    (CoreSettings.get_default_output_format() answers 'mpegts'), and
+    203.0.113.9 is TEST-NET-3 -- never routable, never a socket peer here.
+    A test using the defaults would pass with the threading deleted.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.channel = Channel.objects.create(name="2b2-hdr", channel_number=9211)
+        cls.user = User.objects.create_user(username="2b2-hdr-user", password="x")
+        cls.user.custom_properties = {"output_format": "fmp4"}
+        cls.user.save(update_fields=["custom_properties"])
+
+    def setUp(self):
+        from django.test import RequestFactory
+
+        self.factory = RequestFactory()
+
+    def _hop(self, uri, **extra):
+        request = self.factory.get(
+            "/_dispatcharr/authorize",
+            HTTP_X_ORIGINAL_URI=uri,
+            **extra,
+        )
+        return authorize_views.authorize_view(request)
+
+    def test_the_hop_answers_the_users_output_format_not_the_default(self):
+        # An anonymous request can only ever see the default -- there is
+        # no principal to read a preference from. Authenticating as
+        # cls.user via the same query-param JWT the view already supports
+        # (test_a_query_param_jwt_authorizes_through_the_view, above) is
+        # what makes this a real test of the user branch rather than one
+        # that could only ever observe the default.
+        from rest_framework_simplejwt.tokens import RefreshToken
+
+        token = str(RefreshToken.for_user(self.user).access_token)
+        response = self._hop(f"/proxy/ts/stream/{self.channel.uuid}?token={token}")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response[internal_auth.HEADER_RELAY_OUTPUT_FORMAT], "fmp4"
+        )
+
+    def test_the_hop_answers_the_forwarded_client_address(self):
+        # REMOTE_ADDR is 127.0.0.1 under RequestFactory, which
+        # get_client_ip treats as a trusted proxy, so the forwarded
+        # header is honoured exactly as it is behind nginx.
+        response = self._hop(
+            f"/proxy/ts/stream/{self.channel.uuid}",
+            HTTP_X_FORWARDED_FOR="203.0.113.9",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response[internal_auth.HEADER_RELAY_CLIENT_IP], "203.0.113.9"
+        )
+
+    def test_result_from_headers_carries_both_new_params(self):
+        request = self.factory.get(
+            "/proxy/ts/stream/x",
+            HTTP_X_DISPATCHARR_AUTHORIZED=internal_auth.relay_trust_token(),
+            HTTP_X_RELAY_CHANNEL=str(self.channel.uuid),
+            HTTP_X_RELAY_CLIENT="client_1_2",
+            HTTP_X_RELAY_USER=str(self.user.id),
+            HTTP_X_RELAY_OUTPUT="",
+            HTTP_X_RELAY_OUTPUT_FORMAT="fmp4",
+            HTTP_X_RELAY_CLIENT_IP="203.0.113.9",
+        )
+        with patch.object(authorize_views, "authorize_stream") as inline:
+            result = authorize_views.resolve_authorization(
+                request, authorize.SURFACE_LIVE, identifier="x"
+            )
+        inline.assert_not_called()
+        self.assertEqual(result.output_format, "fmp4")
+        self.assertEqual(result.client_ip, "203.0.113.9")
+        self.assertEqual(result.user_id, str(self.user.id))
+
+    def test_a_query_parameter_still_beats_the_users_preference(self):
+        # resolve_output_format's precedence is force > query > user >
+        # default. The hop sees the query string through X-Original-URI,
+        # so 'mpegts' here must win over the user's 'fmp4' -- the
+        # opposite of the other tests' expectation, which is what makes
+        # this one a real ordering assertion. Authenticated as cls.user
+        # (see the previous test's comment) -- without that, 'mpegts'
+        # would win only because it equals the unauthenticated default,
+        # and the ordering itself would go unproven.
+        from rest_framework_simplejwt.tokens import RefreshToken
+
+        token = str(RefreshToken.for_user(self.user).access_token)
+        response = self._hop(
+            f"/proxy/ts/stream/{self.channel.uuid}?output_format=mpegts&token={token}"
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response[internal_auth.HEADER_RELAY_OUTPUT_FORMAT], "mpegts"
+        )

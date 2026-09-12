@@ -43,14 +43,18 @@ from apps.proxy.internal_auth import (
     HEADER_AUTHORIZE_STATUS,
     HEADER_RELAY_CHANNEL,
     HEADER_RELAY_CLIENT,
+    HEADER_RELAY_CLIENT_IP,
     HEADER_RELAY_NAME,
     HEADER_RELAY_OUTPUT,
+    HEADER_RELAY_OUTPUT_FORMAT,
     HEADER_RELAY_USER,
     META_AUTHORIZED,
     META_ORIGINAL_URI,
     META_RELAY_CHANNEL,
     META_RELAY_CLIENT,
+    META_RELAY_CLIENT_IP,
     META_RELAY_OUTPUT,
+    META_RELAY_OUTPUT_FORMAT,
     META_RELAY_USER,
     request_is_internal,
     request_is_relay_trusted,
@@ -106,7 +110,7 @@ def result_from_headers(request, surface: str) -> AuthorizeResult:
     Only ever called after request_is_relay_trusted(), so every value here
     was written by nginx: the HTTP_-prefixed uwsgi_param override means a
     client's own header of the same name was replaced, and every non-relay
-    location blanks all five.
+    location blanks all seven.
     """
     from django.conf import settings
 
@@ -139,6 +143,8 @@ def result_from_headers(request, surface: str) -> AuthorizeResult:
         # one of the five names dispatcharr_api_params.conf clears -- so
         # the DVR's token reaches the relay exactly as it reached the hop.
         is_internal=request_is_internal(request),
+        output_format=(request.META.get(META_RELAY_OUTPUT_FORMAT) or "").strip(),
+        client_ip=(request.META.get(META_RELAY_CLIENT_IP) or "").strip(),
     )
 
 
@@ -309,6 +315,11 @@ def authorize_view(request):
     response[HEADER_RELAY_CLIENT] = result.client_id
     response[HEADER_RELAY_USER] = result.user_id
     response[HEADER_RELAY_NAME] = result.relay_name
+    # 2b-2. Both resolved by authorize_stream above, so the relay does
+    # not re-read a User row (output_format) and does not need
+    # get_client_ip's trusted-proxy configuration (client_ip).
+    response[HEADER_RELAY_OUTPUT_FORMAT] = result.output_format
+    response[HEADER_RELAY_CLIENT_IP] = result.client_ip
     return response
 
 

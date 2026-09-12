@@ -43,7 +43,7 @@ from apps.accounts.authentication import (
 from apps.accounts.models import User
 from apps.proxy.internal_auth import request_is_internal
 from apps.proxy.utils import check_user_stream_limits
-from dispatcharr.utils import network_access_allowed
+from dispatcharr.utils import get_client_ip, network_access_allowed
 from rest_framework.exceptions import APIException, AuthenticationFailed
 from rest_framework.request import Request
 from rest_framework_simplejwt.authentication import JWTAuthentication
@@ -117,7 +117,7 @@ class AuthorizeDenied(Exception):
 
 @dataclass(frozen=True)
 class AuthorizeResult:
-    """What the hop tells the relay. The five string fields are the five
+    """What the hop tells the relay. The seven string fields are the seven
     X-Relay-* response headers, verbatim; `user`, `trusted` and
     `is_internal` never cross the wire and exist only for the caller.
 
@@ -138,6 +138,8 @@ class AuthorizeResult:
     user: object = None
     trusted: bool = False
     is_internal: bool = False
+    output_format: str = ""
+    client_ip: str = ""
 
 
 def mint_client_id() -> str:
@@ -218,6 +220,43 @@ def resolve_output_profile(request, user):
             except (OutputProfile.DoesNotExist, ValueError, TypeError):
                 return None
     return None
+
+
+# The format aliases a client may send. Kept beside resolve_output_profile
+# for the same reason it was moved here: the hop and the inline path must
+# apply one rule, not two copies of it.
+_FORMAT_ALIASES = {
+    "mpegts": "mpegts",
+    "ts": "mpegts",
+    "fmp4": "fmp4",
+    "mp4": "fmp4",
+}
+
+
+def resolve_output_format(request, user, force=None) -> str:
+    """?output_format=/?output= then the user's custom_properties.
+
+    Moved from apps/proxy/live_proxy/views.py:114-135 (2b-2) so the hop
+    can answer X-Relay-Output-Format without the relay re-reading a User
+    row. `force` is the live path's own extension-derived override
+    (stream_xc's .ts/.mp4 suffix); the hop never passes it, because the
+    hop authorizes a URI and the override is a property of the view's
+    call, not of the decision.
+    """
+    from core.models import CoreSettings
+
+    if force:
+        return force
+    if request is not None:
+        param = request.GET.get("output_format") or request.GET.get("output")
+        if param in _FORMAT_ALIASES:
+            return _FORMAT_ALIASES[param]
+    if user:
+        custom = getattr(user, "custom_properties", None) or {}
+        user_format = custom.get("output_format")
+        if user_format:
+            return user_format
+    return CoreSettings.get_default_output_format()
 
 
 def _acl_key(surface: str) -> str:
@@ -453,4 +492,12 @@ def authorize_stream(
         user=user,
         trusted=False,
         is_internal=is_internal,
+        # Resolved here, once, for every surface. Only the live surfaces
+        # read output_format today; computing it unconditionally keeps the
+        # header's presence a property of the hop rather than of the
+        # surface, so the relay never has to distinguish "absent because
+        # this surface has no format" from "absent because nginx dropped
+        # it".
+        output_format=resolve_output_format(http_request, user),
+        client_ip=get_client_ip(http_request) or "",
     )
