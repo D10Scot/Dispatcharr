@@ -734,11 +734,13 @@ Append to `apps/proxy/live_proxy/tests/test_stream_ts_client_registration.py`. R
 
 Add a module-level `_trusted_decision()` helper to that file identical to the one in Step 1 (repeat it; do not import across test modules).
 
-**This is the fork that shipped a blocking regression in 2b-1, and it is the same fork Ruling R3 is about. Settle it with evidence, per test, before moving on.**
+**This is the fork that shipped a blocking regression in 2b-1, and it is the same fork Ruling R3 is about. How to reach each side is settled — read this rather than re-deriving it.**
 
-`_active_proxy_server` returns a server whose Redis state says the channel is already active, so `needs_initialization` may be False for **both** tests and both may walk `:712`, leaving `:605` unpinned while the suite looks green.
+`_active_proxy_server`'s defaults (`redis_client.exists → True`, `check_if_channel_exists → True`, `am_i_owner=False`) describe an already-active channel, so init is skipped and the test lands on **`views.py:712`**. That is what every test in the file takes except one.
 
-**A coverage run over the whole test module is not sufficient evidence.** Two tests can between them hit both lines while neither *asserts* the behaviour that differs — that is precisely how a fork looks pinned and is not. Establish **which test covers which line**, one test at a time:
+`test_owner_init_resolves_output_profile_once` (`test_stream_ts_client_registration.py:295`) is the exception and the only route to **`views.py:605`**. It overrides the defaults at `:317-321` — `_active_proxy_server(am_i_owner=True)`, then `redis_client.exists → False`, `check_if_channel_exists → False`, `redis_client.hgetall → {}`, `try_acquire_ownership → True`, plus the `_get_channel_init_lock` / `_finish_channel_init_lock` / `_clear_channel_setting_up` wiring at `:322-330` and a `generate_stream_url` return value at `:308-318`. **Copy that override block into the owner test; do not invent one.**
+
+So the follower test as written in Step 2 is correct as it stands, and the owner test needs that override block added. Confirm rather than assume, one test at a time — a coverage run over the whole module is not evidence, because two tests can between them hit both lines while neither *asserts* the behaviour that differs:
 
 ```bash
 cd /Users/dion/git/Dispatcharr/.worktrees/phase2-2b2 && docker exec dispatcharr-testrunner \
@@ -747,9 +749,40 @@ cd /Users/dion/git/Dispatcharr/.worktrees/phase2-2b2 && docker exec dispatcharr-
   && docker exec dispatcharr-testrunner python -m coverage report -m | grep views.py
 ```
 
-Run the same command for `test_a_trusted_follower_registers_the_hops_user_id_and_format`. Read the `Missing` column: the owner test must **not** list 605 as missing, and the follower test must not list 712 as missing. Record both results in the task's completion note.
+Run the same for the follower test. Read the `Missing` column: the owner test must **not** list 605 as missing, the follower test must not list 712 as missing. Record both in the task's completion note. If the owner test still lands on `:712`, the override block was copied incompletely — fix that; do not record the gap, and do not weaken an assertion to make one pass.
 
-**If the owner test lands on `:712` as well, add a test that genuinely reaches `:605` — do not record the gap and move on.** `test_owner_init_resolves_output_profile_once` in the same file already reaches the owner-init branch; copy its setup (in particular whatever makes `needs_initialization` True) rather than inventing one. **Do not leave two tests that silently walk the same line**, and do not weaken the assertion to make one pass.
+**Hazard A — do not put the new assertions into `test_owner_init_resolves_output_profile_once` itself.** That test patches `_output_profile_for` *and* `_resolve_output_format` and then asserts `assert_called_once()` on both. It pins **arity, not behaviour**: it says the helpers are called once, never what they return or what they do with the decision. An `output_format`/`client_ip` assertion written into a test that mocks away the thing under test asserts nothing — the exact family of defect principle 2 names. The new tests therefore leave `_resolve_output_format` **unpatched** (they want the real one) and patch only `_output_profile_for`, which is Task 5's concern, not Task 3's.
+
+**Hazard B — `assert_called_once()` at `:343` is also pinning the `output_options_resolved` flag.** It says `:712` does *not* re-resolve after `:605` already did. A careless edit to that flag in Step 6 breaks this test, and the failure message will say "called twice", not "you broke the flag". If you see that failure, read it as a real finding about the flag, not as a fixture that needs adjusting.
+
+**Hazard C — 18 patch sites, across five files, depend on `_resolve_output_format` staying on the call path in `views`.** Verified:
+
+```
+apps/proxy/live_proxy/tests/test_stream_ts_client_registration.py  (×7)
+apps/proxy/live_proxy/tests/test_ghost_session_cleanup.py          (×5)
+apps/proxy/live_proxy/tests/test_live_db_cleanup.py                (×3)
+apps/proxy/live_proxy/tests/test_internal_principal_no_redirect.py (×2)
+apps/proxy/live_proxy/tests/test_channel_names_on_the_contract.py  (×1)
+```
+
+all spelled `@patch("apps.proxy.live_proxy.views._resolve_output_format", return_value="mpegts")`.
+
+**State the mechanics precisely, because the obvious framing is slightly wrong and the wrong framing leads to the dangerous fix.** `patch("...views._resolve_output_format")` rebinds a name in the `views` module's globals. `views.py:606` and `:713` call `_resolve_output_format(...)`, which resolves that global **at call time** — so the patch intercepts. That stays true whether the global is a locally-defined function (what Step 6 writes) *or* a bare re-export (`from apps.proxy.authorize import resolve_output_format as _resolve_output_format`); a re-export alone does **not** break these patches.
+
+What breaks them, silently, is the call site ceasing to go through that global — for instance changing `:606`/`:713` to a function-local `from apps.proxy.authorize import resolve_output_format` and calling it directly, which is this codebase's house style (602 function-local imports) and therefore an easy accident. Then the `views._resolve_output_format` name still exists, all 18 patches still bind, and all 18 pass while intercepting nothing.
+
+**Required landing shape:** `views._resolve_output_format` stays a module-level `def` in `views.py`, both call sites keep calling it by that bare name, and the delegation to `apps.proxy.authorize.resolve_output_format` happens *inside* it. Verify mechanically after Step 6:
+
+```bash
+cd /Users/dion/git/Dispatcharr/.worktrees/phase2-2b2 && \
+  grep -n 'def _resolve_output_format' apps/proxy/live_proxy/views.py && \
+  grep -c '= _resolve_output_format(' apps/proxy/live_proxy/views.py && \
+  grep -c 'resolve_output_format' apps/proxy/live_proxy/views.py
+```
+
+Expected: one `def`, **2** call sites through the bare name, and a total count of 4 (`def` + 2 calls + the one function-local import inside the wrapper). A higher total means a call site is reaching past the wrapper.
+
+Then prove the patches still bite, once, by sabotage: temporarily make the wrapper's body `raise AssertionError("unpatched")`, run `apps.proxy.live_proxy.tests`, and confirm the tests that patch it still **pass** (the patch replaced the body) while the new Task 3 tests, which do not patch it, **fail**. Revert the sabotage. A patch that no longer intercepts is invisible in every other way.
 
 - [ ] **Step 3: Write the failing test — Django resolves the username**
 
@@ -961,7 +994,7 @@ class _LazyUser:
 
 In `apps/proxy/live_proxy/views.py`:
 
-Replace `_resolve_output_format`'s body (`:114-135`) with a delegating wrapper. **Keep the name and the positional signature** — `test_stream_ts_client_registration.py` patches `apps.proxy.live_proxy.views._resolve_output_format` by name, and `_FORMAT_ALIASES` moved to `authorize.py` in Task 1:
+Replace `_resolve_output_format`'s body (`:114-135`) with a delegating wrapper. **Keep the name, keep it a module-level `def`, keep the positional signature, and keep both call sites calling it by that bare name** — 18 patch sites across five test files depend on it staying on the call path, and Step 2's Hazard C says exactly how that goes silently wrong and how to verify it did not. `_FORMAT_ALIASES` moved to `authorize.py` in Task 1:
 
 ```python
 def _resolve_output_format(user, force=None, request=None, decision=None):
@@ -1641,6 +1674,6 @@ It must state, in its own words:
 
 **Type consistency.** `output_format` and `client_ip` are `str` on `AuthorizeResult`, `str` in the headers, `str` in `_resolve_output_format`'s return. `user_id` is a `str` everywhere on the relay side (`"4242"`, `"0"` as `add_client`'s fallback) and an `int` only inside `_username_for`'s `int(user_id)`. `output_profiles` keys are `str`, its `id` values are `int`, its `argv` values are `list[str]`. `_resolve_output_format` keeps its name and its first three positional parameters because `test_stream_ts_client_registration.py` patches it by name.
 
-**Known open question, to be settled during execution rather than assumed:** whether Task 3 Step 2's two tests genuinely walk `views.py:605` and `:712` respectively, or both walk `:712`. The existing `_active_proxy_server` helper reports the channel as already active, which may make `needs_initialization` False on both. Step 2 settles it per test with a single-test coverage run, requires the result to be recorded, and requires a test that genuinely reaches `:605` to be **added** if the owner test lands on `:712` — recording the gap is not an acceptable outcome. This is the same fork Ruling R3 is about and the one that shipped a blocking regression in 2b-1.
+**The plan's one open question is closed.** It was whether Task 3 Step 2's two tests walk `views.py:605` and `:712` respectively or both walk `:712`. Resolved against the tree: `_active_proxy_server`'s defaults reach `:712`, and only `test_owner_init_resolves_output_profile_once`'s override block (`test_stream_ts_client_registration.py:317-330`) reaches `:605`. Step 2 now carries the fact and the block to copy, keeps the per-test coverage confirmation as verification rather than investigation, and adds the three hazards that discovery exposed — an arity-only owner test, an `assert_called_once()` that is secretly pinning the `output_options_resolved` flag, and 18 `_resolve_output_format` patch sites across five files that fail *silently* if a call site stops going through the `views` module global.
 
 **Spec correction:** Task 6 Step 0 corrects spec lines 1598 and 1658, whose "when `X-Relay-Output` names a profile" decision Ruling R3 shows to be unimplementable. Line 1599 is deliberately left alone; Ruling R4's departure from it is argued in the PR description and recorded in parity-matrix row 17.
