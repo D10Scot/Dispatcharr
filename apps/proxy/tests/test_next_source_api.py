@@ -592,7 +592,17 @@ class OutputProfilesOnTheContractTests(RelayApiTestCase):
         with self.assertRaises(ValueError):
             bad.build_command()
 
-        answer = self._next_source(self.channel.uuid)
+        # Review follow-up: the log line is the operator's only signal
+        # that a profile is being silently omitted now that a malformed
+        # row 500s nothing. Assert the id is IN the message, not merely
+        # that something was logged -- a message without the id gives an
+        # operator nothing to act on.
+        with self.assertLogs("live_proxy", level="ERROR") as logs:
+            answer = self._next_source(self.channel.uuid)
+        self.assertTrue(
+            any(str(bad.id) in message for message in logs.output),
+            f"no ERROR log named the malformed profile's id ({bad.id}): {logs.output}",
+        )
 
         self.assertNotIn(str(bad.id), answer["output_profiles"])
         self.assertIn(str(good.id), answer["output_profiles"])

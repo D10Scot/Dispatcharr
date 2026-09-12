@@ -557,11 +557,25 @@ class TrustedTuneQueriesNoUserRowTests(TestCase):
         user_table = get_user_model()._meta.db_table
         self.assertEqual(user_table, "accounts_user")
 
+        # Review follow-up: a REAL row, not a blank X-Relay-User. With
+        # user_id="" (the original fixture), isdigit() is false and the
+        # pre-split code issues no query either -- this test's own claim
+        # was carried by its sibling
+        # (test_a_header_naming_a_deleted_user_still_registers_that_id),
+        # not by itself. 818181 is a real row's id, and distinct from
+        # every other sentinel this file and test_authenticated_tune_
+        # identity.py use (4242, 99999999, 424242): four tests sharing
+        # one fixture value would fail together for a reason none of
+        # them names.
+        user = get_user_model().objects.create_user(
+            id=818181, username="2b2-no-query-sentinel", password="x"
+        )
+
         helper = StreamTsClientRegistrationTests("setUp")
         helper.setUp()
         proxy_server, client_manager = helper._active_proxy_server(am_i_owner=False)
         client_manager.add_client.return_value = True
-        request = _trusted_request(helper)
+        request = _trusted_request(helper, user_id=str(user.id))
 
         with CaptureQueriesContext(connection) as captured:
             with patch("apps.proxy.live_proxy.views.ProxyServer") as proxy_server_cls, \
