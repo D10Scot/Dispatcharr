@@ -36,6 +36,8 @@ Every task's requirements implicitly include this section.
 
 10. **`--repo D10Scot/Dispatcharr` on every `gh` call.** Without it `gh` resolves to the upstream public tracker.
 
+11. **When an assertion in this plan cannot hold, `skipTest` with the reason — never delete, never weaken.** A skip that names why is evidence about the system; a deleted assertion is silence, and a weakened one is worse than silence because it still looks like a check. This applies to every assertion here, not only the two steps that name it. **And a skip must be reported, not merely committed:** tell whoever is orchestrating this PR, in the completion report and in the PR description, that the assertion is skipped and what that leaves uncovered. A skip nobody reads is the same as a deletion — it just takes longer to discover.
+
 ---
 
 ## Rulings
@@ -1603,7 +1605,9 @@ The distinct-profile assertion added in Step 1 is now the mechanical answer to t
 
 If it **passes**, the follower axis is covered and the PR description says so, citing the assertion.
 
-If it **fails**, do not weaken it. It means the second client re-ran the owner-init path in this single-process harness — `views.py:619-622` short-circuits `initialize_channel` within one process, and `docs/relay-parity-matrix.md`'s row 10 records exactly that defeating a different harness assertion. In that case: keep the drive, convert the assertion to a `self.skipTest` carrying the same message, say in the PR description that the follower axis is **not covered here**, and name `e2e/tests/streaming/shared-upstream.spec.ts` as what does cover it. Do not report a covered axis you did not observe, and do not delete the assertion to make the suite green — a skip that names the reason is evidence; a deletion is not.
+If it **fails**, do not weaken it. It means the second client re-ran the owner-init path in this single-process harness — `views.py:619-622` short-circuits `initialize_channel` within one process, and `docs/relay-parity-matrix.md`'s row 10 records exactly that defeating a different harness assertion. In that case, under Global Constraint 11: keep the drive, convert the assertion to a `self.skipTest` carrying the same message, say in the PR description that the follower axis is **not covered here**, and name `e2e/tests/streaming/shared-upstream.spec.ts` as what does cover it. Do not report a covered axis you did not observe, and do not delete the assertion to make the suite green.
+
+**And say it to a person, not only to the diff.** Tell the orchestrator directly, in the completion report, that this assertion is skipped and that the owner/follower axis is therefore carried by the e2e suite rather than by this guard. A skip that lands quietly in a green run is a deletion with extra steps — and this is the axis on which three consecutive PRs in this programme have hidden a defect, so it is the last one to let pass unremarked.
 
 - [ ] **Step 7: Commit**
 
