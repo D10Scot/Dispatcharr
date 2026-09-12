@@ -14,7 +14,7 @@ Three findings, in descending order of how much they should change what anyone d
    `test_the_captured_cumulative_lead_must_burn_off_before_the_detector_arms` (parity row
    4) — failed **zero** times, across 116 executions in total. Its sibling
    `test_a_buffering_threshold_change_does_not_reach_a_running_channel` (parity row 5)
-   failed **34 of 96**, a 35% rate, in both the coverage and the plain arm. Row 5 has
+   failed **34 of 104**, a 33% rate, in both the coverage and the plain arm. Row 5 has
    never been seen to fail in CI; row 4 has been seen once. They fail at *opposite ends*
    of the machine-speed axis, which is why each is invisible where the other bites.
 2. **The mechanism for row 4 is measured and quantified, and it is not what the issue
@@ -33,11 +33,13 @@ Three findings, in descending order of how much they should change what anyone d
 The in-flight PR is exposed: the coverage matrix is **not** path-gated, so
 `Coverage apps.proxy.live_proxy.tests` runs on every non-docs push to any branch (§ 5).
 
-Added after three further observers reported row 5 (§ 3a, § 4a, § 7): the two tests
-**do not share a mechanism**, they share a design flaw and fail in opposite directions
-with machine speed; contention makes row 5 *more* reliable, not less, measured across
-three load levels; and `scripts/coverage_live_path_isolated.sh` loses a whole coverage
-round to this failure rather than one label.
+Added after further observers reported row 5 (§ 2, § 3a, § 4a, § 5a): the two tests
+**do not share a mechanism** — they share a design flaw and fail in opposite directions
+with machine speed; contention makes row 5 *more* reliable, not less, measured across four
+conditions including one that starves the record producer itself (§ 2), so the competing
+report that load made it worse is noise (Fisher p = 0.52 against a measured load effect at
+p = 0.018 in the other direction); and `scripts/coverage_live_path_isolated.sh` loses a
+whole coverage round to this failure rather than one label.
 
 ## 1. Reproduction, with rates
 
@@ -76,12 +78,13 @@ docker exec \
 | J | coverage, DEBUG | 14 | the class (5 tests) | 8 | 0 | 3 |
 | K | coverage, DEBUG | 14, 4 busy loops | the class (5 tests) | 8 | 0 | 3 |
 | L | coverage, DEBUG | 14, 24 busy loops | the class (5 tests) | 8 | 0 | **0** |
+| M | coverage, DEBUG | 0.5 CPU quota | the class (5 tests) | 8 | 0 | **0** |
 
 Row 4 ran in every one of those runs (it sorts last in the class, and a row-5 failure does
-not stop it): **140 executions, 0 failures.** Row 5 ran in arms B–F and J–L: **96
-executions, 34 failures = 35%** — 31/86 (36%) under coverage, 3/10 under plain. Arms J–L
-are the DEBUG-level captures § 2 measures the window from; they carry the same rate as the
-quiet arms, so the logging did not manufacture the effect it was used to observe.
+not stop it): **148 executions, 0 failures.** Row 5 ran in arms B–F and J–M: **104
+executions, 34 failures = 33%** — 31/94 under coverage, 3/10 under plain. Arms J–M are the
+DEBUG-level captures § 2 measures the window from; the unloaded ones carry the same rate as
+the quiet arms, so the logging did not manufacture the effect it was used to observe.
 
 Row 5's failure text, copied verbatim from
 `scratchpad/covlabel/run-2.log` (arm B) — four distinct variants were seen, differing only
@@ -114,7 +117,7 @@ is not evidence that instrumentation is the discriminating variable (Fisher exac
 been observed.
 
 **I did not reproduce the failure #259 names.** That is a finding, not a gap in effort:
-140 local executions across eight environments, spanning a 28x CPU-quota range and three
+148 local executions across nine environments, spanning a 28x CPU-quota range and three
 host-load levels, produced none.
 § 2 explains why — the failure needs a discrete event that my environment never produced,
 and it says which one.
@@ -283,6 +286,68 @@ from a ~40% coin (p ≈ 2.6%) over a session of many attempts.
 
 **The corollary is uncomfortable and worth stating: this test gets *more* reliable the
 worse the machine is.** It passes in CI because CI is slow.
+
+### Does contention ever hurt rather than help? Tested, four conditions
+
+A competing observation was reported: row 5's rate looked *worse* (4 of 5 attempts, against
+~2 of 5 earlier) while another container ran concurrently — the opposite correlation to the
+one above. The mechanism that would explain it is real in principle: if load starved the
+**record-producing** side more than the reading side, the window would hold fewer records
+and the failure would get worse. That is testable, and preferring my own totals because
+they are mine would not settle it. So it was tested.
+
+The discriminator is the **ratio** of the sampling window to the record period — the number
+of record boundaries the window can cross. If producer starvation dominates anywhere, the
+ratio falls under load.
+
+| condition | what it starves | window | record period | **ratio** | worst reader stall in window | row 5 |
+|-----------|-----------------|--------|---------------|-----------|------------------------------|-------|
+| idle | nothing | 51–57 ms | 21–22 ms | **2.36–2.71** | 35–54 ms | 3/8 fail |
+| 4 busy loops (host) | nothing measurable | 53–57 ms | 21–23 ms | **2.30–2.71** | 29–36 ms | 3/8 fail |
+| 24 busy loops (host) | everything, externally | 165–427 ms | 19–20 ms | **8.25–21.35** | 32–72 ms | 0/8 |
+| **0.5 CPU container quota** | **everything inside the container, stand-in included** | 123–164 ms | 20–22 ms | **5.59–7.81** | 46–77 ms | 0/8 |
+
+The fourth row is the one that bears on the hypothesis directly. The stand-in shares the
+container's CPU quota, so a 0.5-core cap starves the producer itself — and **its record
+period does not move**: 20–22 ms, the same as idle. Meanwhile the window widened 2.7×.
+
+The reason is structural, not incidental. The producer's duty cycle is essentially zero —
+`time.sleep(0.02)` then one ~100-byte `os.write` to a pipe it can never block on (64 KB of
+buffer against ~100-byte records) — and a sleeping process is woken on schedule however
+contended the machine is. Every consumer path (the HTTP round trip, the relay's handler,
+Redis) is CPU-bound and stretches. **The asymmetry is real and it runs the opposite way to
+the hypothesis.** Across 32 runs spanning a 10× range of window width, the worst reader
+stall never grows faster than the window does.
+
+**Verdict: the competing observation is noise, on three independent grounds.**
+
+1. **Magnitude.** Four busy loops — 29% of this machine's cores — moved nothing measurable.
+   The container blamed was at ~20% of *one* core, roughly 1.4% of the machine and a
+   twentieth of a condition already shown to have no effect. It is below the threshold at
+   which anything moves, in either direction.
+2. **Direction, measured.** 6/16 failures unloaded against 0/16 loaded (Fisher exact,
+   two-sided, **p = 0.018**) — a real effect, and it is "load helps".
+3. **The observation itself is not distinguishable from chance.** 4-of-5 against 2-of-5 is
+   Fisher exact two-sided **p = 0.52**; at the ~40% per-run rate measured here,
+   P(≥4 of 5) = 0.087, which over a session of many attempts is unremarkable. The same
+   observer independently retracted the companion inference (that two identical speed sets
+   implied determinism) on finding later failures carried different values.
+
+The recommendation in § 4a is unchanged either way — making "N distinct speeds seen" the
+stopping condition removes the dependence on window width in both directions — but the
+*explanation* matters for whoever implements it, and the explanation is that this test is
+too fast, never that it is starved.
+
+### One caveat on the `+1` relation
+
+`len(seen) = records_in_window + 1` is exact for the three failures tabulated above, but the
+window it counts over is measured from `urllib3`'s log lines, which are written *after* each
+response returns. The effective window therefore starts about one round trip (~2 ms) earlier
+than the measurement does. Idle run-7 is that boundary case: 2 records inside the measured
+window, yet it passed, because the preceding record landed 1 ms before the first poll was
+*logged* and so before the first poll was *issued* — making four distinct values, not three.
+**The instrument is accurate to ±1 record at the window edge.** Nothing about the mechanism
+changes: the count is still set by how many 21 ms periods a ~52 ms window covers.
 
 ## 3. Coverage instrumentation is not the variable
 
@@ -546,8 +611,17 @@ the test aborting after the channel is already tuned and its lines already execu
 - **Row 5's CI rate.** Zero observed in 64 CI label jobs against 28/72 locally. § 2 now
   gives a measured explanation for the gap (CI's slower round trips widen the window), but
   I have taken no CI-side measurement of the window itself to confirm it there.
-- **Row 5's rate as a function of round-trip latency.** I have three load points and they
-  are consistent, but the transition between "fails half the time" and "never fails" was not
-  bracketed: nothing was measured between a 57 ms window and a 165 ms one. The prediction is
-  that the rate falls to zero once the window reliably exceeds ~63 ms (three record
-  periods); that is untested.
+- **Row 5's rate as a function of round-trip latency.** Four load points, all consistent,
+  but the transition between "fails a third of the time" and "never fails" is only bracketed
+  between a 57 ms window and a 123 ms one. The prediction is that the rate falls to zero once
+  the window reliably exceeds ~63 ms (three record periods); the interval between 57 and 123
+  ms is untested.
+- **GIL pressure inside the test process specifically.** Every starvation lever I have is
+  external to the interpreter — host CPU saturation and a container quota — and both starve
+  the observer more than the producer (§ 2). The one regime I cannot reach without editing
+  Python is adding thread contention *inside* the test process so the stderr reader loses the
+  GIL while the request path keeps serving. My data argues against it mattering (the worst
+  reader stall never grows faster than the window across 32 runs and a 10x window range), but
+  it is an argument from a correlate, not a direct test. What it would have to show to
+  overturn the account: the reader's stall growing faster than the window, i.e. the ratio
+  column in § 2 falling below ~3 under load.
