@@ -56,7 +56,9 @@ This PR writes roughly 180–200 new tests whose stated purpose is to move a num
 
 3. **A test can go hollow without changing.** Ask of every assertion: *what edit to production code would make this fail?* If the answer is "none", it is not a test. A changed return value silently disarms an untouched test, and a diff-scoped review cannot see it.
 
-4. **A fixture that patches away the subject its docstring names.** The rule that makes this tractable: **patching the sink you assert against is how you observe; patching the logic that decides what reaches the sink is how you blind yourself.** `@patch("apps.proxy.live_proxy.channel_status.ProxyServer")` to supply a fake Redis is observing — the branch ladder still runs. `@patch.object(cm, "_execute_redis_command")` in a test whose subject is `_execute_redis_command` is blinding.
+4. **A fixture that patches away the subject its docstring names.** The rule that makes this tractable: **patching the sink you assert against is how you observe; patching the logic that decides what reaches the sink is how you blind yourself.**
+
+   **Corollary, and it bites hardest on log assertions: when the same log string is emitted from more than one function, asserting the string pins nothing.** Two tests written that way pass with the arms swapped — shape 4 arriving through the back door, because the "sink" you are observing is shared by code you are not driving. Pin the **value** the arm formats into the message, or pin the **record count** against the one entry point the test drives, or both. Before writing any `assertLogs` assertion in this PR, grep the message for a second emitter; this codebase has at least one such pair (`"Invalid m3u_profile_id format in Redis"` at `channel_status.py:117` and again at `:596`) and 848 broad `except Exception` handlers to hide more. `@patch("apps.proxy.live_proxy.channel_status.ProxyServer")` to supply a fake Redis is observing — the branch ladder still runs. `@patch.object(cm, "_execute_redis_command")` in a test whose subject is `_execute_redis_command` is blinding.
 
 ### The fifth shape, which is specific to this PR: the `except`-body test that pins nothing
 
@@ -259,14 +261,14 @@ metrics/curated/                              MODIFIED  Task 14: milestone + def
 | 5 | `if not self.redis_client: return <X>` guards | `client_manager`, `channel_status`, `server`, `channel_service` | 7 | 18 |
 | 6 | `_execute_redis_command`-shaped two-arm wrappers | `client_manager`, `channel_status`, `server` | 7 | 26 |
 | 7 | `except ValueError` around `int()`/`float()` of a Redis value | `channel_status`, `client_manager` | 6 | 12 |
-| 8 | The non-owner second branch of an owner-gated path | `server.ensure_output_*`'s two non-owner arms, `client_manager` | 10 | 35 |
+| 8 | The non-owner second branch of an owner-gated path | `server.ensure_output_profile`/`ensure_output_format`'s five non-owner gates, `client_manager`'s three | 10 | 45 |
 | 9 | Failure-rollback, TTL-refresh and sweep arms | `client_manager`, `channel_service` | 9 | 103 |
 | 10 | Small error arms in already-96%+ boundary modules | `authorize`, `authorize_views`, `config_helper`, `control_plane`, `relay_client`, `apps` | 11 | 24 |
-| | **total estimated** | | | **443** |
+| | **total estimated** | | | **453** |
 
-**The kind table and the task table must always sum to the same number, and this one does: 443.** Per task that is `65 + 45 + 55 + 35 + 44 + 37 + 103 + 35 + 24`. Two earlier drafts of this plan disagreed with themselves — kind 2 kept a 70 after Task 6 took 2b-3's 7-statement subtraction, and kind 8 carried a 70 that was two whole functions' always-missing rather than the non-owner arms Task 10 actually scopes. If you change any task's estimate, change its kind row in the same edit and re-add both columns.
+**The kind table and the task table must always sum to the same number, and this one does: 453.** Per task that is `65 + 45 + 55 + 35 + 44 + 37 + 103 + 45 + 24`. Three earlier drafts of this plan disagreed with themselves — kind 2 kept a 70 after Task 6 took 2b-3's 7-statement subtraction; kind 8 carried a 70 that was two whole functions' always-missing rather than the non-owner arms Task 10 actually scopes; and its correction to 35 was itself wrong, by cancelling errors (Task 10's header has the post-mortem). If you change any task's estimate, change its kind row in the same edit and re-add both columns.
 
-Predicted shortfall at the branch point is ~405 (see Task 2), and R6's historical discount on these estimates is ~10%, so **realistic delivery is ~399 against ~405 needed**. That is not a cushion — it is level. Task 12's reserve items 1 and 2 should therefore be read as **expected work, not contingency**, at any measured shortfall above ~380.
+Predicted shortfall at the branch point is ~405 (see Task 2), and R6's historical discount on these estimates is ~10%, so **realistic delivery is ~408 against ~405 needed**. That is not a cushion — it is level. Task 12's reserve items 1 and 2 should therefore be read as **expected work, not contingency**, at any measured shortfall above ~380.
 
 ---
 
@@ -611,8 +613,8 @@ PY
 | measured shortfall | scope | stated est. | realistic (−10%) |
 |---|---|---:|---:|
 | **≤ 230** | Tasks 3, 4, 5, 6, 7, 11 only. Skip Tasks 8, 9, 10. | 268 | 241 |
-| **231 – 400** | **Tasks 3-11 as written.** This is the expected band. Above ~380, treat Task 12's reserve items 1-2 as expected work rather than contingency. | 443 | 399 |
-| **401 – 520** | Tasks 3-11, **plus** Task 12's reserve promoted into the plan: `stream_ts`'s connection-retry loop (`views.py:348-394` — the `remaining_time <= retry_interval` break, the `gevent.sleep` back-off, the final attempt at the timeout boundary, and `control_plane.release_source` on the abandoned slot) as Task 8b; `input/manager.py`'s `_wait_for_existing_processes_to_close` (18 statements, **zero** in `except`, pure polling logic) as Task 9b; **and reserve items 3-4** (`_close_socket`/`_attempt_reconnect`'s mockable socket arms, `input/http_streamer.py` behind an in-process `http.server`). | ~600 | ~540 |
+| **231 – 400** | **Tasks 3-11 as written.** This is the expected band. Above ~380, treat Task 12's reserve items 1-2 as expected work rather than contingency. | 453 | 408 |
+| **401 – 520** | Tasks 3-11, **plus** Task 12's reserve promoted into the plan: `stream_ts`'s connection-retry loop (`views.py:348-394` — the `remaining_time <= retry_interval` break, the `gevent.sleep` back-off, the final attempt at the timeout boundary, and `control_plane.release_source` on the abandoned slot) as Task 8b; `input/manager.py`'s `_wait_for_existing_processes_to_close` (18 statements, **zero** in `except`, pure polling logic) as Task 9b; **and reserve items 3-4** (`_close_socket`/`_attempt_reconnect`'s mockable socket arms, `input/http_streamer.py` behind an in-process `http.server`). | ~610 | ~550 |
 | **> 520** | **STOP. Escalate to the orchestrator before writing a single test.** Tier A cannot meet the gate from here. The options — Tier B harness work, Tier C deletion at 0.8 on the statement, a spec amendment to the threshold — are above an implementer's call (R4). | — | — |
 
 **Read the fourth column, not the third.** Every `est.` figure in this plan is a reading of uncovered lines, not a demonstration, and R6 records that such estimates have come in optimistic throughout this programme; the ~10% haircut is that history applied. A band whose *realistic* column sits below its own upper bound is a band that cannot deliver, which is why band 3 draws all four reserve items rather than the two an earlier draft named.
@@ -931,10 +933,18 @@ New file: `apps/proxy/live_proxy/tests/test_channel_status_fields.py`, a `Simple
         with self.assertLogs("live_proxy.channel_status", level="WARNING") as logs:
             info = self._info({"state": "active", "m3u_profile": "not-an-int"})
         self.assertNotIn("m3u_profile_name", info)
-        self.assertTrue(
-            any("Invalid m3u_profile_id format in Redis" in line for line in logs.output)
-        )
+        self.assertEqual(len(logs.records), 1)
+        self.assertIn("Invalid m3u_profile_id format in Redis", logs.output[0])
+        # The VALUE, not just the string: "Invalid m3u_profile_id format in
+        # Redis" is emitted from channel_status.py:117 AND from :596, in a
+        # different function. Pinning the message alone gives two tests that
+        # pass with the arms swapped. The rejected value reaches :117's
+        # message via m3u_profile_id_bytes, so asserting it is what ties this
+        # assertion to this arm.
+        self.assertIn("not-an-int", logs.output[0])
 ```
+
+  **Carry that pattern to the `:595-596` arm rather than the `any(...)` one.** `get_basic_channel_info` emits the same string, so a test for `:595-596` written with a bare substring check would be green whichever function ran. Drive each arm from its own entry point and pin the value.
 
 ### Step 6: `_execute_redis_command`'s two arms in this module
 
@@ -966,6 +976,7 @@ cd /Users/dion/git/Dispatcharr/.worktrees/plan-2b4 && \
 ```
 
 - [ ] Cross-check the result against `live-path.json`'s `missing_lines` and keep only the guards still red. The brief names `client_manager.py` (`:57`, `:184`, `:335`, `:407`, `:418-419`), `channel_status.py:421`, `server.py` (`:1440-1441`, `:1455-1456`) and several in `channel_service.py`.
+- [ ] **Two more belong here and were briefly mis-assigned to Task 10: `server.py:1454` and `server.py:1303`**, both `if not self.redis_client: return False`, in `ensure_output_profile` and `ensure_output_format` respectively. They sit among Task 10's non-owner gates but are the kind-5 idiom, not an owner/follower branch, and covering them there would double-count against this task. Supply a `ProxyServer` with `redis_client = None` and assert each function returns **`False`** — note the value: `ClientManager`'s guards return `None`, `0` or the local count, and a test that only checks falsiness would pass with any of them.
 
 ### Step 2: One parameterised test per class, not per method
 
@@ -1122,33 +1133,58 @@ New file: `apps/proxy/live_proxy/tests/test_channel_service_state.py`.
 
 ## Task 10: Kind 8 — the non-owner second branch
 
-**Estimated: 35 statements.** The relay's organising conditional. Three PRs running in this programme have had a defect hiding in one branch, and CLAUDE.md records owner-versus-follower as a systematic axis: ask at every hop whether a second branch takes a different route.
+**Estimated: 45 statements. Ceiling 50.** The relay's organising conditional. Three PRs running in this programme have had a defect hiding in one branch, and CLAUDE.md records owner-versus-follower as a systematic axis: ask at every hop whether a second branch takes a different route.
 
-**Where the 35 comes from, because an earlier draft of this plan said 70 and was wrong by roughly double.** The 70 descended from the reachability brief's 66, which is `ensure_output_profile` (44) **plus** `ensure_output_format` (22) — two *whole* functions' always-missing, including the owner arms that spawn, which Step 1 below explicitly excludes. The in-scope content, counted statically at `04841a47`:
+**The eight non-owner arms, measured with `PythonParser` at `04841a47`:**
 
-| in-scope arm | statements |
-|---|---:|
-| `server.py:1439-1453` — the non-owner reader-buffer arm | 9 |
-| `server.py:1461-1477` — the non-owner transcode arm | 8 |
-| `server.py`'s `if not self.am_i_owner(...)` publish branch | ~10 |
-| `client_manager.py:370-383` — the non-owner `CLIENT_DISCONNECTED` publish | 6 |
-| its else-body | ~10 |
-| **always-missing in scope** | **~43** |
-| **estimated available** (R6's ~10% discount, plus overlap with Task 9) | **~35** |
+| gate | condition | file:range | stmts |
+|---|---|---|---:|
+| A | `existing is None` and `state != PROFILE_STATE_ACTIVE` | `server.py:1440-1453` | 9 |
+| B | `state == PROFILE_STATE_ACTIVE` and `owner_val != self.worker_id` | `server.py:1464-1475` | 5 |
+| C | `not self.am_i_owner(...)` — `ensure_output_profile` | `server.py:1483-1519` | 15 |
+| B′ | same as B, in `ensure_output_format` | `server.py:1310-1311` | 2 |
+| C′ | same as C, in `ensure_output_format` | `server.py:1321-1339` | 11 |
+| D | non-owner `elif remaining == 0 and _has_local_upstream_activity` | `client_manager.py:377-381` | 2 |
+| E | non-owner `else` — publish `CLIENT_DISCONNECTED` | `client_manager.py:383-396` | 3 |
+| F | lease-expiry promotion | `client_manager.py:361-364` | 3 |
+| | **ceiling** | | **50** |
 
-Note what is *not* here: `channel_service`'s follower routes. The earlier draft listed them as a third source, but `change_stream_url`'s non-owner arm is already inside Task 9 Step 2's 90, so counting it again adds nothing net. Step 3 below is now a reconciliation step, not a source of new statements.
+**50 is a ceiling on TOTAL statements in those ranges, not an always-missing figure.** The always-missing subset is strictly smaller — some of these lines are already covered — so **40 is the realistic planning figure and 45 the estimate**. Read the distinction rather than the number: conflating "statements in the range" with "statements still red" is exactly what produced this task's two earlier wrong figures.
+
+**Both earlier figures were wrong, and the first was wrong in a way worth naming.** A draft said 70, which was the reachability brief's 66 — two *whole* functions' always-missing, owner arms included, which this task excludes. The correction said ~35, which was close to right **for the wrong reasons**: it undercounted gate C by ~18 and omitted `ensure_output_format` (B′ and C′) altogether, while over-crediting `client_manager`'s else-body by about the same amount. The errors cancelled. **A figure that is right because two mistakes cancel is worth no more than a wrong one**, and unlike a wrong one it propagates silently — see Task 12 Step 1, which now checks ranges and not only totals.
+
+**Overlap with Task 9 is clean, and here is why, so nobody re-litigates it.** Task 9 Step 2's five functions are all in `channel_service.py`; Task 9 Step 3's `client_manager` ranges are `:301-306`, `:429-444` and `:465-482`. Gates A-C′ are in `server.py`, which Task 9 claims nowhere, and D/E/F at `:361-396` intersect none of Task 9's ranges. The one real double-count was Task 10 Step 3's "`channel_service` follower routes" against Task 9 Step 2's `change_stream_url` non-owner arm, and Step 3 below no longer claims it.
 
 New file: `apps/proxy/live_proxy/tests/test_non_owner_branches.py`.
 
 ### Step 1: `server.ensure_output_profile` / `ensure_output_format`'s non-owner arms
 
-- [ ] The brief measures these two functions at 66 always-missing combined, and splits them: the **non-owner** arms (`:1440-1453`, `:1461-1477` at the brief's measurement) need only a seeded `output_state`/`output_owner` key and a real Redis — `manager.start()` there deliberately fails to acquire the lock and never spawns. The **owner** arms spawn and are out of scope.
+- [ ] Gates **A, B, C** (`ensure_output_profile`) and **B′, C′** (`ensure_output_format`) need only a seeded `output_state`/`output_owner` key and a real Redis — `manager.start()` there deliberately fails to acquire the lock and never spawns. The **owner** arms spawn and are out of scope. Use the ranges in the table above, which are tighter than the brief's `:1461-1477`/`:1482-1518` and were measured, not read off.
+- [ ] **`if not self.redis_client: return False` at `server.py:1454` and `:1303` is NOT this task's.** It is the `redis_client is None` guard idiom — kind 5 — and belongs to Task 7, which covers that idiom everywhere it repeats. It is excluded from the 50 above. Covering it here would double-count it against Task 7's 18.
 - [ ] Use `RelayHarnessTestCase` for real Redis. Seed the owner key to a worker id that is **not** this process's, then call the function and assert it took the follower route: no `posix_spawn_proc` call (patch it and assert not called — patching the spawn is patching the sink), and the documented return.
 - [ ] Re-derive the line numbers from `live-path.json` first; `server.py` is 1,492 statements and the brief's numbers are pre-2b-2.
 
-### Step 2: `client_manager`'s non-owner `CLIENT_DISCONNECTED` publish (`:370-383`)
+### Step 2: `client_manager`'s non-owner arms — gates D, E and F
 
-- [ ] Construct a `ClientManager` whose channel is owned elsewhere, remove a client, and assert the event was **published** rather than handled locally: assert on the `publish` call's channel (`RedisKeys.events_channel`) and the decoded JSON payload's `event` field. Assert the owner-side handler was **not** called — that is the half that distinguishes the branches.
+**Two traps here, both of which make the obvious fixture run the wrong branch.**
+
+- [ ] **Trap 1 — seeding a foreign owner is not enough, because the code promotes you.** `client_manager.py:361-364` (gate F) re-acquires ownership mid-function:
+
+  ```python
+  am_i_owner = self.proxy_server and self.proxy_server.am_i_owner(self.channel_id)
+
+  # Owner lock TTL can expire while local ffmpeg is still running on this worker.
+  if (not am_i_owner and self.proxy_server
+          and self.proxy_server._has_local_upstream_activity(self.channel_id)):
+      if self.proxy_server.extend_ownership(self.channel_id):
+          am_i_owner = True
+  ```
+
+  A fixture that seeds a foreign owner and stops there therefore runs the **owner** branch, and the test passes while asserting the opposite of its own docstring. **The fixture must control one of the two, and this plan specifies which: make `_has_local_upstream_activity` return `False`.** That is the honest non-owner shape — a worker with no local ffmpeg genuinely has no claim — whereas forcing `extend_ownership` to fail models a Redis failure and would silently also exercise gate F's failure path. Gate F gets its own test, with `_has_local_upstream_activity` **truthy** and `extend_ownership` returning `True`, asserting the owner branch ran *because of the promotion*.
+
+- [ ] **Trap 2 — `:366-396` is a three-way, not a two-way.** `if am_i_owner:` / `elif remaining == 0 and _has_local_upstream_activity:` (gate D, `:377-381`) / `else:` (gate E, the publish, `:383-396`). A test that seeds `remaining == 0` to reach "the non-owner branch" lands in **D**, not in the publish arm, and D's product is `schedule_disconnect = True` plus a warning — not a publish. So:
+  - **Gate E** (the publish) needs `remaining > 0`. Assert the `publish` call's channel (`RedisKeys.events_channel`) and the decoded JSON payload's `event`, `remaining_clients` and `username` fields, and assert the owner-side handler was **not** called.
+  - **Gate D** needs `remaining == 0` **and** `_has_local_upstream_activity` truthy — which, note, is the same condition gate F tests, so the two interact: gate D is only reachable when `extend_ownership` *failed*. Assert the warning is logged and that `_spawn_on_hub(handle_client_disconnect, ...)` was scheduled, and that **nothing was published** — that last assertion is what separates D from E.
 
 ### Step 3: Reconcile with Task 9 — **this step adds no new statements**
 
@@ -1156,15 +1192,15 @@ New file: `apps/proxy/live_proxy/tests/test_non_owner_branches.py`.
 
 ### Step 4: Break-check and checkpoint
 
-- [ ] **Two break-checks, not one — the gates differ.** An earlier draft prescribed a single file-wide break-check on `am_i_owner`, which cannot go red for two of the three arms in scope and would therefore manufacture a false finding under this plan's own "a break-check that does not go red is a finding" rule. Verified at `04841a47`: `server.py:1461-1477` is gated on `state == PROFILE_STATE_ACTIVE` **and** `owner_val != self.worker_id` (`:1459-1462`), and `:1439-1453` sits in the `else` of an existing-buffer check — neither reads `am_i_owner`.
+- [ ] **Three break-checks, one per gate — not one file-wide check.** An earlier draft prescribed a single break-check on `am_i_owner`, which cannot go red for gates A, B, B′ or D/E/F and would therefore manufacture a false finding under this plan's own "a break-check that does not go red is a finding" rule. Each break-check must name, in the commit or the PR, **which subset of this file's tests it turned red**; a break-check whose claimed blast radius exceeds what it can reach is the same defect as an assertion that pins nothing.
 
-  1. **Gate A — the worker-id comparison.** Make `owner_val != self.worker_id` evaluate `False` (e.g. seed `output_owner` to this worker's own id) and confirm the `server.py` non-owner tests fail. This covers the `ensure_output_*` arms and nothing else.
-  2. **Gate B — `am_i_owner`.** Make `am_i_owner` return `True` unconditionally and confirm the tests that actually route through it fail — the `client_manager` publish branch and the `if not self.am_i_owner(...)` branch. This covers those and nothing else.
+  | gate | break-check | must red |
+  |---|---|---|
+  | **A** — `existing is None` and `state != PROFILE_STATE_ACTIVE` | invert `existing is not None` at `:1438`, or force `state == PROFILE_STATE_ACTIVE` | the `server.py:1440-1453` tests only |
+  | **B / B′** — `state == PROFILE_STATE_ACTIVE` and `owner_val != self.worker_id` | make `owner_val == self.worker_id` | `server.py:1464-1475` and `:1310-1311` |
+  | **C / C′** — `not self.am_i_owner(...)` | `am_i_owner` → `True` unconditionally | `server.py:1483-1519` and `:1321-1339`, plus gates D/E/F |
 
-  Each break-check must name, in the commit or the PR, **which subset of this file's tests it turned red**. A break-check whose claimed blast radius exceeds what it can reach is the same defect as an assertion that pins nothing.
-
-- [ ] **PENDING — awaiting the reviewer's subset breakdown, relayed via the orchestrator.** The exact test-to-gate mapping for the two break-checks above is being supplied separately. Do not guess it: if the breakdown has not arrived when you reach this step, implement both break-checks, record which tests each turned red **as measured**, and flag the discrepancy if it differs from the breakdown when it lands. Measured beats relayed here, because the measurement is the thing the breakdown is a claim about.
-- [ ] Run the label, take the checkpoint, compare against 35, commit.
+- [ ] Run the label, take the checkpoint, **compare against 45 — and against the gate table's ranges, not only its total** (Task 12 Step 1's rule). Commit.
 
 ---
 
@@ -1213,6 +1249,7 @@ New file: `apps/proxy/tests/test_boundary_error_arms.py`.
 ### Step 1: Measure where you actually are
 
 - [ ] Run `bash scripts/coverage_live_path_isolated.sh --report`. Record `missing`, `statements` and the per-file `missing_lines`.
+- [ ] **When delivered statements match the estimate, check that they came from the ranges the estimate named.** A matching total over *different* ranges does not validate the estimate — it means two errors cancelled, and the surplus range is uncounted work that will go missing somewhere else. This is not hypothetical: Task 10's first correction landed at ~35 against a true ~45 by undercounting one gate by ~18, omitting two more entirely, and over-crediting a fourth by about the same amount. The total looked defensible and every component was wrong. Diff the **missing-line sets** per file against the ranges each task claimed, exactly as Global Constraint 10 requires for attributing a delta.
 - [ ] Compute `single_round_missing - permitted` using Task 2's `permitted`. **Remember this is a single local round, and the floor is a CI worst.** The rule of thumb from the two censuses on record: a CI worst sits roughly 30-35 above a single round, and the 2a-7 history is that local understates CI by ~6 on top of that. **Treat the target as `permitted - 40`, not `permitted`.**
 - [ ] If the single local round is already below `permitted - 40`, go to Task 13.
 
