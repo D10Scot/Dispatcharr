@@ -613,9 +613,12 @@ PY
 | measured shortfall | scope | stated est. | realistic (−10%) |
 |---|---|---:|---:|
 | **≤ 230** | Tasks 3, 4, 5, 6, 7, 11 only. Skip Tasks 8, 9, 10. | 268 | 241 |
-| **231 – 400** | **Tasks 3-11 as written.** This is the expected band. Above ~380, treat Task 12's reserve items 1-2 as expected work rather than contingency. | 453 | 408 |
+| **231 – 380** | **Tasks 3-11 as written.** | 453 | 408 |
+| **381 – 400** | **Tasks 3-11, plus Tasks 8b and 9b from the start** — not as contingency. See the note below; this is a row of the table precisely so it is *selected* rather than remembered. | 531 | 478 |
 | **401 – 520** | Tasks 3-11, **plus** Task 12's reserve promoted into the plan: `stream_ts`'s connection-retry loop (`views.py:348-394` — the `remaining_time <= retry_interval` break, the `gevent.sleep` back-off, the final attempt at the timeout boundary, and `control_plane.release_source` on the abandoned slot) as Task 8b; `input/manager.py`'s `_wait_for_existing_processes_to_close` (18 statements, **zero** in `except`, pure polling logic) as Task 9b; **and reserve items 3-4** (`_close_socket`/`_attempt_reconnect`'s mockable socket arms, `input/http_streamer.py` behind an in-process `http.server`). | ~610 | ~550 |
 | **> 520** | **STOP. Escalate to the orchestrator before writing a single test.** Tier A cannot meet the gate from here. The options — Tier B harness work, Tier C deletion at 0.8 on the statement, a spec amendment to the threshold — are above an implementer's call (R4). | — | — |
+
+**Why 381-400 is its own row rather than a clause inside the band below it.** At a ~405 shortfall, band 2's stated 453 against a realistic 408 is a three-statement margin — survivable only because Task 12's reserve items 1-2 (`stream_ts`'s retry loop, ~60; `_wait_for_existing_processes_to_close`, 18) are available, which makes the real figure `453 + ~78`. That is a perfectly sound margin **and it evaporates if the promotion is read as advice.** A conditional buried in prose inside the band it modifies is the shape that gets skimmed, so it is a row: an implementer whose census lands at 390 selects Tasks 8b and 9b the same way they select any other scope, rather than recalling a sentence. Below 381 they remain reserve.
 
 **Read the fourth column, not the third.** Every `est.` figure in this plan is a reading of uncovered lines, not a demonstration, and R6 records that such estimates have come in optimistic throughout this programme; the ~10% haircut is that history applied. A band whose *realistic* column sits below its own upper bound is a band that cannot deliver, which is why band 3 draws all four reserve items rather than the two an earlier draft named.
 
@@ -976,7 +979,7 @@ cd /Users/dion/git/Dispatcharr/.worktrees/plan-2b4 && \
 ```
 
 - [ ] Cross-check the result against `live-path.json`'s `missing_lines` and keep only the guards still red. The brief names `client_manager.py` (`:57`, `:184`, `:335`, `:407`, `:418-419`), `channel_status.py:421`, `server.py` (`:1440-1441`, `:1455-1456`) and several in `channel_service.py`.
-- [ ] **Two more belong here and were briefly mis-assigned to Task 10: `server.py:1454` and `server.py:1303`**, both `if not self.redis_client: return False`, in `ensure_output_profile` and `ensure_output_format` respectively. They sit among Task 10's non-owner gates but are the kind-5 idiom, not an owner/follower branch, and covering them there would double-count against this task. Supply a `ProxyServer` with `redis_client = None` and assert each function returns **`False`** — note the value: `ClientManager`'s guards return `None`, `0` or the local count, and a test that only checks falsiness would pass with any of them.
+- [ ] **Two more belong here and were briefly mis-assigned to Task 10: `server.py:1454` and `server.py:1303`**, both `if not self.redis_client: return False`, in `ensure_output_profile` and `ensure_output_format` respectively. They sit among Task 10's non-owner gates but are the kind-5 idiom, not an owner/follower branch, and covering them there would double-count against this task. Supply a `ProxyServer` with `redis_client = None` and assert each function returns **`False`** — note the value, because the kind-5 guards in this task do not all return the same thing: `ClientManager`'s return `None`, `0`, or the **local client count**. A test that only checks falsiness would pass against `None` or `0`; it would *fail* against the local count, which is truthy once seeded, and Step 2 seeds two clients for exactly that reason. So `assertIs(..., False)` and `assertEqual(..., 2)` are each pinning something a bare `assertFalse` would not.
 
 ### Step 2: One parameterised test per class, not per method
 
@@ -1104,6 +1107,8 @@ New file: `apps/proxy/live_proxy/tests/test_setup_and_init_wait.py`.
 
 **The two numbers in this task are measured and estimated respectively, and an earlier draft conflated them.** Step 2 enumerates **90 always-missing** statements across five `channel_service` functions (33 + 30 + 14 + 6 + 7) — that is the measured pool. Applying R6's discount gives **~77 estimated available**, and `client_manager`'s rollback/TTL/sweep arms (Step 3) add **26**, for the 103 above. The draft wrote "(77 in `channel_service`)" beside a step that enumerates 90, which reads as an arithmetic error rather than as a pool-versus-estimate distinction. Keep the two labelled separately wherever you restate them.
 
+**Do not "correct" the 103 upward. It is partly pre-discounted, and that is deliberate.** The 77 already carries R6's ~10% haircut, which every other task's estimate does not — those are pre-haircut, and the band table applies the −10% to the lot. So Task 9 is discounted twice and contributes ~9 statements less to the realistic column than a uniform treatment would give it. That errs **conservative**, which is the direction this plan wants to err, so it stays. Written down because the inconsistency is real and a later reader who spots it will otherwise raise the number and silently delete the margin.
+
 New file: `apps/proxy/live_proxy/tests/test_channel_service_state.py`.
 
 ### Step 1: Pick the fixture level deliberately
@@ -1184,11 +1189,15 @@ New file: `apps/proxy/live_proxy/tests/test_non_owner_branches.py`.
 
 - [ ] **Trap 2 — `:366-396` is a three-way, not a two-way.** `if am_i_owner:` / `elif remaining == 0 and _has_local_upstream_activity:` (gate D, `:377-381`) / `else:` (gate E, the publish, `:383-396`). A test that seeds `remaining == 0` to reach "the non-owner branch" lands in **D**, not in the publish arm, and D's product is `schedule_disconnect = True` plus a warning — not a publish. So:
   - **Gate E** (the publish) needs `remaining > 0`. Assert the `publish` call's channel (`RedisKeys.events_channel`) and the decoded JSON payload's `event`, `remaining_clients` and `username` fields, and assert the owner-side handler was **not** called.
-  - **Gate D** needs `remaining == 0` **and** `_has_local_upstream_activity` truthy — which, note, is the same condition gate F tests, so the two interact: gate D is only reachable when `extend_ownership` *failed*. Assert the warning is logged and that `_spawn_on_hub(handle_client_disconnect, ...)` was scheduled, and that **nothing was published** — that last assertion is what separates D from E.
+
+    `remaining > 0` is **over-constrained on purpose**: gate E is in fact reachable with `remaining == 0` too, once `_has_local_upstream_activity` is `False` (the `elif`'s second conjunct fails and control falls to the `else`). Constraining it anyway makes the test independent of `_has_local_upstream_activity` entirely, so a future change to gate D's condition cannot silently move this test into gate D. Deliberate, not an oversight — leave it.
+  - **Gate D** needs `remaining == 0` **and** `_has_local_upstream_activity` truthy **and** `extend_ownership` falsy. Assert the warning is logged and that `_spawn_on_hub(handle_client_disconnect, ...)` was scheduled, and that **nothing was published** — that last assertion is what separates D from E.
+
+  **The two gates use different levers, and that is what makes them consistent rather than contradictory.** Gate E holds `_has_local_upstream_activity` False and is indifferent to `extend_ownership`; gate D needs it truthy and must therefore force `extend_ownership` falsy — the very lever gate E declines (Trap 1). Anyone reading the two fixtures side by side sees one test doing what the other refused to do; the reason is that each gate is reached by failing a *different* conjunct, so a single lever cannot serve both. Stated here because it reads as an inconsistency to anyone who notices it without the reasoning.
 
 ### Step 3: Reconcile with Task 9 — **this step adds no new statements**
 
-- [ ] Task 9 Step 2 already covers `change_stream_url`'s non-owner arm, so `channel_service`'s follower routes are **not** a third source for this task and are not in its 35. Confirm from `live-path.json` that nothing non-owner-only in `channel_service` is still red after Task 9; if something is, it belongs in Task 9's file, not this one, and its statements go on Task 9's checkpoint rather than being counted twice.
+- [ ] Task 9 Step 2 already covers `change_stream_url`'s non-owner arm, so `channel_service`'s follower routes are **not** a third source for this task and are not in its 45. Confirm from `live-path.json` that nothing non-owner-only in `channel_service` is still red after Task 9; if something is, it belongs in Task 9's file, not this one, and its statements go on Task 9's checkpoint rather than being counted twice.
 
 ### Step 4: Break-check and checkpoint
 
@@ -1198,7 +1207,9 @@ New file: `apps/proxy/live_proxy/tests/test_non_owner_branches.py`.
   |---|---|---|
   | **A** — `existing is None` and `state != PROFILE_STATE_ACTIVE` | invert `existing is not None` at `:1438`, or force `state == PROFILE_STATE_ACTIVE` | the `server.py:1440-1453` tests only |
   | **B / B′** — `state == PROFILE_STATE_ACTIVE` and `owner_val != self.worker_id` | make `owner_val == self.worker_id` | `server.py:1464-1475` and `:1310-1311` |
-  | **C / C′** — `not self.am_i_owner(...)` | `am_i_owner` → `True` unconditionally | `server.py:1483-1519` and `:1321-1339`, plus gates D/E/F |
+  | **C / C′** — `not self.am_i_owner(...)` | `am_i_owner` → `True` unconditionally | `server.py:1483-1519` and `:1321-1339`, **plus every gate D/E/F test** |
+
+  **C is the only one of the three whose blast radius crosses files, and it genuinely does reach D/E/F.** `ClientManager` reads ownership through `self.proxy_server.am_i_owner` at `client_manager.py:359`, so forcing it `True` also skips the lease-expiry promotion (gate F's `:364` never runs, because `not am_i_owner` is already false at `:361`) and takes the `if am_i_owner:` arm at `:367`, making gates D and E unreachable. So C's expected red set is larger than A's or B's by design — confirm that it is, rather than treating the extra failures as collateral. If the `client_manager` tests stay green under C, one of them is not on the branch it claims.
 
 - [ ] Run the label, take the checkpoint, **compare against 45 — and against the gate table's ranges, not only its total** (Task 12 Step 1's rule). Commit.
 
