@@ -261,6 +261,11 @@ class ResolveAuthorizationTests(TestCase):
             "/proxy/ts/stream/x",
             HTTP_X_DISPATCHARR_AUTHORIZED="1",
             HTTP_X_RELAY_CHANNEL=str(self.channel.uuid),
+            # 2b-2's two additions: a forged marker must not let these
+            # through either -- the constant-time compare fails before
+            # result_from_headers is ever reached, so neither is read.
+            HTTP_X_RELAY_OUTPUT_FORMAT="fmp4",
+            HTTP_X_RELAY_CLIENT_IP="203.0.113.9",
         )
         with patch.object(authorize_views, "authorize_stream") as inline:
             authorize_views.resolve_authorization(
