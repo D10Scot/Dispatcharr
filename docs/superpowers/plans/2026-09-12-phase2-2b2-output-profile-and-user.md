@@ -61,7 +61,15 @@ These are not style notes. Each is a test that passed while the code was broken,
 
 - **R1 — `AuthorizeResult.user` becomes lazy, not deleted.** The spec's Stage 2b table says the relay "never needs the `User` row itself." That is true of the **live** surfaces only. `decision.user` is consumed by five call sites outside `live_proxy` — `apps/proxy/vod_proxy/views.py:640`, `:1442`, `:1477` and `apps/timeshift/views.py:172`, `:298` — which thread the object deep into `_serve_catchup` and the VOD session code. **D1 (spec line 433) leaves both surfaces in Python and untouched.** Deleting the field would be a cross-app refactor far outside this PR's named blast radius. Instead `result_from_headers` stops querying eagerly and `user` resolves on first access; the live path stops accessing it, so a live tune performs zero `User` queries, while VOD and catch-up behave exactly as today.
 - **R2 — `username` on relay events is resolved by Django, not carried in a header.** `output/ts/generator.py:134`, `:652` and `output/fmp4/generator.py:114` send `username=self.user.username` into `emit_event`, which reaches `core/relay_events.py` and becomes a `SystemEvent` row — externally observable. Touching `.user` there would re-trigger the query R1 defers. The relay sends `user_id` instead and `apply_event_batch` resolves the username in the API process, which is already where the write happens (Phase 1 PR 6's shape).
-- **R3 — `output_profiles` is a contract addition the Python relay deliberately does not consume, and it carries *every* active profile, not just the one named on the request.** The spec (line 1598) decided "fold the built command into `next-source`'s response when `X-Relay-Output` names a profile." `next-source` runs **once per channel**, at tune, failover and resume; `_output_profile_for` runs **once per client**, and the second client on a running channel (`views.py:712`) never makes a `next-source` call at all. A per-request single profile therefore cannot answer the question the relay actually asks, for any client but the first. Two consequences: the map is keyed by id and lists every `is_active=True` profile, so a Go relay can cache it at tune and answer any later client; and `apps/proxy/live_proxy/views.py:152`'s `OutputProfile.objects.filter(...)` **stays**, because consuming the map from the Python relay needs either a new per-client route (the spec rejects it) or a Redis cache with its own TTL and staleness semantics (the spec does not specify one). This matches 2b-1's precedent exactly: `proxy_settings` shipped on the same response with "Nothing in the PYTHON relay consumes this yet, deliberately." **2b-3 must allowlist `views.py:152` with a citation to this ruling, or make the design decision this PR declines to make.** Flag it in the PR description.
+- **R3 — `output_profiles` is a contract addition the Python relay deliberately does not consume, and it carries *every* active profile, not just the one named on the request.** The spec (line 1598) decided "fold the built command into `next-source`'s response when `X-Relay-Output` names a profile." `next-source` runs **once per channel**, at tune, failover and resume; `_output_profile_for` runs **once per client**, and the second client on a running channel (`views.py:712`) never makes a `next-source` call at all. A per-request single profile therefore cannot answer the question the relay actually asks, for any client but the first. Two consequences: the map is keyed by id and lists every `is_active=True` profile, so a Go relay can cache it at tune and answer any later client; and `apps/proxy/live_proxy/views.py:152`'s `OutputProfile.objects.filter(...)` **stays**, because consuming the map from the Python relay needs either a new per-client route (the spec rejects it) or a Redis cache with its own TTL and staleness semantics (the spec does not specify one). This matches 2b-1's precedent exactly: `proxy_settings` shipped on the same response with "Nothing in the PYTHON relay consumes this yet, deliberately." **2b-3 must allowlist `views.py:152` with a citation to this ruling.** Flag it in the PR description.
+
+  **The Redis cache alternative was considered and declined by the phase orchestrator; do not add it.** The spec already set this precedent and its argument applies here verbatim — line 1595, on the `channel_status.py` fallbacks: *"the surviving fallback, if any, is Python code that is deleted wholesale in `migration/phase2d-delete-live-proxy`, not a shape the Go relay reimplements."* `views.py:152` is that same shape. A cache would buy 2c nothing while introducing a real, unpinned parity change: today an `OutputProfile` edit reaches the next **client**; cached, it would reach only the next **tune**. Shipping an unpinned behaviour change inside a PR whose gate is "the forged-header test still 403s" puts a regression exactly where no gate is looking.
+
+  **The allowlist reconciliation, written now so 2b-3 transcribes it rather than re-deriving it.** Spec line 1769 requires 2c-1's PR description to name, for every non-empty allowlist entry, either the contract field that closes it or the written reason the Go relay never asks the question. For this entry:
+
+  > `views.py:152` stays. The contract field that closes it is `output_profiles` on `next-source`'s response: the Go relay caches the map at tune and serves every later client from memory. Python cannot, because `_output_profile_for` runs per client (`views.py:605` owner-init, `:712` everything else) while `next-source` runs per channel, and closing it in Python would need a cache whose staleness semantics nothing has specified.
+
+  That paragraph goes **verbatim** into this PR's description, and into `apps/proxy/live_proxy/tests/zero_orm_allowlist.py`'s comment when 2b-3 writes it.
 - **R4 — parity-matrix row 17 is not claimed by this PR; it is already pinned, and this PR must keep it green.** Row 17's `Pin` cell already names `apps/proxy/live_proxy/tests/test_client_ip_provenance.py::test_ip_address_is_the_real_client_address_on_both_status_endpoints`, and its `Notes` cell says "2b-2 replaces that source with `X-Relay-Client-IP` … the invariant this row pins is that `ip_address` stays the real client address across that change." The row is not `owed:`, so there is nothing to close. The spec's line 1599 says the Python relay "ignores it exactly as it ignores today's five" — **this plan does not follow that sentence**, because a header no consumer reads can only be tested at its two ends, which is exactly what principle 5 rules out, and because the matrix row explicitly anticipates the source changing here. Task 4 makes the Python relay read the header on the trusted path with `get_client_ip(request)` as the untrusted fallback, extends the row's existing test with a trusted-path case, and updates the row's `Source` and `Notes` cells. Row 18 belongs to 2b-3 and is not touched.
 - **R5 — deferred nit `test_server_event_listener.py:273-329`: checked, not applicable.** This PR touches neither `server.py`'s event listener nor that test file (`grep add_client apps/proxy/live_proxy/tests/test_server_event_listener.py` returns nothing). Leave it for whichever PR edits that file.
 - **R7 — issue #253's reads sit in files this PR edits, and this PR does not touch them.** Two of the three ORM reads #253 records are in files on 2b-2's list: `get_stream_object` at `apps/proxy/live_proxy/views.py:189` — three lines above the `client_ip` line Task 3 Step 6 edits — and at `apps/proxy/authorize.py:344`, a file Task 1 edits. `channel.get_stream_profile()` at `views.py:430` is in the same file too. **Leave all three exactly as they are.** They belong to 2b-3, they are a different question (the guard's shape blindness, not the contract's completeness), and folding them in would put an unreviewed ORM decision inside a PR whose gates cannot see it. Say in the PR description that 2b-2 edited these files and deliberately left those reads, so 2b-3's author does not read the edits as a partial fix. Issue **#257** is the settings-UI edit path (`core/api_views.py`'s `ProxySettingsViewSet`); 2b-2 touches neither that file nor `apps/proxy/config.py`, so it is confirmed unrelated.
@@ -115,6 +123,7 @@ One correction to the brief this plan was written from: the brief said each hop 
 
 **Modified — docs:**
 - `docs/relay-parity-matrix.md` (row 17 only)
+- `docs/superpowers/specs/2026-09-09-phase2-go-relay-design.md` (lines 1598 and 1658 only — Task 6 Step 0; line 1599 deliberately untouched)
 
 **Tests created/extended:**
 - `apps/proxy/tests/test_authorize_view.py` (extend)
@@ -725,16 +734,22 @@ Append to `apps/proxy/live_proxy/tests/test_stream_ts_client_registration.py`. R
 
 Add a module-level `_trusted_decision()` helper to that file identical to the one in Step 1 (repeat it; do not import across test modules).
 
-**If the second test does not actually reach `views.py:605`** — `_active_proxy_server` returns a server whose state says the channel is already active, so `needs_initialization` may be False and both tests may walk `:712` — fix it by asserting the branch rather than assuming it: add `self.assertTrue(proxy_server.am_i_owner.called)` and, if the owner branch is genuinely unreachable from this helper, say so in the test's docstring and cover `:605` through `test_owner_init_resolves_output_profile_once`'s existing setup instead. **Do not leave two tests that silently walk the same line.** Verify with:
+**This is the fork that shipped a blocking regression in 2b-1, and it is the same fork Ruling R3 is about. Settle it with evidence, per test, before moving on.**
+
+`_active_proxy_server` returns a server whose Redis state says the channel is already active, so `needs_initialization` may be False for **both** tests and both may walk `:712`, leaving `:605` unpinned while the suite looks green.
+
+**A coverage run over the whole test module is not sufficient evidence.** Two tests can between them hit both lines while neither *asserts* the behaviour that differs — that is precisely how a fork looks pinned and is not. Establish **which test covers which line**, one test at a time:
 
 ```bash
 cd /Users/dion/git/Dispatcharr/.worktrees/phase2-2b2 && docker exec dispatcharr-testrunner \
-  python -m coverage run --source=apps/proxy/live_proxy/views.py /repo/manage.py test \
-  apps.proxy.live_proxy.tests.test_stream_ts_client_registration -v2 \
-  && docker exec dispatcharr-testrunner python -m coverage report -m
+  python -m coverage run --include='*/live_proxy/views.py' /repo/manage.py test \
+  apps.proxy.live_proxy.tests.test_stream_ts_client_registration.StreamTsClientRegistrationTests.test_a_trusted_owner_registers_the_hops_user_id_and_format \
+  && docker exec dispatcharr-testrunner python -m coverage report -m | grep views.py
 ```
 
-and confirm both 605 and 712 appear as executed.
+Run the same command for `test_a_trusted_follower_registers_the_hops_user_id_and_format`. Read the `Missing` column: the owner test must **not** list 605 as missing, and the follower test must not list 712 as missing. Record both results in the task's completion note.
+
+**If the owner test lands on `:712` as well, add a test that genuinely reaches `:605` — do not record the gap and move on.** `test_owner_init_resolves_output_profile_once` in the same file already reaches the owner-init branch; copy its setup (in particular whatever makes `needs_initialization` True) rather than inventing one. **Do not leave two tests that silently walk the same line**, and do not weaken the assertion to make one pass.
 
 - [ ] **Step 3: Write the failing test — Django resolves the username**
 
@@ -789,6 +804,72 @@ class RelayEventUsernameResolutionTests(TestCase):
         _args, kwargs = write.call_args
         self.assertEqual(kwargs["username"], "sent-by-relay")
 ```
+
+- [ ] **Step 3b: Write the failing test that pins "a live tune performs zero `User` queries"**
+
+This is the claim the whole `_LazyUser` design rests on, and a lazy proxy is exactly the shape where a stray `repr()`, f-string or truthiness check reintroduces the query invisibly — six months from now, in a logging line nobody reviews. Pin it, do not assert it in prose.
+
+**Not `assertNumQueries(0)`:** other Stage 2b residuals still query on this path (`get_stream_object`, `channel.get_stream_profile()` — issue #253), so a count would be brittle and would fail for the wrong reason. Match on the **user table** in the executed SQL instead, so the failure names its own cause.
+
+Append to `apps/proxy/live_proxy/tests/test_stream_ts_client_registration.py`. Note this one is a `TestCase`, not the file's `SimpleTestCase` — it needs a real database connection for the query capture to mean anything, and `_LazyUser` would issue a real query if anything touched it.
+
+```python
+class TrustedTuneQueriesNoUserRowTests(TestCase):
+    """No live tune may materialise the User row (2b-2's _LazyUser).
+
+    The output format arrives on X-Relay-Output-Format and the client
+    hash is written from X-Relay-User's string, so nothing on this path
+    needs the row -- but AuthorizeResult.user still exists for the VOD
+    and catch-up surfaces D1 leaves in Python, and any attribute access
+    on it fetches. This test is what makes that a rule rather than a
+    hope.
+    """
+
+    def test_no_query_touches_the_user_table_on_a_trusted_tune(self):
+        from django.contrib.auth import get_user_model
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        # Vacuous-pass guard: a substring that matches nothing passes
+        # every assertion below while proving nothing, so fail loudly if
+        # AUTH_USER_MODEL ever moves. 'accounts_user' is
+        # settings.AUTH_USER_MODEL = "accounts.User" (dispatcharr/
+        # settings.py:357) with no db_table override.
+        user_table = get_user_model()._meta.db_table
+        self.assertEqual(user_table, "accounts_user")
+
+        helper = StreamTsClientRegistrationTests("setUp")
+        helper.setUp()
+        proxy_server, client_manager = helper._active_proxy_server(am_i_owner=False)
+        client_manager.add_client.return_value = True
+
+        with CaptureQueriesContext(connection) as captured:
+            with patch("apps.proxy.live_proxy.views.ProxyServer") as proxy_server_cls, \
+                 patch("apps.proxy.live_proxy.views.resolve_authorization",
+                       return_value=_trusted_decision()), \
+                 patch("apps.proxy.live_proxy.views.get_stream_object",
+                       return_value=helper._channel()), \
+                 patch("apps.proxy.live_proxy.views.ChannelService"
+                       ".is_channel_unavailable_for_new_clients", return_value=False), \
+                 patch("apps.proxy.live_proxy.views._output_profile_for",
+                       return_value=None), \
+                 patch("apps.proxy.live_proxy.views.create_stream_generator"), \
+                 patch("apps.proxy.live_proxy.views.close_old_connections"):
+                proxy_server_cls.get_instance.return_value = proxy_server
+                from apps.proxy.live_proxy import views
+
+                views.stream_ts(helper._request(), helper.channel_id)
+
+        offenders = [q["sql"] for q in captured.captured_queries if user_table in q["sql"]]
+        self.assertEqual(
+            offenders,
+            [],
+            "a trusted tune queried the user table -- something touched "
+            "AuthorizeResult.user; see _LazyUser's docstring",
+        )
+```
+
+If reusing `StreamTsClientRegistrationTests`'s helpers this way is awkward in practice, lift `_channel`, `_active_proxy_server` and `_request` to module-level functions and have both classes call them. **Do not copy them** — two drifting copies of a fixture is how the follower half stops resembling the owner half.
 
 - [ ] **Step 4: Run all three test modules to verify they fail**
 
@@ -1431,13 +1512,35 @@ Stage `apps/proxy/serializers.py apps/proxy/next_source.py apps/proxy/api_views.
 
 ---
 
-## Task 6: the forged-header gates, and the whole-PR verification
+## Task 6: the spec correction, the forged-header gates, and the whole-PR verification
 
 **Files:**
+- Modify: `docs/superpowers/specs/2026-09-09-phase2-go-relay-design.md:1598` and `:1658`
 - Modify: `e2e/tests/streaming/authorize-matrix.spec.ts:120-131`
 - Modify: `apps/proxy/tests/test_authorize_view.py` — `test_a_forged_marker_falls_through_to_the_inline_decision`
 
 **Interfaces:** none new.
+
+- [ ] **Step 0: Correct the spec in place**
+
+Spec line 1598's decision — "fold the built command and its args list into `next-source`'s response **when `X-Relay-Output` names a profile**" — is factually wrong (Ruling R3) and would mislead 2c's implementer into building a per-request single-profile client. Correct it where it stands, in the idiom of the corrections that landed in `2fc5b269`: an inline bold withdrawal naming what is true, not a footnote. Read that commit first (`git show 2fc5b269 -- docs/superpowers/specs/2026-09-09-phase2-go-relay-design.md`) so the voice matches.
+
+Replace the final sentence of line 1598's "2b's fix" cell — everything from "**Decided in this fix round**" onward — with:
+
+> **Decided in this fix round** (this spec's first draft left two shapes open with no decision, an implementer-facing gap flagged in review as m23): fold the built command into `next-source`'s response rather than a separate route — `next-source` already runs once per tune with the ORM open, and a separate `GET /api/relay/output-profiles/<id>/command` route would be a second round trip for data available at the same moment. **Corrected 2026-09-12, during 2b-2's own planning, and the "when `X-Relay-Output` names a profile" half of that decision is withdrawn: the response carries EVERY `is_active=True` profile, keyed by stringified id, as `{"id": int, "argv": [str, ...]}`.** `next-source` is a per-**channel** call (initial tune, failover, resume — `live_proxy/url_utils.py:56`, `input/manager.py:2076`, `services/channel_service.py:154`), while the Output Profile is resolved per **client** (`live_proxy/views.py:605` on the owner's init path, `:712` on every other client), and the second client on an already-running channel makes no `next-source` call at all. One profile per request therefore answers no client's question but the first's. The Go relay caches the map at tune and serves every later client from memory. **The Python relay does not consume the field** — `views.py:152`'s `OutputProfile.objects.filter(...)` survives 2b-2 deliberately, because closing it in Python would need a cache whose staleness semantics nothing here specifies (today an `OutputProfile` edit reaches the next client; cached, it would reach only the next tune), and it is Python that 2d deletes wholesale — the same reasoning this table already applies to the `channel_status.py` fallback rows above. 2b-3 records it in `zero_orm_allowlist.py` with this paragraph as its citation.
+
+Then fix line 1658's 2b-2 row, whose "What it does" cell still says "folded into `next-source`'s response **when `X-Relay-Output` is set**": change that clause to "folded into `next-source`'s response as an `output_profiles` map of every active profile (see the Stage 2b table's corrected `views.py:152` row)".
+
+Change nothing else in the spec. In particular do **not** touch line 1599's "the Python relay ignores it exactly as it ignores today's five" — Ruling R4 departs from it deliberately and the departure belongs in this PR's description and in parity-matrix row 17, where a reviewer will see it argued, not silently rewritten into the authority document by the PR that disagreed with it.
+
+- [ ] **Step 0b: Check the spec edit did not break its own citations**
+
+```bash
+cd /Users/dion/git/Dispatcharr/.worktrees/phase2-2b2 && \
+  grep -n 'when `X-Relay-Output`' docs/superpowers/specs/2026-09-09-phase2-go-relay-design.md
+```
+
+Expected: no output. Then re-read both edited cells end to end and confirm no table row gained a literal `|` and no row lost its single-line shape — the Stage 2b and PR tables are Markdown tables and a wrapped cell breaks them.
 
 - [ ] **Step 1: Extend the forged-header `@contract` test**
 
@@ -1504,7 +1607,7 @@ Check the file list against this plan's § File Structure. Anything modified tha
 
 - [ ] **Step 7: Commit and push**
 
-Stage the two test files, commit with `-F`, then:
+Stage the two test files **and `docs/superpowers/specs/2026-09-09-phase2-go-relay-design.md`**, commit with `-F`, then:
 
 ```bash
 cd /Users/dion/git/Dispatcharr/.worktrees/phase2-2b2 && git push -u origin migration/phase2b-output-profile-and-user
@@ -1517,8 +1620,11 @@ It must state, in its own words:
 1. The two headers, and that `apps/proxy/live_proxy/views.py` reads both on the trusted path — including that this **deviates from spec line 1599**, which says the Python relay ignores `X-Relay-Client-IP`. Cite Ruling R4 and parity-matrix row 17's own `Notes` cell, which anticipates the change.
 2. That `AuthorizeResult.user` is lazy rather than gone, and why (Ruling R1): D1 leaves VOD and catch-up in Python and five call sites there read it. A live tune now performs zero `User` queries.
 3. That `username` on relay events is resolved by Django (Ruling R2), and that the CLIENT_CONNECTED pub/sub payload's `username` degrades to `"unknown"` on the trusted path with no consumer.
-4. That `output_profiles` carries **every active profile**, not the single one the spec's row describes, and why (Ruling R3) — and that **`apps/proxy/live_proxy/views.py:152`'s `OutputProfile.objects.filter(...)` is deliberately still there**, with 2b-3 owning the allowlist-or-close decision. This is the item most likely to be read as an omission; say it first among the caveats.
-5. The measured Gate 2 number from Step 5.
+4. That `output_profiles` carries **every active profile**, not the single one the spec's row describes, and why (Ruling R3) — and that **`apps/proxy/live_proxy/views.py:152`'s `OutputProfile.objects.filter(...)` is deliberately still there**, with 2b-3 owning the allowlist entry. This is the item most likely to be read as an omission; say it first among the caveats. Quote Ruling R3's reconciliation paragraph **verbatim** — spec line 1769 makes 2c-1 restate it, and it is written once, here.
+5. That the spec itself was corrected at line 1598 and line 1658 (Step 0), and that line 1599 was deliberately **not** corrected — R4's departure is argued in the PR and recorded in parity-matrix row 17 rather than written into the authority document by the PR that disagreed with it.
+6. That 2b-2 edits `apps/proxy/live_proxy/views.py` and `apps/proxy/authorize.py` and deliberately leaves issue #253's ORM reads in both (Ruling R7), so 2b-3's author does not read the surrounding edits as a partial fix.
+7. The measured Gate 2 number from Step 5.
+8. **A reviewer note:** treat Task 3 — the `User`/`username` ripple through `apps/proxy/authorize_views.py`, `live_proxy/views.py`, `client_manager.py`, both generators and `core/relay_events.py` — as its own review surface. It is the only half of this PR that crosses app boundaries, and it is where a mechanical-looking change can drop an externally-observable field (`username` on a `SystemEvent` row). The PR is not split because sequential merging would cost a full CI cycle and a review round for a mechanical ripple; the review is separated instead.
 
 ---
 
@@ -1535,4 +1641,6 @@ It must state, in its own words:
 
 **Type consistency.** `output_format` and `client_ip` are `str` on `AuthorizeResult`, `str` in the headers, `str` in `_resolve_output_format`'s return. `user_id` is a `str` everywhere on the relay side (`"4242"`, `"0"` as `add_client`'s fallback) and an `int` only inside `_username_for`'s `int(user_id)`. `output_profiles` keys are `str`, its `id` values are `int`, its `argv` values are `list[str]`. `_resolve_output_format` keeps its name and its first three positional parameters because `test_stream_ts_client_registration.py` patches it by name.
 
-**Known open question, unresolved:** whether Task 3 Step 2's two tests genuinely walk `views.py:605` and `:712` respectively, or both walk `:712`. The existing `_active_proxy_server` helper reports the channel as already active, which may make `needs_initialization` False on both. Step 2 says how to settle it with a coverage run rather than assuming either way, and what to do with each answer.
+**Known open question, to be settled during execution rather than assumed:** whether Task 3 Step 2's two tests genuinely walk `views.py:605` and `:712` respectively, or both walk `:712`. The existing `_active_proxy_server` helper reports the channel as already active, which may make `needs_initialization` False on both. Step 2 settles it per test with a single-test coverage run, requires the result to be recorded, and requires a test that genuinely reaches `:605` to be **added** if the owner test lands on `:712` — recording the gap is not an acceptable outcome. This is the same fork Ruling R3 is about and the one that shipped a blocking regression in 2b-1.
+
+**Spec correction:** Task 6 Step 0 corrects spec lines 1598 and 1658, whose "when `X-Relay-Output` names a profile" decision Ruling R3 shows to be unimplementable. Line 1599 is deliberately left alone; Ruling R4's departure from it is argued in the PR description and recorded in parity-matrix row 17.
