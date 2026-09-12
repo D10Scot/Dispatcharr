@@ -59,7 +59,25 @@ These are not style notes. Each is a test that passed while the code was broken,
 
 ### Rulings made while planning (spec deviations, each deliberate)
 
-- **R1 — `AuthorizeResult.user` becomes lazy, not deleted.** The spec's Stage 2b table says the relay "never needs the `User` row itself." That is true of the **live** surfaces only. `decision.user` is consumed by five call sites outside `live_proxy` — `apps/proxy/vod_proxy/views.py:640`, `:1442`, `:1477` and `apps/timeshift/views.py:172`, `:298` — which thread the object deep into `_serve_catchup` and the VOD session code. **D1 (spec line 433) leaves both surfaces in Python and untouched.** Deleting the field would be a cross-app refactor far outside this PR's named blast radius. Instead `result_from_headers` stops querying eagerly and `user` resolves on first access; the live path stops accessing it, so a live tune performs zero `User` queries, while VOD and catch-up behave exactly as today.
+- **R1 — `AuthorizeResult.user` is resolved per *surface*, not lazily, and not deleted.** The spec's Stage 2b table says the relay "never needs the `User` row itself." That is true of the **live** surfaces only. `decision.user` is consumed by five call sites outside `live_proxy` — `apps/proxy/vod_proxy/views.py:640`, `:1442`, `:1477` and `apps/timeshift/views.py:172`, `:298` — which thread the object deep into `_serve_catchup` and the VOD session code. **D1 (spec line 433) leaves both surfaces in Python and untouched**, so deleting the field would be a cross-app refactor far outside this PR's named blast radius.
+
+  **A lazy-object design was drafted for this and is withdrawn: it cannot work, and the reason is worth stating so nobody redrafts it.** `result_from_headers` today has **two** distinct "no user" outcomes that both yield `user=None` — the header is absent or non-digit, and the header is a digit whose row no longer exists (a user deleted mid-stream, a stale header). A lazy proxy is never `None`, so every consumer branching on that flips on the second case. Fourteen sites consume it, and **eleven of them test identity, not truthiness** — verified line by line:
+
+  | Test | Sites |
+  |---|---|
+  | `is None` / `is not None` — **11** | `client_manager.py:234`, `:274`; `live_proxy/views.py:174`; `timeshift/views.py:1274`, `:2509`, `:2524`, `:2553`, `:2965`, `:2966`; `vod_proxy/views.py:639`, `:783` |
+  | `if user:` truthiness — **3** | `live_proxy/views.py:129`; `vod_proxy/views.py:138`, `:794` |
+
+  A `__bool__` (and `__eq__`) that resolves would fix the three and leave the eleven permanently wrong, because **`is` cannot be overloaded** — no dunder makes an object `None`. `__eq__` does not affect `is` either. So the lazy design is not merely risky here; for eleven of fourteen consumers it is unfixable in principle.
+
+  **The design instead splits on the surface, which `result_from_headers` already receives as its second parameter.** Live surfaces (`SURFACE_LIVE`, `SURFACE_LIVE_XC`) get `user=None` and `user_id` straight from the header, with no query. Every other surface keeps today's code verbatim — the query, and `user_id=str(user.id) if user is not None else ""`. Consequences, all of them good:
+
+  - **Every one of the fourteen sites keeps a real `User` or a real `None`.** No new object semantics, no dunders, nothing to get subtly wrong. The lazy object's whole hazard class disappears rather than being managed.
+  - **`user=None` on a live tune is already a reachable value today** (any anonymous tune), so every live-path consumer is on a branch it already handles. Task 3 then supersedes each of them anyway: `views.py:129` is skipped because the trusted branch returns first; `client_manager.py:234` would yield `"0"` but the explicit `user_id=` wins; `:274` yields `"unknown"`, documented; `views.py:174` leaves `user` as `None`.
+  - **The seam matches the phase's own seam.** The query is removed from exactly the surfaces D1 ports to Go and kept on exactly the ones D1 leaves in Python. That is a far better justification than "lazy, so nobody notices".
+  - The zero-query claim on the live path becomes **structural** — there is no user object to touch — rather than a property of a proxy's access pattern. Step 3b's capture test still earns its place, now as a guard against a future edit reintroducing a query (a logging line resolving the user), not as the thing holding the invariant up on its own.
+
+- **R1b — `user_id`'s meaning changes on the live surfaces only, and the change is deliberate.** Today `authorize_views.py:133` sets `user_id=str(user.id) if user is not None else ""`, so on the trusted path the field is *proof the row existed at relay-registration time*. Under R1 the live surfaces take it from the header, so it means *the row existed at authorize time*. This is externally observable — Task 3 threads it into `add_client`'s client hash and into the `client_connect` `SystemEvent` — so it is decided rather than absorbed: **accept it.** Three reasons. The divergence window is a single request (nginx's `auth_request` subrequest to the relay's registration), and only for a user deleted inside it. Closing it means re-querying, which is precisely the query this PR exists to remove. And the Go relay cannot re-query at all, so the contract's meaning *must* become "what the hop resolved" at 2c regardless; adopting it now is what makes 2b-2's behaviour and 2c's the same. Task 3 Step 3b pins it with a deleted-user tune, since that is the one input that distinguishes the two meanings.
 - **R2 — `username` on relay events is resolved by Django, not carried in a header.** `output/ts/generator.py:134`, `:652` and `output/fmp4/generator.py:114` send `username=self.user.username` into `emit_event`, which reaches `core/relay_events.py` and becomes a `SystemEvent` row — externally observable. Touching `.user` there would re-trigger the query R1 defers. The relay sends `user_id` instead and `apply_event_batch` resolves the username in the API process, which is already where the write happens (Phase 1 PR 6's shape).
 - **R3 — `output_profiles` is a contract addition the Python relay deliberately does not consume, and it carries *every* active profile, not just the one named on the request.** The spec (line 1598) decided "fold the built command into `next-source`'s response when `X-Relay-Output` names a profile." `next-source` runs **once per channel**, at tune, failover and resume; `_output_profile_for` runs **once per client**, and the second client on a running channel (`views.py:712`) never makes a `next-source` call at all. A per-request single profile therefore cannot answer the question the relay actually asks, for any client but the first. Two consequences: the map is keyed by id and lists every `is_active=True` profile, so a Go relay can cache it at tune and answer any later client; and `apps/proxy/live_proxy/views.py:152`'s `OutputProfile.objects.filter(...)` **stays**, because consuming the map from the Python relay needs either a new per-client route (the spec rejects it) or a Redis cache with its own TTL and staleness semantics (the spec does not specify one). This matches 2b-1's precedent exactly: `proxy_settings` shipped on the same response with "Nothing in the PYTHON relay consumes this yet, deliberately." **2b-3 must allowlist `views.py:152` with a citation to this ruling.** Flag it in the PR description.
 
@@ -568,7 +586,7 @@ Stage `docker/dispatcharr_api_params.conf docker/nginx.conf e2e/tests/streaming-
 
 ---
 
-## Task 3: the live path reads `X-Relay-Output-Format`, and the `User` query goes lazy
+## Task 3: the live path reads `X-Relay-Output-Format`, and the live surfaces stop querying `User`
 
 **Files:**
 - Modify: `apps/proxy/authorize_views.py` — `result_from_headers`
@@ -840,22 +858,22 @@ class RelayEventUsernameResolutionTests(TestCase):
 
 - [ ] **Step 3b: Write the failing test that pins "a live tune performs zero `User` queries"**
 
-This is the claim the whole `_LazyUser` design rests on, and a lazy proxy is exactly the shape where a stray `repr()`, f-string or truthiness check reintroduces the query invisibly — six months from now, in a logging line nobody reviews. Pin it, do not assert it in prose.
+Under Ruling R1 the live path holds no `User` object at all, so the zero-query property is structural rather than a matter of access patterns — but structural today is not structural in six months, when a logging line nobody reviews resolves the user for a message. Pin it, do not assert it in prose. The second test here is the one that pins **Ruling R1b's decision** about what `user_id` means, and it supplies the only input that distinguishes R1b's meaning from today's: a digit header naming a user who does not exist.
 
 **Not `assertNumQueries(0)`:** other Stage 2b residuals still query on this path (`get_stream_object`, `channel.get_stream_profile()` — issue #253), so a count would be brittle and would fail for the wrong reason. Match on the **user table** in the executed SQL instead, so the failure names its own cause.
 
-Append to `apps/proxy/live_proxy/tests/test_stream_ts_client_registration.py`. Note this one is a `TestCase`, not the file's `SimpleTestCase` — it needs a real database connection for the query capture to mean anything, and `_LazyUser` would issue a real query if anything touched it.
+Append to `apps/proxy/live_proxy/tests/test_stream_ts_client_registration.py`. Note this one is a `TestCase`, not the file's `SimpleTestCase` — it needs a real database connection for the query capture to mean anything.
 
 ```python
 class TrustedTuneQueriesNoUserRowTests(TestCase):
-    """No live tune may materialise the User row (2b-2's _LazyUser).
+    """No live tune may query the User table (2b-2, Rulings R1 and R1b).
 
     The output format arrives on X-Relay-Output-Format and the client
-    hash is written from X-Relay-User's string, so nothing on this path
-    needs the row -- but AuthorizeResult.user still exists for the VOD
-    and catch-up surfaces D1 leaves in Python, and any attribute access
-    on it fetches. This test is what makes that a rule rather than a
-    hope.
+    hash is written from X-Relay-User's string, so result_from_headers
+    skips the row entirely on SURFACE_LIVE/SURFACE_LIVE_XC. The VOD and
+    catch-up surfaces D1 leaves in Python still resolve it eagerly and
+    are unaffected. This test is what makes that a rule rather than a
+    property of today's call graph.
     """
 
     def test_no_query_touches_the_user_table_on_a_trusted_tune(self):
@@ -897,8 +915,60 @@ class TrustedTuneQueriesNoUserRowTests(TestCase):
         self.assertEqual(
             offenders,
             [],
-            "a trusted tune queried the user table -- something touched "
-            "AuthorizeResult.user; see _LazyUser's docstring",
+            "a trusted tune queried the user table -- something read "
+            "AuthorizeResult.user on a live surface; see Ruling R1",
+        )
+
+    def test_a_header_naming_a_deleted_user_still_registers_that_id(self):
+        """Ruling R1b's decision, pinned on the one input that shows it.
+
+        A digit X-Relay-User whose row no longer exists: today
+        result_from_headers re-queries and the client hash records "0";
+        after 2b-2 it records what the hop resolved. The window is one
+        request (the auth_request subrequest to registration), closing it
+        means re-querying, and the Go relay cannot re-query at all -- so
+        the contract's meaning becomes "what the hop said" and this test
+        is where that is written down rather than discovered.
+
+        4242 is not a real row and not 0: "0" is add_client's own
+        fallback, so asserting "0" here would pass under either meaning.
+        """
+        from django.contrib.auth import get_user_model
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        self.assertFalse(get_user_model().objects.filter(id=4242).exists())
+        user_table = get_user_model()._meta.db_table
+
+        helper = StreamTsClientRegistrationTests("setUp")
+        helper.setUp()
+        proxy_server, client_manager = helper._active_proxy_server(am_i_owner=False)
+        client_manager.add_client.return_value = True
+
+        with CaptureQueriesContext(connection) as captured:
+            with patch("apps.proxy.live_proxy.views.ProxyServer") as proxy_server_cls, \
+                 patch("apps.proxy.live_proxy.views.resolve_authorization",
+                       return_value=_trusted_decision(user_id="4242")), \
+                 patch("apps.proxy.live_proxy.views.get_stream_object",
+                       return_value=helper._channel()), \
+                 patch("apps.proxy.live_proxy.views.ChannelService"
+                       ".is_channel_unavailable_for_new_clients", return_value=False), \
+                 patch("apps.proxy.live_proxy.views._output_profile_for",
+                       return_value=None), \
+                 patch("apps.proxy.live_proxy.views.create_stream_generator"), \
+                 patch("apps.proxy.live_proxy.views.close_old_connections"):
+                proxy_server_cls.get_instance.return_value = proxy_server
+                from apps.proxy.live_proxy import views
+
+                views.stream_ts(helper._request(), helper.channel_id)
+
+        _args, kwargs = client_manager.add_client.call_args
+        self.assertEqual(kwargs["user_id"], "4242")
+        self.assertEqual(
+            [q["sql"] for q in captured.captured_queries if user_table in q["sql"]],
+            [],
+            "the tune re-queried to discover the user was gone -- that is "
+            "the query R1 removes, and the Go relay cannot make it",
         )
 ```
 
@@ -916,9 +986,9 @@ cd /Users/dion/git/Dispatcharr/.worktrees/phase2-2b2 && docker exec dispatcharr-
 
 Expected: FAIL — `_resolve_output_format() got an unexpected keyword argument 'decision'`, `KeyError: 'user_id'`, and the username assertions.
 
-- [ ] **Step 5: Make `AuthorizeResult.user` lazy and stop querying in `result_from_headers`**
+- [ ] **Step 5: Stop querying `User` on the live surfaces in `result_from_headers`**
 
-In `apps/proxy/authorize.py`, `AuthorizeResult.user` stays a plain field (`user: object = None`) — the laziness lives in the one place that used to fill it eagerly. In `apps/proxy/authorize_views.py`, replace `result_from_headers`'s query:
+`AuthorizeResult.user` stays a plain field (`user: object = None`); nothing about the dataclass changes. The whole edit is in `result_from_headers`, which already receives the surface it is answering for. Replace its query:
 
 ```python
     user_id = (request.META.get(META_RELAY_USER) or "").strip()
@@ -930,65 +1000,39 @@ In `apps/proxy/authorize.py`, `AuthorizeResult.user` stays a plain field (`user:
 with:
 
 ```python
+    # 2b-2. The live surfaces no longer need the row at all: the output
+    # format arrives on X-Relay-Output-Format and the client hash is
+    # written from this string, so nothing on that path reads
+    # AuthorizeResult.user. Skipping the query there is what closes the
+    # spec's Stage 2b row for authorize_views.py:112-141.
+    #
+    # Every other surface keeps it, verbatim. D1 (spec line 433) leaves
+    # /proxy/vod/, /proxy/catchup/ and /streaming/timeshift.php in Python
+    # and they read the row at eleven `is None`/`is not None` sites and
+    # three truthiness ones (see the 2b-2 plan's Ruling R1). A lazy proxy
+    # cannot serve those: `is` is not overloadable, so a stand-in object
+    # is never None and every identity check flips for a user deleted
+    # mid-stream. Splitting on the surface keeps a real row or a real
+    # None everywhere, and it splits exactly where the phase does -- the
+    # live surfaces are the ones 2c ports to Go.
     user_id = (request.META.get(META_RELAY_USER) or "").strip()
-    if not user_id.isdigit():
-        user_id = ""
+    user = None
+    if surface in (SURFACE_LIVE, SURFACE_LIVE_XC):
+        if not user_id.isdigit():
+            user_id = ""
+    else:
+        if user_id.isdigit():
+            user = User.objects.filter(id=int(user_id)).first()
+        user_id = str(user.id) if user is not None else ""
 ```
 
-and replace the `user_id=` / `user=` lines in the returned `AuthorizeResult` with:
+and in the returned `AuthorizeResult`, `user_id=user_id` replaces `user_id=str(user.id) if user is not None else ""`; the `user=user` line is unchanged.
 
-```python
-        user_id=user_id,
-        user=_LazyUser(user_id),
-```
+Import `SURFACE_LIVE` and `SURFACE_LIVE_XC` in `authorize_views.py` if they are not already there (`grep -n 'SURFACE_LIVE' apps/proxy/authorize_views.py` — `_surface_for` uses them, so they almost certainly are).
 
-Add, above `result_from_headers`:
+**Note what this does and does not change.** On the live surfaces `user_id` now means "the row existed when the hop authorized", not "the row exists now" — Ruling R1b, decided and pinned by Step 3b's deleted-user test, not absorbed silently. On every other surface both fields are byte-identical to today. And `stream_ts`'s `if user is None: user = decision.user` (`views.py:174-175`) now leaves `user` as a genuine `None` on a trusted tune, which is a value that path already handles for every anonymous tune today — Step 6 supersedes each of its consumers regardless.
 
-```python
-class _LazyUser:
-    """The User row, fetched only if something actually reads it.
-
-    2b-2 took the last live-path reader away: the output format now
-    arrives on X-Relay-Output-Format and the client hash is written from
-    X-Relay-User's string, so an ordinary tune performs no User query at
-    all. The field cannot simply go, because D1 (spec line 433) leaves
-    /proxy/vod/, /proxy/catchup/ and /streaming/timeshift.php in Python
-    and five call sites there read it -- apps/proxy/vod_proxy/views.py:640,
-    :1442, :1477 and apps/timeshift/views.py:172, :298 -- threading the
-    object deep into _serve_catchup and the VOD session code. Those
-    surfaces keep exactly today's behaviour; the live path simply never
-    touches the attribute.
-
-    Deliberately NOT a SimpleLazyObject: this has to be falsy when there
-    is no principal, and truthiness on a lazy proxy would force the very
-    query this exists to avoid.
-    """
-
-    __slots__ = ("_user_id", "_resolved", "_row")
-
-    def __init__(self, user_id: str):
-        self._user_id = user_id
-        self._resolved = False
-        self._row = None
-
-    def _resolve(self):
-        if not self._resolved:
-            self._resolved = True
-            if self._user_id:
-                self._row = User.objects.filter(id=int(self._user_id)).first()
-        return self._row
-
-    def __bool__(self):
-        return bool(self._resolve())
-
-    def __getattr__(self, name):
-        row = self._resolve()
-        if row is None:
-            raise AttributeError(name)
-        return getattr(row, name)
-```
-
-**Careful:** `stream_ts`'s `if user is None: user = decision.user` (`views.py:174-175`) makes `user` a `_LazyUser`, never `None`. The live path must therefore never do `if user:` on it — Step 6 removes the only two places that would.
+**There is no `_LazyUser` class.** An earlier draft of this plan had one; it is withdrawn for the reason in Ruling R1, and the `SimpleLazyObject` note that went with it is withdrawn with it. Do not reintroduce either — if a future reader reaches for a lazy proxy here, R1's table of eleven identity checks is the answer.
 
 - [ ] **Step 6: Thread the decision through the live path**
 
@@ -1114,7 +1158,8 @@ In `core/relay_events.py`'s `apply_event_batch`, after the three `details.pop(..
 
 ```python
         # 2b-2: the relay posts a user id because it no longer holds a
-        # User row (apps/proxy/authorize_views.py's _LazyUser). Resolve
+        # User row on a live surface (apps/proxy/authorize_views.py's
+        # result_from_headers, 2b-2 Ruling R1). Resolve
         # the display name here, where the SystemEvent write already
         # runs. An explicit username from the untrusted path wins; an
         # unknown id becomes None, exactly what the relay used to send
@@ -1169,7 +1214,7 @@ cd /Users/dion/git/Dispatcharr/.worktrees/phase2-2b2 && docker exec dispatcharr-
   python /repo/manage.py test apps.proxy.tests apps.proxy.live_proxy.tests apps.channels.tests core.tests
 ```
 
-Expected: PASS. If a VOD or timeshift test fails on `_LazyUser`, the fix is in `_LazyUser` (make it present the attribute the caller wants), **not** in the caller — R1 exists so those surfaces do not change.
+Expected: PASS, and **no VOD or timeshift test should change behaviour at all** — R1's surface split leaves `result_from_headers` byte-identical for every non-live surface. If one of them fails, the surface condition is wrong (most likely `SURFACE_LIVE_XC` omitted, or the `else` branch not restoring `user_id=str(user.id) if user is not None else ""`); fix the condition, never the caller.
 
 - [ ] **Step 12: Commit**
 
@@ -1621,7 +1666,7 @@ Expected: PASS. Report the exact counts.
 
 - [ ] **Step 5: Measure Gate 2's coverage, do not assume it**
 
-This PR adds production statements (`_LazyUser`, `_with_output_profiles`, `_username_for`, the `resolve_output_format` move) and deletes almost none, so the denominator moves in the direction that makes `missing` **easier** to regress, not harder. Measure:
+This PR adds production statements (`_with_output_profiles`, `_username_for`, the `resolve_output_format` move, `result_from_headers`'s surface branch) and deletes almost none, so the denominator moves in the direction that makes `missing` **easier** to regress, not harder. Measure:
 
 ```bash
 cd /Users/dion/git/Dispatcharr/.worktrees/phase2-2b2 && scripts/coverage_live_path_isolated.sh
@@ -1651,7 +1696,8 @@ cd /Users/dion/git/Dispatcharr/.worktrees/phase2-2b2 && git push -u origin migra
 It must state, in its own words:
 
 1. The two headers, and that `apps/proxy/live_proxy/views.py` reads both on the trusted path — including that this **deviates from spec line 1599**, which says the Python relay ignores `X-Relay-Client-IP`. Cite Ruling R4 and parity-matrix row 17's own `Notes` cell, which anticipates the change.
-2. That `AuthorizeResult.user` is lazy rather than gone, and why (Ruling R1): D1 leaves VOD and catch-up in Python and five call sites there read it. A live tune now performs zero `User` queries.
+2. That `result_from_headers` now splits on the surface rather than resolving `User` unconditionally, and why (Ruling R1): D1 leaves VOD and catch-up in Python, fourteen sites read the row, and **eleven of them test `is None`/`is not None`** — so a lazy stand-in could not have served them, because `is` is not overloadable. A live tune now performs zero `User` queries; every non-live surface is byte-identical to today.
+2b. That `user_id` consequently means "the row existed when the hop authorized" on the live surfaces, where it used to mean "the row exists now" (Ruling R1b). Say that it is externally observable — it reaches the client hash and the `client_connect` `SystemEvent` — that the divergence window is one request, and that 2c forces the same meaning anyway because the Go relay cannot re-query. Name the test that pins it.
 3. That `username` on relay events is resolved by Django (Ruling R2), and that the CLIENT_CONNECTED pub/sub payload's `username` degrades to `"unknown"` on the trusted path with no consumer.
 4. That `output_profiles` carries **every active profile**, not the single one the spec's row describes, and why (Ruling R3) — and that **`apps/proxy/live_proxy/views.py:152`'s `OutputProfile.objects.filter(...)` is deliberately still there**, with 2b-3 owning the allowlist entry. This is the item most likely to be read as an omission; say it first among the caveats. Quote Ruling R3's reconciliation paragraph **verbatim** — spec line 1769 makes 2c-1 restate it, and it is written once, here.
 5. That the spec itself was corrected at line 1598 and line 1658 (Step 0), and that line 1599 was deliberately **not** corrected — R4's departure is argued in the PR and recorded in parity-matrix row 17 rather than written into the authority document by the PR that disagreed with it.
@@ -1665,12 +1711,14 @@ It must state, in its own words:
 
 **Spec coverage.**
 - Line 1658's scope: `build_command()` folded into `next-source` — Task 5. Both new headers end to end across `authorize_view`, `dispatcharr_api_params.conf`, all nine nginx locations, the greybox spec's `AUTH_REQUEST_SET_VARS`, and `internal_auth.py`'s name pairs — Tasks 1 and 2. Both gates — Task 6 Step 1 (forged `@contract`) and Task 2 Step 6 (`nginx-stream-buffering.spec.ts` test 2).
-- Line 1599's `User` row — Task 3, with Ruling R1's deviation.
+- Line 1599's `User` row — Task 3, with Ruling R1's surface split and Ruling R1b's decision about what `user_id` then means.
 - Lines 1860–1960's NB1 — Task 4, with Ruling R4's deviation.
 - Lines 900–905: row 17 is already pinned and is kept true (R4); **row 18 is untouched** and remains 2b-3's.
 - Lines 660–800's dev-shape response listing seven headers: this PR makes the seven exist. The `POST /_dispatcharr/authorize-internal` route itself is not in 2b-2's scope and is not added here.
 
-**Placeholder scan.** No "TBD", no "add appropriate handling", no "similar to Task N". Every code step carries the code. Two steps deliberately end in a judgement the implementer must make with evidence — Task 3 Step 2's branch check and Task 4 Step 2's must-fail check — and both say exactly what evidence settles them.
+**Placeholder scan.** No "TBD", no "add appropriate handling", no "similar to Task N". Every code step carries the code. Two steps deliberately end in a judgement the implementer must make with evidence — Task 3 Step 2's branch confirmation and Task 4 Step 2's must-fail check — and both say exactly what evidence settles them.
+
+**The design that is NOT here.** An earlier draft resolved `AuthorizeResult.user` through a `_LazyUser` proxy. It is withdrawn: eleven of its fourteen consumers test `is None`/`is not None`, and `is` cannot be overloaded, so no dunder could have made it correct for them (Ruling R1's table). The surface split replaces it and touches none of the fourteen. If a reviewer or a later PR proposes a lazy object here, that table is the answer.
 
 **Type consistency.** `output_format` and `client_ip` are `str` on `AuthorizeResult`, `str` in the headers, `str` in `_resolve_output_format`'s return. `user_id` is a `str` everywhere on the relay side (`"4242"`, `"0"` as `add_client`'s fallback) and an `int` only inside `_username_for`'s `int(user_id)`. `output_profiles` keys are `str`, its `id` values are `int`, its `argv` values are `list[str]`. `_resolve_output_format` keeps its name and its first three positional parameters because `test_stream_ts_client_registration.py` patches it by name.
 
