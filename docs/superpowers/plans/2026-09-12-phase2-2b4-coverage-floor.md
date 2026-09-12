@@ -38,7 +38,9 @@ Every task's requirements implicitly include this section.
 
 7. **Every new test file lives under a `tests/` directory**, which the rcfile omits (`omit = */tests/*`, rcfile lines 15-16 and 35-36). New test files therefore move neither `statements` nor `modules`. The only production-code edit in this PR is Task 1's relocation. **If you find yourself editing a production module to make it testable, stop and report** — that moves the denominator mid-campaign and invalidates Task 2's census.
 
-8. **No dead-code deletion and no `exclude_lines`.** Both are available levers and both are declined. Deleting `D` always-missing statements buys only `≈ 0.8 D` of shortfall, because the denominator shrinks with it: `shortfall(D) = (M − D) − ((S − D) − ceil(0.8 × (S − D)))`. D5 and the spec hand dead-code deletion to stage 2d, not here.
+8. **No dead-code deletion, no `exclude_lines`, and no `# pragma: no cover`.** All three are available levers and all three are declined. Deleting `D` always-missing statements buys only `≈ 0.8 D` of shortfall, because the denominator shrinks with it: `shortfall(D) = (M − D) − ((S − D) − ceil(0.8 × (S − D)))`. D5 and the spec hand dead-code deletion to stage 2d, not here.
+
+   **The pragma deserves its own paragraph, because it is the one cheap lever nothing else in this plan or in Gate 2's machinery stops.** `scripts/coverage_live_path.coveragerc` declares **no `exclude_lines` key at all** (verified: `grep -c exclude_lines` → 0), so coverage's built-in default pragma exclusion is live. A single `# pragma: no cover` on a production line removes it from the numerator **and** the denominator — the same numeric effect as an `exclude_lines` entry, for one comment. And **both of Gate 2's shape checks are structurally blind to it**: `rcfile=` hashes `coverage_live_path.coveragerc`'s bytes, which a pragma does not touch, and `modules=` hashes the *list of files*, which a pragma does not change either. There are **zero** pragmas in the 38 in-scope modules today, so any that appear are this PR's. Adding one is forbidden here, and — unlike an rcfile edit — nothing downstream would catch it. Task 14 Step 5 makes its absence a piece of evidence rather than a promise.
 
 9. **Two functions are forbidden targets, and this is not negotiable.** `server.py`'s `cleanup_task` (78 always-missing at the brief's measurement) ticks on its own interval and samples channels mid-shutdown: chasing it damages the measurement while appearing to improve it, and it is the single largest source of run-to-run flap. `server.py`'s `_cleanup_local_resources` (61) is structurally unreachable ([#230](https://github.com/D10Scot/Dispatcharr/issues/230)) — its non-owner arm sits under `if self.am_i_owner(...)`. Together they are 139 statements, **not** the 222 the spec quotes. Do not write a test that reaches either.
 
@@ -93,9 +95,25 @@ with patch.object(cm, "_execute_redis_command", return_value=None):
     self.assertIsNone(cm._execute_redis_command(lambda: 1))
 ```
 
-**Right:**
+**Right** — with the fixture it needs, which is not optional here:
 
 ```python
+def _client_manager(self):
+    """A real ClientManager over a MagicMock Redis.
+
+    redis_client MUST be truthy. client_manager.py:183-184 returns None
+    *before* the try when it is falsy, so a fixture built with
+    redis_client=None never enters either except arm and the assertLogs
+    below fails with "no logs of level WARNING or higher triggered" --
+    and the tempting fix for that failure is deleting the very assertion
+    this example exists to teach. The `redis_client = None` case is a
+    DIFFERENT branch (kind 5) and belongs in Task 7's guard tests.
+    """
+    return ClientManager(
+        channel_id="chan", redis_client=MagicMock(), worker_id="w1"
+    )
+
+
 def test_a_redis_connection_error_degrades_to_None_and_warns(self):
     """_execute_redis_command's (ConnectionError, TimeoutError) arm.
 
@@ -186,7 +204,7 @@ So the order is Task 0 (#266) → Task 1 (relocate) → Task 2 (census). The cen
 
 ### R4 — The census sets the scope by an explicit rule, decided before the number is known.
 
-A decision rule written after seeing the number is not a decision rule. Task 2 Step 5 fixes the scope from the measured shortfall by the table in that task, and the implementer follows it. The one branch that is *not* the implementer's call is `shortfall > 590`: that means Tier A alone cannot meet the gate, and the remaining options (Tier B harness work, Tier C deletion at 0.8 on the statement, or a spec amendment to the threshold) are decisions above an implementer. **Stop and escalate; do not start writing tests against a target you cannot reach.**
+A decision rule written after seeing the number is not a decision rule. Task 2 Step 5 fixes the scope from the measured shortfall by the table in that task, and the implementer follows it. The one branch that is *not* the implementer's call is `shortfall > 520`: that means Tier A alone cannot meet the gate, and the remaining options (Tier B harness work, Tier C deletion at 0.8 on the statement, or a spec amendment to the threshold) are decisions above an implementer. **Stop and escalate; do not start writing tests against a target you cannot reach.**
 
 ### R5 — Coverage is the *reason* for these tests and never their *oracle*.
 
@@ -235,18 +253,20 @@ metrics/curated/                              MODIFIED  Task 14: milestone + def
 | kind | idiom | where it repeats | task | est. |
 |---|---|---|---|---:|
 | 1 | Pure `str -> Optional[dict]`; no mocks at all | `log_parsers.py` VLC + Streamlink | 3 | 65 |
-| 2 | Pure decision logic over a seeded metadata hash | `channel_status`, `views._channel_setup_needed`, `ts/generator` init-wait | 6, 8 | 70 |
+| 2 | Pure decision logic over a seeded metadata hash | `channel_status`, `views._channel_setup_needed`, `ts/generator` init-wait | 6, 8 | 60 |
 | 3 | ORM-fixture branches, no relay state | `next_source.py` | 5 | 55 |
 | 4 | `requests` boundary; patch the transport, assert the tuple | `url_utils.validate_stream_url` | 4 | 45 |
 | 5 | `if not self.redis_client: return <X>` guards | `client_manager`, `channel_status`, `server`, `channel_service` | 7 | 18 |
 | 6 | `_execute_redis_command`-shaped two-arm wrappers | `client_manager`, `channel_status`, `server` | 7 | 26 |
 | 7 | `except ValueError` around `int()`/`float()` of a Redis value | `channel_status`, `client_manager` | 6 | 12 |
-| 8 | The non-owner second branch of an owner-gated path | `server.ensure_output_*`, `client_manager`, `channel_service` | 10 | 70 |
+| 8 | The non-owner second branch of an owner-gated path | `server.ensure_output_*`'s two non-owner arms, `client_manager` | 10 | 35 |
 | 9 | Failure-rollback, TTL-refresh and sweep arms | `client_manager`, `channel_service` | 9 | 103 |
 | 10 | Small error arms in already-96%+ boundary modules | `authorize`, `authorize_views`, `config_helper`, `control_plane`, `relay_client`, `apps` | 11 | 24 |
-| | **total estimated** | | | **488** |
+| | **total estimated** | | | **443** |
 
-Predicted shortfall at the branch point is ~400-420 (see Task 2), so 488 is a 16-22% cushion. That cushion is R6's discount, not slack.
+**The kind table and the task table must always sum to the same number, and this one does: 443.** Per task that is `65 + 45 + 55 + 35 + 44 + 37 + 103 + 35 + 24`. Two earlier drafts of this plan disagreed with themselves — kind 2 kept a 70 after Task 6 took 2b-3's 7-statement subtraction, and kind 8 carried a 70 that was two whole functions' always-missing rather than the non-owner arms Task 10 actually scopes. If you change any task's estimate, change its kind row in the same edit and re-add both columns.
+
+Predicted shortfall at the branch point is ~405 (see Task 2), and R6's historical discount on these estimates is ~10%, so **realistic delivery is ~399 against ~405 needed**. That is not a cushion — it is level. Task 12's reserve items 1 and 2 should therefore be read as **expected work, not contingency**, at any measured shortfall above ~380.
 
 ---
 
@@ -341,7 +361,16 @@ exit "$report_rc"
 
 - [ ] Temporarily add a module named `apps/proxy/live_proxy/tests/test_zzz_injected_failure.py` containing one `SimpleTestCase` whose single test calls `self.fail("injected for #266")`. This is a scratch file, **not** committed.
 - [ ] Run `bash scripts/coverage_live_path_isolated.sh --report`. Require, in order: the `channels` label runs (its output appears after `liveproxy`'s failure); the status line reads `labels: proxy=0 liveproxy=1 channels=0`; the INVALID banner appears **before** the coverage table; the script exits 1.
-- [ ] Run `bash scripts/coverage_live_path_isolated.sh --write-floor` with the injected failure still present. Require it to exit 1 with `refusing --write-floor on an incomplete round` and to leave `scripts/coverage_live_path.floor` byte-identical (`git diff --exit-code scripts/coverage_live_path.floor`).
+- [ ] Run `bash scripts/coverage_live_path_isolated.sh --write-floor` with the injected failure still present. **Run this from your own writable worktree checkout, not from inside the hook container** — `.claude/hooks/start-test-container.sh` bind-mounts `/repo` **read-only** (`docker inspect dispatcharr-testrunner --format '{{range .Mounts}}{{.RW}}{{end}}'` → `false`), so a floor file that is unchanged there proves the mount is read-only and nothing about whether the refusal fired.
+
+  Require all three of:
+  1. exit status 1;
+  2. the string `refusing --write-floor on an incomplete round` on **stderr**;
+  3. **no report-block output at all** — the coverage table must not be printed, because the refusal is meant to happen *before* the combine, not after it.
+
+  Then, and only as a secondary check, `git diff --exit-code scripts/coverage_live_path.floor scripts/coverage_live_path.floor.modules`. **Both files, not just the floor**: `--write-floor` rewrites the companion module list as well (the floor's own step 3 says so), so checking the floor alone would miss half of what a leaked write would have done.
+
+  The reason this step is spelled out at this length: items 1-3 are what can actually fail, and the byte-identity check — the obvious thing to assert — is the one that cannot in the environment an implementer is most likely to reach for. A vacuous check inside the task whose whole purpose is to stop a measurement vanishing silently would be the plan's own worst joke.
 - [ ] Delete the scratch file. Re-run `bash scripts/coverage_live_path_isolated.sh --report` and require exit 0 with `labels: proxy=0 liveproxy=0 channels=0`.
 
 ### Step 4: Commit
@@ -569,7 +598,7 @@ print(f"SHORTFALL      {M_worst - permitted}")
 PY
 ```
 
-- [ ] **Prediction, for sanity only — not a substitute for the measurement.** At `04841a47`: `S = 8046`, single-round `missing = 1994`. Task 1 adds ~28 statements and ~4 missing; 2b-3's fixtures close ~7 at `channel_status.py:72-78`. A census worst typically sits ~30 above a single round (the 2a-7 CI census spread was 34, the local 13-round spread at `93900a6f` was 53). So expect `S ≈ 8074`, `permitted ≈ 1614`, `M_worst ≈ 2020`, **shortfall ≈ 405**. If your measured shortfall is within ±60 of that, the tree is where this plan expects it. If it is not, say so before proceeding.
+- [ ] **Prediction, for sanity only — not a substitute for the measurement.** At `04841a47`: `S = 8046`, single-round `missing = 1994`. Task 1 adds ~28 statements and ~4 missing; 2b-3's fixtures close ~7 at `channel_status.py:72-78`. A census worst typically sits ~30 above a single round (the 2a-7 CI census spread was 34, the local 13-round spread at `93900a6f` was 53). So expect `S ≈ 8074`, `permitted ≈ 1614`, `M_worst ≈ 2020`, **shortfall ≈ 405**. **Treat 405 as the low end of a 405-455 range, not as a point estimate**: the two censuses on record imply 455 (2a-7's CI campaign: 2,050 against a 1,595 ceiling) and 420 (the reachability brief's own local worst-of-13, which says in as many words "plan against 420, not 393"). A measurement anywhere in 380-470 is the expected outcome. Say so before proceeding only if it lands outside that.
 
 ### Step 4: Write the census down
 
@@ -577,14 +606,18 @@ PY
 
 ### Step 5: Apply the decision rule
 
-- [ ] Fix the scope from the measured shortfall. This rule was written before the number was known (R4) and is followed, not re-argued. **The boundaries sit ~10 statements below the shortfalls they describe** — an 8-round census understates the worst case, and the shift is what keeps a census that came in 10 low from selecting a scope 10 too small (Step 2's ruling):
+- [ ] Fix the scope from the measured shortfall. This rule was written before the number was known (R4) and is followed, not re-argued. **The boundaries sit below the shortfalls they nominally describe, for two compounding reasons** — an 8-round census understates the worst case (Step 2's ruling), and the stated estimates carry R6's ~10% optimism. Both push the same way, so the edges are set against the *realistic* column, not the stated one:
 
-| measured shortfall | scope | est. available | cushion |
+| measured shortfall | scope | stated est. | realistic (−10%) |
 |---|---|---:|---:|
-| **≤ 290** | Tasks 3, 4, 5, 6, 7, 11 only. Skip Tasks 8, 9, 10. | 245 | tight — add Task 8 if a checkpoint undershoots |
-| **291 – 470** | **Tasks 3-11 as written.** This is the expected band. | 488 | 4-68% |
-| **471 – 590** | Tasks 3-11, **plus** `views.py`'s `_channel_setup_needed` is already in Task 8; add `stream_ts`'s connection-retry loop (`views.py:348-394` — the `remaining_time <= retry_interval` break, the `gevent.sleep` back-off, the final attempt at the timeout boundary, and `control_plane.release_source` on the abandoned slot) as Task 8b, and `input/manager.py`'s `_wait_for_existing_processes_to_close` (18 statements, **zero** in `except`, pure polling logic) plus the mockable socket/reconnect arms of `_close_socket` and `_attempt_reconnect` as Task 9b. | ~600 | 2-27% |
-| **> 590** | **STOP. Escalate to the orchestrator before writing a single test.** Tier A cannot meet the gate from here. The options — Tier B harness work, Tier C deletion at 0.8 on the statement, a spec amendment to the threshold — are above an implementer's call (R4). | — | — |
+| **≤ 230** | Tasks 3, 4, 5, 6, 7, 11 only. Skip Tasks 8, 9, 10. | 268 | 241 |
+| **231 – 400** | **Tasks 3-11 as written.** This is the expected band. Above ~380, treat Task 12's reserve items 1-2 as expected work rather than contingency. | 443 | 399 |
+| **401 – 520** | Tasks 3-11, **plus** Task 12's reserve promoted into the plan: `stream_ts`'s connection-retry loop (`views.py:348-394` — the `remaining_time <= retry_interval` break, the `gevent.sleep` back-off, the final attempt at the timeout boundary, and `control_plane.release_source` on the abandoned slot) as Task 8b; `input/manager.py`'s `_wait_for_existing_processes_to_close` (18 statements, **zero** in `except`, pure polling logic) as Task 9b; **and reserve items 3-4** (`_close_socket`/`_attempt_reconnect`'s mockable socket arms, `input/http_streamer.py` behind an in-process `http.server`). | ~600 | ~540 |
+| **> 520** | **STOP. Escalate to the orchestrator before writing a single test.** Tier A cannot meet the gate from here. The options — Tier B harness work, Tier C deletion at 0.8 on the statement, a spec amendment to the threshold — are above an implementer's call (R4). | — | — |
+
+**Read the fourth column, not the third.** Every `est.` figure in this plan is a reading of uncovered lines, not a demonstration, and R6 records that such estimates have come in optimistic throughout this programme; the ~10% haircut is that history applied. A band whose *realistic* column sits below its own upper bound is a band that cannot deliver, which is why band 3 draws all four reserve items rather than the two an earlier draft named.
+
+**Why these edges are lower than the shortfall this plan predicts.** The prediction is ~405. The two censuses actually on record imply more: 2a-7's CI campaign ended at 2,050 missing against a 1,595 ceiling, a **455** shortfall; and the reachability brief's own local worst-of-13 gives **420**, with the brief itself saying in as many words "plan against 420, not 393." A ±60 sanity band around 405 would not have flagged either. If your census lands at 446, you are in band 3 and that is an ordinary outcome, not a surprise.
 
 - [ ] State in the PR description which band the census landed in and which scope that selected.
 
@@ -690,6 +723,8 @@ New file: `apps/proxy/live_proxy/tests/test_vlc_streamlink_parsers.py`, a `Simpl
 ## Task 4: Kind 4 — `validate_stream_url`
 
 **Estimated: 45 statements.** All 47 of `apps/proxy/live_proxy/url_utils.py`'s always-missing statements are in one function, `validate_stream_url` (`:138-262`). It is live code — called from `views.py:479` and `:501`. Plain `requests`: patch the `Session` and assert the four-tuple.
+
+**Reporting rule for this task, ruled 2026-09-12.** `validate_stream_url` measures at ~48 statements, so 45 assumes near-total conversion — the most optimistic estimate in the plan. **Report to the orchestrator at anything under 45**, not at the 60%-of-estimate threshold R6 sets for the other tasks. Task 12's reserve can absorb a 40, but a silent 40 absorbed into the reserve is exactly what defeats the ordering argument that justifies having a sizing census at all: the point of measuring early is that shortfalls surface while scope can still change.
 
 New file: `apps/proxy/live_proxy/tests/test_validate_stream_url.py`, a `SimpleTestCase`.
 
@@ -907,7 +942,9 @@ New file: `apps/proxy/live_proxy/tests/test_channel_status_fields.py`, a `Simple
 
 ### Step 7: Break-check and checkpoint
 
-- [ ] **Break-check:** change `:146`'s `1024 * 1024` to `1024 * 1024 * 2` and confirm exactly the MB rung fails. Revert.
+- [ ] **Break-check:** change the **divisor at `:147`** — `f"{total_bytes / (1024 * 1024):.2f} MB"` → `f"{total_bytes / (1024 * 1024 * 2):.2f} MB"` — and confirm exactly the MB rung fails on the formatted string. Revert.
+
+  **Not `:146`.** That line is the rung *boundary* (`elif total_bytes < 1024 * 1024 * 1024:`), and widening it leaves 1,572,864 in the MB rung, so the test stays green and an implementer following this plan's own rule ("a break-check that does not go red is a finding") would go looking for a fault in a correct test. The divisor is what the assertion reads; the boundary is only reachable by a value chosen to sit on it.
 - [ ] Run the label, take the checkpoint, compare against 35, commit.
 
 ---
@@ -975,7 +1012,27 @@ New file: `apps/proxy/live_proxy/tests/test_setup_and_init_wait.py`.
 
 ### Step 1: `views._channel_setup_needed` (11 statements, `apps/proxy/live_proxy/views.py:60-99`)
 
-- [ ] It is directly callable: `_channel_setup_needed(proxy_server, channel_id)` returning `(needs_setup, state, wait_for_init)`. Six seeded-hash cases close all eleven. Assert the **whole three-tuple** each time, because `wait_for_init` is the field two of the cases exist to distinguish:
+- [ ] It is directly callable: `_channel_setup_needed(proxy_server, channel_id)` returning `(needs_setup, state, wait_for_init)`. Six seeded-hash cases close all eleven. Assert the **whole three-tuple** each time, because `wait_for_init` is the field two of the cases exist to distinguish.
+- [ ] The fixture, which the cases below all use:
+
+```python
+    def _proxy(self, *, metadata=None, heartbeat_exists=False, channel_exists=False):
+        """A stand-in ProxyServer carrying one metadata hash.
+
+        Only the four members _channel_setup_needed actually reads are
+        supplied; the decision ladder itself runs unpatched. Pass
+        metadata=None to exercise the `if proxy_server.redis_client` /
+        empty-hash paths at views.py:67-69.
+        """
+        proxy_server = MagicMock()
+        proxy_server.redis_client = MagicMock()
+        proxy_server.redis_client.hgetall.return_value = metadata or {}
+        proxy_server.redis_client.exists.return_value = heartbeat_exists
+        proxy_server.check_if_channel_exists.return_value = channel_exists
+        return proxy_server
+```
+
+  For the `:67` false case (no Redis client at all), set `proxy_server.redis_client = None` on the object this returns rather than adding a fifth keyword — that branch is one line and does not earn a parameter.
 
 ```python
     def test_the_six_setup_decisions(self):
@@ -1032,7 +1089,9 @@ New file: `apps/proxy/live_proxy/tests/test_setup_and_init_wait.py`.
 
 ## Task 9: Kind 9 — `channel_service.py`'s state machine and the rollback arms
 
-**Estimated: 103 statements** (77 in `channel_service`, 26 in `client_manager`'s rollback/TTL/sweep arms). The largest Tier A pool. Pure Python plus Redis calls; no subprocess.
+**Estimated: 103 statements.** The largest Tier A pool. Pure Python plus Redis calls; no subprocess.
+
+**The two numbers in this task are measured and estimated respectively, and an earlier draft conflated them.** Step 2 enumerates **90 always-missing** statements across five `channel_service` functions (33 + 30 + 14 + 6 + 7) — that is the measured pool. Applying R6's discount gives **~77 estimated available**, and `client_manager`'s rollback/TTL/sweep arms (Step 3) add **26**, for the 103 above. The draft wrote "(77 in `channel_service`)" beside a step that enumerates 90, which reads as an arithmetic error rather than as a pool-versus-estimate distinction. Keep the two labelled separately wherever you restate them.
 
 New file: `apps/proxy/live_proxy/tests/test_channel_service_state.py`.
 
@@ -1063,7 +1122,21 @@ New file: `apps/proxy/live_proxy/tests/test_channel_service_state.py`.
 
 ## Task 10: Kind 8 — the non-owner second branch
 
-**Estimated: 70 statements.** The relay's organising conditional. Three PRs running in this programme have had a defect hiding in one branch, and CLAUDE.md records owner-versus-follower as a systematic axis: ask at every hop whether a second branch takes a different route.
+**Estimated: 35 statements.** The relay's organising conditional. Three PRs running in this programme have had a defect hiding in one branch, and CLAUDE.md records owner-versus-follower as a systematic axis: ask at every hop whether a second branch takes a different route.
+
+**Where the 35 comes from, because an earlier draft of this plan said 70 and was wrong by roughly double.** The 70 descended from the reachability brief's 66, which is `ensure_output_profile` (44) **plus** `ensure_output_format` (22) — two *whole* functions' always-missing, including the owner arms that spawn, which Step 1 below explicitly excludes. The in-scope content, counted statically at `04841a47`:
+
+| in-scope arm | statements |
+|---|---:|
+| `server.py:1439-1453` — the non-owner reader-buffer arm | 9 |
+| `server.py:1461-1477` — the non-owner transcode arm | 8 |
+| `server.py`'s `if not self.am_i_owner(...)` publish branch | ~10 |
+| `client_manager.py:370-383` — the non-owner `CLIENT_DISCONNECTED` publish | 6 |
+| its else-body | ~10 |
+| **always-missing in scope** | **~43** |
+| **estimated available** (R6's ~10% discount, plus overlap with Task 9) | **~35** |
+
+Note what is *not* here: `channel_service`'s follower routes. The earlier draft listed them as a third source, but `change_stream_url`'s non-owner arm is already inside Task 9 Step 2's 90, so counting it again adds nothing net. Step 3 below is now a reconciliation step, not a source of new statements.
 
 New file: `apps/proxy/live_proxy/tests/test_non_owner_branches.py`.
 
@@ -1077,14 +1150,21 @@ New file: `apps/proxy/live_proxy/tests/test_non_owner_branches.py`.
 
 - [ ] Construct a `ClientManager` whose channel is owned elsewhere, remove a client, and assert the event was **published** rather than handled locally: assert on the `publish` call's channel (`RedisKeys.events_channel`) and the decoded JSON payload's `event` field. Assert the owner-side handler was **not** called — that is the half that distinguishes the branches.
 
-### Step 3: `channel_service`'s follower routes
+### Step 3: Reconcile with Task 9 — **this step adds no new statements**
 
-- [ ] Any branch Task 9 Step 2 identified as non-owner-only and left uncovered lands here. For each, assert the follower's own product — a publish, a poll, a `switch_status` read — and assert the owner's direct action did **not** happen.
+- [ ] Task 9 Step 2 already covers `change_stream_url`'s non-owner arm, so `channel_service`'s follower routes are **not** a third source for this task and are not in its 35. Confirm from `live-path.json` that nothing non-owner-only in `channel_service` is still red after Task 9; if something is, it belongs in Task 9's file, not this one, and its statements go on Task 9's checkpoint rather than being counted twice.
 
 ### Step 4: Break-check and checkpoint
 
-- [ ] **Break-check:** make `am_i_owner` return `True` unconditionally and confirm every test in this file fails. That single break-check is the proof the whole file is on the branch it claims. Revert.
-- [ ] Run the label, take the checkpoint, compare against 70, commit.
+- [ ] **Two break-checks, not one — the gates differ.** An earlier draft prescribed a single file-wide break-check on `am_i_owner`, which cannot go red for two of the three arms in scope and would therefore manufacture a false finding under this plan's own "a break-check that does not go red is a finding" rule. Verified at `04841a47`: `server.py:1461-1477` is gated on `state == PROFILE_STATE_ACTIVE` **and** `owner_val != self.worker_id` (`:1459-1462`), and `:1439-1453` sits in the `else` of an existing-buffer check — neither reads `am_i_owner`.
+
+  1. **Gate A — the worker-id comparison.** Make `owner_val != self.worker_id` evaluate `False` (e.g. seed `output_owner` to this worker's own id) and confirm the `server.py` non-owner tests fail. This covers the `ensure_output_*` arms and nothing else.
+  2. **Gate B — `am_i_owner`.** Make `am_i_owner` return `True` unconditionally and confirm the tests that actually route through it fail — the `client_manager` publish branch and the `if not self.am_i_owner(...)` branch. This covers those and nothing else.
+
+  Each break-check must name, in the commit or the PR, **which subset of this file's tests it turned red**. A break-check whose claimed blast radius exceeds what it can reach is the same defect as an assertion that pins nothing.
+
+- [ ] **PENDING — awaiting the reviewer's subset breakdown, relayed via the orchestrator.** The exact test-to-gate mapping for the two break-checks above is being supplied separately. Do not guess it: if the breakdown has not arrived when you reach this step, implement both break-checks, record which tests each turned red **as measured**, and flag the discrepancy if it differs from the breakdown when it lands. Measured beats relayed here, because the measurement is the thing the breakdown is a claim about.
+- [ ] Run the label, take the checkpoint, compare against 35, commit.
 
 ---
 
@@ -1096,7 +1176,22 @@ New file: `apps/proxy/tests/test_boundary_error_arms.py`.
 
 ### Step 1: Enumerate from the measurement, not from this plan
 
-- [ ] Read `live-path.json`'s `missing_lines` for each of the six modules and list every line. **`authorize_views.py` was edited by 2b-2** (the `X-Relay-Output-Format` and `X-Relay-Client-IP` headers), and Task 1 just edited `relay_client.py`, so both lists will differ from the brief's.
+- [ ] Read `live-path.json`'s `missing_lines` for each of the six modules and list every line.
+
+- [ ] **`authorize.py` has drifted further than anything else in scope, and it is this task's largest single claim** (12 of the 24). Measured statically at `04841a47` against the reachability brief's `93900a6f` baseline: **188 → 205 statements, +17**. The brief's 12 always-missing lines are a reading of a file that has since gained 17 statements, so treat its line numbers as void here rather than approximate. Full drift table for the modules this plan targets, same method:
+
+  | module | brief | now | Δ |
+  |---|---:|---:|---:|
+  | `apps/proxy/authorize.py` | 188 | 205 | **+17** |
+  | `apps/proxy/next_source.py` | 329 | 341 | +12 |
+  | `apps/proxy/authorize_views.py` | 108 | 114 | +6 |
+  | `apps/proxy/live_proxy/output/ts/generator.py` | 377 | 378 | +1 |
+  | `apps/proxy/live_proxy/client_manager.py` | 262 | 263 | +1 |
+  | `apps/proxy/live_proxy/views.py` | 613 | 606 | **−7** |
+  | `apps/proxy/relay_client.py` | 112 | 112 | 0 (before Task 1's +28) |
+  | `apps/proxy/live_proxy/server.py` | 1492 | 1492 | 0 |
+
+  `views.py`'s **negative** drift is the one to watch and affects Task 8 and Task 12's reserve, not this task: statements were *removed*, so a line the brief recorded as missing may no longer exist at all. A target that has vanished is not a target you failed to reach — say so in the "not closed" list rather than hunting for it.
 - [ ] For each line, write one sentence saying what behaviour it produces. If you cannot, it goes in the PR's "not closed" list (R5, Global Constraint 15).
 
 ### Step 2: Write one test per arm
@@ -1180,6 +1275,18 @@ New file: `apps/proxy/tests/test_boundary_error_arms.py`.
 - [ ] Same document, D7 (line 439) and § Stage 2a › Gate 2 (line 949): record that Gate 2's ≥80% threshold is **met**, at the measured percentage, in 2b-4, and that both halves of D7 are therefore green. Do not claim Gate 1 — that is 2b-3's.
 - [ ] Same document, the `server.py` "222 unreachable or must not be targeted" figure: correct to **139** (`_cleanup_local_resources` still exactly 61, `cleanup_task` 78 rather than 161 — stage 2a halved it incidentally). This is the figure that made the five-biggest-files strategy look 100 statements short.
 
+  **It appears at five sites, not one, and correcting one of them leaves the document contradicting itself.** Enumerated by `grep -n '222\|283'` at `04841a47`:
+
+  | spec line | what it says | fix |
+  |---|---|---|
+  | 243 | "`server.py` alone contributes **222** statements that are unreachable or…" | → 139 |
+  | 280 | "**222 of its missed statements are unreachable or must not be targeted at all**" | → 139 |
+  | 1189 | 2a-5's row: "840 missed, **222 forbidden-or-unreachable**" | → 139 |
+  | 1212 | "**blocked-or-unreachable is 283** — 61 more than the 222 previously carried" | **derived from the 222 and invalidated with it**; recompute and rewrite the clause, do not just swap the numeral |
+  | 1432 | lists "the 283" among the derived figures | → whatever 1212 becomes |
+
+  **Line 436 is NOT one of them** — its `283` is the tail of the line range `apps/proxy/utils.py:256-283` in D4, which is about `_live_connections` and is unrelated. Do not "fix" it. (Note that Task 1 moves that function, so if D4's range is worth updating it is for the relocation, not for this.)
+
 ### Step 2: The parity matrix
 
 - [ ] `docs/relay-parity-matrix.md` — only if a test this PR added is a **better** reference for a row than the one recorded. Do not churn the matrix for the sake of it; Gate 1 closed in 2b-3 and this PR does not reopen it.
@@ -1202,9 +1309,18 @@ New file: `apps/proxy/tests/test_boundary_error_arms.py`.
   - the decision-rule band Task 2 selected, and the scope that followed;
   - a per-task table of estimated versus delivered statements — this is the record that tells the next campaign whether the reachability estimates were optimistic again;
   - the `_live_connections` relocation, stated as a **code move into the denominator, not an rcfile edit**, and whether a `--shape-only` re-baseline was needed;
-  - the **not closed** list from R5/Constraint 15: every statement targeted and not reached, with the reason;
-  - an explicit statement that `scripts/coverage_live_path.coveragerc` is untouched and no code was deleted, so the number moved by covering code and not by redefining the measurement.
-- [ ] `git diff main --stat -- scripts/coverage_live_path.coveragerc` must be empty. Paste that as evidence rather than asserting it.
+  - the **not closed** list from R5/Constraint 15: every statement targeted and not reached, with the reason — including any target that turned out to have been *deleted* rather than missed (`views.py` lost 7 statements since the brief; see Task 11 Step 1's drift table);
+  - **the break-check evidence: per new test file, which break-check was performed and the failure message observed.** Without this the break-checks live only in per-task steps and in Self-review item 6, neither of which reaches a reviewer — and a break-check nobody can see is indistinguishable from one nobody ran. This is the single most load-bearing line in the PR description, because it is the only evidence that ~200 new tests assert anything;
+  - an explicit statement that `scripts/coverage_live_path.coveragerc` is untouched, that no code was deleted, and that **no `# pragma: no cover` was added**, so the number moved by covering code and not by redefining the measurement.
+- [ ] Paste all three of these as evidence rather than asserting them:
+
+  ```bash
+  git diff main --stat -- scripts/coverage_live_path.coveragerc     # must be empty
+  git diff main -- 'apps/proxy/**/*.py' | grep -c 'pragma'          # must be 0
+  git diff main --stat -- 'apps/proxy/**/*.py'                      # Task 1's move, and nothing else
+  ```
+
+  The pragma count is the one that would otherwise go unchecked anywhere in this repo: Global Constraint 8 records why neither `modules=` nor `rcfile=` can see a pragma, so this grep is the only thing standing between the plan's rule and a silent denominator edit.
 
 ---
 
@@ -1215,7 +1331,8 @@ Before reporting this PR complete, answer each of these in writing:
 1. **Is the gate actually met?** `M_final ≤ permitted`, where `permitted` was recomputed from the census's own `statements` — not copied from this plan, the spec or the brief. Show the arithmetic.
 2. **Was the floor measured where it is enforced?** Every round in the floor census came from a `coverage-gate` job, not from a local container. Show the run URLs.
 3. **Did any round with a failed label reach the floor?** It must not have. Say how many rounds were discarded and why.
-4. **Did the measurement's definition change?** `scripts/coverage_live_path.coveragerc` untouched, no code deleted, no `exclude_lines`. Show the empty diff.
+4. **Did the measurement's definition change?** `scripts/coverage_live_path.coveragerc` untouched, no code deleted, no `exclude_lines`, **no `# pragma: no cover`**. Show the empty diff *and* the zero pragma count — the pragma is the only one of the four that neither shape hash can see, so it is the only one where "I did not do that" is the sole check unless you run the grep.
+4b. **Did a break-check that could not go red get recorded as one?** Two in this plan were caught at review: Task 6's byte-ladder break-check named the rung boundary rather than the divisor, and Task 10's named `am_i_owner` for arms gated on `owner_val != self.worker_id`. Both would have turned an implementer's correct test into a suspected fault. For each break-check you ran, confirm the line you edited is the line the assertion actually reads.
 5. **Are the forbidden functions still red?** `cleanup_task` and `_cleanup_local_resources` were not targeted. Confirm from `live-path.json`.
 6. **Pick three tests at random from the ones you wrote and break the production code they claim to pin.** Do all three go red, for the right reason? If any goes green, that test is hollow and so, probably, are its neighbours — audit the whole file it came from.
 7. **For every `except`-body test: does its assertion distinguish that arm from its neighbour?** If two arms' tests would both pass with the arms swapped, you covered two statements and pinned nothing.
