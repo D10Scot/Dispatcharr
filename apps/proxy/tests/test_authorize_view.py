@@ -309,7 +309,17 @@ class ResolveAuthorizationTests(TestCase):
             )
         inline.assert_called_once()
 
-    def test_a_trusted_user_id_naming_nobody_yields_no_user(self):
+    def test_a_trusted_live_tune_never_resolves_a_user_row_even_naming_nobody(self):
+        # Pre-2b-2 this pinned that User.objects.filter(...).first() found
+        # nobody for a digit naming no real row. Ruling R1 makes that
+        # query never run at all on a live surface, so assertIsNone(user)
+        # alone would now be true by construction -- tautological, not a
+        # pin, since no production edit could make it fail. user_id is
+        # what makes this a real assertion again: R1b says the live
+        # surfaces carry "what the hop said" rather than "the row
+        # exists", and "99999999" (not "0", add_client's own fallback, and
+        # not "") is the one value that distinguishes that meaning from
+        # every other reading.
         request = self.factory.get(
             "/proxy/ts/stream/x",
             HTTP_X_DISPATCHARR_AUTHORIZED=internal_auth.relay_trust_token(),
@@ -319,6 +329,7 @@ class ResolveAuthorizationTests(TestCase):
             request, authorize.SURFACE_LIVE, identifier="x"
         )
         self.assertIsNone(result.user)
+        self.assertEqual(result.user_id, "99999999")
 
     def test_a_non_integer_relay_output_denies_with_403_not_an_exception(self):
         # A trusted marker naming a garbage output profile indicates a
