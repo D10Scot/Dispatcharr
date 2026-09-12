@@ -61,6 +61,13 @@ HEADER_RELAY_OUTPUT = "X-Relay-Output"
 HEADER_RELAY_CLIENT = "X-Relay-Client"
 HEADER_RELAY_USER = "X-Relay-User"
 HEADER_RELAY_NAME = "X-Relay-Name"
+# 2b-2. The hop resolves both once so the relay never re-queries: the
+# output format used to cost a User row inside the relay process
+# (authorize_views.result_from_headers), and the client address cannot
+# be derived from REMOTE_ADDR by a relay nginx proxy_passes to rather
+# than uwsgi_passes to (spec § Stage 2d, NB1).
+HEADER_RELAY_OUTPUT_FORMAT = "X-Relay-Output-Format"
+HEADER_RELAY_CLIENT_IP = "X-Relay-Client-IP"
 # The real status of a denial nginx can only carry as 403. Read back by
 # `auth_request_set $authorize_status $upstream_http_x_authorize_status`
 # and turned into the client's status by `error_page 403 =
@@ -75,6 +82,8 @@ META_RELAY_CHANNEL = "HTTP_X_RELAY_CHANNEL"
 META_RELAY_OUTPUT = "HTTP_X_RELAY_OUTPUT"
 META_RELAY_CLIENT = "HTTP_X_RELAY_CLIENT"
 META_RELAY_USER = "HTTP_X_RELAY_USER"
+META_RELAY_OUTPUT_FORMAT = "HTTP_X_RELAY_OUTPUT_FORMAT"
+META_RELAY_CLIENT_IP = "HTTP_X_RELAY_CLIENT_IP"
 META_ORIGINAL_URI = "HTTP_X_ORIGINAL_URI"
 
 

@@ -451,3 +451,165 @@ class SchemaTests(RelayApiTestCase):
             "/api/relay/events",
         ):
             self.assertIn(path, schema["paths"])
+
+
+class OutputProfilesOnTheContractTests(RelayApiTestCase):
+    """Every active OutputProfile's built command, on every answer.
+
+    Keyed by id and carrying them all, not just the one X-Relay-Output
+    named, because next-source runs once per CHANNEL (tune, failover,
+    resume) while the profile is resolved once per CLIENT -- and the
+    second client on a running channel makes no next-source call at all
+    (apps/proxy/live_proxy/views.py:712). A single-profile field could
+    not answer that client's question. See the plan's Ruling R3.
+    """
+
+    def setUp(self):
+        super().setUp()
+        # core/migrations/0024_outputprofile.py seeds TWO locked,
+        # is_active profiles ('Media Server (AC3 Audio)' and 'Web Player
+        # (AAC Audio)'), so the table is never empty in a test database.
+        # Deactivating them is what makes the assertions below exact
+        # rather than "contains" -- and a `contains` assertion here would
+        # pass while the filter silently returned every row, active or
+        # not, which is the one thing the is_active filter exists to do.
+        from core.models import OutputProfile
+
+        OutputProfile.objects.update(is_active=False)
+
+    def _next_source(self, identifier, expect=200):
+        path = self.next_source_path(identifier)
+        response = self._post(path, {})
+        self.assertEqual(response.status_code, expect)
+        return response.json()
+
+    def test_the_answer_carries_every_active_profiles_argv(self):
+        from core.models import OutputProfile
+
+        active = OutputProfile.objects.create(
+            name="2b2-ac3",
+            command="ffmpeg",
+            parameters="-i pipe:0 -c:a ac3 pipe:1",
+            is_active=True,
+        )
+        OutputProfile.objects.create(
+            name="2b2-disabled",
+            command="ffmpeg",
+            parameters="-i pipe:0 -c:a aac pipe:1",
+            is_active=False,
+        )
+
+        answer = self._next_source(self.channel.uuid)
+
+        # A literal, never active.build_command(): an expected value the
+        # code under test computes cannot fail.
+        self.assertEqual(
+            answer["output_profiles"],
+            {
+                str(active.id): {
+                    "id": active.id,
+                    "argv": ["ffmpeg", "-i", "pipe:0", "-c:a", "ac3", "pipe:1"],
+                }
+            },
+        )
+
+    def test_an_answer_with_no_source_still_carries_the_map(self):
+        # The degraded shapes matter to a Go client, which indexes this
+        # key unconditionally: a KeyError on the failover path is a tune
+        # failure, not a missing field.
+        from core.models import OutputProfile
+
+        OutputProfile.objects.create(
+            name="2b2-only", command="ffmpeg", parameters="-i pipe:0 pipe:1",
+            is_active=True,
+        )
+        answer = self._next_source("00000000-0000-0000-0000-000000000000", expect=404)
+        self.assertIn("output_profiles", answer)
+
+    def test_no_active_profiles_is_an_empty_object_not_a_missing_key(self):
+        # setUp deactivated the two seeded rows and this test adds none.
+        answer = self._next_source(self.channel.uuid)
+        self.assertEqual(answer["output_profiles"], {})
+
+    def test_a_deactivated_seeded_profile_is_absent_from_the_map(self):
+        # The is_active filter, asserted against a row that really
+        # exists: reactivate one of the migration's own locked profiles
+        # and assert only that its id appears, then deactivate it and
+        # assert it does not. Without this, `is_active=True` could be
+        # dropped from the queryset and every test above would still
+        # pass, because they only ever create active rows.
+        #
+        # get_or_create, not get(): a TransactionTestCase run earlier in
+        # the SAME process can have flushed core/migrations/0024's seeded
+        # rows away already under --keepdb (the same hazard
+        # test_next_source_resolution.py's
+        # test_the_locked_ffmpeg_profile_is_carried_when_one_exists
+        # documents for the seeded 'ffmpeg' StreamProfile). Robust to
+        # both orderings: finds the row if it survived, recreates it with
+        # the migration's own shape if not.
+        from core.models import OutputProfile
+
+        seeded, _ = OutputProfile.objects.get_or_create(
+            name="Media Server (AC3 Audio)",
+            defaults={"command": "ffmpeg", "parameters": "-i pipe:0 pipe:1", "locked": True},
+        )
+        OutputProfile.objects.filter(id=seeded.id).update(is_active=True)
+        self.assertIn(
+            str(seeded.id), self._next_source(self.channel.uuid)["output_profiles"]
+        )
+        OutputProfile.objects.filter(id=seeded.id).update(is_active=False)
+        self.assertNotIn(
+            str(seeded.id), self._next_source(self.channel.uuid)["output_profiles"]
+        )
+
+    def test_a_malformed_active_profile_is_skipped_not_a_500(self):
+        # Review finding B1. OutputProfileSerializer validates nothing,
+        # so an unbalanced quote in `parameters` can already be sitting
+        # in the database. Before output_profiles existed, a malformed
+        # row broke only the clients that selected it; folding EVERY
+        # active profile into EVERY next-source answer means one bad row
+        # would otherwise 500 next-source for every channel on every
+        # tune, failover and resume -- regardless of which profile that
+        # channel uses. Assert absence explicitly: a call that merely
+        # succeeds could still be silently missing the good rows too.
+        from core.models import OutputProfile
+
+        good = OutputProfile.objects.create(
+            name="2b2-good",
+            command="ffmpeg",
+            parameters="-i pipe:0 -c:a ac3 pipe:1",
+            is_active=True,
+        )
+        bad = OutputProfile.objects.create(
+            name="2b2-malformed",
+            command="ffmpeg",
+            parameters='-i pipe:0 "unterminated',
+            is_active=True,
+        )
+        # Confirm the fixture actually reproduces the failure mode this
+        # test exists to guard -- if shlex ever stops raising on this
+        # input, the test above would pass for the wrong reason.
+        with self.assertRaises(ValueError):
+            bad.build_command()
+
+        # Review follow-up: the log line is the operator's only signal
+        # that a profile is being silently omitted now that a malformed
+        # row 500s nothing. Assert the id is IN the message, not merely
+        # that something was logged -- a message without the id gives an
+        # operator nothing to act on.
+        with self.assertLogs("live_proxy", level="ERROR") as logs:
+            answer = self._next_source(self.channel.uuid)
+        self.assertTrue(
+            any(str(bad.id) in message for message in logs.output),
+            f"no ERROR log named the malformed profile's id ({bad.id}): {logs.output}",
+        )
+
+        self.assertNotIn(str(bad.id), answer["output_profiles"])
+        self.assertIn(str(good.id), answer["output_profiles"])
+        self.assertEqual(
+            answer["output_profiles"][str(good.id)],
+            {
+                "id": good.id,
+                "argv": ["ffmpeg", "-i", "pipe:0", "-c:a", "ac3", "pipe:1"],
+            },
+        )

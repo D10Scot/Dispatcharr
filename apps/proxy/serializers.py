@@ -135,11 +135,35 @@ class RelayProxySettingsSerializer(serializers.Serializer):
     new_client_behind_seconds = serializers.FloatField()
 
 
+class OutputProfileRefSerializer(serializers.Serializer):
+    """One OutputProfile, already built into argv.
+
+    `argv` and not StreamProfileRefSerializer's {command, args} pair on
+    purpose: a StreamProfile's command is templated (build_command
+    substitutes {streamUrl}/{userAgent}/{channelId} per tune, so only the
+    relay can finish it), while an OutputProfile's is not -- it reads raw
+    MPEG-TS on pipe:0 and writes to pipe:1 with no per-tune substitution
+    at all (core/models.py:200-203). Sending the finished list is what
+    lets a Go relay spawn the transcode without reimplementing shlex.
+    """
+
+    id = serializers.IntegerField()
+    argv = serializers.ListField(child=serializers.CharField(allow_blank=True))
+
+
 class NextSourceResponseSerializer(serializers.Serializer):
     source = SourceSerializer(allow_null=True)
     alternates = SourceSerializer(many=True)
     error = serializers.CharField(allow_null=True)
     proxy_settings = RelayProxySettingsSerializer()
+    # Phase 2 PR 2b-2. Every is_active OutputProfile, keyed by
+    # stringified id -- not just the one X-Relay-Output named, because
+    # next-source runs once per channel while the profile is resolved
+    # once per client, and the second client on a running channel makes
+    # no next-source call (apps/proxy/live_proxy/views.py:712). A
+    # DictField of a nested serializer, so the value shape is still in
+    # the OpenAPI schema and a Go client can generate against it.
+    output_profiles = serializers.DictField(child=OutputProfileRefSerializer())
 
 
 class ReleaseRequestSerializer(serializers.Serializer):

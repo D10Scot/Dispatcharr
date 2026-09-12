@@ -126,6 +126,12 @@ test(
         'X-Dispatcharr-Authorized': '1',
         'X-Relay-Channel': channel.uuid,
         'X-Relay-User': '1',
+        // 2b-2's two additions. A client that forges these gains
+        // nothing: the marker still fails the constant-time compare, so
+        // result_from_headers is never reached and neither value is
+        // read. Sending them is what proves it.
+        'X-Relay-Output-Format': 'fmp4',
+        'X-Relay-Client-IP': '203.0.113.9',
       }
     );
   }

@@ -193,7 +193,7 @@ test(
 );
 
 /**
- * The five variables the hop's answer travels in. Order-independent: the
+ * The variables the hop's answer travels in. Order-independent: the
  * assertion is set membership, so reordering the block in nginx.conf is
  * not a failure.
  */
@@ -203,9 +203,28 @@ const AUTH_REQUEST_SET_VARS = [
   '$relay_output',
   '$relay_client',
   '$relay_user',
-  // The sixth carries the status the module cannot transport: a 404 or
+  // 2b-2: resolved once by the hop so the relay re-reads no User row
+  // and needs no trusted-proxy configuration of its own.
+  '$relay_output_format',
+  '$relay_client_ip',
+  // The eighth carries the status the module cannot transport: a 404 or
   // 429 decision arrives as 403 and error_page turns it back.
   '$authorize_status',
+];
+
+// The subset that is actually forwarded to the relay. $relay_name is
+// captured for `uwsgi_pass $relay_upstream` and never sent onward, so
+// this list is one shorter than the one above and must stay that way --
+// principle 5: capturing a variable and forwarding it are two different
+// things, and a test that checks only the first leaves nine locations'
+// worth of middle unpinned.
+const FORWARDED_RELAY_PARAMS = [
+  'HTTP_X_RELAY_CHANNEL',
+  'HTTP_X_RELAY_OUTPUT',
+  'HTTP_X_RELAY_CLIENT',
+  'HTTP_X_RELAY_USER',
+  'HTTP_X_RELAY_OUTPUT_FORMAT',
+  'HTTP_X_RELAY_CLIENT_IP',
 ];
 
 test(
@@ -235,6 +254,21 @@ test(
             new RegExp(`^\\s*auth_request_set\\s+\\${variable}\\s`).test(line)
           ),
           `location "${block.header}" does not set ${variable} from the subrequest`
+        ).toBe(true);
+      }
+
+      // The other half of the chain. auth_request_set copies the
+      // subrequest's response header into a variable; only a
+      // uwsgi_param sends it to the relay -- and the HTTP_-prefixed
+      // form is also what overrides whatever the client sent under the
+      // same name. A location that captures but does not forward looks
+      // correct in the config and silently strips the header.
+      for (const param of FORWARDED_RELAY_PARAMS) {
+        expect(
+          block.body.some((line) =>
+            new RegExp(`^\\s*uwsgi_param\\s+${param}\\s+\\$relay_`).test(line)
+          ),
+          `location "${block.header}" captures but does not forward ${param}`
         ).toBe(true);
       }
 
@@ -313,6 +347,24 @@ test(
         block!.body.some((line) => /^\s*auth_request\s+\//.test(line)),
         `location "${block!.header}" must not run the authorize subrequest`
       ).toBe(false);
+    }
+
+    // The include is the mechanism; these are the names it must blank.
+    // Asserting the include's presence alone cannot tell a five-name
+    // file from a seven-name one, which is exactly the drift 2b-2
+    // introduces.
+    const paramsFile = stdout.match(
+      /# configuration file \/etc\/nginx\/dispatcharr_api_params\.conf:\n([\s\S]*?)(?=\n# configuration file |\n*$)/
+    );
+    expect(paramsFile, 'nginx -T did not dump dispatcharr_api_params.conf').toBeTruthy();
+    for (const param of [
+      'HTTP_X_DISPATCHARR_AUTHORIZED',
+      ...FORWARDED_RELAY_PARAMS,
+    ]) {
+      expect(
+        new RegExp(`^\\s*uwsgi_param\\s+${param}\\s+""\\s*;`, 'm').test(paramsFile![1]),
+        `dispatcharr_api_params.conf does not blank ${param}`
+      ).toBe(true);
     }
 
     // The nested recordings-file location never surfaces as its own block

@@ -111,27 +111,26 @@ def _drop_pre_registered_client(proxy_server, channel_id, client_id):
     proxy_server.redis_client.delete(RedisKeys.client_metadata(channel_id, client_id))
 
 
-def _resolve_output_format(user, force=None, request=None):
-    """Return the output format string to use for this client."""
-    _FORMAT_ALIASES = {
-        'mpegts': 'mpegts',
-        'ts':     'mpegts',
-        'fmp4':   'fmp4',
-        'mp4':    'fmp4',
-    }
+def _resolve_output_format(user, force=None, request=None, decision=None):
+    """Return the output format string to use for this client.
+
+    The rule itself lives in apps/proxy/authorize.py (2b-2), so the hop
+    and the inline path cannot drift. When nginx authorized the tune, the
+    hop already applied it and the answer is on X-Relay-Output-Format --
+    reading it here is what removes the User query
+    authorize_views.result_from_headers used to run on every trusted tune.
+
+    `force` still wins: it is stream_xc's extension-derived override
+    (.ts/.mp4), a property of this call and not of the decision, so the
+    hop never saw it.
+    """
+    from apps.proxy.authorize import resolve_output_format
+
     if force:
         return force
-    if request:
-        # Support both ?output_format= (native) and ?output= (XC-style)
-        param = request.GET.get('output_format') or request.GET.get('output')
-        if param in _FORMAT_ALIASES:
-            return _FORMAT_ALIASES[param]
-    if user:
-        custom = getattr(user, 'custom_properties', None) or {}
-        user_format = custom.get('output_format')
-        if user_format:
-            return user_format
-    return CoreSettings.get_default_output_format()
+    if decision is not None and decision.trusted:
+        return decision.output_format or CoreSettings.get_default_output_format()
+    return resolve_output_format(request, user, force=None)
 
 
 def _output_profile_for(decision, request, user):
@@ -193,7 +192,18 @@ def stream_ts(request, channel_id, user=None, force_output_format=None, decision
         # Minted by the authorize hop (apps/proxy/authorize.py), so the id
         # nginx put in X-Relay-Client is the id this worker registers.
         client_id = decision.client_id or mint_client_id()
-        client_ip = get_client_ip(request)
+        # 2b-2 / parity-matrix row 17. The hop resolved this once with
+        # get_client_ip's trusted-proxy rules (LOCAL_NETWORK_CIDRS /
+        # DISPATCHARR_TRUSTED_PROXIES); reading it back is what lets a
+        # relay behind proxy_pass -- which sees nginx as its peer, not
+        # the viewer -- report the real address. Untrusted (dev
+        # runserver, any request that did not come through a relay-bound
+        # location) resolves it here exactly as before.
+        client_ip = (
+            decision.client_ip
+            if decision is not None and decision.trusted and decision.client_ip
+            else get_client_ip(request)
+        )
         logger.info(f"[{client_id}] Requested stream for channel {channel_id}")
 
         # Extract client user agent early
@@ -603,7 +613,9 @@ def stream_ts(request, channel_id, user=None, force_output_format=None, decision
                     # with keepalive packets via _wait_for_initialization().
                     if proxy_server.am_i_owner(channel_id):
                         resolved_output_profile = _output_profile_for(decision, request, user)
-                        resolved_output_format = _resolve_output_format(user, force_output_format, request)
+                        resolved_output_format = _resolve_output_format(
+                            user, force_output_format, request, decision=decision
+                        )
                         output_options_resolved = True
                         resolved_format = (
                             f'{resolved_output_format}:p{resolved_output_profile.id}'
@@ -612,6 +624,7 @@ def stream_ts(request, channel_id, user=None, force_output_format=None, decision
                         client_manager = proxy_server.client_managers[channel_id]
                         if not client_manager.add_client(
                             client_id, client_ip, client_user_agent, user,
+                            user_id=decision.user_id if decision is not None else None,
                             output_format=resolved_output_format,
                             output_profile_id=resolved_output_profile.id if resolved_output_profile else None,
                         ):
@@ -710,7 +723,9 @@ def stream_ts(request, channel_id, user=None, force_output_format=None, decision
 
         if not output_options_resolved:
             resolved_output_profile = _output_profile_for(decision, request, user)
-            resolved_output_format = _resolve_output_format(user, force_output_format, request)
+            resolved_output_format = _resolve_output_format(
+                            user, force_output_format, request, decision=decision
+                        )
         # When an output profile is active, append :p{id} to the format key so each
         # (format, profile) pair gets its own independent remux pipeline in Redis.
         resolved_format = (
@@ -731,6 +746,7 @@ def stream_ts(request, channel_id, user=None, force_output_format=None, decision
                 )
             if not client_manager.add_client(
                 client_id, client_ip, client_user_agent, user,
+                user_id=decision.user_id if decision is not None else None,
                 output_format=resolved_output_format,
                 output_profile_id=resolved_output_profile.id if resolved_output_profile else None,
             ):
@@ -782,6 +798,7 @@ def stream_ts(request, channel_id, user=None, force_output_format=None, decision
                 )
             generate = create_fmp4_stream_generator(
                 channel_id, client_id, client_ip, client_user_agent, channel_initializing, user=user,
+                user_id=decision.user_id if decision is not None else None,
                 fmt=resolved_format,
                 channel_name=channel_display_name,
             )
@@ -794,6 +811,7 @@ def stream_ts(request, channel_id, user=None, force_output_format=None, decision
                 client_user_agent,
                 channel_initializing,
                 user=user,
+                user_id=decision.user_id if decision is not None else None,
                 buffer=source_buffer,
                 channel_name=channel_display_name,
             )

@@ -489,7 +489,14 @@ class NextSourceTests(_ControlPlaneTestCase):
         answer = control_plane.next_source("some-uuid")
 
         self.assertEqual(
-            answer, {"source": None, "alternates": [], "error": "identifier not found"}
+            answer,
+            {
+                "source": None,
+                "alternates": [],
+                "error": "identifier not found",
+                # 2b-2: shape-complete so a caller can index it unconditionally.
+                "output_profiles": {},
+            },
         )
 
     def test_a_non_404_refusal_propagates(self):

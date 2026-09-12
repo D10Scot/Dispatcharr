@@ -459,15 +459,22 @@ class NextSourceProfileSwitchTests(TestCase):
 
 
 class NextSourceDbCleanupTests(SimpleTestCase):
+    @patch("core.models.OutputProfile.objects.filter")
     @patch("core.models.CoreSettings.get_proxy_settings")
     @patch("apps.proxy.next_source.close_old_connections")
     @patch("apps.proxy.next_source.get_stream_object")
-    def test_resolve_source_closes_db(self, mock_get_object, mock_close, mock_proxy_settings):
+    def test_resolve_source_closes_db(
+        self, mock_get_object, mock_close, mock_proxy_settings, mock_output_profiles
+    ):
         # Phase 2 PR 2b-1: every resolve_source() answer now carries
         # proxy_settings, which is its own CoreSettings read
         # (_with_proxy_settings). This test is a SimpleTestCase (no DB), so
         # that read is mocked out -- it is not what this test is about.
+        # 2b-2 adds a second such read, output_profiles
+        # (_with_output_profiles's OutputProfile.objects.filter), mocked
+        # for the same reason.
         mock_proxy_settings.return_value = {}
+        mock_output_profiles.return_value = []
         channel = MagicMock()
         channel.get_stream.return_value = (None, None, "no streams", False)
         mock_get_object.return_value = channel

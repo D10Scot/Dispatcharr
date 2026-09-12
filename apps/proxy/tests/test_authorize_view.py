@@ -248,13 +248,24 @@ class ResolveAuthorizationTests(TestCase):
         self.assertTrue(result.trusted)
         self.assertEqual(result.channel_uuid, str(self.channel.uuid))
         self.assertEqual(result.client_id, "client_1_2")
-        self.assertEqual(result.user.id, self.user.id)
+        # SURFACE_LIVE (2b-2, Ruling R1): the live surfaces resolve no
+        # User row at all -- result.user is None even for a real id, and
+        # the id itself is carried on result.user_id instead. See
+        # SurfaceSplitPremiseTests below for the assertion on both sides
+        # of the split.
+        self.assertIsNone(result.user)
+        self.assertEqual(result.user_id, str(self.user.id))
 
     def test_a_forged_marker_falls_through_to_the_inline_decision(self):
         request = self.factory.get(
             "/proxy/ts/stream/x",
             HTTP_X_DISPATCHARR_AUTHORIZED="1",
             HTTP_X_RELAY_CHANNEL=str(self.channel.uuid),
+            # 2b-2's two additions: a forged marker must not let these
+            # through either -- the constant-time compare fails before
+            # result_from_headers is ever reached, so neither is read.
+            HTTP_X_RELAY_OUTPUT_FORMAT="fmp4",
+            HTTP_X_RELAY_CLIENT_IP="203.0.113.9",
         )
         with patch.object(authorize_views, "authorize_stream") as inline:
             authorize_views.resolve_authorization(
@@ -298,7 +309,17 @@ class ResolveAuthorizationTests(TestCase):
             )
         inline.assert_called_once()
 
-    def test_a_trusted_user_id_naming_nobody_yields_no_user(self):
+    def test_a_trusted_live_tune_never_resolves_a_user_row_even_naming_nobody(self):
+        # Pre-2b-2 this pinned that User.objects.filter(...).first() found
+        # nobody for a digit naming no real row. Ruling R1 makes that
+        # query never run at all on a live surface, so assertIsNone(user)
+        # alone would now be true by construction -- tautological, not a
+        # pin, since no production edit could make it fail. user_id is
+        # what makes this a real assertion again: R1b says the live
+        # surfaces carry "what the hop said" rather than "the row
+        # exists", and "99999999" (not "0", add_client's own fallback, and
+        # not "") is the one value that distinguishes that meaning from
+        # every other reading.
         request = self.factory.get(
             "/proxy/ts/stream/x",
             HTTP_X_DISPATCHARR_AUTHORIZED=internal_auth.relay_trust_token(),
@@ -308,6 +329,7 @@ class ResolveAuthorizationTests(TestCase):
             request, authorize.SURFACE_LIVE, identifier="x"
         )
         self.assertIsNone(result.user)
+        self.assertEqual(result.user_id, "99999999")
 
     def test_a_non_integer_relay_output_denies_with_403_not_an_exception(self):
         # A trusted marker naming a garbage output profile indicates a
@@ -331,3 +353,162 @@ class ResolveAuthorizationTests(TestCase):
         )
         self.assertEqual(response.status_code, 429)
         self.assertIn(b"Stream limit exceeded", response.content)
+
+
+class RelayOutputFormatAndClientIpHeaderTests(TestCase):
+    """The hop resolves output_format and client_ip once and says so.
+
+    Non-default values throughout: 'fmp4' is never the default
+    (CoreSettings.get_default_output_format() answers 'mpegts'), and
+    203.0.113.9 is TEST-NET-3 -- never routable, never a socket peer here.
+    A test using the defaults would pass with the threading deleted.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.channel = Channel.objects.create(name="2b2-hdr", channel_number=9211)
+        cls.user = User.objects.create_user(username="2b2-hdr-user", password="x")
+        cls.user.custom_properties = {"output_format": "fmp4"}
+        cls.user.save(update_fields=["custom_properties"])
+
+    def setUp(self):
+        from django.test import RequestFactory
+
+        self.factory = RequestFactory()
+
+    def _hop(self, uri, **extra):
+        request = self.factory.get(
+            "/_dispatcharr/authorize",
+            HTTP_X_ORIGINAL_URI=uri,
+            **extra,
+        )
+        return authorize_views.authorize_view(request)
+
+    def test_the_hop_answers_the_users_output_format_not_the_default(self):
+        # An anonymous request can only ever see the default -- there is
+        # no principal to read a preference from. Authenticating as
+        # cls.user via the same query-param JWT the view already supports
+        # (test_a_query_param_jwt_authorizes_through_the_view, above) is
+        # what makes this a real test of the user branch rather than one
+        # that could only ever observe the default.
+        from rest_framework_simplejwt.tokens import RefreshToken
+
+        token = str(RefreshToken.for_user(self.user).access_token)
+        response = self._hop(f"/proxy/ts/stream/{self.channel.uuid}?token={token}")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response[internal_auth.HEADER_RELAY_OUTPUT_FORMAT], "fmp4"
+        )
+
+    def test_the_hop_answers_the_forwarded_client_address(self):
+        # REMOTE_ADDR is 127.0.0.1 under RequestFactory, which
+        # get_client_ip treats as a trusted proxy, so the forwarded
+        # header is honoured exactly as it is behind nginx.
+        response = self._hop(
+            f"/proxy/ts/stream/{self.channel.uuid}",
+            HTTP_X_FORWARDED_FOR="203.0.113.9",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response[internal_auth.HEADER_RELAY_CLIENT_IP], "203.0.113.9"
+        )
+
+    def test_result_from_headers_carries_both_new_params(self):
+        request = self.factory.get(
+            "/proxy/ts/stream/x",
+            HTTP_X_DISPATCHARR_AUTHORIZED=internal_auth.relay_trust_token(),
+            HTTP_X_RELAY_CHANNEL=str(self.channel.uuid),
+            HTTP_X_RELAY_CLIENT="client_1_2",
+            HTTP_X_RELAY_USER=str(self.user.id),
+            HTTP_X_RELAY_OUTPUT="",
+            HTTP_X_RELAY_OUTPUT_FORMAT="fmp4",
+            HTTP_X_RELAY_CLIENT_IP="203.0.113.9",
+        )
+        with patch.object(authorize_views, "authorize_stream") as inline:
+            result = authorize_views.resolve_authorization(
+                request, authorize.SURFACE_LIVE, identifier="x"
+            )
+        inline.assert_not_called()
+        self.assertEqual(result.output_format, "fmp4")
+        self.assertEqual(result.client_ip, "203.0.113.9")
+        self.assertEqual(result.user_id, str(self.user.id))
+
+    def test_a_query_parameter_still_beats_the_users_preference(self):
+        # resolve_output_format's precedence is force > query > user >
+        # default. The hop sees the query string through X-Original-URI,
+        # so 'mpegts' here must win over the user's 'fmp4' -- the
+        # opposite of the other tests' expectation, which is what makes
+        # this one a real ordering assertion. Authenticated as cls.user
+        # (see the previous test's comment) -- without that, 'mpegts'
+        # would win only because it equals the unauthenticated default,
+        # and the ordering itself would go unproven.
+        from rest_framework_simplejwt.tokens import RefreshToken
+
+        token = str(RefreshToken.for_user(self.user).access_token)
+        response = self._hop(
+            f"/proxy/ts/stream/{self.channel.uuid}?output_format=mpegts&token={token}"
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response[internal_auth.HEADER_RELAY_OUTPUT_FORMAT], "mpegts"
+        )
+
+
+class SurfaceSplitPremiseTests(TestCase):
+    """result_from_headers skips the User row on live surfaces only.
+
+    Asserted as the decision's own output, on both sides, because the
+    split is invisible otherwise: a live surface must not resolve the
+    row, and a non-live one must, and a test of only one side would
+    pass if the condition were inverted.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.user = User.objects.create_user(username="2b2-split", password="x")
+
+    def _trusted(self, surface):
+        from django.test import RequestFactory
+
+        request = RequestFactory().get(
+            "/proxy/ts/stream/x",
+            HTTP_X_DISPATCHARR_AUTHORIZED=internal_auth.relay_trust_token(),
+            HTTP_X_RELAY_USER=str(self.user.id),
+        )
+        return authorize_views.result_from_headers(request, surface)
+
+    def test_a_live_surface_resolves_no_row(self):
+        for surface in (authorize.SURFACE_LIVE, authorize.SURFACE_LIVE_XC):
+            with self.subTest(surface=surface):
+                result = self._trusted(surface)
+                self.assertIsNone(result.user)
+                self.assertEqual(result.user_id, str(self.user.id))
+
+    def test_every_other_surface_still_resolves_the_row(self):
+        for surface in (
+            authorize.SURFACE_VOD,
+            authorize.SURFACE_VOD_XC,
+            authorize.SURFACE_CATCHUP,
+            authorize.SURFACE_CATCHUP_XC,
+        ):
+            with self.subTest(surface=surface):
+                result = self._trusted(surface)
+                self.assertEqual(result.user.id, self.user.id)
+                self.assertEqual(result.user_id, str(self.user.id))
+
+    def test_a_non_live_surface_with_a_deleted_row_still_answers_None(self):
+        # The input that separates every design considered here. On a
+        # non-live surface the old meaning survives intact: no row, so
+        # user is None AND user_id is "" -- which is what
+        # vod_proxy/views.py:783's recovery path keys off.
+        from django.test import RequestFactory
+
+        request = RequestFactory().get(
+            "/proxy/vod/movie/1/s",
+            HTTP_X_DISPATCHARR_AUTHORIZED=internal_auth.relay_trust_token(),
+            HTTP_X_RELAY_USER="4242",
+        )
+        self.assertFalse(User.objects.filter(id=4242).exists())
+        result = authorize_views.result_from_headers(request, authorize.SURFACE_VOD)
+        self.assertIsNone(result.user)
+        self.assertEqual(result.user_id, "")

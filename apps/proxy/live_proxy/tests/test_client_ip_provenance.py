@@ -94,3 +94,65 @@ class ClientIpProvenanceTests(RelayHarnessTestCase):
                 )
 
             self.stop_channel(channel)
+
+
+TRUSTED_CLIENT = "198.51.100.7"  # TEST-NET-2: different from FORWARDED_CLIENT
+
+
+class TrustedClientIpProvenanceTests(RelayHarnessTestCase):
+    def test_a_trusted_tune_reports_the_hops_client_ip_not_the_forwarded_one(self):
+        """The header wins on the trusted path (parity-matrix row 17).
+
+        Two different TEST-NET addresses: X-Forwarded-For carries one and
+        X-Relay-Client-IP the other, so the assertion can only pass if
+        the decision's value is the one used. Sending the same address on
+        both would pass with the reading deleted.
+        """
+        from apps.proxy.internal_auth import relay_trust_token
+
+        with self.stand_in():
+            profile = stand_in_stream_profile()
+            channel = self.make_channel(
+                upstream_url=self.upstream.url, profile=profile
+            )
+            identifier = str(channel.uuid)
+
+            with self.tuned(channel) as first:
+                first.read(20 * 188)
+
+                trusted = requests.get(
+                    f"{self.live_server_url}/proxy/ts/stream/{identifier}",
+                    headers={
+                        "X-Dispatcharr-Authorized": relay_trust_token(),
+                        "X-Relay-Channel": identifier,
+                        "X-Relay-Client": "client_2b2_trusted",
+                        "X-Relay-User": "",
+                        "X-Relay-Output": "",
+                        "X-Relay-Output-Format": "mpegts",
+                        "X-Relay-Client-IP": TRUSTED_CLIENT,
+                        "X-Forwarded-For": FORWARDED_CLIENT,
+                    },
+                    stream=True,
+                    timeout=20,
+                )
+                self.addCleanup(trusted.close)
+                self.assertEqual(trusted.status_code, 200)
+                next(trusted.iter_content(chunk_size=188))
+
+                status = requests.get(
+                    f"{self.live_server_url}/proxy/relay/channels/{identifier}",
+                    headers=_signed(
+                        "GET", f"/proxy/relay/channels/{identifier}"
+                    ),
+                    timeout=10,
+                )
+                self.assertEqual(status.status_code, 200)
+                clients = {
+                    c["client_id"]: c["ip_address"]
+                    for c in status.json()["clients"]
+                }
+                self.assertEqual(
+                    clients.get("client_2b2_trusted"), TRUSTED_CLIENT
+                )
+
+            self.stop_channel(channel)
