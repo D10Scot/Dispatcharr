@@ -30,6 +30,7 @@ class StreamGenerator:
         client_user_agent,
         channel_initializing=False,
         user=None,
+        user_id=None,
         buffer=None,
         channel_name=None,
     ):
@@ -43,6 +44,9 @@ class StreamGenerator:
             client_user_agent: User agent string from client
             channel_initializing: Whether the channel is still initializing
             user: Authenticated user making the request
+            user_id: The authorize hop's X-Relay-User string (2b-2). Sent
+                on emit_event instead of user.username, since a trusted
+                tune carries no User row to read a name from.
             buffer: Source StreamBuffer to read from. Resolved via ProxyServer.get_buffer()
                     before construction; passed in so the generator is buffer-agnostic.
             channel_name: Optional display name (avoids ORM during construction)
@@ -53,6 +57,7 @@ class StreamGenerator:
         self.client_user_agent = client_user_agent
         self.channel_initializing = channel_initializing
         self.user = user
+        self.user_id = user_id
         self._source_buffer = buffer
         self.channel_name = resolve_channel_display_name(channel_id, channel_name=channel_name)
 
@@ -131,7 +136,11 @@ class StreamGenerator:
                     client_ip=self.client_ip,
                     client_id=self.client_id,
                     user_agent=self.client_user_agent[:100] if self.client_user_agent else None,
-                    username=self.user.username if self.user else None
+                    # 2b-2: the relay has no User row on a trusted tune.
+                    # core/relay_events.py resolves the name in the API
+                    # process, which is where the SystemEvent write
+                    # already happens (Phase 1 PR 6).
+                    user_id=self.user_id or None
                 )
             except Exception as e:
                 logger.error(f"Could not log client connect event: {e}")
@@ -649,7 +658,11 @@ class StreamGenerator:
                         user_agent=self.client_user_agent[:100] if self.client_user_agent else None,
                         duration=round(elapsed, 2),
                         bytes_sent=self.bytes_sent,
-                        username=self.user.username if self.user else None
+                        # 2b-2: the relay has no User row on a trusted tune.
+                        # core/relay_events.py resolves the name in the API
+                        # process, which is where the SystemEvent write
+                        # already happens (Phase 1 PR 6).
+                        user_id=self.user_id or None,
                     )
                 except Exception as e:
                     logger.error(f"Could not log client disconnect event: {e}")
@@ -664,6 +677,7 @@ def create_stream_generator(
     client_user_agent,
     channel_initializing=False,
     user=None,
+    user_id=None,
     buffer=None,
     channel_name=None,
 ):
@@ -678,6 +692,7 @@ def create_stream_generator(
         client_user_agent,
         channel_initializing,
         user=user,
+        user_id=user_id,
         buffer=buffer,
         channel_name=channel_name,
     )

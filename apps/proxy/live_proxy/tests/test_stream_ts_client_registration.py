@@ -3,7 +3,7 @@
 from unittest.mock import MagicMock, patch
 
 from django.http import JsonResponse, StreamingHttpResponse
-from django.test import RequestFactory, SimpleTestCase
+from django.test import RequestFactory, SimpleTestCase, TestCase
 
 
 def _decision(user=None, client_id="client_test_1", channel_uuid=""):
@@ -17,6 +17,28 @@ def _decision(user=None, client_id="client_test_1", channel_uuid=""):
         user_id=str(user.id) if user is not None else "",
         relay_name="py",
         user=user,
+    )
+
+
+def _trusted_decision(output_format="fmp4", user_id="4242"):
+    """A trusted (nginx-authorized) decision: no User row, ever.
+
+    Not imported from test_output_format_from_the_hop.py on purpose --
+    two independent copies of this fixture is how the follower half of a
+    fork stops resembling the owner half; each test module keeps its own.
+    """
+    from apps.proxy.authorize import SURFACE_LIVE, AuthorizeResult
+
+    return AuthorizeResult(
+        surface=SURFACE_LIVE,
+        channel_uuid="channel-uuid",
+        client_id="client_test_1",
+        user_id=user_id,
+        relay_name="py",
+        user=None,
+        trusted=True,
+        output_format=output_format,
+        client_ip="203.0.113.9",
     )
 
 
@@ -378,3 +400,209 @@ class StreamTsClientRegistrationTests(SimpleTestCase):
         self.assertIsInstance(response, StreamingHttpResponse)
         client_manager.add_client.assert_called_once()
         mock_create_generator.assert_called_once()
+
+    @patch("apps.proxy.live_proxy.views.close_old_connections")
+    @patch("apps.proxy.live_proxy.views.create_stream_generator")
+    @patch("apps.proxy.live_proxy.views._output_profile_for", return_value=None)
+    @patch(
+        "apps.proxy.live_proxy.views.ChannelService.is_channel_unavailable_for_new_clients",
+        return_value=False,
+    )
+    @patch("apps.proxy.live_proxy.views.get_stream_object")
+    @patch("apps.proxy.live_proxy.views.resolve_authorization")
+    @patch("apps.proxy.live_proxy.views.ProxyServer")
+    def test_a_trusted_follower_registers_the_hops_user_id_and_format(
+        self, proxy_server_cls, resolve, get_stream_object, _unavailable,
+        _profile, _generator, _close,
+    ):
+        """views.py:712 -- the client that did NOT initialize the channel.
+
+        4242 is not 0 and not 1: add_client's own fallback is "0", so a
+        test asserting "0" or a real-looking small id could pass with the
+        threading deleted.
+        """
+        from apps.proxy.live_proxy import views
+
+        resolve.return_value = _trusted_decision()
+        get_stream_object.return_value = self._channel()
+        proxy_server, client_manager = self._active_proxy_server(am_i_owner=False)
+        client_manager.add_client.return_value = True
+        proxy_server_cls.get_instance.return_value = proxy_server
+
+        views.stream_ts(self._request(), self.channel_id)
+
+        _args, kwargs = client_manager.add_client.call_args
+        self.assertEqual(kwargs["user_id"], "4242")
+        self.assertEqual(kwargs["output_format"], "fmp4")
+
+    @patch("apps.proxy.live_proxy.views.close_old_connections")
+    @patch("apps.proxy.live_proxy.views.create_stream_generator")
+    @patch("apps.proxy.live_proxy.views.generate_stream_url")
+    @patch("apps.proxy.live_proxy.views.ChannelService.initialize_channel", return_value=True)
+    @patch("apps.proxy.live_proxy.views._output_profile_for", return_value=None)
+    @patch(
+        "apps.proxy.live_proxy.views.ChannelService.is_channel_unavailable_for_new_clients",
+        return_value=False,
+    )
+    @patch("apps.proxy.live_proxy.views.get_stream_object")
+    @patch("apps.proxy.live_proxy.views.resolve_authorization")
+    @patch("apps.proxy.live_proxy.views.ProxyServer")
+    def test_a_trusted_owner_registers_the_hops_user_id_and_format(
+        self, proxy_server_cls, resolve, get_stream_object, _unavailable,
+        _profile, _initialize, mock_generate_stream_url, mock_create_generator,
+        _close,
+    ):
+        """views.py:605 -- the same assertion on the other side of the fork.
+
+        Copies test_owner_init_resolves_output_profile_once's override
+        block verbatim (redis_client.exists/get, check_if_channel_exists,
+        hgetall, try_acquire_ownership, the init-lock wiring) -- that is
+        the only route to the owner-init branch; _active_proxy_server's
+        own defaults land on :712, not :605.
+        """
+        from apps.proxy.live_proxy import views
+
+        resolve.return_value = _trusted_decision()
+        get_stream_object.return_value = self._channel()
+        mock_generate_stream_url.return_value = (
+            "http://example/stream",
+            "ua",
+            False,
+            "None",
+            True,
+            None,
+            {"channel_name": None, "stream_name": None,
+             "m3u_profile_name": None, "ffmpeg_stream_profile": None},
+        )
+        mock_create_generator.return_value = lambda: iter([b"chunk"])
+
+        proxy_server, client_manager = self._active_proxy_server(am_i_owner=True)
+        proxy_server.redis_client.exists.return_value = False
+        proxy_server.redis_client.get.return_value = None
+        proxy_server.check_if_channel_exists.return_value = False
+        proxy_server.redis_client.hgetall.return_value = {}
+        proxy_server.try_acquire_ownership.return_value = True
+        import gevent.lock
+        lock = gevent.lock.RLock()
+        proxy_server._get_channel_init_lock.return_value = lock
+        proxy_server._finish_channel_init_lock.side_effect = (
+            lambda _cid, held: held.release()
+        )
+        proxy_server._clear_channel_setting_up.side_effect = (
+            lambda cid: proxy_server._channels_setting_up.discard(cid)
+        )
+        client_manager.add_client.return_value = True
+        proxy_server_cls.get_instance.return_value = proxy_server
+
+        views.stream_ts(self._request(), self.channel_id)
+
+        _args, kwargs = client_manager.add_client.call_args
+        self.assertEqual(kwargs["user_id"], "4242")
+        self.assertEqual(kwargs["output_format"], "fmp4")
+
+
+class TrustedTuneQueriesNoUserRowTests(TestCase):
+    """No live tune may query the User table (2b-2, Rulings R1 and R1b).
+
+    The output format arrives on X-Relay-Output-Format and the client
+    hash is written from X-Relay-User's string, so result_from_headers
+    skips the row entirely on SURFACE_LIVE/SURFACE_LIVE_XC. The VOD and
+    catch-up surfaces D1 leaves in Python still resolve it eagerly and
+    are unaffected. This test is what makes that a rule rather than a
+    property of today's call graph.
+    """
+
+    def test_no_query_touches_the_user_table_on_a_trusted_tune(self):
+        from django.contrib.auth import get_user_model
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        # Vacuous-pass guard: a substring that matches nothing passes
+        # every assertion below while proving nothing, so fail loudly if
+        # AUTH_USER_MODEL ever moves. 'accounts_user' is
+        # settings.AUTH_USER_MODEL = "accounts.User" (dispatcharr/
+        # settings.py:357) with no db_table override.
+        user_table = get_user_model()._meta.db_table
+        self.assertEqual(user_table, "accounts_user")
+
+        helper = StreamTsClientRegistrationTests("setUp")
+        helper.setUp()
+        proxy_server, client_manager = helper._active_proxy_server(am_i_owner=False)
+        client_manager.add_client.return_value = True
+
+        with CaptureQueriesContext(connection) as captured:
+            with patch("apps.proxy.live_proxy.views.ProxyServer") as proxy_server_cls, \
+                 patch("apps.proxy.live_proxy.views.resolve_authorization",
+                       return_value=_trusted_decision()), \
+                 patch("apps.proxy.live_proxy.views.get_stream_object",
+                       return_value=helper._channel()), \
+                 patch("apps.proxy.live_proxy.views.ChannelService"
+                       ".is_channel_unavailable_for_new_clients", return_value=False), \
+                 patch("apps.proxy.live_proxy.views._output_profile_for",
+                       return_value=None), \
+                 patch("apps.proxy.live_proxy.views.create_stream_generator"), \
+                 patch("apps.proxy.live_proxy.views.close_old_connections"):
+                proxy_server_cls.get_instance.return_value = proxy_server
+                from apps.proxy.live_proxy import views
+
+                views.stream_ts(helper._request(), helper.channel_id)
+
+        offenders = [q["sql"] for q in captured.captured_queries if user_table in q["sql"]]
+        self.assertEqual(
+            offenders,
+            [],
+            "a trusted tune queried the user table -- something read "
+            "AuthorizeResult.user on a live surface; see Ruling R1",
+        )
+
+    def test_a_header_naming_a_deleted_user_still_registers_that_id(self):
+        """Ruling R1b's decision, pinned on the one input that shows it.
+
+        A digit X-Relay-User whose row no longer exists: today
+        result_from_headers re-queries and the client hash records "0";
+        after 2b-2 it records what the hop resolved. The window is one
+        request (the auth_request subrequest to registration), closing it
+        means re-querying, and the Go relay cannot re-query at all -- so
+        the contract's meaning becomes "what the hop said" and this test
+        is where that is written down rather than discovered.
+
+        4242 is not a real row and not 0: "0" is add_client's own
+        fallback, so asserting "0" here would pass under either meaning.
+        """
+        from django.contrib.auth import get_user_model
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        self.assertFalse(get_user_model().objects.filter(id=4242).exists())
+        user_table = get_user_model()._meta.db_table
+
+        helper = StreamTsClientRegistrationTests("setUp")
+        helper.setUp()
+        proxy_server, client_manager = helper._active_proxy_server(am_i_owner=False)
+        client_manager.add_client.return_value = True
+
+        with CaptureQueriesContext(connection) as captured:
+            with patch("apps.proxy.live_proxy.views.ProxyServer") as proxy_server_cls, \
+                 patch("apps.proxy.live_proxy.views.resolve_authorization",
+                       return_value=_trusted_decision(user_id="4242")), \
+                 patch("apps.proxy.live_proxy.views.get_stream_object",
+                       return_value=helper._channel()), \
+                 patch("apps.proxy.live_proxy.views.ChannelService"
+                       ".is_channel_unavailable_for_new_clients", return_value=False), \
+                 patch("apps.proxy.live_proxy.views._output_profile_for",
+                       return_value=None), \
+                 patch("apps.proxy.live_proxy.views.create_stream_generator"), \
+                 patch("apps.proxy.live_proxy.views.close_old_connections"):
+                proxy_server_cls.get_instance.return_value = proxy_server
+                from apps.proxy.live_proxy import views
+
+                views.stream_ts(helper._request(), helper.channel_id)
+
+        _args, kwargs = client_manager.add_client.call_args
+        self.assertEqual(kwargs["user_id"], "4242")
+        self.assertEqual(
+            [q["sql"] for q in captured.captured_queries if user_table in q["sql"]],
+            [],
+            "the tune re-queried to discover the user was gone -- that is "
+            "the query R1 removes, and the Go relay cannot make it",
+        )

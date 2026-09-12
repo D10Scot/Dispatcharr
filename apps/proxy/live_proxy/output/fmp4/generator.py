@@ -29,6 +29,7 @@ def create_fmp4_stream_generator(
     client_user_agent,
     channel_initializing=False,
     user=None,
+    user_id=None,
     fmt='fmp4',
     channel_name=None,
 ):
@@ -39,6 +40,7 @@ def create_fmp4_stream_generator(
         client_user_agent,
         channel_initializing,
         user,
+        user_id=user_id,
         fmt=fmt,
         channel_name=channel_name,
     )
@@ -55,6 +57,7 @@ class FMP4StreamGenerator:
         client_user_agent,
         channel_initializing=False,
         user=None,
+        user_id=None,
         fmt='fmp4',
         channel_name=None,
     ):
@@ -64,6 +67,10 @@ class FMP4StreamGenerator:
         self.client_user_agent = client_user_agent
         self.channel_initializing = channel_initializing
         self.user = user
+        # 2b-2: the authorize hop's X-Relay-User string. Sent on
+        # emit_event instead of user.username, since a trusted tune
+        # carries no User row to read a name from.
+        self.user_id = user_id
         self.fmt = fmt
         self.channel_name = resolve_channel_display_name(channel_id, channel_name=channel_name)
 
@@ -111,7 +118,11 @@ class FMP4StreamGenerator:
                     client_ip=self.client_ip,
                     client_id=self.client_id,
                     user_agent=self.client_user_agent[:100] if self.client_user_agent else None,
-                    username=self.user.username if self.user else None,
+                    # 2b-2: the relay has no User row on a trusted tune.
+                    # core/relay_events.py resolves the name in the API
+                    # process, which is where the SystemEvent write
+                    # already happens (Phase 1 PR 6).
+                    user_id=self.user_id or None,
                 )
             except Exception:
                 pass

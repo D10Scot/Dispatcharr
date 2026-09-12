@@ -114,10 +114,42 @@ def result_from_headers(request, surface: str) -> AuthorizeResult:
     """
     from django.conf import settings
 
+    # 2b-2. The live surfaces no longer need the row at all: the output
+    # format arrives on X-Relay-Output-Format and the client hash is
+    # written from this string, so nothing on that path reads
+    # AuthorizeResult.user. Skipping the query there is what closes the
+    # spec's Stage 2b row for authorize_views.py:112-141.
+    #
+    # Every other surface keeps it, verbatim. D1 (spec line 433) leaves
+    # /proxy/vod/, /proxy/catchup/ and /streaming/timeshift.php in Python
+    # and they read the row at eleven `is None`/`is not None` sites and
+    # three truthiness ones (see the 2b-2 plan's Ruling R1). A lazy proxy
+    # cannot serve those: `is` is not overloadable, so a stand-in object
+    # is never None and every identity check flips for a user deleted
+    # mid-stream. Splitting on the surface keeps a real row or a real
+    # None everywhere, and it splits exactly where the phase does -- the
+    # live surfaces are the ones 2c ports to Go.
+    #
+    # The else branch below is not a fallback: it is the whole of the
+    # VOD and catch-up behaviour, unchanged. Those views pass
+    # SURFACE_VOD (vod_proxy/views.py:634), SURFACE_VOD_XC (:1417,
+    # :1454), SURFACE_CATCHUP_XC (timeshift/views.py:162) and
+    # SURFACE_CATCHUP (:292) -- never a live surface -- so every
+    # consumer downstream still gets a real row or a real None. That
+    # matters most at vod_proxy/views.py:783, where `if user is None`
+    # is a RECOVERY path that re-resolves the principal from the Redis
+    # session mapping when a VOD redirect stripped the token; a
+    # non-None stand-in there would make it dead code and silently
+    # drop the user.
     user_id = (request.META.get(META_RELAY_USER) or "").strip()
     user = None
-    if user_id.isdigit():
-        user = User.objects.filter(id=int(user_id)).first()
+    if surface in (SURFACE_LIVE, SURFACE_LIVE_XC):
+        if not user_id.isdigit():
+            user_id = ""
+    else:
+        if user_id.isdigit():
+            user = User.objects.filter(id=int(user_id)).first()
+        user_id = str(user.id) if user is not None else ""
 
     output_profile_id = (request.META.get(META_RELAY_OUTPUT) or "").strip()
     if output_profile_id and not output_profile_id.isdigit():
@@ -134,7 +166,7 @@ def result_from_headers(request, surface: str) -> AuthorizeResult:
         channel_uuid=(request.META.get(META_RELAY_CHANNEL) or "").strip(),
         output_profile_id=output_profile_id,
         client_id=(request.META.get(META_RELAY_CLIENT) or "").strip(),
-        user_id=str(user.id) if user is not None else "",
+        user_id=user_id,
         relay_name=settings.RELAY_DEFAULT_NAME,
         user=user,
         trusted=True,

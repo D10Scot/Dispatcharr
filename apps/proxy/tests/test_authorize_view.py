@@ -248,7 +248,13 @@ class ResolveAuthorizationTests(TestCase):
         self.assertTrue(result.trusted)
         self.assertEqual(result.channel_uuid, str(self.channel.uuid))
         self.assertEqual(result.client_id, "client_1_2")
-        self.assertEqual(result.user.id, self.user.id)
+        # SURFACE_LIVE (2b-2, Ruling R1): the live surfaces resolve no
+        # User row at all -- result.user is None even for a real id, and
+        # the id itself is carried on result.user_id instead. See
+        # SurfaceSplitPremiseTests below for the assertion on both sides
+        # of the split.
+        self.assertIsNone(result.user)
+        self.assertEqual(result.user_id, str(self.user.id))
 
     def test_a_forged_marker_falls_through_to_the_inline_decision(self):
         request = self.factory.get(
@@ -430,3 +436,63 @@ class RelayOutputFormatAndClientIpHeaderTests(TestCase):
         self.assertEqual(
             response[internal_auth.HEADER_RELAY_OUTPUT_FORMAT], "mpegts"
         )
+
+
+class SurfaceSplitPremiseTests(TestCase):
+    """result_from_headers skips the User row on live surfaces only.
+
+    Asserted as the decision's own output, on both sides, because the
+    split is invisible otherwise: a live surface must not resolve the
+    row, and a non-live one must, and a test of only one side would
+    pass if the condition were inverted.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.user = User.objects.create_user(username="2b2-split", password="x")
+
+    def _trusted(self, surface):
+        from django.test import RequestFactory
+
+        request = RequestFactory().get(
+            "/proxy/ts/stream/x",
+            HTTP_X_DISPATCHARR_AUTHORIZED=internal_auth.relay_trust_token(),
+            HTTP_X_RELAY_USER=str(self.user.id),
+        )
+        return authorize_views.result_from_headers(request, surface)
+
+    def test_a_live_surface_resolves_no_row(self):
+        for surface in (authorize.SURFACE_LIVE, authorize.SURFACE_LIVE_XC):
+            with self.subTest(surface=surface):
+                result = self._trusted(surface)
+                self.assertIsNone(result.user)
+                self.assertEqual(result.user_id, str(self.user.id))
+
+    def test_every_other_surface_still_resolves_the_row(self):
+        for surface in (
+            authorize.SURFACE_VOD,
+            authorize.SURFACE_VOD_XC,
+            authorize.SURFACE_CATCHUP,
+            authorize.SURFACE_CATCHUP_XC,
+        ):
+            with self.subTest(surface=surface):
+                result = self._trusted(surface)
+                self.assertEqual(result.user.id, self.user.id)
+                self.assertEqual(result.user_id, str(self.user.id))
+
+    def test_a_non_live_surface_with_a_deleted_row_still_answers_None(self):
+        # The input that separates every design considered here. On a
+        # non-live surface the old meaning survives intact: no row, so
+        # user is None AND user_id is "" -- which is what
+        # vod_proxy/views.py:783's recovery path keys off.
+        from django.test import RequestFactory
+
+        request = RequestFactory().get(
+            "/proxy/vod/movie/1/s",
+            HTTP_X_DISPATCHARR_AUTHORIZED=internal_auth.relay_trust_token(),
+            HTTP_X_RELAY_USER="4242",
+        )
+        self.assertFalse(User.objects.filter(id=4242).exists())
+        result = authorize_views.result_from_headers(request, authorize.SURFACE_VOD)
+        self.assertIsNone(result.user)
+        self.assertEqual(result.user_id, "")

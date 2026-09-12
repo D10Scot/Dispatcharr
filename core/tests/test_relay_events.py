@@ -349,3 +349,57 @@ class RelayEventWebSocketPushTests(TestCase):
         mock_send.assert_called_once()
         payload = mock_send.call_args.args[2]
         self.assertEqual(payload["client_id"], "client-42")
+
+
+class RelayEventUsernameResolutionTests(TestCase):
+    """The relay posts a user id; Django turns it into a name.
+
+    The relay has no User row after 2b-2 (authorize_views no longer
+    fetches one on the trusted path), and the SystemEvent row's details
+    carried `username` before this change -- externally observable, so it
+    must keep carrying it.
+    """
+
+    def test_a_user_id_in_details_becomes_a_username(self):
+        from core.relay_events import apply_event_batch
+        from django.contrib.auth import get_user_model
+
+        user = get_user_model().objects.create_user(
+            username="2b2-events-user", password="x"
+        )
+        with patch("core.relay_events.log_system_event") as write:
+            result = apply_event_batch([
+                {
+                    "type": "client_connect",
+                    "channel_id": "",
+                    "channel_name": "Ch",
+                    "details": {"user_id": str(user.id), "client_ip": "203.0.113.9"},
+                }
+            ])
+        self.assertEqual(result["accepted"], 1)
+        _args, kwargs = write.call_args
+        self.assertEqual(kwargs["username"], "2b2-events-user")
+        self.assertNotIn("user_id", kwargs)
+
+    def test_an_unknown_user_id_becomes_a_null_username_not_an_error(self):
+        from core.relay_events import apply_event_batch
+
+        with patch("core.relay_events.log_system_event") as write:
+            result = apply_event_batch([
+                {"type": "client_connect", "details": {"user_id": "99999999"}}
+            ])
+        self.assertEqual(result["accepted"], 1)
+        _args, kwargs = write.call_args
+        self.assertIsNone(kwargs["username"])
+
+    def test_an_explicit_username_is_left_alone(self):
+        # The untrusted path still has a User object and sends the name
+        # directly; resolution must not overwrite it.
+        from core.relay_events import apply_event_batch
+
+        with patch("core.relay_events.log_system_event") as write:
+            apply_event_batch([
+                {"type": "client_connect", "details": {"username": "sent-by-relay"}}
+            ])
+        _args, kwargs = write.call_args
+        self.assertEqual(kwargs["username"], "sent-by-relay")

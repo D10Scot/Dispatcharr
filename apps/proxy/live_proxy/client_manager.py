@@ -212,7 +212,8 @@ class ClientManager:
         except Exception as e:
             logger.error(f"Error notifying owner of client activity: {e}")
 
-    def add_client(self, client_id, client_ip, user_agent=None, user=None, output_format='mpegts', output_profile_id=None):
+    def add_client(self, client_id, client_ip, user_agent=None, user=None,
+                   user_id=None, output_format='mpegts', output_profile_id=None):
         """Add a client with duplicate prevention"""
         if client_id in self._registered_clients:
             logger.debug(f"Client {client_id} already registered, skipping")
@@ -223,6 +224,12 @@ class ClientManager:
         # Use a function to get the client key
         client_key = f"live:channel:{self.channel_id}:clients:{client_id}"
 
+        # user_id is the string the authorize hop put on X-Relay-User.
+        # Preferred over user.id so a trusted tune never has to
+        # materialise the row (2b-2); `user` is still what the untrusted
+        # path hands in.
+        resolved_user_id = user_id or (str(user.id) if user is not None else None)
+
         # Prepare client data
         current_time = str(time.time())
         client_data = {
@@ -231,7 +238,7 @@ class ClientManager:
             "connected_at": current_time,
             "last_active": current_time,
             "worker_id": self.worker_id or "unknown",
-            "user_id": str(user.id) if user is not None else "0",
+            "user_id": resolved_user_id or "0",
             "output_format": output_format,
             "output_profile_id": str(output_profile_id) if output_profile_id is not None else "",
         }
@@ -271,7 +278,13 @@ class ClientManager:
                         "client_id": client_id,
                         "worker_id": self.worker_id or "unknown",
                         "timestamp": time.time(),
-                        "username": user.username if user is not None else "unknown"
+                        # 2b-2: degrades to "unknown" on the trusted path,
+                        # where no User row is fetched. Deliberate and
+                        # invisible -- this event's only consumer is
+                        # server.py:246, which logs receipt and never
+                        # reads the payload's fields.
+                        "username": user.username if user is not None else "unknown",
+                        "user_id": resolved_user_id or "0",
                     }
 
                     if user_agent:

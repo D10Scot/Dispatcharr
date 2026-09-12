@@ -128,6 +128,29 @@ def _apply_stream_stats(event):
         close_old_connections()
 
 
+def _username_for(user_id):
+    """The display name for a relay-posted user id, or None.
+
+    Never raises: a malformed id, a deleted user and a database hiccup
+    all mean "no name to show", and one bad entry must not lose the rest
+    of the batch.
+    """
+    from django.contrib.auth import get_user_model
+
+    try:
+        return (
+            get_user_model()
+            .objects.filter(id=int(user_id))
+            .values_list("username", flat=True)
+            .first()
+        )
+    except (TypeError, ValueError):
+        return None
+    except Exception as exc:  # pragma: no cover - defensive, see docstring
+        logger.warning("Could not resolve username for relay event: %s", exc)
+        return None
+
+
 def apply_event_batch(events):
     """Turn a batch of relay-posted events into rows and pushes.
 
@@ -169,6 +192,17 @@ def apply_event_batch(events):
         details.pop("channel_id", None)
         details.pop("channel_name", None)
         details.pop("event_type", None)
+
+        # 2b-2: the relay posts a user id because it no longer holds a
+        # User row on a live surface (apps/proxy/authorize_views.py's
+        # result_from_headers, 2b-2 Ruling R1). Resolve
+        # the display name here, where the SystemEvent write already
+        # runs. An explicit username from the untrusted path wins; an
+        # unknown id becomes None, exactly what the relay used to send
+        # for an anonymous client.
+        user_id = details.pop("user_id", None)
+        if user_id and "username" not in details:
+            details["username"] = _username_for(user_id)
 
         try:
             log_system_event(
