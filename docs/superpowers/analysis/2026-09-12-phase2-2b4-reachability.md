@@ -12,7 +12,11 @@ reasoning on top of a measurement, and says so in the sentence that makes the cl
 
 ---
 
-## 0. Read this first — four things the brief and the spec get wrong at this commit
+## 0. Read this first — five things the brief and the spec get wrong at this commit
+
+**Two of these are figures quoted verbatim in the spec and will otherwise be copied forward:
+`1,595` permitted missing (now **1,602**, item 2) and `server.py`'s "222 unreachable or must not be
+targeted" (now **139**, item 5).**
 
 1. **The denominator has already moved: 7,978 → 8,011 statements.** The floor file still records
    `statements=7978`; 2b-1 added 33 statements to modules already in scope. This is expected and
@@ -36,6 +40,13 @@ reasoning on top of a measurement, and says so in the sentence that makes the cl
    file's own header (`scripts/coverage_live_path.floor`, "Four regions are known to flap") adds
    `_wait_for_channel_ready`'s error branch. Re-measured in § 5 — **three of the four do not flap on
    this tree**, both survivors are in `server.py`, and a region on nobody's list does flap.
+
+5. **`server.py`'s "222 unreachable or must not be targeted" is 139 today.** The spec's two figures
+   have diverged in opposite directions: `_cleanup_local_resources` is **still exactly 61** (the
+   unreachability call was right and nothing has touched it), while `cleanup_task` is **78, not
+   161** — stage 2a's tests covered half of it incidentally, though it remains both forbidden to
+   target and the largest single source of run-to-run flap. This is not cosmetic: 222 is the figure
+   that made the five-biggest-files strategy look 100 statements short of the gate.
 
 ---
 
@@ -281,6 +292,11 @@ and § 4 is drawn from it.
 
 ### The arithmetic
 
+**Note (added 2026-09-12):** the `utils.py` question in the right-hand column has since been ruled
+on — § 8. The ruling relocates `_live_connections` only, which is a **third** variant costing −1;
+the "with `apps/proxy/utils.py`" column below is the rejected option, kept because it is the
+comparison that decided it.
+
 | | without `apps/proxy/utils.py` | with `apps/proxy/utils.py` |
 |---|---:|---:|
 | denominator (measured) | 8,011 | 8,271 |
@@ -342,7 +358,10 @@ make natural early commits; 6 and 7 are where the work concentrates.
    permitted ceiling). If 2b-2 ships its own tests, it is shortfall-neutral or better.
 3. **2b-3 deleting `channel_status.py:72-78`** (§ 7) — worth ~5.6 of shortfall, and it removes 7
    statements from item 4's pool.
-4. **The `utils.py` decision** (§ 8) — +36.
+4. **The `_live_connections` relocation, now ruled in and carried by 2b-4** (§ 8). It is
+   shortfall-neutral (420 → 419) but it **does** move the denominator to 8,039 and the permitted
+   ceiling to 1,607, so **every figure in this section is a pre-move figure**. Do the move first,
+   re-measure, then fix scope.
 5. **Any decision to delete Tier C.** 75 statements of dead code ≈ 60 of shortfall, at 0.8 on the
    statement. Not recommended for 2b-4, but it is the one lever that would make 420 comfortable.
 
@@ -369,9 +388,43 @@ make natural early commits; 6 and 7 are where the work concentrates.
 
 ---
 
-## 8. Caveat 2 — the `apps/proxy/utils.py` denominator decision (measured, not decided)
+## 8. The `apps/proxy/utils.py` denominator question — measured here, and **decided**
 
-**This is a user decision carried from stage 2a and this document does not make it.** Both variants,
+> ### DECISION (user ruling, 2026-09-12): relocate `_live_connections` to a boundary module so it joins the gate denominator. **Carried in 2b-4** — not a separate PR, and not deferred to 2c.
+>
+> The question had been carried unresolved since stage 2a; the measurements in this section are what
+> closed it. Recorded here so 2b-4's planner does not re-derive or re-litigate it.
+>
+> **Rationale.** Relocation *dominates* on the arithmetic — shortfall 420 → **419**, one statement
+> better, against **+36** for including the whole file — and it brings the tune-path relay call
+> (`relay_client.list_channels(all_clients=True, timeout=TUNE_TIMEOUT)` plus its
+> `RelayUnavailable`/`RelayRefused` and `ImproperlyConfigured` arms) inside the gate that guards the
+> Go port, which is the kind of boundary code Gate 2 exists for. Folding it into 2b-4 rather than a
+> separate PR means **one** `--write-floor --shape-only` re-baseline instead of two, and no extra CI
+> cycle under the fully-sequential merge order.
+>
+> **Three consequences that must travel with the decision:**
+>
+> 1. **This is a code move, not a floor edit.** `_live_connections` has to physically leave
+>    `apps/proxy/utils.py` for a module the rcfile's `[report] include` names. Editing the rcfile to
+>    pull the function's *file* into scope is the other option, and it is the one that was rejected
+>    (+36). The move belongs to whichever PR is willing to touch `utils.py`, and by this ruling that
+>    is **2b-4**.
+> 2. **It changes `modules=`, which is an equality check**, so 2b-4 must run a deliberate
+>    `scripts/coverage_live_path.sh --write-floor --shape-only` re-baseline alongside its `missing`
+>    move. **This is the declined-override machinery being used exactly as designed, not a
+>    workaround** — `coverage_live_path.floor`'s own "HOW TO MOVE THIS FLOOR" describes precisely
+>    this case, and `--shape-only` exists so a module-list change cannot silently overwrite a
+>    campaign's `missing`/`runs` provenance. A later reader finding a shape-only re-baseline in the
+>    same PR as a floor move should **not** read it as someone dodging the ratchet.
+> 3. **Ordering: re-measure after the move, not before.** The relocation changes the denominator
+>    (8,011 → 8,039) and therefore both the permitted-missing ceiling and the shortfall. **The ~420
+>    shortfall and the per-file pool in § 2 and § 6 are pre-move figures.** A plan that relocates and
+>    then spends exactly the 429 statements of a pool measured before the move is working from a
+>    stale denominator — the same error class as carrying 1,595 forward past a denominator that had
+>    already moved to 8,011 (§ 0, items 1-2). Relocate first, re-measure, then scope.
+
+Both variants,
 measured at `93900a6f` over the worst local round (13), by re-running `coverage report` against the
 same combined data with `apps/proxy/utils.py` added to the rcfile's `[report] include`:
 
@@ -401,8 +454,9 @@ docker exec dispatcharr-m2b4-proxy bash -lc 'python -m coverage report --rcfile=
   both `modules=` and the shortfall.
 
 **On the numbers, relocating `_live_connections` dominates including the whole file**: it costs
-nothing, and it puts the only statement of `utils.py` that is on the relay boundary into scope.
-That is an observation about the arithmetic, not a decision.
+nothing, and it puts the only part of `utils.py` that is on the relay boundary into scope. That was
+an observation about the arithmetic when first written; it is now the ruling at the head of this
+section.
 
 ---
 
