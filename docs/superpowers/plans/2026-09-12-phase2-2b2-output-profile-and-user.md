@@ -77,6 +77,22 @@ These are not style notes. Each is a test that passed while the code was broken,
   - **The seam matches the phase's own seam.** The query is removed from exactly the surfaces D1 ports to Go and kept on exactly the ones D1 leaves in Python. That is a far better justification than "lazy, so nobody notices".
   - The zero-query claim on the live path becomes **structural** — there is no user object to touch — rather than a property of a proxy's access pattern. Step 3b's capture test still earns its place, now as a guard against a future edit reintroducing a query (a logging line resolving the user), not as the thing holding the invariant up on its own.
 
+  **Why the `else` branch really does cover every external consumer — verified, not assumed.** "Those surfaces keep exactly today's behaviour" is the kind of claim that has cost this programme a round before, so here is what it rests on. Each of the five external `decision.user` consumers sits in a view whose `resolve_authorization` call passes a surface, and **not one of them is `SURFACE_LIVE` or `SURFACE_LIVE_XC`**:
+
+  | View | Surface passed | `decision.user` read at |
+  |---|---|---|
+  | `vod_proxy/views.py:634` | `SURFACE_VOD` | `:640` |
+  | `vod_proxy/views.py:1417` | `SURFACE_VOD_XC` | `:1442` |
+  | `vod_proxy/views.py:1454` | `SURFACE_VOD_XC` | `:1477` |
+  | `timeshift/views.py:162` | `SURFACE_CATCHUP_XC` | `:172` |
+  | `timeshift/views.py:292` | `SURFACE_CATCHUP` | `:298` |
+
+  So `result_from_headers` runs its unchanged `else` branch for all five, and each of the fourteen consumers downstream of them receives a real row or a real `None`, produced by code this PR does not edit.
+
+  **The consumer this matters most for is `vod_proxy/views.py:783`, which is a recovery path and not a guard**: `if user is None:` there re-resolves the principal from the Redis session mapping for a VOD streaming request whose token was stripped from the redirect URL. Any design that makes `user` non-`None` turns that into dead code and silently drops the user's identity on that path. The surface split leaves it reached with a genuine `None`, exactly as today — and it is the single strongest reason to prefer this design over any stand-in object, which cannot be made `None` for it at all.
+
+  **The thing that would break this is a new non-live view passing a live surface**, so Task 3 Step 5b checks for exactly that rather than trusting the table above to stay true.
+
 - **R1b — `user_id`'s meaning changes on the live surfaces only, and the change is deliberate.** Today `authorize_views.py:133` sets `user_id=str(user.id) if user is not None else ""`, so on the trusted path the field is *proof the row existed at relay-registration time*. Under R1 the live surfaces take it from the header, so it means *the row existed at authorize time*. This is externally observable — Task 3 threads it into `add_client`'s client hash and into the `client_connect` `SystemEvent` — so it is decided rather than absorbed: **accept it.** Three reasons. The divergence window is a single request (nginx's `auth_request` subrequest to the relay's registration), and only for a user deleted inside it. Closing it means re-querying, which is precisely the query this PR exists to remove. And the Go relay cannot re-query at all, so the contract's meaning *must* become "what the hop resolved" at 2c regardless; adopting it now is what makes 2b-2's behaviour and 2c's the same. Task 3 Step 3b pins it with a deleted-user tune, since that is the one input that distinguishes the two meanings.
 - **R2 — `username` on relay events is resolved by Django, not carried in a header.** `output/ts/generator.py:134`, `:652` and `output/fmp4/generator.py:114` send `username=self.user.username` into `emit_event`, which reaches `core/relay_events.py` and becomes a `SystemEvent` row — externally observable. Touching `.user` there would re-trigger the query R1 defers. The relay sends `user_id` instead and `apply_event_batch` resolves the username in the API process, which is already where the write happens (Phase 1 PR 6's shape).
 - **R3 — `output_profiles` is a contract addition the Python relay deliberately does not consume, and it carries *every* active profile, not just the one named on the request.** The spec (line 1598) decided "fold the built command into `next-source`'s response when `X-Relay-Output` names a profile." `next-source` runs **once per channel**, at tune, failover and resume; `_output_profile_for` runs **once per client**, and the second client on a running channel (`views.py:712`) never makes a `next-source` call at all. A per-request single profile therefore cannot answer the question the relay actually asks, for any client but the first. Two consequences: the map is keyed by id and lists every `is_active=True` profile, so a Go relay can cache it at tune and answer any later client; and `apps/proxy/live_proxy/views.py:152`'s `OutputProfile.objects.filter(...)` **stays**, because consuming the map from the Python relay needs either a new per-client route (the spec rejects it) or a Redis cache with its own TTL and staleness semantics (the spec does not specify one). This matches 2b-1's precedent exactly: `proxy_settings` shipped on the same response with "Nothing in the PYTHON relay consumes this yet, deliberately." **2b-3 must allowlist `views.py:152` with a citation to this ruling.** Flag it in the PR description.
@@ -594,7 +610,7 @@ Stage `docker/dispatcharr_api_params.conf docker/nginx.conf e2e/tests/streaming-
 - Modify: `apps/proxy/live_proxy/client_manager.py:215-238`, `:267-275`
 - Modify: `apps/proxy/live_proxy/output/ts/generator.py:26-60`, `:126-135`, `:643-654`; `apps/proxy/live_proxy/output/fmp4/generator.py:28-67`, `:108-116`
 - Modify: `core/relay_events.py:131-190`
-- Test: `apps/proxy/live_proxy/tests/test_output_format_from_the_hop.py` (create), `apps/proxy/live_proxy/tests/test_stream_ts_client_registration.py` (extend), `core/tests/test_relay_events.py` (extend)
+- Test: `apps/proxy/live_proxy/tests/test_output_format_from_the_hop.py` (create), `apps/proxy/live_proxy/tests/test_stream_ts_client_registration.py` (extend), `core/tests/test_relay_events.py` (extend), `apps/proxy/tests/test_authorize_view.py` (extend again, Step 5b)
 
 **Interfaces:**
 - Consumes: `AuthorizeResult.output_format`, `AuthorizeResult.user_id`, `AuthorizeResult.trusted` from Task 1.
@@ -1015,6 +1031,18 @@ with:
     # mid-stream. Splitting on the surface keeps a real row or a real
     # None everywhere, and it splits exactly where the phase does -- the
     # live surfaces are the ones 2c ports to Go.
+    #
+    # The else branch below is not a fallback: it is the whole of the
+    # VOD and catch-up behaviour, unchanged. Those views pass
+    # SURFACE_VOD (vod_proxy/views.py:634), SURFACE_VOD_XC (:1417,
+    # :1454), SURFACE_CATCHUP_XC (timeshift/views.py:162) and
+    # SURFACE_CATCHUP (:292) -- never a live surface -- so every
+    # consumer downstream still gets a real row or a real None. That
+    # matters most at vod_proxy/views.py:783, where `if user is None`
+    # is a RECOVERY path that re-resolves the principal from the Redis
+    # session mapping when a VOD redirect stripped the token; a
+    # non-None stand-in there would make it dead code and silently
+    # drop the user.
     user_id = (request.META.get(META_RELAY_USER) or "").strip()
     user = None
     if surface in (SURFACE_LIVE, SURFACE_LIVE_XC):
@@ -1033,6 +1061,84 @@ Import `SURFACE_LIVE` and `SURFACE_LIVE_XC` in `authorize_views.py` if they are 
 **Note what this does and does not change.** On the live surfaces `user_id` now means "the row existed when the hop authorized", not "the row exists now" — Ruling R1b, decided and pinned by Step 3b's deleted-user test, not absorbed silently. On every other surface both fields are byte-identical to today. And `stream_ts`'s `if user is None: user = decision.user` (`views.py:174-175`) now leaves `user` as a genuine `None` on a trusted tune, which is a value that path already handles for every anonymous tune today — Step 6 supersedes each of its consumers regardless.
 
 **There is no `_LazyUser` class.** An earlier draft of this plan had one; it is withdrawn for the reason in Ruling R1, and the `SimpleLazyObject` note that went with it is withdrawn with it. Do not reintroduce either — if a future reader reaches for a lazy proxy here, R1's table of eleven identity checks is the answer.
+
+- [ ] **Step 5b: Check the surface split's premise, and pin it**
+
+R1's correctness rests on one claim: **no view outside `live_proxy` passes a live surface to `resolve_authorization`.** If one did, its `decision.user` would become `None` and a consumer expecting a row would misbehave — worst at `vod_proxy/views.py:783`, a recovery path, where it would go quietly dead rather than fail.
+
+Verify it against the tree rather than against R1's table:
+
+```bash
+cd /Users/dion/git/Dispatcharr/.worktrees/phase2-2b2 && \
+  grep -rn -A 4 'resolve_authorization(' apps/proxy/vod_proxy/views.py apps/timeshift/views.py | grep SURFACE_
+```
+
+Expected, exactly: `SURFACE_VOD`, `SURFACE_VOD_XC` (×2), `SURFACE_CATCHUP_XC`, `SURFACE_CATCHUP`. Any `SURFACE_LIVE`/`SURFACE_LIVE_XC` in that output means R1's premise is false for that view — **stop and report it** rather than working around it.
+
+Then pin the claim so a future view cannot quietly break it. Append to `apps/proxy/tests/test_authorize_view.py`:
+
+```python
+class SurfaceSplitPremiseTests(TestCase):
+    """result_from_headers skips the User row on live surfaces only.
+
+    Asserted as the decision's own output, on both sides, because the
+    split is invisible otherwise: a live surface must not resolve the
+    row, and a non-live one must, and a test of only one side would
+    pass if the condition were inverted.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.user = User.objects.create_user(username="2b2-split", password="x")
+
+    def _trusted(self, surface):
+        from django.test import RequestFactory
+
+        request = RequestFactory().get(
+            "/proxy/ts/stream/x",
+            HTTP_X_DISPATCHARR_AUTHORIZED=internal_auth.relay_trust_token(),
+            HTTP_X_RELAY_USER=str(self.user.id),
+        )
+        return authorize_views.result_from_headers(request, surface)
+
+    def test_a_live_surface_resolves_no_row(self):
+        for surface in (authorize.SURFACE_LIVE, authorize.SURFACE_LIVE_XC):
+            with self.subTest(surface=surface):
+                result = self._trusted(surface)
+                self.assertIsNone(result.user)
+                self.assertEqual(result.user_id, str(self.user.id))
+
+    def test_every_other_surface_still_resolves_the_row(self):
+        for surface in (
+            authorize.SURFACE_VOD,
+            authorize.SURFACE_VOD_XC,
+            authorize.SURFACE_CATCHUP,
+            authorize.SURFACE_CATCHUP_XC,
+        ):
+            with self.subTest(surface=surface):
+                result = self._trusted(surface)
+                self.assertEqual(result.user.id, self.user.id)
+                self.assertEqual(result.user_id, str(self.user.id))
+
+    def test_a_non_live_surface_with_a_deleted_row_still_answers_None(self):
+        # The input that separates every design considered here. On a
+        # non-live surface the old meaning survives intact: no row, so
+        # user is None AND user_id is "" -- which is what
+        # vod_proxy/views.py:783's recovery path keys off.
+        from django.test import RequestFactory
+
+        request = RequestFactory().get(
+            "/proxy/vod/movie/1/s",
+            HTTP_X_DISPATCHARR_AUTHORIZED=internal_auth.relay_trust_token(),
+            HTTP_X_RELAY_USER="4242",
+        )
+        self.assertFalse(User.objects.filter(id=4242).exists())
+        result = authorize_views.result_from_headers(request, authorize.SURFACE_VOD)
+        self.assertIsNone(result.user)
+        self.assertEqual(result.user_id, "")
+```
+
+Check `SURFACE_VOD_XC` and `SURFACE_CATCHUP_XC` are exported from `apps/proxy/authorize.py` under those names before writing this (`grep -n '^SURFACE_' apps/proxy/authorize.py`); use whatever the module actually calls them.
 
 - [ ] **Step 6: Thread the decision through the live path**
 
