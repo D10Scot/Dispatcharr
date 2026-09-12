@@ -7,7 +7,7 @@ changed**, in this worktree or anywhere else. Every rate below comes from runs l
 
 ## Summary
 
-Three findings, in descending order of how much they should change what anyone does:
+Four findings, in descending order of how much they should change what anyone does:
 
 1. **The issue names the wrong test as the file's flake risk.** In 72 local executions of
    the whole `FfmpegStderrFailoverTests` class, the test named in #259 —
@@ -29,6 +29,11 @@ Three findings, in descending order of how much they should change what anyone d
    is already written to the database: the single `channel_buffering` `SystemEvent`
    carries the `speed` that armed the detector. Asserting on it makes the test
    deterministic and kills the race outright, rather than trading it for a wider margin.
+4. **The sampling window is the *property's* coverage, not just the guard's.** Row 5 checks
+   its actual subject — `state` never BUFFERING — over the same 24 snapshots, so on a
+   *passing* run it verifies that over ~52 ms and about three progress records. Widening the
+   window fixes the guard and the property together; changing the constant fixes neither
+   while hiding both. Read this before § 4a's options.
 
 The in-flight PR is exposed: the coverage matrix is **not** path-gated, so
 `Coverage apps.proxy.live_proxy.tests` runs on every non-docs push to any branch (§ 5).
