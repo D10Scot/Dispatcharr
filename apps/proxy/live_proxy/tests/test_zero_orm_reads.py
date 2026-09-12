@@ -21,6 +21,36 @@ Narrower, faster relatives that stay as they are:
 test_stream_ts_client_registration.py's TrustedTuneQueriesNoUserRowTests
 pins one table on the test thread with CaptureQueriesContext, which is
 correct there and wrong here (Ruling R5).
+
+RULE (added in the post-review fix round, after it was violated once):
+no raw `assertIn`/substring check on SQL text anywhere in this file.
+Every claim about what ran goes through `_signature_matches` (which
+checks `params_fragment` too, not just `sql_fragment`) via
+`_assert_allowlisted`, scoped to the drive it is being asked about
+(`_signature_phases`) -- never a bare `"table_name" in query.sql` that
+bypasses both. Any signature whose SQL text is not unique to one read
+(today, only the `core_coresettings` group-key lookup) MUST carry a
+`params_fragment`. A hand-rolled `assertIn("core_coresettings", …)` once
+shipped here anyway and was satisfied by an unrelated read on the same
+drive -- see the review round's Blocking 2 finding.
+
+A KNOWN, ACCEPTED LIMIT (review round Q6): a signature matches by SQL
+TEXT, so a NEW read on the SAME drive that happens to reproduce an
+already-allowlisted table+WHERE shape (e.g. a second, redundant
+`Channel.objects.filter(uuid=...)` added inside stream_ts itself) is
+invisible to this runtime half -- phase-scoping closes the WRONG-drive
+version of this problem (a read migrating to a phase that never
+expected it) but cannot close the SAME-drive version, because both the
+old and the new call produce identical SQL on the identical phase. The
+STATIC half is what catches this class instead: `scan_relay_package()`
+flags every `.objects.`/`get_object_or_404(`/model-method call by
+`file:line`, so a genuinely new call site -- even one whose SQL is
+indistinguishable from an existing one -- fails
+`test_every_orm_site_in_the_relay_package_is_allowlisted` as an
+unlisted line. Verified directly: inserting the plan's own literal
+break-check text (`Channel.objects.filter(uuid=channel_id).first()`
+inside `stream_ts`) leaves this runtime half green and turns the
+static half red at the new line.
 """
 
 import time
@@ -482,19 +512,30 @@ class RuntimeGuardTests(RelayHarnessTestCase):
         every trusted drive here sets X-Relay-Output-Format, so that SITE
         stays a defensive branch for a relay talking to a pre-2b-2 hop,
         unreached by anything in this file (see its own `reason` in
-        zero_orm_allowlist.py). This drive is still the only one that
-        reaches a get_default_output_format() call at all, which is what
-        the second assertion below checks.
+        zero_orm_allowlist.py). This drive also reaches a SECOND
+        CoreSettings group (network_access, inline_network_access_
+        settings below) on the SAME call, so the assertion that pins
+        get_default_output_format's own signature by name is what
+        distinguishes the two -- a bare "did CoreSettings get queried at
+        all" check is satisfied by either and pins neither (review
+        round's Blocking 2 finding).
         """
         # get_default_output_format() reads the "stream_settings" group,
-        # which is Django-cache-backed (Redis) like "proxy_settings" is
-        # (Task 3's fix, same shape) -- and unlike Postgres, a write to
-        # Redis is not rolled back between test methods. Once anything in
-        # this process's test run has warmed it, this drive answers from
-        # cache and the assertion below flakes on run order. Cold it
-        # explicitly rather than depending on being first.
-        from core.models import CoreSettings, STREAM_SETTINGS_KEY
+        # and network_access_allowed() reads "network_access" -- both
+        # Django-cache-backed (Redis) like "proxy_settings" is (Task 3's
+        # fix, same shape) -- and unlike Postgres, a write to Redis is
+        # not rolled back between test methods. Once anything in this
+        # process's test run has warmed either, this drive answers from
+        # cache and the corresponding assertion flakes on run order.
+        # Cold both explicitly rather than depending on being first.
+        # (network_access's own warm-cache flake surfaced only once this
+        # signature started being checked for real, in the review
+        # round's fix for Blocking 2 -- the old assertIn couldn't
+        # distinguish a cache hit from a cache miss because it didn't
+        # care which CoreSettings group answered it.)
+        from core.models import CoreSettings, NETWORK_ACCESS_KEY, STREAM_SETTINGS_KEY
         CoreSettings.invalidate_group_cache(STREAM_SETTINGS_KEY)
+        CoreSettings.invalidate_group_cache(NETWORK_ACCESS_KEY)
 
         with self.stand_in():
             channel = self.make_channel(
@@ -512,26 +553,35 @@ class RuntimeGuardTests(RelayHarnessTestCase):
                 self.assertEqual(response.status_code, 200)
                 next(response.iter_content(chunk_size=188))
 
-        unrecorded = [
-            (q.sql[:400], q.relay_frames) for q in relay_queries(captured)
-            if not any(_signature_matches(s, q) for s in allowlist.INLINE_AUTHORIZE_SIGNATURES)
-        ]
-        self.assertEqual(
-            unrecorded,
-            [],
-            "\nthe inline authorize path executed a query this list does "
-            "not record. That is not automatically wrong -- it is the "
-            "hop's work, not the relay's -- but it is new, so record it "
-            "with a reason:\n"
-            + "\n".join(f"  {s}\n    via {f}" for s, f in unrecorded),
+        # Review round Blocking 2 / the module docstring's rule: route
+        # through _assert_allowlisted (which itself routes through
+        # _signature_matches), not a hand-rolled substring check. Reusing
+        # the same helper here is deliberate, not incidental: the
+        # untrusted drive is a single phase, so phase-scoping is a no-op
+        # for it today, but it is the same mechanism this file uses
+        # everywhere else, and a future second untrusted-style drive
+        # gets the scoping for free rather than needing to reinvent it.
+        fired_inline = self._assert_allowlisted(
+            captured, "untrusted tune", signatures=allowlist.INLINE_AUTHORIZE_SIGNATURES
         )
-        self.assertIn(
-            "core_coresettings",
-            " ".join(q.sql for q in relay_queries(captured)),
-            "the untrusted tune did not reach CoreSettings at all -- "
-            "apps/proxy/authorize.py's resolve_output_format is the site "
-            "this drive exists to execute, so either the drive is no "
-            "longer untrusted or the site moved",
+        # The discriminating assertion (SF4): pin the SIGNATURE by name,
+        # not merely "some query touched this table". A bare
+        # `assertIn("core_coresettings", …)` is satisfied by
+        # inline_network_access_settings' query alone -- a DIFFERENT
+        # settings group, always present on this drive -- and proves
+        # nothing about get_default_output_format() specifically. Found
+        # by the round's reviewer: replacing authorize.py:259's `return
+        # CoreSettings.get_default_output_format()` with a literal
+        # `return "mpegts"` left the old assertIn green.
+        expected_inline = {
+            sig.name for sig in allowlist.INLINE_AUTHORIZE_SIGNATURES if sig.exercised_by
+        }
+        self.assertEqual(
+            fired_inline & expected_inline,
+            expected_inline,
+            "an INLINE_AUTHORIZE_SIGNATURES entry marked exercised_by did "
+            "not fire on the untrusted drive. Either the read is gone -- "
+            "delete the entry -- or this drive no longer reaches it.",
         )
 
 

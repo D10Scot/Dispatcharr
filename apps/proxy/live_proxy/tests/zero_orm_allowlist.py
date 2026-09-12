@@ -566,6 +566,27 @@ SQL_SIGNATURES = (
 # SQL_SIGNATURES, against a real untrusted tune.
 INLINE_AUTHORIZE_SIGNATURES = (
     Signature(
+        name="inline_proxy_settings_group",
+        sql_fragment='FROM "core_coresettings" WHERE "core_coresettings"."key" = %s',
+        params_fragment="'proxy_settings'",
+        table_model="core.CoreSettings",
+        # Q5 (review round): SQL_SIGNATURES' proxy_settings_group is not
+        # eligible on this list -- the untrusted drive also tunes (it
+        # runs channel.get_stream_profile() etc. exactly as a trusted
+        # tune does), so config_helper.py:50's TSConfig.get_proxy_
+        # settings() could equally fire here on a cache-cold run. Not
+        # marked exercised for the same reason as the SQL_SIGNATURES
+        # entry: whether it fires depends on cache state this guard does
+        # not control.
+        exercised_by="",
+        reason=(
+            "As SQL_SIGNATURES' proxy_settings_group: config_helper.py:50's "
+            "TSConfig.get_proxy_settings() reads this group through a "
+            "10-second process-local cache, reachable from the untrusted "
+            "tune's own channel-setup path exactly as from a trusted one."
+        ),
+    ),
+    Signature(
         name="inline_network_access_settings",
         sql_fragment='FROM "core_coresettings" WHERE "core_coresettings"."key" = %s',
         params_fragment="'network_access'",
