@@ -13,6 +13,7 @@ fallback, and the username is not "unknown".
 
 import requests
 from django.contrib.auth import get_user_model
+from django.test import SimpleTestCase
 
 from apps.proxy.internal_auth import relay_trust_token
 from apps.proxy.live_proxy.redis_keys import RedisKeys
@@ -96,3 +97,65 @@ class AuthenticatedTuneIdentityTests(RelayHarnessTestCase):
                 timeout=15,
                 what="the client_connect event to name the real user",
             )
+
+            # Review finding S2: the TS generator's disconnect emit_event
+            # (output/ts/generator.py's _cleanup) is the other converted,
+            # unpinned site -- a revert to username=self.user.username
+            # there passed the whole suite because nothing exercised it.
+            # Closing the response drives the same generator through its
+            # normal exit path (generate()'s finally: self._cleanup()).
+            response.close()
+            wait_until(
+                lambda: SystemEvent.objects.filter(
+                    event_type="client_disconnect",
+                    details__username=VIEWER_NAME,
+                ).exists(),
+                timeout=15,
+                what="the client_disconnect event to name the real user",
+            )
+
+
+class FMP4GeneratorEmitsUserIdOnConnectTests(SimpleTestCase):
+    """Review finding S2: output/fmp4/generator.py:118-126 converted, unpinned.
+
+    A revert to `username=self.user.username` there passed the whole suite
+    -- nothing exercised the fMP4 connect path's emit_event call. This is
+    the direct-assertion alternative the review offered (over a full
+    real-ffmpeg harness case, which test_fmp4_output.py shows is
+    expensive: INIT_SEGMENT_TIMEOUT alone is 15s per test). Gates before
+    the emit_event call are mocked past deliberately -- this test is
+    about the kwargs on that one call, not about a real remux.
+    """
+
+    def test_the_connect_event_carries_user_id_not_username(self):
+        from unittest.mock import patch
+
+        from apps.proxy.live_proxy.output.fmp4.generator import FMP4StreamGenerator
+
+        gen = FMP4StreamGenerator(
+            "channel-uuid",
+            "client_fmp4_test",
+            "203.0.113.9",
+            "test-agent",
+            channel_initializing=False,
+            user=None,
+            user_id="424242",
+            channel_name="Test Channel",
+        )
+
+        with patch.object(gen, "_wait_for_fmp4_ready", return_value=True), \
+             patch.object(gen, "_setup_streaming", return_value=True), \
+             patch.object(gen, "_fetch_init_segment", return_value=None), \
+             patch(
+                 "apps.proxy.live_proxy.output.fmp4.generator.emit_event"
+             ) as mock_emit:
+            # _fetch_init_segment returning None makes generate() return
+            # right after the emit_event call -- exactly the code this
+            # test needs to run and nothing past it.
+            next(gen.generate(), None)
+
+        mock_emit.assert_called_once()
+        args, kwargs = mock_emit.call_args
+        self.assertEqual(args[0], "client_connect")
+        self.assertEqual(kwargs["user_id"], "424242")
+        self.assertNotIn("username", kwargs)
