@@ -24,6 +24,7 @@ correct there and wrong here (Ruling R5).
 """
 
 import time
+import uuid as uuid_module
 
 import requests
 from django.apps import apps as django_apps
@@ -471,3 +472,123 @@ class RuntimeGuardTests(RelayHarnessTestCase):
             "this drive exists to execute, so either the drive is no "
             "longer untrusted or the site moved",
         )
+
+
+class StatusNameFallbackTests(RelayHarnessTestCase):
+    """Parity-matrix row 18: what the status payload carries when the
+    metadata hash was never written a name.
+
+    THE ANSWER, which 2c is held to: the key is ABSENT from the payload
+    entirely -- not null, not '', not the id. RelayChannelDetailSerializer
+    declares both required=False, so absence is already the contract;
+    channel_status.py's ORM fallback is best-effort enrichment on top of
+    it, filling the key when the row still exists and leaving it absent
+    when the row is gone. The Go relay, having no database, always omits
+    it -- inside the contract, not a divergence from it.
+
+    Written as a fixture rather than as a reachability argument: this
+    fails if anyone deletes the fallback, changes it, or makes it emit a
+    null, whether or not any production path reaches it.
+    """
+
+    def _stream(self, name):
+        """A Stream row this fallback can find, with an m3u_account.
+
+        Stream.objects.create() with no m3u_account fires
+        apps/channels/signals.py's set_default_m3u_account, which looks
+        up a migration-seeded "Custom" M3UAccount -- a row a
+        TransactionTestCase-based harness flushes after the first test
+        that runs, exactly as RelayHarnessTestCase is. harness/relay.py's
+        own make_channel() avoids this the same way, by always supplying
+        one.
+        """
+        from apps.channels.models import Stream
+        from apps.m3u.models import M3UAccount
+
+        account = M3UAccount.objects.create(
+            name=f"row18-account-{uuid_module.uuid4().hex[:8]}",
+            account_type="STD", username="user", password="pass", max_streams=5,
+        )
+        return Stream.objects.create(name=name, url="http://x/", m3u_account=account)
+
+    def test_the_orm_fills_the_name_when_redis_has_none_and_the_row_exists(self):
+        with self.stand_in():
+            channel = self.make_channel(
+                upstream_url=self.upstream.url, profile=stand_in_stream_profile()
+            )
+            identifier = str(channel.uuid)
+            stream = self._stream("2b3-row18-stream-name")
+            redis = ProxyServer.get_instance().redis_client
+            # A name that could not arise by accident, and NO STREAM_NAME
+            # key at all -- writing one empty would test a different branch.
+            redis.hset(
+                RedisKeys.channel_metadata(identifier),
+                mapping={
+                    ChannelMetadataField.STATE: "active",
+                    ChannelMetadataField.STREAM_ID: str(stream.id),
+                },
+            )
+            body = internal_get(
+                self.live_server_url, f"/proxy/relay/channels/{identifier}"
+            ).json()
+        self.assertEqual(body["stream_name"], "2b3-row18-stream-name")
+
+    def test_the_key_is_absent_when_redis_has_no_name_and_no_row_exists(self):
+        """The row-18 answer itself, and the shape 2c must reproduce."""
+        from apps.channels.models import Stream
+        from apps.m3u.models import M3UAccountProfile
+
+        with self.stand_in():
+            channel = self.make_channel(
+                upstream_url=self.upstream.url, profile=stand_in_stream_profile()
+            )
+            identifier = str(channel.uuid)
+            absent_stream_id = 987654
+            self.assertFalse(Stream.objects.filter(id=absent_stream_id).exists())
+            absent_profile_id = 987655
+            self.assertFalse(
+                M3UAccountProfile.objects.filter(id=absent_profile_id).exists()
+            )
+            redis = ProxyServer.get_instance().redis_client
+            redis.hset(
+                RedisKeys.channel_metadata(identifier),
+                mapping={
+                    ChannelMetadataField.STATE: "active",
+                    ChannelMetadataField.STREAM_ID: str(absent_stream_id),
+                    ChannelMetadataField.M3U_PROFILE: str(absent_profile_id),
+                },
+            )
+            body = internal_get(
+                self.live_server_url, f"/proxy/relay/channels/{identifier}"
+            ).json()
+        self.assertNotIn("stream_name", body)
+        self.assertNotIn("m3u_profile_name", body)
+        # The ids ARE present: absence of the NAME is the contract, not
+        # absence of the field pair. Without this the test above passes
+        # against a payload that dropped everything.
+        self.assertEqual(body["stream_id"], absent_stream_id)
+        self.assertEqual(body["m3u_profile_id"], absent_profile_id)
+
+    def test_redis_wins_over_the_orm_when_both_have_a_name(self):
+        """The fallback is a FALLBACK. Two different names, so the
+        assertion distinguishes them -- a test writing the same name in
+        both places passes with the precedence inverted."""
+        with self.stand_in():
+            channel = self.make_channel(
+                upstream_url=self.upstream.url, profile=stand_in_stream_profile()
+            )
+            identifier = str(channel.uuid)
+            stream = self._stream("2b3-row18-from-the-db")
+            redis = ProxyServer.get_instance().redis_client
+            redis.hset(
+                RedisKeys.channel_metadata(identifier),
+                mapping={
+                    ChannelMetadataField.STATE: "active",
+                    ChannelMetadataField.STREAM_ID: str(stream.id),
+                    ChannelMetadataField.STREAM_NAME: "2b3-row18-from-redis",
+                },
+            )
+            body = internal_get(
+                self.live_server_url, f"/proxy/relay/channels/{identifier}"
+            ).json()
+        self.assertEqual(body["stream_name"], "2b3-row18-from-redis")

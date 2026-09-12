@@ -566,6 +566,30 @@ SQL_SIGNATURES = (
 # SQL_SIGNATURES, against a real untrusted tune.
 INLINE_AUTHORIZE_SIGNATURES = (
     Signature(
+        name="inline_network_access_settings",
+        sql_fragment='FROM "core_coresettings" WHERE "core_coresettings"."key" = %s',
+        params_fragment="'network_access'",
+        table_model="core.CoreSettings",
+        exercised_by="untrusted tune",
+        # Found by a break-check, not by the first measurement: an
+        # earlier draft of this list omitted it because the first
+        # measurement ran with this group's Redis-backed cache already
+        # warm from an app-startup fetch, and the query simply did not
+        # fire that time. Task 4 Step 5b's own break-check (add a read to
+        # the inline path, expect `unrecorded` to redden) caught it on a
+        # freshly flushed Redis -- the drive is not "the only thing that
+        # reaches CoreSettings," it reaches it TWICE, on two different
+        # groups, and only one was in the first draft.
+        reason=(
+            "dispatcharr/utils.py's network_access_allowed(), called from "
+            "authorize_stream() (apps/proxy/authorize.py) before the ACL "
+            "check, reads the 'network_access' settings group. Runs on "
+            "EVERY authorize_stream call, anonymous or not -- it is not "
+            "conditioned on a resolved principal the way "
+            "check_user_stream_limits() is."
+        ),
+    ),
+    Signature(
         name="inline_channel_by_uuid",
         sql_fragment='FROM "dispatcharr_channels_channel" WHERE "dispatcharr_channels_channel"."uuid" = %s',
         table_model="dispatcharr_channels.Channel",

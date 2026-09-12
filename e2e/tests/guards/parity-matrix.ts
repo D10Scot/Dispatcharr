@@ -567,4 +567,4 @@ export const HIGHEST_ROW_ID = 30;
  * later that Gate 1 was met and nobody noticed; and "no row is owed" once it is
  * `true`, so Gate 1 cannot silently reopen.
  */
-export const GATE_1_CLOSED = false;
+export const GATE_1_CLOSED = true;
