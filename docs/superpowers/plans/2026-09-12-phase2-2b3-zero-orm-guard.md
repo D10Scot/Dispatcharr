@@ -108,6 +108,10 @@ So the ORM fallback is **best-effort enrichment on top of a contract that alread
 
 Under a same-version deployment both fallbacks are dead. That is a property of a deployment, not of the code, and it is not a thing a guard can assert.
 
+**One production path makes the fallback *not* the repair, and it is filed as [#265](https://github.com/D10Scot/Dispatcharr/issues/265).** A degraded failover onto a cached candidate carrying no names writes the new id and leaves the old name standing — `hset(mapping=...)` merges, the id is unconditional and the name is not (`input/manager.py:2160-2178`, and identically `channel_service.py:931-939`), and `_CACHED_ALTERNATE_REQUIRED_FIELDS` (`:2016-2019`) permits a nameless candidate. The key is then **present and wrong**, so no fallback fires and nothing warns. That is a different failure from row 18's — absence is contractual and self-describing, a stale name is a confident wrong answer — and its fix is an `hdel` at the relay's own switch call sites, the relay-internal class D10 keeps out of this stage. 2b-3 cites it and does not fix it.
+
+**Why coverage reads this the wrong way round, measured.** A parallel measurement over 13 rounds at `93900a6f` found `:72-78` (the `Stream` fallback) missing in all 13 and `:103-110` (the `M3UAccountProfile` fallback) covered in all 13, which reads as an asymmetry in the code. It is an artifact of exactly one fixture. `apps/proxy/live_proxy/tests/test_live_db_cleanup.py:322-344` hand-builds a metadata dict with `stream_name` present and `m3u_profile` present with no name beside it, so it skips one branch and enters the other. Worse, that test is about `close_old_connections`: it asserts `info["stream_name"] == "Backup Feed"`, which comes from **Redis**, and `mock_close.assert_called_once()`. `M3UAccountProfile.objects.filter` is **mocked**, and the fallback's own result is **never asserted**. So `:103-110`'s coverage carries no information about production reachability, and `:72-78`'s absence of coverage is a suite gap rather than evidence of anything. **Reachable but untested, and tested without an oracle** — Task 5's fixtures are what close both, against real Postgres through the harness.
+
 **Two things this ruling does not claim.** It does not claim to have enumerated every write path — it names four and the deployment condition that defeats all of them, which is enough to refuse the deletion, and the refusal is the decision. And it does not claim the fallback ever fires in the harness; Task 5 measures that, and R8 says what to do with either answer.
 
 ### R8 — A row-18 pin is a fixture, not a hope.
@@ -144,8 +148,9 @@ Both cite `channel_status.py:92` for the `M3UAccountProfile` fallback. At `93900
 | `e2e/tests/guards/parity-matrix.ts` | `GATE_1_CLOSED` `false` → `true`. One line. |
 | `docs/superpowers/specs/2026-09-09-phase2-go-relay-design.md` | An inline bold amendment recording R7 and R1, in `2fc5b269`'s idiom. |
 | `CLAUDE.md` | Two sentences: the guard exists, and what it does not prove. |
+| `apps/proxy/live_proxy/tests/test_live_db_cleanup.py` | Task 5 Step 3b: fix `MagicMock(name=...)` at `:338-340` and add the assertion whose absence hid it. The only pre-existing test that executes either fallback, and it asserts nothing about them. |
 
-**Not modified, deliberately:** `apps/proxy/live_proxy/channel_status.py`. Nothing is deleted from it (R7). `apps/proxy/live_proxy/tests/test_stream_ts_client_registration.py`'s two `CaptureQueriesContext` tests (R5).
+**Not modified, deliberately:** `apps/proxy/live_proxy/channel_status.py`. Nothing is deleted from it (R7); the one production path that defeats its fallback is filed as [#265](https://github.com/D10Scot/Dispatcharr/issues/265) and fixed at the relay's own switch call sites, not here. `apps/proxy/live_proxy/tests/test_stream_ts_client_registration.py`'s two `CaptureQueriesContext` tests (R5).
 
 ---
 
@@ -965,7 +970,9 @@ SQL_SIGNATURES = ()  # Task 4 fills this, from its own measurement.
 
 **The three edges left as a comment are not a placeholder to be skipped** — they are entries whose `hits` count must come from *your* measurement rather than this plan's, because they will have moved if 2b-2's squash changed those modules. Write each one out in full, in the same shape as the two above, before Step 5. The guard fails until you do, which is the point.
 
-One entry deserves its reason stated here so it is not mis-written: `apps.proxy.authorize_views.resolve_authorization` reaches `result_from_headers`'s `User.objects.filter(...)` at `authorize_views.py:116`. **The static scanner flags it and the runtime check will clear it**, because 2b-2's Ruling R1 made `AuthorizeResult.user` lazily resolved and no live-surface consumer touches it. That divergence is the guard working as designed — part 1 sees code, part 2 sees execution — and the entry should say so.
+One entry deserves its reason stated here so it is not mis-written: `apps.proxy.authorize_views.resolve_authorization` reaches `result_from_headers`'s `User.objects.filter(id=int(user_id)).first()` — at `authorize_views.py:146` on 2b-2's branch; re-measure the line after the squash. **The static scanner flags it and the runtime check clears it**, and the reason is a **surface split, not laziness**: the query sits in the `else` arm of `if surface in (SURFACE_LIVE, SURFACE_LIVE_XC)`, so a live tune never enters it, while `/proxy/vod/`, `/proxy/catchup/` and `/streaming/timeshift.php` keep today's code verbatim. `closed_by` is that split plus `X-Relay-User`, **not** "the field is lazily resolved".
+
+**Do not write the lazy version.** An earlier draft of 2b-2 proposed a lazy `User` proxy and it was withdrawn at `71cd8d31`: `is` cannot be overloaded, and eleven of the field's fourteen consumers test `is None`/`is not None` (`client_manager.py:234`, `:274`; `live_proxy/views.py:174`; `timeshift/views.py:1274`, `:2509`, `:2524`, `:2553`, `:2965`, `:2966`; `vod_proxy/views.py:639`, `:783`), so a stand-in object would be permanently wrong for all eleven — most sharply at `vod_proxy/views.py:783`, where `if user is None` is a *recovery* path that a non-None stand-in would turn into dead code. The two designs imply different blast radii, which is why the reason matters and not just the conclusion: under laziness any consumer touching the field resurrects the query, while under the split only a change to the surface constant or the branch does.
 
 - [ ] **Step 5: Run the guard to verify it passes**
 
@@ -1243,9 +1250,13 @@ class RuntimeGuardTests(RelayHarnessTestCase):
 
     This is the half that proves the property. Part 1 sees code; this
     sees execution, and the two disagree on purpose in at least one
-    place: authorize_views.py:116's User.objects.filter is flagged
-    statically and never runs on a live tune, because 2b-2's Ruling R1
-    made AuthorizeResult.user lazy.
+    place: result_from_headers' User.objects.filter is flagged
+    statically and never runs on a live tune, because 2b-2 split
+    result_from_headers on the SURFACE (authorize_views.py:146): the
+    query sits in the `else` arm and SURFACE_LIVE/SURFACE_LIVE_XC never
+    enter it. NOT because the field is lazy -- that design was drafted
+    and withdrawn at 71cd8d31, since `is` cannot be overloaded and
+    eleven of the field's fourteen consumers test identity.
 
     Trusted tunes only (Ruling R6): an untrusted tune runs
     authorize_stream inline from a live_proxy frame, where production
@@ -1300,15 +1311,35 @@ class RuntimeGuardTests(RelayHarnessTestCase):
             channel = self.make_channel(upstream_url=self.upstream.url, profile=profile)
             identifier = str(channel.uuid)
 
-            # Global Constraint 1: X-Relay-Output must name a REAL active
-            # profile, or _output_profile_for returns None at views.py:150
-            # before touching the ORM and views.py:153 is never exercised
-            # -- the guard would pass with that site deleted.
+            # Global Constraint 1, twice over.
+            #
+            # X-Relay-Output must name a REAL active profile, or
+            # _output_profile_for returns None at views.py:150 before
+            # touching the ORM and views.py:153 is never exercised -- the
+            # guard would pass with that site deleted.
+            #
+            # X-Relay-User must be a DIGIT naming a REAL row, and this is
+            # the subtler of the two. 2b-2 split result_from_headers on
+            # the surface (authorize_views.py:146): the User query is in
+            # the `else` arm, and the live arm is reached first. With an
+            # empty header there is no digit to query on, so the `else`
+            # arm would not query EITHER -- the guard would stay green
+            # with 2b-2's central change backed out. A digit naming a
+            # real row is the only input that distinguishes "the surface
+            # split holds" from "there was nothing to look up".
+            #
+            # GUARD_VIEWER_ID is 515151: not 2b-2's own 424242 (so the
+            # two tests fail independently), far above any sequence
+            # value, and not add_client's "0" fallback.
+            viewer = get_user_model()(id=GUARD_VIEWER_ID, username="2b3-guard-viewer")
+            viewer.set_password("x")
+            viewer.save()
+
             headers = {
                 "X-Dispatcharr-Authorized": relay_trust_token(),
                 "X-Relay-Channel": identifier,
                 "X-Relay-Client": "client_2b3_owner",
-                "X-Relay-User": "",
+                "X-Relay-User": str(GUARD_VIEWER_ID),
                 "X-Relay-Output": str(output_profile.id),
                 "X-Relay-Output-Format": "mpegts",
                 "X-Relay-Client-IP": "203.0.113.31",
@@ -1406,6 +1437,74 @@ Expected: PASS.
 2. **A new ORM read on the status path only.** Same insertion inside `ChannelStatus.get_detailed_channel_info`. Expected: fails at `status read`, not at `owner tune` — proving the status drive is load-bearing and that a tune-only check (the spec's first draft) would have missed it. Revert.
 3. **A read that vanishes.** Delete `views.py:149-155`'s body and `return None`. Expected: the `exercised_by` assertion fails naming `output_profile_for_this_client`. Revert. If it does **not** fail, the `exercised_by` mechanism is hollow — stop and fix it.
 4. **The attribution.** Change `RELAY_PREFIX` to something that matches nothing. Expected: the test passes — which is the vacuous state, and is why `test_the_table_names_in_every_signature_are_real` and Task 3's tests exist. Note in the PR description that this is a known unguarded direction of part 2, covered by Task 3's suite rather than by this test. Revert.
+5. **2b-2's surface split, backed out.** In `authorize_views.py`'s `result_from_headers`, delete the `if surface in (SURFACE_LIVE, SURFACE_LIVE_XC):` arm so every surface takes the `else` branch. Expected: the owner-tune phase fails with a `SELECT … FROM accounts_user` offender carrying a `live_proxy/views.py:` frame. **If it does not go red, `X-Relay-User` is not naming a real row** and the drive is hollow — that is the whole reason `GUARD_VIEWER_ID` exists. Revert.
+
+- [ ] **Step 5b: The fourth drive — an untrusted tune, characterized not gated**
+
+Steps 1–5 prove a property about **trusted** tunes only, and that is structural (Ruling R6): an untrusted tune runs `authorize_stream` inline from a `live_proxy` frame, so the stack discriminator would attribute the hop's queries to the relay, where production runs that hop in the API process behind nginx's `auth_request`. Widening the attributor to exempt authorize frames would encode a judgment in the mechanism and would mask a genuine relay read that happened to sit in an authorize module; driving untrusted tunes against `SQL_SIGNATURES` would force a dozen hop queries into the policy allowlist with "not really the relay's" reasons, diluting it and making the edge counts noisy.
+
+So drive it against a **separate list**, as a characterization pin rather than a policy gate. This turns an unmeasured hole into a measured one, which is the difference that matters when 2c-1 reads "the guard is green".
+
+```python
+    def test_an_untrusted_tune_executes_a_recorded_set_and_no_other(self):
+        """The branch the trusted-only rule cannot reach (Ruling R6).
+
+        NOT a policy gate: these queries are the authorize hop's, and in
+        production nginx runs that hop in the API process. This is a
+        characterization pin -- the set is recorded so a NEW ORM read on
+        the inline path is visible, not so the set is required to shrink.
+
+        The sharpest thing it covers is views.py:134's
+        CoreSettings.get_default_output_format(). That site is 2b-3's own
+        new finding AND the one site the trusted drives structurally
+        cannot execute: since 2b-2 the hop always sets
+        X-Relay-Output-Format, so force_output_format short-circuits
+        ahead of it on every nginx-authorized tune, and since 2b-2 also
+        leaves decision.user None on a live tune, views.py:129's
+        `if user:` branch is dead there too. No trusted tune can reach
+        line 134. This drive is the only thing in the suite that does.
+        """
+        with self.stand_in():
+            channel = self.make_channel(
+                upstream_url=self.upstream.url, profile=stand_in_stream_profile()
+            )
+            identifier = str(channel.uuid)
+            with capture_queries() as captured:
+                # No X-Dispatcharr-Authorized and no X-Relay-* headers:
+                # resolve_authorization falls to the inline branch.
+                response = requests.get(
+                    f"{self.live_server_url}/proxy/ts/stream/{identifier}",
+                    stream=True, timeout=20,
+                )
+                self.addCleanup(response.close)
+                self.assertEqual(response.status_code, 200)
+                next(response.iter_content(chunk_size=188))
+
+        unrecorded = [
+            (q.sql[:400], q.relay_frames) for q in relay_queries(captured)
+            if not any(s.sql_fragment in q.sql for s in allowlist.INLINE_AUTHORIZE_SIGNATURES)
+        ]
+        self.assertEqual(
+            unrecorded,
+            [],
+            "\nthe inline authorize path executed a query this list does "
+            "not record. That is not automatically wrong -- it is the "
+            "hop's work, not the relay's -- but it is new, so record it "
+            "with a reason:\n"
+            + "\n".join(f"  {s}\n    via {f}" for s, f in unrecorded),
+        )
+        self.assertIn(
+            "core_coresettings",
+            " ".join(q.sql for q in relay_queries(captured)),
+            "the untrusted tune did not reach CoreSettings at all -- "
+            "views.py:134 is the site this drive exists to execute, so "
+            "either the drive is no longer untrusted or the site moved",
+        )
+```
+
+Add `INLINE_AUTHORIZE_SIGNATURES` to `zero_orm_allowlist.py` beside `SQL_SIGNATURES`, with a docstring saying in its first line that it is **characterization, not policy** — it records what the inline hop does, and shrinking it is not a goal.
+
+**Break-check:** add an ORM read to `authorize_stream`'s inline path. Expected: the `unrecorded` assertion fails. Then delete `views.py:134`'s `return CoreSettings.get_default_output_format()` and replace it with `return "mpegts"`. Expected: the second assertion fails — without it, the first passes against a drive that reached nothing. Revert both.
 
 - [ ] **Step 6: Verify the follower branch is genuinely the follower branch**
 
@@ -1570,12 +1669,47 @@ Break-checks:
 2. Change `info['stream_name'] = stream.name` to `info['stream_name'] = None`. Expected: test 1 fails. (`assertNotIn` in test 2 would **not** catch this, and that asymmetry is the point.)
 3. Move the Redis read below the ORM read so the ORM wins. Expected: test 3 fails.
 
+- [ ] **Step 3b: Give the pre-existing test its missing oracle**
+
+`apps/proxy/live_proxy/tests/test_live_db_cleanup.py:338-340` is the only thing that has ever executed `:103-110`, and it executes it with no assertion — and with a mock that does not do what it reads as:
+
+```python
+mock_profile_filter.return_value.first.return_value = MagicMock(name="Profile A")
+```
+
+`name` is consumed by the `Mock` constructor, so `.name` is a **child mock, not the string**. Verified: `type(MagicMock(name="Profile A").name).__name__` is `MagicMock`, `isinstance(..., str)` is `False`, and its repr is `<MagicMock name='Profile A.name' …>`. The test writes a `MagicMock` into `info['m3u_profile_name']` and nobody has noticed, because the value is never read.
+
+Fix both halves in one edit — the miswiring, and the absence that hid it:
+
+```python
+        with patch(
+            "apps.m3u.models.M3UAccountProfile.objects.filter"
+        ) as mock_profile_filter:
+            # configure_mock, not MagicMock(name=...): `name` is consumed
+            # by the Mock constructor, so MagicMock(name="Profile A").name
+            # is a child mock rather than the string, and the assertion
+            # below is what makes that visible instead of silent.
+            profile = MagicMock()
+            profile.configure_mock(name="Profile A")
+            mock_profile_filter.return_value.first.return_value = profile
+            info = ChannelStatus.get_detailed_channel_info("channel-uuid")
+
+        self.assertEqual(info["stream_name"], "Backup Feed")
+        self.assertEqual(info["m3u_profile_name"], "Profile A")
+        mock_close.assert_called_once()
+```
+
+Run: `python manage.py test apps.proxy.live_proxy.tests.test_live_db_cleanup -v 2`
+Expected: PASS.
+
+Break-check: revert only the `configure_mock` line to `MagicMock(name="Profile A")`. Expected: the new `assertEqual` fails with a `MagicMock` on the left. Restore. That failure is the whole point — it is what has been invisible.
+
 - [ ] **Step 4: Close the matrix row**
 
 Replace row 18's `Pin` cell's `owed: 2b-3` with the two test references, correct `:92` to `:106`, and rewrite the `Notes` cell with the answer. Keep the line canonical: `| ` + cells joined by ` | ` + ` |`, no padding, no trailing whitespace — `parity-matrix.spec.ts` check 2 asserts it.
 
 ```
-| 18 | What the status payload's `stream_name` and `m3u_profile_name` contain when the channel metadata hash was never written one | `apps/proxy/live_proxy/channel_status.py:74`, `apps/proxy/live_proxy/channel_status.py:106` | `apps/proxy/live_proxy/tests/test_zero_orm_reads.py::StatusNameFallbackTests::test_the_key_is_absent_when_redis_has_no_name_and_no_row_exists`, `apps/proxy/live_proxy/tests/test_zero_orm_reads.py::StatusNameFallbackTests::test_the_orm_fills_the_name_when_redis_has_none_and_the_row_exists` | 2b-3's answer: **absence is the contract.** The key is absent from the payload entirely — not null, not `''`, not the id — because `channel_status.py` only assigns it inside a truthy branch and `RelayChannelDetailSerializer` declares both `required=False` (`relay_serializers.py:111`, `:113`). Python's ORM fallback is best-effort enrichment on top of that: it fills the key when the row still exists and leaves it absent when the row is gone. The Go relay has no database and always omits it, which is inside the contract rather than a divergence from it. 2c: omit the key; never substitute null, `''` or the numeric id. The reads are NOT deleted — every name write in the tree guards the name on a value `url_utils.py:31-42`'s `tune_extras` degrades to `None` for a control plane that predates 2b-1, and the relay and control plane are separately deployable, so both fallbacks are reachable under version skew (`views.py:553-566` records it). They are allowlisted in `zero_orm_allowlist.py` and deleted wholesale in 2d. The spec and this row previously cited `:92`; 2b-1 moved it to `:106` |
+| 18 | What the status payload's `stream_name` and `m3u_profile_name` contain when the channel metadata hash was never written one | `apps/proxy/live_proxy/channel_status.py:74`, `apps/proxy/live_proxy/channel_status.py:106` | `apps/proxy/live_proxy/tests/test_zero_orm_reads.py::StatusNameFallbackTests::test_the_key_is_absent_when_redis_has_no_name_and_no_row_exists`, `apps/proxy/live_proxy/tests/test_zero_orm_reads.py::StatusNameFallbackTests::test_the_orm_fills_the_name_when_redis_has_none_and_the_row_exists` | 2b-3's answer: **absence is the contract.** The key is absent from the payload entirely — not null, not `''`, not the id — because `channel_status.py` only assigns it inside a truthy branch and `RelayChannelDetailSerializer` declares both `required=False` (`relay_serializers.py:111`, `:113`). Python's ORM fallback is best-effort enrichment on top of that: it fills the key when the row still exists and leaves it absent when the row is gone. The Go relay has no database and always omits it, which is inside the contract rather than a divergence from it. 2c: omit the key; never substitute null, `''` or the numeric id. The reads are NOT deleted — every name write in the tree guards the name on a value `url_utils.py:31-42`'s `tune_extras` degrades to `None` for a control plane that predates 2b-1, and the relay and control plane are separately deployable, so both fallbacks are reachable under version skew (`views.py:553-566` records it). They are allowlisted in `zero_orm_allowlist.py` and deleted wholesale in 2d. One production path defeats the repair rather than needing it — a degraded failover writes the new id and leaves the old name standing, so the key is present and wrong ([#265](https://github.com/D10Scot/Dispatcharr/issues/265)); that is a distinct defect from this row, cited not fixed. Coverage reads the two fallbacks as asymmetric (`:72-78` missing in 13/13, `:103-110` covered in 13/13) but that is one fixture's shape — `test_live_db_cleanup.py:322-344` supplies a `stream_name` and not an `m3u_profile_name`, mocks the query, and asserts nothing about either fallback. The spec and this row previously cited `:92`; 2b-1 moved it to `:106` |
 ```
 
 - [ ] **Step 5: Flip Gate 1**
@@ -1592,7 +1726,7 @@ Break-check: set `GATE_1_CLOSED` back to `false` with row 18 closed. Expected: F
 - [ ] **Step 7: Commit**
 
 ```bash
-git add apps/proxy/live_proxy/tests/test_zero_orm_reads.py docs/relay-parity-matrix.md e2e/tests/guards/parity-matrix.ts
+git add apps/proxy/live_proxy/tests/test_zero_orm_reads.py apps/proxy/live_proxy/tests/test_live_db_cleanup.py docs/relay-parity-matrix.md e2e/tests/guards/parity-matrix.ts
 ```
 
 ```
@@ -1664,11 +1798,12 @@ The PR description must carry, because the 2c-1 precondition and the reviewers d
 
 1. **The allowlist, entry by entry**, each with its `closed_by` — spec line 1769 makes 2c-1 restate every one, and `views.py:153`'s is 2b-2 Ruling R3's paragraph verbatim.
 2. **What the guard cannot see**, R1's three residuals, stated before the claims and not after them.
-3. **Every break-check and its failure text** — Task 1 Step 5 (3), Task 2 Step 6 (4), Task 3 Step 5 (3), Task 4 Step 5 (4), Task 5 Step 3 (3) and Step 6 (1). Eighteen. A break-check that did not go red is a finding; report it as one.
-4. **Row 18's answer and its evidence**, and that the reads survive rather than being deleted.
-5. **The three findings the spec's table does not have**: `views.py:134`, `resolve_source`'s liveness, and the `:92`→`:106` drift.
-6. **Whether the follower axis was actually observed** (Task 4 Step 6), stated either way.
-7. That Gate 1 is closed and Gate 2's floor is untouched (every new file is under `tests/`, which the rcfile omits).
+3. **Every break-check and its failure text** — Task 1 Step 5 (3), Task 2 Step 6 (4), Task 3 Step 5 (3), Task 4 Step 5 (5) and Step 5b (2), Task 5 Step 3 (3), Step 3b (1) and Step 6 (1). Twenty-two. A break-check that did not go red is a finding; report it as one. Two of them are load-bearing beyond their own step: Task 4 Step 5's fifth backs out 2b-2's surface split and must turn the guard red, or `X-Relay-User` is not naming a real row and the drive proves nothing; Task 4 Step 5b's second deletes `views.py:134` and must turn the fourth drive red, or that drive reached nothing.
+4. **Issue [#265](https://github.com/D10Scot/Dispatcharr/issues/265)** — filed during planning, cited in `channel_status.py:106`'s allowlist entry, deliberately not fixed here (relay-internal, D10).
+5. **Row 18's answer and its evidence**, and that the reads survive rather than being deleted.
+6. **The three findings the spec's table does not have**: `views.py:134`, `resolve_source`'s liveness, and the `:92`→`:106` drift.
+7. **Whether the follower axis was actually observed** (Task 4 Step 6), stated either way — and that the untrusted path is characterized (Step 5b), not gated.
+8. That Gate 1 is closed and Gate 2's floor is untouched (every new file is under `tests/`, which the rcfile omits; 2b-3 moves only `missing`, downward, which the ratchet permits without a floor edit). **Tell 2b-4**: Task 5's fixtures close `:72-78`, so a 2b-4 measurement taken before this lands over-counts by that block.
 
 ---
 
