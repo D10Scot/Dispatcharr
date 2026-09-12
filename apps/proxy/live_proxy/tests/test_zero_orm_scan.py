@@ -169,6 +169,20 @@ class QueryCaptureTests(TransactionTestCase):
         /api/relay/ views issue a dozen legitimate control-plane queries
         per tune; counting those would make the guard permanently red for
         the wrong reason.
+
+        Correction (2b-3 review round): this test's OWN call site is a
+        frame under apps/proxy/live_proxy/ (it lives in tests/), so it
+        passes via the tests/ exclusion in _relay_frames(), not because
+        the query genuinely has no live_proxy frame anywhere on its
+        stack -- that harder case (a real control-plane view, no
+        live_proxy frame at all) is what test_a_query_with_a_relay_frame
+        below is the positive contrast to only in the sense that a real
+        /api/relay/ view call is exercised by the runtime guard itself
+        (RuntimeGuardTests' status-read drives), not by a unit test here.
+        test_a_query_from_the_tests_directory_is_not_a_relay_frame below
+        is the test that names the tests/ exclusion explicitly; this one
+        relies on the same mechanism without saying so, which the
+        previous wording obscured.
         """
         from core.models import CoreSettings
         from .harness.queries import capture_queries, relay_queries
