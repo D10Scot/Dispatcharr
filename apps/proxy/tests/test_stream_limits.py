@@ -297,6 +297,49 @@ class LiveConnectionsComeFromTheRelayTests(TestCase):
             [{"media_id": "abc", "client_id": "c1", "connected_at": 1000.0,
               "type": "live"}],
         )
+        # Phase 2 PR 2b-4: this function's home is relay_client, not
+        # apps/proxy/utils.py -- that is what puts the tune-path relay call
+        # inside Gate 2's denominator. Deleting the relocation would move it
+        # back out and nothing else in the suite would notice.
+        self.assertFalse(
+            hasattr(utils, "_live_connections"),
+            "_live_connections moved to relay_client in 2b-4; a copy left "
+            "behind in utils.py is outside the Gate 2 denominator",
+        )
+        self.assertTrue(callable(relay_client.live_connections))
+
+    def test_a_client_with_an_unparseable_user_id_or_timestamp_is_skipped(self):
+        """The two (TypeError, ValueError) arms inside the shaping loop.
+
+        The relay's payload is JSON from another process: a `user_id` that is
+        not an int and a `connected_at` that is not a float must drop that
+        client, not raise out of a tune-path limit check.
+        """
+        from apps.proxy import relay_client
+
+        payload = {
+            "channels": [
+                {
+                    "channel_id": "abc",
+                    "clients": [
+                        {"client_id": "bad-user", "user_id": "not-a-number",
+                         "connected_at": 1000.0},
+                        {"client_id": "bad-time", "user_id": "5",
+                         "connected_at": "not-a-float"},
+                        {"client_id": "good", "user_id": "5",
+                         "connected_at": 1002.0},
+                    ],
+                }
+            ],
+            "count": 1,
+        }
+        with mock.patch.object(relay_client, "list_channels", return_value=payload):
+            connections = relay_client.live_connections(5)
+
+        self.assertEqual(
+            [c["client_id"] for c in connections], ["good"],
+            "a malformed user_id or connected_at drops that client only",
+        )
 
     def test_user_id_none_returns_every_live_client(self):
         from apps.proxy import relay_client, utils
@@ -334,7 +377,7 @@ class LiveConnectionsComeFromTheRelayTests(TestCase):
 
     def test_a_misconfigured_relay_also_contributes_no_live_connections(self):
         # Final review round, minor: mirrors the RelayUnavailable test
-        # above for the ImproperlyConfigured branch _live_connections
+        # above for the ImproperlyConfigured branch relay_client.live_connections
         # gained beside it.
         from django.core.exceptions import ImproperlyConfigured
 

@@ -253,74 +253,6 @@ def attempt_stream_termination(user_id, requesting_client_id, active_connections
         logger.error("[stream limits]" f"[{requesting_client_id}] Error during stream termination for user {user_id}: {e}")
         return False
 
-def _live_connections(user_id):
-    """The live half of get_user_active_connections, over HTTP.
-
-    live:channel:*:clients:* is relay-private state -- the family
-    Phase 3 moves out of Redis -- so the control plane asks the relay
-    for it rather than scanning it. all_clients=True because a cap
-    under-counts a user with more than ten clients on one channel,
-    which is exactly the case this function exists to catch, and
-    TUNE_TIMEOUT because authorize_stream calls this on every tune.
-
-    A relay that cannot answer contributes nothing and logs once. That
-    fails open, and open is correct here: the relay is the only process
-    serving live clients, so a relay that is not answering has none.
-    Failing closed would 429 every tune for the length of a restart.
-    """
-    from django.core.exceptions import ImproperlyConfigured
-
-    from apps.proxy import relay_client
-
-    try:
-        # TUNE_TIMEOUT, not the admin budget: check_user_stream_limits
-        # calls this from inside authorize_stream, so it is on the tune
-        # path for every stream-limited user, and Global Constraints put
-        # tune-path reads at (1, 2) with no retry.
-        payload = relay_client.list_channels(
-            all_clients=True, timeout=relay_client.TUNE_TIMEOUT
-        )
-    except (relay_client.RelayUnavailable, relay_client.RelayRefused) as exc:
-        logger.warning(
-            "[stream limits] the relay could not list channels: %s", exc
-        )
-        return []
-    except ImproperlyConfigured as exc:
-        # Unlike Channel.get_stream() this is a limit *check*, not the
-        # reservation itself: failing open here (see the docstring) is
-        # the same choice a misconfigured relay deserves as an
-        # unreachable one -- propagating would 429/500 every tune for a
-        # problem a retry cannot fix.
-        logger.warning(
-            "[stream limits] the relay could not list channels: %s is misconfigured",
-            getattr(exc, "var_name", None) or "the relay base URL",
-        )
-        return []
-
-    connections = []
-    for channel in payload.get("channels") or []:
-        media_id = channel.get("channel_id")
-        for client in channel.get("clients") or []:
-            raw_user_id = client.get("user_id")
-            if user_id is not None:
-                try:
-                    if raw_user_id is None or int(raw_user_id) != user_id:
-                        continue
-                except (TypeError, ValueError):
-                    continue
-            try:
-                connected_at = float(client.get("connected_at") or 0)
-            except (TypeError, ValueError):
-                continue
-            connections.append({
-                'media_id': media_id,
-                'client_id': client.get("client_id"),
-                'connected_at': connected_at,
-                'type': 'live',
-            })
-    return connections
-
-
 def get_user_active_connections(user_id, include_live=True):
     """Return active stream connections for a single user.
 
@@ -342,7 +274,12 @@ def get_user_active_connections(user_id, include_live=True):
     keep the default.
     """
     redis_client = RedisClient.get_client()
-    connections = _live_connections(user_id) if include_live else []
+    if include_live:
+        from apps.proxy import relay_client
+
+        connections = relay_client.live_connections(user_id)
+    else:
+        connections = []
 
     try:
         # Timeshift only: same key layout as the live family, different

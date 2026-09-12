@@ -147,7 +147,7 @@ class StreamByHashAuthorizationTests(RelayHarnessTestCase):
             next(held.iter_content(chunk_size=188))
 
             # The whole D4 loop runs for real: authorize_stream ->
-            # check_user_stream_limits -> _live_connections ->
+            # check_user_stream_limits -> relay_client.live_connections ->
             # relay_client.list_channels() -> a signed HTTP call to this same
             # process's GET /proxy/relay/channels?clients=all.
             second = self.hop(
