@@ -190,7 +190,7 @@ of a test that covered them. The `always-miss` column beside it is measured.
 | `next_source.py` | 59 | ~55 | ORM-fixture branches, no relay state at all: a `Stream` with no M3U account (`:225`), an account with no default profile (`:231`, `:376-377`), `is_active == False` (`:369-371`), no profile with connection capacity (`:270`), `stream_id is None` (`:276`), the XC credential transform `get_transformed_credentials` → `{base}/live/{u}/{p}/{id}.ts` (`:53-60`), `ordered_stream_ids.index()` raising `ValueError` (`:180-181`), and the `isinstance(channel, Stream)` guard (`:337-338`). Ordinary `TestCase` with model fixtures. **Caveat: 2b-2 edits this file** (§ 7). |
 | `channel_service.py` | 126 | ~100 | The spec's own estimate — "~90% reachable by a Django test-client request driving an in-process fake upstream with real Redis" — **is consistent with what I read.** Concentrated in `change_stream_url` (33), `validate_channel_state` (30), `cancel_pending_shutdown` (14), `stop_channels` (7), `_channel_proxy_is_active` (6). Pure Python plus Redis calls; no subprocess. |
 | `client_manager.py` | 52 | ~45 | `redis_client = None` guards (6 statements across 5 methods), `_execute_redis_command`'s two arms (`:188-193`, 6), the heartbeat thread's "client no longer in Redis" removal (`:108-110`), `add_client`'s failure rollback (`:301-306`, 6), the non-owner `CLIENT_DISCONNECTED` publish (`:370-383`), `refresh_client_ttl` end to end (`:418-431`, 9), and the ghost-client sweep at `:474-485` (11). |
-| `channel_status.py` | 43 | ~40 | Almost all one- and two-line branches over a **seeded metadata hash**: the `total_bytes` byte-formatting ladder (`:143`, `:146-147`, `:149` — 4 statements, one parameterised test), `avg_bitrate > 1000` (`:158`), `duration <= 0` (`:19`), absent metadata (`:33`, `:453`), `output_profile_id` parsing (`:189`), the legacy `transfer_rate_KBps` field (`:209`), `chunk_keys_missing` (`:268`), four `except ValueError` int-parse arms, `_execute_redis_command`'s two arms (`:425-430`), and the `Stream.objects` stream-name fallback (`:72-78` — see § 7, this is 2b-3's business). |
+| `channel_status.py` | 43 | ~40 | Almost all one- and two-line branches over a **seeded metadata hash**: the `total_bytes` byte-formatting ladder (`:143`, `:146-147`, `:149` — 4 statements, one parameterised test), `avg_bitrate > 1000` (`:158`), `duration <= 0` (`:19`), absent metadata (`:33`, `:453`), `output_profile_id` parsing (`:189`), the legacy `transfer_rate_KBps` field (`:209`), `chunk_keys_missing` (`:268`), four `except ValueError` int-parse arms, `_execute_redis_command`'s two arms (`:425-430`), and the `Stream.objects` stream-name fallback (`:72-78` — **2b-3 covers these 7; subtract them**, see § 7). |
 | `views.py` | 157 | ~100 | `_channel_setup_needed` (`:60`, 11 statements, **0 in except**) is a pure function over a Redis metadata hash — STOPPING, ERROR/STOPPED, and the "unknown state but the owner's heartbeat key exists" branch (`:89-94`). Directly callable; six seeded-hash cases close all 11. `stream_ts`'s 89 are the same state machine at view level plus the connection-retry loop (`:348-394`: `remaining_time <= retry_interval` break, the `gevent.sleep` + 25ms back-off, the final attempt at the timeout boundary, and `control_plane.release_source` on the abandoned slot). Reachable with a seeded hash and `generate_stream_url` patched to return `None` then a URL. The remainder is inside the streaming generator's plumbing and is harder. |
 | `output/ts/generator.py` | 73 | ~55 | Spec says ~80–85% reachable the same way; consistent with what I read. `_wait_for_initialization` (16) and `_init_wait_abort_reason` (10) are **26 statements with zero `except` lines** — pure decision logic over channel state. Plus `_is_timeout` (7, and note the fMP4 sibling's missing `url_switching` exemption defect lives next door), `_check_resources` (9), `_stream_data_generator` (10), `_setup_streaming` (6). |
 | `authorize.py` 12, `authorize_views.py` 4, `config_helper.py` 4, `control_plane.py` 3, `relay_client.py` 3, `apps.py` 2 | 28 | ~24 | Small error arms in already-96%+ modules. Cheap, and they are the modules a Go port must match exactly. |
@@ -322,7 +322,7 @@ All Tier A. No subprocess harness, no real ffmpeg, no `exclude_lines`, no dead-c
 | 1 | `services/log_parsers.py` | 73 | 65 | 65 | Pure string→dict. Cheapest statements in the tree, and D7's own stated rationale for Gate 2. |
 | 2 | `next_source.py` | 59 | 55 | 120 | ORM fixtures only. **Sequence this before or with 2b-2**, which edits the file. |
 | 3 | `url_utils.py` | 47 | 45 | 165 | One function, `requests` mocking. |
-| 4 | `channel_status.py` | 43 | 40 | 205 | Seeded metadata hash; three parameterised tests cover most of it. Overlaps 2b-3 at `:72-78`. |
+| 4 | `channel_status.py` | 43 | 40 | 205 | Seeded metadata hash; three parameterised tests cover most of it. **2b-3 covers `:72-78` (7) — subtract them if 2b-3 lands first** (§ 7). |
 | 5 | `client_manager.py` | 52 | 45 | 250 | The three idioms in § 3, concentrated. |
 | 6 | `services/channel_service.py` | 126 | 100 | 350 | Largest Tier A pool; spec's own ~90% estimate held up on inspection. |
 | 7 | `output/ts/generator.py` | 73 | 55 | 405 | `_wait_for_initialization` + `_init_wait_abort_reason` = 26 with no `except` lines. |
@@ -356,8 +356,10 @@ make natural early commits; 6 and 7 are where the work concentrates.
    `internal_auth.py`. New statements arrive **uncovered unless 2b-2 tests them**, and each
    uncovered new statement costs ~0.2 of shortfall net (it raises both the numerator and the
    permitted ceiling). If 2b-2 ships its own tests, it is shortfall-neutral or better.
-3. **2b-3 deleting `channel_status.py:72-78`** (§ 7) — worth ~5.6 of shortfall, and it removes 7
-   statements from item 4's pool.
+3. **2b-3 *covering* `channel_status.py:72-78`** (§ 7) — **not deleting it; that reading was wrong
+   and is corrected there.** 2b-3's fixtures close those 7 statements as a side effect of pinning
+   behaviour, so they come **off** item 4's pool rather than reducing the shortfall. The general
+   form: anything 2b-3's fixtures reach is unavailable to 2b-4.
 4. **The `_live_connections` relocation, now ruled in and carried by 2b-4** (§ 8). It is
    shortfall-neutral (420 → 419) but it **does** move the denominator to 8,039 and the permitted
    ceiling to 1,607, so **every figure in this section is a pre-move figure**. Do the move first,
@@ -375,15 +377,34 @@ make natural early commits; 6 and 7 are where the work concentrates.
   `X-Relay-Client-IP` end to end) edits **`next_source.py`** (item 2 in the recommended order),
   **`authorize_views.py`** and **`internal_auth.py`** (item 8). It will move both the denominator
   and item 2's pool. Sequence item 2 after 2b-2, or expect to redo it.
-- **2b-3** deletes whichever of `channel_status.py`'s two ORM fallbacks prove unreachable.
-  **Measured input for that decision, which 2b-3 should have:**
-  - The **`Stream.objects` stream-name fallback at `:72-78`** (7 statements) is missing in **all 13
-    rounds** — nothing in the suite reaches it. Deletion candidate.
-  - The **`M3UAccountProfile.objects` fallback body at `:103-110`** is **covered in every round**;
-    only its `except (ImportError, DatabaseError)` arm at `:111-112` is missing. It is reachable, so
-    it is an allowlist entry, not a deletion.
+- **2b-3 closes coverage as a side effect of pinning behaviour, so its statements are NOT available
+  to 2b-4 even though they appear in a pre-2b-3 measurement. State the general form once, because it
+  will recur: anything 2b-3's fixtures reach comes off 2b-4's pool.** Concretely — 2b-3's Task 5
+  builds three fixtures that construct states nothing in the suite constructs today (`STREAM_ID`
+  with no `STREAM_NAME` against a real `Stream` row; both ids against rows that do not exist;
+  Redis-vs-ORM precedence with two different names), against real Postgres through the harness
+  rather than mocks. **After 2b-3, `channel_status.py:72-78` goes from missing-in-13/13 to covered
+  with an assertion**, so a 2b-4 pool measured before 2b-3 lands **over-counts by ~7 statements**
+  (item 4 of § 6's order, and the `channel_status.py` row of § 4's Tier A table).
 
-  Deleting `:72-78` removes 7 always-missing statements from item 4's pool and buys ~5.6 of shortfall.
+  **What I measured about those two fallbacks, and what it does and does not license.** Measured:
+  the **`Stream.objects` stream-name fallback at `:72-78`** (7 statements) is missing in **all 13
+  rounds**; the **`M3UAccountProfile.objects` fallback body at `:103-110`** is **covered in every
+  round**, with only its `except (ImportError, DatabaseError)` arm at `:111-112` missing. **That is
+  a fact about the test suite, not about production reachability**, and the original draft of this
+  section called `:72-78` a "deletion candidate", which overstated it.
+
+  **2b-3's planner has since settled it, and the asymmetry is an artefact of one fixture, not of the
+  code.** A single fixture at `apps/proxy/live_proxy/tests/test_live_db_cleanup.py:322-344`
+  hand-builds a metadata dict with `stream_name` present and `m3u_profile_name` absent — **the two
+  fallbacks sit in identical reachability positions and the fixture simply feeds one branch.** The
+  "covered" one is covered by a test about `close_old_connections` that never asserts the fallback's
+  result and mocks `M3UAccountProfile.objects.filter`, so it touches no database at all.
+  Independently, `url_utils.py:31-42`'s `tune_extras` degrades those names to `None` against a
+  pre-2b-1 Django, so **version skew is a supported deployment state** and `:72-78` is reachable in
+  production while dead to every test. **The honest framing for the pair is "reachable but untested"
+  and "tested without an oracle" — neither is a deletion candidate**, and reading a 13/13 miss as
+  unreachability would have deleted a live fallback.
 - 2b-1 has already moved the denominator once (7,978 → 8,011). Expect the same from 2b-2.
 
 ---
