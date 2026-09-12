@@ -41,16 +41,41 @@ already-allowlisted table+WHERE shape (e.g. a second, redundant
 invisible to this runtime half -- phase-scoping closes the WRONG-drive
 version of this problem (a read migrating to a phase that never
 expected it) but cannot close the SAME-drive version, because both the
-old and the new call produce identical SQL on the identical phase. The
-STATIC half is what catches this class instead: `scan_relay_package()`
-flags every `.objects.`/`get_object_or_404(`/model-method call by
-`file:line`, so a genuinely new call site -- even one whose SQL is
-indistinguishable from an existing one -- fails
-`test_every_orm_site_in_the_relay_package_is_allowlisted` as an
-unlisted line. Verified directly: inserting the plan's own literal
-break-check text (`Channel.objects.filter(uuid=channel_id).first()`
-inside `stream_ts`) leaves this runtime half green and turns the
-static half red at the new line.
+old and the new call produce identical SQL on the identical phase.
+
+The STATIC half does NOT reliably cover this gap either, and the first
+draft of this paragraph overclaimed that it does. `scan_relay_package()`
+only flags three textual shapes -- `.objects.`, `get_object_or_404(`/
+`get_list_or_404(`, and a call whose attribute name is a model method
+(Ruling R2) -- so a second call to an already-imported PLAIN HELPER,
+such as a redundant `get_stream_object(channel_id)` added on the SAME
+source line inside stream_ts, is invisible to the static half too: it
+is an `ast.Name` call, not one of the three shapes, and it reaches the
+relay through `.url_utils`'s RELATIVE import, which `import_edges()`
+skips by construction (relative imports carry `node.level != 0`, filtered
+out at the top of that function) -- so there is no new EDGE either.
+Verified directly: this insertion leaves both halves green, 20 tests,
+OK.
+
+Where the earlier verification's own read was mistaken: inserting the
+plan's literal `Channel.objects.filter(uuid=channel_id).first()` *does*
+turn the static half red, but only because every SITE below the
+insertion point shifted down one line and the file:line ledger no
+longer matches -- the scanner is noticing that lines moved, not that a
+read was added. Move the same call to a line by itself with no other
+line-count change and the static half stays green too. A check that
+appears to catch a defect while actually detecting an unrelated side
+effect of the edit is the most deceptive shape found in this programme:
+it is a true positive for a false reason, and looks identical to a real
+catch until someone re-tests it by injection the way this one was.
+
+So the honest claim is narrower than the first draft's: neither half
+reliably catches a new call to an existing helper/model whose SQL
+coincides with an already-allowlisted signature on the same drive. This
+is not a gap this PR is scoped to close -- Ruling R1 already names depth
+and dynamic dispatch as static-half residuals, and Gate 1's own claim is
+a comment-cited allowlist, not exhaustiveness -- but the guard must not
+claim coverage here that it does not have.
 """
 
 import time
