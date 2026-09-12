@@ -14,7 +14,7 @@ Three findings, in descending order of how much they should change what anyone d
    `test_the_captured_cumulative_lead_must_burn_off_before_the_detector_arms` (parity row
    4) — failed **zero** times, across 116 executions in total. Its sibling
    `test_a_buffering_threshold_change_does_not_reach_a_running_channel` (parity row 5)
-   failed **28 of 72**, a 39% rate, in both the coverage and the plain arm. Row 5 has
+   failed **34 of 96**, a 35% rate, in both the coverage and the plain arm. Row 5 has
    never been seen to fail in CI; row 4 has been seen once. They fail at *opposite ends*
    of the machine-speed axis, which is why each is invisible where the other bites.
 2. **The mechanism for row 4 is measured and quantified, and it is not what the issue
@@ -32,6 +32,12 @@ Three findings, in descending order of how much they should change what anyone d
 
 The in-flight PR is exposed: the coverage matrix is **not** path-gated, so
 `Coverage apps.proxy.live_proxy.tests` runs on every non-docs push to any branch (§ 5).
+
+Added after three further observers reported row 5 (§ 3a, § 4a, § 7): the two tests
+**do not share a mechanism**, they share a design flaw and fail in opposite directions
+with machine speed; contention makes row 5 *more* reliable, not less, measured across
+three load levels; and `scripts/coverage_live_path_isolated.sh` loses a whole coverage
+round to this failure rather than one label.
 
 ## 1. Reproduction, with rates
 
@@ -67,10 +73,15 @@ docker exec \
 | G | coverage | 2 | row 4 alone | 20 | 0 | n/a |
 | H | plain | 2 | row 4 alone | 20 | 0 | n/a |
 | I | coverage | 0.5 | row 4 alone | 12 | 0 | n/a |
+| J | coverage, DEBUG | 14 | the class (5 tests) | 8 | 0 | 3 |
+| K | coverage, DEBUG | 14, 4 busy loops | the class (5 tests) | 8 | 0 | 3 |
+| L | coverage, DEBUG | 14, 24 busy loops | the class (5 tests) | 8 | 0 | **0** |
 
 Row 4 ran in every one of those runs (it sorts last in the class, and a row-5 failure does
-not stop it): **116 executions, 0 failures.** Row 5 ran in arms B–F: **72 executions, 28
-failures = 39%**, 25/62 (40%) under coverage and 3/10 under plain.
+not stop it): **140 executions, 0 failures.** Row 5 ran in arms B–F and J–L: **96
+executions, 34 failures = 35%** — 31/86 (36%) under coverage, 3/10 under plain. Arms J–L
+are the DEBUG-level captures § 2 measures the window from; they carry the same rate as the
+quiet arms, so the logging did not manufacture the effect it was used to observe.
 
 Row 5's failure text, copied verbatim from
 `scratchpad/covlabel/run-2.log` (arm B) — four distinct variants were seen, differing only
@@ -103,7 +114,8 @@ is not evidence that instrumentation is the discriminating variable (Fisher exac
 been observed.
 
 **I did not reproduce the failure #259 names.** That is a finding, not a gap in effort:
-116 local executions across five environments, including a 28× CPU spread, produced none.
+140 local executions across eight environments, spanning a 28x CPU-quota range and three
+host-load levels, produced none.
 § 2 explains why — the failure needs a discrete event that my environment never produced,
 and it says which one.
 
@@ -221,10 +233,56 @@ Time-based positioning: 5s behind -> index 0 (buffer head at 69)
 ```
 
 24 reads of 1880 bytes come straight out of that backlog at HTTP-round-trip speed, so the
-loop finishes in roughly 40–60 ms and spans **3** records where the assertion needs 4. It
-misses by about one record — ~20 ms. A *slower* machine spans more records and passes,
+loop finishes fast and spans too few records. A *slower* machine spans more and passes,
 which is exactly why this one is at 39% locally and unobserved in CI, and why row 4 is the
 reverse.
+
+### Row 5, measured directly
+
+Each status poll is an HTTP request and is logged by `urllib3` at DEBUG, so the whole loop
+is visible on the same clock as the stderr records it is sampling. Over 24 DEBUG-level
+runs (`manage.py test -v2` on the class, under coverage, at three host-load levels):
+
+| host load | 24-poll window | per poll | records in window | reader gap (median) | row 5 |
+|-----------|----------------|----------|-------------------|---------------------|-------|
+| idle | 51–57 ms | 2.2–2.5 ms | 2–3 | 21–22 ms | **3/8 fail** |
+| 4 busy loops (29% of 14 cores) | 53–57 ms | 2.3–2.5 ms | 2–3 | 21–23 ms | **3/8 fail** |
+| 24 busy loops (171% of cores) | 165–427 ms | 7.2–18.6 ms | 8–19 | 19–20 ms | **0/8 fail** |
+
+The arithmetic is exact, and the logs confirm it run by run:
+
+**`len(seen) == records_in_window + 1`** — the `+1` is the value already standing in Redis
+when the first of the 24 polls ran. Verified against every failure:
+
+| run | records parsed inside the window | asserted `seen` | standing value |
+|-----|----------------------------------|-----------------|----------------|
+| 2 | `6.8`, `5.27` | `[5.27, 6.8, 11.5]` | `11.5` |
+| 4 | `3.66`, `3.42` | `[3.42, 3.66, 3.98]` | `3.98` |
+| 6 | `6.8`, `5.27` | `[5.27, 6.8, 11.5]` | `11.5` |
+
+So `len(seen) >= 4` requires the window to contain **three** record boundaries. The window
+is ~52 ms and the record period is ~21 ms: **2.5 periods.** It therefore crosses three
+boundaries or two depending on where it happens to start inside a 21 ms period — an
+unbiased coin flip on sub-period phase, which is precisely the ~40–50% rate every observer
+has reported. The margin is **one record period, ~21 ms**, and it is phase, not noise.
+
+That also settles the mechanism question directly: **the stderr reader is not starved.**
+Its median inter-record gap is 19–23 ms in every condition including host saturation —
+flat, and equal to the corpus's own 0.02 s pacing. Records are not being dropped, batched
+or delayed; the *observer* is simply too fast. The hypothesis that contention starves the
+reader greenlet so fewer records are parsed is refuted by these 24 runs: under the load
+that would cause it, the reader's cadence is unchanged (19–20 ms) and the test passes
+8/8 because the window grew 3–8×.
+
+Note what the load curve is and is not sensitive to. Four busy loops on a 14-core host
+changed nothing measurable — the container was never starved. Only host *oversubscription*
+moved the window. A container sitting at ~20% of one core is roughly 1.4% of this machine,
+a third of the 4-hog condition that moved nothing, so a correlation between that and a
+failure run is not supported by this data; four consecutive failures is an ordinary draw
+from a ~40% coin (p ≈ 2.6%) over a session of many attempts.
+
+**The corollary is uncomfortable and worth stating: this test gets *more* reliable the
+worse the machine is.** It passes in CI because CI is slow.
 
 ## 3. Coverage instrumentation is not the variable
 
@@ -255,6 +313,57 @@ The repo precedent quoted in the issue — 2a-3's parity row 8 widening a tolera
 instrumentation slowdown — does not transfer here. That was a byte-count margin against
 work the tracer genuinely slows. This is a wall-clock margin against a constant it does
 not.
+
+## 3a. Do rows 4 and 5 share a mechanism?
+
+Three possibilities were put to me: two independent flakes, a mis-named issue, or one
+cause with scheduling deciding which test loses. **None of the three is right, and the
+most attractive one — a single shared cause — is the one the evidence rules out.**
+
+They share a **design flaw**, not a mechanism:
+
+> both observe a producer running on a corpus-fixed clock (the stderr reader writing
+> `ffmpeg_speed` and `state` into one Redis hash) through an observer whose cadence is set
+> by machine speed, and both report "the mechanism is absent" when what happened is "I did
+> not sample at the right moment".
+
+Below that, everything differs, including the sign:
+
+| | row 4 (burn-off) | row 5 (threshold snapshot) |
+|---|---|---|
+| what bounds the window | a **production constant** — `threading.Timer(0.5, …)` deciding when the client is served — against the corpus's 0.70 s lead | the **observer's own speed** — 24 HTTP round trips draining ring-buffer backlog |
+| window | ~290 ms | ~52 ms |
+| fails when the observer is | **too late** | **too fast** |
+| a slower machine | makes it **worse** | makes it **better** |
+| where it is seen | CI (1/32); never locally in 116 runs | locally (28/72); never in CI in 32 runs |
+| what the fix must do | stop depending on when the client was served | stop depending on how fast the client reads |
+
+"Which test loses is a matter of scheduling" would be true if they shared a cause. They do
+not: which one loses is decided by **the machine**, not by scheduling within a run, and it
+is decided in opposite directions. That is why the two have never been seen to fail in the
+same environment, and why #259 recording only one of them is not a mis-naming — the issue
+was filed from a CI log, and row 4 is the one that fails in CI.
+
+Consequences for the fix: **there is no single constant to change.** There is a single
+*principle* that repairs both — assert the transition, do not sample for it — and it lands
+as two unrelated edits (§ 4, § 4a).
+
+### Is there a third exposed test in this file? No — and here is the criterion
+
+The distinguishing property is whether the awaited condition **latches**:
+
+| test | condition | latches? | exposed |
+|------|-----------|----------|---------|
+| row 28 (scientific notation) | `ffmpeg_speed is not None`, with `stderr_interval=0.0` | yes — whole corpus written at spawn | no |
+| row 1 (sustained low speed) | `state == BUFFERING`, then `stream_id == alternate.id`, then `wait_until` on the event | yes — both persist once true | no |
+| **row 4** | `state == BUFFERING`, but asserts over snapshots taken **before** it | **no** — the lead is transient | **yes** |
+| **row 5** | none — a fixed count of reads, asserting over the snapshots | **no** — a fixed-width sample | **yes** |
+| row 6 (max switches) | `stream_id == alternate.id`, then `wait_until` on the event | yes — persists once switched | no |
+
+For a latching condition a missed sample costs one more loop iteration and nothing else.
+Rows 4 and 5 are the only two that assert over *transient* content, and they are exactly
+the two that flake. Anyone fixing these should apply the latching test to new ones rather
+than re-deriving this.
 
 ## 4. Options for a fix
 
@@ -296,25 +405,61 @@ If the margin arithmetic is to be relied on at all, the test should also *state*
 docstring is thorough about the corpus and silent about the 500 ms timer that halves its
 window.
 
-### Row 5 — replace the broken pacing device
+## 4a. Row 5 — and whether the `4` is load-bearing
+
+### What the guard proves at each value
+
+This was asked specifically, and the exact relation from § 2 answers it without guesswork.
+`len(seen) = records_in_window + 1`, where the `+1` is the value standing in Redis before
+the loop began. The guard's job is to prove records were **still being parsed after the
+settings change**, so that "the state never became BUFFERING" is not vacuously true
+because parsing had stopped:
+
+| threshold | records it proves were parsed after the loop started | verdict |
+|-----------|------------------------------------------------------|---------|
+| `>= 1` | **zero** — the one value may be the pre-existing standing value | **vacuous**; proves nothing at all |
+| `>= 2` | one | **the genuine floor** — the minimum that proves progress |
+| `>= 3` | two | margin |
+| `>= 4` (today) | three | margin |
+
+So the honest answer is narrower than "4 is load-bearing" and narrower than "lower it to
+3": **the guard stops proving anything at 1, and everything from 2 up is the same kind of
+proof with more margin.** Lowering 4 to 3 would not make the test vacuous — that is the one
+correction I would make to the framing I was given — and it would roughly halve the
+failure rate. But it does not *fix* anything: the window holds 2.5 record periods, the
+outcome is decided by sub-period phase, and the margin after the change is still one
+record period. On a machine 40% faster, `>= 3` fails exactly as `>= 4` does now. **Changing
+the constant moves the coin, it does not put it away.**
+
+There is a second reason not to treat this as a constant-tuning problem, and it is the more
+important one. The *property* the test exists to assert —
+`for info in after: assertNotEqual(info.get("state"), BUFFERING)` — is checked over the
+**same 24 snapshots**, i.e. a ~52 ms window spanning 2.5 corpus records. The guard firing
+is the visible symptom; the quiet problem is that on a *passing* run this test verifies its
+subject over about three progress records. **Widening the window fixes the guard and the
+property together; lowering the constant fixes neither and hides both.**
+
+### Replace the broken pacing device
 
 `chunks=24` was chosen as a proxy for elapsed time and is not one, because the client
-starts 61–69 chunks behind live. Options, best first:
+starts 61-69 chunks behind live (§ 2). Options, best first:
 
-1. **Make the stopping condition the observation**: extend `sample_while` with an `until=`
-   predicate over accumulated snapshots (e.g. "4 distinct `ffmpeg_speed` values seen since
-   the change"), bounded by the existing timeout. The test then cannot fail for having
-   looked too fast; it fails only if records genuinely stopped being parsed, which is what
-   it is there to prove. This is the row-5 analogue of the row-4 recommendation: assert
-   the thing, do not sample for it.
+1. **Make the stopping condition the observation.** Extend `sample_while` with an `until=`
+   predicate over accumulated snapshots — "N distinct `ffmpeg_speed` values seen since the
+   change" — bounded by the existing timeout. The test then cannot fail for having looked
+   too fast; it fails only if records genuinely stopped being parsed, which is exactly what
+   the guard is for, and the timeout keeps a real stall failing. This is row 5's analogue
+   of row 4's recommendation: assert the thing, do not sample for it. It also widens the
+   window for the property, because the loop now runs until the producer has demonstrably
+   advanced.
 2. **`set_proxy_settings(self, new_client_behind_seconds=0)`** so the client reads at live
-   and the drain is genuinely paced by the upstream. Better than today (24 chunks × 1880 B
-   at 250 KB/s ≈ 180 ms ≈ 9 records) but still a machine-speed-dependent margin, which is
-   the shape of bug being fixed.
-3. Raise `chunks` — same objection as widening row 4's tolerance, and it scales with the
-   backlog rather than with time.
+   and the drain is genuinely paced by the upstream (24 chunks x 1880 B at 250 KB/s
+   ~ 180 ms ~ 9 records). Better than today, and it removes the backlog coupling — but it
+   is still a machine-speed-dependent margin, which is the shape of bug being fixed. Good
+   as a companion to 1, not a substitute for it.
+3. Raise `chunks`, or lower the `4`. Both move the coin. See above.
 
-### Both — make the failure legible
+## 4b. Both — make the failure legible
 
 Whatever is chosen, the two assertion messages should name what was actually observed
 (snapshot count, elapsed wall clock of the sampling loop, the first and last
@@ -348,19 +493,61 @@ with the best ratio right now is not a code change at all: when
 `never observed the lead at all` or `too few distinct speeds` before investigating
 coverage.
 
+## 5a. A flaky test currently destroys a whole coverage round
+
+Reported by a third observer and confirmed from source, independent of the flake itself.
+
+`scripts/coverage_live_path_isolated.sh` opens with `set -euo pipefail` (line 12) and then
+drives the three labels in a bare loop:
+
+```bash
+declare -a PAIRS=(
+  "proxy:apps.proxy.tests"
+  "liveproxy:apps.proxy.live_proxy.tests"
+  "channels:apps.channels.tests"
+)
+for pair in "${PAIRS[@]}"; do
+  ...
+  docker exec "$c" bash -lc "... bash scripts/coverage_live_path.sh --label ${label}"
+  docker cp "${c}:/tmp/rd" "${OUT}/${suffix}"
+done
+```
+
+`--label` ends `run_label "$2"; exit $?` (`coverage_live_path.sh:552`), so it exits with the
+Django runner's status. Under `set -e` that aborts the loop. `liveproxy` is the **second**
+of three, so a row-5 failure means `channels` never runs, the `docker cp` never happens, and
+the combine/report/gate at the bottom is never reached — **the round produces no
+measurement at all** rather than a partial one or a named failure.
+
+Note the contrast with the in-container script, which handles this properly: its no-argument
+path collects failures into a `failed=()` array, runs every label anyway, and then prints
+"THE FIGURES BELOW ARE INVALID" before the numbers. The isolated wrapper has none of that
+and inherits `set -e` instead. The fix is the same shape — collect the failing labels, run
+the rest, report which died, exit non-zero — and it is worth doing regardless of what
+happens to these two tests, because the wrapper's current behaviour turns any future
+one-label failure into a silently lost round.
+
+Measured coverage impact of the row-5 failure *itself*, once the round completes: **none**.
+The four clean rounds' figures sit inside the spread of the failing rounds — consistent with
+the test aborting after the channel is already tuned and its lines already executed.
+
 ## 6. What I did not establish
 
-- **Which stall put the CI run on rung 2.** Named as a hypothesis in § 2 (GIL saturation
-  starving the in-process `FakeUpstream` while the stand-in's stderr clock runs free), not
-  demonstrated. The experiment that settles it is in § 2.
+- **Which stall put the CI run on rung 2** (row 4). Named as a hypothesis in § 2 (GIL
+  saturation starving the in-process `FakeUpstream` while the stand-in's stderr clock runs
+  free), not demonstrated. The experiment that settles it is in § 2. Note the host-load
+  measurements in § 2 do *not* test it: they starve the whole machine uniformly, whereas
+  this hypothesis needs the test process's GIL saturated while the stand-in, a separate
+  process, keeps its clock.
 - **Whether row 4 can fail without instrumentation.** 0/32 in CI's plain arm and 0/30 in
   local plain executions is consistent with both "coverage matters a little" and "the rung
   is rare and the arms are identical". § 3 argues from the margin measurement that the arms
   are identical; the event counts alone cannot separate them.
-- **Row 5's CI rate.** Zero observed in 64 CI label jobs, 39% locally. I have an
-  explanation for the gap (§ 2) but no CI-side measurement of it.
-- **The other three tests in the class.** `test_a_scientific_notation_speed_is_under_reported_as_its_mantissa`
-  and `test_a_sustained_speed_below_the_threshold_fails_the_channel_over` also drive
-  `sample_while`, and `test_a_buffering_failover_ignores_max_stream_switches` was not
-  examined at all. None failed in 72 class executions; that is weak evidence of safety, not
-  an audit.
+- **Row 5's CI rate.** Zero observed in 64 CI label jobs against 28/72 locally. § 2 now
+  gives a measured explanation for the gap (CI's slower round trips widen the window), but
+  I have taken no CI-side measurement of the window itself to confirm it there.
+- **Row 5's rate as a function of round-trip latency.** I have three load points and they
+  are consistent, but the transition between "fails half the time" and "never fails" was not
+  bracketed: nothing was measured between a 57 ms window and a 165 ms one. The prediction is
+  that the rate falls to zero once the window reliably exceeds ~63 ms (three record
+  periods); that is untested.
