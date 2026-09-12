@@ -80,6 +80,29 @@ def _signature_matches(sig, query):
     return True
 
 
+def _signature_phases(sig):
+    """The drive names this signature is eligible on, parsed from
+    `exercised_by`, or None for "any phase."
+
+    Review round finding: a signature eligible on every phase (the
+    original design) lets a query on drive B satisfy a signature whose
+    `exercised_by` names only drive A -- a wrong-drive match the offender
+    check cannot tell from a right-drive one, since both are "some
+    signature matched." Two concrete failures followed from this: an
+    injected Channel-by-uuid read on the STATUS phase passed because
+    "channel_by_uuid" (owner/follower only) was still globally eligible,
+    and the follower's own OutputProfile lookup going missing entirely
+    was invisible to the union-based exercised_by check because the
+    OWNER's identically-named signature had already fired on a different
+    phase. An EMPTY `exercised_by` stays eligible everywhere on purpose
+    -- it marks a cache-dependent read (Task 4 Step 3) that may
+    legitimately fire on any drive or none.
+    """
+    if not sig.exercised_by:
+        return None
+    return {p.strip() for p in sig.exercised_by.split(",")}
+
+
 def internal_get(base_url, path):
     """GET an internal /proxy/relay/... route the way relay_client.py does.
 
@@ -189,19 +212,42 @@ class RuntimeGuardTests(RelayHarnessTestCase):
     runs that hop in the API process behind nginx's auth_request.
     """
 
-    def _assert_allowlisted(self, captured, phase):
+    def _assert_allowlisted(self, captured, phase, signatures=None):
+        """Every query in `captured` matches a signature ELIGIBLE ON `phase`.
+
+        `signatures` defaults to SQL_SIGNATURES (the trusted-drive
+        policy list); the untrusted drive passes INLINE_AUTHORIZE_
+        SIGNATURES instead, so both paths route through one matcher --
+        review round Blocking 2's rule, stated in the module docstring:
+        no raw SQL-text check anywhere in this file outside this method.
+
+        Eligibility is scoped to `phase` (via _signature_phases), not
+        global: a signature named "owner tune, follower tune" cannot
+        cover a query that shows up on "status read" instead. Without
+        that scoping, a NEW read that happens to reuse an
+        already-allowlisted table+WHERE shape on the WRONG drive is
+        invisible -- exactly the shape of both Blocking findings in the
+        review round.
+        """
+        if signatures is None:
+            signatures = allowlist.SQL_SIGNATURES
+        eligible = [
+            sig for sig in signatures
+            if _signature_phases(sig) is None or phase in _signature_phases(sig)
+        ]
         offenders = []
         for query in relay_queries(captured):
-            if not any(_signature_matches(sig, query) for sig in allowlist.SQL_SIGNATURES):
+            if not any(_signature_matches(sig, query) for sig in eligible):
                 offenders.append((query.sql[:400], query.relay_frames))
         self.assertEqual(
             offenders,
             [],
-            f"\n{phase}: the relay executed a query matching no allowlisted "
-            f"signature.\n" + "\n".join(f"  {s}\n    via {f}" for s, f in offenders),
+            f"\n{phase}: the relay executed a query matching no signature "
+            f"eligible on this drive.\n"
+            + "\n".join(f"  {s}\n    via {f}" for s, f in offenders),
         )
         return {
-            sig.name for sig in allowlist.SQL_SIGNATURES
+            sig.name for sig in eligible
             for q in relay_queries(captured) if _signature_matches(sig, q)
         }
 
@@ -315,30 +361,34 @@ class RuntimeGuardTests(RelayHarnessTestCase):
             # The discriminating assertion, and the mechanical answer to
             # Step 6: only the follower branch can produce a lookup of
             # THIS id.
-            # NOT asserted here, and deliberately: a skipTest raised now
-            # would abort the method before the exercised_by ratchet
-            # below ever runs, so a defect that removes the OutputProfile
-            # read entirely (break-check 3) would report as a skip on
-            # this line instead of a targeted failure on that one -- a
-            # real regression hiding behind a structural finding. Recorded
-            # and checked once every other assertion in this method has
-            # had its chance to fire.
-            follower_skip_reason = None
-            if not any(
-                str(other_profile.id) in q.params
-                for q in relay_queries(captured)
-                if "core_outputprofile" in q.sql
-            ):
-                follower_skip_reason = (
-                    "no OutputProfile lookup named the follower's own "
-                    f"profile ({other_profile.id}). The second client did "
-                    "not take the per-client output-resolution branch -- "
-                    "either it re-ran the owner-init path in this "
-                    "single-process harness, or the profile came from the "
-                    "owner's already-resolved one. The follower axis is "
-                    "NOT covered here; report it as carried by "
-                    "e2e/tests/streaming/shared-upstream.spec.ts instead."
-                )
+            #
+            # Review round Blocking 1: this was a recorded skip reason,
+            # asserted only after the exercised_by ratchet below, on the
+            # theory that a skipTest here would mask that ratchet's own
+            # ability to catch the same regression (break-check 3). That
+            # reasoning does not survive contact with the evidence: 15+
+            # runs here and 14/14 for the round's reviewer never took the
+            # "cannot express the follower branch" path, so the
+            # conditional was a permanent hedge against a situation that
+            # never arose, not an observed limitation -- and Step 6's own
+            # rule is that when the assertion is OBSERVED TO HOLD, the PR
+            # says so and asserts it. There is no runtime signal that
+            # distinguishes "this harness cannot express the follower
+            # branch" from "the follower branch regressed", so a
+            # conditional here cannot be made sound either way. The
+            # honest form is the assertion.
+            self.assertTrue(
+                any(
+                    str(other_profile.id) in q.params
+                    for q in relay_queries(captured)
+                    if "core_outputprofile" in q.sql
+                ),
+                "no OutputProfile lookup named the follower's own profile "
+                f"({other_profile.id}). The second client did not take the "
+                "per-client output-resolution branch -- either it re-ran "
+                "the owner-init path in this single-process harness, or "
+                "the profile came from the owner's already-resolved one.",
+            )
 
             # The status read, WITHOUT ?fields=state -- that is what
             # reaches get_detailed_channel_info and the two fallbacks.
@@ -373,7 +423,7 @@ class RuntimeGuardTests(RelayHarnessTestCase):
                     self.live_server_url, f"/proxy/relay/channels/{identifier}"
                 )
                 self.assertEqual(stripped.status_code, 200)
-            fired_stripped = self._assert_allowlisted(captured, "status read, names stripped")
+            fired_stripped = self._assert_allowlisted(captured, "status read stripped")
             self.assertTrue(
                 fired_stripped - fired_status,
                 "stripping the names from the hash changed nothing about "
@@ -381,24 +431,35 @@ class RuntimeGuardTests(RelayHarnessTestCase):
                 "this drive proves no more than the one above it",
             )
 
-        fired = fired_tune | fired_follower | fired_status | fired_stripped
-        expected = {
-            sig.name for sig in allowlist.SQL_SIGNATURES if sig.exercised_by
-        }
-        self.assertEqual(
-            fired & expected,
-            expected,
-            "an allowlisted signature marked as exercised did not fire. "
-            "Either the read is gone -- delete the entry, that is the "
-            "ratchet -- or this drive no longer reaches it.",
-        )
-
-        # Global Constraint 11: skipTest, never delete or weaken -- but
-        # only now, after every other assertion in this method has had
-        # its chance to fire on its own merits (see the comment where
-        # follower_skip_reason is set).
-        if follower_skip_reason is not None:
-            self.skipTest(follower_skip_reason)
+        # Review round SF3: per-drive, not a flat union. A signature
+        # marked exercised_by="owner tune" firing only on "status read"
+        # is a wrong-drive match the old union+intersection could not
+        # see -- it only asked "did the name show up somewhere", never
+        # "on the drive it claims". This is what would have caught
+        # break-check 6 (follower reuses the owner's profile) on its
+        # own, without needing the explicit assertion above: under that
+        # defect, "follower tune" fires no core_outputprofile query at
+        # all, so output_profile_for_this_client drops out of
+        # fired_follower specifically.
+        for phase_name, fired in (
+            ("owner tune", fired_tune),
+            ("follower tune", fired_follower),
+            ("status read", fired_status),
+            ("status read stripped", fired_stripped),
+        ):
+            expected_here = {
+                sig.name for sig in allowlist.SQL_SIGNATURES
+                if _signature_phases(sig) and phase_name in _signature_phases(sig)
+            }
+            self.assertEqual(
+                fired & expected_here,
+                expected_here,
+                f"{phase_name}: a signature marked exercised_by this drive "
+                "did not fire on it. Either the read is gone -- delete the "
+                "entry, that is the ratchet -- or this drive no longer "
+                "reaches it, or it now fires on a different drive and "
+                "exercised_by needs updating to say so.",
+            )
 
     def test_an_untrusted_tune_executes_a_recorded_set_and_no_other(self):
         """The branch the trusted-only rule cannot reach (Ruling R6).

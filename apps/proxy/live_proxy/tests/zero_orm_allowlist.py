@@ -517,14 +517,14 @@ SQL_SIGNATURES = (
         name="stream_name_fallback",
         sql_fragment='FROM "dispatcharr_channels_stream" WHERE "dispatcharr_channels_stream"."id" = %s',
         table_model="dispatcharr_channels.Stream",
-        exercised_by="status read, names stripped",
+        exercised_by="status read stripped",
         reason="channel_status.py:74's Stream.objects.filter(id=stream_id).first() -- fires only once STREAM_NAME is absent from the hash. Row 18.",
     ),
     Signature(
         name="m3u_profile_name_fallback",
         sql_fragment='FROM "m3u_m3uaccountprofile" WHERE "m3u_m3uaccountprofile"."id" = %s',
         table_model="m3u.M3UAccountProfile",
-        exercised_by="status read, names stripped",
+        exercised_by="status read stripped",
         reason="channel_status.py:106's M3UAccountProfile.objects.filter(id=m3u_profile_id).first() -- fires only once M3U_PROFILE_NAME is absent from the hash. Row 18.",
     ),
     Signature(
