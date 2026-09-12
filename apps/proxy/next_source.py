@@ -723,10 +723,29 @@ def _with_output_profiles(answer):
     """
     from core.models import OutputProfile
 
-    answer["output_profiles"] = {
-        str(profile.id): {"id": profile.id, "argv": profile.build_command()}
-        for profile in OutputProfile.objects.filter(is_active=True)
-    }
+    output_profiles = {}
+    for profile in OutputProfile.objects.filter(is_active=True):
+        try:
+            argv = profile.build_command()
+        except ValueError:
+            # OutputProfileSerializer validates nothing, so an unbalanced
+            # quote in `parameters` can already be sitting in the
+            # database (issue found in review: B1). Before this map
+            # existed, a malformed row only broke the clients that
+            # selected it (views.py's stream_ts, inside its own broad
+            # except); folding EVERY active profile into EVERY
+            # next-source answer means one bad row would otherwise 500
+            # next-source for every channel, on every tune, failover and
+            # resume, regardless of which profile that channel uses.
+            # Skip it and keep the rest of the map serving.
+            logger.error(
+                "OutputProfile %s has unparseable parameters; omitting "
+                "it from next-source's output_profiles map",
+                profile.id,
+            )
+            continue
+        output_profiles[str(profile.id)] = {"id": profile.id, "argv": argv}
+    answer["output_profiles"] = output_profiles
     return answer
 
 

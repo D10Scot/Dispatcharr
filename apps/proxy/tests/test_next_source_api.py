@@ -561,3 +561,45 @@ class OutputProfilesOnTheContractTests(RelayApiTestCase):
         self.assertNotIn(
             str(seeded.id), self._next_source(self.channel.uuid)["output_profiles"]
         )
+
+    def test_a_malformed_active_profile_is_skipped_not_a_500(self):
+        # Review finding B1. OutputProfileSerializer validates nothing,
+        # so an unbalanced quote in `parameters` can already be sitting
+        # in the database. Before output_profiles existed, a malformed
+        # row broke only the clients that selected it; folding EVERY
+        # active profile into EVERY next-source answer means one bad row
+        # would otherwise 500 next-source for every channel on every
+        # tune, failover and resume -- regardless of which profile that
+        # channel uses. Assert absence explicitly: a call that merely
+        # succeeds could still be silently missing the good rows too.
+        from core.models import OutputProfile
+
+        good = OutputProfile.objects.create(
+            name="2b2-good",
+            command="ffmpeg",
+            parameters="-i pipe:0 -c:a ac3 pipe:1",
+            is_active=True,
+        )
+        bad = OutputProfile.objects.create(
+            name="2b2-malformed",
+            command="ffmpeg",
+            parameters='-i pipe:0 "unterminated',
+            is_active=True,
+        )
+        # Confirm the fixture actually reproduces the failure mode this
+        # test exists to guard -- if shlex ever stops raising on this
+        # input, the test above would pass for the wrong reason.
+        with self.assertRaises(ValueError):
+            bad.build_command()
+
+        answer = self._next_source(self.channel.uuid)
+
+        self.assertNotIn(str(bad.id), answer["output_profiles"])
+        self.assertIn(str(good.id), answer["output_profiles"])
+        self.assertEqual(
+            answer["output_profiles"][str(good.id)],
+            {
+                "id": good.id,
+                "argv": ["ffmpeg", "-i", "pipe:0", "-c:a", "ac3", "pipe:1"],
+            },
+        )
