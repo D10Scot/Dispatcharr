@@ -1512,6 +1512,24 @@ Expected: PASS.
 6. **The follower's own profile lookup.** In `views.py:712`, replace `_output_profile_for(decision, request, user)` with the owner's already-resolved value (`resolved_output_profile`). Expected: the distinct-profile assertion fails naming the follower's id. **This is the check that the follower drive is a second drive and not a second copy of the first** — with identical headers it would have passed here, which is why the headers differ. Revert.
 7. **Both status fallbacks, deleted.** Delete `channel_status.py:72-78` and `:103-110`. Expected: the **names-stripped** drive fails its `fired_stripped - fired_status` assertion; the plain status drive stays green, which is the point — the plain one is an addition detector and cannot see a removal. Revert.
 
+**Which phase can fail, and which are green by construction.** Five green phases are not five proofs, and a reader who is not told which is which will assume they are. Each break-check above must redden the phases named here and leave the rest green; a phase going red that this table says cannot is a finding about the guard, not a pass.
+
+| Break-check | owner | follower | status | status-stripped | untrusted |
+|---|---|---|---|---|---|
+| 1 — new ORM read inside `stream_ts` | **red** | **red** | — | — | **red** |
+| 2 — new ORM read inside `get_detailed_channel_info` | — | — | **red** | **red** | — |
+| 5 — 2b-2's surface split backed out | **red** | **red** | — | — | — |
+| 6 — follower reuses the owner's resolved profile | — | **red** | — | — | — |
+| 7 — both `channel_status.py` fallbacks deleted | — | — | — | **red** | — |
+| 5b-2 — `views.py:134`'s `CoreSettings` call deleted | — | — | — | — | **red** |
+
+Two rows in that table are settled facts about the call graph, not guesses, and both were checked rather than assumed:
+
+- **The follower phase *can* fail under break-check 5.** `stream_ts`'s signature is `stream_ts(request, channel_id, user=None, force_output_format=None, decision=None)` and its body opens `if decision is None: decision = resolve_authorization(...)` (`views.py:161-169`). The `decision=` parameter has exactly one caller — `views.py:870`, where `stream_xc` hands its own decision down **inside one request** (parity row 15). Nothing carries a decision *between* requests, so the follower tune is an independent request with `decision=None` and runs `result_from_headers` exactly as the owner does. A follower being served from an already-resolved decision would make this phase green by construction; it is not what the code does.
+- **Neither status phase can fail under break-check 5, and that is structural.** `channel_view` is `@authentication_classes([])` + `@permission_classes([IsInternalRelay])` (`relay_views.py:141-144`). It never calls `resolve_authorization`, so `result_from_headers` is not on that path at all. The status phases carry the `get_detailed_channel_info` axis (rows 2 and 7) and nothing about the authorize hop.
+
+So each of the five phases earns its place on at least one row, and no row is carried by more phases than actually run the code it breaks.
+
 - [ ] **Step 5b: The fourth drive — an untrusted tune, characterized not gated**
 
 Steps 1–5 prove a property about **trusted** tunes only, and that is structural (Ruling R6): an untrusted tune runs `authorize_stream` inline from a `live_proxy` frame, so the stack discriminator would attribute the hop's queries to the relay, where production runs that hop in the API process behind nginx's `auth_request`. Widening the attributor to exempt authorize frames would encode a judgment in the mechanism and would mask a genuine relay read that happened to sit in an authorize module; driving untrusted tunes against `SQL_SIGNATURES` would force a dozen hop queries into the policy allowlist with "not really the relay's" reasons, diluting it and making the edge counts noisy.
@@ -1879,7 +1897,7 @@ The PR description must carry, because the 2c-1 precondition and the reviewers d
 4. **Issue [#265](https://github.com/D10Scot/Dispatcharr/issues/265)** — filed during planning, cited in `channel_status.py:106`'s allowlist entry, deliberately not fixed here (relay-internal, D10).
 5. **Row 18's answer and its evidence**, and that the reads survive rather than being deleted.
 6. **The three findings the spec's table does not have**: `views.py:134`, `resolve_source`'s liveness, and the `:92`→`:106` drift.
-7. **Whether the follower axis was actually observed** (Task 4 Step 6), stated either way — and that the untrusted path is characterized (Step 5b), not gated.
+7. **Whether the follower axis was actually observed** (Task 4 Step 6), stated either way; that the untrusted path is characterized (Step 5b), not gated; and **Task 4 Step 5's phase table** — which of the five drives each break-check can redden, so five green phases are not read as five proofs.
 8. That Gate 1 is closed and Gate 2's floor is untouched (every new file is under `tests/`, which the rcfile omits; 2b-3 moves only `missing`, downward, which the ratchet permits without a floor edit). **Tell 2b-4**: Task 5's fixtures close `:72-78`, so a 2b-4 measurement taken before this lands over-counts by that block.
 
 ---
