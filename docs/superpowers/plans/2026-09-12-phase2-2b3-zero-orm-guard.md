@@ -4,7 +4,7 @@
 
 **Goal:** Build a two-part guard — static and runtime — that makes "the relay reaches the ORM at exactly these named sites, for these written reasons" a checked fact rather than a claim, record the answer to parity-matrix row 18, and close Gate 1.
 
-**Architecture:** Part 1 is an **AST** scanner, not a grep, because the prescribed grep fails in both directions (issue #253: it misses `channel.get_stream_profile()`, and it counts a docstring that quotes the ORM line it replaced). It scans two scopes — every non-test file under `apps/proxy/live_proxy/`, and every first-party symbol those files import in-process — for three shapes: a `.objects` attribute, a `get_object_or_404`/`get_list_or_404` call, and a call whose attribute name is a method defined on a Django model class anywhere in the tree. Part 2 is a runtime check that patches `django.db.backends.utils.CursorWrapper` at class level (global across threads, which a per-connection `CaptureQueriesContext` is not under `LiveServerTestCase`), attributes each captured query to the relay or to the control plane **by stack frame**, and drives a real tune, a real follower tune and a real status read through 2a's subprocess harness. Both parts check against one comment-cited allowlist, `apps/proxy/live_proxy/tests/zero_orm_allowlist.py`.
+**Architecture:** Part 1 is an **AST** scanner, not a grep, because the prescribed grep fails in both directions (issue #253: it misses `channel.get_stream_profile()`, and it counts a docstring that quotes the ORM line it replaced). It scans two scopes — every non-test file under `apps/proxy/live_proxy/`, and every first-party symbol those files import in-process — for three shapes: a `.objects` attribute, a `get_object_or_404`/`get_list_or_404` call, and a call whose attribute name is a method defined on a Django model class anywhere in the tree. Part 2 is a runtime check that patches `django.db.backends.utils.CursorWrapper` at class level (global across threads, which a per-connection `CaptureQueriesContext` is not under `LiveServerTestCase`), attributes each captured query to the relay or to the control plane **by stack frame**, and drives five real requests through 2a's subprocess harness — an owner tune, a follower tune asking for a different Output Profile, an untrusted tune, and the status path read both as-tuned and with the names stripped. Both parts check against one comment-cited allowlist, `apps/proxy/live_proxy/tests/zero_orm_allowlist.py`.
 
 **Tech Stack:** Python `ast`, Django `TestCase`/`LiveServerTestCase`, the 2a relay harness (`apps/proxy/live_proxy/tests/harness/`), real Redis, real Postgres, Playwright only for the parity-matrix guard (`e2e/tests/guards/parity-matrix.spec.ts`, Node-only, no container).
 
@@ -555,7 +555,7 @@ query: it cannot see a property that queries, a getattr dispatch, or an
 ORM read more than one import hop away. See zero_orm_scan.py's docstring.
 
 Part 2 is runtime, and it is the one that proves the property. It drives
-a real tune, a real follower tune and a real status read through 2a's
+five real drives through 2a's
 subprocess harness with every SQL statement recorded, and holds what the
 relay executed against the same allowlist.
 
@@ -1149,7 +1149,13 @@ from django.db.backends.utils import CursorWrapper
 
 RELAY_PREFIX = "/apps/proxy/live_proxy/"
 
-Query = namedtuple("Query", "sql relay_frames")
+# params, not just sql: the SQL text carries placeholders, so two
+# queries against the same table are byte-identical however different
+# the rows they ask for. Task 4's follower drive distinguishes itself
+# from the owner drive by the OutputProfile id it asks for, and that id
+# is only visible here. Failure messages print sql and never params, so
+# a later non-test use of this helper cannot widen what gets logged.
+Query = namedtuple("Query", "sql params relay_frames")
 
 _lock = threading.Lock()
 
@@ -1173,16 +1179,16 @@ def capture_queries():
     real_execute = CursorWrapper.execute
     real_executemany = CursorWrapper.executemany
 
-    def record(sql):
+    def record(sql, params):
         with _lock:
-            captured.append(Query(str(sql), tuple(_relay_frames())))
+            captured.append(Query(str(sql), repr(params), tuple(_relay_frames())))
 
     def execute(self, sql, params=None):
-        record(sql)
+        record(sql, params)
         return real_execute(self, sql, params)
 
     def executemany(self, sql, param_list):
-        record(sql)
+        record(sql, param_list)
         return real_executemany(self, sql, param_list)
 
     CursorWrapper.execute = execute
@@ -1242,11 +1248,11 @@ the relay's iff some frame is a non-test file under live_proxy/.
 
 - [ ] **Step 1: Write the failing test**
 
-Three drives, because owner-versus-follower is a systematic axis (Global Constraint 4) and because the spec is explicit that a tune-only runtime check would never execute the fallback reads under discussion, which are on the **status** path.
+**Five drives.** Owner-versus-follower is a systematic axis (Global Constraint 4); the spec is explicit that a tune-only runtime check would never execute the fallback reads under discussion, which are on the **status** path; and each drive must be able to fail for a reason no other drive covers, or it is a copy rather than a drive. The owner and follower ask for *different* Output Profiles, and the status path is read twice — once as tuned, and once with the two names stripped from the hash, which is the only drive in which `channel_status.py`'s fallbacks actually run.
 
 ```python
 class RuntimeGuardTests(RelayHarnessTestCase):
-    """What the relay actually executes, on a tune, a follower and a status read.
+    """What the relay actually executes, across five drives.
 
     This is the half that proves the property. Part 1 sees code; this
     sees execution, and the two disagree on purpose in at least one
@@ -1358,7 +1364,25 @@ class RuntimeGuardTests(RelayHarnessTestCase):
             # The follower: a second client on a running channel, which
             # makes NO next-source call at all (2b-2 Ruling R3) and takes
             # views.py:712 rather than :605.
-            follower_headers = dict(headers, **{"X-Relay-Client": "client_2b3_follower"})
+            #
+            # It asks for a DIFFERENT OutputProfile, and that is what
+            # makes it a second drive rather than a second copy of the
+            # first. With the same headers as the owner, every assertion
+            # below is satisfied by the owner's own queries and the
+            # follower drive cannot fail on its own -- the owner/follower
+            # axis meeting Global Constraint 1. A distinct id means the
+            # `SELECT ... FROM core_outputprofile` carrying THAT id can
+            # only have come from this request, so the assertion after
+            # the drive fails if the follower path is skipped, short-
+            # circuited, or served from the owner's resolved profile.
+            other_profile = OutputProfile.objects.create(
+                name="2b3-guard-follower", command="ffmpeg",
+                parameters="-i {streamUrl} -f mpegts pipe:1", is_active=True,
+            )
+            follower_headers = dict(headers, **{
+                "X-Relay-Client": "client_2b3_follower",
+                "X-Relay-Output": str(other_profile.id),
+            })
             with capture_queries() as captured:
                 follower = requests.get(
                     f"{self.live_server_url}/proxy/ts/stream/{identifier}",
@@ -1368,6 +1392,21 @@ class RuntimeGuardTests(RelayHarnessTestCase):
                 self.assertEqual(follower.status_code, 200)
                 next(follower.iter_content(chunk_size=188))
             fired_follower = self._assert_allowlisted(captured, "follower tune")
+            # The discriminating assertion, and the mechanical answer to
+            # Step 6: only views.py:712 can produce a lookup of THIS id.
+            self.assertTrue(
+                any(
+                    str(other_profile.id) in q.params
+                    for q in relay_queries(captured)
+                    if "core_outputprofile" in q.sql
+                ),
+                "no OutputProfile lookup named the follower's own profile "
+                f"({other_profile.id}). The second client did not take "
+                "views.py:712 -- either it re-ran the owner-init path in "
+                "this single-process harness, or the profile came from "
+                "the owner's already-resolved one. Report the follower "
+                "axis as NOT covered here rather than asserting it.",
+            )
 
             # The status read, WITHOUT ?fields=state -- that is what
             # reaches get_detailed_channel_info and the two fallbacks.
@@ -1378,7 +1417,39 @@ class RuntimeGuardTests(RelayHarnessTestCase):
                 self.assertEqual(status.status_code, 200)
             fired_status = self._assert_allowlisted(captured, "status read")
 
-        fired = fired_tune | fired_follower | fired_status
+            # A FIFTH drive, and the status path's only discriminating
+            # one. The drive above reads a channel this harness tuned
+            # against a current Django, so tune_extras supplied every
+            # name and the hash has them -- meaning channel_status.py's
+            # two fallbacks never fire and that drive would pass with
+            # both DELETED. It is an addition detector (break-check 2
+            # proves that much) and nothing more; on its own it
+            # contributes no exercised_by and cannot fail on a removal.
+            #
+            # Strip the two names from the hash and read again. Now the
+            # fallbacks run, against real Postgres, and the two
+            # allowlisted sites become observable -- so their entries can
+            # carry exercised_by and their deletion turns this red.
+            redis = ProxyServer.get_instance().redis_client
+            redis.hdel(
+                RedisKeys.channel_metadata(identifier),
+                ChannelMetadataField.STREAM_NAME,
+                ChannelMetadataField.M3U_PROFILE_NAME,
+            )
+            with capture_queries() as captured:
+                stripped = internal_get(
+                    self.live_server_url, f"/proxy/relay/channels/{identifier}"
+                )
+                self.assertEqual(stripped.status_code, 200)
+            fired_stripped = self._assert_allowlisted(captured, "status read, names stripped")
+            self.assertTrue(
+                fired_stripped - fired_status,
+                "stripping the names from the hash changed nothing about "
+                "which queries ran, so the two fallbacks did not fire and "
+                "this drive proves no more than the one above it",
+            )
+
+        fired = fired_tune | fired_follower | fired_status | fired_stripped
         expected = {
             sig.name for sig in allowlist.SQL_SIGNATURES if sig.exercised_by
         }
@@ -1438,6 +1509,8 @@ Expected: PASS.
 3. **A read that vanishes.** Delete `views.py:149-155`'s body and `return None`. Expected: the `exercised_by` assertion fails naming `output_profile_for_this_client`. Revert. If it does **not** fail, the `exercised_by` mechanism is hollow — stop and fix it.
 4. **The attribution.** Change `RELAY_PREFIX` to something that matches nothing. Expected: the test passes — which is the vacuous state, and is why `test_the_table_names_in_every_signature_are_real` and Task 3's tests exist. Note in the PR description that this is a known unguarded direction of part 2, covered by Task 3's suite rather than by this test. Revert.
 5. **2b-2's surface split, backed out.** In `authorize_views.py`'s `result_from_headers`, delete the `if surface in (SURFACE_LIVE, SURFACE_LIVE_XC):` arm so every surface takes the `else` branch. Expected: the owner-tune phase fails with a `SELECT … FROM accounts_user` offender carrying a `live_proxy/views.py:` frame. **If it does not go red, `X-Relay-User` is not naming a real row** and the drive is hollow — that is the whole reason `GUARD_VIEWER_ID` exists. Revert.
+6. **The follower's own profile lookup.** In `views.py:712`, replace `_output_profile_for(decision, request, user)` with the owner's already-resolved value (`resolved_output_profile`). Expected: the distinct-profile assertion fails naming the follower's id. **This is the check that the follower drive is a second drive and not a second copy of the first** — with identical headers it would have passed here, which is why the headers differ. Revert.
+7. **Both status fallbacks, deleted.** Delete `channel_status.py:72-78` and `:103-110`. Expected: the **names-stripped** drive fails its `fired_stripped - fired_status` assertion; the plain status drive stays green, which is the point — the plain one is an addition detector and cannot see a removal. Revert.
 
 - [ ] **Step 5b: The fourth drive — an untrusted tune, characterized not gated**
 
@@ -1508,7 +1581,11 @@ Add `INLINE_AUTHORIZE_SIGNATURES` to `zero_orm_allowlist.py` beside `SQL_SIGNATU
 
 - [ ] **Step 6: Verify the follower branch is genuinely the follower branch**
 
-The follower drive is only a second axis if it takes `views.py:712` rather than `:605`. Confirm it by patching a `logger.info` marker into each branch and reading the harness's captured log for one run, or by asserting `proxy_server.am_i_owner(identifier)` is still the owner's worker while the second request is in flight. If the second request in fact re-runs the owner-init path in this single-process harness, say so in the PR description and mark the follower axis **not covered here**, with `e2e/tests/streaming/shared-upstream.spec.ts` named as what does cover it. Do not report a covered axis you did not observe.
+The distinct-profile assertion added in Step 1 is now the mechanical answer to this — the follower's own `OutputProfile` id can only be looked up by `views.py:712`. So this step is no longer "observe by hand"; it is **read what that assertion did**.
+
+If it **passes**, the follower axis is covered and the PR description says so, citing the assertion.
+
+If it **fails**, do not weaken it. It means the second client re-ran the owner-init path in this single-process harness — `views.py:619-622` short-circuits `initialize_channel` within one process, and `docs/relay-parity-matrix.md`'s row 10 records exactly that defeating a different harness assertion. In that case: keep the drive, convert the assertion to a `self.skipTest` carrying the same message, say in the PR description that the follower axis is **not covered here**, and name `e2e/tests/streaming/shared-upstream.spec.ts` as what does cover it. Do not report a covered axis you did not observe, and do not delete the assertion to make the suite green — a skip that names the reason is evidence; a deletion is not.
 
 - [ ] **Step 7: Commit**
 
@@ -1517,7 +1594,7 @@ git add apps/proxy/live_proxy/tests/test_zero_orm_reads.py apps/proxy/live_proxy
 ```
 
 ```
-test(phase2): the runtime half -- a tune, a follower and a status read (2b-3 task 4)
+test(phase2): the runtime half -- five drives, each able to fail alone (2b-3 task 4)
 
 The half that proves the property part 1 only ratchets. Every SQL
 statement the process executes is recorded and attributed by stack
@@ -1769,7 +1846,7 @@ c. At the `#253` paragraph (line ~1645) — record that `resolve_source` is **no
 
 In § Testing, after the Gate 2 paragraph:
 
-> **Gate 1 is closed.** `apps/proxy/live_proxy/tests/test_zero_orm_reads.py` holds the relay to `zero_orm_allowlist.py` two ways — an AST scan of the package and its in-process import edges, and a runtime record of every SQL statement a tune, a follower tune and a status read execute, attributed to the relay by stack frame. **The static half is a ratchet, not a proof**: it cannot see a property that queries, a `getattr` dispatch, or an ORM read more than one import hop out of the package, so a green static run is never evidence of zero ORM reads — the runtime half carries that.
+> **Gate 1 is closed.** `apps/proxy/live_proxy/tests/test_zero_orm_reads.py` holds the relay to `zero_orm_allowlist.py` two ways — an AST scan of the package and its in-process import edges, and a runtime record of every SQL statement five real drives execute, attributed to the relay by stack frame. **The static half is a ratchet, not a proof**: it cannot see a property that queries, a `getattr` dispatch, or an ORM read more than one import hop out of the package, so a green static run is never evidence of zero ORM reads — the runtime half carries that.
 
 - [ ] **Step 3: Close issue #253**
 
@@ -1798,7 +1875,7 @@ The PR description must carry, because the 2c-1 precondition and the reviewers d
 
 1. **The allowlist, entry by entry**, each with its `closed_by` — spec line 1769 makes 2c-1 restate every one, and `views.py:153`'s is 2b-2 Ruling R3's paragraph verbatim.
 2. **What the guard cannot see**, R1's three residuals, stated before the claims and not after them.
-3. **Every break-check and its failure text** — Task 1 Step 5 (3), Task 2 Step 6 (4), Task 3 Step 5 (3), Task 4 Step 5 (5) and Step 5b (2), Task 5 Step 3 (3), Step 3b (1) and Step 6 (1). Twenty-two. A break-check that did not go red is a finding; report it as one. Two of them are load-bearing beyond their own step: Task 4 Step 5's fifth backs out 2b-2's surface split and must turn the guard red, or `X-Relay-User` is not naming a real row and the drive proves nothing; Task 4 Step 5b's second deletes `views.py:134` and must turn the fourth drive red, or that drive reached nothing.
+3. **Every break-check and its failure text** — Task 1 Step 5 (3), Task 2 Step 6 (4), Task 3 Step 5 (3), Task 4 Step 5 (7) and Step 5b (2), Task 5 Step 3 (3) and Step 3b (1). Twenty-three. A break-check that did not go red is a finding; report it as one. Four are load-bearing beyond their own step, and each proves that one drive can fail alone: Step 5's fifth backs out 2b-2's surface split (or `X-Relay-User` names no real row and the owner drive proves nothing); its sixth makes the follower reuse the owner's profile (or the follower drive is a second copy of the first); its seventh deletes both status fallbacks, which must redden the names-stripped drive and must leave the plain status drive green; and Step 5b's second deletes `views.py:134` (or the untrusted drive reached nothing).
 4. **Issue [#265](https://github.com/D10Scot/Dispatcharr/issues/265)** — filed during planning, cited in `channel_status.py:106`'s allowlist entry, deliberately not fixed here (relay-internal, D10).
 5. **Row 18's answer and its evidence**, and that the reads survive rather than being deleted.
 6. **The three findings the spec's table does not have**: `views.py:134`, `resolve_source`'s liveness, and the `:92`→`:106` drift.
@@ -1817,6 +1894,6 @@ The PR description must carry, because the 2c-1 precondition and the reviewers d
 
 **Where this plan does not know.**
 
-- **Whether the harness's second client genuinely takes the follower branch.** Single process, single `ProxyServer`, and `views.py:619-622` short-circuits `initialize_channel` within one process — `docs/relay-parity-matrix.md`'s row 10 notes exactly this defeating a different harness assertion. Task 4 Step 6 requires the implementer to observe it and to say so if it does not hold, rather than reporting a covered axis.
+- **Whether the harness's second client genuinely takes the follower branch.** Single process, single `ProxyServer`, and `views.py:619-622` short-circuits `initialize_channel` within one process — `docs/relay-parity-matrix.md`'s row 10 notes exactly this defeating a different harness assertion. This is now *asserted* rather than observed: the follower asks for its own `OutputProfile` and only `views.py:712` can look that id up. If the assertion fails, Step 6 says to convert it to a named `skipTest` and report the axis as uncovered — never to delete it.
 - **Exactly which queries a tune executes.** The signature list in Task 4 Step 3 is shaped from the static measurement, not from a run; the step is explicitly measure-then-type. What would settle it: running Task 4's test against the tree.
 - **Whether `exercised_by` is stable enough to gate on.** Three regions of this relay are known to flap between runs. Task 4 Step 3 restricts the marker to deterministic reads and Step 5's third break-check verifies the mechanism bites at all; if it proves flaky in CI, the honest fix is to drop the marker on the flapping entry and say so, not to add a tolerance.
