@@ -197,9 +197,15 @@ def apply_event_batch(events):
         # User row on a live surface (apps/proxy/authorize_views.py's
         # result_from_headers, 2b-2 Ruling R1). Resolve
         # the display name here, where the SystemEvent write already
-        # runs. An explicit username from the untrusted path wins; an
-        # unknown id becomes None, exactly what the relay used to send
-        # for an anonymous client.
+        # runs. Neither client_connect nor client_disconnect sends an
+        # explicit username any more -- both generators were converted
+        # to user_id by this PR -- but the "username" not in details
+        # guard still matters: VOD's vod_start/vod_stop
+        # (apps/proxy/vod_proxy/multi_worker_connection_manager.py:911)
+        # is untouched by 2b-2 and still sends one, and an explicit
+        # value from that path must keep winning over a resolution
+        # attempt. An unknown id becomes None, exactly what the relay
+        # used to send for an anonymous client.
         user_id = details.pop("user_id", None)
         if user_id and "username" not in details:
             details["username"] = _username_for(user_id)
