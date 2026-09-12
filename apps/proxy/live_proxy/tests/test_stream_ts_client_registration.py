@@ -501,6 +501,35 @@ class StreamTsClientRegistrationTests(SimpleTestCase):
         self.assertEqual(kwargs["output_format"], "fmp4")
 
 
+def _trusted_request(helper, user_id=""):
+    """A real trusted request, headers only -- resolve_authorization runs unpatched.
+
+    Review finding S1: the original TrustedTuneQueriesNoUserRowTests
+    patched apps.proxy.live_proxy.views.resolve_authorization directly,
+    so result_from_headers -- the function this class's docstring says
+    it makes a rule -- never ran. The zero-query property was pinned
+    elsewhere (SurfaceSplitPremiseTests, test_authorize_view.py) but not
+    here, despite the docstring's claim. Building the real headers and
+    letting resolve_authorization run for real is what makes the
+    property structural rather than a property of an access pattern --
+    the same distinction the 2b-2 plan's Ruling R1 draws.
+    """
+    from apps.proxy.internal_auth import relay_trust_token
+
+    request = helper.factory.get(
+        f"/proxy/ts/stream/{helper.channel_id}/",
+        HTTP_X_DISPATCHARR_AUTHORIZED=relay_trust_token(),
+        HTTP_X_RELAY_CHANNEL=helper.channel_id,
+        HTTP_X_RELAY_CLIENT="client_test_1",
+        HTTP_X_RELAY_USER=user_id,
+        HTTP_X_RELAY_OUTPUT="",
+        HTTP_X_RELAY_OUTPUT_FORMAT="fmp4",
+        HTTP_X_RELAY_CLIENT_IP="203.0.113.9",
+    )
+    request.user = MagicMock(is_authenticated=False)
+    return request
+
+
 class TrustedTuneQueriesNoUserRowTests(TestCase):
     """No live tune may query the User table (2b-2, Rulings R1 and R1b).
 
@@ -509,7 +538,10 @@ class TrustedTuneQueriesNoUserRowTests(TestCase):
     skips the row entirely on SURFACE_LIVE/SURFACE_LIVE_XC. The VOD and
     catch-up surfaces D1 leaves in Python still resolve it eagerly and
     are unaffected. This test is what makes that a rule rather than a
-    property of today's call graph.
+    property of today's call graph -- which means resolve_authorization
+    itself must run unpatched (see _trusted_request's docstring, review
+    finding S1): a mocked-out decision would not exercise the guard
+    result_from_headers is here to prove.
     """
 
     def test_no_query_touches_the_user_table_on_a_trusted_tune(self):
@@ -529,11 +561,10 @@ class TrustedTuneQueriesNoUserRowTests(TestCase):
         helper.setUp()
         proxy_server, client_manager = helper._active_proxy_server(am_i_owner=False)
         client_manager.add_client.return_value = True
+        request = _trusted_request(helper)
 
         with CaptureQueriesContext(connection) as captured:
             with patch("apps.proxy.live_proxy.views.ProxyServer") as proxy_server_cls, \
-                 patch("apps.proxy.live_proxy.views.resolve_authorization",
-                       return_value=_trusted_decision()), \
                  patch("apps.proxy.live_proxy.views.get_stream_object",
                        return_value=helper._channel()), \
                  patch("apps.proxy.live_proxy.views.ChannelService"
@@ -545,7 +576,7 @@ class TrustedTuneQueriesNoUserRowTests(TestCase):
                 proxy_server_cls.get_instance.return_value = proxy_server
                 from apps.proxy.live_proxy import views
 
-                views.stream_ts(helper._request(), helper.channel_id)
+                views.stream_ts(request, helper.channel_id)
 
         offenders = [q["sql"] for q in captured.captured_queries if user_table in q["sql"]]
         self.assertEqual(
@@ -580,11 +611,10 @@ class TrustedTuneQueriesNoUserRowTests(TestCase):
         helper.setUp()
         proxy_server, client_manager = helper._active_proxy_server(am_i_owner=False)
         client_manager.add_client.return_value = True
+        request = _trusted_request(helper, user_id="4242")
 
         with CaptureQueriesContext(connection) as captured:
             with patch("apps.proxy.live_proxy.views.ProxyServer") as proxy_server_cls, \
-                 patch("apps.proxy.live_proxy.views.resolve_authorization",
-                       return_value=_trusted_decision(user_id="4242")), \
                  patch("apps.proxy.live_proxy.views.get_stream_object",
                        return_value=helper._channel()), \
                  patch("apps.proxy.live_proxy.views.ChannelService"
@@ -596,7 +626,7 @@ class TrustedTuneQueriesNoUserRowTests(TestCase):
                 proxy_server_cls.get_instance.return_value = proxy_server
                 from apps.proxy.live_proxy import views
 
-                views.stream_ts(helper._request(), helper.channel_id)
+                views.stream_ts(request, helper.channel_id)
 
         _args, kwargs = client_manager.add_client.call_args
         self.assertEqual(kwargs["user_id"], "4242")
