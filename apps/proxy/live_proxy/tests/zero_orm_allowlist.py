@@ -43,7 +43,22 @@ from collections import namedtuple
 
 Site = namedtuple("Site", "path lineno pr reason closed_by")
 EdgeEntry = namedtuple("EdgeEntry", "importer module name hits pr reason closed_by")
-Signature = namedtuple("Signature", "name sql_fragment table_model exercised_by reason")
+Signature = namedtuple(
+    "Signature",
+    "name sql_fragment table_model exercised_by reason params_fragment",
+    # params_fragment defaults to "" (always matches): only the
+    # CoreSettings group-key lookups below need it. Django parameterizes
+    # the settings `key` string, so two different groups (e.g.
+    # "proxy_settings" and "stream_settings") produce byte-identical SQL
+    # TEXT -- "WHERE key = %s" either way -- and an `sql_fragment` alone
+    # cannot tell them apart. Found the hard way: an injected read of a
+    # THIRD, unrelated group key matched the "stream_settings" signature
+    # by SQL shape alone and the break-check that was supposed to catch
+    # it passed silently. `params_fragment`, checked against
+    # `repr(query.params)`, is what makes the allowlist name the actual
+    # key rather than "any lookup shaped like this one".
+    defaults=("",),
+)
 
 SITES = (
     Site(
@@ -449,10 +464,151 @@ EDGES = (
     ),
 )
 
-# Task 4 fills this, from its own measurement against a live run.
-SQL_SIGNATURES = ()
+# Measured by running RuntimeGuardTests against this tree with a
+# temporary catch-all signature and a debug print of every captured
+# relay query's SQL text (plan Task 4 Step 3) -- these are the literal
+# fragments that fired, typed by hand, never generated from the capture.
+SQL_SIGNATURES = (
+    Signature(
+        name="channel_by_uuid",
+        sql_fragment='FROM "dispatcharr_channels_channel" WHERE "dispatcharr_channels_channel"."uuid" = %s',
+        table_model="dispatcharr_channels.Channel",
+        exercised_by="owner tune, follower tune",
+        reason=(
+            "get_stream_object(channel_id), called directly at the top of "
+            "stream_ts (views.py) and again inside StreamManager "
+            "(input/manager.py, via the same in-package url_utils "
+            "re-export) -- the EDGE at "
+            "url_utils.py <- apps.proxy.next_source.get_stream_object."
+        ),
+    ),
+    Signature(
+        name="channel_override_fk_accessor",
+        sql_fragment='FROM "dispatcharr_channels_channeloverride" WHERE "dispatcharr_channels_channeloverride"."channel_id" = %s',
+        table_model="dispatcharr_channels.ChannelOverride",
+        exercised_by="owner tune",
+        reason=(
+            "The FK accessor channel.get_stream_profile() touches before "
+            "falling through to StreamProfile.objects.get -- issue #253's "
+            "'worth one to several queries, not one'. SITES views.py:444 "
+            "and input/manager.py:788."
+        ),
+    ),
+    Signature(
+        name="stream_profile_by_id",
+        sql_fragment='FROM "core_streamprofile" WHERE "core_streamprofile"."id" = %s',
+        table_model="core.StreamProfile",
+        exercised_by="owner tune",
+        reason="StreamProfile.objects.get inside channel.get_stream_profile(). SITES views.py:444 and input/manager.py:785/:788.",
+    ),
+    Signature(
+        name="output_profile_for_this_client",
+        sql_fragment='FROM "core_outputprofile" WHERE ("core_outputprofile"."id" = %s AND "core_outputprofile"."is_active")',
+        table_model="core.OutputProfile",
+        exercised_by="owner tune, follower tune",
+        # The owner-init call site and the everything-else call site are
+        # the SAME function body (views.py:151-154, the SITE at :152) --
+        # one signature covers both call frames, since a signature
+        # matches by SQL text, not by which call site reached it. See
+        # SITES, and 2b-2 Ruling R3 transcribed there.
+        reason="views.py:152 -- OutputProfile.objects.filter(id=..., is_active=True).",
+    ),
+    Signature(
+        name="stream_name_fallback",
+        sql_fragment='FROM "dispatcharr_channels_stream" WHERE "dispatcharr_channels_stream"."id" = %s',
+        table_model="dispatcharr_channels.Stream",
+        exercised_by="status read, names stripped",
+        reason="channel_status.py:74's Stream.objects.filter(id=stream_id).first() -- fires only once STREAM_NAME is absent from the hash. Row 18.",
+    ),
+    Signature(
+        name="m3u_profile_name_fallback",
+        sql_fragment='FROM "m3u_m3uaccountprofile" WHERE "m3u_m3uaccountprofile"."id" = %s',
+        table_model="m3u.M3UAccountProfile",
+        exercised_by="status read, names stripped",
+        reason="channel_status.py:106's M3UAccountProfile.objects.filter(id=m3u_profile_id).first() -- fires only once M3U_PROFILE_NAME is absent from the hash. Row 18.",
+    ),
+    Signature(
+        name="proxy_settings_group",
+        sql_fragment='FROM "core_coresettings" WHERE "core_coresettings"."key" = %s',
+        # The `key` value is a bound param, not SQL text, so two
+        # different settings groups are byte-identical SQL and
+        # params_fragment is what tells them apart (see Signature's own
+        # docstring above -- found via a break-check that passed when it
+        # should not have).
+        params_fragment="'proxy_settings'",
+        table_model="core.CoreSettings",
+        # NOT marked exercised: config_helper.py:50's TSConfig.get_proxy_
+        # settings sits behind a 10-second process-local cache whose
+        # warm/cold state depends on what ran earlier in the same test
+        # process -- this programme has already measured flapping regions
+        # from exactly this kind of state and Task 4 Step 3 says mark
+        # exercised_by only where a drive makes the read deterministic.
+        # Present so a cache-cold run does not fail with "no allowlisted
+        # signature" for an already-allowlisted SITE (config_helper.py:50).
+        exercised_by="",
+        reason=(
+            "config_helper.py:50's TSConfig.get_proxy_settings() reads "
+            "this group through a 10-second process-local cache; whether "
+            "it fires on a given run depends on cache state this guard "
+            "does not control, so it is recorded but not required. "
+            "views.py:132's SITE reads a DIFFERENT group (stream_settings, "
+            "the inline_default_output_format signature below) and is "
+            "unreached by every drive here regardless -- see its own "
+            "reason in SITES."
+        ),
+    ),
+)
 
-# Task 4 Step 5b fills this. Characterization, NOT policy: it records what
-# the inline (untrusted) authorize path does, in production the API
-# process's job behind nginx's auth_request, and shrinking it is not a goal.
-INLINE_AUTHORIZE_SIGNATURES = ()
+# Task 4 Step 5b. Characterization, NOT policy: it records what the
+# inline (untrusted) authorize path does -- in production, nginx runs
+# that hop in the API process behind auth_request, never in the relay --
+# so shrinking this list is not a goal. Measured the same way as
+# SQL_SIGNATURES, against a real untrusted tune.
+INLINE_AUTHORIZE_SIGNATURES = (
+    Signature(
+        name="inline_channel_by_uuid",
+        sql_fragment='FROM "dispatcharr_channels_channel" WHERE "dispatcharr_channels_channel"."uuid" = %s',
+        table_model="dispatcharr_channels.Channel",
+        exercised_by="untrusted tune",
+        reason=(
+            "get_stream_object, twice: once inside resolve_authorization's "
+            "inline branch (views.py, the authorize_stream call resolves "
+            "the channel to apply the ACL) and once again at stream_ts's "
+            "own get_stream_object(channel_id) call -- the hop's job, "
+            "duplicated in-process because there is no hop here."
+        ),
+    ),
+    Signature(
+        name="inline_channel_override_fk_accessor",
+        sql_fragment='FROM "dispatcharr_channels_channeloverride" WHERE "dispatcharr_channels_channeloverride"."channel_id" = %s',
+        table_model="dispatcharr_channels.ChannelOverride",
+        exercised_by="untrusted tune",
+        reason="channel.get_stream_profile()'s FK accessor, same as SQL_SIGNATURES' entry, reached on the inline path too.",
+    ),
+    Signature(
+        name="inline_stream_profile_by_id",
+        sql_fragment='FROM "core_streamprofile" WHERE "core_streamprofile"."id" = %s',
+        table_model="core.StreamProfile",
+        exercised_by="untrusted tune",
+        reason="StreamProfile.objects.get inside channel.get_stream_profile(), same as SQL_SIGNATURES' entry.",
+    ),
+    Signature(
+        name="inline_default_output_format",
+        sql_fragment='FROM "core_coresettings" WHERE "core_coresettings"."key" = %s',
+        params_fragment="'stream_settings'",
+        table_model="core.CoreSettings",
+        exercised_by="untrusted tune",
+        reason=(
+            "apps/proxy/authorize.py's resolve_output_format, its own "
+            "last-resort CoreSettings.get_default_output_format() call -- "
+            "reached because resolve_authorization's inline branch calls "
+            "authorize_stream() rather than result_from_headers(), so "
+            "decision.trusted is False and _resolve_output_format takes "
+            "the `return resolve_output_format(...)` branch. NOT "
+            "views.py:132's SITE, which needs decision.trusted True with "
+            "decision.output_format falsy at once -- unreached by every "
+            "drive here, trusted or not (2b-2 always sets X-Relay-Output-"
+            "Format on a trusted tune)."
+        ),
+    ),
+)
