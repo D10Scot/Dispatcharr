@@ -1801,7 +1801,7 @@ of what the ten pre-existing workflows pin.
 | 2c-2 | `migration/phase2c-vertical-slice` | The Proxy stream-profile architecture only (no ffmpeg spawn yet): one client, in-memory ring buffer, MPEG-TS passthrough for a single upstream. Proves the buffer/fan-out shape end to end before ffmpeg complexity is added. | New Go tests pass with `-race`; parity matrix rows 7, 9 (chunk monotonicity, 188-byte realignment) get a Go column | 2c-1 |
 | 2c-3 | `migration/phase2c-fanout` | Multi-client fan-out, join-5s-behind, the client registry, `?clients=all` on `GET /proxy/relay/channels` | Rows 8, 10, 13 get a Go column | 2c-2 |
 | 2c-4 | `migration/phase2c-ffmpeg` | ffmpeg spawn via `os/exec` + `syscall.SysProcAttr{Setpgid, Pdeathsig}` (D5 exception 1), the `log_parsers.py` port | Row 4 (the `speed=` arming delay) gets a Go column with its own real-ffmpeg test, mirroring 2a's harness | 2c-3 |
-| 2c-5 | `migration/phase2c-failover` | The three failover triggers, control-plane client (`next-source`/`release`/`events`, both HMAC headers, the exact timeout table), the degraded fallback to the cached candidate list, and the Redirect Stream Profile architecture — the 302, `validate_stream_url`'s provider probe, the fall-through to the cached alternates, and the internal-principal override that serves a Redirect channel through Proxy instead (`apps/proxy/live_proxy/views.py:462-480`). Added by Amendment A1.2: no row named Redirect, and Gate 1 being closed means an `owed:` marker cannot carry it. | Rows 1, 2, 3, 5, 6 get a Go column | 2c-4 |
+| 2c-5 | `migration/phase2c-failover` | The three failover triggers, the control-plane client's remaining routes (`release`, `events`; `next-source` landed in 2c-2, Amendment A2.1), the degraded fallback to the cached candidate list, and the Redirect Stream Profile architecture — the 302, `validate_stream_url`'s provider probe, the fall-through to the cached alternates, and the internal-principal override that serves a Redirect channel through Proxy instead (`apps/proxy/live_proxy/views.py:462-480`). Added by Amendment A1.2: no row named Redirect, and Gate 1 being closed means an `owed:` marker cannot carry it. | Rows 1, 2, 3, 5, 6 get a Go column | 2c-4 |
 | 2c-6 | `migration/phase2c-fmp4` | fMP4 output format, including row 12's known timeout gap, reproduced not fixed | Row 12 gets a Go column | 2c-5 |
 | 2c-7 | `migration/phase2c-output-profile` | Output Profile shared transcode per `(channel, profile)` | Row 11 gets a Go column | 2c-6 |
 | 2c-8 | `migration/phase2c-control-drain` | Remaining control routes (single-channel `GET`/`DELETE`, `advance`), SIGTERM drain (D6), the dev-only `POST /_dispatcharr/authorize-internal` fallback (D5 exception 2, now fully specified — § The contract, including why it needs its own nginx-unshielded path and `IsInternalRelay` gating) | Every remaining un-Go'd matrix row gets a column | 2c-7 |
@@ -1889,6 +1889,89 @@ effect.
 `go` pack — at three tested packages and three stubs it would analyse almost
 nothing while adding a build-mode configuration to debug. 2c-9 adds it,
 alongside the coverage ratchet, when there is a relay to analyse.
+
+#### Amendment A2 (2c-2) — four scope corrections to the nine-PR table
+
+**A2.1 — the `next-source` client lands in 2c-2, not 2c-5.** The 2c-5 row
+reads "control-plane client (`next-source`/`release`/`events`, both HMAC
+headers, the exact timeout table)". 2c-2's own row is the Proxy
+stream-profile architecture, and a Proxy tune begins with Django saying the
+profile *is* Proxy — the `stream_profile.kind` field Amendment A1.1 added,
+whose first consumer A1.1 itself names as 2c-2. So 2c-2 implements
+`POST /api/relay/channels/<id>/next-source` in full: both HMAC headers, the
+(2s, 5s) budget, the one retry at 0.1s, the 404 mapping, and the **complete**
+4xx/5xx/3xx/non-JSON/non-object disposition table from § Error handling per
+hop. **2c-5's row is narrowed to `release` and `events`, plus the degraded
+fallback to the channel-start-cached candidate list.** The table is
+implemented whole rather than partly on purpose: a client that treated a 403
+from a SECRET_KEY mismatch as a retryable outage is the silent-degradation
+failure that section exists to prevent.
+
+**A2.2 — "gets a Go column" means a Go reference in the existing `Pin` cell,
+not a sixth table column.** `e2e/tests/guards/parity-matrix.ts` finds the
+table by an exact five-name `COLUMNS` match and rejects any row that is not
+five cells; a sixth column means editing the guard and rewriting all thirty
+rows, which is the whole-file diff the matrix's own header exists to prevent.
+The guard was built for the other reading and says so — `testRefProblem`
+already resolves `.go` references, with the comment "2c-9 re-points this
+matrix at Go tests, which is why `.go` is already here" — and `parsePin`
+already accepts a list of references in one cell. **Closing a row in Go stays
+a one-line diff.** 2c-2 does this for rows 7 and 9.
+
+**A2.3 — row 8's mechanism ships in 2c-2; row 8's pin stays 2c-3's.**
+`Ring.Join` and its timestamps are in the ring buffer and therefore in 2c-2,
+pinned by `relay/buffer/ring_test.go::TestJoinStartsRoughlyBehindLive` and
+`::TestJoinFallsBackToTheOldestChunkWhenTheBufferIsShort`. Row 8's claim is
+about a client joining a channel **already running for somebody else**, which
+is fan-out; 2c-3 closes it and should cite those two tests alongside its own
+multi-client one.
+
+**A2.4 — an input for 2c-9: the cross-implementation differential test.**
+`relay/internal/relaytest.SyntheticTS(512, 0x100)` and
+`apps/proxy/live_proxy/tests/harness/asset.py`'s `synthetic_ts(packets=512,
+pid=0x100)` produce byte-identical output — 96,256 bytes hashing to
+`e565411f3bbe6d0ab88a4dcd45d9e2a9ca1f65e049846dc5f61a2ec162f57f89`, pinned
+from the Go side by `TestSyntheticTSMatchesThePythonHarness` — so the two
+relays can be driven from the same bytes and their deliveries compared by
+`packet_index()`. 2c-2 deliberately does not build the comparison: with one
+client and no fan-out on the Go side and four workers and
+`get_optimized_client_data` batching on the Python side, it would compare
+those rather than the behaviour. **Owner: 2c-9**, as a `RelayHarnessTestCase`
+on the Python side that starts the Go binary as a subprocess (the shape
+`harness/standin.py` already uses), drives both from one paced
+`FakeUpstream`, and asserts contiguous `packet_index()` runs rather than a
+body digest — a digest fails on the join point alone.
+
+**A2.5 — an input for 2c-5: three behaviours 2c-2 did not port. TWO are
+unreachable in 2c-2's shape; the THIRD is a live divergence and is recorded
+as one.**
+
+Unreachable, because their Python guard is permanently shut here: keepalive
+packets (`output/ts/generator.py:387`, gated on `_should_send_keepalive` at
+`:546-551`, which needs `not stream_manager.healthy`) and the client timeout
+(`_is_timeout` at `:583-604`, same flag). Nothing lowers that flag except
+the health monitor and the failover machinery, which are 2c-5's. 2c-5 brings
+the flag and should add `ClientTimeout`, `KeepaliveInterval` and
+`MaxKeepalive` to `relay/channel.Tuning` with it; `MAX_KEEPALIVE_DURATION`,
+`KEEPALIVE_INTERVAL`, `STREAM_TIMEOUT` and `FAILOVER_GRACE_PERIOD` are all
+already on the wire after A1.4.
+
+**The error TS packets are NOT unreachable, and an earlier draft of this
+amendment said they were.** That draft called `_wait_for_initialization`
+"the follower path D2 deletes". It is not follower-only: `views.py:644` sets
+`channel_initializing = True` on the branch that logs "Successfully
+initialized channel", so the client that CAUSED the tune enters that wait
+too. The consequence is observable: Python's first client of a channel whose
+upstream then fails receives TS error packets carrying a message
+(`output/ts/generator.py:238`), where the Go relay answers 200 and ends the
+body with zero bytes.
+
+**Recorded as a stated divergence, owner 2c-5**, alongside the failover
+machinery that produces the error states in the first place. Deferring the
+port is reasonable -- the message comes from channel metadata an initialising
+client polls for, and the whole waiting shape changes once `Attach` starts
+the source before the 200 is written -- but the reason must be the true one,
+because the planner who reads this amendment is the one who owes the fix.
 
 ## Stage 2d — cutover, and its trap
 
@@ -2209,6 +2292,8 @@ Filled in as PRs merge; this spec lands as its own PR 0.
 | This spec | — | — |
 | 2c-1 -- the Go relay skeleton, `relay/` module, `go-tests.yml`, `stream_profile.kind` (Amendment A1.1) | `migration/phase2c-skeleton` | pending |
 | 2c-1 fix round -- corrected § Stage 2c's `**Process.**` paragraph: `relay-go` reads `DJANGO_SECRET_KEY` from the environment (as every other supervisord program does), not `/data/jwt` directly — the spec's original wording was a factual error found by `docker/tests/test-puid-pgid.sh` (`relay-go` BACKOFF-looped under a non-root PUID/PGID; `docker/entrypoint.sh:138` reads that file as root, before the privilege drop) | `migration/phase2c-skeleton` | pending |
+| 2c-2 -- the Go relay's vertical slice: the Proxy stream-profile architecture end to end (`relay/buffer`'s ring, `relay/control`'s settings/base-URL/`next-source` client in full, `relay/channel`'s Channel and Manager, `relay/httpapi`'s live TS handler), plus Amendment A1.4 (effective `proxy_settings`, 31 class-attribute defaults now on the wire) and Amendment A2 (the `next-source`/2c-5 scope correction, the Go-pin-is-one-cell ruling, row 8's mechanism-vs-pin split, the differential-test input for 2c-9, and the three behaviours not ported, one of them a stated divergence) | `migration/phase2c-vertical-slice` | pending |
+| 2c-2 review fix round -- opus review against `b5e62fcf` found a credential-echoing gap on the malformed-URL request-build path, `StateActive` unreachable (one mechanism replaced two), and Global Constraint 8's file:line ratchet missing for five constants (two of the reviewer's own citations corrected against this tree in the process); a downstream implementer independently verified and fixed three further defects (a `release`/`Attach` race, a per-tune transport leak, a `Ring.Read` cursor latent bug) before the review's findings arrived | `migration/phase2c-vertical-slice` | pending |
 
 ## Risks
 

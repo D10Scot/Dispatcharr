@@ -13,7 +13,9 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/D10Scot/Dispatcharr/relay/channel"
 	"github.com/D10Scot/Dispatcharr/relay/config"
+	"github.com/D10Scot/Dispatcharr/relay/control"
 	"github.com/D10Scot/Dispatcharr/relay/httpapi"
 )
 
@@ -39,8 +41,15 @@ func main() {
 	log.Printf("starting on port %d (dev routes: %t)", cfg.Port, cfg.DevRoutes)
 
 	srv := &http.Server{
-		Addr:    net.JoinHostPort("0.0.0.0", strconv.Itoa(cfg.Port)),
-		Handler: httpapi.New(httpapi.Config{DevRoutes: cfg.DevRoutes}).Handler(),
+		Addr: net.JoinHostPort("0.0.0.0", strconv.Itoa(cfg.Port)),
+		Handler: httpapi.New(httpapi.Config{
+			DevRoutes: cfg.DevRoutes,
+			Stream: httpapi.StreamDeps{
+				Secret:   cfg.Secret,
+				Channels: channel.NewManager(channel.ManagerConfig{}),
+				Control:  &control.Client{Secret: cfg.Secret},
+			},
+		}).Handler(),
 
 		// ReadHeaderTimeout only. A read or write deadline on the whole
 		// request would be wrong for this process by construction: serving
@@ -50,13 +59,14 @@ func main() {
 		// body, which is the stream.
 		ReadHeaderTimeout: 10 * time.Second,
 
-		// IdleTimeout deliberately left at its zero value (no reaping of
-		// idle keep-alive connections) for 2c-1: this process serves two
-		// health endpoints to nginx/probe clients, not the live traffic an
-		// idle-timeout policy exists to bound. 2c-2 is the first PR to carry
-		// real client connections and is the right place to pick a real
-		// value against real traffic, not a number invented here with
-		// nothing to justify it.
+		// IdleTimeout bounds an idle KEEP-ALIVE connection -- the gap between
+		// one request finishing and the next starting on the same socket. It
+		// never touches a stream in flight, because a stream is one request
+		// that has not finished, which is why this is safe on a process whose
+		// whole purpose is long-lived responses. 120s is comfortably longer
+		// than any client's gap between requests and short enough that an
+		// abandoned socket does not outlive the session.
+		IdleTimeout: 120 * time.Second,
 	}
 
 	// No graceful shutdown here. D6's SIGTERM drain is 2c-8's, and a

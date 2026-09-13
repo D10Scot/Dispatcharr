@@ -731,10 +731,24 @@ def _with_proxy_settings(answer):
     Nothing in the PYTHON relay consumes this yet, deliberately -- see this
     plan's § Self-review for the ruling and the reason, and this PR's
     description.
+
+    The class-attribute half needs no such care: those are module constants
+    with no cache and no database behind them. What they DO need is to be
+    read off TSConfig rather than BaseConfig -- see class_attribute_defaults'
+    own docstring for why the difference is visible on the wire.
     """
     from core.models import CoreSettings
 
-    answer["proxy_settings"] = CoreSettings.get_proxy_settings()
+    from apps.proxy.config import class_attribute_defaults
+
+    # Defaults first, stored second. The two key spaces are disjoint --
+    # thirty-one SCREAMING_CASE class attributes and seven snake_case stored
+    # keys -- so the order cannot matter today, and it is written this way so
+    # that a stored value would win if they ever met. Spec Amendment A1.4.
+    answer["proxy_settings"] = {
+        **class_attribute_defaults(),
+        **CoreSettings.get_proxy_settings(),
+    }
     return answer
 
 

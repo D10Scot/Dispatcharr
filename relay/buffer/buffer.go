@@ -78,13 +78,19 @@ const (
 	MaxBytesPerChannel = MaxChunksPerChannel * ChunkBytes
 )
 
-// ChunksForBytes converts a byte budget to a whole number of chunks, which is
-// what a ring bounded by an eviction unit can actually hold. Used by 2c-2 to
-// turn an operator's DISPATCHARR_RELAY_GO_CHANNEL_BUFFER_BYTES into a ring
-// length; exported here so the conversion has exactly one implementation.
+// ChunksForBytes converts a byte budget to a whole number of chunks at the
+// default chunk size.
 func ChunksForBytes(budget int) int {
-	if budget < ChunkBytes {
+	return chunksFor(budget, ChunkBytes)
+}
+
+// chunksFor is the one implementation, so a ring sized from a chunk size the
+// control plane sent and one sized from the constant can never round
+// differently. A budget below one chunk still yields one, because a
+// zero-length ring would deadlock the writer.
+func chunksFor(budget, chunkBytes int) int {
+	if chunkBytes <= 0 || budget < chunkBytes {
 		return 1
 	}
-	return budget / ChunkBytes
+	return budget / chunkBytes
 }

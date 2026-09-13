@@ -16,6 +16,10 @@ import (
 type Config struct {
 	// DevRoutes gates every route that is not an operational endpoint.
 	DevRoutes bool
+
+	// Stream is what the live TS handler needs. Only read when DevRoutes is
+	// set.
+	Stream StreamDeps
 }
 
 // Server owns the routing table. One per process.
@@ -47,10 +51,8 @@ func New(cfg Config) *Server {
 	s.mux.HandleFunc("GET /readyz", ok)
 
 	if cfg.DevRoutes {
-		// The dev-only route flag spec line 1795 names. The live routes
-		// arrive in 2c-2; until then this stub is what makes the flag a
-		// thing with an observable effect rather than a comment.
-		s.mux.HandleFunc("GET /proxy/ts/stream/{channelID}", notImplemented)
+		// The dev-only route flag spec line 1795 names.
+		s.mux.Handle("GET /proxy/ts/stream/{channelID}", StreamHandler(cfg.Stream))
 	}
 
 	return s
@@ -71,10 +73,4 @@ func ok(w http.ResponseWriter, _ *http.Request) {
 	// probe into log spam. Every other write path in this module handles
 	// its error.
 	_, _ = fmt.Fprintln(w, "ok")
-}
-
-func notImplemented(w http.ResponseWriter, _ *http.Request) {
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	w.WriteHeader(http.StatusNotImplemented)
-	_, _ = fmt.Fprintln(w, "the Go relay does not serve streams yet")
 }
