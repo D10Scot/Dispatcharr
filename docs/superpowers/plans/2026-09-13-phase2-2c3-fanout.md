@@ -10,6 +10,22 @@
 
 ---
 
+## Sequencing: this plan sits on 2c-2's FIX commit, not on its plan
+
+2c-2's own review confirmed all three defects this plan found by reading its code, and 2c-2 is fixing them itself. **Write Tasks 0, 1, 3 and 4 against the FIXED shape**, which is:
+
+- `Manager.release` decides under `m.mu` with an identity check — `m.channels[c.id] == c && c.clients == 0`, delete, then stop with the lock released — and `dropClient` moves inside that critical section. The delayed half is `stopIf(c *Channel)`.
+- `ProxySource.Run` defers `CloseIdleConnections` on a transport it built itself.
+- `Read` returns the index of the last chunk actually appended.
+
+**So Tasks 3 and 4 shrink to deltas.** Task 3 changes `release`'s signature (it takes a client id), moves the delay from `ManagerConfig` to `Tuning`, and adds `Snapshot`; the one-lock discipline and the identity check are already there and must be **preserved, not reintroduced**. Task 4 becomes a verification step rather than an edit. The tests in Appendix E still land in full: a fix without a test that reddens on its absence is a fix nobody can keep.
+
+**The fix commit's SHA goes here when it lands; until then this section is the contract.** Task 0 Step 2 checks each of the three against the merged tree and reports which shape it found.
+
+**And seed your scratch module from `migration/phase2c-vertical-slice` INCLUDING its `_test.go` files**, never from the 2c-2 plan's appendices. Both blocking findings against this plan's first draft — twelve symbol collisions and thirteen broken call sites — came from building against the plan rather than the branch, and neither is visible until `go vet` runs over the merged package.
+
+---
+
 ## Global Constraints
 
 Every task's requirements implicitly include this section. Constraints 1–16 are 2c-1's and 2c-2's, restated because this plan is executed by an agent who has not read them; 17–20 are new.
@@ -108,7 +124,7 @@ Decisions this plan makes that the spec leaves open, that 2c-2 left to its succe
 | Publishes per second per channel | 1,250,000 / 255,868 = **4.9** | derived |
 | Concurrency target | **1,600** | `docker/uwsgi.relay.ini`'s `gevent = $(DISPATCHARR_RELAY_GEVENT)`, default 1600 — what the Python relay is sized for and therefore what the Go relay must match |
 
-Worst case is every one of those 1,600 clients on one channel: 4.9 × 1,600 ≈ **7,800 goroutine wakeups per second**, each a list-traversal entry off a closed channel. That is noise next to what the same publish costs in bytes — 255,868 × 1,600 = **409 MB written to sockets per chunk**, which is bandwidth-bound by four orders of magnitude. **There are also no spurious wakeups**: a waiter blocks only when it is caught up, and a publish is exactly the event it is waiting for, so every wakeup does work. Per-client notification would add cost and remove nothing.
+Compare the two costs **per publish**, which is the only way they are comparable: one publish wakes 1,600 goroutines — each a list-traversal entry off a closed channel — and hands those same 1,600 readers 255,868 bytes each, **409 MB written to sockets**. That is about **256 KB of socket write per wakeup**. The wakeup is not the cost; the bytes are. **There are also no spurious wakeups**: a waiter blocks only when it is caught up, and a publish is exactly the event it is waiting for, so every wakeup does work. Per-client notification would add cost and remove nothing.
 
 **What is NOT ruled here**, because it is not the wakeup: a slow reader's *hold* on evicted chunks. That is R2.
 
@@ -116,11 +132,15 @@ Worst case is every one of those 1,600 clients on one channel: 4.9 × 1,600 ≈ 
 
 2c-2 declined to port `get_optimized_client_data`'s batching (`input/buffer.py:325-372`) on the grounds that its four constants exist to amortise a Redis round trip per chunk, and an in-memory ring has no round trip to amortise. **That is right about three of the four constants and wrong about `MAX_CHUNKS`.**
 
-`MAX_CHUNKS` bounds how much a lagging reader **holds at one instant**, and a held chunk's backing array stays alive after the ring has evicted it — the garbage collector keeps it exactly as long as someone holds it, which is `Chunk.Data`'s own documented contract. Uncapped, one reader behind the head takes `[cursor+1, head]` in a single `Read`, so it can pin a whole ring's worth of evicted chunks on top of the resident ring: **2 × `MaxBytesPerChannel`, about 146 MiB**, where `relay/buffer/buffer.go`'s own sizing note states 73 MiB per channel. Capped, the extra is at most twenty chunks — about 5 MiB — per *distinct* lagging cursor, and readers at the same cursor share one set of arrays.
+`MAX_CHUNKS` (`input/buffer.py:329`) bounds how much a lagging reader **holds at one instant**, and a held chunk's backing array stays alive after the ring has evicted it — the garbage collector keeps it exactly as long as someone holds it, which is `Chunk.Data`'s own documented contract. Uncapped, one reader behind the head takes `[cursor+1, head]` in a single `Read`, so it can pin a whole ring's worth of evicted chunks on top of the resident ring: **2 × `MaxBytesPerChannel`, about 146 MiB**, where `relay/buffer/buffer.go`'s own sizing note states 73 MiB per channel. Capped, the extra is at most twenty chunks — about 5 MiB — per *distinct* lagging cursor, and readers at the same cursor share one set of arrays.
 
-**Ruled: `MaxChunksPerRead = 20`, `input/buffer.py:333`, and only that one.** `MIN_CHUNKS`, `TARGET_SIZE` and `MAX_SIZE` stay unported with 2c-2's reason intact. Note what reading the Python actually says about the cap's worth: `MAX_SIZE` (2 MiB) gates only the **second, top-up** fetch and never the initial `min(chunks_behind, MAX_CHUNKS)` one (`input/buffer.py:348-371`, read in full), so twenty chunks at the effective chunk size — 5,117,360 bytes — is what Python's cap is worth too.
+**Ruled: `MaxChunksPerRead = 20`, `input/buffer.py:329`, and only that one.** `MIN_CHUNKS`, `TARGET_SIZE` and `MAX_SIZE` stay unported with 2c-2's reason intact. Note what reading the Python actually says about the cap's worth: Python's initial count is a **three-branch** on how far behind the client is (`input/buffer.py:336-345`, whose first arm is `max(1, chunks_behind)`) and `MAX_CHUNKS` is only its largest arm; `MAX_SIZE` (2 MiB) then gates the **second, top-up** fetch alone (`:361-371`), never that initial one. So twenty chunks at the effective chunk size — 5,117,360 bytes — is what Python's cap is worth too. An earlier draft of this ruling wrote the initial count as `min(chunks_behind, MAX_CHUNKS)`, which is the right ceiling and the wrong expression.
 
-**`Read`'s `next` moves with the cap**, and that is the half of this ruling most easily got wrong. 2c-2 returned `r.chunks[len-1].Index`, the ring's newest resident; with a cap those stopped being the same thing, and a `next` that ran ahead of the bytes actually handed over would make a lagging client skip everything it did not receive — silently, with no `skipped` to log. `next` is now the index of the **last chunk returned**.
+**`Read`'s `next` moves with the cap**, and that is the half of this ruling most easily got wrong. 2c-2 returned `r.chunks[len-1].Index`, the ring's newest resident; with a cap those stopped being the same thing, and a `next` that ran ahead of the bytes actually handed over would make a lagging client skip everything it did not receive — silently, with no `skipped` to log.
+
+**Python has that defect and Go does not, which is a divergence rather than a port.** `get_optimized_client_data` returns `client_index + chunk_count` (`input/buffer.py:373`) — the count it *asked* for, not the count it got — so a short read there skips undelivered chunks. Returning the last index **actually returned** is strictly better and is recorded in the PR description's divergence list rather than quietly improved.
+
+**`skipped` is an addition too.** Python computes the same number only inside a log string (`output/ts/generator.py:354-358`) and no caller ever sees it; returning it is new. Both are safe-direction additions on a path where Python loses information, and both are stated rather than presented as parity.
 
 ### R3 — The borrowed-slice contract stays asserted rather than enforced, and N readers do not change that.
 
@@ -159,7 +179,7 @@ func (m *Manager) release(c *Channel) {
 
 Measured against this plan's own code with the two statements separated: **round 16 of 400**, `the arriving client holds a channel the manager does not (channel one state=stopped clients=1 head=0 vs <nil>): it was stopped underneath a live client`.
 
-**Ruled: `release` takes `m.mu`, drops the client, and decides whether to detach in the same critical section.** `claim` registers its client under the same lock, so the two are mutually exclusive by construction rather than by timing. The delayed half, `stopIfIdle`, takes the count and removes the entry under one lock for the same reason.
+**Ruled: `release` takes `m.mu`, drops the client, and decides whether to detach in the same critical section.** `claim` registers its client under the same lock, so the two are mutually exclusive by construction rather than by timing. The delayed half, `stopIf`, takes the count and removes the entry under one lock for the same reason.
 
 **And `detachLocked` checks identity, not just the id.** By the time a delayed stop fires the map may hold a *different* `*Channel` under the same id — the first finished, `claim` dropped it, a later tune published a replacement. Deleting by id alone evicts a live successor and strands its clients on a channel nothing can stop. Break-check BC2 below reddens on exactly that.
 
@@ -181,7 +201,7 @@ What does **not** change: `writeTuneFailure` answers with a fixed string per cla
 
 ### R8 — The client registry carries seven fields, not the spec's eight, and `worker_id` and `last_active` wait for 2c-8.
 
-Spec § The contract lists the Redis client hash's fields as `user_id`, `output_format`, `output_profile_id`, `ip_address`, `user_agent`, `connected_at`, `last_active`, `worker_id`. **That is the hash, not this endpoint's payload.** `RelayChannelClientSerializer` (`apps/proxy/relay_serializers.py:22-31`) declares seven, and neither `last_active` nor `worker_id` is among them; both appear only on `RelayDetailClientSerializer`, which renders the **detail** endpoint 2c-8 builds.
+The Redis client hash carries eight fields — `user_id`, `output_format`, `output_profile_id`, `ip_address`, `user_agent`, `connected_at`, `last_active`, `worker_id` (`client_manager.py:235-244`). **That is the hash, not this endpoint's payload.** `RelayChannelClientSerializer` (`apps/proxy/relay_serializers.py:22-31`) declares seven, and neither `last_active` nor `worker_id` is among them; both appear only on `RelayDetailClientSerializer` (`:72-88`), which renders the **detail** endpoint 2c-8 builds. (An earlier draft attributed the eight-field list to spec § The contract, which in fact enumerates the six *serializers*, not the hash's fields. The conclusion is unchanged.)
 
 **Ruled: `channel.Client` carries exactly the seven the list endpoint renders.** Adding two fields nothing reads is the stale-duplicate-of-the-truth shape 2c-2's R5 refused, and the per-client byte counters (`bytes_sent`, `avg_rate_KBps`, `current_rate_KBps`) go with them for the same reason. **2c-8 owns all five**, together with the detail endpoint and `owner`'s asymmetric `'unknown'` default that parity-matrix row 14 pins.
 
@@ -225,7 +245,7 @@ The authorize hop sets `X-Relay-Output-Format` on **every** tune — `apps/proxy
 | Amendment **A2** in the spec, and rows 7 and 9 of the parity matrix carrying Go references | **as planned in 2c-2** | Task 11 appends **A3** after it; Task 9 appends to rows 8, 10 and 13 |
 | `scripts/check_go_stdlib_only.sh` with 2c-2's Redis `go list -deps` check | **as planned in 2c-2** | Task 12 extends nothing; it re-runs it |
 
-**Verified in this tree, not inherited:** everything with a `file:line` in this plan — `apps/proxy/live_proxy/client_manager.py` in full, `output/ts/generator.py`'s positioning, keepalive, timeout, ghost and per-client-stats paths, `input/buffer.py`'s `get_optimized_client_data` and `find_chunk_index_by_time`, `channel_status.py`'s `get_basic_channel_info` and `build_live_channel_stats_data`, `relay_serializers.py` in full, `relay_views.py`'s `channels_view`, `relay_client.py`'s `list_channels` and `live_connections`, `apps/proxy/authorize.py:145-147` and `:483-503`, `apps/proxy/config.py:110-114`, `docker/supervisord/all.conf`, `docker/tests/test-puid-pgid.sh:482`, and the fact that `ChannelMetadataField.LOGO_ID` is **written nowhere in the tree**.
+**Verified in this tree, not inherited:** everything with a `file:line` in this plan — `apps/proxy/live_proxy/client_manager.py` in full, `output/ts/generator.py`'s positioning, keepalive, timeout, ghost and per-client-stats paths, `input/buffer.py`'s `get_optimized_client_data` and `find_chunk_index_by_time`, `channel_status.py`'s `get_basic_channel_info` and `build_live_channel_stats_data`, `relay_serializers.py` in full, `relay_views.py`'s `channels_view`, `relay_client.py`'s `list_channels` and `live_connections`, `apps/proxy/authorize.py:145-147` and `:483-503`, `apps/proxy/config.py:110-114`, `docker/supervisord/all.conf`, `docker/tests/test-puid-pgid.sh:482` and `:1318`, `docker/supervisord/relay.conf`, and the fact that `ChannelMetadataField.LOGO_ID` is written **only into the timeshift key family** (`apps/timeshift/views.py:2984`) and never into the live metadata hash `channel_status.py:486` reads.
 
 ---
 
@@ -237,13 +257,16 @@ relay/buffer/fanout_test.go             NEW  — the cap, the N-reader immutabil
 relay/channel/client.go                 NEW  — the registry's row type
 relay/channel/tuning.go                 EDIT — ShutdownDelay joins the snapshot
 relay/channel/channel.go                EDIT — clients map, SourceInfo, startedAt, ClientSnapshot, ErrDuplicateClient
-relay/channel/manager.go                EDIT — Started, Attach takes a client, release/stopIfIdle/detachLocked, Snapshot
+relay/channel/manager.go                EDIT — Started, Attach takes a client, release/stopIf/detachLocked, Snapshot
 relay/channel/source_proxy.go           EDIT — the built transport releases its idle connections
 relay/channel/fanout_test.go            NEW  — six tests, three of them concurrent
+relay/channel/manager_test.go           EDIT — asStarted + testClient, and twelve Attach call sites
+relay/channel/concurrent_test.go        EDIT — the thirteenth Attach call site, plus an fmt import
 relay/httpapi/stream.go                 EDIT — identify(), ErrUnsupportedOutput, mintClientID, the Started shape
 relay/httpapi/channels.go               NEW  — GET /proxy/relay/channels and its internal-auth gate
 relay/httpapi/server.go                 EDIT — ControlDeps and the second dev route
-relay/httpapi/fanout_test.go            NEW  — the rig, the fan-out test, row 8, row 10, the cap, the auth gate
+relay/httpapi/stream_test.go            EDIT — newRig wires ControlDeps against the SAME manager
+relay/httpapi/fanout_test.go            NEW  — extends 2c-2's rig; the fan-out test, row 8, row 10, the cap, the auth gate
 relay/httpapi/golden_test.go            NEW  — the cross-implementation payload pin
 relay/httpapi/testdata/channels_clients_all.json   NEW — rendered by Django's serializer
 relay/main.go                           EDIT — wire ControlDeps
@@ -252,7 +275,8 @@ relay/main.go                           EDIT — wire ControlDeps
 apps/proxy/tests/test_relay_list_payload_golden.py  NEW — renders and pins the golden from both sides
 
                                         --- infrastructure ---
-docker/tests/test-puid-pgid.sh          EDIT — the role-'all' program list gains relay-uwsgi and relay-go
+docker/tests/test-puid-pgid.sh          EDIT — the 'all' roster gains relay-uwsgi and relay-go; the 'relay' roster gains relay-go
+docker/supervisord/relay.conf           EDIT — one comment: its glob no longer picks up a single program
 
                                         --- documents ---
 docs/relay-parity-matrix.md             EDIT — rows 8, 10 and 13 gain a Go reference
@@ -261,6 +285,8 @@ CLAUDE.md                               EDIT — § Architecture, § Known defec
 ```
 
 Nothing under `core/`, `dispatcharr/`, `frontend/`, `e2e/` or `metrics/` is touched, and nothing under `apps/` beyond the one new test file.
+
+**Four of those are edits to 2c-2's own committed test files**, and they are listed here rather than discovered at `go vet`: three absorb the `Attach` signature change, and one wires the list endpoint's dependencies to the manager the tune path already uses.
 
 ---
 ## Task 0: Diff the merged 2c-2 tree against this plan's expectations
@@ -291,7 +317,9 @@ Nothing under `core/`, `dispatcharr/`, `frontend/`, `e2e/` or `metrics/` is touc
   | `(*Ring).Read` | `func (r *Ring) Read(cursor uint64) (chunks [][]byte, next uint64, skipped uint64)` | Task 1 rewrites its body; a different signature makes Task 1 a redesign — stop and report |
   | `(*Ring).Join` | `func (r *Ring) Join(behind time.Duration) uint64` | Task 5's `serveClient` calls it |
   | `(*Manager).Attach` | `func (m *Manager) Attach(id string, start func() (Source, Tuning, error)) (*Channel, func(), error)` | Task 3 changes it to take a `*Client` and return a `Started`; if 2c-2 already changed it, reconcile and report |
-  | `(*Manager).release` | drops the client, then calls `Stop` | if it already takes `m.mu` across both, Ruling R5's defect was fixed in 2c-2's own review — say so and keep the tests |
+  | `(*Manager).release` | **expected fixed**: one `m.mu` critical section, `dropClient` inside it, an identity check, `stopIf` for the delayed half | if you find 2c-2's original two-step shape, the fix has not landed — apply Ruling R5's version and say so |
+  | `ProxySource.transport` | **expected fixed**: returns the transport and a closer, `Run` defers it | if not, apply Task 4; if so, Task 4 is a verification step |
+  | `(*Ring).Read`'s `next` | **expected fixed**: the index of the last chunk appended | if it still returns `r.chunks[len-1].Index`, Task 1 Step 1 supplies it |
   | `(*Channel).clients` | an `int` | Task 2 replaces it with a map |
   | `Tuning` | three fields | Task 2 adds a fourth |
   | `control.VerifyInternalRequest` | present and exported | Task 6 cannot gate the route without it |
@@ -331,13 +359,13 @@ Ruling R2 caps the read. The byte counter is what lets Task 6's payload carry `t
 
 - [ ] **Step 1: Add `MaxChunksPerRead` and rewrite `Read`'s selection loop**
 
-  In `relay/buffer/ring.go`, above `ErrClosed`:
+  In `relay/buffer/ring.go`, **above `ErrClosed`'s own doc comment** — not between that comment and the `var`. Placing it literally "above `ErrClosed`" splits the sentinel from its documentation and `revive` reports it twice: *comment on exported const MaxChunksPerRead should be of the form "MaxChunksPerRead ..."* and *exported var ErrClosed should have comment or be unexported*. Measured; the Go edit hook blocked on exactly this while this plan was being verified.
 
   ```go
   // MaxChunksPerRead bounds how many chunks one Read hands back.
   //
   // The port of get_optimized_client_data's MAX_CHUNKS
-  // (apps/proxy/live_proxy/input/buffer.py:333), and the ONLY one of that
+  // (apps/proxy/live_proxy/input/buffer.py:329), and the ONLY one of that
   // function's four constants 2c-3 ports. MIN_CHUNKS, TARGET_SIZE and MAX_SIZE
   // exist to amortise a Redis round trip per chunk, and an in-memory ring has
   // no round trip to amortise -- 2c-2's reasoning, unchanged. MAX_CHUNKS is
@@ -479,9 +507,11 @@ Ruling R2 caps the read. The byte counter is what lets Task 6's payload carry `t
   | # | The edit | Expected red | Message |
   |---|---|---|---|
   | 1 | delete `if len(out) == MaxChunksPerRead { break }` | `TestReadIsCappedAndItsCursorFollowsTheBytes` | `one Read returned 40 chunks with 40 resident, want 20 -- a lagging reader can pin a whole ring's worth of evicted chunks` |
-  | 2 | `return out, last, skipped` becomes `return out, r.chunks[len(r.chunks)-1].Index, skipped` | the same test | `next = 40 after a capped read, want 20 -- the cursor ran past the bytes the caller was actually given and the rest of the stream is lost` |
+  | 2 | `return out, last, skipped` becomes `_ = last` followed by `return out, r.chunks[len(r.chunks)-1].Index, skipped` | the same test | `next = 40 after a capped read, want 20 -- the cursor ran past the bytes the caller was actually given and the rest of the stream is lost` |
   | 3 | a `scratch []byte` **field** on `Ring`, allocated once and reused for every chunk | `TestAChunkIsUnchangedAfterEveryClientHasServedIt` | `byte N of a chunk reader M still holds changed from …: a published chunk's backing array was reused` |
   | 4 | drop the `RLock` from `TotalBytes` | `TestManyConcurrentReadersAndOneWriter` | `WARNING: DATA RACE`, with both stacks |
+
+  **`_ = last` is not decoration in number 2.** Dropping the variable's only use makes the package fail to COMPILE, and a break-check that does not build has told you nothing about the test. The same applies to numbers 11 and 12 in Task 5, and all three are spelled with the keep-alive here because all three were first written without it.
 
   **Number 3 carries 2c-2's own caveat forward**: allocating the reused buffer as a **local** inside `Write` does not redden it, because a test that writes one chunk per call never exercises reuse within a call. The defect shape that matters is a field.
 
@@ -549,9 +579,11 @@ Spec D2's `Client registry` key-family row: `live:channel:{id}:clients` (a SET w
   | # | The edit | Expected red | Message |
   |---|---|---|---|
   | 1 | delete `addClient`'s `if _, taken := c.clients[cl.ID]; taken { return false }` | `TestASecondAttachUnderAnAttachedClientIDIsRefused` (Task 3) | `a second attach under the id "dup" returned <nil>, want ErrDuplicateClient` |
-  | 2 | `ClientSnapshot` returns the map in range order | `TestTheListPayloadMatchesDjangosSerializer` **may stay green** — the golden fixture has one client per ordering-sensitive channel. Report the gap rather than adding a second client to force it; the ordering is for the test's determinism, not a contract, and a test that asserted it would be asserting this plan's own choice |
+  | 2 | `ClientSnapshot` returns the map in range order | **expected not to redden.** Report the gap rather than forcing it |
 
-  **Number 2 is listed precisely because it is expected not to redden**, and saying so is the point. Ordering is not a parity property; determinism is a testing convenience, and inventing an assertion for it would pin a decision rather than a behaviour.
+  **Number 2 is listed precisely because it is expected not to redden, and its reason has to be the true one.** It is NOT that the fixture has one client per channel — the golden's first channel has two. It is that **neither golden test runs the handler**: both compare a Go struct literal against the file, and the literal spells its clients out in order. The live key-set test does run the handler but compares key *sets*, which order does not change.
+
+  So the gap is real and it is accepted: ordering is not a parity property — `channel_status.py:533` reads a Redis SET — determinism here is a testing convenience, and an assertion for it would pin this plan's own choice rather than a behaviour. **An earlier draft of this row gave the wrong reason for the right prediction**, which is this plan's own instance of hollow shape six: a correct outcome read off a mechanism that was not the one operating.
 
 - [ ] **Step 5: Run the four checks and commit**
 
@@ -567,7 +599,7 @@ Ruling R5. This is the task the ordering tests exist for, and the one where `-ra
   1. **`Started`**, a struct the start function returns, replacing the three-value `(Source, Tuning, error)`. It carries `Info SourceInfo` as well, which the list endpoint needs and which a fourth return value would have made unreadable.
   2. **`Attach(id string, client *Client, start func() (Started, error))`**. The client is registered inside `claim`, under `m.mu`, which is what makes the arrival path and the departure path mutually exclusive.
   3. **`claim` returns a fourth value, an error**, so a duplicate client id is refused at the point the map is inspected rather than in a second, unsynchronised step.
-  4. **`release`, `stopIfIdle` and `detachLocked`**, replacing 2c-2's `release` and `take`.
+  4. **`release`, `stopIf` and `detachLocked`** — 2c-2's fix-round shape, extended: `release` takes a client id, and the delay is read off `Tuning` rather than `ManagerConfig`. **Preserve the one-lock discipline and the identity check; do not reintroduce them.**
   5. **`Snapshot()`**, every channel in id order, which Task 6's list endpoint reads.
 
   The three-function departure path, in full, because it is the whole ruling:
@@ -600,11 +632,11 @@ Ruling R5. This is the task the ordering tests exist for, and the one where `-ra
   		return
   	}
   	if remaining == 0 && c.tuning.ShutdownDelay > 0 {
-  		time.AfterFunc(c.tuning.ShutdownDelay, func() { m.stopIfIdle(c) })
+  		time.AfterFunc(c.tuning.ShutdownDelay, func() { m.stopIf(c) })
   	}
   }
 
-  // stopIfIdle is the delayed half of release: the grace window expired, so stop
+  // stopIf is the delayed half of release: the grace window expired, so stop
   // the channel unless somebody reconnected inside it.
   //
   // The port of ChannelService.cancel_pending_shutdown
@@ -612,7 +644,7 @@ Ruling R5. This is the task the ordering tests exist for, and the one where `-ra
   // timestamp a reconnecting client deletes. Here the reconnect simply registers
   // a client, and this check sees it -- under the same lock that registered it,
   // so there is no window between "nobody is watching" and "the entry is gone".
-  func (m *Manager) stopIfIdle(c *Channel) {
+  func (m *Manager) stopIf(c *Channel) {
   	m.mu.Lock()
   	stop := c.Clients() == 0 && m.detachLocked(c)
   	m.mu.Unlock()
@@ -640,13 +672,58 @@ Ruling R5. This is the task the ordering tests exist for, and the one where `-ra
   }
   ```
 
-  **The lock order is always manager then channel**, and nothing takes them the other way round: `release` calls `c.dropClient` (channel lock) while holding `m.mu`, `stopIfIdle` calls `c.Clients()` the same way, and `claim` calls `c.addClient`. `c.stop` is called with `m.mu` **released**, because it waits up to `StopWait` for a goroutine.
+  **The lock order is always manager then channel**, and nothing takes them the other way round: `release` calls `c.dropClient` (channel lock) while holding `m.mu`, `stopIf` calls `c.Clients()` the same way, and `claim` calls `c.addClient`. `c.stop` is called with `m.mu` **released**, because it waits up to `StopWait` for a goroutine.
 
   **Everything 2c-2 ruled about `Attach` is preserved and must stay preserved.** `start()` runs outside the manager lock; the per-channel gate is closed from a **deferred** call registered in `Attach` **before** `start()` runs, so it fires at `Attach`'s return, after `publish` has installed the channel; `claim` drops a channel whose ring has closed, and that is the only place it happens. Moving the gate's close into a helper around `start()` wakes a waiter that then races the map insertion, claims a fresh gate and opens a **second** upstream — 2c-2 measured it going wrong within three rounds at eight concurrent clients.
 
-- [ ] **Step 2: Write `relay/channel/fanout_test.go`**
+- [ ] **Step 2: Rewrite the thirteen `Attach` call sites this package inherits**
 
-  **The complete file is Appendix E.** Six tests, three of them concurrent:
+  `Attach(id, start func() (Source, Tuning, error))` becomes `Attach(id, *Client, start func() (Started, error))`, and **thirteen call sites in 2c-2's own committed tests break**. Naming them, because a signature change that lists no call sites is a signature change somebody discovers at `go vet`:
+
+  | File | Lines |
+  |---|---|
+  | `relay/channel/concurrent_test.go` | 93 |
+  | `relay/channel/manager_test.go` | 60, 64, 109, 113, 144, 179, 215, 223, 249, 255, 286, 299 |
+
+  **Two adapters in `manager_test.go` absorb all thirteen**, rather than thirteen closure rewrites. None of those tests is about `SourceInfo` or about client identity — they are about one source per channel, the gate, the panic guarantee and the finished-channel drop — so the change should not touch what they say:
+
+  ```go
+  // asStarted wraps a 2c-2-shaped start function in 2c-3's Started shape.
+  func asStarted(f func() (Source, Tuning, error)) func() (Started, error) {
+  	return func() (Started, error) {
+  		source, tuning, err := f()
+  		return Started{Source: source, Tuning: tuning}, err
+  	}
+  }
+
+  // testClient is a registry row with a caller-chosen id. Distinct ids matter:
+  // two Attach calls under ONE id are a duplicate registration and are refused
+  // (ErrDuplicateClient), which is parity-matrix row 13's first half and exactly
+  // what these tests must not accidentally exercise.
+  func testClient(id string) *Client { ... }
+  ```
+
+  **Every call site gets its own client id.** `TestTwoClientsShareOneSource` attaches twice to `chan-1`; under one id the second attach would now be refused, and the test would fail for a reason that has nothing to do with what it asserts. Two clients are two ids.
+
+  `concurrent_test.go:93` is inside a per-client goroutine, so its id is `fmt.Sprintf("client-%d", i)` and the file gains a `fmt` import.
+
+  **Verified: all of 2c-2's channel and httpapi tests pass unchanged against this PR's tree** once the thirteen sites are rewritten — the cap, the byte counter, the registry and the release rewrite regress none of them.
+
+- [ ] **Step 3: Write `relay/channel/fanout_test.go`**
+
+  **The complete file is Appendix E**, and it is deliberately short on fixtures, because **one package gets one of each**. These five symbols are 2c-2's and are NOT redeclared:
+
+  | Symbol | Where 2c-2 defines it |
+  |---|---|
+  | `sourceCounter` (+ `enter`, `leave`, `snapshot`) | `channel/concurrent_test.go:39-61` |
+  | `countingSource` (+ `Run`) | `channel/concurrent_test.go:31-37` |
+  | `waitForStart(t, c, round)` | `channel/concurrent_test.go:16-28` — note the **third argument**, a round number; pass `0` where there is no loop |
+  | `testTuning()` | `channel/manager_test.go:15` — two fields, no `JoinBehind`; **leave it alone**, this PR's channel tests do not read it and the grace-window test builds its own `Tuning` |
+  | `testClient(id)` | added by Step 2 above |
+
+  This file adds exactly one fixture of its own, `startCounting`, which is `Started` wrapped around `countingSource`.
+
+  Six tests, three of them concurrent:
 
   | Test | What it pins |
   |---|---|
@@ -677,7 +754,7 @@ Ruling R5. This is the task the ordering tests exist for, and the one where `-ra
   		}
   ```
 
-- [ ] **Step 3: Break-check, three edits**
+- [ ] **Step 4: Break-check, three edits**
 
   | # | The edit | Expected red | Message |
   |---|---|---|---|
@@ -687,7 +764,7 @@ Ruling R5. This is the task the ordering tests exist for, and the one where `-ra
 
   **Number 1 reddened on round 16 of 400 on the machine this plan was written on.** It is a race, so the round number will differ; what must not differ is that it reddens within a few hundred rounds and that the message names a channel the manager does not hold. If it survives 400 rounds, say so rather than raising the count — and check first that `release` really is doing the two steps separately, because the edit is easy to apply in a way that keeps them adjacent.
 
-- [ ] **Step 4: Run the four checks and commit**
+- [ ] **Step 5: Run the four checks and commit**
 
 ---
 ## Task 4: `relay/channel` — the transport that was never closed
@@ -860,9 +937,11 @@ A defect in the 2c-2 plan's `ProxySource`, found by Task 3's goroutine test and 
 
   | # | The edit | Expected red | Message |
   |---|---|---|---|
-  | 1 | delete the `if tuning.JoinBehind > 0 { cursor = ring.Join(...) }` branch | `TestASecondClientJoinsBehindLiveAndNotAtTheHead` (Task 8) | `the second client started at packet 8400 with the live head at packet 8400: it joined AT live, not behind it -- new_client_behind_seconds was ignored` |
-  | 2 | `header` returns `r.Header.Get(name)` unconditionally | `TestAnUntrustedRequestIsNotBelievedForAnyRelayHeader` (Task 8), and 2c-2's `TestXRelayChannelIsIgnoredWithoutTheTrustMarker` | `the tune asked about /api/relay/channels/somebody-elses-channel/next-source: an unverified X-Relay-Channel was believed` |
+  | 1 | the `if tuning.JoinBehind > 0 { cursor = ring.Join(...) }` branch becomes `_ = tuning.JoinBehind` | `TestASecondClientJoinsBehindLiveAndNotAtTheHead` (Task 8) | `the second client started at packet 8400 with the live head at packet 8400: it joined AT live, not behind it -- new_client_behind_seconds was ignored` |
+  | 2 | `_ = trusted`, then `header` returns `r.Header.Get(name)` unconditionally | `TestAnUntrustedRequestIsNotBelievedForAnyRelayHeader` (Task 8), and 2c-2's `TestXRelayChannelIsIgnoredWithoutTheTrustMarker` | `the tune asked about /api/relay/channels/somebody-elses-channel/next-source: an unverified X-Relay-Channel was believed` |
   | 3 | `tuningFrom` falls back to a literal for `channel_shutdown_delay` | 2c-2's `TestEveryProxySettingThisRelayReadsIsRequired/channel_shutdown_delay` **only**, once its key list grows by one | `an answer missing only "channel_shutdown_delay" tuned with 200, want 502 -- the relay substituted a default of its own` |
+
+  **Numbers 1 and 2 need the keep-alive line.** Deleting the branch outright leaves `tuning` unused and deleting the guard leaves `trusted` unused, and in both cases the package fails to COMPILE — which tells you nothing about the test. Both were first written without it, and neither reddened until the variable was kept live.
 
   **Number 3 carries 2c-2's own caveat**: running it against a fixture missing several keys at once leaves the test green, because any one of them still fails the tune. The per-key subtest is the one with the property.
 
@@ -892,10 +971,16 @@ The route `relay_client.list_channels` calls, and through it `relay_client.live_
   **Seventeen conditional fields are absent in 2c-3, and each absence has a reason rather than a gap.** The one worth knowing:
 
   ```
-  logo_id        NEVER EMITTED BY PYTHON EITHER. ChannelMetadataField.LOGO_ID
-                 is declared (constants.py:59) and read (channel_status.py:486)
-                 and written NOWHERE in the tree, so the `if not raw: continue`
-                 always continues. Exact parity by doing nothing.
+  logo_id        NEVER EMITTED BY PYTHON EITHER, but not for the reason an
+                 earlier draft of this plan gave. LOGO_ID is declared
+                 (constants.py:59) and read (channel_status.py:486) and IS
+                 written -- at apps/timeshift/views.py:2984, into
+                 timeshift:channel:<id>:metadata, a DIFFERENT KEY FAMILY from
+                 the live:channel:<uuid>:metadata hash channel_status.py reads.
+                 Nothing writes it into the live family, so the
+                 `if not raw: continue` always continues on this endpoint.
+                 Exact parity by doing nothing; "written nowhere in the tree"
+                 was wrong and the conclusion survives it.
   ```
 
   `healthy` needs `StreamManager.healthy` (2c-5's); `video_codec`, `resolution`, `source_fps`, `ffmpeg_speed`, `audio_codec`, `audio_channels` and `stream_type` are ffmpeg- or probe-derived (2c-4 and 2c-5).
@@ -964,6 +1049,12 @@ The oracle for Task 6. Hollow shape 1 in its sharpest form: a Go test comparing 
 
   The Python half does three things, and the third is what stops the fixture going stale:
 
+  **The complete file is Appendix J**, and its module docstring carries the caveat that makes it honest:
+
+  > It pins the SERIALIZER — which keys survive, which render as null, which vanish. It does NOT drive `ChannelStatus.get_basic_channel_info`, so the mapping from "the source dict set this key inside an `if`" to "this key is optional" is 2c-3's reading of `channel_status.py:469-587`, not a measurement of Python's execution.
+
+  Driving the real builder would need a Redis with a channel in it — a much heavier fixture for one more link in the chain — and the completeness assertion below is what stops the reading from silently narrowing instead. **Say this in the PR description too**: a golden that looks like a measurement and is a transcription is worse than one that says which it is.
+
   1. Builds a `payload` dict by hand, exercising every present/absent/null case: two channels, one with every conditional field set and two clients (one fully populated, one with nothing optional), one minimal with no conditional fields and no clients.
   2. Renders it through `RelayChannelListSerializer` and DRF's `JSONRenderer`, and asserts the result equals the committed `relay/httpapi/testdata/channels_clients_all.json` — **compared as parsed JSON, not as bytes**, for the reason Step 3 states.
   3. Asserts the fixture's **completeness**: every field `RelayChannelSerializer` declares is either present on the fully-populated channel, or named in an explicit `NOT_SERVED_BY_2C3` set with a one-line reason. A hand-written fixture that quietly omitted a field would otherwise pin a payload narrower than the contract.
@@ -973,9 +1064,12 @@ The oracle for Task 6. Hollow shape 1 in its sharpest form: a Go test comparing 
   # in neither this set nor the fixture fails the completeness test, which is
   # what stops the golden from silently narrowing as the endpoint grows.
   NOT_SERVED_BY_2C3 = {
-      "logo_id": "ChannelMetadataField.LOGO_ID is written nowhere in the tree, "
-                 "so Python never emits it either (constants.py:59, "
-                 "channel_status.py:486)",
+      "logo_id": (
+          "ChannelMetadataField.LOGO_ID is written only into the TIMESHIFT key "
+          "family (apps/timeshift/views.py:2984, timeshift:channel:<id>:metadata), "
+          "never into the live:channel:<uuid>:metadata hash channel_status.py:486 "
+          "reads, so the live list endpoint never emits it in Python either"
+      ),
       "healthy": "needs StreamManager.healthy, which arrives in 2c-5",
       "video_codec": "ffmpeg-derived, 2c-4",
       "resolution": "ffmpeg-derived, 2c-4",
@@ -1051,26 +1145,32 @@ The oracle for Task 6. Hollow shape 1 in its sharpest form: a Go test comparing 
 
 The tests a reviewer reads first. Everything before this task is machinery; this is where N clients on one channel becomes an assertion.
 
-- [ ] **Step 1: Write the rig**
+- [ ] **Step 1: EXTEND 2c-2's rig; do not build a second one**
 
-  **The complete file is Appendix I.** `newRig` stands up a whole fake deployment — a provider, a Django, this process's mux, and a **real** `httptest.Server` in front of it. Not `httptest.NewRecorder`: the subject is a long-lived streaming response, and a recorder buffers the whole body and returns only once the handler has finished, so every assertion about a client reading while the upstream still runs would be impossible.
+  `httpapi/stream_test.go` already defines `testSecret`, `rigChunkBytes` (`188 * 700` — **already a non-default value**, so the note an earlier draft of this plan carried about 2c-2 "shipping the rig with 255868" is stale and must not be repeated), `rigBudgetBytes`, the `rig` struct, `newRig(t, relaytest.ControlPlaneConfig, relaytest.Config)` and `rig.tune(t, path, http.Header)`. **One package gets one rig.** Redeclaring any of them fails `go vet` before a single test runs.
 
-  Three constants carry decisions:
+  **One edit to `newRig`**, and it is the one that matters:
 
   ```go
-  	// A chunk size the constant cannot produce, so a relay ignoring the wire
-  	// value is detectable. 2c-2 shipped this rig sending 255868 -- the
-  	// constant itself -- which disarmed the whole end-to-end layer against the
-  	// one property Amendment A1.4 exists to prove.
-  	rigChunkBytes = buffer.TSPacketSize * 700
-  	// LONG ENOUGH THAT PacketIndex NEVER WRAPS inside a test, and that is
-  	// what makes the join-point assertion able to fail at all. [Ruling R6]
-  	rigAssetPackets = 65536
+  		// THE SAME manager, not a second one. Two would give the list endpoint
+  		// an empty map while the tune path filled another, and every assertion
+  		// about what the list shows would be about the wrong object.
+  		Control: ControlDeps{Secret: testSecret, Channels: manager},
   ```
 
-  `rig.tune` sends the trust marker and all four `X-Relay-*` values when given a client id, and none of them when given `""` — which is how the untrusted path is driven. `rig.listChannels` mints both internal headers, signing the **full path including the query string**.
+  Everything else this PR needs goes in `fanout_test.go` under names that do not collide (**the complete file is Appendix I**):
 
-  `packetRun` is the shared oracle: it reads N whole packets, checks alignment, and checks that **every packet follows the one before it** by the index the fixture embedded, returning the first. A helper that checked only alignment would pass on a stream with gaps.
+  | New symbol | What it is |
+  |---|---|
+  | `rigAssetPackets = 65536` | Ruling R6's long asset, with the wrap explained in its own comment |
+  | `rigSettings(overrides)` | the full effective settings with the rig's chunk size, plus per-test overrides |
+  | `fanRig(t, up, overrides)` | `newRig` with the long asset and those settings |
+  | `(*rig).tuneAs(t, channelID, clientID)` | the trusted-path shorthand, **built on** `rig.tune` rather than replacing it — `tune` stays the right primitive for the untrusted and malformed cases |
+  | `(*rig).listChannels(t, query)` | the internal call, signing the **full path including the query string** |
+  | `waitForHead(t, r, id, n)` | polls the ring rather than sleeping |
+  | `packetRun(t, who, body, n)` | the shared oracle |
+
+  `packetRun` reads N whole packets, checks alignment, and checks that **every packet follows the one before it** by the index the fixture embedded, returning the first. A helper that checked only alignment would pass on a stream with gaps.
 
 - [ ] **Step 2: Write the six tests**
 
@@ -1081,7 +1181,25 @@ The tests a reviewer reads first. Everything before this task is machinery; this
   | `TestTheClientListIsCappedAtTenUnlessClientsAllIsAsked` | **D4** — the cap, `?clients=all` lifting it, and `client_count` never capped |
   | `TestTheListEndpointRefusesAnUnsignedOrMissignedCall` | the internal gate, four ways |
   | `TestAnUntrustedRequestIsNotBelievedForAnyRelayHeader` | the trust marker gates **every** `X-Relay-*` value, not just the channel |
+  | `TestAnOutputThisRelayDoesNotServeIsRefused` | **R10** — 501 for an fMP4 format and for an Output Profile, with **zero** control-plane and provider calls |
+  | `TestADuplicateClientIDIsRefusedAtTheTuneSurface` | **row 13's first half at the HTTP layer** — 503, and the first client keeps its registration |
+  | `TestTheTwoPortedConstantsMatchTheirPythonLiterals` | the two constants Global Constraint 8 names, against their Python literals |
   | `TestTheLiveEndpointProducesTheGoldensKeySet` (Task 7) | the handler builds the shape |
+
+  **`TestTheTwoPortedConstantsMatchTheirPythonLiterals` is a VALUE test and both halves are needed.** Neither constant was pinned by anything in this plan's first draft, and both survived a break-check: `DefaultClientLimit` 10 → 13 left the cap test green, and `MaxChunksPerRead` 20 → 40 left the buffer cap test green. Both for the same reason — **their expected value IS the constant**, which is the tautological oracle in its purest form. Only a literal written down from the Python side can fail:
+
+  ```go
+  	if DefaultClientLimit != 10 {
+  		t.Errorf("DefaultClientLimit is %d, want 10 -- apps/proxy/relay_views.py:57's "+
+  			"DEFAULT_CLIENT_LIMIT, what the Stats page and /proxy/stats/ have always shown",
+  			DefaultClientLimit)
+  	}
+  	if buffer.MaxChunksPerRead != 20 {
+  		t.Errorf("buffer.MaxChunksPerRead is %d, want 20 -- "+
+  			"apps/proxy/live_proxy/input/buffer.py:329's MAX_CHUNKS, the bound on how much "+
+  			"a lagging reader holds at one instant", buffer.MaxChunksPerRead)
+  	}
+  ```
 
   **The fan-out test's structure is the part to get right.** Every client tunes first, synchronously, so all six are attached before any reads; then six goroutines read concurrently. Tuning inside the goroutines would let a client attach after another had already released, which is a different property.
 
@@ -1106,7 +1224,7 @@ The tests a reviewer reads first. Everything before this task is machinery; this
   | 2 | `RequireInternal` skips `VerifyInternalRequest` | `TestTheListEndpointRefusesAnUnsignedOrMissignedCall`, **three of four subtests** | `answered 200, want 403 -- the internal surface authorised a call that did not carry a valid bound token` |
   | 3 | `identify`'s `header` closure ignores `trusted` | `TestAnUntrustedRequestIsNotBelievedForAnyRelayHeader` | `the tune asked about /api/relay/channels/somebody-elses-channel/next-source: an unverified X-Relay-Channel was believed` |
   | 4 | delete `serveClient`'s `ring.Join` branch | `TestASecondClientJoinsBehindLiveAndNotAtTheHead` | `the second client started at packet 8400 with the live head at packet 8400: it joined AT live, not behind it -- new_client_behind_seconds was ignored` |
-  | 5 | `Attach` calls `start()` unconditionally before consulting the map | `TestEveryClientGetsAnUnbrokenRunFromItsOwnJoinPoint` | `the provider saw N requests for one channel, want 1 -- parity-matrix row 10` |
+  **There is deliberately no break-check for the provider's request count**, and saying why is more useful than inventing one. "One upstream per channel" is not guarded by a line that can be removed: `start()` only asks the control plane, and the provider connection is opened by `publish`'s `go c.run(...)`, so making `Attach` call `start()` eagerly changes nothing a provider can see. The nearest real edit — deleting `claim`'s reuse branch so every caller claims a fresh gate — **hangs rather than fails**: measured, the test ran out its 90-second budget with goroutines parked in `netFD.Read`. The property is structural. The assertion earns its place anyway, as a regression net for 2c-5, whose failover re-tunes through this same manager; the gate itself is guarded by 2c-2's `TestConcurrentFirstClientsStartExactlyOneSource`.
 
   **Number 2 reddens three subtests and not the fourth.** "No headers at all" still fails on `IsInternalPrincipal`, which the edit leaves in place. That is correct and worth confirming rather than reading as a partial break: two mechanisms, each with its own subtest, and the edit removes exactly one.
 
@@ -1150,7 +1268,7 @@ Amendment A2.2 makes this a one-line edit per row, in the existing `Pin` cell, w
 
   **Row 13's second half — the ghost sweep — has no Go pin and must not be given a fake one.** Ruling R8 and Task 2's doc comment establish that the TTL, the heartbeat and the sweep have no analogue in a one-process registry, so there is nothing for a Go test to assert. **Append a sentence to row 13's Notes cell** saying so, naming spec D2's `Client registry` row:
 
-  > The Go pin covers the idempotence half only. The ghost sweep has no Go analogue: spec D2 puts the registry in process memory, where a client entry cannot outlive the goroutine that made it, so the TTL and the heartbeat that the sweep exists to backstop are deleted rather than ported (2c-3).
+  > The Go pin covers the idempotence half only. Row 13's second half has **two** mechanisms and neither has a Go analogue: the heartbeat thread's own staleness check against `last_active` (`client_manager.py:100-126`) and the `remove_ghost_clients` SET sweep (`:434-469`). Spec D2 puts the registry in process memory, where a client entry cannot outlive the goroutine that made it, so the TTL and the heartbeat both mechanisms backstop are deleted rather than ported (2c-3). Note that `refresh_client_ttl` (`:429-444`) has **no production callers** — only tests reach it — so "deleted" overstates its surface: what goes is a method the running system already did not use, alongside two that it did.
 
 - [ ] **Step 3: Do not touch rows 14 or 17**
 
@@ -1193,13 +1311,27 @@ Amendment A2.2 makes this a one-line edit per row, in the existing `Pin` cell, w
 
   **The count in the message is part of the assertion, not decoration.** A list that grows while the message still says "eight" is how the omission survived a whole phase.
 
+  **Say in the PR description that this asserts a SUPERSET, not the roster.** The loop checks that each named program is RUNNING; it does not check that nothing else is. A program added to `all.conf` and not added here still passes. Closing that would mean parsing `[include] files =` from the test, which is a different and larger change than this one.
+
   **`relay-go` is the reason this matters now rather than as tidying.** 2c-1's own fix round found, through this very script, that `relay-go` could not read `/data/jwt` once it dropped privilege under a non-root PUID/PGID — and the script did not assert `relay-go` was running, so it caught that by a different route. The assertion is what makes the next such failure fail here rather than in production.
 
-- [ ] **Step 3: Note what is NOT changed**
+- [ ] **Step 3: Close the second stale rung — the `relay` role**
+
+  `docker/tests/test-puid-pgid.sh:1318` asserts only `relay-uwsgi` for the relay container:
+
+  ```bash
+      if echo "$relay_ctl" | grep -q "relay-uwsgi.*RUNNING" && ! echo "$relay_ctl" | grep -qE "FATAL|BACKOFF"; then
+  ```
+
+  `docker/supervisord/relay.conf`'s glob is `relay-*.conf`, which has picked up `relay-go.conf` since 2c-1 — so the relay role runs two programs and the test checks one. Add the second condition and update the `log_pass` text.
+
+  **And fix that file's own comment while you are there.** `relay.conf` still says *"relay-uwsgi.conf (Phase 1 PR 4) is the only program this glob picks up"*, which stopped being true when 2c-1 added `relay-go.conf` to the same directory. A glob whose comment names its one member is how a second member arrives unnoticed.
+
+- [ ] **Step 4: Note what is NOT changed**
 
   The other `RUNNING` checks in the file — the startup wait at `:193` and the fallback at `:313` — poll `api-uwsgi` specifically and are correct as they are: they are waiting for the container to be up, not asserting the roster.
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 5: Commit**
 
   This file is exercised by `lifecycle-tests.yml`'s `suites` job in full mode, which a `migration/**` branch triggers. **Do not run it locally unless you have the time**: it builds and boots containers.
 
@@ -1230,7 +1362,7 @@ Amendment A2.2 makes this a one-line edit per row, in the existing `Pin` cell, w
   **A3.2 — `get_optimized_client_data`'s MAX_CHUNKS IS ported, and the other
   three constants are not.** 2c-2 declined the batching on the grounds that it
   amortises a Redis round trip. True of `MIN_CHUNKS`, `TARGET_SIZE` and
-  `MAX_SIZE`; not true of `MAX_CHUNKS` (`input/buffer.py:333`), which bounds
+  `MAX_SIZE`; not true of `MAX_CHUNKS` (`input/buffer.py:329`), which bounds
   how much a lagging reader HOLDS at one instant. Uncapped, one reader can pin
   a whole ring's worth of evicted chunks on top of the resident ring — 2 x
   `MaxBytesPerChannel`, about 146 MiB per channel, where the sizing note in
@@ -1252,6 +1384,16 @@ Amendment A2.2 makes this a one-line edit per row, in the existing `Pin` cell, w
   with them parity-matrix row 14's asymmetric `owner` default (`null` on the
   list endpoint, the literal string `'unknown'` on the detail one) and row 17's
   `ip_address` on both. 2c-3 pins neither row: half a row is not a row.
+
+  **A3.5a — two more stated divergences, both where Python loses
+  information.** `get_optimized_client_data` returns `client_index +
+  chunk_count` (`input/buffer.py:373`) — the count it ASKED for, not the count
+  it got — so a short read there skips undelivered chunks; Go returns the index
+  of the last chunk actually handed over. And `skipped` has no Python
+  counterpart as a returned value at all: `output/ts/generator.py:354-358`
+  computes the same number only inside a log string and no caller sees it.
+  Both are additions in the safe direction, recorded rather than presented as
+  parity.
 
   **A3.5 — a stated wire divergence: float spelling.** DRF renders a Python
   float as `5.0`; Go's `encoding/json` renders `float64(5)` as `5`. The
@@ -1349,45 +1491,51 @@ Every break-check in this plan, and the task it belongs to. A `✓` means it was
 | # | Task | The injected defect | What reddens | Verified |
 |---|---|---|---|---|
 | 1 | 1 | `Read` loses its `MaxChunksPerRead` break | `TestReadIsCappedAndItsCursorFollowsTheBytes`, on the chunk count | ✓ |
-| 2 | 1 | `Read` returns the ring's head as `next` | the same test, on the cursor | ✓ |
+| 2 | 1 | `_ = last`, then `Read` returns the ring's head as `next` | the same test, on the cursor | ✓ |
 | 3 | 1 | one backing array reused for every chunk (**a field, not a local**) | `TestAChunkIsUnchangedAfterEveryClientHasServedIt` | — (2c-2 verified the same shape) |
-| 4 | 1 | `TotalBytes` drops its `RLock` | `TestManyConcurrentReadersAndOneWriter`, as `WARNING: DATA RACE` | — |
+| 4 | 1 | drop the `RLock` from `TotalBytes` | `TestManyConcurrentReadersAndOneWriter`, as `WARNING: DATA RACE` | — |
 | 5 | 2 | `addClient` overwrites instead of refusing | `TestASecondAttachUnderAnAttachedClientIDIsRefused` | ✓ |
 | 6 | 2 | `ClientSnapshot` returns map-range order | **expected not to redden**; report the gap | — |
 | 7 | 3 | `release` drops the client outside `m.mu` and locks only around `detachLocked` | `TestAClientArrivingAsTheLastOneLeavesKeepsItsChannel`, round 16 of 400 | ✓ |
 | 8 | 3 | `detachLocked` checks presence, not identity | `TestADelayedStopNeverEvictsAReplacementChannel` | ✓ |
 | 9 | 3 | the shutdown delay is ignored | `TestTheShutdownDelayKeepsAChannelForAReconnectingClient` | ✓ |
 | 10 | 4 | the built `http.Transport` is never closed | `TestConcurrentAttachAndReleaseLeaksNoGoroutine`, 3 → 94 goroutines | ✓ |
-| 11 | 5 | `serveClient` positions at the head | `TestASecondClientJoinsBehindLiveAndNotAtTheHead` | ✓ (see 16) |
-| 12 | 5 | `identify`'s `header` closure ignores `trusted` | `TestAnUntrustedRequestIsNotBelievedForAnyRelayHeader` | ✓ |
+| 11 | 5 | `_ = tuning.JoinBehind`, replacing `serveClient`'s `ring.Join` branch | `TestASecondClientJoinsBehindLiveAndNotAtTheHead` | ✓ (see 16) |
+| 12 | 5 | `_ = trusted`, then `identify`'s `header` closure ignores it | `TestAnUntrustedRequestIsNotBelievedForAnyRelayHeader` | ✓ |
 | 13 | 5 | one setting falls back to a literal | 2c-2's `TestEveryProxySettingThisRelayReadsIsRequired/<key>` **only** | — (2c-2 verified the shape) |
 | 14 | 6 | the client limit is ignored | `TestTheClientListIsCappedAtTenUnlessClientsAllIsAsked` | ✓ |
 | 15 | 6 | `RequireInternal` skips the bound token | `TestTheListEndpointRefusesAnUnsignedOrMissignedCall`, **3 of 4** subtests | ✓ |
 | 16 | 6 | `describeChannel` names a process identity in `owner` | `TestTheLiveEndpointProducesTheGoldensKeySet` **only** | ✓ (did not redden until R9's line went in) |
 | 17 | 7 | `json:"url"` gains `,omitempty` | both golden tests | ✓ |
 | 18 | 7 | `OutputProfileID` loses its pointer | `TestEveryOptionalFieldIsAbsentRatherThanNull` | — |
-| 19 | 8 | `Attach` calls `start()` unconditionally | `TestEveryClientGetsAnUnbrokenRunFromItsOwnJoinPoint`, on the provider's request count | — (2c-2 verified the same shape) |
+| 19 | 8 | `DefaultClientLimit` 10 → 13 | `TestTheTwoPortedConstantsMatchTheirPythonLiterals` **only** — the cap test stays green | ✓ |
+| 20 | 8 | `buffer.MaxChunksPerRead` 20 → 40 | the same test **only** — the buffer cap test stays green | ✓ |
+| 21 | 1 | `MaxChunksPerRead`'s const placed between `ErrClosed`'s doc comment and its `var` | `golangci-lint`, two `revive` findings | ✓ |
+
+**Three rows guard a property with no injectable defect at all, and none of them has an entry above:** the provider's request count (Task 8 Step 3 explains why an eager `start()` changes nothing and the nearest real edit hangs), `ClientSnapshot`'s ordering (row 6), and the borrowed-slice contract against a *consumer* that mutates (Ruling R3). Each is stated rather than given a check that would pass either way.
 
 **Four rows deserve a second look before you trust them, and three of the four come from a break-check that did not redden.**
 
-- **6** is listed *because* it is expected to stay green. Ordering is not a parity property — `channel_status.py:533` reads a Redis SET — so determinism here is a testing convenience and an assertion for it would pin this plan's own choice rather than a behaviour.
+- **6** is listed *because* it is expected to stay green, and its stated reason had to be corrected: not "one client per channel" (the golden's first channel has two) but **neither golden test runs the handler**. Ordering is not a parity property — `channel_status.py:533` reads a Redis SET — so determinism here is a testing convenience.
 - **11** did not redden in this plan's first draft, because the test compared a **wrapped** `PacketIndex` against an unwrapped chunk count. Ruling R6 has the diagnosis; `rigAssetPackets = 65536` is the fix. If it stays green on your tree, check that constant first.
 - **16** did not redden at all until one line was added to the live key-set test. The two golden tests compare a struct literal against a file; **neither runs the handler**. This is the plan's clearest instance of two tests that look like they cover a third thing and do not.
-- **7** is a race and its round number will differ. What must not differ is that it reddens within a few hundred rounds with a message naming a channel the manager does not hold.
+- **7** is a race and its round number will differ. What must not differ is that it reddens within a few hundred rounds with a message naming a channel the manager does not hold. 2c-2's own reviewer measured the same defect at **12% of 3,000 rounds**, plus a deterministic successor-teardown variant, in the shipped code.
+- **19, 20 and 21** exist because a first draft of this plan had none of them: neither constant Global Constraint 8 names was pinned by anything, and the placement of one const comment cost two `revive` findings. Three checks, each catching something that had been invisible.
 
-**A break-check that stays green is the most useful result this table produces**, and three of the four caveats above exist because one did.
+**A break-check that stays green is the most useful result this table produces.** Five of this plan's own did: rows 6 and 16, both constants before rows 19 and 20 existed, and the provider-count check that was dropped. Every one of the five changed the plan.
 
 ---
 
 ## What to report back
 
-1. **Task 0's diff** — every row of the 2c-2 ledger that did not match the merged tree, and which task absorbed it. In particular: did `Manager.release` already take one lock, and did `EffectiveProxySettings()` already carry `channel_shutdown_delay`?
+1. **Task 0's diff** — every row of the 2c-2 ledger that did not match the merged tree, and which task absorbed it. In particular, the three fix-round rows: did `Manager.release` already take one lock with an identity check, did `ProxySource.transport` already return a closer, and did `Read` already return the last index appended? Plus: did `EffectiveProxySettings()` already carry `channel_shutdown_delay`?
+1a. **The collision reconciliation** — that all thirteen inherited `Attach` call sites were rewritten, that none of the five shared fixtures was redeclared, and that **2c-2's own channel and httpapi tests still pass unchanged**. A regression in one of those is a finding about this PR, not about 2c-2.
 2. **Every break-check's actual failure message**, and specifically: did **6**, **11** and **16** behave as this plan predicts?
 3. **The three concurrency pins** — `TestAClientArrivingAsTheLastOneLeavesKeepsItsChannel`, `TestADelayedStopNeverEvictsAReplacementChannel` and `TestConcurrentAttachAndReleaseLeaksNoGoroutine` — green, and their break-checks red on the named test only. For the first, **the round number it reddened on**.
 4. **The goroutine numbers** — `before` and `after` from `TestConcurrentAttachAndReleaseLeaksNoGoroutine`, on a clean tree and with break-check 10 applied. If `after` on a clean tree is anywhere near `before + 20`, say so: the tolerance may be hiding a smaller leak.
 5. **The golden file** — whether your regeneration from Django matched the committed one, and if not, every field that differed. This is the single most likely place this plan is wrong, because it encodes a reading of `RelayChannelSerializer` rather than a measurement.
 6. **The Redis key-family walk** — the family this PR closes, the one it closes partially, and `client_stop`, which it does not.
-7. **The lint ledger** — zero new `#nosec`, and anything the linter found that this plan does not name.
+7. **The lint ledger** — zero new `#nosec`, and anything the linter found that this plan does not name. The one placement finding this plan predicts (break-check 21) should not appear at all if Task 1 Step 1 is followed.
 8. **The hand-run evidence** — `/healthz`, and a failed tune's body confirmed to name no URL and no variable value.
 9. **The stated divergences**, as a list, because they are the part a reviewer cannot infer from a green suite. Task 12 Step 6 has them.
 10. **Anything in the spec, `CLAUDE.md`, the 2c-2 plan or this plan you found wrong or stale.** The two most likely places: the 2c-2 ledger rows, and this plan's reading of `get_basic_channel_info`'s presence rules.
@@ -1396,13 +1544,17 @@ Every break-check in this plan, and the task it belongs to. A `✓` means it was
 
 ## Appendix — the files, in full
 
-Every file below was written, built, vetted, run under `go test -race` three times and linted at **0 issues** before this plan was written, in a scratch module seeded from `main`'s `relay/` plus the 2c-2 plan's own appendices. The task tables above say what each pins and why; these are the bodies, so nothing has to be improvised against the six hollow shapes.
+Every file below was written, built, vetted, run under `go test -race` three times and linted at **0 issues** before this fix round was finished — in a scratch module seeded from **`migration/phase2c-vertical-slice` including its `_test.go` files**, with 2c-2's fix-round shape applied by hand because that commit had not landed. 2c-2's own tests pass unchanged alongside these. The task tables above say what each pins and why; these are the bodies.
 
 **Two literals in here are oracles and must be regenerated rather than trusted:** the golden JSON fixture (Task 7 Step 2 has the command), and — carried from 2c-2 — the synthetic asset's SHA-256.
 
 **Appendix E is the one to read first if you change `Manager.Attach` or `Manager.release`.** Three of its six tests guard orderings rather than values, and every defect they guard against is invisible to `-race`.
 
+**Appendix I declares no rig.** It extends the one `httpapi/stream_test.go` already has; Task 8 Step 1 lists what is 2c-2's and what is new.
+
 ### Appendix A — `relay/buffer/fanout_test.go`
+
+
 
 ```go
 package buffer
@@ -1580,6 +1732,8 @@ func flatten(chunks [][]byte) []byte {
 
 ### Appendix B — `relay/channel/client.go`
 
+
+
 ```go
 package channel
 
@@ -1651,18 +1805,31 @@ type Client struct {
 
 ### Appendix C — `relay/channel/channel.go`
 
+The whole file as it must read afterwards. The diff against 2c-2's is the registry, `ErrDuplicateClient`, `SourceInfo`, `startedAt` and `ClientSnapshot`.
+
 ```go
 // Package channel owns a channel's lifecycle: ownership, the state machine,
 // the switch coordination between the HTTP handlers and the channel's own
 // goroutine, and the client registry.
 //
+// Empty at 2c-1. 2c-2 brings the first real type.
+//
 // WHAT THIS PACKAGE DELIBERATELY DOES NOT CONTAIN, because the Python relay's
 // equivalents are deleted rather than ported (spec D2):
 //
-//   - No ownership lease. See Channel's own comment.
-//   - No follower path and no live:events:{id} pub/sub.
-//   - No client TTL, no heartbeat thread and no ghost sweep. See Client.
-//   - No Redis client, and no Postgres driver.
+//   - No ownership lease. One relay process per host by construction, so
+//     there is never a second writer to fence against. live:channel:{id}:owner,
+//     _ensure_owner_or_stop, release_ownership's non-atomic GET-compare-DELETE
+//     and extend_ownership's non-atomic GET-EXPIRE all go. Ownership becomes
+//     map[uuid]*Channel behind a sync.RWMutex.
+//   - No follower path and no live:events:{id} pub/sub. Those were
+//     multi-worker follower-to-owner coordination; with one owner per channel
+//     by construction they have no purpose.
+//   - No Redis client, and no Postgres driver. The phase's two checkable
+//     invariants (spec § Stage 2c, "The two invariants"). Switch coordination
+//     is a Go chan; the degraded-fallback source cache, the metadata hash, the
+//     stopping flag and the timing counters are all fields on the channel
+//     struct.
 package channel
 
 import (
@@ -1686,14 +1853,39 @@ import (
 // enforced outright here.
 var ErrDuplicateClient = errors.New("channel: a client with this id is already attached")
 
+// SourceInfo is what the next-source answer said about the stream this channel
+// is playing, kept so the status endpoints can render it without a second
+// control-plane call. The fields are exactly the ones
+// ChannelStatus.get_basic_channel_info reads out of the metadata hash.
+type SourceInfo struct {
+	// URL is the provider URL. It reaches the /proxy/relay/channels payload
+	// because channel_status.py:472 puts it there and the Stats page shows it;
+	// that surface is internal and HMAC-authenticated. It must never reach a
+	// log line or a public response body.
+	URL string
+
+	// StreamProfileID is rendered as a STRING, because the metadata hash stores
+	// str(source["stream_profile"]["id"]) (input/manager.py:2165) and the
+	// serializer declares CharField.
+	StreamProfileID int
+
+	StreamID       int
+	StreamName     string
+	ChannelName    string
+	M3UProfileID   int
+	M3UProfileName string
+}
+
 // Channel is one running channel: its ring buffer, its source goroutine, its
-// client registry and its state.
+// client count and its state.
 //
 // There is NO OWNERSHIP LEASE here, and that is spec D2 rather than an
 // omission. One relay process per host by construction means there is never a
 // second writer to fence against, so live:channel:{id}:owner,
 // _ensure_owner_or_stop, release_ownership's non-atomic GET-compare-DELETE and
-// extend_ownership's non-atomic GET-EXPIRE are deleted rather than ported.
+// extend_ownership's non-atomic GET-EXPIRE are deleted rather than ported --
+// together with the follower path and live:events:{id}, which existed only to
+// let a non-owning worker ask the owner to act.
 type Channel struct {
 	id        string
 	ring      *buffer.Ring
@@ -1705,37 +1897,14 @@ type Channel struct {
 	mu      sync.RWMutex
 	state   State
 	lastErr error
-	// clients is the registry. Guarded by mu, and every mutation happens
-	// while the MANAGER's lock is also held, which is what makes "the last
-	// client left" and "the channel leaves the map" one decision rather than
-	// two (Manager.release).
+	// clients is the registry. Guarded by mu, and every mutation happens while
+	// the MANAGER's lock is also held, which is what makes "the last client
+	// left" and "the channel leaves the map" one decision rather than two
+	// (Manager.release).
 	clients map[string]*Client
 
 	cancel context.CancelFunc
 	done   chan struct{}
-}
-
-// SourceInfo is what the next-source answer said about the stream this channel
-// is playing, kept so the status endpoints can render it without a second
-// control-plane call. The fields are exactly the ones
-// ChannelStatus.get_basic_channel_info reads out of the metadata hash.
-type SourceInfo struct {
-	// URL is the provider URL. It reaches the /proxy/relay/channels payload
-	// because channel_status.py:472 puts it there and the Stats page shows
-	// it; that surface is internal and HMAC-authenticated. It must never
-	// reach a log line or a public response body.
-	URL string
-
-	// StreamProfileID is rendered as a STRING, because the metadata hash
-	// stores str(source["stream_profile"]["id"]) (input/manager.py:2165) and
-	// the serializer declares CharField.
-	StreamProfileID int
-
-	StreamID       int
-	StreamName     string
-	ChannelName    string
-	M3UProfileID   int
-	M3UProfileName string
 }
 
 // ID is the channel uuid the control plane and every client address it by.
@@ -1745,13 +1914,13 @@ func (c *Channel) ID() string { return c.id }
 func (c *Channel) Ring() *buffer.Ring { return c.ring }
 
 // Tuning is the channel-start-time settings this channel was started with.
+//
+// SNAPSHOTTED AT CHANNEL START, which is parity-matrix row 5 and not an
+// optimisation: Python reads its thresholds in StreamManager.__init__ and a
+// proxy_settings change never reaches a running channel. Serving it from here
+// is also what lets a second client attach without a next-source call, since
+// the settings arrive on that answer and the second client never makes one.
 func (c *Channel) Tuning() Tuning { return c.tuning }
-
-// Source is what the next-source answer said about this channel's stream.
-func (c *Channel) Source() SourceInfo { return c.source }
-
-// StartedAt is when the channel was published.
-func (c *Channel) StartedAt() time.Time { return c.startedAt }
 
 // State is the channel's current lifecycle state.
 func (c *Channel) State() State {
@@ -1777,40 +1946,13 @@ func (c *Channel) Clients() int {
 	return len(c.clients)
 }
 
-// ClientSnapshot is every attached client, oldest connection first and ties
-// broken by id.
-//
-// DETERMINISTIC ORDER, where Python's is arbitrary: channel_status.py:533
-// reads a Redis SET with SMEMBERS and slices the first ten of whatever order
-// that returned, so no order is the contract and any deterministic one is
-// parity. It is deterministic here because a golden-file comparison against
-// the Python serializer needs it to be, and because "the ten clients the list
-// shows" being a stable set is strictly better than a set that reshuffles
-// between polls.
-func (c *Channel) ClientSnapshot() []Client {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	out := make([]Client, 0, len(c.clients))
-	for _, cl := range c.clients {
-		out = append(out, *cl)
-	}
-	sort.Slice(out, func(i, j int) bool {
-		if !out[i].ConnectedAt.Equal(out[j].ConnectedAt) {
-			return out[i].ConnectedAt.Before(out[j].ConnectedAt)
-		}
-		return out[i].ID < out[j].ID
-	})
-	return out
-}
-
 // Done is closed once the source goroutine has returned and the ring is shut.
 func (c *Channel) Done() <-chan struct{} { return c.done }
 
-// addClient registers cl, or reports that its id is already taken.
-//
-// Called only with the manager's lock held, so a caller that then acts on the
-// result cannot race a concurrent drop. The lock order is always manager then
-// channel and nothing takes them the other way round.
+// addClient and dropClient are the only writers of c.clients. They exist as
+// methods so the manager can adjust the count while holding its own lock
+// without reaching into this struct -- the lock order is always manager then
+// channel, and nothing takes them the other way round.
 func (c *Channel) addClient(cl *Client) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -1829,6 +1971,37 @@ func (c *Channel) dropClient(id string) int {
 	return len(c.clients)
 }
 
+// ClientSnapshot is every attached client, oldest connection first and ties
+// broken by id.
+//
+// DETERMINISTIC ORDER, where Python's is arbitrary: channel_status.py:533 reads
+// a Redis SET with SMEMBERS and slices the first ten of whatever order that
+// returned, so no order is the contract and any deterministic one is parity. It
+// is deterministic here because a golden-file comparison against the Python
+// serializer needs it to be, and because "the ten clients the list shows" being
+// a stable set is strictly better than a set that reshuffles between polls.
+func (c *Channel) ClientSnapshot() []Client {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	out := make([]Client, 0, len(c.clients))
+	for _, cl := range c.clients {
+		out = append(out, *cl)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if !out[i].ConnectedAt.Equal(out[j].ConnectedAt) {
+			return out[i].ConnectedAt.Before(out[j].ConnectedAt)
+		}
+		return out[i].ID < out[j].ID
+	})
+	return out
+}
+
+// Source is what the next-source answer said about this channel's stream.
+func (c *Channel) Source() SourceInfo { return c.source }
+
+// StartedAt is when the channel was published.
+func (c *Channel) StartedAt() time.Time { return c.startedAt }
+
 func (c *Channel) setState(state State, err error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -1838,10 +2011,13 @@ func (c *Channel) setState(state State, err error) {
 	}
 }
 
-// run is the source goroutine. Exactly one per channel, started by the manager.
+// run is the source goroutine. Exactly one per channel, started by the
+// manager.
 //
 // It does NOT remove itself from the manager's map. Manager.claim drops a
-// channel whose ring has closed, and that is the only place it happens.
+// channel whose ring has closed, and that is the only place it happens: two
+// mechanisms for one property means deleting either one changes no test,
+// because the other covers for it silently.
 func (c *Channel) run(ctx context.Context, source Source) {
 	defer close(c.done)
 	defer c.ring.Close()
@@ -1851,18 +2027,26 @@ func (c *Channel) run(ctx context.Context, source Source) {
 
 	switch {
 	case err == nil:
+		// A clean upstream EOF. Python treats this as the stream ending and
+		// the channel stopping; the failover that would try the next
+		// candidate instead is parity-matrix rows 1-3 and 2c-5's.
 		c.log.Info("upstream ended", "channel", c.id)
 		c.setState(StateStopped, nil)
 	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
 		c.log.Info("channel stopped", "channel", c.id)
 		c.setState(StateStopped, nil)
 	default:
+		// The error is logged as-is. Every error this package builds is
+		// written to carry no URL, because a provider URL carries provider
+		// credentials (CLAUDE.md, § Known defects).
 		c.log.Error("upstream failed", "channel", c.id, "error", err)
 		c.setState(StateError, err)
 	}
 }
 
-// markActive moves a channel out of waiting_for_clients.
+// markActive moves a channel out of waiting_for_clients on its first chunk.
+// Called by the manager's attach path rather than by the writer, because the
+// writer is an io.Writer and knows nothing about clients.
 func (c *Channel) markActive() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -1886,6 +2070,8 @@ func (c *Channel) stop(wait time.Duration) {
 ```
 
 ### Appendix D — `relay/channel/manager.go`
+
+The whole file. **The one-lock `release`, `stopIf` and `detachLocked` are 2c-2's fix-round shape**, reproduced here so the file is complete; what 2c-3 adds to them is the client id, the move of the delay onto `Tuning`, and `Snapshot`.
 
 ```go
 package channel
@@ -1913,17 +2099,28 @@ type ManagerConfig struct {
 	// Log is the logger. Nil means slog.Default().
 	Log *slog.Logger
 
-	// Now is the clock handed to every ring. Nil means time.Now.
+	// Now is the clock handed to every ring, injectable so the join-point
+	// tests do not sleep. Nil means time.Now.
 	Now func() time.Time
 }
 
 // Manager owns every running channel.
+//
+// map[string]*Channel behind a sync.RWMutex is the whole of what the
+// ownership lease used to buy (spec D2). Nothing here is in Redis, so nothing
+// here can fail open the three ways server.py's lease does.
 type Manager struct {
 	cfg ManagerConfig
 	log *slog.Logger
 
 	mu       sync.Mutex
 	channels map[string]*Channel
+	// starting holds one gate per channel currently being started. A second
+	// client arriving mid-start waits on the gate rather than starting a
+	// second source, which is what makes "one upstream per channel" a
+	// property of the code -- WITHOUT holding the manager lock across the
+	// control-plane call, which is what makes one slow control plane cost one
+	// tune rather than every tune.
 	starting map[string]chan struct{}
 }
 
@@ -1949,6 +2146,10 @@ func NewManager(cfg ManagerConfig) *Manager {
 
 // Started is what a start function hands back: the source to run, the tuning
 // the channel runs on, and what the control plane said about the stream.
+//
+// A struct rather than a fourth return value: (Source, Tuning, SourceInfo,
+// error) is where a signature stops being readable, and 2c-4's ffmpeg source
+// adds a fifth.
 type Started struct {
 	Source Source
 	Tuning Tuning
@@ -1956,17 +2157,33 @@ type Started struct {
 }
 
 // Attach returns the channel for id, starting it from start() if it is not
-// already running, and registers client against it.
+// already running, and registers one client against it.
 //
 // The returned release function must be called exactly once, and a deferred
-// call is the only correct shape.
+// call is the only correct shape: it drops the client and, when that was the
+// last one, stops the channel after ShutdownDelay.
 //
-// START RUNS OUTSIDE THE MANAGER LOCK, behind a per-channel gate closed from a
-// deferred call registered BEFORE start() runs, so it fires at Attach's return
-// -- after publish has installed the channel. Moving that close inside a
-// helper around start() wakes a waiter that then races the map insertion,
-// claims a fresh gate and opens a SECOND upstream; -race reports none of it,
-// because an ordering bug is not a data race.
+// `start` is a FUNCTION rather than a value so a second client on a running
+// channel never calls the control plane at all -- which is the behaviour
+// views.py:712 has today, and the reason next-source runs once per channel
+// while output profiles resolve once per client (2b-2's own ruling).
+//
+// START RUNS OUTSIDE THE MANAGER LOCK. An earlier draft called it while
+// holding the lock, on the reasoning that one process needs one mutex where
+// Python needs a per-channel init lock plus an ownership lease plus a
+// _channels_setting_up set. That reasoning is right about correctness and
+// wrong about everything else. start() makes the next-source call, whose own
+// budget is two attempts of (2s, 5s) plus a retry delay, and holding the
+// manager lock across it serialises every concurrent Attach, Get, Stop and
+// release behind one slow control plane. Worse, a panic inside start() left
+// the lock held forever: the relay then answered /healthz with 200 while
+// every subsequent tune blocked. Demonstrated, and pinned by
+// TestAPanickingStartDoesNotWedgeTheManager.
+//
+// The exclusion that actually matters is preserved by a gate: the caller that
+// claims the start publishes a channel under `starting`, later callers wait on
+// it and retry, and the gate is closed from a deferred call so a panic wakes
+// them instead of stranding them.
 func (m *Manager) Attach(id string, client *Client, start func() (Started, error)) (*Channel, func(), error) {
 	var gate chan struct{}
 	for {
@@ -1982,13 +2199,32 @@ func (m *Manager) Attach(id string, client *Client, start func() (Started, error
 			gate = own
 			break
 		}
+		// Someone else is starting this channel. Wait for them and look
+		// again; they may have succeeded, failed, or panicked.
 		<-wait
 	}
 
+	// REGISTERED BEFORE start() IS CALLED, so it runs when Attach RETURNS --
+	// which is after publish has installed the channel. The ordering is the
+	// whole point and it is easy to get subtly wrong: an earlier version
+	// closed the gate when the START finished, inside a helper, so a waiter
+	// woken by it raced the caller's own map insertion. When the waiter won it
+	// found neither a channel nor a gate, claimed a fresh one, and started a
+	// SECOND upstream -- a second provider connection with no map entry and
+	// nothing that would ever stop it, plus a first client whose release tore
+	// down the other client's channel. Measured at 8 concurrent clients: it
+	// went wrong within the first few rounds, and -race never flagged it,
+	// because an ordering bug is not a data race.
+	//
+	// A deferred call still runs while a panic unwinds, so this also keeps the
+	// panic guarantee the helper was written for.
 	defer m.releaseGate(id, gate)
 
 	started, err := start()
 	if err != nil {
+		// A failed start leaves no channel, and the deferred release lets the
+		// next caller claim a fresh gate and try again. A tune that failed is
+		// retryable; nothing here caches the failure.
 		return nil, nil, err
 	}
 
@@ -1996,7 +2232,9 @@ func (m *Manager) Attach(id string, client *Client, start func() (Started, error
 	return c, func() { m.release(c, client.ID) }, nil
 }
 
-// releaseGate clears the start claim and wakes everyone waiting on it.
+// releaseGate clears the start claim and wakes everyone waiting on it. It is
+// called from Attach's deferred call and nowhere else, so the close happens
+// exactly once and only after the channel is reachable.
 func (m *Manager) releaseGate(id string, gate chan struct{}) {
 	m.mu.Lock()
 	delete(m.starting, id)
@@ -2005,17 +2243,32 @@ func (m *Manager) releaseGate(id string, gate chan struct{}) {
 }
 
 // claim inspects the map once, under the lock. It returns exactly one of: a
-// running channel with this client registered against it; a gate to wait on
-// because someone else is starting; a gate this caller now owns; or
-// ErrDuplicateClient.
+// running channel with this caller registered against it; a gate to wait on
+// because someone else is starting; or a gate this caller now owns.
 func (m *Manager) claim(id string, client *Client) (existing *Channel, wait, own chan struct{}, err error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	if c, running := m.channels[id]; running {
-		// A FINISHED CHANNEL IS NOT A RUNNING ONE, and this is the ONLY
-		// place one is dropped. Keyed on the ring rather than on c.done
-		// because the ring closes first among run's deferred calls.
+		// A FINISHED CHANNEL IS NOT A RUNNING ONE. Once the ring is closed
+		// nothing will ever be published to it again, so handing it to a new
+		// client serves whatever is left in the buffer and then EOF, with no
+		// re-tune and no error -- a channel whose upstream 404'd would answer
+		// every later viewer with an empty 200, forever. Drop it here and fall
+		// through to a fresh start.
+		//
+		// The ring, not c.done: the ring closes FIRST inside run's deferred
+		// calls, so this covers the whole window from "nothing more will be
+		// published" onward rather than just the tail of it.
+		//
+		// THIS IS THE ONLY PLACE A FINISHED CHANNEL IS DROPPED. An earlier
+		// draft also had run() remove itself from the map, which was worse in
+		// a way that is easy to miss: with two mechanisms, removing this one
+		// changed no test, because the other silently covered for it. One
+		// mechanism means the break-check reddens. The cost is that a finished
+		// channel nobody re-tunes stays in the map until its last client
+		// releases -- and release stops it, so the entry cannot outlive the
+		// clients watching it.
 		if !c.ring.Closed() {
 			if !c.addClient(client) {
 				return nil, nil, nil, ErrDuplicateClient
@@ -2072,31 +2325,10 @@ func (m *Manager) Get(id string) *Channel {
 	return m.channels[id]
 }
 
-// Snapshot is every channel the manager holds, in id order.
-//
-// The list endpoint's source. Ordered so the payload is stable between polls;
-// build_live_channel_stats_data's own order is a Redis SCAN's, which is
-// arbitrary and not a contract.
-func (m *Manager) Snapshot() []*Channel {
-	m.mu.Lock()
-	out := make([]*Channel, 0, len(m.channels))
-	for _, c := range m.channels {
-		out = append(out, c)
-	}
-	m.mu.Unlock()
-	sort.Slice(out, func(i, j int) bool { return out[i].id < out[j].id })
-	return out
-}
-
 // Stop tears a channel down immediately, whatever its client count.
 func (m *Manager) Stop(id string) bool {
-	m.mu.Lock()
-	c, running := m.channels[id]
-	if running {
-		delete(m.channels, id)
-	}
-	m.mu.Unlock()
-	if !running {
+	c := m.take(id)
+	if c == nil {
 		return false
 	}
 	c.setState(StateStopping, nil)
@@ -2104,7 +2336,21 @@ func (m *Manager) Stop(id string) bool {
 	return true
 }
 
-// StopAll tears every channel down.
+// take removes a channel from the map and returns it, or nil.
+func (m *Manager) take(id string) *Channel {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	c, running := m.channels[id]
+	if !running {
+		return nil
+	}
+	delete(m.channels, id)
+	return c
+}
+
+// StopAll tears every channel down. The SIGTERM drain that calls it in
+// anger is 2c-8's; this exists so a test and a shutdown path have one way to
+// do it.
 func (m *Manager) StopAll() {
 	for _, id := range m.ids() {
 		m.Stop(id)
@@ -2124,22 +2370,18 @@ func (m *Manager) ids() []string {
 // release drops one client and, when it was the last, stops the channel --
 // immediately, or after the shutdown delay.
 //
-// THE DROP AND THE DECISION HAPPEN UNDER ONE LOCK, and that is the whole of
-// this function. An earlier shape dropped the client, saw zero remaining, and
-// then called Stop: between those two statements a new client could claim the
-// same channel, be handed it, and have it torn down underneath them -- an
-// empty 200 with no re-tune. claim registers its client under m.mu too, so
-// taking the count and removing the map entry in the same critical section is
-// what makes the two mutually exclusive. -race sees none of this; it is an
-// ordering bug, which is why TestAClientArrivingAsTheLastOneLeavesKeepsItsChannel
-// exists.
+// THE DROP AND THE DECISION HAPPEN UNDER ONE LOCK. An earlier shape dropped the
+// client, saw zero remaining, and then called Stop: between those two
+// statements a new client could claim the same channel, be handed it, and have
+// it torn down underneath them -- an empty 200 with no re-tune. claim registers
+// its client under m.mu too, so taking the count and removing the map entry in
+// the same critical section is what makes the two mutually exclusive. -race
+// sees none of this; it is an ordering bug, which is why
+// TestAClientArrivingAsTheLastOneLeavesKeepsItsChannel exists.
 func (m *Manager) release(c *Channel, clientID string) {
 	m.mu.Lock()
 	remaining := c.dropClient(clientID)
-	stop := false
-	if remaining == 0 && c.tuning.ShutdownDelay <= 0 {
-		stop = m.detachLocked(c)
-	}
+	stop := remaining == 0 && c.tuning.ShutdownDelay <= 0 && m.detachLocked(c)
 	m.mu.Unlock()
 
 	if stop {
@@ -2148,19 +2390,19 @@ func (m *Manager) release(c *Channel, clientID string) {
 		return
 	}
 	if remaining == 0 && c.tuning.ShutdownDelay > 0 {
-		time.AfterFunc(c.tuning.ShutdownDelay, func() { m.stopIfIdle(c) })
+		time.AfterFunc(c.tuning.ShutdownDelay, func() { m.stopIf(c) })
 	}
 }
 
-// stopIfIdle is the delayed half of release: the grace window expired, so stop
-// the channel unless somebody reconnected inside it.
+// stopIf is the delayed half of release: the grace window expired, so stop the
+// channel unless somebody reconnected inside it.
 //
 // The port of ChannelService.cancel_pending_shutdown
 // (services/channel_service.py:103-127), which Python spells as a Redis
 // timestamp a reconnecting client deletes. Here the reconnect simply registers
 // a client, and this check sees it -- under the same lock that registered it,
 // so there is no window between "nobody is watching" and "the entry is gone".
-func (m *Manager) stopIfIdle(c *Channel) {
+func (m *Manager) stopIf(c *Channel) {
 	m.mu.Lock()
 	stop := c.Clients() == 0 && m.detachLocked(c)
 	m.mu.Unlock()
@@ -2174,11 +2416,11 @@ func (m *Manager) stopIfIdle(c *Channel) {
 // detachLocked removes c from the map if the map still holds THIS channel, and
 // reports whether it did. Callers hold m.mu.
 //
-// The identity check is load-bearing. By the time a delayed stop fires, the
-// map may hold a DIFFERENT channel under the same id: the first one finished,
-// claim dropped it, and a later tune published a replacement. Deleting by id
-// alone would evict a live successor and leave its clients attached to a
-// channel nothing can stop.
+// The identity check is load-bearing. By the time a delayed stop fires, the map
+// may hold a DIFFERENT channel under the same id: the first one finished, claim
+// dropped it, and a later tune published a replacement. Deleting by id alone
+// would evict a live successor and leave its clients attached to a channel
+// nothing can stop.
 func (m *Manager) detachLocked(c *Channel) bool {
 	if m.channels[c.id] != c {
 		return false
@@ -2187,7 +2429,24 @@ func (m *Manager) detachLocked(c *Channel) bool {
 	return true
 }
 
-// Describe is a one-line state summary, for logs.
+// Snapshot is every channel the manager holds, in id order.
+//
+// The list endpoint's source. Ordered so the payload is stable between polls;
+// build_live_channel_stats_data's own order is a Redis SCAN's, which is
+// arbitrary and not a contract.
+func (m *Manager) Snapshot() []*Channel {
+	m.mu.Lock()
+	out := make([]*Channel, 0, len(m.channels))
+	for _, c := range m.channels {
+		out = append(out, c)
+	}
+	m.mu.Unlock()
+	sort.Slice(out, func(i, j int) bool { return out[i].id < out[j].id })
+	return out
+}
+
+// Describe is a one-line state summary, for logs and for the 2c-8 status
+// routes to build on.
 func (c *Channel) Describe() string {
 	return fmt.Sprintf("channel %s state=%s clients=%d head=%d", c.id, c.State(), c.Clients(), c.ring.Head())
 }
@@ -2195,13 +2454,13 @@ func (c *Channel) Describe() string {
 
 ### Appendix E — `relay/channel/fanout_test.go`
 
+**Declares only `startCounting`.** `sourceCounter`, `countingSource`, `waitForStart`, `testTuning` and `testClient` are 2c-2's and Task 3 Step 2's.
+
 ```go
 package channel
 
 import (
-	"context"
 	"errors"
-	"io"
 	"runtime"
 	"sync"
 	"testing"
@@ -2211,86 +2470,15 @@ import (
 	"github.com/D10Scot/Dispatcharr/relay/internal/relaytest"
 )
 
-func testTuning() Tuning {
-	return Tuning{
-		ChunkBytes: buffer.TSPacketSize * 4,
-		Retention:  60 * time.Second,
-		JoinBehind: 5 * time.Second,
-	}
-}
-
-func testClient(id string) *Client {
-	return &Client{
-		ID:           id,
-		UserID:       "7",
-		IPAddress:    "203.0.113.9",
-		UserAgent:    "relaytest/1.0",
-		OutputFormat: "mpegts",
-		ConnectedAt:  time.Now(),
-	}
-}
-
-// A source that counts how many are running now and how many ever ran.
-type sourceCounter struct {
-	mu      sync.Mutex
-	running int
-	started int
-}
-
-func (c *sourceCounter) enter() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.running++
-	c.started++
-}
-
-func (c *sourceCounter) leave() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.running--
-}
-
-func (c *sourceCounter) snapshot() (running, started int) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.running, c.started
-}
-
-type countingSource struct{ c *sourceCounter }
-
-func (s countingSource) Run(ctx context.Context, _ io.Writer) error {
-	s.c.enter()
-	defer s.c.leave()
-	<-ctx.Done()
-	return ctx.Err()
-}
-
-// waitForStart blocks until at least one source has entered Run and returns
-// how many had by then.
+// startCounting is the start function the tests below hand to Attach: 2c-3's
+// Started shape around concurrent_test.go's countingSource.
 //
-// A DEADLINE, NOT AN IMMEDIATE READ. publish starts the source goroutine and
-// returns without waiting for the scheduler, so asserting the count straight
-// after Attach races Go's runtime rather than the code -- and it reports ZERO
-// where the defect being hunted reports two, which is a failure message
-// pointing at the wrong thing. Measured: three runs out of three failed this
-// way before the poll went in.
-func waitForStart(t *testing.T, c *sourceCounter) int {
-	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		if _, started := c.snapshot(); started > 0 {
-			return started
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("no source started within five seconds")
-		}
-		time.Sleep(100 * time.Microsecond)
-	}
-}
-
-func startCounting(c *sourceCounter, t Tuning) func() (Started, error) {
+// sourceCounter, countingSource, waitForStart, testTuning and testClient are
+// NOT redeclared here -- they are concurrent_test.go's and manager_test.go's,
+// and one package gets one of each.
+func startCounting(c *sourceCounter, tuning Tuning) func() (Started, error) {
 	return func() (Started, error) {
-		return Started{Source: countingSource{c: c}, Tuning: t}, nil
+		return Started{Source: countingSource{c: c}, Tuning: tuning}, nil
 	}
 }
 
@@ -2317,7 +2505,7 @@ func TestNClientsShareOneSourceAndTheChannelOutlivesAllButTheLast(t *testing.T) 
 		releases = append(releases, release)
 	}
 
-	if started := waitForStart(t, counter); started != 1 {
+	if started := waitForStart(t, counter, 0); started != 1 {
 		t.Fatalf("%d sources were started for one channel, want 1 -- a second provider connection was opened", started)
 	}
 	if got := first.Clients(); got != clients {
@@ -2457,7 +2645,7 @@ func TestTheShutdownDelayKeepsAChannelForAReconnectingClient(t *testing.T) {
 	if m.Get("one") != ch {
 		t.Fatal("the delayed stop fired with a client attached: the reconnect did not cancel it")
 	}
-	waitForStart(t, counter)
+	waitForStart(t, counter, 0)
 	if running, started := counter.snapshot(); running != 1 || started != 1 {
 		t.Fatalf("%d sources running and %d ever started, want 1 and 1", running, started)
 	}
@@ -2577,6 +2765,8 @@ func TestConcurrentAttachAndReleaseLeaksNoGoroutine(t *testing.T) {
 
 ### Appendix F — `relay/httpapi/stream.go`
 
+
+
 ```go
 package httpapi
 
@@ -2598,16 +2788,26 @@ import (
 
 // StreamDeps is everything the live TS handler needs.
 type StreamDeps struct {
-	Secret   string
+	// Secret is the deployment's Django SECRET_KEY, used to verify the
+	// X-Dispatcharr-Authorized marker nginx sets.
+	Secret string
+
+	// Channels owns every running channel.
 	Channels *channel.Manager
-	Control  *control.Client
-	Log      *slog.Logger
+
+	// Control calls Django's /api/relay/... routes.
+	Control *control.Client
+
+	// Log is the logger. Nil means slog.Default().
+	Log *slog.Logger
 
 	// Now is the clock a client's ConnectedAt comes from. Nil means time.Now.
 	Now func() time.Time
 }
 
-// The proxy_settings keys this PR reads.
+// The proxy_settings keys this PR reads. Named constants rather than literals
+// at the call site, so a rename on the wire is one edit and a typo is a
+// compile error rather than a runtime ErrSettingAbsent.
 const (
 	settingChunkBytes    = "BUFFER_CHUNK_SIZE"
 	settingRetention     = "redis_chunk_ttl"
@@ -2615,13 +2815,6 @@ const (
 	settingReadSize      = "CHUNK_SIZE"
 	settingShutdownDelay = "channel_shutdown_delay"
 )
-
-// OutputFormatMPEGTS is the only output format this relay serves.
-//
-// The value apps/proxy/live_proxy/views.py records when no format was chosen
-// (channel_status.py:567's `output_format or 'mpegts'`), and the one 2c-3
-// serves. fMP4 is 2c-6's.
-const OutputFormatMPEGTS = "mpegts"
 
 // tuningFrom resolves the channel-start-time settings out of a next-source
 // answer, and returns the upstream read size alongside them.
@@ -2651,6 +2844,12 @@ func tuningFrom(s control.Settings) (channel.Tuning, int, error) {
 	}
 	return t, readSize, nil
 }
+
+// OutputFormatMPEGTS is the only output format this relay serves.
+//
+// The value channel_status.py:567 records when no format was chosen
+// (`output_format or 'mpegts'`). fMP4 is 2c-6's.
+const OutputFormatMPEGTS = "mpegts"
 
 // StreamHandler serves GET /proxy/ts/stream/{channelID}.
 func StreamHandler(deps StreamDeps) http.HandlerFunc {
@@ -2700,8 +2899,9 @@ func StreamHandler(deps StreamDeps) http.HandlerFunc {
 //
 // Refused rather than served, for 2c-2's reason on stream_profile.kind: a
 // relay that logged "fmp4" in its registry and then wrote MPEG-TS would be
-// wrong in a way nothing on the wire says. 2c-6 brings fMP4 and 2c-7 the
-// Output Profiles.
+// wrong in a way nothing on the wire says, and serving it under the label
+// "mpegts" would be a lie in the payload /proxy/stats/ renders. 2c-6 brings
+// fMP4 and 2c-7 the Output Profiles.
 type ErrUnsupportedOutput struct {
 	Format    string
 	ProfileID string
@@ -2716,13 +2916,16 @@ func (e *ErrUnsupportedOutput) Error() string {
 
 // identify resolves which channel this request is for and who is asking.
 //
-// The four X-Relay-* values are read ONLY when X-Dispatcharr-Authorized proves
+// The five X-Relay-* values are read ONLY when X-Dispatcharr-Authorized proves
 // nginx put them there. Without that check any client could name any channel,
 // any client id, any address and any user by hand and bypass whatever the
 // authorize hop decided -- that marker is the entire reason
 // apps/proxy/authorize.py can be the only place the decision is made. An
 // untrusted request falls back to the path value and to values resolved here,
 // which is the dev shape; 2c-8 brings POST /_dispatcharr/authorize-internal.
+//
+// One closure rather than five `if trusted` blocks: five is five chances to
+// omit one, and the one omitted is the one that matters.
 func identify(r *http.Request, secret string, now func() time.Time) (string, *channel.Client, error) {
 	trusted := control.IsRelayTrusted(secret, r.Header.Get(control.HeaderAuthorized))
 
@@ -2738,12 +2941,12 @@ func identify(r *http.Request, secret string, now func() time.Time) (string, *ch
 		id = r.PathValue("channelID")
 	}
 
-	format := header("X-Relay-Output-Format")
-	profileID := header("X-Relay-Output")
-	if profileID != "" {
+	// Refused before anything is registered or attached, so a tune this relay
+	// cannot serve never reaches the control plane.
+	if profileID := header("X-Relay-Output"); profileID != "" {
 		return id, nil, &ErrUnsupportedOutput{ProfileID: profileID}
 	}
-	if format != "" && format != OutputFormatMPEGTS {
+	if format := header("X-Relay-Output-Format"); format != "" && format != OutputFormatMPEGTS {
 		return id, nil, &ErrUnsupportedOutput{Format: format}
 	}
 
@@ -2757,9 +2960,11 @@ func identify(r *http.Request, secret string, now func() time.Time) (string, *ch
 		ip = peerAddress(r)
 	}
 
+	// NOT trust-gated, deliberately: User-Agent is the client's own header on
+	// every path, not an authorize-hop assertion. client_manager.py:236 reads
+	// it straight off the request too, with the same "unknown" fallback.
 	userAgent := r.Header.Get("User-Agent")
 	if userAgent == "" {
-		// client_manager.py:236's own fallback.
 		userAgent = "unknown"
 	}
 
@@ -2779,19 +2984,19 @@ func identify(r *http.Request, secret string, now func() time.Time) (string, *ch
 	}, nil
 }
 
-// mintClientID is apps/proxy/authorize.py:145-147's mint_client_id, spelled
-// the same way on the wire: client_<unix millis>_<four digits>.
+// mintClientID is apps/proxy/authorize.py:145-147's mint_client_id, spelled the
+// same way on the wire: client_<unix millis>_<four digits>.
 //
 // crypto/rand rather than math/rand: gosec reports G404 on math/rand, and the
 // id is a handle an admin can stop a client by (DELETE
-// /proxy/relay/channels/<id>/clients/<client_id>, 2c-8), so guessability is
-// not nothing. Python's random.randint is what it is; matching the FORMAT is
-// the parity requirement, matching the generator is not.
+// /proxy/relay/channels/<id>/clients/<client_id>, 2c-8), so guessability is not
+// nothing. Python's random.randint is what it is; matching the FORMAT is the
+// parity requirement, matching the generator is not.
 func mintClientID(at time.Time) string {
 	n, err := rand.Int(rand.Reader, big.NewInt(9000))
 	if err != nil {
-		// crypto/rand.Reader does not fail on any platform this runs on;
-		// if it somehow did, a tune must still get an id rather than 500.
+		// crypto/rand.Reader does not fail on any platform this runs on; if it
+		// somehow did, a tune must still get an id rather than a 500.
 		n = big.NewInt(0)
 	}
 	return fmt.Sprintf("client_%d_%d", at.UnixMilli(), 1000+n.Int64())
@@ -2834,7 +3039,12 @@ func startProxyTune(ctx context.Context, client *control.Client, id string) (cha
 		return channel.Started{}, ErrNoSource
 	}
 
-	// KIND, NEVER TRANSCODE.
+	// KIND, NEVER TRANSCODE. `transcode` is false for Proxy AND for Redirect
+	// (apps/proxy/next_source.py:504), and both locked profiles carry an empty
+	// command, so a relay that branched on `transcode` would treat a Redirect
+	// channel as Proxy and stream a provider URL that should have been a 302 --
+	// silently, and to the wrong architecture. `kind` is the field 2c-1 Task 0
+	// added for exactly this, and this is its first consumer.
 	if kind := answer.Source.StreamProfile.Kind; kind != control.KindProxy {
 		return channel.Started{}, &ErrNotProxyKind{Kind: kind}
 	}
@@ -2864,7 +3074,8 @@ func startProxyTune(ctx context.Context, client *control.Client, id string) (cha
 }
 
 // writeTuneFailure turns a tune error into a status. It never echoes the error
-// text to the client.
+// text to the client: a control-plane message can name a variable, and a
+// source URL carries provider credentials.
 func writeTuneFailure(w http.ResponseWriter, log *slog.Logger, id string, err error) {
 	var notProxy *ErrNotProxyKind
 	var unsupported *ErrUnsupportedOutput
@@ -2882,8 +3093,8 @@ func writeTuneFailure(w http.ResponseWriter, log *slog.Logger, id string, err er
 			"channel", id, "format", unsupported.Format, "output_profile", unsupported.ProfileID)
 		http.Error(w, "this output is not served yet", http.StatusNotImplemented)
 	case errors.Is(err, channel.ErrDuplicateClient):
-		// views.py:748-753's 503: a client id already attached to this
-		// channel is a client that never released, not a new viewer.
+		// views.py:748-753's 503: a client id already attached to this channel
+		// is a client that never released, not a new viewer.
 		log.Warn("refusing a duplicate client id", "channel", id)
 		http.Error(w, "failed to register client", http.StatusServiceUnavailable)
 	case errors.Is(err, ErrNoSource):
@@ -2893,6 +3104,8 @@ func writeTuneFailure(w http.ResponseWriter, log *slog.Logger, id string, err er
 		log.Error("the control plane sent incomplete proxy_settings", "channel", id, "key", absent.Key)
 		http.Error(w, "control plane contract mismatch", http.StatusBadGateway)
 	case errors.As(err, &misconfigured):
+		// The variable name only, never the value: a control-plane URL can
+		// carry userinfo.
 		log.Error("the control-plane address is misconfigured", "variable", misconfigured.Variable)
 		http.Error(w, "control plane misconfigured", http.StatusInternalServerError)
 	case errors.As(err, &refused):
@@ -2909,18 +3122,16 @@ func writeTuneFailure(w http.ResponseWriter, log *slog.Logger, id string, err er
 
 // serveClient is the client loop: position once, then read, write, wait.
 //
-// NO KEEPALIVE PACKETS AND NO CLIENT TIMEOUT, both parity: Python's are gated
-// on stream_manager.healthy being FALSE (output/ts/generator.py:546-551 and
-// :592), and nothing lowers that flag except the failover machinery, which is
-// 2c-5's.
-//
-// AND NO GHOST-CLIENT DISCONNECT. output/ts/generator.py:579-581's
-// _is_ghost_client needs consecutive_empty > 100 AND the buffer 50 chunks
-// ahead of the client at the same instant -- a client 50 chunks behind whose
-// chunks exist is fed on its next read, which resets consecutive_empty, so the
-// two conditions are mutually exclusive outside the expiry window
-// find_oldest_available_chunk already recovers from. Not ported, and the
-// reason is that it is unreachable rather than that it is 2c-5's.
+// NO KEEPALIVE PACKETS AND NO CLIENT TIMEOUT, and both omissions are parity
+// rather than scope-cutting. Python sends a keepalive only when
+// _should_send_keepalive says so, and that requires the owner's
+// stream_manager.healthy to be FALSE (output/ts/generator.py:546-551);
+// _is_timeout likewise disconnects only when the same flag is false (:592).
+// Nothing lowers that flag except the health monitor and the failover
+// machinery, which are 2c-5's. The error packets at :209-250 are the other
+// half of the same story: every one of them is inside
+// _wait_for_initialization, the path a follower takes while another worker
+// elects itself owner -- deleted outright by D2, not ported.
 func serveClient(
 	ctx context.Context,
 	w http.ResponseWriter,
@@ -2932,11 +3143,11 @@ func serveClient(
 	tuning := ch.Tuning()
 	ring := ch.Ring()
 
-	// POSITIONED ONCE, at setup, exactly as output/ts/generator.py:264-302
-	// positions a client -- and this is the call parity-matrix row 8 is
-	// about, because from 2c-3 onward the ring the client joins is usually
-	// one ANOTHER client has been filling. A JoinBehind of zero means the
-	// live head, which is what new_client_behind_seconds = 0 means there.
+	// Positioned ONCE, at setup -- and this is the call parity-matrix row 8 is
+	// about, because from 2c-3 onward the ring a client joins is usually one
+	// ANOTHER client has been filling. Exactly as output/ts/generator.py:264-302
+	// positions a client. A JoinBehind of zero means the live head, which is
+	// what new_client_behind_seconds = 0 means there too.
 	cursor := ring.Head()
 	if tuning.JoinBehind > 0 {
 		cursor = ring.Join(tuning.JoinBehind)
@@ -2947,9 +3158,9 @@ func serveClient(
 		if skipped > 0 {
 			// The jump find_oldest_available_chunk performs
 			// (input/buffer.py:407-452): the client fell behind past
-			// retention, so it resumes at the oldest resident chunk with a
-			// gap in its stream. Logged, never a disconnect -- Python does
-			// not disconnect such a client either.
+			// retention, so it resumes at the oldest resident chunk with a gap
+			// in its stream. Logged, never a disconnect -- Python does not
+			// disconnect such a client either.
 			log.Warn("client fell behind the ring",
 				"channel", ch.ID(), "client", client.ID,
 				"skipped", skipped, "head", ring.Head())
@@ -2968,7 +3179,8 @@ func serveClient(
 		}
 		if errors.Is(err, buffer.ErrClosed) {
 			// One last read. The writer may have published between the Read
-			// above and Close.
+			// above and Close, and without this the tail of a stream that
+			// ended cleanly is dropped.
 			if final, _, _ := ring.Read(cursor); len(final) > 0 {
 				writeChunks(w, rc, final)
 			}
@@ -2978,11 +3190,8 @@ func serveClient(
 }
 
 // writeChunks writes and flushes, reporting whether the client is still there.
-//
-// IT NEVER WRITES INTO A CHUNK. The slices are borrowed from the ring and
-// shared by every client at this position; mutating one corrupts all of them,
-// and -race cannot see it. Pinned by
-// TestAChunkIsUnchangedAfterEveryClientHasServedIt.
+// A write error is an ordinary client disconnect and is not logged: one line
+// per viewer leaving would bury everything else.
 func writeChunks(w http.ResponseWriter, rc *http.ResponseController, chunks [][]byte) bool {
 	for _, data := range chunks {
 		// #nosec G705 -- this is the video path. gosec's taint analysis sees
@@ -2990,7 +3199,8 @@ func writeChunks(w http.ResponseWriter, rc *http.ResponseController, chunks [][]
 		// cross-site-scripting risk; the bytes are an MPEG-TS stream served as
 		// video/mp2t, the response carries no HTML context, and copying
 		// provider bytes to a viewer is the only thing this process exists to
-		// do.
+		// do. Re-linted after adding this: no further rule fires on the line,
+		// unlike the G304/G703 pair in 2c-1's secret reader.
 		if _, err := w.Write(data); err != nil {
 			return false
 		}
@@ -3000,6 +3210,8 @@ func writeChunks(w http.ResponseWriter, rc *http.ResponseController, chunks [][]
 ```
 
 ### Appendix G — `relay/httpapi/channels.go`
+
+
 
 ```go
 package httpapi
@@ -3269,6 +3481,8 @@ func RequireInternal(secret string, now func() time.Time, next http.HandlerFunc)
 
 ### Appendix H — `relay/httpapi/golden_test.go`
 
+
+
 ```go
 package httpapi
 
@@ -3279,7 +3493,6 @@ import (
 	"reflect"
 	"sort"
 	"testing"
-	"time"
 
 	"github.com/D10Scot/Dispatcharr/relay/internal/relaytest"
 )
@@ -3494,24 +3707,14 @@ func TestEveryOptionalFieldIsAbsentRatherThanNull(t *testing.T) {
 // channel. Without this, the two tests above pin a struct literal and nothing
 // pins that the handler builds it.
 func TestTheLiveEndpointProducesTheGoldensKeySet(t *testing.T) {
-	r := newRig(t, relaytest.Config{Rate: 4}, rigSettings(nil))
-	response := r.tune(t, "c-keys", "client-a")
+	r := fanRig(t, relaytest.Config{Rate: 4}, nil)
+	response := r.tuneAs(t, "c-keys", "client-a")
 	defer func() { _ = response.Body.Close() }()
 
 	// The channel must have published at least one chunk, so total_bytes and
 	// the two bitrate fields are present -- they are exactly the conditional
 	// fields the golden's populated channel carries.
-	deadline := time.Now().Add(15 * time.Second)
-	for {
-		ch := r.Manager.Get("c-keys")
-		if ch != nil && ch.Ring().Head() > 0 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("the channel published no chunk within fifteen seconds")
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+	waitForHead(t, r, "c-keys", 1)
 
 	status, body := r.listChannels(t, "?clients=all")
 	if status != http.StatusOK {
@@ -3592,6 +3795,8 @@ func mustMarshal(t *testing.T, v any) string {
 
 ### Appendix I — `relay/httpapi/fanout_test.go`
 
+**Extends 2c-2's rig; declares no `rig`, `newRig`, `tune`, `testSecret`, `rigChunkBytes` or `rigBudgetBytes`.**
+
 ```go
 package httpapi
 
@@ -3600,45 +3805,36 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/D10Scot/Dispatcharr/relay/buffer"
-	"github.com/D10Scot/Dispatcharr/relay/channel"
 	"github.com/D10Scot/Dispatcharr/relay/control"
 	"github.com/D10Scot/Dispatcharr/relay/internal/relaytest"
 )
 
-const (
-	rigSecret = "phase2c3-test-secret"
-	// A chunk size the constant cannot produce, so a relay ignoring the wire
-	// value is detectable. 2c-2 shipped this rig sending 255868 -- the
-	// constant itself -- which disarmed the whole end-to-end layer against the
-	// one property Amendment A1.4 exists to prove.
-	rigChunkBytes = buffer.TSPacketSize * 700
-	// LONG ENOUGH THAT PacketIndex NEVER WRAPS inside a test, and that is
-	// what makes the join-point assertion able to fail at all. The embedded
-	// index is the packet's position in the ASSET, so a looping upstream
-	// restarts it at zero; an earlier 4,096-packet asset (3.1 seconds at the
-	// nominal rate) made "how far behind live did this client start" compare a
-	// wrapped index against an unwrapped chunk count, which is large and
-	// positive whatever the relay does. The break-check that removed the join
-	// call entirely left the test GREEN, which is how this was found.
-	//
-	// 65,536 packets is 12.3 MB, 49 seconds at the nominal rate -- longer than
-	// any test here runs.
-	rigAssetPackets = 65536
-)
+// rigAssetPackets is how many packets the fan-out tests' upstream loops.
+//
+// LONG ENOUGH THAT PacketIndex NEVER WRAPS inside a test, and that is what
+// makes the join-point assertion able to fail at all. The embedded index is the
+// packet's position in the ASSET, so a looping upstream restarts it at zero; an
+// earlier 4,096-packet asset (3.1 seconds at the nominal rate) made "how far
+// behind live did this client start" compare a wrapped index against an
+// unwrapped chunk count, which is large and positive whatever the relay does.
+// The break-check that removed the join call entirely left the test GREEN,
+// which is how this was found.
+//
+// 65,536 packets is 12.3 MB, 49 seconds at the nominal rate -- longer than any
+// test here runs. Do not shrink it for speed.
+const rigAssetPackets = 65536
 
-type rig struct {
-	Relay    *httptest.Server
-	Upstream *relaytest.Upstream
-	Control  *relaytest.ControlPlane
-	Manager  *channel.Manager
-}
-
+// rigSettings is the full effective settings object with the rig's non-default
+// chunk size, plus whatever a test overrides.
+//
+// Built from relaytest.EffectiveProxySettings() rather than from a literal, so
+// a key a later PR starts reading appears here automatically instead of
+// failing one test with an ErrSettingAbsent nobody expected.
 func rigSettings(overrides map[string]any) map[string]any {
 	s := relaytest.EffectiveProxySettings()
 	s["BUFFER_CHUNK_SIZE"] = rigChunkBytes
@@ -3648,62 +3844,33 @@ func rigSettings(overrides map[string]any) map[string]any {
 	return s
 }
 
-// newRig stands up a whole fake deployment: a provider, a Django, this
-// process's mux, and a REAL server in front of it. Not httptest.NewRecorder:
-// the subject is a long-lived streaming response, and a recorder buffers the
-// whole body and returns only once the handler has finished.
-func newRig(t *testing.T, upstream relaytest.Config, settings map[string]any) *rig {
+// fanRig is newRig with the long asset and the rig's settings, which is what
+// every test in this file wants.
+func fanRig(t *testing.T, up relaytest.Config, overrides map[string]any) *rig {
 	t.Helper()
-	if upstream.Payload == nil {
-		upstream.Payload = relaytest.SyntheticTS(rigAssetPackets, 0x100)
+	if up.Payload == nil {
+		up.Payload = relaytest.SyntheticTS(rigAssetPackets, 0x100)
 	}
-	up := relaytest.NewUpstream(upstream)
-	t.Cleanup(up.Close)
-
-	cp := relaytest.NewControlPlane(relaytest.ControlPlaneConfig{
-		SourceURL: up.URL(),
-		Settings:  settings,
-	})
-	t.Cleanup(cp.Close)
-
-	m := channel.NewManager(channel.ManagerConfig{BudgetBytes: rigChunkBytes * 64})
-	server := httptest.NewServer(New(Config{
-		DevRoutes: true,
-		Stream: StreamDeps{
-			Secret:   rigSecret,
-			Channels: m,
-			Control:  &control.Client{Secret: rigSecret, BaseURL: cp.URL()},
-		},
-		Control: ControlDeps{Secret: rigSecret, Channels: m},
-	}).Handler())
-	t.Cleanup(server.Close)
-	t.Cleanup(m.StopAll)
-
-	return &rig{Relay: server, Upstream: up, Control: cp, Manager: m}
+	return newRig(t, relaytest.ControlPlaneConfig{Settings: rigSettings(overrides)}, up)
 }
 
-// tune opens a stream for channelID as clientID. The caller closes the body.
-func (r *rig) tune(t *testing.T, channelID, clientID string) *http.Response {
+// tuneAs opens a stream for channelID as clientID, over the trusted path.
+//
+// Built on 2c-2's rig.tune rather than replacing it: that one takes a path and
+// a header set and is the right primitive for the untrusted and malformed
+// cases, and this is the shorthand for the common one.
+func (r *rig) tuneAs(t *testing.T, channelID, clientID string) *http.Response {
 	t.Helper()
-	request, err := http.NewRequestWithContext(t.Context(), http.MethodGet,
-		r.Relay.URL+"/proxy/ts/stream/"+channelID, nil)
-	if err != nil {
-		t.Fatalf("building the tune request: %v", err)
-	}
-	if clientID != "" {
-		request.Header.Set(control.HeaderAuthorized, control.RelayTrustToken(rigSecret))
-		request.Header.Set("X-Relay-Channel", channelID)
-		request.Header.Set("X-Relay-Client", clientID)
-		request.Header.Set("X-Relay-Client-IP", "198.51.100.4")
-		request.Header.Set("X-Relay-User", "7")
-	}
-	response, err := http.DefaultClient.Do(request)
-	if err != nil {
-		t.Fatalf("tuning: %v", err)
-	}
+	header := http.Header{}
+	header.Set(control.HeaderAuthorized, control.RelayTrustToken(testSecret))
+	header.Set("X-Relay-Channel", channelID)
+	header.Set("X-Relay-Client", clientID)
+	header.Set("X-Relay-Client-IP", "198.51.100.4")
+	header.Set("X-Relay-User", "7")
+	response := r.tune(t, "/proxy/ts/stream/"+channelID, header)
 	if response.StatusCode != http.StatusOK {
 		_ = response.Body.Close()
-		t.Fatalf("tune answered %d, want 200", response.StatusCode)
+		t.Fatalf("tune for %s answered %d, want 200", clientID, response.StatusCode)
 	}
 	return response
 }
@@ -3716,10 +3883,10 @@ func (r *rig) listChannels(t *testing.T, query string) (int, []byte) {
 	if err != nil {
 		t.Fatalf("building the list request: %v", err)
 	}
-	request.Header.Set(control.HeaderInternal, control.InternalPrincipalToken(rigSecret))
+	request.Header.Set(control.HeaderInternal, control.InternalPrincipalToken(testSecret))
 	request.Header.Set(control.HeaderInternalRequest,
-		control.InternalRequestHeader(rigSecret, http.MethodGet, path, nil, time.Now().Unix()))
-	response, err := http.DefaultClient.Do(request)
+		control.InternalRequestHeader(testSecret, http.MethodGet, path, nil, time.Now().Unix()))
+	response, err := r.Relay.Client().Do(request)
 	if err != nil {
 		t.Fatalf("listing channels: %v", err)
 	}
@@ -3731,8 +3898,29 @@ func (r *rig) listChannels(t *testing.T, query string) (int, []byte) {
 	return response.StatusCode, body
 }
 
+// waitForHead blocks until the channel's ring has published at least n chunks.
+func waitForHead(t *testing.T, r *rig, id string, n uint64) uint64 {
+	t.Helper()
+	deadline := time.Now().Add(15 * time.Second)
+	for {
+		if ch := r.Manager.Get(id); ch != nil {
+			if head := ch.Ring().Head(); head >= n {
+				return head
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("channel %s never published %d chunks within fifteen seconds", id, n)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
 // packetRun reads n whole packets and reports the index of the first, after
 // checking that every packet follows the one before it.
+//
+// The oracle is relaytest.PacketIndex, an index the fixture embeds and no code
+// under test reads or produces. A helper that checked only alignment would pass
+// on a stream with gaps.
 func packetRun(t *testing.T, who string, body io.Reader, packets int) int {
 	t.Helper()
 	got := make([]byte, packets*buffer.TSPacketSize)
@@ -3755,22 +3943,26 @@ func packetRun(t *testing.T, who string, body io.Reader, packets int) int {
 
 // THE FAN-OUT TEST. N clients on one channel: one upstream connection, one
 // *Channel, and every client's byte stream is an unbroken run of the writer's
-// packets from wherever it joined. Then every client releases and nothing is
-// left running.
+// packets from wherever it joined.
+//
+// Every client tunes FIRST, synchronously, so all six are attached before any
+// reads. Tuning inside the goroutines would let one client attach after another
+// had already released, which is a different property.
 func TestEveryClientGetsAnUnbrokenRunFromItsOwnJoinPoint(t *testing.T) {
 	const clients = 6
 	const packets = 900
 
-	r := newRig(t, relaytest.Config{Rate: 6}, rigSettings(nil))
+	r := fanRig(t, relaytest.Config{Rate: 6}, nil)
 
-	var wg sync.WaitGroup
-	firsts := make([]int, clients)
 	bodies := make([]io.ReadCloser, clients)
 	for i := range clients {
-		response := r.tune(t, "c-fanout", fmt.Sprintf("client-%d", i))
+		response := r.tuneAs(t, "c-fanout", fmt.Sprintf("client-%d", i))
 		defer func() { _ = response.Body.Close() }()
 		bodies[i] = response.Body
 	}
+
+	var wg sync.WaitGroup
+	firsts := make([]int, clients)
 	for i := range clients {
 		wg.Add(1)
 		go func() {
@@ -3791,16 +3983,18 @@ func TestEveryClientGetsAnUnbrokenRunFromItsOwnJoinPoint(t *testing.T) {
 	if got := ch.Clients(); got != clients {
 		t.Fatalf("the channel reports %d clients, want %d", got, clients)
 	}
+
 	// Every client's run came from the same writer, so their join points are
 	// all inside the window the ring held -- at most the ring's capacity apart.
+	// Deliberately loose about WHERE each joined: a tighter bound would pin the
+	// scheduler. What is strict is the provider's request count above and each
+	// run being unbroken, which packetRun checks packet by packet.
 	lowest, highest := firsts[0], firsts[0]
 	for _, f := range firsts {
 		lowest = min(lowest, f)
 		highest = max(highest, f)
 	}
-	span := highest - lowest
-	maxSpan := 64 * rigChunkBytes / buffer.TSPacketSize
-	if span > maxSpan {
+	if span, maxSpan := highest-lowest, rigBudgetBytes/buffer.TSPacketSize; span > maxSpan {
 		t.Fatalf("the clients' join points span %d packets, more than the %d-packet ring: "+
 			"they are not reading one writer's stream", span, maxSpan)
 	}
@@ -3810,43 +4004,30 @@ func TestEveryClientGetsAnUnbrokenRunFromItsOwnJoinPoint(t *testing.T) {
 // a channel ALREADY RUNNING for somebody else starts roughly
 // new_client_behind_seconds behind live, not at the newest chunk.
 //
-// The oracle is the SECOND client's first packet index against the FIRST
-// client's position, both read off relaytest's embedded indices, which no code
-// under test produces. new_client_behind_seconds is sent as 3 rather than the
-// default 5 so a relay ignoring the wire value is visible.
+// new_client_behind_seconds is sent as 3, not the default 5, so a relay
+// ignoring the wire value is visible (hollow shape 2).
 func TestASecondClientJoinsBehindLiveAndNotAtTheHead(t *testing.T) {
 	const behindSeconds = 3
 	// 1.0x nominal is 250,000 byte/s, so three seconds is 750,000 bytes --
 	// about 5.7 chunks at rigChunkBytes, comfortably more than one and
 	// comfortably less than the sixty-four-chunk ring.
-	r := newRig(t, relaytest.Config{Rate: 1},
-		rigSettings(map[string]any{"new_client_behind_seconds": behindSeconds}))
+	r := fanRig(t, relaytest.Config{Rate: 1},
+		map[string]any{"new_client_behind_seconds": behindSeconds})
 
-	first := r.tune(t, "c-join", "client-a")
+	first := r.tuneAs(t, "c-join", "client-a")
 	defer func() { _ = first.Body.Close() }()
-	// Let the first client pull the channel well past the join window.
-	firstStart := packetRun(t, "the first client", first.Body, 200)
+	packetRun(t, "the first client", first.Body, 200)
 
-	deadline := time.Now().Add(15 * time.Second)
-	for {
-		ch := r.Manager.Get("c-join")
-		if ch != nil && ch.Ring().Head() >= 12 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("the channel never filled enough of its ring to have a join window")
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+	head := waitForHead(t, r, "c-join", 12)
 
-	head := r.Manager.Get("c-join").Ring().Head()
-	second := r.tune(t, "c-join", "client-b")
+	second := r.tuneAs(t, "c-join", "client-b")
 	defer func() { _ = second.Body.Close() }()
 	secondStart := packetRun(t, "the second client", second.Body, 100)
 
 	if got := r.Upstream.Requests(); got != 1 {
 		t.Fatalf("the provider saw %d requests, want 1", got)
 	}
+
 	// The live head at the moment the second client joined, in packets.
 	livePackets := int(head) * rigChunkBytes / buffer.TSPacketSize
 	behindPackets := livePackets - secondStart
@@ -3855,18 +4036,16 @@ func TestASecondClientJoinsBehindLiveAndNotAtTheHead(t *testing.T) {
 			"it joined AT live, not behind it -- new_client_behind_seconds was ignored",
 			secondStart, livePackets)
 	}
-	// Three seconds at the nominal rate is 750,000 bytes, 3989 packets. A
-	// generous window either side, because the assertion is "behind by about
-	// the configured window", not a stopwatch.
+	// Three seconds at the nominal rate is 750,000 bytes, 3,989 packets. A
+	// generous window either side, because the claim is "behind by about the
+	// configured window", not a stopwatch: the ring's 700-packet chunk
+	// granularity and the scheduler both move the true figure. What is strict
+	// is the check above -- a client that joined AT live fails outright.
 	const wantPackets = behindSeconds * relaytest.NominalByteRate / buffer.TSPacketSize
 	if behindPackets < wantPackets/4 || behindPackets > wantPackets*4 {
 		t.Fatalf("the second client started %d packets behind live, want roughly %d "+
 			"(%ds at the nominal rate) -- the join point is not the configured window",
 			behindPackets, wantPackets, behindSeconds)
-	}
-	if secondStart <= firstStart {
-		t.Logf("note: the second client started at packet %d, at or behind the first client's "+
-			"start of %d -- legitimate when the ring is shorter than the window", secondStart, firstStart)
 	}
 }
 
@@ -3875,10 +4054,10 @@ func TestASecondClientJoinsBehindLiveAndNotAtTheHead(t *testing.T) {
 // behind (spec D4).
 func TestTheClientListIsCappedAtTenUnlessClientsAllIsAsked(t *testing.T) {
 	const clients = 13
-	r := newRig(t, relaytest.Config{Rate: 4}, rigSettings(nil))
+	r := fanRig(t, relaytest.Config{Rate: 4}, nil)
 
 	for i := range clients {
-		response := r.tune(t, "c-list", fmt.Sprintf("client-%02d", i))
+		response := r.tuneAs(t, "c-list", fmt.Sprintf("client-%02d", i))
 		defer func() { _ = response.Body.Close() }()
 	}
 
@@ -3895,7 +4074,6 @@ func TestTheClientListIsCappedAtTenUnlessClientsAllIsAsked(t *testing.T) {
 		}
 		var payload struct {
 			Channels []struct {
-				ChannelID   string           `json:"channel_id"`
 				ClientCount int              `json:"client_count"`
 				Clients     []map[string]any `json:"clients"`
 			} `json:"channels"`
@@ -3919,48 +4097,42 @@ func TestTheClientListIsCappedAtTenUnlessClientsAllIsAsked(t *testing.T) {
 	}
 }
 
-// An unsigned call is refused, and the refusal names nothing. The bound token
-// signs the FULL path, so a token minted for the bare path does not authorise
-// ?clients=all -- which is the exact route spec D4's whole argument rests on.
+// An unsigned or missigned call is refused, and the refusal names nothing. The
+// bound token signs the FULL path, so a token minted for the bare path does not
+// authorise ?clients=all -- which is the exact route spec D4's whole argument
+// rests on, and the correction the spec's section The contract records.
 func TestTheListEndpointRefusesAnUnsignedOrMissignedCall(t *testing.T) {
-	r := newRig(t, relaytest.Config{Rate: 4}, rigSettings(nil))
-	response := r.tune(t, "c-auth", "client-a")
+	r := fanRig(t, relaytest.Config{Rate: 4}, nil)
+	response := r.tuneAs(t, "c-auth", "client-a")
 	defer func() { _ = response.Body.Close() }()
 
 	for _, tc := range []struct {
-		name    string
-		request func() *http.Request
+		name   string
+		path   string
+		header func(http.Header)
 	}{
-		{"no headers at all", func() *http.Request {
-			req, _ := http.NewRequestWithContext(t.Context(), http.MethodGet,
-				r.Relay.URL+"/proxy/relay/channels", nil)
-			return req
+		{"no headers at all", "/proxy/relay/channels", func(http.Header) {}},
+		{"the principal header only", "/proxy/relay/channels", func(h http.Header) {
+			h.Set(control.HeaderInternal, control.InternalPrincipalToken(testSecret))
 		}},
-		{"the principal header only", func() *http.Request {
-			req, _ := http.NewRequestWithContext(t.Context(), http.MethodGet,
-				r.Relay.URL+"/proxy/relay/channels", nil)
-			req.Header.Set(control.HeaderInternal, control.InternalPrincipalToken(rigSecret))
-			return req
+		{"a token signed for the bare path, sent with a query string", "/proxy/relay/channels?clients=all", func(h http.Header) {
+			h.Set(control.HeaderInternal, control.InternalPrincipalToken(testSecret))
+			h.Set(control.HeaderInternalRequest, control.InternalRequestHeader(
+				testSecret, http.MethodGet, "/proxy/relay/channels", nil, time.Now().Unix()))
 		}},
-		{"a token signed for the bare path, sent with a query string", func() *http.Request {
-			req, _ := http.NewRequestWithContext(t.Context(), http.MethodGet,
-				r.Relay.URL+"/proxy/relay/channels?clients=all", nil)
-			req.Header.Set(control.HeaderInternal, control.InternalPrincipalToken(rigSecret))
-			req.Header.Set(control.HeaderInternalRequest, control.InternalRequestHeader(
-				rigSecret, http.MethodGet, "/proxy/relay/channels", nil, time.Now().Unix()))
-			return req
-		}},
-		{"a token signed with the wrong secret", func() *http.Request {
-			req, _ := http.NewRequestWithContext(t.Context(), http.MethodGet,
-				r.Relay.URL+"/proxy/relay/channels", nil)
-			req.Header.Set(control.HeaderInternal, control.InternalPrincipalToken(rigSecret))
-			req.Header.Set(control.HeaderInternalRequest, control.InternalRequestHeader(
+		{"a token signed with the wrong secret", "/proxy/relay/channels", func(h http.Header) {
+			h.Set(control.HeaderInternal, control.InternalPrincipalToken(testSecret))
+			h.Set(control.HeaderInternalRequest, control.InternalRequestHeader(
 				"not-the-deployment-secret", http.MethodGet, "/proxy/relay/channels", nil, time.Now().Unix()))
-			return req
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			answer, err := http.DefaultClient.Do(tc.request())
+			request, err := http.NewRequestWithContext(t.Context(), http.MethodGet, r.Relay.URL+tc.path, nil)
+			if err != nil {
+				t.Fatalf("building the request: %v", err)
+			}
+			tc.header(request.Header)
+			answer, err := r.Relay.Client().Do(request)
 			if err != nil {
 				t.Fatalf("calling the list endpoint: %v", err)
 			}
@@ -3978,28 +4150,21 @@ func TestTheListEndpointRefusesAnUnsignedOrMissignedCall(t *testing.T) {
 // three ignored: nginx is the only thing that may assert who is asking, and
 // apps/proxy/authorize.py is the only place that decision is made.
 //
-// Read off the LIST ENDPOINT rather than off the tune's status, because what a
-// believed header would corrupt is the registry -- the client id an admin
-// stops by, the address row 17 pins, and the user id the stream limit counts.
+// Read off the LIST ENDPOINT rather than off the tune, because what a believed
+// header would corrupt is the registry -- the client id an admin stops by, the
+// address row 17 pins, and the user id the stream limit counts.
 func TestAnUntrustedRequestIsNotBelievedForAnyRelayHeader(t *testing.T) {
-	r := newRig(t, relaytest.Config{Rate: 4}, rigSettings(nil))
+	r := fanRig(t, relaytest.Config{Rate: 4}, nil)
 
-	request, err := http.NewRequestWithContext(t.Context(), http.MethodGet,
-		r.Relay.URL+"/proxy/ts/stream/c-untrusted", nil)
-	if err != nil {
-		t.Fatalf("building the tune request: %v", err)
-	}
 	// Every X-Relay-* value a trusted request carries, and NO trust marker.
-	request.Header.Set("X-Relay-Channel", "somebody-elses-channel")
-	request.Header.Set("X-Relay-Client", "an-id-i-chose")
-	request.Header.Set("X-Relay-Client-IP", "192.0.2.200")
-	request.Header.Set("X-Relay-User", "10")
-	request.Header.Set("User-Agent", "curl/8.0")
+	header := http.Header{}
+	header.Set("X-Relay-Channel", "somebody-elses-channel")
+	header.Set("X-Relay-Client", "an-id-i-chose")
+	header.Set("X-Relay-Client-IP", "192.0.2.200")
+	header.Set("X-Relay-User", "10")
+	header.Set("User-Agent", "curl/8.0")
 
-	response, err := http.DefaultClient.Do(request)
-	if err != nil {
-		t.Fatalf("tuning: %v", err)
-	}
+	response := r.tune(t, "/proxy/ts/stream/c-untrusted", header)
 	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode != http.StatusOK {
 		t.Fatalf("the untrusted tune answered %d, want 200 -- an unmarked request is the dev "+
@@ -4014,16 +4179,7 @@ func TestAnUntrustedRequestIsNotBelievedForAnyRelayHeader(t *testing.T) {
 		t.Fatalf("the tune asked about %s: an unverified X-Relay-Channel was believed", got)
 	}
 
-	deadline := time.Now().Add(15 * time.Second)
-	for {
-		if ch := r.Manager.Get("c-untrusted"); ch != nil && ch.Clients() == 1 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("the channel never registered its client")
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+	waitForHead(t, r, "c-untrusted", 1)
 
 	_, body := r.listChannels(t, "?clients=all")
 	var payload struct {
@@ -4058,12 +4214,299 @@ func TestAnUntrustedRequestIsNotBelievedForAnyRelayHeader(t *testing.T) {
 			"X-Relay-* assertion and is read on both paths", client["user_agent"])
 	}
 }
+
+// An output this relay does not serve is refused 501 rather than served as
+// MPEG-TS under a label that is not true, and the refusal happens BEFORE the
+// control plane is asked.
+func TestAnOutputThisRelayDoesNotServeIsRefused(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		header string
+		value  string
+	}{
+		{"an output format it does not serve", "X-Relay-Output-Format", "fmp4"},
+		{"an Output Profile", "X-Relay-Output", "7"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := fanRig(t, relaytest.Config{Rate: 4}, nil)
+			header := http.Header{}
+			header.Set(control.HeaderAuthorized, control.RelayTrustToken(testSecret))
+			header.Set("X-Relay-Channel", "c-output")
+			header.Set(tc.header, tc.value)
+
+			response := r.tune(t, "/proxy/ts/stream/c-output", header)
+			defer func() { _ = response.Body.Close() }()
+			if response.StatusCode != http.StatusNotImplemented {
+				t.Fatalf("a tune asking for %s=%s answered %d, want 501",
+					tc.header, tc.value, response.StatusCode)
+			}
+			if got := len(r.Control.Requests()); got != 0 {
+				t.Fatalf("the relay made %d control-plane calls for a tune it cannot serve, "+
+					"want 0 -- the refusal must happen before anything is reserved", got)
+			}
+			if got := r.Upstream.Requests(); got != 0 {
+				t.Fatalf("the provider saw %d requests for a tune the relay refused", got)
+			}
+		})
+	}
+}
+
+// A second tune under a client id already attached to the channel is refused
+// 503, not silently allowed to overwrite the first. Parity-matrix row 13's
+// first half, at the HTTP layer: client_manager.py:218-221 returns False and
+// views.py:748-753 turns that into this status.
+func TestADuplicateClientIDIsRefusedAtTheTuneSurface(t *testing.T) {
+	r := fanRig(t, relaytest.Config{Rate: 4}, nil)
+
+	first := r.tuneAs(t, "c-dup", "the-same-id")
+	defer func() { _ = first.Body.Close() }()
+	waitForHead(t, r, "c-dup", 1)
+
+	header := http.Header{}
+	header.Set(control.HeaderAuthorized, control.RelayTrustToken(testSecret))
+	header.Set("X-Relay-Channel", "c-dup")
+	header.Set("X-Relay-Client", "the-same-id")
+	second := r.tune(t, "/proxy/ts/stream/c-dup", header)
+	defer func() { _ = second.Body.Close() }()
+
+	if second.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("a second tune under an attached client id answered %d, want 503",
+			second.StatusCode)
+	}
+	if got := r.Manager.Get("c-dup").Clients(); got != 1 {
+		t.Fatalf("the channel holds %d clients after a refused duplicate, want 1 -- "+
+			"the registry is not keyed by id", got)
+	}
+}
+
+// The two constants Global Constraint 8 names, pinned to the Python literals
+// they mirror.
+//
+// A VALUE TEST, not a behaviour test, and both are needed. Changing
+// DefaultClientLimit from 10 to 13 leaves the cap test green -- its expected
+// value IS the constant, which is the tautological oracle -- and changing
+// MaxChunksPerRead from 20 to 40 leaves the buffer cap test green for the same
+// reason. Only a literal written down from the Python side can fail.
+func TestTheTwoPortedConstantsMatchTheirPythonLiterals(t *testing.T) {
+	if DefaultClientLimit != 10 {
+		t.Errorf("DefaultClientLimit is %d, want 10 -- apps/proxy/relay_views.py:57's "+
+			"DEFAULT_CLIENT_LIMIT, what the Stats page and /proxy/stats/ have always shown",
+			DefaultClientLimit)
+	}
+	if buffer.MaxChunksPerRead != 20 {
+		t.Errorf("buffer.MaxChunksPerRead is %d, want 20 -- "+
+			"apps/proxy/live_proxy/input/buffer.py:329's MAX_CHUNKS, the bound on how much "+
+			"a lagging reader holds at one instant", buffer.MaxChunksPerRead)
+	}
+}
 ```
 
-### Appendix J — `relay/httpapi/testdata/channels_clients_all.json`
+### Appendix J — `apps/proxy/tests/test_relay_list_payload_golden.py`
 
-**Regenerate this from Django** (Task 7 Step 2). The copy below is this plan's transcription of what `RelayChannelListSerializer` renders from the fixture, written by hand from a full read of `apps/proxy/relay_serializers.py` and `channel_status.py`. It is deliberately spelled the way DRF spells it — `30.0` and `0.0` where Go writes `30` and `0` — so that a run of the golden test exercises the decoded comparison rather than accidentally agreeing byte for byte. **Yours governs.**
+**This file was written but NOT executed while this plan was prepared** — it needs the shared test container, which Global Constraint 10 keeps out of a planning session. Task 7 Step 1 runs it; if it does not pass on your tree, your tree governs and the failure is a finding about this plan's reading of the serializer.
+
+```python
+"""The golden fixture for the Go relay's GET /proxy/relay/channels.
+
+Phase 2 PR 2c-3. This file renders a payload through Django's own
+RelayChannelListSerializer and pins the result to
+relay/httpapi/testdata/channels_clients_all.json, which a Go test reads back.
+That is the whole point: the Go encoder is compared against the OTHER
+implementation, not against a Go struct literal the same PR also wrote.
+
+WHAT THIS PINS AND WHAT IT DOES NOT. It pins the SERIALIZER -- which keys
+survive, which render as null, which vanish. It does NOT drive
+ChannelStatus.get_basic_channel_info, so the mapping from "the source dict set
+this key inside an if" to "this key is optional" is 2c-3's reading of
+apps/proxy/live_proxy/channel_status.py:469-587, not a measurement of Python's
+execution. Driving the real builder would need a Redis with a channel in it,
+which is a much heavier fixture for one more link in the chain; the
+completeness assertion below is what stops the reading from silently narrowing
+instead.
+
+Regenerate the golden with:
+
+    DISPATCHARR_WRITE_GOLDEN=1 python manage.py test \\
+        apps.proxy.tests.test_relay_list_payload_golden
+"""
+
+import json
+import os
+from pathlib import Path
+
+from django.test import SimpleTestCase
+from rest_framework.renderers import JSONRenderer
+
+from apps.proxy.relay_serializers import (
+    RelayChannelListSerializer,
+    RelayChannelSerializer,
+)
+
+GOLDEN = (
+    Path(__file__).resolve().parents[3]
+    / "relay"
+    / "httpapi"
+    / "testdata"
+    / "channels_clients_all.json"
+)
+
+# Every RelayChannelSerializer field 2c-3's Go relay does not produce, and why.
+# A field in neither this mapping nor the fully-populated fixture channel fails
+# test_the_fixture_covers_every_serializer_field, which is what stops the
+# golden from silently narrowing as the endpoint grows.
+NOT_SERVED_BY_2C3 = {
+    "logo_id": (
+        "ChannelMetadataField.LOGO_ID is written only into the TIMESHIFT key "
+        "family (apps/timeshift/views.py:2984, timeshift:channel:<id>:metadata), "
+        "never into the live:channel:<uuid>:metadata hash channel_status.py:486 "
+        "reads, so the live list endpoint never emits it in Python either"
+    ),
+    "healthy": "needs StreamManager.healthy, which arrives in 2c-5",
+    "video_codec": "ffmpeg-derived, 2c-4",
+    "resolution": "ffmpeg-derived, 2c-4",
+    "source_fps": "ffmpeg-derived, 2c-4",
+    "ffmpeg_speed": "ffmpeg-derived, 2c-4",
+    "audio_codec": "ffmpeg-derived, 2c-4",
+    "audio_channels": "ffmpeg-derived, 2c-4",
+    "stream_type": "set by channel_service from the probed input format, 2c-5",
+}
+
+
+def fixture():
+    """Two channels: one with every conditional field and two clients, one with
+    none and no clients. Every present/absent/null case this endpoint can
+    produce is in here."""
+    return {
+        "count": 2,
+        "channels": [
+            {
+                "channel_id": "11111111-1111-4111-8111-111111111111",
+                "state": "active",
+                "url": "http://provider.invalid/live/sub/pw/41.ts",
+                "stream_profile": "1",
+                "owner": None,
+                "buffer_index": 120,
+                "client_count": 2,
+                "uptime": 30.0,
+                "started_at": 1789000000.5,
+                "channel_name": "BBC One HD",
+                "m3u_profile_id": 3,
+                "stream_id": 41,
+                "stream_name": "BBC One HD (UK)",
+                "total_bytes": 9999888,
+                "avg_bitrate_kbps": 2665.3034666666666,
+                "avg_bitrate": "2.67 Mbps",
+                "clients": [
+                    {
+                        "client_id": "client_1789000000000_1234",
+                        "user_agent": "VLC/3.0.20",
+                        "output_format": "mpegts",
+                        "output_profile_id": 7,
+                        "ip_address": "198.51.100.4",
+                        "connected_at": 1789000001.25,
+                        "user_id": "7",
+                    },
+                    {
+                        # Nothing optional. user_agent and output_profile_id
+                        # are assigned on every path in channel_status.py and
+                        # are therefore present-as-null, not absent.
+                        "client_id": "client_1789000000000_5678",
+                        "user_agent": None,
+                        "output_format": "mpegts",
+                        "output_profile_id": None,
+                    },
+                ],
+            },
+            {
+                "channel_id": "22222222-2222-4222-8222-222222222222",
+                "state": "stopped",
+                "url": "",
+                "stream_profile": "0",
+                "owner": None,
+                "buffer_index": 0,
+                "client_count": 0,
+                "uptime": 0.0,
+                "started_at": 1789000100.0,
+                "clients": [],
+            },
+        ],
+    }
+
+
+def rendered():
+    return JSONRenderer().render(RelayChannelListSerializer(fixture()).data)
+
+
+class RelayListPayloadGoldenTests(SimpleTestCase):
+    def test_the_golden_file_is_what_the_serializer_renders(self):
+        payload = rendered()
+        if os.environ.get("DISPATCHARR_WRITE_GOLDEN") == "1":
+            GOLDEN.parent.mkdir(parents=True, exist_ok=True)
+            GOLDEN.write_bytes(payload)
+            self.skipTest(f"rewrote {GOLDEN}")
+
+        self.assertTrue(
+            GOLDEN.exists(),
+            f"{GOLDEN} is missing; regenerate it with DISPATCHARR_WRITE_GOLDEN=1",
+        )
+        # Parsed, not byte-compared, for the same reason the Go side does:
+        # nothing downstream compares bytes, and a whitespace difference
+        # between two JSON writers is not a contract change.
+        self.assertEqual(
+            json.loads(GOLDEN.read_bytes()),
+            json.loads(payload),
+            "relay/httpapi/testdata/channels_clients_all.json has drifted from "
+            "what RelayChannelListSerializer renders; regenerate it with "
+            "DISPATCHARR_WRITE_GOLDEN=1 and read the diff before committing",
+        )
+
+    def test_the_fixture_covers_every_serializer_field(self):
+        """Every declared field is exercised or explicitly excused.
+
+        Without this, a hand-written fixture that quietly omitted a field
+        would pin a payload narrower than the contract, and the Go side would
+        agree with it.
+        """
+        declared = set(RelayChannelSerializer().fields)
+        populated = set(fixture()["channels"][0])
+        excused = set(NOT_SERVED_BY_2C3)
+
+        missing = declared - populated - excused
+        self.assertEqual(
+            missing,
+            set(),
+            "these RelayChannelSerializer fields are neither in the fixture nor "
+            f"in NOT_SERVED_BY_2C3 with a reason: {sorted(missing)}",
+        )
+        stale = excused - declared
+        self.assertEqual(
+            stale,
+            set(),
+            f"NOT_SERVED_BY_2C3 names fields the serializer does not declare: {sorted(stale)}",
+        )
+
+    def test_an_unset_optional_field_vanishes_rather_than_rendering_null(self):
+        """The DRF behaviour the whole golden rests on.
+
+        required=False with NO default= makes Field.get_attribute raise
+        SkipField for a missing key, so the key leaves the JSON entirely. A
+        default= on any of them would turn every absence into a null and change
+        /proxy/ts/status and /proxy/stats/ as well.
+        """
+        minimal = json.loads(rendered())["channels"][1]
+        for key in ("channel_name", "stream_id", "total_bytes", "avg_bitrate"):
+            self.assertNotIn(key, minimal, f"{key} rendered for a channel that has none")
+        for key in ("channel_id", "state", "url", "owner", "clients"):
+            self.assertIn(key, minimal, f"{key} must be present on every channel")
+        self.assertIsNone(minimal["owner"])
+        self.assertEqual(minimal["clients"], [])
+```
+
+### Appendix K — `relay/httpapi/testdata/channels_clients_all.json`
+
+**Regenerate this from Django** (Task 7 Step 2). The copy below is this plan's transcription of what `RelayChannelListSerializer` renders from Appendix J's fixture, deliberately spelled the way DRF spells it — `30.0` and `0.0` where Go writes `30` and `0` — so a run of the golden test exercises the decoded comparison rather than accidentally agreeing byte for byte. **Yours governs.**
 
 ```json
 {"channels": [{"channel_id": "11111111-1111-4111-8111-111111111111", "state": "active", "url": "http://provider.invalid/live/sub/pw/41.ts", "stream_profile": "1", "owner": null, "buffer_index": 120, "client_count": 2, "uptime": 30.0, "started_at": 1789000000.5, "channel_name": "BBC One HD", "m3u_profile_id": 3, "stream_id": 41, "stream_name": "BBC One HD (UK)", "total_bytes": 9999888, "avg_bitrate_kbps": 2665.3034666666666, "avg_bitrate": "2.67 Mbps", "clients": [{"client_id": "client_1789000000000_1234", "user_agent": "VLC/3.0.20", "output_format": "mpegts", "output_profile_id": 7, "ip_address": "198.51.100.4", "connected_at": 1789000001.25, "user_id": "7"}, {"client_id": "client_1789000000000_5678", "user_agent": null, "output_format": "mpegts", "output_profile_id": null}]}, {"channel_id": "22222222-2222-4222-8222-222222222222", "state": "stopped", "url": "", "stream_profile": "0", "owner": null, "buffer_index": 0, "client_count": 0, "uptime": 0.0, "started_at": 1789000100.0, "clients": []}], "count": 2}
 ```
+
