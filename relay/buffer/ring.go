@@ -267,13 +267,30 @@ func (r *Ring) Read(cursor uint64) (chunks [][]byte, next uint64, skipped uint64
 	// would have been the smaller diff and the worse answer: this form needs
 	// no #nosec, costs one pass over at most `capacity` slice headers, and is
 	// correct without relying on the chunks being contiguous.
+	//
+	// next IS THE INDEX OF THE LAST CHUNK ACTUALLY APPENDED TO out, tracked as
+	// the loop goes, NOT r.chunks[len(r.chunks)-1].Index. The two are
+	// numerically identical today because this call always returns every
+	// resident chunk from want through head -- there is no batch cap in this
+	// PR. That equivalence is an accident of this PR's shape, not a property
+	// of the method: the day a caller batches reads (2c-3's own plan already
+	// names get_optimized_client_data's 3-to-20-chunk cap as the Python
+	// precedent this in-memory ring does not need), returning the RING's tail
+	// index while having handed back fewer chunks would silently advance the
+	// caller's cursor past chunks it was never given -- an invisible content
+	// gap, since Read reports skipped only for chunks lost to eviction
+	// BEFORE want, never for ones withheld after it. Computing next from what
+	// was actually appended costs nothing today and is correct regardless of
+	// whether a future cap exists.
 	out := make([][]byte, 0, len(r.chunks))
+	next = cursor
 	for _, c := range r.chunks {
 		if c.Index >= want {
 			out = append(out, c.Data)
+			next = c.Index
 		}
 	}
-	return out, r.chunks[len(r.chunks)-1].Index, skipped
+	return out, next, skipped
 }
 
 // Join returns the cursor a new client starts from, so that its first read

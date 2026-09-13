@@ -305,6 +305,34 @@ func TestReadReportsWhatEvictionSkipped(t *testing.T) {
 	}
 }
 
+// next MUST be the index of the last chunk actually appended to the returned
+// slice, not r.head or r.chunks' own tail -- a forward-looking invariant
+// (found while verifying this plan's own code against a reviewer's claim):
+// this PR's Read has no batch cap, so today the two are numerically
+// identical, and no test in this file can force them apart. The assertion
+// here is structural rather than a fixed literal -- next must equal
+// want+len(out)-1, computed from what Read actually handed back -- so it
+// keeps holding, and failing usefully, the day a bounded Read exists and the
+// two quantities diverge.
+func TestNextIsTheLastChunkActuallyReturnedNotTheRingsTail(t *testing.T) {
+	r := newTestRing(t, nil)
+	perChunk := testChunk / TSPacketSize
+	for range 5 {
+		if _, err := r.Write(relaytest.SyntheticTS(perChunk, 0x100)); err != nil {
+			t.Fatalf("Write: %v", err)
+		}
+	}
+
+	const cursor = 1
+	chunks, next, _ := r.Read(cursor)
+	want := cursor + uint64(len(chunks))
+	if next != want {
+		t.Fatalf("next = %d, want %d (cursor %d + %d chunks actually returned) -- "+
+			"next must track what was handed back, not the ring's own head",
+			next, want, cursor, len(chunks))
+	}
+}
+
 // The byte cap binds: the ring never holds more than its capacity.
 func TestTheRingNeverExceedsItsCapacity(t *testing.T) {
 	r := newTestRing(t, nil)
