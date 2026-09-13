@@ -239,20 +239,26 @@ Python resolves inside `next_source()` and lets `ImproperlyConfigured` propagate
 
 ## The 2c-1 dependency ledger
 
-**2c-1 is being implemented concurrently and has not merged.** Everything below is written against the 2c-1 *plan*, which is fully specified, and every row is marked. **Task 0 is a diff of the merged tree against this table and runs before anything else is written.**
+**2c-1 is implemented and pushed at `e3eee458` (PR #282, draft, under review) but has not merged.** This table was first written against the 2c-1 *plan*; every row has since been **checked against the built tree** with `git show "e3eee458:<path>"` and the ledger below records what is actually there. **Task 0 still runs first** — 2c-1 is under review, so a fix round can move any of this before it merges, and a plan that assumed a draft branch would not change is the same mistake as assuming a plan would not.
+
+Verified at `e3eee458`: the module path and the `go 1.27.1` directive; `buffer`'s seven constants and `ChunksForBytes(budget int) int`; `control`'s three header constants, `RelayTrustToken`, `InternalPrincipalToken`, `IsRelayTrusted` and `InternalRequestHeader(secret, method, fullPath string, body []byte, timestamp int64) string` — the exact signature Task 5 calls; `httpapi.Config{DevRoutes bool}`, `New(Config) *Server`, `(*Server).Handler()` and the dev-gated `GET /proxy/ts/stream/{channelID}` serving `notImplemented`; `.golangci.yml` with `noctx` enabled and `gosec` excluded in `_test.go` only; `go-tests.yml` running `go test -race ./...`, the stdlib check and a `Go result` aggregate, with a change detector whose pattern already covers `scripts/check_go_stdlib_only.sh`; and `stream_profile.kind` on the wire from one `_profile_kind` helper returning exactly `"redirect"`, `"proxy"` and `"transcode"`.
+
+**Three `control` symbols 2c-1 built that this plan did not anticipate and does not use:** `IsInternalPrincipal`, `InternalRequestToken` (the bare digest, without the `v1.<ts>.` envelope) and `VerifyInternalRequest`. They are the *verifying* half of the contract, which 2c-8's `/proxy/relay/…` server needs and 2c-2 does not. Do not reach for them here; a tune verifies only `X-Dispatcharr-Authorized`, through `IsRelayTrusted`.
+
+**And the HMAC vector agrees.** `relay/control/token_test.go:42` at `e3eee458` carries `v1.1789000000.5ce39464af1f52fac92ab6dd8101b289c2b9acce93d392216ac0dbcfa53a1fae` under `SECRET_KEY="phase2c1-test-secret"` — byte for byte the literal Task 5's own test uses, which this plan independently reproduced from a separate implementation before seeing 2c-1's. Two implementations and Django agree on the layout.
 
 | What this PR depends on | Status | If it differs |
 |---|---|---|
-| Module `github.com/D10Scot/Dispatcharr/relay` at `relay/`, Go 1.27.1 | as planned in 2c-1 | the import paths in every file below move |
-| `relay/buffer` with `TSPacketSize`, `ChunkBytes`, `RetentionSeconds`, `JoinBehindSeconds`, `MaxChunksPerChannel`, `MaxBytesPerChannel`, `ChunksForBytes` | as planned in 2c-1 (Task 5) | Task 4 Step 1's patch to `ChunksForBytes` needs re-deriving |
-| `relay/control` with `HeaderAuthorized`, `HeaderInternal`, `HeaderInternalRequest`, `RelayTrustToken`, `InternalPrincipalToken`, `IsRelayTrusted`, `InternalRequestHeader(secret, method, fullPath, body, ts)` | as planned in 2c-1 (Task 4) | Task 5 and Task 8 call these by name |
-| `relay/httpapi` with `Config{DevRoutes bool}`, `New(Config) *Server`, `(*Server).Handler()`, a dev-gated `GET /proxy/ts/stream/{channelID}` returning 501 | as planned in 2c-1 (Task 7) | Task 8 replaces the 501 stub with the real handler |
-| `relay/channel` and `relay/ffmpeg` as documented stubs | as planned in 2c-1 (Task 6) | Task 6 adds files beside `channel.go`; the doc comment stays |
-| `relay/config` with `Load()`, `Config{Port, Secret, DevRoutes}` | as planned in 2c-1 (Task 3) | Task 8's wiring in `main.go` moves |
-| `.golangci.yml` at the repo root, v2 schema, `gosec` excluded in `_test.go` only, `noctx` **not** excluded | as planned in 2c-1 (Task 2) | every lint outcome in this plan is re-derived |
-| `go-tests.yml` running `go build`, `go vet`, `go test -race ./...`, `golangci-lint`, `scripts/check_go_stdlib_only.sh`, with a `Go result` aggregate and a change detector matching `^relay/` | as planned in 2c-1 (Task 11, Ruling R1) | Task 0 reports it; this PR adds no workflow change if it is there |
-| `.claude/hooks/run-go-checks.sh` on `relay/**/*.go` | as planned in 2c-1 (Task 12) | Go edits will not be checked by the hook; run the four checks by hand |
-| `stream_profile.kind` on the next-source contract, values `proxy` / `redirect` / `transcode` | as planned in 2c-1 (Task 0) | **this PR cannot proceed**; `kind` is what the Proxy branch tests. Stop and report. |
+| Module `github.com/D10Scot/Dispatcharr/relay` at `relay/`, Go 1.27.1 | **as built at `e3eee458`** | the import paths in every file below move |
+| `relay/buffer` with `TSPacketSize`, `ChunkBytes`, `RetentionSeconds`, `JoinBehindSeconds`, `MaxChunksPerChannel`, `MaxBytesPerChannel`, `ChunksForBytes` | **as built at `e3eee458`** | Task 4 Step 1's patch to `ChunksForBytes` needs re-deriving |
+| `relay/control` with `HeaderAuthorized`, `HeaderInternal`, `HeaderInternalRequest`, `RelayTrustToken`, `InternalPrincipalToken`, `IsRelayTrusted`, `InternalRequestHeader(secret, method, fullPath, body, ts)` | **as built at `e3eee458`** | Task 5 and Task 8 call these by name |
+| `relay/httpapi` with `Config{DevRoutes bool}`, `New(Config) *Server`, `(*Server).Handler()`, a dev-gated `GET /proxy/ts/stream/{channelID}` returning 501 | **as built at `e3eee458`** | Task 8 replaces the 501 stub with the real handler |
+| `relay/channel` and `relay/ffmpeg` as documented stubs | **as built at `e3eee458`** | Task 6 adds files beside `channel.go`; the doc comment stays |
+| `relay/config` with `Load()`, `Config{Port, Secret, DevRoutes}` | **as built at `e3eee458`** | Task 8's wiring in `main.go` moves |
+| `.golangci.yml` at the repo root, v2 schema, `gosec` excluded in `_test.go` only, `noctx` **not** excluded | **as built at `e3eee458`** | every lint outcome in this plan is re-derived |
+| `go-tests.yml` running `go build`, `go vet`, `go test -race ./...`, `golangci-lint`, `scripts/check_go_stdlib_only.sh`, with a `Go result` aggregate and a change detector matching `^relay/` | **as built at `e3eee458`**, and its pattern already covers `scripts/check_go_stdlib_only.sh` | Task 0 reports it; this PR adds no workflow change if it is there |
+| `.claude/hooks/run-go-checks.sh` on `relay/**/*.go` | not checked — confirm in Task 0 | Go edits will not be checked by the hook; run the four checks by hand |
+| `stream_profile.kind` on the next-source contract, values `proxy` / `redirect` / `transcode` | **as built at `e3eee458`**, from one `_profile_kind` helper | **this PR cannot proceed**; `kind` is what the Proxy branch tests. Stop and report. |
 | `zero_orm_allowlist.py` `resolve_source` hits = 38, `get_stream_object` = 3 | 2c-1's R8 *predicts* 38; measured 36 at `315b02a4` before 2c-1 | Task 1 Step 6 re-measures and expects **no further change** from A1.4 |
 
 **Verified in this tree, not inherited:** everything with a `file:line` in this plan — `apps/proxy/config.py`'s thirty-one class attributes and their values, `core/models.py:719-730`'s seven stored keys, `apps/proxy/serializers.py:107-135`'s serializer, `apps/proxy/next_source.py:679-700`'s `_with_proxy_settings`, `input/buffer.py`'s packetiser and its two Lua scripts, `output/ts/generator.py`'s positioning, keepalive and timeout guards, `input/http_streamer.py` in full, `apps/proxy/internal_base_url.py`'s four branches, `apps/proxy/control_plane.py:73-146`'s retry loop, `e2e/tests/guards/parity-matrix.ts` in full, and `harness/asset.py`'s `synthetic_ts`.
@@ -304,7 +310,7 @@ Nothing under `core/`, `dispatcharr/`, `frontend/`, `e2e/` or `metrics/` is touc
 ---
 ## Task 0: Diff the merged 2c-1 tree against this plan's expectations
 
-**Nothing else is written until this task is done and reported.** 2c-1 was being implemented while this plan was written, so every Go symbol below is an expectation, not a fact.
+**Nothing else is written until this task is done and reported.** The ledger above was checked against `e3eee458`, but 2c-1 is a draft under review: a fix round can move any of it before it merges, so this task re-checks against **the tree you actually have** rather than against that SHA.
 
 - [ ] **Step 1: Confirm the module and the toolchain**
 
