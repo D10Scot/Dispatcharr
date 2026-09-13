@@ -1,0 +1,35 @@
+# golangci-lint configuration, v2 schema. Zero findings is a ratchet, the
+# same rule as zizmor's: touching a Go file means leaving it clean. The
+# PostToolUse hook (.claude/hooks/run-go-checks.sh) and go-tests.yml's lint
+# job run the same version against the same config, so local and CI cannot
+# disagree about what passes.
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  default: standard
+  enable:
+    - bodyclose      # a leaked response body is a leaked fd; the relay is long-lived
+    - copyloopvar
+    - errorlint      # %w and errors.Is/As, which Global Constraint 5's rule needs
+    - gosec
+    - misspell
+    - nilerr
+    - noctx          # every outbound request carries a deadline (§ The contract's timeouts)
+    - revive
+    - unconvert
+  exclusions:
+    generated: lax
+    rules:
+      # gosec only. `noctx` is deliberately NOT excluded in tests — see
+      # the note below the block.
+      - path: _test\.go
+        linters:
+          - gosec
+
+formatters:
+  enable:
+    - gofmt
+    - goimports

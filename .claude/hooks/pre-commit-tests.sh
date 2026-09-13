@@ -150,6 +150,37 @@ if printf '%s\n' "$PATHS" | grep -q '^frontend/'; then
   fi
 fi
 
+# ---------- go ----------
+# The whole module on commit, not just the edited package: this mirrors what
+# go-tests.yml runs, and the same rule the backend gate follows (CI runs the
+# whole package, so the gate does too).
+#
+# The module root is derived from the STAGED PATH by walking up for go.mod,
+# not assumed to be "$REPO_ROOT/relay" — Ruling R4, same reasoning as
+# run-go-checks.sh. $REPO_ROOT here is already correct as of #280 (the gate
+# anchors on its cwd, or on a parsed `cd <dir> &&` prefix), so this is not
+# compensating for a bad root; it is declining the separate assumption that
+# the module sits at a fixed place under it.
+GO_ROOTS="$(printf '%s\n' "$PATHS" | grep '\.go$' | while read -r p; do
+  d="$(dirname "$REPO_ROOT/$p")"
+  while [ "$d" != "/" ] && [ ! -f "$d/go.mod" ]; do d="$(dirname "$d")"; done
+  [ -f "$d/go.mod" ] && printf '%s\n' "$d"
+done | sort -u)"
+if [ -n "$GO_ROOTS" ]; then
+  if ! command -v go >/dev/null 2>&1; then
+    note "Commit gate: Go files are staged but go is not on PATH — the Go tests were NOT run. The commit was NOT verified."
+  else
+    while read -r GR; do
+      [ -n "$GR" ] || continue
+      OUT="$(cd "$GR" && go build ./... 2>&1 && go vet ./... 2>&1 && go test -race ./... 2>&1)"
+      if [ $? -ne 0 ]; then
+        FAILED+=("go:${GR##*/}")
+        REPORT+="$(printf '\n--- go %s ---\n%s\n' "$GR" "$(printf '%s' "$OUT" | grep -Ev '^(ok|\?)' | head -30)")"
+      fi
+    done <<< "$GO_ROOTS"
+  fi
+fi
+
 # ---------- metrics (collectors + build step, no Django) ----------
 if printf '%s\n' "$PATHS" | grep -qE '^(metrics/|scripts/metrics/|scripts/run_metrics_tests\.sh)'; then
   OUT="$(scripts/run_metrics_tests.sh all 2>&1)"; ST=$?

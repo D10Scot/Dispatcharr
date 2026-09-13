@@ -1,0 +1,71 @@
+// Command relay-go is the Go relay. At stage 2c-1 it binds its port, answers
+// /healthz and /readyz, and does nothing else: nginx routes no location to
+// this process until stage 2d, and every route beyond the two health
+// endpoints is behind the dev flag.
+package main
+
+import (
+	"errors"
+	"log"
+	"net"
+	"net/http"
+	"os"
+	"strconv"
+	"time"
+
+	"github.com/D10Scot/Dispatcharr/relay/config"
+	"github.com/D10Scot/Dispatcharr/relay/httpapi"
+)
+
+func main() {
+	log.SetFlags(log.LstdFlags | log.LUTC)
+	log.SetPrefix("relay-go: ")
+
+	cfg, err := config.Load()
+	if err != nil {
+		// Exit rather than degrade. supervisord's startretries=20 will show
+		// this line twenty times in the container log, which is the loud
+		// failure a misconfigured secret deserves -- the alternative is a
+		// process that serves health checks happily and 403s every internal
+		// call with nothing saying why.
+		log.Printf("startup failed: %v", err)
+		os.Exit(1)
+	}
+
+	// The secret is never logged, in any form, at any level -- not its value,
+	// not its length, not a prefix. scripts/check_credential_logging.py polices
+	// the Python side of this rule; there is no Go equivalent yet, so it is
+	// held by hand here.
+	log.Printf("starting on port %d (dev routes: %t)", cfg.Port, cfg.DevRoutes)
+
+	srv := &http.Server{
+		Addr:    net.JoinHostPort("0.0.0.0", strconv.Itoa(cfg.Port)),
+		Handler: httpapi.New(httpapi.Config{DevRoutes: cfg.DevRoutes}).Handler(),
+
+		// ReadHeaderTimeout only. A read or write deadline on the whole
+		// request would be wrong for this process by construction: serving
+		// long-lived responses is the reason it exists, and it is why
+		// docker/uwsgi.relay.ini carries no harakiri either. Bounding just
+		// the header read closes the slow-header class without touching the
+		// body, which is the stream.
+		ReadHeaderTimeout: 10 * time.Second,
+
+		// IdleTimeout deliberately left at its zero value (no reaping of
+		// idle keep-alive connections) for 2c-1: this process serves two
+		// health endpoints to nginx/probe clients, not the live traffic an
+		// idle-timeout policy exists to bound. 2c-2 is the first PR to carry
+		// real client connections and is the right place to pick a real
+		// value against real traffic, not a number invented here with
+		// nothing to justify it.
+	}
+
+	// No graceful shutdown here. D6's SIGTERM drain is 2c-8's, and a
+	// half-implemented drain -- one that stops accepting but does not wait for
+	// anything, because there is nothing to wait for yet -- would look like
+	// the feature while being the default. supervisord's stopwaitsecs=20
+	// bounds the stop either way.
+	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		log.Printf("server stopped: %v", err)
+		os.Exit(1)
+	}
+}

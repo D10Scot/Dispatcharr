@@ -604,7 +604,12 @@ class SourceCarriesNamesTests(NextSourceFixture, TestCase):
         source = resolve_source(self.channel.uuid)["source"]
         self.assertEqual(
             source["ffmpeg_stream_profile"],
-            {"id": ffmpeg.id, "command": ffmpeg.command, "args": ffmpeg.parameters},
+            {
+                "id": ffmpeg.id,
+                "command": ffmpeg.command,
+                "args": ffmpeg.parameters,
+                "kind": "transcode",  # Phase 2 PR 2c-1
+            },
         )
 
     def test_no_locked_ffmpeg_profile_is_a_null_key_not_a_missing_one(self):

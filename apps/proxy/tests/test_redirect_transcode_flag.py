@@ -84,6 +84,18 @@ class RedirectTranscodeFlagTests(TestCase):
             stream_profile=self.redirect_profile,
         )
         ChannelStream.objects.create(channel=self.channel, stream=self.stream, order=0)
+        self.proxy_profile = StreamProfile.objects.create(
+            name="Proxy", command="", parameters="", locked=True, is_active=True,
+        )
+        # Not locked, and not one of the two reserved names: the ordinary
+        # case, which must report "transcode" however it is spelled.
+        self.ffmpeg_profile = StreamProfile.objects.create(
+            name="custom-remux",
+            command="ffmpeg",
+            parameters="-i {streamUrl} -c copy -f mpegts pipe:1",
+            locked=False,
+            is_active=True,
+        )
 
     # Both target functions call close_old_connections() in a `finally`
     # block (pre-existing, not part of this fix) with CONN_MAX_AGE=0, which
@@ -128,3 +140,82 @@ class RedirectTranscodeFlagTests(TestCase):
         self.assertNotIn("error", info)
         self.assertFalse(info["transcode"])
         self.assertEqual(info["stream_profile"], self.redirect_profile.id)
+
+    def test_profile_kind_names_all_three_architectures(self):
+        """The one derivation, over the three shapes it must separate.
+
+        The literals are typed here, not read back from the module: a
+        test comparing _profile_kind(x) against a constant the module
+        also defines would pass with every name spelled wrong
+        together.
+        """
+        from apps.proxy.next_source import _profile_kind
+
+        self.assertEqual(_profile_kind(self.redirect_profile), "redirect")
+        self.assertEqual(_profile_kind(self.proxy_profile), "proxy")
+        self.assertEqual(_profile_kind(self.ffmpeg_profile), "transcode")
+
+    def test_an_unlocked_profile_named_redirect_is_not_redirect(self):
+        """is_redirect() is `locked AND name == "Redirect"`, both halves.
+
+        A user may name their own profile "Redirect"; it is an
+        ordinary transcoding profile and must not make the relay
+        answer 302 to a provider URL it never validated.
+        """
+        from apps.proxy.next_source import _profile_kind
+
+        impostor = StreamProfile.objects.create(
+            name="Redirect", command="ffmpeg", parameters="-i {streamUrl}",
+            locked=False, is_active=True,
+        )
+        self.assertEqual(_profile_kind(impostor), "transcode")
+
+    @patch("apps.proxy.next_source.close_old_connections")
+    @patch("apps.channels.models.reserve_profile_slot", return_value=(True, 1, None))
+    @patch("apps.channels.models.RedisClient.get_client")
+    def test_initial_tune_reports_kind_redirect_and_leaves_transcode_alone(
+        self, mock_get_client, _mock_reserve, _mock_close_old_connections
+    ):
+        mock_get_client.return_value = FakeRedirectRedis()
+
+        answer = resolve_initial_source(str(self.channel.uuid))
+
+        self.assertIsNone(answer["error"])
+        self.assertEqual(answer["source"]["stream_profile"]["kind"], "redirect")
+        # transcode is unchanged by this PR. Asserted beside kind, in the
+        # same payload, because "the new field is right" and "the old
+        # field did not move" are two claims and D5 requires both.
+        self.assertFalse(answer["source"]["transcode"])
+
+    @patch("apps.proxy.next_source.close_old_connections")
+    @patch("apps.channels.models.reserve_profile_slot", return_value=(True, 1, None))
+    @patch("apps.channels.models.RedisClient.get_client")
+    def test_the_locked_ffmpeg_profile_carries_a_kind_too(
+        self, mock_get_client, _mock_reserve, _mock_close_old_connections
+    ):
+        """ffmpeg_stream_profile is rendered by the SAME serializer.
+
+        The fourth dict the ruling did not name. Without it, a
+        required `kind` on StreamProfileRefSerializer makes every
+        next-source answer that carries a locked ffmpeg profile fail
+        serialization -- a 500 on every tune, and one no test touching
+        only the three `source` sites would catch.
+        """
+        StreamProfile.objects.create(
+            name="ffmpeg", command="ffmpeg", parameters="-i {streamUrl}",
+            locked=True, is_active=True,
+        )
+        mock_get_client.return_value = FakeRedirectRedis()
+
+        answer = resolve_initial_source(str(self.channel.uuid))
+
+        self.assertEqual(answer["source"]["ffmpeg_stream_profile"]["kind"], "transcode")
+
+    def test_the_serializer_renders_kind(self):
+        """A required field DRF does not declare is silently dropped."""
+        from apps.proxy.serializers import StreamProfileRefSerializer
+
+        rendered = StreamProfileRefSerializer(
+            {"id": 7, "command": "", "args": "", "kind": "redirect"}
+        ).data
+        self.assertEqual(rendered["kind"], "redirect")

@@ -247,14 +247,32 @@ SITES = (
             "caller already holds; core/models.py compares self.name against "
             "a constant. No query."
         ),
-        closed_by="Nothing to close -- no query.",
+        closed_by=(
+            "stream_profile.kind on next-source's response, added by 2c-1. "
+            "True that this line issues no query, and that was never the "
+            "question 2c-1's precondition asks: the Go relay MUST know "
+            "whether the profile is Redirect (302 and URL validation) or "
+            "Proxy (read into the ring buffer), and before 2c-1 nothing on "
+            "the wire said -- transcode collapses both to false and both "
+            "locked profiles carry empty command/parameters. Spec "
+            "Amendment A1.1."
+        ),
     ),
     Site(
         path="apps/proxy/live_proxy/views.py",
         lineno=468,
         pr="2b-3",
         reason="stream_profile.is_redirect(), as :462.",
-        closed_by="Nothing to close -- no query.",
+        closed_by=(
+            "stream_profile.kind on next-source's response, added by 2c-1. "
+            "True that this line issues no query, and that was never the "
+            "question 2c-1's precondition asks: the Go relay MUST know "
+            "whether the profile is Redirect (302 and URL validation) or "
+            "Proxy (read into the ring buffer), and before 2c-1 nothing on "
+            "the wire said -- transcode collapses both to false and both "
+            "locked profiles carry empty command/parameters. Spec "
+            "Amendment A1.1."
+        ),
     ),
 )
 
@@ -263,7 +281,7 @@ EDGES = (
         importer="apps/proxy/live_proxy/views.py",
         module="apps.proxy.next_source",
         name="resolve_source",
-        hits=36,
+        hits=38,
         pr="2b-3",
         reason=(
             "SETTLED HERE, and issue #253 left it open: resolve_source is NOT "
@@ -277,7 +295,14 @@ EDGES = (
             "StreamProfile.objects.get, _resolve_alternates, _commit, "
             "_with_proxy_settings and _with_output_profiles. #253's "
             "'looks like API-process or dead code; they were read, not "
-            "executed' is withdrawn."
+            "executed' is withdrawn. "
+            "2c-1 raised this from 36 to 38: next_source.py's new "
+            "_profile_kind() helper calls is_redirect() and is_proxy(), two "
+            "model-method names the scanner flags, inside resolve_source's "
+            "reachable subtree. Neither issues a query (core/models.py:127-135 "
+            "compares self.locked and self.name on a loaded instance); the count "
+            "moved because two flagged CALL SITES exist, which is the ratchet "
+            "working rather than a number tuned to fit."
         ),
         closed_by=(
             "POST /api/relay/channels/<id>/next-source with target_stream_id "
@@ -291,7 +316,7 @@ EDGES = (
         importer="apps/proxy/live_proxy/services/channel_service.py",
         module="apps.proxy.next_source",
         name="resolve_source",
-        hits=36,
+        hits=38,
         pr="2b-3",
         reason=(
             "The same symbol as the views.py edge above, and a SEPARATE "
@@ -299,10 +324,17 @@ EDGES = (
             "name): channel_service.py:415 calls resolve_source directly "
             "for the pub/sub-driven operator switch (server.py's switch "
             "listener), a second in-process call site #253 did not "
-            "separately record. Same 36-hit subtree as the views.py edge; "
+            "separately record. Same 38-hit subtree as the views.py edge; "
             "the count is identical by construction, since scan_edge "
             "depends only on the target module and symbol, never on who "
-            "imports it."
+            "imports it. "
+            "2c-1 raised this from 36 to 38: next_source.py's new "
+            "_profile_kind() helper calls is_redirect() and is_proxy(), two "
+            "model-method names the scanner flags, inside resolve_source's "
+            "reachable subtree. Neither issues a query (core/models.py:127-135 "
+            "compares self.locked and self.name on a loaded instance); the count "
+            "moved because two flagged CALL SITES exist, which is the ratchet "
+            "working rather than a number tuned to fit."
         ),
         closed_by="As the views.py edge above -- POST .../next-source with target_stream_id.",
     ),

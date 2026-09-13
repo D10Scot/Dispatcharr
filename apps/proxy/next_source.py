@@ -72,6 +72,56 @@ def _resolve_live_stream_url(stream, m3u_account, m3u_profile):
 _UNRESOLVED_FFMPEG_PROFILE = object()
 
 
+def _profile_kind(profile):
+    """Which of the three Stream Profile architectures this profile is.
+
+    Phase 2 PR 2c-1. The wire already carries `transcode`, which is
+    `not (is_proxy() or is_redirect())` -- one boolean collapsing Proxy
+    and Redirect onto the same value, because from the relay's old
+    point of view they agreed on the only question it was asking
+    ("do I spawn a subprocess?"). A Go relay asks a second question
+    the boolean cannot answer: Redirect means answer 302 and validate
+    the provider URL, Proxy means read the bytes into the ring buffer.
+    Both locked profiles carry empty command/parameters
+    (core/models.py:139-144), so nothing else on the wire separates
+    them either.
+
+    `transcode` is deliberately NOT changed or derived from this --
+    D5's strict parity forbids altering what already exists, and every
+    current consumer keeps reading exactly the boolean it reads today.
+
+    No query: is_redirect()/is_proxy() compare self.locked and
+    self.name on an already-loaded instance (core/models.py:127-135).
+    They are model METHODS, so zero_orm_scan.py flags the two calls
+    below by name -- see the EDGE entries in zero_orm_allowlist.py.
+    """
+    if profile.is_redirect():
+        return "redirect"
+    if profile.is_proxy():
+        return "proxy"
+    return "transcode"
+
+
+def _stream_profile_ref(profile):
+    """A StreamProfile flattened to the wire shape StreamProfileRefSerializer renders.
+
+    One construction site for what used to be four near-identical dict
+    literals. That duplication has already cost this module a
+    production defect once: the `transcode` derivation lived at two
+    points, they disagreed about Redirect, and every reconnect during
+    a recording spawned an empty executable
+    (apps/proxy/tests/test_redirect_transcode_flag.py's own docstring).
+    A second per-profile fact derived independently in four places is
+    that defect pre-built.
+    """
+    return {
+        "id": profile.id,
+        "command": profile.command,
+        "args": profile.parameters,
+        "kind": _profile_kind(profile),
+    }
+
+
 def _locked_ffmpeg_profile():
     """The locked 'ffmpeg' StreamProfile, flattened, or None.
 
@@ -97,7 +147,7 @@ def _locked_ffmpeg_profile():
     profile = StreamProfile.objects.filter(name="ffmpeg", locked=True).first()
     if profile is None:
         return None
-    return {"id": profile.id, "command": profile.command, "args": profile.parameters}
+    return _stream_profile_ref(profile)
 
 
 def get_stream_object(id: str):
@@ -509,11 +559,7 @@ def resolve_initial_source(identifier):
                         "url": stream_url,
                         "user_agent": stream_user_agent,
                         "transcode": transcode,
-                        "stream_profile": {
-                            "id": stream_profile.id,
-                            "command": stream_profile.command,
-                            "args": stream_profile.parameters,
-                        },
+                        "stream_profile": _stream_profile_ref(stream_profile),
                         "m3u_profile_id": profile_id,
                         "slot_reserved": slot_reserved,
                         "channel_name": stream.name,
@@ -571,11 +617,7 @@ def resolve_initial_source(identifier):
                     "url": stream_url,
                     "user_agent": stream_user_agent,
                     "transcode": transcode,
-                    "stream_profile": {
-                        "id": stream_profile.id,
-                        "command": stream_profile.command,
-                        "args": stream_profile.parameters,
-                    },
+                    "stream_profile": _stream_profile_ref(stream_profile),
                     "m3u_profile_id": profile_id,
                     "slot_reserved": slot_reserved,
                     "channel_name": channel.name,
@@ -618,11 +660,7 @@ def _source_from_info(info, *, slot_reserved, locked_ffmpeg_profile=_UNRESOLVED_
         "url": info["url"],
         "user_agent": info["user_agent"],
         "transcode": info["transcode"],
-        "stream_profile": {
-            "id": stream_profile.id,
-            "command": stream_profile.command,
-            "args": stream_profile.parameters,
-        },
+        "stream_profile": _stream_profile_ref(stream_profile),
         "m3u_profile_id": info["m3u_profile_id"],
         "slot_reserved": slot_reserved,
         "channel_name": info.get("channel_name"),
