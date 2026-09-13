@@ -1,0 +1,2485 @@
+# Phase 2 PR 2c-1 — the Go relay skeleton Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** Put a Go module at `relay/`, start it as a supervisord program in the `all` and `relay` roles, build it in the Docker image, and gate it in CI — with `/healthz` and `/readyz` answering 200 and nothing else reachable outside `dev`. This is the first PR of Stage 2c and the first line of Go in the repository. It ships no streaming behaviour at all.
+
+**Architecture:** Five packages the spec names (`httpapi`, `control`, `channel`, `buffer`, `ffmpeg`) plus one this plan adds and justifies (`config`). Three of the six are documented stubs; three carry real, tested code, because a stub that compiles and asserts nothing gives `go-tests.yml` nothing to prove and gives `go test -race` no reason to exist. The three that carry code are the three whose correctness cannot be deferred: `control` holds the HMAC token layout (get one byte wrong and every internal call 403s), `config` holds the `/data/jwt` read that feeds it (get the whitespace handling wrong and the same thing happens, silently), and `buffer` holds the per-channel memory bound this PR is required to settle as a number rather than a comment.
+
+**Tech Stack:** Go 1.27.1, standard library only — `net/http`, `crypto/hmac`, `crypto/sha256`, `encoding/hex`, `os`, `strconv`, `testing`. No third-party module, now or through 2c-9; `go.sum` stays absent. `golangci-lint` 2.13.2 for lint, `go vet` for vet, `go test -race` for tests. Build inside Docker from a digest-pinned `golang` builder stage, cross-compiled to both published architectures.
+
+**Spec:** `docs/superpowers/specs/2026-09-09-phase2-go-relay-design.md` — the `2c-1` row of § Stage 2c › The nine PRs (line 1795), § Stage 2c's `**Process.**` paragraph (line 1690), `**Concurrency.**` (line 1702), `**Buffer depth — an explicit open item**` (line 1709), `**Repo layout.**` (line 1723), `**Third-party Go dependencies: none.**` (line 1731), `**The two invariants**` (line 1738), § The contract (line 517, and the exact byte layout at lines 540-548), D5 (dev fallback), D6 (health/readiness), D7 (both gates, now met), § Testing's `go test -race` bullet (line 2086). Supporting: `apps/proxy/live_proxy/tests/zero_orm_allowlist.py` (this PR's precondition), `apps/proxy/internal_auth.py`, `docker/entrypoint.sh`, `.github/workflows/frontend-tests.yml` (the four-part requireable shape), `.claude/hooks/run-affected-tests.sh` and `pre-commit-tests.sh` (the hook idiom).
+
+**Branch:** `migration/phase2c-skeleton`, cut from `main` **after this plan has merged and after issue #258's hook fix has merged**. The `migration/**` prefix is load-bearing — it makes `e2e-tests.yml` run every Playwright project (CLAUDE.md § Full E2E runs).
+
+---
+
+## Global Constraints
+
+Every task's requirements implicitly include this section.
+
+1. **Anchor every command with an absolute path, or open it with a `cd` into your own worktree.** The shell's working directory has been observed in this programme drifting into another agent's worktree with no `cd` issued. A relative path that resolves somewhere else does not error; it writes a plausible file in the wrong tree. Every command in this plan is written to be run from the worktree root and every path in it is repo-relative from there — prefix each Bash call with `cd <your worktree> && `.
+
+2. **`go test -race` is mandatory on every Go test run, everywhere: locally, in the hook, in the commit gate, in CI.** Spec § Testing (line 2086) states the reason and it is not stylistic: the concurrency model changes from gevent-cooperative (27 "threads" sharing one OS thread under a monkey-patch) to OS-thread-parallel goroutines, so a data race the Python implementation's execution model made *structurally impossible* becomes possible for the first time in this phase. `go test ./...` without `-race` is not a run; it is a compile check with extra steps. There is no "this package has no concurrency yet" exemption — the flag costs nothing on a small suite and the exemption is how it stops being habitual.
+
+3. **Standard library only. No `require` line, no `go.sum`, ever.** Spec line 1731 calls this "a rule to defend, not an accident". Task 2 builds the mechanical check and Task 11 wires it into CI. If a task appears to need a dependency, stop and report — the answer is either that the task is out of 2c-1's scope or that the stdlib does it and the reach for a library was reflex.
+
+4. **No Python file is edited in this PR.** Not `apps/`, not `core/`, not `dispatcharr/`, not `scripts/`. 2c-1's gate is Go-and-infrastructure; a Python edit here would pull the whole backend label matrix into a PR whose own tests cannot exercise it. The one contract gap this plan found (Finding F1, below) is therefore recorded as a spec amendment in this PR and implemented in a later one — deliberately, and stated in the PR description rather than quietly deferred.
+
+5. **Every pin is tool-resolved on the day the PR is opened, never copied from this plan.** The values in Task 11 and Task 10 were resolved on 2026-09-13 and are recorded so the implementer can tell whether anything moved, not so they can be pasted. The spec's own `2c-1` gate (line 1795) makes re-resolution part of the gate: `go.dev/dl`, `docker buildx imagetools inspect` against the current `golang` tag, and fresh `gh api repos/<owner>/<repo>/commits/<tag> --jq .sha` lookups. **Confirm the publisher before trusting a SHA** — a plausible SHA on a same-named fork is worse than a floating tag, because it looks pinned (CLAUDE.md § Supply chain security).
+
+6. **zizmor blocks on every finding in `go-tests.yml`, from its first commit.** The workflows are at zero findings and that is a ratchet. The edit hook runs zizmor on any `.github/workflows/*.yml` write; do not commit a workflow the hook has not passed. `persist-credentials: false` on every `actions/checkout`, top-level `permissions: contents: read`, every `uses:` a 40-character SHA with a trailing version comment.
+
+7. **Do not add a Docker `HEALTHCHECK` in this PR.** D6 pairs the health endpoints with a `HEALTHCHECK` and a supervisord drain, and spec line 1802 assigns the drain to `2c-8`. A `HEALTHCHECK` wired to a `/readyz` that is a static 200 (which is what `2c-1`'s own row specifies) would report healthy through every real failure the probe exists to catch — a green light with nothing behind it, which is worse than no light.
+
+8. **`relay-go` must share supervisord `priority=205` with `relay-uwsgi`, not take a priority of its own.** This is arithmetic, not taste. Supervisord stops one priority group at a time and waits out each group's `stopwaitsecs` before moving to the next, so the container's stop budget is the **sum** across groups. Today's `all` rung sums to 155s (postgres 30 + redis 5 + api-uwsgi 10 + relay-uwsgi 20 + daphne 10 + celery-default 30 + celery-dvr 30 + celery-beat 10 + nginx 10) against a `stop_grace_period: 160s` (`docker/docker-compose.yml:23`, `:157`, `:215`, `docker/docker-compose.aio.yml:13`). A `relay-go` at its own `priority=206` with `stopwaitsecs=20` would take that sum to **175s** and start every deploy exceeding its grace period by 15 seconds — a `SIGKILL` mid-shutdown, appearing as unexplained data loss long after this PR. At the same priority the two programs stop concurrently and the group contributes `max(20, 20) = 20`, leaving the sum at 155.
+
+9. **Nothing in `relay/` may open a Postgres connection or a Redis connection, in any task, including a test.** These are the phase's two checkable success criteria (spec line 1738). At 2c-1 they hold trivially, because constraint 3 means there is no driver to link. Task 2's check is what keeps them holding when the module stops being trivial.
+
+10. **Prefer `t.Setenv` over manual environment save/restore in tests, and never run an environment-mutating test with `t.Parallel()`.** `t.Setenv` restores on cleanup and, deliberately, panics if the test has called `t.Parallel()` — which is the language telling you the test is not safe to parallelise. Do not work around it by saving and restoring by hand; that reintroduces exactly the race `-race` is here to find.
+
+### The six ways a Go test can be green and meaningless
+
+All six shapes below were found in real PRs in this repository in the four days before this plan was written. Every test this PR adds is bound by all six, and every task that adds an assertion ends with a **break-check**: patch the defect in, watch the test go red *for the right reason*, revert. A break-check that does not go red is a finding, not a formality — stop and fix the assertion.
+
+1. **The tautological oracle — a test whose expected value is computed by the code under test cannot fail.** In this PR it has a sharper form than usual, because the subject is a *cross-implementation* contract. An HMAC test that calls the Go function to produce its own expectation proves the function is deterministic and nothing else. The expected digest must be a **literal, produced by the Python side**, so the test pins parity with `apps/proxy/internal_auth.py` rather than self-consistency. Task 4 ships such literals, generated from Django's own module; Task 4 Step 1 re-generates them rather than trusting this plan.
+
+   **Wrong:**
+
+   ```go
+   func TestInternalRequestHeader(t *testing.T) {
+       want := InternalRequestHeader(secret, "POST", "/api/relay/events", nil, 1789000000)
+       got := InternalRequestHeader(secret, "POST", "/api/relay/events", nil, 1789000000)
+       if got != want {
+           t.Fatalf("header = %s, want %s", got, want)
+       }
+   }
+   ```
+
+   This passes with the context string spelled `internal_request`, with the field separator `|` instead of `\n`, with the body digest omitted entirely, and with SHA-512 in place of SHA-256. Every one of those 403s in production.
+
+   **Right:**
+
+   ```go
+   func TestInternalRequestHeaderMatchesPython(t *testing.T) {
+       // Produced by apps/proxy/internal_auth.internal_request_token() under
+       // Django with SECRET_KEY="phase2c1-test-secret". Regenerate with the
+       // script in Task 4 Step 1; never by calling the Go code above.
+       const want = "v1.1789000000.5ce39464af1f52fac92ab6dd8101b289c2b9acce93d392216ac0dbcfa53a1fae"
+       got := InternalRequestHeader(
+           "phase2c1-test-secret",
+           "POST",
+           "/api/relay/channels/abc/next-source",
+           []byte(`{"reason":"init"}`),
+           1789000000,
+       )
+       if got != want {
+           t.Fatalf("header = %s, want %s", got, want)
+       }
+   }
+   ```
+
+2. **A pin that supplies the default pins nothing.** A test must supply a value that could not arise by accident. `t.Setenv("DISPATCHARR_RELAY_GO_PORT", "5658")` and then asserting the port is 5658 passes with the whole environment-parsing branch deleted, because 5658 *is* the fallback. Assert the default and the override in two tests, and make the override's value one the default could never produce (`5999`).
+
+3. **A test can go hollow without changing.** Ask of every assertion: *what edit to production code would make this fail?* If the answer is "none", it is not a test. A changed return value silently disarms an untouched test, and a diff-scoped review cannot see it — which is why every break-check in this plan names the edit it expects to redden the assertion.
+
+4. **A fixture that patches away the subject its docstring names.** The rule: *patching the sink you assert against is how you observe; patching the logic that decides what reaches the sink is how you blind yourself.* In Go this arrives as an interface seam rather than a monkey-patch. A handler test that injects a fake router is observing; a handler test that injects a fake *handler* and asserts the fake was called has replaced the subject with a mirror.
+
+   **Wrong — replaces the subject:**
+
+   ```go
+   func TestHealthz(t *testing.T) {
+       called := false
+       h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { called = true })
+       h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/healthz", nil))
+       if !called {
+           t.Fatal("handler not called")
+       }
+   }
+   ```
+
+   This asserts that `http.HandlerFunc` calls the function you handed it. It passes with `httpapi` deleted.
+
+   **Right — drives the real mux and asserts what a client would see:**
+
+   ```go
+   func TestHealthzReturns200(t *testing.T) {
+       srv := New(Config{DevRoutes: false})
+       rec := httptest.NewRecorder()
+       srv.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+       if rec.Code != http.StatusOK {
+           t.Fatalf("GET /healthz = %d, want 200", rec.Code)
+       }
+       if got := rec.Body.String(); got != "ok\n" {
+           t.Fatalf("body = %q, want %q", got, "ok\n")
+       }
+   }
+   ```
+
+5. **A substring assertion pins nothing when the string has more than one source.** Before asserting on any log line or error message, grep for a second emitter of the same text. If there is one, pin the **value** the arm formats into the message, or pin the **record count** against the one entry point the test drives, or both. In Go this bites hardest on `err.Error()` checks: `strings.Contains(err.Error(), "secret")` passes for four different failures in Task 3's secret loader. Use `errors.Is`/`errors.As` against a named sentinel, or assert the full message.
+
+6. **A true positive for a false reason.** A break-check can redden from a side effect of the edit rather than from the defect — a line number shifting, a doc comment going stale, a neighbouring test's fixture moving. **When a break-check reddens, read the failure message and confirm it names the mechanism.** "expected 5658, got 0" is the mechanism; "build failed" is not.
+
+### Working rules
+
+- **Run the four checks after every task, from the module root**, and treat any of the four failing as a stop:
+
+  ```bash
+  cd <your worktree>/relay && go build ./... && go vet ./... && go test -race ./... && golangci-lint run ./...
+  ```
+
+- **`gofmt` is not optional and is enforced by the linter's formatter section.** Run `gofmt -w .` before committing; `golangci-lint run` fails on unformatted files.
+- **Stage and commit in separate Bash calls.** The `PreToolUse` gate runs before the command, so a single call that does both is blocked outright.
+- **Write commit messages to a file and commit with `-F`.** The gate matches on command text, so a heredoc containing the two words trips it (CLAUDE.md § Test hooks).
+- **Every commit message ends with the attribution lines this session was given.**
+
+---
+
+## Rulings
+
+Decisions this plan makes that the spec leaves open, or that the tree contradicts. Each is binding on the implementer; each names what it was decided against.
+
+### R1 — `go-tests.yml` carries a `Go result` aggregate in the four-part shape **from this PR**, not from 2c-9.
+
+The spec's `2c-9` row (line 1803) makes the gate "A new `go-tests.yml` **`Go result`** aggregate green, built in the four-part shape `CLAUDE.md` § Testing prescribes for every requireable check", and the `2c-1` row (line 1795) names only "`go build ./...`, `golangci-lint run`, `go vet ./...` all green; zizmor clean on `go-tests.yml` from its first commit". The rows are compatible either way — 2c-9 requires the aggregate to be **green**, which a workflow authored in the shape on day one satisfies without a rewrite.
+
+Built here, for three reasons. **The shape is a repo-wide invariant, not a per-workflow choice**: CLAUDE.md § Testing states "Every test workflow now has that shape and a result aggregate — `E2E result`, `Lifecycle result`, `Backend result`, `Frontend result` — so each is requireable", and a fifth test workflow without one is the exception that erodes it. **Retrofitting it at 2c-9 leaves 2c-2 through 2c-8 — seven PRs and the entire Go implementation — running Go jobs that no aggregate covers**, so the shape's own failure mode (a skipped heavy job on a required run) goes unexercised for the whole stage and first gets tested on the PR that can least afford a surprise. **And it costs about thirty lines**, copied from `frontend-tests.yml`, which is the smallest existing instance of the shape.
+
+What 2c-9 still owns is unchanged: the coverage job, the `scripts/coverage_live_path_go.floor` ratchet, and making `Go result` an *actually required* check on the Main ruleset — a repo-settings action, which the spec's own `2c-9` row already flags as not something a commit accomplishes.
+
+### R2 — Buffer depth: **300 chunks, 76,760,400 bytes per channel**, derived below, shipped as a config default in this PR.
+
+Spec line 1709 makes this "an explicit open item, not inherited... 2c's first PR must resolve with a real number, not carry forward unresolved". The user's decision is: derive it from Python's observable behaviour, cap per channel, no host constraint. The derivation, and every input with its `file:line`:
+
+| Input | Value | Source |
+|---|---|---|
+| Chunk size | 255,868 bytes (`188 × 1361`) | `apps/proxy/config.py:15`, `BaseConfig.BUFFER_CHUNK_SIZE` |
+| Retention | 60 seconds | `apps/proxy/config.py:71`, `settings.get("redis_chunk_ttl", 60)`, reached through `apps/proxy/live_proxy/config_helper.py:64-66` and applied at `apps/proxy/live_proxy/input/buffer.py:110` |
+| Join point | 5 seconds behind live | `apps/proxy/config.py:57`, `new_client_behind_seconds`, read at `apps/proxy/live_proxy/config_helper.py:51`, used at `apps/proxy/live_proxy/output/ts/generator.py:268-272` |
+| Reference bitrate | **10 Mbit/s** | Stated, not measured — see below |
+
+**The reference bitrate is a stated assumption and must be labelled as one.** Nothing in the tree records a measured channel bitrate; `avg_bitrate_kbps` is displayed and never thresholded (CLAUDE.md § Failover: "No quality measurement exists"). 10 Mbit/s is the spec's own figure (line 1713) and is a realistic ceiling for a 1080p broadcast MPEG-TS remux, which is what the default FFmpeg profile produces. It is the number the cap is *sized* from; it is not a limit the relay enforces.
+
+```
+10,000,000 bit/s ÷ 8            = 1,250,000 byte/s
+1,250,000 byte/s × 60 s         = 75,000,000 bytes of video per channel
+75,000,000 ÷ 255,868            = 293.12 chunks
+round up to a round number      = 300 chunks
+300 × 255,868                   = 76,760,400 bytes  ≈ 73.2 MiB per channel
+```
+
+**Why a chunk count and a byte budget together, and not a duration.** Redis's TTL bounded *time* and let Redis's own eviction absorb the memory consequence. D2 deletes that absorber, so a time bound is no longer a bound at all — at twice the reference bitrate the same 60 seconds costs twice the memory, and nothing notices until the process is OOM-killed and every channel dies at once (spec § Risks, "Memory profile changes shape, not just size"). The cap is therefore expressed in **bytes**, which is the thing that must not grow, and converted to a chunk count by integer division at startup, because the chunk is the ring's eviction unit.
+
+**Both bounds are enforced, whichever binds first**, and this is what preserves parity. Retention stays 60 seconds so a client's view of how far back the buffer reaches matches Python's; the byte cap sits behind it so memory is bounded regardless of bitrate. The two cross at `76,760,400 ÷ 60 = 1,279,340 byte/s = 10.23 Mbit/s`: below that the 60-second bound binds and behaviour is Python's exactly; above it the byte cap binds first and retention shortens. **That is a deliberate, stated divergence** and it is in the safe direction — a channel at 20 Mbit/s keeps 30 seconds instead of 60 and stays inside its memory budget, rather than keeping 60 seconds and taking the process down.
+
+**The check that matters is the join point, not the retention.** A new client starts 5 seconds behind live, so the cap is only safe while 5 seconds of video is still resident. Five seconds at the reference bitrate is 6,250,000 bytes — 24.4 chunks of 300. The cap stops covering the join point only above `76,760,400 ÷ 5 = 15,352,080 byte/s = 122.8 Mbit/s`, an order of magnitude beyond anything this deployment serves. Task 5 pins both crossover figures as tests, because they are the two numbers that decide whether the cap is safe and neither is obvious from reading the constant.
+
+**Aggregate, stated but not enforced:** ten concurrently-owned channels at the cap is 767,604,000 bytes ≈ 732 MiB resident in one process. That matches the spec's own ~750 MB estimate. **No host-memory check is implemented** — per the user's decision, the cap is per channel, full stop. Sizing the relay against real channel counts is spec § Risks' explicit pre-deployment item, not this PR's.
+
+### R3 — One package beyond the spec's five: `config`.
+
+Spec line 1723 names `channel`, `buffer`, `ffmpeg`, `control`, `httpapi` and says the split is "by concern". `config` is not a sixth concern; it is the wiring inputs — the environment and `/data/jwt`. It gets its own package rather than living in `package main` for one reason: the `/data/jwt` read has a whitespace rule that is easy to get subtly wrong and impossible to test from outside `main` (Task 3 Finding). Everything else about the layout follows the spec exactly, including the instruction *not* to mirror `apps/proxy/live_proxy/`'s file layout.
+
+### R4 — Both Go hooks derive the module root from the **edited file's own path**, by walking up for `go.mod`.
+
+Issue #258 is the Python hooks' version of this: `.claude/hooks/run-affected-tests.sh:33` sets `REPO_ROOT` from `${BASH_SOURCE[0]}`'s directory, so when the hook script lives in one checkout and the edited file lives in a worktree, `:39-43`'s `case "$FILE" in "$REPO_ROOT"/*)` falls through to `/*) exit 0` and the hook silently does nothing. The Go hooks must not inherit that shape. Walking up from the edited file for `go.mod` is independent of `CLAUDE_PROJECT_DIR`, of `BASH_SOURCE`, and of the shell's working directory — the three things that have each been wrong at least once in this programme.
+
+This does not fix, depend on, or conflict with #258. `settings.json` still locates the *script* through `${CLAUDE_PROJECT_DIR:-.}`; whatever #258's fix does about that reaches the Go hook for free.
+
+### R5 — `relay-go` runs in `all`, `relay` **and** `all-dev`.
+
+The spec says roles `all` and `relay` (line 1690). `docker/supervisord/relay.conf`'s include is a glob — `files = /app/docker/supervisord.d/relay-*.conf` — so the `relay` role picks up `relay-go.conf` with no edit. `all.conf` and `all-dev.conf` carry explicit file lists and each needs one path appended. `all-dev` is the rung `DISPATCHARR_ENV=dev` selects for role `all` (`docker/entrypoint.sh:491`), so including it is what "role `all`" means in dev — and it is the only shape where this PR's dev-gated route is reachable at all, which makes leaving it out equivalent to shipping the flag dead.
+
+### R6 — CodeQL gets no `go` language pack in this PR.
+
+`codeql.yml:54` analyses `[actions, python, javascript-typescript]`. Go is a real gap and it should close, but not here: at 2c-1 the module is three tested packages and three stubs, so a Go pack would analyse almost nothing while adding a build-mode configuration to debug. **Recommended owner: 2c-9**, alongside the coverage ratchet, when there is a relay to analyse. Recorded in the PR description as a known, dated gap rather than left unstated.
+
+### R7 — The Docker builder stage cross-compiles; it does not emulate.
+
+`docker-build.yml:88` builds `linux/amd64,linux/arm64` in one buildx invocation. A builder stage written as a plain `FROM golang:...` runs the arm64 leg under QEMU emulation — minutes of emulated compilation per build, for a binary Go can cross-compile natively in about a second. The stage is therefore `FROM --platform=$BUILDPLATFORM` with `ARG TARGETOS`/`TARGETARCH`, verified working for both targets in Task 10.
+
+---
+
+## The allowlist reconciliation — this PR's precondition
+
+**This is Task 1's deliverable and it is written here, in full, so the implementer transcribes rather than researches.** Spec line 1795 states the precondition: if `zero_orm_allowlist.py` is non-empty, this PR's description names, for every entry, **either** the contract field that closes it **or** the written reason the Go relay never asks that question. Line 1738 explains why it matters: the "no Postgres driver" invariant falls out of 2b *conditionally*, and both coverage gates can be green with this punch list untouched.
+
+The spec is explicit that this precondition is enforced by the PR description and its reviewer, not by CI (line 1795: "deciding whether a written reason for skipping a contract field is a *good* reason is not a grep"). The reasoning quality is the whole gate.
+
+**Counts, measured at `0c1654d8`:** 12 `SITES`, 11 `EDGES`, 7 `SQL_SIGNATURES`, 6 `INLINE_AUTHORIZE_SIGNATURES` — **36 entries**. Verified with an AST count rather than by eye:
+
+```bash
+cd <your worktree> && python3 -c "
+import ast
+t = ast.parse(open('apps/proxy/live_proxy/tests/zero_orm_allowlist.py').read())
+for n in t.body:
+    if isinstance(n, ast.Assign) and isinstance(n.value, ast.Tuple):
+        print(n.targets[0].id, len(n.value.elts))
+"
+```
+
+The contract fields cited below were each read in the tree, not taken from the allowlist's own `closed_by` prose. Every `file:line` here was verified at `0c1654d8`.
+
+### SITES — 12 entries
+
+| # | Site | ORM read | Closed by | Evidence | Verdict |
+|---|---|---|---|---|---|
+| S1 | `channel_status.py:74` | `Stream.objects.filter(id=…).first()` — the `stream_name` fallback | **No field, and none is needed: absence is the contract.** `stream_name` is declared `required=False` with no `default=`, so DRF's `Field.get_attribute` raises `SkipField` and the key is **absent** from the JSON, not `null`. A relay with no database always omits it, which is inside the contract rather than a divergence from it. | `apps/proxy/relay_serializers.py:111`; parity matrix row 18 | Reason, verified |
+| S2 | `channel_status.py:106` | `M3UAccountProfile.objects.filter(id=…).first()` — the `m3u_profile_name` fallback | As S1, same mechanism, same row. | `apps/proxy/relay_serializers.py:113`; row 18 | Reason, verified |
+| S3 | `config_helper.py:50` | `TSConfig.get_proxy_settings()` → `CoreSettings.get_proxy_settings` | **`proxy_settings` on the next-source response.** Attached by `_with_proxy_settings` on all four of `resolve_source`'s return paths. | `apps/proxy/next_source.py:699`, wrapper at `:679-701`, applied at `:869`, `:874`, `:877`, `:897` | Field, verified — **see F4** |
+| S4 | `views.py:132` | `CoreSettings.get_default_output_format()` on the trusted branch | **`X-Relay-Output-Format`**, the sixth relay header 2b-2 added; the hop resolves it on every live tune. | Set at `apps/proxy/authorize_views.py:353`; name at `apps/proxy/internal_auth.py`'s `HEADER_RELAY_OUTPUT_FORMAT` | Field, verified |
+| S5 | `views.py:152` | `OutputProfile.objects.filter(id=…, is_active=True)` | **`output_profiles` on the next-source response** — the whole active set, each as `{id, argv}`, so the relay caches the map per channel and serves every later client from memory. | `apps/proxy/next_source.py:748`, built at `:726-747` | Field, verified |
+| S6 | `views.py:444` | `channel.get_stream_profile()` (an FK accessor plus `StreamProfile.objects.get`) | **`stream_profile` on the next-source `source` dict**, as `{id, command, args}`. | `apps/proxy/next_source.py:512-518`, `:574-580`, `:621-627` | Field, verified |
+| S7 | `input/manager.py:785` | `channel.get_stream_profile()` | As S6, same field. | as S6 | Field, verified |
+| S8 | `input/manager.py:788` | `channel.get_stream_profile()` | As S6, same field. | as S6 | Field, verified |
+| S9 | `views.py:766` | `OutputProfile.build_command()` — a model **method**, no query | **Nothing to close, and the Go equivalent exists**: `OutputProfile.build_command` is `[self.command] + shlex_split(self.parameters)`, and Django already runs it when it builds `output_profiles[*].argv`. Go reads the finished argv. | `core/models.py:200-203`; `apps/proxy/next_source.py:747` | Reason, verified |
+| S10 | `input/manager.py:791` | `StreamProfile.build_command(url, ua, channel_id)` — a model method, no query | **Nothing to close as an ORM matter**, and the Go relay reproduces it from `stream_profile.command` + `stream_profile.args`. Its `is_proxy()/is_redirect()` early return is unreachable in Go because the relay only reaches this path when `transcode` is true. | `core/models.py:137-166`; `transcode` at `apps/proxy/next_source.py:511`, computed `:504` | Reason, verified — **see F3** |
+| S11 | `views.py:462` | `stream_profile.is_redirect()` — a model method, no query | **GAP.** True as an ORM statement, and it does not answer this precondition's question. The Go relay *must* ask whether the profile is Redirect: `:462` decides between a 302 and the Proxy path, and applies the internal-principal override that forces Redirect through Proxy. The contract cannot answer it — see Finding **F1**. | `core/models.py:132-135`; call site `apps/proxy/live_proxy/views.py:462-467` | **Neither — F1** |
+| S12 | `views.py:468` | `stream_profile.is_redirect()` | As S11. Same gap, the `elif` arm that performs the redirect URL validation. | `apps/proxy/live_proxy/views.py:468-480` | **Neither — F1** |
+
+### EDGES — 11 entries
+
+| # | Importer ← symbol | Hits | Closed by | Evidence | Verdict |
+|---|---|---|---|---|---|
+| E1 | `views.py` ← `apps.proxy.next_source.resolve_source` | 36 | **`POST /api/relay/channels/<id>/next-source` carrying `target_stream_id`.** The operator switch becomes a control-plane round trip instead of an import; 2c-8 owns the route. | Payload key at `apps/proxy/control_plane.py:179-180` (parameter `:152`); server side `apps/proxy/next_source.py:871-872`, switch resolution `:192-214` | Field, verified |
+| E2 | `services/channel_service.py` ← `resolve_source` | 36 | As E1 — a separate allowlist entry only because the allowlist is per `(importer, module, symbol)`; the same route closes it. | as E1 | Field, verified |
+| E3 | `url_utils.py` ← `next_source.get_stream_object` | 3 | **next-source's own identifier resolution.** `get_stream_object` accepts a channel UUID and falls back to a `stream_hash`, so the Go relay forwards whatever identifier arrived in the URL and Django resolves it. | `apps/proxy/next_source.py:103-113`; parity matrix row 16 | Field, verified |
+| E4 | `client_manager.py` ← `apps.proxy.config.TSConfig` | 5 | **`proxy_settings` on next-source**, as S3. The five flagged classmethods (`get_channel_shutdown_delay`, `get_buffering_timeout`, `get_buffering_speed`, `get_channel_init_grace_period`, `get_channel_client_wait_period`) all read that one group. | `apps/proxy/next_source.py:699` | Field, verified — **see F4** |
+| E5 | `config_helper.py` ← `TSConfig` | 5 | As E4. | as E4 | Field, verified |
+| E6 | `input/manager.py` ← `TSConfig` | 5 | As E4. | as E4 | Field, verified |
+| E7 | `output/ts/generator.py` ← `TSConfig` | 5 | As E4. | as E4 | Field, verified |
+| E8 | `server.py` ← `TSConfig` | 5 | As E4. | as E4 | Field, verified |
+| E9 | `views.py` ← `apps.proxy.authorize.resolve_output_format` | 1 | **`X-Relay-Output-Format` on a trusted tune** (S4's header). On the nginx-less path the same resolution happens in Django behind `POST /_dispatcharr/authorize-internal` and comes back as a response header — the Go relay never runs `resolve_output_format` in either shape. | `apps/proxy/authorize_views.py:353`; spec § The contract's dev-fallback response, 200 shape | Field, verified |
+| E10 | `views.py` ← `apps.proxy.authorize.resolve_output_profile` | 2 | **`X-Relay-Output` on a trusted tune**; the hop resolves `?output_profile=` and the user's `custom_properties` once and puts the id on the header. Dev shape as E9. | `apps/proxy/authorize_views.py:346` | Field, verified |
+| E11 | `views.py` ← `apps.proxy.authorize_views.resolve_authorization` | 1 | **A written reason, and it is D1.** The `User.objects.filter(id=…).first()` sits in the `else` arm of `if surface in (SURFACE_LIVE, SURFACE_LIVE_XC)`. The Go relay serves **only** live surfaces — `/proxy/ts/stream/` and the XC live roots — so it can never enter that arm. VOD, catch-up and `timeshift.php` keep the code verbatim in the Python relay, which is exactly what D1 scopes. `X-Relay-User` carries the identity the live arm needs. | Surface split per the allowlist's own entry; `X-Relay-User` at `apps/proxy/authorize_views.py:348`; D1 at spec line 438 | Reason, verified |
+
+### SQL_SIGNATURES — 7 entries
+
+These are the runtime half of the guard: SQL text observed executing under a relay stack frame. Each maps onto a SITE or EDGE already reconciled above, so each inherits that row's closure rather than getting a new one.
+
+| # | Signature | Produced by | Closed by |
+|---|---|---|---|
+| G1 | `channel_by_uuid` | E3 (`get_stream_object`) | Identifier passthrough — Django resolves it on next-source |
+| G2 | `channel_override_fk_accessor` | S6 / S8 (`get_stream_profile`'s FK touch) | `stream_profile` on next-source |
+| G3 | `stream_profile_by_id` | S6 / S7 / S8 | `stream_profile` on next-source |
+| G4 | `output_profile_for_this_client` | S5 | `output_profiles` on next-source |
+| G5 | `stream_name_fallback` | S1 | Absence is the contract (row 18) |
+| G6 | `m3u_profile_name_fallback` | S2 | Absence is the contract (row 18) |
+| G7 | `proxy_settings_group` (params `'proxy_settings'`) | S3, E4–E8 | `proxy_settings` on next-source — **see F4** |
+
+### INLINE_AUTHORIZE_SIGNATURES — 6 entries
+
+**One written reason covers all six, and it is structural.** These record what the *inline, untrusted* authorize path executes — the path taken when nginx did not authorize the tune. The Go relay never executes `authorize_stream` in any shape: with nginx it reads the seven `X-Relay-*` headers the hop set; without nginx it asks Django over `POST /_dispatcharr/authorize-internal` (D5 exception 2, spec § The contract's dev-fallback section, owned by 2c-8). Every query below therefore runs **in the Django process** in both shapes, and in neither shape does a Go process issue it.
+
+| # | Signature | Runs in Django because | Relay-side equivalent |
+|---|---|---|---|
+| I1 | `inline_proxy_settings_group` | `TSConfig.get_proxy_settings()` reached from the untrusted tune's own channel setup | `proxy_settings` on next-source (G7) |
+| I2 | `inline_network_access_settings` | `network_access_allowed()` runs on **every** `authorize_stream` call, before the ACL check and regardless of principal | Nothing — the ACL decision arrives as the hop's 2xx/4xx, or as the authorize-internal response |
+| I3 | `inline_channel_by_uuid` | `get_stream_object` twice: once inside `resolve_authorization`'s inline branch, once at `stream_ts`'s own call | Identifier passthrough (G1) |
+| I4 | `inline_channel_override_fk_accessor` | `channel.get_stream_profile()`'s FK accessor on the inline path | `stream_profile` on next-source (G2) |
+| I5 | `inline_stream_profile_by_id` | `StreamProfile.objects.get` inside the same call | `stream_profile` on next-source (G3) |
+| I6 | `inline_default_output_format` (params `'stream_settings'`) | `resolve_output_format`'s last-resort `CoreSettings.get_default_output_format()`, reached because `decision.trusted` is False | `X-Relay-Output-Format` on a trusted tune; the authorize-internal 200's own header in the dev shape (E9) |
+
+### Findings — four, one of them a genuine contract gap
+
+These are reported, not smoothed over. F1 is a real gap in the contract; F2 is a gap in the spec's PR table; F3 and F4 are implementation risks that need an owner, not a contract change.
+
+#### F1 — **the contract cannot tell the Go relay that a Stream Profile is Redirect.** (S11, S12)
+
+`StreamProfile.is_redirect()` is `self.locked and self.name == REDIRECT_PROFILE_NAME` (`core/models.py:132-135`) — a name comparison. The next-source `source` dict carries `stream_profile` as `{id, command, args}` (`apps/proxy/next_source.py:512-518`) and a boolean `transcode` computed as `not (is_proxy() or is_redirect())` (`:504`, sent at `:511`). **`transcode` collapses Proxy and Redirect onto the same `False`**, and both locked profiles carry empty `command` and `parameters` (stated in `core/models.py:139-144`'s own comment), so there is no field on the wire — and no inference from the fields that are — by which a Go relay can distinguish the two.
+
+It has to. `apps/proxy/live_proxy/views.py:462-467` serves a 302 for Redirect, except for an internal principal (the DVR), where it forces the Proxy path so the `X-Dispatcharr-Internal` header is never re-sent to a third-party provider — a deliberate Phase 1 PR 5 fix against handing a provider a deployment credential. `:468-480` then validates the redirect URL over HTTP. Neither behaviour is reachable without the answer.
+
+**Proposed fix, minimal and additive:** one key on the existing `stream_profile` object,
+
+```python
+"kind": "redirect" if stream_profile.is_redirect() else ("proxy" if stream_profile.is_proxy() else "transcode"),
+```
+
+at each of the three construction sites (`next_source.py:512-518`, `:574-580`, `:621-627`) plus the corresponding serializer field. `transcode` stays exactly as it is — D5 forbids changing what already exists.
+
+**Not implemented in this PR** (Global Constraint 4: no Python edits here). Recorded as a spec amendment in Task 1, with the recommended owner being **the PR that first serves Redirect** — which brings us to F2.
+
+#### F2 — **no PR in the nine owns the Redirect Stream Profile architecture.**
+
+Walking the table at spec line 1783: 2c-2 is "the Proxy stream-profile architecture only (no ffmpeg spawn yet)"; 2c-3 is fan-out; 2c-4 is ffmpeg; 2c-5 is failover and the control-plane client; 2c-6 is fMP4; 2c-7 is Output Profiles; 2c-8 is the remaining control routes, the drain and the dev fallback; 2c-9 is the coverage ratchet. **Redirect — one of the three architectures D5 names explicitly — appears in none of them.** The parity matrix does not compensate: Redirect is mentioned in exactly one row (row 29, and only as a surface on which the buffering detector is inert), so there is no `owed:` marker that would have caught the omission either.
+
+**Recommended assignment: 2c-5.** Redirect's work is a 302, an HTTP probe of the provider URL (`validate_stream_url`), and a fallback across the channel-start-cached alternates when the probe fails — which is the same cached candidate list 2c-5 already owns for the degraded next-source fallback. The internal-principal override rides along with it. Folding F1's one-key Python change into 2c-5 as its single Django edit is preferable to re-opening 2b for one key after its milestone was recorded, but that is the user's call and this plan records it as a recommendation.
+
+#### F3 — **`shlex.split` has no standard-library equivalent in Go, and the contract is asymmetric about it.**
+
+`output_profiles[*].argv` arrives **pre-split**: Django runs `OutputProfile.build_command()` (`core/models.py:200-203`, a `shlex_split`) and puts the finished list on the wire (`next_source.py:747`). `stream_profile.args` arrives **raw** — the `parameters` text field, unsplit (`next_source.py:515`). So the Go relay must implement POSIX shell word-splitting itself, plus the three placeholder substitutions `{streamUrl}`, `{userAgent}`, `{channelId}` (`core/models.py:147-160`), for the one argv that spawns ffmpeg.
+
+Constraint 3 forbids a library, so this is roughly sixty lines of Go plus a differential test against Python's `shlex.split` over a corpus of real `parameters` values. **Owner: 2c-4**, which ports the spawn path. The alternative — extending the contract with a pre-split `stream_profile.argv_template` the way `output_profiles` already is — would be more consistent and is worth considering there; this plan does not decide it.
+
+#### F4 — **`proxy_settings` carries the stored group, and every default lives in Python class attributes the wire never carries.**
+
+`CoreSettings.get_proxy_settings()` returns the settings group as stored. When a key is absent, Python falls through to `ConfigHelper.get(name, default)`, which is `getattr(Config, name, default)` — so the effective value comes from `BaseConfig`'s class attributes (`apps/proxy/config.py:6-19`), which are never serialised. A Go relay receiving `proxy_settings` therefore needs its own copy of every default, and the two copies can drift silently: a default changed in `apps/proxy/config.py` reaches the Python relay immediately and the Go relay never.
+
+This is exactly the trap CLAUDE.md already records for `BUFFER_CHUNK_SIZE`, where an unreachable `5644` literal in `buffer.py` makes the effective chunk a quarter of what the call site looks like. **Owners: 2c-2 and 2c-4**, as they consume settings. The mitigation is cheap and this PR sets the precedent in Task 5: every Go constant mirroring a Python literal carries the `file:line` of its source in a comment and is pinned by a test that names the same location, so a drift review has something to grep for.
+
+---
+
+## File Structure
+
+```
+relay/                                     NEW — the Go module
+├── go.mod                                 module github.com/D10Scot/Dispatcharr/relay, go 1.27.1
+├── main.go                                wiring only: config → server → ListenAndServe
+├── config/
+│   ├── config.go                          env + /data/jwt, the port, the dev flag
+│   └── config_test.go
+├── control/
+│   ├── token.go                           the three HMAC primitives (§ The contract)
+│   └── token_test.go                      Python-produced vectors
+├── httpapi/
+│   ├── server.go                          the mux, /healthz, /readyz, the dev-gated stub
+│   └── server_test.go
+├── buffer/
+│   ├── buffer.go                          the depth constants and their derivation (R2)
+│   └── buffer_test.go
+├── channel/
+│   └── channel.go                         documented stub — 2c-2 fills it
+└── ffmpeg/
+    └── ffmpeg.go                          documented stub — 2c-4 fills it
+
+.golangci.yml                              NEW — linter config, v2 schema
+.github/workflows/go-tests.yml             NEW — changes / build / lint / Go result
+scripts/check_go_stdlib_only.sh            NEW — the go.sum-empty backstop
+docker/supervisord.d/relay-go.conf         NEW — priority 205, shared with relay-uwsgi (R2/GC8)
+.claude/hooks/run-go-checks.sh             NEW — PostToolUse on relay/**/*.go
+
+docker/Dockerfile                          EDIT — a cross-compiling relay-builder stage
+docker/supervisord/all.conf                EDIT — one path on the include list
+docker/supervisord/all-dev.conf            EDIT — one path on the include list
+.gitattributes                             EDIT — one line, *.go text
+.claude/settings.json                      EDIT — a second PostToolUse hook entry
+.claude/hooks/pre-commit-tests.sh          EDIT — a Go section in the commit gate
+CLAUDE.md                                  EDIT — § Commands, § Architecture, § Test hooks, § Testing
+docs/superpowers/specs/2026-09-09-…-design.md   EDIT — Amendment A1 (F1/F2), Done log row
+```
+
+Nothing under `apps/`, `core/`, `dispatcharr/`, `frontend/`, `e2e/` or `metrics/` is touched.
+
+---
+
+## Task 1: The allowlist reconciliation and the spec amendment
+
+**No Go in this task.** Spec line 1795 puts this "**before** its first line of Go", and line 1738 says why: the no-Postgres-driver invariant is conditional on it.
+
+- [ ] **Step 1: Re-measure the allowlist against the branch tip**
+
+  The table above was measured at `0c1654d8`. If anything landed on `main` between then and your branch point, the counts move.
+
+  ```bash
+  cd <your worktree> && python3 -c "
+  import ast
+  t = ast.parse(open('apps/proxy/live_proxy/tests/zero_orm_allowlist.py').read())
+  for n in t.body:
+      if isinstance(n, ast.Assign) and isinstance(n.value, ast.Tuple):
+          print(n.targets[0].id, len(n.value.elts))
+  "
+  ```
+
+  Expected: `SITES 12`, `EDGES 11`, `SQL_SIGNATURES 7`, `INLINE_AUTHORIZE_SIGNATURES 6`. **If any count differs, stop and report** — a new entry has no row in the table above and reconciling it is analysis, not transcription.
+
+- [ ] **Step 2: Spot-check four contract citations against the tree**
+
+  Not all thirty-six — four, chosen because they are the ones whose drift would be silent:
+
+  ```bash
+  cd <your worktree>
+  sed -n '699p'     apps/proxy/next_source.py       # proxy_settings
+  sed -n '748p'     apps/proxy/next_source.py       # output_profiles
+  sed -n '111,113p' apps/proxy/relay_serializers.py # stream_name / m3u_profile_name, required=False
+  sed -n '353p'     apps/proxy/authorize_views.py   # X-Relay-Output-Format
+  ```
+
+  Each must show the assignment the table cites. A line that has moved is fine — update the table's line number. A line that says something *else* is a finding: stop and report.
+
+- [ ] **Step 3: Write the reconciliation into the PR description**
+
+  Copy the four tables above — SITES, EDGES, SQL_SIGNATURES, INLINE_AUTHORIZE_SIGNATURES — and the Findings section verbatim into the PR description under a heading `## Allowlist reconciliation (spec line 1795 precondition)`. Do not summarise them. The spec makes the reviewer the gate, and a reviewer cannot audit a summary.
+
+- [ ] **Step 4: Amend the spec with F1 and F2**
+
+  Per the standing decision that a spec found wrong at a step is amended in the same PR. Append to § Stage 2c, immediately after the `The nine PRs` table:
+
+  ```markdown
+  #### Amendment A1 (2c-1) — Redirect has no contract field and no owning PR
+
+  Found while clearing 2c-1's allowlist precondition. Two defects in this
+  section, one in the contract and one in the table above.
+
+  **A1.1 — the contract cannot express "this profile is Redirect."**
+  `StreamProfile.is_redirect()` is a name comparison (`core/models.py:132-135`).
+  The next-source `source` dict carries `stream_profile` as `{id, command, args}`
+  (`apps/proxy/next_source.py:512-518`) and `transcode`, which is
+  `not (is_proxy() or is_redirect())` (`:504`, sent at `:511`) — so Proxy and
+  Redirect are both `transcode: false` and both carry empty `command`/`parameters`
+  (`core/models.py:139-144`). A Go relay therefore cannot decide between a 302 and
+  the Proxy path, nor apply the internal-principal override that forces a Redirect
+  channel through Proxy so `X-Dispatcharr-Internal` is never re-sent to a provider
+  (`apps/proxy/live_proxy/views.py:462-467`, a deliberate Phase 1 PR 5 fix).
+
+  Fix: one additive key on the existing `stream_profile` object,
+  `"kind": "redirect" | "proxy" | "transcode"`, at all three construction sites
+  and on the serializer. `transcode` is unchanged — D5 forbids altering what
+  exists. This is a Python change and does not land in 2c-1, whose gate is
+  Go-and-infrastructure only.
+
+  **A1.2 — no PR owns the Redirect architecture.** 2c-2 is Proxy-only; 2c-4
+  through 2c-8 name ffmpeg, failover, fMP4, Output Profiles, and control/drain.
+  Redirect appears in no row. The parity matrix does not compensate: Redirect
+  appears only in row 29, and only as a surface the buffering detector ignores,
+  so no `owed:` marker would have caught this.
+
+  Assignment: **2c-5** takes both. Redirect is a 302 plus an HTTP probe of the
+  provider URL plus a fall-through to the channel-start-cached alternates — the
+  same cached candidate list 2c-5 already owns for the degraded next-source
+  fallback — and A1.1's one-key Python change lands with it rather than
+  re-opening stage 2b after its milestone was recorded.
+
+  **Two further risks, recorded without a spec change because neither needs one.**
+  `shlex.split` has no Go stdlib equivalent and the contract is asymmetric about
+  it: `output_profiles[*].argv` is pre-split by Django (`next_source.py:747`)
+  while `stream_profile.args` is the raw `parameters` text (`:515`), so 2c-4 must
+  implement POSIX word splitting plus the three `{streamUrl}`/`{userAgent}`/
+  `{channelId}` substitutions (`core/models.py:147-160`) under the no-dependencies
+  rule. And `proxy_settings` carries only the *stored* settings group — every
+  default lives in `BaseConfig`'s class attributes (`apps/proxy/config.py:6-19`)
+  and never reaches the wire, so 2c-2 and 2c-4 will hold a second copy of each
+  that can drift silently against the first.
+  ```
+
+  Add a row to the spec's § Done log table for this PR.
+
+- [ ] **Step 5: Commit**
+
+  ```bash
+  cd <your worktree> && git add docs/superpowers/specs/2026-09-09-phase2-go-relay-design.md
+  ```
+
+  Then, as a separate Bash call, commit with `-F` and a message file.
+
+---
+
+## Task 2: The module, the linter config, and the stdlib-only guard
+
+- [ ] **Step 1: Create the module**
+
+  `relay/go.mod`:
+
+  ```
+  module github.com/D10Scot/Dispatcharr/relay
+
+  go 1.27.1
+  ```
+
+  **Re-resolve the version first** and use whatever is current:
+
+  ```bash
+  curl -sS --max-time 20 'https://go.dev/dl/?mode=json' \
+    | python3 -c "import sys,json; print(json.load(sys.stdin)[0]['version'])"
+  go version
+  ```
+
+  On 2026-09-13 both reported `go1.27.1`, and `golangci-lint` 2.13.2 (built with go1.27.0) is installed. If the toolchain on the host is older than `go.mod`'s directive, `go build` refuses with a clear message — that is the right failure, not a reason to lower the directive.
+
+- [ ] **Step 2: The linter config**
+
+  `.golangci.yml` at the **repo root** (not inside `relay/`), so the same file governs any future Go anywhere in the tree:
+
+  ```yaml
+  # golangci-lint configuration, v2 schema. Zero findings is a ratchet, the
+  # same rule as zizmor's: touching a Go file means leaving it clean. The
+  # PostToolUse hook (.claude/hooks/run-go-checks.sh) and go-tests.yml's lint
+  # job run the same version against the same config, so local and CI cannot
+  # disagree about what passes.
+  version: "2"
+
+  run:
+    timeout: 5m
+
+  linters:
+    default: standard
+    enable:
+      - bodyclose      # a leaked response body is a leaked fd; the relay is long-lived
+      - copyloopvar
+      - errorlint      # %w and errors.Is/As, which Global Constraint 5's rule needs
+      - gosec
+      - misspell
+      - nilerr
+      - noctx          # every outbound request carries a deadline (§ The contract's timeouts)
+      - revive
+      - unconvert
+    exclusions:
+      generated: lax
+      rules:
+        - path: _test\.go
+          linters:
+            - gosec
+
+  formatters:
+    enable:
+      - gofmt
+      - goimports
+  ```
+
+  Verify the schema before committing — this is the one file whose syntax errors are silent until CI:
+
+  ```bash
+  cd <your worktree> && golangci-lint config verify --config .golangci.yml
+  ```
+
+  Exit 0 and no output means it validated.
+
+- [ ] **Step 3: The stdlib-only guard**
+
+  `scripts/check_go_stdlib_only.sh`:
+
+  ```bash
+  #!/usr/bin/env bash
+  # The mechanical half of the phase's "no third-party Go dependencies" rule
+  # (spec § Stage 2c, "Third-party Go dependencies: none", line 1731).
+  #
+  # Two checks, because either alone has a hole. `go list -m all` prints the
+  # module graph, which is exactly one line in a zero-dependency module -- it
+  # catches a `require` that `go mod tidy` has resolved. The go.sum check
+  # catches the state between adding an import and tidying, where go.sum
+  # exists and the graph has not been rewritten yet.
+  #
+  # Also the backstop the spec names for 2c-1's un-mechanised PR-description
+  # precondition: a Postgres driver or a Redis client is a third-party module,
+  # so it fails here regardless of whether anyone read the punch list.
+  set -euo pipefail
+
+  MODULE_ROOT="${1:-relay}"
+  cd "$MODULE_ROOT"
+
+  EXPECTED="github.com/D10Scot/Dispatcharr/relay"
+
+  if [ -s go.sum ]; then
+    echo "FAILED: ${MODULE_ROOT}/go.sum is non-empty. This module is stdlib-only;" >&2
+    echo "        a go.sum means a third-party dependency was added." >&2
+    echo "        Spec § Stage 2c: 'This is a rule to defend, not an accident.'" >&2
+    exit 1
+  fi
+
+  GRAPH="$(go list -m all)"
+  if [ "$GRAPH" != "$EXPECTED" ]; then
+    echo "FAILED: the module graph is not stdlib-only." >&2
+    echo "        expected exactly: ${EXPECTED}" >&2
+    echo "        got:" >&2
+    printf '%s\n' "$GRAPH" | sed 's/^/          /' >&2
+    exit 1
+  fi
+
+  echo "OK: ${MODULE_ROOT} depends on the standard library only."
+  ```
+
+  `chmod +x scripts/check_go_stdlib_only.sh`.
+
+- [ ] **Step 4: Line endings**
+
+  Append to `.gitattributes`, beside the existing `*.py text` group:
+
+  ```
+  *.go text
+  ```
+
+- [ ] **Step 5: Break-check the guard, both halves**
+
+  Both must redden, and the message must name the mechanism (shape 6):
+
+  ```bash
+  cd <your worktree>
+  # Half 1: a go.sum appears.
+  echo "example.com/x v1.0.0 h1:deadbeef=" > relay/go.sum
+  scripts/check_go_stdlib_only.sh relay    # expect: exit 1, "go.sum is non-empty"
+  rm relay/go.sum
+
+  # Half 2: a require line that tidy has resolved. Do this by hand rather than
+  # with `go get`, which would reach the network and write a real go.sum.
+  printf '\nrequire example.com/x v1.0.0\n' >> relay/go.mod
+  scripts/check_go_stdlib_only.sh relay    # expect: exit 1, "module graph is not stdlib-only"
+  git checkout relay/go.mod
+  scripts/check_go_stdlib_only.sh relay    # expect: exit 0, "OK: ..."
+  ```
+
+  **Half 2 is the one that can fool you.** With an unresolvable `require` and no network, `go list -m all` may fail rather than print a second module — the script still exits non-zero, so the check still blocks, but for the wrong reason. Read the message: if it is a Go resolution error rather than this script's "module graph is not stdlib-only", note it in the PR description as a known weakness of the second half and rely on the first. Do not silently accept a red as a pass.
+
+- [ ] **Step 6: Commit**
+
+---
+
+## Task 3: `relay/config` — the environment and `/data/jwt`
+
+**The finding this package exists for.** `docker/entrypoint.sh:138` reads the secret as `export DJANGO_SECRET_KEY="$(tr -d '\r\n' < "$SECRET_FILE")"`. `tr -d` **deletes every occurrence** of `\r` and `\n` anywhere in the file, not just trailing whitespace, and it deletes nothing else. `strings.TrimSpace` — the obvious Go reflex — strips spaces and tabs as well, and only at the ends. On a file written by a Windows editor, or one with any interior newline, the two produce **different strings**, hence different HMACs, hence a 403 on every internal call with no error anywhere that names the cause. The exact semantics are worth a package and a test.
+
+- [ ] **Step 1: Write `relay/config/config.go`**
+
+  ```go
+  // Package config turns the deployment's environment into the handful of
+  // values the relay needs at startup. It is deliberately small and has no
+  // dependencies on the rest of the module: everything here is read once, in
+  // main, before anything else exists.
+  package config
+
+  import (
+  	"errors"
+  	"fmt"
+  	"os"
+  	"strconv"
+  	"strings"
+  )
+
+  const (
+  	// DefaultPort is the port the Go relay binds. Spec § Stage 2c: 5658,
+  	// confirmed free against the tree (nothing else in the repo names it).
+  	DefaultPort = 5658
+
+  	// DefaultSecretFile is where docker/entrypoint.sh puts the deployment's
+  	// Django SECRET_KEY (entrypoint.sh:103, SECRET_FILE="/data/jwt"). Every
+  	// role reads the same file from the same mounted volume; the api/all role
+  	// is the only one that creates it (entrypoint.sh:105-137), and the
+  	// entrypoint blocks until it exists before exec'ing supervisord, so by
+  	// the time this process starts the file is there.
+  	DefaultSecretFile = "/data/jwt"
+  )
+
+  // ErrEmptySecret is returned when the secret file exists but holds nothing
+  // usable. A named error rather than a message, so callers can test for the
+  // condition instead of matching a substring.
+  var ErrEmptySecret = errors.New("secret file is empty")
+
+  // Config is everything main needs. Every field is resolved before any
+  // goroutine starts, so nothing here is read concurrently.
+  type Config struct {
+  	// Port is the TCP port to bind, from DISPATCHARR_RELAY_GO_PORT.
+  	Port int
+
+  	// Secret is the deployment's Django SECRET_KEY, the HMAC key for every
+  	// token in package control.
+  	Secret string
+
+  	// DevRoutes gates every route that is not /healthz or /readyz. This PR
+  	// ships no such route beyond a stub, and nginx does not route to this
+  	// process until stage 2d, so the flag is the second of two reasons this
+  	// PR is inert in a production deployment.
+  	DevRoutes bool
+  }
+
+  // Load reads the environment and the secret file. It returns an error rather
+  // than falling back to a generated secret: a relay running on a secret no
+  // other role shares would answer every internal call with a 403 and nothing
+  // would say why.
+  func Load() (Config, error) {
+  	port, err := intFromEnv("DISPATCHARR_RELAY_GO_PORT", DefaultPort)
+  	if err != nil {
+  		return Config{}, err
+  	}
+
+  	path := os.Getenv("DISPATCHARR_SECRET_FILE")
+  	if path == "" {
+  		path = DefaultSecretFile
+  	}
+  	secret, err := ReadSecretFile(path)
+  	if err != nil {
+  		return Config{}, err
+  	}
+
+  	return Config{Port: port, Secret: secret, DevRoutes: devRoutes()}, nil
+  }
+
+  // ReadSecretFile reads path and strips exactly what docker/entrypoint.sh:138
+  // strips: `tr -d '\r\n'` deletes every CR and every LF anywhere in the file
+  // and nothing else. strings.TrimSpace is NOT equivalent -- it also removes
+  // spaces and tabs, and only at the ends -- and the difference is a different
+  // HMAC key, which surfaces as a 403 on every internal call with no error
+  // naming the cause.
+  func ReadSecretFile(path string) (string, error) {
+  	raw, err := os.ReadFile(path)
+  	if err != nil {
+  		return "", fmt.Errorf("reading secret file %s: %w", path, err)
+  	}
+  	secret := strings.NewReplacer("\r", "", "\n", "").Replace(string(raw))
+  	if secret == "" {
+  		return "", fmt.Errorf("%s: %w", path, ErrEmptySecret)
+  	}
+  	return secret, nil
+  }
+
+  // devRoutes reports whether routes beyond the health endpoints are served.
+  // DISPATCHARR_RELAY_GO_DEV_ROUTES wins when set, so an operator can turn the
+  // routes off in a dev container as well as on elsewhere; otherwise it follows
+  // DISPATCHARR_ENV, which is how the rest of the deployment decides dev-ness
+  // (docker/entrypoint.sh:491 selects the all-dev supervisord rung from it).
+  func devRoutes() bool {
+  	if raw := os.Getenv("DISPATCHARR_RELAY_GO_DEV_ROUTES"); raw != "" {
+  		enabled, err := strconv.ParseBool(raw)
+  		if err != nil {
+  			return false
+  		}
+  		return enabled
+  	}
+  	return os.Getenv("DISPATCHARR_ENV") == "dev"
+  }
+
+  func intFromEnv(name string, fallback int) (int, error) {
+  	raw := os.Getenv(name)
+  	if raw == "" {
+  		return fallback, nil
+  	}
+  	value, err := strconv.Atoi(raw)
+  	if err != nil {
+  		return 0, fmt.Errorf("%s=%q is not an integer", name, raw)
+  	}
+  	if value < 1 || value > 65535 {
+  		return 0, fmt.Errorf("%s=%d is not a TCP port", name, value)
+  	}
+  	return value, nil
+  }
+  ```
+
+- [ ] **Step 2: Write `relay/config/config_test.go`**
+
+  Note what each test supplies: the override tests use values the default could never produce (shape 2), and the secret test uses a file the naive implementation would read differently (shape 3 — it is what makes the test capable of failing at all).
+
+  ```go
+  package config
+
+  import (
+  	"errors"
+  	"os"
+  	"path/filepath"
+  	"testing"
+  )
+
+  func TestPortDefaultsTo5658(t *testing.T) {
+  	t.Setenv("DISPATCHARR_RELAY_GO_PORT", "")
+  	got, err := intFromEnv("DISPATCHARR_RELAY_GO_PORT", DefaultPort)
+  	if err != nil {
+  		t.Fatalf("unexpected error: %v", err)
+  	}
+  	if got != 5658 {
+  		t.Fatalf("default port = %d, want 5658", got)
+  	}
+  }
+
+  func TestPortReadsTheEnvironment(t *testing.T) {
+  	// 5999 rather than 5658: a value the default cannot produce, so this
+  	// test fails if the environment read is deleted.
+  	t.Setenv("DISPATCHARR_RELAY_GO_PORT", "5999")
+  	got, err := intFromEnv("DISPATCHARR_RELAY_GO_PORT", DefaultPort)
+  	if err != nil {
+  		t.Fatalf("unexpected error: %v", err)
+  	}
+  	if got != 5999 {
+  		t.Fatalf("port = %d, want 5999", got)
+  	}
+  }
+
+  func TestPortRejectsGarbageRatherThanFallingBack(t *testing.T) {
+  	t.Setenv("DISPATCHARR_RELAY_GO_PORT", "not-a-port")
+  	if _, err := intFromEnv("DISPATCHARR_RELAY_GO_PORT", DefaultPort); err == nil {
+  		t.Fatal("a non-numeric port was accepted; it must fail loudly, not fall back")
+  	}
+  }
+
+  func TestPortRejectsOutOfRange(t *testing.T) {
+  	t.Setenv("DISPATCHARR_RELAY_GO_PORT", "70000")
+  	if _, err := intFromEnv("DISPATCHARR_RELAY_GO_PORT", DefaultPort); err == nil {
+  		t.Fatal("70000 was accepted as a TCP port")
+  	}
+  }
+
+  // The reason package config exists. docker/entrypoint.sh:138 uses
+  // `tr -d '\r\n'`, which deletes every CR and LF anywhere in the file and
+  // nothing else. This fixture has an interior CRLF, an interior LF and
+  // surrounding spaces, so:
+  //
+  //	tr -d '\r\n'        -> "  abc def  "   (what Django's SECRET_KEY becomes)
+  //	strings.TrimSpace   -> "abc\r\ndef"    (a different HMAC key)
+  //	strings.TrimRight   -> "  abc\r\ndef"  (a third one)
+  //
+  // Only the first is correct, and the three differ in the fixture below,
+  // which is what makes this test able to fail.
+  func TestReadSecretFileMatchesEntrypointStripping(t *testing.T) {
+  	dir := t.TempDir()
+  	path := filepath.Join(dir, "jwt")
+  	if err := os.WriteFile(path, []byte("  abc\r\ndef  \n"), 0o600); err != nil {
+  		t.Fatalf("writing fixture: %v", err)
+  	}
+
+  	got, err := ReadSecretFile(path)
+  	if err != nil {
+  		t.Fatalf("unexpected error: %v", err)
+  	}
+  	const want = "  abc def  "
+  	if got != want {
+  		t.Fatalf("secret = %q, want %q", got, want)
+  	}
+  }
+
+  func TestReadSecretFileRejectsAnEmptyFile(t *testing.T) {
+  	dir := t.TempDir()
+  	path := filepath.Join(dir, "jwt")
+  	if err := os.WriteFile(path, []byte("\n\r\n"), 0o600); err != nil {
+  		t.Fatalf("writing fixture: %v", err)
+  	}
+  	_, err := ReadSecretFile(path)
+  	if !errors.Is(err, ErrEmptySecret) {
+  		t.Fatalf("error = %v, want ErrEmptySecret", err)
+  	}
+  }
+
+  func TestReadSecretFileReportsAMissingFile(t *testing.T) {
+  	_, err := ReadSecretFile(filepath.Join(t.TempDir(), "absent"))
+  	if !errors.Is(err, os.ErrNotExist) {
+  		t.Fatalf("error = %v, want os.ErrNotExist", err)
+  	}
+  }
+
+  func TestDevRoutesFollowDispatcharrEnv(t *testing.T) {
+  	t.Setenv("DISPATCHARR_RELAY_GO_DEV_ROUTES", "")
+  	t.Setenv("DISPATCHARR_ENV", "dev")
+  	if !devRoutes() {
+  		t.Fatal("DISPATCHARR_ENV=dev must enable the dev routes")
+  	}
+  	t.Setenv("DISPATCHARR_ENV", "aio")
+  	if devRoutes() {
+  		t.Fatal("DISPATCHARR_ENV=aio must leave the dev routes off")
+  	}
+  }
+
+  func TestDevRoutesOverrideWinsBothWays(t *testing.T) {
+  	t.Setenv("DISPATCHARR_ENV", "aio")
+  	t.Setenv("DISPATCHARR_RELAY_GO_DEV_ROUTES", "1")
+  	if !devRoutes() {
+  		t.Fatal("an explicit 1 must enable the routes outside dev")
+  	}
+  	t.Setenv("DISPATCHARR_ENV", "dev")
+  	t.Setenv("DISPATCHARR_RELAY_GO_DEV_ROUTES", "0")
+  	if devRoutes() {
+  		t.Fatal("an explicit 0 must disable the routes inside dev")
+  	}
+  }
+  ```
+
+  Note the two `devRoutes` tests do not call `t.Parallel()` and must not: `t.Setenv` panics if they do, which is the toolchain refusing an unsafe test rather than a limitation to work around (Global Constraint 10).
+
+- [ ] **Step 3: Break-check, three edits**
+
+  Each must redden, and each failure message must name the mechanism (shape 6):
+
+  1. Replace `strings.NewReplacer(...).Replace(...)` with `strings.TrimSpace(string(raw))`. Expect `TestReadSecretFileMatchesEntrypointStripping` to fail with `secret = "abc\r\ndef", want "  abc def  "`. Revert.
+  2. Change `intFromEnv`'s `if raw == ""` branch to `return fallback, nil` unconditionally (i.e. ignore the environment). Expect `TestPortReadsTheEnvironment` to fail with `port = 5658, want 5999`. Revert.
+  3. Delete the `DISPATCHARR_RELAY_GO_DEV_ROUTES` branch from `devRoutes`. Expect `TestDevRoutesOverrideWinsBothWays` to fail on its first assertion. Revert.
+
+- [ ] **Step 4: Run the four checks and commit**
+
+---
+
+## Task 4: `relay/control` — the HMAC contract
+
+Spec § The contract (lines 540-548) gives the exact byte layout, and states the consequence of getting it wrong: every internal call 403s. This is the highest-consequence forty lines in the PR, which is why it is here and not deferred to 2c-5 with the HTTP client that uses it.
+
+- [ ] **Step 1: Generate the parity vectors from Python, on your own tree**
+
+  Do not trust this plan's literals — regenerate them, because they are the test's entire oracle. The generator imports Django's own `internal_auth` with a fixed key and prints what it produces. It needs Django, so it runs inside the test container.
+
+  Write `/tmp/vectors.py` (outside the repo — this file is not committed):
+
+  ```python
+  import django, sys
+  from django.conf import settings
+  settings.configure(SECRET_KEY="phase2c1-test-secret", INSTALLED_APPS=[], DATABASES={})
+  django.setup()
+  sys.path.insert(0, "/repo")
+  from apps.proxy import internal_auth as ia
+  print("relay_trust_token  =", ia.relay_trust_token())
+  print("internal_principal =", ia.internal_principal_token())
+  for method, path, body, ts in [
+      ("POST", "/api/relay/channels/abc/next-source", b'{"reason":"init"}', 1789000000),
+      ("GET",  "/proxy/relay/channels?clients=all", b"", 1789000000),
+      ("POST", "/api/relay/events", b"", 1789000000),
+  ]:
+      tok = ia.internal_request_token(method, path, body, ts)
+      print(f"{method} {path} body={body!r}")
+      print(f"    header = v1.{ts}.{tok}")
+  ```
+
+  ```bash
+  cd <your worktree>
+  docker inspect dispatcharr-testrunner --format '{{range .Mounts}}{{.Source}}{{"\n"}}{{end}}'
+  ```
+
+  **The mount must be your worktree.** The container is shared across agents and is bind-mounted at exactly one tree; if it points somewhere else, re-point it with `.claude/hooks/start-test-container.sh` before going further, and confirm nobody else is using it (`docker ps`, and check file mtimes in the tree it currently holds). Then:
+
+  ```bash
+  docker cp /tmp/vectors.py dispatcharr-testrunner:/tmp/vectors.py
+  docker exec dispatcharr-testrunner /dispatcharrpy/bin/python /tmp/vectors.py
+  docker exec dispatcharr-testrunner rm -f /tmp/vectors.py
+  ```
+
+  On 2026-09-13 against `0c1654d8` this printed:
+
+  ```
+  relay_trust_token  = 2bb01b0c4f053b1787d3356fb836282b162002848523b130103c33f9cf7d901c
+  internal_principal = 19d4b08667108eb1a38fa11d1bbe7646cb90bc017aad605b302add137818ae7a
+  POST /api/relay/channels/abc/next-source body=b'{"reason":"init"}'
+      header = v1.1789000000.5ce39464af1f52fac92ab6dd8101b289c2b9acce93d392216ac0dbcfa53a1fae
+  GET /proxy/relay/channels?clients=all body=b''
+      header = v1.1789000000.16c32b6499ba30786464bfb130d785fbc3a8b817c7cc5a0e0d73316a60fd702c
+  POST /api/relay/events body=b''
+      header = v1.1789000000.6d24abde774fa01f0c94981f04c77f0b714398dffc379a09c580ac5e00c816d1
+  ```
+
+  **If your output differs, your output governs** — and report it, because `internal_auth.py` changing shape between `0c1654d8` and your branch point would be news.
+
+- [ ] **Step 2: Write `relay/control/token.go`**
+
+  ```go
+  // Package control speaks the two internal HTTP contracts: the /api/relay/...
+  // calls the relay makes to Django, and the /proxy/relay/... calls Django
+  // makes to the relay. At 2c-1 it holds only the tokens both directions
+  // authenticate with; the HTTP client and server arrive in 2c-5 and 2c-8.
+  //
+  // The wire contract is apps/proxy/internal_auth.py, read in full. Three
+  // context-separated HMACs of the deployment's Django SECRET_KEY:
+  //
+  //	X-Dispatcharr-Authorized       HMAC(key, "relay-trust")
+  //	    nginx sets it on every relay-bound location. The relay only ever
+  //	    VERIFIES it; nginx is the producer.
+  //	X-Dispatcharr-Internal         HMAC(key, "internal-principal")
+  //	    "this caller is part of this deployment". Long-lived and shared.
+  //	X-Dispatcharr-Internal-Request v1.<unix_ts>.<hex>
+  //	    binds one request -- method, full path, body, timestamp.
+  package control
+
+  import (
+  	"crypto/hmac"
+  	"crypto/sha256"
+  	"encoding/hex"
+  	"strconv"
+  	"strings"
+  	"time"
+  )
+
+  // Header names, spelled exactly as apps/proxy/internal_auth.py spells them.
+  const (
+  	HeaderAuthorized      = "X-Dispatcharr-Authorized"
+  	HeaderInternal        = "X-Dispatcharr-Internal"
+  	HeaderInternalRequest = "X-Dispatcharr-Internal-Request"
+  )
+
+  // RequestWindow is how far a bound token's timestamp may sit from now, in
+  // EITHER direction: internal_auth.py's check is `abs(now - ts) > 120`, so a
+  // token up to 120s in the future is accepted too. Reproduced, not narrowed --
+  // narrowing it would reject calls a correctly-clocked peer makes.
+  const RequestWindow = 120 * time.Second
+
+  var (
+  	contextRelayTrust        = []byte("relay-trust")
+  	contextInternalPrincipal = []byte("internal-principal")
+  	contextInternalRequest   = []byte("internal-request")
+  )
+
+  func staticToken(secret string, context []byte) string {
+  	mac := hmac.New(sha256.New, []byte(secret))
+  	mac.Write(context)
+  	return hex.EncodeToString(mac.Sum(nil))
+  }
+
+  // RelayTrustToken is the value nginx puts in X-Dispatcharr-Authorized. The
+  // relay derives it only so it can compare, never to send.
+  func RelayTrustToken(secret string) string {
+  	return staticToken(secret, contextRelayTrust)
+  }
+
+  // InternalPrincipalToken is the value this process puts in
+  // X-Dispatcharr-Internal on every call it makes to Django.
+  func InternalPrincipalToken(secret string) string {
+  	return staticToken(secret, contextInternalPrincipal)
+  }
+
+  // IsRelayTrusted reports whether value is this deployment's relay-trust
+  // marker. Constant-time, and it treats an empty or non-ASCII value as a
+  // mismatch rather than an error, matching internal_auth._matches.
+  func IsRelayTrusted(secret, value string) bool {
+  	return matches(value, RelayTrustToken(secret))
+  }
+
+  // IsInternalPrincipal reports whether value is this deployment's static
+  // internal-principal marker.
+  func IsInternalPrincipal(secret, value string) bool {
+  	return matches(value, InternalPrincipalToken(secret))
+  }
+
+  func matches(value, expected string) bool {
+  	if value == "" || expected == "" {
+  		return false
+  	}
+  	// internal_auth._matches rejects non-ASCII before comparing, because
+  	// hmac.compare_digest raises on it. Go's subtle.ConstantTimeCompare does
+  	// not raise, but the two sides must agree on what they reject or a
+  	// malformed header is accepted here and refused there.
+  	for i := 0; i < len(value); i++ {
+  		if value[i] >= 0x80 {
+  			return false
+  		}
+  	}
+  	return hmac.Equal([]byte(value), []byte(expected))
+  }
+
+  // InternalRequestToken is the hex digest half of X-Dispatcharr-Internal-Request.
+  //
+  // The message is five fields joined on a literal '\n' byte
+  // (internal_auth.internal_request_token):
+  //
+  //	"internal-request" \n METHOD \n FULL_PATH \n TIMESTAMP \n hex(sha256(BODY))
+  //
+  // fullPath is the path WITH its query string -- Django verifies against
+  // request.get_full_path(), not request.path, and internal_auth.py's own
+  // comment says why: "the query string is part of what a caller is asking
+  // for, so it has to be part of what the token binds". A client built against
+  // the bare path 403s every call that carries a query.
+  //
+  // An empty body hashes as sha256 of zero bytes, not as an omitted field.
+  func InternalRequestToken(secret, method, fullPath string, body []byte, timestamp int64) string {
+  	bodyDigest := sha256.Sum256(body)
+
+  	var message []byte
+  	message = append(message, contextInternalRequest...)
+  	message = append(message, '\n')
+  	message = append(message, strings.ToUpper(method)...)
+  	message = append(message, '\n')
+  	message = append(message, fullPath...)
+  	message = append(message, '\n')
+  	message = append(message, strconv.FormatInt(timestamp, 10)...)
+  	message = append(message, '\n')
+  	message = append(message, hex.EncodeToString(bodyDigest[:])...)
+
+  	mac := hmac.New(sha256.New, []byte(secret))
+  	mac.Write(message)
+  	return hex.EncodeToString(mac.Sum(nil))
+  }
+
+  // InternalRequestHeader is the full X-Dispatcharr-Internal-Request value:
+  // the literal version prefix "v1", the timestamp, and the digest, joined on
+  // ASCII '.'. The verifier splits on '.' into EXACTLY three parts and rejects
+  // anything else, so no field here may contain one.
+  func InternalRequestHeader(secret, method, fullPath string, body []byte, timestamp int64) string {
+  	return "v1." + strconv.FormatInt(timestamp, 10) + "." +
+  		InternalRequestToken(secret, method, fullPath, body, timestamp)
+  }
+
+  // VerifyInternalRequest checks a header this process received. The four rules
+  // are internal_auth.request_is_internal_request's, in its order: exactly
+  // three dot-separated parts, a literal "v1" first part, a parsable integer
+  // timestamp within RequestWindow in either direction, and a constant-time
+  // digest match.
+  func VerifyInternalRequest(secret, header, method, fullPath string, body []byte, now time.Time) bool {
+  	parts := strings.Split(header, ".")
+  	if len(parts) != 3 || parts[0] != "v1" {
+  		return false
+  	}
+  	timestamp, err := strconv.ParseInt(parts[1], 10, 64)
+  	if err != nil {
+  		return false
+  	}
+  	skew := now.Unix() - timestamp
+  	if skew < 0 {
+  		skew = -skew
+  	}
+  	if skew > int64(RequestWindow/time.Second) {
+  		return false
+  	}
+  	return matches(parts[2], InternalRequestToken(secret, method, fullPath, body, timestamp))
+  }
+  ```
+
+- [ ] **Step 3: Write `relay/control/token_test.go`**
+
+  ```go
+  package control
+
+  import (
+  	"testing"
+  	"time"
+  )
+
+  // Every expected value below was produced by Django, by running
+  // apps/proxy/internal_auth.py under SECRET_KEY="phase2c1-test-secret"
+  // (Task 4 Step 1's generator). They are literals on purpose: a test that
+  // re-derives its expectation by calling the code under test passes with the
+  // context string, the separator, the digest algorithm and the body hash all
+  // wrong, and each of those 403s every internal call in production.
+  const pySecret = "phase2c1-test-secret"
+
+  func TestRelayTrustTokenMatchesPython(t *testing.T) {
+  	const want = "2bb01b0c4f053b1787d3356fb836282b162002848523b130103c33f9cf7d901c"
+  	if got := RelayTrustToken(pySecret); got != want {
+  		t.Fatalf("relay-trust token = %s, want %s", got, want)
+  	}
+  }
+
+  func TestInternalPrincipalTokenMatchesPython(t *testing.T) {
+  	const want = "19d4b08667108eb1a38fa11d1bbe7646cb90bc017aad605b302add137818ae7a"
+  	if got := InternalPrincipalToken(pySecret); got != want {
+  		t.Fatalf("internal-principal token = %s, want %s", got, want)
+  	}
+  }
+
+  // The two contexts must produce different digests. Without this, both
+  // functions could share one context string and every test above still pass
+  // individually -- and a marker leaked through a config file nginx reads
+  // would be replayable as an internal principal, which is the exact reason
+  // internal_auth.py separates them.
+  func TestTheTwoStaticContextsDiffer(t *testing.T) {
+  	if RelayTrustToken(pySecret) == InternalPrincipalToken(pySecret) {
+  		t.Fatal("relay-trust and internal-principal produced the same digest")
+  	}
+  }
+
+  func TestInternalRequestHeaderWithBodyMatchesPython(t *testing.T) {
+  	const want = "v1.1789000000.5ce39464af1f52fac92ab6dd8101b289c2b9acce93d392216ac0dbcfa53a1fae"
+  	got := InternalRequestHeader(pySecret, "POST",
+  		"/api/relay/channels/abc/next-source", []byte(`{"reason":"init"}`), 1789000000)
+  	if got != want {
+  		t.Fatalf("header = %s, want %s", got, want)
+  	}
+  }
+
+  // The query string is inside what the token binds. A Go client built against
+  // the bare path produces a different digest here and 403s every
+  // ?clients=all call -- which is every call apps/proxy/utils.py's
+  // _live_connections makes on every XC handshake.
+  func TestInternalRequestTokenBindsTheQueryString(t *testing.T) {
+  	const want = "16c32b6499ba30786464bfb130d785fbc3a8b817c7cc5a0e0d73316a60fd702c"
+  	got := InternalRequestToken(pySecret, "GET",
+  		"/proxy/relay/channels?clients=all", nil, 1789000000)
+  	if got != want {
+  		t.Fatalf("token = %s, want %s", got, want)
+  	}
+
+  	bare := InternalRequestToken(pySecret, "GET", "/proxy/relay/channels", nil, 1789000000)
+  	if bare == got {
+  		t.Fatal("the query string did not change the digest; it is not being bound")
+  	}
+  }
+
+  // An empty body hashes as sha256 of zero bytes, not as an omitted field.
+  func TestInternalRequestTokenWithEmptyBodyMatchesPython(t *testing.T) {
+  	const want = "6d24abde774fa01f0c94981f04c77f0b714398dffc379a09c580ac5e00c816d1"
+  	got := InternalRequestToken(pySecret, "POST", "/api/relay/events", nil, 1789000000)
+  	if got != want {
+  		t.Fatalf("token = %s, want %s", got, want)
+  	}
+  	if InternalRequestToken(pySecret, "POST", "/api/relay/events", []byte{}, 1789000000) != want {
+  		t.Fatal("nil and empty-slice bodies produced different digests")
+  	}
+  }
+
+  func TestVerifyAcceptsWhatWeProduce(t *testing.T) {
+  	now := time.Unix(1789000000, 0)
+  	header := InternalRequestHeader(pySecret, "POST", "/api/relay/events", []byte("{}"), now.Unix())
+  	if !VerifyInternalRequest(pySecret, header, "POST", "/api/relay/events", []byte("{}"), now) {
+  		t.Fatal("a header this package produced did not verify")
+  	}
+  }
+
+  // The window is symmetric: internal_auth.py checks abs(now - ts) > 120, so a
+  // token 60s in the FUTURE is valid. A one-sided check would reject a peer
+  // whose clock runs slightly fast, intermittently and unreproducibly.
+  func TestVerifyWindowIsSymmetric(t *testing.T) {
+  	issued := int64(1789000000)
+  	header := InternalRequestHeader(pySecret, "GET", "/proxy/relay/channels", nil, issued)
+
+  	for _, tc := range []struct {
+  		name   string
+  		now    int64
+  		accept bool
+  	}{
+  		{"60s in the past", issued + 60, true},
+  		{"60s in the future", issued - 60, true},
+  		{"exactly 120s old", issued + 120, true},
+  		{"121s old", issued + 121, false},
+  		{"121s in the future", issued - 121, false},
+  	} {
+  		got := VerifyInternalRequest(pySecret, header, "GET", "/proxy/relay/channels", nil, time.Unix(tc.now, 0))
+  		if got != tc.accept {
+  			t.Errorf("%s: verify = %v, want %v", tc.name, got, tc.accept)
+  		}
+  	}
+  }
+
+  func TestVerifyRejectsMalformedHeaders(t *testing.T) {
+  	now := time.Unix(1789000000, 0)
+  	valid := InternalRequestHeader(pySecret, "GET", "/x", nil, now.Unix())
+
+  	for _, tc := range []struct{ name, header string }{
+  		{"empty", ""},
+  		{"two parts", "v1.1789000000"},
+  		{"four parts", valid + ".extra"},
+  		{"wrong version", "v2" + valid[2:]},
+  		{"non-numeric timestamp", "v1.abc.deadbeef"},
+  	} {
+  		if VerifyInternalRequest(pySecret, tc.header, "GET", "/x", nil, now) {
+  			t.Errorf("%s: %q verified and must not have", tc.name, tc.header)
+  		}
+  	}
+  }
+
+  func TestVerifyRejectsAnotherDeploymentsSecret(t *testing.T) {
+  	now := time.Unix(1789000000, 0)
+  	header := InternalRequestHeader("some-other-deployment", "GET", "/x", nil, now.Unix())
+  	if VerifyInternalRequest(pySecret, header, "GET", "/x", nil, now) {
+  		t.Fatal("a token signed with a different SECRET_KEY verified")
+  	}
+  }
+  ```
+
+- [ ] **Step 4: Break-check, five edits, each naming its own mechanism**
+
+  This is the most important break-check in the PR; every one of these five is a defect that ships silently and 403s in production.
+
+  | # | Edit | Expected failure |
+  |---|---|---|
+  | 1 | Change `contextInternalRequest` to `[]byte("internal_request")` (underscore) | `TestInternalRequestHeaderWithBodyMatchesPython`: `header = v1.1789000000.<other>, want v1.…5ce39464…` |
+  | 2 | Change the message separator from `'\n'` to `'|'` | the same three vector tests, with three different digests |
+  | 3 | Drop the body digest field from the message entirely | `TestInternalRequestHeaderWithBodyMatchesPython` fails; the two empty-body tests **still pass**, which is exactly why a with-body vector exists |
+  | 4 | Use `fullPath` with the query stripped (`strings.Split(fullPath, "?")[0]`) | `TestInternalRequestTokenBindsTheQueryString` fails on **both** assertions |
+  | 5 | Make the window one-sided: `if now.Unix()-timestamp > 120 \|\| timestamp > now.Unix()` | `TestVerifyWindowIsSymmetric` fails on `60s in the future: verify = false, want true` |
+
+  Run each, read the message, confirm it names the mechanism rather than a build error, revert.
+
+- [ ] **Step 5: Run the four checks and commit**
+
+---
+
+## Task 5: `relay/buffer` — the depth constants
+
+Ruling R2 is the derivation; this task is the code and the tests that keep it honest.
+
+- [ ] **Step 1: Write `relay/buffer/buffer.go`**
+
+  ```go
+  // Package buffer holds the in-memory ring buffer and its chunk fan-out.
+  //
+  // At 2c-1 it holds only the sizing constants, because spec § Stage 2c's
+  // "Buffer depth -- an explicit open item" makes settling them this PR's job:
+  // "2c's first PR must resolve with a real number, not carry forward
+  // unresolved". The ring itself arrives in 2c-2.
+  //
+  // WHY A BOUND AT ALL. The Python relay keeps chunks in Redis under a 60
+  // second TTL and lets Redis's own eviction absorb the memory consequence. D2
+  // deletes that absorber: every live channel's buffered window becomes
+  // resident in this process. A time bound is then not a bound -- at twice the
+  // reference bitrate the same 60 seconds costs twice the memory, and nothing
+  // notices until the process is OOM-killed and every channel dies at once.
+  //
+  // THE DERIVATION, with every input's source:
+  //
+  //	chunk size      255,868 bytes (188 x 1361)  apps/proxy/config.py:15
+  //	retention       60 seconds                  apps/proxy/config.py:71
+  //	join point      5 seconds behind live       apps/proxy/config.py:57
+  //	reference rate  10 Mbit/s                   STATED, not measured -- see below
+  //
+  //	10,000,000 bit/s / 8        = 1,250,000 byte/s
+  //	x 60 s                      = 75,000,000 bytes per channel
+  //	/ 255,868                   = 293.12 chunks
+  //	round up                    = 300 chunks
+  //	x 255,868                   = 76,760,400 bytes ~= 73.2 MiB per channel
+  //
+  // The reference bitrate is an assumption, not a measurement: nothing in the
+  // tree records real channel bitrates (avg_bitrate_kbps is displayed and never
+  // thresholded). 10 Mbit/s is a realistic ceiling for the 1080p MPEG-TS remux
+  // the default FFmpeg profile produces. It sizes the cap; it is not a limit
+  // anything enforces.
+  //
+  // BOTH BOUNDS ARE ENFORCED, whichever binds first, and that is what preserves
+  // parity. Retention stays 60 seconds so a client's view of how far back the
+  // buffer reaches matches Python's. The byte cap sits behind it so memory is
+  // bounded regardless of bitrate. They cross at 10.23 Mbit/s: below it
+  // behaviour is Python's exactly, above it retention shortens and memory does
+  // not grow -- a deliberate divergence, in the safe direction.
+  //
+  // Aggregate, stated and not enforced: ten concurrently-owned channels at the
+  // cap is ~732 MiB in one process. Per the user's decision the cap is per
+  // channel with no host-memory check; sizing against real channel counts is
+  // spec § Risks' pre-deployment item, not this package's.
+  package buffer
+
+  const (
+  	// TSPacketSize is the MPEG-TS packet size every chunk is realigned to.
+  	// apps/proxy/live_proxy/constants.py's TS_PACKET_SIZE.
+  	TSPacketSize = 188
+
+  	// ChunkBytes is the ring's write unit: 188 * 1361, from
+  	// apps/proxy/config.py:15's BaseConfig.BUFFER_CHUNK_SIZE. Note that
+  	// apps/proxy/live_proxy/input/buffer.py:42 reads it with a fallback of
+  	// TS_PACKET_SIZE * 5644, which is an UNREACHABLE default because the
+  	// class attribute always exists -- the effective Python chunk is this
+  	// number, a quarter of what that call site looks like.
+  	ChunkBytes = TSPacketSize * 1361
+
+  	// RetentionSeconds is the parity half of the bound: the Redis chunk TTL
+  	// the Python relay applies, apps/proxy/config.py:71's default of 60.
+  	RetentionSeconds = 60
+
+  	// JoinBehindSeconds is how far behind live a new client starts,
+  	// apps/proxy/config.py:57's new_client_behind_seconds. Not a bound --
+  	// it is the figure the bound must stay above, asserted in the tests.
+  	JoinBehindSeconds = 5
+
+  	// ReferenceBitrateBitsPerSecond sizes the cap. An assumption; see above.
+  	ReferenceBitrateBitsPerSecond = 10_000_000
+
+  	// MaxChunksPerChannel is 293.12 rounded up to a round number.
+  	MaxChunksPerChannel = 300
+
+  	// MaxBytesPerChannel is the memory bound. This, not the chunk count, is
+  	// the thing that must not grow; the count is how it is enforced, because
+  	// the chunk is the ring's eviction unit.
+  	MaxBytesPerChannel = MaxChunksPerChannel * ChunkBytes
+  )
+
+  // ChunksForBytes converts a byte budget to a whole number of chunks, which is
+  // what a ring bounded by an eviction unit can actually hold. Used by 2c-2 to
+  // turn an operator's DISPATCHARR_RELAY_GO_CHANNEL_BUFFER_BYTES into a ring
+  // length; exported here so the conversion has exactly one implementation.
+  func ChunksForBytes(budget int) int {
+  	if budget < ChunkBytes {
+  		return 1
+  	}
+  	return budget / ChunkBytes
+  }
+  ```
+
+- [ ] **Step 2: Write `relay/buffer/buffer_test.go`**
+
+  These tests are not arithmetic checks of constants against themselves — that would be shape 1. Each pins either a Python-sourced literal or one of the two crossover bitrates, which are the numbers that decide whether the cap is safe and which nothing in the constant block makes obvious.
+
+  ```go
+  package buffer
+
+  import "testing"
+
+  // The Python literals this package mirrors. Typed by hand from the source
+  // named in each comment, never computed from the constants above -- these are
+  // the oracle, and a test that derived them from the subject would pass with
+  // every constant wrong together.
+  func TestConstantsMatchThePythonSource(t *testing.T) {
+  	// apps/proxy/config.py:15 -- BUFFER_CHUNK_SIZE = 188 * 1361
+  	if ChunkBytes != 255868 {
+  		t.Errorf("ChunkBytes = %d, want 255868 (apps/proxy/config.py:15)", ChunkBytes)
+  	}
+  	// apps/proxy/config.py:71 -- settings.get("redis_chunk_ttl", 60)
+  	if RetentionSeconds != 60 {
+  		t.Errorf("RetentionSeconds = %d, want 60 (apps/proxy/config.py:71)", RetentionSeconds)
+  	}
+  	// apps/proxy/config.py:57 -- "new_client_behind_seconds": 5
+  	if JoinBehindSeconds != 5 {
+  		t.Errorf("JoinBehindSeconds = %d, want 5 (apps/proxy/config.py:57)", JoinBehindSeconds)
+  	}
+  	// The cap, as Ruling R2 derives it.
+  	if MaxBytesPerChannel != 76760400 {
+  		t.Errorf("MaxBytesPerChannel = %d, want 76760400", MaxBytesPerChannel)
+  	}
+  }
+
+  // The cap must hold at least the full retention window at the bitrate it was
+  // sized for. If it does not, the cap is silently shorter than Python's
+  // buffer at the reference rate and every client's rewind window shrinks.
+  func TestCapCoversFullRetentionAtTheReferenceBitrate(t *testing.T) {
+  	needed := ReferenceBitrateBitsPerSecond / 8 * RetentionSeconds // 75,000,000
+  	if MaxBytesPerChannel < needed {
+  		t.Fatalf("cap %d < %d bytes needed for %ds at %d bit/s",
+  			MaxBytesPerChannel, needed, RetentionSeconds, ReferenceBitrateBitsPerSecond)
+  	}
+  }
+
+  // The bitrate above which the byte cap binds before the 60-second retention.
+  // Below it, behaviour is Python's exactly; above it, retention shortens and
+  // memory does not grow. 10.23 Mbit/s -- close enough to the reference rate
+  // that it is worth stating out loud rather than discovering in production.
+  func TestRetentionAndCapCrossAtTheStatedBitrate(t *testing.T) {
+  	const wantBitsPerSecond = 10_234_720 // 76,760,400 / 60 * 8
+  	got := MaxBytesPerChannel / RetentionSeconds * 8
+  	if got != wantBitsPerSecond {
+  		t.Fatalf("crossover = %d bit/s, want %d -- the plan's Ruling R2 arithmetic has moved",
+  			got, wantBitsPerSecond)
+  	}
+  }
+
+  // The check that actually matters. A new client starts JoinBehindSeconds
+  // behind live, so the cap is only safe while that much video is resident.
+  // The margin is an order of magnitude and this test says by how much.
+  func TestCapCoversTheJoinPointWithAnOrderOfMagnitudeToSpare(t *testing.T) {
+  	const wantCeilingBitsPerSecond = 122_816_640 // 76,760,400 / 5 * 8
+  	got := MaxBytesPerChannel / JoinBehindSeconds * 8
+  	if got != wantCeilingBitsPerSecond {
+  		t.Fatalf("join-point ceiling = %d bit/s, want %d", got, wantCeilingBitsPerSecond)
+  	}
+  	if got < 10*ReferenceBitrateBitsPerSecond {
+  		t.Fatalf("join-point ceiling %d bit/s is under 10x the reference rate; the cap is too tight", got)
+  	}
+  }
+
+  func TestChunksForBytes(t *testing.T) {
+  	for _, tc := range []struct {
+  		name   string
+  		budget int
+  		want   int
+  	}{
+  		{"the default cap", MaxBytesPerChannel, 300},
+  		{"one chunk exactly", ChunkBytes, 1},
+  		{"a partial chunk rounds down to one", ChunkBytes + 1, 1},
+  		{"below one chunk still yields one", 1, 1},
+  		{"two and a half chunks", ChunkBytes*2 + ChunkBytes/2, 2},
+  	} {
+  		if got := ChunksForBytes(tc.budget); got != tc.want {
+  			t.Errorf("%s: ChunksForBytes(%d) = %d, want %d", tc.name, tc.budget, got, tc.want)
+  		}
+  	}
+  }
+  ```
+
+- [ ] **Step 3: Break-check, three edits**
+
+  1. Change `MaxChunksPerChannel` to `200`. Expect `TestConstantsMatchThePythonSource` (`MaxBytesPerChannel = 51173600, want 76760400`) **and** `TestCapCoversFullRetentionAtTheReferenceBitrate` (`cap 51173600 < 75000000`) to fail. Two failures, not one, and the second is the one that says *why* 200 is wrong. Revert.
+  2. Change `ChunkBytes` to `TSPacketSize * 5644` — the unreachable Python default, which is the mistake this comment exists to prevent. Expect `TestConstantsMatchThePythonSource` to fail naming `apps/proxy/config.py:15`. Revert.
+  3. Change `ChunksForBytes`'s guard to `if budget < 1`. Expect `TestChunksForBytes` to fail on `below one chunk still yields one: ChunksForBytes(1) = 0, want 1` — a zero-length ring, which would deadlock 2c-2's writer. Revert.
+
+- [ ] **Step 4: Run the four checks and commit**
+
+---
+
+## Task 6: `relay/channel` and `relay/ffmpeg` — documented stubs
+
+Two files, no tests, because there is nothing yet to assert. What they must not be is empty: a package with a name and no contract is an invitation for the next PR to put the wrong thing in it.
+
+- [ ] **Step 1: `relay/channel/channel.go`**
+
+  ```go
+  // Package channel owns a channel's lifecycle: ownership, the state machine,
+  // the switch coordination between the HTTP handlers and the channel's own
+  // goroutine, and the client registry.
+  //
+  // Empty at 2c-1. 2c-2 brings the first real type.
+  //
+  // WHAT THIS PACKAGE DELIBERATELY DOES NOT CONTAIN, because the Python relay's
+  // equivalents are deleted rather than ported (spec D2):
+  //
+  //   - No ownership lease. One relay process per host by construction, so
+  //     there is never a second writer to fence against. live:channel:{id}:owner,
+  //     _ensure_owner_or_stop, release_ownership's non-atomic GET-compare-DELETE
+  //     and extend_ownership's non-atomic GET-EXPIRE all go. Ownership becomes
+  //     map[uuid]*Channel behind a sync.RWMutex.
+  //   - No follower path and no live:events:{id} pub/sub. Those were
+  //     multi-worker follower-to-owner coordination; with one owner per channel
+  //     by construction they have no purpose.
+  //   - No Redis client, and no Postgres driver. The phase's two checkable
+  //     invariants (spec § Stage 2c, "The two invariants"). Switch coordination
+  //     is a Go chan; the degraded-fallback source cache, the metadata hash, the
+  //     stopping flag and the timing counters are all fields on the channel
+  //     struct.
+  package channel
+  ```
+
+- [ ] **Step 2: `relay/ffmpeg/ffmpeg.go`**
+
+  ```go
+  // Package ffmpeg spawns and supervises the upstream subprocess and parses its
+  // stderr.
+  //
+  // Empty at 2c-1. 2c-4 brings the spawn path and the port of
+  // apps/proxy/live_proxy/input/log_parsers.py.
+  //
+  // TWO THINGS FIXED IN ADVANCE, so 2c-4 does not have to re-decide them.
+  //
+  // Spawning uses os/exec with SysProcAttr{Setpgid: true, Pdeathsig: SIGKILL}.
+  // That is D5's first named exception to strict parity: the Python relay
+  // spawns with os.posix_spawn and no setsid or PDEATHSIG, so an ffmpeg blocked
+  // on a stalled upstream survives its worker and holds a provider slot
+  // (CLAUDE.md, § Operationally). No test asserts the current behaviour and it
+  // is process hygiene rather than streaming behaviour a client can observe,
+  // which is why this one gets fixed in transit and the rest do not.
+  //
+  // Building the argv needs a shell word splitter this module has to write
+  // itself. The contract is asymmetric about this: output_profiles[*].argv
+  // arrives pre-split, because Django ran shlex.split on it
+  // (apps/proxy/next_source.py:747, core/models.py:200-203), while
+  // stream_profile.args arrives as the raw `parameters` text
+  // (apps/proxy/next_source.py:515) and still needs splitting plus the three
+  // {streamUrl} / {userAgent} / {channelId} substitutions
+  // (core/models.py:147-160). The standard library has no shlex, and the
+  // no-third-party-dependencies rule stands, so 2c-4 writes one with a
+  // differential test against Python's. Recorded in the 2c-1 plan as Finding F3.
+  package ffmpeg
+  ```
+
+- [ ] **Step 3: Run the four checks and commit**
+
+  `go vet` is content with a package that declares no symbols; `golangci-lint` may warn about an unused package under some linter sets. If it does, the fix is to report it, not to add a placeholder symbol to quiet it — a `var _ = 0` in a stub is exactly the noise these comments exist instead of.
+
+---
+
+## Task 7: `relay/httpapi` — the mux and the health endpoints
+
+- [ ] **Step 1: Write `relay/httpapi/server.go`**
+
+  ```go
+  // Package httpapi serves the relay's public HTTP surface: the live TS stream
+  // routes, the XC live roots, and the operational endpoints.
+  //
+  // At 2c-1 it serves the two operational endpoints and one gated stub. Nothing
+  // routes to this process from nginx until stage 2d, and the stub is behind
+  // the dev flag as well, so this PR is inert in every deployment shape twice
+  // over.
+  package httpapi
+
+  import (
+  	"fmt"
+  	"net/http"
+  )
+
+  // Config is what the server needs to build its routing table.
+  type Config struct {
+  	// DevRoutes gates every route that is not an operational endpoint.
+  	DevRoutes bool
+  }
+
+  // Server owns the routing table. One per process.
+  type Server struct {
+  	cfg Config
+  	mux *http.ServeMux
+  }
+
+  // New builds the routing table from cfg. The table is fixed at construction:
+  // no route is added or removed after this returns, so the mux is read-only
+  // for the life of the process and needs no lock.
+  func New(cfg Config) *Server {
+  	s := &Server{cfg: cfg, mux: http.NewServeMux()}
+
+  	// Always served, in every shape. D6: the Python relay has neither a
+  	// health endpoint nor a readiness probe, and both are a few lines here.
+  	//
+  	// Both are a static 200 at 2c-1, which is what this PR's row specifies.
+  	// /readyz becomes meaningful in 2c-8, when the SIGTERM drain gives it
+  	// something to report -- and that is also why this PR adds no Docker
+  	// HEALTHCHECK: a probe wired to a static 200 reports healthy through
+  	// every failure it exists to catch.
+  	s.mux.HandleFunc("GET /healthz", ok)
+  	s.mux.HandleFunc("GET /readyz", ok)
+
+  	if cfg.DevRoutes {
+  		// The dev-only route flag spec line 1795 names. The live routes
+  		// arrive in 2c-2; until then this stub is what makes the flag a
+  		// thing with an observable effect rather than a comment.
+  		s.mux.HandleFunc("GET /proxy/ts/stream/{channelID}", notImplemented)
+  	}
+
+  	return s
+  }
+
+  // Handler returns the routing table as an http.Handler, for ListenAndServe
+  // and for tests. Tests drive this, never a hand-built handler: a test that
+  // builds its own handler asserts that net/http calls functions.
+  func (s *Server) Handler() http.Handler { return s.mux }
+
+  func ok(w http.ResponseWriter, _ *http.Request) {
+  	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+  	w.WriteHeader(http.StatusOK)
+  	fmt.Fprintln(w, "ok")
+  }
+
+  func notImplemented(w http.ResponseWriter, _ *http.Request) {
+  	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+  	w.WriteHeader(http.StatusNotImplemented)
+  	fmt.Fprintln(w, "the Go relay does not serve streams yet")
+  }
+  ```
+
+  Note the `GET /healthz` method-and-path pattern: Go 1.22 added method matching to `http.ServeMux`, so a `POST /healthz` falls through to a 405 without a hand-written method check.
+
+- [ ] **Step 2: Write `relay/httpapi/server_test.go`**
+
+  ```go
+  package httpapi
+
+  import (
+  	"net/http"
+  	"net/http/httptest"
+  	"testing"
+  )
+
+  // Drives the real mux and asserts what a client would see. A test that built
+  // its own http.HandlerFunc and asserted it was called would pass with this
+  // whole package deleted.
+  func TestHealthEndpointsAnswer200(t *testing.T) {
+  	srv := New(Config{DevRoutes: false})
+  	for _, path := range []string{"/healthz", "/readyz"} {
+  		rec := httptest.NewRecorder()
+  		srv.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+  		if rec.Code != http.StatusOK {
+  			t.Errorf("GET %s = %d, want 200", path, rec.Code)
+  		}
+  		if got := rec.Body.String(); got != "ok\n" {
+  			t.Errorf("GET %s body = %q, want %q", path, got, "ok\n")
+  		}
+  	}
+  }
+
+  // The health endpoints must not depend on the dev flag: a deployment with the
+  // flag off still needs to be probeable, and that is the shape stage 2d relies
+  // on.
+  func TestHealthEndpointsIgnoreTheDevFlag(t *testing.T) {
+  	for _, dev := range []bool{true, false} {
+  		srv := New(Config{DevRoutes: dev})
+  		rec := httptest.NewRecorder()
+  		srv.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+  		if rec.Code != http.StatusOK {
+  			t.Errorf("DevRoutes=%v: GET /healthz = %d, want 200", dev, rec.Code)
+  		}
+  	}
+  }
+
+  // The flag's whole purpose: with it off, a stream URL is a 404 from the mux,
+  // not a 501 from a registered handler. 404 and 501 are different answers and
+  // the difference is the assertion -- a test that only checked "not 200" would
+  // pass with the route registered and the handler erroring.
+  func TestStreamRouteIsUnregisteredWithoutTheDevFlag(t *testing.T) {
+  	srv := New(Config{DevRoutes: false})
+  	rec := httptest.NewRecorder()
+  	srv.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/proxy/ts/stream/abc", nil))
+  	if rec.Code != http.StatusNotFound {
+  		t.Fatalf("GET /proxy/ts/stream/abc with DevRoutes=false = %d, want 404 (the route must not be registered at all)", rec.Code)
+  	}
+  }
+
+  func TestStreamRouteIsRegisteredWithTheDevFlag(t *testing.T) {
+  	srv := New(Config{DevRoutes: true})
+  	rec := httptest.NewRecorder()
+  	srv.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/proxy/ts/stream/abc", nil))
+  	if rec.Code != http.StatusNotImplemented {
+  		t.Fatalf("GET /proxy/ts/stream/abc with DevRoutes=true = %d, want 501", rec.Code)
+  	}
+  }
+
+  // ServeMux's method matching, asserted because it is doing real work here:
+  // without the "GET " prefix on the pattern, this is a 200 and any client can
+  // POST to the health endpoints.
+  func TestHealthEndpointsRejectNonGET(t *testing.T) {
+  	srv := New(Config{DevRoutes: false})
+  	rec := httptest.NewRecorder()
+  	srv.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/healthz", nil))
+  	if rec.Code != http.StatusMethodNotAllowed {
+  		t.Fatalf("POST /healthz = %d, want 405", rec.Code)
+  	}
+  }
+
+  func TestUnknownPathIs404(t *testing.T) {
+  	srv := New(Config{DevRoutes: true})
+  	rec := httptest.NewRecorder()
+  	srv.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/anything-else", nil))
+  	if rec.Code != http.StatusNotFound {
+  		t.Fatalf("GET /anything-else = %d, want 404", rec.Code)
+  	}
+  }
+  ```
+
+- [ ] **Step 3: Break-check, three edits**
+
+  1. Move the stream-route registration outside the `if cfg.DevRoutes` block. Expect `TestStreamRouteIsUnregisteredWithoutTheDevFlag` to fail with `= 501, want 404 (the route must not be registered at all)`. Revert.
+  2. Change the two health patterns from `"GET /healthz"` to `"/healthz"`. Expect `TestHealthEndpointsRejectNonGET` to fail with `POST /healthz = 200, want 405`. Revert.
+  3. Change `ok` to write `http.StatusNoContent`. Expect `TestHealthEndpointsAnswer200` to fail on both paths. Revert.
+
+- [ ] **Step 4: Run the four checks and commit**
+
+---
+
+## Task 8: `relay/main.go`
+
+- [ ] **Step 1: Write it**
+
+  ```go
+  // Command relay-go is the Go relay. At stage 2c-1 it binds its port, answers
+  // /healthz and /readyz, and does nothing else: nginx routes no location to
+  // this process until stage 2d, and every route beyond the two health
+  // endpoints is behind the dev flag.
+  package main
+
+  import (
+  	"errors"
+  	"log"
+  	"net"
+  	"net/http"
+  	"os"
+  	"strconv"
+  	"time"
+
+  	"github.com/D10Scot/Dispatcharr/relay/config"
+  	"github.com/D10Scot/Dispatcharr/relay/httpapi"
+  )
+
+  func main() {
+  	log.SetFlags(log.LstdFlags | log.LUTC)
+  	log.SetPrefix("relay-go: ")
+
+  	cfg, err := config.Load()
+  	if err != nil {
+  		// Exit rather than degrade. supervisord's startretries=20 will show
+  		// this line twenty times in the container log, which is the loud
+  		// failure a misconfigured secret deserves -- the alternative is a
+  		// process that serves health checks happily and 403s every internal
+  		// call with nothing saying why.
+  		log.Printf("startup failed: %v", err)
+  		os.Exit(1)
+  	}
+
+  	// The secret is never logged, in any form, at any level -- not its value,
+  	// not its length, not a prefix. scripts/check_credential_logging.py polices
+  	// the Python side of this rule; there is no Go equivalent yet, so it is
+  	// held by hand here.
+  	log.Printf("starting on port %d (dev routes: %t)", cfg.Port, cfg.DevRoutes)
+
+  	srv := &http.Server{
+  		Addr:    net.JoinHostPort("0.0.0.0", strconv.Itoa(cfg.Port)),
+  		Handler: httpapi.New(httpapi.Config{DevRoutes: cfg.DevRoutes}).Handler(),
+
+  		// ReadHeaderTimeout only. A read or write deadline on the whole
+  		// request would be wrong for this process by construction: serving
+  		// long-lived responses is the reason it exists, and it is why
+  		// docker/uwsgi.relay.ini carries no harakiri either. Bounding just
+  		// the header read closes the slow-header class without touching the
+  		// body, which is the stream.
+  		ReadHeaderTimeout: 10 * time.Second,
+  	}
+
+  	// No graceful shutdown here. D6's SIGTERM drain is 2c-8's, and a
+  	// half-implemented drain -- one that stops accepting but does not wait for
+  	// anything, because there is nothing to wait for yet -- would look like
+  	// the feature while being the default. supervisord's stopwaitsecs=20
+  	// bounds the stop either way.
+  	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+  		log.Printf("server stopped: %v", err)
+  		os.Exit(1)
+  	}
+  }
+  ```
+
+- [ ] **Step 2: Verify it runs**
+
+  ```bash
+  cd <your worktree>/relay
+  printf 'test-secret-for-a-local-run\n' > /tmp/jwt-probe
+  DISPATCHARR_SECRET_FILE=/tmp/jwt-probe DISPATCHARR_RELAY_GO_PORT=5999 go run . &
+  sleep 1
+  curl -sS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:5999/healthz   # expect 200
+  curl -sS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:5999/readyz    # expect 200
+  curl -sS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:5999/proxy/ts/stream/abc  # expect 404
+  kill %1; rm -f /tmp/jwt-probe
+  ```
+
+  Then the same with `DISPATCHARR_RELAY_GO_DEV_ROUTES=1` and confirm the third call answers **501**. Record both runs' output in the PR description — this is the only end-to-end evidence in the PR that the binary serves anything.
+
+- [ ] **Step 3: Verify it fails loudly on a missing secret**
+
+  ```bash
+  cd <your worktree>/relay && DISPATCHARR_SECRET_FILE=/tmp/definitely-absent go run . ; echo "exit=$?"
+  ```
+
+  Expect a non-zero exit and a line naming the path. **A zero exit here is a finding** — it means the deployment can start a relay that will 403 every internal call silently.
+
+- [ ] **Step 4: Run the four checks and commit**
+
+---
+
+## Task 9: supervisord
+
+- [ ] **Step 1: Write `docker/supervisord.d/relay-go.conf`**
+
+  Modelled on `relay-uwsgi.conf`, with three deliberate differences called out in its own comments.
+
+  ```ini
+  # The Go relay (Phase 2 stage 2c). Started by roles `all` and `relay`; the
+  # relay rung picks it up through its existing relay-*.conf glob, the two
+  # `all` rungs name it explicitly.
+  #
+  # THREE DIFFERENCES FROM relay-uwsgi.conf, each deliberate:
+  #
+  # 1. priority=205, the SAME as relay-uwsgi, not 206. supervisord stops one
+  #    priority group at a time and waits out each group's stopwaitsecs before
+  #    moving on, so the container's stop budget is the SUM across groups --
+  #    155s today, against a 160s stop_grace_period. A separate priority with
+  #    stopwaitsecs=20 would take it to 175s and start SIGKILLing every deploy
+  #    mid-shutdown. Sharing the group makes the two stop concurrently and the
+  #    group cost max(20, 20).
+  #
+  # 2. No wait-for-stores.sh wrapper. The Go relay opens no Postgres connection
+  #    and no Redis connection -- those are the phase's two checkable invariants
+  #    (spec § Stage 2c) -- so it has no store to wait for. It does need
+  #    /data/jwt, and docker/entrypoint.sh blocks on that file for every role
+  #    before it execs supervisord, so it is present by the time this starts.
+  #
+  # 3. No `nice`. UWSGI_NICE_LEVEL exists to keep the streaming path ahead of
+  #    Celery; at 2c-1 this process serves two health endpoints. It joins the
+  #    uWSGI nice level in 2c-2, when it starts carrying bytes.
+  [program:relay-go]
+  command=setpriv --reuid=%(ENV_POSTGRES_USER)s --regid=%(ENV_POSTGRES_USER)s --init-groups /usr/local/bin/relay-go
+  directory=/app
+  environment=HOME="%(ENV_DISPATCHARR_HOME)s",USER="%(ENV_POSTGRES_USER)s"
+  priority=205
+  autostart=true
+  autorestart=true
+  startretries=20
+  startsecs=5
+  stopsignal=TERM
+  stopwaitsecs=20
+  killasgroup=true
+  redirect_stderr=true
+  stdout_logfile=/dev/stdout
+  stdout_logfile_maxbytes=0
+  ```
+
+- [ ] **Step 2: Add it to the two explicit rungs**
+
+  `docker/supervisord/all.conf` and `docker/supervisord/all-dev.conf` each carry one `files = ...` line listing every program. Append ` /app/docker/supervisord.d/relay-go.conf` to each, immediately after the existing `relay-uwsgi.conf` entry so the file reads in start order.
+
+  `docker/supervisord/relay.conf` needs **no edit** — its include is the glob `files = /app/docker/supervisord.d/relay-*.conf`, which already matches. Verify that rather than assume it:
+
+  ```bash
+  cd <your worktree> && grep -n 'files =' docker/supervisord/relay.conf
+  ```
+
+  `docker/supervisord/api.conf` and `worker.conf` must **not** list it: those roles do not serve streams.
+
+- [ ] **Step 3: Verify the stop budget by hand**
+
+  ```bash
+  cd <your worktree> && grep -H 'priority\|stopwaitsecs' docker/supervisord.d/*.conf | sort
+  ```
+
+  Read off the `all` rung's programs, group them by priority, sum the maximum `stopwaitsecs` per group, and confirm the total is still **155** against the `stop_grace_period: 160s` in `docker/docker-compose.yml:23`. **Write the arithmetic into the PR description.** If it exceeds 160, a program's priority is wrong — do not raise the grace period to fit.
+
+- [ ] **Step 4: Commit**
+
+---
+
+## Task 10: The Dockerfile builder stage
+
+- [ ] **Step 1: Re-resolve the builder image digest**
+
+  ```bash
+  docker buildx imagetools inspect golang:<current>-trixie --format '{{.Manifest.Digest}}'
+  ```
+
+  On 2026-09-13, `golang:1.27.1-trixie` resolved to `sha256:9baa6b4187bbb98d240372a8a235ac0bb6b5ddd52bba1431dc2f7c0705862728`. Use the explicit OS variant rather than the bare tag, so a patch bump cannot silently change the builder's base distribution underneath a pinned digest.
+
+- [ ] **Step 2: Add the stage**
+
+  In `docker/Dockerfile`, after the `frontend-builder` stage and **before** the `ARG BASE_IMAGE` redeclaration:
+
+  ```dockerfile
+  # --- Build the Go relay ---
+
+  # --platform=$BUILDPLATFORM with an explicit GOARCH, not a plain FROM.
+  # docker-build.yml builds linux/amd64 and linux/arm64 in one buildx
+  # invocation; a plain FROM would run the arm64 leg's compilation under QEMU
+  # emulation, minutes per build, for a binary Go cross-compiles natively in
+  # about a second.
+  FROM --platform=$BUILDPLATFORM golang:1.27.1-trixie@sha256:9baa6b4187bbb98d240372a8a235ac0bb6b5ddd52bba1431dc2f7c0705862728 AS relay-builder
+
+  ARG TARGETOS
+  ARG TARGETARCH
+
+  WORKDIR /src
+  # go.mod alone, first: it is the whole dependency manifest of a stdlib-only
+  # module, so this layer caches across every source change.
+  COPY ./relay/go.mod ./go.mod
+  COPY ./relay ./
+
+  # CGO_ENABLED=0 makes the binary static, so it runs on the final image
+  # whatever its libc. -trimpath keeps build paths out of the binary;
+  # -s -w drop the symbol and DWARF tables.
+  RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
+      go build -trimpath -ldflags="-s -w" -o /out/relay-go .
+  ```
+
+  And in the `final` stage, after the frontend `COPY --from=`:
+
+  ```dockerfile
+  # The Go relay binary. /usr/local/bin so docker/supervisord.d/relay-go.conf
+  # can name it without a path prefix.
+  COPY --from=relay-builder /out/relay-go /usr/local/bin/relay-go
+  ```
+
+- [ ] **Step 3: Confirm `.dockerignore` does not exclude the module**
+
+  ```bash
+  cd <your worktree> && grep -n 'bin\|relay\|go' .dockerignore
+  ```
+
+  `**/bin` is present and would exclude any directory named `bin` under `relay/`. The layout in this plan has none — **do not create one**, and if a later PR needs a `cmd/` layout, check this first. Nothing else in `.dockerignore` matches `relay/`.
+
+- [ ] **Step 4: Verify the cross-compile works, both architectures**
+
+  Cheaper than a full image build and it tests the only thing this stage does:
+
+  ```bash
+  cd <your worktree>/relay
+  for arch in amd64 arm64; do
+    CGO_ENABLED=0 GOOS=linux GOARCH=$arch go build -trimpath -ldflags="-s -w" -o /tmp/relay-go-$arch . \
+      && echo "linux/$arch ok: $(wc -c < /tmp/relay-go-$arch) bytes"
+  done
+  rm -f /tmp/relay-go-amd64 /tmp/relay-go-arm64
+  ```
+
+  Both must succeed. On 2026-09-13 they produced ~1.5 MB each. Record the output in the PR description.
+
+- [ ] **Step 5: Commit**
+
+---
+
+## Task 11: `go-tests.yml`
+
+Built in the four-part requireable shape per Ruling R1. `frontend-tests.yml` is the template — read it in full before writing, and keep its comment discipline.
+
+- [ ] **Step 1: Re-resolve all three action pins**
+
+  ```bash
+  for r in actions/checkout actions/setup-go golangci/golangci-lint-action; do
+    tag=$(gh api "repos/${r}/releases/latest" --jq .tag_name)
+    sha=$(gh api "repos/${r}/commits/${tag}" --jq .sha)
+    owner=$(gh api "repos/${r}" --jq '.full_name + "  fork=" + (.fork|tostring)')
+    printf '%s@%s  # %s   [%s]\n' "$r" "$sha" "$tag" "$owner"
+  done
+  ```
+
+  **Confirm `fork=false` and that the owner is the real publisher before using a SHA.** On 2026-09-13 this returned:
+
+  ```
+  actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1                # v7.0.1
+  actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e                # v7.0.0
+  golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a   # v9.3.0
+  ```
+
+  Note `actions/checkout@v7.0.1` here while the ten existing workflows pin `v6.1.0`. That is correct and deliberate: spec line 1783 declines the workflow-drift maintenance work as "scope creep wearing a phase-2 branch name" and states that "`go-tests.yml` pinning current versions on its own first commit is correct regardless of what the ten pre-existing workflows pin."
+
+- [ ] **Step 2: Write the workflow**
+
+  ```yaml
+  name: Go Tests
+
+  # Always triggers, and gates internally — the same shape as
+  # frontend-tests.yml, backend-tests.yml, e2e-tests.yml and
+  # lifecycle-tests.yml, and for the same reason. `Go result` at the bottom is
+  # the aggregate that can be required on every PR; `build` and `lint` cannot
+  # be, because a gated job that skips still reports, but a path-filtered
+  # workflow that never triggers reports nothing at all, leaving a required
+  # check "Expected" forever and blocking the merge.
+  #
+  # The coverage ratchet is NOT here. It arrives in 2c-9, which adds a job to
+  # this workflow and a floor file beside it; the aggregate below already has
+  # the shape to take it.
+  on:
+    push:
+      branches: [main]
+    pull_request:
+      branches: [main]
+    workflow_dispatch:
+
+  permissions:
+    contents: read
+
+  concurrency:
+    group: go-tests-${{ github.workflow }}-${{ github.ref }}
+    cancel-in-progress: true
+
+  jobs:
+    changes:
+      name: Detect relevant changes
+      runs-on: ubuntu-latest
+      timeout-minutes: 5
+      outputs:
+        go: ${{ steps.filter.outputs.go }}
+      steps:
+        - name: Checkout code
+          if: github.event_name == 'pull_request' || github.event_name == 'push'
+          uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+          with:
+            persist-credentials: false
+            # pull_request checks out the merge commit, whose first parent is
+            # the base branch tip — depth 2 is enough to diff the whole PR. A
+            # push diffs github.event.before against the new head instead, and
+            # that commit is at an unknown depth, so it needs full history.
+            fetch-depth: ${{ github.event_name == 'pull_request' && 2 || 0 }}
+
+        - name: Decide whether the Go jobs need to run
+          id: filter
+          env:
+            EVENT_NAME: ${{ github.event_name }}
+            EVENT_BEFORE: ${{ github.event.before }}
+            HEAD_SHA: ${{ github.sha }}
+          run: |
+            if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+              echo "go=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            if [ "$EVENT_NAME" = "pull_request" ]; then
+              changed=$(git diff --name-only HEAD^1 HEAD)
+            else
+              if [ "$EVENT_BEFORE" = "0000000000000000000000000000000000000000" ]; then
+                echo "No previous commit to diff against; running the Go jobs."
+                echo "go=true" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
+              if ! changed=$(git diff --name-only "$EVENT_BEFORE" "$HEAD_SHA"); then
+                echo "Could not diff the pushed range; running the Go jobs."
+                echo "go=true" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
+            fi
+            printf 'Changed files:\n%s\n' "$changed"
+            pattern='^(relay/|\.golangci\.yml$|scripts/check_go_stdlib_only\.sh$|\.github/workflows/go-tests\.yml$)'
+            if printf '%s\n' "$changed" | grep -qE "$pattern"; then
+              echo "go=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "go=false" >> "$GITHUB_OUTPUT"
+            fi
+
+    build:
+      name: Build, vet and test
+      runs-on: ubuntu-latest
+      needs: changes
+      if: needs.changes.outputs.go == 'true'
+      timeout-minutes: 15
+      defaults:
+        run:
+          working-directory: ./relay
+      steps:
+        - name: Checkout code
+          uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+          with:
+            persist-credentials: false
+
+        - name: Set up Go
+          uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+          with:
+            # Read from go.mod rather than pinned here, so the toolchain has
+            # exactly one source of truth and CI cannot drift from the
+            # Dockerfile's builder stage without go.mod moving too.
+            go-version-file: relay/go.mod
+
+        - name: Build
+          run: go build ./...
+
+        - name: Vet
+          run: go vet ./...
+
+        # -race is not optional: the concurrency model changes from
+        # gevent-cooperative to OS-thread-parallel goroutines in this phase, so
+        # a data race the Python implementation made structurally impossible
+        # becomes possible for the first time (spec § Testing).
+        - name: Test with the race detector
+          run: go test -race ./...
+
+        - name: Assert the module is standard-library only
+          working-directory: .
+          run: scripts/check_go_stdlib_only.sh relay
+
+    lint:
+      name: golangci-lint
+      runs-on: ubuntu-latest
+      needs: changes
+      if: needs.changes.outputs.go == 'true'
+      timeout-minutes: 15
+      steps:
+        - name: Checkout code
+          uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+          with:
+            persist-credentials: false
+
+        - name: Set up Go
+          uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+          with:
+            go-version-file: relay/go.mod
+
+        - name: Run golangci-lint
+          uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
+          with:
+            # Pinned deliberately, the same rule as zizmor's version in
+            # actions-lint.yml: a new release adding a linter must not fail an
+            # unrelated PR. Keep in sync with the version the PostToolUse hook
+            # checks for (.claude/hooks/run-go-checks.sh).
+            version: v2.13.2
+            working-directory: relay
+
+    # The one check in this workflow that may be required. It always reports,
+    # because it is not gated on anything — see the comment on the triggers.
+    go-result:
+      name: Go result
+      runs-on: ubuntu-latest
+      needs: [changes, build, lint]
+      if: always()
+      timeout-minutes: 5
+      steps:
+        - name: Verify the Go outcome
+          env:
+            CHANGES_RESULT: ${{ needs.changes.result }}
+            BUILD_RESULT: ${{ needs.build.result }}
+            LINT_RESULT: ${{ needs.lint.result }}
+            GO_REQUIRED: ${{ needs.changes.outputs.go }}
+          run: |
+            echo "changes=$CHANGES_RESULT build=$BUILD_RESULT lint=$LINT_RESULT go-required=$GO_REQUIRED"
+            if [ "$CHANGES_RESULT" != "success" ]; then
+              echo "Change detection itself failed — cannot prove the Go jobs were unnecessary."
+              exit 1
+            fi
+            if [ "$GO_REQUIRED" != "true" ]; then
+              echo "No Go-relevant paths changed; the Go jobs were deliberately skipped."
+              exit 0
+            fi
+            # `skipped` here means a gated job never ran on a run that needed
+            # it, so only an exact `success` may report green.
+            for pair in "build:$BUILD_RESULT" "lint:$LINT_RESULT"; do
+              if [ "${pair#*:}" != "success" ]; then
+                echo "The Go jobs were required and ${pair%%:*} did not succeed."
+                exit 1
+              fi
+            done
+            echo "Go build, vet, tests and lint passed."
+  ```
+
+- [ ] **Step 3: zizmor must pass before this is committed**
+
+  The edit hook runs it automatically on the write. If it is unavailable, run it by hand and do not commit on a skip:
+
+  ```bash
+  cd <your worktree> && zizmor --no-progress .github/workflows/go-tests.yml
+  ```
+
+  Zero findings, online audits on. **A "zizmor not installed" note is not a pass** — say the workflow was not linted rather than describing it as clean.
+
+- [ ] **Step 4: Break-check the aggregate**
+
+  The shape's own failure mode is a skipped heavy job on a required run, and it must fail. Temporarily add `if: false` to the `build` job **in addition to** its existing condition, push to the branch, and confirm `Go result` goes **red** with "The Go jobs were required and build did not succeed." Revert and confirm it goes green. Without this, the aggregate is a green light nobody has tested.
+
+- [ ] **Step 5: Commit**
+
+---
+
+## Task 12: The two Claude hooks
+
+Ruling R4 governs both: the module root comes from the edited or staged file's own path, never from `CLAUDE_PROJECT_DIR`, `BASH_SOURCE` or the working directory.
+
+- [ ] **Step 1: Write `.claude/hooks/run-go-checks.sh`**
+
+  ```bash
+  #!/usr/bin/env bash
+  # Claude Code PostToolUse hook — verify the Go module a just-edited .go file
+  # belongs to.
+  #
+  # Four checks, all blocking, all scoped to that module:
+  #
+  #   build        go build ./...          the whole module
+  #   vet          go vet ./...            the whole module
+  #   lint         golangci-lint run       the whole module, zero findings
+  #   tests        go test -race ./<pkg>   the edited file's package only
+  #
+  # Zero lint findings is a ratchet, the same rule as zizmor's: the module
+  # starts clean and touching a file means leaving it clean. -race is not
+  # optional (spec § Testing): this phase moves the relay from gevent's single
+  # OS thread to parallel goroutines, so a data race becomes possible for the
+  # first time, and -race is the cheapest check for exactly that class.
+  #
+  # THE MODULE ROOT COMES FROM THE EDITED FILE'S OWN PATH, by walking up for
+  # go.mod. Deliberately not from CLAUDE_PROJECT_DIR, not from BASH_SOURCE, and
+  # not from the working directory. Issue #258 is the Python hooks' version of
+  # this: run-affected-tests.sh derives its root from BASH_SOURCE, so when the
+  # script lives in one checkout and the edited file lives in a worktree, its
+  # own path guard sends it down the `exit 0` arm and the hook silently does
+  # nothing. Walking up from the file is immune to all three.
+  #
+  # Blocking failures exit 2, which feeds the output back to Claude. "Could not
+  # run" exits 0 but is stated loudly — a silent skip is indistinguishable from
+  # a pass.
+  set -uo pipefail
+
+  GOLANGCI_EXPECTED_VERSION="2.13.2"
+
+  FILE="$(jq -r '.tool_response.filePath // .tool_input.file_path // empty')"
+  [ -n "$FILE" ] || exit 0
+  case "$FILE" in *.go) ;; *) exit 0 ;; esac
+  [ -f "$FILE" ] || exit 0
+
+  # Absolute, so the walk below does not depend on where this shell happens to
+  # be standing.
+  case "$FILE" in
+    /*) ABS="$FILE" ;;
+    *)  ABS="$PWD/$FILE" ;;
+  esac
+
+  # Walk up for go.mod. This is the whole point of the script: the module root
+  # is a property of the file, not of the session.
+  MODULE_ROOT="$(cd "$(dirname "$ABS")" 2>/dev/null && pwd)" || exit 0
+  while [ -n "$MODULE_ROOT" ] && [ ! -f "$MODULE_ROOT/go.mod" ]; do
+    [ "$MODULE_ROOT" = "/" ] && { MODULE_ROOT=""; break; }
+    MODULE_ROOT="$(dirname "$MODULE_ROOT")"
+  done
+  if [ -z "$MODULE_ROOT" ] || [ ! -f "$MODULE_ROOT/go.mod" ]; then
+    exit 0   # a .go file outside any module; nothing to check
+  fi
+
+  NOTES=()
+  BLOCK_TITLE=""
+  BLOCK_BODY=""
+  note()  { NOTES+=("$1"); }
+  block() { [ -n "$BLOCK_TITLE" ] || { BLOCK_TITLE="$1"; BLOCK_BODY="$2"; }; }
+
+  if ! command -v go >/dev/null 2>&1; then
+    note "Did NOT check ${ABS#"$MODULE_ROOT"/} — go is not on PATH. The Go module was NOT verified; say so rather than describing the work as done."
+  else
+    OUT="$(cd "$MODULE_ROOT" && go build ./... 2>&1)"
+    if [ $? -ne 0 ]; then
+      block "go build failed in ${MODULE_ROOT}" "$(printf '%s' "$OUT" | head -30)"
+    else
+      OUT="$(cd "$MODULE_ROOT" && go vet ./... 2>&1)"
+      if [ $? -ne 0 ]; then
+        block "go vet failed in ${MODULE_ROOT}" "$(printf '%s' "$OUT" | head -30)"
+      else
+        # The edited file's own package, relative to the module root. The whole
+        # module runs on commit; per-edit this is the fast, scoped check.
+        PKG_DIR="$(dirname "$ABS")"
+        PKG="./${PKG_DIR#"$MODULE_ROOT"/}"
+        [ "$PKG" = "./$PKG_DIR" ] && PKG="./..."
+        OUT="$(cd "$MODULE_ROOT" && go test -race "$PKG" 2>&1)"
+        if [ $? -ne 0 ]; then
+          block "go test -race ${PKG} failed" "$(printf '%s' "$OUT" | grep -Ev '^(ok|\?)' | head -40)"
+        else
+          printf '%s\n' "$OUT" | grep -E '^(ok|---|PASS|FAIL)' | head -3
+        fi
+      fi
+    fi
+  fi
+
+  if [ -z "$BLOCK_TITLE" ]; then
+    if command -v golangci-lint >/dev/null 2>&1; then
+      # Keep in sync with the pinned `version:` in go-tests.yml — that is the
+      # whole point of this check. A silent version mismatch is worse than no
+      # check: it lets local and CI disagree about what is clean.
+      ACTUAL="$(golangci-lint --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
+      if [ -n "$ACTUAL" ] && [ "$ACTUAL" != "$GOLANGCI_EXPECTED_VERSION" ]; then
+        note "golangci-lint on PATH is ${ACTUAL}, but go-tests.yml pins ${GOLANGCI_EXPECTED_VERSION} — local and CI findings can disagree. Bump both together."
+      fi
+      OUT="$(cd "$MODULE_ROOT" && golangci-lint run ./... 2>&1)"
+      if [ $? -ne 0 ]; then
+        block "golangci-lint findings in ${MODULE_ROOT}" \
+              "$(printf '%s' "$OUT" | head -30)"$'\n\n'"Zero findings is a ratchet here, the same rule as zizmor's for workflows."
+      fi
+    else
+      note "Did NOT lint ${MODULE_ROOT} — golangci-lint is not installed. Install it with 'brew install golangci-lint'."
+    fi
+  fi
+
+  if [ ${#NOTES[@]} -gt 0 ]; then
+    MSG="$(printf '%s\n\n' "${NOTES[@]}")"
+    jq -cn --arg m "$MSG" '{systemMessage:$m,hookSpecificOutput:{hookEventName:"PostToolUse",additionalContext:$m}}'
+  fi
+  if [ -n "$BLOCK_TITLE" ]; then
+    printf 'FAILED: %s\nFix this before continuing; do not describe the work as done.\n\n%s\n' \
+      "$BLOCK_TITLE" "$BLOCK_BODY" >&2
+    exit 2
+  fi
+  exit 0
+  ```
+
+  `chmod +x .claude/hooks/run-go-checks.sh`.
+
+- [ ] **Step 2: Wire it into `.claude/settings.json`**
+
+  Add a second entry to the existing `PostToolUse` `Write|Edit` matcher's `hooks` array, beside `run-affected-tests.sh`:
+
+  ```json
+  {
+    "type": "command",
+    "command": "\"${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/run-go-checks.sh\"",
+    "timeout": 300,
+    "statusMessage": "Running Go checks for the edited file"
+  }
+  ```
+
+  Note this uses `CLAUDE_PROJECT_DIR` to **locate the script**, exactly as the existing entry does — that is issue #258's surface and is not this PR's to change. What R4 governs is what the script does once it runs, which is entirely independent of how it was found.
+
+- [ ] **Step 3: Extend the commit gate**
+
+  In `.claude/hooks/pre-commit-tests.sh`, after the `# ---------- frontend ----------` block and before `# ---------- metrics`:
+
+  ```bash
+  # ---------- go ----------
+  # The whole module on commit, not just the edited package: this mirrors what
+  # go-tests.yml runs, and the same rule the backend gate follows (CI runs the
+  # whole package, so the gate does too).
+  #
+  # The module root is derived from the STAGED PATH, not from $REPO_ROOT —
+  # Ruling R4, and the same reasoning as run-go-checks.sh. The honest limit:
+  # $PATHS itself came from a `git diff` run in $REPO_ROOT, so this section
+  # cannot be more correct than that; what it can avoid is the extra assumption
+  # that the module sits at a fixed place under it.
+  GO_ROOTS="$(printf '%s\n' "$PATHS" | grep '\.go$' | while read -r p; do
+    d="$(dirname "$REPO_ROOT/$p")"
+    while [ "$d" != "/" ] && [ ! -f "$d/go.mod" ]; do d="$(dirname "$d")"; done
+    [ -f "$d/go.mod" ] && printf '%s\n' "$d"
+  done | sort -u)"
+  if [ -n "$GO_ROOTS" ]; then
+    if ! command -v go >/dev/null 2>&1; then
+      note "Commit gate: Go files are staged but go is not on PATH — the Go tests were NOT run. The commit was NOT verified."
+    else
+      while read -r GR; do
+        [ -n "$GR" ] || continue
+        OUT="$(cd "$GR" && go build ./... 2>&1 && go vet ./... 2>&1 && go test -race ./... 2>&1)"
+        if [ $? -ne 0 ]; then
+          FAILED+=("go:${GR##*/}")
+          REPORT+="$(printf '\n--- go %s ---\n%s\n' "$GR" "$(printf '%s' "$OUT" | grep -Ev '^(ok|\?)' | head -30)")"
+        fi
+      done <<< "$GO_ROOTS"
+    fi
+  fi
+  ```
+
+- [ ] **Step 4: Prove both hooks fire, and prove they fire for the right reason**
+
+  This step is the whole value of the task. A hook that is wired but inert is the exact failure #258 describes, and it is invisible.
+
+  1. **PostToolUse, failing:** use the Edit tool to add `func broken() { return 1 }` to `relay/buffer/buffer.go`. Expect the hook to block with "go build failed" and the compiler's own message. Revert with the Edit tool and confirm the hook passes.
+  2. **PostToolUse, test failure rather than build failure:** use the Edit tool to change `MaxChunksPerChannel` to `200`. Expect a block naming `go test -race ./buffer` and the two failing assertions from Task 5 — **not** a build failure. Confirm the message names the mechanism (shape 6). Revert.
+  3. **PostToolUse, lint:** use the Edit tool to add an unused import to `relay/httpapi/server.go`. Expect either the build or the lint arm to block; note which, because a build failure here means the lint arm was never exercised — if so, use an unused *variable* inside a function instead, which builds and lints red. Revert.
+  4. **Commit gate:** stage a `relay/**.go` change with a failing test and attempt a commit. Expect "COMMIT BLOCKED — tests failing for: go:relay". Fix and confirm the commit proceeds.
+
+  **Record all four outcomes in the PR description.** If any hook does not fire, that is a finding — report it rather than describing the hooks as wired.
+
+- [ ] **Step 5: Commit**
+
+---
+
+## Task 13: `CLAUDE.md`
+
+Per the standing convention: a PR that changes a fact CLAUDE.md states corrects it in the same PR.
+
+- [ ] **Step 1: § Commands** — add, after the frontend block:
+
+  ```bash
+  cd relay && go build ./... && go vet ./... && go test -race ./... && golangci-lint run ./...
+  scripts/check_go_stdlib_only.sh relay           # the module must stay stdlib-only
+  ```
+
+- [ ] **Step 2: § Architecture** — the "Two uWSGI processes" paragraph now undercounts the container's processes. Add, after the supervisord sentence:
+
+  > Since Phase 2 stage 2c there is a **third** server process, `relay-go` (`docker/supervisord.d/relay-go.conf`, roles `all` and `relay`, port 5658 from `DISPATCHARR_RELAY_GO_PORT`), a Go binary built in the Dockerfile's own `relay-builder` stage. At 2c-1 it serves `/healthz` and `/readyz` and nothing else: no nginx location routes to it until stage 2d, and every other route is behind a dev-only flag. It shares supervisord `priority=205` with `relay-uwsgi` deliberately — a priority of its own would add its `stopwaitsecs` to the container's stop budget as a separate group and take the sum past the 160s `stop_grace_period`. It opens no Postgres connection and no Redis connection, and links no driver for either; `scripts/check_go_stdlib_only.sh` is the mechanical backstop, run by `go-tests.yml`.
+
+- [ ] **Step 3: § Test hooks** — add, in the existing register, after the zizmor bullet:
+
+  > Go gets its own `PostToolUse` hook, `.claude/hooks/run-go-checks.sh`, on any `*.go` file: `go build ./...`, `go vet ./...` and `golangci-lint run` over the whole module plus `go test -race` for the edited file's package, all blocking, with zero lint findings as a ratchet in zizmor's idiom (the pinned version is checked against `go-tests.yml`'s, and a mismatch warns). `-race` is not optional and has no per-package exemption: this phase moves the relay off gevent's single OS thread, so a data race becomes possible for the first time. The commit gate runs `go build`, `go vet` and `go test -race ./...` over the whole module for any staged `*.go`. **Both derive the module root by walking up from the edited or staged file's own path for a `go.mod`, never from `CLAUDE_PROJECT_DIR`, `BASH_SOURCE` or the working directory** — the Python hooks' equivalent derivation is issue #258, where a hook script in one checkout and an edited file in a worktree make the hook silently do nothing, and the Go hooks must not inherit that shape. Note that `relay/` paths map to **no** backend test label (`scripts/ci_backend_test_labels.py` returns `[]` for them), so for a Go-only commit the Go section of the gate is the only thing that runs.
+
+- [ ] **Step 4: § Testing** — add after the E2E paragraph:
+
+  > `go-tests.yml` is the fifth test workflow and carries the same four-part requireable shape as the others, with a **`Go result`** aggregate from its first commit. It runs `go build`, `go vet`, `go test -race` and `golangci-lint`, plus the stdlib-only assertion. It carries **no coverage gate yet** — 2c-9 adds the ratchet and the floor file. Making `Go result` an actually-required check on the Main ruleset is a repo-settings action, not something a commit accomplishes.
+
+- [ ] **Step 5: § Supply chain security** — note the new pins in the existing register: `go-tests.yml` pins `actions/checkout` v7.0.1 while the other ten workflows pin v6.1.0, deliberately, per spec line 1783's refusal to fold workflow-drift maintenance into this phase. Record that CodeQL analyses `actions`, `python` and `javascript-typescript` and **not** `go` (Ruling R6, recommended owner 2c-9).
+
+- [ ] **Step 6: Commit**
+
+---
+
+## Task 14: Final verification and the PR description
+
+- [ ] **Step 1: Run everything, from a clean tree**
+
+  ```bash
+  cd <your worktree>
+  gofmt -l relay/                                  # must print nothing
+  (cd relay && go build ./...)
+  (cd relay && go vet ./...)
+  (cd relay && go test -race ./...)
+  (cd relay && golangci-lint run ./...)
+  scripts/check_go_stdlib_only.sh relay
+  zizmor --no-progress .github/workflows/go-tests.yml
+  git status --porcelain                           # must print nothing
+  ```
+
+  Every one must be clean. **`gofmt -l` printing a filename is a failure**, even though nothing else catches it locally in this list.
+
+- [ ] **Step 2: Confirm no Python, frontend or e2e file was touched**
+
+  ```bash
+  cd <your worktree> && git diff --name-only main...HEAD | grep -E '^(apps/|core/|dispatcharr/|frontend/|e2e/|e2e-upstream/|metrics/)' && echo "VIOLATION" || echo "clean"
+  ```
+
+  Expect `clean`. Global Constraint 4.
+
+- [ ] **Step 3: Write the PR description**
+
+  It must contain, in this order:
+
+  1. **The allowlist reconciliation** — all four tables and the Findings section, verbatim from Task 1. This is the spec's own precondition and its only enforcement is this description and its reviewer.
+  2. **The four findings**, each with its recommended owner: F1 (Redirect has no contract field → 2c-5), F2 (no PR owns Redirect → 2c-5), F3 (`shlex` asymmetry → 2c-4), F4 (`proxy_settings` defaults are a second source of truth → 2c-2/2c-4).
+  3. **The buffer-depth derivation and its number**: 300 chunks, 76,760,400 bytes per channel, the stated 10 Mbit/s reference bitrate, both crossover bitrates (10.23 Mbit/s where the cap starts binding before retention, 122.8 Mbit/s where it stops covering the join point), and the ~732 MiB ten-channel aggregate. Say plainly that the reference bitrate is an assumption and that no host-memory check exists.
+  4. **Every pin, with the command that resolved it and the date.** Go toolchain, three action SHAs with their publishers confirmed, the `golang` image digest.
+  5. **The stop-budget arithmetic** from Task 9 Step 3, and the sentence that `relay-go` shares `priority=205` for that reason.
+  6. **Every break-check and its failure text.** Task 2 Step 5 (2), Task 3 Step 3 (3), Task 4 Step 4 (5), Task 5 Step 3 (3), Task 7 Step 3 (3), Task 11 Step 4 (1), Task 12 Step 4 (4) — **twenty-one**. A break-check that did not go red is a finding; report it as one. Say for each that the failure message named the mechanism rather than a build error (shape 6).
+  7. **The two runtime probes** from Task 8 Steps 2 and 3: the three status codes with the dev flag off, the 501 with it on, and the non-zero exit on a missing secret.
+  8. **The cross-compile output** from Task 10 Step 4, both architectures.
+  9. **What this PR does not do**, stated rather than implied: no coverage gate (2c-9), no drain and no `HEALTHCHECK` (2c-8), no nginx route (2d), no CodeQL Go pack (R6, recommended 2c-9), no parity-matrix Go column (2c-2 opens it), no metrics/curated update (milestones are per stage, and `phase2` already has its 2b entry — the 2c goal milestone lands with 2c-9).
+
+- [ ] **Step 4: Push and open the PR**
+
+  Branch `migration/phase2c-skeleton`. The `migration/**` prefix makes `e2e-tests.yml` run every Playwright project — expect a long first CI run and do not interpret its length as a fault.
+
+---
+
+## Break-check × what each can redden
+
+Twenty-one break-checks across seven tasks. Five green checks are not five proofs, and a reader not told which is which will assume they are. Each break-check must redden the column named here and leave the rest alone; a column going red that this table says cannot is a finding about the check, not a pass.
+
+| Break-check | `config` | `control` | `buffer` | `httpapi` | hook | CI aggregate |
+|---|---|---|---|---|---|---|
+| T2.5 go.sum / require | — | — | — | — | — | ✔ (the stdlib step) |
+| T3.3-1 TrimSpace for the secret | ✔ | — | — | — | — | — |
+| T3.3-2 ignore the port env | ✔ | — | — | — | — | — |
+| T3.3-3 drop the dev override | ✔ | — | — | — | — | — |
+| T4.4-1 wrong context string | — | ✔ | — | — | — | — |
+| T4.4-2 wrong separator | — | ✔ | — | — | — | — |
+| T4.4-3 drop the body digest | — | ✔ (with-body vector **only**) | — | — | — | — |
+| T4.4-4 strip the query string | — | ✔ (both assertions) | — | — | — | — |
+| T4.4-5 one-sided window | — | ✔ | — | — | — | — |
+| T5.3-1 cap 200 chunks | — | — | ✔ (two tests) | — | — | — |
+| T5.3-2 chunk = 188×5644 | — | — | ✔ | — | — | — |
+| T5.3-3 ChunksForBytes guard | — | — | ✔ | — | — | — |
+| T7.3-1 ungate the stream route | — | — | — | ✔ | — | — |
+| T7.3-2 drop method matching | — | — | — | ✔ | — | — |
+| T7.3-3 204 for health | — | — | — | ✔ | — | — |
+| T11.4 skip the build job | — | — | — | — | — | ✔ |
+| T12.4-1..4 hook firing | ✔ | — | ✔ | ✔ | ✔ | — |
+
+Three notes on what this table is saying:
+
+- **T4.4-3 is the one that justifies having three vectors rather than one.** Dropping the body digest from the signed message leaves both empty-body tests **green** — `sha256(b"")` contributes the same constant either way only if you also drop it from Python, which you have not. Only the with-body vector fails. A single empty-body vector would have made this defect invisible, and it is a total replay-binding failure.
+- **T5.3-1 must produce two failures, not one.** `TestConstantsMatchThePythonSource` says the number moved; `TestCapCoversFullRetentionAtTheReferenceBitrate` says *why the new number is wrong*. If only the first fires, the second test is not doing its job and the cap has no safety assertion behind it.
+- **No break-check in this PR can redden `channel` or `ffmpeg`**, and that is structural, not an oversight: they are documented stubs with no assertions. Do not read their green as evidence of anything.
+
+---
+
+## What to report back
+
+1. **The plan path, the branch and the commit SHA.**
+2. **The allowlist reconciliation as executed** — the four counts you measured, whether they matched, and any citation whose line had moved.
+3. **Any finding beyond F1–F4.** The tables above were built by reading; the implementer reads again with a compiler.
+4. **The buffer number, restated from your own arithmetic**, not copied from R2.
+5. **Every pin you resolved, with the command and the date**, and whether any moved from this plan's values.
+6. **Twenty-one break-check outcomes**, each with its failure text and a word on whether that text named the mechanism.
+7. **The four hook-firing outcomes** from Task 12 Step 4, stated either way.
+8. **Whether the `Go result` aggregate was proven to fail on a skipped required job** (Task 11 Step 4). Without that, R1's whole argument is untested.
+9. **Anything you could not verify**, said plainly. A skipped check reported as a pass is the failure mode this repository's own CI history is built around avoiding.
