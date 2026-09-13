@@ -478,14 +478,14 @@ test_fresh_default() {
             echo "$status_output" | sed 's/^/    /'
         else
             local missing=""
-            for prog in postgres redis api-uwsgi daphne celery-default celery-dvr celery-beat nginx; do
+            for prog in postgres redis api-uwsgi relay-uwsgi relay-go daphne celery-default celery-dvr celery-beat nginx; do
                 echo "$status_output" | grep -qE "^${prog}[[:space:]]+RUNNING" || missing="$missing $prog"
             done
             if [ -n "$missing" ]; then
                 log_fail "supervisorctl status: not RUNNING:$missing"
                 echo "$status_output" | sed 's/^/    /'
             else
-                log_pass "supervisorctl status: all eight programs of role 'all' RUNNING"
+                log_pass "supervisorctl status: all ten programs of role 'all' RUNNING"
                 echo "$status_output" | sed 's/^/    /'
             fi
         fi
@@ -1315,8 +1315,9 @@ test_role_split() {
         log_fail "api container supervisorctl status unexpected: $api_ctl"
     fi
     relay_ctl=$(supervisorctl_status "$relay_name")
-    if echo "$relay_ctl" | grep -q "relay-uwsgi.*RUNNING" && ! echo "$relay_ctl" | grep -qE "FATAL|BACKOFF"; then
-        log_pass "relay container: relay-uwsgi RUNNING, nothing FATAL/BACKOFF"
+    if echo "$relay_ctl" | grep -q "relay-uwsgi.*RUNNING" && echo "$relay_ctl" | grep -q "relay-go.*RUNNING" \
+        && ! echo "$relay_ctl" | grep -qE "FATAL|BACKOFF"; then
+        log_pass "relay container: relay-uwsgi and relay-go RUNNING, nothing FATAL/BACKOFF"
     else
         log_fail "relay container supervisorctl status unexpected: $relay_ctl"
     fi
