@@ -1796,11 +1796,91 @@ of what the ten pre-existing workflows pin.
 | 2c-2 | `migration/phase2c-vertical-slice` | The Proxy stream-profile architecture only (no ffmpeg spawn yet): one client, in-memory ring buffer, MPEG-TS passthrough for a single upstream. Proves the buffer/fan-out shape end to end before ffmpeg complexity is added. | New Go tests pass with `-race`; parity matrix rows 7, 9 (chunk monotonicity, 188-byte realignment) get a Go column | 2c-1 |
 | 2c-3 | `migration/phase2c-fanout` | Multi-client fan-out, join-5s-behind, the client registry, `?clients=all` on `GET /proxy/relay/channels` | Rows 8, 10, 13 get a Go column | 2c-2 |
 | 2c-4 | `migration/phase2c-ffmpeg` | ffmpeg spawn via `os/exec` + `syscall.SysProcAttr{Setpgid, Pdeathsig}` (D5 exception 1), the `log_parsers.py` port | Row 4 (the `speed=` arming delay) gets a Go column with its own real-ffmpeg test, mirroring 2a's harness | 2c-3 |
-| 2c-5 | `migration/phase2c-failover` | The three failover triggers, control-plane client (`next-source`/`release`/`events`, both HMAC headers, the exact timeout table), the degraded fallback to the cached candidate list | Rows 1, 2, 3, 5, 6 get a Go column | 2c-4 |
+| 2c-5 | `migration/phase2c-failover` | The three failover triggers, control-plane client (`next-source`/`release`/`events`, both HMAC headers, the exact timeout table), the degraded fallback to the cached candidate list, and the Redirect Stream Profile architecture — the 302, `validate_stream_url`'s provider probe, the fall-through to the cached alternates, and the internal-principal override that serves a Redirect channel through Proxy instead (`apps/proxy/live_proxy/views.py:462-480`). Added by Amendment A1.2: no row named Redirect, and Gate 1 being closed means an `owed:` marker cannot carry it. | Rows 1, 2, 3, 5, 6 get a Go column | 2c-4 |
 | 2c-6 | `migration/phase2c-fmp4` | fMP4 output format, including row 12's known timeout gap, reproduced not fixed | Row 12 gets a Go column | 2c-5 |
 | 2c-7 | `migration/phase2c-output-profile` | Output Profile shared transcode per `(channel, profile)` | Row 11 gets a Go column | 2c-6 |
 | 2c-8 | `migration/phase2c-control-drain` | Remaining control routes (single-channel `GET`/`DELETE`, `advance`), SIGTERM drain (D6), the dev-only `POST /_dispatcharr/authorize-internal` fallback (D5 exception 2, now fully specified — § The contract, including why it needs its own nginx-unshielded path and `IsInternalRelay` gating) | Every remaining un-Go'd matrix row gets a column | 2c-7 |
 | 2c-9 | `migration/phase2c-go-coverage-gate` | `go test ./... -race -cover` wired into a new `scripts/coverage_live_path_go.floor` ratchet, raised to ≥80%; parity matrix's Python test-reference column gains its Go counterpart on every row | A new `go-tests.yml` **`Go result`** aggregate green, built in the four-part shape `CLAUDE.md` § Testing prescribes for every requireable check (no `paths:` filter on `pull_request`, a cheap always-running change detector, an `if: always()` aggregate with the three branches, a skipped heavy job on a required run failing the aggregate) — **note, added in this fix round, that making `Go result` an actually-required check on the Main ruleset is a repo-settings action, the same class this spec already flags for Renovate elsewhere, not something this PR's commit alone accomplishes** | 2c-8, matrix 100% Go-columned |
+
+#### Amendment A1 (2c-1) — Redirect had no contract field and has no owning PR
+
+Found while clearing 2c-1's allowlist precondition, which is what that
+precondition exists to surface. Two defects in this section — one in the
+contract, one in the table above — plus three inputs later PRs need.
+
+**A1.1 — the contract could not express "this profile is Redirect." CLOSED
+in 2c-1.** `StreamProfile.is_redirect()` is a name comparison
+(`core/models.py:132-135`). The next-source `source` dict carried
+`stream_profile` as `{id, command, args}` (`apps/proxy/next_source.py:512-518`)
+and `transcode`, which is `not (is_proxy() or is_redirect())` (`:504`, sent at
+`:511`) — so Proxy and Redirect were both `transcode: false` and both carry
+empty `command`/`parameters` (`core/models.py:139-144`). A Go relay therefore
+could not decide between a 302 and the Proxy path, nor apply the
+internal-principal override that forces a Redirect channel through Proxy so
+`X-Dispatcharr-Internal` is never re-sent to a provider
+(`apps/proxy/live_proxy/views.py:462-467`, a deliberate Phase 1 PR 5 fix).
+
+Closed by one additive key on the existing `stream_profile` object,
+`"kind": "redirect" | "proxy" | "transcode"`, derived once in
+`next_source.py`'s `_profile_kind()` and applied through `_stream_profile_ref()`
+at all **four** dicts of that shape — the three `source["stream_profile"]`
+construction sites and `_locked_ffmpeg_profile()` (`:97-100`), which the same
+`StreamProfileRefSerializer` renders. `transcode` is unchanged: D5 forbids
+altering what exists.
+
+**It lands in 2c-1 rather than in the PR that first serves Redirect**, for two
+reasons from this spec's own text. The precondition on the `2c-1` row is "a
+contract field for each allowlisted site, or a documented reason it needs
+none, **before** its first line of Go" — a deferred field leaves the two
+`views.py:462`/`:468` allowlist entries closed by neither, so 2c-1 could not
+honestly claim the precondition met. And the first *consumer* is **2c-2**, not
+2c-5: 2c-2 is the Proxy vertical slice, and Go cannot know a profile is Proxy
+rather than Redirect without this field. A contract field must exist before
+its first consumer.
+
+Note for whoever reads the allowlist next: this raised both `resolve_source`
+EDGE `hits` counts, because `_profile_kind()`'s two `is_redirect()`/`is_proxy()`
+calls are model-method names `zero_orm_scan.py` flags. Neither issues a query.
+The entries' own `reason` fields record the move and why.
+
+**A1.2 — no PR owned the Redirect architecture.** 2c-2 is Proxy-only; 2c-4
+through 2c-8 name ffmpeg, failover, fMP4, Output Profiles, and control/drain.
+Redirect appeared in no row. The parity matrix does not compensate: Redirect
+appears only in row 29, and only as a surface the buffering detector ignores.
+Nor can an `owed:` marker record it — Gate 1 closed in 2b-3 and the guard
+requires the owed list to stay empty (`e2e/tests/guards/parity-matrix.spec.ts:308-314`),
+so an `owed:` row would redden a closed gate. **The `2c-5` row in the table
+above is therefore amended to name it**, which is the only durable place it
+can live.
+
+**A1.3 — an input for 2c-4: `shlex.split` has no Go stdlib equivalent, and the
+contract is asymmetric about it.** `output_profiles[*].argv` arrives pre-split,
+because Django ran `shlex_split` on it (`apps/proxy/next_source.py:747`,
+`core/models.py:200-203`); `stream_profile.args` arrives as the raw
+`parameters` text (`apps/proxy/next_source.py:515`). So 2c-4 must implement
+POSIX word splitting plus the three `{streamUrl}`/`{userAgent}`/`{channelId}`
+substitutions (`core/models.py:147-160`) under this stage's
+no-third-party-dependencies rule, with a differential test against Python's
+own `shlex.split`. The alternative worth weighing there: extend the contract
+with a pre-split `stream_profile.argv_template`, as `output_profiles` already is.
+
+**A1.4 — an input for 2c-2: `proxy_settings` carries only the STORED settings
+group.** When a key is absent, Python falls through to
+`ConfigHelper.get(name, default)` → `getattr(Config, name, default)`, so the
+effective value comes from `BaseConfig`'s class attributes
+(`apps/proxy/config.py:6-19`), which never reach the wire. A Go relay would
+hold a second copy of every default, drifting silently whenever the Python one
+changes. Fix, on the Python side and owned by 2c-2 as the first Go consumer of
+settings: send **effective** `proxy_settings` — the stored group merged over
+those defaults — so there is nothing for Go to duplicate. Additive on the wire:
+keys that were absent become present carrying the default they already had in
+effect.
+
+**A1.5 — an input for 2c-9: CodeQL analyses no Go.** `codeql.yml:54` runs
+`[actions, python, javascript-typescript]`. 2c-1 deliberately did not add a
+`go` pack — at three tested packages and three stubs it would analyse almost
+nothing while adding a build-mode configuration to debug. 2c-9 adds it,
+alongside the coverage ratchet, when there is a relay to analyse.
 
 ## Stage 2d — cutover, and its trap
 
@@ -2119,6 +2199,7 @@ Filled in as PRs merge; this spec lands as its own PR 0.
 | Item | PR | Merged |
 |---|---|---|
 | This spec | — | — |
+| 2c-1 -- the Go relay skeleton, `relay/` module, `go-tests.yml`, `stream_profile.kind` (Amendment A1.1) | `migration/phase2c-skeleton` | pending |
 
 ## Risks
 
