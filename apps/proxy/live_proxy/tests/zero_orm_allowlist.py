@@ -324,7 +324,7 @@ EDGES = (
             "name): channel_service.py:415 calls resolve_source directly "
             "for the pub/sub-driven operator switch (server.py's switch "
             "listener), a second in-process call site #253 did not "
-            "separately record. Same 36-hit subtree as the views.py edge; "
+            "separately record. Same 38-hit subtree as the views.py edge; "
             "the count is identical by construction, since scan_edge "
             "depends only on the target module and symbol, never on who "
             "imports it. "

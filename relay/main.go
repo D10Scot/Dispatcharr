@@ -49,6 +49,14 @@ func main() {
 		// the header read closes the slow-header class without touching the
 		// body, which is the stream.
 		ReadHeaderTimeout: 10 * time.Second,
+
+		// IdleTimeout deliberately left at its zero value (no reaping of
+		// idle keep-alive connections) for 2c-1: this process serves two
+		// health endpoints to nginx/probe clients, not the live traffic an
+		// idle-timeout policy exists to bound. 2c-2 is the first PR to carry
+		// real client connections and is the right place to pick a real
+		// value against real traffic, not a number invented here with
+		// nothing to justify it.
 	}
 
 	// No graceful shutdown here. D6's SIGTERM drain is 2c-8's, and a

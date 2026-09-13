@@ -21,8 +21,15 @@
 # the MODULE root, which is <repo>/relay and is defined by where go.mod sits,
 # not by where .git does. Hence the walk rather than a call.
 #
-# CLAUDE_HOOK_REPO_ROOT is honoured the same way the helper honours it, so a
-# manual or test run can pin the tree; the walk then starts from there.
+# CLAUDE_HOOK_REPO_ROOT is deliberately NOT honoured here, unlike
+# hook_repo_root() -- a review found that starting the go.mod WALK there
+# breaks it silently: the variable is meant to pin the REPO root, which has
+# no go.mod (relay/ does), so the walk climbs from the repo root to "/",
+# MODULE_ROOT ends up empty, and the script exits 0 with no output at all --
+# the exact "silent skip indistinguishable from a pass" this header warns
+# against, verified with a real compile error present and the override set.
+# The module root is a property of the file, not of the session, and this
+# script has no lever to override that.
 #
 # hook_container_mismatch() is deliberately NOT used: these checks run on the
 # host, with no container and no bind mount, so there is nothing for it to
@@ -52,19 +59,14 @@ case "$FILE" in *.go) ;; *) exit 0 ;; esac
 #
 # hook_canon_path resolves symlinks (pwd -P), so a /private-prefixed macOS
 # spelling and a plain one compare equal in the prefix strip below. PKG_DIR
-# is always the edited file's own directory; CLAUDE_HOOK_REPO_ROOT only moves
-# where the WALK starts, which is what a manual or test run needs to pin.
+# is always the edited file's own directory, and the go.mod walk always
+# starts there -- see the header comment for why no override is honoured.
 PKG_DIR="$(hook_canon_path "$(dirname "$FILE")")"
 [ -n "$PKG_DIR" ] || exit 0
-START="$PKG_DIR"
-if [ -n "${CLAUDE_HOOK_REPO_ROOT:-}" ]; then
-  START="$(hook_canon_path "$CLAUDE_HOOK_REPO_ROOT")"
-  [ -n "$START" ] || exit 0
-fi
 
 # Walk up for go.mod. The module root is a property of the file, not of the
 # session.
-MODULE_ROOT="$START"
+MODULE_ROOT="$PKG_DIR"
 while [ ! -f "$MODULE_ROOT/go.mod" ]; do
   [ "$MODULE_ROOT" = "/" ] && { MODULE_ROOT=""; break; }
   MODULE_ROOT="$(dirname "$MODULE_ROOT")"

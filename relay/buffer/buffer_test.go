@@ -69,6 +69,11 @@ func TestChunksForBytes(t *testing.T) {
 		budget int
 		want   int
 	}{
+		// MaxBytesPerChannel is ITSELF MaxChunksPerChannel * ChunkBytes, so
+		// dividing it back by ChunkBytes is an algebraic identity: this case
+		// pins that MaxChunksPerChannel is still 300, not that the division
+		// in ChunksForBytes is correct. The cases below it, with budgets
+		// ChunksForBytes did not derive from, are what cover the conversion.
 		{"the default cap", MaxBytesPerChannel, 300},
 		{"one chunk exactly", ChunkBytes, 1},
 		{"a partial chunk rounds down to one", ChunkBytes + 1, 1},

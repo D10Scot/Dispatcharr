@@ -1691,8 +1691,13 @@ catch it.
 (`docker/supervisord.d/relay-go.conf`), started by `DISPATCHARR_ROLE` `all` and `relay` (alongside,
 not instead of, `relay-uwsgi` — both run throughout 2c; D1's scope split means neither is idle).
 Binds `0.0.0.0:$(DISPATCHARR_RELAY_GO_PORT)`, default **5658** (§ Verified facts confirms this port
-is free). Reads `SECRET_KEY` from `/data/jwt` exactly as `docker/entrypoint.sh` does for every other
-role, for both HMAC contexts it needs to produce (`relay-trust` is never produced by the relay — only
+is free). Reads the deployment's Django `SECRET_KEY` from the `DJANGO_SECRET_KEY` environment variable
+`docker/entrypoint.sh` exports before it execs supervisord — the same way every OTHER supervisord
+program in this deployment gets it, not by re-reading `/data/jwt` itself, which a non-root PUID/PGID
+made unreadable to `relay-go` once it dropped privilege after `docker/entrypoint.sh:138`'s root-owned
+read (found in the 2c-1 fix round via `docker/tests/test-puid-pgid.sh`; `DISPATCHARR_SECRET_FILE`,
+default `/data/jwt`, is read directly only as a fallback, for a caller with the file but not the
+inherited environment) — for both HMAC contexts it needs to produce (`relay-trust` is never produced by the relay — only
 verified — since nginx is the one that sets `X-Dispatcharr-Authorized`; the Go relay verifies it the
 same way `internal_auth.request_is_relay_trusted` does) and both it needs to consume/produce for the
 `/proxy/relay/…`/`/api/relay/…` contract (`internal-principal`, `internal-request` — see § The
@@ -1811,9 +1816,11 @@ contract, one in the table above — plus three inputs later PRs need.
 **A1.1 — the contract could not express "this profile is Redirect." CLOSED
 in 2c-1.** `StreamProfile.is_redirect()` is a name comparison
 (`core/models.py:132-135`). The next-source `source` dict carried
-`stream_profile` as `{id, command, args}` (`apps/proxy/next_source.py:512-518`)
-and `transcode`, which is `not (is_proxy() or is_redirect())` (`:504`, sent at
-`:511`) — so Proxy and Redirect were both `transcode: false` and both carry
+`stream_profile` as `{id, command, args}` (`apps/proxy/next_source.py:562`,
+before Task 0 collapsed the three near-identical dict literals into a single
+`_stream_profile_ref()` call at that line) and `transcode`, which is
+`not (is_proxy() or is_redirect())` (`:554`, sent at `:561`) — so Proxy and
+Redirect were both `transcode: false` and both carry
 empty `command`/`parameters` (`core/models.py:139-144`). A Go relay therefore
 could not decide between a 302 and the Proxy path, nor apply the
 internal-principal override that forces a Redirect channel through Proxy so
@@ -1824,7 +1831,7 @@ Closed by one additive key on the existing `stream_profile` object,
 `"kind": "redirect" | "proxy" | "transcode"`, derived once in
 `next_source.py`'s `_profile_kind()` and applied through `_stream_profile_ref()`
 at all **four** dicts of that shape — the three `source["stream_profile"]`
-construction sites and `_locked_ffmpeg_profile()` (`:97-100`), which the same
+construction sites and `_locked_ffmpeg_profile()` (`:125-150`), which the same
 `StreamProfileRefSerializer` renders. `transcode` is unchanged: D5 forbids
 altering what exists.
 
@@ -1855,9 +1862,10 @@ can live.
 
 **A1.3 — an input for 2c-4: `shlex.split` has no Go stdlib equivalent, and the
 contract is asymmetric about it.** `output_profiles[*].argv` arrives pre-split,
-because Django ran `shlex_split` on it (`apps/proxy/next_source.py:747`,
+because Django ran `shlex_split` on it (`apps/proxy/next_source.py:785`,
 `core/models.py:200-203`); `stream_profile.args` arrives as the raw
-`parameters` text (`apps/proxy/next_source.py:515`). So 2c-4 must implement
+`parameters` text (`apps/proxy/next_source.py:120`, inside the `_stream_profile_ref()`
+helper Task 0 adds). So 2c-4 must implement
 POSIX word splitting plus the three `{streamUrl}`/`{userAgent}`/`{channelId}`
 substitutions (`core/models.py:147-160`) under this stage's
 no-third-party-dependencies rule, with a differential test against Python's
@@ -2200,6 +2208,7 @@ Filled in as PRs merge; this spec lands as its own PR 0.
 |---|---|---|
 | This spec | — | — |
 | 2c-1 -- the Go relay skeleton, `relay/` module, `go-tests.yml`, `stream_profile.kind` (Amendment A1.1) | `migration/phase2c-skeleton` | pending |
+| 2c-1 fix round -- corrected § Stage 2c's `**Process.**` paragraph: `relay-go` reads `DJANGO_SECRET_KEY` from the environment (as every other supervisord program does), not `/data/jwt` directly — the spec's original wording was a factual error found by `docker/tests/test-puid-pgid.sh` (`relay-go` BACKOFF-looped under a non-root PUID/PGID; `docker/entrypoint.sh:138` reads that file as root, before the privilege drop) | `migration/phase2c-skeleton` | pending |
 
 ## Risks
 

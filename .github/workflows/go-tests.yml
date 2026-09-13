@@ -76,6 +76,12 @@ jobs:
             fi
           fi
           printf 'Changed files:\n%s\n' "$changed"
+          # Deliberately does NOT match docker/Dockerfile (the relay-builder
+          # stage included): these jobs run `go build`/`go vet`/`go test
+          # -race`/golangci-lint directly against the module on the runner,
+          # never through a Docker build, so a Dockerfile-only change has
+          # nothing here to verify. docker-build.yml is what actually builds
+          # the image and would catch a broken relay-builder stage.
           pattern='^(relay/|\.golangci\.yml$|scripts/check_go_stdlib_only\.sh$|\.github/workflows/go-tests\.yml$)'
           if printf '%s\n' "$changed" | grep -qE "$pattern"; then
             echo "go=true" >> "$GITHUB_OUTPUT"
