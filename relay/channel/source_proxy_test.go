@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
@@ -174,5 +177,70 @@ func TestAConnectFailureNeverEchoesTheProviderURL(t *testing.T) {
 	// Still useful: the transport's own reason survives the strip.
 	if !strings.Contains(err.Error(), "connection refused") {
 		t.Fatalf("the error lost the transport's reason: %s", err)
+	}
+}
+
+// Run builds a fresh *http.Transport every call, and that transport carries
+// no IdleConnTimeout -- its zero value is "no limit", not "the default" --
+// so a connection left idle by a clean upstream EOF (the body drains, the
+// socket is reusable, keep-alive applies) is never expired on its own. Every
+// tune building a new, never-reused Transport turns that into a leak: one
+// goroutine and one open socket to the provider per completed tune, forever,
+// unless Run tells its client to close what it pooled before returning.
+//
+// Observed at the SERVER, not the client: a client-side assertion can only
+// ask its own Transport what it thinks happened, which is exactly the
+// component under test and therefore not independent evidence. Server-side
+// http.ConnState is the provider's own view of the socket, unaffected by
+// anything this package gets right or wrong about its own bookkeeping.
+func TestRunClosesIdleConnectionsWhenItReturns(t *testing.T) {
+	var mu sync.Mutex
+	last := map[net.Conn]http.ConnState{}
+
+	// NewUnstartedServer, not NewServer: NewServer starts serving
+	// immediately, on a goroutine that reads Config.ConnState from its very
+	// first accepted connection onward. Setting the field afterwards races
+	// that read -- confirmed under -race, "Read at ... net/http.(*conn)
+	// .setState()" against "Previous write at ... ConnState = func(...)" on
+	// this test's own assignment line. The field must be set before Start.
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "video/mp2t")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(relaytest.SyntheticTS(4, 0x100))
+		// Handler returns here: a clean EOF the client can pool as idle.
+	}))
+	srv.Config.ConnState = func(c net.Conn, state http.ConnState) {
+		mu.Lock()
+		last[c] = state
+		mu.Unlock()
+	}
+	srv.Start()
+	defer srv.Close()
+
+	if err := (ProxySource{URL: srv.URL + "/live.ts"}).Run(t.Context(), &recordingSink{}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	// The transport returns a drained connection to its idle pool on a
+	// background goroutine, not synchronously with the handler returning --
+	// bounded polling rather than a fixed sleep, both directions.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		mu.Lock()
+		idle := 0
+		for _, s := range last {
+			if s == http.StateIdle {
+				idle++
+			}
+		}
+		mu.Unlock()
+		if idle == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the server still sees %d idle connection(s) two seconds after Run returned -- "+
+				"the client's transport was never told to close what it pooled", idle)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }

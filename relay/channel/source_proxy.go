@@ -160,6 +160,16 @@ func (s ProxySource) Run(parent context.Context, sink io.Writer) error {
 	}
 
 	client := &http.Client{Transport: s.transport()}
+	// A fresh *http.Transport per Run and no IdleConnTimeout set on it means
+	// an idle keep-alive connection this transport pools is never expired on
+	// its own -- IdleConnTimeout's zero value is "no limit", not "the
+	// default". Every tune builds a new one, so a clean upstream EOF (which
+	// leaves the connection reusable, not closed) would leak one goroutine
+	// and one open socket to the provider per completed tune, forever, with
+	// nothing ever reusing the pool that held it. CloseIdleConnections is
+	// this http.Client's own method and is a safe no-op if s.Transport was
+	// overridden with a RoundTripper that does not implement it.
+	defer client.CloseIdleConnections()
 	response, err := client.Do(request)
 	if err != nil {
 		return fmt.Errorf("channel: connecting to the upstream: %w", withoutURL(err))
