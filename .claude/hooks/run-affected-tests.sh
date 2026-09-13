@@ -30,18 +30,26 @@
 # failure mode.
 set -uo pipefail
 
-REPO_ROOT="${CLAUDE_HOOK_REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
+# shellcheck source=_hook_common.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_hook_common.sh"
+
 CONTAINER="${DISPATCHARR_TEST_CONTAINER:-dispatcharr-testrunner}"
+
+INPUT="$(cat)"
+FILE="$(printf '%s' "$INPUT" | jq -r '.tool_response.filePath // .tool_input.file_path // empty')"
+[ -n "$FILE" ] || exit 0
+[ -f "$FILE" ] || exit 0
+
+# REPO_ROOT is derived from the EDITED FILE's own worktree, never from this
+# script's location — see _hook_common.sh's hook_repo_root() (issue #258).
+REPO_ROOT="$(hook_repo_root "$(dirname "$FILE")")" || exit 0
 cd "$REPO_ROOT" || exit 0
 
-FILE="$(jq -r '.tool_response.filePath // .tool_input.file_path // empty')"
-[ -n "$FILE" ] || exit 0
 case "$FILE" in
   "$REPO_ROOT"/*) REL="${FILE#"$REPO_ROOT"/}" ;;
   /*) exit 0 ;;
   *) REL="$FILE" ;;
 esac
-[ -f "$FILE" ] || exit 0
 
 NOTES=()          # advisory, never blocks
 BLOCK_TITLE=""
@@ -51,9 +59,27 @@ note()  { NOTES+=("$1"); }
 block() { [ -n "$BLOCK_TITLE" ] || { BLOCK_TITLE="$1"; BLOCK_BODY="$2"; }; }
 
 _container_up=""
+# Set when container_ok() finds the container running but bind-mounted at a
+# DIFFERENT worktree than REPO_ROOT — the downstream "container not running"
+# notes below check this so they don't misdescribe a mismatch as a down
+# container once the mismatch has already been reported via block().
+_container_mismatched=""
 container_ok() {
   [ -n "$_container_up" ] || {
-    if docker exec "$CONTAINER" true >/dev/null 2>&1; then _container_up=yes; else _container_up=no; fi
+    if docker exec "$CONTAINER" true >/dev/null 2>&1; then
+      _container_up=yes
+      MISMATCH_OUT="$(hook_container_mismatch "$CONTAINER" "$REPO_ROOT")"
+      if [ $? -eq 1 ]; then
+        _container_up=no
+        _container_mismatched=yes
+        EDITED_ROOT="$(printf '%s' "$MISMATCH_OUT" | sed -n 1p)"
+        MOUNT_SRC="$(printf '%s' "$MISMATCH_OUT" | sed -n 2p)"
+        block "container '${CONTAINER}' is mounted at a different worktree than the edited file" \
+              "Edited file's repo root: ${EDITED_ROOT}"$'\n'"Container '${CONTAINER}' is bind-mounted at: ${MOUNT_SRC}"$'\n\n'"Running tests now would check the right label against the WRONG tree and report a plausible-but-meaningless result — worse than not running at all. Re-point the container (only if another agent isn't currently using it — see CLAUDE.md's worktree-occupancy rule):"$'\n'"  cd ${EDITED_ROOT} && .claude/hooks/start-test-container.sh"
+      fi
+    else
+      _container_up=no
+    fi
   }
   [ "$_container_up" = yes ]
 }
@@ -99,7 +125,7 @@ if [[ "$REL" == */models.py || "$REL" == models.py ]]; then
                "$(printf '%s' "$OUT" | awk '/^Migrations for/{f=1} f' | head -20)"$'\n\n'"Generate it with: python manage.py makemigrations ${MOD##*.}" ;;
       *) note "Could not check migrations for ${MOD}: $(printf '%s' "$OUT" | tail -2)" ;;
     esac
-  else
+  elif [ -z "$_container_mismatched" ]; then
     note "Did NOT check migrations for ${MOD} — container '${CONTAINER}' is not running."
   fi
 fi
@@ -113,7 +139,7 @@ case "$REL" in
       OUT="$(dexec manage.py check)"; [ $? -eq 0 ] ||
         block "django check failed after editing ${REL}" \
               "$(printf '%s' "$OUT" | grep -E 'Error|error:' | head -12)"$'\n\n'"apps/channels/models.py imports this module at module level; a cycle here breaks every management command."
-    else
+    elif [ -z "$_container_mismatched" ]; then
       note "Did NOT run 'manage.py check' after editing ${REL} — container '${CONTAINER}' is not running."
     fi
     ;;
@@ -295,7 +321,7 @@ case "$REL" in
       else
         printf '%s\n' "$OUT" | grep -E '^(Ran |OK)' | head -2
       fi
-    else
+    elif [ -z "$_container_mismatched" ]; then
       note "Did NOT run ${PKG} — container '${CONTAINER}' is not running. Backend tests were NOT verified; say so rather than describing the work as done. Start it with .claude/hooks/start-test-container.sh."
     fi
     ;;

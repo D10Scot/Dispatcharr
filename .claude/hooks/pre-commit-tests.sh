@@ -15,16 +15,51 @@
 # they warn loudly, because a gate that fails closed on infra just gets bypassed.
 set -uo pipefail
 
-REPO_ROOT="${CLAUDE_HOOK_REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
-CONTAINER="${DISPATCHARR_TEST_CONTAINER:-dispatcharr-testrunner}"
-cd "$REPO_ROOT" || exit 0
+# shellcheck source=_hook_common.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_hook_common.sh"
 
+CONTAINER="${DISPATCHARR_TEST_CONTAINER:-dispatcharr-testrunner}"
+
+CD_ANCHOR=""
 if [ "${1:-}" = "--git-hook" ]; then
   CMD="git commit"
 else
   CMD="$(jq -r '.tool_input.command // empty')"
   case "$CMD" in *"git commit"*) ;; *) exit 0 ;; esac
+
+  # A plain `git commit` runs inside the worktree it commits to, and the cwd
+  # this script inherits already IS that worktree — but PreToolUse fires
+  # BEFORE the command executes, so for `cd <dir> && git commit …` the
+  # inherited cwd is wherever the PREVIOUS command left it, not <dir>. That is
+  # the exact defect class issue #258 fixed for this script's own path,
+  # relocated to the inherited cwd instead. Measured: a commit landing in a
+  # tree that staged a live_proxy test derived apps.epg.tests from the stale
+  # cwd instead. Handle only the documented, anchored simple form — refuse to
+  # guess at anything more complex (multiple `cd`s, `git -C`, a `;` before the
+  # `cd`, etc.) since general shell parsing isn't safe here.
+  if [[ "$CMD" =~ ^[[:space:]]*cd[[:space:]]+([^[:space:]]+)[[:space:]]*\&\&[[:space:]]*git[[:space:]]+commit ]]; then
+    CD_ANCHOR="${BASH_REMATCH[1]}"
+    CD_ANCHOR="${CD_ANCHOR%\'}"; CD_ANCHOR="${CD_ANCHOR#\'}"
+    CD_ANCHOR="${CD_ANCHOR%\"}"; CD_ANCHOR="${CD_ANCHOR#\"}"
+  else
+    BEFORE_COMMIT="${CMD%%git commit*}"
+    if [[ "$BEFORE_COMMIT" == *"cd "* || "$BEFORE_COMMIT" == *"git -C "* ]]; then
+      MSG="Commit gate: this command changes directory before \`git commit\` in a form more complex than the documented \`cd <dir> && git commit\` (PreToolUse fires before the command runs, so this hook cannot safely determine which tree the commit will land in). Backend/frontend tests were NOT run for this commit."
+      jq -cn --arg m "$MSG" '{systemMessage:$m,hookSpecificOutput:{hookEventName:"PreToolUse",additionalContext:$m}}'
+      exit 0
+    fi
+  fi
 fi
+
+# A `git commit` runs inside the worktree it commits to (and a native
+# `.git/hooks/pre-commit` is itself invoked with cwd at the worktree root), so
+# the cwd this script inherits is the right anchor for the plain form — NOT
+# this script's own location, which under CLAUDE_PROJECT_DIR is the main
+# checkout regardless of which worktree is committing (issue #258). For the
+# `cd <dir> && git commit` form, CD_ANCHOR (parsed above) is used instead;
+# anything else already exited above. Resolved before any `cd` below.
+REPO_ROOT="$(hook_repo_root "${CD_ANCHOR:-.}")" || exit 0
+cd "$REPO_ROOT" || exit 0
 
 WARNINGS=()
 note() { WARNINGS+=("$1"); }
@@ -70,6 +105,20 @@ fi
 if [ -n "$LABELS" ]; then
   if ! docker exec "$CONTAINER" true >/dev/null 2>&1; then
     note "Commit gate: backend tests did NOT run — container '${CONTAINER}' is not running (start it with .claude/hooks/start-test-container.sh). The commit was NOT verified."
+  elif MISMATCH_OUT="$(hook_container_mismatch "$CONTAINER" "$REPO_ROOT")"; [ $? -eq 1 ]; then
+    # Warn, don't block: this script's own header says infra problems warn
+    # rather than block (line 14), and blocking here can wedge a legitimate
+    # commit — with several worktrees sharing one container, the agent NOT
+    # currently holding it could never commit, while the message tells it not
+    # to re-point (CLAUDE.md's worktree-occupancy rule says only the agent
+    # that owns the tree, or a human, should run start-test-container.sh).
+    # Same class as "container not running" above: either way no backend
+    # test ran, so both get the same treatment. The PostToolUse hook's
+    # block() on this same check is unaffected — a single edit can't wedge
+    # a whole worktree's commits the way the gate can.
+    EDITED_ROOT="$(printf '%s' "$MISMATCH_OUT" | sed -n 1p)"
+    MOUNT_SRC="$(printf '%s' "$MISMATCH_OUT" | sed -n 2p)"
+    note "$(printf 'Commit gate: backend tests did NOT run — container '"'"'%s'"'"' is bind-mounted at:\n  %s\nbut this commit is happening in:\n  %s\nRunning tests now would check the right label against the WRONG tree, so they were skipped instead. The commit was NOT verified. Re-point the container (only if another agent is not currently using it — see CLAUDE.md'"'"'s worktree-occupancy rule):\n  cd %s && .claude/hooks/start-test-container.sh' "$CONTAINER" "$MOUNT_SRC" "$EDITED_ROOT" "$EDITED_ROOT")"
   else
     while read -r L; do
       [ -n "$L" ] || continue
