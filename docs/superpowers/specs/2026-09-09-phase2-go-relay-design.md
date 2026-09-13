@@ -240,9 +240,14 @@ lowest-covered file in the denominator), `input/buffer.py` 248/166 (33.1%), `inp
 total **2,504** missed statements, 63% of the whole 3,977-statement gap. **The first draft's
 "closing them approximately **is** the gate" is withdrawn — the arithmetic does not survive
 `server.py`'s measured reachability.** The gate needs **+2,382**; the five-file pool is 2,504, a
-margin of only **122**; and `server.py` alone contributes **222** statements that are unreachable or
-must not be targeted (§ Reachability below). That leaves **2,282** — **100 short of the gate**,
-before anyone has measured how much of the other four files is unreachable.
+margin of only **122**; and `server.py` alone contributes ~~**222**~~ **139** statements that are
+unreachable or must not be targeted (§ Reachability below; **corrected in 2b-4**: `cleanup_task` is
+78 missed, not 161 — stage 2a halved it incidentally while this section's estimate went
+unrevisited — so the pair with `_cleanup_local_resources`'s unchanged 61 is 139, not 222). That
+leaves **2,282** — **100 short of the gate**, before anyone has measured how much of the other
+four files is unreachable — both figures downstream of the withdrawn five-biggest-files strategy
+this paragraph itself retracts two sentences below, and not independently recomputed here for that
+reason.
 
 **The gate is still reachable; its stated strategy is not.** The rest of `live_proxy` holds
 **1,382** missed statements outside those five files, and the ten boundary modules another 91, so
@@ -277,10 +282,12 @@ no subprocess needed, because switch/stop/metadata logic is pure Python and Redi
 
 **`server.py` is NOT ~70-75% reachable, and the estimate that said so is withdrawn — it was an
 estimate, and it did not survive contact with the file.** Measured region by region by 2a-5's
-planner, **222 of its missed statements are unreachable or must not be targeted at all**, and they
-are the two largest-looking prizes in the file:
+planner, ~~**222**~~ **139** of its missed statements are unreachable or must not be targeted at
+all (**corrected in 2b-4**, see below), and they are the two largest-looking prizes in the file:
 
-- **`cleanup_task` (161 missed) — the single biggest block in the file, and forbidden.** It is the
+- **`cleanup_task` (~~161~~ **78** missed, re-measured in 2b-4 — stage 2a halved it incidentally
+  and this section's estimate went unrevisited) — the single biggest block in the file, and
+  forbidden.** It is the
   source of the coverage gate's own run-to-run variance (see § Gate 2's ratchet paragraph): it ticks
   on its own interval and samples channels mid-shutdown. **A PR chasing it would make the
   measurement less trustworthy while appearing to improve it** — the worst possible trade, because
@@ -436,7 +443,7 @@ not the pinned values, since patches land monthly:**
 | **D4** | **No live client keys need to exist in Redis at all**, because `GET /proxy/relay/channels?clients=all` already serves that need and the Go relay must implement it anyway. | `apps/proxy/utils.py:256-283`'s `_live_connections(user_id)` — the live half of `get_user_active_connections`, called by `authorize_stream` on every tune via `check_user_stream_limits` — already calls `relay_client.list_channels(all_clients=True, timeout=relay_client.TUNE_TIMEOUT)`, i.e. it already asks the relay over HTTP rather than scanning `live:channel:*:clients:*` directly; that scan was removed in Phase 1 PR 7. Verified by reading the function in full: it fails open (a relay that cannot answer contributes nothing, logged once) and is documented as deliberately so — "the relay is the only process serving live clients, so a relay that is not answering has none." The Go relay reproducing this route byte-for-byte (§ The contract) closes the loop with zero new Redis state. |
 | **D5** | **Strict behavioural parity, defects included** — the three failover triggers and thresholds, threshold snapshotting at channel start, the monotonic never-reset chunk index, the ~5s-behind-live join, 188-byte TS realignment, the cumulative `speed=` average's ~55s arming delay, `MAX_STREAM_SWITCHES` not bounding buffering-triggered switches, and fMP4's `_is_timeout()` lacking the TS generator's `url_switching` exemption. These get filed as issues against the parity matrix, not fixed in transit. Two named exceptions: **(1) process-lifecycle hygiene** — Go spawns ffmpeg with `SysProcAttr{Setpgid: true, Pdeathsig: syscall.SIGKILL}`, closing the orphaned-ffmpeg-holds-a-provider-slot defect (`CLAUDE.md` § Operationally: "`os.posix_spawn` runs with no `setsid`/`PDEATHSIG`"), because no test asserts the current behaviour and it is process hygiene, not streaming behaviour a client can observe. **(2) The dev authorize path** — with no nginx, there is no `auth_request`; a Go relay cannot call `apps/proxy/authorize.py`'s `authorize_stream` in-process (it is Python). When the trust marker is absent, the Go relay makes an HTTP call to a new Django endpoint, `POST /_dispatcharr/authorize-internal` — its own path, not the existing nginx-facing one, for a reason § The contract states in full — reaching the same `authorize_stream()` decision function over HTTP instead of a Python import. **Two requirements in § The contract are load-bearing for this exception, and both fail silently rather than loudly**: the view builds every one of `authorize_stream`'s inputs from the request body and inherits nothing from the transport request (else the internal-principal question answers itself and everything authorizes), and it resolves a session principal through the session store rather than `request.user` (else a session viewer is downgraded to anonymous and still gets a 200 with bytes). | A rewrite that also changed behaviour would make every regression ambiguous between "the port is wrong" and "the fix changed something." Parity is what makes the ~63 portable tests (§ Verified facts) a meaningful safety net rather than a moving target. The two exceptions are chosen narrowly: neither is externally observable streaming behaviour a Playwright spec could assert differently, and the second is required by D2/D3's own shape (dev has no nginx, and Go has no Django import path), not a discretionary fix folded in for convenience. |
 | **D6** | **Ships drain-on-SIGTERM, `/healthz`, `/readyz`, wired to supervisord `stopwaitsecs` and a Docker `HEALTHCHECK`. No Prometheus metrics.** | `CLAUDE.md` § Operationally records the current relay's shutdown as bounded-not-graceful (`die-on-term`, no drain) and the deployment as having no readiness probe at all — both real gaps this phase can close in a language where a drain loop and a health endpoint are a few dozen lines, not a gevent-compatibility exercise. Metrics are declined because nothing scrapes them today and the metrics dashboard (`metrics/curated/`) is engineering data assembled from git/CI/issue history, not a runtime target — adding a `/metrics` endpoint with no consumer is exactly the scope-widening `CLAUDE.md` warns against. |
-| **D7** | **Two coverage gates, not one, and the second blocks the first line of Go code.** Gate 1: the parity matrix is 100% pinned — no row still marked `owed:` — enforced by a guard test, and met in **2b-3**, not at the end of 2a, since row 18 is a question only 2b-3 can answer (§ A6/A7). Gate 2: ≥80% statement coverage on `apps/proxy/live_proxy/**` plus the Phase 1 boundary modules (§ Stage 2a names the exact ten), measured by `scripts/coverage_live_path.sh` and enforced as a ratchet floor file, in `lint.yml`'s idiom for zizmor's zero-findings rule. **AMENDED after 2a was measured: the ratchet ships in 2a-7 at the measured 74.30%; the ≥80% threshold itself is met in `2b-4`.** Both halves still gate 2c — the ratchet from 2a-7 onward, the threshold from 2b-4 — so this decision's force is unchanged and only its schedule moved (§ Stage 2a › Gate 2, amended). **No PR in stage 2c may merge until both gates are green**, recorded as CI-enforced in 2c's own PRs, not left to review discipline. | The 63 portable tests alone are not enough to catch a subtle regression in, say, the buffering detector's cumulative-average arithmetic — `log_parsers.py` is 69% covered and 235 statements of exactly the logic a byte-for-byte port has to get right. Gating Go's *start* on coverage, not just its *finish*, is what stops "write the matrix, then start porting while coverage catches up" — a sequencing this phase's own §2a reachability numbers show is expensive to do after the fact (the two hardest files to cover, `input/manager.py` and `fmp4/manager.py`, are exactly the two a Go implementer needs most while porting). |
+| **D7** | **Two coverage gates, not one, and the second blocks the first line of Go code.** Gate 1: the parity matrix is 100% pinned — no row still marked `owed:` — enforced by a guard test, and met in **2b-3**, not at the end of 2a, since row 18 is a question only 2b-3 can answer (§ A6/A7). Gate 2: ≥80% statement coverage on `apps/proxy/live_proxy/**` plus the Phase 1 boundary modules (§ Stage 2a names the exact ten), measured by `scripts/coverage_live_path.sh` and enforced as a ratchet floor file, in `lint.yml`'s idiom for zizmor's zero-findings rule. **AMENDED after 2a was measured: the ratchet ships in 2a-7 at the measured 74.30%; the ≥80% threshold itself is met in `2b-4`.** Both halves still gate 2c — the ratchet from 2a-7 onward, the threshold from 2b-4 — so this decision's force is unchanged and only its schedule moved (§ Stage 2a › Gate 2, amended). **No PR in stage 2c may merge until both gates are green**, recorded as CI-enforced in 2c's own PRs, not left to review discipline. **MET: 2b-4 closes the threshold half at the measured 81.11% (missing=1,525 of 8,073, worst of a 12-round CI census), and Gate 1 closed in 2b-3.** Both halves of D7 are therefore green as of 2b-4; D7 no longer blocks 2c. | The 63 portable tests alone are not enough to catch a subtle regression in, say, the buffering detector's cumulative-average arithmetic — `log_parsers.py` is 69% covered and 235 statements of exactly the logic a byte-for-byte port has to get right. Gating Go's *start* on coverage, not just its *finish*, is what stops "write the matrix, then start porting while coverage catches up" — a sequencing this phase's own §2a reachability numbers show is expensive to do after the fact (the two hardest files to cover, `input/manager.py` and `fmp4/manager.py`, are exactly the two a Go implementer needs most while porting). |
 
 ## Architecture
 
@@ -965,6 +972,14 @@ that is held to parity has one.
 > requirement is retained in full and reassigned to `2b-4`** (§ Stage 2b's PR table), so **D7 still
 > blocks every 2c PR**. 2a-7 turns the ratchet on; it does not turn the blocker off.
 >
+> **MET in 2b-4.** A 12-round CI census on the tree carrying 2b-4's tests measured missing=1,496-
+> 1,525 (worst=1,525, `n`=12, stopping rule met at round 12), against denominator **8,073** (moved
+> from 7,978 by this PR's own `_live_connections` relocation into `apps/proxy/relay_client.py`, a
+> code move into the denominator, not an rcfile edit) and a recomputed ceiling of `8,073 -
+> ceil(0.8 × 8,073)` = **1,614**. **81.11% at the floor, 89 statements of margin.** The floor file
+> now records `missing=1,525`; D7's threshold half is green, and — with Gate 1 closed in 2b-3 —
+> both halves of D7 are.
+>
 > **Why the number was not reached, and why it was not bought.** Every reachability estimate in this
 > document was checked during 2a and none survived — three checked, three wrong, two pessimistic and
 > one optimistic. Closing 455 statements from where 2a ends means 2-4 further PRs against a pool
@@ -1186,7 +1201,7 @@ guard exists to refuse, and it would be a poor thing to commit into the spec tha
 |---|---|---|
 | Distance to close | **3,035 → 1,440** (post-2a-3) | pending sysmon re-measurement |
 | 2a-4 `input/manager.py` | 498 missed; its planner predicts 60-120 | pending |
-| 2a-5 `server.py` | 840 missed, **222 forbidden-or-unreachable**; reachable remainder disputed at **150 / 217 / 618** | pending, and the dispute is unresolved |
+| 2a-5 `server.py` | 840 missed, ~~**222**~~ **139 forbidden-or-unreachable** (corrected in 2b-4: `cleanup_task` re-measured at 78, not 161); reachable remainder disputed at **150 / 217 / 618** | pending, and the dispute is unresolved |
 | 2a-6 `fmp4/manager.py` + `profile/manager.py` + `fmp4/generator.py` | **unmeasured**; ≤633 by their pre-harness sum | never measured post-harness |
 | 2a-5's authorize rows | **counted as zero** | see below |
 
@@ -1206,14 +1221,21 @@ with no basis. An exhaustive AST walk mapping every missed line to its innermost
 now supersedes it. The retraction is left standing here rather than deleted: the wrong number was
 published, and a withdrawn claim that vanishes is worse than one visibly retracted.
 
-**`server.py`, measured exhaustively (C-tracer basis, 844 missed — the buckets sum to the total
-exactly):** blocked-or-must-not-target **175**, unreachable or white-box-only **108**, 2a-6's Output
-Profile surface **142**, 2a-5's surfaces **269**, reachable-but-expensive **150**. So
-**blocked-or-unreachable is 283** — 61 more than the 222 previously carried, because
-`_check_orphaned_metadata` (26), `_execute_redis_command` (14), `_check_orphaned_channels` (7, and
-**no callers anywhere** — new dead code) and `_recover_stuck_channel_stops` (14) had been named in
+**`server.py`, measured exhaustively (C-tracer basis, ~~844~~ **761** missed — the buckets sum to
+the total exactly):** blocked-or-must-not-target ~~**175**~~ **92**, unreachable or white-box-only
+**108**, 2a-6's Output Profile surface **142**, 2a-5's surfaces **269**, reachable-but-expensive
+**150**. So **blocked-or-unreachable is ~~283~~ 200** — 61 more than the ~~222~~ **139** previously
+carried (not the stale 222 this clause originally read against — **corrected in 2b-4**: this
+bucket's `cleanup_task` share drops from 161 to 78, the same -83 correction made above propagated
+straight through the bucket sum, since `_check_orphaned_metadata` (26), `_execute_redis_command`
+(14), `_check_orphaned_channels` (7, and **no callers anywhere** — new dead code) and
+`_recover_stuck_channel_stops` (14) — the four items this clause originally named as newly-counted
+noise — are unchanged), because those four had been named in
 prose as noise but never counted — and **reachable is 561**, not 217 and not 618. The 142 stays in
-the pool: it is reachable through the ordinary tune path and 2a-6 moves it as a side effect.
+the pool: it is reachable through the ordinary tune path and 2a-6 moves it as a side effect. **The
+other four buckets (108, 142, 269, 150) are unchanged and not independently re-verified here** —
+this is `cleanup_task`'s correction propagated through the one bucket it lives in, not a fresh
+C-tracer remeasurement of the whole file, which 2b-4 (sysmon-only) cannot produce.
 
 **SUPERSEDED IN TURN, by measurement rather than by argument.** The bracket published above rested
 on this spec's own "~20-30% reachable" estimate for the fmp4/Output-Profile group. **That group is
@@ -1429,7 +1451,7 @@ and what does it count*, not only *do these numbers agree* — which is the habi
 prevented every error in this section, including the published one.
 
 **Hard versus soft, stated because the soft part is load-bearing.** Measured or mechanically
-derived: the 283, the bucket boundaries, both caller claims (grepped), `input/manager.py`'s
+derived: ~~the 283~~ **the 200** (2b-4's correction — see above), the bucket boundaries, both caller claims (grepped), `input/manager.py`'s
 178/49/247 split, and #230's unreachability (verified by indentation). **A judgement, not a
 measurement:** the line between "reachable" and "reachable but expensive" — the 150-statement tail
 of roughly 28 functions whose bodies are `except Exception: logger.error(...)` arms needing fault
@@ -1661,7 +1683,7 @@ catch it.
 | 2b-1 | `migration/phase2b-names-and-profiles` | `channel_name`/`stream_name`/`m3u_profile_name` on `next-source`'s response and `advance`'s **request** body (`RelayAdvanceRequestSerializer`, `relay_serializers.py:187`) — both directions point Django's names at the relay, never the reverse; the `StreamProfile` fallback folded into `next-source`; `get_connections_left` deleted (or folded in, if a caller surfaces); `next-source`'s identifier resolution extended to accept a `stream_hash` (parity row 16); `proxy_settings` added to `next-source`'s response. | 2b's own zero-ORM guard test (part 1, static) shows a measured reduction in surviving sites | 2a-7 (Gate 2 must be green before 2c starts, and 2b's own coverage matters to that number too) |
 | 2b-2 | `migration/phase2b-output-profile-and-user` | `OutputProfile.build_command()`'s output folded into `next-source`'s response as an `output_profiles` map of every active profile (see the Stage 2b table's corrected `views.py:152` row); the new `X-Relay-Output-Format` **and** `X-Relay-Client-IP` headers end to end (`authorize_view`, `dispatcharr_api_params.conf`, all nine nginx locations, the greybox spec's `AUTH_REQUEST_SET_VARS`, `internal_auth.py`'s name pairs) — the full blast-radius file list from the table above, both headers in one PR since they touch the same files. | Existing forged-header `@contract` test still 403s with both headers in place; `nginx-stream-buffering.spec.ts`'s test 2 updated and green | 2b-1 |
 | 2b-3 | `migration/phase2b-zero-orm-guard` | The two-part guard test (static + runtime) plus `zero_orm_allowlist.py`; deletes whichever `channel_status.py:74`/`:92` fallback reads turn out, on inspection during this PR, to be provably unreachable — and, for whichever do not, adds them to the allowlist with a comment citing this decision rather than leaving them to fail the guard silently. **Corrected in this fix round (§ NM2 in the round-2 review): the previous gate — "both guard-test parts green" — could not be met by a PR whose own scope keeps a read in place, since the static guard would fail on it by construction. The allowlist is what makes "leave a read in place, deliberately" and "the guard passes" compatible.** | Both guard-test parts green **against the allowlist** — an empty allowlist is the best outcome but not the gate; a non-empty, comment-cited one still passes; **and Gate 1 is met** — `e2e/tests/guards/parity-matrix.spec.ts` reports no row still marked `owed:`. **Added in the round-6 amendments (§ A6) because no PR's gate was Gate 1**: 2a-1's is "guard green" (which is green by design with rows still owed), 2a-3 through 2a-6's are coverage increases plus their own rows, and 2a-7's is Gate 2 — even though D7 makes Gate 1 a hard precondition on every 2c PR. 2b-3 owns row 18, the last owed row in the phase, so it is necessarily the PR that turns Gate 1 off; a precondition no PR is required to reach is not a precondition | 2b-1, 2b-2 |
-| 2b-4 | `migration/phase2b-coverage-80` | **Closes Gate 2's ≥80% requirement, reassigned here from 2a-7 (§ Stage 2a › Gate 2, amended).** Stage 2a ends measured at **74.30%** — 2,050 missing of 7,978, worst of 15 CI rounds — with the ratchet floor live in `backend-tests.yml`. This PR closes the remaining **455** statements and moves the floor to the 1,595 the gate allows. Scope it from a *measured* per-file reachability pass, not from an estimate: no reachability estimate in this document survived contact with stage 2a. | The floor file records ≤1,595 missing and `backend-tests.yml`'s `coverage-gate` job is green at it; **D7 blocks every 2c PR until then** | 2a-7 (the ratchet and the measurement it rests on) |
+| 2b-4 | `migration/phase2b-coverage-floor` | **Closes Gate 2's ≥80% requirement, reassigned here from 2a-7 (§ Stage 2a › Gate 2, amended).** Stage 2a ends measured at **74.30%** — 2,050 missing of 7,978, worst of 15 CI rounds — with the ratchet floor live in `backend-tests.yml`. ~~This PR closes the remaining **455** statements and moves the floor to the 1,595 the gate allows.~~ **Both figures were stale, and by construction rather than by drift: 455 was arithmetic on the 7,978-statement denominator this row was drafted against, and 1,595 was `7,978 − ceil(0.8 × 7,978)` — but this PR's own Task 1 (`_live_connections` relocated into `apps/proxy/relay_client.py`) moved the denominator to 8,073 before a single coverage test was written, and the denominator moves on any ordinary edit to an already-included module besides — a hard-coded permitted-missing figure goes stale on exactly the kind of code change this document itself makes routine, and must always be recomputed from the denominator in hand, not copied forward. Measured: shortfall **388** (`8,073 − 2,002` against a ceiling of `8,073 − ceil(0.8 × 8,073)` = **1,614**), closed to **missing=1,525** (worst of a 12-round CI census, margin 89) — floor moved to **1,614** the gate allows, not 1,595.** Scope it from a *measured* per-file reachability pass, not from an estimate: no reachability estimate in this document survived contact with stage 2a. | The floor file records ≤1,614 missing (measured **1,525**) and `backend-tests.yml`'s `coverage-gate` job is green at it; **D7 is green as of this PR** | 2a-7 (the ratchet and the measurement it rests on) |
 
 ## Stage 2c — build the Go relay
 
