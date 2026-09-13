@@ -320,3 +320,76 @@ func TestAFinishedChannelIsNotHandedToANewClient(t *testing.T) {
 		t.Fatalf("the live provider saw %d requests, want 1 -- the second client did not re-tune", got)
 	}
 }
+
+// A downstream reviewer's claim, verified here before being trusted: the
+// last client's release() and a concurrent Attach on the same id are not
+// mutually exclusive unless the "am I still idle" re-check runs under the
+// SAME lock claim() holds across its own map-read-and-addClient. Confirmed
+// real against the pre-fix code -- a plain c.Clients() == 0 check taken
+// outside m.mu -- at roughly one race in several thousand rounds: the
+// arriving client's claim() would see the channel still in the map, add
+// itself, and be handed a *Channel that the releasing goroutine's Stop then
+// tore down anyway, because its decision was made from a snapshot the
+// arriving client had already invalidated.
+func TestAReleaseCannotStopAChannelAConcurrentAttachJustJoined(t *testing.T) {
+	const rounds = 20000
+	for round := range rounds {
+		counter := &int32Counter{}
+		m := NewManager(ManagerConfig{BudgetBytes: buffer.TSPacketSize * 32})
+
+		_, releaseFirst, err := m.Attach("shared", func() (Source, Tuning, error) {
+			return blockingSource{started: counter}, testTuning(), nil
+		})
+		if err != nil {
+			t.Fatalf("round %d: first Attach: %v", round, err)
+		}
+
+		var wg sync.WaitGroup
+		var second *Channel
+		var releaseSecond func()
+		var secondErr error
+		start := make(chan struct{})
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			<-start
+			releaseFirst()
+		}()
+		go func() {
+			defer wg.Done()
+			<-start
+			second, releaseSecond, secondErr = m.Attach("shared", func() (Source, Tuning, error) {
+				return blockingSource{started: counter}, testTuning(), nil
+			})
+		}()
+		close(start)
+		wg.Wait()
+
+		if secondErr != nil {
+			t.Fatalf("round %d: second Attach: %v", round, secondErr)
+		}
+		if second == nil {
+			t.Fatalf("round %d: second Attach returned a nil channel with no error", round)
+		}
+		// THE PROPERTY: whichever channel the second client was handed --
+		// the first's, if it won the race, or a freshly started one, if the
+		// first's had already been removed -- it must not be a channel that
+		// is stopping or stopped out from under a client that just arrived.
+		if state := second.State(); state == StateStopping || state == StateStopped {
+			t.Fatalf("round %d: the second client was handed a %s channel", round, state)
+		}
+		releaseSecond()
+
+		// After both releases, exactly the sources this round started must
+		// have stopped -- no leaked goroutine still holding a "started" slot
+		// this manager no longer has a map entry for.
+		deadline := time.Now().Add(5 * time.Second)
+		for len(m.ids()) != 0 {
+			if time.Now().After(deadline) {
+				t.Fatalf("round %d: the manager still holds %d channel(s) after both clients released",
+					round, len(m.ids()))
+			}
+			time.Sleep(time.Millisecond)
+		}
+	}
+}

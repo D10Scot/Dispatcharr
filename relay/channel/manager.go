@@ -276,14 +276,62 @@ func (m *Manager) release(c *Channel) {
 		return
 	}
 	if m.cfg.ShutdownDelay <= 0 {
-		m.Stop(c.id)
+		m.stopIfStillIdle(c)
 		return
 	}
 	time.AfterFunc(m.cfg.ShutdownDelay, func() {
-		if c.Clients() == 0 {
-			m.Stop(c.id)
-		}
+		m.stopIfStillIdle(c)
 	})
+}
+
+// stopIfStillIdle re-checks c's client count and, if it is still zero,
+// removes c from the map and tears it down -- both under m.mu, in the same
+// critical section claim() uses to read the map and call addClient.
+//
+// THE RE-CHECK MUST HAPPEN UNDER m.mu, and that is the whole fix (found by a
+// downstream reviewer, verified here before being trusted): dropClient()
+// above only touches c.mu, so the moment between it returning zero and this
+// method's own lock acquisition is a window in which claim() can run to
+// completion -- see the map, find the ring not yet closed, and addClient()
+// -- entirely unaware that the caller that dropped to zero already decided
+// to stop this channel. Re-reading Clients() here, under the same lock
+// claim() holds across its own check-and-addClient, makes the two mutually
+// exclusive: whichever runs first is the one whose view of "is this channel
+// idle" is the one that is acted on, and the other sees the consequence
+// (either the channel is already gone from the map, or Clients() is back
+// above zero and this call is a no-op). Demonstrated at roughly one race in
+// several thousand rounds by TestAReleaseCannotStopAChannelAConcurrentAttachJustJoined
+// against the pre-fix code (a plain c.Clients() == 0 check taken outside the
+// lock): a client attaching at that exact instant was handed a channel that
+// stopIfStillIdle then tore down anyway, in the same round.
+//
+// The identity check (`existing == c`) guards a narrower case than the race
+// above: by the time this runs, id's map entry might already be a DIFFERENT,
+// newer channel (this one's ring closed on its own and a fresh tune
+// replaced it in claim() before this call ever got the lock). Deleting the
+// map entry unconditionally in that case would remove the wrong channel.
+// Tearing down c itself is still correct and safe either way -- c.stop is
+// idempotent-ish (context.CancelFunc more than once is a no-op, and a select
+// on an already-closed c.done returns immediately) -- so this always runs it
+// once Clients() reads zero, and only touches the map when c is still the
+// entry it names.
+func (m *Manager) stopIfStillIdle(c *Channel) {
+	stop := func() bool {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		if c.Clients() != 0 {
+			return false
+		}
+		if existing, ok := m.channels[c.id]; ok && existing == c {
+			delete(m.channels, c.id)
+		}
+		return true
+	}()
+	if !stop {
+		return
+	}
+	c.setState(StateStopping, nil)
+	c.stop(m.cfg.StopWait)
 }
 
 // Describe is a one-line state summary, for logs and for the 2c-8 status
