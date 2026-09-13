@@ -2,11 +2,11 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Put a Go module at `relay/`, start it as a supervisord program in the `all` and `relay` roles, build it in the Docker image, and gate it in CI — with `/healthz` and `/readyz` answering 200 and nothing else reachable outside `dev`. This is the first PR of Stage 2c and the first line of Go in the repository. It ships no streaming behaviour at all.
+**Goal:** Put a Go module at `relay/`, start it as a supervisord program in the `all` and `relay` roles, build it in the Docker image, and gate it in CI — with `/healthz` and `/readyz` answering 200 and nothing else reachable outside `dev`. Plus one Python contract field, `stream_profile.kind`, without which the PR cannot honestly claim the spec's own precondition met. This is the first PR of Stage 2c and the first line of Go in the repository. It ships no streaming behaviour at all.
 
 **Architecture:** Five packages the spec names (`httpapi`, `control`, `channel`, `buffer`, `ffmpeg`) plus one this plan adds and justifies (`config`). Three of the six are documented stubs; three carry real, tested code, because a stub that compiles and asserts nothing gives `go-tests.yml` nothing to prove and gives `go test -race` no reason to exist. The three that carry code are the three whose correctness cannot be deferred: `control` holds the HMAC token layout (get one byte wrong and every internal call 403s), `config` holds the `/data/jwt` read that feeds it (get the whitespace handling wrong and the same thing happens, silently), and `buffer` holds the per-channel memory bound this PR is required to settle as a number rather than a comment.
 
-**Tech Stack:** Go 1.27.1, standard library only — `net/http`, `crypto/hmac`, `crypto/sha256`, `encoding/hex`, `os`, `strconv`, `testing`. No third-party module, now or through 2c-9; `go.sum` stays absent. `golangci-lint` 2.13.2 for lint, `go vet` for vet, `go test -race` for tests. Build inside Docker from a digest-pinned `golang` builder stage, cross-compiled to both published architectures.
+**Tech Stack:** Go 1.27.1, standard library only — `net/http`, `crypto/hmac`, `crypto/sha256`, `encoding/hex`, `os`, `strconv`, `testing`. No third-party module, now or through 2c-9; `go.sum` stays absent. `golangci-lint` 2.13.2 for lint, `go vet` for vet, `go test -race` for tests. Build inside Docker from a digest-pinned `golang` builder stage, cross-compiled to both published architectures. Task 0 alone is Python: DRF serializers and a Django `TestCase` in the `dispatcharr-testrunner` container, across three backend labels.
 
 **Spec:** `docs/superpowers/specs/2026-09-09-phase2-go-relay-design.md` — the `2c-1` row of § Stage 2c › The nine PRs (line 1795), § Stage 2c's `**Process.**` paragraph (line 1690), `**Concurrency.**` (line 1702), `**Buffer depth — an explicit open item**` (line 1709), `**Repo layout.**` (line 1723), `**Third-party Go dependencies: none.**` (line 1731), `**The two invariants**` (line 1738), § The contract (line 517, and the exact byte layout at lines 540-548), D5 (dev fallback), D6 (health/readiness), D7 (both gates, now met), § Testing's `go test -race` bullet (line 2086). Supporting: `apps/proxy/live_proxy/tests/zero_orm_allowlist.py` (this PR's precondition), `apps/proxy/internal_auth.py`, `docker/entrypoint.sh`, `.github/workflows/frontend-tests.yml` (the four-part requireable shape), `.claude/hooks/run-affected-tests.sh` and `pre-commit-tests.sh` (the hook idiom).
 
@@ -24,7 +24,7 @@ Every task's requirements implicitly include this section.
 
 3. **Standard library only. No `require` line, no `go.sum`, ever.** Spec line 1731 calls this "a rule to defend, not an accident". Task 2 builds the mechanical check and Task 11 wires it into CI. If a task appears to need a dependency, stop and report — the answer is either that the task is out of 2c-1's scope or that the stdlib does it and the reach for a library was reflex.
 
-4. **No Python file is edited in this PR.** Not `apps/`, not `core/`, not `dispatcharr/`, not `scripts/`. 2c-1's gate is Go-and-infrastructure; a Python edit here would pull the whole backend label matrix into a PR whose own tests cannot exercise it. The one contract gap this plan found (Finding F1, below) is therefore recorded as a spec amendment in this PR and implemented in a later one — deliberately, and stated in the PR description rather than quietly deferred.
+4. **Exactly one Python change is in scope, and it is Task 0's.** The contract gap this plan found (Finding F1) is closed here, by adding `stream_profile.kind` to the next-source payload — because the spec's own precondition is "a contract field for each allowlisted site, or a documented reason it needs none, **before** its first line of Go", and a `GAP` row in the reconciliation table is neither. Deferring the field would mean 2c-1 claiming a precondition it had not met. Four files, named in Task 0 and nowhere else: `apps/proxy/next_source.py`, `apps/proxy/serializers.py`, `apps/proxy/tests/test_redirect_transcode_flag.py`, `apps/proxy/live_proxy/tests/zero_orm_allowlist.py`. **Any other Python edit is out of scope** — Task 14 Step 2 checks for one mechanically.
 
 5. **Every pin is tool-resolved on the day the PR is opened, never copied from this plan.** The values in Task 11 and Task 10 were resolved on 2026-09-13 and are recorded so the implementer can tell whether anything moved, not so they can be pasted. The spec's own `2c-1` gate (line 1795) makes re-resolution part of the gate: `go.dev/dl`, `docker buildx imagetools inspect` against the current `golang` tag, and fresh `gh api repos/<owner>/<repo>/commits/<tag> --jq .sha` lookups. **Confirm the publisher before trusting a SHA** — a plausible SHA on a same-named fork is worse than a floating tag, because it looks pinned (CLAUDE.md § Supply chain security).
 
@@ -37,6 +37,14 @@ Every task's requirements implicitly include this section.
 9. **Nothing in `relay/` may open a Postgres connection or a Redis connection, in any task, including a test.** These are the phase's two checkable success criteria (spec line 1738). At 2c-1 they hold trivially, because constraint 3 means there is no driver to link. Task 2's check is what keeps them holding when the module stops being trivial.
 
 10. **Prefer `t.Setenv` over manual environment save/restore in tests, and never run an environment-mutating test with `t.Parallel()`.** `t.Setenv` restores on cleanup and, deliberately, panics if the test has called `t.Parallel()` — which is the language telling you the test is not safe to parallelise. Do not work around it by saving and restoring by hand; that reintroduces exactly the race `-race` is here to find.
+
+11. **Task 0 runs Django tests, so it needs the shared `dispatcharr-testrunner` container, and the container is shared across agents.** Its bind mount points at exactly one worktree, and the `PostToolUse` hooks run in the harness's environment where `DISPATCHARR_TEST_CONTAINER` never reaches them — so an edit-triggered run always uses the container named `dispatcharr-testrunner`, whatever you intended, and tests whichever tree it is mounted at. Before Task 0's first edit:
+
+    ```bash
+    docker inspect dispatcharr-testrunner --format '{{range .Mounts}}{{.Source}}{{"\n"}}{{end}}'
+    ```
+
+    If it is not your worktree, re-point it with `.claude/hooks/start-test-container.sh` — **after** checking nobody else is mid-task in the tree it currently holds (`docker ps`, and `stat -f '%Sm %N'` on that tree's recently-touched files; a modification younger than a few minutes means occupied). Task 0's three backend labels take a few minutes; Tasks 1 onward need no container at all.
 
 ### The six ways a Go test can be green and meaningless
 
@@ -190,9 +198,30 @@ This does not fix, depend on, or conflict with #258. `settings.json` still locat
 
 The spec says roles `all` and `relay` (line 1690). `docker/supervisord/relay.conf`'s include is a glob — `files = /app/docker/supervisord.d/relay-*.conf` — so the `relay` role picks up `relay-go.conf` with no edit. `all.conf` and `all-dev.conf` carry explicit file lists and each needs one path appended. `all-dev` is the rung `DISPATCHARR_ENV=dev` selects for role `all` (`docker/entrypoint.sh:491`), so including it is what "role `all`" means in dev — and it is the only shape where this PR's dev-gated route is reachable at all, which makes leaving it out equivalent to shipping the flag dead.
 
-### R6 — CodeQL gets no `go` language pack in this PR.
+### R6 — CodeQL gets no `go` language pack in this PR, and the gap is recorded in the spec, not in a report.
 
-`codeql.yml:54` analyses `[actions, python, javascript-typescript]`. Go is a real gap and it should close, but not here: at 2c-1 the module is three tested packages and three stubs, so a Go pack would analyse almost nothing while adding a build-mode configuration to debug. **Recommended owner: 2c-9**, alongside the coverage ratchet, when there is a relay to analyse. Recorded in the PR description as a known, dated gap rather than left unstated.
+`codeql.yml:54` analyses `[actions, python, javascript-typescript]`. Go is a real gap and it should close, but not here: at 2c-1 the module is three tested packages and three stubs, so a Go pack would analyse almost nothing while adding a build-mode configuration to debug. **Owner: 2c-9**, alongside the coverage ratchet, when there is a relay to analyse. Task 1 Step 4 writes it into Amendment A1 as a 2c-9 input — a PR description is read once and a spec amendment is read by whoever plans 2c-9, which is the person who needs it.
+
+### R8 — `kind` is derived in **one** helper, not copied into four dicts, and doing so moves an allowlist number.
+
+The lead's ruling names three construction sites plus the serializer. There is a fourth dict of the same shape — `_locked_ffmpeg_profile()` (`apps/proxy/next_source.py:97-100`), which is rendered by the *same* `StreamProfileRefSerializer` — so a required `kind` on that serializer obliges all four. Rather than write the derivation out four times, Task 0 adds two small private helpers and routes all four through them.
+
+**The evidence for the helper is in the tree, not a preference.** `apps/proxy/tests/test_redirect_transcode_flag.py`'s own docstring records a production defect caused by exactly this duplication: the `transcode` derivation existed at two points, they disagreed about Redirect, and "every reconnect spawned an empty executable" during a recording. A second per-profile fact derived independently in four places is that defect's shape, pre-built.
+
+**The consequence, which is easy to miss:** `is_redirect` and `is_proxy` are methods on `StreamProfile`, a Django model, so `zero_orm_scan.py`'s `model_method_names()` includes them (`zero_orm_scan.py:60-82`) and `_hits_in` flags every `x.is_redirect()` call site (`:97`). The helper adds two flagged lines inside `resolve_source`'s reachable subtree, so **both `resolve_source` EDGE entries' `hits` counts move** and the allowlist's ratchet fires until they are updated. Measured at `0c1654d8`, the current counts are `resolve_source` **36** and `get_stream_object` **3**, matching the allowlist exactly:
+
+```bash
+cd <your worktree> && python3 -c "
+import sys; sys.path.insert(0, '.')
+from apps.proxy.live_proxy.tests.zero_orm_scan import scan_edge, Edge
+for name in ('resolve_source', 'get_stream_object'):
+    print(name, len(scan_edge(Edge('x', 'apps.proxy.next_source', name))))
+"
+```
+
+The scanner is pure AST and needs no Django, so this runs anywhere. **Prediction: 36 becomes 38, and `get_stream_object` stays 3.** It is a prediction and Task 0 Step 5 replaces it with a measurement — do not write 38 into the allowlist without running the command.
+
+**This is a ratchet moving for a real reason, which is the only kind of move that is allowed.** Two new ORM-shaped call sites genuinely exist; they issue no query (both compare `self.locked` and `self.name` on an already-loaded instance, `core/models.py:127-135`), which is why they are allowlisted rather than removed, and the count moving is the ratchet doing its job rather than a number being tuned to fit.
 
 ### R7 — The Docker builder stage cross-compiles; it does not emulate.
 
@@ -234,8 +263,10 @@ The contract fields cited below were each read in the tree, not taken from the a
 | S8 | `input/manager.py:788` | `channel.get_stream_profile()` | As S6, same field. | as S6 | Field, verified |
 | S9 | `views.py:766` | `OutputProfile.build_command()` — a model **method**, no query | **Nothing to close, and the Go equivalent exists**: `OutputProfile.build_command` is `[self.command] + shlex_split(self.parameters)`, and Django already runs it when it builds `output_profiles[*].argv`. Go reads the finished argv. | `core/models.py:200-203`; `apps/proxy/next_source.py:747` | Reason, verified |
 | S10 | `input/manager.py:791` | `StreamProfile.build_command(url, ua, channel_id)` — a model method, no query | **Nothing to close as an ORM matter**, and the Go relay reproduces it from `stream_profile.command` + `stream_profile.args`. Its `is_proxy()/is_redirect()` early return is unreachable in Go because the relay only reaches this path when `transcode` is true. | `core/models.py:137-166`; `transcode` at `apps/proxy/next_source.py:511`, computed `:504` | Reason, verified — **see F3** |
-| S11 | `views.py:462` | `stream_profile.is_redirect()` — a model method, no query | **GAP.** True as an ORM statement, and it does not answer this precondition's question. The Go relay *must* ask whether the profile is Redirect: `:462` decides between a 302 and the Proxy path, and applies the internal-principal override that forces Redirect through Proxy. The contract cannot answer it — see Finding **F1**. | `core/models.py:132-135`; call site `apps/proxy/live_proxy/views.py:462-467` | **Neither — F1** |
-| S12 | `views.py:468` | `stream_profile.is_redirect()` | As S11. Same gap, the `elif` arm that performs the redirect URL validation. | `apps/proxy/live_proxy/views.py:468-480` | **Neither — F1** |
+| S11 | `views.py:462` | `stream_profile.is_redirect()` — a model method, no query | **`stream_profile.kind`, the one contract field this PR adds** (Task 0). "No query" is true as an ORM statement and does not answer this precondition: the Go relay *must* ask whether the profile is Redirect, because `:462` decides between a 302 and the Proxy path and applies the internal-principal override that forces Redirect through Proxy. Before Task 0 nothing on the wire could answer — see Finding **F1** for the analysis and why the field lands here rather than in 2c-5. | `core/models.py:132-135`; call site `apps/proxy/live_proxy/views.py:462-467`; field added at `apps/proxy/serializers.py`'s `StreamProfileRefSerializer` | Field, added by this PR |
+| S12 | `views.py:468` | `stream_profile.is_redirect()` | As S11, the `elif` arm that performs the redirect URL validation. Same field. | `apps/proxy/live_proxy/views.py:468-480` | Field, added by this PR |
+
+**Zero gap rows.** Every one of the thirty-six entries closes on a named contract field or a written reason, which is what the spec's precondition asks for. The two rows above were gaps when this plan was first drafted and are closed by Task 0 rather than deferred; the analysis that found them is kept as Finding F1 rather than deleted, because the reasoning is what a reviewer audits.
 
 ### EDGES — 11 entries
 
@@ -280,9 +311,9 @@ These are the runtime half of the guard: SQL text observed executing under a rel
 | I5 | `inline_stream_profile_by_id` | `StreamProfile.objects.get` inside the same call | `stream_profile` on next-source (G3) |
 | I6 | `inline_default_output_format` (params `'stream_settings'`) | `resolve_output_format`'s last-resort `CoreSettings.get_default_output_format()`, reached because `decision.trusted` is False | `X-Relay-Output-Format` on a trusted tune; the authorize-internal 200's own header in the dev shape (E9) |
 
-### Findings — four, one of them a genuine contract gap
+### Findings — four, with their rulings
 
-These are reported, not smoothed over. F1 is a real gap in the contract; F2 is a gap in the spec's PR table; F3 and F4 are implementation risks that need an owner, not a contract change.
+These are reported, not smoothed over. F1 was a real gap in the contract and is **closed by this PR** (Task 0); F2 is a gap in the spec's PR table, assigned to 2c-5; F3 and F4 need an owner, and F4 turns out to be fixable on the Python side rather than merely documented. All four are written into Amendment A1 by Task 1 Step 4, because a spec amendment reaches whoever plans the owning PR and a PR description does not.
 
 #### F1 — **the contract cannot tell the Go relay that a Stream Profile is Redirect.** (S11, S12)
 
@@ -296,27 +327,35 @@ It has to. `apps/proxy/live_proxy/views.py:462-467` serves a 302 for Redirect, e
 "kind": "redirect" if stream_profile.is_redirect() else ("proxy" if stream_profile.is_proxy() else "transcode"),
 ```
 
-at each of the three construction sites (`next_source.py:512-518`, `:574-580`, `:621-627`) plus the corresponding serializer field. `transcode` stays exactly as it is — D5 forbids changing what already exists.
+at the three construction sites (`next_source.py:512-518`, `:574-580`, `:621-627`) plus the corresponding serializer field — and at the fourth dict of the same shape the lead's ruling did not name, `_locked_ffmpeg_profile()` (`:97-100`), which the *same* serializer renders. Task 0 routes all four through one helper rather than writing the derivation out four times; Ruling R8 has the reasoning and the allowlist consequence. `transcode` stays exactly as it is — D5 forbids changing what already exists.
 
-**Not implemented in this PR** (Global Constraint 4: no Python edits here). Recorded as a spec amendment in Task 1, with the recommended owner being **the PR that first serves Redirect** — which brings us to F2.
+**Implemented in this PR, by Task 0.** The first draft of this plan deferred it to 2c-5 on the grounds that 2c-1 edits no Python; that was overruled, correctly, on two points from the spec's own text. The precondition is "a contract field for each allowlisted site, or a documented reason it needs none, **before** its first line of Go" — a deferred field leaves a `GAP` row, which is neither, so 2c-1 could not honestly claim the precondition met. And the **first consumer is 2c-2, not 2c-5**: 2c-2 is the *Proxy* vertical slice, and Go cannot know a profile is Proxy rather than Redirect without this field. A contract field must exist before its first consumer, and 2c-2 is the PR immediately after this one.
+
+What stays with 2c-5 is the Go **behaviour** the field enables — the 302, the URL validation, the internal-principal override. That is F2.
 
 #### F2 — **no PR in the nine owns the Redirect Stream Profile architecture.**
 
 Walking the table at spec line 1783: 2c-2 is "the Proxy stream-profile architecture only (no ffmpeg spawn yet)"; 2c-3 is fan-out; 2c-4 is ffmpeg; 2c-5 is failover and the control-plane client; 2c-6 is fMP4; 2c-7 is Output Profiles; 2c-8 is the remaining control routes, the drain and the dev fallback; 2c-9 is the coverage ratchet. **Redirect — one of the three architectures D5 names explicitly — appears in none of them.** The parity matrix does not compensate: Redirect is mentioned in exactly one row (row 29, and only as a surface on which the buffering detector is inert), so there is no `owed:` marker that would have caught the omission either.
 
-**Recommended assignment: 2c-5.** Redirect's work is a 302, an HTTP probe of the provider URL (`validate_stream_url`), and a fallback across the channel-start-cached alternates when the probe fails — which is the same cached candidate list 2c-5 already owns for the degraded next-source fallback. The internal-principal override rides along with it. Folding F1's one-key Python change into 2c-5 as its single Django edit is preferable to re-opening 2b for one key after its milestone was recorded, but that is the user's call and this plan records it as a recommendation.
+**Assigned to 2c-5**, ruled. Redirect's work is a 302, an HTTP probe of the provider URL (`validate_stream_url`), and a fallback across the channel-start-cached alternates when the probe fails — the same cached candidate list 2c-5 already owns for the degraded next-source fallback. The internal-principal override rides along with it.
+
+**The ownership must be written into the spec's PR table row itself, not into prose beside it, and the reason is mechanical.** The usual way to record an unclosed behaviour in this phase is an `owed:` marker on a parity-matrix row, and that route is shut. Gate 1 closed in 2b-3 precisely because no row is owed any more, and the guard asserts it stays that way: with `GATE_1_CLOSED` true, `e2e/tests/guards/parity-matrix.spec.ts:308-314` requires the owed-row list to be **empty**, failing with "Gate 1 … cannot silently reopen" on any row that carries one. Adding an `owed:` row for Redirect would therefore redden a closed gate to record a note. So the spec's `2c-5` row is the only place this ownership can live, and a sentence near the table is not the table. Task 1 Step 4 edits the row itself.
 
 #### F3 — **`shlex.split` has no standard-library equivalent in Go, and the contract is asymmetric about it.**
 
 `output_profiles[*].argv` arrives **pre-split**: Django runs `OutputProfile.build_command()` (`core/models.py:200-203`, a `shlex_split`) and puts the finished list on the wire (`next_source.py:747`). `stream_profile.args` arrives **raw** — the `parameters` text field, unsplit (`next_source.py:515`). So the Go relay must implement POSIX shell word-splitting itself, plus the three placeholder substitutions `{streamUrl}`, `{userAgent}`, `{channelId}` (`core/models.py:147-160`), for the one argv that spawns ffmpeg.
 
-Constraint 3 forbids a library, so this is roughly sixty lines of Go plus a differential test against Python's `shlex.split` over a corpus of real `parameters` values. **Owner: 2c-4**, which ports the spawn path. The alternative — extending the contract with a pre-split `stream_profile.argv_template` the way `output_profiles` already is — would be more consistent and is worth considering there; this plan does not decide it.
+Constraint 3 forbids a library, so this is roughly sixty lines of Go plus a differential test against Python's `shlex.split` over a corpus of real `parameters` values. **Owner: 2c-4**, ruled, and carried into Amendment A1 as a named *input* to 2c-4's plan rather than a note in this PR's description — 2c-4 is planned by a `fable` agent that will not have read this document, and the two `next_source.py` line cites are what stop it rediscovering the asymmetry from scratch. The alternative it should weigh there — extending the contract with a pre-split `stream_profile.argv_template`, the way `output_profiles` already is — is recorded with it; this plan does not decide it.
 
 #### F4 — **`proxy_settings` carries the stored group, and every default lives in Python class attributes the wire never carries.**
 
 `CoreSettings.get_proxy_settings()` returns the settings group as stored. When a key is absent, Python falls through to `ConfigHelper.get(name, default)`, which is `getattr(Config, name, default)` — so the effective value comes from `BaseConfig`'s class attributes (`apps/proxy/config.py:6-19`), which are never serialised. A Go relay receiving `proxy_settings` therefore needs its own copy of every default, and the two copies can drift silently: a default changed in `apps/proxy/config.py` reaches the Python relay immediately and the Go relay never.
 
-This is exactly the trap CLAUDE.md already records for `BUFFER_CHUNK_SIZE`, where an unreachable `5644` literal in `buffer.py` makes the effective chunk a quarter of what the call site looks like. **Owners: 2c-2 and 2c-4**, as they consume settings. The mitigation is cheap and this PR sets the precedent in Task 5: every Go constant mirroring a Python literal carries the `file:line` of its source in a comment and is pinned by a test that names the same location, so a drift review has something to grep for.
+This is exactly the trap CLAUDE.md already records for `BUFFER_CHUNK_SIZE`, where an unreachable `5644` literal in `buffer.py` makes the effective chunk a quarter of what the call site looks like.
+
+**Owner: 2c-2, and the fix is on the Python side, not the Go one** — ruled, and it is the better answer than the mitigation this plan first proposed. Django should send **effective** `proxy_settings`: the stored group merged over `BaseConfig`'s class-attribute defaults (`apps/proxy/config.py:6-19`), so every key the relay reads is present with a real value and Go holds no second copy to drift. That is additive on the wire — keys that were absent become present carrying the default they already had in effect — so no existing consumer moves. 2c-2 is the first Go consumer of settings, so it lands there; Amendment A1 records it with the `file:line`.
+
+**Not folded into this PR**, even though it is Python and Task 0 is already Python. Task 0 exists because the precondition cannot be met without it; F4's fix has no such forcing argument, its first consumer is 2c-2, and widening 2c-1's Python footprint past the one field it must add is how a skeleton PR becomes a contract PR. This PR still sets the *pattern* in Task 5 — every Go constant mirroring a Python literal carries its source `file:line` in a comment and is pinned by a test naming the same location — because the buffer constants are the one place 2c-1 unavoidably holds such a copy.
 
 ---
 
@@ -356,20 +395,325 @@ docker/supervisord/all-dev.conf            EDIT — one path on the include list
 .claude/settings.json                      EDIT — a second PostToolUse hook entry
 .claude/hooks/pre-commit-tests.sh          EDIT — a Go section in the commit gate
 CLAUDE.md                                  EDIT — § Commands, § Architecture, § Test hooks, § Testing
-docs/superpowers/specs/2026-09-09-…-design.md   EDIT — Amendment A1 (F1/F2), Done log row
+docs/superpowers/specs/2026-09-09-…-design.md   EDIT — Amendment A1, the 2c-5 row, a Done log row
+
+                                           --- Task 0, the only Python ---
+apps/proxy/next_source.py                  EDIT — _profile_kind + _stream_profile_ref, four call sites
+apps/proxy/serializers.py                  EDIT — StreamProfileRefSerializer.kind
+apps/proxy/tests/test_redirect_transcode_flag.py        EDIT — five tests, two fixtures
+apps/proxy/live_proxy/tests/zero_orm_allowlist.py       EDIT — two EDGE hits counts, two closed_by
 ```
 
-Nothing under `apps/`, `core/`, `dispatcharr/`, `frontend/`, `e2e/` or `metrics/` is touched.
+Nothing under `core/`, `dispatcharr/`, `frontend/`, `e2e/` or `metrics/` is touched, and nothing under `apps/` beyond Task 0's four files.
+
+---
+
+## Task 0: `stream_profile.kind` — the one contract field this PR adds
+
+**The only Python in this PR** (Global Constraint 4), and it comes first for two reasons: the spec puts the precondition "before its first line of Go", and Task 1's reconciliation table cites this field as the closer for `views.py:462` and `:468`, so the field should exist in the tree when that table is written rather than name something the implementer intends to add later.
+
+Read Ruling R8 before starting. It explains why four dicts are involved rather than three, and why this task moves a number in `zero_orm_allowlist.py`.
+
+- [ ] **Step 1: Read the four construction sites and the serializer**
+
+  ```bash
+  cd <your worktree>
+  sed -n '75,101p'   apps/proxy/next_source.py   # _locked_ffmpeg_profile, the fourth dict
+  sed -n '495,525p'  apps/proxy/next_source.py   # resolve_initial_source's stream branch
+  sed -n '556,590p'  apps/proxy/next_source.py   # the channel branch
+  sed -n '600,635p'  apps/proxy/next_source.py   # _source_from_info
+  sed -n '12,40p'    apps/proxy/serializers.py   # StreamProfileRefSerializer
+  sed -n '127,136p'  core/models.py              # is_proxy / is_redirect
+  ```
+
+  All four dicts are `{"id": …, "command": …, "args": …}` and all four are rendered by `StreamProfileRefSerializer` — the three inside `source["stream_profile"]`, the fourth as `source["ffmpeg_stream_profile"]`. Line numbers drift; find them by shape.
+
+- [ ] **Step 2: Add the two helpers in `apps/proxy/next_source.py`**
+
+  Place them immediately above `_locked_ffmpeg_profile()`, since that is now the first caller in file order.
+
+  ```python
+  def _profile_kind(profile):
+      """Which of the three Stream Profile architectures this profile is.
+
+      Phase 2 PR 2c-1. The wire already carries `transcode`, which is
+      `not (is_proxy() or is_redirect())` -- one boolean collapsing Proxy
+      and Redirect onto the same value, because from the relay's old
+      point of view they agreed on the only question it was asking
+      ("do I spawn a subprocess?"). A Go relay asks a second question
+      the boolean cannot answer: Redirect means answer 302 and validate
+      the provider URL, Proxy means read the bytes into the ring buffer.
+      Both locked profiles carry empty command/parameters
+      (core/models.py:139-144), so nothing else on the wire separates
+      them either.
+
+      `transcode` is deliberately NOT changed or derived from this --
+      D5's strict parity forbids altering what already exists, and every
+      current consumer keeps reading exactly the boolean it reads today.
+
+      No query: is_redirect()/is_proxy() compare self.locked and
+      self.name on an already-loaded instance (core/models.py:127-135).
+      They are model METHODS, so zero_orm_scan.py flags the two calls
+      below by name -- see the EDGE entries in zero_orm_allowlist.py.
+      """
+      if profile.is_redirect():
+          return "redirect"
+      if profile.is_proxy():
+          return "proxy"
+      return "transcode"
+
+
+  def _stream_profile_ref(profile):
+      """A StreamProfile flattened to the wire shape StreamProfileRefSerializer renders.
+
+      One construction site for what used to be four near-identical dict
+      literals. That duplication has already cost this module a
+      production defect once: the `transcode` derivation lived at two
+      points, they disagreed about Redirect, and every reconnect during
+      a recording spawned an empty executable
+      (apps/proxy/tests/test_redirect_transcode_flag.py's own docstring).
+      A second per-profile fact derived independently in four places is
+      that defect pre-built.
+      """
+      return {
+          "id": profile.id,
+          "command": profile.command,
+          "args": profile.parameters,
+          "kind": _profile_kind(profile),
+      }
+  ```
+
+- [ ] **Step 3: Route all four dicts through the helper**
+
+  `_locked_ffmpeg_profile()`'s return becomes:
+
+  ```python
+      return _stream_profile_ref(profile)
+  ```
+
+  and each of the three `"stream_profile": {...}` literals becomes:
+
+  ```python
+                      "stream_profile": _stream_profile_ref(stream_profile),
+  ```
+
+  In `_source_from_info` the local is also named `stream_profile` (from `StreamProfile.objects.get(id=info["stream_profile"])`), so the same line works there. **Do not touch the `transcode` computations** at `:295`, `:504` and `:563`.
+
+  Then confirm the wire result by eye — four dicts, one helper, no literal `"args":` left in the module except inside the helper:
+
+  ```bash
+  cd <your worktree> && grep -n '"args"' apps/proxy/next_source.py
+  ```
+
+  Expect exactly one hit, inside `_stream_profile_ref`.
+
+- [ ] **Step 4: Add the serializer field**
+
+  In `apps/proxy/serializers.py`'s `StreamProfileRefSerializer`, after `args`:
+
+  ```python
+      # Phase 2 PR 2c-1. Which of the three Stream Profile architectures
+      # this is: "redirect", "proxy" or "transcode". Required, not
+      # optional -- every producer goes through next_source.py's
+      # _stream_profile_ref(), so there is no shape that can omit it, and
+      # a Go relay that has to guess is the gap this field closes
+      # (spec § Stage 2c, Amendment A1.1).
+      #
+      # NOT a ChoiceField: the three values are a closed set today, and a
+      # ChoiceField would make adding a fourth architecture a wire-schema
+      # change that 400s a relay one version behind. A relay reading an
+      # unrecognised kind should degrade, not be told the payload is
+      # invalid by its own control plane.
+      kind = serializers.CharField()
+  ```
+
+- [ ] **Step 5: Re-measure the two allowlist edge counts and update them**
+
+  Ruling R8 predicts 36 → 38. **Measure it; do not write the prediction.**
+
+  ```bash
+  cd <your worktree> && python3 -c "
+  import sys; sys.path.insert(0, '.')
+  from apps.proxy.live_proxy.tests.zero_orm_scan import scan_edge, Edge
+  for name in ('resolve_source', 'get_stream_object'):
+      print(name, len(scan_edge(Edge('x', 'apps.proxy.next_source', name))))
+  "
+  ```
+
+  Set both `resolve_source` `EdgeEntry` `hits` values in `apps/proxy/live_proxy/tests/zero_orm_allowlist.py` to what it prints — both, because the count is identical by construction (`scan_edge` depends only on the target module and symbol, never on who imports it). `get_stream_object` must still print 3; **if it moved, stop and report** — nothing in this task should have touched that subtree.
+
+  Append to each of the two `resolve_source` entries' `reason`:
+
+  ```
+  "2c-1 raised this from 36 to <measured>: next_source.py's new "
+  "_profile_kind() helper calls is_redirect() and is_proxy(), two "
+  "model-method names the scanner flags, inside resolve_source's "
+  "reachable subtree. Neither issues a query (core/models.py:127-135 "
+  "compares self.locked and self.name on a loaded instance); the count "
+  "moved because two flagged CALL SITES exist, which is the ratchet "
+  "working rather than a number tuned to fit."
+  ```
+
+  And replace `views.py:462`'s and `:468`'s `closed_by` — currently `"Nothing to close -- no query."` — with:
+
+  ```
+  closed_by=(
+      "stream_profile.kind on next-source's response, added by 2c-1. "
+      "True that this line issues no query, and that was never the "
+      "question 2c-1's precondition asks: the Go relay MUST know "
+      "whether the profile is Redirect (302 and URL validation) or "
+      "Proxy (read into the ring buffer), and before 2c-1 nothing on "
+      "the wire said -- transcode collapses both to false and both "
+      "locked profiles carry empty command/parameters. Spec "
+      "Amendment A1.1."
+  ),
+  ```
+
+  **Be careful which two entries you edit.** There are four `is_redirect()`/`build_command()` SITES whose `closed_by` currently reads "Nothing to close — no query", and only the two `is_redirect()` ones (`views.py:462`, `:468`) change. `views.py:766` and `input/manager.py:791` are `build_command()` and their reason is unchanged and still correct.
+
+- [ ] **Step 6: Add the tests, in the file whose premise this is**
+
+  `apps/proxy/tests/test_redirect_transcode_flag.py` already builds a locked Redirect profile, an M3U account, a stream and a channel, and already drives **both** derivation points — `resolve_initial_source` (the initial tune) and `get_stream_info_for_switch` (every later switch). Its docstring is literally "Redirect is treated like Proxy wherever the transcode flag is derived", which is the ambiguity `kind` resolves. Extend it rather than starting a new file.
+
+  Add a locked Proxy profile and an unlocked transcoding profile to `setUp`:
+
+  ```python
+          self.proxy_profile = StreamProfile.objects.create(
+              name="Proxy", command="", parameters="", locked=True, is_active=True,
+          )
+          # Not locked, and not one of the two reserved names: the ordinary
+          # case, which must report "transcode" however it is spelled.
+          self.ffmpeg_profile = StreamProfile.objects.create(
+              name="custom-remux",
+              command="ffmpeg",
+              parameters="-i {streamUrl} -c copy -f mpegts pipe:1",
+              locked=False,
+              is_active=True,
+          )
+  ```
+
+  Then, in the same class:
+
+  ```python
+      def test_profile_kind_names_all_three_architectures(self):
+          """The one derivation, over the three shapes it must separate.
+
+          The literals are typed here, not read back from the module: a
+          test comparing _profile_kind(x) against a constant the module
+          also defines would pass with every name spelled wrong
+          together.
+          """
+          from apps.proxy.next_source import _profile_kind
+
+          self.assertEqual(_profile_kind(self.redirect_profile), "redirect")
+          self.assertEqual(_profile_kind(self.proxy_profile), "proxy")
+          self.assertEqual(_profile_kind(self.ffmpeg_profile), "transcode")
+
+      def test_an_unlocked_profile_named_redirect_is_not_redirect(self):
+          """is_redirect() is `locked AND name == "Redirect"`, both halves.
+
+          A user may name their own profile "Redirect"; it is an
+          ordinary transcoding profile and must not make the relay
+          answer 302 to a provider URL it never validated.
+          """
+          from apps.proxy.next_source import _profile_kind
+
+          impostor = StreamProfile.objects.create(
+              name="Redirect", command="ffmpeg", parameters="-i {streamUrl}",
+              locked=False, is_active=True,
+          )
+          self.assertEqual(_profile_kind(impostor), "transcode")
+  ```
+
+  And the two wire-level tests, which are the ones that matter — they assert the field survives the *producers*, not just the helper. Model them on the two existing tests' decorator stacks exactly, including the `close_old_connections` patch and the comment above it explaining why:
+
+  ```python
+      @patch("apps.proxy.next_source.close_old_connections")
+      @patch("apps.channels.models.reserve_profile_slot", return_value=(True, 1, None))
+      @patch("apps.channels.models.RedisClient.get_client")
+      def test_initial_tune_reports_kind_redirect_and_leaves_transcode_alone(
+          self, mock_get_client, _mock_reserve, _mock_close_old_connections
+      ):
+          mock_get_client.return_value = FakeRedirectRedis()
+
+          answer = resolve_initial_source(str(self.channel.uuid))
+
+          self.assertIsNone(answer["error"])
+          self.assertEqual(answer["source"]["stream_profile"]["kind"], "redirect")
+          # transcode is unchanged by this PR. Asserted beside kind, in the
+          # same payload, because "the new field is right" and "the old
+          # field did not move" are two claims and D5 requires both.
+          self.assertFalse(answer["source"]["transcode"])
+
+      @patch("apps.proxy.next_source.close_old_connections")
+      @patch("apps.channels.models.reserve_profile_slot", return_value=(True, 1, None))
+      @patch("apps.channels.models.RedisClient.get_client")
+      def test_the_locked_ffmpeg_profile_carries_a_kind_too(
+          self, mock_get_client, _mock_reserve, _mock_close_old_connections
+      ):
+          """ffmpeg_stream_profile is rendered by the SAME serializer.
+
+          The fourth dict the ruling did not name. Without it, a
+          required `kind` on StreamProfileRefSerializer makes every
+          next-source answer that carries a locked ffmpeg profile fail
+          serialization -- a 500 on every tune, and one no test touching
+          only the three `source` sites would catch.
+          """
+          StreamProfile.objects.create(
+              name="ffmpeg", command="ffmpeg", parameters="-i {streamUrl}",
+              locked=True, is_active=True,
+          )
+          mock_get_client.return_value = FakeRedirectRedis()
+
+          answer = resolve_initial_source(str(self.channel.uuid))
+
+          self.assertEqual(answer["source"]["ffmpeg_stream_profile"]["kind"], "transcode")
+  ```
+
+  Finally, one serializer-level test, because a producer emitting the key and a serializer declaring it are separate failures:
+
+  ```python
+      def test_the_serializer_renders_kind(self):
+          """A required field DRF does not declare is silently dropped."""
+          from apps.proxy.serializers import StreamProfileRefSerializer
+
+          rendered = StreamProfileRefSerializer(
+              {"id": 7, "command": "", "args": "", "kind": "redirect"}
+          ).data
+          self.assertEqual(rendered["kind"], "redirect")
+  ```
+
+- [ ] **Step 7: Break-check, three edits**
+
+  1. Change `_profile_kind` to check `is_proxy()` **before** `is_redirect()`. The locked Redirect profile has `name="Redirect"` so `is_proxy()` is false and this alone does **not** redden — which is the point: run it, watch everything stay green, and understand that the ordering is not what the tests pin. Then make the real defect: delete the `is_redirect()` branch entirely. Expect `test_profile_kind_names_all_three_architectures` to fail with `'transcode' != 'redirect'` and `test_initial_tune_reports_kind_redirect_and_leaves_transcode_alone` to fail on the wire. Revert. **Record both halves** — the first is a true-positive-for-a-false-reason check in reverse, and knowing which edits your tests do *not* catch is worth as much as knowing which they do.
+  2. Drop the `locked` half: change `is_redirect()` in the helper to `profile.name == "Redirect"`. Expect `test_an_unlocked_profile_named_redirect_is_not_redirect` to fail with `'redirect' != 'transcode'`. Revert.
+  3. Revert `_locked_ffmpeg_profile()` to its old literal dict without `kind`. Expect `test_the_locked_ffmpeg_profile_carries_a_kind_too` to fail — and note whether it fails on a `KeyError` or on a DRF validation error, because that tells you whether the serializer is enforcing the field or merely declaring it. Revert.
+
+- [ ] **Step 8: Run the three affected labels**
+
+  `scripts/ci_backend_test_labels.py` maps this task's four files to three labels — verify rather than assume, since the mapping is the same function CI uses:
+
+  ```bash
+  cd <your worktree> && printf 'apps/proxy/next_source.py\napps/proxy/serializers.py\napps/proxy/tests/test_redirect_transcode_flag.py\napps/proxy/live_proxy/tests/zero_orm_allowlist.py\n' | python3 scripts/ci_backend_test_labels.py
+  ```
+
+  Expected: `["apps.channels.tests", "apps.proxy.live_proxy.tests", "apps.proxy.tests"]`. All three must pass. `apps.proxy.live_proxy.tests` is the one that carries the zero-ORM guard, so it is the label that proves Step 5's count is right; `apps.channels.tests` is there because the `apps/proxy/live_proxy/` alias routes to it, and it builds a real `ProxyServer` ten times, so it is slow and not optional.
+
+  The edit hook runs the whole package for `test_redirect_transcode_flag.py` automatically. **If the container is down the hook says so and exits 0 — then say the tests did not run, and do not describe the work as verified.**
+
+- [ ] **Step 9: Commit**
+
+  Stage and commit in separate Bash calls; the gate will run the three labels again against what is staged.
 
 ---
 
 ## Task 1: The allowlist reconciliation and the spec amendment
 
-**No Go in this task.** Spec line 1795 puts this "**before** its first line of Go", and line 1738 says why: the no-Postgres-driver invariant is conditional on it.
+**No Go in this task either.** Spec line 1795 puts this "**before** its first line of Go", and line 1738 says why: the no-Postgres-driver invariant is conditional on it. Task 0 ran first so the field this table cites already exists in the tree.
 
 - [ ] **Step 1: Re-measure the allowlist against the branch tip**
 
-  The table above was measured at `0c1654d8`. If anything landed on `main` between then and your branch point, the counts move.
+  The table above was measured at `0c1654d8`. If anything landed on `main` between then and your branch point, the counts move. Run this **after** Task 0, so the two `resolve_source` `hits` values are the ones Task 0 Step 5 wrote.
 
   ```bash
   cd <your worktree> && python3 -c "
@@ -401,58 +745,111 @@ Nothing under `apps/`, `core/`, `dispatcharr/`, `frontend/`, `e2e/` or `metrics/
 
   Copy the four tables above — SITES, EDGES, SQL_SIGNATURES, INLINE_AUTHORIZE_SIGNATURES — and the Findings section verbatim into the PR description under a heading `## Allowlist reconciliation (spec line 1795 precondition)`. Do not summarise them. The spec makes the reviewer the gate, and a reviewer cannot audit a summary.
 
-- [ ] **Step 4: Amend the spec with F1 and F2**
+- [ ] **Step 4: Amend the spec — the prose block**
 
   Per the standing decision that a spec found wrong at a step is amended in the same PR. Append to § Stage 2c, immediately after the `The nine PRs` table:
 
   ```markdown
-  #### Amendment A1 (2c-1) — Redirect has no contract field and no owning PR
+  #### Amendment A1 (2c-1) — Redirect had no contract field and has no owning PR
 
-  Found while clearing 2c-1's allowlist precondition. Two defects in this
-  section, one in the contract and one in the table above.
+  Found while clearing 2c-1's allowlist precondition, which is what that
+  precondition exists to surface. Two defects in this section — one in the
+  contract, one in the table above — plus three inputs later PRs need.
 
-  **A1.1 — the contract cannot express "this profile is Redirect."**
-  `StreamProfile.is_redirect()` is a name comparison (`core/models.py:132-135`).
-  The next-source `source` dict carries `stream_profile` as `{id, command, args}`
-  (`apps/proxy/next_source.py:512-518`) and `transcode`, which is
-  `not (is_proxy() or is_redirect())` (`:504`, sent at `:511`) — so Proxy and
-  Redirect are both `transcode: false` and both carry empty `command`/`parameters`
-  (`core/models.py:139-144`). A Go relay therefore cannot decide between a 302 and
-  the Proxy path, nor apply the internal-principal override that forces a Redirect
-  channel through Proxy so `X-Dispatcharr-Internal` is never re-sent to a provider
+  **A1.1 — the contract could not express "this profile is Redirect." CLOSED
+  in 2c-1.** `StreamProfile.is_redirect()` is a name comparison
+  (`core/models.py:132-135`). The next-source `source` dict carried
+  `stream_profile` as `{id, command, args}` (`apps/proxy/next_source.py:512-518`)
+  and `transcode`, which is `not (is_proxy() or is_redirect())` (`:504`, sent at
+  `:511`) — so Proxy and Redirect were both `transcode: false` and both carry
+  empty `command`/`parameters` (`core/models.py:139-144`). A Go relay therefore
+  could not decide between a 302 and the Proxy path, nor apply the
+  internal-principal override that forces a Redirect channel through Proxy so
+  `X-Dispatcharr-Internal` is never re-sent to a provider
   (`apps/proxy/live_proxy/views.py:462-467`, a deliberate Phase 1 PR 5 fix).
 
-  Fix: one additive key on the existing `stream_profile` object,
-  `"kind": "redirect" | "proxy" | "transcode"`, at all three construction sites
-  and on the serializer. `transcode` is unchanged — D5 forbids altering what
-  exists. This is a Python change and does not land in 2c-1, whose gate is
-  Go-and-infrastructure only.
+  Closed by one additive key on the existing `stream_profile` object,
+  `"kind": "redirect" | "proxy" | "transcode"`, derived once in
+  `next_source.py`'s `_profile_kind()` and applied through `_stream_profile_ref()`
+  at all **four** dicts of that shape — the three `source["stream_profile"]`
+  construction sites and `_locked_ffmpeg_profile()` (`:97-100`), which the same
+  `StreamProfileRefSerializer` renders. `transcode` is unchanged: D5 forbids
+  altering what exists.
 
-  **A1.2 — no PR owns the Redirect architecture.** 2c-2 is Proxy-only; 2c-4
+  **It lands in 2c-1 rather than in the PR that first serves Redirect**, for two
+  reasons from this spec's own text. The precondition on the `2c-1` row is "a
+  contract field for each allowlisted site, or a documented reason it needs
+  none, **before** its first line of Go" — a deferred field leaves the two
+  `views.py:462`/`:468` allowlist entries closed by neither, so 2c-1 could not
+  honestly claim the precondition met. And the first *consumer* is **2c-2**, not
+  2c-5: 2c-2 is the Proxy vertical slice, and Go cannot know a profile is Proxy
+  rather than Redirect without this field. A contract field must exist before
+  its first consumer.
+
+  Note for whoever reads the allowlist next: this raised both `resolve_source`
+  EDGE `hits` counts, because `_profile_kind()`'s two `is_redirect()`/`is_proxy()`
+  calls are model-method names `zero_orm_scan.py` flags. Neither issues a query.
+  The entries' own `reason` fields record the move and why.
+
+  **A1.2 — no PR owned the Redirect architecture.** 2c-2 is Proxy-only; 2c-4
   through 2c-8 name ffmpeg, failover, fMP4, Output Profiles, and control/drain.
-  Redirect appears in no row. The parity matrix does not compensate: Redirect
-  appears only in row 29, and only as a surface the buffering detector ignores,
-  so no `owed:` marker would have caught this.
+  Redirect appeared in no row. The parity matrix does not compensate: Redirect
+  appears only in row 29, and only as a surface the buffering detector ignores.
+  Nor can an `owed:` marker record it — Gate 1 closed in 2b-3 and the guard
+  requires the owed list to stay empty (`e2e/tests/guards/parity-matrix.spec.ts:308-314`),
+  so an `owed:` row would redden a closed gate. **The `2c-5` row in the table
+  above is therefore amended to name it**, which is the only durable place it
+  can live.
 
-  Assignment: **2c-5** takes both. Redirect is a 302 plus an HTTP probe of the
-  provider URL plus a fall-through to the channel-start-cached alternates — the
-  same cached candidate list 2c-5 already owns for the degraded next-source
-  fallback — and A1.1's one-key Python change lands with it rather than
-  re-opening stage 2b after its milestone was recorded.
+  **A1.3 — an input for 2c-4: `shlex.split` has no Go stdlib equivalent, and the
+  contract is asymmetric about it.** `output_profiles[*].argv` arrives pre-split,
+  because Django ran `shlex_split` on it (`apps/proxy/next_source.py:747`,
+  `core/models.py:200-203`); `stream_profile.args` arrives as the raw
+  `parameters` text (`apps/proxy/next_source.py:515`). So 2c-4 must implement
+  POSIX word splitting plus the three `{streamUrl}`/`{userAgent}`/`{channelId}`
+  substitutions (`core/models.py:147-160`) under this stage's
+  no-third-party-dependencies rule, with a differential test against Python's
+  own `shlex.split`. The alternative worth weighing there: extend the contract
+  with a pre-split `stream_profile.argv_template`, as `output_profiles` already is.
 
-  **Two further risks, recorded without a spec change because neither needs one.**
-  `shlex.split` has no Go stdlib equivalent and the contract is asymmetric about
-  it: `output_profiles[*].argv` is pre-split by Django (`next_source.py:747`)
-  while `stream_profile.args` is the raw `parameters` text (`:515`), so 2c-4 must
-  implement POSIX word splitting plus the three `{streamUrl}`/`{userAgent}`/
-  `{channelId}` substitutions (`core/models.py:147-160`) under the no-dependencies
-  rule. And `proxy_settings` carries only the *stored* settings group — every
-  default lives in `BaseConfig`'s class attributes (`apps/proxy/config.py:6-19`)
-  and never reaches the wire, so 2c-2 and 2c-4 will hold a second copy of each
-  that can drift silently against the first.
+  **A1.4 — an input for 2c-2: `proxy_settings` carries only the STORED settings
+  group.** When a key is absent, Python falls through to
+  `ConfigHelper.get(name, default)` → `getattr(Config, name, default)`, so the
+  effective value comes from `BaseConfig`'s class attributes
+  (`apps/proxy/config.py:6-19`), which never reach the wire. A Go relay would
+  hold a second copy of every default, drifting silently whenever the Python one
+  changes. Fix, on the Python side and owned by 2c-2 as the first Go consumer of
+  settings: send **effective** `proxy_settings` — the stored group merged over
+  those defaults — so there is nothing for Go to duplicate. Additive on the wire:
+  keys that were absent become present carrying the default they already had in
+  effect.
+
+  **A1.5 — an input for 2c-9: CodeQL analyses no Go.** `codeql.yml:54` runs
+  `[actions, python, javascript-typescript]`. 2c-1 deliberately did not add a
+  `go` pack — at three tested packages and three stubs it would analyse almost
+  nothing while adding a build-mode configuration to debug. 2c-9 adds it,
+  alongside the coverage ratchet, when there is a relay to analyse.
   ```
 
-  Add a row to the spec's § Done log table for this PR.
+- [ ] **Step 4b: Amend the spec — the `2c-5` table row itself**
+
+  A1.2's ownership is worthless in prose beside the table; it has to be *in* the row, because the row is what someone planning 2c-5 reads. Edit the `2c-5` row's "What it does" cell — **spec line 1799** at `0c1654d8`; find it by content, since Step 4's own insertion does not move it but anything else landing on `main` might — to append, after the existing degraded-fallback clause:
+
+  ```
+  , and the Redirect Stream Profile architecture — the 302, `validate_stream_url`'s provider probe, the fall-through to the cached alternates, and the internal-principal override that serves a Redirect channel through Proxy instead (`apps/proxy/live_proxy/views.py:462-480`). Added by Amendment A1.2: no row named Redirect, and Gate 1 being closed means an `owed:` marker cannot carry it.
+  ```
+
+  Verify the table still renders — a stray `|` inside a cell splits it into two columns and the parity-matrix guard does not police this file:
+
+  ```bash
+  cd <your worktree> && awk -F'|' '/^\| 2c-[0-9] \|/ {print NF, $2}' docs/superpowers/specs/2026-09-09-phase2-go-relay-design.md
+  ```
+
+  All nine rows must report the same field count.
+
+- [ ] **Step 4c: Add a Done log row**
+
+  Append a row to the spec's § Done log table for this PR.
 
 - [ ] **Step 5: Commit**
 
@@ -2412,13 +2809,22 @@ Per the standing convention: a PR that changes a fact CLAUDE.md states corrects 
 
   Every one must be clean. **`gofmt -l` printing a filename is a failure**, even though nothing else catches it locally in this list.
 
-- [ ] **Step 2: Confirm no Python, frontend or e2e file was touched**
+- [ ] **Step 2: Confirm the Python footprint is exactly Task 0's four files**
+
+  Global Constraint 4 allows four Python paths and no others. Check the allowed set and the forbidden set separately, because one command answering "clean" for both hides which half it checked:
 
   ```bash
-  cd <your worktree> && git diff --name-only main...HEAD | grep -E '^(apps/|core/|dispatcharr/|frontend/|e2e/|e2e-upstream/|metrics/)' && echo "VIOLATION" || echo "clean"
+  cd <your worktree>
+  echo "--- Python/app files this PR touches (expect exactly 4) ---"
+  git diff --name-only main...HEAD | grep -E '^(apps/|core/|dispatcharr/|frontend/|e2e/|e2e-upstream/|metrics/)'
+  echo "--- anything outside Task 0's four (expect nothing) ---"
+  git diff --name-only main...HEAD \
+    | grep -E '^(apps/|core/|dispatcharr/|frontend/|e2e/|e2e-upstream/|metrics/)' \
+    | grep -vxE 'apps/proxy/next_source\.py|apps/proxy/serializers\.py|apps/proxy/tests/test_redirect_transcode_flag\.py|apps/proxy/live_proxy/tests/zero_orm_allowlist\.py' \
+    && echo "VIOLATION" || echo "clean"
   ```
 
-  Expect `clean`. Global Constraint 4.
+  The first block must list exactly those four paths; the second must print `clean`. **A first block with fewer than four entries is also a failure** — it means a Task 0 edit was lost, most likely in a rebase, and the reconciliation table now cites a field that is not in the tree.
 
 - [ ] **Step 3: Write the PR description**
 
@@ -2429,10 +2835,11 @@ Per the standing convention: a PR that changes a fact CLAUDE.md states corrects 
   3. **The buffer-depth derivation and its number**: 300 chunks, 76,760,400 bytes per channel, the stated 10 Mbit/s reference bitrate, both crossover bitrates (10.23 Mbit/s where the cap starts binding before retention, 122.8 Mbit/s where it stops covering the join point), and the ~732 MiB ten-channel aggregate. Say plainly that the reference bitrate is an assumption and that no host-memory check exists.
   4. **Every pin, with the command that resolved it and the date.** Go toolchain, three action SHAs with their publishers confirmed, the `golang` image digest.
   5. **The stop-budget arithmetic** from Task 9 Step 3, and the sentence that `relay-go` shares `priority=205` for that reason.
-  6. **Every break-check and its failure text.** Task 2 Step 5 (2), Task 3 Step 3 (3), Task 4 Step 4 (5), Task 5 Step 3 (3), Task 7 Step 3 (3), Task 11 Step 4 (1), Task 12 Step 4 (4) — **twenty-one**. A break-check that did not go red is a finding; report it as one. Say for each that the failure message named the mechanism rather than a build error (shape 6).
-  7. **The two runtime probes** from Task 8 Steps 2 and 3: the three status codes with the dev flag off, the 501 with it on, and the non-zero exit on a missing secret.
-  8. **The cross-compile output** from Task 10 Step 4, both architectures.
-  9. **What this PR does not do**, stated rather than implied: no coverage gate (2c-9), no drain and no `HEALTHCHECK` (2c-8), no nginx route (2d), no CodeQL Go pack (R6, recommended 2c-9), no parity-matrix Go column (2c-2 opens it), no metrics/curated update (milestones are per stage, and `phase2` already has its 2b entry — the 2c goal milestone lands with 2c-9).
+  6. **Every break-check and its failure text.** Task 0 Step 7 (4, one of them expected green), Task 2 Step 5 (2), Task 3 Step 3 (3), Task 4 Step 4 (5), Task 5 Step 3 (3), Task 7 Step 3 (3), Task 11 Step 4 (1), Task 12 Step 4 (4) — **twenty-four**. A break-check that did not go red is a finding; report it as one, **except T0.7-1a, which is expected to stay green and whose report is what that tells you about branch-order coverage**. Say for each that the failure message named the mechanism rather than a build error (shape 6).
+  7. **The measured allowlist edge count** from Task 0 Step 5 — the number `scan_edge` actually printed for `resolve_source`, whether it matched Ruling R8's predicted 38, and confirmation that `get_stream_object` is still 3.
+  8. **The two runtime probes** from Task 8 Steps 2 and 3: the three status codes with the dev flag off, the 501 with it on, and the non-zero exit on a missing secret.
+  9. **The cross-compile output** from Task 10 Step 4, both architectures.
+  10. **What this PR does not do**, stated rather than implied: no coverage gate (2c-9), no drain and no `HEALTHCHECK` (2c-8), no nginx route (2d), no CodeQL Go pack (R6 and Amendment A1.5, owned by 2c-9), no parity-matrix Go column (2c-2 opens it), no Go consumer of `stream_profile.kind` (2c-2 is the first), no effective-`proxy_settings` fix (A1.4, owned by 2c-2), and no metrics/curated update — milestones are per stage, `phase2` already has its 2b entry, and the 2c goal milestone lands with 2c-9.
 
 - [ ] **Step 4: Push and open the PR**
 
@@ -2442,44 +2849,51 @@ Per the standing convention: a PR that changes a fact CLAUDE.md states corrects 
 
 ## Break-check × what each can redden
 
-Twenty-one break-checks across seven tasks. Five green checks are not five proofs, and a reader not told which is which will assume they are. Each break-check must redden the column named here and leave the rest alone; a column going red that this table says cannot is a finding about the check, not a pass.
+Twenty-four break-checks across eight tasks. Five green checks are not five proofs, and a reader not told which is which will assume they are. Each break-check must redden the column named here and leave the rest alone; a column going red that this table says cannot is a finding about the check, not a pass.
 
-| Break-check | `config` | `control` | `buffer` | `httpapi` | hook | CI aggregate |
-|---|---|---|---|---|---|---|
-| T2.5 go.sum / require | — | — | — | — | — | ✔ (the stdlib step) |
-| T3.3-1 TrimSpace for the secret | ✔ | — | — | — | — | — |
-| T3.3-2 ignore the port env | ✔ | — | — | — | — | — |
-| T3.3-3 drop the dev override | ✔ | — | — | — | — | — |
-| T4.4-1 wrong context string | — | ✔ | — | — | — | — |
-| T4.4-2 wrong separator | — | ✔ | — | — | — | — |
-| T4.4-3 drop the body digest | — | ✔ (with-body vector **only**) | — | — | — | — |
-| T4.4-4 strip the query string | — | ✔ (both assertions) | — | — | — | — |
-| T4.4-5 one-sided window | — | ✔ | — | — | — | — |
-| T5.3-1 cap 200 chunks | — | — | ✔ (two tests) | — | — | — |
-| T5.3-2 chunk = 188×5644 | — | — | ✔ | — | — | — |
-| T5.3-3 ChunksForBytes guard | — | — | ✔ | — | — | — |
-| T7.3-1 ungate the stream route | — | — | — | ✔ | — | — |
-| T7.3-2 drop method matching | — | — | — | ✔ | — | — |
-| T7.3-3 204 for health | — | — | — | ✔ | — | — |
-| T11.4 skip the build job | — | — | — | — | — | ✔ |
-| T12.4-1..4 hook firing | ✔ | — | ✔ | ✔ | ✔ | — |
+| Break-check | Python `kind` | `config` | `control` | `buffer` | `httpapi` | hook | CI aggregate |
+|---|---|---|---|---|---|---|---|
+| T0.7-1a reorder the kind branches | **— (deliberately)** | — | — | — | — | — | — |
+| T0.7-1b delete the redirect branch | ✔ (helper + wire) | — | — | — | — | — | — |
+| T0.7-2 drop the `locked` half | ✔ (the impostor test only) | — | — | — | — | — | — |
+| T0.7-3 revert `_locked_ffmpeg_profile` | ✔ (the fourth-dict test only) | — | — | — | — | — | — |
+| T2.5 go.sum / require | — | — | — | — | — | — | ✔ (the stdlib step) |
+| T3.3-1 TrimSpace for the secret | — | ✔ | — | — | — | — | — |
+| T3.3-2 ignore the port env | — | ✔ | — | — | — | — | — |
+| T3.3-3 drop the dev override | — | ✔ | — | — | — | — | — |
+| T4.4-1 wrong context string | — | — | ✔ | — | — | — | — |
+| T4.4-2 wrong separator | — | — | ✔ | — | — | — | — |
+| T4.4-3 drop the body digest | — | — | ✔ (with-body vector **only**) | — | — | — | — |
+| T4.4-4 strip the query string | — | — | ✔ (both assertions) | — | — | — | — |
+| T4.4-5 one-sided window | — | — | ✔ | — | — | — | — |
+| T5.3-1 cap 200 chunks | — | — | — | ✔ (two tests) | — | — | — |
+| T5.3-2 chunk = 188×5644 | — | — | — | ✔ | — | — | — |
+| T5.3-3 ChunksForBytes guard | — | — | — | ✔ | — | — | — |
+| T7.3-1 ungate the stream route | — | — | — | — | ✔ | — | — |
+| T7.3-2 drop method matching | — | — | — | — | ✔ | — | — |
+| T7.3-3 204 for health | — | — | — | — | ✔ | — | — |
+| T11.4 skip the build job | — | — | — | — | — | — | ✔ |
+| T12.4-1..4 hook firing | — | ✔ | — | ✔ | ✔ | ✔ | — |
 
-Three notes on what this table is saying:
+Four notes on what this table is saying:
+
+- **T0.7-1a is the one row in this table that must stay green, and it is there on purpose.** Swapping the order of `_profile_kind`'s two branches is a plausible-looking edit that changes nothing, because a locked Redirect profile is not a Proxy profile and vice versa. Running it and watching everything pass tells you what these tests do *not* pin — branch order — which is worth knowing before you rely on them. A break-check that stays green is normally a finding; this one is labelled, expected, and the label is what stops it being read as a failure of the suite.
 
 - **T4.4-3 is the one that justifies having three vectors rather than one.** Dropping the body digest from the signed message leaves both empty-body tests **green** — `sha256(b"")` contributes the same constant either way only if you also drop it from Python, which you have not. Only the with-body vector fails. A single empty-body vector would have made this defect invisible, and it is a total replay-binding failure.
 - **T5.3-1 must produce two failures, not one.** `TestConstantsMatchThePythonSource` says the number moved; `TestCapCoversFullRetentionAtTheReferenceBitrate` says *why the new number is wrong*. If only the first fires, the second test is not doing its job and the cap has no safety assertion behind it.
 - **No break-check in this PR can redden `channel` or `ffmpeg`**, and that is structural, not an oversight: they are documented stubs with no assertions. Do not read their green as evidence of anything.
+- **Task 0's column is the only one a Django test can redden, and none of the Go checks can touch it.** The two halves of this PR share no code path: a Go test cannot observe `stream_profile.kind` at all, because 2c-1 ships no control-plane client to read it with. That client arrives in 2c-5, and the field's first Go *consumer* is 2c-2. So Task 0's tests are the field's only guard for the next two PRs — which is why there are five of them for one string, and why three of the four T0 break-checks target a different one.
 
 ---
 
 ## What to report back
 
 1. **The plan path, the branch and the commit SHA.**
-2. **The allowlist reconciliation as executed** — the four counts you measured, whether they matched, and any citation whose line had moved.
+2. **The allowlist reconciliation as executed** — the four counts you measured, whether they matched, any citation whose line had moved, and the `resolve_source` edge count Task 0 Step 5 measured against Ruling R8's predicted 38.
 3. **Any finding beyond F1–F4.** The tables above were built by reading; the implementer reads again with a compiler.
 4. **The buffer number, restated from your own arithmetic**, not copied from R2.
 5. **Every pin you resolved, with the command and the date**, and whether any moved from this plan's values.
-6. **Twenty-one break-check outcomes**, each with its failure text and a word on whether that text named the mechanism.
+6. **Twenty-four break-check outcomes**, each with its failure text and a word on whether that text named the mechanism. T0.7-1a is expected green; say so rather than omitting it.
 7. **The four hook-firing outcomes** from Task 12 Step 4, stated either way.
 8. **Whether the `Go result` aggregate was proven to fail on a skipped required job** (Task 11 Step 4). Without that, R1's whole argument is untested.
 9. **Anything you could not verify**, said plainly. A skipped check reported as a pass is the failure mode this repository's own CI history is built around avoiding.
