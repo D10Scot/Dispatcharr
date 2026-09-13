@@ -407,6 +407,7 @@ docker/Dockerfile                          EDIT — a cross-compiling relay-buil
 docker/supervisord/all.conf                EDIT — one path on the include list
 docker/supervisord/all-dev.conf            EDIT — one path on the include list
 .gitattributes                             EDIT — one line, *.go text
+.gitleaks.toml                             EDIT — allowlist the five HMAC parity vectors, by value
 .claude/settings.json                      EDIT — a second PostToolUse hook entry
 .claude/hooks/pre-commit-tests.sh          EDIT — a Go section in the commit gate
 CLAUDE.md                                  EDIT — § Commands, § Architecture, § Test hooks, § Testing
@@ -743,7 +744,14 @@ Read Ruling R8 before starting. It explains why four dicts are involved rather t
 
   **Do not weaken either assertion to a subset check.** Exact equality is what makes them catch a dropped or wrongly-serialized key, and the first one's own comment says so in as many words. Changing `assertEqual` to `assertIn`-style checks would close this PR's red and silently disarm both tests for every future key — hollow shape 3, applied by hand.
 
-  **Both are also a control on Task 0's own work.** If `kind` were missing from `_locked_ffmpeg_profile()`'s dict, these two would fail *without* the fourth key added, so their behaviour before and after this step tells you the fourth call site really is wired. Run them once before editing and note the failure, then once after.
+  **Both are also a control on Task 0's own work, and the direction matters.** Steps 2–3 have already wired `kind`, so *before* this step's edit both tests compare a three-key literal against a four-key dict and must go **red**. A **green** run here is the finding: it means `_locked_ffmpeg_profile()` is still emitting three keys, so Step 3 missed the fourth call site — the one the ruling did not name. Run them once before editing and confirm they fail, then once after and confirm they pass.
+
+  ```bash
+  cd <your worktree> && docker exec dispatcharr-testrunner /dispatcharrpy/bin/python \
+    manage.py test --keepdb apps.proxy.tests.test_next_source_resolution -v1
+  ```
+
+  The failure names `'kind': 'transcode'` as the unexpected key, so it names the mechanism rather than just a shape mismatch.
 
 - [ ] **Step 7: Break-check, three edits**
 
@@ -753,10 +761,10 @@ Read Ruling R8 before starting. It explains why four dicts are involved rather t
 
 - [ ] **Step 8: Run the three affected labels**
 
-  `scripts/ci_backend_test_labels.py` maps this task's four files to three labels — verify rather than assume, since the mapping is the same function CI uses:
+  `scripts/ci_backend_test_labels.py` maps this task's six files to three labels — verify rather than assume, since the mapping is the same function CI uses:
 
   ```bash
-  cd <your worktree> && printf 'apps/proxy/next_source.py\napps/proxy/serializers.py\napps/proxy/tests/test_redirect_transcode_flag.py\napps/proxy/live_proxy/tests/zero_orm_allowlist.py\n' | python3 scripts/ci_backend_test_labels.py
+  cd <your worktree> && printf 'apps/proxy/next_source.py\napps/proxy/serializers.py\napps/proxy/tests/test_redirect_transcode_flag.py\napps/proxy/live_proxy/tests/zero_orm_allowlist.py\napps/proxy/tests/test_next_source_api.py\napps/proxy/tests/test_next_source_resolution.py\n' | python3 scripts/ci_backend_test_labels.py
   ```
 
   Expected: `["apps.channels.tests", "apps.proxy.live_proxy.tests", "apps.proxy.tests"]`. All three must pass. `apps.proxy.live_proxy.tests` is the one that carries the zero-ORM guard, so it is the label that proves Step 5's count is right; `apps.channels.tests` is there because the `apps/proxy/live_proxy/` alias routes to it, and it builds a real `ProxyServer` ten times, so it is slow and not optional.
@@ -1355,9 +1363,46 @@ Read Ruling R8 before starting. It explains why four dicts are involved rather t
   		t.Fatal("an explicit 0 must disable the routes inside dev")
   	}
   }
+
+  // Everything above tests intFromEnv, ReadSecretFile and devRoutes directly,
+  // which leaves Load() -- the only function main actually calls -- entirely
+  // unpinned. Three defects would redden nothing without this test: a wrong
+  // environment variable name in Load's own call, reading the path from the
+  // wrong variable, and dropping DevRoutes from the returned struct. That is
+  // hollow shape 3 aimed at the wiring rather than the logic: each part is
+  // proven and the assembly is not.
+  //
+  // Asserts all three fields in one call, so it fails on any of them, and
+  // supplies values the defaults cannot produce (shape 2): 5999 is not 5658,
+  // the secret is a literal no fallback generates, and DevRoutes is forced on
+  // while DISPATCHARR_ENV is unset.
+  func TestLoadWiresAllThreeFields(t *testing.T) {
+  	dir := t.TempDir()
+  	path := filepath.Join(dir, "jwt")
+  	if err := os.WriteFile(path, []byte("wired-secret\n"), 0o600); err != nil {
+  		t.Fatalf("writing fixture: %v", err)
+  	}
+  	t.Setenv("DISPATCHARR_SECRET_FILE", path)
+  	t.Setenv("DISPATCHARR_RELAY_GO_PORT", "5999")
+  	t.Setenv("DISPATCHARR_RELAY_GO_DEV_ROUTES", "1")
+
+  	cfg, err := Load()
+  	if err != nil {
+  		t.Fatalf("Load() failed: %v", err)
+  	}
+  	if cfg.Port != 5999 {
+  		t.Errorf("Port = %d, want 5999", cfg.Port)
+  	}
+  	if cfg.Secret != "wired-secret" {
+  		t.Errorf("Secret = %q, want %q", cfg.Secret, "wired-secret")
+  	}
+  	if !cfg.DevRoutes {
+  		t.Error("DevRoutes = false, want true")
+  	}
+  }
   ```
 
-  Note the two `devRoutes` tests do not call `t.Parallel()` and must not: `t.Setenv` panics if they do, which is the toolchain refusing an unsafe test rather than a limitation to work around (Global Constraint 10).
+  Note the three environment-mutating tests do not call `t.Parallel()` and must not: `t.Setenv` panics if they do, which is the toolchain refusing an unsafe test rather than a limitation to work around (Global Constraint 10).
 
 - [ ] **Step 3: Break-check, three edits**
 
@@ -1366,6 +1411,7 @@ Read Ruling R8 before starting. It explains why four dicts are involved rather t
   1. Replace `strings.NewReplacer(...).Replace(...)` with `strings.TrimSpace(string(raw))`. Expect `TestReadSecretFileMatchesEntrypointStripping` to fail with exactly `secret = "abc\r\ndef", want "  abcdef  "` — verified by running it. Revert.
   2. Change `intFromEnv`'s `if raw == ""` branch to `return fallback, nil` unconditionally (i.e. ignore the environment). Expect `TestPortReadsTheEnvironment` to fail with `port = 5658, want 5999`. Revert.
   3. Delete the `DISPATCHARR_RELAY_GO_DEV_ROUTES` branch from `devRoutes`. Expect `TestDevRoutesOverrideWinsBothWays` to fail on its first assertion. Revert.
+  4. In `Load`, drop `DevRoutes` from the returned struct literal (`return Config{Port: port, Secret: secret}`). Expect **only** `TestLoadWiresAllThreeFields` to fail, with `DevRoutes = false, want true` — every other test in the package stays green, because none of them calls `Load`. That asymmetry is the point of the test and the reason it exists: the three unit-level tests prove the parts and say nothing about the assembly.
 
 - [ ] **Step 4: Run the four checks and commit**
 
@@ -1427,6 +1473,18 @@ Spec § The contract (lines 540-548) gives the exact byte layout, and states the
   ```
 
   **If your output differs, your output governs** — and report it, because `internal_auth.py` changing shape between `0c1654d8` and your branch point would be news.
+
+  **These five digests are allowlisted in `.gitleaks.toml`, individually and by exact value.** `gitleaks` scans full history in `lint.yml`, and `relay_trust_token = <64 hex>` matches its `generic-api-key` rule — a false positive, since every value here is an HMAC under the fixed, public key `phase2c1-test-secret` and authenticates nothing in any deployment. The entry is scoped to `regexTarget = "secret"` with one anchored regex per digest (each allowing the optional `v1.<unix_ts>.` prefix the header format adds), and to that one rule, so a real secret landing in this plan or in `relay/control/token_test.go` is still caught by every rule including `generic-api-key` itself. Verified: with the entry in place a probe file carrying all five in a firing context reports no leaks, and an unrelated 64-hex `api_token` in the same file is still found.
+
+  **So regenerating the vectors means editing `.gitleaks.toml` in the same commit.** They are allowlisted one value at a time, deliberately never by path — a path exemption on this plan or on the Go test file would silence a genuine leak dropped there later. If Step 1's output differs from the literals above, update both the plan and the allowlist together, and re-run:
+
+  ```bash
+  cd <your worktree> && docker run --rm -v "$PWD:/repo" \
+    zricethezav/gitleaks:v8.30.1 detect --source=/repo \
+    --config=/repo/.gitleaks.toml --no-git -v --redact
+  ```
+
+  `--no-git` scans the working tree, which is what matters: this branch squash-merges, so its intermediate commits never reach `main` and the tree is what full-history scans will see from then on. Expect `no leaks found`.
 
 - [ ] **Step 2: Write `relay/control/token.go`**
 
@@ -2982,6 +3040,8 @@ Per the standing convention: a PR that changes a fact CLAUDE.md states corrects 
   (cd relay && golangci-lint run ./...)
   scripts/check_go_stdlib_only.sh relay
   zizmor --no-progress .github/workflows/go-tests.yml
+  docker run --rm -v "$PWD:/repo" zricethezav/gitleaks:v8.30.1 \
+    detect --source=/repo --config=/repo/.gitleaks.toml --no-git -v --redact
   git status --porcelain                           # must print nothing
   ```
 
@@ -2989,9 +3049,9 @@ Per the standing convention: a PR that changes a fact CLAUDE.md states corrects 
 
   **This plan's Go was assembled into a scratch module and run through all four checks at plan time**: `go build ./...`, `go vet ./...`, `go test -race ./...` and `golangci-lint run ./...` with this plan's own `.golangci.yml`, returning `0 issues.` and passing tests, with `go.sum` absent and `go list -m all` printing the main module alone. So a lint finding on your run is a difference between your code and the plan's, not a gap in the plan — read it as one. Three fixes in the plan's code exist only because that run found them: `_, _ =` on the two `fmt.Fprintln` calls, `#nosec G101` on `DefaultSecretFile`, and `#nosec G304,G703` on `os.ReadFile`. The last of those is worth remembering as a habit rather than a fact: **silencing one gosec rule can reveal a second on the same line** — G703 was invisible until G304 was suppressed, so re-run the linter after every `#nosec` rather than assuming the line is now clean.
 
-- [ ] **Step 2: Confirm the Python footprint is exactly Task 0's four files**
+- [ ] **Step 2: Confirm the Python footprint is exactly Task 0's six files**
 
-  Global Constraint 4 allows four Python paths and no others. Check the allowed set and the forbidden set separately, because one command answering "clean" for both hides which half it checked:
+  Global Constraint 4 allows six Python paths and no others. Check the allowed set and the forbidden set separately, because one command answering "clean" for both hides which half it checked:
 
   ```bash
   cd <your worktree>
@@ -3015,7 +3075,7 @@ Per the standing convention: a PR that changes a fact CLAUDE.md states corrects 
   3. **The buffer-depth derivation and its number**: 300 chunks, 76,760,400 bytes per channel, the stated 10 Mbit/s reference bitrate, both crossover bitrates (10.23 Mbit/s where the cap starts binding before retention, 122.8 Mbit/s where it stops covering the join point), and the ~732 MiB ten-channel aggregate. Say plainly that the reference bitrate is an assumption and that no host-memory check exists.
   4. **Every pin, with the command that resolved it and the date.** Go toolchain, three action SHAs with their publishers confirmed, the `golang` image digest.
   5. **The stop-budget arithmetic** from Task 9 Step 3, and the sentence that `relay-go` shares `priority=205` for that reason.
-  6. **Every break-check and its failure text.** Task 0 Step 7 (4, one of them expected green), Task 2 Step 5 (2), Task 3 Step 3 (3), Task 4 Step 4 (5), Task 5 Step 3 (3), Task 7 Step 3 (3), Task 11 Step 4 (1), Task 12 Step 4 (4) — **twenty-four**. A break-check that did not go red is a finding; report it as one, **except T0.7-1a, which is expected to stay green and whose report is what that tells you about branch-order coverage**. Say for each that the failure message named the mechanism rather than a build error (shape 6).
+  6. **Every break-check and its failure text.** Task 0 Step 7 (4, one of them expected green), Task 2 Step 5 (2), Task 3 Step 3 (4), Task 4 Step 4 (5), Task 5 Step 3 (3), Task 7 Step 3 (3), Task 11 Step 4 (1), Task 12 Step 4 (4) — **twenty-five**. A break-check that did not go red is a finding; report it as one, **except T0.7-1a, which is expected to stay green and whose report is what that tells you about branch-order coverage**. Say for each that the failure message named the mechanism rather than a build error (shape 6).
   7. **The measured allowlist edge count** from Task 0 Step 5 — the number `scan_edge` actually printed for `resolve_source`, whether it matched Ruling R8's predicted 38, and confirmation that `get_stream_object` is still 3.
   8. **The two runtime probes** from Task 8 Steps 2 and 3: the three status codes with the dev flag off, the 501 with it on, and the non-zero exit on a missing secret.
   9. **The cross-compile output** from Task 10 Step 4, both architectures.
@@ -3029,7 +3089,7 @@ Per the standing convention: a PR that changes a fact CLAUDE.md states corrects 
 
 ## Break-check × what each can redden
 
-Twenty-four break-checks across eight tasks. Five green checks are not five proofs, and a reader not told which is which will assume they are. Each break-check must redden the column named here and leave the rest alone; a column going red that this table says cannot is a finding about the check, not a pass.
+Twenty-five break-checks across eight tasks. Five green checks are not five proofs, and a reader not told which is which will assume they are. Each break-check must redden the column named here and leave the rest alone; a column going red that this table says cannot is a finding about the check, not a pass.
 
 | Break-check | Python `kind` | `config` | `control` | `buffer` | `httpapi` | hook | CI aggregate |
 |---|---|---|---|---|---|---|---|
@@ -3041,6 +3101,7 @@ Twenty-four break-checks across eight tasks. Five green checks are not five proo
 | T3.3-1 TrimSpace for the secret | — | ✔ | — | — | — | — | — |
 | T3.3-2 ignore the port env | — | ✔ | — | — | — | — | — |
 | T3.3-3 drop the dev override | — | ✔ | — | — | — | — | — |
+| T3.3-4 drop DevRoutes from `Load`'s return | — | ✔ (the `Load` test **only**) | — | — | — | — | — |
 | T4.4-1 wrong context string | — | — | ✔ | — | — | — | — |
 | T4.4-2 wrong separator | — | — | ✔ | — | — | — | — |
 | T4.4-3 drop the body digest | — | — | ✔ (with-body vector **only**) | — | — | — | — |
@@ -3073,7 +3134,7 @@ Four notes on what this table is saying:
 3. **Any finding beyond F1–F4.** The tables above were built by reading; the implementer reads again with a compiler.
 4. **The buffer number, restated from your own arithmetic**, not copied from R2.
 5. **Every pin you resolved, with the command and the date**, and whether any moved from this plan's values.
-6. **Twenty-four break-check outcomes**, each with its failure text and a word on whether that text named the mechanism. T0.7-1a is expected green; say so rather than omitting it.
+6. **Twenty-five break-check outcomes**, each with its failure text and a word on whether that text named the mechanism. T0.7-1a is expected green; say so rather than omitting it.
 7. **The four hook-firing outcomes** from Task 12 Step 4, stated either way.
 8. **Whether the `Go result` aggregate was proven to fail on a skipped required job** (Task 11 Step 4). Without that, R1's whole argument is untested.
 9. **Anything you could not verify**, said plainly. A skipped check reported as a pass is the failure mode this repository's own CI history is built around avoiding.

@@ -15,3 +15,15 @@ targetRules = ["generic-api-key"]
 paths = [
   '''^staticfiles/drf-yasg/redoc/redoc\.min\.js$''',
 ]
+
+[[allowlists]]
+description = "Phase 2c-1 HMAC parity vectors: HMAC-SHA256 outputs computed by apps/proxy/internal_auth.py under the fixed, public test key SECRET_KEY=\"phase2c1-test-secret\" (settings.configure(), no database), so the Go relay's control package can be pinned against Python byte-for-byte rather than against itself. Test literals, not credentials; valid for no deployment. They appear in docs/superpowers/plans/2026-09-13-phase2-2c1-skeleton.md and in relay/control/token_test.go. Scoped to the exact values (regexTarget = secret) and the one rule that fires, so a real secret in either file is still caught by every rule including this one. The optional v1.<unix_ts>. prefix is part of the X-Dispatcharr-Internal-Request header's own wire format, so the same digest appears both bare and prefixed. Regenerating the vectors means updating this block in the same commit: they are allowlisted individually, never by path."
+targetRules = ["generic-api-key"]
+regexTarget = "secret"
+regexes = [
+  '''^(v1\.[0-9]+\.)?2bb01b0c4f053b1787d3356fb836282b162002848523b130103c33f9cf7d901c$''',
+  '''^(v1\.[0-9]+\.)?19d4b08667108eb1a38fa11d1bbe7646cb90bc017aad605b302add137818ae7a$''',
+  '''^(v1\.[0-9]+\.)?5ce39464af1f52fac92ab6dd8101b289c2b9acce93d392216ac0dbcfa53a1fae$''',
+  '''^(v1\.[0-9]+\.)?16c32b6499ba30786464bfb130d785fbc3a8b817c7cc5a0e0d73316a60fd702c$''',
+  '''^(v1\.[0-9]+\.)?6d24abde774fa01f0c94981f04c77f0b714398dffc379a09c580ac5e00c816d1$''',
+]
