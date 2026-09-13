@@ -24,7 +24,7 @@
 
 **One more 2c-2 commit is expected** (four fixes: `withoutURL` at `source_proxy.go:156`, `StateActive` reachable from `run()` on the first chunk with `markActive` removed or repurposed, five constants pinned, PR-body records). The diff against `9f744890` will be small. **Two consequences for this plan, both already absorbed:**
 
-- **`markActive` may be removed or repurposed.** `Manager.Attach` calls `existing.markActive()` on the reuse path. Task 0 Step 2 checks whether it still exists; if `run()` now sets `StateActive` on the first chunk, **delete the call rather than keeping a method with one caller** — the state it was setting is being set correctly elsewhere, and the tests that assert on `state` are 2c-2's.
+- **`markActive` is gone from this plan's appendices, and that is a decision rather than an anticipation.** `Manager.Attach` called `existing.markActive()` on the reuse path, and 2c-2's next commit makes `run()` set `StateActive` on the first chunk instead. Carrying a call to a method that commit removes is a guaranteed compile error for the implementer, so **the call and the method are both dropped here**. Measured on `9f744890` with both removed and no replacement in place: build, vet, lint 0 issues and `-race` 3/3 green — **no 2c-2 test asserts `StateActive` anywhere** — but a serving channel then reports `waiting_for_clients` on the list endpoint for its whole life. That gap is 2c-2's to close and Task 0 Step 2a is where this PR notices if it has not.
 - **Do NOT add pins for the five constants** 2c-2 is pinning (the control timeouts, `ProxySource`'s defaults, `NominalByteRate`, `WriteChunk`). This plan pins exactly two, `httpapi.DefaultClientLimit` and `buffer.MaxChunksPerRead`, and **neither exists in 2c-2** — both are introduced by this PR, so there is no duplication.
 
 **And seed your scratch module from the branch INCLUDING its `_test.go` files**, never from a plan's appendices. Both blocking findings against this plan's first draft — symbol collisions and broken call sites — came from building against a plan rather than a branch, and neither is visible until `go vet` runs over the merged package.
@@ -262,7 +262,7 @@ The authorize hop sets `X-Relay-Output-Format` on **every** tune — `apps/proxy
 | `go-tests.yml` running build, vet, `-race`, lint, the stdlib check, with a `Go result` aggregate and a change detector matching `^relay/` | **verified against `main`** | Task 0 reports it; this PR adds no workflow change |
 | `buffer.Ring` with `New`, `Write`, `Read(cursor)`, `Join(behind)`, `Wait(ctx, cursor)`, `Head`, `Oldest`, `Closed`, `Close`, `ResetPosition`, and `chunksFor` | **as planned in 2c-2; re-derive against the merged tree** | Task 1 edits `Read` and adds a counter; a different `Read` signature changes Task 1 wholesale |
 | `channel.Source`, `ProxySource`, `ErrUpstreamIdle`, `ErrUpstreamStatus`, `withoutURL`, `State` and its eight constants, `Tuning{ChunkBytes, Retention, JoinBehind}` | **as planned in 2c-2** | Tasks 2 and 4 edit these files |
-| `channel.Channel` with `ID`, `Ring`, `Tuning`, `State`, `Err`, `Clients`, `Done`, `run`, `markActive`, `stop`, `setState`, `addClient`, `dropClient` | **as planned in 2c-2** | Task 2 replaces the client counter with a registry |
+| `channel.Channel` with `ID`, `Ring`, `Tuning`, `State`, `Err`, `Clients`, `Done`, `run`, `stop`, `setState`, `addClient`, `dropClient` | **as landed**; `markActive` is deliberately NOT in this list — see Task 0 Step 2 | Task 2 replaces the client counter with a registry |
 | `channel.Manager` with `NewManager`, `Attach(id, start)`, `claim`, `publish`, `releaseGate`, `Get`, `Stop`, `StopAll`, `ids`, `release`, `take` | **as planned in 2c-2** | Task 3 changes `Attach`'s signature and rewrites `release` |
 | `control.Settings` with `Int`, `Float`, `Seconds`, `String` and `ErrSettingAbsent`; `control.Client.NextSource`; `Unavailable`, `Refused`, `ErrNotConfigured`; `KindProxy` | **as planned in 2c-2** | Task 5 calls all of these |
 | `httpapi.StreamDeps`, `StreamHandler`, `channelIDFor`, `startProxyTune`, `writeTuneFailure`, `serveClient`, `writeChunks`, `tuningFrom`, `ErrNotProxyKind`, `ErrNoSource` | **as planned in 2c-2** | Task 5 rewrites `channelIDFor` into `identify` and adds two arms to `writeTuneFailure` |
@@ -319,6 +319,17 @@ Nothing under `core/`, `dispatcharr/`, `frontend/`, `e2e/` or `metrics/` is touc
 
 **Nothing else is written until this task is done and reported.** The ledger above was written against the 2c-2 *plan*, which at the time of writing was not implemented. Every "as planned in 2c-2" row is a prediction; this task turns each into a fact or a finding.
 
+- [ ] **Step 0: Seed from the MERGED SHA, not from the branch**
+
+  ```bash
+  cd <your worktree> && git log --oneline -1 <2C2_MERGED_SHA>
+  git diff --stat <2C2_MERGED_SHA> HEAD -- relay/
+  ```
+
+  **`<2C2_MERGED_SHA>` is filled in by the orchestrator before this plan is dispatched.** A branch name is not a seed: `migration/phase2c-vertical-slice` moved three times while this plan was being written, and each move changed a shape the appendices depend on. The appendices below were built and verified against **`9f744890` plus 2c-2's `markActive` removal**; anything later is a diff against that, and **Step 2's table is the diff**.
+
+  If any symbol in Step 2 differs from what that table expects, **stop and report before writing a line**. Reconciling a moved shape mid-task is how an appendix quietly stops matching the tree it was verified against.
+
 - [ ] **Step 1: Confirm the module, the toolchain and the tree**
 
   ```bash
@@ -346,10 +357,21 @@ Nothing under `core/`, `dispatcharr/`, `frontend/`, `e2e/` or `metrics/` is touc
   | `(*Manager).release` | **as landed at `9f744890`**: `dropClient` outside the lock, then `stopIfStillIdle(c)` which re-reads `Clients()` and checks `m.channels[c.id] == c` under `m.mu` | if you find the two-step `m.Stop(c.id)` shape, the tree is older than `9f744890` — stop and report rather than applying this plan to it |
   | `ProxySource.Run` | **as landed**: `defer client.CloseIdleConnections()` right after the client is built | if absent, same answer: wrong base |
   | `(*Ring).Read`'s `next` | **as landed**: the index of the last chunk appended, tracked in the loop | if it returns `r.chunks[len-1].Index`, same answer |
-  | `(*Channel).markActive` | present at `9f744890`, **may be gone in the next fix commit** | if `run()` now sets `StateActive` on the first chunk, delete `Attach`'s call rather than keeping a one-caller method |
+  | `(*Channel).markActive` | **expected ABSENT.** 2c-2's next fix commit makes `run()` set `StateActive` on the first chunk and removes or repurposes this method; the appendices here carry neither the method nor `Attach`'s call to it | **if it is still present**, the tree is older than that fix: a channel this PR serves will report `waiting_for_clients` for its whole life on the list endpoint. Measured — see Step 2a. Stop and report rather than re-adding the call |
+  | `(*Channel).run` sets `StateActive` | **expected present**, on the first published chunk | if neither this nor `markActive` exists, no channel ever reaches `active` and the list endpoint says so. That is the one thing in this PR that cannot be fixed from inside it |
   | `(*Channel).clients` | an `int` | Task 2 replaces it with a map |
   | `Tuning` | three fields | Task 2 adds a fourth |
   | `control.VerifyInternalRequest` | present and exported | Task 6 cannot gate the route without it |
+
+- [ ] **Step 2a: Probe what `state` a serving channel reports**
+
+  The one check in Task 0 that is a behaviour, not a signature, and it is here because the appendices depend on a fix that had not landed when they were written:
+
+  ```bash
+  cd <your worktree>/relay && grep -n "StateActive" channel/channel.go
+  ```
+
+  **Expect `run()` to set it on the first published chunk.** Measured on a tree with `markActive` removed and no replacement: a channel with a client reading it reports `waiting_for_clients` on `GET /proxy/relay/channels` for its whole life, because nothing else ever moves it. That is 2c-2's to fix and this PR cannot fix it from inside — but this PR's list endpoint is the first thing that *renders* it, so it is this PR's job to notice.
 
 - [ ] **Step 3: Confirm the settings the rig sends**
 
@@ -547,6 +569,7 @@ Spec D2's `Client registry` key-family row: `live:channel:{id}:clients` (a SET w
 
   **The complete file is Appendix C.** Four changes to 2c-2's version:
 
+  0. **`markActive` and its one caller are gone** (see § Sequencing). If your seed still has them, stop: the tree predates 2c-2's `StateActive` fix.
   1. `clients int` becomes `clients map[string]*Client`. `Clients()` returns `len`, `addClient` takes a `*Client` and **reports whether the id was free**, `dropClient` takes an id.
   2. `ErrDuplicateClient`, a package-level sentinel. The port of `client_manager.py:218-221`, whose `add_client` returns `False` for an id already in `_registered_clients`; `views.py:748-753` turns that `False` into a 503.
   3. `SourceInfo` and the `source` field: what the next-source answer said about the stream, kept so the status endpoints render it without a second control-plane call. Exactly the fields `get_basic_channel_info` reads out of the metadata hash. **`StreamProfileID` is an `int` here and renders as a STRING** on the wire, because the metadata hash stores `str(source["stream_profile"]["id"])` (`input/manager.py:2165`) and the serializer declares `CharField`.
@@ -639,7 +662,15 @@ Ruling R5. This is the task the ordering tests exist for, and the one where `-ra
   | `relay/channel/concurrent_test.go` | 93 |
   | `relay/channel/manager_test.go` | 60, 64, 109, 113, 144, 179, 215, 223, 249, 255, 286, 299, **340, 361** |
 
-  **The last two are 2c-2's fix commit's own test**, `TestAReleaseCannotStopAChannelAConcurrentAttachJustJoined` — the one that demonstrates the race this plan found. It attaches twice to `shared`, so it needs two distinct client ids like every other pair. **Re-derive the line numbers against your tree**: a further fix commit moves them.
+  **The last two are 2c-2's fix commit's own test**, `TestAReleaseCannotStopAChannelAConcurrentAttachJustJoined` — the one that demonstrates the race this plan found. It attaches twice to `shared`, so it needs two distinct client ids like every other pair.
+
+  **Count them, do not trust this table.** Line numbers move with every fix commit and the total can too:
+
+  ```bash
+  cd <your worktree>/relay && grep -c '\.Attach(' channel/manager_test.go channel/concurrent_test.go
+  ```
+
+  Measured at `9f744890`: **14 + 1 = 15**. A different total is a finding for the report, not something to reconcile silently.
 
   **Two adapters in `manager_test.go` absorb all fifteen**, rather than fifteen closure rewrites. None of those tests is about `SourceInfo` or about client identity — they are about one source per channel, the gate, the panic guarantee and the finished-channel drop — so the change should not touch what they say:
 
@@ -1736,7 +1767,7 @@ type Client struct {
 
 ### Appendix C — `relay/channel/channel.go`
 
-The whole file. The diff against `9f744890` is the registry, `ErrDuplicateClient`, `SourceInfo`, `startedAt` and `ClientSnapshot`.
+The whole file. The diff against `9f744890` is the registry, `ErrDuplicateClient`, `SourceInfo`, `startedAt`, `ClientSnapshot` — and the **removal** of `markActive`, which 2c-2's `StateActive` fix supersedes.
 
 ```go
 // Package channel owns a channel's lifecycle: ownership, the state machine,
@@ -1975,17 +2006,6 @@ func (c *Channel) run(ctx context.Context, source Source) {
 	}
 }
 
-// markActive moves a channel out of waiting_for_clients on its first chunk.
-// Called by the manager's attach path rather than by the writer, because the
-// writer is an io.Writer and knows nothing about clients.
-func (c *Channel) markActive() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.state == StateWaitingForClients {
-		c.state = StateActive
-	}
-}
-
 // ensure the ring satisfies io.Writer where it is used as the sink.
 var _ io.Writer = (*buffer.Ring)(nil)
 
@@ -2002,7 +2022,7 @@ func (c *Channel) stop(wait time.Duration) {
 
 ### Appendix D — `relay/channel/manager.go`
 
-The whole file. **`stopIfStillIdle` is 2c-2's, verbatim** — read it before changing `release`.
+The whole file. **`stopIfStillIdle` is 2c-2's, verbatim** — read it before changing `release`. `Attach`'s reuse path no longer calls `markActive`.
 
 ```go
 package channel
@@ -2123,7 +2143,6 @@ func (m *Manager) Attach(id string, client *Client, start func() (Started, error
 			return nil, nil, err
 		}
 		if existing != nil {
-			existing.markActive()
 			return existing, func() { m.release(existing, client.ID) }, nil
 		}
 		if own != nil {
