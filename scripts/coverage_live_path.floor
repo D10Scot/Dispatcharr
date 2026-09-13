@@ -4,9 +4,14 @@
 # `missing` is the ratchet -- a MAXIMUM, not a target, and lower is better. It is set
 # from the WORST run of at least twelve on the tree that earned it, which is why this
 # gate carries no separate tolerance parameter: the measured spread is already inside
-# the number. Four regions are known to flap (owner-side coordinated stop, non-owner
-# local cleanup, the stderr-reader join, _wait_for_channel_ready's error branch) and
-# the list has grown twice; a fixed tolerance would be stale on arrival.
+# the number. Three regions are known to flap (non-owner local cleanup, server.py:2014-
+# 2046 inside cleanup_task's no-clients-timeout branch, and input/http_streamer.py:153-
+# 161's thread-join cleanup) -- CORRECTED IN 2b-4, measured at `04841a47`: the previous
+# four-region list's owner-side coordinated stop and the stderr-reader join
+# (input/manager.py) no longer flap on this tree, and _wait_for_channel_ready's error
+# branch never did; the two replacements above were unlisted before. The list has now
+# changed three times; a fixed tolerance would be stale on arrival, which this
+# correction is itself evidence for, not just an assertion of it.
 #
 # `shape`, `modules` and `rcfile` are EQUALITY checks, not comparisons. A different
 # measurement shape, module list or measurement DEFINITION makes two numbers
@@ -79,12 +84,14 @@
 # maximum the delta was +13, not +35. Recorded here, not just in the PR, so
 # the next stage does not inherit a delta that has now failed to reproduce
 # once. The mechanism the 2a-7 note names (per-container isolation makes the
-# owner-side block deterministic but not the total; three regions still flap:
-# the owner-side coordinated stop, the non-owner local cleanup, the
-# stderr-reader join) is unchanged -- only the SIZE of the local/CI gap
-# varied between campaigns, which is itself evidence the gap is not a fixed
-# constant to budget against, and the correct response stays "measure in CI",
-# never "assume a fixed offset".
+# owner-side block deterministic but not the total) is unchanged in KIND --
+# some regions still flap -- but not in the SPECIFIC regions: see the
+# corrected three-region list at the top of this file (04841a47's finding,
+# not re-derived from this campaign's own round data, which recorded
+# aggregate `missing=` only and not per-line diffs). Only the SIZE of the
+# local/CI gap varied between campaigns, which is itself evidence the gap is
+# not a fixed constant to budget against, and the correct response stays
+# "measure in CI", never "assume a fixed offset".
 #
 # TWO ROUNDS IN THIS CENSUS CARRY COSMETIC DAMAGE UNRELATED TO THE COVERAGE
 # FIGURE. Round 5's overall workflow-run conclusion reads `cancelled` even
