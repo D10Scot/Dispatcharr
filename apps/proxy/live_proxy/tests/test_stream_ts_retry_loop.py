@@ -8,11 +8,40 @@ control_plane.release_source() on the abandoned slot when that final attempt
 also fails. Fixture copied from test_stream_ts_client_registration.py's
 _channel/_active_proxy_server/_request, per that file's own stated
 convention (each test module keeps its own rather than sharing one).
+
+`apps.proxy.live_proxy.views.time` IS the real global `time` module (views.py
+just does `import time`), so patching `...views.time.time` patches
+`time.time` for the WHOLE PROCESS, not just this module -- and several other
+tests in this suite construct a real ProxyServer(), whose cleanup thread and
+event listener are permanent background threads with no stop mechanism
+(server.py's own docstrings note this). Under a full-package run those
+threads can still be alive and calling time.time() concurrently, so a bare
+finite `side_effect` list is fragile: a single stray call from an unrelated
+leaked thread exhausts it early and turns a controlled scenario into a
+StopIteration deep inside the view (observed as a 500 in CI-style full-suite
+runs; every test here passed reliably in file-level isolation, which is what
+exposed this). `_resilient_time_sequence` pads the tail with the last
+scripted value instead of raising, which is enough to keep the specific
+sequence traced against the function's own call sites correct against any
+plausible amount of stray background noise.
 """
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 from django.test import RequestFactory, SimpleTestCase
 from django.http import StreamingHttpResponse
+
+
+def _resilient_time_sequence(values):
+    """A time.time() side_effect that repeats its last value once exhausted,
+    rather than raising StopIteration on an unexpected extra call."""
+    state = {"i": 0}
+
+    def _next():
+        i = state["i"]
+        state["i"] += 1
+        return values[i] if i < len(values) else values[-1]
+
+    return _next
 
 
 def _decision(user=None, client_id="client_test_1", channel_uuid=""):
@@ -109,7 +138,7 @@ class StreamTsRetryLoopTests(SimpleTestCase):
         # the loop takes the sleep-and-continue path, not the
         # insufficient-time break. Iteration 2 succeeds.
         mock_generate.side_effect = [self._fail_tuple(), self._success_tuple()]
-        mock_time.side_effect = [0.0, 0.1, 0.15, 0.2]
+        mock_time.side_effect = _resilient_time_sequence([0.0, 0.1, 0.15, 0.2])
 
         proxy_server, client_manager = self._owner_init_proxy_server()
         mock_proxy_cls.get_instance.return_value = proxy_server
@@ -122,7 +151,15 @@ class StreamTsRetryLoopTests(SimpleTestCase):
 
         self.assertIsInstance(response, StreamingHttpResponse)
         self.assertEqual(mock_generate.call_count, 2)
-        mock_sleep.assert_called_once()
+        # `apps.proxy.live_proxy.views.gevent` IS the real global gevent
+        # module (views.py just does `import gevent`), so this patch is
+        # process-wide -- an unrelated leaked background greenlet elsewhere
+        # in the suite calls gevent.sleep(1) at a high rate under a
+        # full-package run (observed: 1157 stray calls in one run), which a
+        # bare assert_called_once() cannot tell apart from this test's own
+        # single call. Counting calls with retry_interval's specific first
+        # value (0.1) is what survives that noise.
+        self.assertEqual(mock_sleep.call_args_list.count(call(0.1)), 1)
 
     @patch("apps.proxy.live_proxy.views.close_old_connections")
     @patch("apps.proxy.live_proxy.views.create_stream_generator")
@@ -150,7 +187,7 @@ class StreamTsRetryLoopTests(SimpleTestCase):
         # sleep path. The final attempt (made once, at the timeout
         # boundary) then succeeds.
         mock_generate.side_effect = [self._fail_tuple(), self._success_tuple()]
-        mock_time.side_effect = [0.0, 0.1, 2.95, 2.96]
+        mock_time.side_effect = _resilient_time_sequence([0.0, 0.1, 2.95, 2.96])
 
         proxy_server, client_manager = self._owner_init_proxy_server()
         mock_proxy_cls.get_instance.return_value = proxy_server
@@ -164,8 +201,11 @@ class StreamTsRetryLoopTests(SimpleTestCase):
         self.assertIsInstance(response, StreamingHttpResponse)
         self.assertEqual(mock_generate.call_count, 2)
         # The break took the early exit -- no sleep was attempted between
-        # the single loop iteration and the final attempt.
-        mock_sleep.assert_not_called()
+        # the single loop iteration and the final attempt. Checked against
+        # retry_interval's specific value rather than a bare
+        # assert_not_called(), for the same stray-background-greenlet reason
+        # documented at the top of this file (that mock is process-wide).
+        self.assertNotIn(call(0.1), mock_sleep.call_args_list)
 
     @patch("apps.proxy.live_proxy.views.close_old_connections")
     @patch("apps.proxy.live_proxy.views.create_stream_generator")
@@ -199,7 +239,7 @@ class StreamTsRetryLoopTests(SimpleTestCase):
             self._fail_tuple(),
             self._fail_tuple(slot_reserved=True),
         ]
-        mock_time.side_effect = [0.0, 0.1, 2.95, 2.96]
+        mock_time.side_effect = _resilient_time_sequence([0.0, 0.1, 2.95, 2.96])
         mock_release_source.side_effect = control_plane.ControlPlaneRefused(
             403, "/api/relay/channels/channel-uuid/release"
         )
