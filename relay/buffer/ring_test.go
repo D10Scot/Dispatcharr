@@ -314,6 +314,18 @@ func TestReadReportsWhatEvictionSkipped(t *testing.T) {
 // want+len(out)-1, computed from what Read actually handed back -- so it
 // keeps holding, and failing usefully, the day a bounded Read exists and the
 // two quantities diverge.
+//
+// THIS TEST IS UN-ARMED ON THIS TREE, stated plainly rather than left to be
+// rediscovered: cursor+len(chunks) equals the ring's own tail whenever Read
+// returns every resident chunk, which it always does here with no cap, so
+// reverting the fix this test guards (back to r.chunks[len(r.chunks)-1]
+// .Index) leaves this assertion passing -- confirmed by review's own
+// break-check against 9f744890, and independently before that. The fix
+// itself stays, because the day a caller batches reads is the day the two
+// diverge and this assertion starts failing usefully; the code just cannot
+// be made to demonstrate that divergence yet. Owner: 2c-3, whose bounded
+// Read should arm this test rather than add a second one -- its own
+// planner has already been pointed at this test by name.
 func TestNextIsTheLastChunkActuallyReturnedNotTheRingsTail(t *testing.T) {
 	r := newTestRing(t, nil)
 	perChunk := testChunk / TSPacketSize
