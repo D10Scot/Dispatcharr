@@ -229,3 +229,20 @@ func TestSecondsHonoursAFractionalValue(t *testing.T) {
 		t.Fatalf("KEEPALIVE_INTERVAL = %s, want 500ms", got)
 	}
 }
+
+// Global Constraint 8's ratchet, found missing by review: these three
+// literals cited the spec with no file:line and nothing asserted them.
+// apps/proxy/control_plane.py:37-41 is Python's own next-source client's
+// CONNECT_TIMEOUT/READ_TIMEOUT/RETRY_DELAY, verified against this tree
+// rather than copied from the reviewer's citation.
+func TestTheTimeoutsMatchPython(t *testing.T) {
+	if ConnectTimeout != 2*time.Second {
+		t.Errorf("ConnectTimeout = %s, want 2s (apps/proxy/control_plane.py:37)", ConnectTimeout)
+	}
+	if ReadTimeout != 5*time.Second {
+		t.Errorf("ReadTimeout = %s, want 5s (apps/proxy/control_plane.py:38)", ReadTimeout)
+	}
+	if RetryDelay != 100*time.Millisecond {
+		t.Errorf("RetryDelay = %s, want 100ms (apps/proxy/control_plane.py:41)", RetryDelay)
+	}
+}

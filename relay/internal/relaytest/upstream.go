@@ -9,7 +9,8 @@ import (
 )
 
 // WriteChunk is how much the upstream writes to the wire at a time: 50 TS
-// packets, harness/upstream.py's _WRITE_CHUNK.
+// packets, apps/proxy/live_proxy/tests/harness/upstream.py:31's
+// _WRITE_CHUNK. Pinned by TestNominalByteRateAndWriteChunkMatchThePythonHarness.
 const WriteChunk = PacketSize * 50
 
 // Config shapes one Upstream. The zero value is a valid unpaced upstream

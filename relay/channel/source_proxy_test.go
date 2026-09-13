@@ -271,3 +271,25 @@ func TestRunClosesIdleConnectionsWhenItReturns(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 }
+
+// Global Constraint 8's ratchet, found missing by review: ChunkSize,
+// ConnectTimeout and ReadTimeout's zero-value defaults were never exercised,
+// because every other test in this file supplies an explicit value.
+// Constructed with the ZERO VALUE here, not a passed-in one, so this test
+// fails if a default silently changes rather than passing regardless.
+//
+// apps/proxy/live_proxy/input/http_streamer.py:18's chunk_size=8192 default
+// parameter and :71's timeout=(5, 30) are what these three mirror, verified
+// against this tree.
+func TestProxySourceDefaultsMatchPython(t *testing.T) {
+	var s ProxySource
+	if got := s.chunkSize(); got != 8192 {
+		t.Errorf("chunkSize() = %d, want 8192 (apps/proxy/live_proxy/input/http_streamer.py:18)", got)
+	}
+	if got := s.connectTimeout(); got != 5*time.Second {
+		t.Errorf("connectTimeout() = %s, want 5s (apps/proxy/live_proxy/input/http_streamer.py:71)", got)
+	}
+	if got := s.readTimeout(); got != 30*time.Second {
+		t.Errorf("readTimeout() = %s, want 30s (apps/proxy/live_proxy/input/http_streamer.py:71)", got)
+	}
+}

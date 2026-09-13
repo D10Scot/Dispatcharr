@@ -22,7 +22,9 @@ const (
 )
 
 // Timeouts for next-source, from spec § The contract: connect 2s, read 5s,
-// one retry at 0.1s.
+// one retry at 0.1s -- the same numbers Python's own next-source client
+// uses, at apps/proxy/control_plane.py:37 (CONNECT_TIMEOUT), :38
+// (READ_TIMEOUT) and :41 (RETRY_DELAY). Pinned by TestTheTimeoutsMatchPython.
 const (
 	ConnectTimeout = 2 * time.Second
 	ReadTimeout    = 5 * time.Second

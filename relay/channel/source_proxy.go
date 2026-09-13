@@ -60,16 +60,22 @@ type ProxySource struct {
 	// UserAgent goes on the request when non-empty.
 	UserAgent string
 
-	// ChunkSize is the read size. Zero means 8192, apps/proxy/config.py's
-	// CHUNK_SIZE, which is also HTTPStreamReader's own default.
+	// ChunkSize is the read size. Zero means 8192, apps/proxy/config.py:7's
+	// CHUNK_SIZE, which is also HTTPStreamReader's own default parameter
+	// value at apps/proxy/live_proxy/input/http_streamer.py:18. Pinned,
+	// against the zero value rather than a passed-in one, by
+	// TestProxySourceDefaultsMatchPython.
 	ChunkSize int
 
 	// ConnectTimeout bounds the dial and the response headers. Zero means 5
-	// seconds, the first half of http_streamer.py:70's timeout=(5, 30).
+	// seconds, the first half of apps/proxy/live_proxy/input/
+	// http_streamer.py:71's timeout=(5, 30). Pinned by
+	// TestProxySourceDefaultsMatchPython.
 	ConnectTimeout time.Duration
 
 	// ReadTimeout bounds the gap between bytes, which is what requests' read
-	// timeout means. Zero means 30 seconds, the second half of the same pair.
+	// timeout means. Zero means 30 seconds, the second half of the same pair
+	// at the same line. Pinned by TestProxySourceDefaultsMatchPython.
 	ReadTimeout time.Duration
 
 	// Transport overrides the HTTP transport, for tests. Nil means one built

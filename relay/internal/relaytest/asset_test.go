@@ -67,3 +67,17 @@ func corrupted(packet []byte) []byte {
 	out[0] = 0x00
 	return out
 }
+
+// Global Constraint 8's ratchet, found missing by review: NominalByteRate and
+// WriteChunk named a file with no line and nothing asserted them.
+// apps/proxy/live_proxy/tests/harness/upstream.py:29 (NOMINAL_BYTE_RATE) and
+// :31 (_WRITE_CHUNK) are what these mirror, verified against this tree.
+func TestNominalByteRateAndWriteChunkMatchThePythonHarness(t *testing.T) {
+	if NominalByteRate != 250000 {
+		t.Errorf("NominalByteRate = %d, want 250000 (apps/proxy/live_proxy/tests/harness/upstream.py:29)",
+			NominalByteRate)
+	}
+	if WriteChunk != 9400 {
+		t.Errorf("WriteChunk = %d, want 9400 (apps/proxy/live_proxy/tests/harness/upstream.py:31)", WriteChunk)
+	}
+}

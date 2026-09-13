@@ -33,7 +33,9 @@ const (
 
 	// NominalByteRate is what a pacing Rate of 1.0 means, in bytes per
 	// second: 2 Mbit/s, the bitrate e2e-upstream/scripts/make-asset.sh builds
-	// its own asset at, and the figure harness/upstream.py uses.
+	// its own asset at, and the figure apps/proxy/live_proxy/tests/harness/
+	// upstream.py:29's NOMINAL_BYTE_RATE uses. Pinned by
+	// TestNominalByteRateAndWriteChunkMatchThePythonHarness.
 	NominalByteRate = 2_000_000 / 8
 )
 
