@@ -217,6 +217,10 @@ The spec says roles `all` and `relay` (line 1690). `docker/supervisord/relay.con
 
 `codeql.yml:54` analyses `[actions, python, javascript-typescript]`. Go is a real gap and it should close, but not here: at 2c-1 the module is three tested packages and three stubs, so a Go pack would analyse almost nothing while adding a build-mode configuration to debug. **Owner: 2c-9**, alongside the coverage ratchet, when there is a relay to analyse. Task 1 Step 4 writes it into Amendment A1 as a 2c-9 input — a PR description is read once and a spec amendment is read by whoever plans 2c-9, which is the person who needs it.
 
+### R7 — The Docker builder stage cross-compiles; it does not emulate.
+
+`docker-build.yml:88` builds `linux/amd64,linux/arm64` in one buildx invocation. A builder stage written as a plain `FROM golang:...` runs the arm64 leg under QEMU emulation — minutes of emulated compilation per build, for a binary Go can cross-compile natively in about a second. The stage is therefore `FROM --platform=$BUILDPLATFORM` with `ARG TARGETOS`/`TARGETARCH`, verified working for both targets in Task 10.
+
 ### R8 — `kind` is derived in **one** helper, not copied into four dicts, and doing so moves an allowlist number.
 
 The lead's ruling names three construction sites plus the serializer. There is a fourth dict of the same shape — `_locked_ffmpeg_profile()` (`apps/proxy/next_source.py:97-100`), which is rendered by the *same* `StreamProfileRefSerializer` — so a required `kind` on that serializer obliges all four. Rather than write the derivation out four times, Task 0 adds two small private helpers and routes all four through them.
@@ -237,10 +241,6 @@ for name in ('resolve_source', 'get_stream_object'):
 The scanner is pure AST and needs no Django, so this runs anywhere. **Prediction: 36 becomes 38, and `get_stream_object` stays 3.** It is a prediction and Task 0 Step 5 replaces it with a measurement — do not write 38 into the allowlist without running the command.
 
 **This is a ratchet moving for a real reason, which is the only kind of move that is allowed.** Two new ORM-shaped call sites genuinely exist; they issue no query (both compare `self.locked` and `self.name` on an already-loaded instance, `core/models.py:127-135`), which is why they are allowlisted rather than removed, and the count moving is the ratchet doing its job rather than a number being tuned to fit.
-
-### R7 — The Docker builder stage cross-compiles; it does not emulate.
-
-`docker-build.yml:88` builds `linux/amd64,linux/arm64` in one buildx invocation. A builder stage written as a plain `FROM golang:...` runs the arm64 leg under QEMU emulation — minutes of emulated compilation per build, for a binary Go can cross-compile natively in about a second. The stage is therefore `FROM --platform=$BUILDPLATFORM` with `ARG TARGETOS`/`TARGETARCH`, verified working for both targets in Task 10.
 
 ---
 
@@ -753,7 +753,9 @@ Read Ruling R8 before starting. It explains why four dicts are involved rather t
 
   The failure names `'kind': 'transcode'` as the unexpected key, so it names the mechanism rather than just a shape mismatch.
 
-- [ ] **Step 7: Break-check, three edits**
+- [ ] **Step 7: Break-check, four checks across three edits**
+
+  Three numbered edits below, but the first is run in two stages — a control that must stay green, then the real defect — so the break-check table counts four (`T0.7-1a` … `T0.7-3`) and so does Task 14 Step 3. Report all four.
 
   1. Change `_profile_kind` to check `is_proxy()` **before** `is_redirect()`. The locked Redirect profile has `name="Redirect"` so `is_proxy()` is false and this alone does **not** redden — which is the point: run it, watch everything stay green, and understand that the ordering is not what the tests pin. Then make the real defect: delete the `is_redirect()` branch entirely. Expect `test_profile_kind_names_all_three_architectures` to fail with `'transcode' != 'redirect'` and `test_initial_tune_reports_kind_redirect_and_leaves_transcode_alone` to fail on the wire. Revert. **Record both halves** — the first is a true-positive-for-a-false-reason check in reverse, and knowing which edits your tests do *not* catch is worth as much as knowing which they do.
   2. Drop the `locked` half: change `is_redirect()` in the helper to `profile.name == "Redirect"`. Expect `test_an_unlocked_profile_named_redirect_is_not_redirect` to fail with `'redirect' != 'transcode'`. Revert.
@@ -1404,7 +1406,7 @@ Read Ruling R8 before starting. It explains why four dicts are involved rather t
 
   Note the three environment-mutating tests do not call `t.Parallel()` and must not: `t.Setenv` panics if they do, which is the toolchain refusing an unsafe test rather than a limitation to work around (Global Constraint 10).
 
-- [ ] **Step 3: Break-check, three edits**
+- [ ] **Step 3: Break-check, four edits**
 
   Each must redden, and each failure message must name the mechanism (shape 6):
 
@@ -3075,7 +3077,7 @@ Per the standing convention: a PR that changes a fact CLAUDE.md states corrects 
   3. **The buffer-depth derivation and its number**: 300 chunks, 76,760,400 bytes per channel, the stated 10 Mbit/s reference bitrate, both crossover bitrates (10.23 Mbit/s where the cap starts binding before retention, 122.8 Mbit/s where it stops covering the join point), and the ~732 MiB ten-channel aggregate. Say plainly that the reference bitrate is an assumption and that no host-memory check exists.
   4. **Every pin, with the command that resolved it and the date.** Go toolchain, three action SHAs with their publishers confirmed, the `golang` image digest.
   5. **The stop-budget arithmetic** from Task 9 Step 3, and the sentence that `relay-go` shares `priority=205` for that reason.
-  6. **Every break-check and its failure text.** Task 0 Step 7 (4, one of them expected green), Task 2 Step 5 (2), Task 3 Step 3 (4), Task 4 Step 4 (5), Task 5 Step 3 (3), Task 7 Step 3 (3), Task 11 Step 4 (1), Task 12 Step 4 (4) — **twenty-five**. A break-check that did not go red is a finding; report it as one, **except T0.7-1a, which is expected to stay green and whose report is what that tells you about branch-order coverage**. Say for each that the failure message named the mechanism rather than a build error (shape 6).
+  6. **Every break-check and its failure text.** Task 0 Step 7 (4, one of them expected green), Task 2 Step 5 (2), Task 3 Step 3 (4), Task 4 Step 4 (5), Task 5 Step 3 (3), Task 7 Step 3 (3), Task 11 Step 4 (1), Task 12 Step 4 (4) — **twenty-six** (4+2+4+5+3+3+1+4; the arithmetic is written out because this total has already drifted twice). A break-check that did not go red is a finding; report it as one, **except T0.7-1a, which is expected to stay green and whose report is what that tells you about branch-order coverage**. Say for each that the failure message named the mechanism rather than a build error (shape 6).
   7. **The measured allowlist edge count** from Task 0 Step 5 — the number `scan_edge` actually printed for `resolve_source`, whether it matched Ruling R8's predicted 38, and confirmation that `get_stream_object` is still 3.
   8. **The two runtime probes** from Task 8 Steps 2 and 3: the three status codes with the dev flag off, the 501 with it on, and the non-zero exit on a missing secret.
   9. **The cross-compile output** from Task 10 Step 4, both architectures.
@@ -3089,7 +3091,7 @@ Per the standing convention: a PR that changes a fact CLAUDE.md states corrects 
 
 ## Break-check × what each can redden
 
-Twenty-five break-checks across eight tasks. Five green checks are not five proofs, and a reader not told which is which will assume they are. Each break-check must redden the column named here and leave the rest alone; a column going red that this table says cannot is a finding about the check, not a pass.
+Twenty-six break-checks across eight tasks. Five green checks are not five proofs, and a reader not told which is which will assume they are. Each break-check must redden the column named here and leave the rest alone; a column going red that this table says cannot is a finding about the check, not a pass.
 
 | Break-check | Python `kind` | `config` | `control` | `buffer` | `httpapi` | hook | CI aggregate |
 |---|---|---|---|---|---|---|---|
@@ -3134,7 +3136,7 @@ Four notes on what this table is saying:
 3. **Any finding beyond F1–F4.** The tables above were built by reading; the implementer reads again with a compiler.
 4. **The buffer number, restated from your own arithmetic**, not copied from R2.
 5. **Every pin you resolved, with the command and the date**, and whether any moved from this plan's values.
-6. **Twenty-five break-check outcomes**, each with its failure text and a word on whether that text named the mechanism. T0.7-1a is expected green; say so rather than omitting it.
+6. **Twenty-six break-check outcomes**, each with its failure text and a word on whether that text named the mechanism. T0.7-1a is expected green; say so rather than omitting it.
 7. **The four hook-firing outcomes** from Task 12 Step 4, stated either way.
 8. **Whether the `Go result` aggregate was proven to fail on a skipped required job** (Task 11 Step 4). Without that, R1's whole argument is untested.
 9. **Anything you could not verify**, said plainly. A skipped check reported as a pass is the failure mode this repository's own CI history is built around avoiding.
