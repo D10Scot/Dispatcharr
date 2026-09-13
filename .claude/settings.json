@@ -10,6 +10,12 @@
             "command": "\"${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/run-affected-tests.sh\"",
             "timeout": 300,
             "statusMessage": "Running tests for the edited file"
+          },
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/run-go-checks.sh\"",
+            "timeout": 300,
+            "statusMessage": "Running Go checks for the edited file"
           }
         ]
       }
