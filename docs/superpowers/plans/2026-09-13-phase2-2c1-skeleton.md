@@ -24,7 +24,18 @@ Every task's requirements implicitly include this section.
 
 3. **Standard library only. No `require` line, no `go.sum`, ever.** Spec line 1731 calls this "a rule to defend, not an accident". Task 2 builds the mechanical check and Task 11 wires it into CI. If a task appears to need a dependency, stop and report — the answer is either that the task is out of 2c-1's scope or that the stdlib does it and the reach for a library was reflex.
 
-4. **Exactly one Python change is in scope, and it is Task 0's.** The contract gap this plan found (Finding F1) is closed here, by adding `stream_profile.kind` to the next-source payload — because the spec's own precondition is "a contract field for each allowlisted site, or a documented reason it needs none, **before** its first line of Go", and a `GAP` row in the reconciliation table is neither. Deferring the field would mean 2c-1 claiming a precondition it had not met. Four files, named in Task 0 and nowhere else: `apps/proxy/next_source.py`, `apps/proxy/serializers.py`, `apps/proxy/tests/test_redirect_transcode_flag.py`, `apps/proxy/live_proxy/tests/zero_orm_allowlist.py`. **Any other Python edit is out of scope** — Task 14 Step 2 checks for one mechanically.
+4. **Exactly one Python *change* is in scope, and it is Task 0's `stream_profile.kind`.** The contract gap this plan found (Finding F1) is closed here — because the spec's own precondition is "a contract field for each allowlisted site, or a documented reason it needs none, **before** its first line of Go", and a `GAP` row in the reconciliation table is neither. Deferring the field would mean 2c-1 claiming a precondition it had not met. **Six files, named in Task 0 and nowhere else:**
+
+   | File | Why |
+   |---|---|
+   | `apps/proxy/next_source.py` | the two helpers and the four call sites |
+   | `apps/proxy/serializers.py` | the `kind` field on `StreamProfileRefSerializer` |
+   | `apps/proxy/tests/test_redirect_transcode_flag.py` | the new tests |
+   | `apps/proxy/live_proxy/tests/zero_orm_allowlist.py` | two edge counts, two `closed_by` |
+   | `apps/proxy/tests/test_next_source_api.py` | **fallout** — asserts exact dict equality on `ffmpeg_stream_profile` |
+   | `apps/proxy/tests/test_next_source_resolution.py` | **fallout** — the same assertion at the resolver level |
+
+   The last two are not optional and not discretionary. Both assert `assertEqual(source["ffmpeg_stream_profile"], {"id": …, "command": …, "args": …})` — **exact dict equality on three keys** — so a fourth key reddens them, and both live in `apps.proxy.tests`, which Task 0 Step 8 requires green. Step 6b updates them. **Any Python edit beyond these six is out of scope** — Task 14 Step 2 checks both directions mechanically.
 
 5. **Every pin is tool-resolved on the day the PR is opened, never copied from this plan.** The values in Task 11 and Task 10 were resolved on 2026-09-13 and are recorded so the implementer can tell whether anything moved, not so they can be pasted. The spec's own `2c-1` gate (line 1795) makes re-resolution part of the gate: `go.dev/dl`, `docker buildx imagetools inspect` against the current `golang` tag, and fresh `gh api repos/<owner>/<repo>/commits/<tag> --jq .sha` lookups. **Confirm the publisher before trusting a SHA** — a plausible SHA on a same-named fork is worse than a floating tag, because it looks pinned (CLAUDE.md § Supply chain security).
 
@@ -99,7 +110,7 @@ All six shapes below were found in real PRs in this repository in the four days 
    func TestHealthz(t *testing.T) {
        called := false
        h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { called = true })
-       h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/healthz", nil))
+       h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/healthz", nil))
        if !called {
            t.Fatal("handler not called")
        }
@@ -114,7 +125,7 @@ All six shapes below were found in real PRs in this repository in the four days 
    func TestHealthzReturns200(t *testing.T) {
        srv := New(Config{DevRoutes: false})
        rec := httptest.NewRecorder()
-       srv.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+       srv.Handler().ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/healthz", nil))
        if rec.Code != http.StatusOK {
            t.Fatalf("GET /healthz = %d, want 200", rec.Code)
        }
@@ -188,11 +199,15 @@ round up to a round number      = 300 chunks
 
 Spec line 1723 names `channel`, `buffer`, `ffmpeg`, `control`, `httpapi` and says the split is "by concern". `config` is not a sixth concern; it is the wiring inputs — the environment and `/data/jwt`. It gets its own package rather than living in `package main` for one reason: the `/data/jwt` read has a whitespace rule that is easy to get subtly wrong and impossible to test from outside `main` (Task 3 Finding). Everything else about the layout follows the spec exactly, including the instruction *not* to mirror `apps/proxy/live_proxy/`'s file layout.
 
-### R4 — Both Go hooks derive the module root from the **edited file's own path**, by walking up for `go.mod`.
+### R4 — Both Go hooks anchor on the **edited or staged file's own path**, following `_hook_common.sh`'s precedent, and walk up for `go.mod` rather than calling its helper.
 
-Issue #258 is the Python hooks' version of this: `.claude/hooks/run-affected-tests.sh:33` sets `REPO_ROOT` from `${BASH_SOURCE[0]}`'s directory, so when the hook script lives in one checkout and the edited file lives in a worktree, `:39-43`'s `case "$FILE" in "$REPO_ROOT"/*)` falls through to `/*) exit 0` and the hook silently does nothing. The Go hooks must not inherit that shape. Walking up from the edited file for `go.mod` is independent of `CLAUDE_PROJECT_DIR`, of `BASH_SOURCE`, and of the shell's working directory — the three things that have each been wrong at least once in this programme.
+**The precedent, as merged.** Issue #258 (PR #280, on `main` at `b1cab647`) moved both Python hooks off deriving their root from their own script path. `.claude/hooks/run-affected-tests.sh` now sources `_hook_common.sh` and sets `REPO_ROOT="$(hook_repo_root "$(dirname "$FILE")")"` — anchored on the edited file, with `CLAUDE_HOOK_REPO_ROOT` as the documented override. The helper's own header states the failure it closes: `CLAUDE_PROJECT_DIR` is pinned to the main checkout for every agent session regardless of which worktree it works in, so a label computed relative to it came out as nonsense like `.worktrees.fix-258.apps.proxy.tests` and the hook reported FAILED regardless of the real outcome.
 
-This does not fix, depend on, or conflict with #258. `settings.json` still locates the *script* through `${CLAUDE_PROJECT_DIR:-.}`; whatever #258's fix does about that reaches the Go hook for free.
+**The Go hooks follow that rule and cannot use that function.** `hook_repo_root` returns the **repo** root; a Go hook needs the **module** root, which is `<repo>/relay` today and is defined by where `go.mod` sits, not by where `.git` does. Running `go build ./...` from the repo root would find no module at all. So the Go hook walks up from the edited file for `go.mod` — the same anchor, resolving a different thing.
+
+That is the whole justification. **Do not repeat this plan's earlier reasoning**, which described the pre-#280 `run-affected-tests.sh` in the present tense and cited a `case` fallthrough at `:39-43` that is now unreachable, because `REPO_ROOT` is derived correctly before it. The conclusion was right and the evidence for it is gone; citing a defect that has been fixed is how a plan teaches an implementer something false.
+
+**What the Go hook still borrows from the helper:** `hook_canon_path` for the walk's starting directory (`pwd -P`, so a symlinked spelling of the same path compares equal — a plain `cd … && pwd` does not), and `CLAUDE_HOOK_REPO_ROOT` honoured the same way, so a manual or test run can pin the tree. `settings.json` still locates the *script* through `${CLAUDE_PROJECT_DIR:-.}`, unchanged by #280 and irrelevant here: what the script does once it runs is what R4 governs.
 
 ### R5 — `relay-go` runs in `all`, `relay` **and** `all-dev`.
 
@@ -282,7 +297,7 @@ The contract fields cited below were each read in the tree, not taken from the a
 | E8 | `server.py` ← `TSConfig` | 5 | As E4. | as E4 | Field, verified |
 | E9 | `views.py` ← `apps.proxy.authorize.resolve_output_format` | 1 | **`X-Relay-Output-Format` on a trusted tune** (S4's header). On the nginx-less path the same resolution happens in Django behind `POST /_dispatcharr/authorize-internal` and comes back as a response header — the Go relay never runs `resolve_output_format` in either shape. | `apps/proxy/authorize_views.py:353`; spec § The contract's dev-fallback response, 200 shape | Field, verified |
 | E10 | `views.py` ← `apps.proxy.authorize.resolve_output_profile` | 2 | **`X-Relay-Output` on a trusted tune**; the hop resolves `?output_profile=` and the user's `custom_properties` once and puts the id on the header. Dev shape as E9. | `apps/proxy/authorize_views.py:346` | Field, verified |
-| E11 | `views.py` ← `apps.proxy.authorize_views.resolve_authorization` | 1 | **A written reason, and it is D1.** The `User.objects.filter(id=…).first()` sits in the `else` arm of `if surface in (SURFACE_LIVE, SURFACE_LIVE_XC)`. The Go relay serves **only** live surfaces — `/proxy/ts/stream/` and the XC live roots — so it can never enter that arm. VOD, catch-up and `timeshift.php` keep the code verbatim in the Python relay, which is exactly what D1 scopes. `X-Relay-User` carries the identity the live arm needs. | Surface split per the allowlist's own entry; `X-Relay-User` at `apps/proxy/authorize_views.py:348`; D1 at spec line 438 | Reason, verified |
+| E11 | `views.py` ← `apps.proxy.authorize_views.resolve_authorization` | 1 | **A written reason, and it is D1.** The `User.objects.filter(id=…).first()` sits in the `else` arm of `if surface in (SURFACE_LIVE, SURFACE_LIVE_XC)`. The Go relay serves **only** live surfaces — `/proxy/ts/stream/` and the XC live roots — so it can never enter that arm. VOD, catch-up and `timeshift.php` keep the code verbatim in the Python relay, which is exactly what D1 scopes. `X-Relay-User` carries the identity the live arm needs. | Surface split per the allowlist's own entry; `X-Relay-User` at `apps/proxy/authorize_views.py:348`; D1 at spec line 440 | Reason, verified |
 
 ### SQL_SIGNATURES — 7 entries
 
@@ -402,9 +417,11 @@ apps/proxy/next_source.py                  EDIT — _profile_kind + _stream_prof
 apps/proxy/serializers.py                  EDIT — StreamProfileRefSerializer.kind
 apps/proxy/tests/test_redirect_transcode_flag.py        EDIT — five tests, two fixtures
 apps/proxy/live_proxy/tests/zero_orm_allowlist.py       EDIT — two EDGE hits counts, two closed_by
+apps/proxy/tests/test_next_source_api.py                EDIT — fallout: exact-dict assertion gains "kind"
+apps/proxy/tests/test_next_source_resolution.py         EDIT — fallout: the same, at the resolver level
 ```
 
-Nothing under `core/`, `dispatcharr/`, `frontend/`, `e2e/` or `metrics/` is touched, and nothing under `apps/` beyond Task 0's four files.
+Nothing under `core/`, `dispatcharr/`, `frontend/`, `e2e/` or `metrics/` is touched, and nothing under `apps/` beyond Task 0's six files.
 
 ---
 
@@ -683,6 +700,51 @@ Read Ruling R8 before starting. It explains why four dicts are involved rather t
           self.assertEqual(rendered["kind"], "redirect")
   ```
 
+- [ ] **Step 6b: Update the two existing tests the new key breaks**
+
+  **This is fallout, not scope creep, and skipping it leaves Step 8 red.** Two tests assert *exact dict equality* on `ffmpeg_stream_profile` against a three-key literal, so the fourth key fails them. Both are in `apps.proxy.tests`, the label Step 8 requires green.
+
+  ```bash
+  cd <your worktree> && grep -n 'ffmpeg_stream_profile' apps/proxy/tests/test_next_source_api.py apps/proxy/tests/test_next_source_resolution.py
+  ```
+
+  In `apps/proxy/tests/test_next_source_api.py` (the assertion at `:316-323` at `b1cab647`, immediately below a comment block explaining that this is the *wire* layer a Go client meets), add the fourth key:
+
+  ```python
+          self.assertEqual(
+              source["ffmpeg_stream_profile"],
+              {
+                  "id": ffmpeg_profile.id,
+                  "command": ffmpeg_profile.command,
+                  "args": ffmpeg_profile.parameters,
+                  # Phase 2 PR 2c-1. The locked ffmpeg profile is neither the
+                  # locked Proxy nor the locked Redirect one, so its kind is
+                  # "transcode" — asserted as a literal here rather than
+                  # computed, because this test's whole premise is that it
+                  # pins the bytes a Go client reads.
+                  "kind": "transcode",
+              },
+          )
+  ```
+
+  And in `apps/proxy/tests/test_next_source_resolution.py` (`:605-608`), the one-line form:
+
+  ```python
+          self.assertEqual(
+              source["ffmpeg_stream_profile"],
+              {
+                  "id": ffmpeg.id,
+                  "command": ffmpeg.command,
+                  "args": ffmpeg.parameters,
+                  "kind": "transcode",  # Phase 2 PR 2c-1
+              },
+          )
+  ```
+
+  **Do not weaken either assertion to a subset check.** Exact equality is what makes them catch a dropped or wrongly-serialized key, and the first one's own comment says so in as many words. Changing `assertEqual` to `assertIn`-style checks would close this PR's red and silently disarm both tests for every future key — hollow shape 3, applied by hand.
+
+  **Both are also a control on Task 0's own work.** If `kind` were missing from `_locked_ffmpeg_profile()`'s dict, these two would fail *without* the fourth key added, so their behaviour before and after this step tells you the fourth call site really is wired. Run them once before editing and note the failure, then once after.
+
 - [ ] **Step 7: Break-check, three edits**
 
   1. Change `_profile_kind` to check `is_proxy()` **before** `is_redirect()`. The locked Redirect profile has `name="Redirect"` so `is_proxy()` is false and this alone does **not** redden — which is the point: run it, watch everything stay green, and understand that the ordering is not what the tests pin. Then make the real defect: delete the `is_redirect()` branch entirely. Expect `test_profile_kind_names_all_three_architectures` to fail with `'transcode' != 'redirect'` and `test_initial_tune_reports_kind_redirect_and_leaves_transcode_alone` to fail on the wire. Revert. **Record both halves** — the first is a true-positive-for-a-false-reason check in reverse, and knowing which edits your tests do *not* catch is worth as much as knowing which they do.
@@ -913,6 +975,8 @@ Read Ruling R8 before starting. It explains why four dicts are involved rather t
     exclusions:
       generated: lax
       rules:
+        # gosec only. `noctx` is deliberately NOT excluded in tests — see
+        # the note below the block.
         - path: _test\.go
           linters:
             - gosec
@@ -922,6 +986,20 @@ Read Ruling R8 before starting. It explains why four dicts are involved rather t
       - gofmt
       - goimports
   ```
+
+  **Two decisions inside that block, both made here rather than left to the implementer.**
+
+  `gosec` is excluded in `_test.go` because test fixtures legitimately do things gosec flags — writing a temp file with a permissive mode, embedding a fixed secret — and every such finding in a test is noise.
+
+  **`noctx` is deliberately not excluded**, which costs one argument per request in test code: `httptest.NewRequestWithContext(t.Context(), …)` rather than `httptest.NewRequest(…)`. The exclusion was the cheaper fix and is the wrong one. `noctx` exists to catch an outbound request with no deadline, and from 2c-5 the tests make real outbound calls to a control-plane stand-in — exactly the calls whose missing deadlines this phase's timeout table makes load-bearing. An exclusion added now for a purely inbound `httptest.NewRequest` would be silently covering those too by the time they exist. `t.Context()` is also strictly better in a `-race` suite: the request's context is cancelled when the test ends, rather than living until the process does.
+
+  **Verify the config parses before committing it** — this is the one file whose syntax errors stay silent until CI:
+
+  ```bash
+  cd <your worktree> && golangci-lint config verify --config .golangci.yml
+  ```
+
+  Exit 0 and no output means it validated.
 
   Verify the schema before committing — this is the one file whose syntax errors are silent until CI:
 
@@ -1042,6 +1120,9 @@ Read Ruling R8 before starting. It explains why four dicts are involved rather t
   	// is the only one that creates it (entrypoint.sh:105-137), and the
   	// entrypoint blocks until it exists before exec'ing supervisord, so by
   	// the time this process starts the file is there.
+  	//
+  	// #nosec G101 -- a filesystem path, not a credential. gosec matches on
+  	// the IDENTIFIER containing "Secret"; the value is "/data/jwt".
   	DefaultSecretFile = "/data/jwt"
   )
 
@@ -1096,6 +1177,13 @@ Read Ruling R8 before starting. It explains why four dicts are involved rather t
   // HMAC key, which surfaces as a 403 on every internal call with no error
   // naming the cause.
   func ReadSecretFile(path string) (string, error) {
+  	// #nosec G304,G703 -- `path` is deployment configuration
+  	// (DISPATCHARR_SECRET_FILE, or the /data/jwt default), never client
+  	// input; reading an operator-named file is this function's whole job.
+  	// BOTH rule ids are needed: silencing G304 alone leaves gosec's
+  	// taint-analysis rule G703 firing on the same line, and G703 only
+  	// becomes visible once G304 is suppressed — found by running the
+  	// linter, not by reading it.
   	raw, err := os.ReadFile(path)
   	if err != nil {
   		return "", fmt.Errorf("reading secret file %s: %w", path, err)
@@ -1192,16 +1280,21 @@ Read Ruling R8 before starting. It explains why four dicts are involved rather t
   }
 
   // The reason package config exists. docker/entrypoint.sh:138 uses
-  // `tr -d '\r\n'`, which deletes every CR and LF anywhere in the file and
-  // nothing else. This fixture has an interior CRLF, an interior LF and
-  // surrounding spaces, so:
+  // `tr -d '\r\n'`, which DELETES every CR and LF anywhere in the file --
+  // it does not replace them with anything, and it touches nothing else.
+  // This fixture has an interior CRLF and surrounding spaces, so:
   //
-  //	tr -d '\r\n'        -> "  abc def  "   (what Django's SECRET_KEY becomes)
+  //	tr -d '\r\n'        -> "  abcdef  "    (what Django's SECRET_KEY becomes)
   //	strings.TrimSpace   -> "abc\r\ndef"    (a different HMAC key)
   //	strings.TrimRight   -> "  abc\r\ndef"  (a third one)
   //
-  // Only the first is correct, and the three differ in the fixture below,
-  // which is what makes this test able to fail.
+  // Only the first is correct, and the three differ on this fixture, which
+  // is what makes this test able to fail. Confirm the expected value against
+  // the shell rather than reasoning about it -- an earlier draft of this
+  // plan wrote "  abc def  ", with a space where the deleted CRLF had been,
+  // and it is exactly the kind of error a test can encode permanently:
+  //
+  //	printf '  abc\r\ndef  \n' | tr -d '\r\n' | od -c
   func TestReadSecretFileMatchesEntrypointStripping(t *testing.T) {
   	dir := t.TempDir()
   	path := filepath.Join(dir, "jwt")
@@ -1213,7 +1306,7 @@ Read Ruling R8 before starting. It explains why four dicts are involved rather t
   	if err != nil {
   		t.Fatalf("unexpected error: %v", err)
   	}
-  	const want = "  abc def  "
+  	const want = "  abcdef  "
   	if got != want {
   		t.Fatalf("secret = %q, want %q", got, want)
   	}
@@ -1270,7 +1363,7 @@ Read Ruling R8 before starting. It explains why four dicts are involved rather t
 
   Each must redden, and each failure message must name the mechanism (shape 6):
 
-  1. Replace `strings.NewReplacer(...).Replace(...)` with `strings.TrimSpace(string(raw))`. Expect `TestReadSecretFileMatchesEntrypointStripping` to fail with `secret = "abc\r\ndef", want "  abc def  "`. Revert.
+  1. Replace `strings.NewReplacer(...).Replace(...)` with `strings.TrimSpace(string(raw))`. Expect `TestReadSecretFileMatchesEntrypointStripping` to fail with exactly `secret = "abc\r\ndef", want "  abcdef  "` — verified by running it. Revert.
   2. Change `intFromEnv`'s `if raw == ""` branch to `return fallback, nil` unconditionally (i.e. ignore the environment). Expect `TestPortReadsTheEnvironment` to fail with `port = 5658, want 5999`. Revert.
   3. Delete the `DISPATCHARR_RELAY_GO_DEV_ROUTES` branch from `devRoutes`. Expect `TestDevRoutesOverrideWinsBothWays` to fail on its first assertion. Revert.
 
@@ -1950,8 +2043,13 @@ Two files, no tests, because there is nothing yet to assert. What they must not 
   }
 
   // Server owns the routing table. One per process.
+  //
+  // Deliberately holds no copy of its Config: `New` reads cfg.DevRoutes to
+  // decide the table and nothing reads it afterwards, so storing it would be
+  // a field with no reader. 2c-2 adds whatever state it actually needs;
+  // keeping an unread field here in anticipation is how `unused` findings
+  // and stale duplicates of the truth both start.
   type Server struct {
-  	cfg Config
   	mux *http.ServeMux
   }
 
@@ -1959,7 +2057,7 @@ Two files, no tests, because there is nothing yet to assert. What they must not 
   // no route is added or removed after this returns, so the mux is read-only
   // for the life of the process and needs no lock.
   func New(cfg Config) *Server {
-  	s := &Server{cfg: cfg, mux: http.NewServeMux()}
+  	s := &Server{mux: http.NewServeMux()}
 
   	// Always served, in every shape. D6: the Python relay has neither a
   	// health endpoint nor a readiness probe, and both are a few lines here.
@@ -1990,13 +2088,19 @@ Two files, no tests, because there is nothing yet to assert. What they must not 
   func ok(w http.ResponseWriter, _ *http.Request) {
   	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
   	w.WriteHeader(http.StatusOK)
-  	fmt.Fprintln(w, "ok")
+  	// The error is discarded deliberately, and `_, _ =` rather than a bare
+  	// call so errcheck can see that it was a decision: a failed write to a
+  	// health probe means the prober hung up mid-response. There is nothing
+  	// to recover and nobody to tell, and logging it would turn a flapping
+  	// probe into log spam. Every other write path in this module handles
+  	// its error.
+  	_, _ = fmt.Fprintln(w, "ok")
   }
 
   func notImplemented(w http.ResponseWriter, _ *http.Request) {
   	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
   	w.WriteHeader(http.StatusNotImplemented)
-  	fmt.Fprintln(w, "the Go relay does not serve streams yet")
+  	_, _ = fmt.Fprintln(w, "the Go relay does not serve streams yet")
   }
   ```
 
@@ -2020,7 +2124,7 @@ Two files, no tests, because there is nothing yet to assert. What they must not 
   	srv := New(Config{DevRoutes: false})
   	for _, path := range []string{"/healthz", "/readyz"} {
   		rec := httptest.NewRecorder()
-  		srv.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+  		srv.Handler().ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, path, nil))
   		if rec.Code != http.StatusOK {
   			t.Errorf("GET %s = %d, want 200", path, rec.Code)
   		}
@@ -2037,7 +2141,7 @@ Two files, no tests, because there is nothing yet to assert. What they must not 
   	for _, dev := range []bool{true, false} {
   		srv := New(Config{DevRoutes: dev})
   		rec := httptest.NewRecorder()
-  		srv.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+  		srv.Handler().ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/healthz", nil))
   		if rec.Code != http.StatusOK {
   			t.Errorf("DevRoutes=%v: GET /healthz = %d, want 200", dev, rec.Code)
   		}
@@ -2051,7 +2155,7 @@ Two files, no tests, because there is nothing yet to assert. What they must not 
   func TestStreamRouteIsUnregisteredWithoutTheDevFlag(t *testing.T) {
   	srv := New(Config{DevRoutes: false})
   	rec := httptest.NewRecorder()
-  	srv.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/proxy/ts/stream/abc", nil))
+  	srv.Handler().ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/proxy/ts/stream/abc", nil))
   	if rec.Code != http.StatusNotFound {
   		t.Fatalf("GET /proxy/ts/stream/abc with DevRoutes=false = %d, want 404 (the route must not be registered at all)", rec.Code)
   	}
@@ -2060,7 +2164,7 @@ Two files, no tests, because there is nothing yet to assert. What they must not 
   func TestStreamRouteIsRegisteredWithTheDevFlag(t *testing.T) {
   	srv := New(Config{DevRoutes: true})
   	rec := httptest.NewRecorder()
-  	srv.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/proxy/ts/stream/abc", nil))
+  	srv.Handler().ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/proxy/ts/stream/abc", nil))
   	if rec.Code != http.StatusNotImplemented {
   		t.Fatalf("GET /proxy/ts/stream/abc with DevRoutes=true = %d, want 501", rec.Code)
   	}
@@ -2072,7 +2176,7 @@ Two files, no tests, because there is nothing yet to assert. What they must not 
   func TestHealthEndpointsRejectNonGET(t *testing.T) {
   	srv := New(Config{DevRoutes: false})
   	rec := httptest.NewRecorder()
-  	srv.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/healthz", nil))
+  	srv.Handler().ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/healthz", nil))
   	if rec.Code != http.StatusMethodNotAllowed {
   		t.Fatalf("POST /healthz = %d, want 405", rec.Code)
   	}
@@ -2081,7 +2185,7 @@ Two files, no tests, because there is nothing yet to assert. What they must not 
   func TestUnknownPathIs404(t *testing.T) {
   	srv := New(Config{DevRoutes: true})
   	rec := httptest.NewRecorder()
-  	srv.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/anything-else", nil))
+  	srv.Handler().ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/anything-else", nil))
   	if rec.Code != http.StatusNotFound {
   		t.Fatalf("GET /anything-else = %d, want 404", rec.Code)
   	}
@@ -2170,18 +2274,45 @@ Two files, no tests, because there is nothing yet to assert. What they must not 
 
 - [ ] **Step 2: Verify it runs**
 
+  **No job control and no bare `sleep`.** `%1` needs an interactive shell, and a foreground `sleep` is blocked in this harness; both fail in ways that look like the binary being broken. Capture the PID with `$!` and poll the endpoint instead — polling is also the honest wait, since a fixed sleep either wastes time or races the listener.
+
   ```bash
   cd <your worktree>/relay
   printf 'test-secret-for-a-local-run\n' > /tmp/jwt-probe
-  DISPATCHARR_SECRET_FILE=/tmp/jwt-probe DISPATCHARR_RELAY_GO_PORT=5999 go run . &
-  sleep 1
-  curl -sS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:5999/healthz   # expect 200
-  curl -sS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:5999/readyz    # expect 200
-  curl -sS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:5999/proxy/ts/stream/abc  # expect 404
-  kill %1; rm -f /tmp/jwt-probe
+
+  probe() {   # $1 = the value of DISPATCHARR_RELAY_GO_DEV_ROUTES
+    DISPATCHARR_SECRET_FILE=/tmp/jwt-probe \
+    DISPATCHARR_RELAY_GO_PORT=5999 \
+    DISPATCHARR_RELAY_GO_DEV_ROUTES="$1" \
+      go run . & local pid=$!
+    local i
+    for i in $(seq 1 50); do
+      # stderr silenced here and NOWHERE else in this block: this curl's
+      # failure is the loop condition, not an answer being interpreted, and
+      # its "connection refused" lines while the listener comes up would
+      # otherwise bury the three status codes below. `perl select` rather
+      # than `sleep 0.2` — a foreground sleep is blocked in this harness.
+      curl -fsS -o /dev/null http://127.0.0.1:5999/healthz 2>/dev/null && break
+      perl -e 'select(undef,undef,undef,0.2)'
+    done
+    echo "dev_routes=$1"
+    for p in /healthz /readyz /proxy/ts/stream/abc; do
+      printf '  %-26s %s\n' "$p" "$(curl -sS -o /dev/null -w '%{http_code}' "http://127.0.0.1:5999$p")"
+    done
+    kill "$pid" 2>/dev/null
+    wait "$pid" 2>/dev/null
+  }
+
+  probe 0                                        # expect 200, 200, 404
+  pkill -f 'exe/relay'; perl -e 'select(undef,undef,undef,0.5)'
+  probe 1                                        # expect 200, 200, 501
+  pkill -f 'exe/relay'
+  rm -f /tmp/jwt-probe
   ```
 
-  Then the same with `DISPATCHARR_RELAY_GO_DEV_ROUTES=1` and confirm the third call answers **501**. Record both runs' output in the PR description — this is the only end-to-end evidence in the PR that the binary serves anything.
+  The `pkill` between runs is not belt-and-braces: `go run` compiles to a temp binary and execs it as a *child*, so `kill "$pid"` reaps `go run` and can leave the listener holding `:5999`. Without it the second `probe` fails with "address already in use", which reads like the binary being broken rather than the previous run still running.
+
+  **This block was run against the plan's own code at plan time and produced exactly the expected nine values**, plus `starting on port 5999 (dev routes: false)` and `… true)` on the two runs. Record your own output in the PR description — this is the only end-to-end evidence in the PR that the binary serves anything.
 
 - [ ] **Step 3: Verify it fails loudly on a missing secret**
 
@@ -2189,7 +2320,7 @@ Two files, no tests, because there is nothing yet to assert. What they must not 
   cd <your worktree>/relay && DISPATCHARR_SECRET_FILE=/tmp/definitely-absent go run . ; echo "exit=$?"
   ```
 
-  Expect a non-zero exit and a line naming the path. **A zero exit here is a finding** — it means the deployment can start a relay that will 403 every internal call silently.
+  Expect exit 1 and `startup failed: reading secret file /tmp/definitely-absent: open /tmp/definitely-absent: no such file or directory` — verified at plan time. **A zero exit here is a finding** — it means the deployment can start a relay that will 403 every internal call silently.
 
 - [ ] **Step 4: Run the four checks and commit**
 
@@ -2294,9 +2425,12 @@ Two files, no tests, because there is nothing yet to assert. What they must not 
   ARG TARGETARCH
 
   WORKDIR /src
-  # go.mod alone, first: it is the whole dependency manifest of a stdlib-only
-  # module, so this layer caches across every source change.
-  COPY ./relay/go.mod ./go.mod
+  # One COPY, deliberately. The usual "copy go.mod first, download, then copy
+  # the source" split exists to cache `go mod download` across source changes;
+  # a stdlib-only module downloads nothing, so the split would add a layer
+  # that caches an empty step and a comment claiming a benefit it does not
+  # deliver. Reinstate it in the same commit as the first dependency, if there
+  # ever is one.
   COPY ./relay ./
 
   # CGO_ENABLED=0 makes the binary static, so it runs on the final image
@@ -2404,6 +2538,12 @@ Built in the four-part requireable shape per Ruling R1. `frontend-tests.yml` is 
       outputs:
         go: ${{ steps.filter.outputs.go }}
       steps:
+        # The `if:` is always true under this workflow's three triggers, and it
+        # is copied deliberately rather than simplified: frontend-tests.yml,
+        # e2e-tests.yml and lifecycle-tests.yml all carry the identical line,
+        # so it is the house spelling of this job, and a fourth workflow that
+        # differs invites the reader to wonder which one is wrong. If the
+        # triggers ever grow a `schedule:`, it starts doing work.
         - name: Checkout code
           if: github.event_name == 'pull_request' || github.event_name == 'push'
           uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -2594,40 +2734,60 @@ Ruling R4 governs both: the module root comes from the edited or staged file's o
   # first time, and -race is the cheapest check for exactly that class.
   #
   # THE MODULE ROOT COMES FROM THE EDITED FILE'S OWN PATH, by walking up for
-  # go.mod. Deliberately not from CLAUDE_PROJECT_DIR, not from BASH_SOURCE, and
-  # not from the working directory. Issue #258 is the Python hooks' version of
-  # this: run-affected-tests.sh derives its root from BASH_SOURCE, so when the
-  # script lives in one checkout and the edited file lives in a worktree, its
-  # own path guard sends it down the `exit 0` arm and the hook silently does
-  # nothing. Walking up from the file is immune to all three.
+  # go.mod — the same anchor _hook_common.sh's hook_repo_root() uses, resolving
+  # a different thing. That helper returns the REPO root; `go build ./...` needs
+  # the MODULE root, which is <repo>/relay and is defined by where go.mod sits,
+  # not by where .git does. Hence the walk rather than a call.
+  #
+  # CLAUDE_HOOK_REPO_ROOT is honoured the same way the helper honours it, so a
+  # manual or test run can pin the tree; the walk then starts from there.
+  #
+  # hook_container_mismatch() is deliberately NOT used: these checks run on the
+  # host, with no container and no bind mount, so there is nothing for it to
+  # judge. Its absence here is a decision, not an omission.
   #
   # Blocking failures exit 2, which feeds the output back to Claude. "Could not
   # run" exits 0 but is stated loudly — a silent skip is indistinguishable from
   # a pass.
   set -uo pipefail
 
+  # shellcheck source=_hook_common.sh
+  source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_hook_common.sh"
+
   GOLANGCI_EXPECTED_VERSION="2.13.2"
 
-  FILE="$(jq -r '.tool_response.filePath // .tool_input.file_path // empty')"
+  INPUT="$(cat)"
+  FILE="$(printf '%s' "$INPUT" | jq -r '.tool_response.filePath // .tool_input.file_path // empty')"
   [ -n "$FILE" ] || exit 0
   case "$FILE" in *.go) ;; *) exit 0 ;; esac
   [ -f "$FILE" ] || exit 0
 
-  # Absolute, so the walk below does not depend on where this shell happens to
-  # be standing.
-  case "$FILE" in
-    /*) ABS="$FILE" ;;
-    *)  ABS="$PWD/$FILE" ;;
-  esac
+  # Claude Code hands the hook an absolute path, exactly as the merged
+  # run-affected-tests.sh assumes when it does `dirname "$FILE"`. No
+  # relative-path branch: it would be dead code, and if it ever fired it would
+  # resolve against the working directory this repo documents as unreliable
+  # across concurrent sessions — the one input a hook must never trust.
+  #
+  # hook_canon_path resolves symlinks (pwd -P), so a /private-prefixed macOS
+  # spelling and a plain one compare equal in the prefix strip below. PKG_DIR
+  # is always the edited file's own directory; CLAUDE_HOOK_REPO_ROOT only moves
+  # where the WALK starts, which is what a manual or test run needs to pin.
+  PKG_DIR="$(hook_canon_path "$(dirname "$FILE")")"
+  [ -n "$PKG_DIR" ] || exit 0
+  START="$PKG_DIR"
+  if [ -n "${CLAUDE_HOOK_REPO_ROOT:-}" ]; then
+    START="$(hook_canon_path "$CLAUDE_HOOK_REPO_ROOT")"
+    [ -n "$START" ] || exit 0
+  fi
 
-  # Walk up for go.mod. This is the whole point of the script: the module root
-  # is a property of the file, not of the session.
-  MODULE_ROOT="$(cd "$(dirname "$ABS")" 2>/dev/null && pwd)" || exit 0
-  while [ -n "$MODULE_ROOT" ] && [ ! -f "$MODULE_ROOT/go.mod" ]; do
+  # Walk up for go.mod. The module root is a property of the file, not of the
+  # session.
+  MODULE_ROOT="$START"
+  while [ ! -f "$MODULE_ROOT/go.mod" ]; do
     [ "$MODULE_ROOT" = "/" ] && { MODULE_ROOT=""; break; }
     MODULE_ROOT="$(dirname "$MODULE_ROOT")"
   done
-  if [ -z "$MODULE_ROOT" ] || [ ! -f "$MODULE_ROOT/go.mod" ]; then
+  if [ -z "$MODULE_ROOT" ]; then
     exit 0   # a .go file outside any module; nothing to check
   fi
 
@@ -2638,7 +2798,7 @@ Ruling R4 governs both: the module root comes from the edited or staged file's o
   block() { [ -n "$BLOCK_TITLE" ] || { BLOCK_TITLE="$1"; BLOCK_BODY="$2"; }; }
 
   if ! command -v go >/dev/null 2>&1; then
-    note "Did NOT check ${ABS#"$MODULE_ROOT"/} — go is not on PATH. The Go module was NOT verified; say so rather than describing the work as done."
+    note "Did NOT check ${FILE##*/} — go is not on PATH. The Go module was NOT verified; say so rather than describing the work as done."
   else
     OUT="$(cd "$MODULE_ROOT" && go build ./... 2>&1)"
     if [ $? -ne 0 ]; then
@@ -2650,7 +2810,9 @@ Ruling R4 governs both: the module root comes from the edited or staged file's o
       else
         # The edited file's own package, relative to the module root. The whole
         # module runs on commit; per-edit this is the fast, scoped check.
-        PKG_DIR="$(dirname "$ABS")"
+        # Both sides went through hook_canon_path, so the prefix strip is
+        # comparing like with like. A file at the module root strips to "",
+        # and "./" is a valid package spec for it.
         PKG="./${PKG_DIR#"$MODULE_ROOT"/}"
         [ "$PKG" = "./$PKG_DIR" ] && PKG="./..."
         OUT="$(cd "$MODULE_ROOT" && go test -race "$PKG" 2>&1)"
@@ -2721,11 +2883,12 @@ Ruling R4 governs both: the module root comes from the edited or staged file's o
   # go-tests.yml runs, and the same rule the backend gate follows (CI runs the
   # whole package, so the gate does too).
   #
-  # The module root is derived from the STAGED PATH, not from $REPO_ROOT —
-  # Ruling R4, and the same reasoning as run-go-checks.sh. The honest limit:
-  # $PATHS itself came from a `git diff` run in $REPO_ROOT, so this section
-  # cannot be more correct than that; what it can avoid is the extra assumption
-  # that the module sits at a fixed place under it.
+  # The module root is derived from the STAGED PATH by walking up for go.mod,
+  # not assumed to be "$REPO_ROOT/relay" — Ruling R4, same reasoning as
+  # run-go-checks.sh. $REPO_ROOT here is already correct as of #280 (the gate
+  # anchors on its cwd, or on a parsed `cd <dir> &&` prefix), so this is not
+  # compensating for a bad root; it is declining the separate assumption that
+  # the module sits at a fixed place under it.
   GO_ROOTS="$(printf '%s\n' "$PATHS" | grep '\.go$' | while read -r p; do
     d="$(dirname "$REPO_ROOT/$p")"
     while [ "$d" != "/" ] && [ ! -f "$d/go.mod" ]; do d="$(dirname "$d")"; done
@@ -2758,6 +2921,19 @@ Ruling R4 governs both: the module root comes from the edited or staged file's o
 
   **Record all four outcomes in the PR description.** If any hook does not fire, that is a finding — report it rather than describing the hooks as wired.
 
+  **The script was run at plan time** against a scratch module, with these results — match them, and treat a difference as a finding rather than a variation:
+
+  | Payload | Result |
+  |---|---|
+  | a clean `.go` file | exit 0, prints `ok  github.com/…/relay/buffer  1.331s` |
+  | a type error added | exit 2, `FAILED: go build failed in …` plus the compiler's own line |
+  | a constant changed so a test fails | exit 2, `FAILED: go test -race ./buffer failed` plus `ChunkBytes = 1061072, want 255868` — a *test* failure, not a build one |
+  | a non-`.go` path (`go.mod`) | exit 0, silent |
+  | a `.go` file outside any module | exit 0, silent |
+  | the same file spelled through a symlink (`/tmp/…` vs `/private/tmp/…`) | exit 0, package still resolved — this is what `hook_canon_path` buys |
+
+  `shellcheck -x` reports only `SC2181` (checking `$?` rather than the command directly) on the four `OUT="$(…)"; if [ $? -ne 0 ]` pairs. That is the idiom the merged `run-affected-tests.sh` uses throughout, so it is house style here; do not "fix" it into a different shape from its sibling.
+
 - [ ] **Step 5: Commit**
 
 ---
@@ -2779,7 +2955,9 @@ Per the standing convention: a PR that changes a fact CLAUDE.md states corrects 
 
 - [ ] **Step 3: § Test hooks** — add, in the existing register, after the zizmor bullet:
 
-  > Go gets its own `PostToolUse` hook, `.claude/hooks/run-go-checks.sh`, on any `*.go` file: `go build ./...`, `go vet ./...` and `golangci-lint run` over the whole module plus `go test -race` for the edited file's package, all blocking, with zero lint findings as a ratchet in zizmor's idiom (the pinned version is checked against `go-tests.yml`'s, and a mismatch warns). `-race` is not optional and has no per-package exemption: this phase moves the relay off gevent's single OS thread, so a data race becomes possible for the first time. The commit gate runs `go build`, `go vet` and `go test -race ./...` over the whole module for any staged `*.go`. **Both derive the module root by walking up from the edited or staged file's own path for a `go.mod`, never from `CLAUDE_PROJECT_DIR`, `BASH_SOURCE` or the working directory** — the Python hooks' equivalent derivation is issue #258, where a hook script in one checkout and an edited file in a worktree make the hook silently do nothing, and the Go hooks must not inherit that shape. Note that `relay/` paths map to **no** backend test label (`scripts/ci_backend_test_labels.py` returns `[]` for them), so for a Go-only commit the Go section of the gate is the only thing that runs.
+  > Go gets its own `PostToolUse` hook, `.claude/hooks/run-go-checks.sh`, on any `*.go` file: `go build ./...`, `go vet ./...` and `golangci-lint run` over the whole module plus `go test -race` for the edited file's package, all blocking, with zero lint findings as a ratchet in zizmor's idiom (the pinned version is checked against `go-tests.yml`'s, and a mismatch warns). `-race` is not optional and has no per-package exemption: this phase moves the relay off gevent's single OS thread, so a data race becomes possible for the first time. The commit gate runs `go build`, `go vet` and `go test -race ./...` over the whole module for any staged `*.go`. **Both anchor on the edited or staged file's own path, following #258's rule, and both then walk up for a `go.mod` rather than calling `hook_repo_root`** — that helper returns the *repo* root, and `go build ./...` needs the *module* root, which is `relay/` and is defined by where `go.mod` sits, not `.git`. They do borrow `hook_canon_path`, so a symlinked spelling of the same tree compares equal, and they honour `CLAUDE_HOOK_REPO_ROOT` the same way. `hook_container_mismatch` is deliberately unused: the Go checks run on the host with no container, so it has nothing to judge. Note that `relay/` paths map to **no** backend test label (`scripts/ci_backend_test_labels.py` returns `[]` for them), so for a Go-only commit the Go section of the gate is the only thing that runs.
+
+  **Read `CLAUDE.md` § Test hooks as it stands on your branch before writing this in.** PR #280 rewrote that section's container paragraph, and the sentence above has to sit beside the merged text rather than contradict it — the merged paragraph already describes both hooks deriving their root from the edit and comparing it against the container's mount by destination.
 
 - [ ] **Step 4: § Testing** — add after the E2E paragraph:
 
@@ -2809,22 +2987,24 @@ Per the standing convention: a PR that changes a fact CLAUDE.md states corrects 
 
   Every one must be clean. **`gofmt -l` printing a filename is a failure**, even though nothing else catches it locally in this list.
 
+  **This plan's Go was assembled into a scratch module and run through all four checks at plan time**: `go build ./...`, `go vet ./...`, `go test -race ./...` and `golangci-lint run ./...` with this plan's own `.golangci.yml`, returning `0 issues.` and passing tests, with `go.sum` absent and `go list -m all` printing the main module alone. So a lint finding on your run is a difference between your code and the plan's, not a gap in the plan — read it as one. Three fixes in the plan's code exist only because that run found them: `_, _ =` on the two `fmt.Fprintln` calls, `#nosec G101` on `DefaultSecretFile`, and `#nosec G304,G703` on `os.ReadFile`. The last of those is worth remembering as a habit rather than a fact: **silencing one gosec rule can reveal a second on the same line** — G703 was invisible until G304 was suppressed, so re-run the linter after every `#nosec` rather than assuming the line is now clean.
+
 - [ ] **Step 2: Confirm the Python footprint is exactly Task 0's four files**
 
   Global Constraint 4 allows four Python paths and no others. Check the allowed set and the forbidden set separately, because one command answering "clean" for both hides which half it checked:
 
   ```bash
   cd <your worktree>
-  echo "--- Python/app files this PR touches (expect exactly 4) ---"
+  echo "--- Python/app files this PR touches (expect exactly 6) ---"
   git diff --name-only main...HEAD | grep -E '^(apps/|core/|dispatcharr/|frontend/|e2e/|e2e-upstream/|metrics/)'
-  echo "--- anything outside Task 0's four (expect nothing) ---"
+  echo "--- anything outside Task 0's six (expect nothing) ---"
   git diff --name-only main...HEAD \
     | grep -E '^(apps/|core/|dispatcharr/|frontend/|e2e/|e2e-upstream/|metrics/)' \
-    | grep -vxE 'apps/proxy/next_source\.py|apps/proxy/serializers\.py|apps/proxy/tests/test_redirect_transcode_flag\.py|apps/proxy/live_proxy/tests/zero_orm_allowlist\.py' \
+    | grep -vxE 'apps/proxy/next_source\.py|apps/proxy/serializers\.py|apps/proxy/tests/test_redirect_transcode_flag\.py|apps/proxy/live_proxy/tests/zero_orm_allowlist\.py|apps/proxy/tests/test_next_source_api\.py|apps/proxy/tests/test_next_source_resolution\.py' \
     && echo "VIOLATION" || echo "clean"
   ```
 
-  The first block must list exactly those four paths; the second must print `clean`. **A first block with fewer than four entries is also a failure** — it means a Task 0 edit was lost, most likely in a rebase, and the reconciliation table now cites a field that is not in the tree.
+  The first block must list exactly those six paths; the second must print `clean`. **A first block with fewer than six entries is also a failure** — it means a Task 0 edit was lost, most likely in a rebase, and either the reconciliation table cites a field that is not in the tree or two existing tests are about to go red in CI.
 
 - [ ] **Step 3: Write the PR description**
 
