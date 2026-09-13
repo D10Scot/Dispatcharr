@@ -49,18 +49,28 @@ class VLCCanParseTests(SimpleTestCase):
 
 class VLCParseVideoStreamTests(SimpleTestCase):
     def test_the_ts_demux_codec_map(self):
-        """One row of video_codec_map per assertion, dict compared whole.
+        """Every alias of video_codec_map, one subTest per alias, dict compared whole.
 
-        The map is four tuples of aliases against four codec names; a Go port
-        gets this wrong by transcribing three of the four, which a
-        'video_codec' in result assertion would not catch.
+        The map is four tuples KEYED BY ALIAS TUPLE, ten alias strings total
+        against four codec names -- a Go port transcribing only one alias per
+        tuple (the shape a single-alias-per-row test cannot catch) still
+        passes a test that checked only one alias per row. Every alias gets
+        its own line and its own subTest: 'avc'/'h.264'/'type=0x1b' -> h264,
+        'hevc'/'h.265'/'type=0x24' -> hevc, 'mpeg-2'/'type=0x02' -> mpeg2video,
+        'mpeg-4'/'type=0x10' -> mpeg4.
         """
         parser = VLCLogParser()
         for line, expected in [
+            ("ts demux debug: pid 256 avc", {"video_codec": "h264"}),
+            ("ts demux debug: pid 256 h.264", {"video_codec": "h264"}),
             ("ts demux debug: pid 256 type=0x1b", {"video_codec": "h264"}),
             ("ts demux debug: pid 256 hevc", {"video_codec": "hevc"}),
+            ("ts demux debug: pid 256 h.265", {"video_codec": "hevc"}),
+            ("ts demux debug: pid 256 type=0x24", {"video_codec": "hevc"}),
+            ("ts demux debug: pid 256 mpeg-2", {"video_codec": "mpeg2video"}),
             ("ts demux debug: pid 256 type=0x02", {"video_codec": "mpeg2video"}),
             ("ts demux debug: pid 256 mpeg-4", {"video_codec": "mpeg4"}),
+            ("ts demux debug: pid 256 type=0x10", {"video_codec": "mpeg4"}),
         ]:
             with self.subTest(line=line):
                 self.assertEqual(parser.parse_video_stream(line), expected)
