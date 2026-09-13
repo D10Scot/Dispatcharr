@@ -1801,10 +1801,10 @@ of what the ten pre-existing workflows pin.
 | 2c-2 | `migration/phase2c-vertical-slice` | The Proxy stream-profile architecture only (no ffmpeg spawn yet): one client, in-memory ring buffer, MPEG-TS passthrough for a single upstream. Proves the buffer/fan-out shape end to end before ffmpeg complexity is added. | New Go tests pass with `-race`; parity matrix rows 7, 9 (chunk monotonicity, 188-byte realignment) get a Go column | 2c-1 |
 | 2c-3 | `migration/phase2c-fanout` | Multi-client fan-out, join-5s-behind, the client registry, `?clients=all` on `GET /proxy/relay/channels` | Rows 8, 10, 13 get a Go column | 2c-2 |
 | 2c-4 | `migration/phase2c-ffmpeg` | ffmpeg spawn via `os/exec` + `syscall.SysProcAttr{Setpgid, Pdeathsig}` (D5 exception 1), the `log_parsers.py` port | Row 4 (the `speed=` arming delay) gets a Go column with its own real-ffmpeg test, mirroring 2a's harness | 2c-3 |
-| 2c-5 | `migration/phase2c-failover` | The three failover triggers, the control-plane client's remaining routes (`release`, `events`; `next-source` landed in 2c-2, Amendment A2.1), the degraded fallback to the cached candidate list, and the Redirect Stream Profile architecture — the 302, `validate_stream_url`'s provider probe, the fall-through to the cached alternates, and the internal-principal override that serves a Redirect channel through Proxy instead (`apps/proxy/live_proxy/views.py:462-480`). Added by Amendment A1.2: no row named Redirect, and Gate 1 being closed means an `owed:` marker cannot carry it. | Rows 1, 2, 3, 5, 6 get a Go column | 2c-4 |
+| 2c-5 | `migration/phase2c-failover` | The three failover triggers, the control-plane client's remaining routes (`release`, `events`; `next-source` landed in 2c-2, Amendment A2.1), the degraded fallback to the cached candidate list, and the Redirect Stream Profile architecture — the 302, `validate_stream_url`'s provider probe, the fall-through to the cached alternates, and the internal-principal override that serves a Redirect channel through Proxy instead (`apps/proxy/live_proxy/views.py:462-480`). Added by Amendment A1.2: no row named Redirect, and Gate 1 being closed means an `owed:` marker cannot carry it. The health flag this PR introduces is what `ClientTimeout`, `KeepaliveInterval` and `MaxKeepalive` gate (Amendment A2.5); `channel_shutdown_delay` already landed in 2c-3, not here (Amendment A3.3), and the client registry's TTL/heartbeat/ghost sweep it might have implied are deleted rather than ported (Amendment A3.1), so this PR has no registry expiry to build. | Rows 1, 2, 3, 5, 6 get a Go column | 2c-4 |
 | 2c-6 | `migration/phase2c-fmp4` | fMP4 output format, including row 12's known timeout gap, reproduced not fixed | Row 12 gets a Go column | 2c-5 |
 | 2c-7 | `migration/phase2c-output-profile` | Output Profile shared transcode per `(channel, profile)` | Row 11 gets a Go column | 2c-6 |
-| 2c-8 | `migration/phase2c-control-drain` | Remaining control routes (single-channel `GET`/`DELETE`, `advance`), SIGTERM drain (D6), the dev-only `POST /_dispatcharr/authorize-internal` fallback (D5 exception 2, now fully specified — § The contract, including why it needs its own nginx-unshielded path and `IsInternalRelay` gating) | Every remaining un-Go'd matrix row gets a column | 2c-7 |
+| 2c-8 | `migration/phase2c-control-drain` | Remaining control routes (single-channel `GET`/`DELETE`, `advance`; the collection `GET` landed in 2c-3), the detail endpoint's five extra client fields and row 14's `owner` asymmetry (Amendment A3.4), SIGTERM drain (D6), the dev-only `POST /_dispatcharr/authorize-internal` fallback (D5 exception 2, now fully specified — § The contract, including why it needs its own nginx-unshielded path and `IsInternalRelay` gating) | Every remaining un-Go'd matrix row gets a column | 2c-7 |
 | 2c-9 | `migration/phase2c-go-coverage-gate` | `go test ./... -race -cover` wired into a new `scripts/coverage_live_path_go.floor` ratchet, raised to ≥80%; parity matrix's Python test-reference column gains its Go counterpart on every row | A new `go-tests.yml` **`Go result`** aggregate green, built in the four-part shape `CLAUDE.md` § Testing prescribes for every requireable check (no `paths:` filter on `pull_request`, a cheap always-running change detector, an `if: always()` aggregate with the three branches, a skipped heavy job on a required run failing the aggregate) — **note, added in this fix round, that making `Go result` an actually-required check on the Main ruleset is a repo-settings action, the same class this spec already flags for Renovate elsewhere, not something this PR's commit alone accomplishes** | 2c-8, matrix 100% Go-columned |
 
 #### Amendment A1 (2c-1) — Redirect had no contract field and has no owning PR
@@ -1972,6 +1972,81 @@ port is reasonable -- the message comes from channel metadata an initialising
 client polls for, and the whole waiting shape changes once `Attach` starts
 the source before the 200 is written -- but the reason must be the true one,
 because the planner who reads this amendment is the one who owes the fix.
+
+#### Amendment A3 (2c-3) — five corrections and inputs from the fan-out
+
+**A3.1 — the client registry's TTL, heartbeat and ghost sweep are DELETED,
+not ported, and the key-family table's "Becomes" cell understates it.** The
+table gives `clients`, `client_metadata` and `client_stop` as "the control
+API's in-memory client map". What it does not say is that
+`CLIENT_RECORD_TTL`, `CLIENT_HEARTBEAT_INTERVAL`, `GHOST_CLIENT_MULTIPLIER`
+and `ClientManager.remove_ghost_clients` go with them. Those exist for one
+failure — a uWSGI worker dies holding clients and its Redis keys outlive it
+(`client_manager.py:446-482`, `apps/proxy/config.py:110-113`) — and with one
+process and the registry in its own memory a client entry cannot outlive the
+goroutine that made it. **A consequence for `CLAUDE.md` § Known defects**:
+`xc_get_info`'s per-handshake `?clients=all` call no longer triggers an
+`SREM` write across every running channel, because there are no ghosts to
+sweep. The defect closes as a side effect of D2 rather than being fixed.
+
+**A3.2 — `get_optimized_client_data`'s MAX_CHUNKS IS ported, and the other
+three constants are not.** 2c-2 declined the batching on the grounds that it
+amortises a Redis round trip. True of `MIN_CHUNKS`, `TARGET_SIZE` and
+`MAX_SIZE`; not true of `MAX_CHUNKS` (`input/buffer.py:329`), which bounds
+how much a lagging reader HOLDS at one instant. Uncapped, one reader can pin
+a whole ring's worth of evicted chunks on top of the resident ring — 2 x
+`MaxBytesPerChannel`, about 146 MiB per channel, where the sizing note in
+`relay/buffer/buffer.go` states 73 MiB. `buffer.MaxChunksPerRead = 20`.
+
+**A3.3 — `channel_shutdown_delay` lands in 2c-3, not 2c-8.** 2c-2 wired the
+field and deferred reading it to "where the re-check window can actually be
+tested against a reconnecting client". A reconnecting client is a second
+client, and second clients arrive in 2c-3. The field moves from
+`ManagerConfig` to `channel.Tuning`, because it is a channel-start-time
+setting like the other three (parity-matrix row 5).
+
+**A3.4 — an input for 2c-8: five client fields and the detail endpoint's
+asymmetries.** 2c-3 ships `GET /proxy/relay/channels` only. The client
+registry carries the seven fields `RelayChannelClientSerializer` renders and
+NOT `last_active`, `worker_id`, `bytes_sent`, `avg_rate_KBps` or
+`current_rate_KBps`, all five of which appear only on
+`RelayDetailClientSerializer`. 2c-8 adds them with the detail endpoint, and
+with them parity-matrix row 14's asymmetric `owner` default (`null` on the
+list endpoint, the literal string `'unknown'` on the detail one) and row 17's
+`ip_address` on both. 2c-3 pins neither row: half a row is not a row.
+
+**A3.5a — two more stated divergences, both where Python loses
+information.** `get_optimized_client_data` returns `client_index +
+chunk_count` (`input/buffer.py:373`) — the count it ASKED for, not the count
+it got — so a short read there skips undelivered chunks; Go returns the index
+of the last chunk actually handed over. And `skipped` has no Python
+counterpart as a returned value at all: `output/ts/generator.py:354-358`
+computes the same number only inside a log string and no caller sees it.
+Both are additions in the safe direction, recorded rather than presented as
+parity.
+
+**A3.6 — the tune's control-plane call is detached from the calling
+client.** `Manager.Attach` runs `start()` behind a per-channel gate, so with
+the first client's `r.Context()` that client disconnecting cancels
+next-source for every client waiting behind it. Python detaches by
+construction -- it calls next_source from inside the client's own request
+greenlet (`views.py:340`, `:390`) and uWSGI does not cancel a greenlet when
+its client hangs up -- so a Go relay that propagated cancellation would be
+strictly less available than the one it replaces. 2c-3 uses
+`context.WithTimeout(context.WithoutCancel(parent), tuneBudget)`, where the
+budget is `control.Client`'s own two-attempt worst case. **Measured cost of
+getting it wrong**: not a failed tune for the waiter, which recovers by
+re-claiming the gate, but a wasted control-plane round trip per departing
+tuner plus a failure whenever that retry also fails.
+
+**A3.5 — a stated wire divergence: float spelling.** DRF renders a Python
+float as `5.0`; Go's `encoding/json` renders `float64(5)` as `5`. The
+difference is textual and no consumer can observe it —
+`relay_client._request` calls `.json()` and `api.js` parses — so the golden
+fixture is compared as parsed JSON rather than as bytes, and forcing `5.0`
+out of `encoding/json` would need a custom marshaller on every float field.
+Recorded so a reviewer of a byte diff between the two relays is not
+surprised by it.
 
 ## Stage 2d — cutover, and its trap
 
@@ -2294,6 +2369,7 @@ Filled in as PRs merge; this spec lands as its own PR 0.
 | 2c-1 fix round -- corrected § Stage 2c's `**Process.**` paragraph: `relay-go` reads `DJANGO_SECRET_KEY` from the environment (as every other supervisord program does), not `/data/jwt` directly — the spec's original wording was a factual error found by `docker/tests/test-puid-pgid.sh` (`relay-go` BACKOFF-looped under a non-root PUID/PGID; `docker/entrypoint.sh:138` reads that file as root, before the privilege drop) | `migration/phase2c-skeleton` | pending |
 | 2c-2 -- the Go relay's vertical slice: the Proxy stream-profile architecture end to end (`relay/buffer`'s ring, `relay/control`'s settings/base-URL/`next-source` client in full, `relay/channel`'s Channel and Manager, `relay/httpapi`'s live TS handler), plus Amendment A1.4 (effective `proxy_settings`, 31 class-attribute defaults now on the wire) and Amendment A2 (the `next-source`/2c-5 scope correction, the Go-pin-is-one-cell ruling, row 8's mechanism-vs-pin split, the differential-test input for 2c-9, and the three behaviours not ported, one of them a stated divergence) | `migration/phase2c-vertical-slice` | pending |
 | 2c-2 review fix round -- opus review against `b5e62fcf` found a credential-echoing gap on the malformed-URL request-build path, `StateActive` unreachable (one mechanism replaced two), and Global Constraint 8's file:line ratchet missing for five constants (two of the reviewer's own citations corrected against this tree in the process); a downstream implementer independently verified and fixed three further defects (a `release`/`Attach` race, a per-tune transport leak, a `Ring.Read` cursor latent bug) before the review's findings arrived | `migration/phase2c-vertical-slice` | pending |
+| 2c-3 -- multi-client fan-out: the client registry (`relay/channel/client.go`, seven fields, the TTL/heartbeat/ghost sweep deleted rather than ported, Amendment A3.1), the manager's arrival and departure under one lock (the last-client rule and a concurrent attach are one decision, R5), `channel_shutdown_delay` (Amendment A3.3), the bounded read (`buffer.MaxChunksPerRead`, Amendment A3.2), `GET /proxy/relay/channels[?clients=all]` with its golden payload rendered by Django and asserted by both languages, and the tune's next-source call detached from the calling client's request context (Amendment A3.6). Parity matrix rows 8, 10, 13 get a Go column. | `migration/phase2c-fanout` | pending |
 
 ## Risks
 
