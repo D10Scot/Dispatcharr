@@ -10,19 +10,24 @@
 
 ---
 
-## Sequencing: this plan sits on 2c-2's FIX commit, not on its plan
+## Sequencing: this plan sits on 2c-2's fix commits, verified at `9f744890`
 
-2c-2's own review confirmed all three defects this plan found by reading its code, and 2c-2 is fixing them itself. **Write Tasks 0, 1, 3 and 4 against the FIXED shape**, which is:
+2c-2's own review confirmed all three defects this plan found by reading its code, and 2c-2 fixed them itself. **Everything below was rebuilt and re-verified against `migration/phase2c-vertical-slice` at `9f744890`** (`b5e62fcf` + `4bdf6be9` + `20fa1c27` + `9f744890`), including every `_test.go`. The three shapes, pinned with `git show "9f744890:relay/…"` rather than read off a working tree:
 
-- `Manager.release` decides under `m.mu` with an identity check — `m.channels[c.id] == c && c.clients == 0`, delete, then stop with the lock released — and `dropClient` moves inside that critical section. The delayed half is `stopIf(c *Channel)`.
-- `ProxySource.Run` defers `CloseIdleConnections` on a transport it built itself.
-- `Read` returns the index of the last chunk actually appended.
+| Fix | Shape as landed | What 2c-3 does with it |
+|---|---|---|
+| `relay/channel/manager.go` | `release()` calls `stopIfStillIdle(c)`, which takes `m.mu`, **re-reads `c.Clients()`**, checks `m.channels[c.id] == c`, deletes only then and stops outside the lock. `dropClient` stays **outside** the lock. | **Preserve it exactly.** 2c-3 changes two things: the drop names a client, and the delay comes off `Tuning` rather than `ManagerConfig`. The one-lock decision, the re-check and the identity check are not reintroduced and not restructured. |
+| `relay/channel/source_proxy.go` | `Run` does `defer client.CloseIdleConnections()` on the `*http.Client`; `transport()` still builds a fresh transport per Run. | **Nothing.** This plan's Task 4 is deleted — 2c-2's fix is better than the one this plan proposed (it is a no-op when `s.Transport` is an injected `RoundTripper` that does not implement the method, where returning a closer from `transport()` needed a branch for that case). Task 4 becomes a verification step inside Task 0. |
+| `relay/buffer/ring.go` | `Read`'s `next` is the index of the last chunk **actually appended**, tracked in the loop, with the contract in the doc comment. `TestNextIsTheLastChunkActuallyReturnedNotTheRingsTail` asserts `next == cursor + len(out)`. | **Keep the invariant and cite the test.** Task 1's cap must set `next` from the appended chunk, which it does; that test starts discriminating the moment a cap exists, so 2c-3 writes **no second test for it**. |
 
-**So Tasks 3 and 4 shrink to deltas.** Task 3 changes `release`'s signature (it takes a client id), moves the delay from `ManagerConfig` to `Tuning`, and adds `Snapshot`; the one-lock discipline and the identity check are already there and must be **preserved, not reintroduced**. Task 4 becomes a verification step rather than an edit. The tests in Appendix E still land in full: a fix without a test that reddens on its absence is a fix nobody can keep.
+**Why `stopIfStillIdle`'s shape is still correct with a registry**, since this plan's own earlier draft put the drop inside the lock instead: `claim`'s `addClient` and `stopIfStillIdle`'s re-check are both under `m.mu`, so whichever runs first is the one acted on and the other sees the consequence — either the entry is already gone and the arrival starts fresh, or `Clients()` is back above zero and the stop is a no-op. Swapping a counter for a map does not touch that argument. **Do not "improve" it.**
 
-**The fix commit's SHA goes here when it lands; until then this section is the contract.** Task 0 Step 2 checks each of the three against the merged tree and reports which shape it found.
+**One more 2c-2 commit is expected** (four fixes: `withoutURL` at `source_proxy.go:156`, `StateActive` reachable from `run()` on the first chunk with `markActive` removed or repurposed, five constants pinned, PR-body records). The diff against `9f744890` will be small. **Two consequences for this plan, both already absorbed:**
 
-**And seed your scratch module from `migration/phase2c-vertical-slice` INCLUDING its `_test.go` files**, never from the 2c-2 plan's appendices. Both blocking findings against this plan's first draft — twelve symbol collisions and thirteen broken call sites — came from building against the plan rather than the branch, and neither is visible until `go vet` runs over the merged package.
+- **`markActive` may be removed or repurposed.** `Manager.Attach` calls `existing.markActive()` on the reuse path. Task 0 Step 2 checks whether it still exists; if `run()` now sets `StateActive` on the first chunk, **delete the call rather than keeping a method with one caller** — the state it was setting is being set correctly elsewhere, and the tests that assert on `state` are 2c-2's.
+- **Do NOT add pins for the five constants** 2c-2 is pinning (the control timeouts, `ProxySource`'s defaults, `NominalByteRate`, `WriteChunk`). This plan pins exactly two, `httpapi.DefaultClientLimit` and `buffer.MaxChunksPerRead`, and **neither exists in 2c-2** — both are introduced by this PR, so there is no duplication.
+
+**And seed your scratch module from the branch INCLUDING its `_test.go` files**, never from a plan's appendices. Both blocking findings against this plan's first draft — symbol collisions and broken call sites — came from building against a plan rather than a branch, and neither is visible until `go vet` runs over the merged package.
 
 ---
 
@@ -179,9 +184,11 @@ func (m *Manager) release(c *Channel) {
 
 Measured against this plan's own code with the two statements separated: **round 16 of 400**, `the arriving client holds a channel the manager does not (channel one state=stopped clients=1 head=0 vs <nil>): it was stopped underneath a live client`.
 
-**Ruled: `release` takes `m.mu`, drops the client, and decides whether to detach in the same critical section.** `claim` registers its client under the same lock, so the two are mutually exclusive by construction rather than by timing. The delayed half, `stopIf`, takes the count and removes the entry under one lock for the same reason.
+**2c-2 fixed this itself, and the shape it shipped is the one to preserve.** `release` drops the client outside `m.mu` and then calls `stopIfStillIdle(c)`, which under `m.mu` **re-reads `c.Clients()`**, checks `m.channels[c.id] == c`, deletes only then, and stops with the lock released. The drop staying outside the lock is fine because the *decision* is inside it: `claim`'s `addClient` and this re-check are both under `m.mu`, so whichever runs first is the one acted on and the other sees the consequence — the entry is already gone and the arrival starts fresh, or `Clients()` is back above zero and the stop is a no-op.
 
-**And `detachLocked` checks identity, not just the id.** By the time a delayed stop fires the map may hold a *different* `*Channel` under the same id — the first finished, `claim` dropped it, a later tune published a replacement. Deleting by id alone evicts a live successor and strands its clients on a channel nothing can stop. Break-check BC2 below reddens on exactly that.
+**Swapping a counter for a registry does not touch that argument**, which is why 2c-3 changes two lines of `release` and none of `stopIfStillIdle`. An earlier draft of this plan proposed pulling the drop inside the lock as well; that is also correct and it is not what landed, and reintroducing it would be a rewrite of a function whose current shape is pinned by 2c-2's own race test.
+
+**The identity check (`existing == c`) guards a narrower case than the race**: by the time a delayed stop fires, the map may hold a *different* `*Channel` under the same id — the first finished, `claim` dropped it, a later tune published a replacement. Deleting by id alone evicts a live successor and strands its clients on a channel nothing can stop.
 
 ### R6 — A test whose oracle wraps is not a test. The join-point assertion needs an asset longer than the run.
 
@@ -212,6 +219,25 @@ The Redis client hash carries eight fields — `user_id`, `output_format`, `outp
 **Ruled: `owner` is always present and always `null`.** No consumer reads it: grepped across `frontend/src` (**zero** hits for the word) and across `relay_client`'s two readers of this payload, `list_channels` and `live_connections`, which take `channel_id` and `clients`. The **asymmetry** parity-matrix row 14 pins — the detail endpoint defaulting to the literal string `'unknown'` — is 2c-8's to carry.
 
 **And the assertion goes on the LIVE payload, not on the golden fixture.** The break-check that made `describeChannel` name a process identity left the golden tests green, because they compare a struct literal that hard-codes a nil owner against a file that says `null`; neither runs the handler. One line in `TestTheLiveEndpointProducesTheGoldensKeySet` closed it. **That is this plan's second break-check that did not redden**, and it is the reason the live key-set test exists at all.
+
+### R11 — `startProxyTune` detaches from the calling client's request context.
+
+`Manager.Attach` runs `start()` behind a per-channel gate: the first client in makes the next-source call and every later client for that channel waits on the gate. 2c-2 passed `r.Context()` into that call, which is correct at one client and wrong the moment a second can be waiting — that client's tab closing cancels next-source for everyone parked behind it.
+
+**Python detaches, by construction rather than by choice.** Its tune calls `generate_stream_url` → `control_plane.next_source` from inside the client's own request greenlet (`apps/proxy/live_proxy/views.py:340` and `:390`), and uWSGI does not cancel a greenlet when its client hangs up — the greenlet runs to completion and only discovers the disconnect on a later write. So the channel starts, and the clients polling `_channel_setup_needed` attach to it. **A Go relay that propagated cancellation would be strictly less available than the Python one it replaces**, which is the opposite of what D5 asks for.
+
+**Ruled: `context.WithTimeout(context.WithoutCancel(parent), tuneBudget)`.** `WithoutCancel` keeps any values on the request context while dropping its cancellation, and the timeout puts back a bound of the right shape — the control client's own worst case rather than the viewer's patience:
+
+```go
+// control.Client's own worst case: two attempts of (ConnectTimeout,
+// ReadTimeout) plus the retry delay between them. `attempts` is unexported, so
+// the 2 is written here; if control ever changes it this over- or undershoots,
+// which costs a longer or shorter gate wait and never correctness, because each
+// attempt is still bounded by the client's own http.Client.Timeout.
+const tuneBudget = 2*(control.ConnectTimeout+control.ReadTimeout) + control.RetryDelay
+```
+
+**The damage from getting this wrong is smaller than it first looks, and the plan says so rather than overstating it.** Measured against the attached-context version: the second client still gets its 200 and its bytes, because the cancelled start returns an error, `Attach`'s deferred `releaseGate` opens the gate, and the waiter re-claims and makes its own call. What is lost is **a wasted control-plane round trip per departing tuner**, a failed response for the client that left, and a real failure for the waiter whenever that retry also fails. So the assertion that discriminates in `TestTheTuningClientLeavingDoesNotFailTheTuneForEveryoneElse` is **the next-source request count**, not the status — and the test says which, because a break-check that reddens on the wrong assertion teaches the next reader the wrong mechanism.
 
 ### R10 — An unsupported output format or Output Profile is refused 501, not served as MPEG-TS under the wrong label.
 
@@ -257,15 +283,15 @@ relay/buffer/fanout_test.go             NEW  — the cap, the N-reader immutabil
 relay/channel/client.go                 NEW  — the registry's row type
 relay/channel/tuning.go                 EDIT — ShutdownDelay joins the snapshot
 relay/channel/channel.go                EDIT — clients map, SourceInfo, startedAt, ClientSnapshot, ErrDuplicateClient
-relay/channel/manager.go                EDIT — Started, Attach takes a client, release/stopIf/detachLocked, Snapshot
-relay/channel/source_proxy.go           EDIT — the built transport releases its idle connections
+relay/channel/manager.go                EDIT — Started, Attach takes a client, release's two lines, Snapshot
 relay/channel/fanout_test.go            NEW  — six tests, three of them concurrent
-relay/channel/manager_test.go           EDIT — asStarted + testClient, and twelve Attach call sites
-relay/channel/concurrent_test.go        EDIT — the thirteenth Attach call site, plus an fmt import
-relay/httpapi/stream.go                 EDIT — identify(), ErrUnsupportedOutput, mintClientID, the Started shape
+relay/channel/manager_test.go           EDIT — asStarted + testClient, and fourteen Attach call sites
+relay/channel/concurrent_test.go        EDIT — the fifteenth Attach call site, plus an fmt import
+relay/httpapi/stream.go                 EDIT — identify(), ErrUnsupportedOutput, mintClientID, Started, the detached tune context
 relay/httpapi/channels.go               NEW  — GET /proxy/relay/channels and its internal-auth gate
 relay/httpapi/server.go                 EDIT — ControlDeps and the second dev route
 relay/httpapi/stream_test.go            EDIT — newRig wires ControlDeps against the SAME manager
+relay/internal/relaytest/controlplane.go EDIT — ControlPlaneConfig.Delay, so a test can act mid-tune
 relay/httpapi/fanout_test.go            NEW  — extends 2c-2's rig; the fan-out test, row 8, row 10, the cap, the auth gate
 relay/httpapi/golden_test.go            NEW  — the cross-implementation payload pin
 relay/httpapi/testdata/channels_clients_all.json   NEW — rendered by Django's serializer
@@ -286,7 +312,7 @@ CLAUDE.md                               EDIT — § Architecture, § Known defec
 
 Nothing under `core/`, `dispatcharr/`, `frontend/`, `e2e/` or `metrics/` is touched, and nothing under `apps/` beyond the one new test file.
 
-**Four of those are edits to 2c-2's own committed test files**, and they are listed here rather than discovered at `go vet`: three absorb the `Attach` signature change, and one wires the list endpoint's dependencies to the manager the tune path already uses.
+**Four of those are edits to 2c-2's own committed test files**, and they are listed here rather than discovered at `go vet`: two absorb the `Attach` signature change, one wires the list endpoint's dependencies to the manager the tune path already uses, and one adds a delay knob to the fake Django. **`relay/channel/source_proxy.go` is NOT edited** — 2c-2's fix commit closed the transport leak itself.
 
 ---
 ## Task 0: Diff the merged 2c-2 tree against this plan's expectations
@@ -317,9 +343,10 @@ Nothing under `core/`, `dispatcharr/`, `frontend/`, `e2e/` or `metrics/` is touc
   | `(*Ring).Read` | `func (r *Ring) Read(cursor uint64) (chunks [][]byte, next uint64, skipped uint64)` | Task 1 rewrites its body; a different signature makes Task 1 a redesign — stop and report |
   | `(*Ring).Join` | `func (r *Ring) Join(behind time.Duration) uint64` | Task 5's `serveClient` calls it |
   | `(*Manager).Attach` | `func (m *Manager) Attach(id string, start func() (Source, Tuning, error)) (*Channel, func(), error)` | Task 3 changes it to take a `*Client` and return a `Started`; if 2c-2 already changed it, reconcile and report |
-  | `(*Manager).release` | **expected fixed**: one `m.mu` critical section, `dropClient` inside it, an identity check, `stopIf` for the delayed half | if you find 2c-2's original two-step shape, the fix has not landed — apply Ruling R5's version and say so |
-  | `ProxySource.transport` | **expected fixed**: returns the transport and a closer, `Run` defers it | if not, apply Task 4; if so, Task 4 is a verification step |
-  | `(*Ring).Read`'s `next` | **expected fixed**: the index of the last chunk appended | if it still returns `r.chunks[len-1].Index`, Task 1 Step 1 supplies it |
+  | `(*Manager).release` | **as landed at `9f744890`**: `dropClient` outside the lock, then `stopIfStillIdle(c)` which re-reads `Clients()` and checks `m.channels[c.id] == c` under `m.mu` | if you find the two-step `m.Stop(c.id)` shape, the tree is older than `9f744890` — stop and report rather than applying this plan to it |
+  | `ProxySource.Run` | **as landed**: `defer client.CloseIdleConnections()` right after the client is built | if absent, same answer: wrong base |
+  | `(*Ring).Read`'s `next` | **as landed**: the index of the last chunk appended, tracked in the loop | if it returns `r.chunks[len-1].Index`, same answer |
+  | `(*Channel).markActive` | present at `9f744890`, **may be gone in the next fix commit** | if `run()` now sets `StateActive` on the first chunk, delete `Attach`'s call rather than keeping a one-caller method |
   | `(*Channel).clients` | an `int` | Task 2 replaces it with a map |
   | `Tuning` | three fields | Task 2 adds a fourth |
   | `control.VerifyInternalRequest` | present and exported | Task 6 cannot gate the route without it |
@@ -384,59 +411,27 @@ Ruling R2 caps the read. The byte counter is what lets Task 6's payload carry `t
   const MaxChunksPerRead = 20
   ```
 
-  Then replace `Read`'s doc comment and its selection loop. **The whole method, as it must read afterwards:**
+  Then add the cap to `Read`'s existing selection loop. **Two lines and a `continue`, on the shape `9f744890` already has:**
 
   ```go
-  // Read returns up to MaxChunksPerRead resident chunks after cursor.
-  //
-  // cursor is the LAST CONSUMED index, Python's local_index convention. next is
-  // the cursor to pass to the following call -- the index of the LAST CHUNK
-  // ACTUALLY RETURNED, not the ring's head, because the batch cap means those
-  // are no longer the same thing. skipped is how many indices were lost to
-  // eviction before the first chunk returned.
-  //
-  // THE RETURNED SLICES ARE BORROWED. They alias the ring's own backing arrays
-  // and a caller must never write into one: a published chunk is shared by
-  // every reader at that position, so one consumer mutating it corrupts every
-  // other. Go has no read-only slice and -race cannot see this (two goroutines
-  // writing different bytes of one array is not a race on any address), so the
-  // contract lives here and in TestAChunkIsUnchangedAfterEveryClientHasServedIt.
-  func (r *Ring) Read(cursor uint64) (chunks [][]byte, next uint64, skipped uint64) {
-  	r.mu.RLock()
-  	defer r.mu.RUnlock()
-
-  	if len(r.chunks) == 0 {
-  		return nil, cursor, 0
-  	}
-  	oldest := r.chunks[0].Index
-  	want := cursor + 1
-  	if want < oldest {
-  		skipped = oldest - want
-  		want = oldest
-  	}
-  	if want > r.head {
-  		return nil, cursor, skipped
-  	}
-
-  	out := make([][]byte, 0, min(len(r.chunks), MaxChunksPerRead))
-  	last := cursor
   	for _, c := range r.chunks {
   		if c.Index < want {
   			continue
   		}
+  		// The cap. next keeps tracking the last chunk APPENDED, which is
+  		// 2c-2's contract and is what makes a capped read correct rather than
+  		// a silent gap: a next that ran ahead to the ring's tail would make a
+  		// lagging client skip everything this call did not hand it.
   		if len(out) == MaxChunksPerRead {
   			break
   		}
   		out = append(out, c.Data)
-  		last = c.Index
+  		next = c.Index
   	}
-  	return out, last, skipped
-  }
+  	return out, next, skipped
   ```
 
-  **`last` starts at `cursor`, not at zero.** A read that returns nothing must hand back the caller's own cursor unchanged; returning zero would rewind every caught-up client to the start of the channel on every empty poll.
-
-  2c-2's `TestReadReportsWhatEvictionSkipped` writes twelve chunks into an eight-chunk ring, so it returns eight — inside the cap — and must still pass unchanged. **If it fails, the refactor is wrong, not the test.**
+  And give `out` a bounded capacity: `make([][]byte, 0, min(len(r.chunks), MaxChunksPerRead))`.
 
 - [ ] **Step 2: Add the byte counter**
 
@@ -507,11 +502,13 @@ Ruling R2 caps the read. The byte counter is what lets Task 6's payload carry `t
   | # | The edit | Expected red | Message |
   |---|---|---|---|
   | 1 | delete `if len(out) == MaxChunksPerRead { break }` | `TestReadIsCappedAndItsCursorFollowsTheBytes` | `one Read returned 40 chunks with 40 resident, want 20 -- a lagging reader can pin a whole ring's worth of evicted chunks` |
-  | 2 | `return out, last, skipped` becomes `_ = last` followed by `return out, r.chunks[len(r.chunks)-1].Index, skipped` | the same test | `next = 40 after a capped read, want 20 -- the cursor ran past the bytes the caller was actually given and the rest of the stream is lost` |
+  | 2 | `next = c.Index` inside the loop becomes `next = r.chunks[len(r.chunks)-1].Index` after it | **2c-2's `TestNextIsTheLastChunkActuallyReturnedNotTheRingsTail`**, not a test of this PR's | `next = 40, want 20 (cursor 0 + 20 chunks actually returned) -- next must track what was handed back, not the ring's own head` |
   | 3 | a `scratch []byte` **field** on `Ring`, allocated once and reused for every chunk | `TestAChunkIsUnchangedAfterEveryClientHasServedIt` | `byte N of a chunk reader M still holds changed from …: a published chunk's backing array was reused` |
   | 4 | drop the `RLock` from `TotalBytes` | `TestManyConcurrentReadersAndOneWriter` | `WARNING: DATA RACE`, with both stacks |
 
-  **`_ = last` is not decoration in number 2.** Dropping the variable's only use makes the package fail to COMPILE, and a break-check that does not build has told you nothing about the test. The same applies to numbers 11 and 12 in Task 5, and all three are spelled with the keep-alive here because all three were first written without it.
+  **Number 2 is 2c-2's check, run here because this PR is what arms it.** Before the cap, `next` and the ring's tail were the same value and that test could not fail; after it, they diverge. Running it is how you confirm the cap and the cursor agree — and it is why this PR adds no `next` assertion of its own.
+
+  **Numbers 11 and 12 in Task 5 need a keep-alive line** (`_ = tuning.JoinBehind`, `_ = trusted`): deleting the branch outright leaves a variable unused and the package fails to COMPILE, which tells you nothing about the test. Both were first written without it.
 
   **Number 3 carries 2c-2's own caveat forward**: allocating the reused buffer as a **local** inside `Write` does not redden it, because a test that writes one chunk per call never exercises reuse within a call. The defect shape that matters is a field.
 
@@ -592,100 +589,59 @@ Spec D2's `Client registry` key-family row: `live:channel:{id}:clients` (a SET w
 
 Ruling R5. This is the task the ordering tests exist for, and the one where `-race` is no help at all.
 
-- [ ] **Step 1: Rewrite `relay/channel/manager.go`**
+- [ ] **Step 1: Edit `relay/channel/manager.go` — a delta, not a rewrite**
 
-  **The complete file is Appendix D.** Five changes to 2c-2's version:
+  **The complete file is Appendix D**, and the part of it that matters most is what is **unchanged**: `release`'s drop stays outside `m.mu`, and `stopIfStillIdle` keeps its re-check, its identity check and its stop-outside-the-lock. That is 2c-2's fix commit `9f744890`, demonstrated by its own `TestAReleaseCannotStopAChannelAConcurrentAttachJustJoined` at roughly one race in several thousand rounds against the pre-fix code. **Preserve it.**
+
+  Five changes to it:
 
   1. **`Started`**, a struct the start function returns, replacing the three-value `(Source, Tuning, error)`. It carries `Info SourceInfo` as well, which the list endpoint needs and which a fourth return value would have made unreadable.
   2. **`Attach(id string, client *Client, start func() (Started, error))`**. The client is registered inside `claim`, under `m.mu`, which is what makes the arrival path and the departure path mutually exclusive.
   3. **`claim` returns a fourth value, an error**, so a duplicate client id is refused at the point the map is inspected rather than in a second, unsynchronised step.
-  4. **`release`, `stopIf` and `detachLocked`** — 2c-2's fix-round shape, extended: `release` takes a client id, and the delay is read off `Tuning` rather than `ManagerConfig`. **Preserve the one-lock discipline and the identity check; do not reintroduce them.**
+  4. **`release(c, clientID)`** — two lines different from 2c-2's: `c.dropClient(clientID)` instead of `c.dropClient()`, and `c.tuning.ShutdownDelay` instead of `m.cfg.ShutdownDelay` (twice). `stopIfStillIdle` is **not touched at all**. `ManagerConfig.ShutdownDelay` is deleted in the same edit, so no caller can supply the old one by accident.
   5. **`Snapshot()`**, every channel in id order, which Task 6's list endpoint reads.
 
-  The three-function departure path, in full, because it is the whole ruling:
+  The whole of `release` afterwards, which is the whole of the delta:
 
   ```go
-  // release drops one client and, when it was the last, stops the channel --
-  // immediately, or after the shutdown delay.
-  //
-  // THE DROP AND THE DECISION HAPPEN UNDER ONE LOCK, and that is the whole of
-  // this function. An earlier shape dropped the client, saw zero remaining, and
-  // then called Stop: between those two statements a new client could claim the
-  // same channel, be handed it, and have it torn down underneath them -- an
-  // empty 200 with no re-tune. claim registers its client under m.mu too, so
-  // taking the count and removing the map entry in the same critical section is
-  // what makes the two mutually exclusive. -race sees none of this; it is an
-  // ordering bug, which is why TestAClientArrivingAsTheLastOneLeavesKeepsItsChannel
-  // exists.
+  // 2c-3 changes exactly two things here and preserves everything else: the drop
+  // names a client, and the delay comes off the channel's own Tuning rather than
+  // the manager's config (it is a channel-start-time setting, parity-matrix row
+  // 5). The drop stays OUTSIDE m.mu and the decision stays inside
+  // stopIfStillIdle, which is 2c-2's fix and is correct with a registry for the
+  // same reason it is correct with a counter: claim's addClient and
+  // stopIfStillIdle's re-check are both under m.mu, so whichever runs first is
+  // the one acted on and the other sees the consequence.
   func (m *Manager) release(c *Channel, clientID string) {
-  	m.mu.Lock()
-  	remaining := c.dropClient(clientID)
-  	stop := false
-  	if remaining == 0 && c.tuning.ShutdownDelay <= 0 {
-  		stop = m.detachLocked(c)
-  	}
-  	m.mu.Unlock()
-
-  	if stop {
-  		c.setState(StateStopping, nil)
-  		c.stop(m.cfg.StopWait)
+  	if remaining := c.dropClient(clientID); remaining > 0 {
   		return
   	}
-  	if remaining == 0 && c.tuning.ShutdownDelay > 0 {
-  		time.AfterFunc(c.tuning.ShutdownDelay, func() { m.stopIf(c) })
-  	}
-  }
-
-  // stopIf is the delayed half of release: the grace window expired, so stop
-  // the channel unless somebody reconnected inside it.
-  //
-  // The port of ChannelService.cancel_pending_shutdown
-  // (services/channel_service.py:103-127), which Python spells as a Redis
-  // timestamp a reconnecting client deletes. Here the reconnect simply registers
-  // a client, and this check sees it -- under the same lock that registered it,
-  // so there is no window between "nobody is watching" and "the entry is gone".
-  func (m *Manager) stopIf(c *Channel) {
-  	m.mu.Lock()
-  	stop := c.Clients() == 0 && m.detachLocked(c)
-  	m.mu.Unlock()
-  	if !stop {
+  	if c.tuning.ShutdownDelay <= 0 {
+  		m.stopIfStillIdle(c)
   		return
   	}
-  	c.setState(StateStopping, nil)
-  	c.stop(m.cfg.StopWait)
-  }
-
-  // detachLocked removes c from the map if the map still holds THIS channel, and
-  // reports whether it did. Callers hold m.mu.
-  //
-  // The identity check is load-bearing. By the time a delayed stop fires, the
-  // map may hold a DIFFERENT channel under the same id: the first one finished,
-  // claim dropped it, and a later tune published a replacement. Deleting by id
-  // alone would evict a live successor and leave its clients attached to a
-  // channel nothing can stop.
-  func (m *Manager) detachLocked(c *Channel) bool {
-  	if m.channels[c.id] != c {
-  		return false
-  	}
-  	delete(m.channels, c.id)
-  	return true
+  	time.AfterFunc(c.tuning.ShutdownDelay, func() {
+  		m.stopIfStillIdle(c)
+  	})
   }
   ```
 
-  **The lock order is always manager then channel**, and nothing takes them the other way round: `release` calls `c.dropClient` (channel lock) while holding `m.mu`, `stopIf` calls `c.Clients()` the same way, and `claim` calls `c.addClient`. `c.stop` is called with `m.mu` **released**, because it waits up to `StopWait` for a goroutine.
+  **`Channel.Clients()` must never take `m.mu`**, and its doc comment now says so: `stopIfStillIdle` calls it *while holding* the manager lock, so a channel method that reached back for the manager's lock would deadlock the process on the first release. The lock order is manager then channel, one way only.
 
   **Everything 2c-2 ruled about `Attach` is preserved and must stay preserved.** `start()` runs outside the manager lock; the per-channel gate is closed from a **deferred** call registered in `Attach` **before** `start()` runs, so it fires at `Attach`'s return, after `publish` has installed the channel; `claim` drops a channel whose ring has closed, and that is the only place it happens. Moving the gate's close into a helper around `start()` wakes a waiter that then races the map insertion, claims a fresh gate and opens a **second** upstream — 2c-2 measured it going wrong within three rounds at eight concurrent clients.
 
-- [ ] **Step 2: Rewrite the thirteen `Attach` call sites this package inherits**
+- [ ] **Step 2: Rewrite the fifteen `Attach` call sites this package inherits**
 
-  `Attach(id, start func() (Source, Tuning, error))` becomes `Attach(id, *Client, start func() (Started, error))`, and **thirteen call sites in 2c-2's own committed tests break**. Naming them, because a signature change that lists no call sites is a signature change somebody discovers at `go vet`:
+  `Attach(id, start func() (Source, Tuning, error))` becomes `Attach(id, *Client, start func() (Started, error))`, and **fifteen call sites in 2c-2's own committed tests break**. Naming them, because a signature change that lists no call sites is a signature change somebody discovers at `go vet`:
 
-  | File | Lines |
+  | File | Lines (at `9f744890`) |
   |---|---|
   | `relay/channel/concurrent_test.go` | 93 |
-  | `relay/channel/manager_test.go` | 60, 64, 109, 113, 144, 179, 215, 223, 249, 255, 286, 299 |
+  | `relay/channel/manager_test.go` | 60, 64, 109, 113, 144, 179, 215, 223, 249, 255, 286, 299, **340, 361** |
 
-  **Two adapters in `manager_test.go` absorb all thirteen**, rather than thirteen closure rewrites. None of those tests is about `SourceInfo` or about client identity — they are about one source per channel, the gate, the panic guarantee and the finished-channel drop — so the change should not touch what they say:
+  **The last two are 2c-2's fix commit's own test**, `TestAReleaseCannotStopAChannelAConcurrentAttachJustJoined` — the one that demonstrates the race this plan found. It attaches twice to `shared`, so it needs two distinct client ids like every other pair. **Re-derive the line numbers against your tree**: a further fix commit moves them.
+
+  **Two adapters in `manager_test.go` absorb all fifteen**, rather than fifteen closure rewrites. None of those tests is about `SourceInfo` or about client identity — they are about one source per channel, the gate, the panic guarantee and the finished-channel drop — so the change should not touch what they say:
 
   ```go
   // asStarted wraps a 2c-2-shaped start function in 2c-3's Started shape.
@@ -707,7 +663,7 @@ Ruling R5. This is the task the ordering tests exist for, and the one where `-ra
 
   `concurrent_test.go:93` is inside a per-client goroutine, so its id is `fmt.Sprintf("client-%d", i)` and the file gains a `fmt` import.
 
-  **Verified: all of 2c-2's channel and httpapi tests pass unchanged against this PR's tree** once the thirteen sites are rewritten — the cap, the byte counter, the registry and the release rewrite regress none of them.
+  **Verified: all of 2c-2's channel and httpapi tests pass unchanged against this PR's tree** once the fifteen sites are rewritten — the cap, the byte counter, the registry and `release`'s two lines regress none of them, `TestAReleaseCannotStopAChannelAConcurrentAttachJustJoined` included.
 
 - [ ] **Step 3: Write `relay/channel/fanout_test.go`**
 
@@ -721,6 +677,8 @@ Ruling R5. This is the task the ordering tests exist for, and the one where `-ra
   | `testTuning()` | `channel/manager_test.go:15` — two fields, no `JoinBehind`; **leave it alone**, this PR's channel tests do not read it and the grace-window test builds its own `Tuning` |
   | `testClient(id)` | added by Step 2 above |
 
+  `startCounting` is this file's one addition.
+
   This file adds exactly one fixture of its own, `startCounting`, which is `Started` wrapped around `countingSource`.
 
   Six tests, three of them concurrent:
@@ -731,7 +689,7 @@ Ruling R5. This is the task the ordering tests exist for, and the one where `-ra
   | `TestASecondAttachUnderAnAttachedClientIDIsRefused` | **row 13's first half** — registration is idempotent per client id |
   | `TestAClientArrivingAsTheLastOneLeavesKeepsItsChannel` | **R5's ordering**, 400 rounds |
   | `TestTheShutdownDelayKeepsAChannelForAReconnectingClient` | **R4** — the grace window, supplied non-default at 400 ms |
-  | `TestADelayedStopNeverEvictsAReplacementChannel` | `detachLocked`'s identity check |
+  | `TestADelayedStopNeverEvictsAReplacementChannel` | `stopIfStillIdle`'s identity check, at the delayed path 2c-2's own test does not reach |
   | `TestConcurrentAttachAndReleaseLeaksNoGoroutine` | **Constraint 17** — 50 rounds × 8 clients, with a goroutine count after every release |
 
   Two fixtures are load-bearing and both were arrived at by a test failing first.
@@ -758,75 +716,21 @@ Ruling R5. This is the task the ordering tests exist for, and the one where `-ra
 
   | # | The edit | Expected red | Message |
   |---|---|---|---|
-  | 1 | `release` drops the client **before** taking `m.mu`, and takes the lock only around `detachLocked` | `TestAClientArrivingAsTheLastOneLeavesKeepsItsChannel` | `round 16: the arriving client holds a channel the manager does not (channel one state=stopped clients=1 head=0 vs <nil>): it was stopped underneath a live client` |
-  | 2 | `detachLocked`'s `m.channels[c.id] != c` becomes a bare presence check | `TestADelayedStopNeverEvictsAReplacementChannel` | `the first channel's delayed stop evicted the replacement: the map holds <nil>, want the channel the live client is watching` |
+  | 1 | `stopIfStillIdle`'s `c.Clients() != 0` moves **outside** the `m.mu` closure — 2c-2's own pre-fix shape | `TestAClientArrivingAsTheLastOneLeavesKeepsItsChannel` **and** 2c-2's `TestAReleaseCannotStopAChannelAConcurrentAttachJustJoined` | `round 0: the arriving client holds a channel the manager does not (channel one state=stopped clients=1 head=0 vs <nil>): it was stopped underneath a live client`, alongside `round 6: the second client was handed a stopped channel` |
+  | 2 | `stopIfStillIdle`'s `ok && existing == c` becomes a bare presence check | `TestADelayedStopNeverEvictsAReplacementChannel` **only** | `the first channel's delayed stop evicted the replacement: the map holds <nil>, want the channel the live client is watching` |
   | 3 | `if remaining == 0 && c.tuning.ShutdownDelay <= 0` becomes `if remaining == 0` | `TestTheShutdownDelayKeepsAChannelForAReconnectingClient` | `the channel was stopped immediately: the shutdown delay did not apply` |
 
-  **Number 1 reddened on round 16 of 400 on the machine this plan was written on.** It is a race, so the round number will differ; what must not differ is that it reddens within a few hundred rounds and that the message names a channel the manager does not hold. If it survives 400 rounds, say so rather than raising the count — and check first that `release` really is doing the two steps separately, because the edit is easy to apply in a way that keeps them adjacent.
+  **Number 1 reddens BOTH tests, and that is the point of running it.** 2c-2's own race test covers the immediate path; this PR's covers it at 400 rounds with a registry in place. Measured on round 0 and round 6 respectively, but it is a race — what must not differ is that both redden within a few hundred rounds. **Number 2 reddens only this PR's test**, because 2c-2's does not exercise the *delayed* path where a replacement channel can exist.
 
 - [ ] **Step 5: Run the four checks and commit**
 
 ---
-## Task 4: `relay/channel` — the transport that was never closed
+## Task 4: (deleted — 2c-2 fixed the transport leak itself)
 
-A defect in the 2c-2 plan's `ProxySource`, found by Task 3's goroutine test and fixed here because it is a two-line change in the file that caused it.
+`ProxySource.Run` now does `defer client.CloseIdleConnections()` on the `*http.Client` it builds (`relay/channel/source_proxy.go` at `9f744890`). **No edit here.** Two things survive from what this task used to be:
 
-- [ ] **Step 1: Make `transport()` hand back a closer**
-
-  `ProxySource.transport()` builds a fresh `http.Transport` on every `Run` and nothing ever closes it. A fresh transport per `Run` is **right** — one channel's upstream is one connection and must not share a pool with another channel's — but an unclosed one keeps its idle connection and that connection's `readLoop` and `writeLoop` goroutines alive until Go's own idle timeout, which is not set here. Two goroutines and a socket per finished channel.
-
-  **Measured**: `TestConcurrentAttachAndReleaseLeaksNoGoroutine` went from 3 goroutines to **89** across 50 rounds without the fix and settles back to the baseline with it. Invisible with one channel, which is why 2c-2 could not have seen it.
-
-  ```go
-  // transport returns the round tripper to use and, when this call BUILT one,
-  // the closer that releases its idle connections.
-  //
-  // A fresh http.Transport per Run is right -- one channel's upstream is one
-  // connection and must not share a pool with another channel's -- but an
-  // unclosed one keeps its idle connection and that connection's readLoop and
-  // writeLoop goroutines alive until Go's own idle timeout, which is not set
-  // here. That is two goroutines and a socket per finished channel, invisible
-  // with one channel and measurable at fifty: TestConcurrentAttachAndRelease-
-  // LeaksNoGoroutine went from 3 goroutines to 89 across 50 rounds without this
-  // and settles back to the baseline with it.
-  //
-  // An injected Transport is NOT closed: the test that supplied it owns it.
-  func (s ProxySource) transport() (http.RoundTripper, func()) {
-  	if s.Transport != nil {
-  		return s.Transport, func() {}
-  	}
-  	built := &http.Transport{
-  		DialContext:           (&net.Dialer{Timeout: s.connectTimeout()}).DialContext,
-  		ResponseHeaderTimeout: s.connectTimeout(),
-  		MaxIdleConns:          1,
-  		MaxConnsPerHost:       1,
-  		DisableCompression:    true,
-  	}
-  	return built, built.CloseIdleConnections
-  }
-  ```
-
-  And in `Run`, replacing the single line that built the client:
-
-  ```go
-  	roundTripper, closeIdle := s.transport()
-  	defer closeIdle()
-
-  	client := &http.Client{Transport: roundTripper}
-  	response, err := client.Do(request)
-  ```
-
-  **`defer`, not a call at the end.** `Run` has eight return points and a `defer` covers all of them, including the one a `sink.Write` failure takes.
-
-- [ ] **Step 2: Break-check, one edit**
-
-  | # | The edit | Expected red | Message |
-  |---|---|---|---|
-  | 1 | `return built, built.CloseIdleConnections` becomes `return built, func() {}` | `TestConcurrentAttachAndReleaseLeaksNoGoroutine` | `goroutines went from 3 to 94 across 50 rounds of 8 clients -- something started per attach is never stopped` |
-
-  The numbers will differ; what must not is the shape — tens of goroutines, not a handful. **If it reddens at a number close to the tolerance, say so**: the test allows `before + 20` for `net/http`'s own idle connections, and a leak that only just clears that bar is a leak the tolerance is hiding.
-
-- [ ] **Step 3: Run the four checks and commit**
+- **`TestConcurrentAttachAndReleaseLeaksNoGoroutine` still lands**, in Task 3's `fanout_test.go`. A fix whose absence no test reddens is a fix nobody can keep, and 2c-2's own fix commit carries no goroutine-count test.
+- **Task 0 Step 2 verifies the `defer` is there.** If it is not, the tree is older than `9f744890` and everything below is being applied to the wrong base.
 
 ---
 ## Task 5: `relay/httpapi` — who is asking, and what they may have
@@ -905,7 +809,18 @@ A defect in the 2c-2 plan's `ProxySource`, found by Task 3's goroutine test and 
 
   In `tuningFrom`, a fifth required read. The constant block gains `settingShutdownDelay = "channel_shutdown_delay"`. Global Constraint 13: **no Go-side default**, and `Seconds` fails on an absent key like the other four.
 
-- [ ] **Step 4: Thread the client through the tune path**
+- [ ] **Step 4: Detach the next-source call from the calling client**
+
+  Ruling R11. `startProxyTune`'s first parameter is renamed `parent`, and its first two statements become:
+
+  ```go
+  	ctx, cancel := context.WithTimeout(context.WithoutCancel(parent), tuneBudget)
+  	defer cancel()
+  ```
+
+  with `tuneBudget` declared beside `OutputFormatMPEGTS` and the doc comment R11 gives, including the two paragraphs naming Python's own behaviour and its `file:line`. **`StreamHandler` still passes `r.Context()`** — the detaching happens one level down, where the reason for it lives.
+
+- [ ] **Step 5: Thread the client through the tune path**
 
   `StreamHandler` calls `identify`, passes the client to `Attach`, and passes it to `serveClient` so the fall-behind log names it. `startProxyTune` returns a `channel.Started` carrying the `SourceInfo` Task 6 renders. `StreamDeps` gains a `Now func() time.Time`, nil meaning `time.Now`.
 
@@ -933,10 +848,11 @@ A defect in the 2c-2 plan's `ProxySource`, found by Task 3's goroutine test and 
 
   The `skipped > 0` branch gains its Python citation: it is the jump `find_oldest_available_chunk` performs (`input/buffer.py:407-452`), logged and never a disconnect, because **Python does not disconnect such a client either**.
 
-- [ ] **Step 5: Break-check, three edits**
+- [ ] **Step 6: Break-check, four edits**
 
   | # | The edit | Expected red | Message |
   |---|---|---|---|
+  | 0 | `context.WithoutCancel(parent)` becomes `parent` | `TestTheTuningClientLeavingDoesNotFailTheTuneForEveryoneElse` (Task 8), **on the request count** | `the relay made 2 next-source calls, want 1 -- the gate did not hold the second client while the first was calling` |
   | 1 | the `if tuning.JoinBehind > 0 { cursor = ring.Join(...) }` branch becomes `_ = tuning.JoinBehind` | `TestASecondClientJoinsBehindLiveAndNotAtTheHead` (Task 8) | `the second client started at packet 8400 with the live head at packet 8400: it joined AT live, not behind it -- new_client_behind_seconds was ignored` |
   | 2 | `_ = trusted`, then `header` returns `r.Header.Get(name)` unconditionally | `TestAnUntrustedRequestIsNotBelievedForAnyRelayHeader` (Task 8), and 2c-2's `TestXRelayChannelIsIgnoredWithoutTheTrustMarker` | `the tune asked about /api/relay/channels/somebody-elses-channel/next-source: an unverified X-Relay-Channel was believed` |
   | 3 | `tuningFrom` falls back to a literal for `channel_shutdown_delay` | 2c-2's `TestEveryProxySettingThisRelayReadsIsRequired/channel_shutdown_delay` **only**, once its key list grows by one | `an answer missing only "channel_shutdown_delay" tuned with 200, want 502 -- the relay substituted a default of its own` |
@@ -945,7 +861,7 @@ A defect in the 2c-2 plan's `ProxySource`, found by Task 3's goroutine test and 
 
   **Number 3 carries 2c-2's own caveat**: running it against a fixture missing several keys at once leaves the test green, because any one of them still fails the tune. The per-key subtest is the one with the property.
 
-- [ ] **Step 6: Run the four checks and commit**
+- [ ] **Step 7: Run the four checks and commit**
 
 ---
 ## Task 6: `relay/httpapi` — `GET /proxy/relay/channels`
@@ -1167,8 +1083,11 @@ The tests a reviewer reads first. Everything before this task is machinery; this
   | `fanRig(t, up, overrides)` | `newRig` with the long asset and those settings |
   | `(*rig).tuneAs(t, channelID, clientID)` | the trusted-path shorthand, **built on** `rig.tune` rather than replacing it — `tune` stays the right primitive for the untrusted and malformed cases |
   | `(*rig).listChannels(t, query)` | the internal call, signing the **full path including the query string** |
+  | `fanRigWith(t, cp, up, overrides)` | `fanRig` with control over the fake Django too, for the test that needs it slow |
   | `waitForHead(t, r, id, n)` | polls the ring rather than sleeping |
   | `packetRun(t, who, body, n)` | the shared oracle |
+
+  **One field is added to `relaytest.ControlPlaneConfig`: `Delay time.Duration`**, which holds every answer for that long before writing it. R11's test needs a next-source call still in flight when a client disconnects, and there is no other way to arrange that; it is four lines in `internal/relaytest/controlplane.go` and zero is the ordinary immediate answer.
 
   `packetRun` reads N whole packets, checks alignment, and checks that **every packet follows the one before it** by the index the fixture embedded, returning the first. A helper that checked only alignment would pass on a stream with gaps.
 
@@ -1183,6 +1102,7 @@ The tests a reviewer reads first. Everything before this task is machinery; this
   | `TestAnUntrustedRequestIsNotBelievedForAnyRelayHeader` | the trust marker gates **every** `X-Relay-*` value, not just the channel |
   | `TestAnOutputThisRelayDoesNotServeIsRefused` | **R10** — 501 for an fMP4 format and for an Output Profile, with **zero** control-plane and provider calls |
   | `TestADuplicateClientIDIsRefusedAtTheTuneSurface` | **row 13's first half at the HTTP layer** — 503, and the first client keeps its registration |
+  | `TestTheTuningClientLeavingDoesNotFailTheTuneForEveryoneElse` | **R11** — the first client drops mid-next-source and the second still gets bytes, off **one** control-plane call |
   | `TestTheTwoPortedConstantsMatchTheirPythonLiterals` | the two constants Global Constraint 8 names, against their Python literals |
   | `TestTheLiveEndpointProducesTheGoldensKeySet` (Task 7) | the handler builds the shape |
 
@@ -1395,6 +1315,20 @@ Amendment A2.2 makes this a one-line edit per row, in the existing `Pin` cell, w
   Both are additions in the safe direction, recorded rather than presented as
   parity.
 
+  **A3.6 — the tune's control-plane call is detached from the calling
+  client.** `Manager.Attach` runs `start()` behind a per-channel gate, so with
+  the first client's `r.Context()` that client disconnecting cancels
+  next-source for every client waiting behind it. Python detaches by
+  construction -- it calls next_source from inside the client's own request
+  greenlet (`views.py:340`, `:390`) and uWSGI does not cancel a greenlet when
+  its client hangs up -- so a Go relay that propagated cancellation would be
+  strictly less available than the one it replaces. 2c-3 uses
+  `context.WithTimeout(context.WithoutCancel(parent), tuneBudget)`, where the
+  budget is `control.Client`'s own two-attempt worst case. **Measured cost of
+  getting it wrong**: not a failed tune for the waiter, which recovers by
+  re-claiming the gate, but a wasted control-plane round trip per departing
+  tuner plus a failure whenever that retry also fails.
+
   **A3.5 — a stated wire divergence: float spelling.** DRF renders a Python
   float as `5.0`; Go's `encoding/json` renders `float64(5)` as `5`. The
   difference is textual and no consumer can observe it —
@@ -1491,15 +1425,15 @@ Every break-check in this plan, and the task it belongs to. A `✓` means it was
 | # | Task | The injected defect | What reddens | Verified |
 |---|---|---|---|---|
 | 1 | 1 | `Read` loses its `MaxChunksPerRead` break | `TestReadIsCappedAndItsCursorFollowsTheBytes`, on the chunk count | ✓ |
-| 2 | 1 | `_ = last`, then `Read` returns the ring's head as `next` | the same test, on the cursor | ✓ |
+| 2 | 1 | `next = c.Index` moves out of the loop and becomes the ring's tail | **2c-2's** `TestNextIsTheLastChunkActuallyReturnedNotTheRingsTail` | ✓ |
 | 3 | 1 | one backing array reused for every chunk (**a field, not a local**) | `TestAChunkIsUnchangedAfterEveryClientHasServedIt` | — (2c-2 verified the same shape) |
 | 4 | 1 | drop the `RLock` from `TotalBytes` | `TestManyConcurrentReadersAndOneWriter`, as `WARNING: DATA RACE` | — |
 | 5 | 2 | `addClient` overwrites instead of refusing | `TestASecondAttachUnderAnAttachedClientIDIsRefused` | ✓ |
 | 6 | 2 | `ClientSnapshot` returns map-range order | **expected not to redden**; report the gap | — |
-| 7 | 3 | `release` drops the client outside `m.mu` and locks only around `detachLocked` | `TestAClientArrivingAsTheLastOneLeavesKeepsItsChannel`, round 16 of 400 | ✓ |
-| 8 | 3 | `detachLocked` checks presence, not identity | `TestADelayedStopNeverEvictsAReplacementChannel` | ✓ |
+| 7 | 3 | `stopIfStillIdle` re-reads `Clients()` outside `m.mu` (2c-2's pre-fix shape) | `TestAClientArrivingAsTheLastOneLeavesKeepsItsChannel` **and** 2c-2's `TestAReleaseCannotStop…`, rounds 0 and 6 | ✓ |
+| 8 | 3 | `stopIfStillIdle` checks presence, not identity | `TestADelayedStopNeverEvictsAReplacementChannel` **only** | ✓ |
 | 9 | 3 | the shutdown delay is ignored | `TestTheShutdownDelayKeepsAChannelForAReconnectingClient` | ✓ |
-| 10 | 4 | the built `http.Transport` is never closed | `TestConcurrentAttachAndReleaseLeaksNoGoroutine`, 3 → 94 goroutines | ✓ |
+| 10 | 3 | remove `defer client.CloseIdleConnections()` from `ProxySource.Run` (2c-2's fix) | `TestConcurrentAttachAndReleaseLeaksNoGoroutine`, 3 → ~94 goroutines | ✓ (measured against this plan's own equivalent fix) |
 | 11 | 5 | `_ = tuning.JoinBehind`, replacing `serveClient`'s `ring.Join` branch | `TestASecondClientJoinsBehindLiveAndNotAtTheHead` | ✓ (see 16) |
 | 12 | 5 | `_ = trusted`, then `identify`'s `header` closure ignores it | `TestAnUntrustedRequestIsNotBelievedForAnyRelayHeader` | ✓ |
 | 13 | 5 | one setting falls back to a literal | 2c-2's `TestEveryProxySettingThisRelayReadsIsRequired/<key>` **only** | — (2c-2 verified the shape) |
@@ -1511,6 +1445,7 @@ Every break-check in this plan, and the task it belongs to. A `✓` means it was
 | 19 | 8 | `DefaultClientLimit` 10 → 13 | `TestTheTwoPortedConstantsMatchTheirPythonLiterals` **only** — the cap test stays green | ✓ |
 | 20 | 8 | `buffer.MaxChunksPerRead` 20 → 40 | the same test **only** — the buffer cap test stays green | ✓ |
 | 21 | 1 | `MaxChunksPerRead`'s const placed between `ErrClosed`'s doc comment and its `var` | `golangci-lint`, two `revive` findings | ✓ |
+| 22 | 5 | `context.WithoutCancel(parent)` becomes `parent` | `TestTheTuningClientLeavingDoesNotFailTheTuneForEveryoneElse`, **on the request count only** | ✓ |
 
 **Three rows guard a property with no injectable defect at all, and none of them has an entry above:** the provider's request count (Task 8 Step 3 explains why an eager `start()` changes nothing and the nearest real edit hangs), `ClientSnapshot`'s ordering (row 6), and the borrowed-slice contract against a *consumer* that mutates (Ruling R3). Each is stated rather than given a check that would pass either way.
 
@@ -1519,7 +1454,8 @@ Every break-check in this plan, and the task it belongs to. A `✓` means it was
 - **6** is listed *because* it is expected to stay green, and its stated reason had to be corrected: not "one client per channel" (the golden's first channel has two) but **neither golden test runs the handler**. Ordering is not a parity property — `channel_status.py:533` reads a Redis SET — so determinism here is a testing convenience.
 - **11** did not redden in this plan's first draft, because the test compared a **wrapped** `PacketIndex` against an unwrapped chunk count. Ruling R6 has the diagnosis; `rigAssetPackets = 65536` is the fix. If it stays green on your tree, check that constant first.
 - **16** did not redden at all until one line was added to the live key-set test. The two golden tests compare a struct literal against a file; **neither runs the handler**. This is the plan's clearest instance of two tests that look like they cover a third thing and do not.
-- **7** is a race and its round number will differ. What must not differ is that it reddens within a few hundred rounds with a message naming a channel the manager does not hold. 2c-2's own reviewer measured the same defect at **12% of 3,000 rounds**, plus a deterministic successor-teardown variant, in the shipped code.
+- **7** is a race and its round numbers will differ. 2c-2's own reviewer measured this defect at **12% of 3,000 rounds** in the shipped code, plus a deterministic successor-teardown variant; 2c-2's fix commit closed both, and this row is what keeps them closed.
+- **22** reddens on the request count and **not** on the status or the bytes: the waiter recovers by re-claiming the gate and making its own call. That is the true cost of the attached context — a wasted round trip per departing tuner — and the test says so, because a check that reddened on the wrong assertion would teach the next reader the wrong mechanism.
 - **19, 20 and 21** exist because a first draft of this plan had none of them: neither constant Global Constraint 8 names was pinned by anything, and the placement of one const comment cost two `revive` findings. Three checks, each catching something that had been invisible.
 
 **A break-check that stays green is the most useful result this table produces.** Five of this plan's own did: rows 6 and 16, both constants before rows 19 and 20 existed, and the provider-count check that was dropped. Every one of the five changed the plan.
@@ -1529,9 +1465,10 @@ Every break-check in this plan, and the task it belongs to. A `✓` means it was
 ## What to report back
 
 1. **Task 0's diff** — every row of the 2c-2 ledger that did not match the merged tree, and which task absorbed it. In particular, the three fix-round rows: did `Manager.release` already take one lock with an identity check, did `ProxySource.transport` already return a closer, and did `Read` already return the last index appended? Plus: did `EffectiveProxySettings()` already carry `channel_shutdown_delay`?
-1a. **The collision reconciliation** — that all thirteen inherited `Attach` call sites were rewritten, that none of the five shared fixtures was redeclared, and that **2c-2's own channel and httpapi tests still pass unchanged**. A regression in one of those is a finding about this PR, not about 2c-2.
+1a. **The collision reconciliation** — that all fifteen inherited `Attach` call sites were rewritten, that none of the five shared fixtures was redeclared, and that **2c-2's own channel and httpapi tests still pass unchanged**. A regression in one of those is a finding about this PR, not about 2c-2.
 2. **Every break-check's actual failure message**, and specifically: did **6**, **11** and **16** behave as this plan predicts?
 3. **The three concurrency pins** — `TestAClientArrivingAsTheLastOneLeavesKeepsItsChannel`, `TestADelayedStopNeverEvictsAReplacementChannel` and `TestConcurrentAttachAndReleaseLeaksNoGoroutine` — green, and their break-checks red on the named test only. For the first, **the round number it reddened on**.
+3a. **R11's break-check** — which assertion reddened. If the status or the bytes failed rather than the request count, the gate is behaving differently from what this plan measured and that is a finding.
 4. **The goroutine numbers** — `before` and `after` from `TestConcurrentAttachAndReleaseLeaksNoGoroutine`, on a clean tree and with break-check 10 applied. If `after` on a clean tree is anywhere near `before + 20`, say so: the tolerance may be hiding a smaller leak.
 5. **The golden file** — whether your regeneration from Django matched the committed one, and if not, every field that differed. This is the single most likely place this plan is wrong, because it encodes a reading of `RelayChannelSerializer` rather than a measurement.
 6. **The Redis key-family walk** — the family this PR closes, the one it closes partially, and `client_stop`, which it does not.
@@ -1544,17 +1481,15 @@ Every break-check in this plan, and the task it belongs to. A `✓` means it was
 
 ## Appendix — the files, in full
 
-Every file below was written, built, vetted, run under `go test -race` three times and linted at **0 issues** before this fix round was finished — in a scratch module seeded from **`migration/phase2c-vertical-slice` including its `_test.go` files**, with 2c-2's fix-round shape applied by hand because that commit had not landed. 2c-2's own tests pass unchanged alongside these. The task tables above say what each pins and why; these are the bodies.
+Every file below was written, built, vetted, run under `go test -race` three times and linted at **0 issues** in a scratch module seeded from **`migration/phase2c-vertical-slice` at `9f744890`, including every `_test.go`**. 2c-2's own tests — all of them, its three fix commits' included — pass unchanged alongside these.
 
 **Two literals in here are oracles and must be regenerated rather than trusted:** the golden JSON fixture (Task 7 Step 2 has the command), and — carried from 2c-2 — the synthetic asset's SHA-256.
 
 **Appendix E is the one to read first if you change `Manager.Attach` or `Manager.release`.** Three of its six tests guard orderings rather than values, and every defect they guard against is invisible to `-race`.
 
-**Appendix I declares no rig.** It extends the one `httpapi/stream_test.go` already has; Task 8 Step 1 lists what is 2c-2's and what is new.
+**Appendices D, F and I are deltas on files 2c-2 owns.** D preserves `stopIfStillIdle` untouched; F changes `startProxyTune`'s context and nothing else about the control call; I declares no rig, extending `httpapi/stream_test.go`'s.
 
 ### Appendix A — `relay/buffer/fanout_test.go`
-
-
 
 ```go
 package buffer
@@ -1598,21 +1533,19 @@ func TestReadIsCappedAndItsCursorFollowsTheBytes(t *testing.T) {
 		t.Fatalf("one Read returned %d chunks with 40 resident, want %d -- a lagging reader "+
 			"can pin a whole ring's worth of evicted chunks", len(chunks), MaxChunksPerRead)
 	}
-	if next != uint64(MaxChunksPerRead) {
-		t.Fatalf("next = %d after a capped read, want %d -- the cursor ran past the bytes the "+
-			"caller was actually given and the rest of the stream is lost", next, MaxChunksPerRead)
-	}
 	if skipped != 0 {
 		t.Fatalf("skipped = %d with nothing evicted", skipped)
 	}
+	// next's contract -- the index of the last chunk actually returned, never
+	// the ring's tail -- is 2c-2's and is asserted by
+	// TestNextIsTheLastChunkActuallyReturnedNotTheRingsTail, which starts
+	// discriminating the moment this cap exists. Not re-asserted here: one
+	// mechanism per invariant.
 
 	// The rest arrives on the following calls, in order and with no gap.
-	rest, next2, _ := r.Read(next)
+	rest, _, _ := r.Read(next)
 	if len(rest) != 40-MaxChunksPerRead {
 		t.Fatalf("the second Read returned %d chunks, want %d", len(rest), 40-MaxChunksPerRead)
-	}
-	if next2 != 40 {
-		t.Fatalf("next = %d after the second read, want 40", next2)
 	}
 	// Position, not shape: the two reads concatenated must be the source from
 	// packet zero.
@@ -1732,8 +1665,6 @@ func flatten(chunks [][]byte) []byte {
 
 ### Appendix B — `relay/channel/client.go`
 
-
-
 ```go
 package channel
 
@@ -1805,7 +1736,7 @@ type Client struct {
 
 ### Appendix C — `relay/channel/channel.go`
 
-The whole file as it must read afterwards. The diff against 2c-2's is the registry, `ErrDuplicateClient`, `SourceInfo`, `startedAt` and `ClientSnapshot`.
+The whole file. The diff against `9f744890` is the registry, `ErrDuplicateClient`, `SourceInfo`, `startedAt` and `ClientSnapshot`.
 
 ```go
 // Package channel owns a channel's lifecycle: ownership, the state machine,
@@ -1897,10 +1828,9 @@ type Channel struct {
 	mu      sync.RWMutex
 	state   State
 	lastErr error
-	// clients is the registry. Guarded by mu, and every mutation happens while
-	// the MANAGER's lock is also held, which is what makes "the last client
-	// left" and "the channel leaves the map" one decision rather than two
-	// (Manager.release).
+	// clients is the registry. Guarded by mu; the manager reads its length
+	// through Clients() inside its own critical section, which is what makes
+	// stopIfStillIdle's re-check and claim's addClient mutually exclusive.
 	clients map[string]*Client
 
 	cancel context.CancelFunc
@@ -1939,7 +1869,8 @@ func (c *Channel) Err() error {
 // Clients is how many readers are attached.
 //
 // Never capped, matching channel_status.py:461's SCARD: the LIST is capped at
-// ten without ?clients=all, the COUNT never is.
+// ten without ?clients=all, the COUNT never is. The manager calls this inside
+// its own lock (stopIfStillIdle), so it must never take m.mu itself.
 func (c *Channel) Clients() int {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -1963,7 +1894,7 @@ func (c *Channel) addClient(cl *Client) bool {
 	return true
 }
 
-// dropClient removes one client and reports how many remain. Manager lock held.
+// dropClient removes one client and reports how many remain.
 func (c *Channel) dropClient(id string) int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -2071,7 +2002,7 @@ func (c *Channel) stop(wait time.Duration) {
 
 ### Appendix D — `relay/channel/manager.go`
 
-The whole file. **The one-lock `release`, `stopIf` and `detachLocked` are 2c-2's fix-round shape**, reproduced here so the file is complete; what 2c-3 adds to them is the client id, the move of the delay onto `Tuning`, and `Snapshot`.
+The whole file. **`stopIfStillIdle` is 2c-2's, verbatim** — read it before changing `release`.
 
 ```go
 package channel
@@ -2367,66 +2298,75 @@ func (m *Manager) ids() []string {
 	return ids
 }
 
-// release drops one client and, when it was the last, stops the channel --
-// immediately, or after the shutdown delay.
-//
-// THE DROP AND THE DECISION HAPPEN UNDER ONE LOCK. An earlier shape dropped the
-// client, saw zero remaining, and then called Stop: between those two
-// statements a new client could claim the same channel, be handed it, and have
-// it torn down underneath them -- an empty 200 with no re-tune. claim registers
-// its client under m.mu too, so taking the count and removing the map entry in
-// the same critical section is what makes the two mutually exclusive. -race
-// sees none of this; it is an ordering bug, which is why
-// TestAClientArrivingAsTheLastOneLeavesKeepsItsChannel exists.
+// 2c-3 changes exactly two things here and preserves everything else: the drop
+// names a client, and the delay comes off the channel's own Tuning rather than
+// the manager's config (it is a channel-start-time setting, parity-matrix row
+// 5). The drop stays OUTSIDE m.mu and the decision stays inside
+// stopIfStillIdle, which is 2c-2's fix and is correct with a registry for the
+// same reason it is correct with a counter: claim's addClient and
+// stopIfStillIdle's re-check are both under m.mu, so whichever runs first is
+// the one acted on and the other sees the consequence.
 func (m *Manager) release(c *Channel, clientID string) {
-	m.mu.Lock()
-	remaining := c.dropClient(clientID)
-	stop := remaining == 0 && c.tuning.ShutdownDelay <= 0 && m.detachLocked(c)
-	m.mu.Unlock()
-
-	if stop {
-		c.setState(StateStopping, nil)
-		c.stop(m.cfg.StopWait)
+	if remaining := c.dropClient(clientID); remaining > 0 {
 		return
 	}
-	if remaining == 0 && c.tuning.ShutdownDelay > 0 {
-		time.AfterFunc(c.tuning.ShutdownDelay, func() { m.stopIf(c) })
+	if c.tuning.ShutdownDelay <= 0 {
+		m.stopIfStillIdle(c)
+		return
 	}
+	time.AfterFunc(c.tuning.ShutdownDelay, func() {
+		m.stopIfStillIdle(c)
+	})
 }
 
-// stopIf is the delayed half of release: the grace window expired, so stop the
-// channel unless somebody reconnected inside it.
+// stopIfStillIdle re-checks c's client count and, if it is still zero,
+// removes c from the map and tears it down -- both under m.mu, in the same
+// critical section claim() uses to read the map and call addClient.
 //
-// The port of ChannelService.cancel_pending_shutdown
-// (services/channel_service.py:103-127), which Python spells as a Redis
-// timestamp a reconnecting client deletes. Here the reconnect simply registers
-// a client, and this check sees it -- under the same lock that registered it,
-// so there is no window between "nobody is watching" and "the entry is gone".
-func (m *Manager) stopIf(c *Channel) {
-	m.mu.Lock()
-	stop := c.Clients() == 0 && m.detachLocked(c)
-	m.mu.Unlock()
+// THE RE-CHECK MUST HAPPEN UNDER m.mu, and that is the whole fix (found by a
+// downstream reviewer, verified here before being trusted): dropClient()
+// above only touches c.mu, so the moment between it returning zero and this
+// method's own lock acquisition is a window in which claim() can run to
+// completion -- see the map, find the ring not yet closed, and addClient()
+// -- entirely unaware that the caller that dropped to zero already decided
+// to stop this channel. Re-reading Clients() here, under the same lock
+// claim() holds across its own check-and-addClient, makes the two mutually
+// exclusive: whichever runs first is the one whose view of "is this channel
+// idle" is the one that is acted on, and the other sees the consequence
+// (either the channel is already gone from the map, or Clients() is back
+// above zero and this call is a no-op). Demonstrated at roughly one race in
+// several thousand rounds by TestAReleaseCannotStopAChannelAConcurrentAttachJustJoined
+// against the pre-fix code (a plain c.Clients() == 0 check taken outside the
+// lock): a client attaching at that exact instant was handed a channel that
+// stopIfStillIdle then tore down anyway, in the same round.
+//
+// The identity check (`existing == c`) guards a narrower case than the race
+// above: by the time this runs, id's map entry might already be a DIFFERENT,
+// newer channel (this one's ring closed on its own and a fresh tune
+// replaced it in claim() before this call ever got the lock). Deleting the
+// map entry unconditionally in that case would remove the wrong channel.
+// Tearing down c itself is still correct and safe either way -- c.stop is
+// idempotent-ish (context.CancelFunc more than once is a no-op, and a select
+// on an already-closed c.done returns immediately) -- so this always runs it
+// once Clients() reads zero, and only touches the map when c is still the
+// entry it names.
+func (m *Manager) stopIfStillIdle(c *Channel) {
+	stop := func() bool {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		if c.Clients() != 0 {
+			return false
+		}
+		if existing, ok := m.channels[c.id]; ok && existing == c {
+			delete(m.channels, c.id)
+		}
+		return true
+	}()
 	if !stop {
 		return
 	}
 	c.setState(StateStopping, nil)
 	c.stop(m.cfg.StopWait)
-}
-
-// detachLocked removes c from the map if the map still holds THIS channel, and
-// reports whether it did. Callers hold m.mu.
-//
-// The identity check is load-bearing. By the time a delayed stop fires, the map
-// may hold a DIFFERENT channel under the same id: the first one finished, claim
-// dropped it, and a later tune published a replacement. Deleting by id alone
-// would evict a live successor and leave its clients attached to a channel
-// nothing can stop.
-func (m *Manager) detachLocked(c *Channel) bool {
-	if m.channels[c.id] != c {
-		return false
-	}
-	delete(m.channels, c.id)
-	return true
 }
 
 // Snapshot is every channel the manager holds, in id order.
@@ -2765,8 +2705,6 @@ func TestConcurrentAttachAndReleaseLeaksNoGoroutine(t *testing.T) {
 
 ### Appendix F — `relay/httpapi/stream.go`
 
-
-
 ```go
 package httpapi
 
@@ -2850,6 +2788,15 @@ func tuningFrom(s control.Settings) (channel.Tuning, int, error) {
 // The value channel_status.py:567 records when no format was chosen
 // (`output_format or 'mpegts'`). fMP4 is 2c-6's.
 const OutputFormatMPEGTS = "mpegts"
+
+// tuneBudget bounds a DETACHED next-source call -- see startProxyTune.
+//
+// control.Client's own worst case: two attempts of (ConnectTimeout,
+// ReadTimeout) plus the retry delay between them. `attempts` is unexported, so
+// the 2 is written here; if control ever changes it this over- or undershoots,
+// which costs a longer or shorter gate wait and never correctness, because each
+// attempt is still bounded by the client's own http.Client.Timeout.
+const tuneBudget = 2*(control.ConnectTimeout+control.ReadTimeout) + control.RetryDelay
 
 // StreamHandler serves GET /proxy/ts/stream/{channelID}.
 func StreamHandler(deps StreamDeps) http.HandlerFunc {
@@ -3027,7 +2974,32 @@ var ErrNoSource = errors.New("the control plane has no source for this channel")
 
 // startProxyTune makes the one control-plane call a tune needs and builds the
 // source from its answer.
-func startProxyTune(ctx context.Context, client *control.Client, id string) (channel.Started, error) {
+//
+// IT DETACHES FROM THE CALLING CLIENT'S REQUEST CONTEXT, and that is a decision
+// fan-out forces rather than a tidy-up. Manager.Attach runs start() behind a
+// per-channel gate: the first client in makes the call and every later client
+// for that channel waits on the gate. With the caller's own r.Context(), that
+// first client closing its tab mid-call cancels next-source for ALL of them --
+// they wake, find no channel, and each retries into the same failure. Harmless
+// at one client, which is why 2c-2 could ship it; wrong the moment a second
+// client can be waiting.
+//
+// PYTHON DETACHES TOO, by construction rather than by choice. Its tune calls
+// generate_stream_url -> control_plane.next_source from inside the client's own
+// request greenlet (views.py:340 and :390), and uWSGI does not cancel a
+// greenlet when its client hangs up -- the greenlet runs to completion and only
+// discovers the disconnect on a later write. So the channel starts, and the
+// followers polling _channel_setup_needed attach to it. A Go relay that
+// propagated cancellation would be strictly less available than the Python one
+// it replaces.
+//
+// context.WithoutCancel keeps any values on the request context while dropping
+// its cancellation, and the timeout puts back a bound of the right shape: the
+// control client's own worst case rather than the viewer's patience.
+func startProxyTune(parent context.Context, client *control.Client, id string) (channel.Started, error) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(parent), tuneBudget)
+	defer cancel()
+
 	answer, err := client.NextSource(ctx, id, control.NextSourceRequest{
 		ExcludeStreamIDs: []int{},
 		Reason:           "initial",
@@ -3143,9 +3115,7 @@ func serveClient(
 	tuning := ch.Tuning()
 	ring := ch.Ring()
 
-	// Positioned ONCE, at setup -- and this is the call parity-matrix row 8 is
-	// about, because from 2c-3 onward the ring a client joins is usually one
-	// ANOTHER client has been filling. Exactly as output/ts/generator.py:264-302
+	// Positioned ONCE, at setup, exactly as output/ts/generator.py:264-302
 	// positions a client. A JoinBehind of zero means the live head, which is
 	// what new_client_behind_seconds = 0 means there too.
 	cursor := ring.Head()
@@ -3210,8 +3180,6 @@ func writeChunks(w http.ResponseWriter, rc *http.ResponseController, chunks [][]
 ```
 
 ### Appendix G — `relay/httpapi/channels.go`
-
-
 
 ```go
 package httpapi
@@ -3480,8 +3448,6 @@ func RequireInternal(secret string, now func() time.Time, next http.HandlerFunc)
 ```
 
 ### Appendix H — `relay/httpapi/golden_test.go`
-
-
 
 ```go
 package httpapi
@@ -3801,7 +3767,9 @@ func mustMarshal(t *testing.T, v any) string {
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -3848,10 +3816,18 @@ func rigSettings(overrides map[string]any) map[string]any {
 // every test in this file wants.
 func fanRig(t *testing.T, up relaytest.Config, overrides map[string]any) *rig {
 	t.Helper()
+	return fanRigWith(t, relaytest.ControlPlaneConfig{}, up, overrides)
+}
+
+// fanRigWith is fanRig with control over the fake Django as well, for the
+// tests that need it slow.
+func fanRigWith(t *testing.T, cp relaytest.ControlPlaneConfig, up relaytest.Config, overrides map[string]any) *rig {
+	t.Helper()
 	if up.Payload == nil {
 		up.Payload = relaytest.SyntheticTS(rigAssetPackets, 0x100)
 	}
-	return newRig(t, relaytest.ControlPlaneConfig{Settings: rigSettings(overrides)}, up)
+	cp.Settings = rigSettings(overrides)
+	return newRig(t, cp, up)
 }
 
 // tuneAs opens a stream for channelID as clientID, over the trusted path.
@@ -4299,11 +4275,133 @@ func TestTheTwoPortedConstantsMatchTheirPythonLiterals(t *testing.T) {
 			"a lagging reader holds at one instant", buffer.MaxChunksPerRead)
 	}
 }
+
+// THE TUNING CLIENT MAY LEAVE AND THE TUNE MUST SURVIVE IT.
+//
+// Manager.Attach runs start() behind a per-channel gate: the first client in
+// makes the next-source call and every later client for that channel waits on
+// the gate. If that call used the first client's r.Context(), the first client
+// closing its tab would cancel next-source for everyone waiting -- they wake,
+// find no channel, and each retries into the same failure.
+//
+// Python detaches by construction: its tune calls next_source from inside the
+// client's own request greenlet (views.py:340, :390) and uWSGI does not cancel
+// a greenlet when its client hangs up, so the channel starts and the followers
+// attach to it. This asserts the Go relay does the same.
+//
+// The control plane is held for 1.5s so the disconnect lands squarely inside
+// the call. The second client tunes 250ms in -- while the first is still
+// waiting -- so it is genuinely on the gate rather than arriving afterwards.
+//
+// WHICH ASSERTION DISCRIMINATES, measured rather than assumed. Against the
+// attached-context version the SECOND client still gets its 200 and its bytes:
+// the cancelled start returns an error, Attach's deferred releaseGate opens the
+// gate, and the waiter re-claims and makes its own call, which succeeds. The
+// damage is therefore a WASTED control-plane round trip per departing tuner --
+// plus a failed response for the client that left, and a real failure for the
+// waiter whenever that retry also fails -- and the request-count assertion at
+// the end is the one that sees it. The status and bytes assertions are kept
+// because a 200 with an empty body is the same failure wearing a better number,
+// but they are not what fails first.
+func TestTheTuningClientLeavingDoesNotFailTheTuneForEveryoneElse(t *testing.T) {
+	r := fanRigWith(t,
+		relaytest.ControlPlaneConfig{Delay: 1500 * time.Millisecond},
+		relaytest.Config{Rate: 4}, nil)
+
+	// The first client, on a context this test cancels mid-call.
+	firstCtx, dropFirst := context.WithCancel(t.Context())
+	firstDone := make(chan struct{})
+	go func() {
+		defer close(firstDone)
+		request, err := http.NewRequestWithContext(firstCtx, http.MethodGet,
+			r.Relay.URL+"/proxy/ts/stream/c-detach", nil)
+		if err != nil {
+			return
+		}
+		request.Header.Set(control.HeaderAuthorized, control.RelayTrustToken(testSecret))
+		request.Header.Set("X-Relay-Channel", "c-detach")
+		request.Header.Set("X-Relay-Client", "client-leaving")
+		response, err := r.Relay.Client().Do(request)
+		if err == nil {
+			_ = response.Body.Close()
+		}
+	}()
+
+	// The second client joins while the first is still inside next-source, so
+	// it is parked on the gate when the first goes away. It reads its own bytes
+	// in its own goroutine and reports an outcome, rather than handing the
+	// response back over a channel: a *http.Response that crosses a channel is
+	// a body bodyclose cannot follow, and reading here is also what makes the
+	// assertion "it got a working stream" rather than "it got a status".
+	type outcome struct {
+		status int
+		err    error
+	}
+	second := make(chan outcome, 1)
+	go func() {
+		time.Sleep(250 * time.Millisecond)
+		request, err := http.NewRequestWithContext(t.Context(), http.MethodGet,
+			r.Relay.URL+"/proxy/ts/stream/c-detach", nil)
+		if err != nil {
+			second <- outcome{err: err}
+			return
+		}
+		request.Header.Set(control.HeaderAuthorized, control.RelayTrustToken(testSecret))
+		request.Header.Set("X-Relay-Channel", "c-detach")
+		request.Header.Set("X-Relay-Client", "client-staying")
+		response, err := r.Relay.Client().Do(request)
+		if err != nil {
+			second <- outcome{err: err}
+			return
+		}
+		defer func() { _ = response.Body.Close() }()
+		if response.StatusCode != http.StatusOK {
+			second <- outcome{status: response.StatusCode}
+			return
+		}
+		// Bytes, not just a status: a 200 with an empty body would be the same
+		// failure wearing a better number.
+		got := make([]byte, 40*buffer.TSPacketSize)
+		if _, err := io.ReadFull(response.Body, got); err != nil {
+			second <- outcome{status: response.StatusCode, err: err}
+			return
+		}
+		if problem := relaytest.AlignmentProblem(got); problem != "" {
+			second <- outcome{status: response.StatusCode, err: errors.New(problem)}
+			return
+		}
+		second <- outcome{status: response.StatusCode}
+	}()
+
+	time.Sleep(600 * time.Millisecond)
+	dropFirst()
+	<-firstDone
+
+	select {
+	case got := <-second:
+		if got.err != nil {
+			t.Fatalf("the second client's tune failed after the first left: %v -- the "+
+				"next-source call was cancelled by a client that is not the only one waiting",
+				got.err)
+		}
+		if got.status != http.StatusOK {
+			t.Fatalf("the second client got %d after the first client left mid-tune, want 200 -- "+
+				"startProxyTune is still bound to the first client's request context", got.status)
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("the second client neither started nor failed within twenty seconds")
+	}
+
+	if got := r.Control.Requests(); len(got) != 1 {
+		t.Fatalf("the relay made %d next-source calls, want 1 -- the gate did not hold the "+
+			"second client while the first was calling", len(got))
+	}
+}
 ```
 
 ### Appendix J — `apps/proxy/tests/test_relay_list_payload_golden.py`
 
-**This file was written but NOT executed while this plan was prepared** — it needs the shared test container, which Global Constraint 10 keeps out of a planning session. Task 7 Step 1 runs it; if it does not pass on your tree, your tree governs and the failure is a finding about this plan's reading of the serializer.
+**Written but NOT executed while this plan was prepared** — it needs the shared test container, which Global Constraint 10 keeps out of a planning session. Task 7 Step 1 runs it; if it does not pass on your tree, your tree governs.
 
 ```python
 """The golden fixture for the Go relay's GET /proxy/relay/channels.
@@ -4504,7 +4602,7 @@ class RelayListPayloadGoldenTests(SimpleTestCase):
 
 ### Appendix K — `relay/httpapi/testdata/channels_clients_all.json`
 
-**Regenerate this from Django** (Task 7 Step 2). The copy below is this plan's transcription of what `RelayChannelListSerializer` renders from Appendix J's fixture, deliberately spelled the way DRF spells it — `30.0` and `0.0` where Go writes `30` and `0` — so a run of the golden test exercises the decoded comparison rather than accidentally agreeing byte for byte. **Yours governs.**
+**Regenerate this from Django** (Task 7 Step 2). Deliberately spelled the way DRF spells it — `30.0` where Go writes `30` — so the golden test exercises the decoded comparison rather than accidentally agreeing byte for byte. **Yours governs.**
 
 ```json
 {"channels": [{"channel_id": "11111111-1111-4111-8111-111111111111", "state": "active", "url": "http://provider.invalid/live/sub/pw/41.ts", "stream_profile": "1", "owner": null, "buffer_index": 120, "client_count": 2, "uptime": 30.0, "started_at": 1789000000.5, "channel_name": "BBC One HD", "m3u_profile_id": 3, "stream_id": 41, "stream_name": "BBC One HD (UK)", "total_bytes": 9999888, "avg_bitrate_kbps": 2665.3034666666666, "avg_bitrate": "2.67 Mbps", "clients": [{"client_id": "client_1789000000000_1234", "user_agent": "VLC/3.0.20", "output_format": "mpegts", "output_profile_id": 7, "ip_address": "198.51.100.4", "connected_at": 1789000001.25, "user_id": "7"}, {"client_id": "client_1789000000000_5678", "user_agent": null, "output_format": "mpegts", "output_profile_id": null}]}, {"channel_id": "22222222-2222-4222-8222-222222222222", "state": "stopped", "url": "", "stream_profile": "0", "owner": null, "buffer_index": 0, "client_count": 0, "uptime": 0.0, "started_at": 1789000100.0, "clients": []}], "count": 2}
