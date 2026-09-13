@@ -372,10 +372,10 @@ Nothing under `core/`, `dispatcharr/`, `frontend/`, `e2e/` or `metrics/` is touc
   The one check in Task 0 that is about a *count* rather than a presence:
 
   ```bash
-  cd <your worktree>/relay && grep -rn "state = StateActive" --include='*.go' . | grep -v _test.go
+  cd <your worktree>/relay && grep -rnE "state = StateActive|setState\(StateActive" --include='*.go' . | grep -v _test.go
   ```
 
-  **Expect exactly one line, `channel/channel.go`'s, inside `promoteOnFirstChunk`** — measured at `81d41975`. Match the **assignment**, not the identifier: `StateActive` also appears in the state vocabulary's own declaration and in comments, so grepping the bare name reports several and tells you nothing.
+  **Expect exactly one line, `channel/channel.go`'s, inside `promoteOnFirstChunk`** — measured at `81d41975`. Match the **assignment and the setter call**, not the bare identifier: `StateActive` also appears in the state vocabulary's own declaration and in comments, so grepping the bare name reports several and tells you nothing — and the second alternative is there because the package's own setter is `setState`, so a watcher written idiomatically as `c.setState(StateActive, nil)` would evade a grep for the assignment alone.
 
   Two is the shape § Sequencing forbids, and it does not fail loudly: `TestAChannelWithFlowingBytesBecomesActive` stays green with either mechanism deleted, so a second watcher does not break a test — it makes a passing one meaningless. **Task 12 Step 3a re-runs this grep** after the full verification pass; the count is the assertion.
 
@@ -1423,7 +1423,7 @@ Amendment A2.2 makes this a one-line edit per row, in the existing `Pin` cell, w
 - [ ] **Step 3a: Re-run Task 0 Step 2a — the one count no test guards**
 
   ```bash
-  cd <your worktree>/relay && grep -rn "state = StateActive" --include='*.go' . | grep -v _test.go
+  cd <your worktree>/relay && grep -rnE "state = StateActive|setState\(StateActive" --include='*.go' . | grep -v _test.go
   ```
 
   **Expect exactly one line, `channel/channel.go`'s, inside `promoteOnFirstChunk`** — the same count Task 0 Step 2a measured at `81d41975`. This is the only check in the plan that catches a second first-chunk watcher, and by § Sequencing's own argument no test does: `TestAChannelWithFlowingBytesBecomesActive` stays green with either mechanism deleted, so a green Step 3 says nothing about it. **If the count is anything other than one, stop and report the extra `file:line` before going further in this task** — do not delete either assignment to make the number right, because which watcher the state test is currently exercising is not knowable from the count, and the rule it breaks is a design rule (§ Sequencing), not a cleanup.
