@@ -34,4 +34,27 @@ if [ "$GRAPH" != "$EXPECTED" ]; then
   exit 1
 fi
 
+# Spec § Stage 2c's second invariant: "The Go binary links no Redis client."
+#
+# The module-graph check above catches an IMPORTED one and nothing else. This
+# catches the shape it cannot: a Redis client written inside this module, in
+# the standard library, which is entirely possible and would satisfy every
+# other gate in this repo.
+#
+# `go list -deps` and not a text scan, and the difference is not style. The
+# invariant is about what the BINARY LINKS, and a text scan cannot tell that
+# from a comment: several files in relay/ legitimately name Redis while
+# explaining what D2 deleted, and `redis_chunk_ttl` is a settings key that is
+# on the wire and CANNOT be renamed, because D5 is strict parity and a
+# settings key is visible in the UI. A grep would need an exclusion list, and
+# an exclusion that names one string is an exclusion somebody widens.
+if go list -deps ./... | grep -qiE '(^|/)redis'; then
+  echo "FAILED: ${MODULE_ROOT} links a package named for Redis." >&2
+  echo "        Spec § Stage 2c: 'The Go binary links no Redis client.'" >&2
+  echo "        D2 puts the ring buffer in process memory; the live path" >&2
+  echo "        reaches no Redis at all, in any form." >&2
+  go list -deps ./... | grep -iE '(^|/)redis' | sed 's/^/          /' >&2
+  exit 1
+fi
+
 echo "OK: ${MODULE_ROOT} depends on the standard library only."
