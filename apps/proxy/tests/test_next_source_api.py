@@ -217,6 +217,12 @@ class NextSourceRouteTests(RelayApiTestCase):
                 "id": self.stream_profile_obj.id,
                 "command": "ffmpeg",
                 "args": "-i {streamUrl}",
+                # Phase 2 PR 2c-1. self.stream_profile_obj is neither the
+                # locked Proxy nor the locked Redirect profile, so its kind
+                # is "transcode" -- asserted as a literal, not computed,
+                # because this test's whole premise is that it pins the
+                # bytes a Go client reads.
+                "kind": "transcode",
             },
         )
 
@@ -319,6 +325,12 @@ class NextSourceRouteTests(RelayApiTestCase):
                 "id": ffmpeg_profile.id,
                 "command": ffmpeg_profile.command,
                 "args": ffmpeg_profile.parameters,
+                # Phase 2 PR 2c-1. The locked ffmpeg profile is neither the
+                # locked Proxy nor the locked Redirect one, so its kind is
+                # "transcode" — asserted as a literal here rather than
+                # computed, because this test's whole premise is that it
+                # pins the bytes a Go client reads.
+                "kind": "transcode",
             },
         )
         self.assertEqual(
