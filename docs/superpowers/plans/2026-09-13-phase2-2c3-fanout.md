@@ -12,7 +12,7 @@
 
 ## Sequencing: this plan sits on 2c-2's fix commits, verified at `81d41975`
 
-2c-2's own review confirmed all three defects this plan found by reading its code, and 2c-2 fixed them itself. **Everything below was rebuilt and re-verified against `migration/phase2c-vertical-slice` at `81d41975`** (`b5e62fcf` through `81d41975`, eight commits, **review-2c2 CLEAR and out of draft**), including every `_test.go`. The three shapes, pinned with `git show "81d41975:relay/…"` rather than read off a working tree:
+2c-2's own review confirmed all three defects this plan found by reading its code, and 2c-2 fixed them itself. **Everything below was rebuilt and re-verified against 2c-2 as merged, `81d41975`** — PR #285's squash of `migration/phase2c-vertical-slice`'s eight commits, `b5e62fcf` through `87dca88d`, whose tip the merge reproduces byte for byte — including every `_test.go`. The three shapes, pinned with `git show "81d41975:relay/…"` rather than read off a working tree:
 
 | Fix | Shape as landed | What 2c-3 does with it |
 |---|---|---|
@@ -110,7 +110,7 @@ Every test this PR adds is bound by all six, and every task that adds an asserti
 - Run the four checks after every task (Global Constraint 16).
 - Stage and commit in separate Bash calls; write commit messages to a file and use `-F`.
 - Every commit message ends with the attribution lines this session was given.
-- **Every Go file in this plan has been built, vetted, race-tested three times and linted at zero findings before this plan was written**, in a scratch module seeded from `main`'s `relay/` plus the 2c-2 plan's own appendices. Where you find a discrepancy, **your tree governs** — and report it, because it means 2c-2 merged differently from its plan.
+- **Every Go file in this plan has been built, vetted, race-tested three times and linted at zero findings before this plan was written**, in a scratch module seeded from `81d41975`'s `relay/`, every `_test.go` included. Where you find a discrepancy, your tree is the fact and this plan is the claim — **stop and report it** (Task 0 Step 0) rather than reconciling mid-task, because it means your seed is not `81d41975`.
 
 ---
 
@@ -253,27 +253,27 @@ The authorize hop sets `X-Relay-Output-Format` on **every** tune — `apps/proxy
 
 ## The 2c-2 dependency ledger
 
-**2c-2 is planned but NOT implemented** (`docs/phase2c2-plan`, PR #284, ready). Every row below is "as planned in 2c-2" unless it says otherwise, and **Task 0 re-derives every one of them against the merged tree** — a plan that assumed an unmerged plan would land unchanged is the same mistake as assuming a draft branch would not move. Rows marked **verified against `main`** were checked with `git show "f2714383:<path>"` and are 2c-1 as built.
+**2c-2 is merged**: PR #285, squashed onto `main` as `81d41975` — the eight branch commits `b5e62fcf` through `87dca88d`, whose tip the merge reproduces byte for byte (`git diff 87dca88d 81d41975` is empty for the whole tree). Every row below was verified at that SHA with `git show "81d41975:<path>"` and `grep -n`, never read off a working tree, and states what **is** there rather than what a plan predicted. **Task 0 re-checks the rows against your seed anyway**: the appendices were built on this exact tree, and applying them to any other is how a plan quietly stops matching the code it describes. (An earlier draft of this ledger predated the merge, marked eleven rows "as planned in 2c-2" and checked the rest against 2c-1's `f2714383`; every prediction held, and the rows below record the check rather than the prediction.)
 
-| What this PR depends on | Status | If it differs |
+| What this PR depends on | Status at `81d41975` | If your tree differs |
 |---|---|---|
-| Module `github.com/D10Scot/Dispatcharr/relay` at `relay/`, Go 1.27.1 | **verified against `main` `f2714383`** | every import path below moves |
-| `buffer.TSPacketSize`, `ChunkBytes`, `RetentionSeconds`, `JoinBehindSeconds`, `MaxChunksPerChannel`, `MaxBytesPerChannel`, `ChunksForBytes` | **verified against `main`** | Task 1's edits need re-deriving |
-| `control.HeaderAuthorized`, `HeaderInternal`, `HeaderInternalRequest`, `RelayTrustToken`, `InternalPrincipalToken`, `IsRelayTrusted`, `InternalRequestHeader` | **verified against `main`** | Tasks 5 and 6 call these by name |
-| `control.IsInternalPrincipal(secret, value)` and `VerifyInternalRequest(secret, header, method, fullPath, body, now)` | **verified against `main`** — 2c-1 built them and 2c-2's ledger deliberately did not use them; **this PR is their first consumer** | Task 6 cannot gate the list route; stop and report |
-| `httpapi.Config{DevRoutes bool}`, `New(Config) *Server`, `(*Server).Handler()` | **verified against `main`** | Task 6's wiring moves |
-| `.golangci.yml` at the repo root, v2 schema, `gosec` excluded in `_test.go` only, `noctx` **not** excluded | **verified against `main`** | every lint outcome here is re-derived |
-| `go-tests.yml` running build, vet, `-race`, lint, the stdlib check, with a `Go result` aggregate and a change detector matching `^relay/` | **verified against `main`** | Task 0 reports it; this PR adds no workflow change |
-| `buffer.Ring` with `New`, `Write`, `Read(cursor)`, `Join(behind)`, `Wait(ctx, cursor)`, `Head`, `Oldest`, `Closed`, `Close`, `ResetPosition`, and `chunksFor` | **as planned in 2c-2; re-derive against the merged tree** | Task 1 edits `Read` and adds a counter; a different `Read` signature changes Task 1 wholesale |
-| `channel.Source`, `ProxySource`, `ErrUpstreamIdle`, `ErrUpstreamStatus`, `withoutURL`, `State` and its eight constants, `Tuning{ChunkBytes, Retention, JoinBehind}` | **as planned in 2c-2** | Tasks 2 and 4 edit these files |
-| `channel.Channel` with `ID`, `Ring`, `Tuning`, `State`, `Err`, `Clients`, `Done`, `run`, `stop`, `setState`, `addClient`, `dropClient` | **as landed**; `markActive` is deliberately NOT in this list — see Task 0 Step 2 | Task 2 replaces the client counter with a registry |
-| `channel.Manager` with `NewManager`, `Attach(id, start)`, `claim`, `publish`, `releaseGate`, `Get`, `Stop`, `StopAll`, `ids`, `release`, `take` | **as planned in 2c-2** | Task 3 changes `Attach`'s signature and rewrites `release` |
-| `control.Settings` with `Int`, `Float`, `Seconds`, `String` and `ErrSettingAbsent`; `control.Client.NextSource`; `Unavailable`, `Refused`, `ErrNotConfigured`; `KindProxy` | **as planned in 2c-2** | Task 5 calls all of these |
-| `httpapi.StreamDeps`, `StreamHandler`, `channelIDFor`, `startProxyTune`, `writeTuneFailure`, `serveClient`, `writeChunks`, `tuningFrom`, `ErrNotProxyKind`, `ErrNoSource` | **as planned in 2c-2** | Task 5 rewrites `channelIDFor` into `identify` and adds two arms to `writeTuneFailure` |
-| `relaytest.SyntheticTS`, `PacketIndex`, `AlignmentProblem`, `PacketSize`, `NominalByteRate`, `NewUpstream`, `Config`, `Upstream.Requests`/`Headers`, `NewControlPlane`, `ControlPlaneConfig`, `EffectiveProxySettings` | **as planned in 2c-2** | every test here builds on them |
-| `relaytest.EffectiveProxySettings()` carries `channel_shutdown_delay` | **as planned in 2c-2** (value 0) | Task 5's per-key subtest needs it; add it if absent |
-| Amendment **A2** in the spec, and rows 7 and 9 of the parity matrix carrying Go references | **as planned in 2c-2** | Task 11 appends **A3** after it; Task 9 appends to rows 8, 10 and 13 |
-| `scripts/check_go_stdlib_only.sh` with 2c-2's Redis `go list -deps` check | **as planned in 2c-2** | Task 12 extends nothing; it re-runs it |
+| Module `github.com/D10Scot/Dispatcharr/relay` at `relay/`, Go 1.27.1 | **verified** — `relay/go.mod` is two lines, no `require`, and there is no `go.sum` | every import path below moves |
+| `buffer.TSPacketSize`, `ChunkBytes`, `RetentionSeconds`, `JoinBehindSeconds`, `MaxChunksPerChannel`, `MaxBytesPerChannel`, `ChunksForBytes`, and the unexported `chunksFor` | **verified** — `relay/buffer/buffer.go:47-91`, all in that file rather than `ring.go` | Task 1's edits need re-deriving |
+| `control.HeaderAuthorized`, `HeaderInternal`, `HeaderInternalRequest`, `RelayTrustToken`, `InternalPrincipalToken`, `IsRelayTrusted`, `InternalRequestHeader` | **verified** — `relay/control/token.go:28-130` | Tasks 5 and 6 call these by name |
+| `control.IsInternalPrincipal(secret, value)` and `VerifyInternalRequest(secret, header, method, fullPath, body, now)` | **verified** — `token.go:73` and `:140`. 2c-1 built them and 2c-2 did not use them; **this PR is their first consumer** | Task 6 cannot gate the list route; stop and report |
+| `httpapi.Config{DevRoutes bool; Stream StreamDeps}`, `New(Config) *Server`, `(*Server).Handler()` | **verified** — `relay/httpapi/server.go:16-64`; the `Stream` field is 2c-2's, and Task 6 adds `ControlDeps` beside it | Task 6's wiring moves |
+| `.golangci.yml` at the repo root, v2 schema, `gosec` excluded in `_test.go` only, `noctx` **not** excluded | **verified** | every lint outcome here is re-derived |
+| `go-tests.yml` running build, vet, `-race`, lint, the stdlib check, with a `Go result` aggregate and a change detector matching `^relay/` | **verified** — the detector's pattern is `^(relay/\|\.golangci\.yml$\|scripts/check_go_stdlib_only\.sh$\|\.github/workflows/go-tests\.yml$)` at `:86` | Task 0 reports it; this PR adds no workflow change |
+| `buffer.Ring` with `New`, `Write`, `Read(cursor)`, `Join(behind)`, `Wait(ctx, cursor)`, `Head`, `Oldest`, `Closed`, `Close`, `ResetPosition` | **verified** — `relay/buffer/ring.go:108-374`; `Read` is `func (r *Ring) Read(cursor uint64) (chunks [][]byte, next uint64, skipped uint64)` at `:246` and `next` tracks the last chunk actually appended (§ Sequencing) | Task 1 edits `Read` and adds a counter; a different `Read` signature changes Task 1 wholesale — stop and report |
+| `channel.Source`, `ProxySource`, `ErrUpstreamIdle`, `ErrUpstreamStatus`, `withoutURL`, `State` and its eight constants, `Tuning{ChunkBytes, Retention, JoinBehind}` | **verified** — `relay/channel/source_proxy.go`, `state.go:19-28`, `tuning.go:23-36`; `ProxySource.Run` carries `defer client.CloseIdleConnections()` (§ Sequencing) | Tasks 2 and 4 edit these files |
+| `channel.Channel` with `ID`, `Ring`, `Tuning`, `State`, `Err`, `Clients`, `Done`, `run`, `stop`, `setState`, `addClient`, `dropClient`, `promoteOnFirstChunk`, and `Describe()` (declared in `manager.go`) | **verified** — `relay/channel/channel.go:62-204` and `manager.go:343`; `markActive` is deliberately NOT in this list — see Task 0 Step 2. Appendix C keeps `promoteOnFirstChunk` and Appendix D keeps `Describe()` | Task 2 replaces the client counter with a registry |
+| `channel.Manager` with `NewManager`, `Attach(id, start)`, `claim`, `publish`, `releaseGate`, `Get`, `Stop`, `StopAll`, `ids`, `release`, `take`, `stopIfStillIdle` | **verified** — `relay/channel/manager.go:55-343`; `Attach` is `func (m *Manager) Attach(id string, start func() (Source, Tuning, error)) (*Channel, func(), error)` at `:102`, and `release` is the `stopIfStillIdle` shape § Sequencing pins (`:278`, `:322`) | Task 3 changes `Attach`'s signature and rewrites `release` |
+| `control.Settings` with `Int`, `Float`, `Seconds`, `String` and `ErrSettingAbsent`; `control.Client.NextSource`; `Unavailable`, `Refused`, `ErrNotConfigured`; `KindProxy`; the exported `ConnectTimeout`, `ReadTimeout` and `RetryDelay` | **verified** — `relay/control/settings.go:23-72`, `nextsource.go:18-153`, `baseurl.go:17`; the three timeouts are at `nextsource.go:29-31` and Ruling R11's `tuneBudget` is built from them (`attempts` at `:32` is unexported, which is why R11 writes the 2) | Task 5 calls all of these |
+| `httpapi.StreamDeps`, `StreamHandler`, `channelIDFor`, `startProxyTune`, `writeTuneFailure`, `serveClient`, `writeChunks`, `tuningFrom`, `ErrNotProxyKind`, `ErrNoSource` | **verified** — `relay/httpapi/stream.go:16-273`; `StreamHandler` passes `r.Context()` into `startProxyTune` at `:82` (the function itself is declared at `:139`), which is what Ruling R11 changes one level down | Task 5 rewrites `channelIDFor` into `identify` and adds two arms to `writeTuneFailure` |
+| `relaytest.SyntheticTS`, `PacketIndex`, `AlignmentProblem`, `PacketSize`, `NominalByteRate`, `NewUpstream`, `Config`, `Upstream.Requests`/`Headers`, `NewControlPlane`, `ControlPlaneConfig`, `ControlPlane.Requests`, `EffectiveProxySettings` | **verified** — `relay/internal/relaytest/asset.go`, `upstream.go`, `controlplane.go`; `ControlPlaneConfig` has no `Delay` field, which Task 8 adds | every test here builds on them |
+| `relaytest.EffectiveProxySettings()` carries `channel_shutdown_delay` | **verified** — `controlplane.go:29`, value `0`, beside `new_client_behind_seconds` (`:32`) and `BUFFER_CHUNK_SIZE` (`:34`) | Task 5's per-key subtest needs it; Task 0 Step 3 says what to do if it is missing |
+| Amendment **A2** in the spec, and rows 7 and 9 of the parity matrix carrying Go references | **verified** — spec `:1893` (`#### Amendment A2 (2c-2)`); `docs/relay-parity-matrix.md:165` and `:167` each end "The Go pin is 2c-2's." | Task 11 appends **A3** after it; Task 9 appends to rows 8, 10 and 13 |
+| `scripts/check_go_stdlib_only.sh` with 2c-2's Redis `go list -deps` check | **verified** — `:51` | Task 12 extends nothing; it re-runs it |
 
 **Verified in this tree, not inherited:** everything with a `file:line` in this plan — `apps/proxy/live_proxy/client_manager.py` in full, `output/ts/generator.py`'s positioning, keepalive, timeout, ghost and per-client-stats paths, `input/buffer.py`'s `get_optimized_client_data` and `find_chunk_index_by_time`, `channel_status.py`'s `get_basic_channel_info` and `build_live_channel_stats_data`, `relay_serializers.py` in full, `relay_views.py`'s `channels_view`, `relay_client.py`'s `list_channels` and `live_connections`, `apps/proxy/authorize.py:145-147` and `:483-503`, `apps/proxy/config.py:110-114`, `docker/supervisord/all.conf`, `docker/tests/test-puid-pgid.sh:482` and `:1318`, `docker/supervisord/relay.conf`, and the fact that `ChannelMetadataField.LOGO_ID` is written **only into the timeshift key family** (`apps/timeshift/views.py:2984`) and never into the live metadata hash `channel_status.py:486` reads.
 
@@ -289,8 +289,8 @@ relay/channel/tuning.go                 EDIT — ShutdownDelay joins the snapsho
 relay/channel/channel.go                EDIT — clients map, SourceInfo, startedAt, ClientSnapshot, ErrDuplicateClient
 relay/channel/manager.go                EDIT — Started, Attach takes a client, release's two lines, Snapshot
 relay/channel/fanout_test.go            NEW  — six tests, three of them concurrent
-relay/channel/manager_test.go           EDIT — asStarted + testClient, and fourteen Attach call sites
-relay/channel/concurrent_test.go        EDIT — the fifteenth Attach call site, plus an fmt import
+relay/channel/manager_test.go           EDIT — asStarted + testClient, and fifteen Attach call sites
+relay/channel/concurrent_test.go        EDIT — the sixteenth Attach call site, plus an fmt import
 relay/httpapi/stream.go                 EDIT — identify(), ErrUnsupportedOutput, mintClientID, Started, the detached tune context
 relay/httpapi/channels.go               NEW  — GET /proxy/relay/channels and its internal-auth gate
 relay/httpapi/server.go                 EDIT — ControlDeps and the second dev route
@@ -321,7 +321,7 @@ Nothing under `core/`, `dispatcharr/`, `frontend/`, `e2e/` or `metrics/` is touc
 ---
 ## Task 0: Diff the merged 2c-2 tree against this plan's expectations
 
-**Nothing else is written until this task is done and reported.** The ledger above was written against the 2c-2 *plan*, which at the time of writing was not implemented. Every "as planned in 2c-2" row is a prediction; this task turns each into a fact or a finding.
+**Nothing else is written until this task is done and reported.** The ledger above was verified at `81d41975`, and every appendix below was built on that exact tree. This task is the check that your seed **is** that tree, row by row — a fact confirmed or a finding reported, never a shape reconciled in passing.
 
 - [ ] **Step 0: Seed from the MERGED SHA, not from the branch**
 
@@ -357,7 +357,7 @@ Nothing under `core/`, `dispatcharr/`, `frontend/`, `e2e/` or `metrics/` is touc
   |---|---|---|
   | `(*Ring).Read` | `func (r *Ring) Read(cursor uint64) (chunks [][]byte, next uint64, skipped uint64)` | Task 1 rewrites its body; a different signature makes Task 1 a redesign — stop and report |
   | `(*Ring).Join` | `func (r *Ring) Join(behind time.Duration) uint64` | Task 5's `serveClient` calls it |
-  | `(*Manager).Attach` | `func (m *Manager) Attach(id string, start func() (Source, Tuning, error)) (*Channel, func(), error)` | Task 3 changes it to take a `*Client` and return a `Started`; if 2c-2 already changed it, reconcile and report |
+  | `(*Manager).Attach` | `func (m *Manager) Attach(id string, start func() (Source, Tuning, error)) (*Channel, func(), error)` | Task 3 changes it to take a `*Client` and return a `Started`; this is the shape at `81d41975`, so a different one means the tree is not the seed — stop and report |
   | `(*Manager).release` | **as landed at `81d41975`**: `dropClient` outside the lock, then `stopIfStillIdle(c)` which re-reads `Clients()` and checks `m.channels[c.id] == c` under `m.mu` | if you find the two-step `m.Stop(c.id)` shape, the tree is older than `81d41975` — stop and report rather than applying this plan to it |
   | `ProxySource.Run` | **as landed**: `defer client.CloseIdleConnections()` right after the client is built | if absent, same answer: wrong base |
   | `(*Ring).Read`'s `next` | **as landed**: the index of the last chunk appended, tracked in the loop | if it returns `r.chunks[len-1].Index`, same answer |
@@ -377,7 +377,7 @@ Nothing under `core/`, `dispatcharr/`, `frontend/`, `e2e/` or `metrics/` is touc
 
   **Expect exactly one line, `channel/channel.go`'s, inside `promoteOnFirstChunk`** — measured at `81d41975`. Match the **assignment**, not the identifier: `StateActive` also appears in the state vocabulary's own declaration and in comments, so grepping the bare name reports several and tells you nothing.
 
-  Two is the shape § Sequencing forbids, and it does not fail loudly: `TestAChannelWithFlowingBytesBecomesActive` stays green with either mechanism deleted, so a second watcher does not break a test — it makes a passing one meaningless. **Re-run this grep at the end of Task 12**; the count is the assertion.
+  Two is the shape § Sequencing forbids, and it does not fail loudly: `TestAChannelWithFlowingBytesBecomesActive` stays green with either mechanism deleted, so a second watcher does not break a test — it makes a passing one meaningless. **Task 12 Step 3a re-runs this grep** after the full verification pass; the count is the assertion.
 
 - [ ] **Step 3: Confirm the settings the rig sends**
 
@@ -659,7 +659,7 @@ Ruling R5. This is the task the ordering tests exist for, and the one where `-ra
 
   **Everything 2c-2 ruled about `Attach` is preserved and must stay preserved.** `start()` runs outside the manager lock; the per-channel gate is closed from a **deferred** call registered in `Attach` **before** `start()` runs, so it fires at `Attach`'s return, after `publish` has installed the channel; `claim` drops a channel whose ring has closed, and that is the only place it happens. Moving the gate's close into a helper around `start()` wakes a waiter that then races the map insertion, claims a fresh gate and opens a **second** upstream — 2c-2 measured it going wrong within three rounds at eight concurrent clients.
 
-- [ ] **Step 2: Rewrite the fifteen `Attach` call sites this package inherits**
+- [ ] **Step 2: Rewrite the sixteen `Attach` call sites this package inherits**
 
   `Attach(id, start func() (Source, Tuning, error))` becomes `Attach(id, *Client, start func() (Started, error))`, and **sixteen call sites in 2c-2's own committed tests break** — measured at `81d41975`, up from fifteen at `9f744890` because `b05cc401`'s state test adds one. Naming them, because a signature change that lists no call sites is a signature change somebody discovers at `go vet`:
 
@@ -668,7 +668,7 @@ Ruling R5. This is the task the ordering tests exist for, and the one where `-ra
   | `relay/channel/concurrent_test.go` | one |
   | `relay/channel/manager_test.go` | fifteen of them |
 
-  **Three of them are 2c-2's own fix-commit tests** — `TestAReleaseCannotStopAChannelAConcurrentAttachJustJoined` (twice, to `shared`, so two distinct ids) and `TestAChannelWithFlowingBytesBecomesActive`. Line numbers are deliberately not listed: they moved between `9f744890` and `81d41975` and will move again.
+  **Three of them are 2c-2's own fix-commit tests** — `TestAReleaseCannotStopAChannelAConcurrentAttachJustJoined` (twice, to `shared`, so two distinct ids) and `TestAChannelWithFlowingBytesBecomesActive`. Line numbers are deliberately not listed: they moved between `9f744890` and `81d41975`, and `git grep -n '\.Attach(' 81d41975 -- relay/channel/` gives the current ones (15 in `manager_test.go`, 1 in `concurrent_test.go`).
 
   **Count them, do not trust this table.** Line numbers move with every fix commit and the total can too:
 
@@ -889,7 +889,7 @@ Ruling R5. This is the task the ordering tests exist for, and the one where `-ra
 
   | # | The edit | Expected red | Message |
   |---|---|---|---|
-  | 0 | `context.WithoutCancel(parent)` becomes `parent` | `TestTheTuningClientLeavingDoesNotFailTheTuneForEveryoneElse` (Task 8), **on the request count** | `the relay made 2 next-source calls, want 1 -- the gate did not hold the second client while the first was calling` |
+  | 0 | `context.WithoutCancel(parent)` becomes `parent` | `TestTheTuningClientLeavingDoesNotFailTheTuneForEveryoneElse` (Task 8), **on the request count** | `the relay made 2 next-source calls, want 1 -- the first client's disconnect cancelled next-source for the client waiting behind it, which then had to call again` |
   | 1 | the `if tuning.JoinBehind > 0 { cursor = ring.Join(...) }` branch becomes `_ = tuning.JoinBehind` | `TestASecondClientJoinsBehindLiveAndNotAtTheHead` (Task 8) | `the second client started at packet 8400 with the live head at packet 8400: it joined AT live, not behind it -- new_client_behind_seconds was ignored` |
   | 2 | `_ = trusted`, then `header` returns `r.Header.Get(name)` unconditionally | `TestAnUntrustedRequestIsNotBelievedForAnyRelayHeader` (Task 8), and 2c-2's `TestXRelayChannelIsIgnoredWithoutTheTrustMarker` | `the tune asked about /api/relay/channels/somebody-elses-channel/next-source: an unverified X-Relay-Channel was believed` |
   | 3 | `tuningFrom` falls back to a literal for `channel_shutdown_delay` | 2c-2's `TestEveryProxySettingThisRelayReadsIsRequired/channel_shutdown_delay` **only**, once its key list grows by one | `an answer missing only "channel_shutdown_delay" tuned with 200, want 502 -- the relay substituted a default of its own` |
@@ -1420,6 +1420,14 @@ Amendment A2.2 makes this a one-line edit per row, in the existing `Pin` cell, w
 
   `gofmt -l .` must print nothing. `golangci-lint` must report **0 issues**.
 
+- [ ] **Step 3a: Re-run Task 0 Step 2a — the one count no test guards**
+
+  ```bash
+  cd <your worktree>/relay && grep -rn "state = StateActive" --include='*.go' . | grep -v _test.go
+  ```
+
+  **Expect exactly one line, `channel/channel.go`'s, inside `promoteOnFirstChunk`** — the same count Task 0 Step 2a measured at `81d41975`. This is the only check in the plan that catches a second first-chunk watcher, and by § Sequencing's own argument no test does: `TestAChannelWithFlowingBytesBecomesActive` stays green with either mechanism deleted, so a green Step 3 says nothing about it. **If the count is anything other than one, stop and report the extra `file:line` before going further in this task** — do not delete either assignment to make the number right, because which watcher the state test is currently exercising is not knowable from the count, and the rule it breaks is a design rule (§ Sequencing), not a cleanup.
+
 - [ ] **Step 4: Run the relay by hand once**
 
   ```bash
@@ -1512,13 +1520,13 @@ Every break-check in this plan, and the task it belongs to. A `✓` means it was
 7. **The lint ledger** — zero new `#nosec`, and anything the linter found that this plan does not name. The one placement finding this plan predicts (break-check 21) should not appear at all if Task 1 Step 1 is followed.
 8. **The hand-run evidence** — `/healthz`, and a failed tune's body confirmed to name no URL and no variable value.
 9. **The stated divergences**, as a list, because they are the part a reviewer cannot infer from a green suite. Task 12 Step 6 has them.
-10. **Anything in the spec, `CLAUDE.md`, the 2c-2 plan or this plan you found wrong or stale.** The two most likely places: the 2c-2 ledger rows, and this plan's reading of `get_basic_channel_info`'s presence rules.
+10. **Anything in the spec, `CLAUDE.md`, the 2c-2 plan or this plan you found wrong or stale.** The two most likely places: the dependency ledger's `file:line` citations, and this plan's reading of `get_basic_channel_info`'s presence rules.
 
 ---
 
 ## Appendix — the files, in full
 
-Every file below was written, built, vetted, run under `go test -race` three times and linted at **0 issues** in a scratch module seeded from **`migration/phase2c-vertical-slice` at `81d41975`, including every `_test.go`**. 2c-2's own tests — all of them, its three fix commits' included — pass unchanged alongside these.
+Every file below was written, built, vetted, run under `go test -race` three times and linted at **0 issues** in a scratch module seeded from **2c-2 as merged, `81d41975`, including every `_test.go`**. 2c-2's own tests — all of them, its three fix commits' included — pass unchanged alongside these.
 
 **Two literals in here are oracles and must be regenerated rather than trusted:** the golden JSON fixture (Task 7 Step 2 has the command), and — carried from 2c-2 — the synthetic asset's SHA-256.
 
@@ -4484,8 +4492,8 @@ func TestTheTuningClientLeavingDoesNotFailTheTuneForEveryoneElse(t *testing.T) {
 	}
 
 	if got := r.Control.Requests(); len(got) != 1 {
-		t.Fatalf("the relay made %d next-source calls, want 1 -- the gate did not hold the "+
-			"second client while the first was calling", len(got))
+		t.Fatalf("the relay made %d next-source calls, want 1 -- the first client's disconnect "+
+			"cancelled next-source for the client waiting behind it, which then had to call again", len(got))
 	}
 }
 ```
