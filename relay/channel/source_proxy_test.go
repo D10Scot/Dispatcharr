@@ -180,6 +180,33 @@ func TestAConnectFailureNeverEchoesTheProviderURL(t *testing.T) {
 	}
 }
 
+// A malformed URL never echoes the provider's credential either -- found by
+// review, not by this plan. http.NewRequestWithContext returns net/url's own
+// parse error UNWRAPPED on a bad URL, and that error IS already a *url.Error
+// whose Error() prints the whole string verbatim: "parse \"<url>\": <reason>".
+// A control byte (\x7f) is what makes net/url actually refuse to parse --
+// the credential is again in the path and the query, not the userinfo, which
+// is the one substring net/http's own formatting would otherwise redact on
+// its own. This is the ONE source of the string in this test: withoutURL is
+// the only thing that can remove it, so a pass here is not an accident of
+// some other redaction.
+func TestAMalformedSourceURLNeverEchoesTheProviderCredential(t *testing.T) {
+	const secretURL = "http://provider.example/live/subscriber/hunter2/9.ts?token=s3cr3t\x7f"
+	err := ProxySource{URL: secretURL}.Run(t.Context(), &recordingSink{})
+	if err == nil {
+		t.Fatal("a URL with a raw control character parsed successfully")
+	}
+	for _, secret := range []string{"hunter2", "s3cr3t", "/live/subscriber", secretURL} {
+		if strings.Contains(err.Error(), secret) {
+			t.Fatalf("the error echoes %q from the malformed source URL: %s", secret, err)
+		}
+	}
+	// Still useful: the reason net/url actually gave survives the strip.
+	if !strings.Contains(err.Error(), "invalid control character") {
+		t.Fatalf("the error lost net/url's own reason: %s", err)
+	}
+}
+
 // Run builds a fresh *http.Transport every call, and that transport carries
 // no IdleConnTimeout -- its zero value is "no limit", not "the default" --
 // so a connection left idle by a clean upstream EOF (the body drains, the

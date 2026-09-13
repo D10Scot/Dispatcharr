@@ -153,7 +153,12 @@ func (s ProxySource) Run(parent context.Context, sink io.Writer) error {
 		// The URL came from the control plane, so a bad one is a control-plane
 		// answer this relay cannot use. The URL itself is NEVER in the message:
 		// it carries provider credentials (CLAUDE.md, credential logging).
-		return fmt.Errorf("channel: the source URL is not usable: %w", err)
+		// NewRequestWithContext returns url.Parse's own error unwrapped on a
+		// malformed URL, which is already a *url.Error printing the whole
+		// string verbatim -- withoutURL strips it here exactly as it does at
+		// the connect-failure site below; a bare %w was found by review to
+		// leak it into channel.go's "upstream failed" log line.
+		return fmt.Errorf("channel: the source URL is not usable: %w", withoutURL(err))
 	}
 	if s.UserAgent != "" {
 		request.Header.Set("User-Agent", s.UserAgent)
