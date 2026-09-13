@@ -40,15 +40,20 @@ func main() {
 	// held by hand here.
 	log.Printf("starting on port %d (dev routes: %t)", cfg.Port, cfg.DevRoutes)
 
+	// THE SAME manager, not a second one. Two would give the list endpoint
+	// an empty map while the tune path filled another, and every assertion
+	// about what the list shows would be about the wrong object.
+	channels := channel.NewManager(channel.ManagerConfig{})
 	srv := &http.Server{
 		Addr: net.JoinHostPort("0.0.0.0", strconv.Itoa(cfg.Port)),
 		Handler: httpapi.New(httpapi.Config{
 			DevRoutes: cfg.DevRoutes,
 			Stream: httpapi.StreamDeps{
 				Secret:   cfg.Secret,
-				Channels: channel.NewManager(channel.ManagerConfig{}),
+				Channels: channels,
 				Control:  &control.Client{Secret: cfg.Secret},
 			},
+			Control: httpapi.ControlDeps{Secret: cfg.Secret, Channels: channels},
 		}).Handler(),
 
 		// ReadHeaderTimeout only. A read or write deadline on the whole
