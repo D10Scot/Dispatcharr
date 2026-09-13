@@ -12,6 +12,7 @@ on:
       - 'dispatcharr/**'
       - 'frontend/**'
       - 'docker/**'
+      - 'relay/**'
       - 'scripts/**'
       - 'pyproject.toml'
       - 'uv.lock'

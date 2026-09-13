@@ -80,8 +80,9 @@ jobs:
           # stage included): these jobs run `go build`/`go vet`/`go test
           # -race`/golangci-lint directly against the module on the runner,
           # never through a Docker build, so a Dockerfile-only change has
-          # nothing here to verify. docker-build.yml is what actually builds
-          # the image and would catch a broken relay-builder stage.
+          # nothing here to verify. docker-build.yml would catch a broken
+          # relay-builder stage, but only for a Dockerfile change and only
+          # AFTER merge -- it triggers on push to main, not on PRs.
           pattern='^(relay/|\.golangci\.yml$|scripts/check_go_stdlib_only\.sh$|\.github/workflows/go-tests\.yml$)'
           if printf '%s\n' "$changed" | grep -qE "$pattern"; then
             echo "go=true" >> "$GITHUB_OUTPUT"

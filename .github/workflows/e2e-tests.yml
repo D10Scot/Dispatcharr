@@ -12,6 +12,7 @@ on:
       - 'dispatcharr/**'
       - 'frontend/**'
       - 'docker/**'
+      - 'relay/**'
       - 'scripts/**'
       - 'e2e/**'
       - 'e2e-upstream/**'
