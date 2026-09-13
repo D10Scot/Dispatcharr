@@ -4,9 +4,78 @@
 # `missing` is the ratchet -- a MAXIMUM, not a target, and lower is better. It is set
 # from the WORST run of at least twelve on the tree that earned it, which is why this
 # gate carries no separate tolerance parameter: the measured spread is already inside
-# the number. Four regions are known to flap (owner-side coordinated stop, non-owner
-# local cleanup, the stderr-reader join, _wait_for_channel_ready's error branch) and
-# the list has grown twice; a fixed tolerance would be stale on arrival.
+# the number. **104 statements flap across this campaign's own 12 CI rounds**, measured
+# on this tree at `22d68497` (below), FIRST-HAND from the retained per-label
+# `gate-data-*` artifacts of the SAME 12 runs `missing` was set from -- not from a
+# smaller sample, not from an earlier tree, and not inherited from a citation. The
+# dominant source is `cleanup_task` (`server.py`, **54** of the 104: 15 at 1961-1989, 20
+# at 2014-2046, 3 at 2063-2068, 15 at 2166-2192, plus one isolated statement at 1940 --
+# unsurprising, since the spec's own § Reachability already names this function as "the
+# source of the coverage gate's own run-to-run variance". `_cleanup_local_resources`,
+# the file's OTHER forbidden function, contributes ZERO: 61 of its 62 statements are
+# missing every single round, perfectly deterministic (2491-2573; the file's own
+# `non-owner local cleanup` region, 2489-2566, is essentially this same function and is
+# likewise exactly constant at 56/56 every round). **So the largest source of variance
+# is a function this programme is forbidden to target by design -- no PR may reduce it,
+# and it can only ever be absorbed by the floor, never engineered away.**
+#
+# The rest: `server.py`'s `extend_ownership` (581-587, 4 of its statements) and
+# `_recover_stuck_channel_stops` (1782-1788, 6 of them), plus singles/pairs at
+# 1263-1264 (`_coordinated_stop_channel`), 1615 (`_has_local_upstream_activity`),
+# 1806-1807 (`stop_channel`), 2274-2275/2288 (`_check_orphaned_metadata`), 2440
+# (`refresh_channel_registry`) -- 19 outside `cleanup_task` (4+6+2+1+2+3+1), 73 in
+# `server.py` total (54 + 19);
+# `input/manager.py` 363-365 (`_upstream_may_continue`), 640-641 (`run`), 1009-1011
+# (`_read_stderr`), 1383-1384 (`_close_all_connections`), 1785 (`_close_socket`,
+# NOT the 1739-1767 stderr-reader join proper, which does not flap -- see below),
+# 1856-1863 (`fetch_chunk`) -- 17 total; `input/http_streamer.py` 156-157 (2);
+# `live_proxy/utils.py` 221-222 (2); one line each in `input/buffer.py` (3 total: 282,
+# 355-356), `output/fmp4/manager.py` (175-176, 334 -- 3 total), `output/fmp4/buffer.py`
+# (92), `output/fmp4/generator.py` (142), `output/profile/manager.py` (382),
+# `output/ts/generator.py` (635). 73+17+2+2+3+3+1+1+1+1 = 104.
+#
+# **The per-round flappy-and-missing count runs 35 (round 7) to 64 (round 2) -- a
+# range of 29, exactly the census spread (1525 max - 1496 min = 29).** This 104-line
+# set is not A cause of the spread among others; on this tree, it IS the spread,
+# statement for statement.
+#
+# **Spot-checked against this PR's own ~200 new tests: none references any of the
+# functions above by name, and the one place a name DOES appear
+# (`test_non_owner_branches.py`'s gate-F test) uses `extend_ownership`/
+# `_has_local_upstream_activity` as MOCKED collaborator attributes, never invoking
+# the real method bodies.** The flappy set is therefore orthogonal to this PR's work
+# and will not shrink because of it.
+#
+# THIS SUPERSEDES BOTH the four-region list this file previously carried (owner-side
+# coordinated stop, non-owner local cleanup, the stderr-reader join,
+# `_wait_for_channel_ready`'s error branch) AND a plan-review correction to it measured
+# at `04841a47`, before this PR's ~200 tests existed -- two of them (Task 9b, Task 10)
+# land squarely on the modules in question, so a citation measured before they landed
+# could have been invalidated by them. It was not, and ALL FOUR of the originally-named
+# regions turn out to be perfectly deterministic (not three, as the review first
+# suspected): `channel_service.py:28-49` (4/4 every round), `server.py:2099-2112`
+# (9/9), `server.py:2489-2566` (56/56), `input/manager.py:1739-1767` (10/10) -- zero
+# flap, all four, across all 12 rounds. `_wait_for_channel_ready`'s error branch does
+# not appear in the flappy set at all. This measurement is taken from the SAME 12 runs
+# `missing` was set from, i.e. AFTER Tasks 1-11 (Task 9b and Task 10 included) were
+# already committed, so it is a first-hand CONFIRMATION on the post-PR tree, not merely
+# an inherited claim, and it is stronger evidence than the citation it confirms (same
+# tree `missing` was set from, 12 rounds instead of whatever `04841a47` used).
+#
+# CAVEAT, stated because the shape of this note is what let the OLD list go stale
+# unnoticed: unobserved-to-vary across 12 rounds is not proof of stability, only
+# absence of observed variance in that sample. This list has now changed three times
+# (the original set, the 2a-7 four-region list, this one) -- exactly why the gate
+# carries no tolerance parameter keyed to a fixed region list, and why a future
+# correction to THIS list, when it comes, should re-derive from CI artifacts again
+# (they are retained for 1 day by `backend-tests.yml`'s `upload-artifact` step; a
+# 12-round census's worth is enough to reconstruct every round's full per-line data,
+# not just the aggregate `missing=` a census's own harvester happens to print) rather
+# than assume today's set is permanent. An independent local 6-round check
+# (per-container isolation, same tree, kept in this PR's own record) broadly
+# corroborates the shape of this list -- non-owner local cleanup and the owner-side
+# coordinated stop stayed constant there too -- but is not the source of the numbers
+# above; the source is the 12 CI rounds' own retained artifacts.
 #
 # `shape`, `modules` and `rcfile` are EQUALITY checks, not comparisons. A different
 # measurement shape, module list or measurement DEFINITION makes two numbers
@@ -48,7 +117,81 @@
 # Written by:  scripts/coverage_live_path.sh --write-floor
 # Enforced by: scripts/coverage_live_path.sh --gate  (backend-tests.yml, job coverage-gate)
 #
-# PROVENANCE (Phase 2 PR 2a-7, amended before merge -- measured in CI, where the
+# PROVENANCE (Phase 2 PR 2b-4, Task 13 -- measured in CI, where the gate is
+# enforced). `missing` below is the WORST of 12 rounds of backend-tests.yml's
+# own coverage-label + coverage-gate jobs, on migration/phase2b-coverage-floor
+# at 22d684974f08c4cc8f183e5af2d06a95e895964a, 2026-09-13. Full sequence, in
+# order:
+#   1513 1525 1501 1510 1510 1510 1496 1519 1514 1509 1504 1512
+# max=1525 (round 2)  min=1496 (round 7)  spread=29  n=12
+# The stopping rule (maximum unchanged for >=6 consecutive rounds, minimum 12)
+# was met at round 12: the max was set at round 2 and held for the remaining
+# ten rounds. `statements` (8073) is NOT unchanged from the previous floor's
+# denominator (7978) -- it moved twice, verified statically via PythonParser
+# against the 38-file module list both times: +68 from main's own ordinary
+# drift since the 2a-7 floor (this PR's base, `807ffade`, measures 8046 on
+# its own, before any of this PR's commits) and +27 from this PR's own Task 1
+# (`_live_connections` relocated from `apps/proxy/utils.py`, out of scope, into
+# `apps/proxy/relay_client.py`, in scope -- the function's own 27 statements,
+# counted directly -- a code move into the denominator, not an rcfile edit).
+# 7978 + 68 + 27 = 8073. The FILE SET and the rcfile are unchanged either way,
+# which is why `modules=`/`rcfile=` did not move -- `statements` moving is not
+# evidence against that; the two checks answer different questions. Not
+# load-bearing for the threshold either way: at the base denominator 8046,
+# `missing=1525` is still 81.05% -- comfortably over 80% before Task 1's own
+# denominator move is even counted.
+#
+# THIS IS A DELIBERATE, LARGE LOWERING (2050 -> 1525), not a re-baseline: 2b-4
+# is the coverage-floor PR the 2a-7 floor's own header named as the shortfall's
+# owner (Stage 2a ended at 74.30%, not the spec's >=80%; D7 blocked every 2c
+# PR until this closed). 481 new-test statements closed a measured 388-
+# statement shortfall against a ceiling of 1614 (= 8073 - ceil(0.8 * 8073)),
+# selected from the plan's 381-400 band (Tasks 3-11 plus 8b/9b in scope from
+# the start) before any test was written, not sized to a total after the
+# fact. Margin at M_final: 1614 - 1525 = 89.
+#
+# LOCAL VS CI, AND WHY THE HISTORICAL +35 DELTA IS NOT CARRIED FORWARD. The
+# 2a-7 floor above was set in CI after its LOCAL campaign's maximum (2044) was
+# exceeded by the very first CI run (2045), and the 2b-4 plan sized its test
+# scope's cushion assuming that same failure mode -- roughly local+35 in CI --
+# would recur. It did not: this campaign's own local isolated-container
+# reconciliation ran 1484-1512, and the CI census above ran 1496-1525; at the
+# maximum the delta was +13, not +35. Recorded here, not just in the PR, so
+# the next stage does not inherit a delta that has now failed to reproduce
+# once. The mechanism the 2a-7 note names (per-container isolation makes the
+# owner-side block deterministic but not the total) is unchanged in KIND --
+# some regions still flap -- but not in the SPECIFIC regions: see the
+# 104-statement flappy set measured directly from this campaign's own 12
+# retained CI artifacts, at the top of this file. Only the SIZE of the
+# local/CI gap varied between campaigns, which is itself evidence the gap is
+# not a fixed constant to budget against, and the correct response stays
+# "measure in CI", never "assume a fixed offset".
+#
+# THREE ROUNDS IN THIS CENSUS CARRY COSMETIC DAMAGE UNRELATED TO THE COVERAGE
+# FIGURE -- 5, 8 and 9, not just 5 and 9. Rounds 5 (run 34730823866) and 8
+# (run 34731318626) have the same shape: overall workflow-run conclusion
+# reads `cancelled` even though all 22 of their jobs -- every `Coverage *`
+# label, `Coverage gate` (the source of 1510 and 1519 respectively), and
+# `Backend result`, the aggregate job that runs AFTER the gate -- completed
+# with `success`; the run's own top-level conclusion is not a validity
+# signal for this measurement, only the job set is (see
+# scripts/coverage_live_path_isolated.sh's own #266-descended reasoning,
+# applied one level up). Round 9 (run 34731465670) is different: it carries
+# one actually-cancelled job (`core.tests`, a plain backend-matrix label
+# unrelated to coverage) and one downstream `Backend result` failure caused
+# by that cancellation. All three are caused by this campaign's own serial
+# dispatch loop: it advances to round N+1 as soon as round N's `Coverage
+# gate` job concludes, which is before every job in round N's run finishes,
+# so the ref's cancel-in-progress concurrency group clips whatever is still
+# running in round N once round N+1 is dispatched. This can only ever clip a
+# job downstream of the gate, never a coverage job itself (coverage-gate
+# needs [coverage-label], so every coverage job is already complete by the
+# time it runs) -- harmless for this census, but it is why most of these 12
+# runs are not clean runs for any other purpose, and it is recorded here so
+# a reader of the run history is not left wondering why a `missing=` figure
+# came from a run GitHub calls cancelled or failed.
+#
+# PRIOR PROVENANCE (Phase 2 PR 2a-7, amended before merge -- measured in CI, where the
 # gate is enforced). `missing` below is the WORST of 15 rounds of
 # backend-tests.yml's own coverage-label + coverage-gate jobs, on this branch,
 # 2026-09-11. Full sequence, in order:
@@ -168,11 +311,11 @@
 #      actually runs it in -- and confirm it exits 0 against the new floor before
 #      committing.
 shape=per-container/v1-sysmon
-statements=7978
-missing=2050
-percent=74.30
-measured=2026-09-11
-runs=15
+statements=8073
+missing=1525
+percent=81.11
+measured=2026-09-13
+runs=12
 modules=8cb5c65dac3e
 module_count=38
 rcfile=3af0a78b9b6f
