@@ -186,13 +186,13 @@ Spec § Stage 2c's two invariants held at 2c-1 by construction: constraint 3 for
 | Settings | `proxy_settings` | arrives on the `next-source` answer (2b, completed by A1.4) |
 | **Metadata hash, partially** | `channel_metadata`'s state, error and name fields | `Channel.state`, `Channel.lastErr` and `Tuning`. The rest of the hash — the byte counters, `ffmpeg_speed`, `source_fps`, the stream and profile names the status endpoints render — is untouched, because nothing in this PR serves a status route. **2c-8 owns the remainder** and should not read this row as closed. |
 
-The six rows this PR does not touch — the client registry, switch coordination, the follower pub/sub, the degraded-fallback cache, the timing counters and the fMP4 output state — belong to 2c-3, 2c-5, 2c-6 and 2c-8, and each is named in the spec's own table.
+**Four rows closed, one partial, six untouched.** The six — the client registry, switch coordination, the follower pub/sub, the degraded-fallback cache, the timing counters and the fMP4 output state — belong to 2c-3, 2c-5, 2c-6 and 2c-8, and each is named in the spec's own table. **The metadata-hash row is the partial one and 2c-8 must not read it as closed**: this PR covers its state, error and name fields and none of the byte counters, `ffmpeg_speed`, `source_fps` or the profile names the status endpoints render, because nothing here serves a status route.
 
 **And the mechanical half, whose reach is narrower than it looks.** `scripts/check_go_stdlib_only.sh` already fails on a non-empty `go.sum` or a module graph longer than one line, so a third-party Redis client cannot be linked. Task 11 adds a `go list -deps` check for a package *named* for Redis, which catches one more shape: a client written inside this module, in its own package, which no existing gate would notice.
 
 **It does not catch a hand-rolled RESP client written inside an existing package** — a few dozen lines of `net.Dial` and `\r\n` formatting inside `channel` would pass every check in this repo. Nothing mechanical here can, short of a protocol-aware scan nobody is going to write. The invariant's real enforcement is review plus the fact that there is no reason to write one; the check is a backstop against the careless shape, not a proof, and it is stated that way rather than claimed as more.
 
-### R5 — No keepalive packets, no error packets, no client timeout. All three are parity, not scope-cutting.
+### R5 — No keepalive packets and no client timeout, both parity; no error packets, a stated divergence.
 
 The obvious reading of `output/ts/generator.py` is that a client at the buffer head gets keepalive packets and is disconnected after `STREAM_TIMEOUT + FAILOVER_GRACE_PERIOD`. Reading the guards changes the answer.
 
@@ -248,6 +248,10 @@ Two failures, both demonstrated rather than argued. `start()`'s own budget is tw
 
 **Ruled: `claim` inspects the map once under the lock and hands back either a running channel, a gate to wait on, or a gate this caller owns; `start()` runs with the lock released; `publish` re-takes it to install the channel.** The exclusion that matters — one upstream per channel — is preserved by the gate rather than by lock duration. The gate is closed from a **deferred** call, so a panic wakes the waiters instead of stranding them behind a gate that never closes; without that, the second client for the panicked channel blocks forever even though the manager itself is fine. Two tests, `TestAPanickingStartDoesNotWedgeTheManager` and `TestAPanickingStartReleasesItsGate`, pin the two halves separately, because one covers for the other.
 
+**Where the deferred close is registered is the whole of the ruling, and getting it wrong replaces the wedge with something worse.** An intermediate draft put it inside a `runStart` helper, so it fired when the **start** finished — *before* `publish` installed the channel. A waiter woken by that close raced the caller's own map insertion; when it won it saw an empty map and no gate, claimed a fresh gate, and started a **second upstream**. Measured at eight concurrent clients: it went wrong within the first three rounds, producing two distinct `*Channel`s handed to clients of one id, one of them absent from the map, and — after every client released — a source goroutine still running with nothing able to stop it. A leaked provider connection holding a slot, and a first client whose `release` tore down the other client's channel.
+
+**`-race` reports none of that**, because an ordering bug is not a data race, which is why `TestConcurrentFirstClientsStartExactlyOneSource` exists and asserts four separate all-or-nothing properties over four hundred rounds: one source started, one `*Channel` for every client, one map entry, and zero sources still running after the last release. Registering the defer in `Attach` **before** the `start()` call is what makes it run at `Attach`'s return, after `publish`; deferred calls still execute while a panic unwinds, so the panic guarantee is unaffected. Break-check: move the close back inside a helper around `start()` and that test reddens on round 0 or 1, three runs out of three.
+
 ### R11 — `Ring.Wait` takes the caller's cursor, and a finished channel is dropped in exactly one place.
 
 Two defects an earlier draft shipped, found by running the code rather than reading it.
@@ -280,7 +284,7 @@ Verified at `e3eee458`: the module path and the `go 1.27.1` directive; `buffer`'
 | `relay/config` with `Load()`, `Config{Port, Secret, DevRoutes}` | **as built at `e3eee458`** | Task 8's wiring in `main.go` moves |
 | `.golangci.yml` at the repo root, v2 schema, `gosec` excluded in `_test.go` only, `noctx` **not** excluded | **as built at `e3eee458`** | every lint outcome in this plan is re-derived |
 | `go-tests.yml` running `go build`, `go vet`, `go test -race ./...`, `golangci-lint`, `scripts/check_go_stdlib_only.sh`, with a `Go result` aggregate and a change detector matching `^relay/` | **as built at `e3eee458`**, and its pattern already covers `scripts/check_go_stdlib_only.sh` | Task 0 reports it; this PR adds no workflow change if it is there |
-| `.claude/hooks/run-go-checks.sh` on `relay/**/*.go` | not checked — confirm in Task 0 | Go edits will not be checked by the hook; run the four checks by hand |
+| `.claude/hooks/run-go-checks.sh` on `relay/**/*.go` | **as built at `e3eee458`** — registered, blocking on build, vet, lint and `-race`, and anchored on the edited file's own path | — |
 | `stream_profile.kind` on the next-source contract, values `proxy` / `redirect` / `transcode` | **as built at `e3eee458`**, from one `_profile_kind` helper | **this PR cannot proceed**; `kind` is what the Proxy branch tests. Stop and report. |
 | `zero_orm_allowlist.py` `resolve_source` hits = 38, `get_stream_object` = 3 | 2c-1's R8 *predicts* 38; measured 36 at `315b02a4` before 2c-1 | Task 1 Step 6 re-measures and expects **no further change** from A1.4 |
 
@@ -1883,12 +1887,16 @@ The core of the PR. Parity-matrix rows **7** and **9** are pinned here, and row 
   | 3 | a `scratch []byte` field on `Ring`, allocated once and reused for every chunk | `TestAPublishedChunkIsNeverRewritten` | `byte 2 of a chunk a reader still holds changed from 0x00 to 0x01 after later writes: a published chunk's backing array was reused` |
   | 4 | `Join`'s body becomes `return r.head` | `TestJoinStartsRoughlyBehindLive` **and** `TestJoinFallsBackToTheOldestChunkWhenTheBufferIsShort` | `Join(3s) = 6, want 3 so the next read starts at chunk 4; head is 6` |
   | 5 | delete the age loop from `evictLocked` | `TestRetentionEvictsBeforeTheRingIsFull` | `oldest resident chunk is 1, want 2 -- a chunk older than the retention window survived in a ring with seven free slots` |
-  | 6 | `New` ignores `cfg.ChunkBytes` | **11 tests** — 10 in `buffer`, 1 in `channel`, **0 in `httpapi`** — 2 of them with `no bytes at all` | the one to read is `TestCapacityUsesTheConfiguredChunkSize`: `the ring holds 4 chunks, want 16 (a 1023472-byte budget at 63967 bytes a chunk)` |
+  | 6 | `New` ignores `cfg.ChunkBytes` | **13 tests** — 11 in `buffer`, 1 in `channel`, 1 in `httpapi` — 2 of them with `no bytes at all` | the one to read is `TestTheRingUsesTheChunkSizeTheControlPlaneSent`: `the ring's chunk is 255868 bytes, want 131600 — the relay used its own constant instead of the BUFFER_CHUNK_SIZE the control plane sent` |
   | 7 | `Head()` drops its `RLock`/`RUnlock` | `TestConcurrentReadersAndOneWriter` | `WARNING: DATA RACE`, with both stacks |
 
   **Number 6 is this PR's worked instance of hollow shape 6.** The break-check reddens broadly and most of the eleven messages name a *symptom*, not the mechanism. Confirm you see the capacity test's message; if you only see "no bytes at all", you have not confirmed anything about the configured chunk size.
 
-  **And note which package does not redden at all.** `httpapi`'s rig is unaffected, because its fake control plane sends `BUFFER_CHUNK_SIZE: 255868` — the same number as the constant — so ignoring the config field changes nothing there. Worth seeing once: the end-to-end tests cannot detect this defect, and only the unit-level capacity test can, which is why it exists. An earlier draft of this table said "five tests, four of them", read off a truncated `head -10`. Measure rather than copy.
+  **Two earlier drafts of this row were wrong and the second one is the more instructive.** The first said "five tests, four of them", read off a truncated `head -10`. The second said eleven, but also that `httpapi` reddened zero — which was true, and the reason was a defect in the rig rather than a fact about the layer: the fake control plane sent `BUFFER_CHUNK_SIZE: 255868`, **the same number as the constant**, so a relay ignoring the wire value behaved identically and the whole end-to-end layer was disarmed against the one property A1.4 exists to prove. A pin that supplies the default (hollow shape 2), one layer up from where that shape usually appears.
+
+  **Fixed two ways, and both were needed.** `rigChunkBytes` is `188 * 700`, a value the constant cannot produce — necessary, and on its own **still not sufficient**, because every other test in that package reads a byte stream and a relay using the wrong chunk size still delivers correct, aligned, in-order TS in differently sized pieces no HTTP client can observe. Measured: with the rig alone, this break-check still reddened zero `httpapi` tests. `TestTheRingUsesTheChunkSizeTheControlPlaneSent` is what closes it, by looking at the ring the tune actually built — the one test in that package that reaches past the response body, and the comment there says why that is unavoidable.
+
+  Measure rather than copy.
 
   **Number 3 is the one that will mislead you if you take a shortcut.** Allocating the scratch buffer as a local inside `Write` rather than as a field on `Ring` does **not** redden the test, because a test that writes one chunk per `Write` call never exercises reuse within a call. That happened while writing this plan. The defect shape that matters is a field, and that is what to inject.
 
@@ -3127,13 +3135,42 @@ This is where the ownership lease is replaced rather than ported (spec D2).
   		<-wait
   	}
 
-  	built, tuning, err := m.runStart(id, gate, start)
+  	// REGISTERED BEFORE start() IS CALLED, so it runs when Attach RETURNS --
+  	// which is after publish has installed the channel. The ordering is the
+  	// whole point and it is easy to get subtly wrong: an earlier version
+  	// closed the gate when the START finished, inside a helper, so a waiter
+  	// woken by it raced the caller's own map insertion. When the waiter won it
+  	// found neither a channel nor a gate, claimed a fresh one, and started a
+  	// SECOND upstream -- a second provider connection with no map entry and
+  	// nothing that would ever stop it, plus a first client whose release tore
+  	// down the other client's channel. Measured at 8 concurrent clients: it
+  	// went wrong within the first few rounds, and -race never flagged it,
+  	// because an ordering bug is not a data race.
+  	//
+  	// A deferred call still runs while a panic unwinds, so this also keeps the
+  	// panic guarantee the helper was written for.
+  	defer m.releaseGate(id, gate)
+
+  	built, tuning, err := start()
   	if err != nil {
+  		// A failed start leaves no channel, and the deferred release lets the
+  		// next caller claim a fresh gate and try again. A tune that failed is
+  		// retryable; nothing here caches the failure.
   		return nil, nil, err
   	}
 
   	c := m.publish(id, built, tuning)
   	return c, func() { m.release(c) }, nil
+  }
+
+  // releaseGate clears the start claim and wakes everyone waiting on it. It is
+  // called from Attach's deferred call and nowhere else, so the close happens
+  // exactly once and only after the channel is reachable.
+  func (m *Manager) releaseGate(id string, gate chan struct{}) {
+  	m.mu.Lock()
+  	delete(m.starting, id)
+  	m.mu.Unlock()
+  	close(gate)
   }
 
   // claim inspects the map once, under the lock. It returns exactly one of: a
@@ -3175,23 +3212,6 @@ This is where the ownership lease is replaced rather than ported (spec D2).
   	gate := make(chan struct{})
   	m.starting[id] = gate
   	return nil, nil, gate
-  }
-
-  // runStart calls start with the manager lock released, and clears the gate
-  // from a deferred call so a panic inside start wakes every waiter instead of
-  // stranding them behind a gate that never closes.
-  func (m *Manager) runStart(
-  	id string,
-  	gate chan struct{},
-  	start func() (Source, Tuning, error),
-  ) (Source, Tuning, error) {
-  	defer func() {
-  		m.mu.Lock()
-  		delete(m.starting, id)
-  		m.mu.Unlock()
-  		close(gate)
-  	}()
-  	return start()
   }
 
   // publish installs the started channel and registers its first client.
@@ -3307,6 +3327,7 @@ This is where the ownership lease is replaced rather than ported (spec D2).
   | `TestAPanickingStartDoesNotWedgeTheManager` | **R10** — the next `Attach` proceeds after a panic inside `start()` |
   | `TestAPanickingStartReleasesItsGate` | the other half: a second client for **that** id is not stranded |
   | `TestAFinishedChannelIsNotHandedToANewClient` | **R11** — a closed ring means a fresh channel and a real re-tune |
+  | `TestConcurrentFirstClientsStartExactlyOneSource` | **R10's ordering** — 8 clients × 400 rounds: one source, one `*Channel`, one map entry, zero leaked goroutines |
 
   The first two are the same property measured at two places, and both are needed. The first counts *starts inside this process*, so it fails if `Attach` starts a second reader however it managed to; the second counts *HTTP requests at the provider*, which is what parity-matrix row 10 is actually about and what a shared-`http.Transport` bug would show up in. **Row 10 is not claimed by this PR** — it says "three clients" and that is 2c-3's — but the test belongs here with the code it exercises.
 
@@ -3317,8 +3338,11 @@ This is where the ownership lease is replaced rather than ported (spec D2).
   1. Make `Attach` call `start()` unconditionally, before consulting the map. Expect `the start function ran 2 times, want 1 -- the second client must not call the control plane`, and `TestTwoClientsMakeOneUpstreamRequest` to fail with `the provider saw 2 requests`. **Note what these tests do not have**: neither is concurrent, so they pin "one source per channel" and not "one source under concurrent first clients". The gate in `claim` provides the second, and the test that would pin it belongs with 2c-3's fan-out.
   2. Delete `defer c.ring.Close()` from `run`. Expect `TestACleanUpstreamEndClosesTheRing` to fail with `Wait at the head returned <nil>, want ErrClosed — the ring is still open after the source returned, and every reader would block forever`.
   3. In `run`'s switch, make the `default` arm set `StateStopped`. Expect `TestAnUpstreamFailurePutsTheChannelInError` to fail with `state = "stopped" after an upstream 404, want "error"`.
-  4. Replace `runStart`'s deferred gate cleanup with the same three statements written inline after `start()` returns. Expect **`TestAPanickingStartReleasesItsGate`** to fail on its five-second deadline, and `TestAPanickingStartDoesNotWedgeTheManager` to stay green — the manager lock is fine, only that one channel's gate is stranded. Verified. The split between the two tests is the point: one would have covered for the other.
+  4. Change `defer m.releaseGate(id, gate)` to a plain call placed after `start()` returns. Expect **two** failures: `TestAPanickingStartReleasesItsGate` on its five-second deadline, because a panic now skips the call entirely and strands that channel's waiters; and `TestConcurrentFirstClientsStartExactlyOneSource` on round 0, because the gate now closes before `publish` installs the channel. Expect `TestAPanickingStartDoesNotWedgeTheManager` to stay **green** — the manager lock is fine, only the gate is wrong. Verified, all three.
+
+     **That one edit breaks two independent properties, which is why the deferred form is not a stylistic preference.** `defer` buys the panic guarantee and the ordering guarantee together, and losing either one alone would be a different bug: the panic case strands one channel, the ordering case opens a second provider connection.
   5. Change `claim`'s `if !c.ring.Closed()` to `if true`. Expect `TestAFinishedChannelIsNotHandedToANewClient` to fail with `the second client was handed the finished channel`. Verified. **This is the check that found the duplicated mechanism**: with `run()` also removing itself from the map, this edit reddened nothing.
+  6. Move `defer m.releaseGate(id, gate)` from `Attach` into a helper wrapped around `start()`, so it fires when the start finishes rather than when `Attach` returns. Expect `TestConcurrentFirstClientsStartExactlyOneSource` to fail on round 0 or 1 with `client N got a different *Channel from client 0: two clients of one channel are watching two different upstreams`. Verified, three runs out of three. **This is the only break-check in the plan that guards an ordering rather than a value**, and the defect it guards against is invisible to `-race`.
 
 - [ ] **Step 5: Run the four checks and commit**
 
@@ -3692,6 +3716,7 @@ The tune path, end to end.
   | Test | What it pins |
   |---|---|
   | `TestATuneDeliversTheProvidersBytes` | **the vertical slice**: 200, `video/mp2t`, two chunks of whole in-order TS packets, and one upstream request |
+  | `TestTheRingUsesTheChunkSizeTheControlPlaneSent` | **A1.4's payoff**: the ring's chunk is the size the wire named, not the constant |
   | `TestATuneMakesOneSignedControlPlaneCall` | one call, to `.../<uuid>/next-source`, carrying both internal headers |
   | `TestATuneRefusesAKindItDoesNotServe` | `redirect` and `transcode` each get **501**, and the provider is contacted **zero** times |
   | `TestATuneRefusesIncompleteProxySettings` | a pre-A1.4 control plane gets **502** and no provider contact |
@@ -3884,18 +3909,36 @@ Ruling R2 makes this a one-line edit per row, in the existing `Pin` cell, with n
   `FakeUpstream`, and asserts contiguous `packet_index()` runs rather than a
   body digest — a digest fails on the join point alone.
 
-  **A2.5 — an input for 2c-5: three behaviours 2c-2 deliberately did not
-  port, each because its Python guard is permanently shut in 2c-2's shape.**
-  Keepalive packets (`output/ts/generator.py:387`, gated on
-  `_should_send_keepalive` at `:546-551`, which needs
-  `not stream_manager.healthy`), the client timeout (`_is_timeout` at
-  `:583-604`, same flag), and the error TS packets (`:209-250`, all inside
-  `_wait_for_initialization`, the follower path D2 deletes). 2c-5 brings the
-  health flag that opens the first two gates and should add
-  `ClientTimeout`, `KeepaliveInterval` and `MaxKeepalive` to
-  `relay/channel.Tuning` with it; `MAX_KEEPALIVE_DURATION`,
+  **A2.5 — an input for 2c-5: three behaviours 2c-2 did not port. TWO are
+  unreachable in 2c-2's shape; the THIRD is a live divergence and is recorded
+  as one.**
+
+  Unreachable, because their Python guard is permanently shut here: keepalive
+  packets (`output/ts/generator.py:387`, gated on `_should_send_keepalive` at
+  `:546-551`, which needs `not stream_manager.healthy`) and the client timeout
+  (`_is_timeout` at `:583-604`, same flag). Nothing lowers that flag except
+  the health monitor and the failover machinery, which are 2c-5's. 2c-5 brings
+  the flag and should add `ClientTimeout`, `KeepaliveInterval` and
+  `MaxKeepalive` to `relay/channel.Tuning` with it; `MAX_KEEPALIVE_DURATION`,
   `KEEPALIVE_INTERVAL`, `STREAM_TIMEOUT` and `FAILOVER_GRACE_PERIOD` are all
   already on the wire after A1.4.
+
+  **The error TS packets are NOT unreachable, and an earlier draft of this
+  amendment said they were.** That draft called `_wait_for_initialization`
+  "the follower path D2 deletes". It is not follower-only: `views.py:644` sets
+  `channel_initializing = True` on the branch that logs "Successfully
+  initialized channel", so the client that CAUSED the tune enters that wait
+  too. The consequence is observable: Python's first client of a channel whose
+  upstream then fails receives TS error packets carrying a message
+  (`output/ts/generator.py:238`), where the Go relay answers 200 and ends the
+  body with zero bytes.
+
+  **Recorded as a stated divergence, owner 2c-5**, alongside the failover
+  machinery that produces the error states in the first place. Deferring the
+  port is reasonable -- the message comes from channel metadata an initialising
+  client polls for, and the whole waiting shape changes once `Attach` starts
+  the source before the 200 is written -- but the reason must be the true one,
+  because the planner who reads this amendment is the one who owes the fix.
   ```
 
   Then **edit the 2c-5 row of the nine-PR table itself** (not prose beside it — 2c-1's Finding F2 established why): change "control-plane client (`next-source`/`release`/`events`, both HMAC headers, the exact timeout table)" to "the control-plane client's remaining routes (`release`, `events`; `next-source` landed in 2c-2, Amendment A2.1)".
@@ -4121,7 +4164,7 @@ Every break-check in this plan, and the phase it belongs to. A `✓` means the b
 | 9 | 4 | one backing array reused for every chunk (**a field, not a local**) | `TestAPublishedChunkIsNeverRewritten` | ✓ |
 | 10 | 4 | `Join` returns the head | both `Join` positioning tests | ✓ |
 | 11 | 4 | no age-based eviction | `TestRetentionEvictsBeforeTheRingIsFull` | ✓ |
-| 12 | 4 | `New` ignores `cfg.ChunkBytes` | 11 tests (10 `buffer`, 1 `channel`, 0 `httpapi`); **read `TestCapacityUsesTheConfiguredChunkSize`'s message** | ✓ |
+| 12 | 4 | `New` ignores `cfg.ChunkBytes` | 13 tests (11 `buffer`, 1 `channel`, 1 `httpapi`); **read the `httpapi` one's message** | ✓ |
 | 13 | 4 | `Head()` without `RLock` | `TestConcurrentReadersAndOneWriter`, as `WARNING: DATA RACE` | ✓ |
 | 14 | 5 | the token's field separator becomes `\|` | `TestNextSourceSignsTheRequestTheWayDjangoVerifiesIt` | — |
 | 15 | 5 | `Refused` embeds `*Unavailable` | `TestA403IsRefusedAndIsNotUnavailable` | — |
@@ -4140,17 +4183,22 @@ Every break-check in this plan, and the phase it belongs to. A `✓` means the b
 | 28 | 8 | the `ErrClosed` final read deleted | **expected not to redden**; report the gap | ✓ (did not redden) |
 | 29 | 11 | a local package named `redisclient` imported from `main.go` | `scripts/check_go_stdlib_only.sh` | ✓ |
 | 30 | 4 | `Wait`'s `fresh := r.head > cursor` becomes `false` | `TestWaitReturnsImmediatelyWhenAChunkArrivedDuringTheGap` | ✓ |
-| 31 | 7 | `runStart`'s deferred gate cleanup written inline | `TestAPanickingStartReleasesItsGate` **only** | ✓ |
+| 31 | 7 | `defer m.releaseGate(...)` becomes a plain call after `start()` | `TestAPanickingStartReleasesItsGate` **and** `TestConcurrentFirstClientsStartExactlyOneSource`; the wedge test stays green | ✓ |
 | 32 | 7 | `claim`'s `if !c.ring.Closed()` becomes `if true` | `TestAFinishedChannelIsNotHandedToANewClient` | ✓ |
 | 33 | 5 | `envOr` uses `os.Getenv` and falls back on empty | `TestAnEmptyHostVariableFailsRatherThanFallingBack` | ✓ |
 | 34 | 6 | the `User-Agent` assignment deleted | `TestProxySourceSendsTheUserAgent` | ✓ |
+| 35 | 7 | `releaseGate`'s defer moved inside a helper wrapping `start()` — the panic guarantee kept, the ordering lost | `TestConcurrentFirstClientsStartExactlyOneSource`, round 0-1; every other test green | ✓ ×3 |
+| 36 | 8 | the rig sends `buffer.ChunkBytes` instead of `rigChunkBytes` | **nothing** — that is the finding, and why `TestTheRingUsesTheChunkSizeTheControlPlaneSent` exists | ✓ (did not redden) |
 
 **Four rows deserve a second look before you trust them, and every one of the four was found by a break-check that did not redden.**
 
 - **9** does not redden if the reused array is a local inside `Write` rather than a field on `Ring`. That is the shape to inject.
 - **12** reddens eleven tests and most of the messages name a symptom. Confirm the capacity test's message, and note that `httpapi` does not redden at all.
 - **27** does not redden against `TestATuneRefusesIncompleteProxySettings`, because that fixture is missing seven keys at once and any one of them still fails the tune. The per-key test is the one that has the property.
-- **32** did not redden at all in an intermediate draft, because `run()` removed the channel from the map as well as `claim` dropping it — two mechanisms for one property, each silently covering for the other's deletion. That is what produced Ruling R11's "exactly one place". **A break-check that stays green is the most useful result this table produces**, and three of the four entries here exist because one did.
+- **32** did not redden at all in an intermediate draft, because `run()` removed the channel from the map as well as `claim` dropping it — two mechanisms for one property, each silently covering for the other's deletion. That is what produced Ruling R11's "exactly one place".
+- **36** is listed precisely because it does **not** redden: a rig sending the default chunk size disarms the end-to-end layer, and swapping in a non-default one still reddens nothing, because no HTTP client can observe a chunk boundary. Both facts were measured, and together they are why one test in `httpapi` reaches past the response body.
+
+**A break-check that stays green is the most useful result this table produces**, and four of the five caveats here exist because one did.
 
 ---
 
@@ -4169,13 +4217,15 @@ Every break-check in this plan, and the phase it belongs to. A `✓` means the b
 
 ---
 
-## Appendix — the six test files, in full
+## Appendix — the seven test files, in full
 
-Every file below was written, built, vetted, run under `go test -race` three times and linted at **0 issues** before this plan was written, and again after the fix round that produced Rulings R1's amendment, R4's narrowing, R5's correction and the `Manager.Attach` restructure. The task tables above say what each test pins and why; these are the bodies, so nothing has to be improvised against the six hollow shapes.
+Every file below was written, built, vetted, run under `go test -race` three times and linted at **0 issues** before this plan was written, and again after each of the two fix rounds — the first producing Rulings R10 and R11 and the `Manager.Attach` restructure, the second the gate-ordering correction inside it and the rig's non-default chunk size. The task tables above say what each test pins and why; these are the bodies, so nothing has to be improvised against the six hollow shapes.
 
 Two literals in here are oracles produced by the **other** implementation and must be regenerated rather than trusted (Task 2 Step 2 and Task 5 Step 4 have the commands): the SHA-256 of the synthetic asset, and the bound-token header.
 
-Three assertion orderings are load-bearing and are commented as such in place: the redirect test checks the **target's** request count before the error type (Appendix B), the finished-channel test polls for the re-tune rather than racing the dial (Appendix E), and the ring-closed assertion asks at the **head** rather than at cursor zero (Appendix E).
+Four assertion orderings are load-bearing and are commented as such in place: the redirect test checks the **target's** request count before the error type (Appendix B), the finished-channel test polls for the re-tune rather than racing the dial (Appendix E), the ring-closed assertion asks at the **head** rather than at cursor zero (Appendix E), and the concurrency test polls for the first source rather than asserting the count immediately (Appendix G) — that last one failed on round 122 of its first run, reporting zero sources where the defect it hunts reports two.
+
+**Appendix G is the one to read first if you change `Manager.Attach`.** It is the only test in the plan that guards an ordering rather than a value, and the defect it guards against is invisible to `-race`.
 
 
 ### Appendix A — `relay/buffer/ring_test.go` (Task 4 Step 3)
@@ -5654,6 +5704,27 @@ Three assertion orderings are load-bearing and are commented as such in place: t
 
   const testSecret = "phase2c1-test-secret"
 
+  // The chunk size the rig's fake control plane sends, and the unit every read
+  // length below is expressed in.
+  //
+  // DELIBERATELY NOT buffer.ChunkBytes. A rig that sent the default would be a
+  // pin that supplies the default (hollow shape 2), and it would disarm this
+  // whole end-to-end layer against the one property Amendment A1.4 exists to
+  // prove: with the wire value equal to the constant, a relay that ignored
+  // BUFFER_CHUNK_SIZE entirely would behave identically and every test here
+  // would stay green. Measured: with the default, forcing New to ignore
+  // cfg.ChunkBytes reddens 0 of these tests; with 700 packets it reddens them.
+  //
+  // 700 packets rather than a round number of bytes, so the chunk stays a whole
+  // number of TS packets as the real one is.
+  const rigChunkBytes = buffer.TSPacketSize * 700
+
+  // Enough ring for sixty-four of those, so a test can read several chunks
+  // without the writer evicting the head of what it is about to read. The
+  // earlier 188*4000 budget gave a capacity of TWO at the default chunk size,
+  // against a test that read exactly two -- no margin at all.
+  const rigBudgetBytes = rigChunkBytes * 64
+
   // rig is a whole relay in front of a whole fake deployment: a fake Django, a
   // fake provider, and this process's own mux served over a real socket.
   //
@@ -5677,10 +5748,17 @@ Three assertion orderings are load-bearing and are commented as such in place: t
   	if cp.SourceURL == "" {
   		cp.SourceURL = upstream.URL()
   	}
+  	if cp.Settings == nil {
+  		// Only when the caller has not supplied its own: the per-key required
+  		// test deletes a key from the full set and must keep that set.
+  		settings := relaytest.EffectiveProxySettings()
+  		settings["BUFFER_CHUNK_SIZE"] = rigChunkBytes
+  		cp.Settings = settings
+  	}
   	controlPlane := relaytest.NewControlPlane(cp)
   	t.Cleanup(controlPlane.Close)
 
-  	manager := channel.NewManager(channel.ManagerConfig{BudgetBytes: buffer.TSPacketSize * 4000})
+  	manager := channel.NewManager(channel.ManagerConfig{BudgetBytes: rigBudgetBytes})
   	t.Cleanup(manager.StopAll)
 
   	server := New(Config{
@@ -5742,7 +5820,7 @@ Three assertion orderings are load-bearing and are commented as such in place: t
   	// Two chunks' worth. The client is positioned five seconds behind live and
   	// the buffer is younger than that, so it starts at the oldest chunk --
   	// meaning what arrives is the head of the provider's own payload.
-  	want := buffer.ChunkBytes * 2
+  	want := rigChunkBytes * 2
   	got := make([]byte, want)
   	if _, err := io.ReadFull(response.Body, got); err != nil {
   		t.Fatalf("reading the stream: %v", err)
@@ -5764,6 +5842,42 @@ Three assertion orderings are load-bearing and are commented as such in place: t
   	}
   }
 
+  // A1.4's payoff, asserted where it can actually be seen. Making the rig send a
+  // non-default BUFFER_CHUNK_SIZE is necessary but NOT sufficient: every other
+  // test here reads a byte stream, and a relay that ignored the wire value and
+  // used the constant would still deliver correct, aligned, in-order TS -- just
+  // in differently sized pieces no HTTP client can observe. Measured: with the
+  // rig alone, forcing New to ignore cfg.ChunkBytes reddens 0 of these tests.
+  //
+  // This one looks at the ring the tune actually built. It is the only test in
+  // the package that reaches past the response body, and that is the point:
+  // chunk size is invisible from outside by construction, so an end-to-end
+  // assertion on it has to go one layer in or not exist.
+  func TestTheRingUsesTheChunkSizeTheControlPlaneSent(t *testing.T) {
+  	payload := relaytest.SyntheticTS(4096, 0x100)
+  	rig := newRig(t, relaytest.ControlPlaneConfig{}, relaytest.Config{Payload: payload})
+
+  	response := rig.tune(t, "/proxy/ts/stream/a-channel-uuid", nil)
+  	defer func() { _ = response.Body.Close() }()
+  	if _, err := io.ReadFull(response.Body, make([]byte, rigChunkBytes)); err != nil {
+  		t.Fatalf("reading the stream: %v", err)
+  	}
+
+  	ch := rig.Manager.Get("a-channel-uuid")
+  	if ch == nil {
+  		t.Fatal("the channel is not in the manager after a successful tune")
+  	}
+  	chunks, _, _ := ch.Ring().Read(0)
+  	if len(chunks) == 0 {
+  		t.Fatal("the ring holds no chunks after the client read a chunk's worth")
+  	}
+  	if got := len(chunks[0]); got != rigChunkBytes {
+  		t.Fatalf("the ring's chunk is %d bytes, want %d -- the relay used its own "+
+  			"constant instead of the BUFFER_CHUNK_SIZE the control plane sent, "+
+  			"which is the second copy Amendment A1.4 removes", got, rigChunkBytes)
+  	}
+  }
+
   // The tune makes exactly one next-source call, signed with both internal
   // headers. A client that could reach the relay without them would be talking
   // to a relay that had not asked Django anything.
@@ -5775,7 +5889,7 @@ Three assertion orderings are load-bearing and are commented as such in place: t
   		t.Fatalf("tune = %d, want 200", response.StatusCode)
   	}
   	// Read a little so the tune has certainly gone through.
-  	if _, err := io.ReadFull(response.Body, make([]byte, buffer.ChunkBytes)); err != nil {
+  	if _, err := io.ReadFull(response.Body, make([]byte, rigChunkBytes)); err != nil {
   		t.Fatalf("reading the stream: %v", err)
   	}
 
@@ -5942,6 +6056,167 @@ Three assertion orderings are load-bearing and are commented as such in place: t
   		}
   	case <-time.After(10 * time.Second):
   		t.Fatal("the client's response never ended after the upstream stopped")
+  	}
+  }
+  ```
+
+### Appendix G — `relay/channel/concurrent_test.go` (Task 7 Step 3)
+
+  ```go
+  package channel
+
+  import (
+  	"context"
+  	"io"
+  	"sync"
+  	"testing"
+  	"time"
+
+  	"github.com/D10Scot/Dispatcharr/relay/buffer"
+  )
+
+  // waitForStart blocks until at least one source has entered Run, and returns
+  // how many had by then. A deadline rather than a sleep: a fixed wait either
+  // costs four hundred rounds of it or races anyway.
+  func waitForStart(t *testing.T, c *sourceCounter, round int) int {
+  	t.Helper()
+  	deadline := time.Now().Add(5 * time.Second)
+  	for {
+  		if _, started := c.snapshot(); started > 0 {
+  			return started
+  		}
+  		if time.Now().After(deadline) {
+  			t.Fatalf("round %d: no source started within five seconds", round)
+  		}
+  		time.Sleep(100 * time.Microsecond)
+  	}
+  }
+
+  // A source that counts how many are running right now and how many ever ran.
+  type countingSource struct{ c *sourceCounter }
+
+  func (s countingSource) Run(ctx context.Context, _ io.Writer) error {
+  	s.c.enter()
+  	defer s.c.leave()
+  	<-ctx.Done()
+  	return ctx.Err()
+  }
+
+  type sourceCounter struct {
+  	mu      sync.Mutex
+  	running int
+  	started int
+  }
+
+  func (c *sourceCounter) enter() {
+  	c.mu.Lock()
+  	defer c.mu.Unlock()
+  	c.running++
+  	c.started++
+  }
+
+  func (c *sourceCounter) leave() {
+  	c.mu.Lock()
+  	defer c.mu.Unlock()
+  	c.running--
+  }
+
+  func (c *sourceCounter) snapshot() (running, started int) {
+  	c.mu.Lock()
+  	defer c.mu.Unlock()
+  	return c.running, c.started
+  }
+
+  // THE ORDERING TEST. Eight clients tune one channel at once, four hundred
+  // times over. The properties are all-or-nothing and none of them is a data
+  // race, which is exactly why this test exists: -race does not flag an
+  // ordering bug, and every assertion below was violated by a version of
+  // Attach that passed -race cleanly.
+  //
+  // What went wrong in that version: the gate closed when the START finished
+  // rather than when Attach returned, so a waiter woken by it raced the
+  // caller's own map insertion, found neither a channel nor a gate, and
+  // started a SECOND upstream. The visible damage was a second provider
+  // connection with no map entry and nothing that would ever stop it, and a
+  // first client whose release tore down the other client's channel.
+  func TestConcurrentFirstClientsStartExactlyOneSource(t *testing.T) {
+  	const clients = 8
+  	const rounds = 400
+
+  	for round := range rounds {
+  		counter := &sourceCounter{}
+  		m := NewManager(ManagerConfig{BudgetBytes: buffer.TSPacketSize * 32})
+
+  		var wg sync.WaitGroup
+  		seen := make([]*Channel, clients)
+  		releases := make([]func(), clients)
+  		errs := make([]error, clients)
+  		for i := range clients {
+  			wg.Add(1)
+  			go func() {
+  				defer wg.Done()
+  				c, release, err := m.Attach("one", func() (Source, Tuning, error) {
+  					return countingSource{c: counter}, testTuning(), nil
+  				})
+  				seen[i], releases[i], errs[i] = c, release, err
+  			}()
+  		}
+  		wg.Wait()
+
+  		for i, err := range errs {
+  			if err != nil {
+  				t.Fatalf("round %d: client %d failed to attach: %v", round, i, err)
+  			}
+  		}
+  		for i, c := range seen {
+  			if c != seen[0] {
+  				t.Fatalf("round %d: client %d got a different *Channel from client 0: "+
+  					"two clients of one channel are watching two different upstreams",
+  					round, i)
+  			}
+  		}
+  		// Polled up, then bounded. publish starts the source goroutine and
+  		// returns without waiting for it to be scheduled, so asserting the
+  		// count immediately races Go's scheduler rather than the code -- which
+  		// this test did on round 122 of its first run, reporting zero sources
+  		// where the defect it hunts reports two. Wait for the first, then
+  		// require that there is only one.
+  		started := waitForStart(t, counter, round)
+  		if started != 1 {
+  			t.Fatalf("round %d: %d sources were started for one channel, want 1 -- "+
+  				"a second provider connection was opened", round, started)
+  		}
+  		if got := m.Get("one"); got != seen[0] {
+  			t.Fatalf("round %d: the map holds %v, not the channel handed to clients -- "+
+  				"the channel clients are watching is unreachable and nothing can stop it",
+  				round, got)
+  		}
+  		if n := len(m.ids()); n != 1 {
+  			t.Fatalf("round %d: the manager holds %d channels for one id, want 1", round, n)
+  		}
+
+  		for _, release := range releases {
+  			release()
+  		}
+
+  		// Every source must be gone. A source still running after the last
+  		// client left is a leaked provider connection holding a slot.
+  		deadline := time.Now().Add(5 * time.Second)
+  		for {
+  			running, _ := counter.snapshot()
+  			if running == 0 {
+  				break
+  			}
+  			if time.Now().After(deadline) {
+  				t.Fatalf("round %d: %d source goroutines still running after every "+
+  					"client released -- a leaked provider connection", round, running)
+  			}
+  			time.Sleep(time.Millisecond)
+  		}
+  		if n := len(m.ids()); n != 0 {
+  			t.Fatalf("round %d: the manager still holds %d channels after every client released", round, n)
+  		}
+  		m.StopAll()
   	}
   }
   ```
