@@ -35,6 +35,19 @@ class StreamProfileRefSerializer(serializers.Serializer):
     id = serializers.IntegerField()
     command = serializers.CharField(allow_blank=True)
     args = serializers.CharField(allow_blank=True)
+    # Phase 2 PR 2c-1. Which of the three Stream Profile architectures
+    # this is: "redirect", "proxy" or "transcode". Required, not
+    # optional -- every producer goes through next_source.py's
+    # _stream_profile_ref(), so there is no shape that can omit it, and
+    # a Go relay that has to guess is the gap this field closes
+    # (spec § Stage 2c, Amendment A1.1).
+    #
+    # NOT a ChoiceField: the three values are a closed set today, and a
+    # ChoiceField would make adding a fourth architecture a wire-schema
+    # change that 400s a relay one version behind. A relay reading an
+    # unrecognised kind should degrade, not be told the payload is
+    # invalid by its own control plane.
+    kind = serializers.CharField()
 
 
 class SourceSerializer(serializers.Serializer):

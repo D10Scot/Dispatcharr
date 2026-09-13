@@ -1,0 +1,193 @@
+name: Go Tests
+
+# Always triggers, and gates internally — the same shape as
+# frontend-tests.yml, backend-tests.yml, e2e-tests.yml and
+# lifecycle-tests.yml, and for the same reason. `Go result` at the bottom is
+# the aggregate that can be required on every PR; `build` and `lint` cannot
+# be, because a gated job that skips still reports, but a path-filtered
+# workflow that never triggers reports nothing at all, leaving a required
+# check "Expected" forever and blocking the merge.
+#
+# The coverage ratchet is NOT here. It arrives in 2c-9, which adds a job to
+# this workflow and a floor file beside it; the aggregate below already has
+# the shape to take it.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: go-tests-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  changes:
+    name: Detect relevant changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      go: ${{ steps.filter.outputs.go }}
+    steps:
+      # The `if:` is always true under this workflow's three triggers, and it
+      # is copied deliberately rather than simplified: frontend-tests.yml,
+      # e2e-tests.yml and lifecycle-tests.yml all carry the identical line,
+      # so it is the house spelling of this job, and a fourth workflow that
+      # differs invites the reader to wonder which one is wrong. If the
+      # triggers ever grow a `schedule:`, it starts doing work.
+      - name: Checkout code
+        if: github.event_name == 'pull_request' || github.event_name == 'push'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          # pull_request checks out the merge commit, whose first parent is
+          # the base branch tip — depth 2 is enough to diff the whole PR. A
+          # push diffs github.event.before against the new head instead, and
+          # that commit is at an unknown depth, so it needs full history.
+          fetch-depth: ${{ github.event_name == 'pull_request' && 2 || 0 }}
+
+      - name: Decide whether the Go jobs need to run
+        id: filter
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_BEFORE: ${{ github.event.before }}
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            echo "go=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            changed=$(git diff --name-only HEAD^1 HEAD)
+          else
+            if [ "$EVENT_BEFORE" = "0000000000000000000000000000000000000000" ]; then
+              echo "No previous commit to diff against; running the Go jobs."
+              echo "go=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            if ! changed=$(git diff --name-only "$EVENT_BEFORE" "$HEAD_SHA"); then
+              echo "Could not diff the pushed range; running the Go jobs."
+              echo "go=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          fi
+          printf 'Changed files:\n%s\n' "$changed"
+          # Deliberately does NOT match docker/Dockerfile (the relay-builder
+          # stage included): these jobs run `go build`/`go vet`/`go test
+          # -race`/golangci-lint directly against the module on the runner,
+          # never through a Docker build, so a Dockerfile-only change has
+          # nothing here to verify. docker-build.yml would catch a broken
+          # relay-builder stage, but only for a Dockerfile change and only
+          # AFTER merge -- it triggers on push to main, not on PRs.
+          pattern='^(relay/|\.golangci\.yml$|scripts/check_go_stdlib_only\.sh$|\.github/workflows/go-tests\.yml$)'
+          if printf '%s\n' "$changed" | grep -qE "$pattern"; then
+            echo "go=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "go=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  build:
+    name: Build, vet and test
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.go == 'true'
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: ./relay
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          # Read from go.mod rather than pinned here, so the toolchain has
+          # exactly one source of truth and CI cannot drift from the
+          # Dockerfile's builder stage without go.mod moving too.
+          go-version-file: relay/go.mod
+
+      - name: Build
+        run: go build ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      # -race is not optional: the concurrency model changes from
+      # gevent-cooperative to OS-thread-parallel goroutines in this phase, so
+      # a data race the Python implementation made structurally impossible
+      # becomes possible for the first time (spec § Testing).
+      - name: Test with the race detector
+        run: go test -race ./...
+
+      - name: Assert the module is standard-library only
+        working-directory: .
+        run: scripts/check_go_stdlib_only.sh relay
+
+  lint:
+    name: golangci-lint
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.go == 'true'
+    timeout-minutes: 15
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: relay/go.mod
+
+      - name: Run golangci-lint
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
+        with:
+          # Pinned deliberately, the same rule as zizmor's version in
+          # actions-lint.yml: a new release adding a linter must not fail an
+          # unrelated PR. Keep in sync with the version the PostToolUse hook
+          # checks for (.claude/hooks/run-go-checks.sh).
+          version: v2.13.2
+          working-directory: relay
+
+  # The one check in this workflow that may be required. It always reports,
+  # because it is not gated on anything — see the comment on the triggers.
+  go-result:
+    name: Go result
+    runs-on: ubuntu-latest
+    needs: [changes, build, lint]
+    if: always()
+    timeout-minutes: 5
+    steps:
+      - name: Verify the Go outcome
+        env:
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          BUILD_RESULT: ${{ needs.build.result }}
+          LINT_RESULT: ${{ needs.lint.result }}
+          GO_REQUIRED: ${{ needs.changes.outputs.go }}
+        run: |
+          echo "changes=$CHANGES_RESULT build=$BUILD_RESULT lint=$LINT_RESULT go-required=$GO_REQUIRED"
+          if [ "$CHANGES_RESULT" != "success" ]; then
+            echo "Change detection itself failed — cannot prove the Go jobs were unnecessary."
+            exit 1
+          fi
+          if [ "$GO_REQUIRED" != "true" ]; then
+            echo "No Go-relevant paths changed; the Go jobs were deliberately skipped."
+            exit 0
+          fi
+          # `skipped` here means a gated job never ran on a run that needed
+          # it, so only an exact `success` may report green.
+          for pair in "build:$BUILD_RESULT" "lint:$LINT_RESULT"; do
+            if [ "${pair#*:}" != "success" ]; then
+              echo "The Go jobs were required and ${pair%%:*} did not succeed."
+              exit 1
+            fi
+          done
+          echo "Go build, vet, tests and lint passed."

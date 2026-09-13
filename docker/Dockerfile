@@ -22,6 +22,33 @@ RUN npm ci --no-audit --progress=false
 RUN    npm run build && \
     rm -rf node_modules .cache
 
+# --- Build the Go relay ---
+
+# --platform=$BUILDPLATFORM with an explicit GOARCH, not a plain FROM.
+# docker-build.yml builds linux/amd64 and linux/arm64 in one buildx
+# invocation; a plain FROM would run the arm64 leg's compilation under QEMU
+# emulation, minutes per build, for a binary Go cross-compiles natively in
+# about a second.
+FROM --platform=$BUILDPLATFORM golang:1.27.1-trixie@sha256:9baa6b4187bbb98d240372a8a235ac0bb6b5ddd52bba1431dc2f7c0705862728 AS relay-builder
+
+ARG TARGETOS
+ARG TARGETARCH
+
+WORKDIR /src
+# One COPY, deliberately. The usual "copy go.mod first, download, then copy
+# the source" split exists to cache `go mod download` across source changes;
+# a stdlib-only module downloads nothing, so the split would add a layer
+# that caches an empty step and a comment claiming a benefit it does not
+# deliver. Reinstate it in the same commit as the first dependency, if there
+# ever is one.
+COPY ./relay ./
+
+# CGO_ENABLED=0 makes the binary static, so it runs on the final image
+# whatever its libc. -trimpath keeps build paths out of the binary;
+# -s -w drop the symbol and DWARF tables.
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
+    go build -trimpath -ldflags="-s -w" -o /out/relay-go .
+
 # --- Redeclare build arguments for the next stage ---
 ARG BASE_IMAGE
 
@@ -46,6 +73,10 @@ RUN for f in /app/docker/entrypoint*.sh; do \
 RUN rm -rf /app/frontend
 # Copy built frontend assets
 COPY --from=frontend-builder /app/frontend/dist /app/frontend/dist
+
+# The Go relay binary. /usr/local/bin so docker/supervisord.d/relay-go.conf
+# can name it without a path prefix.
+COPY --from=relay-builder /out/relay-go /usr/local/bin/relay-go
 
 # Add timestamp argument
 ARG TIMESTAMP
