@@ -27,11 +27,44 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"sort"
 	"sync"
 	"time"
 
 	"github.com/D10Scot/Dispatcharr/relay/buffer"
 )
+
+// ErrDuplicateClient is returned by Attach when the channel already has a
+// client registered under this id.
+//
+// The port of client_manager.py:218-221, whose add_client returns False for an
+// id already in _registered_clients; views.py:748-753 turns that False into a
+// 503. One process means one registry, so what Python enforces per worker is
+// enforced outright here.
+var ErrDuplicateClient = errors.New("channel: a client with this id is already attached")
+
+// SourceInfo is what the next-source answer said about the stream this channel
+// is playing, kept so the status endpoints can render it without a second
+// control-plane call. The fields are exactly the ones
+// ChannelStatus.get_basic_channel_info reads out of the metadata hash.
+type SourceInfo struct {
+	// URL is the provider URL. It reaches the /proxy/relay/channels payload
+	// because channel_status.py:472 puts it there and the Stats page shows it;
+	// that surface is internal and HMAC-authenticated. It must never reach a
+	// log line or a public response body.
+	URL string
+
+	// StreamProfileID is rendered as a STRING, because the metadata hash stores
+	// str(source["stream_profile"]["id"]) (input/manager.py:2165) and the
+	// serializer declares CharField.
+	StreamProfileID int
+
+	StreamID       int
+	StreamName     string
+	ChannelName    string
+	M3UProfileID   int
+	M3UProfileName string
+}
 
 // Channel is one running channel: its ring buffer, its source goroutine, its
 // client count and its state.
@@ -44,15 +77,20 @@ import (
 // together with the follower path and live:events:{id}, which existed only to
 // let a non-owning worker ask the owner to act.
 type Channel struct {
-	id     string
-	ring   *buffer.Ring
-	log    *slog.Logger
-	tuning Tuning
+	id        string
+	ring      *buffer.Ring
+	log       *slog.Logger
+	tuning    Tuning
+	source    SourceInfo
+	startedAt time.Time
 
 	mu      sync.RWMutex
 	state   State
 	lastErr error
-	clients int
+	// clients is the registry. Guarded by mu; the manager reads its length
+	// through Clients() inside its own critical section, which is what makes
+	// stopIfStillIdle's re-check and claim's addClient mutually exclusive.
+	clients map[string]*Client
 
 	cancel context.CancelFunc
 	done   chan struct{}
@@ -88,10 +126,14 @@ func (c *Channel) Err() error {
 }
 
 // Clients is how many readers are attached.
+//
+// Never capped, matching channel_status.py:461's SCARD: the LIST is capped at
+// ten without ?clients=all, the COUNT never is. The manager calls this inside
+// its own lock (stopIfStillIdle), so it must never take m.mu itself.
 func (c *Channel) Clients() int {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	return c.clients
+	return len(c.clients)
 }
 
 // Done is closed once the source goroutine has returned and the ring is shut.
@@ -101,18 +143,54 @@ func (c *Channel) Done() <-chan struct{} { return c.done }
 // methods so the manager can adjust the count while holding its own lock
 // without reaching into this struct -- the lock order is always manager then
 // channel, and nothing takes them the other way round.
-func (c *Channel) addClient() {
+func (c *Channel) addClient(cl *Client) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.clients++
+	if _, taken := c.clients[cl.ID]; taken {
+		return false
+	}
+	c.clients[cl.ID] = cl
+	return true
 }
 
-func (c *Channel) dropClient() int {
+// dropClient removes one client and reports how many remain.
+func (c *Channel) dropClient(id string) int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.clients--
-	return c.clients
+	delete(c.clients, id)
+	return len(c.clients)
 }
+
+// ClientSnapshot is every attached client, oldest connection first and ties
+// broken by id.
+//
+// DETERMINISTIC ORDER, where Python's is arbitrary: channel_status.py:533 reads
+// a Redis SET with SMEMBERS and slices the first ten of whatever order that
+// returned, so no order is the contract and any deterministic one is parity. It
+// is deterministic here because a golden-file comparison against the Python
+// serializer needs it to be, and because "the ten clients the list shows" being
+// a stable set is strictly better than a set that reshuffles between polls.
+func (c *Channel) ClientSnapshot() []Client {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	out := make([]Client, 0, len(c.clients))
+	for _, cl := range c.clients {
+		out = append(out, *cl)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if !out[i].ConnectedAt.Equal(out[j].ConnectedAt) {
+			return out[i].ConnectedAt.Before(out[j].ConnectedAt)
+		}
+		return out[i].ID < out[j].ID
+	})
+	return out
+}
+
+// Source is what the next-source answer said about this channel's stream.
+func (c *Channel) Source() SourceInfo { return c.source }
+
+// StartedAt is when the channel was published.
+func (c *Channel) StartedAt() time.Time { return c.startedAt }
 
 func (c *Channel) setState(state State, err error) {
 	c.mu.Lock()

@@ -274,7 +274,7 @@ func TestATuneRefusesIncompleteProxySettings(t *testing.T) {
 // thing that can fail the tune is that key's own absence.
 func TestEveryProxySettingThisRelayReadsIsRequired(t *testing.T) {
 	for _, key := range []string{
-		settingChunkBytes, settingRetention, settingJoinBehind, settingReadSize,
+		settingChunkBytes, settingRetention, settingJoinBehind, settingReadSize, settingShutdownDelay,
 	} {
 		t.Run(key, func(t *testing.T) {
 			settings := relaytest.EffectiveProxySettings()

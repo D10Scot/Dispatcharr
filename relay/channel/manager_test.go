@@ -17,6 +17,22 @@ func testTuning() Tuning {
 	return Tuning{ChunkBytes: buffer.TSPacketSize * 4, Retention: time.Minute}
 }
 
+// asStarted wraps a 2c-2-shaped start function in 2c-3's Started shape.
+func asStarted(f func() (Source, Tuning, error)) func() (Started, error) {
+	return func() (Started, error) {
+		source, tuning, err := f()
+		return Started{Source: source, Tuning: tuning}, err
+	}
+}
+
+// testClient is a registry row with a caller-chosen id. Distinct ids matter:
+// two Attach calls under ONE id are a duplicate registration and are refused
+// (ErrDuplicateClient), which is parity-matrix row 13's first half and exactly
+// what these tests must not accidentally exercise.
+func testClient(id string) *Client {
+	return &Client{ID: id, UserID: "0", OutputFormat: "mpegts"}
+}
+
 // A source that blocks until its context is done, counting how many times it
 // was started.
 type blockingSource struct{ started *int32Counter }
@@ -58,11 +74,11 @@ func TestTwoClientsShareOneSource(t *testing.T) {
 		return blockingSource{started: started}, testTuning(), nil
 	}
 
-	first, releaseFirst, err := m.Attach("chan-1", start)
+	first, releaseFirst, err := m.Attach("chan-1", testClient("a"), asStarted(start))
 	if err != nil {
 		t.Fatalf("first Attach: %v", err)
 	}
-	second, releaseSecond, err := m.Attach("chan-1", start)
+	second, releaseSecond, err := m.Attach("chan-1", testClient("b"), asStarted(start))
 	if err != nil {
 		t.Fatalf("second Attach: %v", err)
 	}
@@ -107,11 +123,11 @@ func TestTwoClientsMakeOneUpstreamRequest(t *testing.T) {
 	start := func() (Source, Tuning, error) {
 		return ProxySource{URL: up.URL()}, testTuning(), nil
 	}
-	ch, releaseFirst, err := m.Attach("chan-2", start)
+	ch, releaseFirst, err := m.Attach("chan-2", testClient("a"), asStarted(start))
 	if err != nil {
 		t.Fatalf("Attach: %v", err)
 	}
-	_, releaseSecond, err := m.Attach("chan-2", start)
+	_, releaseSecond, err := m.Attach("chan-2", testClient("b"), asStarted(start))
 	if err != nil {
 		t.Fatalf("Attach: %v", err)
 	}
@@ -142,9 +158,9 @@ func TestACleanUpstreamEndClosesTheRing(t *testing.T) {
 	m := NewManager(ManagerConfig{BudgetBytes: buffer.TSPacketSize * 32})
 	t.Cleanup(m.StopAll)
 
-	ch, release, err := m.Attach("chan-3", func() (Source, Tuning, error) {
+	ch, release, err := m.Attach("chan-3", testClient("a"), asStarted(func() (Source, Tuning, error) {
 		return ProxySource{URL: up.URL()}, testTuning(), nil
-	})
+	}))
 	if err != nil {
 		t.Fatalf("Attach: %v", err)
 	}
@@ -183,9 +199,9 @@ func TestAChannelWithFlowingBytesBecomesActive(t *testing.T) {
 	m := NewManager(ManagerConfig{BudgetBytes: buffer.TSPacketSize * 400})
 	t.Cleanup(m.StopAll)
 
-	ch, release, err := m.Attach("chan-active", func() (Source, Tuning, error) {
+	ch, release, err := m.Attach("chan-active", testClient("a"), asStarted(func() (Source, Tuning, error) {
 		return ProxySource{URL: up.URL()}, testTuning(), nil
-	})
+	}))
 	if err != nil {
 		t.Fatalf("Attach: %v", err)
 	}
@@ -212,9 +228,9 @@ func TestAnUpstreamFailurePutsTheChannelInError(t *testing.T) {
 	m := NewManager(ManagerConfig{BudgetBytes: buffer.TSPacketSize * 32})
 	t.Cleanup(m.StopAll)
 
-	ch, release, err := m.Attach("chan-4", func() (Source, Tuning, error) {
+	ch, release, err := m.Attach("chan-4", testClient("a"), asStarted(func() (Source, Tuning, error) {
 		return ProxySource{URL: up.URL()}, testTuning(), nil
-	})
+	}))
 	if err != nil {
 		t.Fatalf("Attach: %v", err)
 	}
@@ -248,17 +264,17 @@ func TestAPanickingStartDoesNotWedgeTheManager(t *testing.T) {
 				t.Error("the panic did not propagate to the caller")
 			}
 		}()
-		_, _, _ = m.Attach("boom", func() (Source, Tuning, error) {
+		_, _, _ = m.Attach("boom", testClient("a"), asStarted(func() (Source, Tuning, error) {
 			panic("the control plane exploded")
-		})
+		}))
 	}()
 
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		_, release, err := m.Attach("after", func() (Source, Tuning, error) {
+		_, release, err := m.Attach("after", testClient("a"), asStarted(func() (Source, Tuning, error) {
 			return blockingSource{started: &int32Counter{}}, testTuning(), nil
-		})
+		}))
 		if err != nil {
 			t.Errorf("the Attach after the panic failed: %v", err)
 			return
@@ -282,15 +298,15 @@ func TestAPanickingStartReleasesItsGate(t *testing.T) {
 
 	func() {
 		defer func() { _ = recover() }()
-		_, _, _ = m.Attach("boom", func() (Source, Tuning, error) { panic("boom") })
+		_, _, _ = m.Attach("boom", testClient("a"), asStarted(func() (Source, Tuning, error) { panic("boom") }))
 	}()
 
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		_, release, err := m.Attach("boom", func() (Source, Tuning, error) {
+		_, release, err := m.Attach("boom", testClient("a"), asStarted(func() (Source, Tuning, error) {
 			return blockingSource{started: &int32Counter{}}, testTuning(), nil
-		})
+		}))
 		if err != nil {
 			t.Errorf("retrying the panicked channel failed: %v", err)
 			return
@@ -319,9 +335,9 @@ func TestAFinishedChannelIsNotHandedToANewClient(t *testing.T) {
 	m := NewManager(ManagerConfig{BudgetBytes: buffer.TSPacketSize * 400})
 	t.Cleanup(m.StopAll)
 
-	first, releaseFirst, err := m.Attach("chan-5", func() (Source, Tuning, error) {
+	first, releaseFirst, err := m.Attach("chan-5", testClient("a"), asStarted(func() (Source, Tuning, error) {
 		return ProxySource{URL: dead.URL()}, testTuning(), nil
-	})
+	}))
 	if err != nil {
 		t.Fatalf("first Attach: %v", err)
 	}
@@ -332,9 +348,9 @@ func TestAFinishedChannelIsNotHandedToANewClient(t *testing.T) {
 
 	// The first client is still attached, which is the case that matters: a
 	// release would have stopped the channel anyway.
-	second, releaseSecond, err := m.Attach("chan-5", func() (Source, Tuning, error) {
+	second, releaseSecond, err := m.Attach("chan-5", testClient("b"), asStarted(func() (Source, Tuning, error) {
 		return ProxySource{URL: live.URL()}, testTuning(), nil
-	})
+	}))
 	if err != nil {
 		t.Fatalf("second Attach: %v", err)
 	}
@@ -373,9 +389,9 @@ func TestAReleaseCannotStopAChannelAConcurrentAttachJustJoined(t *testing.T) {
 		counter := &int32Counter{}
 		m := NewManager(ManagerConfig{BudgetBytes: buffer.TSPacketSize * 32})
 
-		_, releaseFirst, err := m.Attach("shared", func() (Source, Tuning, error) {
+		_, releaseFirst, err := m.Attach("shared", testClient("a"), asStarted(func() (Source, Tuning, error) {
 			return blockingSource{started: counter}, testTuning(), nil
-		})
+		}))
 		if err != nil {
 			t.Fatalf("round %d: first Attach: %v", round, err)
 		}
@@ -394,9 +410,9 @@ func TestAReleaseCannotStopAChannelAConcurrentAttachJustJoined(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			<-start
-			second, releaseSecond, secondErr = m.Attach("shared", func() (Source, Tuning, error) {
+			second, releaseSecond, secondErr = m.Attach("shared", testClient("b"), asStarted(func() (Source, Tuning, error) {
 				return blockingSource{started: counter}, testTuning(), nil
-			})
+			}))
 		}()
 		close(start)
 		wg.Wait()
