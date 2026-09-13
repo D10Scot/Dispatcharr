@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -164,6 +165,41 @@ func TestACleanUpstreamEndClosesTheRing(t *testing.T) {
 	if err := ch.Ring().Wait(t.Context(), ch.Ring().Head()); !errors.Is(err, buffer.ErrClosed) {
 		t.Fatalf("Wait at the head returned %v, want ErrClosed -- the ring is still "+
 			"open after the source returned, and every reader would block forever", err)
+	}
+}
+
+// A channel with one attached client and flowing bytes reaches active --
+// found broken by review: the prior mechanism (a manager-side markActive,
+// called only on a SECOND client's Attach) measured 0/300 rounds ever
+// reaching it, because a channel's first client never triggered it and
+// run()'s own concurrent write of waiting_for_clients usually raced a
+// second client's call into a no-op. promoteOnFirstChunk is now the one
+// mechanism, driven by the ring publishing its first chunk rather than by
+// how many clients have attached.
+func TestAChannelWithFlowingBytesBecomesActive(t *testing.T) {
+	up := relaytest.NewUpstream(relaytest.Config{Rate: 0.2})
+	t.Cleanup(up.Close)
+
+	m := NewManager(ManagerConfig{BudgetBytes: buffer.TSPacketSize * 400})
+	t.Cleanup(m.StopAll)
+
+	ch, release, err := m.Attach("chan-active", func() (Source, Tuning, error) {
+		return ProxySource{URL: up.URL()}, testTuning(), nil
+	})
+	if err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	defer release()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for ch.State() != StateActive && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if state := ch.State(); state != StateActive {
+		t.Fatalf("state = %q after bytes flowed for up to five seconds, want %q", state, StateActive)
+	}
+	if got := ch.Describe(); !strings.Contains(got, "state=active") {
+		t.Fatalf("Describe() = %q, want it to report state=active", got)
 	}
 }
 

@@ -135,6 +135,7 @@ func (c *Channel) run(ctx context.Context, source Source) {
 	defer c.ring.Close()
 
 	c.setState(StateWaitingForClients, nil)
+	go c.promoteOnFirstChunk(ctx)
 	err := source.Run(ctx, c.ring)
 
 	switch {
@@ -156,10 +157,39 @@ func (c *Channel) run(ctx context.Context, source Source) {
 	}
 }
 
-// markActive moves a channel out of waiting_for_clients on its first chunk.
-// Called by the manager's attach path rather than by the writer, because the
-// writer is an io.Writer and knows nothing about clients.
-func (c *Channel) markActive() {
+// promoteOnFirstChunk moves a channel out of waiting_for_clients the moment
+// its first chunk is published, mirroring the waiting_for_clients + data ->
+// active half of Python's promotion (apps/proxy/live_proxy/services/
+// channel_service.py:204-240's promote_channel_when_buffer_ready): "clients"
+// is not a separate condition to check here the way it is there, because a
+// channel in this manager never exists without at least one attached client
+// -- Manager.publish always installs the first client before starting this
+// goroutine (manager.go's own doc comment on publish). No parity-matrix row
+// pins this transition yet; it is one to add when a later PR builds the
+// status routes that expose `state`.
+//
+// THIS IS THE ONLY PLACE state MOVES TO active. An earlier version called an
+// equivalent method (markActive) from the manager's Attach path instead --
+// on a SECOND client's arrival, never the first -- which meant a channel's
+// very first (and often only) client never triggered it at all, and a
+// second client's call raced run()'s own concurrent write of
+// waiting_for_clients so it was usually a no-op anyway: measured by review
+// at 0/300 rounds ever reaching active. Two mechanisms for one transition is
+// exactly the shape CLAUDE.md's Ruling R11 warns about elsewhere in this
+// package -- removing the wrong one would have changed no test. There is
+// now exactly one.
+//
+// Runs as its own goroutine, started by run() alongside the source's copy
+// loop, because Ring.Wait is the ring's only "something was published"
+// signal and the copy loop itself is busy blocking on the upstream read.
+func (c *Channel) promoteOnFirstChunk(ctx context.Context) {
+	if err := c.ring.Wait(ctx, 0); err != nil {
+		// ctx.Err(): the channel stopped before any data arrived. ErrClosed:
+		// the ring closed with nothing ever published (e.g. an immediate
+		// upstream failure) -- Python's equivalent returns None ("no
+		// promotion applies") in both cases, never active.
+		return
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.state == StateWaitingForClients {

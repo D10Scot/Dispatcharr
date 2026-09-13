@@ -104,7 +104,11 @@ func (m *Manager) Attach(id string, start func() (Source, Tuning, error)) (*Chan
 	for {
 		existing, wait, own := m.claim(id)
 		if existing != nil {
-			existing.markActive()
+			// No markActive call here: promoteOnFirstChunk (run's own
+			// goroutine) is the one mechanism for waiting_for_clients ->
+			// active, and it runs regardless of which or how many clients
+			// are attached, so a second client's arrival needs no separate
+			// trigger.
 			return existing, func() { m.release(existing) }, nil
 		}
 		if own != nil {
