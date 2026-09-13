@@ -4,14 +4,50 @@
 # `missing` is the ratchet -- a MAXIMUM, not a target, and lower is better. It is set
 # from the WORST run of at least twelve on the tree that earned it, which is why this
 # gate carries no separate tolerance parameter: the measured spread is already inside
-# the number. Three regions are known to flap (non-owner local cleanup, server.py:2014-
-# 2046 inside cleanup_task's no-clients-timeout branch, and input/http_streamer.py:153-
-# 161's thread-join cleanup) -- CORRECTED IN 2b-4, measured at `04841a47`: the previous
-# four-region list's owner-side coordinated stop and the stderr-reader join
-# (input/manager.py) no longer flap on this tree, and _wait_for_channel_ready's error
-# branch never did; the two replacements above were unlisted before. The list has now
-# changed three times; a fixed tolerance would be stale on arrival, which this
-# correction is itself evidence for, not just an assertion of it.
+# the number. **104 statements flap across this campaign's own 12 CI rounds** (below),
+# measured FIRST-HAND from the retained per-label `gate-data-*` artifacts of the same
+# 12 runs `missing` was set from -- not from a smaller sample, not from an earlier tree,
+# and not inherited from a citation. The dominant source is `cleanup_task`
+# (`server.py`, ~53 of the 104, in four clusters: 1961-1989, 2014-2046, 2063-2068,
+# 2166-2192) -- unsurprising, since the spec's own § Reachability already names it as
+# "the source of the coverage gate's own run-to-run variance". The rest: `server.py`'s
+# `extend_ownership` (581-587) and `_recover_stuck_channel_stops` (1782-1788), plus
+# assorted singles/pairs at 1263-1264, 1615, 1806-1807, 1940, 2274-2275, 2288, 2440;
+# `input/manager.py` at 363-365, 640-641, 1009-1011, 1383-1384, 1785, 1856-1863 (17
+# total, NOT including the 1739-1767 stderr-reader join, which does not flap on this
+# tree); `input/http_streamer.py` 156-157; `live_proxy/utils.py` 221-222; one line
+# each in `input/buffer.py` (3 total: 282, 355-356), `output/fmp4/manager.py` (175-176,
+# 334), `output/fmp4/buffer.py` (92), `output/fmp4/generator.py` (142),
+# `output/profile/manager.py` (382), `output/ts/generator.py` (635).
+#
+# THIS SUPERSEDES BOTH the four-region list this file previously carried (owner-side
+# coordinated stop, non-owner local cleanup, the stderr-reader join,
+# `_wait_for_channel_ready`'s error branch) AND a plan-review correction to it measured
+# at `04841a47`, before this PR's ~200 tests existed -- two of them (Task 9b, Task 10)
+# land squarely on the modules in question, so a citation measured before they landed
+# could have been invalidated by them. It was not: this measurement is taken from the
+# SAME 12 runs `missing` was set from, i.e. AFTER Tasks 1-11 (Task 9b and Task 10
+# included) were already committed, and it independently confirms the citation's
+# claims -- the owner-side coordinated stop (`channel_service.py`, zero flap observed)
+# and the stderr-reader join (`input/manager.py:1739-1767`, zero flap observed) do not
+# flap on this tree, `_wait_for_channel_ready`'s error branch does not appear at all,
+# and `non-owner local cleanup` (`server.py:2099-2112`, `2489-2566`) is exactly constant
+# across all 12 rounds -- zero flap observed there either. So this is a first-hand
+# CONFIRMATION of the correction, not merely an inherited claim, and it is stronger
+# evidence than the citation because it was measured on the post-PR tree, in CI, over
+# more rounds (12 vs whatever `04841a47` used).
+#
+# CAVEAT, stated because the shape of this note is what let the OLD list go stale
+# unnoticed: unobserved-to-vary across 12 rounds is not proof of stability, only
+# absence of observed variance in that sample. This list has now changed three times
+# (the original set, the 2a-7 four-region list, this one) -- exactly why the gate
+# carries no tolerance parameter keyed to a fixed region list, and why a future
+# correction to THIS list, when it comes, should re-derive from CI artifacts again
+# rather than assume today's set is permanent. An independent local 6-round check
+# (per-container isolation, same tree, kept in this PR's own record) broadly
+# corroborates the shape of this list -- non-owner local cleanup and the owner-side
+# coordinated stop stayed constant there too -- but is not the source of the numbers
+# above; the source is the 12 CI rounds.
 #
 # `shape`, `modules` and `rcfile` are EQUALITY checks, not comparisons. A different
 # measurement shape, module list or measurement DEFINITION makes two numbers
@@ -86,9 +122,8 @@
 # once. The mechanism the 2a-7 note names (per-container isolation makes the
 # owner-side block deterministic but not the total) is unchanged in KIND --
 # some regions still flap -- but not in the SPECIFIC regions: see the
-# corrected three-region list at the top of this file (04841a47's finding,
-# not re-derived from this campaign's own round data, which recorded
-# aggregate `missing=` only and not per-line diffs). Only the SIZE of the
+# 104-statement flappy set measured directly from this campaign's own 12
+# retained CI artifacts, at the top of this file. Only the SIZE of the
 # local/CI gap varied between campaigns, which is itself evidence the gap is
 # not a fixed constant to budget against, and the correct response stays
 # "measure in CI", never "assume a fixed offset".
