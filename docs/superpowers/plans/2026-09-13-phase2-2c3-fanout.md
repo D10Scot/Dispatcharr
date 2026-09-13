@@ -10,9 +10,9 @@
 
 ---
 
-## Sequencing: this plan sits on 2c-2's fix commits, verified at `87dca88d`
+## Sequencing: this plan sits on 2c-2's fix commits, verified at `81d41975`
 
-2c-2's own review confirmed all three defects this plan found by reading its code, and 2c-2 fixed them itself. **Everything below was rebuilt and re-verified against `migration/phase2c-vertical-slice` at `87dca88d`** (`b5e62fcf` through `87dca88d`, eight commits, **review-2c2 CLEAR and out of draft**), including every `_test.go`. The three shapes, pinned with `git show "87dca88d:relay/…"` rather than read off a working tree:
+2c-2's own review confirmed all three defects this plan found by reading its code, and 2c-2 fixed them itself. **Everything below was rebuilt and re-verified against `migration/phase2c-vertical-slice` at `81d41975`** (`b5e62fcf` through `81d41975`, eight commits, **review-2c2 CLEAR and out of draft**), including every `_test.go`. The three shapes, pinned with `git show "81d41975:relay/…"` rather than read off a working tree:
 
 | Fix | Shape as landed | What 2c-3 does with it |
 |---|---|---|
@@ -326,11 +326,11 @@ Nothing under `core/`, `dispatcharr/`, `frontend/`, `e2e/` or `metrics/` is touc
 - [ ] **Step 0: Seed from the MERGED SHA, not from the branch**
 
   ```bash
-  cd <your worktree> && git log --oneline -1 <2C2_MERGED_SHA>
-  git diff --stat <2C2_MERGED_SHA> HEAD -- relay/
+  cd <your worktree> && git log --oneline -1 81d41975
+  git diff --stat 81d41975 HEAD -- relay/
   ```
 
-  **`<2C2_MERGED_SHA>` is filled in by the orchestrator before this plan is dispatched.** A branch name is not a seed: `migration/phase2c-vertical-slice` moved three times while this plan was being written, and each move changed a shape the appendices depend on. The appendices below were built and verified against **`87dca88d` plus 2c-2's `markActive` removal**; anything later is a diff against that, and **Step 2's table is the diff**.
+  **`81d41975` is 2c-2 as merged** — PR #285, squashed onto `main`, so every `git show "81d41975:relay/…"` in this plan resolves without fetching a branch. A branch name is not a seed: `migration/phase2c-vertical-slice` moved four times while this plan was written and each move changed a shape the appendices depend on. Verified before this plan was re-pointed at the merge: `git diff 87dca88d 81d41975` is **empty for the whole tree**, not only for `relay/`, so the appendices below — built and verified against the branch tip — apply to the merge SHA unchanged. Anything later than `81d41975` is a diff against it, and **Step 2's table is the diff**.
 
   If any symbol in Step 2 differs from what that table expects, **stop and report before writing a line**. Reconciling a moved shape mid-task is how an appendix quietly stops matching the tree it was verified against.
 
@@ -358,24 +358,26 @@ Nothing under `core/`, `dispatcharr/`, `frontend/`, `e2e/` or `metrics/` is touc
   | `(*Ring).Read` | `func (r *Ring) Read(cursor uint64) (chunks [][]byte, next uint64, skipped uint64)` | Task 1 rewrites its body; a different signature makes Task 1 a redesign — stop and report |
   | `(*Ring).Join` | `func (r *Ring) Join(behind time.Duration) uint64` | Task 5's `serveClient` calls it |
   | `(*Manager).Attach` | `func (m *Manager) Attach(id string, start func() (Source, Tuning, error)) (*Channel, func(), error)` | Task 3 changes it to take a `*Client` and return a `Started`; if 2c-2 already changed it, reconcile and report |
-  | `(*Manager).release` | **as landed at `87dca88d`**: `dropClient` outside the lock, then `stopIfStillIdle(c)` which re-reads `Clients()` and checks `m.channels[c.id] == c` under `m.mu` | if you find the two-step `m.Stop(c.id)` shape, the tree is older than `87dca88d` — stop and report rather than applying this plan to it |
+  | `(*Manager).release` | **as landed at `81d41975`**: `dropClient` outside the lock, then `stopIfStillIdle(c)` which re-reads `Clients()` and checks `m.channels[c.id] == c` under `m.mu` | if you find the two-step `m.Stop(c.id)` shape, the tree is older than `81d41975` — stop and report rather than applying this plan to it |
   | `ProxySource.Run` | **as landed**: `defer client.CloseIdleConnections()` right after the client is built | if absent, same answer: wrong base |
   | `(*Ring).Read`'s `next` | **as landed**: the index of the last chunk appended, tracked in the loop | if it returns `r.chunks[len-1].Index`, same answer |
-  | `(*Channel).markActive` | **expected ABSENT.** 2c-2's next fix commit makes `run()` set `StateActive` on the first chunk and removes or repurposes this method; the appendices here carry neither the method nor `Attach`'s call to it | **if it is still present**, the tree is older than that fix: a channel this PR serves will report `waiting_for_clients` for its whole life on the list endpoint. Measured — see Step 2a. Stop and report rather than re-adding the call |
-  | `(*Channel).run` sets `StateActive` | **expected present**, on the first published chunk | if neither this nor `markActive` exists, no channel ever reaches `active` and the list endpoint says so. That is the one thing in this PR that cannot be fixed from inside it |
+  | `(*Channel).markActive` | **the DECLARATION is absent at `81d41975`**: `grep -c 'func (c \*Channel) markActive'` is 0. Do NOT grep the bare name — it survives in three explanatory comments (`channel.go`, `manager.go`, `manager_test.go`) and a naive count reports 3, which reads as "still present" | if the declaration is there, the tree predates the merge and the appendices will not apply cleanly. Stop and report |
+  | `(*Channel).promoteOnFirstChunk` | **present at `81d41975`**, started from `run()` and waiting on `ring.Wait(ctx, 0)` | if absent, no channel ever reaches `active` and the list endpoint this PR ships reports `waiting_for_clients` forever. Stop and report; do not add your own watcher (§ Sequencing) |
   | `(*Channel).clients` | an `int` | Task 2 replaces it with a map |
   | `Tuning` | three fields | Task 2 adds a fourth |
   | `control.VerifyInternalRequest` | present and exported | Task 6 cannot gate the route without it |
 
-- [ ] **Step 2a: Probe what `state` a serving channel reports**
+- [ ] **Step 2a: Confirm there is exactly ONE first-chunk mechanism**
 
-  The one check in Task 0 that is a behaviour, not a signature, and it is here because the appendices depend on a fix that had not landed when they were written:
+  The one check in Task 0 that is about a *count* rather than a presence:
 
   ```bash
-  cd <your worktree>/relay && grep -n "StateActive" channel/channel.go
+  cd <your worktree>/relay && grep -rn "state = StateActive" --include='*.go' . | grep -v _test.go
   ```
 
-  **Expect `run()` to set it on the first published chunk.** Measured on a tree with `markActive` removed and no replacement: a channel with a client reading it reports `waiting_for_clients` on `GET /proxy/relay/channels` for its whole life, because nothing else ever moves it. That is 2c-2's to fix and this PR cannot fix it from inside — but this PR's list endpoint is the first thing that *renders* it, so it is this PR's job to notice.
+  **Expect exactly one line, `channel/channel.go`'s, inside `promoteOnFirstChunk`** — measured at `81d41975`. Match the **assignment**, not the identifier: `StateActive` also appears in the state vocabulary's own declaration and in comments, so grepping the bare name reports several and tells you nothing.
+
+  Two is the shape § Sequencing forbids, and it does not fail loudly: `TestAChannelWithFlowingBytesBecomesActive` stays green with either mechanism deleted, so a second watcher does not break a test — it makes a passing one meaningless. **Re-run this grep at the end of Task 12**; the count is the assertion.
 
 - [ ] **Step 3: Confirm the settings the rig sends**
 
@@ -437,7 +439,7 @@ Ruling R2 caps the read. The byte counter is what lets Task 6's payload carry `t
   const MaxChunksPerRead = 20
   ```
 
-  Then add the cap to `Read`'s existing selection loop. **Two lines and a `continue`, on the shape `87dca88d` already has:**
+  Then add the cap to `Read`'s existing selection loop. **Two lines and a `continue`, on the shape `81d41975` already has:**
 
   ```go
   	for _, c := range r.chunks {
@@ -618,7 +620,7 @@ Ruling R5. This is the task the ordering tests exist for, and the one where `-ra
 
 - [ ] **Step 1: Edit `relay/channel/manager.go` — a delta, not a rewrite**
 
-  **The complete file is Appendix D**, and the part of it that matters most is what is **unchanged**: `release`'s drop stays outside `m.mu`, and `stopIfStillIdle` keeps its re-check, its identity check and its stop-outside-the-lock. That is 2c-2's fix commit `87dca88d`, demonstrated by its own `TestAReleaseCannotStopAChannelAConcurrentAttachJustJoined` at roughly one race in several thousand rounds against the pre-fix code. **Preserve it.**
+  **The complete file is Appendix D**, and the part of it that matters most is what is **unchanged**: `release`'s drop stays outside `m.mu`, and `stopIfStillIdle` keeps its re-check, its identity check and its stop-outside-the-lock. That is 2c-2's fix commit `81d41975`, demonstrated by its own `TestAReleaseCannotStopAChannelAConcurrentAttachJustJoined` at roughly one race in several thousand rounds against the pre-fix code. **Preserve it.**
 
   Five changes to it:
 
@@ -659,14 +661,14 @@ Ruling R5. This is the task the ordering tests exist for, and the one where `-ra
 
 - [ ] **Step 2: Rewrite the fifteen `Attach` call sites this package inherits**
 
-  `Attach(id, start func() (Source, Tuning, error))` becomes `Attach(id, *Client, start func() (Started, error))`, and **sixteen call sites in 2c-2's own committed tests break** — measured at `87dca88d`, up from fifteen at `9f744890` because `b05cc401`'s state test adds one. Naming them, because a signature change that lists no call sites is a signature change somebody discovers at `go vet`:
+  `Attach(id, start func() (Source, Tuning, error))` becomes `Attach(id, *Client, start func() (Started, error))`, and **sixteen call sites in 2c-2's own committed tests break** — measured at `81d41975`, up from fifteen at `9f744890` because `b05cc401`'s state test adds one. Naming them, because a signature change that lists no call sites is a signature change somebody discovers at `go vet`:
 
-  | File | Lines (at `87dca88d`) |
+  | File | Lines (at `81d41975`) |
   |---|---|
   | `relay/channel/concurrent_test.go` | one |
   | `relay/channel/manager_test.go` | fifteen of them |
 
-  **Three of them are 2c-2's own fix-commit tests** — `TestAReleaseCannotStopAChannelAConcurrentAttachJustJoined` (twice, to `shared`, so two distinct ids) and `TestAChannelWithFlowingBytesBecomesActive`. Line numbers are deliberately not listed: they moved between `9f744890` and `87dca88d` and will move again.
+  **Three of them are 2c-2's own fix-commit tests** — `TestAReleaseCannotStopAChannelAConcurrentAttachJustJoined` (twice, to `shared`, so two distinct ids) and `TestAChannelWithFlowingBytesBecomesActive`. Line numbers are deliberately not listed: they moved between `9f744890` and `81d41975` and will move again.
 
   **Count them, do not trust this table.** Line numbers move with every fix commit and the total can too:
 
@@ -674,7 +676,7 @@ Ruling R5. This is the task the ordering tests exist for, and the one where `-ra
   cd <your worktree>/relay && grep -c '\.Attach(' channel/manager_test.go channel/concurrent_test.go
   ```
 
-  Measured at `87dca88d`: **15 + 1 = 16**. A different total is a finding for the report, not something to reconcile silently.
+  Measured at `81d41975`: **15 + 1 = 16**. A different total is a finding for the report, not something to reconcile silently.
 
   **Two adapters in `manager_test.go` absorb all sixteen**, rather than sixteen closure rewrites. None of those tests is about `SourceInfo` or about client identity — they are about one source per channel, the gate, the panic guarantee and the finished-channel drop — so the change should not touch what they say:
 
@@ -762,10 +764,10 @@ Ruling R5. This is the task the ordering tests exist for, and the one where `-ra
 ---
 ## Task 4: (deleted — 2c-2 fixed the transport leak itself)
 
-`ProxySource.Run` now does `defer client.CloseIdleConnections()` on the `*http.Client` it builds (`relay/channel/source_proxy.go` at `87dca88d`). **No edit here.** Two things survive from what this task used to be:
+`ProxySource.Run` now does `defer client.CloseIdleConnections()` on the `*http.Client` it builds (`relay/channel/source_proxy.go` at `81d41975`). **No edit here.** Two things survive from what this task used to be:
 
 - **`TestConcurrentAttachAndReleaseLeaksNoGoroutine` still lands**, in Task 3's `fanout_test.go`. A fix whose absence no test reddens is a fix nobody can keep, and 2c-2's own fix commit carries no goroutine-count test.
-- **Task 0 Step 2 verifies the `defer` is there.** If it is not, the tree is older than `87dca88d` and everything below is being applied to the wrong base.
+- **Task 0 Step 2 verifies the `defer` is there.** If it is not, the tree is older than `81d41975` and everything below is being applied to the wrong base.
 
 ---
 ## Task 5: `relay/httpapi` — who is asking, and what they may have
@@ -1516,7 +1518,7 @@ Every break-check in this plan, and the task it belongs to. A `✓` means it was
 
 ## Appendix — the files, in full
 
-Every file below was written, built, vetted, run under `go test -race` three times and linted at **0 issues** in a scratch module seeded from **`migration/phase2c-vertical-slice` at `87dca88d`, including every `_test.go`**. 2c-2's own tests — all of them, its three fix commits' included — pass unchanged alongside these.
+Every file below was written, built, vetted, run under `go test -race` three times and linted at **0 issues** in a scratch module seeded from **`migration/phase2c-vertical-slice` at `81d41975`, including every `_test.go`**. 2c-2's own tests — all of them, its three fix commits' included — pass unchanged alongside these.
 
 **Two literals in here are oracles and must be regenerated rather than trusted:** the golden JSON fixture (Task 7 Step 2 has the command), and — carried from 2c-2 — the synthetic asset's SHA-256.
 
@@ -1526,7 +1528,7 @@ Every file below was written, built, vetted, run under `go test -race` three tim
 
 ### Appendix A — `relay/buffer/fanout_test.go`
 
-**No `next` assertion.** The cap ARMS 2c-2's `TestNextIsTheLastChunkActuallyReturnedNotTheRingsTail`, which `87dca88d` ships labelled un-armed with 2c-3 named as its owner; arming it is the job, not writing a second one.
+**No `next` assertion.** The cap ARMS 2c-2's `TestNextIsTheLastChunkActuallyReturnedNotTheRingsTail`, which `81d41975` ships labelled un-armed with 2c-3 named as its owner; arming it is the job, not writing a second one.
 
 ```go
 package buffer
@@ -1773,7 +1775,7 @@ type Client struct {
 
 ### Appendix C — `relay/channel/channel.go`
 
-The whole file. The diff against `87dca88d` is the registry, `ErrDuplicateClient`, `SourceInfo`, `startedAt` and `ClientSnapshot`. **`promoteOnFirstChunk` is 2c-2's and is untouched** — it is the only thing that sets `StateActive`.
+The whole file. The diff against `81d41975` is the registry, `ErrDuplicateClient`, `SourceInfo`, `startedAt` and `ClientSnapshot`. **`promoteOnFirstChunk` is 2c-2's and is untouched** — it is the only thing that sets `StateActive`.
 
 ```go
 // Package channel owns a channel's lifecycle: ownership, the state machine,
@@ -2069,7 +2071,7 @@ func (c *Channel) stop(wait time.Duration) {
 
 ### Appendix D — `relay/channel/manager.go`
 
-The whole file. **`stopIfStillIdle` is 2c-2's, verbatim** — read it before changing `release`. `Attach`'s reuse path calls nothing on the existing channel, which is `87dca88d`'s shape.
+The whole file. **`stopIfStillIdle` is 2c-2's, verbatim** — read it before changing `release`. `Attach`'s reuse path calls nothing on the existing channel, which is `81d41975`'s shape.
 
 ```go
 package channel
