@@ -84,6 +84,10 @@ func newRig(t *testing.T, cp relaytest.ControlPlaneConfig, up relaytest.Config) 
 				HTTP:    control.NewHTTPClient(),
 			},
 		},
+		// THE SAME manager, not a second one. Two would give the list endpoint
+		// an empty map while the tune path filled another, and every assertion
+		// about what the list shows would be about the wrong object.
+		Control: ControlDeps{Secret: testSecret, Channels: manager},
 	})
 	relay := httptest.NewServer(server.Handler())
 	t.Cleanup(relay.Close)
