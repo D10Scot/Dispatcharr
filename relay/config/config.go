@@ -92,7 +92,10 @@ func Load() (Config, error) {
 // The file read stays as a fallback for a caller that has the file but not
 // the inherited environment (a manual `go run`, a test), and it keeps its
 // own stripping: nothing guarantees a caller reaching that branch already
-// applied entrypoint.sh's tr -d '\r\n'.
+// applied entrypoint.sh's tr -d '\r\n'. That fallback path is reachable only
+// outside supervisord -- a host `go run`, a test -- and cannot worsen a
+// missing-environment misconfiguration in the deployed shape: both paths
+// fail loudly, naming the cause, rather than authenticating with "".
 //
 // PRECEDENCE IS LOAD-BEARING, not incidental: the environment must win
 // whenever it is set, because that is the value every other program in this

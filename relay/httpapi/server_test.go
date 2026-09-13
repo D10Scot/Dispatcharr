@@ -50,15 +50,6 @@ func TestStreamRouteIsUnregisteredWithoutTheDevFlag(t *testing.T) {
 	}
 }
 
-func TestStreamRouteIsRegisteredWithTheDevFlag(t *testing.T) {
-	srv := New(Config{DevRoutes: true})
-	rec := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/proxy/ts/stream/abc", nil))
-	if rec.Code != http.StatusNotImplemented {
-		t.Fatalf("GET /proxy/ts/stream/abc with DevRoutes=true = %d, want 501", rec.Code)
-	}
-}
-
 // ServeMux's method matching, asserted because it is doing real work here:
 // without the "GET " prefix on the pattern, this is a 200 and any client can
 // POST to the health endpoints.

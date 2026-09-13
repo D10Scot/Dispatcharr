@@ -147,6 +147,56 @@ class RelayProxySettingsSerializer(serializers.Serializer):
     channel_client_wait_period = serializers.FloatField()
     new_client_behind_seconds = serializers.FloatField()
 
+    # Phase 2 spec Amendment A1.4: TSConfig's class-attribute defaults, the
+    # half of the effective settings that had never been on the wire. Each
+    # is declared explicitly rather than through a DictField for this
+    # class's existing reason -- the contract belongs in the
+    # drf-spectacular schema so a Go client can generate against it -- and
+    # the field TYPE mirrors the Python literal's own type, so a Go client
+    # is not handed 15.0 where the schema promised an integer.
+    #
+    # The list is not maintained by hand: test_effective_proxy_settings.py
+    # enumerates apps/proxy/config.py and fails if a default is added there
+    # without appearing here. The file:line and value in each comment are
+    # provenance for a reader, not the source of truth.
+    #
+    # No `required=False`: this serializer only ever renders, and the one
+    # producer (_with_proxy_settings) always supplies every key, so a
+    # missing key is a contract bug and should be a loud 500 rather than a
+    # silently dropped field -- which is the failure mode A1.4 exists to
+    # remove.
+    BUFFER_CHUNK_SIZE = serializers.IntegerField()  # config.py:15 = 255868
+    BUFFER_SPEED = serializers.IntegerField()  # config.py:17 = 1
+    CHUNK_BATCH_SIZE = serializers.IntegerField()  # config.py:95 = 5
+    CHUNK_SIZE = serializers.IntegerField()  # config.py:7 = 8192
+    CHUNK_TIMEOUT = serializers.IntegerField()  # config.py:99 = 5
+    CLEANUP_CHECK_INTERVAL = serializers.IntegerField()  # config.py:111 = 1
+    CLEANUP_INTERVAL = serializers.IntegerField()  # config.py:107 = 60
+    CLIENT_HEARTBEAT_INTERVAL = serializers.IntegerField()  # config.py:112 = 5
+    CLIENT_POLL_INTERVAL = serializers.FloatField()  # config.py:8 = 0.1
+    CLIENT_RECORD_TTL = serializers.IntegerField()  # config.py:110 = 60
+    CLIENT_WAIT_TIMEOUT = serializers.IntegerField()  # config.py:114 = 60
+    CONNECTION_TIMEOUT = serializers.IntegerField()  # config.py:13 = 10
+    DEFAULT_USER_AGENT = serializers.CharField()  # config.py:6 = 'VLC/3.0.20 LibVLC/3.0.20'
+    FAILOVER_GRACE_PERIOD = serializers.IntegerField()  # config.py:120 = 20
+    GHOST_CLIENT_MULTIPLIER = serializers.FloatField()  # config.py:113 = 10.0
+    HEALTH_CHECK_INTERVAL = serializers.IntegerField()  # config.py:104 = 5
+    INITIAL_BEHIND_CHUNKS = serializers.IntegerField()  # config.py:94 = 4
+    KEEPALIVE_INTERVAL = serializers.FloatField()  # config.py:97 = 0.5
+    MAX_HEALTH_RECOVERY_ATTEMPTS = serializers.IntegerField()  # config.py:117 = 2
+    MAX_KEEPALIVE_DURATION = serializers.IntegerField()  # config.py:122 = 300
+    MAX_RECONNECT_ATTEMPTS = serializers.IntegerField()  # config.py:118 = 3
+    MAX_RETRIES = serializers.IntegerField()  # config.py:9 = 3
+    MAX_STREAM_SWITCHES = serializers.IntegerField()  # config.py:14 = 10
+    MIN_STABLE_TIME_BEFORE_RECONNECT = serializers.IntegerField()  # config.py:119 = 30
+    NEW_CLIENT_BEHIND_SECONDS = serializers.IntegerField()  # config.py:96 = 5
+    RETRY_WAIT_INTERVAL = serializers.FloatField()  # config.py:12 = 0.5
+    RETRY_WINDOW_SECONDS = serializers.IntegerField()  # config.py:10 = 1800
+    STABLE_CONNECTION_THRESHOLD = serializers.IntegerField()  # config.py:11 = 30
+    STREAM_TIMEOUT = serializers.IntegerField()  # config.py:103 = 20
+    TARGET_BITRATE = serializers.IntegerField()  # config.py:102 = 8000000
+    URL_SWITCH_TIMEOUT = serializers.IntegerField()  # config.py:121 = 20
+
 
 class OutputProfileRefSerializer(serializers.Serializer):
     """One OutputProfile, already built into argv.

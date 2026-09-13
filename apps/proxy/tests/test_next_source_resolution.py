@@ -626,7 +626,17 @@ class SourceCarriesNamesTests(NextSourceFixture, TestCase):
 
     def test_the_answer_carries_proxy_settings_as_resolved_now(self):
         from core.models import CoreSettings
+        from apps.proxy.config import class_attribute_defaults
         from apps.proxy.next_source import resolve_source
 
         answer = resolve_source(self.channel.uuid)
-        self.assertEqual(answer["proxy_settings"], CoreSettings.get_proxy_settings())
+        # Spec Amendment A1.4: the stored group merged over TSConfig's
+        # class-attribute defaults. Asserted as two subset checks rather
+        # than one equality, so this test keeps saying what it was written
+        # to say -- the STORED values are resolved now, not cached -- while
+        # the defaults half is covered by test_effective_proxy_settings.py.
+        self.assertEqual(
+            {k: answer["proxy_settings"][k] for k in CoreSettings.get_proxy_settings()},
+            CoreSettings.get_proxy_settings(),
+        )
+        self.assertTrue(set(class_attribute_defaults()).issubset(answer["proxy_settings"]))

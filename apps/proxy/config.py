@@ -174,3 +174,57 @@ class TSConfig(BaseConfig):
     @property
     def CHANNEL_CLIENT_WAIT_PERIOD(self):
         return self.get_channel_client_wait_period()
+
+
+# Types a class-attribute default may have and still go on the wire. bool is
+# excluded explicitly because it is a subclass of int and would otherwise be
+# serialised as a number; there is none today, and this is what keeps that
+# from becoming a silent wire change if one is added.
+_WIRE_SCALARS = (int, float, str)
+
+
+def class_attribute_defaults():
+    """Every TSConfig class-attribute default, by its own name.
+
+    This is the half of the effective proxy settings that has never been on
+    the wire. The relay reads these through ConfigHelper.get(name, default),
+    which is getattr(TSConfig, name, default) -- apps/proxy/live_proxy/
+    config_helper.py:16 -- so they are the real defaults, and a Go relay that
+    did not receive them would have to hold its own copy of every one.
+    Phase 2 spec Amendment A1.4.
+
+    TSConfig, not BaseConfig, because that is what ConfigHelper consults.
+    The difference is not cosmetic: TSConfig shadows BaseConfig's plain
+    BUFFERING_TIMEOUT with a @property, so walking BaseConfig would put a
+    stale 15 on the wire beside the buffering_timeout stored key that
+    actually supplies the live value.
+
+    The MRO is walked base-first so a derived class wins, and a name whose
+    derived binding is NOT a plain scalar -- a property, a classmethod -- is
+    REMOVED rather than skipped.
+
+    That pop excludes exactly ONE name: BUFFERING_TIMEOUT, the only case
+    where a plain scalar exists on BaseConfig (= 15, :16) and a @property
+    shadows it on TSConfig (:163). The other five properties --
+    BUFFERING_SPEED, REDIS_CHUNK_TTL, CHANNEL_SHUTDOWN_DELAY,
+    CHANNEL_INIT_GRACE_PERIOD, CHANNEL_CLIENT_WAIT_PERIOD -- have no scalar
+    counterpart under the same name, so they are never added in the first
+    place and the isinstance check alone keeps them out. All six are
+    database-backed and already on the wire under their snake_case names.
+    Measured: with the pop, 31 keys; without it, 32, the extra one being
+    BUFFERING_TIMEOUT carrying a stale 15.
+
+    vars(), not dir(): dir() on a class also reports the metaclass's
+    attributes, and this walk should see exactly what is written in this
+    file.
+    """
+    defaults = {}
+    for klass in reversed(TSConfig.__mro__):
+        for name, value in vars(klass).items():
+            if name.startswith("_"):
+                continue
+            if isinstance(value, _WIRE_SCALARS) and not isinstance(value, bool):
+                defaults[name] = value
+            else:
+                defaults.pop(name, None)
+    return defaults
