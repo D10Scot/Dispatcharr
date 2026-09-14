@@ -1,8 +1,44 @@
 {
  "detail": null,
- "fetched_at": "2026-09-13T11:10:02+00:00",
+ "fetched_at": "2026-09-14T11:55:22+00:00",
  "kind": "issues",
  "records": [
+  {
+   "closed_at": null,
+   "created_at": "2026-09-13T13:40:33Z",
+   "id": 286,
+   "label_events": [
+    {
+     "at": "2026-09-13T13:40:35Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    }
+   ],
+   "labels": [
+    "needs-triage"
+   ],
+   "state": "open",
+   "title": "Python relay: get_chunks_for_client advances by the requested count on a short read, silently skipping undelivered chunks",
+   "updated_at": "2026-09-13T13:40:33Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-09-13T11:19:35Z",
+   "id": 283,
+   "label_events": [
+    {
+     "at": "2026-09-13T11:19:36Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    }
+   ],
+   "labels": [
+    "needs-triage"
+   ],
+   "state": "open",
+   "title": "Go relay: *url.Error redacts only userinfo \u2014 provider credentials in path/query leak on every wrapped error; no Go equivalent of check_credential_logging.py",
+   "updated_at": "2026-09-13T11:19:35Z"
+  },
   {
    "closed_at": null,
    "created_at": "2026-09-13T09:13:03Z",
@@ -97,7 +133,7 @@
    ],
    "state": "open",
    "title": "Flaky under --shuffle: test_a_buffering_threshold_change_does_not_reach_a_running_channel (pre-existing, timing-driven)",
-   "updated_at": "2026-09-12T21:10:14Z"
+   "updated_at": "2026-09-13T12:00:24Z"
   },
   {
    "closed_at": "2026-09-12T20:23:53Z",
