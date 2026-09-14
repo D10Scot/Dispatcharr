@@ -33,4 +33,8 @@ type Tuning struct {
 	// new_client_behind_seconds. Zero means start at the live head, which is
 	// what the setting's own 0 means (output/ts/generator.py:296-302).
 	JoinBehind time.Duration
+
+	// ShutdownDelay is how long a channel with no clients stays up, from
+	// channel_shutdown_delay. 2c-3 supplies it; see the plan's Ruling R4.
+	ShutdownDelay time.Duration
 }

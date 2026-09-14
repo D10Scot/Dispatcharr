@@ -20,6 +20,10 @@ type Config struct {
 	// Stream is what the live TS handler needs. Only read when DevRoutes is
 	// set.
 	Stream StreamDeps
+
+	// Control is what the internal control routes need. Only read when
+	// DevRoutes is set.
+	Control ControlDeps
 }
 
 // Server owns the routing table. One per process.
@@ -53,6 +57,11 @@ func New(cfg Config) *Server {
 	if cfg.DevRoutes {
 		// The dev-only route flag spec line 1795 names.
 		s.mux.Handle("GET /proxy/ts/stream/{channelID}", StreamHandler(cfg.Stream))
+		// Gated with the rest: nginx routes nothing to this process until
+		// stage 2d, and Django still calls the Python relay's copy of this
+		// route. 2c-8 brings the other four.
+		s.mux.Handle("GET /proxy/relay/channels",
+			RequireInternal(cfg.Control.Secret, cfg.Control.Now, ChannelsHandler(cfg.Control)))
 	}
 
 	return s

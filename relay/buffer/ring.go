@@ -7,6 +7,27 @@ import (
 	"time"
 )
 
+// MaxChunksPerRead bounds how many chunks one Read hands back.
+//
+// The port of get_optimized_client_data's MAX_CHUNKS
+// (apps/proxy/live_proxy/input/buffer.py:329), and the ONLY one of that
+// function's four constants 2c-3 ports. MIN_CHUNKS, TARGET_SIZE and MAX_SIZE
+// exist to amortise a Redis round trip per chunk, and an in-memory ring has
+// no round trip to amortise -- 2c-2's reasoning, unchanged. MAX_CHUNKS is
+// different in kind: it bounds how much a lagging reader HOLDS at one
+// instant, and a held chunk's backing array stays alive after the ring has
+// evicted it. Uncapped, one reader behind the head can pin a whole ring's
+// worth of evicted chunks on top of the resident ring -- 2 x
+// MaxBytesPerChannel, about 146 MiB, where 2c-1's sizing note states 73 MiB.
+// Capped, the extra is at most 20 chunks, about 5 MiB, per DISTINCT lagging
+// cursor; readers at the same cursor share one set of arrays.
+//
+// 20 chunks at the default chunk size is 5,117,360 bytes, which is what the
+// Python cap is worth too: MAX_SIZE (2 MiB) gates only the SECOND, top-up
+// fetch, never the initial min(chunks_behind, MAX_CHUNKS) one
+// (input/buffer.py:348-371, read in full).
+const MaxChunksPerRead = 20
+
 // ErrClosed is returned by Write and Wait once the ring has been closed. A
 // named sentinel rather than a message: callers test the condition with
 // errors.Is, and a substring check on an error string pins nothing when more
@@ -101,6 +122,12 @@ type Ring struct {
 	// client disconnecting -- a goroutine leak per abandoned tune.
 	notify chan struct{}
 	closed bool
+
+	// total is every byte the upstream has handed this ring, including the
+	// partial packet not yet published. The in-memory equivalent of the
+	// metadata hash's total_bytes (apps/proxy/live_proxy/channel_status.py:510),
+	// which the status endpoints render and derive avg_bitrate_kbps from.
+	total uint64
 }
 
 // New builds a ring. BudgetBytes below one chunk still yields a one-chunk
@@ -154,9 +181,11 @@ func (r *Ring) Write(p []byte) (int, error) {
 	combined := append(r.partial, p...)
 	complete := (len(combined) / TSPacketSize) * TSPacketSize
 	if complete == 0 {
+		r.total += uint64(len(p))
 		r.partial = combined
 		return len(p), nil
 	}
+	r.total += uint64(len(p))
 	r.pending = append(r.pending, combined[:complete]...)
 	// Copy rather than reslice: combined's backing array is r.partial's, and
 	// holding a tail of it would pin the whole accumulated buffer alive for
@@ -218,6 +247,13 @@ func (r *Ring) Head() uint64 {
 	return r.head
 }
 
+// TotalBytes is every byte the upstream has written to this ring.
+func (r *Ring) TotalBytes() uint64 {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.total
+}
+
 // Oldest is the lowest index still resident, and false when the ring is empty.
 func (r *Ring) Oldest() (uint64, bool) {
 	r.mu.RLock()
@@ -239,10 +275,16 @@ func (r *Ring) Oldest() (uint64, bool) {
 // caller can log a real gap.
 //
 // Python's get_optimized_client_data batching (3..20 chunks, a 1 MB target and
-// a 2 MB cap, input/buffer.py:302-372) is deliberately NOT ported: it amortises
-// a Redis round trip per chunk, and an in-memory ring has no round trip to
-// amortise. What a client receives is identical; only the size of each write
-// to its socket differs, which no parity row covers.
+// a 2 MB cap, input/buffer.py:302-372) has FOUR constants, and this method
+// ports only one of them. MIN_CHUNKS, TARGET_SIZE and MAX_SIZE amortise a
+// Redis round trip per chunk, and an in-memory ring has no round trip to
+// amortise, so none of the three is ported -- what a client receives is
+// identical; only the size of each write to its socket differs, which no
+// parity row covers. MAX_CHUNKS is different in kind and IS ported, as
+// MaxChunksPerRead (2c-3): it bounds how much a lagging reader HOLDS at one
+// instant, not a batching optimisation, and an uncapped Read can pin a whole
+// ring's worth of evicted chunks on top of the resident ring. See
+// MaxChunksPerRead's own doc comment for the sizing.
 func (r *Ring) Read(cursor uint64) (chunks [][]byte, next uint64, skipped uint64) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -269,26 +311,34 @@ func (r *Ring) Read(cursor uint64) (chunks [][]byte, next uint64, skipped uint64
 	// correct without relying on the chunks being contiguous.
 	//
 	// next IS THE INDEX OF THE LAST CHUNK ACTUALLY APPENDED TO out, tracked as
-	// the loop goes, NOT r.chunks[len(r.chunks)-1].Index. The two are
-	// numerically identical today because this call always returns every
-	// resident chunk from want through head -- there is no batch cap in this
-	// PR. That equivalence is an accident of this PR's shape, not a property
-	// of the method: the day a caller batches reads (2c-3's own plan already
-	// names get_optimized_client_data's 3-to-20-chunk cap as the Python
-	// precedent this in-memory ring does not need), returning the RING's tail
-	// index while having handed back fewer chunks would silently advance the
+	// the loop goes, NOT r.chunks[len(r.chunks)-1].Index. The two DIFFER
+	// whenever this call's batch is capped by MaxChunksPerRead (2c-3): with
+	// more resident chunks than the cap allows, out holds only the first
+	// MaxChunksPerRead of them and next is the last one actually appended,
+	// which is behind the ring's own tail. Returning the RING's tail index
+	// here while having handed back fewer chunks would silently advance the
 	// caller's cursor past chunks it was never given -- an invisible content
 	// gap, since Read reports skipped only for chunks lost to eviction
-	// BEFORE want, never for ones withheld after it. Computing next from what
-	// was actually appended costs nothing today and is correct regardless of
-	// whether a future cap exists.
-	out := make([][]byte, 0, len(r.chunks))
+	// BEFORE want, never for ones withheld after it. Pinned by
+	// TestNextIsTheLastChunkActuallyReturnedNotTheRingsTail (ring_test.go),
+	// armed by this cap: before it existed, next and the tail were always
+	// the same value for any fixture this call could produce, and the test
+	// could not fail; the fixture now writes past the cap so it can.
+	out := make([][]byte, 0, min(len(r.chunks), MaxChunksPerRead))
 	next = cursor
 	for _, c := range r.chunks {
-		if c.Index >= want {
-			out = append(out, c.Data)
-			next = c.Index
+		if c.Index < want {
+			continue
 		}
+		// The cap. next keeps tracking the last chunk APPENDED, which is
+		// 2c-2's contract and is what makes a capped read correct rather than
+		// a silent gap: a next that ran ahead to the ring's tail would make a
+		// lagging client skip everything this call did not hand it.
+		if len(out) == MaxChunksPerRead {
+			break
+		}
+		out = append(out, c.Data)
+		next = c.Index
 	}
 	return out, next, skipped
 }

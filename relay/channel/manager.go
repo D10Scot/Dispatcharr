@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sort"
 	"sync"
 	"time"
 
@@ -15,10 +16,6 @@ type ManagerConfig struct {
 	// BudgetBytes is each channel's ring size. Zero means
 	// buffer.MaxBytesPerChannel.
 	BudgetBytes int
-
-	// ShutdownDelay is how long a channel with no clients stays up, the
-	// channel_shutdown_delay setting, which defaults to 0.
-	ShutdownDelay time.Duration
 
 	// StopWait bounds how long Stop waits for a source goroutine.
 	StopWait time.Duration
@@ -71,6 +68,18 @@ func NewManager(cfg ManagerConfig) *Manager {
 	}
 }
 
+// Started is what a start function hands back: the source to run, the tuning
+// the channel runs on, and what the control plane said about the stream.
+//
+// A struct rather than a fourth return value: (Source, Tuning, SourceInfo,
+// error) is where a signature stops being readable, and 2c-4's ffmpeg source
+// adds a fifth.
+type Started struct {
+	Source Source
+	Tuning Tuning
+	Info   SourceInfo
+}
+
 // Attach returns the channel for id, starting it from start() if it is not
 // already running, and registers one client against it.
 //
@@ -99,17 +108,20 @@ func NewManager(cfg ManagerConfig) *Manager {
 // claims the start publishes a channel under `starting`, later callers wait on
 // it and retry, and the gate is closed from a deferred call so a panic wakes
 // them instead of stranding them.
-func (m *Manager) Attach(id string, start func() (Source, Tuning, error)) (*Channel, func(), error) {
+func (m *Manager) Attach(id string, client *Client, start func() (Started, error)) (*Channel, func(), error) {
 	var gate chan struct{}
 	for {
-		existing, wait, own := m.claim(id)
+		existing, wait, own, err := m.claim(id, client)
+		if err != nil {
+			return nil, nil, err
+		}
 		if existing != nil {
 			// No markActive call here: promoteOnFirstChunk (run's own
 			// goroutine) is the one mechanism for waiting_for_clients ->
 			// active, and it runs regardless of which or how many clients
 			// are attached, so a second client's arrival needs no separate
 			// trigger.
-			return existing, func() { m.release(existing) }, nil
+			return existing, func() { m.release(existing, client.ID) }, nil
 		}
 		if own != nil {
 			gate = own
@@ -136,7 +148,7 @@ func (m *Manager) Attach(id string, start func() (Source, Tuning, error)) (*Chan
 	// panic guarantee the helper was written for.
 	defer m.releaseGate(id, gate)
 
-	built, tuning, err := start()
+	started, err := start()
 	if err != nil {
 		// A failed start leaves no channel, and the deferred release lets the
 		// next caller claim a fresh gate and try again. A tune that failed is
@@ -144,8 +156,8 @@ func (m *Manager) Attach(id string, start func() (Source, Tuning, error)) (*Chan
 		return nil, nil, err
 	}
 
-	c := m.publish(id, built, tuning)
-	return c, func() { m.release(c) }, nil
+	c := m.publish(id, client, started)
+	return c, func() { m.release(c, client.ID) }, nil
 }
 
 // releaseGate clears the start claim and wakes everyone waiting on it. It is
@@ -161,7 +173,7 @@ func (m *Manager) releaseGate(id string, gate chan struct{}) {
 // claim inspects the map once, under the lock. It returns exactly one of: a
 // running channel with this caller registered against it; a gate to wait on
 // because someone else is starting; or a gate this caller now owns.
-func (m *Manager) claim(id string) (existing *Channel, wait, own chan struct{}) {
+func (m *Manager) claim(id string, client *Client) (existing *Channel, wait, own chan struct{}, err error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -186,43 +198,51 @@ func (m *Manager) claim(id string) (existing *Channel, wait, own chan struct{}) 
 		// releases -- and release stops it, so the entry cannot outlive the
 		// clients watching it.
 		if !c.ring.Closed() {
-			c.addClient()
-			return c, nil, nil
+			if !c.addClient(client) {
+				return nil, nil, nil, ErrDuplicateClient
+			}
+			return c, nil, nil, nil
 		}
 		delete(m.channels, id)
 	}
 	if gate, starting := m.starting[id]; starting {
-		return nil, gate, nil
+		return nil, gate, nil, nil
 	}
 	gate := make(chan struct{})
 	m.starting[id] = gate
-	return nil, nil, gate
+	return nil, nil, gate, nil
 }
 
 // publish installs the started channel and registers its first client.
-func (m *Manager) publish(id string, source Source, tuning Tuning) *Channel {
+func (m *Manager) publish(id string, client *Client, started Started) *Channel {
 	ctx, cancel := context.WithCancel(context.Background())
+	now := m.cfg.Now
+	if now == nil {
+		now = time.Now
+	}
 	c := &Channel{
 		id: id,
 		ring: buffer.New(buffer.Config{
 			BudgetBytes: m.cfg.BudgetBytes,
-			ChunkBytes:  tuning.ChunkBytes,
-			Retention:   tuning.Retention,
+			ChunkBytes:  started.Tuning.ChunkBytes,
+			Retention:   started.Tuning.Retention,
 			Now:         m.cfg.Now,
 		}),
-		log:     m.log,
-		tuning:  tuning,
-		state:   StateInitializing,
-		clients: 1,
-		cancel:  cancel,
-		done:    make(chan struct{}),
+		log:       m.log,
+		tuning:    started.Tuning,
+		source:    started.Info,
+		startedAt: now(),
+		state:     StateInitializing,
+		clients:   map[string]*Client{client.ID: client},
+		cancel:    cancel,
+		done:      make(chan struct{}),
 	}
 
 	m.mu.Lock()
 	m.channels[id] = c
 	m.mu.Unlock()
 
-	go c.run(ctx, source)
+	go c.run(ctx, started.Source)
 	return c
 }
 
@@ -275,15 +295,23 @@ func (m *Manager) ids() []string {
 	return ids
 }
 
-func (m *Manager) release(c *Channel) {
-	if remaining := c.dropClient(); remaining > 0 {
+// 2c-3 changes exactly two things here and preserves everything else: the drop
+// names a client, and the delay comes off the channel's own Tuning rather than
+// the manager's config (it is a channel-start-time setting, parity-matrix row
+// 5). The drop stays OUTSIDE m.mu and the decision stays inside
+// stopIfStillIdle, which is 2c-2's fix and is correct with a registry for the
+// same reason it is correct with a counter: claim's addClient and
+// stopIfStillIdle's re-check are both under m.mu, so whichever runs first is
+// the one acted on and the other sees the consequence.
+func (m *Manager) release(c *Channel, clientID string) {
+	if remaining := c.dropClient(clientID); remaining > 0 {
 		return
 	}
-	if m.cfg.ShutdownDelay <= 0 {
+	if c.tuning.ShutdownDelay <= 0 {
 		m.stopIfStillIdle(c)
 		return
 	}
-	time.AfterFunc(m.cfg.ShutdownDelay, func() {
+	time.AfterFunc(c.tuning.ShutdownDelay, func() {
 		m.stopIfStillIdle(c)
 	})
 }
@@ -336,6 +364,22 @@ func (m *Manager) stopIfStillIdle(c *Channel) {
 	}
 	c.setState(StateStopping, nil)
 	c.stop(m.cfg.StopWait)
+}
+
+// Snapshot is every channel the manager holds, in id order.
+//
+// The list endpoint's source. Ordered so the payload is stable between polls;
+// build_live_channel_stats_data's own order is a Redis SCAN's, which is
+// arbitrary and not a contract.
+func (m *Manager) Snapshot() []*Channel {
+	m.mu.Lock()
+	out := make([]*Channel, 0, len(m.channels))
+	for _, c := range m.channels {
+		out = append(out, c)
+	}
+	m.mu.Unlock()
+	sort.Slice(out, func(i, j int) bool { return out[i].id < out[j].id })
+	return out
 }
 
 // Describe is a one-line state summary, for logs and for the 2c-8 status

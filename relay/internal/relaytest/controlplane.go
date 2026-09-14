@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"sync"
+	"time"
 )
 
 // EffectiveProxySettings is what Amendment A1.4 makes Django send on every
@@ -67,6 +68,12 @@ type ControlPlaneConfig struct {
 	// generated answer, so a test can drive the non-JSON and non-object rows
 	// of the error table.
 	Body string
+
+	// Delay holds every answer for this long before writing it. Zero is the
+	// ordinary immediate answer. 2c-3's R11 test needs a next-source call
+	// still in flight when a client disconnects, and there is no other way
+	// to arrange that deterministically.
+	Delay time.Duration
 }
 
 // ControlPlane is a fake Django answering POST /api/relay/... .
@@ -112,6 +119,10 @@ func NewControlPlane(cfg ControlPlaneConfig) *ControlPlane {
 			Body:   body,
 		})
 		c.mu.Unlock()
+
+		if cfg.Delay > 0 {
+			time.Sleep(cfg.Delay)
+		}
 
 		switch {
 		case cfg.RedirectTo != "":

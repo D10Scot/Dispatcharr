@@ -2,6 +2,7 @@ package channel
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"sync"
 	"testing"
@@ -90,9 +91,9 @@ func TestConcurrentFirstClientsStartExactlyOneSource(t *testing.T) {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				c, release, err := m.Attach("one", func() (Source, Tuning, error) {
+				c, release, err := m.Attach("one", testClient(fmt.Sprintf("client-%d", i)), asStarted(func() (Source, Tuning, error) {
 					return countingSource{c: counter}, testTuning(), nil
-				})
+				}))
 				seen[i], releases[i], errs[i] = c, release, err
 			}()
 		}
