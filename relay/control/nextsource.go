@@ -9,6 +9,8 @@ import (
 	"io"
 	"net/http"
 	"time"
+
+	"github.com/D10Scot/Dispatcharr/relay/redact"
 )
 
 // The three stream-profile architectures, as StreamProfileRef.Kind spells
@@ -32,12 +34,63 @@ const (
 	attempts       = 2
 )
 
-// StreamProfileRef is the next-source answer's stream_profile object.
+// StreamProfileRef is the next-source answer's stream_profile object, and
+// its ffmpeg_stream_profile object, which the same serializer renders.
 type StreamProfileRef struct {
 	ID      int    `json:"id"`
 	Command string `json:"command"`
 	Args    string `json:"args"`
 	Kind    string `json:"kind"`
+
+	// Argv is the argument list Django BUILT for this tune: StreamProfile.
+	// build_command(url, user_agent, pk) with the command removed
+	// (core/models.py:137-160 -- shlex.split of the profile's parameters,
+	// then the {streamUrl}/{userAgent}/{channelId} substitutions). Spec
+	// Amendment A4.1: the relay carries no word splitter and no
+	// substitution table, so the argv it spawns is byte for byte the argv
+	// the Python relay spawns from the same answer.
+	//
+	// Three states, and the difference between the last two is the whole
+	// reason for ArgvPresent: a LIST is the built argv (empty for Proxy and
+	// Redirect, whose build_command returns []); JSON NULL means Django
+	// could not split the parameters (an unbalanced quote, which shlex
+	// refuses with ValueError) and the tune cannot be served; the key
+	// ABSENT means a control plane older than this relay, which is not a
+	// profile problem and must not be reported as one.
+	Argv []string `json:"-"`
+
+	// ArgvPresent reports whether the answer carried the argv key at all.
+	ArgvPresent bool `json:"-"`
+}
+
+// UnmarshalJSON decodes the object and records whether argv was present, a
+// distinction encoding/json cannot make for a slice field on its own: an
+// absent key and an explicit null both leave it nil.
+func (p *StreamProfileRef) UnmarshalJSON(data []byte) error {
+	type plain StreamProfileRef
+	var aux struct {
+		plain
+		ArgvRaw json.RawMessage `json:"argv"`
+	}
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+	*p = StreamProfileRef(aux.plain)
+	p.Argv, p.ArgvPresent = nil, false
+	if len(aux.ArgvRaw) == 0 {
+		return nil
+	}
+	p.ArgvPresent = true
+	if bytes.Equal(bytes.TrimSpace(aux.ArgvRaw), []byte("null")) {
+		return nil
+	}
+	if err := json.Unmarshal(aux.ArgvRaw, &p.Argv); err != nil {
+		return fmt.Errorf("stream_profile.argv is not a list of strings: %w", err) // credential-logging: ok - an encoding/json type error naming the JSON shape, never a value
+	}
+	if p.Argv == nil {
+		p.Argv = []string{}
+	}
+	return nil
 }
 
 // Source is one candidate upstream.
@@ -52,6 +105,13 @@ type Source struct {
 	ChannelName    string           `json:"channel_name"`
 	StreamName     string           `json:"stream_name"`
 	M3UProfileName string           `json:"m3u_profile_name"`
+
+	// FFmpegStreamProfile is the locked "ffmpeg" profile, built for this
+	// same URL, or nil when none is installed (apps/proxy/next_source.py's
+	// _locked_ffmpeg_profile, Phase 2 PR 2b-1). It is what a Proxy channel
+	// whose URL turns out to be HLS, RTSP or UDP is played through instead
+	// (input/manager.py:445-453's force_ffmpeg).
+	FFmpegStreamProfile *StreamProfileRef `json:"ffmpeg_stream_profile"`
 }
 
 // NextSourceRequest is the POST body.
@@ -96,7 +156,12 @@ type Unavailable struct {
 
 func (e *Unavailable) Error() string {
 	if e.Err != nil {
-		return fmt.Sprintf("control plane unavailable at %s: %s: %v", e.Path, e.Reason, e.Err)
+		// Through redact.Error: Err is the transport's *url.Error on a
+		// connection failure, and its message carries the control-plane
+		// base URL, which DISPATCHARR_INTERNAL_API_BASE_URL may give with
+		// userinfo. Found by relay/internal/credlint's first run over this
+		// module (2c-4), the shape 2c-2's review found once by hand.
+		return fmt.Sprintf("control plane unavailable at %s: %s: %v", e.Path, e.Reason, redact.Error(e.Err))
 	}
 	return fmt.Sprintf("control plane unavailable at %s: %s", e.Path, e.Reason)
 }
@@ -154,7 +219,7 @@ func (c *Client) NextSource(ctx context.Context, identifier string, req NextSour
 	path := "/api/relay/channels/" + identifier + "/next-source"
 	body, err := json.Marshal(req)
 	if err != nil {
-		return nil, fmt.Errorf("encoding the next-source request: %w", err)
+		return nil, fmt.Errorf("encoding the next-source request: %w", err) // credential-logging: ok - encoding/json reports a TYPE it cannot encode, never a field's value
 	}
 
 	raw, status, err := c.post(ctx, path, body)
@@ -226,7 +291,7 @@ func (c *Client) attempt(
 ) ([]byte, int, error) {
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, base+path, bytes.NewReader(body))
 	if err != nil {
-		return nil, 0, fmt.Errorf("building the request for %s: %w", path, err)
+		return nil, 0, fmt.Errorf("building the request for %s: %w", path, redact.Error(err))
 	}
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set(HeaderInternal, InternalPrincipalToken(c.Secret))

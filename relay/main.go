@@ -30,7 +30,7 @@ func main() {
 		// failure a misconfigured secret deserves -- the alternative is a
 		// process that serves health checks happily and 403s every internal
 		// call with nothing saying why.
-		log.Printf("startup failed: %v", err)
+		log.Printf("startup failed: %v", err) // credential-logging: ok - config.Load's errors name a variable, a port, or the secret FILE's path, never the secret
 		os.Exit(1)
 	}
 
@@ -80,7 +80,7 @@ func main() {
 	// the feature while being the default. supervisord's stopwaitsecs=20
 	// bounds the stop either way.
 	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		log.Printf("server stopped: %v", err)
+		log.Printf("server stopped: %v", err) // credential-logging: ok - a net.Listen or Serve error naming the bind address
 		os.Exit(1)
 	}
 }
