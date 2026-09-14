@@ -185,11 +185,24 @@ jobs:
           GOOS=linux go vet ./...
           GOOS=darwin go vet ./...
 
+      # -race links a runtime that needs cgo, and the base image is a
+      # runtime image (docker/DispatcharrBase's `final` stage) with no C
+      # toolchain -- confirmed in CI on cd29df98: "go: -race requires cgo;
+      # enable cgo by setting CGO_ENABLED=1" immediately, before any test
+      # ran. Root in the container (no sudo needed); unversioned apt matches
+      # the base image's own accepted practice.
+      - name: Install a C toolchain for -race
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends gcc libc6-dev
+
       # -race is not optional: the concurrency model changes from
       # gevent-cooperative to OS-thread-parallel goroutines in this phase, so
       # a data race the Python implementation made structurally impossible
       # becomes possible for the first time (spec § Testing).
       - name: Test with the race detector
+        env:
+          CGO_ENABLED: "1"
         run: go test -race ./...
 
       - name: Assert the module is standard-library only
