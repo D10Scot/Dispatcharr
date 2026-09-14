@@ -14,11 +14,11 @@
 
 ---
 
-## Sequencing: this plan sits on 2c-4 as merged, whose tree the orchestrator names as `<2C4_MERGED_SHA>`
+## Sequencing: this plan sits on 2c-4 as merged at `d92b33be`, and was re-seeded from that tree
 
-2c-4's plan is on branch `docs/phase2c4-plan` at `b0a323fe` (`docs/superpowers/plans/2026-09-13-phase2-2c4-ffmpeg.md`; read it with `git -C <repo> show "b0a323fe:docs/superpowers/plans/2026-09-13-phase2-2c4-ffmpeg.md"` — brace the expansion in zsh). Its implementation, `migration/phase2c-ffmpeg`, was **not merged and not reachable** when this plan was written: no local branch, no remote branch, no worktree carried it. **Every appendix here was therefore built and verified on `main` at `29224271` (2c-3 as merged) with 2c-4's own appendices applied over it, every `_test.go` included** — the tree the 2c-4 reviewer also built (its `review2c4` container mounts exactly that) — and re-verified after the 2c-4 review's fix rounds could not be seen from here. That is the one seeding shape available and it is stated rather than hidden: the brief's rule is "seed from the implemented tree, never from a plan's appendices," and this plan could not obey it for 2c-4. **The orchestrator fills `<2C4_MERGED_SHA>` when 2c-4 merges, and this plan is re-seeded from that SHA, every appendix re-verified byte for byte, before it is reviewed.** Until that happens, Task 0 is the diff between what this plan expects of 2c-4 and what merged.
+2c-4's plan is on `main` at `97a5457a` (PR #294, `docs/superpowers/plans/2026-09-13-phase2-2c4-ffmpeg.md`) and its implementation, PR #298 on `migration/phase2c-ffmpeg`, squash-merged as **`d92b33be`** (`git diff --quiet 823cac44 d92b33be` is empty: tree-identical to the final branch head). **Every appendix in this plan was built and verified on `d92b33be`'s `relay/`, every `_test.go` included, taken with `git archive d92b33be relay`.** It was not always so, and the history is stated: the first draft was built on `main` at `29224271` (2c-3) with 2c-4's plan appendices applied from `b0a323fe`, because 2c-4's implementation was unreachable then; it was re-checked against the plan's `97a5457a` appendices (four deltas, none in a file this plan changes); and when 2c-4 merged, the merged tree was diffed byte for byte against that seed. **The result: identical for every file this plan edits or calls into.** The merge differs from the seed in exactly four files — `ffmpeg/procgone_test.go` (a zombie-aware `processGone`), `ffmpeg/spawn_linux_test.go` (an `_ *testing.T`), the Django-regenerated `channels_clients_all.json` (semantically identical to the hand-written one, compact spelling), and `main.go` (a comparison artefact: the appendix set carried only its two marker lines) — and this plan takes all four from the tree. Task 0 remains the check that the tree you execute against IS `d92b33be`.
 
-**Task 0 is the diff, and its stop rule is binding.** A symbol that differs from the ledger below is a **stop-and-report**, never a reconciliation in passing. The shapes this plan depends on most, with what changes if the merge differs:
+**Task 0 is the diff, and its stop rule is binding.** A symbol that differs from the ledger below is a **stop-and-report**, never a reconciliation in passing. The shapes this plan depends on most, with what changes if your tree differs from `d92b33be`:
 
 | 2c-4 shape this plan builds on | Where 2c-5 touches it | If your tree differs |
 |---|---|---|
@@ -28,7 +28,7 @@
 | `ffmpeg.Detector{Threshold, Timeout, Now}` with `Observe`, `Buffering`, `Reset`, unexported `since` | Task 2 adds `BufferingFor` | a renamed field is a one-line edit; a missing `Reset` is a stop |
 | `httpapi.startTune(parent, client, id)`, `transcodeSource`, `writeTuneFailure`'s nine arms, `ErrUnservedKind`, `ErrNoFFmpegProfile`, `serveClient` with no keepalive, `channelPayload` with 23 fields | Task 3 reshapes `startTune`, Task 4 adds the Redirect branch and an arm, Task 5 rewrites `serveClient` and adds a field | Appendix P is the whole `stream.go`; a renamed helper is a find-and-replace, a missing one a stop |
 | `relaytest.ControlPlaneConfig` with fifteen fields ending `BlankUserAgent`, `SetSettings`, `RecordedRequest{Method, Path, Header, Body}`, `EffectiveProxySettings()` with fourteen keys | Task 1 adds two fields, three mutators, event recording, route dispatch and six keys | Appendix E is the whole file after |
-| `relaytest.Config` with `DeadAir`; `Upstream` with `Requests`, `Headers` | Task 1 adds `DeadAirAfterBytes` and `Methods` | Appendix F |
+| `relaytest.Config` with `DeadAir`; `Upstream` with `Requests`, `Headers`, and a rate throttle that sleeps `min(wait, 250ms)` once (issue #300) | Task 1 adds `DeadAirAfterBytes` and `Methods` and fixes #300 | Appendix F |
 | `httpapi/stream_test.go`'s `rig{Relay, Upstream, Control, Manager}`, `newRig`, `tune`; `fanout_test.go`'s `fanRig`, `fanRigWith`, `rigSettings`, `tuneAs`, `listChannels`, `waitForHead`, `packetRun`; `transcode_test.go`'s `transcodeRig`, `waitForStats`, `listedChannel` | Tasks 3–5 add a field, a constructor and three test files that call all of them | a renamed helper is a find-and-replace in Appendices S–W |
 | `channel/source_transcode_test.go`'s `standInSource`, `transcodeTuning`, `assetFile`, `captureLog`, `attachTranscode`, `waitFor`; `manager_test.go`'s `testTuning`, `asStarted`, `testClient`, `int32Counter` | Task 2 edits `testTuning` and three tests and adds a file that calls the rest | Appendices O, R and AF |
 | `apps/proxy/tests/test_relay_list_payload_golden.py` with `NOT_SERVED_YET = {"logo_id": …, "healthy": …}` | Task 5 removes `healthy` and adds it to the fixture | if `healthy` is not in `NOT_SERVED_YET`, 2c-4 shipped it and Task 5's Python half is a no-op — say so |
@@ -36,7 +36,7 @@
 
 **Ruled, and binding on every task below: 2c-5 adds no third writer of `StateActive`.** `promoteOnFirstChunk` stays the one promotion mechanism, and 2c-4's guarded recovery edge in `stats.go`'s `reportBuffering` stays the only other write. The buffering-triggered switch moves the channel out of `buffering` by calling `reportBuffering(false)` — the existing writer, not a new one — because that is what `_parse_ffmpeg_stats`'s `hset ACTIVE` after a successful switch is (`input/manager.py:1195-1197`). Task 0 counts two, Task 8 counts two, and both name the lines.
 
-**Seed your scratch module from the merged tree INCLUDING its `_test.go` files.** This plan's own seed was the best available and is not that; Task 0 Step 0 is where the two are reconciled.
+**Seed your scratch module from the merged tree INCLUDING its `_test.go` files** — 2c-3's rule, unchanged; this plan's own seed is exactly that tree.
 
 **Amendment numbering.** Where this plan says "Amendment A3" or "A4" it means the spec's own section as it stands on `main`. The 2c-3 plan carries stale sub-numbers at its `:1345`, `:1369` and `:1458`; the 2c-4 plan's Appendix U1 is A4's text as proposed and may have been renumbered in its fix round. Cite the spec, never a plan, for a sub-number.
 
@@ -44,7 +44,7 @@
 
 ## Global Constraints
 
-Every task's requirements implicitly include this section. Constraints 1–26 are 2c-1's through 2c-4's, restated because this plan is executed by an agent who has not read them; 27–33 are new.
+Every task's requirements implicitly include this section. Constraints 1–26 are 2c-1's through 2c-4's, restated because this plan is executed by an agent who has not read them; 27–35 are new, the last two being lessons 2c-4's own fix round paid for.
 
 1. **Anchor every command with an absolute path, or open it with a `cd` into your own worktree.** The shell's working directory has been observed drifting into another agent's worktree with no `cd` issued.
 
@@ -85,10 +85,10 @@ Every task's requirements implicitly include this section. Constraints 1–26 ar
 16. **Run the four checks after every task, from the module root**, and treat any of the four failing as a stop:
 
     ```bash
-    cd <your worktree>/relay && go build ./... && go vet ./... && go test -race ./... && golangci-lint run ./...
+    cd <your worktree>/relay && gofmt -l . && go build ./... && go vet ./... && GOOS=linux go vet ./... && GOOS=darwin go vet ./... && go test -race ./... && golangci-lint run ./... && GOOS=linux golangci-lint run ./... && GOOS=darwin golangci-lint run ./...
     ```
 
-    `gofmt -l .` must print nothing. Add `GOOS=linux go vet ./...` at Task 8: the spawn's Linux half still compiles.
+    `gofmt -l .` must print nothing. **Vet and lint run three times, under the native, `linux` and `darwin` GOOS** (Constraint 35).
 
 17. **An ordering bug is not a data race, and `-race` is silent on every one of them.** This PR's instructive one: `TestTwoClientsShareOneSource` asserted the source ran once and released the channel immediately after `Attach`; the supervisor loop's first attempt now starts a few statements later than 2c-2's bare `source.Run`, and the release arrived first — zero runs, a green detector, a red test. Task 2 waits for the run before releasing.
 
@@ -124,6 +124,10 @@ Every task's requirements implicitly include this section. Constraints 1–26 ar
 
 33. **The fake control plane is one server answering three routes by path suffix**, and a test that asserts a request count names the route (`RequestsTo("/next-source")`), because the release on teardown and the event batches now share the log.
 
+34. **A test proving a process died uses the zombie-aware probe, and the Go CI job runs in a container with `--init`.** 2c-4's fix round found `processGone` reading a killed child as alive because nothing had reaped it: in the base image there is no init to adopt orphans, so a dead child sits in `/proc` as state `Z` until its parent waits. The merged `ffmpeg/procgone_test.go` checks the `/proc` state and falls back to `kill(0)`, and `go-tests.yml` runs the build job with `--entrypoint "" --init`. This PR adds no process-death test; any later one reuses `processGone` and never a bare `kill(0)`.
+
+35. **Every gate list carries the three-GOOS vet and lint.** Build-tagged files are invisible to one OS's lint: `ffmpeg/spawn_linux.go` and `spawn_linux_test.go` compile only under `GOOS=linux`, `spawn_other.go` only elsewhere, and a native darwin run type-checks neither Linux half. The hook, `go-tests.yml` and Task 8 all run vet and lint under the native, `linux` and `darwin` GOOS; this plan's own gate did too, and its numbers below are from that shape.
+
 ### The six ways a Go test can be green and meaningless
 
 Every test this PR adds is bound by all six, and every task that adds an assertion ends with a **break-check**: patch the defect in, watch the test go red *for the right reason*, revert. **A break-check that does not go red is a finding, not a formality** — one of this plan's twenty did not (§ Break-check, row 20), and it is listed as an unpinned edit rather than hidden.
@@ -145,7 +149,7 @@ Every test this PR adds is bound by all six, and every task that adds an asserti
 - Run the four checks after every task (Constraint 16), then `scripts/check_go_credential_logging.sh relay` (Constraint 21). **Run `relay/channel` at least eight times consecutively under `-race` before Task 2 is committed**: it holds four timing-shaped tests (rows 1, 2, 6 and the health restoration).
 - Stage and commit in separate Bash calls; write commit messages to a file and use `-F`.
 - Every commit message ends with the attribution lines this session was given.
-- **Every Go file in this plan has been built, vetted (darwin and `GOOS=linux`), race-tested and linted at zero findings before this plan was written**, in a scratch module seeded as § Sequencing describes: the channel package eight times consecutively and the whole module three times (the log is in the plan's report). Where you find a discrepancy, your tree is the fact and this plan is the claim — **stop and report it** (Task 0 Step 0).
+- **Every Go file in this plan has been built, vetted and linted under three GOOS values at zero findings, race-tested and run without the race detector before this plan was written**, in a scratch module seeded from `d92b33be` as § Sequencing describes: `go test -race ./...` three times, `./channel` eight times consecutively, `./ffmpeg ./channel` without `-race` three times, credlint clean, stdlib only, no `go.sum`. Where you find a discrepancy, your tree is the fact and this plan is the claim — **stop and report it** (Task 0 Step 0).
 
 ---
 
@@ -217,7 +221,7 @@ A2.5 recorded that Python's first client of a channel whose upstream then fails 
 
 ## The 2c-4 dependency ledger
 
-Every row below was verified against `29224271` plus 2c-4's appendices at `b0a323fe` (§ Sequencing). **Task 0 re-checks every row against `<2C4_MERGED_SHA>`**, and a row that does not match is a stop.
+Every row below was verified at `d92b33be` with `git show "d92b33be:relay/<path>"` and `grep -n`, never off a working tree (§ Sequencing). **Task 0 re-checks every row against your tree**, and a row that does not match is a stop.
 
 | What this PR depends on | Expected shape | If your tree differs |
 |---|---|---|
@@ -301,46 +305,16 @@ Nothing under `core/`, `dispatcharr/`, `frontend/`, `e2e/`, `metrics/`, `.github
 
 ## Task 0: Diff the merged 2c-4 tree against this plan's expectations
 
-**Nothing else is written until this task is done and reported.** § Sequencing says why this task carries more weight than 2c-4's did: this plan was seeded from 2c-4's appendices, not its implementation.
+**Nothing else is written until this task is done and reported.**
 
-- [ ] **Step 0: Seed from the MERGED SHA the orchestrator names**
-
-  ```bash
-  cd <your worktree> && git log --oneline -1 <2C4_MERGED_SHA>
-  git diff --stat <2C4_MERGED_SHA> HEAD -- relay/ apps/proxy/
-  ```
-
-  `<2C4_MERGED_SHA>` is 2c-4 as merged onto `main`, filled in by the orchestrator. If it is still the placeholder when you read this, **stop**: this plan cannot be executed against a branch tip. Then, and this is the step 2c-4's Task 0 did not need:
+- [ ] **Step 0: Seed from the merged SHA**
 
   ```bash
-  cd <your worktree> && git worktree add /tmp/plan2c4-appendices docs/phase2c4-plan 2>&1 | tail -1
-  python3 - <<'EOF'
-  # Extract every `**\`relay/...\`**` + fenced block from the 2c-4 plan and diff
-  # each against the merged tree. This plan's Go was built against those
-  # blocks; every difference the merge introduced is a line this plan has not
-  # seen.
-  import re, subprocess, sys, os
-  plan = open('/tmp/plan2c4-appendices/docs/superpowers/plans/2026-09-13-phase2-2c4-ffmpeg.md').read().split('\n')
-  label = re.compile(r'^\*\*`(relay/[^`]+)`\*\*')
-  i = 0
-  while i < len(plan):
-      m = label.match(plan[i])
-      if not m: i += 1; continue
-      j = i + 1
-      while j < len(plan) and not plan[j].startswith('```'): j += 1
-      k = j + 1
-      while k < len(plan) and plan[k] != '```': k += 1
-      body = '\n'.join(plan[j+1:k]) + '\n'
-      path = m.group(1)
-      if os.path.exists(path) and len(body.splitlines()) > 3:
-          r = subprocess.run(['diff', '-u', '-', path], input=body, text=True, capture_output=True)
-          print(f"{path}: {'identical' if r.returncode == 0 else str(r.stdout.count(chr(10)+'-')+r.stdout.count(chr(10)+'+')) + ' changed lines'}")
-      i = k + 1
-  EOF
-  git worktree remove /tmp/plan2c4-appendices
+  cd <your worktree> && git log --oneline -1 d92b33be
+  git diff --stat d92b33be HEAD -- relay/ apps/proxy/
   ```
 
-  Every file that is not `identical` is a file whose merged form this plan did not build against. **Read each diff before continuing**, and for each file this plan edits (§ File Structure), carry the merge's change into the appendix version by hand — the appendices here are whole files, so a fix-round change to a function this plan does not touch would otherwise be reverted by applying them. A change to a function this plan DOES touch is a stop-and-report.
+  `d92b33be` is 2c-4 as merged onto `main` (PR #298), whose tree every appendix here was built on. The diff must be **empty** for `relay/`: if it is not, Step 2's table is the diff, and a file this plan replaces whole (§ File Structure) that has moved since is a stop-and-report, because applying the appendix would revert the change.
 
 - [ ] **Step 1: Confirm the module, the toolchain, ffmpeg and the fixtures**
 
@@ -385,7 +359,7 @@ Nothing under `core/`, `dispatcharr/`, `frontend/`, `e2e/`, `metrics/`, `.github
   cd <your worktree>/relay && grep -rnE "state = StateActive|setState\(StateActive" --include='*.go' . | grep -v _test.go
   ```
 
-  **Expect exactly two lines at `<2C4_MERGED_SHA>`**: `channel/channel.go`'s inside `promoteOnFirstChunk`, and `channel/stats.go`'s inside `reportBuffering` under `case !on && c.state == StateBuffering`. **After Task 2 the count is still TWO**, and Task 8 Step 3a re-runs this grep and expects the same two lines. `failoverFromBuffering` calls `reportBuffering(false)`; it adds no write (§ Sequencing).
+  **Expect exactly two lines at `d92b33be`**: `channel/channel.go`'s inside `promoteOnFirstChunk`, and `channel/stats.go`'s inside `reportBuffering` under `case !on && c.state == StateBuffering`. **After Task 2 the count is still TWO**, and Task 8 Step 3a re-runs this grep and expects the same two lines. `failoverFromBuffering` calls `reportBuffering(false)`; it adds no write (§ Sequencing).
 
 - [ ] **Step 3: Confirm the Python side this PR edits is where the plan says**
 
@@ -409,7 +383,7 @@ Nothing under `core/`, `dispatcharr/`, `frontend/`, `e2e/`, `metrics/`, `.github
 
 - [ ] **Step 5: Report**
 
-  Every ledger row that did not match, every appendix file Step 0 found not `identical` and what you carried across, and which task absorbs each. Do not start Task 1 until this is reported.
+  Every ledger row that did not match, and which task absorbs it. Do not start Task 1 until this is reported.
 
 ---
 
@@ -422,11 +396,13 @@ Nothing under `core/`, `dispatcharr/`, `frontend/`, `e2e/`, `metrics/`, `.github
 
 **Interfaces:**
 - Consumes: `control.Client.post` (2c-2), `Unavailable`, `Refused`, `ErrNotConfigured.Variable`, `redact.Error`.
-- Produces: `control.ReleaseRequest{StreamID, M3UProfileID, ChannelPK *int}`; `(*Client).Release(ctx, identifier, ReleaseRequest) (bool, error)`; `control.Event{Type, ChannelID, ChannelName, ClientID string; StreamID *int; Details map[string]any}`; `MaxEventsPerBatch = 200`; `(*Client).PostEvents(ctx, []Event) error`; `NewEmitter(*Client, *slog.Logger) *Emitter` with `Emit(Event)`, `Close()`, `Down() bool`; `relaytest.ControlPlaneConfig.Alternates []AlternateConfig{StreamID, URL, UserAgent, Argv}`, `.SlotReserved *bool`; `(*ControlPlane).SetStatus(int)`, `SetDelay(time.Duration)`, `RequestsTo(suffix) []RecordedRequest`, `Events() []RecordedEvent`, `EventsOfType(string)`; `RecordedRequest.At`; `relaytest.Config.DeadAirAfterBytes`; `(*Upstream).Methods() []string`; six more keys on `EffectiveProxySettings()`.
+- Produces: the #300 fix in `relaytest.Upstream`'s throttle; `control.ReleaseRequest{StreamID, M3UProfileID, ChannelPK *int}`; `(*Client).Release(ctx, identifier, ReleaseRequest) (bool, error)`; `control.Event{Type, ChannelID, ChannelName, ClientID string; StreamID *int; Details map[string]any}`; `MaxEventsPerBatch = 200`; `(*Client).PostEvents(ctx, []Event) error`; `NewEmitter(*Client, *slog.Logger) *Emitter` with `Emit(Event)`, `Close()`, `Down() bool`; `relaytest.ControlPlaneConfig.Alternates []AlternateConfig{StreamID, URL, UserAgent, Argv}`, `.SlotReserved *bool`; `(*ControlPlane).SetStatus(int)`, `SetDelay(time.Duration)`, `RequestsTo(suffix) []RecordedRequest`, `Events() []RecordedEvent`, `EventsOfType(string)`; `RecordedRequest.At`; `relaytest.Config.DeadAirAfterBytes`; `(*Upstream).Methods() []string`; six more keys on `EffectiveProxySettings()`.
 
 - [ ] **Step 1: Write the four `control` files from Appendices A–D and replace the two `relaytest` files from Appendices E–F**
 
   The fake control plane now dispatches on the path suffix: `/release` answers `{"released": true}` (`api_views.py:96-100`), `/events` records the batch and answers `{"accepted": n, "rejected": 0}`, everything else is a next-source answer built from `SourceURL` (stream 1) and `Alternates`, honouring `exclude_stream_ids` and `current_url` and listing the rest when `include_alternates` is set — the shape `resolve_source` produces. `SetStatus` and `SetDelay` change every LATER answer, which is the only way a test can take the control plane down after a tune. The upstream's `DeadAirAfterBytes` is `harness/standin.py`'s flag on the provider rather than the child.
+
+  **And the upstream's throttle is fixed — issue #300, found by the 2c-4 review and owned here because this PR extends the file.** The throttle slept `min(wait, 250ms)` ONCE, capping the total wait, so any rate below ~37,600 B/s was delivered faster than configured: the three `Rate 0.05` fixtures (`channel/fanout_test.go:247`, `channel/manager_test.go:117` and `:332`) about three times too fast, and row 4's quarter-rate upstream looping every 13.5 s instead of 32 s. Appendix F sleeps in steps of at most 250 ms until due, breaking when the client's context ends. **None of this PR's own fixtures sits on the bug** — every 2c-5 upstream runs at `Rate: 4` (1 MB/s) or unpaced — and none of the four affected tests needed its window widened (measured; Constraint 31 would have applied if one had). Row 4's real-ffmpeg test now arms **6.5–6.6 s** after the first record (two runs) at 10.2–10.3x opening speed on ffmpeg 9.0.1 against a truly quarter-rate upstream, where 2c-4 measured 12.2 s on the capped throttle; both are above the 4 s floor, and the floor does not move.
 
 - [ ] **Step 2: Run the two packages**
 
@@ -436,9 +412,11 @@ Nothing under `core/`, `dispatcharr/`, `frontend/`, `e2e/`, `metrics/`, `.github
 
   Expect `ok` for both. The emitter's outage test counts `level=WARN` lines, not the message alone: the later batches log the same message at DEBUG, which is the whole point.
 
-- [ ] **Step 3: Break-check**
+- [ ] **Step 3: Break-checks**
 
   In `control/events.go`'s `post`, delete `e.down = true` from the `default` arm. Run `TestTheEmitterLogsOnceIntoAnOutageAndOnceOutOfIt`: red, "the emitter does not report the outage". Revert.
+
+  Then #300's: put the throttle back to a single `time.Sleep(min(wait, 250*time.Millisecond))` and run `go test -race -count=1 -v -run TestTheCumulativeLeadMustBurnOffBeforeTheDetectorArms ./channel/`. The test stays green either way (its 4 s floor is below both measurements — that is what a floor is for), so the break-check is the **number**: the logged "armed N s after the first record" must be well above this plan's 6.5–6.6 s with the cap back in place (2c-4 measured 12.2 s) and near it with the fix. Record both. Revert.
 
 - [ ] **Step 4: Lint, credlint, commit**
 
@@ -711,14 +689,19 @@ Amendment A2.2's rule: a Go reference appended to the existing `Pin` cell, one l
 
 ## Task 8: final verification and the PR description
 
-- [ ] **Step 1: The whole module, three times, plus the Linux vet**
+- [ ] **Step 1: The whole gate**
 
   ```bash
-  cd <your worktree>/relay && gofmt -l . && go build ./... && go vet ./... && GOOS=linux go vet ./... && for i in 1 2 3; do go test -race -count=1 ./... 2>&1 | grep -v '^ok\|no test files' ; done; golangci-lint run ./...
+  cd <your worktree>/relay && ls go.sum 2>&1; gofmt -l . && go build ./... \
+    && go vet ./... && GOOS=linux go vet ./... && GOOS=darwin go vet ./... \
+    && golangci-lint run ./... && GOOS=linux golangci-lint run ./... && GOOS=darwin golangci-lint run ./... \
+    && for i in 1 2 3; do go test -race -count=1 ./... 2>&1 | grep -v '^ok\|no test files'; done \
+    && for i in 1 2 3 4 5 6 7 8; do go test -race -count=1 ./channel/ 2>&1 | grep -v '^ok'; done \
+    && for i in 1 2 3; do go test -count=1 ./ffmpeg/ ./channel/ 2>&1 | grep -v '^ok'; done
   cd <your worktree> && scripts/check_go_credential_logging.sh relay && scripts/check_go_stdlib_only.sh relay
   ```
 
-  Nothing printed by the loop; `0 issues`; credlint clean; stdlib only.
+  `go.sum` absent; nothing printed by any loop; `0 issues` three times; credlint clean; stdlib only. The no-race runs are break-check 22 of 2c-4's plan: the stand-in's stderr pump is joined, and a scheduling-dependent pass under `-race` alone was how that bug hid.
 
 - [ ] **Step 2: The backend labels the commit gate will run**
 
@@ -769,8 +752,11 @@ Every break-check in this plan, and the task it belongs to. A `✓` means it was
 | 19 | 5 | `healthy` not rendered | `TestHealthyOnTheListPayloadFollowsTheHealthMonitor` **and** `TestTheLiveEndpointProducesTheGoldensKeySet` | ✓ |
 | 20 | 2 | the transcode source's cause reset removed | **nothing** — no stand-in produces a first-attempt-only failure; listed as an unpinned edit | ✓ (green) |
 | 21 | 5 | the error packet not sent | `TestAClientWithNoBytesGetsAnErrorPacketWhenEverySourceFails`, "the body is 0 bytes" | ✓ |
+| 22 | 1 | #300's throttle cap put back | nothing reddens; the row-4 arming time moves from 6.5–6.6 s (real quarter rate) to about 12 s (capped) — a measurement, recorded, not a pin | ✓ (6.5 s and 6.6 s with the fix, two runs on this host) |
 
 **Row 1 deserves a second look.** With one check instead of three, the switch happens on the first tick after the threshold, and the test's 20 ms poll usually misses the unhealthy window, so the `sawUnhealthy` clause fires before the gap clause can. Both clauses guard the same mechanism; if on your host the gap clause fires instead, that is the same finding. Neither is the "switch happened" clause, which a one-check monitor also satisfies — which is why the test has the other two.
+
+**Row 22 is a measurement, not a pin.** Row 4's test asserts a floor, and both throttles clear it; what the fix changes is how honest the number under the floor is. If your host reports an arming time under 4 s with the fix, that is the test reddening for its own reason, not this row's.
 
 **Row 20 is listed because it does not redden.** The stale cause would surface only when a transcode child fails on its first attempt and succeeds on its second; no stand-in flag produces that, and the corpus is static. Recorded as an unpinned edit in the PR description rather than pinned by a test that rewrites a fixture between attempts and races the backoff.
 
@@ -781,8 +767,9 @@ Every break-check in this plan, and the task it belongs to. A `✓` means it was
 1. **Task 0's diff** — every appendix file Step 0 found not `identical` to the merged tree, what you carried across, and every ledger row that did not match. This is the report the orchestrator most needs, because this plan's seed was not the implemented tree (§ Sequencing).
 2. **The `StateActive` count** at Task 0 (two) and at Task 8 (two, the same lines).
 3. **Every break-check's actual failure message**, and specifically whether row 1 reddened on the sibling clause or the gap, whether row 14 reddened on its key alone, and whether row 20 stayed green.
-4. **The eight consecutive `-race` runs of `relay/channel` and the three of the module.**
+4. **The gate's counts** — three `-race` runs of the module, eight of `relay/channel`, three no-race runs of `./ffmpeg ./channel`, and the three-GOOS vet and lint.
 5. **The credlint census** — zero findings, two markers added; anything new it reported that this plan does not name.
+5a. **#300** — the row-4 arming time with and without the fix on your host and ffmpeg version, beside this plan's 6.5–6.6 s (fix) and 2c-4's 12.2 s (cap), and whether any of the three `Rate 0.05` tests needed a wider window.
 6. **The golden file** — whether Django's regeneration matched Appendix AC's edit beyond the one new key.
 7. **The lint ledger** — zero new suppressions, 2c-4's eight untouched.
 8. **The issue number** filed in Task 7.
@@ -1820,6 +1807,8 @@ func (c *ControlPlane) Close() { c.server.Close() }
 
 ### Appendix F — `relay/internal/relaytest/upstream.go`
 
+The whole file after 2c-5: `DeadAirAfterBytes`, `Methods`, and the #300 throttle fix (Task 1 Step 1), whose comment cites the issue.
+
 **`relay/internal/relaytest/upstream.go`**
 
 ```go
@@ -2022,7 +2011,18 @@ func (u *Upstream) serve(w http.ResponseWriter, r *http.Request, cfg Config, pay
 
 		if rate > 0 {
 			due := started.Add(time.Duration(float64(sent) / rate * float64(time.Second)))
-			if wait := time.Until(due); wait > 0 {
+			// Sleep UNTIL DUE, in steps of at most 250 ms so a client that
+			// has gone is noticed within a step rather than after the whole
+			// wait. An earlier form slept min(wait, 250ms) ONCE, capping the
+			// total wait: any rate below ~37,600 B/s was delivered faster
+			// than configured -- Rate 0.05 fixtures about three times too
+			// fast, row 4's quarter-rate upstream looping every 13.5 s
+			// instead of 32 s (issue #300, found by the 2c-4 review).
+			for {
+				wait := time.Until(due)
+				if wait <= 0 || r.Context().Err() != nil {
+					break
+				}
 				time.Sleep(min(wait, 250*time.Millisecond))
 			}
 		}
@@ -4293,8 +4293,10 @@ func TestParsedStderrReachesTheChannelsStats(t *testing.T) {
 	m := NewManager(ManagerConfig{BudgetBytes: buffer.TSPacketSize * 400})
 	t.Cleanup(m.StopAll)
 
-	// interval 0: the whole corpus is on stderr before the copy finishes,
-	// so the last record is the one the channel holds when it stops.
+	// interval 0: the whole corpus is on stderr before the stand-in exits,
+	// by construction -- RunStandIn joins its stderr pump before returning
+	// (break-check 22) -- so the last record is the one the channel holds
+	// when it stops.
 	src := standInSource(t, "-i", path, "--stderr-corpus", relaytest.CorpusPath("normal"), "--stderr-interval", "0")
 	ch, release := attachTranscode(t, m, "transcode-stats", src, transcodeTuning(0.1, 300*time.Second))
 	defer release()
@@ -7055,10 +7057,11 @@ func TestTheListEndpointCarriesTheFfmpegDerivedFields(t *testing.T) {
 	defer func() { _ = response.Body.Close() }()
 	waitForHead(t, r, "c-stats", 1)
 	waitForStats(t, r, "c-stats")
-	// The whole capture is on stderr before the first byte reaches the
-	// client (interval 0), so the last record is the one reported. Waited
-	// for rather than assumed, because the reader and the copy loop are
-	// two goroutines.
+	// The whole capture is on stderr before the stand-in exits, by
+	// construction (RunStandIn joins its stderr pump; break-check 22), and
+	// at interval 0 it is written in one burst, so the last record is the
+	// one reported once the reader has drained it. Waited for rather than
+	// assumed, because the reader and the copy loop are two goroutines.
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		speed := r.Manager.Get("c-stats").Stats().FFmpegSpeed
@@ -8876,10 +8879,10 @@ func mustMarshal(t *testing.T, v any) string {
 }
 ```
 
-**And `relay/httpapi/testdata/channels_clients_all.json`, regenerated by Django (Task 5 Step 1)** — 2c-4's line with `"healthy": true` inserted between `"avg_bitrate": "2.67 Mbps"` and `"video_codec": "h264"` on channel 1:
+**And `relay/httpapi/testdata/channels_clients_all.json`, regenerated by Django (Task 5 Step 1)** — `d92b33be`'s line with `"healthy":true` inserted between `"avg_bitrate":"2.67 Mbps"` and `"video_codec":"h264"` on channel 1, in Django's own compact spelling:
 
 ```json
-{"channels": [{"channel_id": "11111111-1111-4111-8111-111111111111", "state": "active", "url": "http://provider.invalid/live/sub/pw/41.ts", "stream_profile": "1", "owner": null, "buffer_index": 120, "client_count": 2, "uptime": 30.0, "started_at": 1789000000.5, "channel_name": "BBC One HD", "m3u_profile_id": 3, "stream_id": 41, "stream_name": "BBC One HD (UK)", "total_bytes": 9999888, "avg_bitrate_kbps": 2665.3034666666667, "avg_bitrate": "2.67 Mbps", "healthy": true, "video_codec": "h264", "resolution": "1920x1080", "source_fps": 25.0, "ffmpeg_speed": 1.02, "audio_codec": "aac", "audio_channels": "stereo", "stream_type": "mpegts", "clients": [{"client_id": "client_1789000000000_1234", "user_agent": "VLC/3.0.20", "output_format": "mpegts", "output_profile_id": 7, "ip_address": "198.51.100.4", "connected_at": 1789000001.25, "user_id": "7"}, {"client_id": "client_1789000000000_5678", "user_agent": null, "output_format": "mpegts", "output_profile_id": null}]}, {"channel_id": "22222222-2222-4222-8222-222222222222", "state": "stopped", "url": "", "stream_profile": "0", "owner": null, "buffer_index": 0, "client_count": 0, "uptime": 0.0, "started_at": 1789000100.0, "clients": []}], "count": 2}
+{"channels":[{"channel_id":"11111111-1111-4111-8111-111111111111","state":"active","url":"http://provider.invalid/live/sub/pw/41.ts","stream_profile":"1","owner":null,"buffer_index":120,"client_count":2,"uptime":30.0,"started_at":1789000000.5,"channel_name":"BBC One HD","m3u_profile_id":3,"stream_id":41,"stream_name":"BBC One HD (UK)","total_bytes":9999888,"avg_bitrate_kbps":2665.3034666666667,"avg_bitrate":"2.67 Mbps","healthy":true,"video_codec":"h264","resolution":"1920x1080","source_fps":25.0,"ffmpeg_speed":1.02,"audio_codec":"aac","audio_channels":"stereo","stream_type":"mpegts","clients":[{"client_id":"client_1789000000000_1234","user_agent":"VLC/3.0.20","output_format":"mpegts","output_profile_id":7,"ip_address":"198.51.100.4","connected_at":1789000001.25,"user_id":"7"},{"client_id":"client_1789000000000_5678","user_agent":null,"output_format":"mpegts","output_profile_id":null}]},{"channel_id":"22222222-2222-4222-8222-222222222222","state":"stopped","url":"","stream_profile":"0","owner":null,"buffer_index":0,"client_count":0,"uptime":0.0,"started_at":1789000100.0,"clients":[]}],"count":2}
 ```
 
 ### Appendix AF — `relay/channel/failover_test.go`
