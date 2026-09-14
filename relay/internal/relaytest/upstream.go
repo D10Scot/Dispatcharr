@@ -46,9 +46,17 @@ type Config struct {
 
 	// DeadAir sends the 200 and the headers, then nothing at all for this
 	// long -- exactly what a provider that stops producing looks like from
-	// the relay's side. The failover trigger that acts on it is 2c-5's; this
-	// PR only needs to not hang forever on one.
+	// the relay's side. 2c-5's dead-air trigger (parity-matrix row 2) acts
+	// on it.
 	DeadAir time.Duration
+
+	// DeadAirAfterBytes sends this many bytes and then nothing at all until
+	// the client goes away: a provider that STOPPED rather than one that
+	// never started, which is the shape that takes the relay past its
+	// init grace period and onto CONNECTION_TIMEOUT (input/manager.py:
+	// 1547-1551). Zero means no dead air. harness/standin.py's
+	// --dead-air-after-bytes, on the upstream rather than the child.
+	DeadAirAfterBytes int
 }
 
 // Upstream is a looping TS provider on 127.0.0.1.
@@ -58,6 +66,7 @@ type Upstream struct {
 	mu       sync.Mutex
 	requests int
 	headers  []http.Header
+	methods  []string
 }
 
 // NewUpstream starts an upstream. Register its Close with t.Cleanup.
@@ -75,6 +84,7 @@ func NewUpstream(cfg Config) *Upstream {
 		u.mu.Lock()
 		u.requests++
 		u.headers = append(u.headers, r.Header.Clone())
+		u.methods = append(u.methods, r.Method)
 		u.mu.Unlock()
 		u.serve(w, r, cfg, payload)
 	}))
@@ -98,6 +108,14 @@ func (u *Upstream) Headers() []http.Header {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	return append([]http.Header(nil), u.headers...)
+}
+
+// Methods is the HTTP method of each request the upstream answered, in
+// order -- how a test tells a HEAD probe from a GET that would have streamed.
+func (u *Upstream) Methods() []string {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return append([]string(nil), u.methods...)
 }
 
 // Close stops the server and waits for its handlers.
@@ -147,10 +165,19 @@ func (u *Upstream) serve(w http.ResponseWriter, r *http.Request, cfg Config, pay
 		if r.Context().Err() != nil {
 			return
 		}
+		if cfg.DeadAirAfterBytes > 0 && sent >= cfg.DeadAirAfterBytes {
+			// Connected, silent, and still here: the relay's watchdog is
+			// what ends this, by hanging up.
+			<-r.Context().Done()
+			return
+		}
 
 		want := WriteChunk
 		if cfg.StopAfterBytes > 0 && cfg.StopAfterBytes-sent < want {
 			want = cfg.StopAfterBytes - sent
+		}
+		if cfg.DeadAirAfterBytes > 0 && cfg.DeadAirAfterBytes-sent < want {
+			want = cfg.DeadAirAfterBytes - sent
 		}
 		piece := make([]byte, 0, want)
 		for len(piece) < want {
@@ -170,7 +197,18 @@ func (u *Upstream) serve(w http.ResponseWriter, r *http.Request, cfg Config, pay
 
 		if rate > 0 {
 			due := started.Add(time.Duration(float64(sent) / rate * float64(time.Second)))
-			if wait := time.Until(due); wait > 0 {
+			// Sleep UNTIL DUE, in steps of at most 250 ms so a client that
+			// has gone is noticed within a step rather than after the whole
+			// wait. An earlier form slept min(wait, 250ms) ONCE, capping the
+			// total wait: any rate below ~37,600 B/s was delivered faster
+			// than configured -- Rate 0.05 fixtures about three times too
+			// fast, row 4's quarter-rate upstream looping every 13.5 s
+			// instead of 32 s (issue #300, found by the 2c-4 review).
+			for {
+				wait := time.Until(due)
+				if wait <= 0 || r.Context().Err() != nil {
+					break
+				}
 				time.Sleep(min(wait, 250*time.Millisecond))
 			}
 		}

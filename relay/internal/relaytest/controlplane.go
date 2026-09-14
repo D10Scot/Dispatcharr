@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"time"
 )
@@ -32,13 +33,19 @@ func EffectiveProxySettings() map[string]any {
 		"channel_client_wait_period": 5,
 		"new_client_behind_seconds":  5,
 		// TSConfig's class-attribute defaults, the half A1.4 adds.
-		"BUFFER_CHUNK_SIZE":      255868,                     // apps/proxy/config.py:15, 188 * 1361
-		"DEFAULT_USER_AGENT":     "VLC/3.0.20 LibVLC/3.0.20", // :6
-		"CHUNK_SIZE":             8192,                       // :7
-		"STREAM_TIMEOUT":         20,                         // :103
-		"FAILOVER_GRACE_PERIOD":  20,                         // :120
-		"KEEPALIVE_INTERVAL":     0.5,                        // :97
-		"MAX_KEEPALIVE_DURATION": 300,                        // :122
+		"BUFFER_CHUNK_SIZE":           255868,                     // apps/proxy/config.py:15, 188 * 1361
+		"DEFAULT_USER_AGENT":          "VLC/3.0.20 LibVLC/3.0.20", // :6
+		"CHUNK_SIZE":                  8192,                       // :7
+		"STREAM_TIMEOUT":              20,                         // :103
+		"FAILOVER_GRACE_PERIOD":       20,                         // :120
+		"KEEPALIVE_INTERVAL":          0.5,                        // :97
+		"MAX_KEEPALIVE_DURATION":      300,                        // :122
+		"CONNECTION_TIMEOUT":          10,                         // :13
+		"HEALTH_CHECK_INTERVAL":       5,                          // :104
+		"MAX_RETRIES":                 3,                          // :9
+		"RETRY_WINDOW_SECONDS":        1800,                       // :10
+		"STABLE_CONNECTION_THRESHOLD": 30,                         // :11
+		"MAX_STREAM_SWITCHES":         10,                         // :14
 	}
 }
 
@@ -96,6 +103,31 @@ type ControlPlaneConfig struct {
 	// "relaytest/1.0", the fixture's usual value; BlankUserAgent sends "".
 	UserAgent      string
 	BlankUserAgent bool
+
+	// Alternates are the channel's other streams, in the order Django's
+	// own traversal would offer them (2c-5). SourceURL is stream 1; each
+	// alternate names its own stream id and URL. A next-source call whose
+	// exclude_stream_ids or current_url rules out stream 1 is answered
+	// with the first alternate it does not rule out, and a call with
+	// include_alternates lists the rest -- the shape resolve_source
+	// (apps/proxy/next_source.py:804-960) produces. With none, the fake
+	// answers a null source once stream 1 is excluded, which is Django's
+	// "no candidate" answer.
+	Alternates []AlternateConfig
+
+	// SlotReserved is the source's slot_reserved flag. Nil means true, the
+	// value every earlier fixture sent.
+	SlotReserved *bool
+}
+
+// AlternateConfig is one alternate stream the fake offers. Argv is the
+// built argv for THIS stream's URL, as Django builds one per candidate
+// (Amendment A4.1); nil renders as [] under the config's Command.
+type AlternateConfig struct {
+	StreamID  int
+	URL       string
+	UserAgent string
+	Argv      []string
 }
 
 // ProfileConfig is one stream-profile object the fake sends.
@@ -111,7 +143,10 @@ type ControlPlane struct {
 
 	mu       sync.Mutex
 	requests []RecordedRequest
+	events   []RecordedEvent
 	settings map[string]any
+	status   int
+	delay    time.Duration
 }
 
 // SetSettings replaces the proxy_settings every LATER answer carries. It is
@@ -124,12 +159,42 @@ func (c *ControlPlane) SetSettings(settings map[string]any) {
 	c.settings = settings
 }
 
-// RecordedRequest is one call the fake received.
+// SetStatus makes every LATER call answer with status, whatever the route:
+// 503 is an outage the client retries once and then degrades on, 403 a
+// refusal it never degrades on. Zero restores the configured behaviour. It is
+// how a test takes the control plane down AFTER a tune succeeded, which is
+// the only moment the degraded fallback can be observed.
+func (c *ControlPlane) SetStatus(status int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.status = status
+}
+
+// SetDelay holds every LATER answer for d before writing it, overriding the
+// config's Delay: how a test makes the control plane slow AFTER a tune, so
+// a failover's own budget can be watched being spent. Zero restores it.
+func (c *ControlPlane) SetDelay(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.delay = d
+}
+
+// RecordedRequest is one call the fake received, and when.
 type RecordedRequest struct {
 	Method string
 	Path   string
 	Header http.Header
 	Body   []byte
+	At     time.Time
+}
+
+// RecordedEvent is one event out of a posted batch, decoded.
+type RecordedEvent struct {
+	Type        string
+	ChannelID   string
+	ChannelName string
+	StreamID    *int
+	Details     map[string]any
 }
 
 // NewControlPlane starts a fake control plane. Register Close with t.Cleanup.
@@ -157,11 +222,17 @@ func NewControlPlane(cfg ControlPlaneConfig) *ControlPlane {
 			Path:   r.RequestURI,
 			Header: r.Header.Clone(),
 			Body:   body,
+			At:     time.Now(),
 		})
+		forced := c.status
+		delay := c.delay
 		c.mu.Unlock()
 
-		if cfg.Delay > 0 {
-			time.Sleep(cfg.Delay)
+		if delay == 0 {
+			delay = cfg.Delay
+		}
+		if delay > 0 {
+			time.Sleep(delay)
 		}
 
 		switch {
@@ -170,6 +241,10 @@ func NewControlPlane(cfg ControlPlaneConfig) *ControlPlane {
 			return
 		case seen < cfg.FailFirst:
 			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		case forced != 0 && forced != http.StatusOK:
+			w.WriteHeader(forced)
+			_, _ = w.Write([]byte(`{"detail":"relaytest: status set by the test"}`))
 			return
 		case cfg.Status != 0 && cfg.Status != http.StatusOK:
 			w.WriteHeader(cfg.Status)
@@ -181,70 +256,166 @@ func NewControlPlane(cfg ControlPlaneConfig) *ControlPlane {
 			return
 		}
 
-		c.mu.Lock()
-		settings := c.settings
-		c.mu.Unlock()
-		if settings == nil {
-			settings = cfg.Settings
-		}
-		if settings == nil {
-			settings = EffectiveProxySettings()
-		}
-		kind := cfg.Kind
-		if kind == "" {
-			kind = "proxy"
-		}
-		profile := func(id int, command string, argv []string) map[string]any {
-			object := map[string]any{"id": id, "command": command, "args": "", "kind": kind}
-			switch {
-			case cfg.ArgvAbsent:
-			case cfg.ArgvNull:
-				object["argv"] = nil
-			case argv == nil:
-				object["argv"] = []string{}
-			default:
-				object["argv"] = argv
-			}
-			return object
-		}
-		var ffmpegProfile any
-		if cfg.FFmpegProfile != nil {
-			ffmpegProfile = profile(cfg.FFmpegProfile.ID, cfg.FFmpegProfile.Command, cfg.FFmpegProfile.Argv)
-		}
-		userAgent := "relaytest/1.0"
-		if cfg.UserAgent != "" {
-			userAgent = cfg.UserAgent
-		}
-		if cfg.BlankUserAgent {
-			userAgent = ""
-		}
-
-		answer := map[string]any{
-			"alternates":      []any{},
-			"error":           nil,
-			"proxy_settings":  settings,
-			"output_profiles": map[string]any{},
-			"source":          nil,
-		}
-		if cfg.SourceURL != "" {
-			answer["source"] = map[string]any{
-				"stream_id":             1,
-				"url":                   cfg.SourceURL,
-				"user_agent":            userAgent,
-				"transcode":             false,
-				"m3u_profile_id":        1,
-				"slot_reserved":         true,
-				"channel_name":          "Test Channel",
-				"stream_name":           "Test Stream",
-				"m3u_profile_name":      "Test Profile",
-				"stream_profile":        profile(1, cfg.Command, cfg.Argv),
-				"ffmpeg_stream_profile": ffmpegProfile,
-			}
-		}
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(answer)
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/release"):
+			// apps/proxy/api_views.py:96-100: ReleaseResponseSerializer.
+			_ = json.NewEncoder(w).Encode(map[string]any{"released": true})
+		case strings.HasSuffix(r.URL.Path, "/events"):
+			c.recordEvents(body)
+			var batch struct {
+				Events []json.RawMessage `json:"events"`
+			}
+			_ = json.Unmarshal(body, &batch)
+			_ = json.NewEncoder(w).Encode(map[string]any{"accepted": len(batch.Events), "rejected": 0})
+		default:
+			_ = json.NewEncoder(w).Encode(c.nextSourceAnswer(cfg, body))
+		}
 	}))
 	return c
+}
+
+func (c *ControlPlane) recordEvents(body []byte) {
+	var batch struct {
+		Events []struct {
+			Type        string         `json:"type"`
+			ChannelID   string         `json:"channel_id"`
+			ChannelName string         `json:"channel_name"`
+			StreamID    *int           `json:"stream_id"`
+			Details     map[string]any `json:"details"`
+		} `json:"events"`
+	}
+	if err := json.Unmarshal(body, &batch); err != nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, e := range batch.Events {
+		c.events = append(c.events, RecordedEvent{Type: e.Type, ChannelID: e.ChannelID, ChannelName: e.ChannelName, StreamID: e.StreamID, Details: e.Details})
+	}
+}
+
+// nextSourceAnswer picks a candidate the way Django's resolve_source does:
+// the first of stream 1 and the alternates, in order, that the request's
+// exclude_stream_ids does not name and whose URL is not the current_url
+// (apps/proxy/next_source.py:242-368's own "already playing" rejection),
+// or a null source.
+func (c *ControlPlane) nextSourceAnswer(cfg ControlPlaneConfig, body []byte) map[string]any {
+	var req struct {
+		Exclude           []int  `json:"exclude_stream_ids"`
+		CurrentURL        string `json:"current_url"`
+		IncludeAlternates bool   `json:"include_alternates"`
+	}
+	_ = json.Unmarshal(body, &req)
+	excluded := map[int]bool{}
+	for _, id := range req.Exclude {
+		excluded[id] = true
+	}
+
+	c.mu.Lock()
+	settings := c.settings
+	c.mu.Unlock()
+	if settings == nil {
+		settings = cfg.Settings
+	}
+	if settings == nil {
+		settings = EffectiveProxySettings()
+	}
+	kind := cfg.Kind
+	if kind == "" {
+		kind = "proxy"
+	}
+	profile := func(id int, command string, argv []string) map[string]any {
+		object := map[string]any{"id": id, "command": command, "args": "", "kind": kind}
+		switch {
+		case cfg.ArgvAbsent:
+		case cfg.ArgvNull:
+			object["argv"] = nil
+		case argv == nil:
+			object["argv"] = []string{}
+		default:
+			object["argv"] = argv
+		}
+		return object
+	}
+	var ffmpegProfile any
+	if cfg.FFmpegProfile != nil {
+		ffmpegProfile = profile(cfg.FFmpegProfile.ID, cfg.FFmpegProfile.Command, cfg.FFmpegProfile.Argv)
+	}
+	userAgent := "relaytest/1.0"
+	if cfg.UserAgent != "" {
+		userAgent = cfg.UserAgent
+	}
+	if cfg.BlankUserAgent {
+		userAgent = ""
+	}
+	slotReserved := true
+	if cfg.SlotReserved != nil {
+		slotReserved = *cfg.SlotReserved
+	}
+
+	type candidate struct {
+		id        int
+		url       string
+		userAgent string
+		argv      []string
+	}
+	var candidates []candidate
+	if cfg.SourceURL != "" {
+		candidates = append(candidates, candidate{1, cfg.SourceURL, userAgent, cfg.Argv})
+	}
+	for _, alt := range cfg.Alternates {
+		ua := alt.UserAgent
+		if ua == "" {
+			ua = userAgent
+		}
+		candidates = append(candidates, candidate{alt.StreamID, alt.URL, ua, alt.Argv})
+	}
+	render := func(cand candidate) map[string]any {
+		return map[string]any{
+			"stream_id":             cand.id,
+			"url":                   cand.url,
+			"user_agent":            cand.userAgent,
+			"transcode":             kind == "transcode",
+			"m3u_profile_id":        1,
+			"slot_reserved":         slotReserved,
+			"channel_name":          "Test Channel",
+			"stream_name":           "Test Stream",
+			"m3u_profile_name":      "Test Profile",
+			"stream_profile":        profile(1, cfg.Command, cand.argv),
+			"ffmpeg_stream_profile": ffmpegProfile,
+		}
+	}
+
+	answer := map[string]any{
+		"alternates":      []any{},
+		"error":           nil,
+		"proxy_settings":  settings,
+		"output_profiles": map[string]any{},
+		"source":          nil,
+	}
+	chosen := -1
+	for i, cand := range candidates {
+		if excluded[cand.id] || (req.CurrentURL != "" && cand.url == req.CurrentURL) {
+			continue
+		}
+		chosen = i
+		break
+	}
+	if chosen < 0 {
+		return answer
+	}
+	answer["source"] = render(candidates[chosen])
+	if req.IncludeAlternates {
+		alternates := []any{}
+		for i, cand := range candidates {
+			if i != chosen {
+				alternates = append(alternates, render(cand))
+			}
+		}
+		answer["alternates"] = alternates
+	}
+	return answer
 }
 
 // URL is the base URL to hand a control.Client.
@@ -257,5 +428,37 @@ func (c *ControlPlane) Requests() []RecordedRequest {
 	return append([]RecordedRequest(nil), c.requests...)
 }
 
-// Close stops the fake.
+// RequestsTo is every call whose path ends with suffix, in order: "/release",
+// "/events" or "/next-source".
+func (c *ControlPlane) RequestsTo(suffix string) []RecordedRequest {
+	var out []RecordedRequest
+	for _, r := range c.Requests() {
+		if strings.HasSuffix(strings.SplitN(r.Path, "?", 2)[0], suffix) {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// Events is every event the fake has been posted, in order.
+func (c *ControlPlane) Events() []RecordedEvent {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]RecordedEvent(nil), c.events...)
+}
+
+// EventsOfType is Events filtered to one type.
+func (c *ControlPlane) EventsOfType(typ string) []RecordedEvent {
+	var out []RecordedEvent
+	for _, e := range c.Events() {
+		if e.Type == typ {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+// Close stops the fake. A relay whose control plane has been closed sees a
+// transport failure on its next call, which is the other shape of
+// control.Unavailable beside SetStatus's 5xx.
 func (c *ControlPlane) Close() { c.server.Close() }
