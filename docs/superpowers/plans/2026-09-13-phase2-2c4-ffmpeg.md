@@ -72,7 +72,7 @@ Every task's requirements implicitly include this section. Constraints 1–20 ar
 
 14. **Parity is against the code, not against the summary.** Every behavioural claim here carries a `file:line`. Five places where reading the source changed this plan: the parser is keyed on the **whole** command string, not its basename (`input/manager.py:797-803`); `_parse_ffmpeg_stats` drops the **whole** line when one captured number does not parse (`:1249`); the UDP filter drops values and **leaves their flags** (`:808-812`); `connecting` is set on **both** paths, not the transcode one (`:1905-1963`, correcting 2c-2's `state.go` comment); and `endswith('.m3u8')` runs over the whole URL, query string included (`utils.py:55`).
 
-15. **Decide every lint finding in this plan, and re-lint after every `#nosec`.** This PR adds **eight** suppressions, every one with its reason on the line, and Task 11 Step 6 lists them: `#nosec G204` on the spawn (`ffmpeg/spawn.go:88`); the `G204,G702` **pair** on credlint's `go list` call (`internal/credlint/check.go:142`), where the taint rule fired only once the first was silenced, the same shape as 2c-1's `G304/G703`; `#nosec G304` on credlint's source read (`check.go:214`); `#nosec G304` on the stand-in's fixture read (`internal/relaytest/standin.go:262`) and `//nolint:noctx` on its fetch (`:202`), a test-support file that is not `_test.go`; `//nolint:errorlint` on a test asserting identity (`redact/redact_test.go:43`); and `#nosec G204` twice in the real-ffmpeg test (`channel/source_transcode_real_test.go:31`, `:43`) on a `LookPath` result with fixed arguments. Six findings were **fixed rather than suppressed**: three `unused-parameter` trampolines, one `context-as-argument` order, one `noctx` (`exec.CommandContext` with `context.Background()`), and the G702 above. An earlier draft of this constraint counted four; the appendices carry eight.
+15. **Decide every lint finding in this plan, and re-lint after every `#nosec`.** This PR adds **eight** suppressions, every one with its reason on the line, and Task 11 Step 6 lists them: `#nosec G204` on the spawn (`ffmpeg/spawn.go:88`); the `G204,G702` **pair** on credlint's `go list` call (`internal/credlint/check.go:142`), where the taint rule fired only once the first was silenced, the same shape as 2c-1's `G304/G703`; `#nosec G304` on credlint's source read (`check.go:214`); `#nosec G304` on the stand-in's fixture read (`internal/relaytest/standin.go:281`) and `//nolint:noctx` on its fetch (`:221`), a test-support file that is not `_test.go`; `//nolint:errorlint` on a test asserting identity (`redact/redact_test.go:43`); and `#nosec G204` twice in the real-ffmpeg test (`channel/source_transcode_real_test.go:31`, `:43`) on a `LookPath` result with fixed arguments. Six findings were **fixed rather than suppressed**: three `unused-parameter` trampolines, one `context-as-argument` order, one `noctx` (`exec.CommandContext` with `context.Background()`), and the G702 above. An earlier draft of this constraint counted four; the appendices carry eight.
 
 16. **Run the four checks after every task, from the module root**, and treat any of the four failing as a stop:
 
@@ -82,7 +82,7 @@ Every task's requirements implicitly include this section. Constraints 1–20 ar
 
     `gofmt -l .` must print nothing.
 
-17. **An ordering bug is not a data race, and `-race` is silent on every one of them.** This PR's two most instructive defects were both false-reason passes on a test that could not have failed: a helper process that died of EPIPE before the mechanism under test was reached (twice, Ruling R6), and a kill test whose three-second bound let `os/exec`'s own fallback SIGKILL stand in for ours (break-check 8).
+17. **An ordering bug is not a data race, and `-race` is silent on every one of them.** This PR's two most instructive defects were both false-reason passes on a test that could not have failed: a helper process that died of EPIPE before the mechanism under test was reached (twice, Ruling R6), and a kill test whose three-second bound let `os/exec`'s own fallback SIGKILL stand in for ours (break-check 8). The third, found in the review's third round, is the purest instance: the stand-in returned — and `os.Exit` killed its stderr pump — before the pump goroutine had ever been scheduled, so one `ffmpeg` test and two `channel` tests were green under `-race` and red 3/3 without it, because the detector's slower scheduling was the only thing that let the pump run first. Nothing raced: a goroutine that never runs writes nothing, and `-race` has nothing to report. `RunStandIn` now joins its pump before returning (Appendix I, break-check 22), and Task 11 Step 3 runs the module once **without** `-race` for exactly this class.
 
 18. **One mechanism per invariant.** Break-check 10 is listed *because* it does not redden.
 
@@ -547,15 +547,16 @@ D5's first exception, and the fd-for-fd contract of `input/manager.py:823-923`.
 
   On darwin `spawn_linux_test.go` does not compile into the test binary; the `GOOS=linux go vet` is what proves it compiles at all.
 
-- [ ] **Step 5: Break-check, three edits**
+- [ ] **Step 5: Break-check, four edits**
 
   | # | The edit | Expected red | Message |
   |---|---|---|---|
   | 8 | `spawn.go`: `Cancel` sends `SIGTERM` | `TestCancelKillsTheChildWithSIGKILL` | `the child took 502.16ms to die after cancel; a direct SIGKILL takes milliseconds, and 500ms is WaitDelay's own fallback kill after a signal the child ignored` |
   | 17 | `spawn.go`: `cr := bytes.IndexByte(buf, '\r')` becomes `cr := -1` | `TestReadStderrSplitsOnCROrLFAndSeesEveryRecord`, `normal` and `slow-trickle` subtests | `the reader saw 1 progress lines, the corpus holds 11 records -- the split lost or merged records`; `truncation` stays green, and should — it has no CR |
+  | 22 | `standin.go`: the pump join removed — `go pumpStderr(o.corpus, o.interval, o.loop)` with no `pumped` channel and no `defer` — **run WITHOUT `-race`**: `go test -count=1 ./ffmpeg ./channel` | `TestReadStderrSplitsOnCROrLFAndSeesEveryRecord`, all three subtests; in `channel`, `TestParsedStderrReachesTheChannelsStats` and `TestOutputPhaseStreamLinesDoNotOverwriteTheInputs`. **Green under `-race`**, red 3/3 without it | `the reader saw 0 progress lines, the corpus holds 11 records -- the split lost or merged records` (and `76`, `1`); `video_codec = <nil>, want h264` (and nine more); `resolution = <nil>, want the INPUT's 320x180 -- the output phase's stream line overwrote it` |
   | — | `spawn.go`: `Start` no longer refuses `://` | `TestACommandThatIsAURLIsRefusedBeforeSpawning` | not run |
 
-  **Break-check 8 stayed green in this plan's first draft** (a three-second bound) and **17 was mis-applied** on the first attempt — the edit did not land and the unmodified tree passed. Confirm the edit is in the file before reading a green as a finding.
+  **Break-check 8 stayed green in this plan's first draft** (a three-second bound) and **17 was mis-applied** on the first attempt — the edit did not land and the unmodified tree passed. Confirm the edit is in the file before reading a green as a finding. **22 is the one break-check in this plan that must be run without `-race`**: with it, the detector's scheduling hides the defect and the run is green (Constraint 17).
 
 - [ ] **Step 6: Run the Linux-only pin in the repo's Go image, both ways**
 
@@ -941,9 +942,10 @@ Amendment A2.2's rule: a Go reference appended to the existing `Pin` cell, one l
   ```bash
   cd <your worktree>/relay && gofmt -l . && go build ./... && go vet ./... && GOOS=linux go vet ./... && golangci-lint run ./...
   for i in 1 2 3; do go test -race -count=1 ./... || echo "RUN $i FAILED"; done
+  go test -count=1 ./...
   ```
 
-  Three clean runs. This plan's own measured about 34 s (`channel`, 21 of it the real ffmpeg), 16 s (`httpapi`), 8 s (`ffmpeg`).
+  Three clean runs under `-race`, **and one without it** — the detector's slower scheduling can turn an ordering bug green (Constraint 17, break-check 22), so the module runs once at the scheduler's own pace. Three clean runs. This plan's own measured about 34 s (`channel`, 21 of it the real ffmpeg), 16 s (`httpapi`), 8 s (`ffmpeg`).
 
 - [ ] **Step 3a: The `StateActive` count**
 
@@ -997,6 +999,7 @@ Every break-check in this plan, and the task it belongs to. A `✓` means it was
 | 19 | 6 | `TimedOut` no longer ends the source | `TestASustainedSubThresholdSpeedEndsTheSourceWithATimeout` | ✓ |
 | 20 | 3 | `Pdeathsig` removed (Linux, in the Go image) | `TestAChildOfADeadRelayDiesWithIt`, 5.02 s | ✓ — **on the third helper** (R6) |
 | 21 | 2 | the VLC word-form channel fallback deleted (`parse.go`, the `vlcChannelWordsRe` block) | `TestCanParseAndParseAgreeWithThePythonParsers/vlc_word-form_channel_fallback` **only**, `Parse ok = false, want true (got {})` | ✓ — added in the review's second round; before the row existed the deletion stayed green | 
+| 22 | 3 | the stand-in's pump join removed (`standin.go`: bare `go pumpStderr(...)`, no `pumped` channel), run **without `-race`** | `TestReadStderrSplitsOnCROrLFAndSeesEveryRecord` (all three corpora, `the reader saw 0 progress lines, the corpus holds 11 records -- the split lost or merged records`), `TestParsedStderrReachesTheChannelsStats`, `TestOutputPhaseStreamLinesDoNotOverwriteTheInputs`; **green under `-race`** | ✓ — added in the review's third round; red 3/3 without `-race`, green 3/3 with it, on the unjoined tree |
 | 1a, 1b | 1 | `redact.Error`/`Line` neutered | the redact tests and 2c-2's two | — |
 | — | 4 | substitute before split; `[]` on `ValueError` | the two Python tests named | — (container) |
 | — | 5 | `ArgvPresent` always true | `TestArgvPresenceIsDecodedInAllThreeStates/absent…` | — |
@@ -3707,7 +3710,26 @@ func RunStandIn(args []string) int {
 	}
 
 	if o.corpus != "" {
-		go pumpStderr(o.corpus, o.interval, o.loop)
+		// The pump is JOINED before RunStandIn returns, unless it loops.
+		// Without the join, a file input at interval 0 finished its copy
+		// and returned before the goroutine had ever been scheduled, and
+		// os.Exit killed the pump with nothing written -- deterministically
+		// without `-race`, and green under it only because the detector's
+		// slower scheduling let the pump run first (break-check 22). A
+		// daemon thread in standin.py has no such hazard: a Python thread
+		// starts running synchronously. Deferred, so every return path
+		// waits -- an exit code, EPIPE on fd 1, an input error -- which is
+		// also what a real ffmpeg does: its stderr epilogue lands before it
+		// exits. A looping pump never returns, so it is not joined; dead
+		// air never returns either, so the join is unreachable there.
+		pumped := make(chan struct{})
+		go func() {
+			defer close(pumped)
+			pumpStderr(o.corpus, o.interval, o.loop)
+		}()
+		if !o.loop {
+			defer func() { <-pumped }()
+		}
 	}
 
 	var source io.ReadCloser
@@ -5948,8 +5970,10 @@ func TestParsedStderrReachesTheChannelsStats(t *testing.T) {
 	m := NewManager(ManagerConfig{BudgetBytes: buffer.TSPacketSize * 400})
 	t.Cleanup(m.StopAll)
 
-	// interval 0: the whole corpus is on stderr before the copy finishes,
-	// so the last record is the one the channel holds when it stops.
+	// interval 0: the whole corpus is on stderr before the stand-in exits,
+	// by construction -- RunStandIn joins its stderr pump before returning
+	// (break-check 22) -- so the last record is the one the channel holds
+	// when it stops.
 	src := standInSource(t, "-i", path, "--stderr-corpus", relaytest.CorpusPath("normal"), "--stderr-interval", "0")
 	ch, release := attachTranscode(t, m, "transcode-stats", src, transcodeTuning(0.1, 300*time.Second))
 	defer release()
@@ -7590,10 +7614,11 @@ func TestTheListEndpointCarriesTheFfmpegDerivedFields(t *testing.T) {
 	defer func() { _ = response.Body.Close() }()
 	waitForHead(t, r, "c-stats", 1)
 	waitForStats(t, r, "c-stats")
-	// The whole capture is on stderr before the first byte reaches the
-	// client (interval 0), so the last record is the one reported. Waited
-	// for rather than assumed, because the reader and the copy loop are
-	// two goroutines.
+	// The whole capture is on stderr before the stand-in exits, by
+	// construction (RunStandIn joins its stderr pump; break-check 22), and
+	// at interval 0 it is written in one burst, so the last record is the
+	// one reported once the reader has drained it. Waited for rather than
+	// assumed, because the reader and the copy loop are two goroutines.
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		speed := r.Manager.Get("c-stats").Stats().FFmpegSpeed
