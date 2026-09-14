@@ -99,8 +99,9 @@ func TestTheCumulativeLeadMustBurnOffBeforeTheDetectorArms(t *testing.T) {
 
 	m := NewManager(ManagerConfig{BudgetBytes: buffer.ChunkBytes * 16})
 	t.Cleanup(m.StopAll)
-	tuning := Tuning{ChunkBytes: buffer.ChunkBytes, Retention: time.Minute,
-		BufferingSpeed: 1.0, BufferingTimeout: 300 * time.Second}
+	tuning := testTuning()
+	tuning.ChunkBytes, tuning.Retention = buffer.ChunkBytes, time.Minute
+	tuning.BufferingSpeed, tuning.BufferingTimeout = 1.0, 300*time.Second
 	src := &TranscodeSource{
 		Command:   "ffmpeg", // the profile's command, so ToolFor routes to the ffmpeg parser
 		Argv:      []string{"-i", up.URL(), "-c:v", "copy", "-c:a", "copy", "-f", "mpegts", "pipe:1"},

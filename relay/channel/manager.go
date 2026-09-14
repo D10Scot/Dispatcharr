@@ -26,6 +26,17 @@ type ManagerConfig struct {
 	// Now is the clock handed to every ring, injectable so the join-point
 	// tests do not sleep. Nil means time.Now.
 	Now func() time.Time
+
+	// Events receives every transition a channel reports (events.go). Nil
+	// discards them, which is what a test that is not about events wants
+	// and what no deployment should run.
+	Events EventSink
+
+	// Release gives a channel's provider slot back once its source
+	// goroutine has returned, whatever ended it: the one release call per
+	// channel (Channel.releaseSlot). Nil means no control plane to tell,
+	// which only a test wants.
+	Release func(id string, info SourceInfo)
 }
 
 // Manager owns every running channel.
@@ -69,15 +80,19 @@ func NewManager(cfg ManagerConfig) *Manager {
 }
 
 // Started is what a start function hands back: the source to run, the tuning
-// the channel runs on, and what the control plane said about the stream.
+// the channel runs on, what the control plane said about the stream, and the
+// resolver the channel fails over through.
 //
 // A struct rather than a fourth return value: (Source, Tuning, SourceInfo,
 // error) is where a signature stops being readable, and 2c-4's ffmpeg source
-// adds a fifth.
+// adds a fifth. Resolver is nil for a channel with no failover, which is a
+// test shape: every tune builds one, because it holds the candidate list
+// cached at channel start.
 type Started struct {
-	Source Source
-	Tuning Tuning
-	Info   SourceInfo
+	Source   Source
+	Tuning   Tuning
+	Info     SourceInfo
+	Resolver Resolver
 }
 
 // Attach returns the channel for id, starting it from start() if it is not
@@ -220,6 +235,10 @@ func (m *Manager) publish(id string, client *Client, started Started) *Channel {
 	if now == nil {
 		now = time.Now
 	}
+	events := m.cfg.Events
+	if events == nil {
+		events = discardEvents{}
+	}
 	c := &Channel{
 		id: id,
 		ring: buffer.New(buffer.Config{
@@ -228,14 +247,31 @@ func (m *Manager) publish(id string, client *Client, started Started) *Channel {
 			Retention:   started.Tuning.Retention,
 			Now:         m.cfg.Now,
 		}),
-		log:       m.log,
-		tuning:    started.Tuning,
-		source:    started.Info,
-		startedAt: now(),
-		state:     StateInitializing,
-		clients:   map[string]*Client{client.ID: client},
-		cancel:    cancel,
-		done:      make(chan struct{}),
+		log:         m.log,
+		tuning:      started.Tuning,
+		source:      started.Info,
+		channelName: started.Info.ChannelName,
+		startedAt:   now(),
+		now:         now,
+		resolver:    started.Resolver,
+		events:      events,
+		release:     m.cfg.Release,
+		ctx:         ctx,
+		state:       StateInitializing,
+		clients:     map[string]*Client{client.ID: client},
+		// StreamManager.__init__ (input/manager.py:76-78, :93-96): healthy
+		// until the monitor says otherwise, the initial stream already in
+		// the tried set, and the failure window from the tune's settings.
+		healthy:         true,
+		lastData:        now(),
+		tried:           map[int]bool{},
+		currentStreamID: started.Info.StreamID,
+		failures:        failureCounter{window: started.Tuning.RetryWindow, now: now},
+		cancel:          cancel,
+		done:            make(chan struct{}),
+	}
+	if started.Info.StreamID != 0 {
+		c.tried[started.Info.StreamID] = true
 	}
 
 	m.mu.Lock()

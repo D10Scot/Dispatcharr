@@ -14,17 +14,6 @@ import (
 	"github.com/D10Scot/Dispatcharr/relay/redact"
 )
 
-// ErrBufferingTimeout is returned when ffmpeg's reported speed stayed below
-// buffering_speed for longer than buffering_timeout.
-//
-// 2c-4 ENDS THE TUNE ON THIS, the same decision 2c-2 took for
-// ErrUpstreamIdle and for the same reason: Python calls _try_next_stream()
-// at this point (input/manager.py:1182, parity-matrix row 1) and 2c-4 has no
-// failover to call. Ending the source with a named error is the honest
-// shape; 2c-5 replaces the one call site that raises it with the failover,
-// and rows 1 and 6 close there.
-var ErrBufferingTimeout = errors.New("channel: the transcode process buffered past buffering_timeout")
-
 // ErrInputFailed is VLC's "unable to open the MRL": input/manager.py:1059-1064
 // closes the socket on it, which the main loop then reads as a connection
 // failure. Only reachable when the profile's command is literally vlc or
@@ -152,6 +141,12 @@ func (s *TranscodeSource) failure() error {
 func (s *TranscodeSource) Run(parent context.Context, sink io.Writer) error {
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
+	// A fresh attempt has no cause yet: the run loop calls Run again on the
+	// same source after a failure (input/manager.py's retry loop), and a
+	// cause left over from the last attempt would end this one at once.
+	s.mu.Lock()
+	s.cause = nil
+	s.mu.Unlock()
 
 	proc, err := ffmpeg.Start(ctx, s.Command, s.argv())
 	if err != nil {
@@ -319,20 +314,34 @@ func (r *stderrReader) progress(line string) {
 	switch verdict := r.detector.Observe(*p.Speed); verdict {
 	case ffmpeg.Started:
 		// :1213-1226: the flag, the clock, a warning, the channel_buffering
-		// event -- which is 2c-5's, with the events route -- and the state.
+		// event and the state.
 		s.log().Warn("buffering started", "channel", s.channelID(), "speed", *p.Speed, "threshold", r.detector.Threshold)
 		if s.channel != nil {
+			s.channel.emit("channel_buffering", map[string]any{"speed": *p.Speed})
 			s.channel.reportBuffering(true)
 		}
 	case ffmpeg.Continuing:
 		// :1232-1234 re-writes the BUFFERING state on every sample; the
 		// state is already buffering here, so there is nothing to write.
 	case ffmpeg.TimedOut:
-		// :1178-1211: Python tries the next stream. 2c-4 ends the tune with
-		// a named error instead (ErrBufferingTimeout's comment); 2c-5
-		// replaces this arm and this arm only.
-		s.log().Error("buffering timeout reached", "channel", s.channelID(), "speed", *p.Speed, "timeout", r.detector.Timeout)
-		s.fail(ErrBufferingTimeout, r.cancel)
+		// :1178-1211, parity-matrix row 1: the next stream, asked for from
+		// THIS goroutine, as Python asks from its stderr thread. On success
+		// the channel has parked the new source and cancelled this attempt;
+		// on failure Python stays buffering and asks again on the very next
+		// record (:1210) -- one control-plane call per progress record until
+		// something answers, reproduced and filed rather than rate-limited.
+		bufferingFor := r.detector.BufferingFor()
+		s.log().Error("buffering timeout reached", "channel", s.channelID(), "speed", *p.Speed, "buffering_for", bufferingFor.Round(100*time.Millisecond), "timeout", r.detector.Timeout)
+		if s.channel != nil && s.channel.failoverFromBuffering(bufferingFor) {
+			s.log().Info("switched to the next stream after a buffering timeout", "channel", s.channelID())
+			// :1185-1186, the successful-switch branch: buffering cleared
+			// and the clock forgotten. The process this reader belongs to
+			// is about to be killed, so the reset is for fidelity, not
+			// for the next record.
+			r.detector.Reset()
+		} else {
+			s.log().Error("failed to switch to the next stream after a buffering timeout", "channel", s.channelID())
+		}
 	case ffmpeg.Ended:
 		s.log().Info("buffering ended", "channel", s.channelID(), "speed", *p.Speed)
 		if s.channel != nil {
