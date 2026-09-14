@@ -275,10 +275,16 @@ func (r *Ring) Oldest() (uint64, bool) {
 // caller can log a real gap.
 //
 // Python's get_optimized_client_data batching (3..20 chunks, a 1 MB target and
-// a 2 MB cap, input/buffer.py:302-372) is deliberately NOT ported: it amortises
-// a Redis round trip per chunk, and an in-memory ring has no round trip to
-// amortise. What a client receives is identical; only the size of each write
-// to its socket differs, which no parity row covers.
+// a 2 MB cap, input/buffer.py:302-372) has FOUR constants, and this method
+// ports only one of them. MIN_CHUNKS, TARGET_SIZE and MAX_SIZE amortise a
+// Redis round trip per chunk, and an in-memory ring has no round trip to
+// amortise, so none of the three is ported -- what a client receives is
+// identical; only the size of each write to its socket differs, which no
+// parity row covers. MAX_CHUNKS is different in kind and IS ported, as
+// MaxChunksPerRead (2c-3): it bounds how much a lagging reader HOLDS at one
+// instant, not a batching optimisation, and an uncapped Read can pin a whole
+// ring's worth of evicted chunks on top of the resident ring. See
+// MaxChunksPerRead's own doc comment for the sizing.
 func (r *Ring) Read(cursor uint64) (chunks [][]byte, next uint64, skipped uint64) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -305,19 +311,19 @@ func (r *Ring) Read(cursor uint64) (chunks [][]byte, next uint64, skipped uint64
 	// correct without relying on the chunks being contiguous.
 	//
 	// next IS THE INDEX OF THE LAST CHUNK ACTUALLY APPENDED TO out, tracked as
-	// the loop goes, NOT r.chunks[len(r.chunks)-1].Index. The two are
-	// numerically identical today because this call always returns every
-	// resident chunk from want through head -- there is no batch cap in this
-	// PR. That equivalence is an accident of this PR's shape, not a property
-	// of the method: the day a caller batches reads (2c-3's own plan already
-	// names get_optimized_client_data's 3-to-20-chunk cap as the Python
-	// precedent this in-memory ring does not need), returning the RING's tail
-	// index while having handed back fewer chunks would silently advance the
+	// the loop goes, NOT r.chunks[len(r.chunks)-1].Index. The two DIFFER
+	// whenever this call's batch is capped by MaxChunksPerRead (2c-3): with
+	// more resident chunks than the cap allows, out holds only the first
+	// MaxChunksPerRead of them and next is the last one actually appended,
+	// which is behind the ring's own tail. Returning the RING's tail index
+	// here while having handed back fewer chunks would silently advance the
 	// caller's cursor past chunks it was never given -- an invisible content
 	// gap, since Read reports skipped only for chunks lost to eviction
-	// BEFORE want, never for ones withheld after it. Computing next from what
-	// was actually appended costs nothing today and is correct regardless of
-	// whether a future cap exists.
+	// BEFORE want, never for ones withheld after it. Pinned by
+	// TestNextIsTheLastChunkActuallyReturnedNotTheRingsTail (ring_test.go),
+	// armed by this cap: before it existed, next and the tail were always
+	// the same value for any fixture this call could produce, and the test
+	// could not fail; the fixture now writes past the cap so it can.
 	out := make([][]byte, 0, min(len(r.chunks), MaxChunksPerRead))
 	next = cursor
 	for _, c := range r.chunks {

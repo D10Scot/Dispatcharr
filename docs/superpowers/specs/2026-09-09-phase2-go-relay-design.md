@@ -2015,7 +2015,7 @@ with them parity-matrix row 14's asymmetric `owner` default (`null` on the
 list endpoint, the literal string `'unknown'` on the detail one) and row 17's
 `ip_address` on both. 2c-3 pins neither row: half a row is not a row.
 
-**A3.5a — two more stated divergences, both where Python loses
+**A3.5 — two more stated divergences, both where Python loses
 information.** `get_optimized_client_data` returns `client_index +
 chunk_count` (`input/buffer.py:373`) — the count it ASKED for, not the count
 it got — so a short read there skips undelivered chunks; Go returns the index
@@ -2039,7 +2039,7 @@ getting it wrong**: not a failed tune for the waiter, which recovers by
 re-claiming the gate, but a wasted control-plane round trip per departing
 tuner plus a failure whenever that retry also fails.
 
-**A3.5 — a stated wire divergence: float spelling.** DRF renders a Python
+**A3.7 — a stated wire divergence: float spelling.** DRF renders a Python
 float as `5.0`; Go's `encoding/json` renders `float64(5)` as `5`. The
 difference is textual and no consumer can observe it —
 `relay_client._request` calls `.json()` and `api.js` parses — so the golden

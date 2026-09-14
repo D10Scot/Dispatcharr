@@ -307,41 +307,40 @@ func TestReadReportsWhatEvictionSkipped(t *testing.T) {
 
 // next MUST be the index of the last chunk actually appended to the returned
 // slice, not r.head or r.chunks' own tail -- a forward-looking invariant
-// (found while verifying this plan's own code against a reviewer's claim):
-// this PR's Read has no batch cap, so today the two are numerically
-// identical, and no test in this file can force them apart. The assertion
-// here is structural rather than a fixed literal -- next must equal
-// want+len(out)-1, computed from what Read actually handed back -- so it
-// keeps holding, and failing usefully, the day a bounded Read exists and the
-// two quantities diverge.
+// (found while verifying this plan's own code against a reviewer's claim).
+// The assertion is structural rather than a fixed literal -- next must equal
+// cursor+len(out), computed from what Read actually handed back -- so it
+// holds regardless of whether a call happens to be capped.
 //
-// THIS TEST IS UN-ARMED ON THIS TREE, stated plainly rather than left to be
-// rediscovered: cursor+len(chunks) equals the ring's own tail whenever Read
-// returns every resident chunk, which it always does here with no cap, so
-// reverting the fix this test guards (back to r.chunks[len(r.chunks)-1]
-// .Index) leaves this assertion passing -- confirmed by review's own
-// break-check against 9f744890, and independently before that. The fix
-// itself stays, because the day a caller batches reads is the day the two
-// diverge and this assertion starts failing usefully; the code just cannot
-// be made to demonstrate that divergence yet. Owner: 2c-3, whose bounded
-// Read should arm this test rather than add a second one -- its own
-// planner has already been pointed at this test by name.
+// ARMED BY 2c-3's MaxChunksPerRead, stated plainly because the un-armed
+// history is worth keeping: before that cap existed, cursor+len(chunks)
+// always equalled the ring's own tail, because Read returned every resident
+// chunk with nothing held back -- so reverting the fix this test guards
+// (back to r.chunks[len(r.chunks)-1].Index) left this assertion passing on
+// any fixture this file could build, confirmed by review's own break-check
+// against 9f744890 and independently before that. The fixture below writes
+// forty chunks into a sixty-four-chunk ring and reads from cursor 0, so the
+// cap binds and Read hands back only twenty of them: next is no longer the
+// ring's tail (40) but the last of the twenty actually appended, and the two
+// quantities diverge for the first time. This is one assertion of the
+// property from a different fixture than relay/buffer/fanout_test.go's
+// TestReadIsCappedAndItsCursorFollowsTheBytes, not a second mechanism for
+// it -- both exercise the same code path in Read.
 func TestNextIsTheLastChunkActuallyReturnedNotTheRingsTail(t *testing.T) {
-	r := newTestRing(t, nil)
+	r := New(Config{BudgetBytes: testChunk * 64, ChunkBytes: testChunk})
 	perChunk := testChunk / TSPacketSize
-	for range 5 {
+	for range 40 {
 		if _, err := r.Write(relaytest.SyntheticTS(perChunk, 0x100)); err != nil {
 			t.Fatalf("Write: %v", err)
 		}
 	}
 
-	const cursor = 1
-	chunks, next, _ := r.Read(cursor)
-	want := cursor + uint64(len(chunks))
+	chunks, next, _ := r.Read(0)
+	want := uint64(len(chunks))
 	if next != want {
-		t.Fatalf("next = %d, want %d (cursor %d + %d chunks actually returned) -- "+
+		t.Fatalf("next = %d, want %d (cursor 0 + %d chunks actually returned) -- "+
 			"next must track what was handed back, not the ring's own head",
-			next, want, cursor, len(chunks))
+			next, want, len(chunks))
 	}
 }
 

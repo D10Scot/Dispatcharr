@@ -273,6 +273,14 @@ func TestTheLiveEndpointProducesTheGoldensKeySet(t *testing.T) {
 	if got, want := keysOf(liveRow), keysOf(goldenRow); !reflect.DeepEqual(got, want) {
 		t.Fatalf("the live client row's keys are\n  %v\nand the golden's are\n  %v", got, want)
 	}
+	// Asserted on the LIVE row, for the same reason as owner above: the key-set
+	// check just above would stay green whether output_profile_id rendered as
+	// null or as a bare integer -- both carry the key -- so a *Client.OutputProfileID
+	// that lost its pointer and became an int would pass undetected.
+	if got := liveRow["output_profile_id"]; got != nil {
+		t.Fatalf("the live client reports output_profile_id %v, want null: 2c-3 serves "+
+			"no Output Profile yet, so every attached client's OutputProfileID is nil", got)
+	}
 }
 
 func keysOf(m map[string]any) []string {

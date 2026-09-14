@@ -43,10 +43,16 @@ func TestReadIsCappedAndItsCursorFollowsTheBytes(t *testing.T) {
 		t.Fatalf("skipped = %d with nothing evicted", skipped)
 	}
 	// next's contract -- the index of the last chunk actually returned, never
-	// the ring's tail -- is 2c-2's and is asserted by
-	// TestNextIsTheLastChunkActuallyReturnedNotTheRingsTail, which starts
-	// discriminating the moment this cap exists. Not re-asserted here: one
-	// mechanism per invariant.
+	// the ring's tail -- is 2c-2's own invariant, armed by this cap (2c-3).
+	// This test does not check next's numeric value directly; it uses next
+	// to drive the second Read below and checks the RESULT is exactly the
+	// remaining twenty chunks in order, which fails if next ran ahead
+	// (a gap) or behind (a duplicate) just as surely as a bare equality
+	// check would. That makes it a second assertion of the same property
+	// from a different fixture -- forty chunks in a sixty-four-chunk ring,
+	// read from cursor 0 -- not a second mechanism: both this test and
+	// TestNextIsTheLastChunkActuallyReturnedNotTheRingsTail (ring_test.go)
+	// exercise the same `next = c.Index` line in Read.
 
 	// The rest arrives on the following calls, in order and with no gap.
 	rest, _, _ := r.Read(next)
