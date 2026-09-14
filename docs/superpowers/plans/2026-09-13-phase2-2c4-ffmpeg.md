@@ -18,7 +18,7 @@
 
 2c-3's plan is on `main` at `c1763e00` (PR #287, `docs/superpowers/plans/2026-09-13-phase2-2c3-fanout.md`; read it with `git show "c1763e00:docs/superpowers/plans/2026-09-13-phase2-2c3-fanout.md"`). Its implementation is PR #288, `migration/phase2c-fanout`, reviewed and landed at **`76611908`** (fix round 1 on `b430531b`), sitting directly on `c1763e00` — so the squash-merge commit's tree is byte-identical to `76611908`'s. **Every appendix in this plan was built and verified on `76611908`'s `relay/`, every `_test.go` included**, after a first draft on a hand reconstruction of 2c-3 from its appendices had been re-seeded onto the real tree and every predecessor file re-applied edit by edit. The re-seed moved exactly two anchors (both re-worded comments in the fix round) and three comment-only edits, and no code; the fix round's own changes to files this plan does not edit — `buffer/ring.go`'s armed `TestNextIsTheLastChunkActuallyReturnedNotTheRingsTail` fixture, `channel/manager_test.go`'s adapters, `golden_test.go`'s live-row `output_profile_id` assertion — are taken as they landed.
 
-**Task 0 is still the diff.** The orchestrator fills `<2C3_MERGED_SHA>` with the merge commit, not `76611908`; the two trees are identical by construction, and Task 0 Step 0 proves it rather than assumes it. A symbol that differs from the ledger below is a **stop-and-report**, never a reconciliation in passing. Three shapes this plan depends on most, with what changes if the merge differs from `76611908`:
+**Task 0 is still the diff.** The orchestrator fills `29224271` with the merge commit, not `76611908`; the two trees are identical by construction, and Task 0 Step 0 proves it rather than assumes it. A symbol that differs from the ledger below is a **stop-and-report**, never a reconciliation in passing. Three shapes this plan depends on most, with what changes if the merge differs from `76611908`:
 
 | 2c-3 shape this plan builds on | Where 2c-4 touches it | If your tree differs |
 |---|---|---|
@@ -230,7 +230,7 @@ A `Source` has one method, and 2c-2's R6 keeps it that way for 2c-4's benefit. T
 
 ## The 2c-3 dependency ledger
 
-Every row was verified at `76611908` with `git show "76611908:relay/<path>"` and `grep -n`, never off a working tree (§ Sequencing). **Task 0 re-checks every row against `<2C3_MERGED_SHA>`**, and a row that does not match is a stop.
+Every row was verified at `76611908` with `git show "76611908:relay/<path>"` and `grep -n`, never off a working tree (§ Sequencing). **Task 0 re-checks every row against `29224271`**, and a row that does not match is a stop.
 
 | What this PR depends on | Expected shape | If your tree differs |
 |---|---|---|
@@ -332,11 +332,11 @@ Nothing under `core/`, `dispatcharr/`, `frontend/`, `e2e/` or `metrics/` is touc
 - [ ] **Step 0: Seed from the MERGED SHA the orchestrator names**
 
   ```bash
-  cd <your worktree> && git log --oneline -1 <2C3_MERGED_SHA>
-  git diff --stat <2C3_MERGED_SHA> HEAD -- relay/
+  cd <your worktree> && git log --oneline -1 29224271
+  git diff --stat 29224271 HEAD -- relay/
   ```
 
-  `<2C3_MERGED_SHA>` is 2c-3 as merged onto `main`, filled in by the orchestrator. If it is empty when you read this, **stop**: this plan cannot be executed against a branch tip. The merge is a squash of `migration/phase2c-fanout` at `76611908`, which sits directly on `c1763e00`, so `git diff 76611908 <2C3_MERGED_SHA> -- relay/` must be **empty** — run it, and if it is not, Step 2's table is the diff. Everything in this plan was verified at `76611908`.
+  `29224271` is 2c-3 as merged onto `main`, filled in by the orchestrator. If it is empty when you read this, **stop**: this plan cannot be executed against a branch tip. The merge is a squash of `migration/phase2c-fanout` at `76611908`, which sits directly on `c1763e00`, so `git diff 76611908 29224271 -- relay/` must be **empty** — run it, and if it is not, Step 2's table is the diff. Everything in this plan was verified at `76611908`.
 
 - [ ] **Step 1: Confirm the module, the toolchain, ffmpeg and Docker**
 
@@ -382,7 +382,7 @@ Nothing under `core/`, `dispatcharr/`, `frontend/`, `e2e/` or `metrics/` is touc
   cd <your worktree>/relay && grep -rnE "state = StateActive|setState\(StateActive" --include='*.go' . | grep -v _test.go
   ```
 
-  **Expect exactly one line at `<2C3_MERGED_SHA>`, `channel/channel.go`'s, inside `promoteOnFirstChunk`** — 2c-3's Task 12 Step 3a measured it. **After Task 6 the count is TWO**, and the second is `channel/stats.go`'s `c.state = StateActive` inside `reportBuffering`, under `case !on && c.state == StateBuffering`. That is the buffering **recovery** edge (`input/manager.py:1244-1247`), guarded so it can only fire on a channel that is already past promotion; it is not a second first-chunk mechanism (§ Sequencing). Task 11 Step 3a re-runs this grep and expects two, naming both.
+  **Expect exactly one line at `29224271`, `channel/channel.go`'s, inside `promoteOnFirstChunk`** — 2c-3's Task 12 Step 3a measured it. **After Task 6 the count is TWO**, and the second is `channel/stats.go`'s `c.state = StateActive` inside `reportBuffering`, under `case !on && c.state == StateBuffering`. That is the buffering **recovery** edge (`input/manager.py:1244-1247`), guarded so it can only fire on a channel that is already past promotion; it is not a second first-chunk mechanism (§ Sequencing). Task 11 Step 3a re-runs this grep and expects two, naming both.
 
 - [ ] **Step 3: Confirm the Python side this PR edits is where the plan says**
 
@@ -1009,7 +1009,7 @@ Every break-check in this plan, and the task it belongs to. A `✓` means it was
 
 ## What to report back
 
-1. **Task 0's diff** — every ledger row that did not match `<2C3_MERGED_SHA>`, and which task absorbed it. In particular the `Started`/`Attach` shape, `EffectiveProxySettings` carrying both thresholds, and whether `test_relay_list_payload_golden.py` exists.
+1. **Task 0's diff** — every ledger row that did not match `29224271`, and which task absorbed it. In particular the `Started`/`Attach` shape, `EffectiveProxySettings` carrying both thresholds, and whether `test_relay_list_payload_golden.py` exists.
 2. **The `StateActive` count** at Task 0 (one) and at Task 11 (two, named).
 3. **Every break-check's actual failure message**, and specifically: did **8**, **17** and **20** behave as this plan predicts, and did **10** stay green?
 4. **The real-ffmpeg numbers** — ffmpeg version, first speed, seconds to arm, two runs — beside this plan's 9.0.1 / 10.9x / 12.2 s.
