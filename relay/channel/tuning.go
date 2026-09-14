@@ -37,4 +37,14 @@ type Tuning struct {
 	// ShutdownDelay is how long a channel with no clients stays up, from
 	// channel_shutdown_delay. 2c-3 supplies it; see the plan's Ruling R4.
 	ShutdownDelay time.Duration
+
+	// BufferingSpeed is buffering_speed: the ffmpeg-reported speed below
+	// which a transcode channel is buffering. Read by TranscodeSource's
+	// detector and by nothing on the Proxy path -- parity-matrix row 29,
+	// the detector is ffmpeg-exclusive.
+	BufferingSpeed float64
+
+	// BufferingTimeout is buffering_timeout: how long buffering may last
+	// before the detector gives up on the source.
+	BufferingTimeout time.Duration
 }

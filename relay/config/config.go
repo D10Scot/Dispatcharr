@@ -129,11 +129,11 @@ func ReadSecretFile(path string) (string, error) {
 	// linter, not by reading it.
 	raw, err := os.ReadFile(path)
 	if err != nil {
-		return "", fmt.Errorf("reading secret file %s: %w", path, err)
+		return "", fmt.Errorf("reading secret file %s: %w", path, err) // credential-logging: ok - an *fs.PathError naming the operator-named secret FILE, which is configuration, never the secret and never a URL
 	}
 	secret := strings.NewReplacer("\r", "", "\n", "").Replace(string(raw))
 	if secret == "" {
-		return "", fmt.Errorf("%s: %w", path, ErrEmptySecret)
+		return "", fmt.Errorf("%s: %w", path, ErrEmptySecret) // credential-logging: ok - a sentinel and the secret file's path
 	}
 	return secret, nil
 }

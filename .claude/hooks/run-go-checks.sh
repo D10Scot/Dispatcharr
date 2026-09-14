@@ -5,8 +5,9 @@
 # Four checks, all blocking, all scoped to that module:
 #
 #   build        go build ./...          the whole module
-#   vet          go vet ./...            the whole module
-#   lint         golangci-lint run       the whole module, zero findings
+#   vet          go vet ./... (native, GOOS=linux, GOOS=darwin)   the whole module
+#   lint         golangci-lint run (native, GOOS=linux, GOOS=darwin)   the whole module, zero findings
+#   credlint     go run ./internal/credlint ./...   the whole module, zero findings
 #   tests        go test -race ./<pkg>   the edited file's package only
 #
 # Zero lint findings is a ratchet, the same rule as zizmor's: the module
@@ -88,9 +89,13 @@ else
   if [ $? -ne 0 ]; then
     block "go build failed in ${MODULE_ROOT}" "$(printf '%s' "$OUT" | head -30)"
   else
-    OUT="$(cd "$MODULE_ROOT" && go vet ./... 2>&1)"
+    # Three invocations, not one: relay/ffmpeg/spawn_linux.go and
+    # spawn_other.go are build-tag-split, so a single native `go vet ./...`
+    # only ever typechecks whichever half matches this host's own GOOS.
+    # go-tests.yml's build job runs the same three passes.
+    OUT="$(cd "$MODULE_ROOT" && { go vet ./... && GOOS=linux go vet ./... && GOOS=darwin go vet ./...; } 2>&1)"
     if [ $? -ne 0 ]; then
-      block "go vet failed in ${MODULE_ROOT}" "$(printf '%s' "$OUT" | head -30)"
+      block "go vet failed in ${MODULE_ROOT} (native, GOOS=linux or GOOS=darwin)" "$(printf '%s' "$OUT" | head -30)"
     else
       # The edited file's own package, relative to the module root. The whole
       # module runs on commit; per-edit this is the fast, scoped check.
@@ -110,6 +115,19 @@ else
 fi
 
 if [ -z "$BLOCK_TITLE" ]; then
+  # The credential-logging guard, the Go side of scripts/
+  # check_credential_logging.py: zero findings is a ratchet like the
+  # linter's. Run through the same script go-tests.yml runs, so the two
+  # cannot disagree. It is built from the module's own source by `go run`,
+  # so there is nothing to install and no version to pin.
+  OUT="$(cd "$MODULE_ROOT" && go run ./internal/credlint ./... 2>&1)"
+  if [ $? -ne 0 ]; then
+    block "credential-logging findings in ${MODULE_ROOT}" \
+          "$(printf '%s' "$OUT" | head -30)"$'\n\n'"Every error-typed log or format argument passes through redact.Error, or carries '// credential-logging: ok - <reason>'. relay/internal/credlint/check.go states the rule."
+  fi
+fi
+
+if [ -z "$BLOCK_TITLE" ]; then
   if command -v golangci-lint >/dev/null 2>&1; then
     # Keep in sync with the pinned `version:` in go-tests.yml — that is the
     # whole point of this check. A silent version mismatch is worse than no
@@ -118,9 +136,13 @@ if [ -z "$BLOCK_TITLE" ]; then
     if [ -n "$ACTUAL" ] && [ "$ACTUAL" != "$GOLANGCI_EXPECTED_VERSION" ]; then
       note "golangci-lint on PATH is ${ACTUAL}, but go-tests.yml pins ${GOLANGCI_EXPECTED_VERSION} — local and CI findings can disagree. Bump both together."
     fi
-    OUT="$(cd "$MODULE_ROOT" && golangci-lint run ./... 2>&1)"
+    # Three invocations, not one -- the same reason as the vet block above:
+    # this host's native GOOS only ever lints one half of the
+    # relay/ffmpeg build-tag split. go-tests.yml's lint job runs the same
+    # three passes.
+    OUT="$(cd "$MODULE_ROOT" && { golangci-lint run ./... && GOOS=linux golangci-lint run ./... && GOOS=darwin golangci-lint run ./...; } 2>&1)"
     if [ $? -ne 0 ]; then
-      block "golangci-lint findings in ${MODULE_ROOT}" \
+      block "golangci-lint findings in ${MODULE_ROOT} (native, GOOS=linux or GOOS=darwin)" \
             "$(printf '%s' "$OUT" | head -30)"$'\n\n'"Zero findings is a ratchet here, the same rule as zizmor's for workflows."
     fi
   else

@@ -32,6 +32,7 @@ jobs:
     timeout-minutes: 5
     outputs:
       go: ${{ steps.filter.outputs.go }}
+      base_image: ${{ steps.base_image.outputs.image }}
     steps:
       # The `if:` is always true under this workflow's three triggers, and it
       # is copied deliberately rather than simplified: frontend-tests.yml,
@@ -49,6 +50,24 @@ jobs:
           # push diffs github.event.before against the new head instead, and
           # that commit is at an unknown depth, so it needs full history.
           fetch-depth: ${{ github.event_name == 'pull_request' && 2 || 0 }}
+
+      # The same own-built image backend-tests.yml's `plan` job selects
+      # (base-image.yml, built from docker/DispatcharrBase): it ships the
+      # production ffmpeg (8.1.2), which the `build` job's container: now
+      # uses so parity-matrix row 4's real-ffmpeg pin runs against the
+      # version production and the harness capture actually use, not
+      # whatever a bare ubuntu-latest runner's apt carries.
+      - name: Select base image
+        id: base_image
+        env:
+          REPOSITORY_OWNER: ${{ github.repository_owner }}
+          REPOSITORY_NAME: ${{ github.event.repository.name }}
+        run: |
+          REPO_OWNER="$(echo "$REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')"
+          REPO_NAME="$(echo "$REPOSITORY_NAME" | tr '[:upper:]' '[:lower:]')"
+          IMAGE="ghcr.io/${REPO_OWNER}/${REPO_NAME}:base"
+          echo "image=${IMAGE}" >> "$GITHUB_OUTPUT"
+          echo "Using base image: ${IMAGE}"
 
       - name: Decide whether the Go jobs need to run
         id: filter
@@ -83,7 +102,7 @@ jobs:
           # nothing here to verify. docker-build.yml would catch a broken
           # relay-builder stage, but only for a Dockerfile change and only
           # AFTER merge -- it triggers on push to main, not on PRs.
-          pattern='^(relay/|\.golangci\.yml$|scripts/check_go_stdlib_only\.sh$|\.github/workflows/go-tests\.yml$)'
+          pattern='^(relay/|\.golangci\.yml$|scripts/check_go_stdlib_only\.sh$|scripts/check_go_credential_logging\.sh$|\.github/workflows/go-tests\.yml$|apps/proxy/live_proxy/tests/harness/fixtures/ffmpeg_stderr/)'
           if printf '%s\n' "$changed" | grep -qE "$pattern"; then
             echo "go=true" >> "$GITHUB_OUTPUT"
           else
@@ -96,6 +115,39 @@ jobs:
     needs: changes
     if: needs.changes.outputs.go == 'true'
     timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: read
+    # Runs inside this repository's own base image (the same one
+    # backend-tests.yml's `test`/`coverage-label` jobs use), NOT a bare
+    # ubuntu-latest runner: parity-matrix row 4's one real-ffmpeg pin
+    # (relay/channel/source_transcode_real_test.go) must run against the
+    # product's OWN ffmpeg (8.1.2, docker/DispatcharrBase), not merely
+    # "any" ffmpeg. A stream-copy progress line's leading token differs by
+    # major version -- `frame=` from 7.x on, `size=` on 6.x -- and both
+    # relays' progress gate looks for `frame=` verbatim
+    # (input/manager.py:1017; ffmpeg/progress.go:40), so ffmpeg 6.x is
+    # blind to every progress line, not just quantitatively different, and
+    # row 4's detector can never arm against it: a plain `apt-get install
+    # ffmpeg` on ubuntu-latest resolved to 6.1.1 and reddened this row in
+    # CI while every local and 8.1.2 run stayed green. Filed as #299
+    # (2026-09-14 CI fix round; spec Amendment A4.7, Done log). Do not
+    # widen the parser or this test to accommodate 6.x -- #299 owns that.
+    container:
+      image: ${{ needs.changes.outputs.base_image }} # zizmor: ignore[unpinned-images]
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      # --init: GitHub starts a job container with a keep-alive PID 1 (a
+      # `tail -f /dev/null` shape) and docker-execs each step into it, and
+      # that PID 1 never reaps anything -- TestAChildOfADeadRelayDiesWithIt
+      # (relay/ffmpeg/spawn_linux_test.go) kills a stand-in with Pdeathsig,
+      # which works, but the now-dead process sits as an unreaped zombie
+      # until the test's 5s deadline, because nothing calls wait() on it.
+      # docker-init (added by --init) becomes PID 1 instead and reaps on
+      # exit, the same fix ffmpeg/procgone_test.go's processGone also
+      # carries a Linux-only zombie check for, independently.
+      options: --entrypoint "" --init
     defaults:
       run:
         working-directory: ./relay
@@ -113,22 +165,58 @@ jobs:
           # Dockerfile's builder stage without go.mod moving too.
           go-version-file: relay/go.mod
 
+      - name: ffmpeg version
+        run: ffmpeg -version | head -1
+
       - name: Build
         run: go build ./...
 
+      # Both GOOS, durably: relay/ffmpeg/spawn_linux.go and spawn_other.go
+      # are build-tag-split, and this job's native GOOS is linux (the
+      # container runs on the ubuntu-latest host), so a plain `go vet ./...`
+      # alone never typechecks spawn_other.go's darwin/!linux branch -- the
+      # exact gap golangci-lint hit in the CI fix round's item 1 (its darwin
+      # counterpart never having compiled spawn_linux_test.go). GOOS=linux
+      # is redundant with the native pass on this runner; kept anyway so
+      # this step and the lint job's below read the same, deliberately.
       - name: Vet
-        run: go vet ./...
+        run: |
+          go vet ./...
+          GOOS=linux go vet ./...
+          GOOS=darwin go vet ./...
+
+      # -race links a runtime that needs cgo, and the base image is a
+      # runtime image (docker/DispatcharrBase's `final` stage) with no C
+      # toolchain -- confirmed in CI on cd29df98: "go: -race requires cgo;
+      # enable cgo by setting CGO_ENABLED=1" immediately, before any test
+      # ran. Root in the container (no sudo needed); unversioned apt matches
+      # the base image's own accepted practice.
+      - name: Install a C toolchain for -race
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends gcc libc6-dev
 
       # -race is not optional: the concurrency model changes from
       # gevent-cooperative to OS-thread-parallel goroutines in this phase, so
       # a data race the Python implementation made structurally impossible
       # becomes possible for the first time (spec § Testing).
       - name: Test with the race detector
+        env:
+          CGO_ENABLED: "1"
         run: go test -race ./...
 
       - name: Assert the module is standard-library only
         working-directory: .
         run: scripts/check_go_stdlib_only.sh relay
+
+      # The Go side of the credential-logging rule (lint.yml's
+      # credential-logging job is the Python side): every error-typed
+      # argument to a formatting or logging call passes through
+      # redact.Error or carries a written reason. relay/internal/credlint
+      # states the rule; the PostToolUse hook runs the same script.
+      - name: Assert no error reaches a log unredacted
+        working-directory: .
+        run: scripts/check_go_credential_logging.sh relay
 
   lint:
     name: golangci-lint
@@ -147,6 +235,14 @@ jobs:
         with:
           go-version-file: relay/go.mod
 
+      # Three invocations, deliberately, not one: this runner's native GOOS
+      # is linux, so a bare run only ever typechecks relay/ffmpeg/
+      # spawn_linux.go, never spawn_other.go's darwin/!linux build tag, and
+      # a Mac contributor's local run is the mirror opposite. CI fix round
+      # item 1 hit exactly this gap (darwin's local lint never compiling
+      # spawn_linux_test.go, so its unused-parameter finding was invisible
+      # until ubuntu's CI run). Zero findings on all three is the ratchet;
+      # .claude/hooks/run-go-checks.sh runs the same three passes locally.
       - name: Run golangci-lint
         uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
         with:
@@ -154,6 +250,22 @@ jobs:
           # actions-lint.yml: a new release adding a linter must not fail an
           # unrelated PR. Keep in sync with the version the PostToolUse hook
           # checks for (.claude/hooks/run-go-checks.sh).
+          version: v2.13.2
+          working-directory: relay
+
+      - name: Run golangci-lint (GOOS=linux)
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
+        env:
+          GOOS: linux
+        with:
+          version: v2.13.2
+          working-directory: relay
+
+      - name: Run golangci-lint (GOOS=darwin)
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
+        env:
+          GOOS: darwin
+        with:
           version: v2.13.2
           working-directory: relay
 

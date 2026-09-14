@@ -49,6 +49,22 @@ class StreamProfileRefSerializer(serializers.Serializer):
     # invalid by its own control plane.
     kind = serializers.CharField()
 
+    # Phase 2 PR 2c-4, spec Amendment A4.1: the argument list Django BUILT
+    # for this source -- StreamProfile.build_command(url, user_agent, pk)
+    # with the command removed -- so the Go relay carries no shlex and no
+    # substitution table. `args` stays: the Python relay's force-ffmpeg path
+    # still reads it (input/manager.py:745's stored["args"]), and D5 forbids
+    # altering what exists.
+    #
+    # allow_null: null is "shlex refused these parameters" (an unbalanced
+    # quote), a real state a row can be in, and the relay refuses THAT
+    # profile rather than the whole answer. NOT required=False: a Go relay
+    # tells an unbuildable profile from an older Django by whether the key
+    # is present, so every producer must send it.
+    argv = serializers.ListField(
+        child=serializers.CharField(allow_blank=True), allow_null=True
+    )
+
 
 class SourceSerializer(serializers.Serializer):
     stream_id = serializers.IntegerField()

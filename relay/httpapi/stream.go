@@ -14,6 +14,7 @@ import (
 	"github.com/D10Scot/Dispatcharr/relay/buffer"
 	"github.com/D10Scot/Dispatcharr/relay/channel"
 	"github.com/D10Scot/Dispatcharr/relay/control"
+	"github.com/D10Scot/Dispatcharr/relay/redact"
 )
 
 // StreamDeps is everything the live TS handler needs.
@@ -39,11 +40,14 @@ type StreamDeps struct {
 // at the call site, so a rename on the wire is one edit and a typo is a
 // compile error rather than a runtime ErrSettingAbsent.
 const (
-	settingChunkBytes    = "BUFFER_CHUNK_SIZE"
-	settingRetention     = "redis_chunk_ttl"
-	settingJoinBehind    = "new_client_behind_seconds"
-	settingReadSize      = "CHUNK_SIZE"
-	settingShutdownDelay = "channel_shutdown_delay"
+	settingChunkBytes       = "BUFFER_CHUNK_SIZE"
+	settingRetention        = "redis_chunk_ttl"
+	settingJoinBehind       = "new_client_behind_seconds"
+	settingReadSize         = "CHUNK_SIZE"
+	settingShutdownDelay    = "channel_shutdown_delay"
+	settingBufferingSpeed   = "buffering_speed"
+	settingBufferingTimeout = "buffering_timeout"
+	settingDefaultUserAgent = "DEFAULT_USER_AGENT"
 )
 
 // tuningFrom resolves the channel-start-time settings out of a next-source
@@ -66,6 +70,17 @@ func tuningFrom(s control.Settings) (channel.Tuning, int, error) {
 		return t, 0, err
 	}
 	if t.ShutdownDelay, err = s.Seconds(settingShutdownDelay); err != nil {
+		return t, 0, err
+	}
+	// The buffering thresholds, read on EVERY tune including a Proxy one
+	// that will never consult them: a setting is read from the wire or the
+	// tune fails (Global Constraint 13), and reading them only on the
+	// transcode path would leave the per-key test green against a Proxy
+	// rig while a transcode tune silently defaulted.
+	if t.BufferingSpeed, err = s.Float(settingBufferingSpeed); err != nil {
+		return t, 0, err
+	}
+	if t.BufferingTimeout, err = s.Seconds(settingBufferingTimeout); err != nil {
 		return t, 0, err
 	}
 	readSize, err := s.Int(settingReadSize)
@@ -113,7 +128,7 @@ func StreamHandler(deps StreamDeps) http.HandlerFunc {
 		}
 
 		ch, release, err := deps.Channels.Attach(id, client, func() (channel.Started, error) {
-			return startProxyTune(r.Context(), deps.Control, id)
+			return startTune(r.Context(), deps.Control, id)
 		})
 		if err != nil {
 			writeTuneFailure(w, log, id, err)
@@ -253,19 +268,54 @@ func peerAddress(r *http.Request) string {
 	return host
 }
 
-// ErrNotProxyKind is returned when the channel's Stream Profile is not Proxy.
-type ErrNotProxyKind struct{ Kind string }
+// ErrUnservedKind is returned when the channel's Stream Profile is one this
+// relay does not serve yet: Redirect, until 2c-5. 2c-2's ErrNotProxyKind,
+// renamed when the transcode kind started being served.
+type ErrUnservedKind struct{ Kind string }
 
-func (e *ErrNotProxyKind) Error() string {
-	return fmt.Sprintf("the Go relay serves only the %q stream profile so far, not %q",
-		control.KindProxy, e.Kind)
+func (e *ErrUnservedKind) Error() string {
+	return fmt.Sprintf("the Go relay does not serve the %q stream profile yet", e.Kind)
 }
+
+// ErrProfileArgvAbsent is returned when the stream profile object carries no
+// argv key at all: a control plane older than 2c-4 (spec Amendment A4.1).
+// Reported as a contract mismatch, the same class as an absent
+// proxy_settings key, and never as a profile problem.
+type ErrProfileArgvAbsent struct{ ProfileID int }
+
+func (e *ErrProfileArgvAbsent) Error() string {
+	return fmt.Sprintf("stream profile %d carries no argv: the control plane is older than this relay", e.ProfileID)
+}
+
+// ErrProfileUnbuildable is returned when Django could not build the
+// profile's argv -- argv is null, because shlex refused the parameters
+// (an unbalanced quote) -- or the profile has no command. Python fails at
+// spawn time on the same profile (build_command raises inside
+// _establish_transcode_connection, which returns False); this fails the
+// tune before anything is spawned.
+type ErrProfileUnbuildable struct{ ProfileID int }
+
+func (e *ErrProfileUnbuildable) Error() string {
+	return fmt.Sprintf("stream profile %d cannot be built into a command line", e.ProfileID)
+}
+
+// ErrNoFFmpegProfile is returned when a Proxy channel's URL needs ffmpeg
+// (HLS, RTSP or UDP) and the answer carries no locked ffmpeg profile.
+// Python falls back to the channel's own Proxy profile, whose
+// build_command returns [], and spawns nothing (input/manager.py:790-795,
+// then :836's posix_spawn of an empty command fails); the outcome is the
+// same failed tune, reported here by name.
+var ErrNoFFmpegProfile = errors.New("this channel's URL needs ffmpeg and the control plane has no locked ffmpeg profile")
 
 // ErrNoSource is returned when next-source had no candidate.
 var ErrNoSource = errors.New("the control plane has no source for this channel")
 
-// startProxyTune makes the one control-plane call a tune needs and builds the
-// source from its answer.
+// startTune makes the one control-plane call a tune needs and builds the
+// source from its answer: ProxySource for a Proxy profile, TranscodeSource
+// for a transcode one, and TranscodeSource on the locked ffmpeg profile for
+// a Proxy profile whose URL is HLS, RTSP or UDP (input/manager.py:445-453's
+// force_ffmpeg, decided at connect time there and at tune time here, since
+// the URL is known at both).
 //
 // IT DETACHES FROM THE CALLING CLIENT'S REQUEST CONTEXT, and that is a decision
 // fan-out forces rather than a tidy-up. Manager.Attach runs start() behind a
@@ -283,12 +333,13 @@ var ErrNoSource = errors.New("the control plane has no source for this channel")
 // discovers the disconnect on a later write. So the channel starts, and the
 // followers polling _channel_setup_needed attach to it. A Go relay that
 // propagated cancellation would be strictly less available than the Python one
-// it replaces.
+// it replaces. (2c-3's startProxyTune, renamed in 2c-4 when it grew the
+// transcode branch; the detaching is unchanged.)
 //
 // context.WithoutCancel keeps any values on the request context while dropping
 // its cancellation, and the timeout puts back a bound of the right shape: the
 // control client's own worst case rather than the viewer's patience.
-func startProxyTune(parent context.Context, client *control.Client, id string) (channel.Started, error) {
+func startTune(parent context.Context, client *control.Client, id string) (channel.Started, error) {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(parent), tuneBudget)
 	defer cancel()
 
@@ -303,27 +354,61 @@ func startProxyTune(parent context.Context, client *control.Client, id string) (
 		return channel.Started{}, ErrNoSource
 	}
 
+	tuning, readSize, err := tuningFrom(answer.ProxySettings)
+	if err != nil {
+		return channel.Started{}, err
+	}
+	// The user agent the Python relay would use: the answer's, or
+	// DEFAULT_USER_AGENT when blank (input/manager.py:73's
+	// `user_agent or Config.DEFAULT_USER_AGENT`). Off the wire, never a Go
+	// literal, and read unconditionally so the per-key test covers it.
+	defaultUserAgent, err := answer.ProxySettings.String(settingDefaultUserAgent)
+	if err != nil {
+		return channel.Started{}, err
+	}
+	userAgent := answer.Source.UserAgent
+	if userAgent == "" {
+		userAgent = defaultUserAgent
+	}
+
 	// KIND, NEVER TRANSCODE. `transcode` is false for Proxy AND for Redirect
 	// (apps/proxy/next_source.py:504), and both locked profiles carry an empty
 	// command, so a relay that branched on `transcode` would treat a Redirect
 	// channel as Proxy and stream a provider URL that should have been a 302 --
 	// silently, and to the wrong architecture. `kind` is the field 2c-1 Task 0
-	// added for exactly this, and this is its first consumer.
-	if kind := answer.Source.StreamProfile.Kind; kind != control.KindProxy {
-		return channel.Started{}, &ErrNotProxyKind{Kind: kind}
+	// added for exactly this.
+	var source channel.Source
+	switch kind := answer.Source.StreamProfile.Kind; {
+	case kind == control.KindProxy && channel.NeedsFFmpeg(answer.Source.URL):
+		// force_ffmpeg: the Proxy reader cannot follow a playlist or speak
+		// RTSP, so the locked ffmpeg profile plays the URL instead.
+		if answer.Source.FFmpegStreamProfile == nil {
+			return channel.Started{}, ErrNoFFmpegProfile
+		}
+		source, err = transcodeSource(answer.Source.FFmpegStreamProfile, answer.Source.URL, userAgent, readSize)
+	case kind == control.KindProxy:
+		// The defaulted agent here too: Python's HTTP reader sends
+		// self.user_agent (input/manager.py:165), which :73 has already
+		// defaulted, so a blank user_agent reaches the provider as
+		// DEFAULT_USER_AGENT on both architectures. Found by review; the
+		// first draft defaulted only the transcode arms, and a blank agent
+		// on the Proxy path would have reached a provider as Go's own.
+		source = channel.ProxySource{
+			URL:       answer.Source.URL,
+			UserAgent: userAgent,
+			ChunkSize: readSize,
+		}
+	case kind == control.KindTranscode:
+		source, err = transcodeSource(&answer.Source.StreamProfile, answer.Source.URL, userAgent, readSize)
+	default:
+		return channel.Started{}, &ErrUnservedKind{Kind: kind}
 	}
-
-	tuning, readSize, err := tuningFrom(answer.ProxySettings)
 	if err != nil {
 		return channel.Started{}, err
 	}
 
 	return channel.Started{
-		Source: channel.ProxySource{
-			URL:       answer.Source.URL,
-			UserAgent: answer.Source.UserAgent,
-			ChunkSize: readSize,
-		},
+		Source: source,
 		Tuning: tuning,
 		Info: channel.SourceInfo{
 			URL:             answer.Source.URL,
@@ -337,11 +422,33 @@ func startProxyTune(parent context.Context, client *control.Client, id string) (
 	}, nil
 }
 
+// transcodeSource builds the transcode architecture's source from a profile
+// object whose argv Django built. The three states of argv are the three
+// outcomes: a list is spawned, null cannot be built, and an absent key is a
+// control plane older than this relay (control.StreamProfileRef).
+func transcodeSource(profile *control.StreamProfileRef, url, userAgent string, readSize int) (channel.Source, error) {
+	if !profile.ArgvPresent {
+		return nil, &ErrProfileArgvAbsent{ProfileID: profile.ID}
+	}
+	if profile.Argv == nil || profile.Command == "" {
+		return nil, &ErrProfileUnbuildable{ProfileID: profile.ID}
+	}
+	return &channel.TranscodeSource{
+		Command:   profile.Command,
+		Argv:      profile.Argv,
+		URL:       url,
+		UserAgent: userAgent,
+		ChunkSize: readSize,
+	}, nil
+}
+
 // writeTuneFailure turns a tune error into a status. It never echoes the error
 // text to the client: a control-plane message can name a variable, and a
 // source URL carries provider credentials.
 func writeTuneFailure(w http.ResponseWriter, log *slog.Logger, id string, err error) {
-	var notProxy *ErrNotProxyKind
+	var unserved *ErrUnservedKind
+	var argvAbsent *ErrProfileArgvAbsent
+	var unbuildable *ErrProfileUnbuildable
 	var unsupported *ErrUnsupportedOutput
 	var refused *control.Refused
 	var unavailable *control.Unavailable
@@ -349,9 +456,20 @@ func writeTuneFailure(w http.ResponseWriter, log *slog.Logger, id string, err er
 	var absent *control.ErrSettingAbsent
 
 	switch {
-	case errors.As(err, &notProxy):
-		log.Warn("refusing a tune for an unsupported stream profile", "channel", id, "kind", notProxy.Kind)
+	case errors.As(err, &unserved):
+		log.Warn("refusing a tune for an unsupported stream profile", "channel", id, "kind", unserved.Kind)
 		http.Error(w, "this stream profile is not served yet", http.StatusNotImplemented)
+	case errors.As(err, &argvAbsent):
+		// The same class as an absent proxy_settings key, and the same
+		// status: the control plane predates this relay.
+		log.Error("the control plane sent a stream profile with no argv", "channel", id, "profile", argvAbsent.ProfileID)
+		http.Error(w, "control plane contract mismatch", http.StatusBadGateway)
+	case errors.As(err, &unbuildable):
+		log.Error("the stream profile cannot be built into a command line", "channel", id, "profile", unbuildable.ProfileID)
+		http.Error(w, "stream profile cannot be built", http.StatusServiceUnavailable)
+	case errors.Is(err, ErrNoFFmpegProfile):
+		log.Error("the channel's URL needs ffmpeg and no locked ffmpeg profile is installed", "channel", id)
+		http.Error(w, "no ffmpeg profile for this stream", http.StatusServiceUnavailable)
 	case errors.As(err, &unsupported):
 		log.Warn("refusing a tune for an unsupported output",
 			"channel", id, "format", unsupported.Format, "output_profile", unsupported.ProfileID)
@@ -379,7 +497,7 @@ func writeTuneFailure(w http.ResponseWriter, log *slog.Logger, id string, err er
 		log.Error("the control plane is unreachable", "channel", id, "reason", unavailable.Reason)
 		http.Error(w, "control plane unreachable", http.StatusBadGateway)
 	default:
-		log.Error("the tune failed", "channel", id, "error", err)
+		log.Error("the tune failed", "channel", id, "error", redact.Error(err))
 		http.Error(w, "tune failed", http.StatusInternalServerError)
 	}
 }

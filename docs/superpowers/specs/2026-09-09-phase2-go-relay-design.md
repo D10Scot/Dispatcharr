@@ -1800,8 +1800,8 @@ of what the ten pre-existing workflows pin.
 | 2c-1 | `migration/phase2c-skeleton` | `relay/` skeleton: module init, `main.go`, `httpapi`/`control`/`channel`/`buffer`/`ffmpeg` package stubs, `docker/supervisord.d/relay-go.conf`, the Dockerfile builder stage, `go-tests.yml` (build + lint + `go vet`, no coverage gate yet — nothing to cover), `/healthz`/`/readyz` returning static 200s, a dev-only route flag so this PR is inert in every non-dev deployment. **Precondition, added in this fix round (§ m-R3-2): if `zero_orm_allowlist.py` is non-empty, this PR's own description names, for every entry, either the contract field that closes it or the written reason the Go relay never asks that question — the "no Postgres driver" invariant is conditional on this, not automatic (§ Stage 2c's invariant text). Stated plainly rather than left to imply more rigour than exists (round-4 review, nm-R4-2): unlike D7's coverage gates, this precondition is enforced by the PR description and its reviewer, not by CI — deciding whether a written reason for skipping a contract field is a *good* reason is not a grep, so no mechanical check for it is proposed here. The mechanical backstop is downstream, at 2c-9: a driver import would still fail the build/`go.sum`-empty check regardless of whether this precondition was honoured, which is why an unmechanised precondition here is an accepted gap rather than a silent one.** | `go build ./...`, `golangci-lint run`, `go vet ./...` all green; zizmor clean on `go-tests.yml` from its first commit; the allowlist reconciliation above stated explicitly, not silently assumed; **and, added in this fix round, the Go toolchain and action pins are re-resolved at PR time, not carried forward from this spec's 2026-09-09 values** — `go.dev/dl`, `docker buildx imagetools inspect` against the current `golang` tag, and fresh `gh api .../commits/<tag> --jq .sha` lookups for `golangci-lint-action`/`setup-go`/`checkout`, committed with whatever the tool returns on the day this PR is opened | 2b-3 — which is where **both** gates are finally satisfied: Gate 2 went green at 2a-7 and stays green, and Gate 1 closes here with row 18 (§ A6/A7) — **and** the allowlist reconciliation above |
 | 2c-2 | `migration/phase2c-vertical-slice` | The Proxy stream-profile architecture only (no ffmpeg spawn yet): one client, in-memory ring buffer, MPEG-TS passthrough for a single upstream. Proves the buffer/fan-out shape end to end before ffmpeg complexity is added. | New Go tests pass with `-race`; parity matrix rows 7, 9 (chunk monotonicity, 188-byte realignment) get a Go column | 2c-1 |
 | 2c-3 | `migration/phase2c-fanout` | Multi-client fan-out, join-5s-behind, the client registry, `?clients=all` on `GET /proxy/relay/channels` | Rows 8, 10, 13 get a Go column | 2c-2 |
-| 2c-4 | `migration/phase2c-ffmpeg` | ffmpeg spawn via `os/exec` + `syscall.SysProcAttr{Setpgid, Pdeathsig}` (D5 exception 1), the `log_parsers.py` port | Row 4 (the `speed=` arming delay) gets a Go column with its own real-ffmpeg test, mirroring 2a's harness | 2c-3 |
-| 2c-5 | `migration/phase2c-failover` | The three failover triggers, the control-plane client's remaining routes (`release`, `events`; `next-source` landed in 2c-2, Amendment A2.1), the degraded fallback to the cached candidate list, and the Redirect Stream Profile architecture — the 302, `validate_stream_url`'s provider probe, the fall-through to the cached alternates, and the internal-principal override that serves a Redirect channel through Proxy instead (`apps/proxy/live_proxy/views.py:462-480`). Added by Amendment A1.2: no row named Redirect, and Gate 1 being closed means an `owed:` marker cannot carry it. The health flag this PR introduces is what `ClientTimeout`, `KeepaliveInterval` and `MaxKeepalive` gate (Amendment A2.5); `channel_shutdown_delay` already landed in 2c-3, not here (Amendment A3.3), and the client registry's TTL/heartbeat/ghost sweep it might have implied are deleted rather than ported (Amendment A3.1), so this PR has no registry expiry to build. | Rows 1, 2, 3, 5, 6 get a Go column | 2c-4 |
+| 2c-4 | `migration/phase2c-ffmpeg` | ffmpeg spawn via `os/exec` + `syscall.SysProcAttr{Setpgid, Pdeathsig}` (D5 exception 1), the `log_parsers.py` port, Amendment A4.1 (Django builds `stream_profile.argv`; no Go word splitter), the seven ffmpeg-derived fields on `GET /proxy/relay/channels`, and the Go credential-logging guard (#283) | Row 4 (the `speed=` arming delay) gets a Go column with its own real-ffmpeg test, mirroring 2a's harness; rows 5, 28 and 29 too (Amendment A4.4) | 2c-3 |
+| 2c-5 | `migration/phase2c-failover` | The three failover triggers, the control-plane client's remaining routes (`release`, `events`; `next-source` landed in 2c-2, Amendment A2.1), the degraded fallback to the cached candidate list, and the Redirect Stream Profile architecture — the 302, `validate_stream_url`'s provider probe, the fall-through to the cached alternates, and the internal-principal override that serves a Redirect channel through Proxy instead (`apps/proxy/live_proxy/views.py:462-480`). Added by Amendment A1.2: no row named Redirect, and Gate 1 being closed means an `owed:` marker cannot carry it. The health flag this PR introduces is what `ClientTimeout`, `KeepaliveInterval` and `MaxKeepalive` gate (Amendment A2.5); `channel_shutdown_delay` already landed in 2c-3, not here (Amendment A3.3), and the client registry's TTL/heartbeat/ghost sweep it might have implied are deleted rather than ported (Amendment A3.1), so this PR has no registry expiry to build. The buffering-timeout arm 2c-4's `TranscodeSource` ends the tune on (`ErrBufferingTimeout`), the `channel_buffering` and `channel_failover` events, and `healthy` (Amendment A4.3). | Rows 1, 2, 3, 5, 6 get a Go column | 2c-4 |
 | 2c-6 | `migration/phase2c-fmp4` | fMP4 output format, including row 12's known timeout gap, reproduced not fixed | Row 12 gets a Go column | 2c-5 |
 | 2c-7 | `migration/phase2c-output-profile` | Output Profile shared transcode per `(channel, profile)` | Row 11 gets a Go column | 2c-6 |
 | 2c-8 | `migration/phase2c-control-drain` | Remaining control routes (single-channel `GET`/`DELETE`, `advance`; the collection `GET` landed in 2c-3), the detail endpoint's five extra client fields and row 14's `owner` asymmetry (Amendment A3.4), SIGTERM drain (D6), the dev-only `POST /_dispatcharr/authorize-internal` fallback (D5 exception 2, now fully specified — § The contract, including why it needs its own nginx-unshielded path and `IsInternalRelay` gating) | Every remaining un-Go'd matrix row gets a column | 2c-7 |
@@ -2047,6 +2047,130 @@ fixture is compared as parsed JSON rather than as bytes, and forcing `5.0`
 out of `encoding/json` would need a custom marshaller on every float field.
 Recorded so a reviewer of a byte diff between the two relays is not
 surprised by it.
+
+#### Amendment A4 (2c-4) — six corrections and inputs from the ffmpeg source
+
+**A4.1 — Django builds the argv; the relay carries no shell word splitter.
+CLOSES A1.3.** A1.3 offered 2c-4 a Go port of `shlex.split` plus the three
+substitutions, differential-tested against Python, or a pre-split
+`stream_profile.argv_template`. 2c-4 took the contract extension and went
+one step further: `stream_profile.argv` and `ffmpeg_stream_profile.argv`
+carry `StreamProfile.build_command(url, user_agent, pk)` with the command
+removed — built by Django for each Source's own URL, user agent and
+object. A template was not enough: `{channelId}` substitutes the numeric pk
+(`input/manager.py:791`'s `channel.id`), which is on no contract field, and
+substitution happens per part after splitting (`core/models.py:154-158`),
+so a URL with a space stays one argument. The corpus is what settles it —
+`#standard{access=file,mux=ts,dst=-}` is one token, `\$` survives inside
+double quotes, an unbalanced quote raises — and a second implementation of
+all that is a second copy of the truth. Three states on the wire: a list
+(empty for Proxy and Redirect), `null` (shlex refused the parameters; the
+relay refuses that profile with 503), the key absent (an older Django; a
+502 contract mismatch). `args` stays, per D5. The user agent is defaulted
+on both sides the way `input/manager.py:73` defaults it, from
+`DEFAULT_USER_AGENT`, which A1.4 already put on the wire. **The cost,
+stated**: every Source now carries its URL three times (`url`,
+`stream_profile.argv`, `ffmpeg_stream_profile.argv`) and every alternate
+the same, so a next-source answer with N alternates grows by roughly
+2(N+1) URL-length strings; 2c-9's cross-implementation differential
+fixtures will carry each URL in three places and must be generated, not
+hand-written.
+
+**A4.2 — the Go credential-logging guard (#283), and a Python leak it
+would have caught.** `relay/internal/credlint` type-checks the module with
+`go/types` (stdlib; the gc importer resolves standard packages in ~100 ms)
+and requires every error-typed argument to a formatting or logging call to
+pass through `redact.Error` or carry `// credential-logging: ok - <reason>`.
+Keyed on the TYPE because a provider URL reaches a Go log through one door,
+an error that carries it, and 2c-2's review found the leak at the one
+`*url.Error` site a name-based guard missed. Over the bare 2c-3 tree it
+reports 17 sites: eight resolved through `redact.Error` — the `"upstream
+failed"` log, `source_proxy.go`'s four wraps, `writeTuneFailure`'s default
+arm, and the two no human guard had caught (`control.Unavailable.Error()`'s
+`%v` of the transport error, and the request-build wrap) — and nine
+markers with reasons (`encoding/json` errors over values that are not
+URLs, the secret file's path, the bind address). Stderr lines are redacted structurally by `redact.Line`, because
+ffmpeg echoes the URL it was given and the HLS demuxer echoes every derived
+segment URL. **The Python relay logs those same lines at INFO, unredacted**
+(`input/manager.py:1094`), invisible to `scripts/check_credential_logging.py`
+because the variable is named `content` — filed as [#295](https://github.com/D10Scot/Dispatcharr/issues/295), recorded in
+`CLAUDE.md` § Known defects, not fixed here (D10).
+
+**A4.3 — inputs for 2c-5.** 2c-4's `TranscodeSource` ends the tune with
+`channel.ErrBufferingTimeout` where `_parse_ffmpeg_stats` calls
+`_try_next_stream()` (`input/manager.py:1178-1182`); `stderrReader.progress`'s
+`TimedOut` arm is the one line 2c-5 replaces, and `ffmpeg.Detector.Reset` is
+the successful-switch branch (`:1185-1186`) already there for it. The
+`channel_buffering` (`:1217-1226`) and `channel_failover` (`:1195-1206`)
+events, and `healthy`, arrive with the events route. `ffmpeg.ErrExited`
+carries Python's `returncode` for row 3's connection-failure accounting.
+**`httpapi.ErrProfileUnbuildable` is terminal for that profile**: a null
+argv means Django could not split the parameters, and no retry against the
+same candidate can change that, so 2c-5's failover must skip such a
+candidate rather than count it as a connection failure to retry per
+candidate (Python never sees this case at resolve time -- its
+`build_command` raises at spawn time inside the retry loop and burns three
+attempts on it).
+
+**A4.4 — rows 5, 28 and 29 close in 2c-4 with row 4.** The nine-PR table
+named only row 4. Row 5 (thresholds snapshotted at start) is
+`channel.Tuning`'s two new fields and a test that changes the setting
+between two tunes; row 28 (the scientific-notation under-report, #227) is
+`ffmpeg/progress.go`'s regex, verbatim; row 29 (the detector is
+ffmpeg-exclusive) could not fail until both architectures existed. Row 4's
+Go pin is the matrix's one REAL-ffmpeg test, measured at 10.9x opening speed
+and 12.2 s to arm on ffmpeg 9.0.1.
+
+**A4.5 — `connecting` is not transcode-specific.** 2c-2's `state.go`
+comment said 2c-4 would set it. `input/manager.py:1905-1963` sets it on
+both paths, for the window before the ring holds `INITIAL_BEHIND_CHUNKS`
+chunks; that window belongs to the promotion machinery whose one mechanism
+fires on the first chunk. Declared, never entered, comment corrected.
+
+**A4.6 — the UDP user-agent filter leaves dangling flags, reproduced and
+filed.** `input/manager.py:808-812` drops every argument carrying the user
+agent or `user-agent`/`user_agent`, and leaves the flags that introduced
+them: `-headers 'User-Agent: X'` becomes a bare `-headers` whose value is
+now `-i`. Reproduced per D5 (`TestTheUDPFilterDropsUserAgentArguments`
+expects the dangling flag), filed as [#296](https://github.com/D10Scot/Dispatcharr/issues/296). The Python filter also runs
+over `cmd[0]`; that shape is not reproduced.
+
+**A4.7 — row 4's real-ffmpeg pin needs the SAME ffmpeg production runs,
+not any ffmpeg (CI fix round, 2026-09-14).** `TestTheCumulativeLeadMustBurnOffBeforeTheDetectorArms`
+FAILED in CI (ubuntu-latest, apt's ffmpeg 6.1.1-3ubuntu5) while passing on
+every local run (ffmpeg 9.0.1) and against the capture 2a/2c-4 took the
+threshold from (ffmpeg 8.1.2). Diagnosed by driving the row-4 test inside
+`ubuntu:24.04` with the exact CI ffmpeg: ffmpeg 6.1.1's stream-copy
+(`-c:v copy -c:a copy`) progress lines omit the `frame=` field ffmpeg
+9.0.1 and 8.1.2 both include, so `ffmpeg/parse.go`'s `IsProgressLine`
+gate — ported verbatim from `input/manager.py:993`/`:1017`'s own
+`frame=` check — never passes, the detector receives zero progress
+records, and it can never arm. Not a restart, not the looped corpus's
+timestamp discontinuity: purely the missing field, and not merely a
+quantitative difference — a stream-copy progress line's leading token on
+ffmpeg 6.x is `size=`, not `frame=`, so **both relays' identical `frame=`
+gate is structurally blind to ffmpeg 6.x**, filed as
+[#299](https://github.com/D10Scot/Dispatcharr/issues/299) rather than
+fixed here (neither the parser nor this test is widened to accommodate
+6.x). R4's "fails rather than skips under CI" was correctly catching a
+real mismatch between the runner's ffmpeg and the one this project
+actually ships and measured the capture against, not a flaky test.
+Ruled: **not** a corpus/loop change and **not** a relaxed assertion
+(options (b)/(c) — either would paper over a real version-dependent gap
+rather than close it). Fixed by running `go-tests.yml`'s `build` job
+inside this repository's own base image (`ghcr.io/<owner>/<repo>:base`,
+built from `docker/DispatcharrBase`), the same image `backend-tests.yml`
+already uses, which ships the production ffmpeg (8.1.2) rather than a
+floating distro package — the row's pin now runs against the exact
+ffmpeg production and the harness capture both use. `go-tests.yml`'s
+`lint` job and `.claude/hooks/run-go-checks.sh` also gained two extra
+passes each (`GOOS=linux`, `GOOS=darwin`) for `go vet` and
+`golangci-lint`, closing a related gap the same round found:
+`relay/ffmpeg/spawn_linux.go` and `spawn_other.go` are build-tag-split,
+so a single native-GOOS lint or vet pass only ever checks the half
+matching the runner's own OS, which is how
+`spawn_linux_test.go`'s unused-parameter finding (CI fix round item 1)
+went unseen by every darwin-hosted local run.
 
 ## Stage 2d — cutover, and its trap
 
@@ -2370,6 +2494,7 @@ Filled in as PRs merge; this spec lands as its own PR 0.
 | 2c-2 -- the Go relay's vertical slice: the Proxy stream-profile architecture end to end (`relay/buffer`'s ring, `relay/control`'s settings/base-URL/`next-source` client in full, `relay/channel`'s Channel and Manager, `relay/httpapi`'s live TS handler), plus Amendment A1.4 (effective `proxy_settings`, 31 class-attribute defaults now on the wire) and Amendment A2 (the `next-source`/2c-5 scope correction, the Go-pin-is-one-cell ruling, row 8's mechanism-vs-pin split, the differential-test input for 2c-9, and the three behaviours not ported, one of them a stated divergence) | `migration/phase2c-vertical-slice` | pending |
 | 2c-2 review fix round -- opus review against `b5e62fcf` found a credential-echoing gap on the malformed-URL request-build path, `StateActive` unreachable (one mechanism replaced two), and Global Constraint 8's file:line ratchet missing for five constants (two of the reviewer's own citations corrected against this tree in the process); a downstream implementer independently verified and fixed three further defects (a `release`/`Attach` race, a per-tune transport leak, a `Ring.Read` cursor latent bug) before the review's findings arrived | `migration/phase2c-vertical-slice` | pending |
 | 2c-3 -- multi-client fan-out: the client registry (`relay/channel/client.go`, seven fields, the TTL/heartbeat/ghost sweep deleted rather than ported, Amendment A3.1), the manager's arrival and departure under one lock (the last-client rule and a concurrent attach are one decision, R5), `channel_shutdown_delay` (Amendment A3.3), the bounded read (`buffer.MaxChunksPerRead`, Amendment A3.2), `GET /proxy/relay/channels[?clients=all]` with its golden payload rendered by Django and asserted by both languages, and the tune's next-source call detached from the calling client's request context (Amendment A3.6). Parity matrix rows 8, 10, 13 get a Go column. | `migration/phase2c-fanout` | pending |
+| 2c-4 -- the Go relay's ffmpeg source: `relay/ffmpeg`'s spawn (`os/exec` + `SysProcAttr{Setpgid, Pdeathsig}`, D5 exception 1), the `log_parsers.py` port and the clock-injected buffering detector, `relay/channel`'s `TranscodeSource` and the package-private `attachable` seam, Amendment A4.1 (Django builds `stream_profile.argv`; no Go word splitter), the Go credential-logging guard `relay/internal/credlint` (#283) plus its `scripts/check_go_credential_logging.sh`, and the seven ffmpeg-derived fields on `GET /proxy/relay/channels`. Parity matrix rows 4 (real-ffmpeg), 5, 28 and 29 get a Go column (Amendment A4.4). Two Python-relay defects found and filed rather than fixed, per D10: the provider-URL INFO leak through ffmpeg's stderr preamble ([#295](https://github.com/D10Scot/Dispatcharr/issues/295)) and the UDP filter's dangling flag ([#296](https://github.com/D10Scot/Dispatcharr/issues/296)). CI fix round (2026-09-14): golangci-lint's darwin/linux build-tag blind spot fixed, the fixture-vs-migration-seed argv mismatch fixed, and row 4's real-ffmpeg pin moved onto the base image's production ffmpeg after both relays' shared `frame=` progress gate was found structurally blind to ffmpeg 6.x, filed rather than fixed as [#299](https://github.com/D10Scot/Dispatcharr/issues/299) (Amendment A4.7). | `migration/phase2c-ffmpeg` | pending |
 
 ## Risks
 

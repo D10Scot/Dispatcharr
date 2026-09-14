@@ -40,7 +40,7 @@ func (s Settings) Int(key string) (int, error) {
 	// so 15 arrives as 15.0 and json.Unmarshal into an int refuses it.
 	var value float64
 	if err := json.Unmarshal(raw, &value); err != nil {
-		return 0, fmt.Errorf("proxy_settings[%q] is not a number: %w", key, err)
+		return 0, fmt.Errorf("proxy_settings[%q] is not a number: %w", key, err) // credential-logging: ok - an encoding/json error over a settings value, which is a number or a short string
 	}
 	return int(value), nil
 }
@@ -53,7 +53,7 @@ func (s Settings) Float(key string) (float64, error) {
 	}
 	var value float64
 	if err := json.Unmarshal(raw, &value); err != nil {
-		return 0, fmt.Errorf("proxy_settings[%q] is not a number: %w", key, err)
+		return 0, fmt.Errorf("proxy_settings[%q] is not a number: %w", key, err) // credential-logging: ok - an encoding/json error over a settings value
 	}
 	return value, nil
 }
@@ -76,7 +76,7 @@ func (s Settings) String(key string) (string, error) {
 	}
 	var value string
 	if err := json.Unmarshal(raw, &value); err != nil {
-		return "", fmt.Errorf("proxy_settings[%q] is not a string: %w", key, err)
+		return "", fmt.Errorf("proxy_settings[%q] is not a string: %w", key, err) // credential-logging: ok - an encoding/json error over a settings value; DEFAULT_USER_AGENT is the only string and is not a credential
 	}
 	return value, nil
 }

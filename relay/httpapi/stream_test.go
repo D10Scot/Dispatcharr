@@ -224,12 +224,13 @@ func TestATuneMakesOneSignedControlPlaneCall(t *testing.T) {
 	}
 }
 
-// 2c-2 serves the Proxy architecture ONLY, and refuses anything else loudly
-// rather than falling through. `kind` is what it branches on: `transcode` is
-// false for Redirect as well as Proxy, so a relay that read that field would
-// serve a Redirect channel's provider URL through the Proxy path silently.
+// The relay refuses a kind it does not serve loudly rather than falling
+// through: Redirect, until 2c-5. `kind` is what it branches on: `transcode`
+// is false for Redirect as well as Proxy, so a relay that read that field
+// would serve a Redirect channel's provider URL through the Proxy path
+// silently. (2c-2 listed transcode here too; 2c-4 serves it.)
 func TestATuneRefusesAKindItDoesNotServe(t *testing.T) {
-	for _, kind := range []string{control.KindRedirect, control.KindTranscode} {
+	for _, kind := range []string{control.KindRedirect} {
 		t.Run(kind, func(t *testing.T) {
 			rig := newRig(t, relaytest.ControlPlaneConfig{Kind: kind}, relaytest.Config{})
 			response := rig.tune(t, "/proxy/ts/stream/a-channel-uuid", nil)
@@ -279,6 +280,7 @@ func TestATuneRefusesIncompleteProxySettings(t *testing.T) {
 func TestEveryProxySettingThisRelayReadsIsRequired(t *testing.T) {
 	for _, key := range []string{
 		settingChunkBytes, settingRetention, settingJoinBehind, settingReadSize, settingShutdownDelay,
+		settingBufferingSpeed, settingBufferingTimeout, settingDefaultUserAgent,
 	} {
 		t.Run(key, func(t *testing.T) {
 			settings := relaytest.EffectiveProxySettings()

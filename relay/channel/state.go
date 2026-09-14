@@ -5,13 +5,17 @@ package channel
 // strings reach a client through the status endpoints' `state` field and a
 // rename is a wire change.
 //
-// The full Python vocabulary is eight values. Four of them belong to
-// behaviour later PRs bring: Connecting is set by the transcode path
-// (2c-4), Buffering only ever by the ffmpeg stderr reader (2c-4, and
-// parity-matrix row 29 pins that the Proxy architecture never enters it),
-// and Stopping by the coordinated teardown (2c-8). They are declared here
-// anyway, so that the vocabulary has one home and a later PR adds a
-// transition rather than a constant.
+// The full Python vocabulary is eight values. Buffering is entered only by
+// the ffmpeg stderr reader (2c-4's TranscodeSource; parity-matrix row 29
+// pins that the Proxy architecture never enters it) and Stopping by the
+// coordinated teardown (2c-8). Connecting is NOT transcode-specific, which
+// 2c-2's version of this comment said: input/manager.py:1905-1963 sets it on
+// BOTH paths, for the window after a connection is up and before the ring
+// holds INITIAL_BEHIND_CHUNKS (4) chunks, and promote_channel_when_buffer_
+// ready moves it on. That window is not ported -- promoteOnFirstChunk is the
+// one promotion mechanism here and it fires on the first chunk, not the
+// fourth -- so Connecting is declared and never entered, and a later PR
+// that wants it adds a transition rather than a constant.
 type State string
 
 // The eight states. Only Initializing, WaitingForClients, Active, Error and

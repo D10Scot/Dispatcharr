@@ -102,8 +102,9 @@ def _profile_kind(profile):
     return "transcode"
 
 
-def _stream_profile_ref(profile):
-    """A StreamProfile flattened to the wire shape StreamProfileRefSerializer renders.
+def _stream_profile_ref(profile, *, url, user_agent, pk):
+    """A StreamProfile flattened to the wire shape StreamProfileRefSerializer renders,
+    with the argv Django BUILT for this source.
 
     One construction site for what used to be four near-identical dict
     literals. That duplication has already cost this module a
@@ -113,17 +114,49 @@ def _stream_profile_ref(profile):
     (apps/proxy/tests/test_redirect_transcode_flag.py's own docstring).
     A second per-profile fact derived independently in four places is
     that defect pre-built.
+
+    Phase 2 PR 2c-4, spec Amendment A4.1: `argv` is StreamProfile.build_command
+    (core/models.py:137-160 -- shlex.split of `parameters`, then the three
+    {streamUrl}/{userAgent}/{channelId} substitutions) with the command
+    removed, built here for THIS source's url, user agent and object, so the
+    Go relay carries no word splitter and no substitution table and spawns,
+    byte for byte, what the Python relay spawns from the same answer. The
+    user agent is defaulted the way input/manager.py:73 defaults it
+    (`user_agent or Config.DEFAULT_USER_AGENT`), because that is the value
+    the Python relay substitutes.
+
+    Three shapes, and a Go client tells them apart by presence: a list (empty
+    for Proxy and Redirect, whose build_command returns []); None when shlex
+    refuses the parameters -- an unbalanced quote raises ValueError, which
+    the Python relay meets only at spawn time inside
+    _establish_transcode_connection's broad except -- rendered as JSON null
+    so the relay refuses the tune by name; and the key absent, which only a
+    Django older than this can produce.
     """
+    from apps.proxy.config import TSConfig
+
+    try:
+        argv = profile.build_command(url, user_agent or TSConfig.DEFAULT_USER_AGENT, pk)[1:]
+    except ValueError:
+        # OutputProfileSerializer validates nothing and StreamProfile's
+        # serializer validates no better: an unbalanced quote can already
+        # be sitting in the row. The answer still serves -- the relay
+        # refuses this profile, not the whole channel list.
+        logger.error(
+            "StreamProfile %s has unparseable parameters; sending argv=null", profile.id
+        )
+        argv = None
     return {
         "id": profile.id,
         "command": profile.command,
         "args": profile.parameters,
         "kind": _profile_kind(profile),
+        "argv": argv,
     }
 
 
 def _locked_ffmpeg_profile():
-    """The locked 'ffmpeg' StreamProfile, flattened, or None.
+    """The locked 'ffmpeg' StreamProfile ROW, or None.
 
     input/manager.py:737 used to run this query inside the relay process on
     the force-ffmpeg reconnect path (HLS/RTSP/UDP upstreams detected at
@@ -136,18 +169,51 @@ def _locked_ffmpeg_profile():
     by falling back to the channel's own profile. The key is always
     present so the relay can tell "not installed" from "old Django".
 
-    Callers inside this module that run once per resolve_source() call
-    (resolve_initial_source, _source_from_info, _resolve_alternates,
-    _commit) take a `locked_ffmpeg_profile` kwarg instead of calling this
-    directly, so resolve_source() can resolve it once and thread the same
-    value through every Source it builds -- see the N-alternates note on
-    resolve_source() itself. Call this function directly only from
-    resolve_source() (or a test).
+    THE ROW, NOT THE FLATTENED DICT, since Phase 2 PR 2c-4: the dict now
+    carries an argv built for each Source's own URL, so what one
+    resolve_source() call shares across the primary source and its N
+    alternates is the row, and each Source renders it for itself
+    (_LockedFfmpegProfile.ref). Called through _LockedFfmpegProfile, which
+    is what keeps it to one query per resolve_source() call
+    (test_resolving_with_alternates_runs_the_locked_ffmpeg_query_once).
     """
-    profile = StreamProfile.objects.filter(name="ffmpeg", locked=True).first()
-    if profile is None:
-        return None
-    return _stream_profile_ref(profile)
+    return StreamProfile.objects.filter(name="ffmpeg", locked=True).first()
+
+
+class _LockedFfmpegProfile:
+    """The locked ffmpeg row, resolved at most once per resolve_source() call
+    and only when a Source is actually about to be built.
+
+    Replaces the pre-resolved-dict threading 2b-1 used for the N-alternates
+    case (resolve_source()'s note): the holder is created once in
+    resolve_source(), handed to resolve_initial_source, _resolve_alternates
+    and _commit, and queries the first time any of them needs the row --
+    never for an answer that builds no Source, which is what
+    NextSourceDbCleanupTests pins.
+
+    Accepts what the old kwarg accepted, so the existing call shapes and
+    tests keep working: the _UNRESOLVED_FFMPEG_PROFILE sentinel (resolve
+    lazily), None (not installed), a StreamProfile row (pre-resolved).
+    """
+
+    def __init__(self, profile=_UNRESOLVED_FFMPEG_PROFILE):
+        self._profile = profile
+
+    @classmethod
+    def wrap(cls, value):
+        return value if isinstance(value, cls) else cls(value)
+
+    def get(self):
+        if self._profile is _UNRESOLVED_FFMPEG_PROFILE:
+            self._profile = _locked_ffmpeg_profile()
+        return self._profile
+
+    def ref(self, *, url, user_agent, pk):
+        """ffmpeg_stream_profile for one Source: the row built for THIS url, or None."""
+        profile = self.get()
+        if profile is None:
+            return None
+        return _stream_profile_ref(profile, url=url, user_agent=user_agent, pk=pk)
 
 
 def get_stream_object(id: str):
@@ -356,6 +422,7 @@ def get_stream_info_for_switch(channel_id: str, target_stream_id: Optional[int] 
             'stream_name': stream.name,
             'channel_name': channel.name,
             'm3u_profile_name': m3u_profile.name,
+            'channel_pk': channel.id,
         }
     except Exception as e:
         if slot_reserved and channel is not None:
@@ -495,7 +562,7 @@ def get_alternate_streams(channel_id: str, current_stream_id: Optional[int] = No
         close_old_connections()
 
 
-def resolve_initial_source(identifier):
+def resolve_initial_source(identifier, *, locked_ffmpeg_profile=_UNRESOLVED_FFMPEG_PROFILE):
     """
     Resolve the source a channel or previewed stream should play right now.
 
@@ -516,6 +583,7 @@ def resolve_initial_source(identifier):
 
     Returns {"source": <dict|None>, "error": <str|None>}.
     """
+    locked = _LockedFfmpegProfile.wrap(locked_ffmpeg_profile)
     try:
         channel_or_stream = get_stream_object(identifier)
 
@@ -559,13 +627,17 @@ def resolve_initial_source(identifier):
                         "url": stream_url,
                         "user_agent": stream_user_agent,
                         "transcode": transcode,
-                        "stream_profile": _stream_profile_ref(stream_profile),
+                        "stream_profile": _stream_profile_ref(
+                            stream_profile, url=stream_url, user_agent=stream_user_agent, pk=stream.id
+                        ),
                         "m3u_profile_id": profile_id,
                         "slot_reserved": slot_reserved,
                         "channel_name": stream.name,
                         "stream_name": stream.name,
                         "m3u_profile_name": m3u_profile.name,
-                        "ffmpeg_stream_profile": _locked_ffmpeg_profile(),
+                        "ffmpeg_stream_profile": locked.ref(
+                            url=stream_url, user_agent=stream_user_agent, pk=stream.id
+                        ),
                     },
                     "error": None,
                 }
@@ -617,13 +689,17 @@ def resolve_initial_source(identifier):
                     "url": stream_url,
                     "user_agent": stream_user_agent,
                     "transcode": transcode,
-                    "stream_profile": _stream_profile_ref(stream_profile),
+                    "stream_profile": _stream_profile_ref(
+                        stream_profile, url=stream_url, user_agent=stream_user_agent, pk=channel.id
+                    ),
                     "m3u_profile_id": profile_id,
                     "slot_reserved": slot_reserved,
                     "channel_name": channel.name,
                     "stream_name": stream.name,
                     "m3u_profile_name": m3u_profile.name,
-                    "ffmpeg_stream_profile": _locked_ffmpeg_profile(),
+                    "ffmpeg_stream_profile": locked.ref(
+                        url=stream_url, user_agent=stream_user_agent, pk=channel.id
+                    ),
                 },
                 "error": None,
             }
@@ -644,29 +720,35 @@ def _source_from_info(info, *, slot_reserved, locked_ffmpeg_profile=_UNRESOLVED_
     """Shape one Source dict from a get_stream_info_for_switch answer.
 
     `info['stream_profile']` is a core.models.StreamProfile id (the
-    ffmpeg/proxy/redirect profile), not the M3U profile — the seven fields
+    ffmpeg/proxy/redirect profile), not the M3U profile -- the seven fields
     here are the SourceSerializer contract Task 6 adds.
 
     locked_ffmpeg_profile: see resolve_source()'s N-alternates note --
     _resolve_alternates calls this once per candidate, so a caller that
     knows it in advance (that function, and _commit) should pass it rather
-    than let each call re-run the query.
+    than let each call re-run the query. Since 2c-4 it is a
+    _LockedFfmpegProfile (or anything its wrap() accepts), and the
+    flattening happens here, per Source, because the argv depends on
+    info['url'].
     """
-    if locked_ffmpeg_profile is _UNRESOLVED_FFMPEG_PROFILE:
-        locked_ffmpeg_profile = _locked_ffmpeg_profile()
+    locked = _LockedFfmpegProfile.wrap(locked_ffmpeg_profile)
     stream_profile = StreamProfile.objects.get(id=info["stream_profile"])
     return {
         "stream_id": info["stream_id"],
         "url": info["url"],
         "user_agent": info["user_agent"],
         "transcode": info["transcode"],
-        "stream_profile": _stream_profile_ref(stream_profile),
+        "stream_profile": _stream_profile_ref(
+            stream_profile, url=info["url"], user_agent=info["user_agent"], pk=info.get("channel_pk")
+        ),
         "m3u_profile_id": info["m3u_profile_id"],
         "slot_reserved": slot_reserved,
         "channel_name": info.get("channel_name"),
         "stream_name": info.get("stream_name"),
         "m3u_profile_name": info.get("m3u_profile_name"),
-        "ffmpeg_stream_profile": locked_ffmpeg_profile,
+        "ffmpeg_stream_profile": locked.ref(
+            url=info["url"], user_agent=info["user_agent"], pk=info.get("channel_pk")
+        ),
     }
 
 
@@ -678,8 +760,8 @@ def _resolve_alternates(identifier, current_stream_id, *, locked_ffmpeg_profile=
     the loop below, rather than letting each of the N candidates re-run
     the same query -- see resolve_source()'s N-alternates note.
     """
-    if locked_ffmpeg_profile is _UNRESOLVED_FFMPEG_PROFILE:
-        locked_ffmpeg_profile = _locked_ffmpeg_profile()
+    locked_ffmpeg_profile = _LockedFfmpegProfile.wrap(locked_ffmpeg_profile)
+    locked_ffmpeg_profile.get()
     alternates = []
     for candidate in get_alternate_streams(identifier, current_stream_id=current_stream_id):
         info = get_stream_info_for_switch(identifier, candidate["stream_id"])
@@ -892,6 +974,7 @@ def resolve_source(
     # tune and resume paths never send it) or reason=="failover" is what
     # actually distinguishes a failover from the reuse-or-reserve shape.
     is_failover_request = current_url is not None or reason == "failover"
+    locked = _LockedFfmpegProfile()
 
     if not excluded and target_stream_id is None and not is_failover_request:
         # No pre-resolved locked_ffmpeg_profile here: resolve_initial_source
@@ -902,7 +985,7 @@ def resolve_source(
         # value resolve_initial_source already computed is reused below
         # instead of _resolve_alternates() resolving its own (see that
         # function's docstring and resolve_source()'s N-alternates note).
-        answer = resolve_initial_source(identifier)
+        answer = resolve_initial_source(identifier, locked_ffmpeg_profile=locked)
         # A previewed Stream has no assigned alternates -- get_alternate_streams()
         # walks Channel.streams, which a bare Stream doesn't have -- so
         # _resolve_alternates would call get_alternate_streams(), which logs
@@ -914,8 +997,7 @@ def resolve_source(
             and isinstance(resolved_object, Channel)
         ):
             answer["alternates"] = _resolve_alternates(
-                identifier, answer["source"]["stream_id"],
-                locked_ffmpeg_profile=answer["source"]["ffmpeg_stream_profile"],
+                identifier, answer["source"]["stream_id"], locked_ffmpeg_profile=locked,
             )
         answer.setdefault("alternates", [])
         return _with_output_profiles(_with_proxy_settings(answer))
@@ -927,7 +1009,7 @@ def resolve_source(
                 {"source": None, "alternates": [], "error": info["error"]}
             ))
         return _with_output_profiles(_with_proxy_settings({
-            "source": _commit(identifier, info),
+            "source": _commit(identifier, info, locked_ffmpeg_profile=locked),
             "alternates": [],
             "error": None,
         }))
@@ -947,7 +1029,7 @@ def resolve_source(
         if current_url and info["url"] == current_url:
             continue
         return _with_output_profiles(_with_proxy_settings({
-            "source": _commit(identifier, info),
+            "source": _commit(identifier, info, locked_ffmpeg_profile=locked),
             "alternates": [],
             "error": None,
         }))

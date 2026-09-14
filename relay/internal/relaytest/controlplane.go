@@ -32,12 +32,13 @@ func EffectiveProxySettings() map[string]any {
 		"channel_client_wait_period": 5,
 		"new_client_behind_seconds":  5,
 		// TSConfig's class-attribute defaults, the half A1.4 adds.
-		"BUFFER_CHUNK_SIZE":      255868, // apps/proxy/config.py:15, 188 * 1361
-		"CHUNK_SIZE":             8192,   // :7
-		"STREAM_TIMEOUT":         20,     // :103
-		"FAILOVER_GRACE_PERIOD":  20,     // :120
-		"KEEPALIVE_INTERVAL":     0.5,    // :97
-		"MAX_KEEPALIVE_DURATION": 300,    // :122
+		"BUFFER_CHUNK_SIZE":      255868,                     // apps/proxy/config.py:15, 188 * 1361
+		"DEFAULT_USER_AGENT":     "VLC/3.0.20 LibVLC/3.0.20", // :6
+		"CHUNK_SIZE":             8192,                       // :7
+		"STREAM_TIMEOUT":         20,                         // :103
+		"FAILOVER_GRACE_PERIOD":  20,                         // :120
+		"KEEPALIVE_INTERVAL":     0.5,                        // :97
+		"MAX_KEEPALIVE_DURATION": 300,                        // :122
 	}
 }
 
@@ -74,6 +75,34 @@ type ControlPlaneConfig struct {
 	// still in flight when a client disconnects, and there is no other way
 	// to arrange that deterministically.
 	Delay time.Duration
+
+	// Command and Argv are the stream_profile's built command line. Empty
+	// and nil render as "" and [] -- the Proxy and Redirect shape.
+	Command string
+	Argv    []string
+
+	// ArgvAbsent leaves the argv key out of stream_profile entirely, the
+	// shape of a control plane older than 2c-4. ArgvNull sends it as null,
+	// the shape of a profile whose parameters shlex could not split. Both
+	// apply to ffmpeg_stream_profile too when one is sent.
+	ArgvAbsent bool
+	ArgvNull   bool
+
+	// FFmpegProfile, when set, is sent as ffmpeg_stream_profile; nil sends
+	// null, which is "no locked ffmpeg profile installed".
+	FFmpegProfile *ProfileConfig
+
+	// UserAgent overrides the source's user_agent. Empty means
+	// "relaytest/1.0", the fixture's usual value; BlankUserAgent sends "".
+	UserAgent      string
+	BlankUserAgent bool
+}
+
+// ProfileConfig is one stream-profile object the fake sends.
+type ProfileConfig struct {
+	ID      int
+	Command string
+	Argv    []string
 }
 
 // ControlPlane is a fake Django answering POST /api/relay/... .
@@ -82,6 +111,17 @@ type ControlPlane struct {
 
 	mu       sync.Mutex
 	requests []RecordedRequest
+	settings map[string]any
+}
+
+// SetSettings replaces the proxy_settings every LATER answer carries. It is
+// how a test changes a setting between two tunes, the way an operator's
+// save does, to show that a channel already running does not pick it up
+// (parity-matrix row 5).
+func (c *ControlPlane) SetSettings(settings map[string]any) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.settings = settings
 }
 
 // RecordedRequest is one call the fake received.
@@ -141,13 +181,42 @@ func NewControlPlane(cfg ControlPlaneConfig) *ControlPlane {
 			return
 		}
 
-		settings := cfg.Settings
+		c.mu.Lock()
+		settings := c.settings
+		c.mu.Unlock()
+		if settings == nil {
+			settings = cfg.Settings
+		}
 		if settings == nil {
 			settings = EffectiveProxySettings()
 		}
 		kind := cfg.Kind
 		if kind == "" {
 			kind = "proxy"
+		}
+		profile := func(id int, command string, argv []string) map[string]any {
+			object := map[string]any{"id": id, "command": command, "args": "", "kind": kind}
+			switch {
+			case cfg.ArgvAbsent:
+			case cfg.ArgvNull:
+				object["argv"] = nil
+			case argv == nil:
+				object["argv"] = []string{}
+			default:
+				object["argv"] = argv
+			}
+			return object
+		}
+		var ffmpegProfile any
+		if cfg.FFmpegProfile != nil {
+			ffmpegProfile = profile(cfg.FFmpegProfile.ID, cfg.FFmpegProfile.Command, cfg.FFmpegProfile.Argv)
+		}
+		userAgent := "relaytest/1.0"
+		if cfg.UserAgent != "" {
+			userAgent = cfg.UserAgent
+		}
+		if cfg.BlankUserAgent {
+			userAgent = ""
 		}
 
 		answer := map[string]any{
@@ -159,19 +228,17 @@ func NewControlPlane(cfg ControlPlaneConfig) *ControlPlane {
 		}
 		if cfg.SourceURL != "" {
 			answer["source"] = map[string]any{
-				"stream_id":        1,
-				"url":              cfg.SourceURL,
-				"user_agent":       "relaytest/1.0",
-				"transcode":        false,
-				"m3u_profile_id":   1,
-				"slot_reserved":    true,
-				"channel_name":     "Test Channel",
-				"stream_name":      "Test Stream",
-				"m3u_profile_name": "Test Profile",
-				"stream_profile": map[string]any{
-					"id": 1, "command": "", "args": "", "kind": kind,
-				},
-				"ffmpeg_stream_profile": nil,
+				"stream_id":             1,
+				"url":                   cfg.SourceURL,
+				"user_agent":            userAgent,
+				"transcode":             false,
+				"m3u_profile_id":        1,
+				"slot_reserved":         true,
+				"channel_name":          "Test Channel",
+				"stream_name":           "Test Stream",
+				"m3u_profile_name":      "Test Profile",
+				"stream_profile":        profile(1, cfg.Command, cfg.Argv),
+				"ffmpeg_stream_profile": ffmpegProfile,
 			}
 		}
 		w.Header().Set("Content-Type", "application/json")
