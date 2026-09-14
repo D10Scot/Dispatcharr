@@ -7,6 +7,7 @@
 #   build        go build ./...          the whole module
 #   vet          go vet ./...            the whole module
 #   lint         golangci-lint run       the whole module, zero findings
+#   credlint     go run ./internal/credlint ./...   the whole module, zero findings
 #   tests        go test -race ./<pkg>   the edited file's package only
 #
 # Zero lint findings is a ratchet, the same rule as zizmor's: the module
@@ -106,6 +107,19 @@ else
         printf '%s\n' "$OUT" | grep -E '^(ok|---|PASS|FAIL)' | head -3
       fi
     fi
+  fi
+fi
+
+if [ -z "$BLOCK_TITLE" ]; then
+  # The credential-logging guard, the Go side of scripts/
+  # check_credential_logging.py: zero findings is a ratchet like the
+  # linter's. Run through the same script go-tests.yml runs, so the two
+  # cannot disagree. It is built from the module's own source by `go run`,
+  # so there is nothing to install and no version to pin.
+  OUT="$(cd "$MODULE_ROOT" && go run ./internal/credlint ./... 2>&1)"
+  if [ $? -ne 0 ]; then
+    block "credential-logging findings in ${MODULE_ROOT}" \
+          "$(printf '%s' "$OUT" | head -30)"$'\n\n'"Every error-typed log or format argument passes through redact.Error, or carries '// credential-logging: ok - <reason>'. relay/internal/credlint/check.go states the rule."
   fi
 fi
 

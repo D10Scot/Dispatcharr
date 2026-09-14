@@ -83,7 +83,7 @@ jobs:
           # nothing here to verify. docker-build.yml would catch a broken
           # relay-builder stage, but only for a Dockerfile change and only
           # AFTER merge -- it triggers on push to main, not on PRs.
-          pattern='^(relay/|\.golangci\.yml$|scripts/check_go_stdlib_only\.sh$|\.github/workflows/go-tests\.yml$)'
+          pattern='^(relay/|\.golangci\.yml$|scripts/check_go_stdlib_only\.sh$|scripts/check_go_credential_logging\.sh$|\.github/workflows/go-tests\.yml$|apps/proxy/live_proxy/tests/harness/fixtures/ffmpeg_stderr/)'
           if printf '%s\n' "$changed" | grep -qE "$pattern"; then
             echo "go=true" >> "$GITHUB_OUTPUT"
           else
@@ -113,6 +113,20 @@ jobs:
           # Dockerfile's builder stage without go.mod moving too.
           go-version-file: relay/go.mod
 
+      # Real ffmpeg, for parity-matrix row 4's one real-ffmpeg pin
+      # (relay/channel/source_transcode_real_test.go). The test FAILS rather
+      # than skips when CI is set and ffmpeg is absent, so a runner image
+      # that stops shipping it cannot turn the pin into a silent skip. The
+      # distribution's ffmpeg, not the Dispatcharr image's 8.1.2: the row's
+      # claim is about ffmpeg's cumulative speed= average, which every
+      # version this project has met shares, and the test asserts a shape,
+      # never a digit.
+      - name: Install ffmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg
+          ffmpeg -version | head -1
+
       - name: Build
         run: go build ./...
 
@@ -129,6 +143,15 @@ jobs:
       - name: Assert the module is standard-library only
         working-directory: .
         run: scripts/check_go_stdlib_only.sh relay
+
+      # The Go side of the credential-logging rule (lint.yml's
+      # credential-logging job is the Python side): every error-typed
+      # argument to a formatting or logging call passes through
+      # redact.Error or carries a written reason. relay/internal/credlint
+      # states the rule; the PostToolUse hook runs the same script.
+      - name: Assert no error reaches a log unredacted
+        working-directory: .
+        run: scripts/check_go_credential_logging.sh relay
 
   lint:
     name: golangci-lint
