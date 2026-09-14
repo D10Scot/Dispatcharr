@@ -32,6 +32,7 @@ jobs:
     timeout-minutes: 5
     outputs:
       go: ${{ steps.filter.outputs.go }}
+      base_image: ${{ steps.base_image.outputs.image }}
     steps:
       # The `if:` is always true under this workflow's three triggers, and it
       # is copied deliberately rather than simplified: frontend-tests.yml,
@@ -49,6 +50,24 @@ jobs:
           # push diffs github.event.before against the new head instead, and
           # that commit is at an unknown depth, so it needs full history.
           fetch-depth: ${{ github.event_name == 'pull_request' && 2 || 0 }}
+
+      # The same own-built image backend-tests.yml's `plan` job selects
+      # (base-image.yml, built from docker/DispatcharrBase): it ships the
+      # production ffmpeg (8.1.2), which the `build` job's container: now
+      # uses so parity-matrix row 4's real-ffmpeg pin runs against the
+      # version production and the harness capture actually use, not
+      # whatever a bare ubuntu-latest runner's apt carries.
+      - name: Select base image
+        id: base_image
+        env:
+          REPOSITORY_OWNER: ${{ github.repository_owner }}
+          REPOSITORY_NAME: ${{ github.event.repository.name }}
+        run: |
+          REPO_OWNER="$(echo "$REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')"
+          REPO_NAME="$(echo "$REPOSITORY_NAME" | tr '[:upper:]' '[:lower:]')"
+          IMAGE="ghcr.io/${REPO_OWNER}/${REPO_NAME}:base"
+          echo "image=${IMAGE}" >> "$GITHUB_OUTPUT"
+          echo "Using base image: ${IMAGE}"
 
       - name: Decide whether the Go jobs need to run
         id: filter
@@ -96,6 +115,26 @@ jobs:
     needs: changes
     if: needs.changes.outputs.go == 'true'
     timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: read
+    # Runs inside this repository's own base image (the same one
+    # backend-tests.yml's `test`/`coverage-label` jobs use), NOT a bare
+    # ubuntu-latest runner: parity-matrix row 4's one real-ffmpeg pin
+    # (relay/channel/source_transcode_real_test.go) must run against the
+    # SAME ffmpeg production and the harness capture use (8.1.2,
+    # docker/DispatcharrBase), because ffmpeg 6.1.1 (a plain `apt-get
+    # install ffmpeg` on ubuntu-latest) omits `frame=` from stream-copy
+    # progress lines and the verbatim-ported IsProgressLine gate never
+    # passes -- discovered when this exact swap made the row fail in CI
+    # while every local and 8.1.2 run stayed green (2026-09-14 CI fix
+    # round; spec Amendment A4, Done log).
+    container:
+      image: ${{ needs.changes.outputs.base_image }} # zizmor: ignore[unpinned-images]
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: --entrypoint ""
     defaults:
       run:
         working-directory: ./relay
@@ -113,25 +152,25 @@ jobs:
           # Dockerfile's builder stage without go.mod moving too.
           go-version-file: relay/go.mod
 
-      # Real ffmpeg, for parity-matrix row 4's one real-ffmpeg pin
-      # (relay/channel/source_transcode_real_test.go). The test FAILS rather
-      # than skips when CI is set and ffmpeg is absent, so a runner image
-      # that stops shipping it cannot turn the pin into a silent skip. The
-      # distribution's ffmpeg, not the Dispatcharr image's 8.1.2: the row's
-      # claim is about ffmpeg's cumulative speed= average, which every
-      # version this project has met shares, and the test asserts a shape,
-      # never a digit.
-      - name: Install ffmpeg
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends ffmpeg
-          ffmpeg -version | head -1
+      - name: ffmpeg version
+        run: ffmpeg -version | head -1
 
       - name: Build
         run: go build ./...
 
+      # Both GOOS, durably: relay/ffmpeg/spawn_linux.go and spawn_other.go
+      # are build-tag-split, and this job's native GOOS is linux (the
+      # container runs on the ubuntu-latest host), so a plain `go vet ./...`
+      # alone never typechecks spawn_other.go's darwin/!linux branch -- the
+      # exact gap golangci-lint hit in the CI fix round's item 1 (its darwin
+      # counterpart never having compiled spawn_linux_test.go). GOOS=linux
+      # is redundant with the native pass on this runner; kept anyway so
+      # this step and the lint job's below read the same, deliberately.
       - name: Vet
-        run: go vet ./...
+        run: |
+          go vet ./...
+          GOOS=linux go vet ./...
+          GOOS=darwin go vet ./...
 
       # -race is not optional: the concurrency model changes from
       # gevent-cooperative to OS-thread-parallel goroutines in this phase, so
@@ -170,6 +209,14 @@ jobs:
         with:
           go-version-file: relay/go.mod
 
+      # Three invocations, deliberately, not one: this runner's native GOOS
+      # is linux, so a bare run only ever typechecks relay/ffmpeg/
+      # spawn_linux.go, never spawn_other.go's darwin/!linux build tag, and
+      # a Mac contributor's local run is the mirror opposite. CI fix round
+      # item 1 hit exactly this gap (darwin's local lint never compiling
+      # spawn_linux_test.go, so its unused-parameter finding was invisible
+      # until ubuntu's CI run). Zero findings on all three is the ratchet;
+      # .claude/hooks/run-go-checks.sh runs the same three passes locally.
       - name: Run golangci-lint
         uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
         with:
@@ -177,6 +224,22 @@ jobs:
           # actions-lint.yml: a new release adding a linter must not fail an
           # unrelated PR. Keep in sync with the version the PostToolUse hook
           # checks for (.claude/hooks/run-go-checks.sh).
+          version: v2.13.2
+          working-directory: relay
+
+      - name: Run golangci-lint (GOOS=linux)
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
+        env:
+          GOOS: linux
+        with:
+          version: v2.13.2
+          working-directory: relay
+
+      - name: Run golangci-lint (GOOS=darwin)
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
+        env:
+          GOOS: darwin
+        with:
           version: v2.13.2
           working-directory: relay
 
