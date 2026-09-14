@@ -42,11 +42,13 @@ GOLDEN = (
     / "channels_clients_all.json"
 )
 
-# Every RelayChannelSerializer field 2c-3's Go relay does not produce, and why.
-# A field in neither this mapping nor the fully-populated fixture channel fails
-# test_the_fixture_covers_every_serializer_field, which is what stops the
-# golden from silently narrowing as the endpoint grows.
-NOT_SERVED_BY_2C3 = {
+# Every RelayChannelSerializer field the Go relay does not produce yet, and
+# why. A field in neither this mapping nor the fully-populated fixture channel
+# fails test_the_fixture_covers_every_serializer_field, which is what stops
+# the golden from silently narrowing as the endpoint grows. 2c-3 excused nine;
+# 2c-4's transcode source produces seven of them (the input format included --
+# it is log_parsers.py's parse_input_format, not 2c-5's).
+NOT_SERVED_YET = {
     "logo_id": (
         "ChannelMetadataField.LOGO_ID is written only into the TIMESHIFT key "
         "family (apps/timeshift/views.py:2984, timeshift:channel:<id>:metadata), "
@@ -54,13 +56,6 @@ NOT_SERVED_BY_2C3 = {
         "reads, so the live list endpoint never emits it in Python either"
     ),
     "healthy": "needs StreamManager.healthy, which arrives in 2c-5",
-    "video_codec": "ffmpeg-derived, 2c-4",
-    "resolution": "ffmpeg-derived, 2c-4",
-    "source_fps": "ffmpeg-derived, 2c-4",
-    "ffmpeg_speed": "ffmpeg-derived, 2c-4",
-    "audio_codec": "ffmpeg-derived, 2c-4",
-    "audio_channels": "ffmpeg-derived, 2c-4",
-    "stream_type": "set by channel_service from the probed input format, 2c-5",
 }
 
 
@@ -88,6 +83,17 @@ def fixture():
                 "total_bytes": 9999888,
                 "avg_bitrate_kbps": 2665.3034666666666,
                 "avg_bitrate": "2.67 Mbps",
+                # The seven ffmpeg-derived fields, Phase 2 PR 2c-4: present only
+                # when a transcode process reported them (channel_status.py:
+                # 605-627). source_fps is a FLOAT on this endpoint and a string
+                # on the detail one (parity-matrix row 14).
+                "video_codec": "h264",
+                "resolution": "1920x1080",
+                "source_fps": 25.0,
+                "ffmpeg_speed": 1.02,
+                "audio_codec": "aac",
+                "audio_channels": "stereo",
+                "stream_type": "mpegts",
                 "clients": [
                     {
                         "client_id": "client_1789000000000_1234",
@@ -161,20 +167,20 @@ class RelayListPayloadGoldenTests(SimpleTestCase):
         """
         declared = set(RelayChannelSerializer().fields)
         populated = set(fixture()["channels"][0])
-        excused = set(NOT_SERVED_BY_2C3)
+        excused = set(NOT_SERVED_YET)
 
         missing = declared - populated - excused
         self.assertEqual(
             missing,
             set(),
             "these RelayChannelSerializer fields are neither in the fixture nor "
-            f"in NOT_SERVED_BY_2C3 with a reason: {sorted(missing)}",
+            f"in NOT_SERVED_YET with a reason: {sorted(missing)}",
         )
         stale = excused - declared
         self.assertEqual(
             stale,
             set(),
-            f"NOT_SERVED_BY_2C3 names fields the serializer does not declare: {sorted(stale)}",
+            f"NOT_SERVED_YET names fields the serializer does not declare: {sorted(stale)}",
         )
 
     def test_an_unset_optional_field_vanishes_rather_than_rendering_null(self):

@@ -40,6 +40,8 @@ func goldenPayload() channelListPayload {
 	uaA := "VLC/3.0.20"
 	var uaAbsent *string
 	profileID := 7
+	sourceFPS := 25.0
+	speed := 1.02
 
 	return channelListPayload{
 		Count: 2,
@@ -61,6 +63,13 @@ func goldenPayload() channelListPayload {
 				TotalBytes:     &total,
 				AvgBitrateKbps: &kbps,
 				AvgBitrate:     "2.67 Mbps",
+				VideoCodec:     "h264",
+				Resolution:     "1920x1080",
+				SourceFPS:      &sourceFPS,
+				FFmpegSpeed:    &speed,
+				AudioCodec:     "aac",
+				AudioChannels:  "stereo",
+				StreamType:     "mpegts",
 				Clients: []clientPayload{
 					{
 						ClientID:        "client_1789000000000_1234",
@@ -221,14 +230,20 @@ func TestEveryOptionalFieldIsAbsentRatherThanNull(t *testing.T) {
 // channel. Without this, the two tests above pin a struct literal and nothing
 // pins that the handler builds it.
 func TestTheLiveEndpointProducesTheGoldensKeySet(t *testing.T) {
-	r := fanRig(t, relaytest.Config{Rate: 4}, nil)
+	// A TRANSCODE tune, so the seven ffmpeg-derived keys the golden's
+	// populated channel carries are produced by a real stderr reader
+	// parsing a real capture -- a Proxy tune would render a payload seven
+	// keys short and this test would report the golden as wrong.
+	r := transcodeRig(t, nil, "--stderr-corpus", relaytest.CorpusPath("normal"), "--stderr-interval", "0")
 	response := r.tuneAs(t, "c-keys", "client-a")
 	defer func() { _ = response.Body.Close() }()
 
 	// The channel must have published at least one chunk, so total_bytes and
-	// the two bitrate fields are present -- they are exactly the conditional
-	// fields the golden's populated channel carries.
+	// the two bitrate fields are present, and the reader must have seen the
+	// whole capture, so ffmpeg_speed is -- together they are exactly the
+	// conditional fields the golden's populated channel carries.
 	waitForHead(t, r, "c-keys", 1)
+	waitForStats(t, r, "c-keys")
 
 	status, body := r.listChannels(t, "?clients=all")
 	if status != http.StatusOK {

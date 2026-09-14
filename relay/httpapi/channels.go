@@ -65,18 +65,23 @@ type clientPayload struct {
 // client_count, uptime, started_at -- three of them nullable. The rest are
 // conditional, hence the pointers and the omitempty.
 //
-// SEVENTEEN OF THE CONDITIONAL FIELDS ARE ABSENT IN 2c-3, and each absence has
-// a reason rather than a gap:
+// TWO OF THE CONDITIONAL FIELDS ARE STILL ABSENT after 2c-4, and each absence
+// has a reason rather than a gap:
 //
 //	logo_id        NEVER EMITTED BY PYTHON EITHER. ChannelMetadataField.LOGO_ID
-//	               is declared (constants.py:59) and read (channel_status.py:486)
-//	               and written NOWHERE in the tree, so the `if not raw: continue`
+//	               is written only into the timeshift key family
+//	               (apps/timeshift/views.py:2984), never into the live hash
+//	               channel_status.py:486 reads, so the `if not raw: continue`
 //	               always continues. Exact parity by doing nothing.
 //	healthy        needs StreamManager.healthy, which is 2c-5's.
-//	video_codec, resolution, source_fps, ffmpeg_speed, audio_codec,
-//	audio_channels, stream_type
-//	               all ffmpeg- or probe-derived, written by the stderr reader
-//	               and channel_service; 2c-4 and 2c-5.
+//
+// The seven ffmpeg-derived fields -- video_codec, resolution, source_fps,
+// ffmpeg_speed, audio_codec, audio_channels, stream_type -- arrive in 2c-4
+// from channel.Stats, each present only when the transcode process reported
+// it (channel_status.py:605-627 assigns each inside an `if`), and never on
+// the Proxy architecture, which spawns nothing: parity-matrix row 29.
+// source_fps is a FLOAT here and a STRING on the detail endpoint, row 14's
+// asymmetry, which 2c-8 carries with that endpoint.
 type channelPayload struct {
 	ChannelID      string   `json:"channel_id"`
 	State          *string  `json:"state"`
@@ -94,6 +99,13 @@ type channelPayload struct {
 	TotalBytes     *uint64  `json:"total_bytes,omitempty"`
 	AvgBitrateKbps *float64 `json:"avg_bitrate_kbps,omitempty"`
 	AvgBitrate     string   `json:"avg_bitrate,omitempty"`
+	VideoCodec     string   `json:"video_codec,omitempty"`
+	Resolution     string   `json:"resolution,omitempty"`
+	SourceFPS      *float64 `json:"source_fps,omitempty"`
+	FFmpegSpeed    *float64 `json:"ffmpeg_speed,omitempty"`
+	AudioCodec     string   `json:"audio_codec,omitempty"`
+	AudioChannels  string   `json:"audio_channels,omitempty"`
+	StreamType     string   `json:"stream_type,omitempty"`
 
 	// Clients is ALWAYS PRESENT, never omitted: channel_status.py:587 assigns
 	// it on every path, so an empty channel renders "clients": [] and not an
@@ -142,7 +154,7 @@ func ChannelsHandler(deps ControlDeps) http.HandlerFunc {
 		if err != nil {
 			// Unreachable: every field is a plain type. Answering 500 rather
 			// than a half-written 200 if it ever happens.
-			log.Error("encoding the channel list failed", "error", err)
+			log.Error("encoding the channel list failed", "error", err) // credential-logging: ok - an encoding/json error over plain struct fields; the URL it could name is one this payload carries on purpose (Ruling R7 of the 2c-3 plan)
 			http.Error(w, "internal error", http.StatusInternalServerError)
 			return
 		}
@@ -208,6 +220,30 @@ func describeChannel(c *channel.Channel, limit int, at time.Time) channelPayload
 				out.AvgBitrate = fmt.Sprintf("%.2f Kbps", kbps)
 			}
 		}
+	}
+
+	// The ffmpeg-derived fields, exactly the seven get_basic_channel_info
+	// copies out of the hash (:605-627), each only when the reader set it.
+	// A stream_type of "" (channel_service writes str(input_format), never
+	// empty) and a codec of "" would be dropped by omitempty where Python's
+	// `if video_codec:` drops them too.
+	stats := c.Stats()
+	if stats.VideoCodec != nil {
+		out.VideoCodec = *stats.VideoCodec
+	}
+	if stats.Resolution != nil {
+		out.Resolution = *stats.Resolution
+	}
+	out.SourceFPS = stats.SourceFPS
+	out.FFmpegSpeed = stats.FFmpegSpeed
+	if stats.AudioCodec != nil {
+		out.AudioCodec = *stats.AudioCodec
+	}
+	if stats.AudioChannels != nil {
+		out.AudioChannels = *stats.AudioChannels
+	}
+	if stats.StreamType != nil {
+		out.StreamType = *stats.StreamType
 	}
 
 	for i, cl := range clients {
