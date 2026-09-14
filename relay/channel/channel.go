@@ -88,6 +88,9 @@ type Channel struct {
 	mu      sync.RWMutex
 	state   State
 	lastErr error
+	// stats is what a transcode process has reported (stats.go). Empty for
+	// the Proxy architecture, which spawns nothing -- parity-matrix row 29.
+	stats Stats
 	// clients is the registry. Guarded by mu; the manager reads its length
 	// through Clients() inside its own critical section, which is what makes
 	// stopIfStillIdle's re-check and claim's addClient mutually exclusive.
@@ -202,6 +205,12 @@ func (c *Channel) setState(state State, err error) {
 	}
 }
 
+// attachable is the optional interface a Source implements to be handed the
+// channel it runs on, for stats and state. TranscodeSource does; ProxySource
+// has nothing to report and does not. Checked once, in run, so a source is
+// attached to exactly the channel whose goroutine runs it.
+type attachable interface{ attach(*Channel) }
+
 // run is the source goroutine. Exactly one per channel, started by the
 // manager.
 //
@@ -213,6 +222,9 @@ func (c *Channel) run(ctx context.Context, source Source) {
 	defer close(c.done)
 	defer c.ring.Close()
 
+	if a, ok := source.(attachable); ok {
+		a.attach(c)
+	}
 	c.setState(StateWaitingForClients, nil)
 	go c.promoteOnFirstChunk(ctx)
 	err := source.Run(ctx, c.ring)
@@ -228,11 +240,9 @@ func (c *Channel) run(ctx context.Context, source Source) {
 		c.log.Info("channel stopped", "channel", c.id)
 		c.setState(StateStopped, nil)
 	default:
-		// The error is logged through redact.Error rather than as-is: every
-		// error this package builds is already written to carry no URL
-		// (CLAUDE.md, § Known defects), but this is also the one log call
-		// relay/internal/credlint's static check can see, so it is the
-		// enforcement point, not just a restatement of the rule.
+		// Through redact.Error, which is what relay/internal/credlint holds
+		// every error-typed log argument in this module to: a provider URL
+		// carries provider credentials (CLAUDE.md, § Known defects).
 		c.log.Error("upstream failed", "channel", c.id, "error", redact.Error(err))
 		c.setState(StateError, err)
 	}
