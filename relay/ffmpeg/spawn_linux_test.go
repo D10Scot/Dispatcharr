@@ -25,7 +25,7 @@ const parentEnv = "RELAY_PDEATHSIG_PARENT"
 
 // TestParentProcess is the second trampoline. Under parentEnv it is the
 // relay stand-in described above; in an ordinary run it returns at once.
-func TestParentProcess(t *testing.T) {
+func TestParentProcess(_ *testing.T) {
 	if os.Getenv(parentEnv) != "1" {
 		return
 	}
