@@ -587,20 +587,34 @@ class SourceCarriesNamesTests(NextSourceFixture, TestCase):
         # TransactionTestCase run earlier in the SAME process can have
         # flushed it away already (manager_support.py:105's "Created rather
         # than fetched" comment documents exactly this hazard). get_or_create
-        # is robust to both orderings: if the seeded row survived, this finds
-        # it (name+locked is not DB-unique, so a get() alone risks a second
-        # match if one ever collides; a filter().first() ordered by pk is
-        # what _locked_ffmpeg_profile() itself uses); if it was flushed away,
-        # this recreates it with the same shape a real deployment has.
+        # was tried here first and found the WRONG row on a fresh database:
+        # the migration-seeded profile already exists, so its `defaults`
+        # never applied and `parameters` stayed the seeded
+        # "-user_agent {userAgent} -i {streamUrl} -c copy -f mpegts pipe:1"
+        # -- silently correct only on a warm --keepdb database carrying an
+        # earlier test's own write. A queryset UPDATE-or-CREATE is robust to
+        # both orderings without that hazard: QuerySet.update() is a bulk SQL
+        # UPDATE that calls neither Model.save() (whose protected-profile
+        # guard blocks changing a locked row's fields, core/models.py:78-101)
+        # nor any signal, so it is not blocked the way .save() or .delete()
+        # would be (core/signals.py's prevent_deletion_if_locked -- tried
+        # first here -- blocks a locked row's DELETE too). If nothing
+        # existed to update, the row is created fresh, which needs neither
+        # guard because a new instance has no pk yet. `parameters` therefore
+        # always ends up exactly what this test sets, never whatever
+        # migrations or an earlier test happened to leave.
         from apps.proxy.next_source import resolve_source
 
-        ffmpeg, _ = StreamProfile.objects.get_or_create(
-            name="ffmpeg", locked=True,
-            defaults={
-                "command": "ffmpeg",
-                "parameters": "-i {streamUrl} -c copy -f mpegts pipe:1",
-            },
+        params = "-i {streamUrl} -c copy -f mpegts pipe:1"
+        updated = StreamProfile.objects.filter(name="ffmpeg", locked=True).update(
+            command="ffmpeg", parameters=params
         )
+        if updated:
+            ffmpeg = StreamProfile.objects.filter(name="ffmpeg", locked=True).first()
+        else:
+            ffmpeg = StreamProfile.objects.create(
+                name="ffmpeg", locked=True, command="ffmpeg", parameters=params
+            )
         source = resolve_source(self.channel.uuid)["source"]
         self.assertEqual(
             source["ffmpeg_stream_profile"],

@@ -296,17 +296,37 @@ class NextSourceRouteTests(RelayApiTestCase):
         """PIN. Phase 2 PR 2b-1: the wire, not just the resolver."""
         from core.models import CoreSettings
 
-        # get_or_create, not .get(), and done BEFORE the request below (the
-        # resolve happens inside that call): a TransactionTestCase run
-        # earlier in the same process can flush the migration-seeded locked
-        # 'ffmpeg' row away (manager_support.py:105's "Created rather than
-        # fetched" comment documents the same hazard;
-        # test_next_source_resolution.py hit this exact DoesNotExist during
-        # review and was fixed the same way).
-        ffmpeg_profile, _ = StreamProfile.objects.get_or_create(
-            name="ffmpeg", locked=True,
-            defaults={"command": "ffmpeg", "parameters": "-i {streamUrl}"},
+        # Update-or-create, done BEFORE the request below (the resolve
+        # happens inside that call), and robust to both orderings a
+        # TransactionTestCase run earlier in the same process can leave: the
+        # migration-seeded locked 'ffmpeg' row either flushed away
+        # (manager_support.py:105's "Created rather than fetched" comment
+        # documents the same hazard) or still present. get_or_create was
+        # tried here first and, on a fresh database, silently kept the
+        # SEEDED row's own parameters instead of this test's `defaults` --
+        # the seeded profile already exists, so defaults never apply -- which
+        # only looked correct on a warm --keepdb database carrying an
+        # earlier test's own write. Delete-then-create was tried next and is
+        # ALSO wrong: core/signals.py's prevent_deletion_if_locked (a
+        # pre_delete receiver, separate from StreamProfile.save()'s own
+        # guard) raises ValidationError on deleting any locked row.
+        # QuerySet.update() is a bulk SQL UPDATE -- it calls neither
+        # Model.save() (whose protected-profile guard blocks an UPDATE of an
+        # existing locked pk, core/models.py:78-101) nor any signal (no
+        # pre_save/post_save is registered for StreamProfile, and this is
+        # not a delete), so it is blocked by neither guard; a fresh create
+        # needs neither guard either, since a new instance has no pk yet.
+        # `parameters` therefore always ends up exactly what this test sets.
+        params = "-i {streamUrl}"
+        updated = StreamProfile.objects.filter(name="ffmpeg", locked=True).update(
+            command="ffmpeg", parameters=params
         )
+        if updated:
+            ffmpeg_profile = StreamProfile.objects.filter(name="ffmpeg", locked=True).first()
+        else:
+            ffmpeg_profile = StreamProfile.objects.create(
+                name="ffmpeg", locked=True, command="ffmpeg", parameters=params
+            )
 
         response = self._post(self.next_source_path(str(self.channel.uuid)), {})
         self.assertEqual(response.status_code, 200)
