@@ -122,13 +122,17 @@ jobs:
     # backend-tests.yml's `test`/`coverage-label` jobs use), NOT a bare
     # ubuntu-latest runner: parity-matrix row 4's one real-ffmpeg pin
     # (relay/channel/source_transcode_real_test.go) must run against the
-    # SAME ffmpeg production and the harness capture use (8.1.2,
-    # docker/DispatcharrBase), because ffmpeg 6.1.1 (a plain `apt-get
-    # install ffmpeg` on ubuntu-latest) omits `frame=` from stream-copy
-    # progress lines and the verbatim-ported IsProgressLine gate never
-    # passes -- discovered when this exact swap made the row fail in CI
-    # while every local and 8.1.2 run stayed green (2026-09-14 CI fix
-    # round; spec Amendment A4, Done log).
+    # product's OWN ffmpeg (8.1.2, docker/DispatcharrBase), not merely
+    # "any" ffmpeg. A stream-copy progress line's leading token differs by
+    # major version -- `frame=` from 7.x on, `size=` on 6.x -- and both
+    # relays' progress gate looks for `frame=` verbatim
+    # (input/manager.py:1017; ffmpeg/progress.go:40), so ffmpeg 6.x is
+    # blind to every progress line, not just quantitatively different, and
+    # row 4's detector can never arm against it: a plain `apt-get install
+    # ffmpeg` on ubuntu-latest resolved to 6.1.1 and reddened this row in
+    # CI while every local and 8.1.2 run stayed green. Filed as #299
+    # (2026-09-14 CI fix round; spec Amendment A4.7, Done log). Do not
+    # widen the parser or this test to accommodate 6.x -- #299 owns that.
     container:
       image: ${{ needs.changes.outputs.base_image }} # zizmor: ignore[unpinned-images]
       credentials:

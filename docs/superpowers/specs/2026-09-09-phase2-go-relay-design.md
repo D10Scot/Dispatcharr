@@ -2146,25 +2146,29 @@ threshold from (ffmpeg 8.1.2). Diagnosed by driving the row-4 test inside
 gate — ported verbatim from `input/manager.py:993`/`:1017`'s own
 `frame=` check — never passes, the detector receives zero progress
 records, and it can never arm. Not a restart, not the looped corpus's
-timestamp discontinuity: purely the missing field. **This is a genuine
-ffmpeg-version behaviour difference, and the Python relay's identical
-`frame=` gate would have the identical gap on 6.1.1** — R4's "fails
-rather than skips under CI" was correctly catching a real mismatch
-between the runner's ffmpeg and the one this project actually ships and
-measured the capture against, not a flaky test. Ruled: **not** a
-corpus/loop change and **not** a relaxed assertion (options (b)/(c) —
-either would paper over a real version-dependent gap rather than close
-it). Fixed by running `go-tests.yml`'s `build` job inside this
-repository's own base image (`ghcr.io/<owner>/<repo>:base`, built from
-`docker/DispatcharrBase`), the same image `backend-tests.yml` already
-uses, which ships the production ffmpeg (8.1.2) rather than a floating
-distro package — the row's pin now runs against the exact ffmpeg
-production and the harness capture both use. `go-tests.yml`'s `lint` job
-and `.claude/hooks/run-go-checks.sh` also gained two extra passes each
-(`GOOS=linux`, `GOOS=darwin`) for `go vet` and `golangci-lint`, closing a
-related gap the same round found: `relay/ffmpeg/spawn_linux.go` and
-`spawn_other.go` are build-tag-split, so a single native-GOOS lint or vet
-pass only ever checks the half matching the runner's own OS, which is how
+timestamp discontinuity: purely the missing field, and not merely a
+quantitative difference — a stream-copy progress line's leading token on
+ffmpeg 6.x is `size=`, not `frame=`, so **both relays' identical `frame=`
+gate is structurally blind to ffmpeg 6.x**, filed as
+[#299](https://github.com/D10Scot/Dispatcharr/issues/299) rather than
+fixed here (neither the parser nor this test is widened to accommodate
+6.x). R4's "fails rather than skips under CI" was correctly catching a
+real mismatch between the runner's ffmpeg and the one this project
+actually ships and measured the capture against, not a flaky test.
+Ruled: **not** a corpus/loop change and **not** a relaxed assertion
+(options (b)/(c) — either would paper over a real version-dependent gap
+rather than close it). Fixed by running `go-tests.yml`'s `build` job
+inside this repository's own base image (`ghcr.io/<owner>/<repo>:base`,
+built from `docker/DispatcharrBase`), the same image `backend-tests.yml`
+already uses, which ships the production ffmpeg (8.1.2) rather than a
+floating distro package — the row's pin now runs against the exact
+ffmpeg production and the harness capture both use. `go-tests.yml`'s
+`lint` job and `.claude/hooks/run-go-checks.sh` also gained two extra
+passes each (`GOOS=linux`, `GOOS=darwin`) for `go vet` and
+`golangci-lint`, closing a related gap the same round found:
+`relay/ffmpeg/spawn_linux.go` and `spawn_other.go` are build-tag-split,
+so a single native-GOOS lint or vet pass only ever checks the half
+matching the runner's own OS, which is how
 `spawn_linux_test.go`'s unused-parameter finding (CI fix round item 1)
 went unseen by every darwin-hosted local run.
 
@@ -2490,7 +2494,7 @@ Filled in as PRs merge; this spec lands as its own PR 0.
 | 2c-2 -- the Go relay's vertical slice: the Proxy stream-profile architecture end to end (`relay/buffer`'s ring, `relay/control`'s settings/base-URL/`next-source` client in full, `relay/channel`'s Channel and Manager, `relay/httpapi`'s live TS handler), plus Amendment A1.4 (effective `proxy_settings`, 31 class-attribute defaults now on the wire) and Amendment A2 (the `next-source`/2c-5 scope correction, the Go-pin-is-one-cell ruling, row 8's mechanism-vs-pin split, the differential-test input for 2c-9, and the three behaviours not ported, one of them a stated divergence) | `migration/phase2c-vertical-slice` | pending |
 | 2c-2 review fix round -- opus review against `b5e62fcf` found a credential-echoing gap on the malformed-URL request-build path, `StateActive` unreachable (one mechanism replaced two), and Global Constraint 8's file:line ratchet missing for five constants (two of the reviewer's own citations corrected against this tree in the process); a downstream implementer independently verified and fixed three further defects (a `release`/`Attach` race, a per-tune transport leak, a `Ring.Read` cursor latent bug) before the review's findings arrived | `migration/phase2c-vertical-slice` | pending |
 | 2c-3 -- multi-client fan-out: the client registry (`relay/channel/client.go`, seven fields, the TTL/heartbeat/ghost sweep deleted rather than ported, Amendment A3.1), the manager's arrival and departure under one lock (the last-client rule and a concurrent attach are one decision, R5), `channel_shutdown_delay` (Amendment A3.3), the bounded read (`buffer.MaxChunksPerRead`, Amendment A3.2), `GET /proxy/relay/channels[?clients=all]` with its golden payload rendered by Django and asserted by both languages, and the tune's next-source call detached from the calling client's request context (Amendment A3.6). Parity matrix rows 8, 10, 13 get a Go column. | `migration/phase2c-fanout` | pending |
-| 2c-4 -- the Go relay's ffmpeg source: `relay/ffmpeg`'s spawn (`os/exec` + `SysProcAttr{Setpgid, Pdeathsig}`, D5 exception 1), the `log_parsers.py` port and the clock-injected buffering detector, `relay/channel`'s `TranscodeSource` and the package-private `attachable` seam, Amendment A4.1 (Django builds `stream_profile.argv`; no Go word splitter), the Go credential-logging guard `relay/internal/credlint` (#283) plus its `scripts/check_go_credential_logging.sh`, and the seven ffmpeg-derived fields on `GET /proxy/relay/channels`. Parity matrix rows 4 (real-ffmpeg), 5, 28 and 29 get a Go column (Amendment A4.4). Two Python-relay defects found and filed rather than fixed, per D10: the provider-URL INFO leak through ffmpeg's stderr preamble ([#295](https://github.com/D10Scot/Dispatcharr/issues/295)) and the UDP filter's dangling flag ([#296](https://github.com/D10Scot/Dispatcharr/issues/296)). CI fix round (2026-09-14): golangci-lint's darwin/linux build-tag blind spot fixed, the fixture-vs-migration-seed argv mismatch fixed, and row 4's real-ffmpeg pin moved onto the base image's production ffmpeg (Amendment A4.7). | `migration/phase2c-ffmpeg` | pending |
+| 2c-4 -- the Go relay's ffmpeg source: `relay/ffmpeg`'s spawn (`os/exec` + `SysProcAttr{Setpgid, Pdeathsig}`, D5 exception 1), the `log_parsers.py` port and the clock-injected buffering detector, `relay/channel`'s `TranscodeSource` and the package-private `attachable` seam, Amendment A4.1 (Django builds `stream_profile.argv`; no Go word splitter), the Go credential-logging guard `relay/internal/credlint` (#283) plus its `scripts/check_go_credential_logging.sh`, and the seven ffmpeg-derived fields on `GET /proxy/relay/channels`. Parity matrix rows 4 (real-ffmpeg), 5, 28 and 29 get a Go column (Amendment A4.4). Two Python-relay defects found and filed rather than fixed, per D10: the provider-URL INFO leak through ffmpeg's stderr preamble ([#295](https://github.com/D10Scot/Dispatcharr/issues/295)) and the UDP filter's dangling flag ([#296](https://github.com/D10Scot/Dispatcharr/issues/296)). CI fix round (2026-09-14): golangci-lint's darwin/linux build-tag blind spot fixed, the fixture-vs-migration-seed argv mismatch fixed, and row 4's real-ffmpeg pin moved onto the base image's production ffmpeg after both relays' shared `frame=` progress gate was found structurally blind to ffmpeg 6.x, filed rather than fixed as [#299](https://github.com/D10Scot/Dispatcharr/issues/299) (Amendment A4.7). | `migration/phase2c-ffmpeg` | pending |
 
 ## Risks
 
