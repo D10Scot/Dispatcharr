@@ -223,6 +223,11 @@ class NextSourceRouteTests(RelayApiTestCase):
                 # because this test's whole premise is that it pins the
                 # bytes a Go client reads.
                 "kind": "transcode",
+                # Phase 2 PR 2c-4, Amendment A4.1: the argv Django built for
+                # THIS source's url from the fixture's "-i {streamUrl}"
+                # parameters, a literal derived by hand, never
+                # build_command(...)[1:] (the tautological oracle).
+                "argv": ["-i", source["url"]],
             },
         )
 
@@ -331,6 +336,10 @@ class NextSourceRouteTests(RelayApiTestCase):
                 # computed, because this test's whole premise is that it
                 # pins the bytes a Go client reads.
                 "kind": "transcode",
+                # Phase 2 PR 2c-4, Amendment A4.1: the argv Django built for
+                # THIS source's url from the fixture's "-i {streamUrl}"
+                # parameters, a literal, never build_command(...)[1:].
+                "argv": ["-i", source["url"]],
             },
         )
         self.assertEqual(

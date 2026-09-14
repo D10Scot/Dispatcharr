@@ -281,7 +281,7 @@ EDGES = (
         importer="apps/proxy/live_proxy/views.py",
         module="apps.proxy.next_source",
         name="resolve_source",
-        hits=38,
+        hits=39,
         pr="2b-3",
         reason=(
             "SETTLED HERE, and issue #253 left it open: resolve_source is NOT "
@@ -302,7 +302,15 @@ EDGES = (
             "reachable subtree. Neither issues a query (core/models.py:127-135 "
             "compares self.locked and self.name on a loaded instance); the count "
             "moved because two flagged CALL SITES exist, which is the ratchet "
-            "working rather than a number tuned to fit."
+            "working rather than a number tuned to fit. "
+            "2c-4 raised this from 38 to 39: spec Amendment A4.1 has "
+            "_stream_profile_ref call profile.build_command(url, user_agent, "
+            "pk) to build the argv the Go relay spawns, one flagged CALL SITE "
+            "inside resolve_source's reachable subtree. build_command is pure "
+            "(core/models.py:137-160, shlex.split and string substitution over "
+            "a loaded row's own fields); it issues no query. The count moved "
+            "because one new flagged call site exists, the ratchet working "
+            "exactly as designed."
         ),
         closed_by=(
             "POST /api/relay/channels/<id>/next-source with target_stream_id "
@@ -316,7 +324,7 @@ EDGES = (
         importer="apps/proxy/live_proxy/services/channel_service.py",
         module="apps.proxy.next_source",
         name="resolve_source",
-        hits=38,
+        hits=39,
         pr="2b-3",
         reason=(
             "The same symbol as the views.py edge above, and a SEPARATE "
@@ -324,7 +332,7 @@ EDGES = (
             "name): channel_service.py:415 calls resolve_source directly "
             "for the pub/sub-driven operator switch (server.py's switch "
             "listener), a second in-process call site #253 did not "
-            "separately record. Same 38-hit subtree as the views.py edge; "
+            "separately record. Same 39-hit subtree as the views.py edge; "
             "the count is identical by construction, since scan_edge "
             "depends only on the target module and symbol, never on who "
             "imports it. "
@@ -334,7 +342,15 @@ EDGES = (
             "reachable subtree. Neither issues a query (core/models.py:127-135 "
             "compares self.locked and self.name on a loaded instance); the count "
             "moved because two flagged CALL SITES exist, which is the ratchet "
-            "working rather than a number tuned to fit."
+            "working rather than a number tuned to fit. "
+            "2c-4 raised this from 38 to 39: spec Amendment A4.1 has "
+            "_stream_profile_ref call profile.build_command(url, user_agent, "
+            "pk) to build the argv the Go relay spawns, one flagged CALL SITE "
+            "inside resolve_source's reachable subtree. build_command is pure "
+            "(core/models.py:137-160, shlex.split and string substitution over "
+            "a loaded row's own fields); it issues no query. The count moved "
+            "because one new flagged call site exists, the ratchet working "
+            "exactly as designed."
         ),
         closed_by="As the views.py edge above -- POST .../next-source with target_stream_id.",
     ),

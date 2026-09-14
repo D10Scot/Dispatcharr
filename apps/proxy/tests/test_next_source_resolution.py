@@ -609,6 +609,10 @@ class SourceCarriesNamesTests(NextSourceFixture, TestCase):
                 "command": ffmpeg.command,
                 "args": ffmpeg.parameters,
                 "kind": "transcode",  # Phase 2 PR 2c-1
+                # Phase 2 PR 2c-4, Amendment A4.1: the argv Django built for
+                # THIS source's url from the fixture's
+                # "-i {streamUrl} -c copy -f mpegts pipe:1" parameters.
+                "argv": ["-i", source["url"], "-c", "copy", "-f", "mpegts", "pipe:1"],
             },
         )
 
