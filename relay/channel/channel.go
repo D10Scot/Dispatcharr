@@ -32,6 +32,7 @@ import (
 	"time"
 
 	"github.com/D10Scot/Dispatcharr/relay/buffer"
+	"github.com/D10Scot/Dispatcharr/relay/redact"
 )
 
 // ErrDuplicateClient is returned by Attach when the channel already has a
@@ -227,10 +228,12 @@ func (c *Channel) run(ctx context.Context, source Source) {
 		c.log.Info("channel stopped", "channel", c.id)
 		c.setState(StateStopped, nil)
 	default:
-		// The error is logged as-is. Every error this package builds is
-		// written to carry no URL, because a provider URL carries provider
-		// credentials (CLAUDE.md, § Known defects).
-		c.log.Error("upstream failed", "channel", c.id, "error", err)
+		// The error is logged through redact.Error rather than as-is: every
+		// error this package builds is already written to carry no URL
+		// (CLAUDE.md, § Known defects), but this is also the one log call
+		// relay/internal/credlint's static check can see, so it is the
+		// enforcement point, not just a restatement of the rule.
+		c.log.Error("upstream failed", "channel", c.id, "error", redact.Error(err))
 		c.setState(StateError, err)
 	}
 }

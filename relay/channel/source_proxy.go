@@ -7,9 +7,10 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"net/url"
 	"sync/atomic"
 	"time"
+
+	"github.com/D10Scot/Dispatcharr/relay/redact"
 )
 
 // Source produces one channel's upstream bytes.
@@ -84,31 +85,6 @@ type ProxySource struct {
 	Transport http.RoundTripper
 }
 
-// withoutURL strips the URL out of a *url.Error before it reaches a log.
-//
-// net/http wraps every client failure in a *url.Error whose Error() prints the
-// whole URL, and its redaction covers ONLY userinfo -- it turns
-// http://user:pw@host into http://user:***@host and leaves the path and query
-// string untouched. Provider credentials in this deployment routinely live in
-// the QUERY STRING (a provider URL is commonly
-// .../live/<user>/<pass>/<id>.ts, and the M3U transform builds others with
-// ?username=&password=), so %w-wrapping the error as it comes would put a
-// working credential in the container log on every failed connect. What is
-// left after the strip is the transport's own message -- "dial tcp
-// 127.0.0.1:1: connect: connection refused" -- which names a host and a port
-// and no secret.
-//
-// This is the Go-side instance of the rule scripts/check_credential_logging.py
-// enforces on the Python side. There is no Go equivalent of that script yet;
-// until there is, this function and the tests around it are the enforcement.
-func withoutURL(err error) error {
-	var urlErr *url.Error
-	if errors.As(err, &urlErr) && urlErr.Err != nil {
-		return urlErr.Err
-	}
-	return err
-}
-
 func (s ProxySource) chunkSize() int {
 	if s.ChunkSize > 0 {
 		return s.ChunkSize
@@ -164,7 +140,7 @@ func (s ProxySource) Run(parent context.Context, sink io.Writer) error {
 		// string verbatim -- withoutURL strips it here exactly as it does at
 		// the connect-failure site below; a bare %w was found by review to
 		// leak it into channel.go's "upstream failed" log line.
-		return fmt.Errorf("channel: the source URL is not usable: %w", withoutURL(err))
+		return fmt.Errorf("channel: the source URL is not usable: %w", redact.Error(err))
 	}
 	if s.UserAgent != "" {
 		request.Header.Set("User-Agent", s.UserAgent)
@@ -183,7 +159,7 @@ func (s ProxySource) Run(parent context.Context, sink io.Writer) error {
 	defer client.CloseIdleConnections()
 	response, err := client.Do(request)
 	if err != nil {
-		return fmt.Errorf("channel: connecting to the upstream: %w", withoutURL(err))
+		return fmt.Errorf("channel: connecting to the upstream: %w", redact.Error(err))
 	}
 	defer func() { _ = response.Body.Close() }()
 
@@ -208,7 +184,7 @@ func (s ProxySource) Run(parent context.Context, sink io.Writer) error {
 		if n > 0 {
 			watchdog.Reset(s.readTimeout())
 			if _, writeErr := sink.Write(buf[:n]); writeErr != nil {
-				return fmt.Errorf("channel: writing upstream bytes to the buffer: %w", writeErr)
+				return fmt.Errorf("channel: writing upstream bytes to the buffer: %w", redact.Error(writeErr))
 			}
 		}
 		if readErr == nil {
@@ -226,6 +202,6 @@ func (s ProxySource) Run(parent context.Context, sink io.Writer) error {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return ctxErr
 		}
-		return fmt.Errorf("channel: reading the upstream: %w", readErr)
+		return fmt.Errorf("channel: reading the upstream: %w", redact.Error(readErr))
 	}
 }
