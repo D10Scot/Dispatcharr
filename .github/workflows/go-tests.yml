@@ -138,7 +138,16 @@ jobs:
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
-      options: --entrypoint ""
+      # --init: GitHub starts a job container with a keep-alive PID 1 (a
+      # `tail -f /dev/null` shape) and docker-execs each step into it, and
+      # that PID 1 never reaps anything -- TestAChildOfADeadRelayDiesWithIt
+      # (relay/ffmpeg/spawn_linux_test.go) kills a stand-in with Pdeathsig,
+      # which works, but the now-dead process sits as an unreaped zombie
+      # until the test's 5s deadline, because nothing calls wait() on it.
+      # docker-init (added by --init) becomes PID 1 instead and reaps on
+      # exit, the same fix ffmpeg/procgone_test.go's processGone also
+      # carries a Linux-only zombie check for, independently.
+      options: --entrypoint "" --init
     defaults:
       run:
         working-directory: ./relay
