@@ -60,7 +60,7 @@ Every task's requirements implicitly include this section. Constraints 1–26 ar
 
 7. **Do not add a Docker `HEALTHCHECK`, a SIGTERM drain, or a `/readyz` that reports anything real.** Those are 2c-8's. `control.Emitter.Close` exists so the drain can call it; nothing calls it in this PR except tests.
 
-8. **Every Go constant that mirrors a Python literal carries its source `file:line` in a comment and is pinned by a test naming the same location.** This PR adds five in `channel/failover.go` — `retryBackoffStep`, `retryBackoffCap` (`input/manager.py:566`), `maxUnhealthyChecks` (`:1556`), `healthActionCooldown` (`:1557`), `stableReconnectAfter` (`:1573`) — pinned by `TestTheFailoverLiteralsMatchPython`; three in `httpapi` — `keepaliveAfterEmptyReads` (`output/ts/generator.py:548`), `probeTimeout` (`views.py:480`), `probeChunk` (`url_utils.py:196`), `probeRedirectLimit` (requests' default); and `control.MaxEventsPerBatch` (`serializers.py:272`), pinned by `TestABatchOverTheRoutesLimitIsRefusedLocally`. Every threshold comes off the wire (Constraint 13).
+8. **Every Go constant that mirrors a Python literal carries its source `file:line` in a comment and is pinned by a test naming the same location.** This PR adds five in `channel/failover.go` — `retryBackoffStep`, `retryBackoffCap` (`input/manager.py:557`), `maxUnhealthyChecks` (`:1556`), `healthActionCooldown` (`:1557`), `stableReconnectAfter` (`:1580`) — pinned by `TestTheFailoverLiteralsMatchPython`; three in `httpapi` — `keepaliveAfterEmptyReads` (`output/ts/generator.py:546`), `probeTimeout` (`views.py:480`), `probeChunk` (`url_utils.py:200`), `probeRedirectLimit` (requests' default); and `control.MaxEventsPerBatch` (`serializers.py:272`), pinned by `TestABatchOverTheRoutesLimitIsRefusedLocally`. Every threshold comes off the wire (Constraint 13).
 
 9. **Prefer `t.Setenv` over manual environment save/restore, and never run an environment-mutating test with `t.Parallel()`.**
 
@@ -78,7 +78,7 @@ Every task's requirements implicitly include this section. Constraints 1–26 ar
 
 13. **A control-plane setting is read from the wire or the tune fails. Never from a Go-side default.** This PR adds eleven required keys — `CONNECTION_TIMEOUT`, `HEALTH_CHECK_INTERVAL`, `channel_init_grace_period`, `MAX_RETRIES`, `RETRY_WINDOW_SECONDS`, `STABLE_CONNECTION_THRESHOLD`, `MAX_STREAM_SWITCHES`, `STREAM_TIMEOUT`, `FAILOVER_GRACE_PERIOD`, `KEEPALIVE_INTERVAL`, `MAX_KEEPALIVE_DURATION` — and the per-key test grows by eleven subtests. **All eleven are read on every tune, Redirect tunes included**, for 2c-4's reason: a key read only on the path that consults it leaves the per-key test green against a rig that never takes that path.
 
-14. **Parity is against the code, not against the summary.** Every behavioural claim here carries a `file:line`. Six places where reading the source changed this plan: a clean upstream EOF is a **retried connection failure**, not the stream ending (`input/manager.py:1868-1872` then `:557-568`; 2c-2's `TestACleanUpstreamEndClosesTheRing` was pinning the pre-loop shape and is reshaped in Task 2); a health-requested switch records **no** failure (`:515-517` breaks before `:557`); `_note_stable_connection` resets the tried set but **not** the failure counter (`:199-204`); the buffering-timeout branch, on failure, **asks again on the next record** (`:1210`); `validate_stream_url` returns the URL it was **given**, not the redirect target (`url_utils.py:180`); and `release_source` on the Redirect path runs only when the tune reserved a slot (`views.py:516-517`).
+14. **Parity is against the code, not against the summary.** Every behavioural claim here carries a `file:line`. Six places where reading the source changed this plan: a clean upstream EOF is a **retried connection failure**, not the stream ending (`input/manager.py:1870-1875` then `:555-563`; 2c-2's `TestACleanUpstreamEndClosesTheRing` was pinning the pre-loop shape and is reshaped in Task 2); a health-requested switch records **no** failure (`:505-507` breaks before `:534`); `_note_stable_connection` resets the tried set but **not** the failure counter (`:199-204`); the buffering-timeout branch, on failure, **asks again on the next record** (`:1210`); `validate_stream_url` returns the URL it was **given**, not the redirect target (`url_utils.py:183`, `:250`); and `release_source` on the Redirect path runs only when the tune reserved a slot (`views.py:516-517`).
 
 15. **Decide every lint finding in this plan, and re-lint after every `#nosec`.** This PR adds **no suppression**: four findings on the first lint (an ineffectual assignment, two unused parameters, a De Morgan simplification) were fixed rather than suppressed, and the eight 2c-4 carries are untouched. Task 8 Step 6 lists them as zero new.
 
@@ -110,7 +110,7 @@ Every task's requirements implicitly include this section. Constraints 1–26 ar
 
 26. **The `Pdeathsig` and SIGKILL tests assert a mechanism, not an outcome.** Unchanged.
 
-27. **A test's `Tuning` is built on `testTuning()` or `transcodeTuning()`, never as a bare literal.** `MAX_RETRIES` is on `Tuning` now, and a literal that omits it is a channel that **never connects** — `retry_count < 0` is false on the first pass, which is exactly what Python does with `MAX_RETRIES = 0` and exactly what a test author does not intend. The real-ffmpeg test failed this way before Task 2 rebuilt its tuning: ninety seconds waiting for a detector on a source that never ran. A test whose subject is one threshold overrides that one field.
+27. **A test's `Tuning` is built on `testTuning()` or `transcodeTuning()`, never as a bare literal.** `MAX_RETRIES` is on `Tuning` now, and a literal that omits it is a channel that **never connects** — `retry_count < 0` is false on the first pass, which is exactly what Python does with `MAX_RETRIES = 0` and exactly what a test author does not intend. The real-ffmpeg test failed this way before Task 2 rebuilt its tuning: ninety seconds waiting for a detector on a source that never ran. A test whose subject is one threshold overrides that one field. The check: `grep -rn 'Tuning{' relay --include='*_test.go'` prints exactly one hit, `testTuning()`'s own literal.
 
 28. **A test that measures a timeout takes its clock BEFORE the thing it measures starts.** Row 1's pin takes `started` before `Attach`; row 2's reads the source's own last-write time and the resolver's own call time, both recorded by the parties themselves. The 2c-4 review's 2-in-8 flake is the reason.
 
@@ -120,7 +120,7 @@ Every task's requirements implicitly include this section. Constraints 1–26 ar
 
 31. **Widen a sample window, never lower an asserted count.** The keepalive test asserts at least five null packets in an eight-second window at a 50 ms interval; if it reports fewer on a slow host, the window grows.
 
-32. **Every event this relay raises is one Python raises, with the same `type` and the same `details` keys.** The vocabulary is `core/models.py`'s `SystemEvent.EVENT_TYPES`; an unknown type is rejected by `core/relay_events.py:apply_event_batch` and counted, not raised, so a misspelling would be a silent loss. This PR raises exactly six types: `channel_buffering`, `channel_failover`, `stream_switch`, `channel_reconnect`, `channel_error` (two `error_type`s and one `reason`), and nothing else — `channel_start`, `channel_stop`, `client_connect` and `client_disconnect` are the tune and stop paths' and are 2c-8's (Ruling R11).
+32. **Every event this relay raises is one Python raises, with the same `type` and the same `details` keys.** The vocabulary is `core/models.py`'s `SystemEvent.EVENT_TYPES`; an unknown type is rejected by `core/relay_events.py:apply_event_batch` and counted, not raised, so a misspelling would be a silent loss. This PR raises exactly five types: `channel_buffering`, `channel_failover`, `stream_switch`, `channel_reconnect` (one shape, `attempt`/`max_attempts`; the `reason: health_monitor` shape lives inside the unreachable `_attempt_reconnect`, R4) and `channel_error` (`error_type: connection_failed`, `reason: degraded_failover`), and nothing else — `channel_start`, `channel_stop`, `client_connect` and `client_disconnect` are the tune and stop paths' and are 2c-8's (Ruling R11).
 
 33. **The fake control plane is one server answering three routes by path suffix**, and a test that asserts a request count names the route (`RequestsTo("/next-source")`), because the release on teardown and the event batches now share the log.
 
@@ -132,7 +132,7 @@ Every task's requirements implicitly include this section. Constraints 1–26 ar
 
 Every test this PR adds is bound by all six, and every task that adds an assertion ends with a **break-check**: patch the defect in, watch the test go red *for the right reason*, revert. **A break-check that does not go red is a finding, not a formality** — one of this plan's twenty did not (§ Break-check, row 20), and it is listed as an unpinned edit rather than hidden.
 
-1. **The tautological oracle.** Every expected value is a literal or a Python line: `"Connection failed after 3 attempts"` and `"All 1 stream options failed"` are `input/manager.py:663-666`'s strings; the failure-window test's clock values are the row's own Notes; the keepalive packet's four header bytes are `utils.py:82-90`'s.
+1. **The tautological oracle.** Every expected value is a literal or a Python line: `"Connection failed after 3 attempts"` and `"All 1 stream options failed"` are `input/manager.py:679-682`'s strings; the failure-window test's clock values are the row's own Notes; the keepalive packet's four header bytes are `utils.py:82-90`'s.
 
 2. **A pin that supplies the default pins nothing.** Row 2 runs at `CONNECTION_TIMEOUT` 300 ms and `HEALTH_CHECK_INTERVAL` 50 ms; row 6 at `MAX_STREAM_SWITCHES` **0**; the keepalive tests at `KEEPALIVE_INTERVAL` 50 ms and `MAX_KEEPALIVE_DURATION` 0.5 s; the budget test at a 300 ms transport timeout. `testTuning()` carries the production values so that a test which does NOT override one runs the real shape (Constraint 27).
 
@@ -159,31 +159,31 @@ Decisions this plan makes that the spec leaves open, that 2c-4 left to its succe
 
 ### R1 — A clean upstream EOF is a connection failure, retried and counted. 2c-2's pin of the opposite is reshaped, not kept.
 
-`fetch_chunk` reads an empty chunk as "Server closed connection" (`input/manager.py:1868-1872`), `_process_stream_data` returns, and `run`'s retry loop records a failure and reconnects with backoff (`:557-568`) — three times, then the source is exhausted (`:533-538`, row 3). A transcode child that exits 0 after copying its input takes the same path. 2c-2 ended the channel in `stopped` on the first EOF and pinned it (`TestACleanUpstreamEndClosesTheRing`), which was the honest shape before there was a loop; 2c-4's `channel.go` comment said as much ("the failover that would try the next candidate instead is parity-matrix rows 1-3 and 2c-5's"). **Ruled: the loop is ported whole and the test becomes `TestACleanUpstreamEndIsRetriedAndThenExhaustsTheSource`** — three requests at the provider, `error` with "Connection failed after 3 attempts", the ring closed. Four other 2c-2/2c-4 tests change their expected attempt count and nothing else (Task 2 Step 2, Task 3 Step 3). Decided against a `Tuning.MaxRetries` of one for the old tests: a test that keeps its old assertion by supplying the number that makes it true is hollow shape 2.
+`fetch_chunk` reads an empty chunk as "Server closed connection" (`input/manager.py:1870-1875`), `_process_stream_data` returns, and `run`'s retry loop records a failure and reconnects with backoff (`:555-563`) — three times, then the source is exhausted (`:534-537`, row 3). A transcode child that exits 0 after copying its input takes the same path. 2c-2 ended the channel in `stopped` on the first EOF and pinned it (`TestACleanUpstreamEndClosesTheRing`), which was the honest shape before there was a loop; 2c-4's `channel.go` comment said as much ("the failover that would try the next candidate instead is parity-matrix rows 1-3 and 2c-5's"). **Ruled: the loop is ported whole and the test becomes `TestACleanUpstreamEndIsRetriedAndThenExhaustsTheSource`** — three requests at the provider, `error` with "Connection failed after 3 attempts", the ring closed. Four other 2c-2/2c-4 tests change their expected attempt count and nothing else (Task 2 Step 2, Task 3 Step 3). Decided against a `Tuning.MaxRetries` of one for the old tests: a test that keeps its old assertion by supplying the number that makes it true is hollow shape 2.
 
 ### R2 — The Resolver is an interface in `channel`; its implementation and the degraded fallback live in `httpapi`. `channel` still does not import `control`.
 
-`_try_next_stream` (`input/manager.py:2041-2225`) does two things: asks Django and, on `ControlPlaneUnavailable`, picks from the cached list; then swaps the URL, clears the failure history, resets the packetiser, raises `stream_switch` and does the degraded bookkeeping. The first half is wire-shaped — it needs the candidate list the initial answer carried, and the Unavailable/Refused distinction the wire client makes — and the second half is channel state. **Ruled: `channel.Resolver.Next(ctx, NextRequest) (Resolved, error)`, with `Resolved{Source, Info, Degraded}`; `httpapi.resolver` implements it over `control.Client` and holds `answer.Alternates`; `channel.failover` does the second half.** The channel-package tests drive the loop with a scripted resolver; the httpapi tests drive the disposition with a real fake control plane. Decided against `channel` importing `control` for `control.Source`: 2c-2's `tuning.go` made "this package never imports the wire package" a property, and this plan keeps it at the cost of one ten-line adapter (`httpapi.EventSink`).
+`_try_next_stream` (`input/manager.py:2041-2225`) does two things: asks Django (`:2076-2082`) and, on `ControlPlaneUnavailable`, picks from the cached list (`:2099-2107`); then swaps the URL, clears the failure history, resets the packetiser, raises `stream_switch` and does the degraded bookkeeping. The first half is wire-shaped — it needs the candidate list the initial answer carried, and the Unavailable/Refused distinction the wire client makes — and the second half is channel state. **Ruled: `channel.Resolver.Next(ctx, NextRequest) (Resolved, error)`, with `Resolved{Source, Info, Degraded}`; `httpapi.resolver` implements it over `control.Client` and holds `answer.Alternates`; `channel.failover` does the second half.** The channel-package tests drive the loop with a scripted resolver; the httpapi tests drive the disposition with a real fake control plane. Decided against `channel` importing `control` for `control.Source`: 2c-2's `tuning.go` made "this package never imports the wire package" a property, and this plan keeps it at the cost of one ten-line adapter (`httpapi.EventSink`).
 
 ### R3 — The health monitor cancels the running attempt; Python's loop notices its flag up to `CHUNK_TIMEOUT` later. A divergence in the safe direction, and `CHUNK_TIMEOUT` is not read.
 
-`_monitor_health` sets `needs_stream_switch` (`:1580-1583`) and the main loop checks it between `fetch_chunk` calls (`:1362-1365`), each of which blocks up to `CHUNK_TIMEOUT` (5 s) in `select` on a silent pipe — the Python pin for row 2 measured 5.47 s of that wait. **Ruled: `monitorHealth` sets the same flag and calls `cancelAttempt`, so `Source.Run` returns at once** and the loop acts on the flag. Nothing a client can observe gets slower; `CHUNK_TIMEOUT` has no reader here and is not on `Tuning`. Decided against a per-read timeout in the sources to reproduce the delay: it would reproduce a wait, not a behaviour.
+`_monitor_health` sets `needs_stream_switch` (`:1587-1590`) and the main loop checks it between `fetch_chunk` calls (`:1364-1365`), each of which blocks up to `CHUNK_TIMEOUT` (5 s) in `select` on a silent pipe (`:1845`) — the Python pin for row 2 measured 5.47 s of that wait. **Ruled: `monitorHealth` sets the same flag and calls `cancelAttempt`, so `Source.Run` returns at once** and the loop acts on the flag. Nothing a client can observe gets slower; `CHUNK_TIMEOUT` has no reader here and is not on `Tuning`. Decided against a per-read timeout in the sources to reproduce the delay: it would reproduce a wait, not a behaviour.
 
-### R4 — The stable-stream reconnect is decided by whether the reconnect delivered a byte, because a Source has no "connected" moment.
+### R4 — The live reconnect path is the inner loop's fall-through (`:521-534`); the outer loop's `_attempt_reconnect` branch is unreachable and is not ported. Found by the reviewer, against a shape that had ported the dead branch.
 
-`_attempt_reconnect` (`:1611-1676`) reports success when `_establish_*_connection` returns True — a spawned process or a started reader thread, before any byte — and the main loop then clears the failure history; on failure it sets `needs_stream_switch`. A Go `Source.Run` returns only when the connection is over. **Ruled: the attempt after a `needsReconnect` is the reconnect; if any byte arrived during it (`dataSince(startedAt)`) it was a success and the history is cleared, otherwise the flag becomes a switch.** The branch needs a stream stable for `stableReconnectAfter` (30 s, a bare literal at `:1573`) to be reached, which no test in either language drives (row 2's Notes); `healthActionFor` — the decision itself — is pinned at 29 s versus 30 s. `channel_reconnect` on this path carries `reason: health_monitor` (`:1640-1646`).
+`_monitor_health` sets `needs_reconnect` only while the stream is connected (`:1565`, `:1583`). While connected, the main loop is inside `_process_stream_data`, whose loop condition includes `not self.needs_reconnect` (`:1364-1365`), so it returns; the inner retry loop then clears the flag (`:527`), closes the socket (`:531`) and **falls through to the failure accounting** (`:533-534`) — "Repeated health reconnects count toward max_retries like any other URL failure" — and the next attempt on the same URL is the reconnect. The outer loop's `_attempt_reconnect` branch (`:414-426`) is checked only at the top of the outer loop, which is reached after the inner loop ends with the flag already cleared and the stream disconnected; nothing sets it between. **Ruled: `run` takes the flag inside the inner loop after `runAttempt` and falls through to the failure accounting, exactly `:521-534`; the outer branch and its `channel_reconnect{reason: health_monitor}` (`:1655-1662`, inside the dead `_attempt_reconnect`) are not ported.** This plan's first draft did the opposite — took the flag at the outer top and judged a reconnect by a delivered byte — and the reviewer reproduced the consequence with an injected clock: after the first reconnect the flag stayed set, the monitor's own `if not self.needs_reconnect` guard (`:1581`) never cancelled again, and a second stall on the same stable stream was logged and never acted on. `TestASecondStableStallIsActedOnAfterAHealthReconnect` drives two stable stalls with an injected clock and expects three runs; its failure message names the stale flag (break-check row 23). The stable literal itself (`stableReconnectAfter`, `:1580`) stays pinned as a decision by `healthActionFor`.
 
 ### R5 — `channel_reconnect` on a retry is raised as the attempt starts, not once it is established.
 
-`:491-501` raises it after `connection_result` is True. For the Proxy architecture that moment is "the reader thread started", which never fails; for transcode it is "the spawn succeeded". A Source has neither. **Ruled: raised at the start of every attempt after the first**, carrying `attempt` and `max_attempts`. The one divergence: a transcode spawn that fails at once (a missing command) will have announced a reconnect it never made. Stated in the PR description; a sixth `Source` method to report establishment was decided against, since 2c-2's R6 keeps the interface at one method and this is the only consumer.
+`:486-496` raises it after `connection_result` is True. For the Proxy architecture that moment is "the reader thread started", which never fails; for transcode it is "the spawn succeeded". A Source has neither. **Ruled: raised at the start of every attempt after the first**, carrying `attempt` and `max_attempts`. The one divergence: a transcode spawn that fails at once (a missing command) will have announced a reconnect it never made. Stated in the PR description; a sixth `Source` method to report establishment was decided against, since 2c-2's R6 keeps the interface at one method and this is the only consumer.
 
 ### R6 — The buffering-triggered switch runs on the stderr goroutine, parks the new source, and cancels its own attempt. The main loop never counts it. (Rows 1 and 6.)
 
-`_parse_ffmpeg_stats` calls `_try_next_stream()` from the stderr thread (`:1178-1182`); `update_url` kills the process the thread is reading (`:1483-1490`), so the thread ends with it; the switch never touches `stream_switch_attempts` (row 6, #221). **Ruled: `stderrReader.progress`'s `TimedOut` arm calls `Channel.failoverFromBuffering`, which resolves synchronously, parks the `Resolved` in `c.pending`, calls `reportBuffering(false)`, raises `channel_failover{reason: buffering_timeout, duration}`, and cancels the attempt; `run` adopts `pending` without incrementing `switches`.** `TranscodeSource.Run` already waits for its stderr reader before returning, so the adoption cannot race the reader. On failure Python stays buffering and asks again on the very next progress record (`:1210`) — one control-plane call per record, reproduced (`TestABufferingTimeoutWithNoAlternateKeepsPlayingAndAsksOnEveryRecord`) and **filed as an issue** in Task 7, because it is a Python defect the port must carry (D5), not one to fix in transit. `Detector.Reset` is called on success for fidelity (A4.3's "successful-switch branch"); the process is about to die, so nothing observes it.
+`_parse_ffmpeg_stats` calls `_try_next_stream()` from the stderr thread (`:1178-1182`); `update_url` kills the process the thread is reading (`:1483`), so the thread ends with it; the switch never touches `stream_switch_attempts` (row 6, #221). **Ruled: `stderrReader.progress`'s `TimedOut` arm calls `Channel.failoverFromBuffering`, which resolves synchronously, parks the `Resolved` in `c.pending`, calls `reportBuffering(false)`, raises `channel_failover{reason: buffering_timeout, duration}`, and cancels the attempt; `run` adopts `pending` without incrementing `switches`.** `TranscodeSource.Run` already waits for its stderr reader before returning, so the adoption cannot race the reader. On failure Python stays buffering and asks again on the very next progress record (`:1210`) — one control-plane call per record, reproduced (`TestABufferingTimeoutWithNoAlternateKeepsPlayingAndAsksOnEveryRecord`) and **filed as an issue** in Task 7, because it is a Python defect the port must carry (D5), not one to fix in transit. `Detector.Reset` is called on success for fidelity (A4.3's "successful-switch branch"); the process is about to die, so nothing observes it.
 
 ### R7 — A Redirect tune publishes no channel: the 302 is an error out of the start function, and Python renders nothing for it either.
 
-`stream_ts`'s Redirect branch (`views.py:468-547`) returns before `ChannelService.initialize_channel` (`:571`), which is the only writer of the `live:channel:<uuid>:metadata` hash `build_live_channel_stats_data` renders; `views.py` performs no `hset`/`set`/`sadd` of its own before that point (grepped: none), and the ownership key `try_acquire_ownership` took is released by the `finally` at `:645-648` that the redirect `return` passes through. What a Redirect tune leaves in Redis is Django's own `channel_stream:`/`stream_profile:` keys, released a moment later, and `channel_source_cache` with a TTL, which nothing renders. So the list endpoint shows **nothing** for a Redirect channel in Python, and the Go relay must show nothing too. **Ruled: `startTune` returns `*redirectAnswer` (an `error`) for a Redirect kind; `Manager.Attach` treats it as a failed start — gate released, no channel — and `StreamHandler` writes the `Location` and the status.** Pinned by `TestARedirectProfileHandsTheClientTheProviderURLAndFetchesNothing`, which asserts `Manager.Get` is nil and the list has `count: 0` after a 302. A concurrent second client on a Redirect channel waits on the gate and then makes its own probe and gets its own 302; Python's follower would wait `CLIENT_WAIT_TIMEOUT` for an initialisation that never comes — an edge where Go is strictly kinder, stated. **The Python harness proof was not run** (this plan had no container and no Django); the reading above is static, and Task 4 Step 5 names the one-test harness check an implementer can run to confirm it.
+`stream_ts`'s Redirect branch (`views.py:468-547`) returns before `ChannelService.initialize_channel` (`:578`), which is the only writer of the `live:channel:<uuid>:metadata` hash `build_live_channel_stats_data` renders; `views.py` performs no `hset`/`set`/`sadd` of its own before that point (grepped: none), and the ownership key `try_acquire_ownership` took is released by the `finally` at `:645-648` that the redirect `return` passes through. What a Redirect tune leaves in Redis is Django's own `channel_stream:`/`stream_profile:` keys, released a moment later, and `channel_source_cache` with a TTL, which nothing renders. So the list endpoint shows **nothing** for a Redirect channel in Python, and the Go relay must show nothing too. **Ruled: `startTune` returns `*redirectAnswer` (an `error`) for a Redirect kind; `Manager.Attach` treats it as a failed start — gate released, no channel — and `StreamHandler` writes the `Location` and the status.** Pinned by `TestARedirectProfileHandsTheClientTheProviderURLAndFetchesNothing`, which asserts `Manager.Get` is nil and the list has `count: 0` after a 302. A concurrent second client on a Redirect channel waits on the gate and then makes its own probe and gets its own 302; Python's follower would wait `CLIENT_WAIT_TIMEOUT` for an initialisation that never comes — an edge where Go is strictly kinder, stated. **The Python harness proof was not run** (this plan had no container and no Django); the reading above is static, and Task 4 Step 5 names the one-test harness check an implementer can run to confirm it.
 
 ### R8 — The internal-principal override is `control.IsInternalPrincipal` on the request's own static header, not trust-gated.
 
@@ -195,27 +195,27 @@ Decisions this plan makes that the spec leaves open, that 2c-4 left to its succe
 
 ### R10 — `stream_switch`'s `new_url` goes through `redact.Line`, which keeps less than Python's `redact_url`. A stated divergence in the safe direction.
 
-`update_url` puts `redact_url(new_url)[:100]` in the event's details (`:1527-1535`); `redact_url` masks userinfo, the Xtream path segments and the sensitive query keys and leaves the rest (`dispatcharr/utils.py:180-216`). `redact.Line` keeps scheme and host and replaces everything after with `[redacted]`. The WebSocket push drops `details` entirely (`core/relay_events.py:_WS_FIELDS`), so a browser sees neither; the `SystemEvent` row sees the redacted form. **Ruled: `redact.Line`, cut at 100** — one redactor for the module (2c-4's R7), and a row carrying `http://host/[redacted]` where Python's carries `http://host/live/***/***/1.ts` is a difference in the direction the credential rule points. `channel_error`'s `url` is the same.
+`update_url` puts `redact_url(new_url)[:100]` in the event's details (`:1523-1532`); `redact_url` masks userinfo, the Xtream path segments and the sensitive query keys and leaves the rest (`dispatcharr/utils.py:180-216`). `redact.Line` keeps scheme and host and replaces everything after with `[redacted]`. The WebSocket push drops `details` entirely (`core/relay_events.py:_WS_FIELDS`), so a browser sees neither; the `SystemEvent` row sees the redacted form. **Ruled: `redact.Line`, cut at 100** — one redactor for the module (2c-4's R7), and a row carrying `http://host/[redacted]` where Python's carries `http://host/live/***/***/1.ts` is a difference in the direction the credential rule points. `channel_error`'s `url` is the same.
 
-### R11 — The events client lands with the six types the failover machinery raises; the four the tune and stop paths raise are 2c-8's.
+### R11 — The events client lands with the five types the failover machinery raises; the four the tune and stop paths raise are 2c-8's.
 
-`input/manager.py` raises `channel_buffering`, `channel_failover`, `stream_switch`, `channel_reconnect` (two shapes) and `channel_error` (`connection_failed`, `connection_exception`, `degraded_failover`). `channel_start`, `channel_stop`, `client_connect` and `client_disconnect` are raised from `views.py`, `server.py` and `output/ts/generator.py:129` — the tune path and the coordinated stop, which 2c-8 owns with the control routes. **Ruled: this PR raises the manager's six and no other**; `connection_exception` is not reachable (a Go `Source.Run` returns an error rather than raising, and every error is the `connection_failed` shape). Recorded in Amendment A5.3 as 2c-8's input so the four are not lost between rows.
+`input/manager.py` raises `channel_buffering`, `channel_failover`, `stream_switch`, `channel_reconnect` (`:486-496`; the second shape at `:1655-1662` is inside the unreachable `_attempt_reconnect`, R4) and `channel_error` (`connection_failed`, `connection_exception`, `degraded_failover`). `channel_start`, `channel_stop`, `client_connect` and `client_disconnect` are raised from `views.py`, `server.py` and `output/ts/generator.py:130-141` — the tune path and the coordinated stop, which 2c-8 owns with the control routes. **Ruled: this PR raises the manager's five and no other**; `connection_exception` is not reachable (a Go `Source.Run` returns an error rather than raising, and every error is the `connection_failed` shape). Recorded in Amendment A5.3 as 2c-8's input so the four are not lost between rows.
 
 ### R12 — The emitter is one worker and a bounded queue, batching what has queued; Python spawns a greenlet per event. Events raised during an outage are lost, not queued for retry.
 
-`emit_event` spawns `post_events` on a greenlet per event (`control_plane.py:296-329`); a slow control plane accumulates one blocked greenlet per transition. **Ruled: `control.Emitter` — a 1024-deep channel, one goroutine, batches of up to `MaxEventsPerBatch` (200, the route's `max_length`), order preserved, a full queue dropping the newest with a warning.** The `_events_down` flag is ported per emitter with its once-per-transition logging (pinned); a failed batch is not retried beyond the client's one retry, so an event raised during an outage is lost exactly as `CLAUDE.md` § Operationally records. Decided against a goroutine per event: it reproduces a resource shape, not a behaviour, and the batch limit is a contract the route enforces.
+`emit_event` spawns `post_events` on a greenlet per event (`control_plane.py:317-345`); a slow control plane accumulates one blocked greenlet per transition. **Ruled: `control.Emitter` — a 1024-deep channel, one goroutine, batches of up to `MaxEventsPerBatch` (200, the route's `max_length`), order preserved, a full queue dropping the newest with a warning.** The `_events_down` flag is ported per emitter with its once-per-transition logging (pinned); a failed batch is not retried beyond the client's one retry, so an event raised during an outage is lost exactly as `CLAUDE.md` § Operationally records. Decided against a goroutine per event: it reproduces a resource shape, not a behaviour, and the batch limit is a contract the route enforces.
 
 ### R13 — Every failover threshold is on `Tuning`, ten new fields; `URL_SWITCH_TIMEOUT`, `CHUNK_TIMEOUT` and `RETRY_WAIT_INTERVAL` are not read.
 
-`URL_SWITCH_TIMEOUT` (`:409-413`) resets a `url_switching` flag that got stuck; the Go switch is synchronous and cannot stick. `CHUNK_TIMEOUT` is R3's. `RETRY_WAIT_INTERVAL` has an accessor (`config_helper.py:94-96`) and no caller — the backoff is the `.25 * failures` literal. **Ruled: not read, not on `Tuning`, stated here.** The three client-loop keys A2.5 named arrive as `ClientTimeout` (the sum `_is_timeout` computes from two keys, `output/ts/generator.py:585-587`), `KeepaliveInterval` and `MaxKeepalive`.
+`URL_SWITCH_TIMEOUT` (`:408-412`) resets a `url_switching` flag that got stuck; the Go switch is synchronous and cannot stick. `CHUNK_TIMEOUT` is R3's. `RETRY_WAIT_INTERVAL` has an accessor (`config_helper.py:94-96`) and no caller — the backoff is the `.25 * failures` literal. **Ruled: not read, not on `Tuning`, stated here.** The three client-loop keys A2.5 named arrive as `ClientTimeout` (the sum `_is_timeout` computes from two keys, `output/ts/generator.py:585-587`), `KeepaliveInterval` and `MaxKeepalive`.
 
-### R14 — The `_is_timeout` disconnect is ported as the condition Python evaluates and pinned through the keepalive cap, because on the TS path the cap is the exit a client can reach.
+### R14 — The `_is_timeout` disconnect is ported as the condition Python evaluates minus its `url_switching` exemption, and pinned through the keepalive cap, because on the TS path the cap is the exit a client can reach.
 
-Row 12's Notes already record it: the keepalive path refreshes `last_yield_time` on every packet it sends whenever a client sits at the head of an unhealthy stream, which is the one condition under which `_is_timeout`'s 40 s could otherwise elapse. The reachable disconnect on TS is `MAX_KEEPALIVE_DURATION`. **Ruled: `serveClient` evaluates `time.Since(lastYield) > ClientTimeout && !Healthy() && !Switching()` exactly, and the pin is `TestAClientIsDroppedOnceTheKeepaliveCapIsReached`.** The `url_switching` exemption is carried as `Channel.Switching()`, true only while `failover` applies the swap; fMP4's missing exemption is row 12 and 2c-6's, untouched.
+Row 12's Notes already record it: the keepalive path refreshes `last_yield_time` on every packet it sends whenever a client sits at the head of an unhealthy stream, which is the one condition under which `_is_timeout`'s 40 s could otherwise elapse. The reachable disconnect on TS is `MAX_KEEPALIVE_DURATION`. **Ruled: `serveClient` evaluates `time.Since(lastYield) > ClientTimeout && !Healthy()` exactly, and the pin is `TestAClientIsDroppedOnceTheKeepaliveCapIsReached`.** The `url_switching` exemption (`output/ts/generator.py:593-596`) is **not ported, and stated as a divergence**: `url_switching` is true only inside `update_url`'s own body (`input/manager.py:1471-1472` to `:1540`), a window of at most the old process's kill and stderr join, and a client reprieved in it is dropped on its next poll a second later. This plan's first draft carried a `Switching()` flag that was set and cleared under one lock hold and so could never read true — dead code the reviewer found; dropping it is the honest shape, since a flag spanning the whole switch would reprieve clients Python does not. fMP4's missing exemption is row 12 and 2c-6's, untouched.
 
 ### R15 — The error TS packet is ported for the client that received nothing; the initialization-timeout packet is not.
 
-A2.5 recorded that Python's first client of a channel whose upstream then fails receives error TS packets where 2c-2 answered zero bytes, and named this PR the owner. `_wait_for_initialization` yields `create_ts_packet('error', "Error: <error_message>")` when the state it polls is `error`/`stopped`/`stopping` (`:229-231`), where `error_message` is what `run`'s finally block wrote (`:663-666`); a client already streaming is ended by `_check_resources` with no packet (`:433-436`). **Ruled: `serveClient` writes one packet carrying `ErrSourcesExhausted.Message()` when the ring closes with `sent == 0` and the channel is in error, "Error: Unknown error" for a stopped one, and nothing for a client that had bytes.** The "Error: Initialization timeout" packet after `CLIENT_WAIT_TIMEOUT` (`:252-254`) is **not** ported: this relay has no initializing wait a client can time out in, and a source that never delivers is ended by the health monitor's `InitGracePeriod`. Both halves are in the PR description's divergence list, replacing A2.5's.
+A2.5 recorded that Python's first client of a channel whose upstream then fails receives error TS packets where 2c-2 answered zero bytes, and named this PR the owner. `_wait_for_initialization` yields `create_ts_packet('error', "Error: <error_message>")` when the state it polls is `error`/`stopped`/`stopping` (`:235-239`), where `error_message` is what `run`'s finally block wrote (`:679-682`); a client already streaming is ended by `_check_resources` with no packet (`:455-459`). **Ruled: `serveClient` writes one packet carrying `ErrSourcesExhausted.Message()` when the ring closes with `sent == 0` and the channel is in error, "Error: Unknown error" for a stopped one, and nothing for a client that had bytes.** The "Error: Initialization timeout" packet after `CLIENT_WAIT_TIMEOUT` (`:249-251`) is **not** ported: this relay has no initializing wait a client can time out in, and a source that never delivers is ended by the health monitor's `InitGracePeriod`. Both halves are in the PR description's divergence list, replacing A2.5's.
 
 ---
 
@@ -250,7 +250,7 @@ Every row below was verified at `d92b33be` with `git show "d92b33be:relay/<path>
 | Amendment **A4** in the spec; rows 4, 5, 28, 29 carrying Go references; the 2c-5 row reading as 2c-4's Task 10 Step 2 left it | 2c-4 Tasks 9, 10 | Task 6 edits rows 1, 2, 3, 6, 7; Task 7 appends A5 |
 | `.claude/hooks/run-go-checks.sh` running credlint; `scripts/check_go_credential_logging.sh`; `scripts/check_go_stdlib_only.sh` | 2c-4 Task 8 | run, not edited |
 
-**Verified in this tree, not inherited:** everything with a `file:line` in this plan — `input/manager.py:28-160`, `:183-206`, `:384-720`, `:753-860`, `:1102-1250`, `:1277-1380`, `:1462-1720`, `:1815-1966`, `:2020-2231` read in full; `views.py:160-280`, `:380-600`, `:645-648`, `:857`; `url_utils.py` in full; `next_source.py:717-755`, `:961-1011`; `control_plane.py:60-345`; `core/relay_events.py` in full; `serializers.py:232-280`; `api_views.py:90-135`; `relay_serializers.py:34-66`; `channel_status.py:300-325`, `:520-535`; `output/ts/generator.py:100-160`, `:200-260`, `:300-420`, `:520-604`; `utils.py:71-98`; `apps/proxy/config.py` in full; `config_helper.py` in full; `apps/channels/models.py:501-542`; `internal_auth.py:40-60`; `authorize_views.py:177`; `dispatcharr/utils.py:180-216`; `harness/faults.py:1-58`; `tests/test_manager_connection_failover.py`, `test_manager_stderr_failover.py:91-188`, `:363-460`, `test_failover_retry_window.py`; `e2e/tests/streaming-failover/*.spec.ts` and `streaming/stream-profiles.spec.ts:1-46`.
+**Verified at `d92b33be`, not inherited** (`apps/proxy/live_proxy/input/manager.py` is byte-identical between `29224271` and `d92b33be`, so every citation below was re-checked line by line against that file with `grep -n` after the reviewer found a drift list in the first draft): everything with a `file:line` in this plan — `input/manager.py:28-160`, `:183-206`, `:384-720`, `:753-860`, `:1102-1250`, `:1277-1380`, `:1462-1720`, `:1815-1966`, `:2020-2231` read in full; `views.py:160-280`, `:380-600`, `:645-648`, `:857`; `url_utils.py` in full; `next_source.py:717-755`, `:961-1011`; `control_plane.py:60-345`; `core/relay_events.py` in full; `serializers.py:232-280`; `api_views.py:90-135`; `relay_serializers.py:34-66`; `channel_status.py:300-325`, `:520-535`; `output/ts/generator.py:100-160`, `:200-260`, `:300-420`, `:520-604`; `utils.py:71-98`; `apps/proxy/config.py` in full; `config_helper.py` in full; `apps/channels/models.py:501-542`; `internal_auth.py:40-60`; `authorize_views.py:177`; `dispatcharr/utils.py:180-216`; `harness/faults.py:1-58`; `tests/test_manager_connection_failover.py`, `test_manager_stderr_failover.py:91-188`, `:363-460`, `test_failover_retry_window.py`; `e2e/tests/streaming-failover/*.spec.ts` and `streaming/stream-profiles.spec.ts:1-46`.
 
 ---
 
@@ -266,12 +266,12 @@ relay/internal/relaytest/upstream.go      EDIT — DeadAirAfterBytes, Methods
 relay/channel/tuning.go                   EDIT — ten fields
 relay/channel/events.go                   NEW  — Event, EventSink, discardEvents, Channel.emit
 relay/channel/failover.go                 NEW  — Resolver, NextRequest, Resolved, ErrNoAlternate, ErrSourcesExhausted, the five literals, failureCounter, healthActionFor, Channel.failover, failoverFromBuffering
-relay/channel/health.go                   NEW  — dataClock, Healthy, Switching, inactivityThreshold, monitorHealth, takeFlag, flagSet
-relay/channel/channel.go                  EDIT — seventeen fields, run (the supervisor), runAttempt, dataSince, takePending, noteStable, releaseSlot; Source() under mu
+relay/channel/health.go                   NEW  — dataClock, Healthy, inactivityThreshold, monitorHealth, takeFlag, flagSet
+relay/channel/channel.go                  EDIT — sixteen fields, run (the supervisor), runAttempt, takePending, noteStable, releaseSlot; Source() under mu
 relay/channel/manager.go                  EDIT — ManagerConfig.Events/Release, Started.Resolver, publish
 relay/channel/source_transcode.go         EDIT — ErrBufferingTimeout deleted, cause reset, channel_buffering raised, the TimedOut arm
 relay/ffmpeg/detector.go                  EDIT — BufferingFor
-relay/channel/failover_test.go            NEW  — the fakes and eleven tests
+relay/channel/failover_test.go            NEW  — the fakes, a fake clock and twelve tests
 relay/channel/manager_test.go             EDIT — testTuning, TestTwoClientsShareOneSource, TestACleanUpstreamEnd…, TestAnUpstreamFailure…
 relay/channel/source_transcode_test.go    EDIT — the alternate-silent rows 1 and 6 tests and the no-alternate test replace the timeout test; the clean-exit test
 relay/channel/source_transcode_real_test.go EDIT — the tuning literal builds on testTuning()
@@ -437,13 +437,14 @@ Nothing under `core/`, `dispatcharr/`, `frontend/`, `e2e/`, `metrics/`, `.github
 
 **Interfaces:**
 - Consumes: `buffer.Ring.ResetPosition`, `ffmpeg.Detector.Reset`/`BufferingFor`, `redact.Error`/`Line`, `TranscodeSource.attach`/`fail`.
-- Produces: `channel.Resolver`, `NextRequest{Exclude []int; CurrentURL string; CurrentStreamID int}`, `Resolved{Source, Info, Degraded}`, `ErrNoAlternate`, `*ErrSourcesExhausted{Tried, Attempts, Last}` with `Message()`; `channel.Event`, `EventSink`; `ManagerConfig.Events EventSink`, `.Release func(id string, info SourceInfo)`; `Started.Resolver`; `(*Channel).Healthy()`, `Switching()`; `Tuning`'s ten new fields; `failoverFromBuffering(time.Duration) bool` (package-private, called by the stderr reader).
+- Produces: `channel.Resolver`, `NextRequest{Exclude []int; CurrentURL string; CurrentStreamID int}`, `Resolved{Source, Info, Degraded}`, `ErrNoAlternate`, `*ErrSourcesExhausted{Tried, Attempts, Last}` with `Message()`; `channel.Event`, `EventSink`; `ManagerConfig.Events EventSink`, `.Release func(id string, info SourceInfo)`; `Started.Resolver`; `(*Channel).Healthy()`; `Tuning`'s ten new fields; `failoverFromBuffering(time.Duration) bool` (package-private, called by the stderr reader).
 
 - [ ] **Step 1: Write the files**
 
-  Appendices G–O, R and AF are whole files. Three things to read before applying them, because they are where a merge difference would hide (Task 0 Step 0):
+  Appendices G–O, R and AF are whole files. Four things to read before applying them, because they are where a merge difference would hide (Task 0 Step 0):
 
-  - `channel.go`'s `run` is the port of `input/manager.py:384-660`, loop for loop; its comment carries the line map. `releaseSlot` is deferred FIRST so it runs LAST, after the ring has closed.
+  - `channel.go`'s `run` is the port of `input/manager.py:384-709`, loop for loop; its comment carries the line map. `releaseSlot` is deferred FIRST so it runs LAST, after the ring has closed.
+  - The health monitor's reconnect flag is taken INSIDE the inner loop, after `runAttempt`, and falls through to the failure accounting (`:521-534`, Ruling R4). There is no outer-loop reconnect branch and no `channel_reconnect{reason: health_monitor}`; both were in this plan's first draft, and the reviewer showed the flag going stale.
   - `source_transcode.go` changes in three places: `ErrBufferingTimeout` and its comment are deleted; `Run` resets `s.cause` under `s.mu` before `ffmpeg.Start`; `progress`'s `Started` arm raises `channel_buffering` and its `TimedOut` arm calls `failoverFromBuffering`. Everything else is 2c-4's byte for byte.
   - `manager.go` changes in three places: two `ManagerConfig` fields, one `Started` field, and `publish`'s literal (`events`, `release`, `ctx`, `now`, `channelName`, `healthy`, `lastData`, `tried`, `currentStreamID`, `failures`). `Attach`, `claim`, `release`, `stopIfStillIdle`, `Snapshot` are untouched.
 
@@ -482,6 +483,7 @@ Nothing under `core/`, `dispatcharr/`, `frontend/`, `e2e/`, `metrics/`, `.github
   | 8 | `stream_switch`'s `new_url` unredacted | `TestThreeConnectFailuresExhaustTheSourceAndFailOver` | "must be the redacted URL, host kept and path gone" |
   | 9 | the `degraded_failover` emit → `if false` | `TestAFailoverFromTheCacheRaisesDegradedFailoverOnRecovery` | "raised 0 times, want exactly 1" |
   | 10 | `s.cause = nil` reset removed | `TestABufferingTimeoutWithNoAlternateKeepsPlayingAndAsksOnEveryRecord` | **stays green** — recorded, not hidden (§ Break-check, row 20) |
+  | 11 | the inner loop's `c.takeFlag(&c.needsReconnect)` → `c.flagSet(...)` (read, never cleared) | `TestASecondStableStallIsActedOnAfterAHealthReconnect` | "stall 2: the source ran 2 times, want 3 -- needsReconnect stayed set after the first reconnect and the monitor never cancelled again" (row 23) |
 
 - [ ] **Step 5: Count the `StateActive` writers**
 
@@ -506,7 +508,7 @@ Nothing under `core/`, `dispatcharr/`, `frontend/`, `e2e/`, `metrics/`, `.github
 
 - [ ] **Step 1: Write the files**
 
-  `stream.go` is applied whole; Tasks 4 and 5 test what it already contains. Its `startTune` sends `IncludeAlternates: true` (`url_utils.py:60-61` does), builds the `sourceBuilder` once per tune, and hands the channel a `resolver` holding `answer.Alternates`. `main.go` builds one `control.Client`, one `Emitter`, and a manager with both hooks.
+  `stream.go` is applied whole; Tasks 4 and 5 test what it already contains. Its `startTune` sends `IncludeAlternates: true` (`url_utils.py:55-58` does), builds the `sourceBuilder` once per tune, and hands the channel a `resolver` holding `answer.Alternates`. `main.go` builds one `control.Client`, one `Emitter`, and a manager with both hooks.
 
   The rig's manager now carries `EventSink` and `ReleaseVia` over the rig's own client, so the fake's request log sees releases and events too — which is why `TestAStreamThatEndsClosesTheClientsResponse` counts with `RequestsTo("/next-source")` (Constraint 33).
 
@@ -554,7 +556,7 @@ Nothing under `core/`, `dispatcharr/`, `frontend/`, `e2e/`, `metrics/`, `.github
 
 - [ ] **Step 1: Read `validateStreamURL` against `url_utils.py:138-262` before trusting it**
 
-  Five decisions, each cited in the code: a non-HTTP scheme is valid unprobed (`:154-157`); a HEAD that errors is "HEAD not supported", never "invalid" (`:173-175`); a HEAD 2xx is valid (`:178-180`); a GET 2xx with one byte is valid whatever the Content-Type (`:222-249`); the URL returned is the one given (`:180`, `:268`). The probe sends **no** `User-Agent` when the answer's is blank (`:161`'s `None` value), which Go needs `req.Header["User-Agent"] = nil` for.
+  Five decisions, each cited in the code: a non-HTTP scheme is valid unprobed (`:154-157`); a HEAD that errors is "HEAD not supported", never "invalid" (`:175-178`); a HEAD 2xx is valid (`:181-183`); a GET 2xx with one byte is valid whatever the Content-Type (`:234-250`); the URL returned is the one given (`:183`, `:250`). The probe sends **no** `User-Agent` when the answer's is blank (`:163`'s `None` value), which Go needs `req.Header["User-Agent"] = nil` for.
 
 - [ ] **Step 2: Write `redirect_test.go` and run**
 
@@ -636,7 +638,7 @@ Amendment A2.2's rule: a Go reference appended to the existing `Pin` cell, one l
   | Row | Append to `Pin` | Append to `Notes` |
   |---|---|---|
   | 1 | `` `relay/channel/source_transcode_test.go::TestASustainedSubThresholdSpeedFailsTheChannelOver` `` | The Go pin is 2c-5's: the same lever (buffering_speed at the API maximum, a 1s timeout against the slow-trickle capture), the switch made from the stderr goroutine, the clock taken before the source starts, `channel_failover` carrying `reason: buffering_timeout` and a `duration` past the timeout. |
-  | 2 | `` `relay/channel/failover_test.go::TestDeadAirOnAYoungConnectionSwitchesStreams` ``, `` `relay/httpapi/failover_test.go::TestAFailoverKeepsTheClientAttachedAndFed` `` | The Go pin is 2c-5's and drives the same unstable branch: CONNECTION_TIMEOUT and HEALTH_CHECK_INTERVAL off the wire at 300 ms and 50 ms, and the assertion is on the GAP between the last byte and the resolver's call — at least the threshold plus two more checks — so a monitor acting on its first inactive check reddens. The stable branch's 30 s literal is pinned as a decision (`healthActionFor` at 29 s versus 30 s), not driven. The second reference is the e2e spec's claim at the relay: the client is still attached and fed after the switch. |
+  | 2 | `` `relay/channel/failover_test.go::TestDeadAirOnAYoungConnectionSwitchesStreams` ``, `` `relay/httpapi/failover_test.go::TestAFailoverKeepsTheClientAttachedAndFed` `` | The Go pin is 2c-5's and drives the same unstable branch: CONNECTION_TIMEOUT and HEALTH_CHECK_INTERVAL off the wire at 300 ms and 50 ms, and the assertion is on the GAP between the last byte and the resolver's call — at least the threshold plus two more checks — so a monitor acting on its first inactive check reddens. The stable branch's 30 s literal is pinned as a decision (`healthActionFor` at 29 s versus 30 s), not driven; the reconnect it selects is the inner loop's fall-through at `:521-534`, and a second stall after it is pinned by `failover_test.go::TestASecondStableStallIsActedOnAfterAHealthReconnect`. One stated divergence: the Go monitor CANCELS the running attempt when it raises a flag, where Python's main loop notices the flag between `fetch_chunk` calls, each blocking up to `CHUNK_TIMEOUT` (5 s) in `select` on a silent pipe (`:1364-1365`, `:1845`) — the Go relay acts up to five seconds sooner and `CHUNK_TIMEOUT` is not read (spec Amendment A5.7). The second reference is the e2e spec's claim at the relay: the client is still attached and fed after the switch. |
   | 3 | `` `relay/channel/failover_test.go::TestThreeConnectFailuresExhaustTheSourceAndFailOver` ``, `` `relay/channel/failover_test.go::TestTheRetryWindowResetsTheCounterAfterAnIdleGap` `` | The Go pins are 2c-5's: three attempts at the source, one resolver request excluding stream 1, two `channel_reconnect`, one `channel_error` with `connection_failed` and `attempts` 3, one `stream_switch`; and the window with an injected clock at t = 0, 1700, 3400 and 5201. A clean EOF is a counted failure here as it is in Python (`:1868-1872`), which 2c-2 had pinned the other way. |
   | 6 | `` `relay/channel/source_transcode_test.go::TestABufferingFailoverIgnoresMaxStreamSwitches` ``, `` `relay/channel/failover_test.go::TestMaxStreamSwitchesBoundsAMainLoopSwitch` `` | The Go pin is 2c-5's, reproduced not fixed: with MAX_STREAM_SWITCHES at zero off the wire, a buffering failover still switches and the channel keeps playing, while the sibling proves the same zero DOES end the loop after a connect-failure switch — the asymmetry is what is pinned, not the absence of a bound. |
   | 7 | `` `relay/channel/failover_test.go::TestTheChunkIndexIsMonotonicAcrossAFailover` `` | The Go pin across a SWITCH is 2c-5's: the primary's chunks stay readable from index 0 after the failover, the head keeps climbing, and the primary's three stray trailing bytes are dropped by `ResetPosition` rather than glued to the alternate's first packet. |
@@ -721,7 +723,7 @@ Amendment A2.2's rule: a Go reference appended to the existing `Pin` cell, one l
 
 - [ ] **Step 6: The PR description**
 
-  In this order: what this PR does; **Ruling R1** and the four tests it reshaped; **the twenty break-checks** with their actual messages, and the one that stayed green (row 20) with its reason; **the eight consecutive `relay/channel` runs and three module runs**; **the credlint census** — two markers added, both `encoding/json`, zero findings; **zero suppressions**; **the edits no test pins**, stated: the transcode source's cause reset (no stand-in shape produces a first-attempt-only VLC failure), `Detector.Reset` on a buffering switch (the process dies before the next record), the stable-stream reconnect branch (30 s of wall clock, as in Python), `Emitter`'s `ErrNotConfigured` arm, and `redirectTune`'s "failed to release" log; **the stated divergences**, as a list: a clean EOF's retry replacing 2c-2's stop (R1, Python's own shape); the health monitor cancelling the attempt where Python waits up to `CHUNK_TIMEOUT` (R3); a reconnect judged by a delivered byte rather than an established connection (R4); `channel_reconnect` raised at attempt start (R5); `redact.Line` on event URLs where Python's `redact_url` keeps more (R10); one emitter worker and batching where Python spawns a greenlet per event, with a full queue dropping (R12); `URL_SWITCH_TIMEOUT`, `CHUNK_TIMEOUT`, `RETRY_WAIT_INTERVAL` not read (R13); the `_is_timeout` disconnect reachable only through the keepalive cap on TS (R14, as in Python); the initialization-timeout packet not ported (R15); `channel_pk` sent as null (R9); a concurrent second client on a Redirect channel getting its own 302 rather than a wait (R7); the slot released when the source goroutine returns rather than at the stop path's cleanup, seconds earlier; **the Python defect filed** (R6); **what this PR does not do**: no fMP4 (2c-6); no Output Profile (2c-7); no `channel_start`/`channel_stop`/`client_connect`/`client_disconnect`, no detail endpoint, no `advance`, no drain (2c-8); no Go coverage ratchet and no CodeQL Go pack (2c-9); no nginx route (2d).
+  In this order: what this PR does; **Ruling R1** and the four tests it reshaped; **the twenty break-checks** with their actual messages, and the one that stayed green (row 20) with its reason; **the eight consecutive `relay/channel` runs and three module runs**; **the credlint census** — two markers added, both `encoding/json`, zero findings; **zero suppressions**; **the edits no test pins**, stated: the transcode source's cause reset (no stand-in shape produces a first-attempt-only VLC failure), `Detector.Reset` on a buffering switch (the process dies before the next record), the stable-stream reconnect branch (30 s of wall clock, as in Python), `Emitter`'s `ErrNotConfigured` arm, and `redirectTune`'s "failed to release" log; **the stated divergences**, as a list: a clean EOF's retry replacing 2c-2's stop (R1, Python's own shape); the health monitor cancelling the attempt where Python waits up to `CHUNK_TIMEOUT` (R3); the outer loop's `_attempt_reconnect` branch not ported because Python cannot reach it (R4); `channel_reconnect` raised at attempt start (R5); after a buffering-triggered switch the new source starts as attempt 1 with a clean history, where Python's main loop may record one failure for the attempt the switch ended (`:533-534`) unless `update_url`'s clear (`:1512`) lands after it, and so may announce the new source as attempt 2 or 3 with a `channel_reconnect` (N4 of the review); `redact.Line` on event URLs where Python's `redact_url` keeps more (R10); one emitter worker and batching where Python spawns a greenlet per event, with a full queue dropping (R12); `URL_SWITCH_TIMEOUT`, `CHUNK_TIMEOUT`, `RETRY_WAIT_INTERVAL` not read (R13); the `_is_timeout` disconnect reachable only through the keepalive cap on TS (R14, as in Python), and its `url_switching` exemption not ported (R14); the initialization-timeout packet not ported (R15); `channel_pk` sent as null (R9); a concurrent second client on a Redirect channel getting its own 302 rather than a wait (R7); the slot released when the source goroutine returns rather than at the stop path's cleanup, seconds earlier; **the Python defect filed** (R6); **what this PR does not do**: no fMP4 (2c-6); no Output Profile (2c-7); no `channel_start`/`channel_stop`/`client_connect`/`client_disconnect`, no detail endpoint, no `advance`, no drain (2c-8); no Go coverage ratchet and no CodeQL Go pack (2c-9); no nginx route (2d).
 
 ---
 
@@ -752,6 +754,7 @@ Every break-check in this plan, and the task it belongs to. A `✓` means it was
 | 19 | 5 | `healthy` not rendered | `TestHealthyOnTheListPayloadFollowsTheHealthMonitor` **and** `TestTheLiveEndpointProducesTheGoldensKeySet` | ✓ |
 | 20 | 2 | the transcode source's cause reset removed | **nothing** — no stand-in produces a first-attempt-only failure; listed as an unpinned edit | ✓ (green) |
 | 21 | 5 | the error packet not sent | `TestAClientWithNoBytesGetsAnErrorPacketWhenEverySourceFails`, "the body is 0 bytes" | ✓ |
+| 23 | 2 | `needsReconnect` read but never cleared inside the inner loop (`flagSet` for `takeFlag`) | `TestASecondStableStallIsActedOnAfterAHealthReconnect`, "stall 2: the source ran 2 times, want 3 -- needsReconnect stayed set after the first reconnect and the monitor never cancelled again" | ✓ |
 | 22 | 1 | #300's throttle cap put back | nothing reddens; the row-4 arming time moves from 6.5–6.6 s (real quarter rate) to about 12 s (capped) — a measurement, recorded, not a pin | ✓ (6.5 s and 6.6 s with the fix, two runs on this host) |
 
 **Row 1 deserves a second look.** With one check instead of three, the switch happens on the first tick after the threshold, and the test's 20 ms poll usually misses the unhealthy window, so the `sawUnhealthy` clause fires before the gap clause can. Both clauses guard the same mechanism; if on your host the gap clause fires instead, that is the same finding. Neither is the "switch happened" clause, which a one-check monitor also satisfies — which is why the test has the other two.
@@ -766,7 +769,7 @@ Every break-check in this plan, and the task it belongs to. A `✓` means it was
 
 1. **Task 0's diff** — every appendix file Step 0 found not `identical` to the merged tree, what you carried across, and every ledger row that did not match. This is the report the orchestrator most needs, because this plan's seed was not the implemented tree (§ Sequencing).
 2. **The `StateActive` count** at Task 0 (two) and at Task 8 (two, the same lines).
-3. **Every break-check's actual failure message**, and specifically whether row 1 reddened on the sibling clause or the gap, whether row 14 reddened on its key alone, and whether row 20 stayed green.
+3. **Every break-check's actual failure message**, and specifically whether row 1 reddened on the sibling clause or the gap, whether row 14 reddened on its key alone, whether row 20 stayed green, and row 23's stale-flag message.
 4. **The gate's counts** — three `-race` runs of the module, eight of `relay/channel`, three no-race runs of `./ffmpeg ./channel`, and the three-GOOS vet and lint.
 5. **The credlint census** — zero findings, two markers added; anything new it reported that this plan does not name.
 5a. **#300** — the row-4 arming time with and without the fix on your host and ffmpeg version, beside this plan's 6.5–6.6 s (fix) and 2c-4's 12.2 s (cap), and whether any of the three `Rate 0.05` tests needed a wider window.
@@ -798,7 +801,7 @@ import (
 
 // ReleaseRequest is the body of POST /api/relay/channels/<id>/release,
 // apps/proxy/serializers.py's ReleaseRequestSerializer: three optional
-// integers, every one of which apps/proxy/control_plane.py:243-247's
+// integers, every one of which apps/proxy/control_plane.py:236-240's
 // release_source sends as an explicit key, null when unknown. Pointers
 // without omitempty reproduce that: the key is always on the wire.
 //
@@ -874,7 +877,10 @@ import (
 // redact_url and truncated to 100 characters -- and core/relay_events.py's
 // WebSocket push is a field whitelist that drops details entirely. The relay's
 // half of that contract is that whatever it puts in details went through
-// redact.Line first; channel.emit is the one producer and does so.
+// redact.Line first, and that is the PRODUCERS' job, not this type's or
+// channel.emit's: the two sites in package channel that put a URL in
+// details (failover's stream_switch, run's channel_error) each call
+// redact.Line before building the map. A third site would have to too.
 type Event struct {
 	Type        string         `json:"type"`
 	ChannelID   string         `json:"channel_id,omitempty"`
@@ -1008,7 +1014,7 @@ func (e *Emitter) run() {
 	}
 }
 
-// post is post_events' disposition (control_plane.py:266-329), one log line
+// post is post_events' disposition (control_plane.py:265-329), one log line
 // per transition into and out of an outage rather than one per batch.
 func (e *Emitter) post(batch []Event) {
 	ctx, cancel := context.WithTimeout(context.Background(), e.timeout)
@@ -1034,7 +1040,7 @@ func (e *Emitter) post(batch []Event) {
 			e.down = true
 		}
 	case errors.As(err, &misconfigured):
-		// The variable name only, never the value: control_plane.py:301-317's
+		// The variable name only, never the value: control_plane.py:297-315's
 		// own rule, for the same reason -- the value can carry userinfo.
 		if e.down {
 			e.log.Debug("could not post relay events: the control-plane address is misconfigured", "variable", misconfigured.Variable, "events", len(batch))
@@ -2152,15 +2158,16 @@ type Channel struct {
 	clients map[string]*Client
 
 	// The health monitor's view (health.go), all under mu: StreamManager's
-	// healthy, connected, last_data_time and connection_start_time, the two
-	// recovery flags it raises for the run loop, and url_switching.
+	// healthy, connected, last_data_time and connection_start_time, and the
+	// two recovery flags it raises for the run loop. url_switching is NOT
+	// here: the one thing that read it, _is_timeout's exemption, is not
+	// ported (the 2c-5 plan's Ruling R14).
 	healthy        bool
 	connected      bool
 	lastData       time.Time
 	connStart      time.Time
 	needsReconnect bool
 	needsSwitch    bool
-	switching      bool
 	// cancelAttempt ends the attempt currently running, so the health monitor
 	// and the stderr reader can make the run loop act now rather than at the
 	// next read. Nil between attempts.
@@ -2299,7 +2306,7 @@ func (c *Channel) setState(state State, err error) {
 type attachable interface{ attach(*Channel) }
 
 // run is the channel's supervisor goroutine, the port of StreamManager.run
-// (input/manager.py:384-660). Exactly one per channel, started by the
+// (input/manager.py:384-709). Exactly one per channel, started by the
 // manager.
 //
 // THE SHAPE IS PYTHON'S, loop for loop. The outer loop is one source at a
@@ -2308,13 +2315,19 @@ type attachable interface{ attach(*Channel) }
 // Source.Run: it ends on a clean EOF, an error, or a cancellation the health
 // monitor or the stderr reader asked for. EVERY end that is not a stop is a
 // connection failure, a clean EOF included -- "Server closed connection",
-// :1868-1872 -- counted and retried with backoff (:557-568), until the
-// counter reaches MaxRetries and the source is exhausted (:533-538,
+// :1870-1875 -- counted and retried with backoff (:555-563), until the
+// counter reaches MaxRetries and the source is exhausted (:534-537,
 // parity-matrix row 3), at which point the resolver is asked for the next
-// one (:600-616). The health monitor's requests are honoured between
-// attempts (:407-431, :515-517) and the stderr reader's buffering switch is
-// adopted the same way (failover.go). Out of sources, the channel ends in
-// error naming the count (:660-676).
+// one (:596-611). The health monitor's switch request is honoured after the
+// attempt it ended (:505-507, :428-438); its RECONNECT request is cleared
+// inside the inner loop and falls through to the failure accounting
+// (:521-534), so the reconnect is simply the next attempt on the same URL.
+// The outer loop's own reconnect branch (:414-426, _attempt_reconnect) is
+// NOT ported, because it is unreachable in Python: the monitor sets the flag
+// only while connected (:1565), and :527 clears it on every pass of the
+// inner loop before the outer loop's top can see it. The stderr reader's
+// buffering switch is adopted between attempts too (failover.go). Out of
+// sources, the channel ends in error naming the count (:678-682).
 //
 // It does NOT remove itself from the manager's map. Manager.claim drops a
 // channel whose ring has closed, and that is the only place it happens: two
@@ -2333,21 +2346,11 @@ func (c *Channel) run(ctx context.Context, first Source) {
 	switches := 0
 	var last error
 	for ctx.Err() == nil && switches <= c.tuning.MaxStreamSwitches {
-		reconnecting := c.takeFlag(&c.needsReconnect)
-		if reconnecting {
-			// :407-419, _attempt_reconnect: the same URL again, before any
-			// switch. The attempt below IS the reconnect; whether it
-			// "succeeded" (:414) is read off whether any byte arrived, since
-			// a Source reports no separate connected moment.
-			c.log.Info("health monitor requested a reconnect", "channel", c.id)
-			c.emit("channel_reconnect", map[string]any{"reason": "health_monitor"})
-		}
-
 		urlFailed := false
 		for ctx.Err() == nil && c.failures.count < c.tuning.MaxRetries && !urlFailed && !c.flagSet(&c.needsSwitch) {
 			attempt := c.failures.count + 1
-			if attempt > 1 && !reconnecting {
-				// :491-501, on a retry. Python raises it once the connection
+			if attempt > 1 {
+				// :486-496, on a retry. Python raises it once the connection
 				// is established; a Source has no such moment, so it is
 				// raised as the attempt starts -- a transcode spawn that
 				// fails at once will have announced a reconnect it never
@@ -2369,29 +2372,30 @@ func (c *Channel) run(ctx context.Context, first Source) {
 				break
 			}
 			if c.flagSet(&c.needsSwitch) {
-				// :515-517: leave for the switch without counting a failure.
+				// :505-507: leave for the switch without counting a failure.
 				c.log.Info("stream needs to switch", "channel", c.id, "after", c.now().Sub(startedAt).Round(100*time.Millisecond))
 				break
 			}
-			if reconnecting {
-				reconnecting = false
-				if c.dataSince(startedAt) {
-					// :414-416: a reconnect that delivered is a success --
-					// history cleared, back to the top.
-					c.failures.clear()
-					continue
-				}
-				// :417-419: a reconnect that did not becomes a switch.
-				c.mu.Lock()
-				c.needsSwitch = true
-				c.mu.Unlock()
-				break
-			}
 			if duration := c.now().Sub(startedAt); duration >= c.tuning.StableThreshold {
-				// :528-535: a stable run resets the rotation.
+				// :508-513: a stable run resets the rotation.
 				c.log.Info("stream was stable; resetting the switch rotation", "channel", c.id, "duration", duration.Round(time.Second))
 				c.noteStable()
 				switches = 0
+			}
+			if c.takeFlag(&c.needsReconnect) {
+				// :521-531: the monitor asked for a same-URL reconnect on a
+				// stream that had been stable. The flag is CLEARED HERE, on
+				// every pass, and the attempt it ended falls through to the
+				// failure accounting below -- "Repeated health reconnects
+				// count toward max_retries like any other URL failure" -- so
+				// the reconnect is the next attempt, announced by the
+				// channel_reconnect above like any retry. Clearing it
+				// anywhere else leaves the monitor's own `if not
+				// needs_reconnect` guard (:1581) shut, and a second stall on
+				// the same stream is never acted on; the 2c-5 plan's
+				// reviewer reproduced exactly that against an earlier shape
+				// of this loop.
+				c.log.Info("health monitor requested reconnect", "channel", c.id)
 			}
 
 			if err == nil {
@@ -2402,7 +2406,7 @@ func (c *Channel) run(ctx context.Context, first Source) {
 			if failures >= c.tuning.MaxRetries {
 				urlFailed = true
 				c.log.Warn("maximum retry attempts reached for this URL", "channel", c.id, "attempts", c.tuning.MaxRetries, "error", redact.Error(err))
-				// :544-551.
+				// :541-551.
 				c.emit("channel_error", map[string]any{
 					"error_type": "connection_failed",
 					"url":        truncate(redact.Line(c.Source().URL), 100),
@@ -2422,7 +2426,7 @@ func (c *Channel) run(ctx context.Context, first Source) {
 		}
 
 		if c.takeFlag(&c.needsSwitch) {
-			// :421-431: the health monitor's switch.
+			// :428-438: the health monitor's switch.
 			if resolved, ok := c.failover(ctx, "health_monitor"); ok {
 				switches++
 				source = resolved.Source
@@ -2433,7 +2437,7 @@ func (c *Channel) run(ctx context.Context, first Source) {
 			continue
 		}
 		if urlFailed {
-			// :600-616.
+			// :596-611.
 			if resolved, ok := c.failover(ctx, "max_retries_exceeded"); ok {
 				switches++
 				source = resolved.Source
@@ -2449,7 +2453,7 @@ func (c *Channel) run(ctx context.Context, first Source) {
 		c.log.Info("channel stopped", "channel", c.id)
 		c.setState(StateStopped, nil)
 	default:
-		// :660-676: the ERROR state and its message, for the client waiting
+		// :678-682: the ERROR state and its message, for the client waiting
 		// on its first byte.
 		c.mu.RLock()
 		tried := len(c.tried)
@@ -2465,8 +2469,8 @@ func (c *Channel) run(ctx context.Context, first Source) {
 
 // runAttempt is one connection: one Source.Run, under a context the health
 // monitor and the stderr reader can cancel, with the channel marked
-// connected and healthy for its duration (input/manager.py:1315-1316,
-// :1324).
+// connected and healthy for its duration (input/manager.py:1314-1315,
+// :1320).
 func (c *Channel) runAttempt(ctx context.Context, source Source) error {
 	if a, ok := source.(attachable); ok {
 		a.attach(c)
@@ -2490,13 +2494,6 @@ func (c *Channel) runAttempt(ctx context.Context, source Source) error {
 	c.cancelAttempt = nil
 	c.mu.Unlock()
 	return err
-}
-
-// dataSince reports whether any byte arrived after t.
-func (c *Channel) dataSince(t time.Time) bool {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return c.lastData.After(t)
 }
 
 // takePending hands the run loop a source the stderr reader adopted.
@@ -2656,7 +2653,7 @@ type Tuning struct {
 	InitGracePeriod time.Duration
 
 	// MaxRetries is MAX_RETRIES: consecutive connection failures before the
-	// source is exhausted (input/manager.py:50, :533-538, row 3).
+	// source is exhausted (input/manager.py:50, :534-537, row 3).
 	MaxRetries int
 
 	// RetryWindow is RETRY_WINDOW_SECONDS: a gap since the last failure
@@ -2664,7 +2661,7 @@ type Tuning struct {
 	RetryWindow time.Duration
 
 	// StableThreshold is STABLE_CONNECTION_THRESHOLD: a connection that ran
-	// this long resets the switch rotation (input/manager.py:52, :528-535).
+	// this long resets the switch rotation (input/manager.py:52, :508-513).
 	StableThreshold time.Duration
 
 	// MaxStreamSwitches is MAX_STREAM_SWITCHES: the main loop's bound on
@@ -2685,7 +2682,7 @@ type Tuning struct {
 
 	// MaxKeepalive is MAX_KEEPALIVE_DURATION: the wall-clock cap on those
 	// keepalives before the client is dropped (output/ts/generator.py:
-	// 372-380).
+	// 371-380).
 	MaxKeepalive time.Duration
 }
 ```
@@ -2956,7 +2953,7 @@ func (m *Manager) publish(id string, client *Client, started Started) *Channel {
 		ctx:         ctx,
 		state:       StateInitializing,
 		clients:     map[string]*Client{client.ID: client},
-		// StreamManager.__init__ (input/manager.py:76-78, :93-100): healthy
+		// StreamManager.__init__ (input/manager.py:76-78, :93-96): healthy
 		// until the monitor says otherwise, the initial stream already in
 		// the tried set, and the failure window from the tune's settings.
 		healthy:         true,
@@ -3355,11 +3352,11 @@ type Resolved struct {
 	Degraded bool
 }
 
-// ErrNoAlternate is "No alternate stream available" (input/manager.py:2114).
+// ErrNoAlternate is "No alternate stream available" (input/manager.py:2110).
 var ErrNoAlternate = errors.New("channel: no alternate stream available")
 
 // ErrSourcesExhausted is the error a channel ends in once every candidate has
-// failed: run()'s finally block (input/manager.py:660-676), which writes
+// failed: run()'s finally block (input/manager.py:678-682), which writes
 // "All N stream options failed" when any stream id was ever tried and
 // "Connection failed after N attempts" otherwise. Last is the error the
 // final attempt ended with, so errors.Is and errors.As still see the
@@ -3398,7 +3395,7 @@ var errUpstreamEnded = errors.New("channel: the upstream ended the connection")
 // a setting supplies. Each is pinned by TestTheFailoverLiteralsMatchPython.
 const (
 	// retryBackoffStep and retryBackoffCap: `min(.25 * failures, 3)` at
-	// input/manager.py:566 and :595.
+	// input/manager.py:557 and :588.
 	retryBackoffStep = 250 * time.Millisecond
 	retryBackoffCap  = 3 * time.Second
 
@@ -3411,7 +3408,7 @@ const (
 	healthActionCooldown = 30 * time.Second
 
 	// stableReconnectAfter is the bare `stable_time >= 30` at
-	// input/manager.py:1573: a stream that was stable this long is
+	// input/manager.py:1580: a stream that was stable this long is
 	// reconnected in place before it is switched. apps/proxy/config.py:119
 	// names MIN_STABLE_TIME_BEFORE_RECONNECT = 30 for it and nothing reads
 	// that (CLAUDE.md § Known defects, dead or unwired), so it is a literal
@@ -3425,7 +3422,7 @@ func retryBackoff(failures int) time.Duration {
 }
 
 // healthAction is the health monitor's decision once the checks have run
-// out (input/manager.py:1569-1583): reconnect in place if the stream had
+// out (input/manager.py:1576-1590): reconnect in place if the stream had
 // been stable, switch streams otherwise.
 type healthAction int
 
@@ -3472,10 +3469,11 @@ func (f *failureCounter) clear() {
 // failover is _try_next_stream (input/manager.py:2041-2225) minus the
 // control-plane call, which is the resolver's. It records the candidate as
 // tried, refuses the URL already playing (update_url's own first check,
-// :1464-1466), resets the packetiser (:1519-1524, never the chunk index --
-// row 7), swaps the source info, clears the failure history (:1516) and
-// raises stream_switch (:1527-1535); then the degraded bookkeeping of
-// :2181-2192. It does NOT stop the running attempt -- the caller does,
+// :1464-1466), resets the packetiser (:1515-1520, never the chunk index --
+// row 7), swaps the source info, clears the failure history (:1512) and
+// raises stream_switch (:1523-1532); then the degraded bookkeeping of
+// :2191-2202. url_switching (:1471-1472, cleared at :1540) is not carried:
+// its one reader, _is_timeout's exemption, is not ported (Ruling R14). It does NOT stop the running attempt -- the caller does,
 // because the two callers stop it differently: the run loop has already
 // seen it end, and the stderr reader cancels it after adopting the result.
 //
@@ -3519,22 +3517,20 @@ func (c *Channel) failover(ctx context.Context, why string) (Resolved, bool) {
 
 	if resolved.Info.URL == current.URL {
 		// update_url returns False on the URL already playing, and
-		// _try_next_stream reports the failover failed (:2146-2157).
+		// _try_next_stream reports the failover failed (:2143-2153).
 		c.log.Error("the failover named the URL already playing", "channel", c.id, "stream", resolved.Info.StreamID)
 		return Resolved{}, false
 	}
 
 	c.log.Info("switching stream", "channel", c.id, "trigger", why, "stream", resolved.Info.StreamID, "m3u_profile", resolved.Info.M3UProfileID)
 	c.mu.Lock()
-	c.switching = true
 	c.ring.ResetPosition()
 	c.source = resolved.Info
 	c.currentStreamID = resolved.Info.StreamID
 	c.failures.clear()
-	c.switching = false
 	c.mu.Unlock()
 
-	// stream_switch (:1527-1535): the URL through redact_url and cut at 100
+	// stream_switch (:1523-1532): the URL through redact_url and cut at 100
 	// characters there; through redact.Line here, which keeps less --
 	// scheme and host only -- and the same cut.
 	c.emit("stream_switch", map[string]any{
@@ -3549,7 +3545,7 @@ func (c *Channel) failover(ctx context.Context, why string) (Resolved, bool) {
 	if !resolved.Degraded && degradedBefore {
 		// Django is answering again: say, once, that an earlier failover ran
 		// blind on the cached list and may have exceeded max_streams
-		// (:2183-2192).
+		// (:2191-2202).
 		c.emit("channel_error", map[string]any{"reason": "degraded_failover"})
 	}
 	return resolved, true
@@ -3578,7 +3574,7 @@ func (c *Channel) failoverFromBuffering(bufferingFor time.Duration) bool {
 	c.pending = &resolved
 	cancel := c.cancelAttempt
 	c.mu.Unlock()
-	// :1195-1197's hset ACTIVE after the switch, through the guarded
+	// :1190-1197's hset ACTIVE after the switch, through the guarded
 	// recovery edge -- the one existing writer of StateActive beside
 	// promoteOnFirstChunk, not a third.
 	c.reportBuffering(false)
@@ -3637,15 +3633,6 @@ func (c *Channel) Healthy() bool {
 	return c.healthy
 }
 
-// Switching is StreamManager.url_switching: true only while a switch is
-// being applied, which _is_timeout treats as a reason to give a client more
-// time (output/ts/generator.py:593-596).
-func (c *Channel) Switching() bool {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return c.switching
-}
-
 // inactivityThreshold is _health_inactivity_threshold (input/manager.py:
 // 1547-1551): the init grace period while a connection is up and the ring
 // is still empty, CONNECTION_TIMEOUT otherwise. Called with mu held.
@@ -3663,8 +3650,9 @@ func (c *Channel) inactivityThreshold() time.Duration {
 // or a switch (one that had not) -- parity-matrix row 2.
 //
 // WHERE IT DIFFERS: Python sets a flag the main loop notices between
-// fetch_chunk calls, each of which blocks up to CHUNK_TIMEOUT (5s) in select
-// on a silent pipe, so the loop acts up to five seconds after the flag. This
+// fetch_chunk calls (:1364-1365), each of which blocks up to CHUNK_TIMEOUT
+// (5s) in select on a silent pipe (:1845), so the loop acts up to five
+// seconds after the flag. This
 // monitor sets the same flag and CANCELS the running attempt, so the loop
 // acts at once. A divergence in the safe direction, stated rather than
 // reproduced: CHUNK_TIMEOUT is not read.
@@ -4238,7 +4226,7 @@ func waitFor(t *testing.T, what string, timeout time.Duration, cond func() bool)
 // THE TRANSCODE PATH END TO END AT THE CHANNEL: the child's fd 1 is the
 // video, it reaches the ring as whole packets in order, and a child that ends
 // cleanly is RETRIED exactly as a clean Proxy EOF is (input/manager.py:
-// 1868-1872, then the retry loop): three runs of the same asset, then the
+// 1870-1875, then the retry loop): three runs of the same asset, then the
 // source is exhausted and the channel ends in error.
 func TestATranscodeProcessesFd1ReachesTheRingInOrder(t *testing.T) {
 	path, payload := assetFile(t, 64)
@@ -4473,7 +4461,7 @@ func TestASustainedSubThresholdSpeedFailsTheChannelOver(t *testing.T) {
 	// The alternate's child is SILENT on stderr: with the threshold at the
 	// API maximum every record of any capture is below it, so a child that
 	// replayed one would put the channel straight back into buffering and
-	// hide the active edge the switch itself produces (:1195-1197).
+	// hide the active edge the switch itself produces (:1190-1197).
 	alternate := standInSource(t, "-i", path, "--dead-air-after-bytes", "1504")
 	ran := &int32Counter{}
 	resolver := &fakeResolver{answers: []Resolved{{
@@ -4535,7 +4523,7 @@ func TestABufferingFailoverIgnoresMaxStreamSwitches(t *testing.T) {
 	// The alternate's child is SILENT on stderr: with the threshold at the
 	// API maximum every record of any capture is below it, so a child that
 	// replayed one would put the channel straight back into buffering and
-	// hide the active edge the switch itself produces (:1195-1197).
+	// hide the active edge the switch itself produces (:1190-1197).
 	alternate := standInSource(t, "-i", path, "--dead-air-after-bytes", "1504")
 	ran := &int32Counter{}
 	resolver := &fakeResolver{answers: []Resolved{{
@@ -5289,7 +5277,7 @@ func startTune(parent context.Context, deps tuneDeps, id string, internal bool) 
 		ExcludeStreamIDs: []int{},
 		Reason:           "initial",
 		// generate_stream_url asks for the alternates on the initial call
-		// (url_utils.py:60-61) and caches them for the degraded fallback and
+		// (url_utils.py:55-58) and caches them for the degraded fallback and
 		// the Redirect fall-through; 2c-2 did not ask, having neither.
 		IncludeAlternates: true,
 	})
@@ -5507,7 +5495,7 @@ func writeTuneFailure(w http.ResponseWriter, log *slog.Logger, id string, err er
 }
 
 // keepaliveAfterEmptyReads is _should_send_keepalive's `consecutive_empty < 5`
-// (output/ts/generator.py:548): a client at the head of an unhealthy channel
+// (output/ts/generator.py:546): a client at the head of an unhealthy channel
 // receives keepalives only once five successive reads have found nothing.
 const keepaliveAfterEmptyReads = 5
 
@@ -5517,13 +5505,14 @@ const keepaliveAfterEmptyReads = 5
 // because nothing could lower the flag they are gated on until 2c-5's
 // health monitor arrived:
 //
-//   - KEEPALIVES (:366-389, :540-551): a client waiting at the buffer head
+//   - KEEPALIVES (:371-389, :542-551): a client waiting at the buffer head
 //     of an UNHEALTHY channel, after five empty reads, is sent one null TS
 //     packet every KeepaliveInterval, each refreshing its last-yield time,
 //     for at most MaxKeepalive of wall clock, after which it is dropped.
 //   - THE CLIENT TIMEOUT (:583-604): a client with no yielded chunk for
-//     ClientTimeout on an UNHEALTHY channel is dropped, unless a switch is
-//     in progress. Row 12's Notes record what this means on the TS path:
+//     ClientTimeout on an UNHEALTHY channel is dropped. Its url_switching
+//     exemption (:593-596) is not ported -- see the branch itself for why.
+//     Row 12's Notes record what this means on the TS path:
 //     the keepalives refresh the very timer this reads, so on a channel
 //     that is unhealthy for long enough to reach it, it is the keepalive cap
 //     that actually ends the client. Ported as it is, because it is the
@@ -5535,14 +5524,14 @@ const keepaliveAfterEmptyReads = 5
 // flag is re-read at Python's cadence, and each timeout counts as one empty
 // read.
 //
-// THE ERROR PACKET (:229-231, utils.py:71-98): a client that has received
+// THE ERROR PACKET (:235-239, utils.py:71-98): a client that has received
 // NOTHING when its channel ends in error is handed one 188-byte packet
 // carrying "Error: <message>" before the body closes -- what the first
 // client of a channel whose every source failed sees in Python (row 3's own
 // pin reads it), and what Amendment A2.5 recorded 2c-2 as not sending. A
 // client already streaming when the channel errors gets a closed body and
-// no packet, as _check_resources gives it (:433-436). The initialization
-// timeout packet (:252-254, after CLIENT_WAIT_TIMEOUT with no ready state)
+// no packet, as _check_resources gives it (:455-459). The initialization
+// timeout packet (:249-251, after CLIENT_WAIT_TIMEOUT with no ready state)
 // is NOT ported: this relay has no initializing wait a client can time out
 // in, and a channel whose source never delivers is ended by the health
 // monitor's init grace period instead.
@@ -5623,13 +5612,14 @@ func serveClient(
 			lastYield = time.Now()
 			wait = tuning.KeepaliveInterval
 		} else if time.Since(lastYield) > tuning.ClientTimeout && !ch.Healthy() {
-			if ch.Switching() {
-				log.Info("stream switching in progress, giving the client more time", "channel", ch.ID(), "client", client.ID)
-			} else {
-				log.Warn("no data and the stream is unhealthy, disconnecting",
-					"channel", ch.ID(), "client", client.ID, "timeout", tuning.ClientTimeout)
-				return
-			}
+			// _is_timeout (:583-604) minus its url_switching exemption
+			// (:593-596), which is not ported: url_switching is true only
+			// inside update_url's own body (input/manager.py:1471-1540), a
+			// window of at most the old process's kill-and-join, and a
+			// client reprieved there is dropped on its next poll anyway.
+			log.Warn("no data and the stream is unhealthy, disconnecting",
+				"channel", ch.ID(), "client", client.ID, "timeout", tuning.ClientTimeout)
+			return
 		}
 
 		waitCtx, cancel := context.WithTimeout(ctx, max(wait, time.Millisecond))
@@ -5661,7 +5651,7 @@ func serveClient(
 
 // errorPacketMessage is the text _wait_for_initialization puts in the error
 // packet for a channel that ended before the client's first byte
-// (output/ts/generator.py:229-231): the error message the channel recorded,
+// (output/ts/generator.py:235-239): the error message the channel recorded,
 // "Unknown error" when a stopped channel recorded none, and nothing for a
 // channel that is still running.
 func errorPacketMessage(ch *channel.Channel) string {
@@ -6194,9 +6184,9 @@ func TestTwoClientsMakeOneUpstreamRequest(t *testing.T) {
 
 // A CLEAN UPSTREAM EOF IS A CONNECTION FAILURE, retried and counted, not the
 // stream ending: fetch_chunk reads an empty chunk as "Server closed
-// connection" (input/manager.py:1868-1872), _process_stream_data returns,
-// and the retry loop records a failure and reconnects (:557-568). Three of
-// them exhaust the source (:533-538, parity-matrix row 3); with nothing to
+// connection" (input/manager.py:1870-1875), _process_stream_data returns,
+// and the retry loop records a failure and reconnects (:555-563). Three of
+// them exhaust the source (:534-537, parity-matrix row 3); with nothing to
 // fail over to, the channel ends in error naming the attempts, and its ring
 // closes so no reader blocks forever. 2c-2 ended the channel on the first
 // EOF, which was the honest shape before there was a retry loop to run;
@@ -6230,7 +6220,7 @@ func TestACleanUpstreamEndIsRetriedAndThenExhaustsTheSource(t *testing.T) {
 	}
 	var exhausted *ErrSourcesExhausted
 	if !errors.As(ch.Err(), &exhausted) || exhausted.Message() != "Connection failed after 3 attempts" {
-		t.Fatalf("Err() = %v, want ErrSourcesExhausted saying \"Connection failed after 3 attempts\" (input/manager.py:666)", ch.Err())
+		t.Fatalf("Err() = %v, want ErrSourcesExhausted saying \"Connection failed after 3 attempts\" (input/manager.py:682)", ch.Err())
 	}
 	// Asked AT THE HEAD, not at cursor 0. Wait reports freshness before
 	// closure, so a caught-up reader is the only one that can observe the
@@ -6886,7 +6876,7 @@ func TestTheStreamRouteIsUnregisteredWithoutTheDevFlag(t *testing.T) {
 }
 
 // A stream that ends cleanly is RECONNECTED, three times, before the source
-// is exhausted (input/manager.py:1868-1872 and the retry loop; 2c-2 ended
+// is exhausted (input/manager.py:1870-1875 and the retry loop; 2c-2 ended
 // the tune on the first EOF, before there was a loop) -- and only then does
 // the client's response end rather than hang, with every byte the provider
 // sent across the three connections. With no alternate on the fake control
@@ -7465,7 +7455,7 @@ import (
 )
 
 // resolver is channel.Resolver over the control client: the control-plane
-// half of _try_next_stream (input/manager.py:2088-2125) and the whole of its
+// half of _try_next_stream (input/manager.py:2076-2131) and the whole of its
 // degraded fallback, which is why it is one per channel -- it holds the
 // candidate list the initial answer carried, the in-memory form of
 // live:channel:{id}:source_cache (spec § Stage 2c's key-family table,
@@ -7479,7 +7469,7 @@ import (
 // 403 from a SECRET_KEY mismatch between roles) fails the switch loudly,
 // because "the cached list would keep a deleted channel streaming, and a
 // token fault would make every failover on the deployment degrade forever
-// instead of failing once" (:2095-2106). A null source is ErrNoAlternate.
+// instead of failing once" (:2084-2098). A null source is ErrNoAlternate.
 //
 // THE TIMING SHAPE IS THE CLIENT'S: a failover against an unreachable
 // control plane costs two attempts of (ConnectTimeout, ReadTimeout) plus the
@@ -7942,14 +7932,14 @@ import (
 // probed, the cached alternates are tried in turn when it fails, the
 // reserved slot is given back, and the client is handed the URL -- the one
 // that VALIDATED, not wherever the probe was redirected to, because
-// validate_stream_url returns the URL it was given (url_utils.py:180, :268).
+// validate_stream_url returns the URL it was given (url_utils.py:183, :250).
 
 // probeTimeout is the (5, 5) pair views.py:480 and :503 pass
 // validate_stream_url: connect 5s, read 5s.
 const probeTimeout = 5 * time.Second
 
 // probeRedirectLimit is requests' DEFAULT_REDIRECT_LIMIT (30), which
-// allow_redirects=True on the probe (url_utils.py:170, :183) is bounded by;
+// allow_redirects=True on the probe (url_utils.py:174, :190) is bounded by;
 // past it requests raises TooManyRedirects and the URL is invalid.
 const probeRedirectLimit = 30
 
@@ -8005,7 +7995,7 @@ func redirectTune(ctx context.Context, deps tuneDeps, id string, answer *control
 	source := answer.Source
 
 	// Python passes the answer's user_agent RAW here, not the defaulted one
-	// StreamManager would use (views.py:481 versus input/manager.py:73), so
+	// StreamManager would use (views.py:479-481 versus input/manager.py:73), so
 	// a blank agent sends no User-Agent header at all.
 	_ = defaultUserAgent
 	valid, message := validateStreamURL(ctx, probe, source.URL, source.UserAgent)
@@ -8059,7 +8049,7 @@ func redirectTune(ctx context.Context, deps tuneDeps, id string, answer *control
 // non-HTTP scheme is valid unprobed; a HEAD that answers 2xx is valid; a GET
 // that answers 2xx and yields at least one byte is valid; anything else is
 // not, with the reason. The Content-Type is never a reason to refuse
-// (:222-249, "always consider the stream valid if we got data").
+// (:234-250, "always consider the stream valid if we got data").
 func validateStreamURL(ctx context.Context, probe *http.Client, rawURL, userAgent string) (bool, string) {
 	lower := strings.ToLower(rawURL)
 	if strings.HasPrefix(lower, "udp://") || strings.HasPrefix(lower, "rtp://") || strings.HasPrefix(lower, "rtsp://") {
@@ -8093,8 +8083,8 @@ func validateStreamURL(ctx context.Context, probe *http.Client, rawURL, userAgen
 		return response, nil
 	}
 
-	// HEAD first (:166-172); any error means "HEAD not supported", not
-	// "invalid" (:173-175).
+	// HEAD first (:171-178); any error means "HEAD not supported", not
+	// "invalid" (:175-178).
 	if head, err := request(http.MethodHead); err == nil {
 		status := head.StatusCode
 		_ = head.Body.Close()
@@ -8402,7 +8392,7 @@ func packetsUntil(t *testing.T, body io.ReadCloser, deadline time.Duration, stop
 }
 
 // KEEPALIVES ARE GATED ON THE HEALTH FLAG (output/ts/generator.py:387-405,
-// :540-551): a client waiting at the buffer head receives null packets only
+// :542-551): a client waiting at the buffer head receives null packets only
 // once the channel is UNHEALTHY, and never while it is merely quiet. The
 // primary goes silent after three chunks with CONNECTION_TIMEOUT at 5s, so
 // the channel stays healthy for five seconds of silence -- in which no null
@@ -8453,7 +8443,7 @@ func TestAnUnhealthyChannelSendsKeepalivesAtTheBufferHeadAndAHealthyOneDoesNot(t
 	}
 }
 
-// THE KEEPALIVE CAP (output/ts/generator.py:369-380): keepalives refresh the
+// THE KEEPALIVE CAP (output/ts/generator.py:371-380): keepalives refresh the
 // timer _is_timeout reads, so a permanently failed stream would hold a client
 // forever; MAX_KEEPALIVE_DURATION ends it. Compressed to half a second, with
 // the control plane too slow to ever switch: the response ends, and the
@@ -8510,7 +8500,7 @@ func TestHealthyOnTheListPayloadFollowsTheHealthMonitor(t *testing.T) {
 	}
 }
 
-// THE ERROR PACKET (output/ts/generator.py:229-231; parity-matrix row 3's
+// THE ERROR PACKET (output/ts/generator.py:235-239; parity-matrix row 3's
 // Python pin reads it): a client that received nothing when its channel
 // ended in error gets exactly one 188-byte packet on the null PID carrying
 // "Error: <message>", with the message run()'s finally block would have
@@ -9092,7 +9082,7 @@ func attachWith(t *testing.T, m *Manager, id string, source Source, tuning Tunin
 // against the number written there.
 func TestTheFailoverLiteralsMatchPython(t *testing.T) {
 	if retryBackoff(1) != 250*time.Millisecond || retryBackoff(2) != 500*time.Millisecond || retryBackoff(12) != 3*time.Second || retryBackoff(13) != 3*time.Second {
-		t.Errorf("retryBackoff is not min(.25 * failures, 3) (input/manager.py:566): %s %s %s", retryBackoff(1), retryBackoff(2), retryBackoff(13))
+		t.Errorf("retryBackoff is not min(.25 * failures, 3) (input/manager.py:557): %s %s %s", retryBackoff(1), retryBackoff(2), retryBackoff(13))
 	}
 	if maxUnhealthyChecks != 3 {
 		t.Errorf("maxUnhealthyChecks = %d, want 3 (input/manager.py:1556)", maxUnhealthyChecks)
@@ -9101,10 +9091,10 @@ func TestTheFailoverLiteralsMatchPython(t *testing.T) {
 		t.Errorf("healthActionCooldown = %s, want 30s (input/manager.py:1557)", healthActionCooldown)
 	}
 	if stableReconnectAfter != 30*time.Second {
-		t.Errorf("stableReconnectAfter = %s, want 30s (input/manager.py:1573's bare literal)", stableReconnectAfter)
+		t.Errorf("stableReconnectAfter = %s, want 30s (input/manager.py:1580's bare literal)", stableReconnectAfter)
 	}
 	if healthActionFor(30*time.Second) != actionReconnect || healthActionFor(29*time.Second) != actionSwitch {
-		t.Error("healthActionFor: a stream stable for >= 30s reconnects in place, a younger one switches (input/manager.py:1573-1583)")
+		t.Error("healthActionFor: a stream stable for >= 30s reconnects in place, a younger one switches (input/manager.py:1576-1590)")
 	}
 }
 
@@ -9208,7 +9198,7 @@ func TestThreeConnectFailuresExhaustTheSourceAndFailOver(t *testing.T) {
 
 // PARITY-MATRIX ROW 2: no data for longer than the inactivity threshold,
 // observed on three consecutive health checks, switches streams
-// (input/manager.py:1503-1507, :1509-1560, :414-439) -- the unstable branch,
+// (input/manager.py:1547-1551, :1553-1609, :414-438) -- the unstable branch,
 // the same one the Python pin drives, because the stable branch needs 30
 // seconds of wall clock (row 2's Notes). Thresholds compressed off the
 // tuning: 300 ms of silence, checked every 50 ms.
@@ -9218,7 +9208,7 @@ func TestThreeConnectFailuresExhaustTheSourceAndFailOver(t *testing.T) {
 // asked; the gap must be at least the threshold plus two more intervals. A
 // port that acted on the first inactive check would ask at ~300-350 ms and
 // redden. And no connection failure is counted: Python leaves the retry loop
-// on the flag before its failure accounting (:515-517).
+// on the flag before its failure accounting (:505-507).
 func TestDeadAirOnAYoungConnectionSwitchesStreams(t *testing.T) {
 	events := &eventLog{}
 	m := NewManager(ManagerConfig{BudgetBytes: buffer.TSPacketSize * 400, Events: events})
@@ -9263,7 +9253,7 @@ func TestDeadAirOnAYoungConnectionSwitchesStreams(t *testing.T) {
 }
 
 // The health flag comes back on its own when data resumes before the third
-// check (input/manager.py:1592-1599), and nothing is switched. A source that
+// check (input/manager.py:1594-1601), and nothing is switched. A source that
 // pauses for one threshold and a half, against a threshold of 300 ms
 // checked every 200 ms: the check at 400 ms finds it inactive, the one at
 // 600 ms finds data 100 ms old.
@@ -9304,7 +9294,7 @@ func (s pausingSource) Run(ctx context.Context, sink io.Writer) error {
 }
 
 // Out of candidates, the channel ends in error carrying Python's own message
-// (input/manager.py:660-666): "All N stream options failed" when any stream
+// (input/manager.py:679-682): "All N stream options failed" when any stream
 // id was tried -- the initial one counts -- and the last attempt's error
 // still reachable through it.
 func TestAnExhaustedChannelEndsInErrorNamingTheCount(t *testing.T) {
@@ -9407,7 +9397,7 @@ func (raggedSource) Run(_ context.Context, sink io.Writer) error {
 	return &ErrUpstreamStatus{Status: 502}
 }
 
-// The degraded bookkeeping of _try_next_stream (input/manager.py:2181-2192):
+// The degraded bookkeeping of _try_next_stream (input/manager.py:2191-2202):
 // a switch resolved from the cache sets the flag and raises nothing; the next
 // switch the control plane answers raises channel_error with
 // reason degraded_failover, once.
@@ -9518,6 +9508,108 @@ func TestTheSlotIsReleasedOnceWhenTheSourceGoroutineReturns(t *testing.T) {
 		t.Fatalf("released %+v, want the alternate's stream 2 on profile 5", released[0])
 	}
 }
+
+// fakeClock is an injectable time.Now for the manager, so a "stable for 31
+// seconds" stream costs no wall clock.
+type fakeClock struct {
+	mu sync.Mutex
+	t  time.Time
+}
+
+func (c *fakeClock) now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.t
+}
+
+func (c *fakeClock) advance(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.t = c.t.Add(d)
+}
+
+// stallingSource writes two chunks' worth, reports it, then writes again on
+// every resume signal and reports each, blocking until cancelled: a provider
+// that goes quiet after a stable run, twice over. Every Run counts.
+type stallingSource struct {
+	runs   *int32Counter
+	resume chan struct{}
+	wrote  chan struct{}
+}
+
+func (s stallingSource) Run(ctx context.Context, sink io.Writer) error {
+	s.runs.inc()
+	payload := relaytest.SyntheticTS(8, 0x100)
+	if _, err := sink.Write(payload); err != nil {
+		return err
+	}
+	s.wrote <- struct{}{}
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-s.resume:
+			if _, err := sink.Write(payload[:4*buffer.TSPacketSize]); err != nil {
+				return err
+			}
+			s.wrote <- struct{}{}
+		}
+	}
+}
+
+// THE RECONNECT FLAG IS CLEARED ON EVERY PASS OF THE INNER LOOP
+// (input/manager.py:521-531), and a shape that cleared it only at the outer
+// loop's top left it set after the first reconnect: the monitor's own guard
+// (`if not self.needs_reconnect`, :1581) then never cancelled again, and a
+// SECOND stall on a stable stream was logged and never acted on -- the 2c-5
+// plan's reviewer reproduced that against an earlier loop. Two stable stalls
+// with an injected clock (31 s of stability, then 35 s of silence, twice):
+// each must cancel the attempt and start the next, so the source runs three
+// times, and channel_reconnect is raised for attempts 2 and 3 with no
+// `reason: health_monitor` shape, which is the outer branch Python cannot
+// reach (Ruling R4).
+func TestASecondStableStallIsActedOnAfterAHealthReconnect(t *testing.T) {
+	clock := &fakeClock{t: time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC)}
+	events := &eventLog{}
+	m := NewManager(ManagerConfig{BudgetBytes: buffer.TSPacketSize * 400, Now: clock.now, Events: events})
+	t.Cleanup(m.StopAll)
+
+	runs := &int32Counter{}
+	src := stallingSource{runs: runs, resume: make(chan struct{}), wrote: make(chan struct{})}
+	tuning := testTuning()
+	tuning.HealthCheckInterval = 20 * time.Millisecond
+	ch, release := attachWith(t, m, "stall-twice", src, tuning, &fakeResolver{})
+	defer release()
+
+	for stall := 1; stall <= 2; stall++ {
+		<-src.wrote                     // this attempt's first bytes: the ring holds a chunk
+		clock.advance(31 * time.Second) // stable past stableReconnectAfter
+		src.resume <- struct{}{}
+		<-src.wrote                     // lastData is now 31 s after connStart
+		clock.advance(35 * time.Second) // silence past CONNECTION_TIMEOUT, past the cooldown
+		want := stall + 1
+		deadline := time.Now().Add(5 * time.Second)
+		for runs.get() != want && time.Now().Before(deadline) {
+			time.Sleep(10 * time.Millisecond)
+		}
+		if runs.get() != want {
+			t.Fatalf("stall %d: the source ran %d times, want %d -- needsReconnect stayed set after the first reconnect and the monitor never cancelled again", stall, runs.get(), want)
+		}
+	}
+	reconnects := events.of("channel_reconnect")
+	if len(reconnects) != 2 || reconnects[0].Details["attempt"] != 2 || reconnects[1].Details["attempt"] != 3 {
+		t.Fatalf("channel_reconnect = %+v, want attempts 2 and 3", reconnects)
+	}
+	for _, e := range reconnects {
+		if e.Details["reason"] == "health_monitor" {
+			t.Fatalf("channel_reconnect carried reason health_monitor: the outer-loop branch is unreachable in Python and is not ported")
+		}
+	}
+	if ch.State() != StateActive {
+		t.Fatalf("state = %q after two reconnects, want active", ch.State())
+	}
+	m.Stop("stall-twice")
+}
 ```
 
 ### Appendix AD — `apps/proxy/tests/test_relay_list_payload_golden.py`, two edits
@@ -9590,7 +9682,9 @@ queue, batching up to the route's `max_length` of 200, logging an outage
 once on the way in and once on the way out, and losing -- not queuing --
 what is raised during it. The relay raises `channel_buffering`,
 `channel_failover`, `stream_switch`, `channel_reconnect` and `channel_error`
-(`connection_failed`, `degraded_failover`): `input/manager.py`'s six.
+(`connection_failed`, `degraded_failover`): `input/manager.py`'s five, the
+`channel_reconnect{reason: health_monitor}` shape excluded because it lives
+inside `_attempt_reconnect`, which A5.7 shows Python cannot reach.
 `channel_start`, `channel_stop`, `client_connect` and `client_disconnect`
 are raised from the tune path and the coordinated stop (`views.py`,
 `server.py`, `output/ts/generator.py:129`) and **belong to 2c-8** with the
@@ -9627,18 +9721,30 @@ serves the channel through Proxy, force-ffmpeg included, exactly as
 `_monitor_health` lowers and raises; `serveClient` sends keepalives at the
 head of an unhealthy channel after five empty reads, caps them, and
 evaluates `_is_timeout`'s condition -- reachable on TS only through the cap,
-as row 12's Notes record. The error TS packet is ported for the client that
+as row 12's Notes record -- minus its `url_switching` exemption
+(`output/ts/generator.py:593-596`), which is not ported: `url_switching` is
+true only inside `update_url`'s own body (`input/manager.py:1471-1540`), and
+a client reprieved in that window is dropped on its next poll. The error TS packet is ported for the client that
 received nothing when its channel ended (`:229-231`, the message from
 `run`'s finally block); the initialization-timeout packet (`:252-254`) is
 not, because this relay has no initializing wait a client can time out in.
 `healthy` is on the list payload and leaves the golden's `NOT_SERVED_YET`.
 
 **A5.7 — the stated divergences.** The health monitor cancels the running
-attempt where Python's loop notices its flag up to `CHUNK_TIMEOUT` later
-(`:1362-1365`, `:1774`), so `CHUNK_TIMEOUT` is not read; a stable-stream
-reconnect is judged a success by a delivered byte rather than an established
-connection, since a `Source` has no such moment; `channel_reconnect` is
-raised as a retry attempt starts rather than once established; event URLs
+attempt where Python's loop notices its flag between `fetch_chunk` calls
+(`:1364-1365`), each blocking up to `CHUNK_TIMEOUT` in `select` (`:1845`), so
+the Go relay acts up to five seconds sooner and `CHUNK_TIMEOUT` is not read;
+the outer loop's `_attempt_reconnect` branch (`:414-426`) is not ported,
+because Python cannot reach it -- the monitor sets `needs_reconnect` only
+while connected (`:1565`) and the inner loop clears it on every pass
+(`:527`) before the outer loop's top can see it -- so a health reconnect is
+the inner loop's fall-through (`:521-534`) here as there, and no
+`channel_reconnect{reason: health_monitor}` is raised; after a
+buffering-triggered switch the new source starts as attempt 1 with a clean
+history, where Python's main loop may record one failure for the attempt the
+switch ended (`:533-534`) unless `update_url`'s clear (`:1512`) lands after
+it; `channel_reconnect` is raised as a retry attempt starts rather than once
+established; event URLs
 go through `redact.Line` (scheme and host) where `redact_url` keeps more;
 one emitter worker and batching where Python spawns a greenlet per event;
 `URL_SWITCH_TIMEOUT` and `RETRY_WAIT_INTERVAL` are not read (the first
