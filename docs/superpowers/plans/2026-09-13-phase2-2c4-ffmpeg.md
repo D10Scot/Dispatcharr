@@ -56,7 +56,7 @@ Every task's requirements implicitly include this section. Constraints 1–20 ar
 
 9. **Prefer `t.Setenv` over manual environment save/restore, and never run an environment-mutating test with `t.Parallel()`.** Every test that spawns the stand-in calls `t.Setenv(relaytest.StandInEnv, "1")`; none takes `t.Parallel()`.
 
-10. **Only Task 4 (the Python side) and Task 7 Step 6 (regenerating the golden) need the shared `dispatcharr-testrunner` container.** Before either edit:
+10. **Only Task 4 (the Python side) needs the shared `dispatcharr-testrunner` container.** Task 7 Step 6 regenerates the golden on the host with `TEST_USE_SQLITE=1`, because the writing run has to create a file and the container mounts the repo read-only. Before Task 4's first edit:
 
     ```bash
     docker inspect dispatcharr-testrunner --format '{{range .Mounts}}{{.Source}}{{"\n"}}{{end}}'
@@ -72,7 +72,7 @@ Every task's requirements implicitly include this section. Constraints 1–20 ar
 
 14. **Parity is against the code, not against the summary.** Every behavioural claim here carries a `file:line`. Five places where reading the source changed this plan: the parser is keyed on the **whole** command string, not its basename (`input/manager.py:797-803`); `_parse_ffmpeg_stats` drops the **whole** line when one captured number does not parse (`:1249`); the UDP filter drops values and **leaves their flags** (`:808-812`); `connecting` is set on **both** paths, not the transcode one (`:1905-1963`, correcting 2c-2's `state.go` comment); and `endswith('.m3u8')` runs over the whole URL, query string included (`utils.py:55`).
 
-15. **Decide every lint finding in this plan, and re-lint after every `#nosec`.** This PR adds **two** `#nosec` — `G204` on the spawn (`ffmpeg/spawn.go`) and the `G204,G702` **pair** on credlint's `go list` call, where the taint rule fired only once the first was silenced, the same shape as 2c-1's `G304/G703` — one `#nosec G304` on the stand-in's fixture read (a test-support file that is not `_test.go`), and one `//nolint:errorlint` on a test asserting identity. Six other findings were **fixed rather than suppressed**: three `unused-parameter` trampolines, one `context-as-argument` order, one `noctx` (`exec.CommandContext` with `context.Background()`), and the G702 above.
+15. **Decide every lint finding in this plan, and re-lint after every `#nosec`.** This PR adds **eight** suppressions, every one with its reason on the line, and Task 11 Step 6 lists them: `#nosec G204` on the spawn (`ffmpeg/spawn.go:88`); the `G204,G702` **pair** on credlint's `go list` call (`internal/credlint/check.go:142`), where the taint rule fired only once the first was silenced, the same shape as 2c-1's `G304/G703`; `#nosec G304` on credlint's source read (`check.go:214`); `#nosec G304` on the stand-in's fixture read (`internal/relaytest/standin.go:262`) and `//nolint:noctx` on its fetch (`:202`), a test-support file that is not `_test.go`; `//nolint:errorlint` on a test asserting identity (`redact/redact_test.go:43`); and `#nosec G204` twice in the real-ffmpeg test (`channel/source_transcode_real_test.go:31`, `:43`) on a `LookPath` result with fixed arguments. Six findings were **fixed rather than suppressed**: three `unused-parameter` trampolines, one `context-as-argument` order, one `noctx` (`exec.CommandContext` with `context.Background()`), and the G702 above. An earlier draft of this constraint counted four; the appendices carry eight.
 
 16. **Run the four checks after every task, from the module root**, and treat any of the four failing as a stop:
 
@@ -120,7 +120,7 @@ Every test this PR adds is bound by all six, and every task that adds an asserti
 
 ### Working rules
 
-- Run the four checks after every task (Global Constraint 16), then `scripts/check_go_credential_logging.sh relay` (Constraint 21).
+- Run the four checks after every task (Global Constraint 16), then `scripts/check_go_credential_logging.sh relay` (Constraint 21). **Run `relay/channel` at least eight times under `-race` before Task 6 is committed**: its two timeout tests are the ones where a clock taken in the wrong place reads as a flake (Task 6 Step 4's note on `TestASustainedSubThresholdSpeedEndsTheSourceWithATimeout`).
 - Stage and commit in separate Bash calls; write commit messages to a file and use `-F`.
 - Every commit message ends with the attribution lines this session was given.
 - **Every Go file in this plan has been built, vetted, race-tested three times and linted at zero findings before this plan was written**, in a scratch module seeded from `76611908`, every `_test.go` included (§ Sequencing). The real-ffmpeg test ran on ffmpeg 9.0.1 (host) and the Linux-only test in the repo's Go 1.27.1 image, both ways. Where you find a discrepancy, your tree is the fact and this plan is the claim — **stop and report it** (Task 0 Step 0).
@@ -145,7 +145,9 @@ Three findings, from reading `core/models.py:137-160` and running `shlex.split` 
 
 **Three states, and a Go client tells them apart by presence.** A list is the built argv (empty for Proxy and Redirect, whose `build_command` returns `[]`). JSON `null` is "shlex refused the parameters" — an unbalanced quote a row can already carry, which the Python relay meets only at spawn time inside a broad `except` that returns `False` and retries; the relay refuses **that profile** by name (503) rather than the whole answer. The key **absent** is a control plane older than this relay, reported as a contract mismatch (502) like an absent setting. `control.StreamProfileRef` carries `ArgvPresent` for exactly this, through a custom `UnmarshalJSON`, because `encoding/json` cannot tell null from absent for a plain slice.
 
-**The user agent is defaulted the way the Python relay defaults it**, `user_agent or Config.DEFAULT_USER_AGENT` (`input/manager.py:73`), on the Django side when building and on the Go side for the UDP filter — off the wire, from `DEFAULT_USER_AGENT`, which A1.4 already put there.
+**The user agent is defaulted the way the Python relay defaults it**, `user_agent or Config.DEFAULT_USER_AGENT` (`input/manager.py:73`), on the Django side when building and on the Go side on **both** architectures — the UDP filter reads it on the transcode path, and the Proxy reader sends it as Python's `_create_session` does (`:165`) — off the wire, from `DEFAULT_USER_AGENT`, which A1.4 already put there.
+
+**And the wire grows, which is stated rather than absorbed.** Every Source now carries its URL three times — `url`, `stream_profile.argv`, `ffmpeg_stream_profile.argv` — and every alternate the same, so an answer with N alternates grows by roughly 2(N+1) URL-length strings. 2c-9's cross-implementation differential fixtures will carry each URL in three places and must be generated, never hand-written. **And a `null` argv is terminal for that profile**: 2c-5's failover must skip such a candidate, never retry it as a connection failure (Amendment A4.3).
 
 ### R2 — A buffering timeout ends the tune in 2c-4, with a named error, and 2c-5 replaces exactly one arm.
 
@@ -192,7 +194,7 @@ The brief asks for the minimum: every `exec.Cmd` error, every stderr line echoin
 
 **Why the type and not the name.** A provider URL reaches a Go log through one door: an error that carries it. `net/http` wraps every client failure in a `*url.Error` whose `Error()` prints the whole URL and masks only userinfo. 2c-2's review found the leak at the one `*url.Error` site the human guard missed. A check blind to the variable's name and keyed on its type cannot miss the next one. **Strings are not checked**, and the Python check has the same limit; what a string can carry — an ffmpeg stderr line echoing the URL — is redacted by `redact.Line` at the one site such lines are logged, and `TestAProviderURLInStderrNeverReachesTheLog`, whose secret has exactly one source, is the guard for that door.
 
-**Its first run over the module reported 18 sites.** Two were fixed with `redact.Error`: `control.Unavailable.Error()` formats the transport's `*url.Error` with `%v`, whose message carries the control-plane base URL — which `DISPATCHARR_INTERNAL_API_BASE_URL` may give with userinfo — and `control.attempt`'s `NewRequestWithContext` wrap. Sixteen took markers with reasons: `encoding/json` errors over settings values, `*fs.PathError`s over the secret **file's** path and fixture paths, the checker's own diagnostics. The existing `channel.withoutURL` moved to `redact.Error` so one function is the allowlist, and `channel.go`'s `"upstream failed"` and `writeTuneFailure`'s default arm now go through it.
+**Over the bare `76611908` seed, with only `redact` and `credlint` added, it reports 17 sites** — measured, and re-measured for the review after a first draft of this paragraph said 18 and split them wrongly. **Eight are resolved through `redact.Error`**: `channel/channel.go:233` (the `"upstream failed"` log), `channel/source_proxy.go:167`, `:186`, `:211`, `:229` (the two `withoutURL` sites and the two bare `%w` wraps), `control/nextsource.go:99` (`Unavailable.Error()` formats the transport's `*url.Error` with `%v`, whose message carries the control-plane base URL — which `DISPATCHARR_INTERNAL_API_BASE_URL` may give with userinfo) and `:229` (`attempt`'s `NewRequestWithContext` wrap), and `httpapi/stream.go:382` (`writeTuneFailure`'s default arm). The two `nextsource.go` sites are the ones no human guard had caught. **Nine take markers with reasons**: `config/config.go:132`, `:136` (the secret **file's** path), `control/settings.go:43`, `:56`, `:79` and `control/nextsource.go:157` (`encoding/json` errors over values that are not URLs), `httpapi/channels.go:145` (an encode error over a payload that carries the URL on purpose), `main.go:33`, `:83`. 2c-4's own new non-test files add **eleven** more sites the checker sees and the appendices already satisfy: `ffmpeg/spawn.go` ×3 and `internal/credlint/main.go` ×2 with markers, `internal/relaytest/corpus.go` ×2 and `standin.go` ×3 with markers plus one `redact.Error`, and `channel/source_transcode.go` ×2 through `redact.Error`. The existing `channel.withoutURL` moved to `redact.Error` so one function is the allowlist.
 
 **Known gaps, stated as the Python check states its three.** A composite literal storing an error in a field (`control.Unavailable{Err: err}`) is not a call and is not seen; the type's `Error()` method is, one hop later, which is where the real one was found. `errors.Join`, and an error stringified by hand and passed as a string, are invisible. The redactor allowlist is one full name; `TestTheRedactorIsExactlyRedactError` fails if a local function named `Error` is ever mistaken for it.
 
@@ -366,7 +368,7 @@ Nothing under `core/`, `dispatcharr/`, `frontend/`, `e2e/` or `metrics/` is touc
   | `(*Channel).run` | sets `StateWaitingForClients`, starts `promoteOnFirstChunk`, calls `source.Run(ctx, c.ring)`, three-arm switch | Task 6 inserts three lines before `setState`; Appendix M assumes this body |
   | `Channel` fields | `id, ring, log, tuning, source, startedAt, mu, state, lastErr, clients, cancel, done` | Task 6 adds `stats` after `lastErr` |
   | `Tuning` | four fields ending in `ShutdownDelay` | Task 6 adds two |
-  | `withoutURL` | declared in `channel/source_proxy.go`, called at four sites there | Task 1 deletes it and calls `redact.Error`; a fifth call site elsewhere is a finding |
+  | `withoutURL` | declared in `channel/source_proxy.go`, called at **two** sites there (`:167`, `:186`); the two other `%w` wraps in that file (`:211`, `:229`) are bare | Task 1 deletes it, calls `redact.Error` at all four, and a call site elsewhere is a finding |
   | `startProxyTune` | `func startProxyTune(parent context.Context, client *control.Client, id string) (channel.Started, error)`, detaching with `context.WithoutCancel` | Task 7 renames it; the detach stays |
   | `tuningFrom` | five keys: `settingChunkBytes`, `settingRetention`, `settingJoinBehind`, `settingShutdownDelay`, `settingReadSize` | Task 7 adds three constants and two reads |
   | `channelPayload` | sixteen fields, `AvgBitrate` followed by `Clients` | Task 7 inserts seven between them |
@@ -393,7 +395,7 @@ Nothing under `core/`, `dispatcharr/`, `frontend/`, `e2e/` or `metrics/` is touc
   grep -n 'hits=' apps/proxy/live_proxy/tests/zero_orm_allowlist.py
   ```
 
-  At `81d41975` the eight functions are at `:105`, `:125`, `:643`, `:673`, `:696`, `:500`, `:812` and `:242`, the sentinel above them, `kind` at `serializers.py:50`. The golden test file is 2c-3's (Appendix J of that plan); if it is absent, 2c-3 merged without it and Task 7 Step 6 is a stop. The two `resolve_source` entries carry `hits=38`.
+  At `29224271` the eight functions are at `:105`, `:125`, `:643`, `:673`, `:696`, `:498`, `:804` and `:242`, the sentinel at `:72`, `kind` at `serializers.py:50`. The golden test file is 2c-3's (Appendix J of that plan); if it is absent, 2c-3 merged without it and Task 7 Step 6 is a stop. The two `resolve_source` entries carry `hits=38`.
 
 - [ ] **Step 4: Confirm CI's shape before editing it**
 
@@ -458,7 +460,7 @@ The port of `log_parsers.py` (235 statements at 69% coverage — the spec's "hig
 
 **Files:**
 - Create: `relay/ffmpeg/parse.go`, `progress.go`, `detector.go` (Appendices C, D, E); `parse_test.go`, `format_test.go`, `progress_test.go`, `detector_test.go` (Appendix G); `relay/internal/relaytest/corpus.go` (Appendix H)
-- Modify: `relay/ffmpeg/ffmpeg.go` — replace 2c-1's stub comment with the one in Appendix C's header (its "2c-4 writes a splitter" paragraph is withdrawn by R1)
+- Modify: `relay/ffmpeg/ffmpeg.go` — replace 2c-1's stub comment, whole file, with Appendix C's `ffmpeg.go` (its "2c-4 writes a splitter" paragraph is withdrawn by R1, and the replacement says so)
 
 **Interfaces:**
 - Produces: `ffmpeg.Info` (twelve pointer fields, one per `log_parsers.py` dict key), `Kind` and its seven constants, `Tool` and `ToolFor(command)`, `CanParse(tool, line) Kind`, `Parse(kind, line) (Info, bool)`, `AutoParse(line) (Kind, Info, bool)`; `Progress` (four pointer fields), `IsProgressLine`, `ParseProgress`, `Round(x, places)`; `Detector{Threshold, Timeout, Now}` with `Observe(speed) Verdict`, `Buffering()`, `Reset()`, and the five verdicts. `relaytest.CorpusNames`, `CorpusPath`, `Corpus`, `SplitCorpus`, `CorpusSpeeds`, `CorpusElapsed`.
@@ -482,7 +484,7 @@ The port of `log_parsers.py` (235 statements at 69% coverage — the spec's "hig
   cd <your worktree>/relay && go test -race -count=1 ./ffmpeg ./internal/relaytest
   ```
 
-  `TestCanParseAndParseAgreeWithThePythonParsers` is a twenty-row table whose ffmpeg rows are **real lines** — four verbatim from the corpus preamble — and whose expectations are literals. `TestTheCorpusPreambleParsesAsPythonStoresIt` drives the whole `normal` preamble through the ffmpeg parser and compares the merged result to what the capture carries. `TestAScientificNotationSpeedIsUnderReportedAsItsMantissa` PINS A DEFECT (row 28) and asserts the wrong value on purpose. `TestRoundMatchesPythonsRound`'s nine expectations came from `python3 -c 'print(round(x, n))'`; write none of your own without running Python. `TestTheCapturedLeadIsNeverCalledBufferingBeforeItCrosses` is row 4's corpus half.
+  `TestCanParseAndParseAgreeWithThePythonParsers` is a sixty-five-row table — twenty of them ffmpeg rows that are **real lines**, four verbatim from the corpus preamble, plus one row per subTest of `apps/proxy/live_proxy/tests/test_vlc_streamlink_parsers.py` (2b-4's literal cases for every VLC and Streamlink branch: all ten video aliases, all eight audio aliases, the fps fraction and its zero denominator, the `wxh` bounds at 9999 and 0099, the generic fallbacks with **no** `avcodec` prefix, both precedence rules, the four named channel counts, five Streamlink qualities and the `144p` fallback to 1080p, and the empty-result exits). Every expectation is a literal copied from the Python file, none from this parser. Nine rows are `directDispatch`: their Python counterparts call the parse method directly, so their lines carry no `type=` and `CanParse` is not asserted for them — the shape of the Python test, not a loosening. `TestTheCorpusPreambleParsesAsPythonStoresIt` drives the whole `normal` preamble through the ffmpeg parser and compares the merged result to what the capture carries. `TestAScientificNotationSpeedIsUnderReportedAsItsMantissa` PINS A DEFECT (row 28) and asserts the wrong value on purpose. `TestRoundMatchesPythonsRound`'s nine expectations came from `python3 -c 'print(round(x, n))'`; write none of your own without running Python. `TestTheCapturedLeadIsNeverCalledBufferingBeforeItCrosses` is row 4's corpus half.
 
 - [ ] **Step 4: Break-check, four edits**
 
@@ -591,7 +593,7 @@ Ruling R1. **This is the one task that needs the shared container** (Global Cons
 
 - [ ] **Step 3: The tests, and the two expectations that gain a key**
 
-  Appendix T3 in full. Then the two exact-dict assertions Appendix T4 names gain `"argv": [...]` built by hand from the fixture's parameters and `source["url"]` — never `build_command(...)[1:]`.
+  Appendix T3 in full. Then the three exact-dict assertions Appendix T4 names gain `"argv": [...]` built by hand from the fixture's parameters and `source["url"]` — never `build_command(...)[1:]`.
 
   ```bash
   cd <your worktree> && python manage.py test apps.proxy.tests.test_stream_profile_argv apps.proxy.tests.test_next_source_resolution apps.proxy.tests.test_next_source_api apps.proxy.tests.test_next_source_edges apps.proxy.tests.test_redirect_transcode_flag
@@ -627,7 +629,7 @@ Ruling R1. **This is the one task that needs the shared container** (Global Cons
 
 - [ ] **Step 1: `nextsource.go`**
 
-  The custom unmarshaller decodes into an alias plus a `json.RawMessage` for `argv`, then sets `ArgvPresent` from the raw's length and `Argv` from its content, with an explicit-`null` check. `Argv` is tagged `json:"-"` so the default encoder never writes it back. The two `redact.Error` calls are the two real findings credlint reported (R7): `Unavailable.Error()`'s `%v` of the transport error, and `attempt`'s request-build wrap.
+  The custom unmarshaller decodes into an alias plus a `json.RawMessage` for `argv`, then sets `ArgvPresent` from the raw's length and `Argv` from its content, with an explicit-`null` check. `Argv` is tagged `json:"-"` so the default encoder never writes it back. The two `redact.Error` calls are the two findings no human guard had caught (R7): `Unavailable.Error()`'s `%v` of the transport error, and `attempt`'s request-build wrap.
 
 - [ ] **Step 2: The markers**
 
@@ -689,7 +691,7 @@ Ruling R1. **This is the one task that needs the shared container** (Global Cons
   | `TestParsedStderrReachesTheChannelsStats` | the `normal` preamble and last record, rounded as stored, with `video_bitrate` absent because the corpus line has no kb/s |
   | `TestOutputPhaseStreamLinesDoNotOverwriteTheInputs` | the input-phase gate, with an edited output resolution (Constraint 22's first declared line) |
   | `TestTheCapturedLeadIsNeverLabelledBufferingBeforeItCrosses` | **row 4, corpus half**, state read before stats for the ordering reason in its comment |
-  | `TestASustainedSubThresholdSpeedEndsTheSourceWithATimeout` | R2: `ErrBufferingTimeout`, after at least the timeout, at the API maximum threshold |
+  | `TestASustainedSubThresholdSpeedEndsTheSourceWithATimeout` | R2: `ErrBufferingTimeout`, after at least the timeout, at the API maximum threshold. **Its clock starts before the source does.** The first draft started it after the poll first observed `buffering` — later than the detector's own `since` — and the `< time.Second` bound reddened 2 runs in 8 under `-race` at 997 ms: the timeout fires on the first record more than a second after `since`, and the test was measuring from a later moment. A clock that cannot be late keeps the bound honest; break-check 19 still reddens with it |
   | `TestBufferingEndsWhenTheSpeedRecovers` | the recovery edge, on a re-ordered capture (Constraint 22's third line) |
   | `TestAProviderURLInStderrNeverReachesTheLog` | **the secret has one source**, the host survives |
   | `TestAMissingCommandFailsTheChannelWithoutEchoingArgv` | an `exec.Error` names the executable and nothing from argv |
@@ -738,7 +740,7 @@ Ruling R1. **This is the one task that needs the shared container** (Global Cons
 
 - [ ] **Step 1: `stream.go`**
 
-  `tuningFrom` reads the two thresholds on every tune (Constraint 13). `startTune` reads `DEFAULT_USER_AGENT` unconditionally and falls back to it when the answer's user agent is blank (`input/manager.py:73`), then branches on `kind` **and** the URL: Proxy + `NeedsFFmpeg` → the locked ffmpeg profile or `ErrNoFFmpegProfile`; Proxy → `ProxySource` as before; transcode → `transcodeSource(&answer.Source.StreamProfile, …)`; anything else → `ErrUnservedKind`. `transcodeSource` maps the three argv states to two errors and a source. `writeTuneFailure` gains three arms — `ErrProfileArgvAbsent` 502 (the same class and status as an absent setting), `ErrProfileUnbuildable` 503, `ErrNoFFmpegProfile` 503 — and its default arm goes through `redact.Error`. The detaching context is unchanged.
+  `tuningFrom` reads the two thresholds on every tune (Constraint 13). `startTune` reads `DEFAULT_USER_AGENT` unconditionally and falls back to it when the answer's user agent is blank (`input/manager.py:73`) — **on both arms**: the transcode source's UDP filter reads it and the Proxy source sends it, as Python's `_create_session` sends `self.user_agent` (`:165`); a first draft defaulted only the transcode arms and would have let a blank agent reach a provider as Go's own — then branches on `kind` **and** the URL: Proxy + `NeedsFFmpeg` → the locked ffmpeg profile or `ErrNoFFmpegProfile`; Proxy → `ProxySource` as before; transcode → `transcodeSource(&answer.Source.StreamProfile, …)`; anything else → `ErrUnservedKind`. `transcodeSource` maps the three argv states to two errors and a source. `writeTuneFailure` gains three arms — `ErrProfileArgvAbsent` 502 (the same class and status as an absent setting), `ErrProfileUnbuildable` 503, `ErrNoFFmpegProfile` 503 — and its default arm goes through `redact.Error`. The detaching context is unchanged.
 
 - [ ] **Step 2: `channels.go`**
 
@@ -761,7 +763,7 @@ Ruling R1. **This is the one task that needs the shared container** (Global Cons
   | `TestAProxyProfileWithAnHLSURLIsPlayedThroughTheFFmpegProfile` | force-ffmpeg; the discriminator is `ffmpeg_speed` on the payload |
   | `TestAProxyProfileWithAnHLSURLAndNoFFmpegProfileIsRefused` | 503, and the raw reader is never pointed at a playlist |
   | `TestABufferingThresholdChangeDoesNotReachARunningChannel` | **row 5** — API minimum then maximum, `SetSettings` between two tunes, the second channel is the falsifier |
-  | `TestABlankUserAgentFallsBackToTheWireDefault` | at `startTune`, against the fixture's literal |
+  | `TestABlankUserAgentFallsBackToTheWireDefault` | at `startTune`, against the fixture's literal, two subtests: the transcode source's `UserAgent` and the Proxy source's |
   | `TestAChildThatExitsNonZeroEndsTheTune` | the response ends, the channel carries `status 2` — take the `*Channel` **while the client is attached**, because its release drops it from the manager |
 
   ```bash
@@ -778,15 +780,16 @@ Ruling R1. **This is the one task that needs the shared container** (Global Cons
   | 12 | (Task 6's) | the row 5 test | `the running channel picked up the new threshold` |
   | 15 | `describeChannel` reads `channel.Stats{}` | `TestTheListEndpointCarriesTheFfmpegDerivedFields` **and** `TestTheLiveEndpointProducesTheGoldensKeySet` | `resolution = <nil> (<nil>), want 320x180 (string)`; `the live payload's keys are …` |
   | 16 | the `KindTranscode` branch becomes unreachable | `TestATranscodeTuneDeliversTheChildsOutput` | `tune for client-a answered 501, want 200` |
-  | — | `startTune` skips the `DEFAULT_USER_AGENT` fallback | `TestABlankUserAgentFallsBackToTheWireDefault` | `UserAgent = "", want the wire's DEFAULT_USER_AGENT` |
+  | — | `startTune` skips the `DEFAULT_USER_AGENT` fallback | both subtests of `TestABlankUserAgentFallsBackToTheWireDefault` | `UserAgent = "", want the wire's DEFAULT_USER_AGENT` |
+  | — | the Proxy arm passes `answer.Source.UserAgent` (the first draft's shape) | the `proxy` subtest only | `… a blank agent would reach the provider as Go's own` |
 
-- [ ] **Step 6: Regenerate the golden from Django** (container)
+- [ ] **Step 6: Regenerate the golden from Django** (host)
 
-  Edit `apps/proxy/tests/test_relay_list_payload_golden.py` per Appendix T5 — the populated channel's fixture gains the seven fields, `NOT_SERVED_BY_2C3` becomes `NOT_SERVED_YET` with `logo_id` and `healthy` — then:
+  Edit `apps/proxy/tests/test_relay_list_payload_golden.py` per Appendix T5 — the populated channel's fixture gains the seven fields, `NOT_SERVED_BY_2C3` becomes `NOT_SERVED_YET` with `logo_id` and `healthy` — then, **on the host, not in the container**: the writing run creates a file under `relay/httpapi/testdata/`, and the container mounts the repo read-only at `/repo`. The golden tests are `SimpleTestCase` and need no database, so the SQLite fallback serves:
 
   ```bash
-  cd <your worktree> && DISPATCHARR_WRITE_GOLDEN=1 python manage.py test apps.proxy.tests.test_relay_list_payload_golden
-  python manage.py test apps.proxy.tests.test_relay_list_payload_golden
+  cd <your worktree> && TEST_USE_SQLITE=1 DISPATCHARR_WRITE_GOLDEN=1 uv run python manage.py test apps.proxy.tests.test_relay_list_payload_golden
+  TEST_USE_SQLITE=1 uv run python manage.py test apps.proxy.tests.test_relay_list_payload_golden
   git diff --stat relay/httpapi/testdata/channels_clients_all.json
   ```
 
@@ -814,7 +817,7 @@ Ruling R7, and Constraint 23's ffmpeg install.
   cd <your worktree> && scripts/check_go_credential_logging.sh relay
   ```
 
-  If Tasks 1, 5 and 6 landed every marker and wrap, it prints `credlint: 10 package(s) clean`. **Its first run over this plan's own tree reported 18 sites**; each is resolved in Appendices K, L, M, N, S. A finding here is a task above that missed one, not a reason to add a marker in this task.
+  If Tasks 1, 5 and 6 landed every marker and wrap, it prints `credlint: 10 package(s) clean`. **Over the bare seed it reports 17 sites** (Ruling R7 lists every one and how it is resolved), and the new files add eleven the appendices already satisfy. A finding here is a task above that missed one, not a reason to add a marker in this task.
 
 - [ ] **Step 3: Its own tests**
 
@@ -961,7 +964,7 @@ Amendment A2.2's rule: a Go reference appended to the existing `Pin` cell, one l
 
 - [ ] **Step 6: Write the PR description**
 
-  In this order: what this PR does; **Ruling R1** and what it cost on the Django side; **the three break-checks that did not redden** (R6 twice, break-check 8) and what closed each; **the credlint census** — 18 findings, the two real ones, the sixteen markers; **the measurements** — the real-ffmpeg numbers on your host and ffmpeg version, next to this plan's; **the stated divergences**: `redact.Line` on stderr where Python logs raw (R8); recovery to `active` only from `buffering` (R12); a URL-shaped command refused before spawning (Task 3); `connecting` not entered (R10); a buffering timeout ending the tune rather than failing over, until 2c-5 (R2); the UDP filter's `cmd[0]` not filtered (R11); `ErrExited` carrying the status Python only logs; **what this PR does not do**: no failover, no `release`, no `events`, no `channel_buffering`/`channel_failover`, no `healthy`, no Redirect (2c-5); no fMP4 (2c-6); no Output Profile — `output_profiles[*].argv` is still undeclared on `NextSourceAnswer` (2c-7); no detail endpoint, no `advance`, no drain (2c-8); no Go coverage ratchet and no CodeQL Go pack (2c-9).
+  In this order: what this PR does; **Ruling R1** and what it cost on the Django side, wire growth included; **the four break-checks that did not redden on a first attempt** (R6 twice, break-check 8, and the timeout test's clock — Task 6 Step 4) and what closed each; **the credlint census** — 17 sites over the bare seed, eight through `redact.Error`, nine markers, plus the new files' eleven; **the eight suppressions**, each with its line and reason (Constraint 15); **the four arms no test pins**, stated so nobody reads them as pinned: `transcodeSource`'s `profile.Command == ""` refusal (every fixture has a command), `waitOrKill`'s kill after `KillWait` (every stand-in exits within it once fd 1 closes), `Wait`'s close-stdout-first (a child blocked on a full pipe nobody drains is not a shape any test builds), and `reportBuffering(true)`'s state guard (break-check 10 shows the recovery guard is not pinned either); **the measurements** — the real-ffmpeg numbers on your host and ffmpeg version, next to this plan's; **the stated divergences**: `redact.Line` on stderr where Python logs raw (R8); recovery to `active` only from `buffering` (R12); a URL-shaped command refused before spawning (Task 3); `connecting` not entered (R10); a buffering timeout ending the tune rather than failing over, until 2c-5 (R2); the UDP filter's `cmd[0]` not filtered (R11); `ErrExited` carrying the status Python only logs; **what this PR does not do**: no failover, no `release`, no `events`, no `channel_buffering`/`channel_failover`, no `healthy`, no Redirect (2c-5); no fMP4 (2c-6); no Output Profile — `output_profiles[*].argv` is still undeclared on `NextSourceAnswer` (2c-7); no detail endpoint, no `advance`, no drain (2c-8); no Go coverage ratchet and no CodeQL Go pack (2c-9).
 
 - [ ] **Step 7: Commit, and do not push or open a PR unless told to**
 
@@ -1011,12 +1014,12 @@ Every break-check in this plan, and the task it belongs to. A `✓` means it was
 
 1. **Task 0's diff** — every ledger row that did not match `29224271`, and which task absorbed it. In particular the `Started`/`Attach` shape, `EffectiveProxySettings` carrying both thresholds, and whether `test_relay_list_payload_golden.py` exists.
 2. **The `StateActive` count** at Task 0 (one) and at Task 11 (two, named).
-3. **Every break-check's actual failure message**, and specifically: did **8**, **17** and **20** behave as this plan predicts, and did **10** stay green?
+3. **Every break-check's actual failure message**, and specifically: did **8**, **17** and **20** behave as this plan predicts, and did **10** stay green? And eight consecutive green `-race` runs of `relay/channel`.
 4. **The real-ffmpeg numbers** — ffmpeg version, first speed, seconds to arm, two runs — beside this plan's 9.0.1 / 10.9x / 12.2 s.
-5. **The credlint census** — the number of findings its first run reported on your tree before Task 5/6's markers (this plan's: 18), the two `redact.Error` fixes, and anything new it reported that this plan does not name.
+5. **The credlint census** — the number of findings over the bare seed with `redact` and `credlint` added (this plan's: 17; eight through `redact.Error`, nine markers), and anything new it reported that this plan does not name.
 6. **The zero-ORM number** — expected 39 on both `resolve_source` entries.
 7. **The golden file** — whether Django's regeneration matched Appendix Q's hand-written JSON beyond the seven new keys.
-8. **The lint ledger** — the four `#nosec`/`nolint` this plan names and nothing else.
+8. **The lint ledger** — the eight suppressions Constraint 15 names and nothing else.
 9. **The Linux pin's two Docker runs** — PASS with `Pdeathsig`, the five-second FAIL without.
 10. **The two issue numbers** filed in Task 10.
 11. **The stated divergences**, as a list (Task 11 Step 6).
@@ -2238,12 +2241,23 @@ func s(v string) *string   { return &v }
 func i(v int) *int         { return &v }
 func f(v float64) *float64 { return &v }
 
-// A SUPERSET of what apps/proxy/live_proxy/tests/test_property_log_parsers.py
-// exercises, as a table. Every FFmpeg row below is a REAL line: the first
-// four are taken verbatim from the captured corpus (see
-// TestTheCorpusPreambleParsesAsPythonStoresIt for the proof they are), and
-// the shapes the Python property tests generate are represented by one
-// concrete instance each.
+// A SUPERSET of what the two Python parser test files exercise, as a table:
+// apps/proxy/live_proxy/tests/test_property_log_parsers.py (Hypothesis
+// round-trips on generated FFmpeg lines, represented by one concrete
+// instance each) and test_vlc_streamlink_parsers.py (2b-4's literal cases
+// for every named branch of the VLC and Streamlink parsers, one row per
+// Python subTest, expected values copied from that file). Every FFmpeg row
+// is a REAL line: the first four are taken verbatim from the captured corpus
+// (see TestTheCorpusPreambleParsesAsPythonStoresIt for the proof they are).
+// directDispatch names the rows whose Python counterpart calls the parse
+// method directly rather than through can_parse.
+var directDispatch = map[string]bool{
+	"vlc alias avc": true, "vlc alias h.264": true, "vlc alias hevc": true, "vlc alias h.265": true,
+	"vlc alias mpeg-2": true, "vlc alias mpeg-4": true,
+	"vlc audio alias adts": true, "vlc audio alias lpcm": true,
+	"vlc audio empty-result exit": true,
+}
+
 func TestCanParseAndParseAgreeWithThePythonParsers(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -2364,10 +2378,71 @@ func TestCanParseAndParseAgreeWithThePythonParsers(t *testing.T) {
 			"Input #0, mpegts, from 'http://127.0.0.1:33123/live.ts':",
 			"", Info{}, false,
 		},
+		// The rows below are apps/proxy/live_proxy/tests/test_vlc_streamlink_
+		// parsers.py's (2b-4) literal cases, one Go row per Python subTest,
+		// every expected value copied from that file and none from this
+		// parser. The VLC codec map is four tuples keyed by ALIAS TUPLE, ten
+		// aliases against four names, and that file's own reason for one
+		// row per alias applies here unchanged: a port transcribing one
+		// alias per tuple passes a one-alias-per-row test.
+		{"vlc alias avc", ToolVLC, "ts demux debug: pid 256 avc video", KindVLCVideo, Info{VideoCodec: s("h264")}, true},
+		{"vlc alias h.264", ToolVLC, "ts demux debug: pid 256 h.264 video", KindVLCVideo, Info{VideoCodec: s("h264")}, true},
+		{"vlc alias type=0x1b", ToolVLC, "ts demux debug: pid 256 type=0x1b video", KindVLCVideo, Info{VideoCodec: s("h264")}, true},
+		{"vlc alias hevc", ToolVLC, "ts demux debug: pid 256 hevc video", KindVLCVideo, Info{VideoCodec: s("hevc")}, true},
+		{"vlc alias h.265", ToolVLC, "ts demux debug: pid 256 h.265 video", KindVLCVideo, Info{VideoCodec: s("hevc")}, true},
+		{"vlc alias type=0x24", ToolVLC, "ts demux debug: pid 256 type=0x24 video", KindVLCVideo, Info{VideoCodec: s("hevc")}, true},
+		{"vlc alias mpeg-2", ToolVLC, "ts demux debug: pid 256 mpeg-2 video", KindVLCVideo, Info{VideoCodec: s("mpeg2video")}, true},
+		{"vlc alias type=0x02", ToolVLC, "ts demux debug: pid 256 type=0x02 video", KindVLCVideo, Info{VideoCodec: s("mpeg2video")}, true},
+		{"vlc alias mpeg-4", ToolVLC, "ts demux debug: pid 256 mpeg-4 video", KindVLCVideo, Info{VideoCodec: s("mpeg4")}, true},
+		{"vlc alias type=0x10", ToolVLC, "ts demux debug: pid 256 type=0x10 video", KindVLCVideo, Info{VideoCodec: s("mpeg4")}, true},
+		{"vlc audio alias type=0xf", ToolVLC, "ts demux debug: pid 257 type=0xf audio", KindVLCAudio, Info{AudioCodec: s("aac")}, true},
+		{"vlc audio alias adts", ToolVLC, "ts demux debug: pid 257 adts audio", KindVLCAudio, Info{AudioCodec: s("aac")}, true},
+		{"vlc audio alias type=0x03", ToolVLC, "ts demux debug: pid 257 type=0x03 audio", KindVLCAudio, Info{AudioCodec: s("mp3")}, true},
+		{"vlc audio alias type=0x04", ToolVLC, "ts demux debug: pid 257 type=0x04 audio", KindVLCAudio, Info{AudioCodec: s("mp3")}, true},
+		{"vlc audio alias type=0x06", ToolVLC, "ts demux debug: pid 257 type=0x06 audio", KindVLCAudio, Info{AudioCodec: s("ac3")}, true},
+		{"vlc audio alias type=0x81", ToolVLC, "ts demux debug: pid 257 type=0x81 audio", KindVLCAudio, Info{AudioCodec: s("ac3")}, true},
+		{"vlc audio alias type=0x0b", ToolVLC, "ts demux debug: pid 257 type=0x0b audio", KindVLCAudio, Info{AudioCodec: s("pcm")}, true},
+		{"vlc audio alias lpcm", ToolVLC, "ts demux debug: pid 257 lpcm audio", KindVLCAudio, Info{AudioCodec: s("pcm")}, true},
+		{"vlc source fps as a fraction", ToolVLC, "stream_out_transcode debug: source fps 30000/1001", KindVLCVideo, Info{SourceFPS: f(30000.0 / 1001.0)}, true},
+		{"vlc source fps with a zero denominator is absent, not zero", ToolVLC, "stream_out_transcode debug: source fps 30/0", KindVLCVideo, Info{}, false},
+		{"vlc source wxh", ToolVLC, "stream_out_transcode debug: source 1280x720", KindVLCVideo, Info{Resolution: s("1280x720"), Width: i(1280), Height: i(720)}, true},
+		{"vlc source wxh upper bound is reachable only at 9999", ToolVLC, "stream_out_transcode debug: source 9999x9999", KindVLCVideo, Info{Resolution: s("9999x9999"), Width: i(9999), Height: i(9999)}, true},
+		{"vlc source wxh below 100 is dropped", ToolVLC, "stream_out_transcode debug: source 0099x0099", KindVLCVideo, Info{}, false},
+		// NOT prefixed "avcodec": that substring's "avc" would add the codec
+		// key the Python test's expected dict does not carry.
+		{"vlc generic resolution fallback with no codec", ToolVLC, "decoder debug: 1920x1080 yuv420p", KindVLCVideo, Info{Resolution: s("1920x1080"), Width: i(1920), Height: i(1080)}, true},
+		{"vlc generic resolution below 100 is dropped", ToolVLC, "decoder debug: 099x099", KindVLCVideo, Info{}, false},
+		{"vlc generic fps fallback", ToolVLC, "decoder debug: 29.97 fps", KindVLCVideo, Info{SourceFPS: f(29.97)}, true},
+		{"vlc source fps wins over a co-occurring generic fps", ToolVLC, "stream_out_transcode debug: source fps 30/1 at 25 fps", KindVLCVideo, Info{SourceFPS: f(30)}, true},
+		{"vlc video empty-result exit", ToolVLC, "ts demux debug: pid 256 type=0x99 video", KindVLCVideo, Info{}, false},
+		{"vlc channels: 1", ToolVLC, "decoder debug: channels: 1", KindVLCAudio, Info{AudioChannels: s("mono")}, true},
+		{"vlc channels: 2", ToolVLC, "decoder debug: channels: 2", KindVLCAudio, Info{AudioChannels: s("stereo")}, true},
+		{"vlc channels: 6", ToolVLC, "decoder debug: channels: 6", KindVLCAudio, Info{AudioChannels: s("5.1")}, true},
+		{"vlc channels: 8", ToolVLC, "decoder debug: channels: 8", KindVLCAudio, Info{AudioChannels: s("7.1")}, true},
+		{"vlc samplerate: field", ToolVLC, "decoder debug: samplerate: 48000", KindVLCAudio, Info{SampleRate: i(48000)}, true},
+		{"vlc hz form when samplerate: is absent", ToolVLC, "decoder debug: 44100 hz channels: 2", KindVLCAudio, Info{SampleRate: i(44100), AudioChannels: s("stereo")}, true},
+		{"vlc samplerate: wins over a co-occurring hz form", ToolVLC, "decoder debug: samplerate: 48000 at 44100 hz", KindVLCAudio, Info{SampleRate: i(48000)}, true},
+		{"vlc channels: count wins over a co-occurring word form", ToolVLC, "decoder debug: channels: 2 mono", KindVLCAudio, Info{AudioChannels: s("stereo")}, true},
+		{"vlc audio empty-result exit", ToolVLC, "decoder debug: nothing recognisable here channels", KindVLCAudio, Info{}, false},
+		{"streamlink 2160p", ToolStreamlink, "[cli][info] Opening stream: 2160p (hls)", KindStreamlink, Info{VideoCodec: s("h264"), Resolution: s("3840x2160"), Width: i(3840), Height: i(2160), PixelFormat: s("yuv420p")}, true},
+		{"streamlink 1080p", ToolStreamlink, "[cli][info] Opening stream: 1080p (hls)", KindStreamlink, Info{VideoCodec: s("h264"), Resolution: s("1920x1080"), Width: i(1920), Height: i(1080), PixelFormat: s("yuv420p")}, true},
+		{"streamlink 480p", ToolStreamlink, "[cli][info] Opening stream: 480p (hls)", KindStreamlink, Info{VideoCodec: s("h264"), Resolution: s("854x480"), Width: i(854), Height: i(480), PixelFormat: s("yuv420p")}, true},
+		{"streamlink 360p", ToolStreamlink, "[cli][info] Opening stream: 360p (hls)", KindStreamlink, Info{VideoCodec: s("h264"), Resolution: s("640x360"), Width: i(640), Height: i(360), PixelFormat: s("yuv420p")}, true},
+		{"streamlink 144p falls back to 1080p", ToolStreamlink, "[cli][info] Opening stream: 144p", KindStreamlink, Info{VideoCodec: s("h264"), Resolution: s("1920x1080"), Width: i(1920), Height: i(1080), PixelFormat: s("yuv420p")}, true},
+		{"streamlink 1600x900", ToolStreamlink, "[cli][info] Opening stream: 1600x900", KindStreamlink, Info{VideoCodec: s("h264"), Resolution: s("1600x900"), Width: i(1600), Height: i(900), PixelFormat: s("yuv420p")}, true},
+		{"streamlink no match", ToolStreamlink, "[cli][info] Found matching plugin", "", Info{}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if kind := CanParse(tc.tool, tc.line); kind != tc.kind {
-				t.Fatalf("CanParse(%s) = %q, want %q", tc.tool, kind, tc.kind)
+			// test_vlc_streamlink_parsers.py drives parse_video_stream and
+			// parse_audio_stream DIRECTLY for the rows below, so their lines
+			// carry no "type=" and can_parse would not claim them; the kind
+			// is the method the Python test called, and CanParse is not
+			// asserted. Every other row goes through CanParse first, as
+			// _log_stderr_content does.
+			if !directDispatch[tc.name] {
+				if kind := CanParse(tc.tool, tc.line); kind != tc.kind {
+					t.Fatalf("CanParse(%s) = %q, want %q", tc.tool, kind, tc.kind)
+				}
 			}
 			if tc.kind == "" {
 				return
@@ -2418,6 +2493,15 @@ func TestAutoParseFollowsTheFactoryOrderAndNeverReportsAVLCInputFailure(t *testi
 	}
 	if kind, _, ok := AutoParse("[00007f] main input error: unable to open the MRL 'http://x/y'"); ok {
 		t.Fatalf("AutoParse reported %q for a VLC input failure; auto_parse returns None for it", kind)
+	}
+	// test_vlc_streamlink_parsers.py's claimed-but-empty case: a line
+	// can_parse CLAIMS (ts demux debug + type= + video) that parses to
+	// nothing must be no result, not a result with an empty Info.
+	if kind, _, ok := AutoParse("ts demux debug: pid 256 type=0x99 video"); ok {
+		t.Fatalf("AutoParse reported %q with an empty Info for a claimed-but-empty line", kind)
+	}
+	if _, ok := Parse("not_a_stream_type", "x"); ok {
+		t.Fatal("Parse of an unknown kind returned a result")
 	}
 }
 
@@ -5983,11 +6067,19 @@ func TestASustainedSubThresholdSpeedEndsTheSourceWithATimeout(t *testing.T) {
 	t.Cleanup(m.StopAll)
 	src := standInSource(t, "-i", path, "--dead-air-after-bytes", "1504",
 		"--stderr-corpus", relaytest.CorpusPath("slow-trickle"), "--stderr-interval", "0.02", "--stderr-loop")
+	// The clock starts BEFORE the source does, so it can only be EARLIER
+	// than the detector's own `since`. An earlier draft started it after the
+	// 10 ms poll first observed buffering -- later than `since` -- and the
+	// bound below reddened 2 runs in 8 under -race at 997 ms, because the
+	// timeout fires on the first record more than a second after `since`
+	// while the test measured from a later moment. A clock that cannot be
+	// late keeps the `< time.Second` bound honest: the source ending inside
+	// a second of it would mean the detector timed out early.
+	started := time.Now()
 	ch, release := attachTranscode(t, m, "timeout", src, transcodeTuning(apiMax, time.Second))
 	defer release()
 
 	waitFor(t, "buffering", 10*time.Second, func() bool { return ch.State() == StateBuffering })
-	started := time.Now()
 	select {
 	case <-ch.Done():
 	case <-time.After(15 * time.Second):
@@ -6812,9 +6904,15 @@ func startTune(parent context.Context, client *control.Client, id string) (chann
 		}
 		source, err = transcodeSource(answer.Source.FFmpegStreamProfile, answer.Source.URL, userAgent, readSize)
 	case kind == control.KindProxy:
+		// The defaulted agent here too: Python's HTTP reader sends
+		// self.user_agent (input/manager.py:165), which :73 has already
+		// defaulted, so a blank user_agent reaches the provider as
+		// DEFAULT_USER_AGENT on both architectures. Found by review; the
+		// first draft defaulted only the transcode arms, and a blank agent
+		// on the Proxy path would have reached a provider as Go's own.
 		source = channel.ProxySource{
 			URL:       answer.Source.URL,
-			UserAgent: answer.Source.UserAgent,
+			UserAgent: userAgent,
 			ChunkSize: readSize,
 		}
 	case kind == control.KindTranscode:
@@ -7648,30 +7746,54 @@ func TestABufferingThresholdChangeDoesNotReachARunningChannel(t *testing.T) {
 }
 
 // A blank user_agent on the answer falls back to the wire's
-// DEFAULT_USER_AGENT for the argv filter, as input/manager.py:73 does for
-// the whole StreamManager. Asserted on the source startTune builds, against
-// the fixture's own literal, because nothing about a blank agent is visible
-// from outside on a non-UDP tune.
+// DEFAULT_USER_AGENT on BOTH architectures, as input/manager.py:73 does for
+// the whole StreamManager: the transcode source's UDP filter reads it, and
+// the Proxy reader sends it (:165). Asserted on the source startTune builds,
+// against the fixture's own literal, because nothing about a blank agent is
+// visible from outside on a non-UDP transcode tune -- and on the Proxy path
+// the provider would see Go's own default instead, which review found the
+// first draft allowing.
 func TestABlankUserAgentFallsBackToTheWireDefault(t *testing.T) {
-	cp := relaytest.NewControlPlane(relaytest.ControlPlaneConfig{
-		Kind: control.KindTranscode, SourceURL: "udp://239.0.0.1:1234", BlankUserAgent: true,
-		Command: "ffmpeg", Argv: []string{"-i", "udp://239.0.0.1:1234"}, Settings: rigSettings(nil),
+	const wireDefault = "VLC/3.0.20 LibVLC/3.0.20"
+	t.Run("transcode", func(t *testing.T) {
+		cp := relaytest.NewControlPlane(relaytest.ControlPlaneConfig{
+			Kind: control.KindTranscode, SourceURL: "udp://239.0.0.1:1234", BlankUserAgent: true,
+			Command: "ffmpeg", Argv: []string{"-i", "udp://239.0.0.1:1234"}, Settings: rigSettings(nil),
+		})
+		t.Cleanup(cp.Close)
+		started, err := startTune(context.Background(), &control.Client{Secret: testSecret, BaseURL: cp.URL(), HTTP: control.NewHTTPClient()}, "c-ua")
+		if err != nil {
+			t.Fatalf("startTune: %v", err)
+		}
+		source, ok := started.Source.(*channel.TranscodeSource)
+		if !ok {
+			t.Fatalf("the source is a %T, want *channel.TranscodeSource", started.Source)
+		}
+		if source.UserAgent != wireDefault {
+			t.Fatalf("UserAgent = %q, want the wire's DEFAULT_USER_AGENT", source.UserAgent)
+		}
+		if source.Command != "ffmpeg" || len(source.Argv) != 2 {
+			t.Fatalf("the source was built from the wrong profile: %+v", source)
+		}
 	})
-	t.Cleanup(cp.Close)
-	started, err := startTune(context.Background(), &control.Client{Secret: testSecret, BaseURL: cp.URL(), HTTP: control.NewHTTPClient()}, "c-ua")
-	if err != nil {
-		t.Fatalf("startTune: %v", err)
-	}
-	source, ok := started.Source.(*channel.TranscodeSource)
-	if !ok {
-		t.Fatalf("the source is a %T, want *channel.TranscodeSource", started.Source)
-	}
-	if source.UserAgent != "VLC/3.0.20 LibVLC/3.0.20" {
-		t.Fatalf("UserAgent = %q, want the wire's DEFAULT_USER_AGENT", source.UserAgent)
-	}
-	if source.Command != "ffmpeg" || len(source.Argv) != 2 {
-		t.Fatalf("the source was built from the wrong profile: %+v", source)
-	}
+	t.Run("proxy", func(t *testing.T) {
+		cp := relaytest.NewControlPlane(relaytest.ControlPlaneConfig{
+			Kind: control.KindProxy, SourceURL: "http://provider.invalid/live.ts", BlankUserAgent: true,
+			Settings: rigSettings(nil),
+		})
+		t.Cleanup(cp.Close)
+		started, err := startTune(context.Background(), &control.Client{Secret: testSecret, BaseURL: cp.URL(), HTTP: control.NewHTTPClient()}, "c-ua-proxy")
+		if err != nil {
+			t.Fatalf("startTune: %v", err)
+		}
+		source, ok := started.Source.(channel.ProxySource)
+		if !ok {
+			t.Fatalf("the source is a %T, want channel.ProxySource", started.Source)
+		}
+		if source.UserAgent != wireDefault {
+			t.Fatalf("UserAgent = %q, want the wire's DEFAULT_USER_AGENT -- a blank agent would reach the provider as Go's own", source.UserAgent)
+		}
+	})
 }
 
 // A transcode child that exits non-zero ends the client's response and puts
@@ -9184,7 +9306,7 @@ class _LockedFfmpegProfile:
         return _stream_profile_ref(profile, url=url, user_agent=user_agent, pk=pk)
 
 
-# --- resolve_initial_source (next_source.py:500-640): the signature gains a
+# --- resolve_initial_source (next_source.py:498-640): the signature gains a
 #     kwarg and the two Source literals change. Everything else is untouched.
 #
 #   def resolve_initial_source(identifier, *, locked_ffmpeg_profile=_UNRESOLVED_FFMPEG_PROFILE):
@@ -9273,10 +9395,10 @@ def _source_from_info(info, *, slot_reserved, locked_ffmpeg_profile=_UNRESOLVED_
 #     :681-682. Keep that: call `locked_ffmpeg_profile.get()` right after
 #     wrap(), which is the one query the test counts.
 
-# --- resolve_source (next_source.py:812-960): the holder is created once and
+# --- resolve_source (next_source.py:804-960): the holder is created once and
 #     threaded. Three edits.
 #
-#   after `is_failover_request = ...` (:895):
+#   after `is_failover_request = ...` (:887):
 #       locked = _LockedFfmpegProfile()
 #
 #   the initial-tune branch (:905, :916-919):
@@ -9330,6 +9452,8 @@ be the tautological oracle, the same function computing both sides. The
 literals were derived by hand from the parameters and confirmed against
 `python3 -c 'import shlex; ...'` while the plan was written.
 """
+
+import json
 
 from django.test import TestCase
 from rest_framework.renderers import JSONRenderer
@@ -9475,8 +9599,10 @@ class TheWire(TestCase):
         ).data
         self.assertIn("argv", broken)
         self.assertIsNone(broken["argv"])
+        # DRF's JSONRenderer is compact (no space after the colon), so the
+        # rendered bytes are decoded rather than substring-matched.
         rendered = JSONRenderer().render(broken)
-        self.assertIn(b'"argv": null', rendered)
+        self.assertIsNone(json.loads(rendered)["argv"])
 
     def test_the_answer_serializer_carries_argv_on_both_profile_objects(self):
         # StreamProfileRefSerializer renders stream_profile AND
@@ -9490,8 +9616,8 @@ class TheWire(TestCase):
 
 **T4 — the existing tests and the allowlist**
 
-Two existing tests compare `ffmpeg_stream_profile` to an exact dict and gain
-the `argv` key; the value is a literal derived from the fixture's parameters
+Three existing tests compare a profile object to an exact dict and gain the
+`argv` key -- two on `ffmpeg_stream_profile`, one on `stream_profile`; the value is a literal derived from the fixture's parameters
 and the answer's own url, never from build_command:
 
 apps/proxy/tests/test_next_source_resolution.py::test_the_locked_ffmpeg_profile_is_carried_when_one_exists
@@ -9500,6 +9626,15 @@ apps/proxy/tests/test_next_source_resolution.py::test_the_locked_ffmpeg_profile_
 
 apps/proxy/tests/test_next_source_api.py (around :323, the same assertion at the wire)
     the same key, with the fixture's parameters and `source["url"]`.
+
+A THIRD exact dict, on `stream_profile` rather than `ffmpeg_stream_profile`,
+found by review:
+
+apps/proxy/tests/test_next_source_api.py::NextSourceRouteTests::test_next_source_returns_the_contract_fields (:214-226)
+    the fixture's profile has parameters "-i {streamUrl}" (:123), so the
+    expected dict gains
+        "argv": ["-i", source["url"]],
+    beside "kind": "transcode".
 
 apps/proxy/tests/test_next_source_edges.py::test_an_unresolved_locked_ffmpeg_profile_is_resolved_once
     unchanged: _resolve_alternates still resolves eagerly through the module
@@ -9742,7 +9877,13 @@ all that is a second copy of the truth. Three states on the wire: a list
 relay refuses that profile with 503), the key absent (an older Django; a
 502 contract mismatch). `args` stays, per D5. The user agent is defaulted
 on both sides the way `input/manager.py:73` defaults it, from
-`DEFAULT_USER_AGENT`, which A1.4 already put on the wire.
+`DEFAULT_USER_AGENT`, which A1.4 already put on the wire. **The cost,
+stated**: every Source now carries its URL three times (`url`,
+`stream_profile.argv`, `ffmpeg_stream_profile.argv`) and every alternate
+the same, so a next-source answer with N alternates grows by roughly
+2(N+1) URL-length strings; 2c-9's cross-implementation differential
+fixtures will carry each URL in three places and must be generated, not
+hand-written.
 
 **A4.2 — the Go credential-logging guard (#283), and a Python leak it
 would have caught.** `relay/internal/credlint` type-checks the module with
@@ -9751,10 +9892,13 @@ and requires every error-typed argument to a formatting or logging call to
 pass through `redact.Error` or carry `// credential-logging: ok - <reason>`.
 Keyed on the TYPE because a provider URL reaches a Go log through one door,
 an error that carries it, and 2c-2's review found the leak at the one
-`*url.Error` site a name-based guard missed. Its first run reported 18
-sites; two were real (`control.Unavailable.Error()`'s `%v` of the
-transport error, and the request-build wrap), the rest took markers with
-reasons. Stderr lines are redacted structurally by `redact.Line`, because
+`*url.Error` site a name-based guard missed. Over the bare 2c-3 tree it
+reports 17 sites: eight resolved through `redact.Error` — the `"upstream
+failed"` log, `source_proxy.go`'s four wraps, `writeTuneFailure`'s default
+arm, and the two no human guard had caught (`control.Unavailable.Error()`'s
+`%v` of the transport error, and the request-build wrap) — and nine
+markers with reasons (`encoding/json` errors over values that are not
+URLs, the secret file's path, the bind address). Stderr lines are redacted structurally by `redact.Line`, because
 ffmpeg echoes the URL it was given and the HLS demuxer echoes every derived
 segment URL. **The Python relay logs those same lines at INFO, unredacted**
 (`input/manager.py:1094`), invisible to `scripts/check_credential_logging.py`
@@ -9769,6 +9913,13 @@ the successful-switch branch (`:1185-1186`) already there for it. The
 `channel_buffering` (`:1217-1226`) and `channel_failover` (`:1195-1206`)
 events, and `healthy`, arrive with the events route. `ffmpeg.ErrExited`
 carries Python's `returncode` for row 3's connection-failure accounting.
+**`httpapi.ErrProfileUnbuildable` is terminal for that profile**: a null
+argv means Django could not split the parameters, and no retry against the
+same candidate can change that, so 2c-5's failover must skip such a
+candidate rather than count it as a connection failure to retry per
+candidate (Python never sees this case at resolve time -- its
+`build_command` raises at spawn time inside the retry loop and burns three
+attempts on it).
 
 **A4.4 — rows 5, 28 and 29 close in 2c-4 with row 4.** The nine-PR table
 named only row 4. Row 5 (thresholds snapshotted at start) is
