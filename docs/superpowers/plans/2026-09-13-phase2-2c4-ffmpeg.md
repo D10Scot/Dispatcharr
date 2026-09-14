@@ -14,21 +14,23 @@
 
 ---
 
-## Sequencing: this plan sits on 2c-3, which is not yet merged
+## Sequencing: this plan sits on 2c-3 as implemented at `76611908`, whose tree the squash merge reproduces
 
-2c-3's plan is on `main` at `c1763e00` (PR #287, `docs/superpowers/plans/2026-09-13-phase2-2c3-fanout.md`; read it with `git show "c1763e00:docs/superpowers/plans/2026-09-13-phase2-2c3-fanout.md"`), being implemented in parallel on `migration/phase2c-fanout`. **This plan was built and verified on `81d41975` (2c-2 as merged) with 2c-3's appendices B–K applied by hand and its prose edits (Tasks 1, 2, 3, 5, 6, 8) applied from their descriptions** — the manager's `Started`/`Attach(id, *Client, start)` shape, the client registry, `Tuning.ShutdownDelay`, `Ring.TotalBytes`/`MaxChunksPerRead`, `identify`, the list endpoint and its golden, `ControlPlaneConfig.Delay`. That reconstruction passed 2c-3's own tests and 2c-2's unchanged, three times under `-race`, at 0 lint findings, before a line of 2c-4 was written.
+2c-3's plan is on `main` at `c1763e00` (PR #287, `docs/superpowers/plans/2026-09-13-phase2-2c3-fanout.md`; read it with `git show "c1763e00:docs/superpowers/plans/2026-09-13-phase2-2c3-fanout.md"`). Its implementation is PR #288, `migration/phase2c-fanout`, reviewed and landed at **`76611908`** (fix round 1 on `b430531b`), sitting directly on `c1763e00` — so the squash-merge commit's tree is byte-identical to `76611908`'s. **Every appendix in this plan was built and verified on `76611908`'s `relay/`, every `_test.go` included**, after a first draft on a hand reconstruction of 2c-3 from its appendices had been re-seeded onto the real tree and every predecessor file re-applied edit by edit. The re-seed moved exactly two anchors (both re-worded comments in the fix round) and three comment-only edits, and no code; the fix round's own changes to files this plan does not edit — `buffer/ring.go`'s armed `TestNextIsTheLastChunkActuallyReturnedNotTheRingsTail` fixture, `channel/manager_test.go`'s adapters, `golden_test.go`'s live-row `output_profile_id` assertion — are taken as they landed.
 
-**It is a reconstruction, and Task 0 is the diff.** Every appendix here was verified against the reconstruction, not against the tree 2c-3 actually merges; the orchestrator fills `<2C3_MERGED_SHA>` in Task 0, and a symbol that differs from the ledger below is a **stop-and-report**, never a reconciliation in passing. Three shapes this plan depends on most, with what changes if 2c-3 landed them differently:
+**Task 0 is still the diff.** The orchestrator fills `<2C3_MERGED_SHA>` with the merge commit, not `76611908`; the two trees are identical by construction, and Task 0 Step 0 proves it rather than assumes it. A symbol that differs from the ledger below is a **stop-and-report**, never a reconciliation in passing. Three shapes this plan depends on most, with what changes if the merge differs from `76611908`:
 
 | 2c-3 shape this plan builds on | Where 2c-4 touches it | If your tree differs |
 |---|---|---|
 | `Manager.Attach(id string, client *Client, start func() (Started, error))`, `Started{Source, Tuning, Info}` | `startTune` returns a `Started` whose `Source` is now one of two types; `channel.run` gains three lines before `source.Run` | a different `Started` shape moves Task 6 Step 3 and Task 7 Step 2 — stop and report |
 | `httpapi.identify`, `ErrUnsupportedOutput`, `writeTuneFailure`'s arms, `ControlDeps`, `ChannelsHandler`/`describeChannel`, `golden_test.go`'s `goldenPayload` and `TestTheLiveEndpointProducesTheGoldensKeySet`, the rig's `fanRig`/`tuneAs`/`listChannels`/`waitForHead`/`packetRun` | Task 7 adds arms, fields and a transcode rig on top of all of them | a renamed helper is a find-and-replace in Appendix Q; a missing one is a stop |
-| `relaytest.ControlPlaneConfig{SourceURL, Kind, Settings, Status, FailFirst, RedirectTo, Body, Delay}` and `EffectiveProxySettings()` | Task 5 adds seven fields and a `SetSettings`; the effective settings gain `DEFAULT_USER_AGENT` | Appendix J is the whole file as it stands after 2c-4; diff it against yours rather than applying it blind |
+| `relaytest.ControlPlaneConfig{SourceURL, Kind, Settings, Status, FailFirst, RedirectTo, Body, Delay}` (whose `Delay` is a plain `time.Sleep` at `76611908`) and `EffectiveProxySettings()` | Task 5 adds seven fields and a `SetSettings`; the effective settings gain `DEFAULT_USER_AGENT` | Appendix J is the whole file as it stands after 2c-4; diff it against yours rather than applying it blind |
 
 **Ruled, and binding on every task below: 2c-4 adds no second first-chunk watcher and no second promotion mechanism.** `promoteOnFirstChunk` stays the only place `waiting_for_clients` becomes `active`. The one new write of `StateActive` this PR adds — the buffering **recovery** edge in `stats.go`'s `reportBuffering` — is guarded by `c.state == StateBuffering` and can never promote a channel that has not already been active. Task 0 Step 2a's count therefore moves from **one to two**, and the second line is named there. Break-check 10 shows that removing that guard reddens nothing, which is recorded rather than hidden: the guard is a design rule (§ Sequencing of the 2c-3 plan), not a tested property.
 
-**Seed your scratch module from the merged tree INCLUDING its `_test.go` files, never from a plan's appendices** — 2c-3's rule, unchanged, and the reason this plan's own reconstruction is called one.
+**Seed your scratch module from the merged tree INCLUDING its `_test.go` files, never from a plan's appendices** — 2c-3's rule, unchanged, and the reason this plan's first draft was re-seeded before it was reviewed.
+
+**Amendment numbering.** Where this plan says "Amendment A3" it means the spec's own section as it stands on `main` (`c1763e00`), whose sub-items were renumbered by physical position in 2c-3's fix round; the 2c-3 *plan* still carries the old numbers at its `:1345`, `:1369` and `:1458`. Cite the spec, never that plan, for an A3 sub-number.
 
 ---
 
@@ -121,7 +123,7 @@ Every test this PR adds is bound by all six, and every task that adds an asserti
 - Run the four checks after every task (Global Constraint 16), then `scripts/check_go_credential_logging.sh relay` (Constraint 21).
 - Stage and commit in separate Bash calls; write commit messages to a file and use `-F`.
 - Every commit message ends with the attribution lines this session was given.
-- **Every Go file in this plan has been built, vetted, race-tested three times and linted at zero findings before this plan was written**, in a scratch module seeded from `81d41975` plus 2c-3's appendices (§ Sequencing). The real-ffmpeg test ran on ffmpeg 9.0.1 (host) and the Linux-only test in the repo's Go 1.27.1 image, both ways. Where you find a discrepancy, your tree is the fact and this plan is the claim — **stop and report it** (Task 0 Step 0).
+- **Every Go file in this plan has been built, vetted, race-tested three times and linted at zero findings before this plan was written**, in a scratch module seeded from `76611908`, every `_test.go` included (§ Sequencing). The real-ffmpeg test ran on ffmpeg 9.0.1 (host) and the Linux-only test in the repo's Go 1.27.1 image, both ways. Where you find a discrepancy, your tree is the fact and this plan is the claim — **stop and report it** (Task 0 Step 0).
 
 ---
 
@@ -228,7 +230,7 @@ A `Source` has one method, and 2c-2's R6 keeps it that way for 2c-4's benefit. T
 
 ## The 2c-3 dependency ledger
 
-Every row was verified at the **reconstruction** this plan was built on (§ Sequencing), not at a merged SHA. **Task 0 re-checks every row against `<2C3_MERGED_SHA>`**, and a row that does not match is a stop.
+Every row was verified at `76611908` with `git show "76611908:relay/<path>"` and `grep -n`, never off a working tree (§ Sequencing). **Task 0 re-checks every row against `<2C3_MERGED_SHA>`**, and a row that does not match is a stop.
 
 | What this PR depends on | Expected shape | If your tree differs |
 |---|---|---|
@@ -243,7 +245,7 @@ Every row was verified at the **reconstruction** this plan was built on (§ Sequ
 | `control.StreamProfileRef{ID, Command, Args, Kind}`, `control.Source` with `StreamProfile` and **no** `FFmpegStreamProfile`, `NextSourceAnswer`, `Settings` with `Int`/`Float`/`Seconds`/`String`, `KindProxy`/`KindRedirect`/`KindTranscode` | 2c-2 | Task 5 adds `Argv`/`ArgvPresent`/`UnmarshalJSON` and `FFmpegStreamProfile`; Appendix K is the whole file after |
 | `httpapi.StreamDeps{Secret, Channels, Control, Log, Now}`, `identify`, `mintClientID`, `peerAddress`, `startProxyTune(parent, client, id)`, `tuningFrom` with five keys, `writeTuneFailure`, `serveClient`, `writeChunks`, `ErrNotProxyKind`, `ErrNoSource`, `ErrUnsupportedOutput`, `OutputFormatMPEGTS`, `tuneBudget` | 2c-3 Appendix F | Task 7 renames one function and one error and adds branches, keys and arms; Appendix P is the whole file after |
 | `httpapi.ControlDeps`, `ChannelsHandler`, `describeChannel`, `channelPayload` with sixteen fields, `clientPayload`, `RequireInternal`, `DefaultClientLimit` | 2c-3 Appendix G | Task 7 adds seven fields; Appendix P |
-| `httpapi/golden_test.go`'s `goldenPayload`, `TestTheListPayloadMatchesDjangosSerializer`, `TestEveryOptionalFieldIsAbsentRatherThanNull`, `TestTheLiveEndpointProducesTheGoldensKeySet`, `keysOf`, `decodeGolden`; `testdata/channels_clients_all.json` | 2c-3 Appendix H/K | Task 7 edits the literal, one test's rig, and regenerates the JSON |
+| `httpapi/golden_test.go`'s `goldenPayload`, `TestTheListPayloadMatchesDjangosSerializer`, `TestEveryOptionalFieldIsAbsentRatherThanNull`, `TestTheLiveEndpointProducesTheGoldensKeySet` (which at `76611908` also asserts the live row's `output_profile_id` is null — a transcode client's still is, so the assertion survives Task 7's rig change), `keysOf`, `decodeGolden`; `testdata/channels_clients_all.json` | 2c-3 Appendix H/K + fix round | Task 7 edits the literal, one test's rig, and regenerates the JSON |
 | `httpapi/stream_test.go`'s `testSecret`, `rigChunkBytes`, `rigBudgetBytes`, `rig`, `newRig`, `tune`, `TestATuneRefusesAKindItDoesNotServe`, `TestEveryProxySettingThisRelayReadsIsRequired`; `fanout_test.go`'s `rigAssetPackets`, `rigSettings`, `fanRig`, `fanRigWith`, `tuneAs`, `listChannels`, `waitForHead`, `packetRun` | 2c-2 + 2c-3 Appendix I | Appendix Q's `transcode_test.go` declares none of them; two of 2c-2's tests are edited |
 | `relaytest.SyntheticTS`, `PacketIndex`, `AlignmentProblem`, `NominalByteRate`, `NewUpstream`/`Config{Payload, Status, Rate, StopAfterBytes, Abrupt, DeadAir}`, `NewControlPlane`/`ControlPlaneConfig{SourceURL, Kind, Settings, Status, FailFirst, RedirectTo, Body, Delay}`, `EffectiveProxySettings()` with `buffering_speed` **and** `buffering_timeout` already present | 2c-2 + 2c-3 Task 8 | Task 5 extends `ControlPlaneConfig`; Appendix J is the whole file after |
 | `relay/ffmpeg/ffmpeg.go`, a doc-comment-only stub naming `os/exec` + `SysProcAttr{Setpgid, Pdeathsig}` and the splitter 2c-4 would write | 2c-1 | Task 2 replaces the comment; the splitter half of it is now wrong (R1) |
@@ -325,7 +327,7 @@ Nothing under `core/`, `dispatcharr/`, `frontend/`, `e2e/` or `metrics/` is touc
 
 ## Task 0: Diff the merged 2c-3 tree against this plan's expectations
 
-**Nothing else is written until this task is done and reported.** The ledger above was verified against a reconstruction of 2c-3 (§ Sequencing); this task is the check that the tree 2c-3 merged **is** that shape.
+**Nothing else is written until this task is done and reported.** The ledger above was verified at `76611908` (§ Sequencing); this task is the check that the tree 2c-3 merged **is** that tree.
 
 - [ ] **Step 0: Seed from the MERGED SHA the orchestrator names**
 
@@ -334,7 +336,7 @@ Nothing under `core/`, `dispatcharr/`, `frontend/`, `e2e/` or `metrics/` is touc
   git diff --stat <2C3_MERGED_SHA> HEAD -- relay/
   ```
 
-  `<2C3_MERGED_SHA>` is 2c-3 as merged onto `main`, filled in by the orchestrator. If it is empty when you read this, **stop**: this plan cannot be executed against a branch tip, for the reason the 2c-3 plan gives — the branch moved four times while that plan was written. Anything later than the merge SHA is a diff against it, and Step 2's table is the diff.
+  `<2C3_MERGED_SHA>` is 2c-3 as merged onto `main`, filled in by the orchestrator. If it is empty when you read this, **stop**: this plan cannot be executed against a branch tip. The merge is a squash of `migration/phase2c-fanout` at `76611908`, which sits directly on `c1763e00`, so `git diff 76611908 <2C3_MERGED_SHA> -- relay/` must be **empty** — run it, and if it is not, Step 2's table is the diff. Everything in this plan was verified at `76611908`.
 
 - [ ] **Step 1: Confirm the module, the toolchain, ffmpeg and Docker**
 
@@ -372,7 +374,7 @@ Nothing under `core/`, `dispatcharr/`, `frontend/`, `e2e/` or `metrics/` is touc
   | `EffectiveProxySettings()` | carries `buffering_timeout: 15`, `buffering_speed: 1.0`, `channel_shutdown_delay: 0`, `BUFFER_CHUNK_SIZE: 255868`, `CHUNK_SIZE: 8192` | Task 5 adds `DEFAULT_USER_AGENT`; the two thresholds MUST already be there — 2c-2 typed the stored seven |
   | `ffmpeg/ffmpeg.go` | a package doc comment and nothing else | Task 2 replaces the comment; any code in it is a stop |
   | `TestATuneRefusesAKindItDoesNotServe` | iterates `[]string{control.KindRedirect, control.KindTranscode}` | Task 7 narrows it |
-  | `TestEveryProxySettingThisRelayReadsIsRequired` | five keys in its list | Task 7 adds three |
+  | `TestEveryProxySettingThisRelayReadsIsRequired` | five keys in its list, on one line at `76611908` | Task 7 adds three |
 
 - [ ] **Step 2a: Count the writers of `StateActive`, and know what the number will become**
 
@@ -883,7 +885,7 @@ Amendment A2.2's rule: a Go reference appended to the existing `Pin` cell, one l
 
 - [ ] **Step 1: Write Amendment A4 into the spec**
 
-  After Amendment A3 (2c-3's), Appendix U1's text: A4.1 (Django builds the argv — R1), A4.2 (the credential guard and the Python relay's own stderr leak — R7, R8), A4.3 (inputs for 2c-5: the `TimedOut` arm, the two events, `healthy`, `Detector.Reset`), A4.4 (rows 5, 28 and 29 close here with row 4), A4.5 (`connecting` is not transcode-specific — R10), A4.6 (the UDP filter's dangling flag, reproduced and filed — R11).
+  After Amendment A3 (2c-3's, as renumbered on `main` — cite the spec's sub-numbers, never the 2c-3 plan's; § Sequencing), Appendix U1's text: A4.1 (Django builds the argv — R1), A4.2 (the credential guard and the Python relay's own stderr leak — R7, R8), A4.3 (inputs for 2c-5: the `TimedOut` arm, the two events, `healthy`, `Detector.Reset`), A4.4 (rows 5, 28 and 29 close here with row 4), A4.5 (`connecting` is not transcode-specific — R10), A4.6 (the UDP filter's dangling flag, reproduced and filed — R11).
 
 - [ ] **Step 2: Edit the nine-PR table's 2c-4 and 2c-5 rows, in the table**
 
@@ -1024,11 +1026,11 @@ Every break-check in this plan, and the task it belongs to. A `✓` means it was
 
 ## Appendix — the files, in full
 
-Every Go file below was written, built, vetted, run under `go test -race` three times and linted at **0 issues** in a scratch module seeded from `81d41975` plus 2c-3's appendices (§ Sequencing), with `scripts/check_go_credential_logging.sh` clean and `GOOS=linux go vet` clean. The real-ffmpeg test ran on ffmpeg 9.0.1; the Linux-only test ran in the repo's Go 1.27.1 image, both ways. The Python files (Appendix T) were syntax-checked and **not executed** — they need the shared container, which Global Constraint 10 keeps out of a planning session; Task 4 runs them, and yours governs.
+Every Go file below was written, built, vetted, run under `go test -race` three times and linted at **0 issues** in a scratch module seeded from `76611908`, every `_test.go` included (§ Sequencing), with `scripts/check_go_credential_logging.sh` clean and `GOOS=linux go vet` clean. The real-ffmpeg test ran on ffmpeg 9.0.1; the Linux-only test ran in the repo's Go 1.27.1 image, both ways. The Python files (Appendix T) were syntax-checked and **not executed** — they need the shared container, which Global Constraint 10 keeps out of a planning session; Task 4 runs them, and yours governs.
 
 **Two literals are oracles and must be regenerated rather than trusted:** the golden JSON (Task 7 Step 6), and — carried from 2c-2 — the synthetic asset's SHA-256.
 
-**Appendices M, N, P and J are whole files that 2c-3 owns and 2c-4 edits.** Diff them against your tree rather than overwriting: a 2c-3 fix round may have moved something this plan's reconstruction did not see.
+**Appendices M, N, P, J and K are whole files that 2c-3 owns and 2c-4 edits**, as they stand after 2c-4 on `76611908`. Diff them against your tree rather than overwriting.
 
 
 ### Appendix A — `relay/redact/redact.go`
@@ -3748,9 +3750,10 @@ type ControlPlaneConfig struct {
 	// of the error table.
 	Body string
 
-	// Delay holds every answer for this long before writing it, so a test
-	// can act while a next-source call is still in flight. Zero answers at
-	// once.
+	// Delay holds every answer for this long before writing it. Zero is the
+	// ordinary immediate answer. 2c-3's R11 test needs a next-source call
+	// still in flight when a client disconnects, and there is no other way
+	// to arrange that deterministically.
 	Delay time.Duration
 
 	// Command and Argv are the stream_profile's built command line. Empty
@@ -3838,11 +3841,7 @@ func NewControlPlane(cfg ControlPlaneConfig) *ControlPlane {
 		c.mu.Unlock()
 
 		if cfg.Delay > 0 {
-			select {
-			case <-r.Context().Done():
-				return
-			case <-time.After(cfg.Delay):
-			}
+			time.Sleep(cfg.Delay)
 		}
 
 		switch {
@@ -6934,6 +6933,14 @@ func writeTuneFailure(w http.ResponseWriter, log *slog.Logger, id string, err er
 // half of the same story: every one of them is inside
 // _wait_for_initialization, the path a follower takes while another worker
 // elects itself owner -- deleted outright by D2, not ported.
+//
+// AND NO GHOST-CLIENT DISCONNECT. output/ts/generator.py:579-581's
+// _is_ghost_client needs consecutive_empty > 100 AND the buffer 50 chunks
+// ahead of the client at the same instant -- a client 50 chunks behind whose
+// chunks exist is fed on its next read, which resets consecutive_empty, so the
+// two conditions are mutually exclusive outside the expiry window
+// find_oldest_available_chunk already recovers from. Not ported, and the
+// reason is that it is unreachable rather than that it is 2c-5's.
 func serveClient(
 	ctx context.Context,
 	w http.ResponseWriter,
@@ -6945,9 +6952,11 @@ func serveClient(
 	tuning := ch.Tuning()
 	ring := ch.Ring()
 
-	// Positioned ONCE, at setup, exactly as output/ts/generator.py:264-302
-	// positions a client. A JoinBehind of zero means the live head, which is
-	// what new_client_behind_seconds = 0 means there too.
+	// POSITIONED ONCE, at setup, exactly as output/ts/generator.py:264-302
+	// positions a client -- and this is the call parity-matrix row 8 is
+	// about, because from 2c-3 onward the ring the client joins is usually
+	// one ANOTHER client has been filling. A JoinBehind of zero means the
+	// live head, which is what new_client_behind_seconds = 0 means there.
 	cursor := ring.Head()
 	if tuning.JoinBehind > 0 {
 		cursor = ring.Join(tuning.JoinBehind)
@@ -7994,6 +8003,14 @@ func TestTheLiveEndpointProducesTheGoldensKeySet(t *testing.T) {
 	if got, want := keysOf(liveRow), keysOf(goldenRow); !reflect.DeepEqual(got, want) {
 		t.Fatalf("the live client row's keys are\n  %v\nand the golden's are\n  %v", got, want)
 	}
+	// Asserted on the LIVE row, for the same reason as owner above: the key-set
+	// check just above would stay green whether output_profile_id rendered as
+	// null or as a bare integer -- both carry the key -- so a *Client.OutputProfileID
+	// that lost its pointer and became an int would pass undetected.
+	if got := liveRow["output_profile_id"]; got != nil {
+		t.Fatalf("the live client reports output_profile_id %v, want null: 2c-3 serves "+
+			"no Output Profile yet, so every attached client's OutputProfileID is nil", got)
+	}
 }
 
 func keysOf(m map[string]any) []string {
@@ -8312,9 +8329,8 @@ func TestATuneRefusesIncompleteProxySettings(t *testing.T) {
 // thing that can fail the tune is that key's own absence.
 func TestEveryProxySettingThisRelayReadsIsRequired(t *testing.T) {
 	for _, key := range []string{
-		settingChunkBytes, settingRetention, settingJoinBehind, settingReadSize,
-		settingShutdownDelay, settingBufferingSpeed, settingBufferingTimeout,
-		settingDefaultUserAgent,
+		settingChunkBytes, settingRetention, settingJoinBehind, settingReadSize, settingShutdownDelay,
+		settingBufferingSpeed, settingBufferingTimeout, settingDefaultUserAgent,
 	} {
 		t.Run(key, func(t *testing.T) {
 			settings := relaytest.EffectiveProxySettings()
