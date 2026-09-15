@@ -186,7 +186,18 @@ func StreamHandler(deps StreamDeps) http.HandlerFunc {
 	}
 
 	return func(w http.ResponseWriter, r *http.Request) {
-		id, client, err := identify(r, deps.Secret, now)
+		// D5, exception 2: with no nginx there is no auth_request, and a Go
+		// process cannot import authorize_stream, so the decision is asked
+		// for over HTTP. On every ordinary nginx-fronted tune this returns
+		// (nil, nil) without a round trip, matching the frequency of the
+		// Python relay's own inline fallback -- which is to say never, in
+		// production.
+		decision, err := authorizeTune(r, deps, log)
+		if err != nil {
+			writeAuthorizeFailure(w, log, err)
+			return
+		}
+		id, client, err := identify(r, deps.Secret, now, decision)
 		if err != nil {
 			writeTuneFailure(w, log, id, err)
 			return
@@ -311,10 +322,19 @@ func (e *ErrUnsupportedOutput) Error() string {
 //
 // One closure rather than five `if trusted` blocks: five is five chances to
 // omit one, and the one omitted is the one that matters.
-func identify(r *http.Request, secret string, now func() time.Time) (string, *channel.Client, error) {
+func identify(r *http.Request, secret string, now func() time.Time, decision *control.Decision) (string, *channel.Client, error) {
 	trusted := control.IsRelayTrusted(secret, r.Header.Get(control.HeaderAuthorized))
 
 	header := func(name string) string {
+		// A decision from the dev fallback answers in the hop's place: the
+		// same seven values, resolved by the same authorize_stream() call,
+		// arriving as a response rather than as request headers. Checked
+		// FIRST, so a request that carried no valid marker can never fall
+		// back to reading its own headers -- the two sources are exclusive
+		// by construction and never merged.
+		if decision != nil {
+			return decisionHeader(decision, name)
+		}
 		if !trusted {
 			return ""
 		}
