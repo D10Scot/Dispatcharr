@@ -19,7 +19,7 @@ Every task's requirements implicitly include all of these. A conflict with any i
 3. **The module stays standard-library only.** `relay/go.sum` must not exist; `go list -m all` must print exactly `github.com/D10Scot/Dispatcharr/relay`. `scripts/check_go_stdlib_only.sh relay` is the mechanical check and it already runs in `go-tests.yml`.
 4. **No Postgres driver, no Redis client, on the Go side.** Same check.
 5. **Lint and vet under three GOOS.** `golangci-lint run` and `go vet ./...` native, `GOOS=linux` and `GOOS=darwin`. Zero findings is a ratchet, in zizmor's idiom. `golangci-lint` is pinned at **v2.13.2** in both `go-tests.yml` and `.claude/hooks/run-go-checks.sh`.
-6. **Every suppression is listed with its line and its reason.** The census on the seed tree is **18 grep hits for `#nosec`/`nolint`, of which 16 are real suppressions** — `relay/internal/relaytest/fmp4.go:43` and `relay/buffer/ring.go:310` are prose explaining why no suppression was needed. This PR adds none; if it does, the PR description lists them.
+6. **Every suppression is listed with its line and its reason.** On `a635190c` the census is **18 grep hits for `#nosec`/`nolint`, of which 16 are real suppressions** — `relay/internal/relaytest/fmp4.go:43` and `relay/buffer/ring.go:310` are prose explaining why no suppression was needed. **This PR adds exactly one**, and it is disclosed here rather than left for a reviewer to find: `relay/drain/drain_test.go`'s `os.ReadFile(path) // #nosec G304 -- a path this test computed from the repo root`, which R16 needs and which gosec fires on for any `os.ReadFile` of a variable. The census after this PR is 19 hits / 17 real. If any further suppression appears, the PR description lists it with its line and reason.
 7. **`scripts/check_go_credential_logging.sh relay` stays at zero findings.** Any error-typed argument to a logging or formatting call goes through `redact.Error` or carries `// credential-logging: ok - <reason>`.
 8. **`scripts/check_credential_logging.py` stays at zero findings** for every `*.py` this PR touches.
 9. **Every `uses:` is a full 40-char commit SHA with the version as a trailing comment**, tool-resolved at PR time (`gh api repos/<owner>/<repo>/commits/<tag> --jq .sha`), never hand-typed, and the publisher confirmed. **zizmor at zero findings on every workflow this PR edits**, online audits on (`GH_TOKEN` from `gh auth token`).
@@ -37,16 +37,19 @@ These are the decisions this plan makes on the questions the spec and the eight 
 
 ### R1 — The denominator is the packages the shipped binary links, not `./...`
 
-`go list -deps .` from `relay/` prints exactly nine packages of this module on the seed tree: `relay` (main), `buffer`, `channel`, `config`, `control`, `ffmpeg`, `httpapi`, `output`, `redact`. **On the 2c-8 tree it is ten**: `main.go` imports `relay/drain`, so the drain is linked and in the denominator. Verified against `origin/migration/phase2c-control-drain` at `ee911fa5`. Task 0 Step 2 expects exactly those ten; an eleventh is a stop-and-report, because every figure below is measured against nine and re-measured against ten. `relay/internal/relaytest` and `relay/internal/credlint` are in the module and in neither list: the first is the Go counterpart of `apps/proxy/live_proxy/tests/harness/` and the second is a lint tool invoked with `go run`.
+`go list -deps .` from `relay/` prints exactly **ten** packages of this module on `a635190c`: `relay` (main), `buffer`, `channel`, `config`, `control`, `drain`, `ffmpeg`, `httpapi`, `output`, `redact`. `relay/drain` is the tenth, added by 2c-8 and imported by `main.go`. Task 0 Step 2 expects exactly those ten; an eleventh, or a missing `drain`, is a stop-and-report. `relay/internal/relaytest` and `relay/internal/credlint` are in the module and in neither list: the first is the Go counterpart of `apps/proxy/live_proxy/tests/harness/` and the second is a lint tool invoked with `go run`.
 
-Measured on the seed tree (d6d71f97), same run, same command:
+Measured on `a635190c`, same run, same command:
 
 | scope | statements | missing | coverage |
 |---|---|---|---|
-| the whole module (`./...`) | 3,670 | 870 | 76.29% |
-| the nine linked packages | 2,956 | 338 | 88.57% |
+| the whole module (`./...`) | 4,463 | 1,172 | 73.74% |
+| the ten linked packages | 3,696 | 587 | **84.12%** |
+| the two excluded packages | 767 | 585 | 23.7% |
 
-`relaytest` alone contributes **499** of those 870 missing statements, on 575 statements of test scaffolding.
+`relaytest` alone is 628 of those 767 statements. **The two excluded packages are 585 of the module's 1,172 missing statements** — half the module's shortfall is test scaffolding and a lint tool.
+
+**The margin narrowed between 2c-7 and 2c-8, and that is worth stating rather than burying.** On the 2c-7 seed the same measurement gave 3,670 / 870 / 76.29% and 2,956 / 338 / 88.57%. 2c-8 added 740 linked statements carrying 249 missing ones — a **marginal coverage of 66.4%** on its own additions — which is what took the module from 88.57% to 84.12%. The 80% ceiling is `3696 - ceil(0.8 × 3696)` = **739**, so the margin is **152 statements**, where on the seed it was 253. One more PR of 2c-8's shape would breach it. Task 7 Step 4 is what acts on that if CI measures worse; the floor's header records it so the next stage reads it before, not after.
 
 **The rule is decided by kind, not by number.** `scripts/coverage_live_path.coveragerc` excludes exactly these two kinds on the Python side — `omit = */tests/*` takes the harness out, and no script under `scripts/` is in its ten-module boundary list. The Go gate applies the same rule to the same kinds. The difference from the Python gate's own declined exclusion (§ Gate 2, "Denominator exclusion was considered and declined") is that that one was proposed *in order to reach a threshold it could not reach anyway*; this one is the scope rule the sibling gate already uses, and the threshold is met with 253 statements of margin either way.
 
@@ -54,16 +57,16 @@ It is derived mechanically rather than listed by hand so it cannot rot — and t
 
 ### R2 — Per-package `-cover`, not `-coverpkg`
 
-`go test -cover` instruments only the package under test, so a package's figure comes from its own tests. `-coverpkg` counts a package as covered when any other package's test walks through it. Both measured, same tree, same denominator:
+`go test -cover` instruments only the package under test, so a package's figure comes from its own tests. `-coverpkg` counts a package as covered when any other package's test walks through it. Both measured on `a635190c`, same denominator:
 
 | mode | statements | missing | coverage |
 |---|---|---|---|
-| per-package (`-cover`) | 2,956 | 338 | 88.57% |
-| cross-package (`-coverpkg`, merged per block) | 2,956 | 221 | 92.52% |
+| per-package (`-cover`) | 3,696 | 587 | 84.12% |
+| cross-package (`-coverpkg`, merged per block) | 3,696 | 316 | 91.45% |
 
-117 statements — 3.95 points — is entirely code executed by a neighbour's tests. Per-package is kept because D7's stated purpose for Gate 2 is catching a subtle regression, which needs an *assertion over* the code rather than an *execution of* it, and an assertion lives in the package's own tests.
+271 statements — 7.33 points — is entirely code executed by a neighbour's tests, and the gap **widened** with 2c-8 (it was 117 statements / 3.95 points on the 2c-7 seed). That is the measurement arguing for per-package more strongly than before: a third of the module's uncovered code is reached by some other package's test without any test asserting anything about it there. Per-package is kept because D7's stated purpose for Gate 2 is catching a subtle regression, which needs an *assertion over* the code rather than an *execution of* it, and an assertion lives in the package's own tests.
 
-A timing objection was considered and **did not survive measurement**: instrumenting the live path into every test binary might have perturbed the suite's real-time assertions, but `relay/channel` took 75.0 s under `-coverpkg` and 75.2 s without. Recorded because a plan that cited an unmeasured reason would be worse than one that cites a measured non-reason.
+A timing objection was considered and **did not survive measurement** on the seed: instrumenting the live path into every test binary might have perturbed the suite's real-time assertions, but `relay/channel` took 75.0 s under `-coverpkg` and 75.2 s without. Recorded because a plan that cited an unmeasured reason would be worse than one that cites a measured non-reason.
 
 A `-coverpkg` profile repeats every block once per test binary, so the gate **refuses one outright** rather than silently producing a plausible number from it.
 
@@ -103,7 +106,7 @@ A `workflow_dispatch` input (`census: true`) was considered and rejected: it wou
 
 **The stopping rule is the Python gate's**: dispatch `go-tests.yml` on the branch repeatedly, read `this run missing=` from each `Coverage gate` job, and stop when the **maximum has been unchanged for ≥6 consecutive rounds, with ≥12 rounds total**. Record every round, in order — a bare min/max cannot show the rule was met. `missing` is set to `max(rounds)`, by hand, because `--write-floor` writes the figure from the run it just took and cannot know it is the Nth of a campaign.
 
-**Local draws are for design, not for the number.** A 12-round local census on the seed tree measured **337–338, max 338, min 337, spread 1** — one block, `relay/buffer/ring.go:262.3,263.1`, the empty-ring arm of `Ring.Oldest()`, covered when some test happens to call it before the first write. That is two orders of magnitude tighter than the Python gate's 104-statement flappy set, and it is expected: the Go tests inject clocks and poll for conditions where the Python relay's spread comes from gevent background housekeeping this implementation deleted. It is **not** a reason to take fewer CI rounds.
+**Local draws are for design, not for the number.** A 12-round local census on `a635190c` measured **587–588, max 588, min 587, spread 1**, in order: `588 587 588 587 588 588 587 588 587 588 588 588`. The maximum was set at round 1 and held for eleven more. The single flapping block is `relay/buffer/ring.go:262.3,263.1`, the empty-ring arm of `Ring.Oldest()`, covered when some test happens to call it before the first write — **the same one block as on the 2c-7 seed**, which is two trees agreeing rather than one tree's accident. That is two orders of magnitude tighter than the Python gate's 104-statement flappy set, and it is expected: the Go tests inject clocks and poll for conditions where the Python relay's spread comes from gevent background housekeeping this implementation deleted. It is **not** a reason to take fewer CI rounds.
 
 ### R6 — A draw beyond the census, and the one part of #312 the Go gate does not inherit
 
@@ -128,12 +131,12 @@ The gate's own failure message says this, so a reader does not have to find the 
 **Verified by break-check, and the first attempt was a true positive for a false reason.** Setting `maxUnhealthyChecks = 1` does redden the test, but through an *earlier* assertion (`the channel was never observed unhealthy before it switched`) — the switch happens too fast for the poll to observe the unhealthy window, so that break-check proves nothing about the gap. Setting `maxUnhealthyChecks = 2` reddens through the gap assertion itself:
 
 ```
-failover_test.go:374: the resolver was asked 350.477375ms after the last byte, under
+failover_test.go:374: the resolver was asked 351.230375ms after the last byte, under
 CONNECTION_TIMEOUT + two more checks (400ms): the monitor did not wait for three
 consecutive checks
 ```
 
-49.5 ms of margin against a fix that removes a ~30 µs error — five orders of magnitude apart, which is the evidence that the fix removes a false red without weakening a true one.
+~50 ms of margin (351.23 ms measured on `a635190c`; 350.48 ms on the seed) against a fix that removes a ~30 µs error — five orders of magnitude apart, which is the evidence that the fix removes a false red without weakening a true one.
 
 ### R8 — The differential test: one test, real Django on both sides, citing no matrix row
 
@@ -147,7 +150,7 @@ Amendment A2.4 asks for "a `RelayHarnessTestCase` on the Python side that starts
 
 **Gate 2 (Python) is untouched, checked rather than assumed**: the new file is `apps/proxy/live_proxy/tests/test_relay_differential.py`, the rcfile omits `*/tests/*`, and `scripts/coverage_live_path.floor.modules` contains **zero** paths under `tests/`. No production module is edited. No Gate 2 run is owed.
 
-**Cost, measured in a container on the seed tree: 2.3 s for the module**, plus the job's own Go build and store bootstrap.
+**Cost, measured in a container on `a635190c`: 6.5 s for the module**, plus the job's own Go build and store bootstrap. It was 2.3 s on the 2c-7 seed; the difference is 2c-8's drain, which the test's `SIGTERM` teardown now raises and which spends a five-second client grace before anything else. The teardown wait is **30 s, not 10** — a 10 s wait sat only 5 s above the observed teardown and would have escalated to `SIGKILL` the first time the drain used more of its 15 s budget, a flake that would read as a hung relay.
 
 ### R9 — The realignment differential was built, run and dropped
 
@@ -207,11 +210,11 @@ The split is declined here: a file move reads as a whole delete plus a whole add
 
 **It fails rather than skips or defaults** when the file or the key is absent. A helper that fell back to 20 would turn a renamed key into a permanently green test asserting a number nothing in the repository says any more — the silence-read-as-pass shape, one level up from the thing the test is for. The regex is anchored and comment-aware, so a `#stopwaitsecs=99` in a note is not read as the setting, which is also how supervisord's own parser behaves.
 
-**Verified against the real 2c-8 tree** (`origin/migration/phase2c-control-drain` at `ee911fa5`, extracted read-only with `git archive`; no branch was checked out and no worktree taken). Five break-checks, each reverted before the next:
+**Verified on `a635190c`**, 2c-8 as merged. Five break-checks, each reverted before the next:
 
 | conf | expected | observed |
 |---|---|---|
-| `stopwaitsecs=10` | red, budget exceeds the window | `DefaultBudget is 15s against a stopwaitsecs of 10s: the drain would be SIGKILLed partway through…` |
+| `stopwaitsecs=10` | red, budget exceeds the window | `DefaultBudget is 15s against a stopwaitsecs of 10s: the drain would be SIGKILLed partway through, losing every release and every channel_stop` |
 | `stopwaitsecs=16` | red, margin below 3s | `only 1s of margin between the drain budget and stopwaitsecs…` |
 | `stopwaitsecs=60` | **green** | `ok` — the control that proves this is a bound, not an equality |
 | key renamed to `stop_wait_secs` | red, naming the file and the key | `…declares no stopwaitsecs=<n>. Either supervisord's stop window for relay-go moved to another key, or it was removed…` |
@@ -255,7 +258,7 @@ The split is declined here: a file move reads as a whole delete plus a whole add
 
 ## Task 0: Verify the seed against 2c-8 as merged
 
-This plan was written against **`d6d71f97`** (2c-7 as merged) plus 2c-8's plan appendices as the *expected* shape of what 2c-8 lands. 2c-8 merges first. This task is the diff between the two, and it runs before anything else.
+This plan was **re-seeded onto `a635190c`** (2c-8 as merged) and every figure, hunk and expected output in it was re-measured or re-captured there. This task is what confirms the tree the implementer starts from is still that one, and it runs before anything else. It was executed once already, at re-seed time, and every row below came back as expected — so a surprise here means `main` moved again, not that the expectation was a guess.
 
 **Files:** none modified.
 
@@ -274,7 +277,7 @@ cd /Users/dion/git/Dispatcharr/.worktrees/phase2c-go-coverage-gate
 git rev-parse HEAD
 ```
 
-Expected: the printed SHA is `<2C8_MERGED_SHA>` — the orchestrator fills this in when 2c-8 merges. If it is not, `origin/main` has moved past 2c-8; **stop and report** rather than guessing which commits are in between.
+Expected: the printed SHA is **`a635190c`**, 2c-8 as merged (`relay(phase2): 2c-8 — control routes, the SIGTERM drain, the dev authorize fallback and the last parity pins (#315)`). If it is not, `origin/main` has moved past 2c-8; **stop and report** rather than guessing which commits are in between — every figure in this plan is measured on that commit.
 
 - [ ] **Step 2: Confirm the four facts every later task depends on**
 
@@ -288,7 +291,7 @@ grep -n "GATE_1_CLOSED\|HIGHEST_ROW_ID" e2e/tests/guards/parity-matrix.ts
 
 Expected, in order: `go.sum absent: OK`; a **ten**-line package list — `relay`, `buffer`, `channel`, `config`, `control`, **`drain`**, `ffmpeg`, `httpapi`, `output`, `redact`; `0`; and `GATE_1_CLOSED = true` with `HIGHEST_ROW_ID = 30`.
 
-**`drain` is the expected tenth**, and it is expected rather than tolerated: `relay/main.go` imports it on 2c-8's branch, verified at `ee911fa5`. This plan's own figures (R1, and every number in Appendix E's worked example) were measured on the **nine**-package seed, so they will all move — which is why Task 2 Step 2 says to record whatever the script prints rather than to expect a number.
+**`drain` is the expected tenth**, and it is expected rather than tolerated: `relay/main.go` imports it. Every figure in this plan was measured on `a635190c` with those exact ten, so Task 2 Step 2's expected output is a real number rather than a shape — but it still says to record what the script prints, because a local draw is a draw.
 
 **An eleventh package, or a missing `drain`, is a stop-and-report.** Either is a denominator nobody has measured, and the response is to re-measure, not to proceed and let Task 8's campaign discover it twelve CI rounds later.
 
@@ -437,7 +440,7 @@ go test -count=1 -race -run 'TestDeadAirOnAYoungConnectionSwitchesStreams' ./cha
 Expected: FAIL, naming the gap assertion —
 
 ```
-failover_test.go:374: the resolver was asked 350.4...ms after the last byte, under CONNECTION_TIMEOUT + two more checks (400ms): the monitor did not wait for three consecutive checks
+failover_test.go:374: the resolver was asked 351.2...ms after the last byte, under CONNECTION_TIMEOUT + two more checks (400ms): the monitor did not wait for three consecutive checks
 ```
 
 **`maxUnhealthyChecks = 1` is the WRONG break-check and must not be used as evidence.** It reddens through an earlier assertion — `the channel was never observed unhealthy before it switched` — because the switch happens too fast for the poll to see the unhealthy window, so it says nothing about the gap. Restore `3` and re-run the test to confirm green before committing.
@@ -469,7 +472,7 @@ Expected: a `const supervisordStopWait = 20 * time.Second` with a comment claimi
 
 - [ ] **Step 8: Apply Appendix G**
 
-Two hunks: `RepoRoot()` exported from `relay/internal/relaytest/corpus.go`, and `relay/drain/drain_test.go`'s helper replacing the constant.
+The `relay/internal/relaytest/corpus.go` and `relay/drain/drain_test.go` halves of **Appendix G** — `RepoRoot()` exported, and the helper replacing the constant. Appendix G is one diff over four files; its other two (`failover_test.go`, `main.go`) belong to Steps 3 and to Task 2 Step 7 and are applied there.
 
 - [ ] **Step 9: Run it**
 
@@ -532,10 +535,10 @@ bash scripts/coverage_relay_go.sh --report /tmp/relay-go-coverage
 Expected: a nine-row per-package table, two `~out of scope` lines naming `internal/credlint` and `internal/relaytest`, and a summary line of the shape
 
 ```
-coverage_relay_go: shape=go-race-per-package/v1  packages=9  statements=2956  missing=338  coverage=88.57%
+coverage_relay_go: shape=go-race-per-package/v1  packages=10  statements=3696  missing=587  coverage=84.12%
 ```
 
-The exact numbers will differ on the 2c-8 tree — 2c-8 adds routes, a drain and events, so `statements` rises. **Record whatever it prints; it is Task 8's local design figure, not the floor.**
+`missing` will be 587 or 588 — one block flaps (R5). **Record whatever it prints; it is Task 8's local design figure, not the floor.** `statements=3696` and `packages=10` are not expected to vary at all: if either does, something is in the denominator that this plan did not measure, and that is Task 0 Step 2's stop-and-report arriving late.
 
 - [ ] **Step 3: Verify the bootstrap branch**
 
@@ -754,7 +757,7 @@ docker exec -e TEST_USE_SQLITE= -e POSTGRES_HOST=/var/run/postgresql \
   apps.proxy.live_proxy.tests.test_relay_differential 2>&1 | tail -20
 ```
 
-Expected: `Ran 1 test in ~2.3s` and `OK`, plus a `relay-go said:` block showing `starting on port …(dev routes: true)`, `connection attempt channel=…` and `channel stopped channel=…`. Those three lines are the proof that the Go relay reached the real Django `next-source` and streamed.
+Expected: `Ran 1 test in ~6.5s` and `OK`, plus a `relay-go said:` block showing `starting on port …(dev routes: true)`, `connection attempt channel=…`, `channel stopped channel=…`, then `received terminated, draining`, `INFO draining budget=15s client_grace=5s` and `INFO drained elapsed=5.00…s`. The first three are the proof that the Go relay reached the real Django `next-source` and streamed; the last three are 2c-8's drain running on the test's own `SIGTERM`, and they are why the module takes 6.5 s rather than the 2.3 s it took before 2c-8.
 
 - [ ] **Step 6: Confirm the skip path, which is the common case**
 
@@ -793,7 +796,7 @@ docker exec -e TEST_USE_SQLITE= -e POSTGRES_HOST=/var/run/postgresql \
   apps.proxy.live_proxy.tests 2>&1 | tail -5
 ```
 
-Expected: `OK (skipped=…)`, the skip count one higher than the label's usual.
+Expected: `Ran 429 tests … OK (skipped=1)` — measured on `a635190c` in 67.7 s. The one skip is this test; if the count is higher, something else in the label is skipping and it is not this PR's doing.
 
 - [ ] **Step 9: Credential check**
 
@@ -1064,7 +1067,7 @@ grep -E '^packages=|^package_count=' scripts/coverage_relay_go.floor
 wc -l < scripts/coverage_relay_go.floor.packages
 ```
 
-Expected: `package_count=10` and ten lines, on the 2c-8 tree (nine on the seed; R1 and Task 0 Step 2 say which and why). The gate checks the hash on every run anyway; this is the human-readable half.
+Expected: `package_count=10` and ten lines. The gate checks the hash on every run anyway; this is the human-readable half.
 
 - [ ] **Step 6: Commit and confirm CI**
 
@@ -1190,10 +1193,11 @@ docker volume rm phase2c9-hookdb
 
 ## Appendix A — `scripts/coverage_relay_go.sh`
 
-Verbatim. Verified on `d6d71f97`: `--measure`, `--report`, `--gate` (with and
-without a floor), `--write-floor` and `--write-floor --shape-only` all run, and
+Verbatim. Verified on **`a635190c`**: `--measure`, `--report`, `--gate` (with and
+without a floor), `--write-floor` and `--write-floor --shape-only` all run;
 all seven failure modes in Task 2 Step 5 exit 1 with a message naming the
-mechanism.
+mechanism; and `--write-floor --shape-only` leaves a hand-added prose line in
+the floor untouched.
 
 Two portability notes, both deliberate. There is **no `${x@Q}`** anywhere: that
 expansion is bash 4.4+, and macOS ships bash 3.2 at `/bin/bash`, so a script
@@ -1231,18 +1235,19 @@ hash comes out of both.
 # derived list is hashed into the floor, so GROWING it is still a deliberate
 # re-baseline and never a silent denominator move.
 #
-# The numbers this distinction is worth, measured 2026-09-15 on d6d71f97:
-# the whole module is 3,670 statements / 870 missing / 76.29%; the nine linked
-# packages are 2,956 / 338 / 88.57%. relaytest alone is 499 of those 870
-# missing. Stated here rather than in a PR description because a reader who
-# runs `go test -cover ./...` and sees 76% must be able to find out in one
-# place why this gate says 88%.
+# The numbers this distinction is worth, measured 2026-09-15 on a635190c:
+# the whole module is 4,463 statements / 1,172 missing / 73.74%; the ten linked
+# packages are 3,696 / 587 / 84.12%. The two excluded packages are 767
+# statements of which 585 are missing -- HALF the module's shortfall is test
+# scaffolding and a lint tool. Stated here rather than in a PR description
+# because a reader who runs `go test -cover ./...` and sees 74% must be able to
+# find out in one place why this gate says 84%.
 #
 # PER-PACKAGE, NOT -coverpkg. `go test -cover` instruments only the package
 # under test, so a package's figure comes from its OWN tests; `-coverpkg`
 # counts a package as covered when any other package's test walks through it.
 # Both were measured on the same tree and the same denominator: per-package
-# 338 missing, -coverpkg 221 -- a 117-statement, 3.95-point difference that is
+# 587 missing, -coverpkg 316 -- a 271-statement, 7.33-point difference that is
 # entirely code executed by a neighbour's tests. Per-package is kept because
 # the gate's stated purpose (spec D7) is catching a subtle regression, which
 # needs an ASSERTION over the code, not an execution of it, and an assertion
@@ -1625,10 +1630,12 @@ esac
 
 ## Appendix B — `apps/proxy/live_proxy/tests/test_relay_differential.py`
 
-Verbatim. Verified in a container on `d6d71f97`: `Ran 1 test in 2.326s`, `OK`,
-with the Go relay's own log confirming it reached the real Django
-`next-source` and streamed. The skip path was verified separately and reports
-`OK (skipped=1)`.
+Verbatim. Verified in a container on **`a635190c`**: `Ran 1 test in 6.418s`,
+`OK`, with the Go relay's own log confirming it reached the real Django
+`next-source`, streamed, and then ran 2c-8's drain on the test's `SIGTERM`.
+The skip path was verified separately (`OK (skipped=1)`, naming
+`DISPATCHARR_RELAY_GO_BIN`), and the whole `apps.proxy.live_proxy.tests` label
+runs `429 tests … OK (skipped=1)` in 67.7 s with this file present.
 
 ```python
 """The cross-implementation differential: both relays, the same bytes, compared.
@@ -1784,9 +1791,19 @@ class RelayDifferentialTests(ControlMixin, RelayHarnessTestCase):
 
         def stop():
             if process.poll() is None:
+                # SIGTERM, not SIGKILL: since 2c-8 that raises D6's drain, and
+                # letting it run is what keeps this test from leaving a
+                # half-torn-down channel behind. The wait is THIRTY seconds
+                # against a drain budget of 15 s, not ten: the drain spends a
+                # five-second client grace before anything else, so a 10 s
+                # wait sat only 5 s above the observed teardown and would
+                # escalate to SIGKILL the first time the drain used more of
+                # its own budget -- a flake that would read as a hung relay.
+                # Measured: the whole test takes ~6.5 s, of which ~5 s is this
+                # grace (it was ~2.3 s before 2c-8 added the drain).
                 process.terminate()
                 try:
-                    process.wait(timeout=10)
+                    process.wait(timeout=30)
                 except subprocess.TimeoutExpired:
                     process.kill()
                     process.wait(timeout=10)
@@ -1923,12 +1940,13 @@ class RelayDifferentialTests(ControlMixin, RelayHarnessTestCase):
 
 ## Appendix C — the workflow diff
 
-Against `d6d71f97`; `git apply --check` passes. **Re-anchor after 2c-8 merges**
-— Task 0 is where that is found out, and the four action SHAs are re-resolved
-in Task 3 Step 1 rather than taken from here.
+Against **`a635190c`**; `git apply --check` passes. 2c-8 touched neither
+workflow, so this hunk needed no re-anchoring. The four action SHAs are still
+re-resolved in Task 3 Step 1 rather than taken from here.
 
 `actionlint` is silent on both files and `zizmor 1.30.1` reports
-`No findings to report.` on both, run **online** with `GH_TOKEN="$(gh auth token)"`.
+`No findings to report. (2 ignored, 4 suppressed)` across both, run **online**
+with `GH_TOKEN="$(gh auth token)"`.
 
 ```diff
 diff --git a/.github/workflows/codeql.yml b/.github/workflows/codeql.yml
@@ -2259,12 +2277,17 @@ index 26be35e8..6e986374 100644
 
 ## Appendix D — the parity-matrix guard diff
 
-Against `d6d71f97`; `git apply --check` passes. Verified by running
-`npx playwright test --project=guards parity-matrix` in both flag states: with
-`GO_PARITY_CLOSED = true` it failed naming `14, 15, 16, 17, 18, 19, 20, 21, 22,
-23, 24, 25, 30`; with it `false`, all eight checks passed, logging
-`parity matrix (Go): 15 of 28 pinned rows carry a Go reference; 2 row(s) are not pinnable.`
-On the 2c-8 tree those two outcomes swap, which is Task 6 Step 4.
+Against **`a635190c`**; `git apply --check` passes, and 2c-8 touched neither
+guard file. Verified there: `tsc --noEmit` clean and **8 passed**, logging
+`parity matrix: 30 rows — 28 pinned, 0 owed, 2 white-box-only.` and
+`parity matrix (Go): 28 of 28 pinned rows carry a Go reference; 2 row(s) are not pinnable.`
+
+Both break-checks run on the same tree. Removing row 1's Go reference fails
+with `Rows with a Python pin and no Go one: 1.`; flipping `GO_PARITY_CLOSED` to
+`false` fails with `No pinned row lacks a Go reference any more — you just
+closed the last one. Flip GO_PARITY_CLOSED to true…`. (On the 2c-7 seed the
+`true` branch named all thirteen rows 2c-8 then owed, which is the same check
+seen from the other side.)
 
 ```diff
 diff --git a/e2e/tests/guards/parity-matrix.spec.ts b/e2e/tests/guards/parity-matrix.spec.ts
@@ -2405,21 +2428,22 @@ as a placeholder in the committed file.
 # floor came from a 21-round LOCAL campaign whose maximum the very first CI run
 # exceeded -- and this file inherits the lesson rather than re-learning it.
 #
-# WHAT IS MEASURED. The packages `go list -deps .` reports from relay/ -- ten on
-# the 2c-8 tree, `drain` included:
+# WHAT IS MEASURED. The ten packages `go list -deps .` reports from relay/ on
+# a635190c, `drain` included:
 # the packages the SHIPPED BINARY LINKS. relay/internal/relaytest (the Go
 # counterpart of apps/proxy/live_proxy/tests/harness/) and
 # relay/internal/credlint (a lint tool run with `go run`) are in the module and
 # in NEITHER, by the same rule scripts/coverage_live_path.coveragerc applies on
 # the Python side. The difference is large and stated rather than buried:
-# measured on one run, the whole module is 3,670 statements / 870 missing /
-# 76.29%; the nine linked packages are 2,956 / 338 / 88.57%, and relaytest
-# alone is 499 of the 870 missing.
+# measured on one run at a635190c, the whole module is 4,463 statements / 1,172
+# missing / 73.74%; the ten linked packages are 3,696 / 587 / 84.12%; and the
+# two excluded packages are 767 statements of which 585 are missing -- HALF the
+# module's shortfall is test scaffolding and a lint tool.
 #
 # HOW. `go test -count=1 -race -covermode=atomic -coverprofile=... ./...`, per
 # package -- NOT -coverpkg, which counts a package as covered when a
-# neighbour's test walks through it (measured on the same tree: 221 missing
-# instead of 338, a 117-statement, 3.95-point difference). A -coverpkg profile
+# neighbour's test walks through it (measured on the same tree: 316 missing
+# instead of 587, a 271-statement, 7.33-point difference). A -coverpkg profile
 # repeats every block once per test binary and --gate refuses one outright.
 # -count=1 is load-bearing: `go test` replays a cached coverage profile
 # verbatim, so a census without it is one run reported N times.
@@ -2500,7 +2524,7 @@ as a placeholder in the committed file.
 # permanent.
 #
 # LOCAL VS CI. A 12-round LOCAL census on the same tree ran <lo>-<hi> (spread
-# <s>). Recorded so the next campaign can see whether the gap reproduces, and
+# <s>; on a635190c it was 587-588, spread 1, one block). Recorded so the next campaign can see whether the gap reproduces, and
 # NOT as an offset to budget against: the Python gate measured local+35 in one
 # campaign and local+13 in the next, which is itself the evidence that the gap
 # is not a constant. The correct response stays "measure in CI".
@@ -2508,7 +2532,11 @@ as a placeholder in the committed file.
 # THE THRESHOLD. D7 requires >=80% on the live path, transferring to Go at
 # >=80%. The ceiling is statements - ceil(0.8 * statements) = <CEILING>;
 # `missing` is <MAX>, so the margin is <CEILING - MAX> statements and coverage
-# at the floor is <PERCENT>%.
+# at the floor is <PERCENT>%. AT a635190c THAT MARGIN IS 152 STATEMENTS (739 -
+# 587), DOWN FROM 253 AT THE 2c-7 SEED: 2c-8 added 740 linked statements
+# carrying 249 missing ones, a marginal coverage of 66.4% on its own additions.
+# Recorded because the next PR of that shape breaches the gate, and the right
+# time to know that is before it is written, not when CI says so.
 #
 # HOW TO MOVE THIS FLOOR (read before running --write-floor).
 #
@@ -2558,35 +2586,39 @@ gomod=<HASH>
 
 ## Appendix F — the spec's Amendment A9 and its Done-log row
 
-Against `d6d71f97`; `git apply --check` passes. **This hunk will conflict after
-2c-8 merges**, because Amendment A8 is inserted at the same anchor (immediately
-before `## Stage 2d — cutover, and its trap`) and the Done-log row is appended
-to the same table. Re-anchor both in Task 9 — the amendment goes *after* A8,
-and the Done-log row goes *after* 2c-8's. The content does not change; only
-where it attaches does.
+Against **`a635190c`**; `git apply --check` passes. This is the hunk that did
+conflict on the re-seed and has been re-anchored: Amendment **A9 now sits after
+A8** (spec line 2616, with A8 at 2465 and `## Stage 2d` at 2764), and the
+Done-log row is appended after 2c-8's, taking that table from 12 rows to 13.
+A9 carries **ten** numbered items.
+
+`CLAUDE.md` did **not** conflict: 2c-8 edited its Architecture paragraph and
+added a Known-defects bullet for [#314](https://github.com/D10Scot/Dispatcharr/issues/314),
+none of which is one of this PR's three passages. The three are re-applied by
+string match rather than by line, so they land wherever 2c-8 left them.
 
 Task 9 Step 3's row count check is what catches a Done-log entry written as a
 bullet, which is invisible to the table.
 
-The same file also carries this appendix's CLAUDE.md hunks (three passages,
+The same file carries this appendix's CLAUDE.md hunks (three passages,
 § Testing, § Build reproducibility and § Supply chain security), because they
 were captured in one `git diff`.
 
 ```diff
 diff --git a/CLAUDE.md b/CLAUDE.md
-index 31609244..1389cb0b 100644
+index 436e2777..fee2778d 100644
 --- a/CLAUDE.md
 +++ b/CLAUDE.md
-@@ -158,7 +158,7 @@ Coverage ~45.6% backend / 71.9% frontend, **inversely correlated with criticalit
+@@ -159,7 +159,7 @@ Coverage ~45.6% backend / 71.9% frontend, **inversely correlated with criticalit
  
  **E2E exists now**: a Playwright suite in `e2e/` (fourteen projects: `bootstrap`, `guards`, `pristine`, `seeded`, `streaming`, `streaming-failover`, `streaming-greybox`, `streaming-split`, `frontend`, `dvr`, `lifecycle`, `lifecycle-upgrade`, `lifecycle-restore`, `lifecycle-scheduling` — most run their own CI job and container; `guards` is static analysis over the suite's own source and needs neither) runs against a shared, API-seeded AIO container (ADR `docs/adr/0001`), with `e2e-upstream/` providing a fake provider image with twelve injectable faults. G4 covers the live streaming data path: TS alignment/continuity, multi-client upstream sharing, mid-stream switching, all three failover triggers, the three Stream Profile architectures, Output Profile process sharing. Read `e2e/README.md` before adding to it and `e2e/COVERAGE.md` for what is/isn't covered (the shared worklist across the seven-goal programme — updated in the same PR as the tests). `e2e-tests.yml` runs on push/PR, and the fork's **Main ruleset requires its checks on every PR** (the workflow always triggers; a `changes` job skips the heavy jobs for docs-only diffs, since a skipped job still satisfies a required check). **Every test workflow now has that shape and a result aggregate** — `E2E result`, `Lifecycle result`, `Backend result`, `Frontend result` — so each is requireable: no `paths:` filter on the `pull_request` trigger (nor on `push` for backend/frontend), a cheap always-running change detector (`changes`, or `plan` in `backend-tests.yml`), and an `if: always()` aggregate with three branches — detector failed ⇒ fail, run not required ⇒ pass, otherwise every heavy job must be exactly `success`. **A skipped heavy job on a *required* run fails the aggregate**; only the not-required branch forgives a skip. `streaming-split` is the newest, and the only project that takes a supervisord program away rather than the container: it stops `api-uwsgi` with a stream running and restarts `relay-uwsgi` with a Celery task queued, driving `instance.supervisorctl()` so it needs one allowlist line and no new grey-box capability.
  
 -`go-tests.yml` is the fifth test workflow and carries the same four-part requireable shape as the others, with a **`Go result`** aggregate from its first commit. It runs `go build`, `go vet`, `go test -race` and `golangci-lint`, plus the stdlib-only assertion. It carries **no coverage gate yet** — 2c-9 adds the ratchet and the floor file. Making `Go result` an actually-required check on the Main ruleset is a repo-settings action, not something a commit accomplishes.
-+`go-tests.yml` is the fifth test workflow and carries the same four-part requireable shape as the others, with a **`Go result`** aggregate from its first commit. It runs `go build`, `go vet`, `go test -race` and `golangci-lint` under three GOOS, plus the stdlib-only and credential-logging assertions. **Since 2c-9 it also carries the Go coverage ratchet and the cross-implementation differential**, both in `Go result`'s `needs`. `scripts/coverage_relay_go.sh` is Gate 2's Go counterpart and its denominator is the packages the shipped binary LINKS — `go list -deps .` from `relay/`, nine packages — so `relay/internal/relaytest` (the Go harness) and `relay/internal/credlint` (a `go run` lint tool) are out of it by the same rule `scripts/coverage_live_path.coveragerc` applies on the Python side; measured on the same run, the whole module is 76.3% and the nine linked packages 88.6%, and `relaytest` alone is 499 of the 870 missing. It measures **per package** (`go test -count=1 -race -covermode=atomic`, no `-coverpkg` — a `-coverpkg` profile repeats every block per test binary and is refused outright), `-count=1` because `go test` replays a cached coverage profile verbatim and a census without it is one run reported N times. `--gate` checks three shapes for equality — `shape=`, `packages=` (a hash of the sorted linked-package list, committed beside the floor in `scripts/coverage_relay_go.floor.packages` and verified against the hash on every run) and `gomod=` (a hash of `relay/go.mod`'s bytes, the counterpart of the Python gate's `rcfile=`, since go.mod fixes both the toolchain and the dependency set) — then compares `missing` against the floor; `statements` is recorded provenance and never compared. The floor's `missing` is the WORST of ≥12 **CI** draws under the same stopping rule the Python gate uses; a draw above it is a finding to investigate, not noise, and the fix is a re-measurement PR of its own, never a floor bump on the PR that drew it. Unlike the Python gate, a CI artifact is directly usable locally: a Go coverprofile's first column is an import path, not a filesystem path, so there is no `[paths]` remapping to get wrong ([#312](https://github.com/D10Scot/Dispatcharr/issues/312)'s second operational note does not apply). The **differential** job is the only one that builds `relay-go` and boots Postgres and Redis together; it runs `apps/proxy/live_proxy/tests/test_relay_differential.py`, which starts the Go binary against the test's own `LiveServerTestCase` Django and compares what both relays deliver from one `FakeUpstream` — and which SKIPS in every other run of that label, deterministically, because `DISPATCHARR_RELAY_GO_BIN` is unset there, so Gate 2's Python census is unperturbed. Making `Go result` an actually-required check on the Main ruleset is a repo-settings action, not something a commit accomplishes.
++`go-tests.yml` is the fifth test workflow and carries the same four-part requireable shape as the others, with a **`Go result`** aggregate from its first commit. It runs `go build`, `go vet`, `go test -race` and `golangci-lint` under three GOOS, plus the stdlib-only and credential-logging assertions. **Since 2c-9 it also carries the Go coverage ratchet and the cross-implementation differential**, both in `Go result`'s `needs`. `scripts/coverage_relay_go.sh` is Gate 2's Go counterpart and its denominator is the packages the shipped binary LINKS — `go list -deps .` from `relay/`, ten since 2c-8 added `relay/drain` — so `relay/internal/relaytest` (the Go harness) and `relay/internal/credlint` (a `go run` lint tool) are out of it by the same rule `scripts/coverage_live_path.coveragerc` applies on the Python side; measured on the same run, the whole module is 79.8% and the ten linked packages 84.1%, with `relaytest` alone contributing 628 of the module's uncounted statements. It measures **per package** (`go test -count=1 -race -covermode=atomic`, no `-coverpkg` — a `-coverpkg` profile repeats every block per test binary and is refused outright), `-count=1` because `go test` replays a cached coverage profile verbatim and a census without it is one run reported N times. `--gate` checks three shapes for equality — `shape=`, `packages=` (a hash of the sorted linked-package list, committed beside the floor in `scripts/coverage_relay_go.floor.packages` and verified against the hash on every run) and `gomod=` (a hash of `relay/go.mod`'s bytes, the counterpart of the Python gate's `rcfile=`, since go.mod fixes both the toolchain and the dependency set) — then compares `missing` against the floor; `statements` is recorded provenance and never compared. The floor's `missing` is the WORST of ≥12 **CI** draws under the same stopping rule the Python gate uses; a draw above it is a finding to investigate, not noise, and the fix is a re-measurement PR of its own, never a floor bump on the PR that drew it. Unlike the Python gate, a CI artifact is directly usable locally: a Go coverprofile's first column is an import path, not a filesystem path, so there is no `[paths]` remapping to get wrong ([#312](https://github.com/D10Scot/Dispatcharr/issues/312)'s second operational note does not apply). The **differential** job is the only one that builds `relay-go` and boots Postgres and Redis together; it runs `apps/proxy/live_proxy/tests/test_relay_differential.py`, which starts the Go binary against the test's own `LiveServerTestCase` Django and compares what both relays deliver from one `FakeUpstream` — and which SKIPS in every other run of that label, deterministically, because `DISPATCHARR_RELAY_GO_BIN` is unset there, so Gate 2's Python census is unperturbed. Making `Go result` an actually-required check on the Main ruleset is a repo-settings action, not something a commit accomplishes.
  
  **The e2e suite quarantines its Redis coupling on purpose.** `e2e/fixtures/greybox/redis.ts` is the only sanctioned way a test reaches Redis; `e2e/tests/guards/allowlist.ts` + `e2e/tests/guards/capabilities.spec.ts` enforce an importer allowlist across four capabilities (grey-box Redis, container lifecycle, subprocess execution, container introspection), each with a test that fails naming the offender — an assertion, not a convention. Phase 3 removes Redis from the data path, at which point every greybox test is rewritten or deleted; one file keeps that a single grep. Importing it from outside `tests/streaming-greybox/` adds work to that refactor. One row is deliberately uncovered: the un-fenced ownership lease couldn't be provoked from outside the container (the owner's cleanup loop re-acquires the deleted key in <500ms; a follower only contends when channel *metadata* is absent too) — `COVERAGE.md` carries the full trace and the untried lever, recorded as a gap rather than shipped as a passing test, deliberately.
  
-@@ -168,7 +168,7 @@ Coverage ~45.6% backend / 71.9% frontend, **inversely correlated with criticalit
+@@ -169,7 +169,7 @@ Coverage ~45.6% backend / 71.9% frontend, **inversely correlated with criticalit
  
  ## Build reproducibility (improving)
  
@@ -2595,7 +2627,7 @@ index 31609244..1389cb0b 100644
  
  ## Supply chain security
  
-@@ -183,7 +183,7 @@ GHCR pushes (`docker-build.yml`, `base-image.yml`, `ci.yml`, `release.yml`) are
+@@ -184,7 +184,7 @@ GHCR pushes (`docker-build.yml`, `base-image.yml`, `ci.yml`, `release.yml`) are
  
  Permission hygiene: every workflow sets top-level `permissions: contents: read` and grants more only on the job that needs it. Add `persist-credentials: false` to every `actions/checkout`.
  
@@ -2605,14 +2637,14 @@ index 31609244..1389cb0b 100644
  ## Conventions
  
 diff --git a/docs/superpowers/specs/2026-09-09-phase2-go-relay-design.md b/docs/superpowers/specs/2026-09-09-phase2-go-relay-design.md
-index f2f07da2..7e50586a 100644
+index 6fdbc2d1..e7d48254 100644
 --- a/docs/superpowers/specs/2026-09-09-phase2-go-relay-design.md
 +++ b/docs/superpowers/specs/2026-09-09-phase2-go-relay-design.md
-@@ -2462,6 +2462,147 @@ disambiguated only by the logger's `format=` field, not by the message
- itself — a one-line rename that belongs with Ruling R1's recommended
- `fmp4.go` split, for 2c-9.
+@@ -2613,6 +2613,154 @@ whose wire name is not a Python identifier is silently input-blind, and
+ this contract has one more such field waiting to be added the moment a
+ fourth credential header is discovered.
  
-+#### Amendment A9 (2c-9) — nine rulings from the Go coverage gate and 2c's close-out
++#### Amendment A9 (2c-9) — ten rulings from the Go coverage gate and 2c's close-out
 +
 +**A9.1 — the gate's files are `scripts/coverage_relay_go.*`, not the 2c-9 row's
 +`scripts/coverage_live_path_go.floor`.** `dispatcharr/test_discovery.py`'s
@@ -2632,9 +2664,16 @@ index f2f07da2..7e50586a 100644
 +`internal/credlint` (a `go run` lint tool) are in neither, by the same rule
 +`scripts/coverage_live_path.coveragerc` already applies on the Python side
 +(`omit = */tests/*`, and no `scripts/` file in the ten-module boundary list).
-+**The count is TEN on the merged 2c-8 tree, not nine**: `main.go` imports `relay/drain`, verified against `migration/phase2c-control-drain` at `ee911fa5`. The figures below were measured on the nine-package seed and are labelled as such. Measured on one run at `d6d71f97`: the whole module is 3,670 statements / 870
-+missing / **76.29%**; the nine linked packages are 2,956 / 338 / **88.57%**,
-+with `relaytest` alone contributing 499 of the 870. The rule is decided by
++The count is **TEN** since 2c-8 added `relay/drain`, which `main.go` imports.
++Measured on one run at `a635190c`: the whole module is 4,463 statements /
++1,172 missing / **73.74%**; the ten linked packages are 3,696 / 587 /
++**84.12%**; the two excluded packages are 767 statements of which 585 are
++missing. (On the 2c-7 seed the same measurement was 3,670 / 870 / 76.29%
++against 2,956 / 338 / 88.57%, which is the drop 2c-8's own additions bought:
++740 new linked statements carrying 249 new missing ones, a **marginal coverage
++of 66.4%** on the code 2c-8 added. Stated because the ceiling is now closer —
++152 statements of margin rather than 253 — and the next PR of that shape would
++breach it.) The rule is decided by
 +KIND, and it is derived mechanically so it cannot rot — but the derived list is
 +hashed into the floor (`packages=`), with the sorted list committed beside it,
 +so a package entering or leaving the binary is a deliberate re-baseline.
@@ -2731,7 +2770,7 @@ index f2f07da2..7e50586a 100644
 +two are different in kind: that was a log message conditioned on a refactor,
 +this is a claim that can become false with nobody touching the test, in a PR
 +whose whole subject is replacing hand-copied claims with mechanical ones.
-+Five break-checks, verified on `ee911fa5`; the load-bearing one is
++Five break-checks, verified on `a635190c`; the load-bearing one is
 +`stopwaitsecs=60` staying GREEN, which is what makes the fix a bound rather
 +than an equality. Not built and recorded as a Stage 2d input: nothing asserts
 +the conf's own header claim that `relay-go` shares `priority=205` with
@@ -2756,11 +2795,11 @@ index f2f07da2..7e50586a 100644
  ## Stage 2d — cutover, and its trap
  
  **The historical bug this stage exists to not repeat.** Every live-bound nginx location today carries
-@@ -2788,6 +2929,7 @@ Filled in as PRs merge; this spec lands as its own PR 0.
- | 2c-5 -- the Go relay's failover: the three triggers (rows 1, 2, 3) as one port of `StreamManager.run`'s two loops, a clean EOF ported as a retried connection failure (R1); the control-plane client's `release` and `events` routes and an emitter that batches and logs an outage once (R12); the degraded fallback to the candidate list cached at channel start, never on a refusal (R2); the Redirect Stream Profile architecture -- the 302, the provider probe, the fall-through to the cached alternates, the internal-principal override, publishing no channel (R7, R8); the health flag, the keepalives, the client timeout and the error packet closing Amendment A2.5 (R14, R15); the five events the failover machinery raises (R11). Parity matrix rows 1, 2, 3 and 6 get a Go column; row 7 gains a pin across a switch. A pre-existing Python defect (one `next-source` call per buffering progress record when no alternate exists) reproduced per D5 and filed as [#302](https://github.com/D10Scot/Dispatcharr/issues/302) (R6). | `migration/phase2c-failover` | pending |
+@@ -2940,6 +3088,7 @@ Filled in as PRs merge; this spec lands as its own PR 0.
  | 2c-6 -- the Go relay's fMP4 output format (`migration/phase2c-fmp4`). One remux per channel reading the shared ring on `pipe:0`, the init segment replayed to every client, a refcounted lifecycle with no shutdown delay, and parity-matrix row 12 ([#222](https://github.com/D10Scot/Dispatcharr/issues/222)) reproduced, pinned and filed rather than fixed. Row 12 gets its Go pin. Amendment A6. [#304](https://github.com/D10Scot/Dispatcharr/issues/304) (a pre-existing 2c-4 defect, the stderr pipe truncated by a reap racing its drain) fixed in `relay/ffmpeg/spawn.go`, repairing `relay/channel/source_transcode.go` without editing it. Two Python-side findings from the port, reproduced and filed rather than fixed: the fMP4 scanner's resynchronisation arm discarding the whole working buffer ([#306](https://github.com/D10Scot/Dispatcharr/issues/306)) and the dead stop-during-restart guard in `_handle_bsf_error` ([#307](https://github.com/D10Scot/Dispatcharr/issues/307)). Three plan corrections found and fixed in the plan document as committed, run rather than read: Task 4 Step 7's break-check rows 16-18 name tests defined in `relay/httpapi/fmp4_test.go`, Task 6's file, and had to run there rather than in Task 4; Task 1 Step 2's expected result for `TestEveryStderrLineSurvivesTheWaitThatPrecedesTheJoin` describes a runtime failure the package cannot yet produce, since the two `StartPiped` tests appended in the same step leave it uncompilable until Step 3's implementation lands; and the issue-number-placeholder slot count was corrected from six to five (an instruction about the slots had been counted as one) with Task 8 Step 5's own verification grep narrowed to the paths that can carry a real slot, since run unscoped over all of `docs/` it could never return empty. | `migration/phase2c-fmp4` | pending |
  | 2c-7 -- the Go relay's Output Profiles (`migration/phase2c-output-profile`). One transcode per active `(channel, profile)` pair reading the channel's shared ring on `pipe:0` and writing a second in-process MPEG-TS ring, shared by every client on that profile; an fMP4 client on a profile runs it and 2c-6's remux chained, under `mpegts:p<id>` and `fmp4:p<id>`. Parity-matrix row 11 gets its Go pin, counted in spawns. The contract gained a null `argv` so a broken Output Profile can be told from a deactivated one. Amendment A7. Three plan corrections found, disclosed and **fixed in the plan document as committed**, run rather than read: Task 4 Step 5 and Task 7 Step 5 misassigned which break-check rows belong to which task -- rows 3-7 name `httpapi`-package tests Task 7 creates (Appendix P) and rows 8 and 11 name `output`-package tests Task 4 creates (Appendix I), so Task 4's Step 5 now reads "rows 8 and 11" and Task 7's now reads "rows 2, 3, 4, 5, 6, 7, 9, 10, 12, 13, 16, 17, 18", the amended lists this PR actually ran each row against; rows 16, 17 and 18 were re-checked against the same test rather than assumed correct, and confirmed already in Task 7's list -- `TestTheDeactivatedProfileCorrectionDoesNotRaceTheListEndpoint` and `TestAFailoverRefreshesTheProfileSetAndADegradedOneDoesNot` (both arms) are in `relay/httpapi/profile_test.go`, and no channel-package location for either exists. Task 5 Step 3's "Expected: green" for the whole-module `go build ./...` did not hold and is amended to name what actually goes green at that step: `go build`/`vet`/`golangci-lint` scoped to `./channel/... ./output/... ./control/... ./buffer/... ./ffmpeg/... ./internal/...` (every package but `httpapi`), `go test -race ./channel/...`, and `gofmt -l .` over the whole tree -- **commit `38669dba` (Task 5) does not build alone**, because `httpapi/fmp4.go` and `stream.go` still call `AttachOutput` with the pre-2c-7 signature; the whole-module build, vet, test and lint first go green at Task 6 Step 4 once `httpapi`'s own edits land, so a `go build ./...` bisect on this branch lands on Task 6's commit for a defect that is Task 5's incompleteness, not Task 6's own. No commit was ever made against a genuinely broken working tree regardless, since Task 6 was written and verified before either commit. Third, Task 9 Step 3's `ffmpeg.StartPiped`/`.Start` call-site breakdown named the wrong two files ("two in spawn.go, one in output/fmp4.go, one in output/profile.go"); the actual four are one in `output/profile.go`, two in `output/fmp4.go` (the initial spawn and the bitstream-filter retry) and one in `channel/source_transcode.go` -- the total of 4 was already right. | `migration/phase2c-output-profile` | pending |
-+| 2c-9 -- the Go coverage gate and stage 2c's close-out (`migration/phase2c-go-coverage-gate`). `scripts/coverage_relay_go.sh` measures the nine packages the shipped binary LINKS (not `./...`: `internal/relaytest` and `internal/credlint` are out by the same rule the Python rcfile applies, worth 76.29% vs 88.57% on one run) under `go test -count=1 -race -covermode=atomic`, and gates on `missing` against a floor whose number is the worst of >=12 CI draws, with `shape=`/`packages=`/`gomod=` as equality checks and `statements` recorded but never compared. `go-tests.yml` gains `coverage` and `differential` jobs, both in `Go result`'s needs; `codeql.yml` gains a Go job of its own with `build-mode: manual`. The parity matrix's Go half becomes mechanical: an eighth guard check plus `GO_PARITY_CLOSED`, with rows 26 and 27 exempt by construction rather than by an exemption list. Amendment A2.4's cross-implementation differential lands as one harness test that starts `relay-go` against the test's own `LiveServerTestCase` Django; a second differential (row 9's realignment) was built, run and dropped because `FakeUpstream`'s looping payload cannot express a mid-packet start without re-breaking every loop. [#309](https://github.com/D10Scot/Dispatcharr/issues/309) fixed by taking the dead-air test's stamp on the other side of the write, since a twelve-round census needs a suite that does not flake. 2c-8's `relay/drain/drain_test.go` stops restating `docker/supervisord.d/relay-go.conf`'s `stopwaitsecs` as a Go constant and reads it, through a newly exported `relaytest.RepoRoot()`, failing rather than defaulting when the key is gone -- five break-checks, the load-bearing one being `stopwaitsecs=60` staying green so the assertion is a bound and not an equality. Amendment A9. Three handoffs declined with reasons (the matrix line-number refresh, the `fmp4.go` split and its `"remux stderr"` rename, the milestone row). | `migration/phase2c-go-coverage-gate` | pending |
+ | 2c-8 -- the Go relay's control routes and drain (`migration/phase2c-control-drain`). The four remaining `/proxy/relay/…` routes (the single-channel `GET` with its `?fields=state` form, the channel `DELETE`, the client `DELETE` and `advance`), the detail endpoint with its five extra client fields and row 14's `owner` asymmetry, the XC live roots (Ruling R1: spec D1 scopes them and no PR owned them), the four events the tune and stop paths raise, the dev-only `POST /_dispatcharr/authorize-internal` fallback and the Go half that calls it, and D6's SIGTERM drain with a real `/readyz` and a role-aware Docker `HEALTHCHECK`. Thirteen parity-matrix rows get a Go pin, taking the matrix to 28 of 28 pinnable rows, and the ten authorize-matrix rows among them gain a Notes clause saying the Go pin covers the relay's ask-and-obey share and not the decision, which stays Django's. Amendment A8. Four defects found and fixed, three in code this PR did not write: `RequireInternal` verifying the bound signature against an empty body (A8.3), `Manager.publish` bypassing `addClient` for the first client of every channel (A8.4), `control.Emitter` panicking on a send after `Close` and on a second `Close` (A8.5), and -- in this PR's own first draft, found by a Gate 2 coverage test -- the `x-api-key` body field that never arrived, because DRF reads input by a field's NAME and `source=` maps only the output (A8.9). Two Python-side findings reproduced and filed rather than fixed: `source_bitrate` and `ffmpeg_bitrate` are read by `channel_status.py` and written by nothing, the second because the reader and the writer name two different constants ([#314](https://github.com/D10Scot/Dispatcharr/issues/314)). Four break-checks stayed green on a first attempt and each produced a better test or deleted unreachable code. Five plan-text corrections found and made in-tree, none changing the shipped code: Task 0 Step 2's expected `c.clients[` grep count on the merged 2c-7 tree said four hits including `StopClient`'s lookup, but `StopClient` does not exist until this PR's own Task 1 -- the measured count on the tree Task 0 actually ran against is three (one write, two reads); Appendix U's request-count fix, written for Task 4 Step 5, was applied at Task 1 instead so Task 1's own commit would not land with `./httpapi` red under Constraint 33, and both steps now say so; Tasks 2, 3 and 4 landed in one commit rather than three, plus Ruling R10's `Emitter` guards and Task 8's self-contained Docker/entrypoint/healthcheck pieces, because building each task in isolation surfaced a three-link build/test dependency chain the plan's task boundaries did not show; `authorize_test.go` (Task 6) defines `runningIDs` and `containsString`, and `xc_test.go` (Task 7) calls rather than redefines them, the reverse of where the plan first placed them; and `server.go`'s `/healthz`/`/readyz` doc comment was rewritten as one coherent paragraph rather than applied as Appendix J's original hunk, which would have left a stale 2c-1 sentence ("this PR adds no Docker HEALTHCHECK") sitting directly above the paragraph describing the HEALTHCHECK this PR adds -- Appendix J's hunk text is regenerated to match. | `migration/phase2c-control-drain` | pending |
++| 2c-9 -- the Go coverage gate and stage 2c's close-out (`migration/phase2c-go-coverage-gate`). `scripts/coverage_relay_go.sh` measures the ten packages the shipped binary LINKS (not `./...`: `internal/relaytest` and `internal/credlint` are out by the same rule the Python rcfile applies, worth 73.74% vs 84.12% on one run at `a635190c`) under `go test -count=1 -race -covermode=atomic`, and gates on `missing` against a floor whose number is the worst of >=12 CI draws, with `shape=`/`packages=`/`gomod=` as equality checks and `statements` recorded but never compared. `go-tests.yml` gains `coverage` and `differential` jobs, both in `Go result`'s needs; `codeql.yml` gains a Go job of its own with `build-mode: manual`. The parity matrix's Go half becomes mechanical: an eighth guard check plus `GO_PARITY_CLOSED`, with rows 26 and 27 exempt by construction rather than by an exemption list. Amendment A2.4's cross-implementation differential lands as one harness test that starts `relay-go` against the test's own `LiveServerTestCase` Django; a second differential (row 9's realignment) was built, run and dropped because `FakeUpstream`'s looping payload cannot express a mid-packet start without re-breaking every loop. [#309](https://github.com/D10Scot/Dispatcharr/issues/309) fixed by taking the dead-air test's stamp on the other side of the write, since a twelve-round census needs a suite that does not flake. 2c-8's `relay/drain/drain_test.go` stops restating `docker/supervisord.d/relay-go.conf`'s `stopwaitsecs` as a Go constant and reads it, through a newly exported `relaytest.RepoRoot()`, failing rather than defaulting when the key is gone -- five break-checks, the load-bearing one being `stopwaitsecs=60` staying green so the assertion is a bound and not an equality. Amendment A9. Three handoffs declined with reasons (the matrix line-number refresh, the `fmp4.go` split and its `"remux stderr"` rename, the milestone row). | `migration/phase2c-go-coverage-gate` | pending |
  
  ## Risks
  
@@ -2768,18 +2807,64 @@ index f2f07da2..7e50586a 100644
 
 ---
 
-## Appendix G — the drain test's conf read (R16)
+## Appendix G — the four Go source hunks (#309, R15's one-liner, R16)
 
-Against **`origin/migration/phase2c-control-drain` at `ee911fa5`**, not against the seed — `relay/drain/` does not exist on `d6d71f97`. Extracted read-only with `git archive`; no branch was checked out and no worktree taken, so nothing this plan did could disturb 2c-8's own tree.
+Against **`a635190c`**; `git apply --check` passes. One diff, four files, three
+rulings: `relay/channel/failover_test.go` is R7's stamp move, `relay/main.go`
+is R15's one-line comment correction, and `relay/internal/relaytest/corpus.go`
+plus `relay/drain/drain_test.go` are R16.
 
-Verified there: `gofmt -l` silent, `go vet ./drain/ ./internal/relaytest/` silent, `go test -count=1 -race ./drain/` green, `golangci-lint run ./drain/... ./internal/...` at `0 issues.`, and all five of Task 1 Step 10's break-checks behaving — including the `stopwaitsecs=60` control that stays green.
+Verified on that tree, whole module unless stated: `gofmt -l` silent;
+`go build ./...`; `go vet` native, `GOOS=linux` and `GOOS=darwin`;
+`golangci-lint run ./...` at `0 issues.` under all three GOOS;
+`scripts/check_go_credential_logging.sh relay` at `12 package(s) clean`;
+`scripts/check_go_stdlib_only.sh relay` OK; `relay/go.sum` absent;
+`go test -count=1 -race ./...` three times at 11 packages `ok` with no `FAIL`,
+and three more times without `-race`.
 
-It will apply to the merged tree unless 2c-8's fix round touched either file; Task 1 Step 7 is where that is found out.
+Six break-checks, each reverted before the next. R7's, at
+`maxUnhealthyChecks = 2`, reddens through the gap assertion at 351.23 ms
+against 400 ms — **not** at `= 1`, which reddens through an earlier assertion
+and proves nothing about the gap. R16's five are in Task 1 Step 10, and the
+load-bearing one is `stopwaitsecs=60` staying **green**, which is what makes
+the assertion a bound rather than an equality.
 
 ```diff
+diff --git a/relay/channel/failover_test.go b/relay/channel/failover_test.go
+index 17e58a57..9ee8d386 100644
+--- a/relay/channel/failover_test.go
++++ b/relay/channel/failover_test.go
+@@ -174,10 +174,24 @@ func (c *timeCell) get() time.Time  { c.mu.Lock(); defer c.mu.Unlock(); return c
+ 
+ func (s deadAirSource) Run(ctx context.Context, sink io.Writer) error {
+ 	payload := relaytest.SyntheticTS(s.packets, 0x100)
++	// STAMPED BEFORE THE WRITE, and the order is the whole fix for #309.
++	// dataClock.Write records the channel's own lastData at the START of the
++	// write (health.go's dataClock), and the health monitor measures from
++	// THAT. A stamp taken after Write returns is therefore LATER than the
++	// monitor's own clock by however long the ring write took, and the
++	// assertion below is a `>=` on the gap -- so a later `wrote` makes the
++	// measured gap SMALLER and reddens the test for a reason that is not the
++	// behaviour. Measured twice at 399.968 ms and 399.990 ms against the
++	// 400 ms floor on a loaded host, zero failures in 300 solo runs (#309).
++	// Stamped first, `wrote` is no later than the monitor's lastData, so the
++	// bound is conservative in the direction the assertion needs. The claim
++	// is UNCHANGED and the window is not widened: the count of checks is
++	// still three, and a monitor acting on the first inactive check still
++	// asks at ~300-350 ms, which no microsecond-scale shift rescues.
++	s.lastWrite.set(time.Now())
+ 	if _, err := sink.Write(payload); err != nil {
+ 		return err
+ 	}
+-	s.lastWrite.set(time.Now())
+ 	<-ctx.Done()
+ 	return ctx.Err()
+ }
+diff --git a/relay/drain/drain_test.go b/relay/drain/drain_test.go
+index 35c7460f..de014a00 100644
 --- a/relay/drain/drain_test.go
 +++ b/relay/drain/drain_test.go
-@@ -2,22 +2,71 @@
+@@ -2,22 +2,71 @@ package drain
  
  import (
  	"context"
@@ -2856,9 +2941,11 @@ It will apply to the merged tree unless 2c-8's fix round touched either file; Ta
  
  	if DefaultBudget >= supervisordStopWait {
  		t.Fatalf("DefaultBudget is %s against a stopwaitsecs of %s: the drain would be "+
+diff --git a/relay/internal/relaytest/corpus.go b/relay/internal/relaytest/corpus.go
+index 362f3ec3..0aa3bde4 100644
 --- a/relay/internal/relaytest/corpus.go
 +++ b/relay/internal/relaytest/corpus.go
-@@ -38,6 +38,17 @@
+@@ -38,6 +38,17 @@ func repoRoot() string {
  	return filepath.Dir(filepath.Dir(filepath.Dir(filepath.Dir(file))))
  }
  
@@ -2876,6 +2963,23 @@ It will apply to the merged tree unless 2c-8's fix round touched either file; Ta
  // CorpusPath is the absolute path of one capture.
  func CorpusPath(name string) string {
  	for _, known := range CorpusNames {
+diff --git a/relay/main.go b/relay/main.go
+index aee395d5..f6fa530e 100644
+--- a/relay/main.go
++++ b/relay/main.go
+@@ -40,8 +40,10 @@ func main() {
+ 
+ 	// The secret is never logged, in any form, at any level -- not its value,
+ 	// not its length, not a prefix. scripts/check_credential_logging.py polices
+-	// the Python side of this rule; there is no Go equivalent yet, so it is
+-	// held by hand here.
++	// the Python side of this rule and scripts/check_go_credential_logging.sh
++	// (relay/internal/credlint, 2c-4) polices this one -- but neither sees a
++	// secret that is not an ERROR, so this particular line is still held by
++	// hand: credlint checks error-typed arguments, and cfg.Secret is a string.
+ 	log.Printf("starting on port %d (dev routes: %t)", cfg.Port, cfg.DevRoutes)
+ 
+ 	// THE SAME manager, not a second one. Two would give the list endpoint
 ```
 
 ---
@@ -2886,6 +2990,6 @@ It will apply to the merged tree unless 2c-8's fix round touched either file; Ta
 
 **Spec coverage, second pass.** Ruling R16 and Task 1's Steps 7-11 are not in the spec's 2c-9 row at all — they come from 2c-8's review handoff. They are in scope because the row's subject is the gate and R16 is the same defect class the gate exists to remove; the PR description says so plainly rather than letting a reader wonder why a drain test moved in a coverage PR.
 
-**Placeholder scan.** Three placeholder kinds remain and both are deliberate, marked, and owned by the orchestrator rather than the implementer: `<2C8_MERGED_SHA>` in Task 0 Step 1, `<2C9_MERGE_SHA>`/`<2C9_PR_NUMBER>` in Task 10 Step 3, which name a commit that does not exist while the plan is being executed, and Appendix E's `<…>` fields, every one of which Task 8 fills from the census and none of which may survive into the committed floor. Every other number in this plan is measured — on `d6d71f97`, or for R16 and Appendix G on `ee911fa5` — and re-measured by the task that uses it.
+**Placeholder scan.** Two placeholder kinds remain, both deliberate and marked: `<2C9_MERGE_SHA>`/`<2C9_PR_NUMBER>` in Task 10 Step 3, which name a commit that does not exist while the plan is being executed, and Appendix E's `<…>` fields, every one of which Task 8 fills from the CI census and none of which may survive into the committed floor. `<2C8_MERGED_SHA>` is gone — it is `a635190c`. Every other number in this plan is measured on `a635190c` and re-measured by the task that uses it.
 
 **Type consistency.** `--measure`/`--report`/`--gate`/`--write-floor` are the script's four modes throughout; the data directory is `/tmp/relay-go-coverage` in every workflow step and every task; the artifact is `relay-go-coverage`; the floor's fields are `shape`, `statements`, `missing`, `percent`, `measured`, `runs`, `packages`, `package_count`, `gomod` in the script, the floor template and the rulings table alike; `GO_PARITY_CLOSED` and `goRefs` are spelled the same in both guard files; `DISPATCHARR_RELAY_GO_BIN` is the only switch name used by the test and the workflow.
