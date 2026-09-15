@@ -124,9 +124,72 @@ type NextSourceRequest struct {
 	IncludeAlternates bool   `json:"include_alternates"`
 }
 
-// NextSourceAnswer is the response body. output_profiles is deliberately not
-// declared: 2c-7 owns Output Profiles and json.Unmarshal ignores what no field
-// names, so leaving it out now costs nothing and claims nothing.
+// OutputProfileRef is one entry of the answer's output_profiles map: an
+// is_active OutputProfile with its command line already built
+// (apps/proxy/serializers.py:217-230's OutputProfileRefSerializer).
+//
+// ARGV CARRIES THE COMMAND AS ELEMENT 0, unlike StreamProfileRef.Argv, which
+// has it stripped off the front. core/models.py:200-203's build_command is
+// `[self.command] + shlex_split(self.parameters)` and 2b-2 sends the whole
+// list, where next_source.py's _stream_profile_ref sends `command` in its own
+// field and the REST in argv. The asymmetry is on the wire and is reproduced
+// rather than tidied: Command() and Args() below are the only places that
+// split it, and TestTheOutputProfileArgvCarriesTheCommandFirst pins it against
+// the same Python lines.
+//
+// Argv nil with Present true is Django saying it could NOT build the list --
+// shlex refused the profile's parameters (an unbalanced quote), which
+// OutputProfileSerializer validates nothing against, so such a row can already
+// be sitting in the database.
+type OutputProfileRef struct {
+	ID int `json:"id"`
+
+	// Argv is build_command() in full, or nil when Django sent null.
+	Argv []string `json:"-"`
+}
+
+// UnmarshalJSON decodes the entry, mapping an explicit null argv to a nil
+// slice and an empty list to an empty non-nil one -- the same distinction
+// StreamProfileRef.UnmarshalJSON makes, for the same reason.
+func (p *OutputProfileRef) UnmarshalJSON(data []byte) error {
+	var aux struct {
+		ID      int             `json:"id"`
+		ArgvRaw json.RawMessage `json:"argv"`
+	}
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+	p.ID, p.Argv = aux.ID, nil
+	if len(aux.ArgvRaw) == 0 || bytes.Equal(bytes.TrimSpace(aux.ArgvRaw), []byte("null")) {
+		return nil
+	}
+	if err := json.Unmarshal(aux.ArgvRaw, &p.Argv); err != nil {
+		return fmt.Errorf("output_profiles[].argv is not a list of strings: %w", err) // credential-logging: ok - an encoding/json type error naming the JSON shape, never a value
+	}
+	if p.Argv == nil {
+		p.Argv = []string{}
+	}
+	return nil
+}
+
+// Command is the executable to spawn: argv[0]. Empty when Django could not
+// build the list, or when the profile's own command field is blank.
+func (p OutputProfileRef) Command() string {
+	if len(p.Argv) == 0 {
+		return ""
+	}
+	return p.Argv[0]
+}
+
+// Args is everything after the command, the way ffmpeg.StartPiped takes it.
+func (p OutputProfileRef) Args() []string {
+	if len(p.Argv) < 2 {
+		return []string{}
+	}
+	return p.Argv[1:]
+}
+
+// NextSourceAnswer is the response body.
 type NextSourceAnswer struct {
 	Source     *Source  `json:"source"`
 	Alternates []Source `json:"alternates"`
@@ -134,6 +197,54 @@ type NextSourceAnswer struct {
 	// unmarshals to the empty string. Callers test Source == nil, never this.
 	Error         string   `json:"error"`
 	ProxySettings Settings `json:"proxy_settings"`
+
+	// OutputProfiles is every is_active OutputProfile, keyed by stringified
+	// id (apps/proxy/next_source.py's _with_output_profiles, 2b-2). The WHOLE
+	// active set travels because next-source runs once per CHANNEL while the
+	// profile is resolved once per CLIENT, and the second client on a running
+	// channel makes no next-source call at all (views.py:712) -- 2b-2's own
+	// Ruling R3, which named a Go relay caching the map per channel as what
+	// closes views.py:152's ORM read.
+	OutputProfiles map[string]OutputProfileRef `json:"-"`
+
+	// OutputProfilesPresent reports whether the answer carried the key at
+	// all. An ABSENT key is a control plane older than 2b-2 and is a contract
+	// mismatch, not "this deployment has no profiles"; an empty OBJECT is the
+	// latter, and apps/proxy/tests/test_next_source_api.py::
+	// test_no_active_profiles_is_an_empty_object_not_a_missing_key pins that
+	// Django sends one. encoding/json cannot tell a nil map from an absent
+	// key on its own, which is why this flag exists -- StreamProfileRef.
+	// ArgvPresent is the same shape for the same reason.
+	OutputProfilesPresent bool `json:"-"`
+}
+
+// UnmarshalJSON decodes the answer and records whether output_profiles was
+// present, which a plain map field cannot report.
+func (a *NextSourceAnswer) UnmarshalJSON(data []byte) error {
+	type plain NextSourceAnswer
+	var aux struct {
+		plain
+		ProfilesRaw json.RawMessage `json:"output_profiles"`
+	}
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+	*a = NextSourceAnswer(aux.plain)
+	a.OutputProfiles, a.OutputProfilesPresent = nil, false
+	if len(aux.ProfilesRaw) == 0 {
+		return nil
+	}
+	a.OutputProfilesPresent = true
+	if bytes.Equal(bytes.TrimSpace(aux.ProfilesRaw), []byte("null")) {
+		return nil
+	}
+	if err := json.Unmarshal(aux.ProfilesRaw, &a.OutputProfiles); err != nil {
+		return fmt.Errorf("output_profiles is not an object of profiles: %w", err) // credential-logging: ok - an encoding/json type error naming the JSON shape, never a value
+	}
+	if a.OutputProfiles == nil {
+		a.OutputProfiles = map[string]OutputProfileRef{}
+	}
+	return nil
 }
 
 // Unavailable means the control plane could not be reached or did not answer
