@@ -827,7 +827,7 @@ Three new types above `AttachOutput`, and one branch inside it.
 cd <your worktree>/relay && go build ./... && go vet ./... && go test -race ./... && golangci-lint run ./... && gofmt -l .
 ```
 
-Expected: green. `relay/channel`'s own suite (~75s) must be unaffected: nothing this task adds is reached by any existing test.
+**Plan correction, found running this task**: an earlier draft said "Expected: green" for this whole-module invocation, but it cannot be, and is not a formality to work around -- `httpapi/fmp4.go` and `stream.go` still call `AttachOutput` with the pre-2c-7 `(format string, remux output.Remux)` signature until Task 6's Appendix N and O land, so `go build ./...` fails in exactly one package. Run the four checks scoped to what this task actually changes instead: `go build ./channel/... ./output/... ./control/... ./buffer/... ./ffmpeg/... ./internal/...` (every package except `httpapi`), `go vet` over the same set, `go test -race ./channel/...` (~75s, unaffected -- nothing this task adds is reached by any existing test), `golangci-lint run` over the same set, and `gofmt -l .` over the whole tree (formatting has no compile dependency). Expected: green on all of those. The WHOLE-MODULE build, vet, test and lint first go green at Task 6 Step 4, once `httpapi` compiles again -- **a bisect on `go build ./...` red therefore lands on this task's commit, not on a defect in it**: the failure is `httpapi`'s pre-existing call sites not yet updated, resolved by the very next commit, and never left in a state the commit gate would have accepted on its own (Task 6's edits were written and verified before either commit was made, so the working tree the gate saw was always the union of both).
 
 - [ ] **Step 4: Commit**
 
@@ -1060,7 +1060,7 @@ scripts/check_go_stdlib_only.sh relay            # expect: OK: relay depends on 
 ls relay/go.sum                                   # expect: No such file or directory
 grep -rn "StateActive" relay/channel/ --include=*.go | grep -v _test.go   # expect the SAME two writers Task 0 recorded
 grep -rn "AttachOutput" relay/ --include=*.go | grep -v _test.go          # expect 3: the definition and two call sites
-grep -rn "ffmpeg.StartPiped\|ffmpeg.Start(" relay/ --include=*.go | grep -v _test.go  # expect 4: two in spawn.go, one in output/fmp4.go, one in output/profile.go
+grep -rn "ffmpeg.StartPiped\|ffmpeg.Start(" relay/ --include=*.go | grep -v _test.go  # expect 4: one in output/profile.go, two in output/fmp4.go (initial spawn and the bitstream-filter retry), one in channel/source_transcode.go -- an earlier draft's breakdown ("two in spawn.go, one in output/fmp4.go, one in output/profile.go") named the wrong two files for the total's other half; the total of 4 was already correct
 ```
 
 **Name the accepted gap here rather than leaving it implied:** Task 5 added no test of its own, so `channel.OutputProfiles`, `SetClientOutputProfile`, `OutputSpec` and the failover refresh are covered only end-to-end through `httpapi` — which for each of them is a real pin with a break-check, not an absence. What remains genuinely unpinned is narrower and is stated in Ruling R5: the **staleness window** between two `next-source` answers, which has no Python counterpart to compare against.
