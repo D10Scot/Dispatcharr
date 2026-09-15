@@ -1,8 +1,10 @@
 package httpapi
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -293,6 +295,23 @@ func RequireInternal(secret string, now func() time.Time, next http.HandlerFunc)
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}
+		// THE BODY IS PART OF WHAT THE TOKEN SIGNS, and reading it here is
+		// what 2c-8 adds: internal_auth.py's message is
+		// [context, METHOD, FULL_PATH, timestamp, sha256(BODY)], and every
+		// route this gate protected until now was a GET or a bodyless
+		// DELETE, so verifying against an empty body was right by accident.
+		// POST .../advance carries one, and a gate that verified nil against
+		// a token signed over the real body 403s every call -- measured, on
+		// the first run of TestAnAdvanceSwitchesTheChannelAndKeepsTheClientFed.
+		//
+		// Bounded and buffered: the handler is given a reader over the same
+		// bytes, because the body cannot be read twice and the signature
+		// must be checked before the handler sees any of it.
+		body, tooLarge := readInternalBody(r)
+		if tooLarge {
+			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+			return
+		}
 		// The bound token signs r.URL.RequestURI(), which is Django's
 		// get_full_path(): the escaped path plus the query string. This route
 		// is reached WITH a query string (?clients=all) and without, and the
@@ -300,11 +319,41 @@ func RequireInternal(secret string, now func() time.Time, next http.HandlerFunc)
 		// records, and the reason it is not cosmetic.
 		if !control.VerifyInternalRequest(
 			secret, r.Header.Get(control.HeaderInternalRequest),
-			r.Method, r.URL.RequestURI(), nil, now(),
+			r.Method, r.URL.RequestURI(), body, now(),
 		) {
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}
+		if len(body) > 0 {
+			r.Body = io.NopCloser(bytes.NewReader(body))
+		}
 		next(w, r)
 	}
+}
+
+// MaxInternalBody bounds what RequireInternal will buffer to verify a
+// signature. The largest body any of these five routes carries is the
+// advance's resolved source -- a URL, a user agent, three names and a
+// built argv -- so a mebibyte is three orders of magnitude of headroom and
+// small enough that an unauthenticated caller cannot make this process
+// buffer a large one before the signature is checked.
+const MaxInternalBody = 1 << 20
+
+// readInternalBody buffers the request body, reporting whether it exceeded
+// the bound. A nil body reads as empty, which is the shape every GET and
+// DELETE here has and the shape sha256(b"") covers.
+func readInternalBody(r *http.Request) (body []byte, tooLarge bool) {
+	if r.Body == nil {
+		return nil, false
+	}
+	raw, err := io.ReadAll(io.LimitReader(r.Body, MaxInternalBody+1))
+	if err != nil {
+		// A truncated body cannot match the signature, so it fails the check
+		// below rather than being reported separately.
+		return raw, false
+	}
+	if len(raw) > MaxInternalBody {
+		return nil, true
+	}
+	return raw, false
 }

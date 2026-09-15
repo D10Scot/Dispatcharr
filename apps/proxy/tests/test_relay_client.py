@@ -456,6 +456,13 @@ class RelayClientCallTests(SimpleTestCase):
                 "channel_name": None,
                 "m3u_profile_name": None,
                 "reset_tried": True,
+                # Phase 2 PR 2c-8: three fields the Go relay needs because it
+                # builds no command line (Amendment A4.1). Defaulted here
+                # because this test calls advance() without them, which is
+                # the shape a caller that has not resolved a profile sends.
+                "transcode": False,
+                "stream_profile": None,
+                "ffmpeg_stream_profile": None,
             },
         )
         self.assertEqual(

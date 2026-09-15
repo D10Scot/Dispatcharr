@@ -280,6 +280,47 @@ EDGES = (
     EdgeEntry(
         importer="apps/proxy/live_proxy/views.py",
         module="apps.proxy.next_source",
+        name="channel_stream_profile_ref",
+        hits=7,
+        pr="2c-8",
+        reason=(
+            "Phase 2 PR 2c-8. change_stream can be called with a bare url and "
+            "no stream_id -- reachable only by a hand-crafted admin call, "
+            "never by the UI, whose switchStream always sends stream_id "
+            "(frontend/src/api.js:3314-3322) -- and that path resolves no "
+            "Stream row, so there is no source dict to take a stream_profile "
+            "out of. The Go relay builds no command line (Amendment A4.1), so "
+            "without one it has nothing to spawn. This helper asks the "
+            "CHANNEL for its own effective profile and builds the argv "
+            "against the supplied url, which is the same profile the Python "
+            "relay uses on that path: StreamManager keeps its own across "
+            "update_url (input/manager.py:1462-1540) and rebuilds the command "
+            "from it. "
+            "SEVEN FLAGGED SITES in the reachable subtree, measured rather "
+            "than asserted: Channel.get_stream_profile's "
+            "effective_stream_profile_obj and its CoreSettings default "
+            "lookup, is_proxy() and is_redirect() (which compare self.locked "
+            "and self.name on a loaded instance, core/models.py:127-135 -- "
+            "flagged CALL SITES, not queries), _stream_profile_ref's "
+            "build_command (pure, core/models.py:137-160), and "
+            "_LockedFfmpegProfile.ref reaching _locked_ffmpeg_profile's "
+            "StreamProfile.objects.filter, which IS a query. "
+            "IN THE API PROCESS EITHER WAY: PR 4's routing put change_stream "
+            "on the api role, so this import is not executed in the relay "
+            "process at all -- the same structural reason the six inline "
+            "authorize edges carry."
+        ),
+        closed_by=(
+            "POST /proxy/relay/channels/<id>/advance carrying stream_profile, "
+            "ffmpeg_stream_profile and transcode -- the three fields 2c-8 "
+            "adds to RelayAdvanceRequestSerializer. Django resolves the "
+            "profile in the API process, where the ORM is, and the relay "
+            "spawns the argv it is handed."
+        ),
+    ),
+    EdgeEntry(
+        importer="apps/proxy/live_proxy/views.py",
+        module="apps.proxy.next_source",
         name="resolve_source",
         hits=39,
         pr="2b-3",

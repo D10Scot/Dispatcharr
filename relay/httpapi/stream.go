@@ -221,6 +221,18 @@ func StreamHandler(deps StreamDeps) http.HandlerFunc {
 		}
 		defer release()
 
+		// From here down the request's context also ends when an admin
+		// stops THIS client: DELETE /proxy/relay/channels/<id>/clients/<cid>
+		// closes the signal Channel.StopClient owns, which is the in-memory
+		// form of the stop key ChannelService.stop_client SETEXes and the
+		// generator's loop polls (output/ts/generator.py:307-318). Applied
+		// to the request rather than to one call so both output formats
+		// inherit it -- one mechanism, and neither loop can be the one that
+		// forgot.
+		stopCtx, stopCancel := stopContext(r.Context(), client)
+		defer stopCancel()
+		r = r.WithContext(stopCtx)
+
 		// views.py:765-776, BEFORE the format branch and in that order: the
 		// Output Profile transcode is started (or joined) first, and the
 		// buffer everything below reads is get_buffer(channel, profile) --
@@ -250,7 +262,15 @@ func StreamHandler(deps StreamDeps) http.HandlerFunc {
 			return
 		}
 
+		// client_connect, at _setup_streaming's own success point
+		// (output/ts/generator.py:129-143): after the channel is up and the
+		// response has begun, before the streaming loop.
+		emitClientConnect(ch, client)
 		serveClient(r.Context(), w, rc, ch, source, client, log)
+		// client_disconnect, from the generator's cleanup (:651-667). TS
+		// only -- the fMP4 generator raises none, and that asymmetry is
+		// reproduced (clientevents.go).
+		emitClientDisconnect(ch, client, now())
 	}
 }
 
@@ -371,6 +391,29 @@ func identify(r *http.Request, secret string, now func() time.Time) (string, *ch
 		OutputProfileID: outputProfileID,
 		ConnectedAt:     now(),
 	}, nil
+}
+
+// stopContext ends when the request ends OR when an admin stops this client.
+//
+// A goroutine rather than context.AfterFunc because the trigger is a channel
+// close, not a parent context; it returns as soon as either side fires, and
+// the caller's deferred cancel guarantees the second one always does.
+func stopContext(parent context.Context, client *channel.Client) (context.Context, context.CancelFunc) {
+	stop := client.Stopped()
+	if stop == nil {
+		// A client that never reached the registry cannot be stopped by id,
+		// so there is nothing to watch and no goroutine to start.
+		return parent, func() {}
+	}
+	ctx, cancel := context.WithCancel(parent)
+	go func() {
+		select {
+		case <-stop:
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+	return ctx, cancel
 }
 
 // ErrOutputProfileMalformed is an X-Relay-Output that is not a positive
@@ -803,6 +846,15 @@ func serveClient(
 	var keepaliveStart time.Time
 	empties := 0
 	for {
+		if ctx.Err() != nil {
+			// The admin stop and the client hang-up both land here. Checked
+			// at the top of every pass rather than only inside the wait,
+			// because a ring that always has data never reaches the wait --
+			// which is exactly the busy channel an admin is most likely to
+			// be stopping a client on. Python polls its stop key here
+			// (output/ts/generator.py:307-318).
+			return
+		}
 		chunks, next, skipped := ring.Read(cursor)
 		if skipped > 0 {
 			// The jump find_oldest_available_chunk performs
@@ -819,10 +871,17 @@ func serveClient(
 			if !writeChunks(w, rc, chunks) {
 				return
 			}
+			at := time.Now()
 			for _, c := range chunks {
 				sent += len(c)
+				// ONE CALL PER CHUNK, not one per Read: current_rate_KBps is
+				// the rate over the gap between consecutive chunks
+				// (output/ts/generator.py:477-499 increments inside its own
+				// `for chunk in chunks` loop), so batching them here would
+				// report a rate over a window Python never measures.
+				client.Sent(len(c), at)
 			}
-			lastYield = time.Now()
+			lastYield = at
 			keepaliveStart = time.Time{}
 			empties = 0
 			continue
@@ -843,7 +902,10 @@ func serveClient(
 				return
 			}
 			sent += buffer.TSPacketSize
+			// A keepalive counts toward bytes_sent (:392) and refreshes
+			// last_active (:395-397), both of which Sent does.
 			lastYield = time.Now()
+			client.Sent(buffer.TSPacketSize, lastYield)
 			wait = tuning.KeepaliveInterval
 		} else if time.Since(lastYield) > tuning.ClientTimeout && !ch.Healthy() {
 			// _is_timeout (:583-604) minus its url_switching exemption
@@ -872,6 +934,7 @@ func serveClient(
 			if final, _, _ := ring.Read(cursor); len(final) > 0 {
 				writeChunks(w, rc, final)
 				sent += len(final[0])
+				client.Sent(len(final[0]), time.Now())
 			}
 			if sent == 0 {
 				if message := errorPacketMessage(ch); message != "" {

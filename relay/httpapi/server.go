@@ -58,10 +58,22 @@ func New(cfg Config) *Server {
 		// The dev-only route flag spec line 1795 names.
 		s.mux.Handle("GET /proxy/ts/stream/{channelID}", StreamHandler(cfg.Stream))
 		// Gated with the rest: nginx routes nothing to this process until
-		// stage 2d, and Django still calls the Python relay's copy of this
-		// route. 2c-8 brings the other four.
-		s.mux.Handle("GET /proxy/relay/channels",
-			RequireInternal(cfg.Control.Secret, cfg.Control.Now, ChannelsHandler(cfg.Control)))
+		// stage 2d, and Django still calls the Python relay's copy of these
+		// routes. All five of § The contract's Django-to-relay table are here
+		// as of 2c-8; the collection GET landed in 2c-3.
+		//
+		// ONE GATE PER ROUTE rather than a wrapper around the mux: the two
+		// health endpoints must stay ungated (a probe holds no SECRET_KEY),
+		// and a middleware with an exception list is one edit away from
+		// exempting a route it should not.
+		internal := func(h http.HandlerFunc) http.Handler {
+			return RequireInternal(cfg.Control.Secret, cfg.Control.Now, h)
+		}
+		s.mux.Handle("GET /proxy/relay/channels", internal(ChannelsHandler(cfg.Control)))
+		s.mux.Handle("GET /proxy/relay/channels/{channelID}", internal(ChannelHandler(cfg.Control)))
+		s.mux.Handle("DELETE /proxy/relay/channels/{channelID}", internal(ChannelHandler(cfg.Control)))
+		s.mux.Handle("DELETE /proxy/relay/channels/{channelID}/clients/{clientID}", internal(ClientHandler(cfg.Control)))
+		s.mux.Handle("POST /proxy/relay/channels/{channelID}/advance", internal(AdvanceHandler(cfg.Control)))
 	}
 
 	return s

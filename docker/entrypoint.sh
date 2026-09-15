@@ -493,5 +493,12 @@ else
     SUPERVISORD_CONF="/app/docker/supervisord/${DISPATCHARR_ROLE}.conf"
 fi
 
+# The resolved role, for docker/healthcheck.sh. HEALTHCHECK runs as a fresh
+# process with the CONTAINER's environment, which carries DISPATCHARR_ROLE
+# only when the operator set it explicitly -- the default this script applied
+# above is invisible to it otherwise. /run is tmpfs-or-container-writable and
+# already holds supervisord's own socket and pidfile.
+printf '%s' "$DISPATCHARR_ROLE" > /run/dispatcharr-role || true
+
 echo "🚀 Starting supervisord ($DISPATCHARR_ROLE) with $SUPERVISORD_CONF"
 exec supervisord -n -c "$SUPERVISORD_CONF"

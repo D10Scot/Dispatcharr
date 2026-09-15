@@ -457,6 +457,9 @@ def advance(
     channel_name=None,
     m3u_profile_name=None,
     reset_tried=False,
+    transcode=False,
+    stream_profile=None,
+    ffmpeg_stream_profile=None,
 ):
     """Switch a running channel to an already-resolved source.
 
@@ -480,5 +483,12 @@ def advance(
             "channel_name": channel_name,
             "m3u_profile_name": m3u_profile_name,
             "reset_tried": reset_tried,
+            # Phase 2 PR 2c-8: the Go relay spawns the argv Django built and
+            # splits no words of its own (Amendment A4.1), so the profile
+            # travels with the source rather than being looked up again on
+            # the relay. The Python relay's handler ignores all three.
+            "transcode": transcode,
+            "stream_profile": stream_profile,
+            "ffmpeg_stream_profile": ffmpeg_stream_profile,
         },
     )
