@@ -49,9 +49,18 @@ type rig struct {
 	Upstream *relaytest.Upstream
 	Control  *relaytest.ControlPlane
 	Manager  *channel.Manager
+	Emitter  *control.Emitter
 }
 
 func newRig(t *testing.T, cp relaytest.ControlPlaneConfig, up relaytest.Config) *rig {
+	t.Helper()
+	return newRigWithClient(t, cp, up, control.NewHTTPClient())
+}
+
+// newRigWithClient is newRig with the control client's transport chosen by
+// the test: how the budget-shape test compresses ConnectTimeout+ReadTimeout
+// to something a test can wait out.
+func newRigWithClient(t *testing.T, cp relaytest.ControlPlaneConfig, up relaytest.Config, httpClient *http.Client) *rig {
 	t.Helper()
 
 	upstream := relaytest.NewUpstream(up)
@@ -70,7 +79,19 @@ func newRig(t *testing.T, cp relaytest.ControlPlaneConfig, up relaytest.Config) 
 	controlPlane := relaytest.NewControlPlane(cp)
 	t.Cleanup(controlPlane.Close)
 
-	manager := channel.NewManager(channel.ManagerConfig{BudgetBytes: rigBudgetBytes})
+	// ONE control client, as main.go builds one: the tune, the failover,
+	// the release on teardown and the events all go through it, so the fake
+	// sees them in one request log.
+	client := &control.Client{Secret: testSecret, BaseURL: controlPlane.URL(), HTTP: httpClient}
+	emitter := control.NewEmitter(client, nil)
+	manager := channel.NewManager(channel.ManagerConfig{
+		BudgetBytes: rigBudgetBytes,
+		Events:      EventSink(emitter),
+		Release:     ReleaseVia(client, nil),
+	})
+	// Order matters: channels stop (and release) before the emitter drains,
+	// and the emitter drains before the fake closes.
+	t.Cleanup(emitter.Close)
 	t.Cleanup(manager.StopAll)
 
 	server := New(Config{
@@ -78,11 +99,7 @@ func newRig(t *testing.T, cp relaytest.ControlPlaneConfig, up relaytest.Config) 
 		Stream: StreamDeps{
 			Secret:   testSecret,
 			Channels: manager,
-			Control: &control.Client{
-				Secret:  testSecret,
-				BaseURL: controlPlane.URL(),
-				HTTP:    control.NewHTTPClient(),
-			},
+			Control:  client,
 		},
 		// THE SAME manager, not a second one. Two would give the list endpoint
 		// an empty map while the tune path filled another, and every assertion
@@ -92,7 +109,7 @@ func newRig(t *testing.T, cp relaytest.ControlPlaneConfig, up relaytest.Config) 
 	relay := httptest.NewServer(server.Handler())
 	t.Cleanup(relay.Close)
 
-	return &rig{Relay: relay, Upstream: upstream, Control: controlPlane, Manager: manager}
+	return &rig{Relay: relay, Upstream: upstream, Control: controlPlane, Manager: manager, Emitter: emitter}
 }
 
 func (r *rig) tune(t *testing.T, path string, header http.Header) *http.Response {
@@ -224,13 +241,14 @@ func TestATuneMakesOneSignedControlPlaneCall(t *testing.T) {
 	}
 }
 
-// The relay refuses a kind it does not serve loudly rather than falling
-// through: Redirect, until 2c-5. `kind` is what it branches on: `transcode`
-// is false for Redirect as well as Proxy, so a relay that read that field
-// would serve a Redirect channel's provider URL through the Proxy path
-// silently. (2c-2 listed transcode here too; 2c-4 serves it.)
+// The relay refuses a kind it does not know loudly rather than falling
+// through. `kind` is what it branches on: `transcode` is false for Redirect
+// as well as Proxy, so a relay that read that field would serve a Redirect
+// channel's provider URL through the Proxy path silently. All three kinds
+// are served since 2c-5 (2c-2 listed transcode and redirect here), so the
+// kind that can reach this arm is one a newer control plane invents.
 func TestATuneRefusesAKindItDoesNotServe(t *testing.T) {
-	for _, kind := range []string{control.KindRedirect} {
+	for _, kind := range []string{"hls-passthrough"} {
 		t.Run(kind, func(t *testing.T) {
 			rig := newRig(t, relaytest.ControlPlaneConfig{Kind: kind}, relaytest.Config{})
 			response := rig.tune(t, "/proxy/ts/stream/a-channel-uuid", nil)
@@ -281,6 +299,9 @@ func TestEveryProxySettingThisRelayReadsIsRequired(t *testing.T) {
 	for _, key := range []string{
 		settingChunkBytes, settingRetention, settingJoinBehind, settingReadSize, settingShutdownDelay,
 		settingBufferingSpeed, settingBufferingTimeout, settingDefaultUserAgent,
+		settingConnectionTimeout, settingHealthCheckInterval, settingInitGracePeriod, settingMaxRetries,
+		settingRetryWindow, settingStableThreshold, settingMaxStreamSwitches, settingStreamTimeout,
+		settingFailoverGrace, settingKeepaliveInterval, settingMaxKeepalive,
 	} {
 		t.Run(key, func(t *testing.T) {
 			settings := relaytest.EffectiveProxySettings()
@@ -347,8 +368,12 @@ func TestTheStreamRouteIsUnregisteredWithoutTheDevFlag(t *testing.T) {
 	}
 }
 
-// A stream that ends cleanly ends the client's response rather than hanging
-// it, and the client gets every byte the provider sent.
+// A stream that ends cleanly is RECONNECTED, three times, before the source
+// is exhausted (input/manager.py:1870-1875 and the retry loop; 2c-2 ended
+// the tune on the first EOF, before there was a loop) -- and only then does
+// the client's response end rather than hang, with every byte the provider
+// sent across the three connections. With no alternate on the fake control
+// plane, the failover finds nothing and the channel errors.
 func TestAStreamThatEndsClosesTheClientsResponse(t *testing.T) {
 	payload := relaytest.SyntheticTS(4096, 0x100)
 	rig := newRig(t,
@@ -372,7 +397,15 @@ func TestAStreamThatEndsClosesTheClientsResponse(t *testing.T) {
 		if problem := relaytest.AlignmentProblem(body); problem != "" {
 			t.Fatalf("the delivered stream is not whole TS packets: %s", problem)
 		}
-	case <-time.After(10 * time.Second):
+	case <-time.After(20 * time.Second):
 		t.Fatal("the client's response never ended after the upstream stopped")
+	}
+	if n := rig.Upstream.Requests(); n != 3 {
+		t.Fatalf("the provider saw %d requests, want MAX_RETRIES = 3: a clean EOF is reconnected before the source is given up", n)
+	}
+	// The failover asked the control plane, which had nothing left once
+	// stream 1 was excluded.
+	if calls := rig.Control.RequestsTo("/next-source"); len(calls) != 2 || !strings.Contains(string(calls[1].Body), `"reason":"failover"`) {
+		t.Fatalf("the control plane saw %d next-source calls, want the tune and one failover: %+v", len(calls), calls)
 	}
 }

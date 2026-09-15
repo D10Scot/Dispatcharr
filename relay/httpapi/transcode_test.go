@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"strings"
@@ -335,7 +336,7 @@ func TestABlankUserAgentFallsBackToTheWireDefault(t *testing.T) {
 			Command: "ffmpeg", Argv: []string{"-i", "udp://239.0.0.1:1234"}, Settings: rigSettings(nil),
 		})
 		t.Cleanup(cp.Close)
-		started, err := startTune(context.Background(), &control.Client{Secret: testSecret, BaseURL: cp.URL(), HTTP: control.NewHTTPClient()}, "c-ua")
+		started, err := startTune(context.Background(), tuneDeps{control: &control.Client{Secret: testSecret, BaseURL: cp.URL(), HTTP: control.NewHTTPClient()}, log: slog.Default()}, "c-ua", false)
 		if err != nil {
 			t.Fatalf("startTune: %v", err)
 		}
@@ -356,7 +357,7 @@ func TestABlankUserAgentFallsBackToTheWireDefault(t *testing.T) {
 			Settings: rigSettings(nil),
 		})
 		t.Cleanup(cp.Close)
-		started, err := startTune(context.Background(), &control.Client{Secret: testSecret, BaseURL: cp.URL(), HTTP: control.NewHTTPClient()}, "c-ua-proxy")
+		started, err := startTune(context.Background(), tuneDeps{control: &control.Client{Secret: testSecret, BaseURL: cp.URL(), HTTP: control.NewHTTPClient()}, log: slog.Default()}, "c-ua-proxy", false)
 		if err != nil {
 			t.Fatalf("startTune: %v", err)
 		}
@@ -370,9 +371,10 @@ func TestABlankUserAgentFallsBackToTheWireDefault(t *testing.T) {
 	})
 }
 
-// A transcode child that exits non-zero ends the client's response and puts
-// the channel in error carrying the child's code, which is what 2c-5's
-// connection-failure accounting (row 3) will read.
+// A transcode child that exits non-zero is a connection failure: three of
+// them exhaust the source (row 3's accounting), the client's response ends,
+// and the channel is in error still carrying the child's code through the
+// exhaustion error.
 func TestAChildThatExitsNonZeroEndsTheTune(t *testing.T) {
 	r := transcodeRig(t, nil, "--exit-after-bytes", "376000", "--exit-code", "2")
 	response := r.tuneAs(t, "c-exit", "client-a")
@@ -393,13 +395,16 @@ func TestAChildThatExitsNonZeroEndsTheTune(t *testing.T) {
 		if len(body) == 0 {
 			t.Fatal("the client received nothing")
 		}
-	case <-time.After(15 * time.Second):
-		t.Fatal("the response never ended after the child exited")
+	case <-time.After(30 * time.Second):
+		t.Fatal("the response never ended after the child exited three times")
 	}
 	<-ch.Done()
 	var exited interface{ Error() string }
 	if !errors.As(ch.Err(), &exited) || !strings.Contains(ch.Err().Error(), "status 2") {
 		t.Fatalf("Err() = %v, want the child's exit status 2", ch.Err())
+	}
+	if n := r.Upstream.Requests(); n != 3 {
+		t.Fatalf("the provider saw %d requests, want 3: one per attempt on the same source", n)
 	}
 }
 

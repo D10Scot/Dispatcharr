@@ -7,6 +7,7 @@ package main
 import (
 	"errors"
 	"log"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -43,7 +44,15 @@ func main() {
 	// THE SAME manager, not a second one. Two would give the list endpoint
 	// an empty map while the tune path filled another, and every assertion
 	// about what the list shows would be about the wrong object.
-	channels := channel.NewManager(channel.ManagerConfig{})
+	// One control client for the tune path, the failover, the release on
+	// teardown and the events; one emitter behind it, so an outage is logged
+	// once for the whole process as control_plane.py's module flag does.
+	client := &control.Client{Secret: cfg.Secret}
+	emitter := control.NewEmitter(client, slog.Default())
+	channels := channel.NewManager(channel.ManagerConfig{
+		Events:  httpapi.EventSink(emitter),
+		Release: httpapi.ReleaseVia(client, slog.Default()),
+	})
 	srv := &http.Server{
 		Addr: net.JoinHostPort("0.0.0.0", strconv.Itoa(cfg.Port)),
 		Handler: httpapi.New(httpapi.Config{
@@ -51,7 +60,7 @@ func main() {
 			Stream: httpapi.StreamDeps{
 				Secret:   cfg.Secret,
 				Channels: channels,
-				Control:  &control.Client{Secret: cfg.Secret},
+				Control:  client,
 			},
 			Control: httpapi.ControlDeps{Secret: cfg.Secret, Channels: channels},
 		}).Handler(),
