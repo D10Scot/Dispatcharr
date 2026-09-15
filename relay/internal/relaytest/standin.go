@@ -63,6 +63,26 @@ import (
 //	--ignore-sigterm         stay alive through SIGTERM, so a test can tell
 //	                         SIGKILL from SIGTERM
 //	--stdin-probe            report on stderr whether stdin was at EOF
+//	--fmp4-fragments N       ignore the copy loop: drain stdin, write the
+//	                         synthetic fMP4 init segment and then N fragments,
+//	                         and stay alive producing nothing afterwards. What
+//	                         a remux looks like from the relay's side.
+//	--fmp4-interval S        seconds between those fragments (default 0.02)
+//	--fmp4-bsf-error         write the aac_adtstoasc bitstream-filter line to
+//	                         stderr first and produce nothing, which is what a
+//	                         non-AAC source makes the real remux do
+//	--fmp4-exit              exit after the last fragment instead of staying
+//	                         alive producing nothing -- a remux that ENDED,
+//	                         where the default is one that STALLED
+//	--spawn-log PATH         append this process's pid to PATH before doing
+//	                         anything else, so a test can count how many times
+//	                         the relay spawned it. apps/proxy/live_proxy/tests/
+//	                         output_support.py:83's spawn_logging_standin, whose
+//	                         own docstring gives the reason a LOG beats a
+//	                         process count: the claim is about how many
+//	                         processes were STARTED, and a log says that
+//	                         directly where a count of survivors says it only
+//	                         indirectly.
 
 // StandInEnv is the environment variable that turns the re-executed test
 // binary into the stand-in.
@@ -96,6 +116,12 @@ type standInOptions struct {
 	echoArgv       bool
 	ignoreSigterm  bool
 	stdinProbe     bool
+	fmp4Fragments  int
+	haveFMP4       bool
+	fmp4Interval   time.Duration
+	fmp4BSFError   bool
+	fmp4Exit       bool
+	spawnLog       string
 	haveExitAfter  bool
 	haveDeadAir    bool
 	positional     []string
@@ -104,7 +130,7 @@ type standInOptions struct {
 }
 
 func parseStandIn(args []string) standInOptions {
-	o := standInOptions{interval: 50 * time.Millisecond, originalArgs: args}
+	o := standInOptions{interval: 50 * time.Millisecond, fmp4Interval: 20 * time.Millisecond, originalArgs: args}
 	for i := 0; i < len(args); i++ {
 		next := func() string {
 			if i+1 >= len(args) {
@@ -136,6 +162,19 @@ func parseStandIn(args []string) standInOptions {
 			o.ignoreSigterm = true
 		case "--stdin-probe":
 			o.stdinProbe = true
+		case "--fmp4-fragments":
+			o.fmp4Fragments, _ = strconv.Atoi(next())
+			o.haveFMP4 = true
+		case "--fmp4-interval":
+			secs, _ := strconv.ParseFloat(next(), 64)
+			o.fmp4Interval = time.Duration(secs * float64(time.Second))
+		case "--fmp4-bsf-error":
+			o.fmp4BSFError = true
+			o.haveFMP4 = true
+		case "--fmp4-exit":
+			o.fmp4Exit = true
+		case "--spawn-log":
+			o.spawnLog = next()
 		case "-i":
 			// ffmpeg's own input flag. Above the generic dash branch, for
 			// the reason standin.py:90-101 records: `-i` starts with a dash.
@@ -164,6 +203,14 @@ func RunStandIn(args []string) int {
 		fmt.Fprintf(os.Stderr, "stand-in: %s needs a value\n", o.fatalParseFlag)
 		return 2
 	}
+	if o.spawnLog != "" {
+		// Appended, never truncated: the point is the COUNT across every
+		// spawn, so a second process must not erase the first's line.
+		if handle, err := os.OpenFile(o.spawnLog, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600); err == nil {
+			_, _ = fmt.Fprintf(handle, "%d\n", os.Getpid())
+			_ = handle.Close()
+		}
+	}
 	if o.echoArgv {
 		// Mimics the one thing about ffmpeg's stderr that matters to the
 		// redaction tests: it echoes the URL it was given.
@@ -184,6 +231,10 @@ func RunStandIn(args []string) int {
 			fmt.Fprintln(os.Stderr, "stand-in stdin: data")
 		}
 	}
+	if o.haveFMP4 {
+		return runFMP4StandIn(o)
+	}
+
 	if o.input == "" {
 		fmt.Fprintln(os.Stderr, "stand-in: no input; expected `-i <url>` or a positional")
 		return 2
@@ -298,4 +349,81 @@ func pumpStderr(path string, interval time.Duration, loop bool) {
 			return
 		}
 	}
+}
+
+// runFMP4StandIn is the stand-in as a REMUX rather than as a source: it drains
+// fd 0 the way ffmpeg does and writes a synthetic fragmented-MP4 stream to
+// fd 1, ignoring what it read.
+//
+// Ignoring the input is the point and not a shortcut. The subject of every test
+// that uses this is the relay's reaction to what a remux produced -- the init
+// segment split, the fragment boundaries, the client's position, the row-12
+// timeout -- and a stand-in that transformed its input would make each of those
+// depend on an encoder nobody can pin. The test that DOES need a real remux's
+// bytes uses a real ffmpeg, in relay/output.
+//
+// It stays alive after the last fragment rather than exiting, which is what
+// makes a stalled remux (as opposed to an ended one) something a test can
+// build: an exit would close the fragment buffer and end every client, which is
+// the OTHER outcome.
+func runFMP4StandIn(o standInOptions) int {
+	if o.fmp4BSFError {
+		// The real line, ffmpeg 8.1.2 against an AC3 source. BOTH substrings
+		// output/fmp4/manager.py:373 tests for are in it, which is what makes
+		// this the input to the retry path rather than an ordinary diagnostic.
+		fmt.Fprintln(os.Stderr,
+			"Codec 'ac3' (86019) is not supported by the bitstream filter 'aac_adtstoasc'. "+
+				"Supported codecs are: aac (86018) ")
+	}
+
+	// fd 0 drained in the background, so a relay writing megabytes into a
+	// 64 KiB pipe is never blocked by a stand-in that is not reading. A real
+	// ffmpeg reads continuously too; a stand-in that did not would turn every
+	// test into a deadlock that looked like a slow one.
+	go func() {
+		_, _ = io.Copy(io.Discard, os.Stdin)
+	}()
+
+	if o.fmp4Fragments > 0 {
+		if _, err := os.Stdout.Write(SyntheticFMP4Init()); err != nil {
+			return o.exitCode
+		}
+		for i := range o.fmp4Fragments {
+			if o.fmp4Interval > 0 {
+				time.Sleep(o.fmp4Interval)
+			}
+			if _, err := os.Stdout.Write(SyntheticFMP4Fragment(i)); err != nil {
+				return o.exitCode
+			}
+		}
+	}
+
+	if o.fmp4Exit {
+		return o.exitCode
+	}
+	// Alive, connected, producing nothing. A sleep loop rather than select{},
+	// for RunStandIn's own stated reason: Go kills a process whose every
+	// goroutine is asleep, and the panic would land on stderr where the
+	// relay's reader would take it for a diagnostic line.
+	for {
+		time.Sleep(time.Second)
+	}
+}
+
+// SpawnCount is how many lines a --spawn-log holds: how many times the relay
+// spawned the stand-in. Zero when the file does not exist, which is what a
+// relay that spawned nothing leaves behind -- output_support.py:111's
+// spawn_count, same contract.
+func SpawnCount(path string) int {
+	raw, err := os.ReadFile(path) // #nosec G304 -- a path the test itself chose
+	if err != nil {
+		return 0
+	}
+	n := 0
+	for _, line := range strings.Split(string(raw), "\n") {
+		if strings.TrimSpace(line) != "" {
+			n++
+		}
+	}
+	return n
 }
