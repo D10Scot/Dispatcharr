@@ -6,8 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -44,7 +46,12 @@ type Process struct {
 	cmd    *exec.Cmd
 	stdout io.ReadCloser
 	stderr io.ReadCloser
-	cancel context.CancelFunc
+	// stdin is non-nil only for a process started by StartPiped: the
+	// output-side remux, whose fd 0 is the relay's own ring rather than
+	// /dev/null (output/fmp4/manager.py:36's `-i pipe:0`).
+	stdin     io.WriteCloser
+	closeOnce sync.Once
+	cancel    context.CancelFunc
 	// ended is closed by Wait once the process has been reaped.
 	ended chan struct{}
 	err   error
@@ -80,7 +87,30 @@ func (e *ErrExited) Error() string {
 
 // Start spawns command with argv, in its own process group, and returns once
 // it is running. ctx cancellation kills the whole group.
+//
+// fd 0 IS /dev/null, which is input/manager.py:830-834's POSIX_SPAWN_OPEN. The
+// input-side transcode reads its upstream over the network and never from the
+// relay; a writable stdin here would be a pipe nobody fills.
 func Start(ctx context.Context, command string, argv []string) (*Process, error) {
+	return start(ctx, command, argv, false)
+}
+
+// StartPiped is Start with a WRITABLE fd 0, for the output-side remux, whose
+// input is the channel's own ring buffer rather than a URL
+// (output/fmp4/manager.py:32-45's `-f mpegts -i pipe:0`).
+//
+// ONE SPAWNER, TWO ENTRY POINTS, and that is deliberate rather than tidy: the
+// Setpgid/Pdeathsig group, the SIGKILL-only cancel, the KillWait budget, the
+// three-way exit mapping and the stderr splitter are the observable contract
+// this package exists to hold, and an output-side process that got its own
+// spawn would be a second copy of all five -- the shape D5's "do not write a
+// second implementation of the truth" warns about. The ONLY difference is
+// fd 0, and it is one parameter.
+func StartPiped(ctx context.Context, command string, argv []string) (*Process, error) {
+	return start(ctx, command, argv, true)
+}
+
+func start(ctx context.Context, command string, argv []string, pipeStdin bool) (*Process, error) {
 	if strings.Contains(command, "://") {
 		return nil, ErrCommandIsAURL
 	}
@@ -100,24 +130,91 @@ func Start(ctx context.Context, command string, argv []string) (*Process, error)
 	}
 	cmd.WaitDelay = KillWait
 
+	var stdin io.WriteCloser
+	if pipeStdin {
+		var err error
+		stdin, err = cmd.StdinPipe()
+		if err != nil {
+			cancel()
+			return nil, fmt.Errorf("ffmpeg: opening the stdin pipe: %w", err) // credential-logging: ok - an os.Pipe failure, no URL anywhere in it
+		}
+	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		cancel()
 		return nil, fmt.Errorf("ffmpeg: opening the stdout pipe: %w", err) // credential-logging: ok - an os.Pipe failure, no URL anywhere in it
 	}
-	stderr, err := cmd.StderrPipe()
+	// THE STDERR PIPE IS OURS, NOT cmd.StderrPipe()'s, AND THAT IS ISSUE #304.
+	//
+	// os/exec's own documentation on StderrPipe says it plainly: "Wait will
+	// close the pipe after seeing the command exit, so most callers need not
+	// close it themselves; it is thus incorrect to call Wait before all reads
+	// from the pipe have completed." Process.Wait below calls cmd.Wait, and
+	// BOTH of this package's consumers reach it with their stderr drain still
+	// running -- channel.TranscodeSource.Run waits for the process and only
+	// then joins the reader (source_transcode.go), and 2c-6's output pipeline
+	// does the same. Under package-wide scheduling pressure the drain is cut
+	// off part-way: the 2c-5 review reproduced it as
+	// TestParsedStderrReachesTheChannelsStats reporting an EARLIER progress
+	// record's speed than the corpus's last (ffmpeg_speed 3.98 where 2.87 was
+	// due), once in nine no-race runs, and deterministically with a few
+	// milliseconds of delay per read.
+	//
+	// AN os.Pipe THE PARENT OWNS FIXES IT AT THE SOURCE, and fixes both call
+	// sites with one edit rather than imposing an ordering rule on every
+	// future one. cmd.Wait closes only the pipes os/exec itself created; an
+	// *os.File assigned to cmd.Stderr it leaves alone. The parent's copy of
+	// the WRITE end is closed immediately after Start -- otherwise the reader
+	// would never see EOF, because this process would still hold one open --
+	// so the reader's EOF is exactly the child's last byte, whenever the
+	// reaper runs. ReadStderr closes the read end when it returns, which is
+	// the one place it can be closed safely: it is the sole consumer and it
+	// returns only at EOF or on a read error.
+	//
+	// IN PRODUCTION the defect loses the last progress records before an exit,
+	// so ffmpeg_speed, total_bytes and the rest of channel.Stats could be
+	// stale at teardown by however many records the drain missed. Nothing a
+	// viewer sees; something the status endpoints render.
+	stderrRead, stderrWrite, err := os.Pipe()
 	if err != nil {
 		cancel()
 		return nil, fmt.Errorf("ffmpeg: opening the stderr pipe: %w", err) // credential-logging: ok - an os.Pipe failure, no URL anywhere in it
 	}
+	cmd.Stderr = stderrWrite
 	if err := cmd.Start(); err != nil {
+		_ = stderrRead.Close()
+		_ = stderrWrite.Close()
 		cancel()
 		// exec.Error carries the command NAME (refused above if it were a
 		// URL); a *fs.PathError carries the executable's path. Neither
 		// carries argv, which is where the URL is.
 		return nil, fmt.Errorf("ffmpeg: starting %s: %w", command, err) // credential-logging: ok - exec.Error and PathError name the executable, never argv, and a URL-shaped command is refused before this line
 	}
-	return &Process{cmd: cmd, stdout: stdout, stderr: stderr, cancel: cancel, ended: make(chan struct{})}, nil
+	// The child holds its own copy now, so the parent's must go or the reader
+	// never sees EOF (#304).
+	_ = stderrWrite.Close()
+	return &Process{cmd: cmd, stdout: stdout, stderr: stderrRead, stdin: stdin, cancel: cancel, ended: make(chan struct{})}, nil
+}
+
+// Stdin is the write end of a StartPiped process's fd 0, and nil for one
+// started by Start.
+func (p *Process) Stdin() io.Writer { return p.stdin }
+
+// CloseStdin closes fd 0, which is how a remux is asked to flush and exit
+// cleanly: output/fmp4/manager.py:159-163's stop() closes the child's stdin
+// first and only kills it if it is still running afterwards. Idempotent, and a
+// no-op for a process started by Start.
+//
+// sync.Once rather than a nil check after closing, because both the writer
+// goroutine's own deferred close (manager.py:244-249's `finally`) and Stop
+// call it, from different goroutines: os.File.Close is not documented as safe
+// to call concurrently with itself, and `go test -race` would not necessarily
+// see the overlap.
+func (p *Process) CloseStdin() {
+	if p.stdin == nil {
+		return
+	}
+	p.closeOnce.Do(func() { _ = p.stdin.Close() })
 }
 
 // Stdout is the read end of the process's fd 1: the video bytes.
@@ -140,6 +237,10 @@ func (p *Process) PID() int { return p.cmd.Process.Pid }
 // It never returns an error: a broken stderr pipe means the process is
 // going, and Wait is where that is reported.
 func (p *Process) ReadStderr(fn func(line string)) {
+	// The sole consumer closes the read end, and this is the only place it is
+	// closed (#304): Wait must not, because a Wait racing an unfinished drain
+	// is the defect itself.
+	defer func() { _ = p.stderr.Close() }()
 	var buf []byte
 	chunk := make([]byte, 4096) // input/manager.py:976's read size
 	for {

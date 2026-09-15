@@ -272,3 +272,133 @@ func TestAMissingExecutableFailsStartWithoutEchoingArgv(t *testing.T) {
 		t.Fatalf("the start error lost the executable's name: %v", err)
 	}
 }
+
+// A StartPiped process's fd 0 is a pipe the relay writes, which is what the
+// output-side remux needs: `-f mpegts -i pipe:0` (output/fmp4/manager.py:35-36)
+// where the input-side transcode gets /dev/null (input/manager.py:830-834).
+//
+// IT ASSERTS THE ROUND TRIP, not merely that Stdin() is non-nil: the stand-in
+// with `-i pipe:0` copies fd 0 to fd 1, so the bytes coming back prove the
+// descriptor really is the child's input. And it closes stdin before reading to
+// EOF, because a child copying a pipe nobody closes never sees EOF and never
+// exits -- which is exactly why CloseStdin exists and why manager.py:159-163's
+// stop() closes it first.
+func TestAPipedProcessCanBeFedOnItsStandardInput(t *testing.T) {
+	t.Setenv(relaytest.StandInEnv, "1")
+	command, argv := relaytest.StandInCommand("-i", "pipe:0")
+	p, err := StartPiped(t.Context(), command, argv)
+	if err != nil {
+		t.Fatalf("StartPiped: %v", err)
+	}
+	if p.Stdin() == nil {
+		t.Fatal("StartPiped gave the process no stdin")
+	}
+
+	payload := relaytest.SyntheticTS(64, 0x100)
+	written := make(chan error, 1)
+	go func() {
+		_, err := p.Stdin().Write(payload)
+		p.CloseStdin()
+		written <- err
+	}()
+
+	got, err := io.ReadAll(p.Stdout())
+	if err != nil {
+		t.Fatalf("reading stdout: %v", err)
+	}
+	if err := <-written; err != nil {
+		t.Fatalf("writing stdin: %v", err)
+	}
+	if !bytes.Equal(got, payload) {
+		t.Fatalf("the child echoed %d bytes, want the %d written to its fd 0", len(got), len(payload))
+	}
+	if err := p.Wait(); err != nil {
+		t.Fatalf("Wait: %v, want nil for a child that exited 0 after EOF on fd 0", err)
+	}
+}
+
+// A Start process has NO writable fd 0, and that is the parity half: Python's
+// input-side spawn opens /dev/null onto fd 0 (input/manager.py:830-834), so a
+// transcode source that tried to feed its child would be writing somewhere the
+// Python relay does not.
+func TestAnOrdinaryProcessHasNoWritableStandardInput(t *testing.T) {
+	path, _ := assetFile(t, 8)
+	p := standIn(t.Context(), t, "-i", path)
+	t.Cleanup(p.Kill)
+	if p.Stdin() != nil {
+		t.Fatal("Start gave the process a writable fd 0: the input-side spawn's is /dev/null")
+	}
+	// And CloseStdin is a no-op rather than a panic, so a shared stop path can
+	// call it without knowing which constructor was used.
+	p.CloseStdin()
+	p.CloseStdin()
+}
+
+// ISSUE #304, PINNED IN THE PACKAGE THAT OWNS IT: every byte a child writes to
+// fd 2 reaches the reader, even though Wait runs before the drain is joined.
+//
+// THE DEFECT THIS REPLACES was cmd.StderrPipe(), whose own documentation says
+// "it is thus incorrect to call Wait before all reads from the pipe have
+// completed" -- and both consumers of this package do exactly that, because a
+// source has to reap the process before it can say how the process ended. The
+// 2c-5 review reproduced it as a channel holding an EARLIER progress record's
+// speed than the corpus's last (ffmpeg_speed 3.98 where 2.87 was due), once in
+// nine no-race runs.
+//
+// THE SHAPE IS THE CALL SITES' OWN, not a contrived race: read fd 1 to EOF,
+// reap, then join the stderr drain -- channel.TranscodeSource.Run's
+// `waitOrKill(proc); cancel(); <-stderrDone` exactly, and 2c-6's output
+// pipeline's too. A version that called Wait CONCURRENTLY with a live fd 1
+// reader was tried first and is not what this pins: Wait closes the stdout
+// pipe before it reaps (its own doc comment says why), so the child took
+// SIGPIPE and the test failed on signal 13 for a reason that has nothing to do
+// with #304.
+//
+// The oracle is the CORPUS, which this package neither reads nor produces: the
+// number of progress records the fixture holds. A test that asserted "some
+// stderr arrived" would have passed against the defect every time. Its
+// break-check reverts the parent-owned pipe AND slows each read, because the
+// unfixed code loses records on a schedule rather than on every run.
+func TestEveryStderrLineSurvivesTheWaitThatPrecedesTheJoin(t *testing.T) {
+	corpus := relaytest.CorpusPath("normal")
+	wantRecords := len(relaytest.CorpusSpeeds("normal"))
+	if wantRecords < 2 {
+		t.Fatalf("the normal corpus holds %d progress records, which is too few to tell a truncated drain from a complete one", wantRecords)
+	}
+	path, _ := assetFile(t, 8)
+
+	p := standIn(t.Context(), t, "-i", path, "--stderr-corpus", corpus, "--stderr-interval", "0")
+
+	var mu sync.Mutex
+	var lines []string
+	drained := make(chan struct{})
+	go func() {
+		defer close(drained)
+		p.ReadStderr(func(line string) {
+			mu.Lock()
+			lines = append(lines, line)
+			mu.Unlock()
+		})
+	}()
+
+	if _, err := io.Copy(io.Discard, p.Stdout()); err != nil {
+		t.Fatalf("draining fd 1: %v", err)
+	}
+	if err := p.Wait(); err != nil {
+		t.Fatalf("Wait: %v, want nil for a stand-in that exits 0", err)
+	}
+	<-drained
+
+	mu.Lock()
+	defer mu.Unlock()
+	records := 0
+	for _, line := range lines {
+		if strings.Contains(line, "speed=") {
+			records++
+		}
+	}
+	if records != wantRecords {
+		t.Fatalf("%d of the corpus's %d progress records reached the reader: reaping the process must not truncate the stderr drain (#304)",
+			records, wantRecords)
+	}
+}
