@@ -393,7 +393,7 @@ The tempting implementation asks Django whether it is reachable and reports unre
 
 ## File Structure
 
-**Go, created (18):**
+**Go, created — 20 `.go` files and one generated JSON fixture, 21 in all.** The table's rows are not a count: the test row below is eight files, and the appendix list (`Appendix A` … `Appendix AQ`) is the authority. **Go, modified: 17.**
 
 | File | Responsibility |
 |---|---|
@@ -410,12 +410,12 @@ The tempting implementation asks Django whether it is reachable and reports unre
 | `relay/httpapi/authorize.go` | `authorizeTune`, `decisionHeader`, `writeAuthorizeFailure`. |
 | `relay/httpapi/xc.go` | The two XC live roots (R1). |
 | `relay/httpapi/testdata/channel_detail.json` | The golden, rendered by Django's own serializer. |
-| `relay/httpapi/{control,advance,events,authorize,xc,drain,detail_golden,detail_builder}_test.go` | The tests. |
+| `relay/httpapi/{control,advance,events,authorize,xc,drain,detail_golden,detail_builder}_test.go` | The tests. **Eight files in one row**, which is what made the heading above read 18 when the applied tree has 21 created. |
 
-**Go, modified (17):** `channel/{channel,client,events,failover,manager}.go`, `control/{events,events_test}.go`, `httpapi/{channels,fmp4,server,stream}.go`, `httpapi/{fanout,server,stream,transcode}_test.go`, `internal/relaytest/controlplane.go`, `main.go`.
+**Go, modified (17), named in full:** `channel/{channel,client,events,failover,manager}.go`, `control/{events,events_test}.go`, `httpapi/{channels,fmp4,server,stream}.go`, `httpapi/{fanout,server,stream,transcode}_test.go`, `internal/relaytest/controlplane.go`, `main.go`.
 
 **Python, created (2):** `apps/proxy/tests/test_authorize_internal_view.py`, `apps/proxy/tests/test_relay_detail_payload_golden.py`.
-**Python, modified (6 production and allowlist files, plus 1 existing test):** `apps/proxy/{authorize_views,next_source,relay_client,relay_serializers}.py`, `apps/proxy/live_proxy/views.py`, `apps/proxy/live_proxy/tests/zero_orm_allowlist.py`, `apps/proxy/tests/test_relay_client.py`, `dispatcharr/urls.py`.
+**Python, modified (7 production and allowlist files, plus 1 existing test):** `apps/proxy/{authorize_views,next_source,relay_client,relay_serializers}.py`, `apps/proxy/live_proxy/views.py`, `apps/proxy/live_proxy/tests/zero_orm_allowlist.py`, `apps/proxy/tests/test_relay_client.py`, `dispatcharr/urls.py`.
 
 **Docker, created (1):** `docker/healthcheck.sh`. **Modified (2):** `docker/Dockerfile`, `docker/entrypoint.sh`.
 
