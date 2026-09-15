@@ -118,25 +118,44 @@ The gate's own failure message says this, so a reader does not have to find the 
 
 **One half of #312 cannot arise here, by construction.** Its second operational note is that CI's coverage artifacts are unusable locally because coverage.py records absolute paths (`/__w/Dispatcharr/Dispatcharr/…`) and the committed rcfile has no `[paths]` section. A Go coverprofile's first column is an **import path** — `github.com/D10Scot/Dispatcharr/relay/buffer/ring.go:31.42,35.3` — not a filesystem path, so a downloaded CI artifact parses identically on any machine with no remapping. State it in the floor header; it is the reason this gate's artifacts are directly diffable and the Python gate's are not.
 
-### R7 — #309 is fixed here, by taking the stamp on the other side of the write
+### R7 — #309 is fixed here, and the stamp move alone was measured not to fix it
 
 [#309](https://github.com/D10Scot/Dispatcharr/issues/309): `TestDeadAirOnAYoungConnectionSwitchesStreams` (`relay/channel/failover_test.go`) asserts the resolver was asked no sooner than `ConnectionTimeout + 2×HealthCheckInterval` = 400 ms after the last byte, and was seen to fail twice in twelve loaded runs at 399.968 ms and 399.990 ms.
 
-**Fixed here, and the reason is this PR specifically**: the census is twelve green CI runs of the whole Go suite, and a test that fails perhaps one run in six under load makes every draw a coin toss and the campaign several times longer. A flaky test in the workflow the close-out asks the user to make *required* is also the wrong thing to hand over.
+**Fixed here, and the reason is this PR specifically**: the census is twelve green CI runs of the whole Go suite, and a test that fails under load makes every draw a coin toss. A flaky test in the workflow the close-out asks the user to make *required* is also the wrong thing to hand over.
 
-**The mechanism, found rather than assumed.** `dataClock.Write` (`relay/channel/health.go`) records the channel's own `lastData` at the **start** of the write, before `ring.Write`; the test's `deadAirSource.Run` records `lastWrite` **after** `sink.Write` returns. So the test's clock is strictly later than the monitor's, by however long the ring write took, and the assertion is a `>=` on `asked - wrote` — a later `wrote` makes the gap *smaller*. Tens of microseconds is exactly the observed shortfall.
+**The first draft of this ruling had the mechanism wrong, and the measurement is what found that out.** It proposed moving the source's `lastWrite` stamp to before `sink.Write`, on the argument that `dataClock.Write` records the channel's own `lastData` at the start of the write, so a stamp taken afterwards is later than the monitor's clock and the `>=` assertion loses by that much. That argument is correct as far as it goes and the stamp move is kept — but a controlled A/B says it does not reduce the failure rate:
 
-**The fix is to move the stamp to before the write.** `wrote` is then no later than the monitor's `lastData`, so the bound is conservative in the direction the assertion needs. Nothing is widened and no count is lowered: the claim is still three consecutive checks. The issue's other suggested shape — subtract a 50 ms tolerance — is declined, because it weakens a real bound to fix a clock disagreement.
+| shape | runs (loaded) | sub-400 ms gaps | minimum gap |
+|---|---|---|---|
+| A: stamp moved before the write | 60 | **2** (399.966 ms, 399.960 ms) | 399.960 ms |
+| B: unmodified | 60 | **1** (399.995 ms) | 399.995 ms |
+| C: stamp moved **and** the bound widened | 30 | 0 | 399.989 ms, against a 395 ms floor |
 
-**Verified by break-check, and the first attempt was a true positive for a false reason.** Setting `maxUnhealthyChecks = 1` does redden the test, but through an *earlier* assertion (`the channel was never observed unhealthy before it switched`) — the switch happens too fast for the poll to observe the unhealthy window, so that break-check proves nothing about the gap. Setting `maxUnhealthyChecks = 2` reddens through the gap assertion itself:
+Two campaigns, same host, 28 busy-loop spinners on 14 cores, shapes alternating within each round so neither sees a different machine, `-race` off, the gap logged on every run rather than inferred from pass/fail. A and B are indistinguishable.
+
+**The real mechanism, instrumented rather than argued.** A `println` in `monitorHealth` on this tree prints the inactivity at every tick:
 
 ```
-failover_test.go:374: the resolver was asked 351.230375ms after the last byte, under
-CONNECTION_TIMEOUT + two more checks (400ms): the monitor did not wait for three
-consecutive checks
+TICK inactivity_us 250496 threshold_us 300000 unhealthyChecks 0 …
+TICK inactivity_us 301093 threshold_us 300000 unhealthyChecks 0 …
+TICK inactivity_us 351729 threshold_us 300000 unhealthyChecks 1 …
+TICK inactivity_us 400631 threshold_us 300000 unhealthyChecks 2 …
 ```
 
-~50 ms of margin (351.23 ms measured on `a635190c`; 350.48 ms on the seed) against a fix that removes a ~30 µs error — five orders of magnitude apart, which is the evidence that the fix removes a false red without weakening a true one.
+The monitor's tick grid is phased on **its own start**, not on the last byte, so the first tick whose inactivity exceeds `ConnectionTimeout` lands at **301.093 ms** — 1.09 ms past 300, that overshoot being the ticker's accumulated drift over six ticks — and the third unhealthy check two ticks later at ~400.6 ms. **So the margin above a floor of exactly `ConnectionTimeout + 2 × HealthCheckInterval` is the drift alone, about a millisecond, not the 50 ms interval it looks like.** Any sub-millisecond perturbation breaches it, and the stamp order — tens of microseconds — is one such perturbation among several rather than the cause.
+
+This also **disconfirms the mechanism the review proposed** (an unhealthy check counted before the first byte, which the trailing `if c.healthy { unhealthyChecks = 0 }` cannot reset). The trace shows `unhealthyChecks 0` at the 301 ms tick, so nothing was counted earlier; and it cannot be, because `inactivityThreshold()` (`relay/channel/health.go`) returns `InitGracePeriod` while `connected && ring.Head() == 0`, which this test leaves at `testTuning()`'s 60 s, and `channel.go:592-595` sets `lastData` at connect rather than leaving it zero. The conclusion the review drew from that mechanism is right; the mechanism is not.
+
+**So the fix is the bound, and the stamp move rides along.** The floor becomes `ConnectionTimeout + 2×HealthCheckInterval − HealthCheckInterval/10` — 395 ms here. **The asserted count is unchanged at three**; what moves is the clock tolerance, which is what the issue's own second option proposed and what the first draft of this ruling wrongly declined. A tenth of an interval is two orders of magnitude below the 50 ms that separates this from acting one check early, so the test still catches what it exists to catch:
+
+| break-check | observed |
+|---|---|
+| `maxUnhealthyChecks = 2` (acts on the second check) | **red** at 350.99 ms against 395 ms — 44 ms of margin |
+| `maxUnhealthyChecks = 1` (acts on the first) | **red**, but through the earlier `sawUnhealthy` assertion on this host |
+| unmodified | green, eight consecutive `-race` runs |
+
+**The `= 1` row is host-dependent and is stated as such rather than as a property of the test.** On this host the switch happens too fast for the poll to observe the unhealthy window, so it reddens through `the channel was never observed unhealthy before it switched`; on the reviewer's host it reddens through the gap assertion at 301 ms. Either way it is not the row to cite as evidence about the gap, which is why `= 2` is the one the plan uses.
 
 ### R8 — The differential test: one test, real Django on both sides, citing no matrix row
 
@@ -370,80 +389,85 @@ grep -n "func (s deadAirSource) Run" -A 9 channel/failover_test.go
 
 Expected: `dataClock.Write` sets `d.c.lastData = d.c.now()` **before** `d.c.ring.Write(p)`; `deadAirSource.Run` calls `s.lastWrite.set(time.Now())` **after** `sink.Write(payload)`. If either has moved, the fix below is against a different shape — re-derive it before editing.
 
-- [ ] **Step 2: Reproduce the false red by breaking the clock further**
+- [ ] **Step 2: Measure the gap before changing anything**
 
-Temporarily make the source's stamp later still, to show the assertion is sensitive to the stamp's position and not only to the monitor:
+The failure is one run in tens, so a pass/fail loop measures almost nothing. Log the gap instead. Add `t.Logf("GAPMEASURE %d", asked.Sub(wrote).Nanoseconds())` immediately after the `asked, wrote := …` line, build a test binary, and run it under load:
 
 ```bash
 cd /Users/dion/git/Dispatcharr/.worktrees/phase2c-go-coverage-gate/relay
-# Insert a deliberate 5ms delay between the write and the stamp, run, revert.
+go test -count=1 -c -o /tmp/chan_B.test ./channel/
+for i in $(seq 1 28); do (while :; do :; done) & done
+for i in $(seq 1 30); do /tmp/chan_B.test -test.run 'TestDeadAirOnAYoungConnectionSwitchesStreams' -test.count=1 -test.v 2>&1 | grep -o 'GAPMEASURE [0-9]*'; done
+kill %1 %2 %3 %4 %5 %6 %7 %8 %9 %10 %11 %12 %13 %14 %15 %16 %17 %18 %19 %20 %21 %22 %23 %24 %25 %26 %27 %28
 ```
 
-Add `time.Sleep(5 * time.Millisecond)` between `sink.Write(payload)` and `s.lastWrite.set(time.Now())`, then:
+Expected: gaps clustered just above 400,000,000 ns with a minimum within a millisecond of it, and roughly one run in thirty **below** it. Measured on this tree: minimum 399.995 ms, one sub-400 in 30. **That thin margin is the finding** — not the individual failure.
 
-```bash
-go test -count=1 -race -run 'TestDeadAirOnAYoungConnectionSwitchesStreams' ./channel/
-```
+- [ ] **Step 3: Instrument the monitor once, to see where the margin goes**
 
-Expected: FAIL, with `the resolver was asked 39...ms after the last byte, under CONNECTION_TIMEOUT + two more checks (400ms)` — a gap ~5 ms under 400. That is the same failure #309 reports at ~30 µs, made visible. **Revert the sleep** before the next step.
-
-- [ ] **Step 3: Move the stamp to before the write**
-
-Replace `deadAirSource.Run` in `relay/channel/failover_test.go` with:
+Add, temporarily, inside `monitorHealth`'s loop in `relay/channel/health.go` just after `threshold := c.inactivityThreshold()`:
 
 ```go
-func (s deadAirSource) Run(ctx context.Context, sink io.Writer) error {
-	payload := relaytest.SyntheticTS(s.packets, 0x100)
-	// STAMPED BEFORE THE WRITE, and the order is the whole fix for #309.
-	// dataClock.Write records the channel's own lastData at the START of the
-	// write (health.go's dataClock), and the health monitor measures from
-	// THAT. A stamp taken after Write returns is therefore LATER than the
-	// monitor's own clock by however long the ring write took, and the
-	// assertion below is a `>=` on the gap -- so a later `wrote` makes the
-	// measured gap SMALLER and reddens the test for a reason that is not the
-	// behaviour. Measured twice at 399.968 ms and 399.990 ms against the
-	// 400 ms floor on a loaded host, zero failures in 300 solo runs (#309).
-	// Stamped first, `wrote` is no later than the monitor's lastData, so the
-	// bound is conservative in the direction the assertion needs. The claim
-	// is UNCHANGED and the window is not widened: the count of checks is
-	// still three, and a monitor acting on the first inactive check still
-	// asks at ~300-350 ms, which no microsecond-scale shift rescues.
-	s.lastWrite.set(time.Now())
-	if _, err := sink.Write(payload); err != nil {
-		return err
-	}
-	<-ctx.Done()
-	return ctx.Err()
-}
+println("TICK inactivity_us", inactivity.Microseconds(), "threshold_us", threshold.Microseconds(), "unhealthyChecks", unhealthyChecks, "connected", c.connected, "head", int(c.ring.Head()))
 ```
 
-- [ ] **Step 4: Run the test, and the package eight times**
+Run the one test verbosely and read the ticks. Expected, and measured on this tree:
+
+```
+TICK inactivity_us 301093 threshold_us 300000 unhealthyChecks 0 connected true head 2
+TICK inactivity_us 351729 threshold_us 300000 unhealthyChecks 1 connected true head 2
+TICK inactivity_us 400631 threshold_us 300000 unhealthyChecks 2 connected true head 2
+```
+
+The tick grid is phased on the monitor's start, so the first tick past 300 ms lands at ~301 ms — the overshoot is ticker drift over six ticks — and the third unhealthy check two ticks later at ~400.6 ms. **The margin above a 400 ms floor is that drift, about a millisecond.** Note `unhealthyChecks 0` on the 301 ms tick: nothing is counted before the first byte, because `inactivityThreshold()` returns `InitGracePeriod` (60 s in `testTuning()`) while the ring is empty. **Revert this `println` before going on.**
+
+- [ ] **Step 4: Apply the fix — the stamp move and the bound, together**
+
+Both hunks are in **Appendix G**. The stamp moves before `sink.Write`, and the floor becomes `tuning.ConnectionTimeout + 2*tuning.HealthCheckInterval - tuning.HealthCheckInterval/10`. **The asserted count stays three**; only the clock tolerance moves.
+
+- [ ] **Step 5: Prove it with a controlled A/B, both shapes, same host, same load**
+
+Build three binaries — unmodified, stamp-only, stamp-plus-bound — each with the `GAPMEASURE` log, and run them **alternating within each round** so no shape gets a different machine:
 
 ```bash
-cd /Users/dion/git/Dispatcharr/.worktrees/phase2c-go-coverage-gate/relay
-gofmt -l .
-go vet ./channel/
-for i in 1 2 3 4 5 6 7 8; do go test -count=1 -race ./channel/ 2>&1 | tail -1; done
+for i in $(seq 1 30); do
+  for shape in A B C; do
+    /tmp/chan_${shape}.test -test.run 'TestDeadAirOnAYoungConnectionSwitchesStreams' -test.count=1 -test.v 2>&1 \
+      | grep -oE 'GAPMEASURE [0-9]*|^(FAIL|--- FAIL)'
+  done
+done
 ```
 
-Expected: `gofmt -l` prints nothing; vet is silent; eight `ok` lines.
+Expected, and measured over two campaigns on this tree:
 
-- [ ] **Step 5: Break-check — the assertion still catches a monitor that acts too early**
+| shape | runs | sub-400 ms gaps | minimum |
+|---|---|---|---|
+| unmodified | 60 | 1 | 399.995 ms |
+| stamp only | 60 | 2 | 399.960 ms |
+| stamp + bound | 30 | 0 (against its own 395 ms floor) | 399.989 ms |
 
-Set `maxUnhealthyChecks = 2` in `relay/channel/failover.go` (it is `3`), run the one test, then revert:
+**The stamp move alone does not reduce the rate and the plan says so.** If your own A/B disagrees — if the stamp-only shape is clearly better on your host — say so in the PR description with the table, because that would mean the residual is host-dependent in a way this measurement did not see.
+
+- [ ] **Step 5b: Break-check — the bound still catches a monitor that acts early**
+
+Set `maxUnhealthyChecks = 2` in `relay/channel/failover.go` (it is `3`), run the one test, then restore:
 
 ```bash
 cd /Users/dion/git/Dispatcharr/.worktrees/phase2c-go-coverage-gate/relay
 go test -count=1 -race -run 'TestDeadAirOnAYoungConnectionSwitchesStreams' ./channel/ 2>&1 | grep failover_test
 ```
 
-Expected: FAIL, naming the gap assertion —
+Expected: **red**, naming the gap —
 
 ```
-failover_test.go:374: the resolver was asked 351.2...ms after the last byte, under CONNECTION_TIMEOUT + two more checks (400ms): the monitor did not wait for three consecutive checks
+failover_test.go:390: the resolver was asked 350.988791ms after the last byte, under CONNECTION_TIMEOUT + two more checks less a tenth of an interval (395ms): the monitor did not wait for three consecutive checks
 ```
 
-**`maxUnhealthyChecks = 1` is the WRONG break-check and must not be used as evidence.** It reddens through an earlier assertion — `the channel was never observed unhealthy before it switched` — because the switch happens too fast for the poll to see the unhealthy window, so it says nothing about the gap. Restore `3` and re-run the test to confirm green before committing.
+44 ms of margin against a 5 ms tolerance, which is what says the tolerance did not buy the fix at the cost of the assertion.
+
+**`maxUnhealthyChecks = 1` is host-dependent and must not be cited as the evidence.** On this host it reddens through the earlier `the channel was never observed unhealthy before it switched` — the switch outruns the poll — while on another it reddens through the gap at ~301 ms. Run it if you like; quote `= 2`.
+
+Restore `3` and confirm eight consecutive green `-race` runs of the package before committing.
 
 - [ ] **Step 6: Commit**
 
@@ -457,7 +481,7 @@ Then, separately, with the message written to a file:
 git commit -F /tmp/2c9-msg-1.txt
 ```
 
-Message subject: `test(relay): measure dead air from the monitor's own clock (#309)`
+Message subject: `test(relay): widen the dead-air bound past the ticker's own drift (#309)`
 
 - [ ] **Step 7: Confirm the drain test's stale premise on the merged tree**
 
@@ -532,7 +556,7 @@ bash scripts/coverage_relay_go.sh --measure /tmp/relay-go-coverage
 bash scripts/coverage_relay_go.sh --report /tmp/relay-go-coverage
 ```
 
-Expected: a nine-row per-package table, two `~out of scope` lines naming `internal/credlint` and `internal/relaytest`, and a summary line of the shape
+Expected: a **ten**-row per-package table, two `~out of scope` lines naming `internal/credlint` and `internal/relaytest`, and a summary line of the shape
 
 ```
 coverage_relay_go: shape=go-race-per-package/v1  packages=10  statements=3696  missing=587  coverage=84.12%
@@ -547,7 +571,7 @@ cd /Users/dion/git/Dispatcharr/.worktrees/phase2c-go-coverage-gate
 bash scripts/coverage_relay_go.sh --gate /tmp/relay-go-coverage; echo "exit=$?"
 ```
 
-Expected: `NO FLOOR at …` plus `this run statements=… missing=… coverage=…% packages=… (9)`, and `exit=0`.
+Expected: `NO FLOOR at …` plus `this run statements=3696 missing=587 coverage=84.12% packages=0321b777fc5d (10)`, and `exit=0`.
 
 - [ ] **Step 4: Write a throwaway floor and verify the gate passes**
 
@@ -618,7 +642,7 @@ golangci-lint run ./...
 cd .. && scripts/check_go_credential_logging.sh relay
 ```
 
-Expected: `gofmt -l` silent, build and all three vets silent, `0 issues.`, and `credlint: N package(s) clean`. Verified on the seed tree: gofmt clean, build OK, vet ×3 OK, `0 issues.`, `credlint: 11 package(s) clean`.
+Expected: `gofmt -l` silent, build and all three vets silent, `0 issues.`, and `credlint: N package(s) clean`. Verified on `a635190c`: gofmt clean, build OK, vet ×3 OK, `0 issues.` under all three GOOS, and `credlint: 12 package(s) clean`.
 
 It changes no statement, so it cannot move the coverage denominator — but it is committed **with the script**, before Task 8 writes the floor, so there is no commit in between where the tree and the floor disagree.
 
@@ -772,6 +796,34 @@ docker exec -e TEST_USE_SQLITE= -e POSTGRES_HOST=/var/run/postgresql \
 
 Expected: `OK (skipped=1)` and the skip reason naming `DISPATCHARR_RELAY_GO_BIN`. This is what `backend-tests.yml` sees, in both its `test` and its `coverage-label` jobs — deterministically, which is what keeps Gate 2's Python census unperturbed.
 
+- [ ] **Step 6b: Break-check — a corrupting relay must redden the comparison**
+
+The differential's whole claim is that a byte-level divergence shows up. Prove it by building a relay that introduces one. In `relay/channel/health.go`'s `dataClock.Write`, between the `mu.Unlock()` and the `ring.Write`:
+
+```go
+	if len(p) > 100 {
+		p[100] ^= 0xFF
+	}
+```
+
+Offset 100 is inside a packet's filler — outside the sync byte, the PID, the continuity counter and the four-byte embedded index — so the packet still parses, still aligns and still carries its own index. Only the payload differs, which is exactly the divergence a body digest would find and a structural check might not.
+
+```bash
+cd /Users/dion/git/Dispatcharr/.worktrees/phase2c-go-coverage-gate/relay
+GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o /tmp/relay-go-corrupt .   # GOARCH=amd64 on x86_64
+docker cp /tmp/relay-go-corrupt phase2c9:/tmp/relay-go-corrupt
+```
+
+Re-run Step 5 with `DISPATCHARR_RELAY_GO_BIN=/tmp/relay-go-corrupt`. Expected: **red**, with
+
+```
+AssertionError: … : packet index 0 differs between the two relays. This is a byte-level
+divergence on the live path, not a timing difference: both relays were served the same
+asset from its start.
+```
+
+**Revert `health.go` by restoring the file**, rebuild the good binary, and confirm Step 5 is green again before going on. Keep the corrupt binary: Step 7b uses it.
+
 - [ ] **Step 7: Break-check the anti-silence guard**
 
 The workflow step that asserts the test ran must actually fail on the skip output. Check it against the log Step 6 just produced:
@@ -785,6 +837,39 @@ grep -q 'skipped=' /tmp/fake-skip.log && echo "skip check FIRES (expected)"
 
 Expected: both lines print. The count check alone would pass a skipped run — which is exactly why there are two.
 
+- [ ] **Step 7b: Break-check — restore the pipe and watch a failing test report green**
+
+The job runs its command through `scripts/ci_bootstrap_backend.sh`'s `exec bash -c "$CI_BACKEND_RUNNER"` — **a fresh shell with no `pipefail`** — so a `… | tee` runner exits with `tee`'s status and a failing test reports success. Appendix C redirects instead. Prove the hole is real, with the corrupting binary from Step 6b:
+
+```bash
+CMD='cd /repo && /dispatcharrpy/bin/python manage.py test --keepdb apps.proxy.live_proxy.tests.test_relay_differential'
+# the shape this PR REPLACES:
+docker exec <the env flags> -e DISPATCHARR_RELAY_GO_BIN=/tmp/relay-go-corrupt phase2c9 \
+  bash -c "$CMD 2>&1 | tee /tmp/d.log" >/dev/null 2>&1; echo "exit=$?"
+# the shape it ships:
+docker exec <the env flags> -e DISPATCHARR_RELAY_GO_BIN=/tmp/relay-go-corrupt phase2c9 \
+  bash -c "$CMD > /tmp/d2.log 2>&1" >/dev/null 2>&1; echo "exit=$?"
+docker exec phase2c9 grep -E '^(Ran|FAILED|OK)' /tmp/d.log /tmp/d2.log
+```
+
+Expected, and measured on this tree:
+
+| runner shape | exit | log |
+|---|---|---|
+| `… 2>&1 \| tee /tmp/d.log` | **0** | `Ran 1 test in 6.522s` / `FAILED (failures=1)` |
+| `… > /tmp/d2.log 2>&1` | **1** | `Ran 1 test in 6.429s` / `FAILED (failures=1)` |
+
+**And the two-assertion version of Step 7's guard passes that log**, which is why Appendix C carries a third assertion on the final status line:
+
+```bash
+printf 'Ran 1 test in 6.4s\n\nFAILED (failures=1)\n' > /tmp/l-fail.log
+grep -qE '^Ran [1-9][0-9]* tests?' /tmp/l-fail.log && echo "count check PASSES (the hole)"
+grep -q 'skipped=' /tmp/l-fail.log || echo "skip check PASSES (the hole)"
+grep -qE '^OK$' /tmp/l-fail.log || echo "OK check FIRES (the fix)"
+```
+
+Expected: all three lines print. Exercise the guard on all four log shapes — `OK`, `FAILED`, `OK (skipped=1)`, `Ran 0 tests` — and confirm the first exits 0 and the other three exit 1.
+
 - [ ] **Step 8: Run the whole label, to be sure the new file breaks nothing**
 
 ```bash
@@ -797,6 +882,8 @@ docker exec -e TEST_USE_SQLITE= -e POSTGRES_HOST=/var/run/postgresql \
 ```
 
 Expected: `Ran 429 tests … OK (skipped=1)` — measured on `a635190c` in 67.7 s. The one skip is this test; if the count is higher, something else in the label is skipping and it is not this PR's doing.
+
+**One failure in this label is expected noise and is re-run rather than investigated**: `test_a_buffering_threshold_change_does_not_reach_a_running_channel` is the pre-existing, timing-driven flake of [#273](https://github.com/D10Scot/Dispatcharr/issues/273). It reddened once and passed on the immediate re-run while preparing this plan, on a tree where this PR touches nothing it uses. Any *other* failure is this PR's to explain.
 
 - [ ] **Step 9: Credential check**
 
@@ -979,7 +1066,7 @@ gh run list --repo D10Scot/Dispatcharr --workflow go-tests.yml --branch migratio
 gh run view --repo D10Scot/Dispatcharr <run-id> --log --job "Coverage gate" | grep "coverage_relay_go:"
 ```
 
-Expected: `NO FLOOR at …` and `this run statements=… missing=N coverage=…% packages=… (9)`, and the job **green**. Also confirm `Cross-implementation differential` and `Go result` are green.
+Expected: `NO FLOOR at …` and `this run statements=3696 missing=N coverage=…% packages=0321b777fc5d (10)`, and the job **green**. Also confirm `Cross-implementation differential` and `Go result` are green.
 
 **If `Coverage gate` is red on the first run, stop.** A red gate with no floor file means the parse failed, not that coverage regressed — read which of the seven messages it printed.
 
@@ -999,7 +1086,7 @@ gh run view --repo D10Scot/Dispatcharr <run-id> --log --job "Coverage gate" | gr
 
 - [ ] **Step 4: If the measured coverage is below 80%, do not lower anything**
 
-Compute the ceiling from the run's own denominator: `ceiling = statements - ceil(0.8 × statements)`. On the seed tree that is `2956 - 2365 = 591` against a `missing` of 338 — **253 statements of margin**. 2c-8 adds routes, a drain and events, so both numbers move; the margin is expected to stay large.
+Compute the ceiling from the run's own denominator: `ceiling = statements - ceil(0.8 × statements)`. On `a635190c` that is `3696 - 2957 = 739` against a local `missing` of 587–588 — **151–152 statements of margin**. (On the 2c-7 seed it was `2956 - 2365 = 591` against 338, a margin of 253: 2c-8's own additions are 66.4% covered at the margin and that is where the other hundred went.) A CI draw is expected to be worse than a local one, and 151 statements absorbs far more than the Python gate's largest observed local-to-CI delta of 35.
 
 If `max(rounds)` exceeds the ceiling, the spec's ≥80% is not met, and there are exactly two legitimate responses: **name the packages that owe the shortfall** (from the per-package table) and add tests in this PR, or **amend the spec in-PR with a Done-log entry** saying the requirement moved and to whom. A lower floor with no statement either way is not one of them.
 
@@ -1153,7 +1240,7 @@ Separately: `git commit -F /tmp/2c9-msg-8.txt`, subject `docs(phase2): Amendment
 
 - [ ] **Step 1: Write the PR description**
 
-In this order: what this PR does; **the fifteen rulings**, each in a sentence with its measured figure where it has one; **the CI census**, in full, with the stopping rule and the ceiling computation; **the seven gate break-checks** with their actual first lines; **#309's fix**, including the break-check that was a true positive for a false reason and had to be redone; **R16's drain test**, with its five break-checks and, in particular, the `stopwaitsecs=60` control that proves the assertion is a bound and not an equality; **the differential test's two measurements** (the 178-versus-0 join point, and the 2.3 s runtime) and **the realignment test that was built and dropped**, with the loop-phase argument; **the credlint census** (`scripts/check_go_credential_logging.sh relay`, zero findings) and **the suppression census** (18 grep hits, 16 real, this PR adds none); **`go.sum` verified absent** and `go list -m all` printing exactly one module — the last confirmation the spec's § Requirements table owes to 2c-9; **the stated divergences and declines**: R14 (no matrix line-number refresh), R15 (no `fmp4.go` split, no `"remux stderr"` rename), and `relay/main.go`'s one-line comment correction, disclosed as a one-liner outside this PR's subject with the reason it was not declined alongside the rename; and **what this PR does not do**: no nginx route (2d), no ADR (2d's docs PR), no `metrics/curated` update (R13), no HLS (Phase 4).
+In this order: what this PR does; **the sixteen rulings**, each in a sentence with its measured figure where it has one; **the CI census**, in full, with the stopping rule and the ceiling computation; **the seven gate break-checks** with their actual first lines; **#309's fix and the A/B that reshaped it** — the stamp move measured not to reduce the failure rate, the margin found to be ticker drift rather than a tick interval, and the bound widened by a tenth of an interval with the count unchanged; the `= 1` break-check named as host-dependent; **R16's drain test**, with its five break-checks and, in particular, the `stopwaitsecs=60` control that proves the assertion is a bound and not an equality; **the `differential` job's piped runner**, which reported green on a failing test until this PR redirected instead, with the two exit codes and the third assertion that now reads the final status line; **the differential test's three measurements** (the 178-versus-0 join point, the 6.5 s runtime of which ~5 s is 2c-8's drain grace, and the corrupting-relay break-check) and **the realignment test that was built and dropped**, with the loop-phase argument; **the credlint census** (`scripts/check_go_credential_logging.sh relay`, 12 packages clean) and **the suppression census** (18 grep hits and 16 real on `a635190c`, 19 and 17 after this PR, the one addition being `drain_test.go`'s `#nosec G304` with its reason); **`go.sum` verified absent** and `go list -m all` printing exactly one module — the last confirmation the spec's § Requirements table owes to 2c-9; **the stated divergences and declines**: R14 (no matrix line-number refresh), R15 (no `fmp4.go` split, no `"remux stderr"` rename), and `relay/main.go`'s one-line comment correction, disclosed as a one-liner outside this PR's subject with the reason it was not declined alongside the rename; and **what this PR does not do**: no nginx route (2d), no ADR (2d's docs PR), no `metrics/curated` update (R13), no HLS (Phase 4).
 
 - [ ] **Step 2: Undraft, and wait for the required checks**
 
@@ -1225,7 +1312,7 @@ hash comes out of both.
 #
 # WHAT IS MEASURED, and why it is not `./...`. The denominator is exactly the
 # packages the SHIPPED BINARY LINKS -- `go list -deps .` from the module root,
-# nine packages today. relay/internal/relaytest and relay/internal/credlint are
+# ten of them today. relay/internal/relaytest and relay/internal/credlint are
 # in the module and in neither: the first is the Go counterpart of
 # apps/proxy/live_proxy/tests/harness/ and the second is a lint tool run by
 # `go run`, and scripts/coverage_live_path.coveragerc omits both kinds on the
@@ -1630,12 +1717,19 @@ esac
 
 ## Appendix B — `apps/proxy/live_proxy/tests/test_relay_differential.py`
 
-Verbatim. Verified in a container on **`a635190c`**: `Ran 1 test in 6.418s`,
+Verbatim. Verified in a container on **`a635190c`**: `Ran 1 test in 6.425s`,
 `OK`, with the Go relay's own log confirming it reached the real Django
 `next-source`, streamed, and then ran 2c-8's drain on the test's `SIGTERM`.
 The skip path was verified separately (`OK (skipped=1)`, naming
 `DISPATCHARR_RELAY_GO_BIN`), and the whole `apps.proxy.live_proxy.tests` label
-runs `429 tests … OK (skipped=1)` in 67.7 s with this file present.
+runs `429 tests … OK (skipped=1)` in 66.6 s with this file present.
+
+**And it was break-checked**, which no earlier draft of this plan did: a Go
+relay that flips one filler byte per chunk (`p[100] ^= 0xFF` in
+`dataClock.Write`, outside the sync byte, the PID, the continuity counter and
+the embedded index) reddens it with `packet index 0 differs between the two
+relays…`. Task 4 Step 6b is that check. A comparison nothing has ever made fail
+is a comparison nobody has shown compares anything.
 
 ```python
 """The cross-implementation differential: both relays, the same bytes, compared.
@@ -2019,7 +2113,7 @@ index 099f8b26..2556c2c9 100644
      name: Analyze (${{ matrix.language }})
      runs-on: ubuntu-latest
 diff --git a/.github/workflows/go-tests.yml b/.github/workflows/go-tests.yml
-index 26be35e8..6e986374 100644
+index 26be35e8..f1a4371a 100644
 --- a/.github/workflows/go-tests.yml
 +++ b/.github/workflows/go-tests.yml
 @@ -8,9 +8,11 @@ name: Go Tests
@@ -2082,7 +2176,7 @@ index 26be35e8..6e986374 100644
  
        - name: Assert the module is standard-library only
          working-directory: .
-@@ -269,12 +292,160 @@ jobs:
+@@ -269,12 +292,181 @@ jobs:
            version: v2.13.2
            working-directory: relay
  
@@ -2211,18 +2305,34 @@ index 26be35e8..6e986374 100644
 +        env:
 +          GITHUB_WORKSPACE: ${{ github.workspace }}
 +          DISPATCHARR_RELAY_GO_BIN: /tmp/relay-go
++          # REDIRECTED, NOT PIPED, and the difference is the whole job.
++          # ci_bootstrap_backend.sh runs this through `exec bash -c "$CI_BACKEND_RUNNER"`
++          # -- a fresh shell with no `pipefail` -- so `… | tee` would exit with
++          # tee's 0 and a FAILING differential would report green. Verified:
++          # `bash -c 'bash -c "exit 7" 2>&1 | tee /tmp/x'` exits 0, and the
++          # same command with `> /tmp/x 2>&1` exits 7. The two other
++          # CI_BACKEND_RUNNER call sites in this repository are single commands,
++          # so nothing upstream was protecting this one.
 +          CI_BACKEND_RUNNER: >-
 +            python manage.py test --keepdb -v2
 +            apps.proxy.live_proxy.tests.test_relay_differential
-+            2>&1 | tee /tmp/differential.log
++            > /tmp/differential.log 2>&1
 +        run: bash scripts/ci_bootstrap_backend.sh
 +
-+      # A skip here is the "silence read as pass" shape: the job would be
-+      # green because the test never ran. Django's runner prints "skipped=N"
-+      # in its summary line only when something skipped, so its absence is
-+      # the assertion — and "OK" with a nonzero count is what says the test
-+      # ran at all.
-+      - name: Assert the differential test actually ran
++      - name: Show the differential log
++        if: always()
++        shell: bash
++        run: cat /tmp/differential.log
++
++      # THREE assertions, because the step above can only be trusted for two
++      # of them. A skip is the "silence read as pass" shape -- the job green
++      # because the test never ran -- and Django prints "skipped=N" in its
++      # summary only when something skipped, so its absence is the assertion.
++      # A nonzero "Ran N tests" says the module ran at all. And the FINAL
++      # STATUS LINE must be exactly OK: "Ran 1 test … FAILED (failures=1)"
++      # satisfies both of the other two, which is what makes the third one
++      # load-bearing rather than belt-and-braces.
++      - name: Assert the differential test ran and passed
 +        shell: bash
 +        run: |
 +          set -euo pipefail
@@ -2231,6 +2341,11 @@ index 26be35e8..6e986374 100644
 +          if grep -q 'skipped=' /tmp/differential.log; then
 +            echo "the differential test SKIPPED in the one job that must not skip it:"
 +            grep -n 'skipped\|DISPATCHARR_RELAY_GO_BIN' /tmp/differential.log | head -20
++            exit 1
++          fi
++          if ! grep -qE '^OK$' /tmp/differential.log; then
++            echo "the differential test RAN and did not pass:"
++            grep -nE '^(FAILED|ERROR|OK)' /tmp/differential.log | head -5
 +            exit 1
 +          fi
 +
@@ -2244,7 +2359,7 @@ index 26be35e8..6e986374 100644
      if: always()
      timeout-minutes: 5
      steps:
-@@ -283,9 +454,11 @@ jobs:
+@@ -283,9 +475,11 @@ jobs:
            CHANGES_RESULT: ${{ needs.changes.result }}
            BUILD_RESULT: ${{ needs.build.result }}
            LINT_RESULT: ${{ needs.lint.result }}
@@ -2257,7 +2372,7 @@ index 26be35e8..6e986374 100644
            if [ "$CHANGES_RESULT" != "success" ]; then
              echo "Change detection itself failed — cannot prove the Go jobs were unnecessary."
              exit 1
-@@ -296,10 +469,11 @@ jobs:
+@@ -296,10 +490,11 @@ jobs:
            fi
            # `skipped` here means a gated job never ran on a run that needed
            # it, so only an exact `success` may report green.
@@ -2429,8 +2544,8 @@ as a placeholder in the committed file.
 # exceeded -- and this file inherits the lesson rather than re-learning it.
 #
 # WHAT IS MEASURED. The ten packages `go list -deps .` reports from relay/ on
-# a635190c, `drain` included:
-# the packages the SHIPPED BINARY LINKS. relay/internal/relaytest (the Go
+# a635190c, `drain` included -- the packages the SHIPPED BINARY LINKS.
+# relay/internal/relaytest (the Go
 # counterpart of apps/proxy/live_proxy/tests/harness/) and
 # relay/internal/credlint (a lint tool run with `go run`) are in the module and
 # in NEITHER, by the same rule scripts/coverage_live_path.coveragerc applies on
@@ -2637,14 +2752,14 @@ index 436e2777..fee2778d 100644
  ## Conventions
  
 diff --git a/docs/superpowers/specs/2026-09-09-phase2-go-relay-design.md b/docs/superpowers/specs/2026-09-09-phase2-go-relay-design.md
-index 6fdbc2d1..e7d48254 100644
+index 6fdbc2d1..82efe9e8 100644
 --- a/docs/superpowers/specs/2026-09-09-phase2-go-relay-design.md
 +++ b/docs/superpowers/specs/2026-09-09-phase2-go-relay-design.md
-@@ -2613,6 +2613,154 @@ whose wire name is not a Python identifier is silently input-blind, and
+@@ -2613,6 +2613,179 @@ whose wire name is not a Python identifier is silently input-blind, and
  this contract has one more such field waiting to be added the moment a
  fourth credential header is discovered.
  
-+#### Amendment A9 (2c-9) — ten rulings from the Go coverage gate and 2c's close-out
++#### Amendment A9 (2c-9) — eleven rulings from the Go coverage gate and 2c's close-out
 +
 +**A9.1 — the gate's files are `scripts/coverage_relay_go.*`, not the 2c-9 row's
 +`scripts/coverage_live_path_go.floor`.** `dispatcharr/test_discovery.py`'s
@@ -2659,7 +2774,7 @@ index 6fdbc2d1..e7d48254 100644
 +names `scripts/coverage_relay_go\.` instead.
 +
 +**A9.2 — the denominator is the packages the shipped binary LINKS, not
-+`./...`.** `go list -deps .` from `relay/` is nine packages; `internal/relaytest`
++`./...`.** `go list -deps .` from `relay/` is ten packages; `internal/relaytest`
 +(the Go counterpart of `apps/proxy/live_proxy/tests/harness/`) and
 +`internal/credlint` (a `go run` lint tool) are in neither, by the same rule
 +`scripts/coverage_live_path.coveragerc` already applies on the Python side
@@ -2679,9 +2794,10 @@ index 6fdbc2d1..e7d48254 100644
 +so a package entering or leaving the binary is a deliberate re-baseline.
 +
 +**A9.3 — per-package `-cover`, not `-coverpkg`, measured rather than assumed.**
-+Same tree, same denominator: per-package 338 missing / 88.57%, `-coverpkg`
-+(merged per block) 221 / **92.52%** — 117 statements, 3.95 points, entirely
-+code executed by a neighbour's tests. Per-package is kept because D7's stated
++Same tree, same denominator, measured on `a635190c`: per-package 587 missing /
++84.12%, `-coverpkg` (merged per block) 316 / **91.45%** — 271 statements, 7.33
++points, entirely code executed by a neighbour's tests, and a gap that WIDENED
++with 2c-8 (117 statements / 3.95 points on the 2c-7 seed). Per-package is kept because D7's stated
 +purpose needs an ASSERTION over the code, which lives in the package's own
 +tests, not an execution of it. A timing objection to `-coverpkg` was raised and
 +did NOT survive measurement (`relay/channel` 75.0 s with, 75.2 s without),
@@ -2754,6 +2870,21 @@ index 6fdbc2d1..e7d48254 100644
 +`build-mode` is empty for three of four — both risk three working analyses to
 +add a fourth. `codeql.yml`'s push path filter gains `relay/**`.
 +
++**A9.9 — three handoffs declined, each with its reason.** 2c-6 offered 2c-9 the
++matrix line-number refresh "on the pass it is already making" — but **2c-9
++edits no matrix row at all** (2c-8 closed the last thirteen; this PR's matrix
++change is in the guard), so the refresh would be a whole-file diff in a PR
++whose matrix diff is zero lines, and it stays its own chore PR; the guard
++already fails on a citation that no longer RESOLVES. 2c-7 offered the
++`"remux stderr"` rename at `relay/output/fmp4.go`, explicitly conditioned on
++Ruling R1's recommended `fmp4.go` split; the split is declined here (a file
++move reads as a whole delete plus a whole add, the wrong diff for a gate PR,
++and 2d needs neither), so the rename goes with it. And the stage-2c
++`metrics/curated/` milestone is a SEPARATE follow-up PR, not this one: a
++milestone row carries the merge SHA and a merge commit cannot name itself —
++exactly what stage 2b did, `61600940` merging 2b-4 as #275 and #276 recording
++it afterwards.
++
 +**A9.10 — a derived threshold that cannot notice its own source moving, fixed
 +rather than declined.** 2c-8's `relay/drain/drain_test.go` asserts the drain's
 +budget against a hand-copied `const supervisordStopWait = 20 * time.Second`,
@@ -2777,29 +2908,38 @@ index 6fdbc2d1..e7d48254 100644
 +`relay-uwsgi` so its `stopwaitsecs` does not add a separate group to the
 +container's 155 s stop budget against a 160 s `stop_grace_period`.
 +
-+**A9.9 — three handoffs declined, each with its reason.** 2c-6 offered 2c-9 the
-+matrix line-number refresh "on the pass it is already making" — but **2c-9
-+edits no matrix row at all** (2c-8 closed the last thirteen; this PR's matrix
-+change is in the guard), so the refresh would be a whole-file diff in a PR
-+whose matrix diff is zero lines, and it stays its own chore PR; the guard
-+already fails on a citation that no longer RESOLVES. 2c-7 offered the
-+`"remux stderr"` rename at `relay/output/fmp4.go`, explicitly conditioned on
-+Ruling R1's recommended `fmp4.go` split; the split is declined here (a file
-+move reads as a whole delete plus a whole add, the wrong diff for a gate PR,
-+and 2d needs neither), so the rename goes with it. And the stage-2c
-+`metrics/curated/` milestone is a SEPARATE follow-up PR, not this one: a
-+milestone row carries the merge SHA and a merge commit cannot name itself —
-+exactly what stage 2b did, `61600940` merging 2b-4 as #275 and #276 recording
-+it afterwards.
++
++**A9.11 — #309's margin is ticker drift, not a tick interval, and the first fix
++proposed for it was measured not to work.** `TestDeadAirOnAYoungConnection
++SwitchesStreams` asserts the resolver was asked no sooner than
++`ConnectionTimeout + 2 x HealthCheckInterval` after the last byte. That floor
++looks like it has a 50 ms margin and does not: the monitor's tick grid is
++phased on its own start rather than on the last byte, so the first tick past
++`ConnectionTimeout` lands a drift-width late -- instrumented at **301.093 ms**
++against 300 -- and the third unhealthy check two ticks later at **~400.6 ms**.
++The margin above the floor is that drift, about a millisecond. 2c-9's first
++draft proposed moving the test source's own timestamp to before its write,
++which is directionally right and is kept; a controlled A/B (two campaigns, same
++host, 28 spinners on 14 cores, shapes alternating within each round, the gap
++logged every run) says it does not reduce the failure rate -- 2 sub-400 ms gaps
++in 60 runs with it against 1 in 60 without. Widening the floor by a tenth of an
++interval does: 0 in 30, with a minimum 5 ms clear of its own bound. **The
++asserted count stays three**; only the clock tolerance moves, and the test still
++reddens at 350.99 ms on a monitor that acts one check early. Recorded because
++the mechanism a reviewer proposed for it -- an unhealthy check counted before
++the first byte -- is disconfirmed by the same trace (`unhealthyChecks 0` at the
++301 ms tick; `inactivityThreshold()` returns `InitGracePeriod` while the ring is
++empty), and a right conclusion reached through a wrong mechanism is worth
++separating in the record.
 +
  ## Stage 2d — cutover, and its trap
  
  **The historical bug this stage exists to not repeat.** Every live-bound nginx location today carries
-@@ -2940,6 +3088,7 @@ Filled in as PRs merge; this spec lands as its own PR 0.
+@@ -2940,6 +3113,7 @@ Filled in as PRs merge; this spec lands as its own PR 0.
  | 2c-6 -- the Go relay's fMP4 output format (`migration/phase2c-fmp4`). One remux per channel reading the shared ring on `pipe:0`, the init segment replayed to every client, a refcounted lifecycle with no shutdown delay, and parity-matrix row 12 ([#222](https://github.com/D10Scot/Dispatcharr/issues/222)) reproduced, pinned and filed rather than fixed. Row 12 gets its Go pin. Amendment A6. [#304](https://github.com/D10Scot/Dispatcharr/issues/304) (a pre-existing 2c-4 defect, the stderr pipe truncated by a reap racing its drain) fixed in `relay/ffmpeg/spawn.go`, repairing `relay/channel/source_transcode.go` without editing it. Two Python-side findings from the port, reproduced and filed rather than fixed: the fMP4 scanner's resynchronisation arm discarding the whole working buffer ([#306](https://github.com/D10Scot/Dispatcharr/issues/306)) and the dead stop-during-restart guard in `_handle_bsf_error` ([#307](https://github.com/D10Scot/Dispatcharr/issues/307)). Three plan corrections found and fixed in the plan document as committed, run rather than read: Task 4 Step 7's break-check rows 16-18 name tests defined in `relay/httpapi/fmp4_test.go`, Task 6's file, and had to run there rather than in Task 4; Task 1 Step 2's expected result for `TestEveryStderrLineSurvivesTheWaitThatPrecedesTheJoin` describes a runtime failure the package cannot yet produce, since the two `StartPiped` tests appended in the same step leave it uncompilable until Step 3's implementation lands; and the issue-number-placeholder slot count was corrected from six to five (an instruction about the slots had been counted as one) with Task 8 Step 5's own verification grep narrowed to the paths that can carry a real slot, since run unscoped over all of `docs/` it could never return empty. | `migration/phase2c-fmp4` | pending |
  | 2c-7 -- the Go relay's Output Profiles (`migration/phase2c-output-profile`). One transcode per active `(channel, profile)` pair reading the channel's shared ring on `pipe:0` and writing a second in-process MPEG-TS ring, shared by every client on that profile; an fMP4 client on a profile runs it and 2c-6's remux chained, under `mpegts:p<id>` and `fmp4:p<id>`. Parity-matrix row 11 gets its Go pin, counted in spawns. The contract gained a null `argv` so a broken Output Profile can be told from a deactivated one. Amendment A7. Three plan corrections found, disclosed and **fixed in the plan document as committed**, run rather than read: Task 4 Step 5 and Task 7 Step 5 misassigned which break-check rows belong to which task -- rows 3-7 name `httpapi`-package tests Task 7 creates (Appendix P) and rows 8 and 11 name `output`-package tests Task 4 creates (Appendix I), so Task 4's Step 5 now reads "rows 8 and 11" and Task 7's now reads "rows 2, 3, 4, 5, 6, 7, 9, 10, 12, 13, 16, 17, 18", the amended lists this PR actually ran each row against; rows 16, 17 and 18 were re-checked against the same test rather than assumed correct, and confirmed already in Task 7's list -- `TestTheDeactivatedProfileCorrectionDoesNotRaceTheListEndpoint` and `TestAFailoverRefreshesTheProfileSetAndADegradedOneDoesNot` (both arms) are in `relay/httpapi/profile_test.go`, and no channel-package location for either exists. Task 5 Step 3's "Expected: green" for the whole-module `go build ./...` did not hold and is amended to name what actually goes green at that step: `go build`/`vet`/`golangci-lint` scoped to `./channel/... ./output/... ./control/... ./buffer/... ./ffmpeg/... ./internal/...` (every package but `httpapi`), `go test -race ./channel/...`, and `gofmt -l .` over the whole tree -- **commit `38669dba` (Task 5) does not build alone**, because `httpapi/fmp4.go` and `stream.go` still call `AttachOutput` with the pre-2c-7 signature; the whole-module build, vet, test and lint first go green at Task 6 Step 4 once `httpapi`'s own edits land, so a `go build ./...` bisect on this branch lands on Task 6's commit for a defect that is Task 5's incompleteness, not Task 6's own. No commit was ever made against a genuinely broken working tree regardless, since Task 6 was written and verified before either commit. Third, Task 9 Step 3's `ffmpeg.StartPiped`/`.Start` call-site breakdown named the wrong two files ("two in spawn.go, one in output/fmp4.go, one in output/profile.go"); the actual four are one in `output/profile.go`, two in `output/fmp4.go` (the initial spawn and the bitstream-filter retry) and one in `channel/source_transcode.go` -- the total of 4 was already right. | `migration/phase2c-output-profile` | pending |
  | 2c-8 -- the Go relay's control routes and drain (`migration/phase2c-control-drain`). The four remaining `/proxy/relay/…` routes (the single-channel `GET` with its `?fields=state` form, the channel `DELETE`, the client `DELETE` and `advance`), the detail endpoint with its five extra client fields and row 14's `owner` asymmetry, the XC live roots (Ruling R1: spec D1 scopes them and no PR owned them), the four events the tune and stop paths raise, the dev-only `POST /_dispatcharr/authorize-internal` fallback and the Go half that calls it, and D6's SIGTERM drain with a real `/readyz` and a role-aware Docker `HEALTHCHECK`. Thirteen parity-matrix rows get a Go pin, taking the matrix to 28 of 28 pinnable rows, and the ten authorize-matrix rows among them gain a Notes clause saying the Go pin covers the relay's ask-and-obey share and not the decision, which stays Django's. Amendment A8. Four defects found and fixed, three in code this PR did not write: `RequireInternal` verifying the bound signature against an empty body (A8.3), `Manager.publish` bypassing `addClient` for the first client of every channel (A8.4), `control.Emitter` panicking on a send after `Close` and on a second `Close` (A8.5), and -- in this PR's own first draft, found by a Gate 2 coverage test -- the `x-api-key` body field that never arrived, because DRF reads input by a field's NAME and `source=` maps only the output (A8.9). Two Python-side findings reproduced and filed rather than fixed: `source_bitrate` and `ffmpeg_bitrate` are read by `channel_status.py` and written by nothing, the second because the reader and the writer name two different constants ([#314](https://github.com/D10Scot/Dispatcharr/issues/314)). Four break-checks stayed green on a first attempt and each produced a better test or deleted unreachable code. Five plan-text corrections found and made in-tree, none changing the shipped code: Task 0 Step 2's expected `c.clients[` grep count on the merged 2c-7 tree said four hits including `StopClient`'s lookup, but `StopClient` does not exist until this PR's own Task 1 -- the measured count on the tree Task 0 actually ran against is three (one write, two reads); Appendix U's request-count fix, written for Task 4 Step 5, was applied at Task 1 instead so Task 1's own commit would not land with `./httpapi` red under Constraint 33, and both steps now say so; Tasks 2, 3 and 4 landed in one commit rather than three, plus Ruling R10's `Emitter` guards and Task 8's self-contained Docker/entrypoint/healthcheck pieces, because building each task in isolation surfaced a three-link build/test dependency chain the plan's task boundaries did not show; `authorize_test.go` (Task 6) defines `runningIDs` and `containsString`, and `xc_test.go` (Task 7) calls rather than redefines them, the reverse of where the plan first placed them; and `server.go`'s `/healthz`/`/readyz` doc comment was rewritten as one coherent paragraph rather than applied as Appendix J's original hunk, which would have left a stale 2c-1 sentence ("this PR adds no Docker HEALTHCHECK") sitting directly above the paragraph describing the HEALTHCHECK this PR adds -- Appendix J's hunk text is regenerated to match. | `migration/phase2c-control-drain` | pending |
-+| 2c-9 -- the Go coverage gate and stage 2c's close-out (`migration/phase2c-go-coverage-gate`). `scripts/coverage_relay_go.sh` measures the ten packages the shipped binary LINKS (not `./...`: `internal/relaytest` and `internal/credlint` are out by the same rule the Python rcfile applies, worth 73.74% vs 84.12% on one run at `a635190c`) under `go test -count=1 -race -covermode=atomic`, and gates on `missing` against a floor whose number is the worst of >=12 CI draws, with `shape=`/`packages=`/`gomod=` as equality checks and `statements` recorded but never compared. `go-tests.yml` gains `coverage` and `differential` jobs, both in `Go result`'s needs; `codeql.yml` gains a Go job of its own with `build-mode: manual`. The parity matrix's Go half becomes mechanical: an eighth guard check plus `GO_PARITY_CLOSED`, with rows 26 and 27 exempt by construction rather than by an exemption list. Amendment A2.4's cross-implementation differential lands as one harness test that starts `relay-go` against the test's own `LiveServerTestCase` Django; a second differential (row 9's realignment) was built, run and dropped because `FakeUpstream`'s looping payload cannot express a mid-packet start without re-breaking every loop. [#309](https://github.com/D10Scot/Dispatcharr/issues/309) fixed by taking the dead-air test's stamp on the other side of the write, since a twelve-round census needs a suite that does not flake. 2c-8's `relay/drain/drain_test.go` stops restating `docker/supervisord.d/relay-go.conf`'s `stopwaitsecs` as a Go constant and reads it, through a newly exported `relaytest.RepoRoot()`, failing rather than defaulting when the key is gone -- five break-checks, the load-bearing one being `stopwaitsecs=60` staying green so the assertion is a bound and not an equality. Amendment A9. Three handoffs declined with reasons (the matrix line-number refresh, the `fmp4.go` split and its `"remux stderr"` rename, the milestone row). | `migration/phase2c-go-coverage-gate` | pending |
++| 2c-9 -- the Go coverage gate and stage 2c's close-out (`migration/phase2c-go-coverage-gate`). `scripts/coverage_relay_go.sh` measures the ten packages the shipped binary LINKS (not `./...`: `internal/relaytest` and `internal/credlint` are out by the same rule the Python rcfile applies, worth 73.74% vs 84.12% on one run at `a635190c`) under `go test -count=1 -race -covermode=atomic`, and gates on `missing` against a floor whose number is the worst of >=12 CI draws, with `shape=`/`packages=`/`gomod=` as equality checks and `statements` recorded but never compared. `go-tests.yml` gains `coverage` and `differential` jobs, both in `Go result`'s needs; `codeql.yml` gains a Go job of its own with `build-mode: manual`. The parity matrix's Go half becomes mechanical: an eighth guard check plus `GO_PARITY_CLOSED`, with rows 26 and 27 exempt by construction rather than by an exemption list. Amendment A2.4's cross-implementation differential lands as one harness test that starts `relay-go` against the test's own `LiveServerTestCase` Django; a second differential (row 9's realignment) was built, run and dropped because `FakeUpstream`'s looping payload cannot express a mid-packet start without re-breaking every loop. [#309](https://github.com/D10Scot/Dispatcharr/issues/309) fixed by widening the dead-air bound by a tenth of a check interval, the asserted count of three unchanged -- the stamp move first proposed for it was measured not to reduce the failure rate (2 sub-400 ms gaps in 60 loaded runs against 1 in 60 unmodified) and the margin turned out to be the health monitor's ticker drift, about a millisecond, rather than the 50 ms interval the floor looks like. 2c-8's `relay/drain/drain_test.go` stops restating `docker/supervisord.d/relay-go.conf`'s `stopwaitsecs` as a Go constant and reads it, through a newly exported `relaytest.RepoRoot()`, failing rather than defaulting when the key is gone -- five break-checks, the load-bearing one being `stopwaitsecs=60` staying green so the assertion is a bound and not an equality. Amendment A9. Three handoffs declined with reasons (the matrix line-number refresh, the `fmp4.go` split and its `"remux stderr"` rename, the milestone row). | `migration/phase2c-go-coverage-gate` | pending |
  
  ## Risks
  
@@ -2823,35 +2963,39 @@ Verified on that tree, whole module unless stated: `gofmt -l` silent;
 and three more times without `-race`.
 
 Six break-checks, each reverted before the next. R7's, at
-`maxUnhealthyChecks = 2`, reddens through the gap assertion at 351.23 ms
-against 400 ms — **not** at `= 1`, which reddens through an earlier assertion
-and proves nothing about the gap. R16's five are in Task 1 Step 10, and the
-load-bearing one is `stopwaitsecs=60` staying **green**, which is what makes
-the assertion a bound rather than an equality.
+`maxUnhealthyChecks = 2`, reddens through the gap assertion at **350.99 ms
+against the new 395 ms floor** — 44 ms of margin against a 5 ms tolerance,
+which is what says the widened bound did not buy the fix at the cost of the
+assertion. `= 1` is **host-dependent** and is not the row to cite: here it
+reddens through the earlier `sawUnhealthy` assertion, elsewhere through the gap
+at ~301 ms. R16's five are in Task 1 Step 10, and the load-bearing one there is
+`stopwaitsecs=60` staying **green**, which is what makes that assertion a bound
+rather than an equality.
+
+R7's own evidence is not a break-check but a controlled A/B, in Task 1 Step 5:
+two campaigns, same host, 28 spinners on 14 cores, shapes alternating within
+each round, the gap logged on every run. Stamp-only drew 2 sub-400 ms gaps in
+60 runs against the unmodified shape's 1 in 60; stamp-plus-bound drew 0 in 30
+with a minimum 5 ms clear of its floor.
 
 ```diff
 diff --git a/relay/channel/failover_test.go b/relay/channel/failover_test.go
-index 17e58a57..9ee8d386 100644
+index 17e58a57..ead8650e 100644
 --- a/relay/channel/failover_test.go
 +++ b/relay/channel/failover_test.go
-@@ -174,10 +174,24 @@ func (c *timeCell) get() time.Time  { c.mu.Lock(); defer c.mu.Unlock(); return c
+@@ -174,10 +174,19 @@ func (c *timeCell) get() time.Time  { c.mu.Lock(); defer c.mu.Unlock(); return c
  
  func (s deadAirSource) Run(ctx context.Context, sink io.Writer) error {
  	payload := relaytest.SyntheticTS(s.packets, 0x100)
-+	// STAMPED BEFORE THE WRITE, and the order is the whole fix for #309.
-+	// dataClock.Write records the channel's own lastData at the START of the
-+	// write (health.go's dataClock), and the health monitor measures from
-+	// THAT. A stamp taken after Write returns is therefore LATER than the
-+	// monitor's own clock by however long the ring write took, and the
-+	// assertion below is a `>=` on the gap -- so a later `wrote` makes the
-+	// measured gap SMALLER and reddens the test for a reason that is not the
-+	// behaviour. Measured twice at 399.968 ms and 399.990 ms against the
-+	// 400 ms floor on a loaded host, zero failures in 300 solo runs (#309).
-+	// Stamped first, `wrote` is no later than the monitor's lastData, so the
-+	// bound is conservative in the direction the assertion needs. The claim
-+	// is UNCHANGED and the window is not widened: the count of checks is
-+	// still three, and a monitor acting on the first inactive check still
-+	// asks at ~300-350 ms, which no microsecond-scale shift rescues.
++	// Stamped BEFORE the write, because dataClock.Write records the channel's
++	// own lastData at the START of the write (health.go's dataClock) and the
++	// monitor measures from THAT -- so a stamp taken afterwards is later than
++	// the monitor's clock by however long the ring write took, and the
++	// assertion below is a `>=` on the gap. Directional, and MEASURED NOT TO
++	// BE SUFFICIENT on its own: under load this shape still drew 2 sub-400 ms
++	// gaps in 60 runs against the unfixed shape's 1 in 60. The bound below is
++	// what actually closes #309; this is the perturbation it was cheap to
++	// remove first.
 +	s.lastWrite.set(time.Now())
  	if _, err := sink.Write(payload); err != nil {
  		return err
@@ -2860,6 +3004,38 @@ index 17e58a57..9ee8d386 100644
  	<-ctx.Done()
  	return ctx.Err()
  }
+@@ -356,8 +365,29 @@ func TestDeadAirOnAYoungConnectionSwitchesStreams(t *testing.T) {
+ 		t.Fatal("the channel was never observed unhealthy before it switched")
+ 	}
+ 	asked, wrote := resolver.firstCallAt(), lastWrite.get()
+-	if gap := asked.Sub(wrote); gap < tuning.ConnectionTimeout+2*tuning.HealthCheckInterval {
+-		t.Fatalf("the resolver was asked %s after the last byte, under CONNECTION_TIMEOUT + two more checks (%s): the monitor did not wait for three consecutive checks", gap, tuning.ConnectionTimeout+2*tuning.HealthCheckInterval)
++	// THE CLAIM IS THREE CHECKS AND IT IS NOT WEAKENED; what moves is the
++	// clock tolerance, and #309 is why.
++	//
++	// The monitor's first unhealthy check is the first TICK whose inactivity
++	// exceeds CONNECTION_TIMEOUT, and the tick grid is phased on the monitor's
++	// start rather than on the last byte. Instrumented on this tree, the six
++	// ticks to 300 ms land at 301.093 ms -- 1.09 ms past, that overshoot being
++	// the ticker's accumulated drift -- and the third unhealthy check two ticks
++	// later at ~400.6 ms. So the margin above a floor of exactly
++	// CONNECTION_TIMEOUT + 2 intervals is the DRIFT ALONE, about a
++	// millisecond, not the 50 ms interval it looks like. Any sub-millisecond
++	// perturbation breaches it: measured at 399.966, 399.960 and 399.995 ms on
++	// a loaded host, with and without the stamp fix above alike.
++	//
++	// A tenth of an interval -- 5 ms here -- is two orders of magnitude below
++	// the 50 ms that separates this from acting one check early, so the test
++	// still reddens on a monitor that acts on the second check (~350.6 ms
++	// measured) or the first (~301 ms), which is what it exists to catch.
++	// Measured with this bound: 30 loaded runs, zero failures, minimum gap
++	// 399.989 ms -- 5 ms of real margin where the old bound had 40 microseconds.
++	floor := tuning.ConnectionTimeout + 2*tuning.HealthCheckInterval - tuning.HealthCheckInterval/10
++	if gap := asked.Sub(wrote); gap < floor {
++		t.Fatalf("the resolver was asked %s after the last byte, under CONNECTION_TIMEOUT + two more checks less a tenth of an interval (%s): the monitor did not wait for three consecutive checks", gap, floor)
+ 	} else if gap > 3*time.Second {
+ 		t.Fatalf("the resolver was asked %s after the last byte: the dead air was not acted on", gap)
+ 	}
 diff --git a/relay/drain/drain_test.go b/relay/drain/drain_test.go
 index 35c7460f..de014a00 100644
 --- a/relay/drain/drain_test.go
