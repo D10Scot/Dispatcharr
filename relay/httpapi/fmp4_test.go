@@ -370,11 +370,17 @@ func TestAnFMP4TuneWhoseRemuxCannotBeSpawnedIsAFiveHundred(t *testing.T) {
 // start the TS keepalives and blur which of the two mechanisms held the TS
 // client open.
 //
-// THE STALL IS ON THE REMUX, NOT ON THE UPSTREAM, and that is what makes the
-// contrast sharp: the channel's ring keeps filling, so the channel stays
-// healthy and the TS client keeps receiving bytes, while the fragment buffer
-// goes quiet. A stalled UPSTREAM would eventually make the channel unhealthy
-// and fail over, and the test would be about the failover.
+// THE STALL IS ON THE UPSTREAM, NOT ON THE REMUX, and that is what makes the
+// contrast meaningful: the provider stops sending after DeadAirAfterBytes, so
+// BOTH the ring and the fragment buffer go quiet together and the TS client
+// is silent for exactly as long as the fMP4 client is. CONNECTION_TIMEOUT is
+// deliberately left at its default (10s, relaytest.ControlPlane's own), well
+// past this test's two-second window, so the channel stays HEALTHY -- which
+// is what keeps the TS client's own timeout gate shut and makes the contrast
+// about row 12's missing health check rather than about the channel's health.
+// If row 12 were "fixed" by adding that gate to serveFMP4Client (break-check
+// 14), it is this same health guard that would then govern the fMP4 client's
+// drop too, and the two loops would agree.
 func TestAStalledFMP4ClientIsDroppedWhileATSClientIsNot(t *testing.T) {
 	const (
 		streamTimeout = 1.0
