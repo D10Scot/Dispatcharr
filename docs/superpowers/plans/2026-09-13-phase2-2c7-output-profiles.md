@@ -16,13 +16,17 @@
 
 ## Sequencing: this plan sits on 2c-6 as merged, whose tree the orchestrator names as `<2C6_MERGED_SHA>`
 
-2c-6's plan is on branch `docs/phase2c6-plan` at `f142bf90` (`docs/superpowers/plans/2026-09-13-phase2-2c6-fmp4.md`; read it with `git -C <repo> show "f142bf90:docs/superpowers/plans/2026-09-13-phase2-2c6-fmp4.md"` — **brace the expansion in zsh**, or the `:path` is eaten as a history modifier and you get the tip commit's diff instead, exit code 0 and all).
+2c-6's plan is on branch `docs/phase2c6-plan` at `d5ad9aac` (`docs/superpowers/plans/2026-09-13-phase2-2c6-fmp4.md`; read it with `git -C <repo> show "d5ad9aac:docs/superpowers/plans/2026-09-13-phase2-2c6-fmp4.md"` — **brace the expansion in zsh**, or the `:path` is eaten as a history modifier and you get the tip commit's diff instead, exit code 0 and all).
 
 **2c-6 was not merged and not implemented when this plan was written.** No branch, no worktree and no commit carried `relay/output`, `buffer.Fragments`, `ffmpeg.StartPiped` or `channel/output.go`. So this plan could not obey the brief's "seed from the implemented tree, never from a plan's appendices" rule for its predecessor, and says so rather than hiding it — the same position 2c-6 itself was in with respect to 2c-5.
 
 **What it did instead, and what that buys.** Every appendix here was built and verified on `main` at **`9d666f8c`** (2c-5 as merged) **with 2c-6's own appendices applied over it**, extracted mechanically from that plan's fenced blocks rather than retyped: eleven whole files written out, seven diffs applied with `git apply`. **All seven applied with no fuzz and no rejects**, and the resulting module built, vetted, linted at zero issues and passed `go test -race ./...` green before a line of 2c-7 was written. That is the strongest evidence available that 2c-6's appendices describe a tree that compiles against `9d666f8c`, and it is not evidence that the tree 2c-6 *merges* is that tree.
 
-**The 2c-6 tip is known to be moving**: a fix round was in progress when this plan was written, and one of its corrections is to 2c-6's own Ruling R1 — that sentence promising 2c-7 a second constructor and a second sink type overstated the constructor's share, and Ruling R11 below is this plan's half of the correction. The appendices here were built against `f142bf90`; a fix round that reshapes `Pipeline` itself moves Appendix G's anchors and is a Task 0 stop.
+**That branch moved once while this plan was being written**, `f142bf90` → `d5ad9aac`: a rebase onto `9d666f8c` plus one fix round. **Every appendix here was re-extracted from `d5ad9aac` and the whole module re-verified after it** — build, vet and `golangci-lint` at zero under native, `GOOS=linux` and `GOOS=darwin`, a full `-race` run green, credlint clean over eleven packages.
+
+Seven Go files changed in that round and **four of them are files this PR also edits**. Three changed in comments only, and `output/fmp4.go`'s sole code change is a moved `<-stderrDone` in `generation` that touches none of Ruling R11's five anchors: the regenerated Appendix G diff is **byte-identical** to the one built on `f142bf90`. `ffmpeg/spawn.go` really changed — #304's parent-owned stderr pipe — and this PR does not touch it. **The one substantive collision is `httpapi/fanout_test.go`**, and Task 7 Step 3 is where it is resolved: the fix round added a THIRD 501 row, `"an Output Profile on an fMP4 tune"`, which is exactly the combination 2c-7 makes work.
+
+One of that round's corrections is to 2c-6's own Ruling R1 — the sentence promising 2c-7 a second constructor and a second sink type overstated the constructor's share — and Ruling R11 below is this plan's half of it. A **later** fix round that reshapes `Pipeline` itself would move Appendix G's anchors and is a Task 0 stop.
 
 **The orchestrator fills `<2C6_MERGED_SHA>` when 2c-6 merges, and this plan is re-seeded from that SHA — every `_test.go` included — and every appendix re-verified byte for byte, before it is reviewed.** Until then, Task 0 is the diff between what this plan expects of 2c-6 and what merged.
 
@@ -41,7 +45,7 @@
 | `channel/failover.go`'s `Resolved{Source, Info, Degraded}` and the switch's `c.mu.Lock()` block | Task 5 adds one field and three lines | a reshaped switch is a stop |
 | `httpapi/stream.go`'s `StreamDeps{Secret, Channels, Control, Log, Now, Probe, Remux}`, `identify`'s `X-Relay-Output` **refusal**, `serveClient(ctx, w, rc, ch, client, log)`, `StreamHandler`'s `defer release()` → fMP4 branch → TS headers, `writeTuneFailure`'s switch | Task 6 replaces the refusal, adds a `ring` parameter to `serveClient`, inserts one block before the fMP4 branch and one case in `writeTuneFailure` | Appendix K gives every anchor; a handler that no longer branches on `client.OutputFormat` is a stop |
 | `httpapi/fmp4.go`'s `serveFMP4(w, r, deps, ch, client, log)` and `ch.AttachOutput(output.FormatFMP4, deps.Remux)` | Task 6 adds a `source *buffer.Ring` parameter and composes the key | Appendix J |
-| `httpapi/fanout_test.go`'s `fanRig`, `fanRigWith`, `rigSettings`, `tuneAs`, `listChannels`, `waitForHead`, and `TestAnOutputThisRelayDoesNotServeIsRefused`'s two rows | Task 7 edits that one test; the helpers are used unchanged | the 501 test still carrying an `X-Relay-Output: 7` row expecting 501 is the row this PR must change — if it is gone already, 2c-6 did something this plan does not know about |
+| `httpapi/fanout_test.go`'s `fanRig`, `fanRigWith`, `rigSettings`, `tuneAs`, `listChannels`, `waitForHead`, and `TestAnOutputThisRelayDoesNotServeIsRefused`'s **three** rows with an `andFMP4 bool` field and an `output` import (the third row and both are `d5ad9aac`'s fix round) | Task 7 replaces all three profile-bearing rows and removes the `andFMP4` field, the `output` import and the `if tc.andFMP4` block with them; the helpers are used unchanged | **two** rows and no `andFMP4` means you seeded from before that fix round — re-seed. A test that no longer refuses `hls` is a stop |
 | `httpapi/fmp4_test.go`'s `standInRemux`, `readAtLeast`, `rig.tuneFMP4` | Task 7 calls all three unchanged | a renamed helper is a find-and-replace in Appendix N |
 | `httpapi/stream_test.go`'s `rigOption`, `withRemux`, variadic `newRig`/`newRigWithClient` | Task 7 uses `withRemux` unchanged | |
 | `httpapi/golden_test.go`'s `TestTheLiveEndpointProducesTheGoldensKeySet`, whose live-row assertion says `output_profile_id` must be null "because 2c-3 serves no Output Profile yet" | Task 7 rewrites that **message** and keeps the assertion (Ruling R7) | |
@@ -868,7 +872,11 @@ Expected: with Task 6 applied they **pass**; with Task 6 reverted they fail to c
 
 - [ ] **Step 3: Fix the 501 subtest and the golden message**
 
-Apply Appendix Q. `TestAnOutputThisRelayDoesNotServeIsRefused`'s table gains a `status` column; the `X-Relay-Output: 7` row becomes two rows — `"seven"` and `"0"` — both expecting **400**, and the loop gains an assertion that the refused value is not echoed into the body. `golden_test.go`'s live-row message stops citing 2c-3.
+Apply Appendix Q. `TestAnOutputThisRelayDoesNotServeIsRefused`'s table gains a `status` column and loses `d5ad9aac`'s `andFMP4 bool`; **both** of its profile-bearing rows go — the bare `X-Relay-Output: 7` row and the `"an Output Profile on an fMP4 tune"` row that 2c-6's fix round added — replaced by `"seven"` and `"0"`, both expecting **400**. The `if tc.andFMP4` block goes with them, and so does the `output` import, which that fix round added for that row alone and which `go vet` reports as unused the moment the row is deleted.
+
+**Do not read this as dropping the concern that row guarded.** Its comment named an identify that returned early on a format it serves and so silently dropped the Output Profile — a real hazard, and under 2c-7 no longer a 501 question at all, because the profile is resolved after the channel is up rather than refused in `identify`. `TestAnFMP4ClientOnAnOutputProfileRunsTheTranscodeAndTheRemuxChained` is the stronger form of the same guard: it asserts the transcode really spawned, that both `mpegts:p3` and `fmp4:p3` are registered, and that the remux's own fd 0 carried the transcode's packets. A relay that dropped the profile and streamed plain fMP4 passes a status check and fails all three. Say so in the PR description rather than letting a reviewer find a deleted row.
+
+The loop also gains an assertion that the refused value is not echoed into the body. `golden_test.go`'s live-row message stops citing 2c-3.
 
 - [ ] **Step 4: Run the package to verify everything passes**
 
@@ -1032,7 +1040,7 @@ Fifteen. Every row was run in the scratch module described in § Sequencing, and
 
 ## Appendix — the files, in full
 
-Every file below was built, vetted under three GOOS, race-tested and linted at zero findings in the scratch module § Sequencing describes. Whole files are given whole; edits to 2c-6's files are given as diffs against the tree that plan's appendices produce.
+Every file below was built, vetted under three GOOS, race-tested and linted at zero findings in the scratch module § Sequencing describes, **re-verified against `d5ad9aac`** after 2c-6's fix round. Whole files are given whole; edits to 2c-6's files are given as diffs against the tree that plan's appendices produce.
 
 
 ### Appendix A — `relay/control/nextsource.go`
@@ -1902,7 +1910,7 @@ Five additive edits and two doc paragraphs. **Nothing is moved and nothing is re
  // Done is closed once the pipeline's process has ended and its buffer is shut.
  func (p *Pipeline) Done() <-chan struct{} { return p.done }
  
-@@ -425,7 +479,7 @@
+@@ -428,7 +482,7 @@
  	// The buffer closes with the pipeline, which is what wakes a client
  	// waiting for an init segment that will now never arrive and what ends a
  	// client's read loop.
@@ -1911,7 +1919,7 @@ Five additive edits and two doc paragraphs. **Nothing is moved and nothing is re
  
  	for generation := 0; ; generation++ {
  		bsf, err := p.generation(ctx, proc)
-@@ -475,7 +529,7 @@
+@@ -478,7 +532,7 @@
  			// (manager.py:372), the same divergence 2c-4's Ruling R8 records
  			// for the input side.
  			p.log.Warn("remux stderr", "line", redact.Line(line))
@@ -1920,7 +1928,7 @@ Five additive edits and two doc paragraphs. **Nothing is moved and nothing is re
  				wantRetry = true
  				// manager.py:374-378 starts a thread that kills the process
  				// (:387-389). Kill is that SIGKILL to the whole group; cancel
-@@ -496,7 +550,7 @@
+@@ -499,7 +553,7 @@
  	var readErr error
  	go func() {
  		defer close(readerDone)
@@ -2980,8 +2988,8 @@ Six edits. `identify` records what the hop asked for, not what the tune serves; 
 **`relay/httpapi/stream.go`**
 
 ```diff
---- a/relay/httpapi/stream.go
-+++ b/relay/httpapi/stream.go
+--- a/httpapi/stream.go
++++ b/httpapi/stream.go
 @@ -9,6 +9,7 @@
  	"math/big"
  	"net"
@@ -3180,7 +3188,7 @@ The remux's key gains the profile and its source becomes the profile's ring (Rul
  ) {
 -	pipeline, releaseOutput, err := ch.AttachOutput(output.FormatFMP4, deps.Remux)
 +	// THE KEY CARRIES THE PROFILE AND THE SOURCE IS THE PROFILE'S RING, both
-+	//2c-7's and both straight off views.py: :731-734 composes the format key
++	// 2c-7's and both straight off views.py: :731-734 composes the format key
 +	// as f'{fmt}:p{id}' when a profile is active, and :790-792 hands
 +	// ensure_output_format the profile's buffer as the remux's input. So an
 +	// fMP4 client on an Output Profile runs TWO chained processes -- the
@@ -3189,7 +3197,7 @@ The remux's key gains the profile and its source becomes the profile's ring (Rul
 +	key := output.FormatKey(output.FormatFMP4, client.OutputProfileID)
 +	pipeline, releaseOutput, err := ch.AttachOutput(key, channel.OutputSpec{Remux: deps.Remux, Source: source})
  	if err != nil {
- 		// views.py:790-796's JsonResponse({"error": ...}, status=500), body and
+ 		// views.py:789-798's JsonResponse({"error": ...}, status=500), body and
  		// all: a relay that answered a bare 500 here would be distinguishable
 ```
 
@@ -3866,7 +3874,7 @@ func TestStoppingTheChannelStopsItsProfileTranscode(t *testing.T) {
 
 ### Appendix Q — `relay/httpapi/fanout_test.go` and `golden_test.go`
 
-The 501 subtest's Output Profile row becomes two malformed-value rows at 400, plus an assertion that the refused value is never echoed. The golden's live-row message stops citing a stage that no longer describes it (Ruling R7).
+Both of `d5ad9aac`'s profile-bearing rows go — the bare one and the `andFMP4` one its fix round added, which is the combination 2c-7 makes work — replaced by two malformed-value rows at 400, plus an assertion that the refused value is never echoed. The `andFMP4` field, its `if` block and the `output` import go with them; `go vet` reports that import unused the moment the row is deleted. The golden's live-row message stops citing a stage that no longer describes it (Ruling R7).
 
 
 **`relay/httpapi/fanout_test.go`**
@@ -3882,34 +3890,85 @@ The 501 subtest's Output Profile row becomes two malformed-value rows at 400, pl
  	"sync"
  	"testing"
  	"time"
-@@ -433,6 +434,7 @@
- 		name   string
- 		header string
- 		value  string
+@@ -14,7 +15,6 @@
+ 	"github.com/D10Scot/Dispatcharr/relay/buffer"
+ 	"github.com/D10Scot/Dispatcharr/relay/control"
+ 	"github.com/D10Scot/Dispatcharr/relay/internal/relaytest"
+-	"github.com/D10Scot/Dispatcharr/relay/output"
+ )
+ 
+ // rigAssetPackets is how many packets the fan-out tests' upstream loops.
+@@ -431,10 +431,10 @@
+ // control plane is asked.
+ func TestAnOutputThisRelayDoesNotServeIsRefused(t *testing.T) {
+ 	for _, tc := range []struct {
+-		name    string
+-		header  string
+-		value   string
+-		andFMP4 bool
++		name   string
++		header string
++		value  string
 +		status int
  	}{
  		// 2c-6 SERVES fmp4, so this row moved to a format NEITHER relay has.
  		// `hls` is the honest choice: apps/proxy/hls_proxy/ exists, is 1,206
-@@ -442,8 +444,16 @@
+@@ -444,24 +444,31 @@
  		// what both implementations do. Before 2c-6 this row said "fmp4"; a
  		// row that still did would now be asserting the opposite of what this
  		// PR ships.
--		{"an output format it does not serve", "X-Relay-Output-Format", "hls"},
--		{"an Output Profile", "X-Relay-Output", "7"},
+-		{"an output format it does not serve", "X-Relay-Output-Format", "hls", false},
+-		{"an Output Profile", "X-Relay-Output", "7", false},
+-		// 2c-6 SERVES fmp4 and 2c-7 will serve Output Profiles; a tune asking
+-		// for BOTH is still refused, and nothing else here covers the pair --
+-		// the rows above vary one header each, so an identify that served a
+-		// recognised format and never looked at the profile would satisfy
+-		// both of them.
 +		{"an output format it does not serve", "X-Relay-Output-Format", "hls", http.StatusNotImplemented},
-+		// 2c-7 SERVES Output Profiles, so the row that asked for one with a
-+		// valid id is gone -- it is now TestTwoClientsOnOneOutputProfileShare
-+		// OneTranscode's subject. What is still refused is a MALFORMED id,
-+		// which the authorize hop answers 403 for one hop earlier
-+		// (apps/proxy/authorize_views.py:154-162) and which therefore reaches
-+		// a relay only when the internal contract is broken. 400, not 501:
-+		// the relay serves this output, it just cannot read the header.
++		// 2c-7 SERVES Output Profiles, so 2c-6's two profile rows are GONE and
++		// neither is replaced by a 501: the bare-profile row is now
++		// TestTwoClientsOnOneOutputProfileShareOneTranscode's subject, and the
++		// fMP4-plus-profile row 2c-6's fix round added is
++		// TestAnFMP4ClientOnAnOutputProfileRunsTheTranscodeAndTheRemuxChained's.
+ 		//
+-		// NOT ABOUT THE ORDER OF THE TWO CHECKS, and this was measured rather
+-		// than assumed: swapping them so the format is tested first leaves all
+-		// three subtests passing, because the profile arm refuses
+-		// unconditionally wherever it sits. What this row actually guards is
+-		// an identify that RETURNED EARLY on a format it serves -- a plausible
+-		// tidy-up once there are two served formats -- which would accept this
+-		// tune and stream plain fMP4 while silently dropping the Output
+-		// Profile the operator configured. Python runs the `fmp4:p7` pipeline
+-		// for it instead (server.py's _parse_output_key).
+-		{"an Output Profile on an fMP4 tune", "X-Relay-Output", "7", true},
++		// THE CONCERN THAT ROW GUARDED IS NOT DROPPED WITH IT. Its comment
++		// named an identify that RETURNED EARLY on a format it serves and so
++		// silently dropped the Output Profile -- which under 2c-7 is no longer
++		// a 501 question at all, because the profile is resolved after the
++		// channel is up rather than refused in identify. The chained test is
++		// the stronger form of the same guard: it asserts the transcode really
++		// spawned, that both `mpegts:p3` and `fmp4:p3` are registered, and that
++		// the remux's own fd 0 carried the TRANSCODE's packets. A relay that
++		// dropped the profile and streamed plain fMP4 passes a status check and
++		// fails all three.
++		//
++		// What is still refused is a value that is not a positive integer,
++		// which apps/proxy/authorize_views.py:154-162 denies 403 one hop
++		// earlier, so it reaches a relay only when the internal contract is
++		// broken. 400, not 501: the relay serves this output, it just cannot
++		// read the header.
 +		{"a malformed Output Profile id", "X-Relay-Output", "seven", http.StatusBadRequest},
 +		{"a zero Output Profile id", "X-Relay-Output", "0", http.StatusBadRequest},
  	} {
  		t.Run(tc.name, func(t *testing.T) {
  			r := fanRig(t, relaytest.Config{Rate: 4}, nil)
-@@ -454,10 +464,15 @@
+@@ -469,16 +476,18 @@
+ 			header.Set(control.HeaderAuthorized, control.RelayTrustToken(testSecret))
+ 			header.Set("X-Relay-Channel", "c-output")
+ 			header.Set(tc.header, tc.value)
+-			if tc.andFMP4 {
+-				header.Set("X-Relay-Output-Format", output.FormatFMP4)
+-			}
  
  			response := r.tune(t, "/proxy/ts/stream/c-output", header)
  			defer func() { _ = response.Body.Close() }()
