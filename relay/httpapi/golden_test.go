@@ -42,6 +42,7 @@ func goldenPayload() channelListPayload {
 	profileID := 7
 	sourceFPS := 25.0
 	speed := 1.02
+	healthy := true
 
 	return channelListPayload{
 		Count: 2,
@@ -63,6 +64,7 @@ func goldenPayload() channelListPayload {
 				TotalBytes:     &total,
 				AvgBitrateKbps: &kbps,
 				AvgBitrate:     "2.67 Mbps",
+				Healthy:        &healthy,
 				VideoCodec:     "h264",
 				Resolution:     "1920x1080",
 				SourceFPS:      &sourceFPS,

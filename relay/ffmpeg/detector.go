@@ -99,6 +99,20 @@ func (d *Detector) Observe(speed float64) Verdict {
 // Buffering reports whether the last observation left the channel buffering.
 func (d *Detector) Buffering() bool { return d.buffering }
 
+// BufferingFor is how long the channel has been buffering, `buffering_duration`
+// at input/manager.py:1177 -- the value the channel_failover event carries as
+// `duration` (:1204). Zero when not buffering.
+func (d *Detector) BufferingFor() time.Duration {
+	if !d.buffering {
+		return 0
+	}
+	now := d.Now
+	if now == nil {
+		now = time.Now
+	}
+	return now().Sub(d.since)
+}
+
 // Reset is the successful-switch branch (:1185-1186): buffering cleared and
 // the clock forgotten, so the NEXT sub-threshold sample starts a fresh
 // window. 2c-5's failover calls it; nothing in 2c-4 does.

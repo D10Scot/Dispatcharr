@@ -65,15 +65,20 @@ type clientPayload struct {
 // client_count, uptime, started_at -- three of them nullable. The rest are
 // conditional, hence the pointers and the omitempty.
 //
-// TWO OF THE CONDITIONAL FIELDS ARE STILL ABSENT after 2c-4, and each absence
-// has a reason rather than a gap:
+// ONE CONDITIONAL FIELD IS STILL ABSENT after 2c-5, with a reason rather
+// than a gap:
 //
 //	logo_id        NEVER EMITTED BY PYTHON EITHER. ChannelMetadataField.LOGO_ID
 //	               is written only into the timeshift key family
 //	               (apps/timeshift/views.py:2984), never into the live hash
 //	               channel_status.py:486 reads, so the `if not raw: continue`
 //	               always continues. Exact parity by doing nothing.
-//	healthy        needs StreamManager.healthy, which is 2c-5's.
+//
+// healthy arrived in 2c-5 with the health monitor: channel_status.py:527-529
+// sets it only when the answering process holds the channel's StreamManager
+// -- which the single relay process always does for a channel in its map --
+// so it is present on every channel this relay lists, true from the tune
+// until the monitor sees no data for the inactivity threshold.
 //
 // The seven ffmpeg-derived fields -- video_codec, resolution, source_fps,
 // ffmpeg_speed, audio_codec, audio_channels, stream_type -- arrive in 2c-4
@@ -99,6 +104,7 @@ type channelPayload struct {
 	TotalBytes     *uint64  `json:"total_bytes,omitempty"`
 	AvgBitrateKbps *float64 `json:"avg_bitrate_kbps,omitempty"`
 	AvgBitrate     string   `json:"avg_bitrate,omitempty"`
+	Healthy        *bool    `json:"healthy,omitempty"`
 	VideoCodec     string   `json:"video_codec,omitempty"`
 	Resolution     string   `json:"resolution,omitempty"`
 	SourceFPS      *float64 `json:"source_fps,omitempty"`
@@ -221,6 +227,11 @@ func describeChannel(c *channel.Channel, limit int, at time.Time) channelPayload
 			}
 		}
 	}
+
+	// healthy (:527-529): the health monitor's flag, on every channel this
+	// process holds.
+	healthy := c.Healthy()
+	out.Healthy = &healthy
 
 	// The ffmpeg-derived fields, exactly the seven get_basic_channel_info
 	// copies out of the hash (:605-627), each only when the reader set it.

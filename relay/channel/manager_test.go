@@ -13,8 +13,27 @@ import (
 	"github.com/D10Scot/Dispatcharr/relay/internal/relaytest"
 )
 
+// testTuning is the channel-start-time settings every channel test runs on.
+// The ten failover fields carry apps/proxy/config.py's own values -- the
+// production shape, so a 2c-2 test that drives a 404 now sees three attempts
+// and 0.75s of backoff, as the Python relay would. A test whose SUBJECT is
+// one of these thresholds overrides it with a non-default value (hollow
+// shape 2: a pin that supplies the default pins nothing).
 func testTuning() Tuning {
-	return Tuning{ChunkBytes: buffer.TSPacketSize * 4, Retention: time.Minute}
+	return Tuning{
+		ChunkBytes:          buffer.TSPacketSize * 4,
+		Retention:           time.Minute,
+		ConnectionTimeout:   10 * time.Second,
+		HealthCheckInterval: 5 * time.Second,
+		InitGracePeriod:     60 * time.Second,
+		MaxRetries:          3,
+		RetryWindow:         1800 * time.Second,
+		StableThreshold:     30 * time.Second,
+		MaxStreamSwitches:   10,
+		ClientTimeout:       40 * time.Second,
+		KeepaliveInterval:   500 * time.Millisecond,
+		MaxKeepalive:        300 * time.Second,
+	}
 }
 
 // asStarted wraps a 2c-2-shaped start function in 2c-3's Started shape.
@@ -92,6 +111,9 @@ func TestTwoClientsShareOneSource(t *testing.T) {
 	if got := first.Clients(); got != 2 {
 		t.Fatalf("Clients() = %d, want 2", got)
 	}
+	// The source goroutine starts after Attach returns; releasing before it
+	// has called Run would count zero runs and prove nothing about sharing.
+	waitFor(t, "the source to start", 5*time.Second, func() bool { return started.get() == 1 })
 
 	releaseSecond()
 	if m.Get("chan-1") == nil {
@@ -148,9 +170,16 @@ func TestTwoClientsMakeOneUpstreamRequest(t *testing.T) {
 	<-ch.Done()
 }
 
-// A channel whose source ends cleanly stops on its own: the ring closes and
-// every reader is woken.
-func TestACleanUpstreamEndClosesTheRing(t *testing.T) {
+// A CLEAN UPSTREAM EOF IS A CONNECTION FAILURE, retried and counted, not the
+// stream ending: fetch_chunk reads an empty chunk as "Server closed
+// connection" (input/manager.py:1870-1875), _process_stream_data returns,
+// and the retry loop records a failure and reconnects (:555-563). Three of
+// them exhaust the source (:534-537, parity-matrix row 3); with nothing to
+// fail over to, the channel ends in error naming the attempts, and its ring
+// closes so no reader blocks forever. 2c-2 ended the channel on the first
+// EOF, which was the honest shape before there was a retry loop to run;
+// this is the Python one.
+func TestACleanUpstreamEndIsRetriedAndThenExhaustsTheSource(t *testing.T) {
 	payload := relaytest.SyntheticTS(8, 0x100)
 	up := relaytest.NewUpstream(relaytest.Config{Payload: payload, StopAfterBytes: len(payload)})
 	t.Cleanup(up.Close)
@@ -168,11 +197,18 @@ func TestACleanUpstreamEndClosesTheRing(t *testing.T) {
 
 	select {
 	case <-ch.Done():
-	case <-time.After(5 * time.Second):
-		t.Fatal("the source goroutine did not return after the upstream ended")
+	case <-time.After(10 * time.Second):
+		t.Fatal("the source goroutine did not return after the upstream ended three times")
 	}
-	if state := ch.State(); state != StateStopped {
-		t.Fatalf("state = %q after a clean upstream end, want %q", state, StateStopped)
+	if got := up.Requests(); got != 3 {
+		t.Fatalf("the provider saw %d requests, want MAX_RETRIES = 3: a clean EOF is reconnected, not accepted", got)
+	}
+	if state := ch.State(); state != StateError {
+		t.Fatalf("state = %q after three clean EOFs, want %q", state, StateError)
+	}
+	var exhausted *ErrSourcesExhausted
+	if !errors.As(ch.Err(), &exhausted) || exhausted.Message() != "Connection failed after 3 attempts" {
+		t.Fatalf("Err() = %v, want ErrSourcesExhausted saying \"Connection failed after 3 attempts\" (input/manager.py:682)", ch.Err())
 	}
 	// Asked AT THE HEAD, not at cursor 0. Wait reports freshness before
 	// closure, so a caught-up reader is the only one that can observe the
@@ -238,15 +274,20 @@ func TestAnUpstreamFailurePutsTheChannelInError(t *testing.T) {
 
 	select {
 	case <-ch.Done():
-	case <-time.After(5 * time.Second):
-		t.Fatal("the source goroutine did not return after a 404")
+	case <-time.After(10 * time.Second):
+		t.Fatal("the source goroutine did not return after three 404s")
 	}
 	if state := ch.State(); state != StateError {
 		t.Fatalf("state = %q after an upstream 404, want %q", state, StateError)
 	}
+	// Three attempts (MAX_RETRIES) before the source is exhausted, and the
+	// last attempt's error still visible through the exhaustion wrapper.
+	if got := up.Requests(); got != 3 {
+		t.Fatalf("the provider saw %d requests, want 3", got)
+	}
 	var status *ErrUpstreamStatus
 	if !errors.As(ch.Err(), &status) || status.Status != 404 {
-		t.Fatalf("Err() = %v, want an *ErrUpstreamStatus carrying 404", ch.Err())
+		t.Fatalf("Err() = %v, want an *ErrUpstreamStatus carrying 404 inside the exhaustion error", ch.Err())
 	}
 }
 

@@ -106,7 +106,9 @@ func waitFor(t *testing.T, what string, timeout time.Duration, cond func() bool)
 
 // THE TRANSCODE PATH END TO END AT THE CHANNEL: the child's fd 1 is the
 // video, it reaches the ring as whole packets in order, and a child that ends
-// cleanly stops the channel exactly as a clean Proxy EOF does.
+// cleanly is RETRIED exactly as a clean Proxy EOF is (input/manager.py:
+// 1870-1875, then the retry loop): three runs of the same asset, then the
+// source is exhausted and the channel ends in error.
 func TestATranscodeProcessesFd1ReachesTheRingInOrder(t *testing.T) {
 	path, payload := assetFile(t, 64)
 	m := NewManager(ManagerConfig{BudgetBytes: buffer.TSPacketSize * 400})
@@ -117,27 +119,37 @@ func TestATranscodeProcessesFd1ReachesTheRingInOrder(t *testing.T) {
 
 	select {
 	case <-ch.Done():
-	case <-time.After(10 * time.Second):
-		t.Fatal("the channel did not finish after the child copied its asset and exited")
+	case <-time.After(20 * time.Second):
+		t.Fatal("the channel did not finish after the child copied its asset and exited three times")
 	}
-	if state := ch.State(); state != StateStopped {
-		t.Fatalf("state = %q after a clean child exit, want %q (err %v)", state, StateStopped, ch.Err())
+	if state := ch.State(); state != StateError {
+		t.Fatalf("state = %q after three clean child exits, want %q (err %v)", state, StateError, ch.Err())
+	}
+	var exhausted *ErrSourcesExhausted
+	if !errors.As(ch.Err(), &exhausted) || exhausted.Attempts != 3 {
+		t.Fatalf("Err() = %v, want ErrSourcesExhausted after MAX_RETRIES attempts", ch.Err())
 	}
 	chunks, _, _ := ch.Ring().Read(0)
 	got := bytes.Join(chunks, nil)
-	// testTuning's chunk is four packets, so the last partial chunk is
-	// held back by the packetiser; everything published must be the
-	// asset's own packets in order.
-	if len(got) == 0 || len(got) > len(payload) {
-		t.Fatalf("the ring holds %d bytes of a %d-byte asset", len(got), len(payload))
+	// testTuning's chunk is four packets, so each run's last partial chunk
+	// is held back by the packetiser -- and dropped by the switch-less
+	// ResetPosition-free retry, which is Python's own shape: a reconnect
+	// does not touch the buffer. Everything published must be the asset's
+	// own packets in order, the index wrapping at each rerun.
+	if len(got) == 0 || len(got) > 3*len(payload) {
+		t.Fatalf("the ring holds %d bytes of a %d-byte asset run three times", len(got), len(payload))
 	}
 	if problem := relaytest.AlignmentProblem(got); problem != "" {
 		t.Fatalf("the ring's bytes are not whole packets: %s", problem)
 	}
+	packets := len(payload) / buffer.TSPacketSize
+	previous := -1
 	for i := 0; i < len(got); i += buffer.TSPacketSize {
-		if idx := relaytest.PacketIndex(got[i : i+buffer.TSPacketSize]); idx != i/buffer.TSPacketSize {
-			t.Fatalf("packet at byte %d carries index %d, want %d", i, idx, i/buffer.TSPacketSize)
+		idx := relaytest.PacketIndex(got[i : i+buffer.TSPacketSize])
+		if idx != (previous+1)%packets && (previous < 0 || idx != 0) {
+			t.Fatalf("packet at byte %d carries index %d after %d: out of order within a run", i, idx, previous)
 		}
+		previous = idx
 	}
 }
 
@@ -285,15 +297,11 @@ func TestTheCapturedLeadIsNeverLabelledBufferingBeforeItCrosses(t *testing.T) {
 	m.Stop("row4")
 }
 
-// A sustained sub-threshold speed past buffering_timeout ends the source
-// with ErrBufferingTimeout and puts the channel in error -- 2c-4's stand-in
-// for the failover 2c-5 wires here. The lever is buffering_speed at the API
-// maximum, as parity-matrix row 1's Python pin uses it: the capture opens
-// above 10 and every later record is below, so the detector arms on record
-// two. The timeout is 1s and the tail is 75 records at 20 ms, 1.5s, which
-// outlasts it; the assertion is that the error is the timeout's, not the
-// SIGKILL's.
-func TestASustainedSubThresholdSpeedEndsTheSourceWithATimeout(t *testing.T) {
+// slowTrickleTail checks the capture still has the shape rows 1 and 6 lean
+// on: opens above the API's maximum buffering_speed, stays below it from the
+// second record, and its below-threshold tail outlasts a 1s timeout.
+func slowTrickleTail(t *testing.T) {
+	t.Helper()
 	speeds := relaytest.CorpusSpeeds("slow-trickle")
 	const apiMax = 10.0 // core/serializers.py:96's max_value
 	if speeds[0] <= apiMax {
@@ -307,39 +315,154 @@ func TestASustainedSubThresholdSpeedEndsTheSourceWithATimeout(t *testing.T) {
 	if tail := time.Duration(len(speeds)-1) * 20 * time.Millisecond; tail < 1400*time.Millisecond {
 		t.Fatalf("the below-threshold tail is %s, too short to outlast the 1s timeout with margin; re-derive", tail)
 	}
+}
 
+// PARITY-MATRIX ROW 1: ffmpeg's reported speed below buffering_speed,
+// sustained longer than buffering_timeout, switches streams
+// (input/manager.py:1064-1066, :1122-1191). The lever is buffering_speed at
+// the API maximum, as the Python pin uses it: the capture opens above 10 and
+// every later record is below, so the detector arms on record two, and a
+// 1s timeout against a 1.5s tail (replayed at 20 ms a record, looping) is
+// what fires it. The resolver hands over a second stand-in, whose child is
+// then the one producing bytes.
+//
+// The clock starts BEFORE the source does, so it can only be EARLIER than
+// the detector's own `since`; the switch landing under a second of it would
+// mean the detector timed out early. (2c-4's timeout test learnt this the
+// hard way: a clock taken after the first poll saw buffering reddened 2 in
+// 8 under -race.)
+func TestASustainedSubThresholdSpeedFailsTheChannelOver(t *testing.T) {
+	slowTrickleTail(t)
+	const apiMax = 10.0
 	path, _ := assetFile(t, 8)
-	m := NewManager(ManagerConfig{BudgetBytes: buffer.TSPacketSize * 400})
+	events := &eventLog{}
+	m := NewManager(ManagerConfig{BudgetBytes: buffer.TSPacketSize * 400, Events: events})
 	t.Cleanup(m.StopAll)
+
+	// The alternate's child is SILENT on stderr: with the threshold at the
+	// API maximum every record of any capture is below it, so a child that
+	// replayed one would put the channel straight back into buffering and
+	// hide the active edge the switch itself produces (:1190-1197).
+	alternate := standInSource(t, "-i", path, "--dead-air-after-bytes", "1504")
+	ran := &int32Counter{}
+	resolver := &fakeResolver{answers: []Resolved{{
+		Source: countingRuns{inner: alternate, runs: ran},
+		Info:   SourceInfo{URL: "http://provider.invalid/alternate.ts", StreamID: 2, M3UProfileID: 1},
+	}}}
 	src := standInSource(t, "-i", path, "--dead-air-after-bytes", "1504",
 		"--stderr-corpus", relaytest.CorpusPath("slow-trickle"), "--stderr-interval", "0.02", "--stderr-loop")
-	// The clock starts BEFORE the source does, so it can only be EARLIER
-	// than the detector's own `since`. An earlier draft started it after the
-	// 10 ms poll first observed buffering -- later than `since` -- and the
-	// bound below reddened 2 runs in 8 under -race at 997 ms, because the
-	// timeout fires on the first record more than a second after `since`
-	// while the test measured from a later moment. A clock that cannot be
-	// late keeps the `< time.Second` bound honest: the source ending inside
-	// a second of it would mean the detector timed out early.
+
 	started := time.Now()
-	ch, release := attachTranscode(t, m, "timeout", src, transcodeTuning(apiMax, time.Second))
+	ch, release := attachWith(t, m, "row1", src, transcodeTuning(apiMax, time.Second), resolver)
 	defer release()
 
 	waitFor(t, "buffering", 10*time.Second, func() bool { return ch.State() == StateBuffering })
+	waitFor(t, "the switch", 15*time.Second, func() bool { return ch.Source().StreamID == 2 })
+	if elapsed := time.Since(started); elapsed < time.Second {
+		t.Fatalf("the channel switched %s after it started, before the 1s buffering_timeout could have elapsed", elapsed)
+	}
+	waitFor(t, "the alternate's child to run", 10*time.Second, func() bool { return ran.get() == 1 })
+	waitFor(t, "the state to leave buffering", 10*time.Second, func() bool { return ch.State() == StateActive })
+
+	if len(events.of("channel_buffering")) == 0 {
+		t.Fatal("buffering never armed: no channel_buffering event")
+	}
+	failovers := events.of("channel_failover")
+	if len(failovers) != 1 {
+		t.Fatalf("channel_failover raised %d times, want 1: %+v", len(failovers), failovers)
+	}
+	if reason := failovers[0].Details["reason"]; reason != "buffering_timeout" {
+		t.Fatalf("channel_failover reason = %v, want buffering_timeout", reason)
+	}
+	if d, _ := failovers[0].Details["duration"].(float64); d < 1.0 {
+		t.Fatalf("channel_failover duration = %v, want at least the 1s buffering_timeout", d)
+	}
+	req := resolver.requests()
+	if len(req) != 1 || len(req[0].Exclude) != 1 || req[0].Exclude[0] != 1 || req[0].CurrentStreamID != 1 {
+		t.Fatalf("the resolver was asked %+v, want one request excluding stream 1 and naming it as current", req)
+	}
+	m.Stop("row1")
+}
+
+// PARITY-MATRIX ROW 6 (issue #221, reproduced not fixed): MAX_STREAM_SWITCHES
+// bounds the main loop's switches (input/manager.py:388-402) and NOT a
+// buffering-triggered one, which the stderr thread makes without touching
+// the counter (:1134-1138). With the bound at ZERO a buffering failover
+// still switches. Falsifiable in the direction that matters: teach the
+// stderr path to consult the counter -- the natural fix for #221 -- and a
+// bound of zero refuses this switch. Its sibling in failover_test.go shows
+// the same bound DOES stop a main-loop switch, so the two together pin the
+// asymmetry rather than the absence of a bound.
+func TestABufferingFailoverIgnoresMaxStreamSwitches(t *testing.T) {
+	slowTrickleTail(t)
+	const apiMax = 10.0
+	path, _ := assetFile(t, 8)
+	events := &eventLog{}
+	m := NewManager(ManagerConfig{BudgetBytes: buffer.TSPacketSize * 400, Events: events})
+	t.Cleanup(m.StopAll)
+
+	// The alternate's child is SILENT on stderr: with the threshold at the
+	// API maximum every record of any capture is below it, so a child that
+	// replayed one would put the channel straight back into buffering and
+	// hide the active edge the switch itself produces (:1190-1197).
+	alternate := standInSource(t, "-i", path, "--dead-air-after-bytes", "1504")
+	ran := &int32Counter{}
+	resolver := &fakeResolver{answers: []Resolved{{
+		Source: countingRuns{inner: alternate, runs: ran},
+		Info:   SourceInfo{URL: "http://provider.invalid/alternate.ts", StreamID: 2, M3UProfileID: 1},
+	}}}
+	src := standInSource(t, "-i", path, "--dead-air-after-bytes", "1504",
+		"--stderr-corpus", relaytest.CorpusPath("slow-trickle"), "--stderr-interval", "0.02", "--stderr-loop")
+	tuning := transcodeTuning(apiMax, time.Second)
+	tuning.MaxStreamSwitches = 0
+
+	ch, release := attachWith(t, m, "row6", src, tuning, resolver)
+	defer release()
+
+	waitFor(t, "the switch despite a bound of zero", 15*time.Second, func() bool { return ch.Source().StreamID == 2 })
+	waitFor(t, "the alternate's child to run", 10*time.Second, func() bool { return ran.get() == 1 })
+	// And the channel keeps going on the new source: the bound of zero,
+	// which ends the main loop after ITS first switch, is never consulted.
+	time.Sleep(300 * time.Millisecond)
+	if state := ch.State(); state != StateActive {
+		t.Fatalf("state = %q after a buffering failover under MAX_STREAM_SWITCHES = 0, want active: the stderr path consulted the main loop's bound", state)
+	}
+	if len(events.of("channel_failover")) != 1 {
+		t.Fatal("the switch was not the buffering path's: no channel_failover event")
+	}
+	m.Stop("row6")
+}
+
+// The failure branch of the same arm (input/manager.py:1210): with nothing
+// to fail over to, Python logs an error, stays buffering, and asks the
+// control plane AGAIN ON THE VERY NEXT RECORD -- one next-source call per
+// progress record, for as long as the speed stays low. Reproduced per D5
+// and filed as an issue; the assertion is that the channel keeps playing
+// (the child is never killed) while the resolver is asked repeatedly.
+func TestABufferingTimeoutWithNoAlternateKeepsPlayingAndAsksOnEveryRecord(t *testing.T) {
+	slowTrickleTail(t)
+	const apiMax = 10.0
+	path, _ := assetFile(t, 8)
+	m := NewManager(ManagerConfig{BudgetBytes: buffer.TSPacketSize * 400})
+	t.Cleanup(m.StopAll)
+	resolver := &fakeResolver{} // every answer is ErrNoAlternate
+	src := standInSource(t, "-i", path, "--dead-air-after-bytes", "1504",
+		"--stderr-corpus", relaytest.CorpusPath("slow-trickle"), "--stderr-interval", "0.02", "--stderr-loop")
+
+	ch, release := attachWith(t, m, "no-alt", src, transcodeTuning(apiMax, time.Second), resolver)
+	defer release()
+
+	waitFor(t, "the first failed switch", 10*time.Second, func() bool { return len(resolver.requests()) >= 1 })
+	waitFor(t, "a third failed switch, one per record", 10*time.Second, func() bool { return len(resolver.requests()) >= 3 })
+	if state := ch.State(); state != StateBuffering {
+		t.Fatalf("state = %q, want buffering: a failed switch leaves the channel where it was", state)
+	}
 	select {
 	case <-ch.Done():
-	case <-time.After(15 * time.Second):
-		t.Fatal("the source did not end after buffering past the timeout")
+		t.Fatalf("the channel ended (%v): a failed buffering switch must not end the tune", ch.Err())
+	default:
 	}
-	if elapsed := time.Since(started); elapsed < time.Second {
-		t.Fatalf("the source ended %s after buffering began, before the 1s timeout could have elapsed", elapsed)
-	}
-	if !errors.Is(ch.Err(), ErrBufferingTimeout) {
-		t.Fatalf("Err() = %v, want ErrBufferingTimeout", ch.Err())
-	}
-	if ch.State() != StateError {
-		t.Fatalf("state = %q, want %q", ch.State(), StateError)
-	}
+	m.Stop("no-alt")
 }
 
 // Recovery: a speed back at the threshold moves buffering to active, and

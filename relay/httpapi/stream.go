@@ -34,6 +34,11 @@ type StreamDeps struct {
 
 	// Now is the clock a client's ConnectedAt comes from. Nil means time.Now.
 	Now func() time.Time
+
+	// Probe is the HTTP client validate_stream_url's port probes a Redirect
+	// channel's provider with. Nil means one built from probeTimeout that
+	// follows redirects, as requests does there.
+	Probe *http.Client
 }
 
 // The proxy_settings keys this PR reads. Named constants rather than literals
@@ -48,6 +53,20 @@ const (
 	settingBufferingSpeed   = "buffering_speed"
 	settingBufferingTimeout = "buffering_timeout"
 	settingDefaultUserAgent = "DEFAULT_USER_AGENT"
+
+	// The failover thresholds and the client-loop values 2c-5 reads
+	// (channel.Tuning names each one's Python line).
+	settingConnectionTimeout   = "CONNECTION_TIMEOUT"
+	settingHealthCheckInterval = "HEALTH_CHECK_INTERVAL"
+	settingInitGracePeriod     = "channel_init_grace_period"
+	settingMaxRetries          = "MAX_RETRIES"
+	settingRetryWindow         = "RETRY_WINDOW_SECONDS"
+	settingStableThreshold     = "STABLE_CONNECTION_THRESHOLD"
+	settingMaxStreamSwitches   = "MAX_STREAM_SWITCHES"
+	settingStreamTimeout       = "STREAM_TIMEOUT"
+	settingFailoverGrace       = "FAILOVER_GRACE_PERIOD"
+	settingKeepaliveInterval   = "KEEPALIVE_INTERVAL"
+	settingMaxKeepalive        = "MAX_KEEPALIVE_DURATION"
 )
 
 // tuningFrom resolves the channel-start-time settings out of a next-source
@@ -81,6 +100,44 @@ func tuningFrom(s control.Settings) (channel.Tuning, int, error) {
 		return t, 0, err
 	}
 	if t.BufferingTimeout, err = s.Seconds(settingBufferingTimeout); err != nil {
+		return t, 0, err
+	}
+	if t.ConnectionTimeout, err = s.Seconds(settingConnectionTimeout); err != nil {
+		return t, 0, err
+	}
+	if t.HealthCheckInterval, err = s.Seconds(settingHealthCheckInterval); err != nil {
+		return t, 0, err
+	}
+	if t.InitGracePeriod, err = s.Seconds(settingInitGracePeriod); err != nil {
+		return t, 0, err
+	}
+	if t.MaxRetries, err = s.Int(settingMaxRetries); err != nil {
+		return t, 0, err
+	}
+	if t.RetryWindow, err = s.Seconds(settingRetryWindow); err != nil {
+		return t, 0, err
+	}
+	if t.StableThreshold, err = s.Seconds(settingStableThreshold); err != nil {
+		return t, 0, err
+	}
+	if t.MaxStreamSwitches, err = s.Int(settingMaxStreamSwitches); err != nil {
+		return t, 0, err
+	}
+	// _is_timeout's total_timeout is the SUM of two settings
+	// (output/ts/generator.py:585-587); both are read, one field holds it.
+	streamTimeout, err := s.Seconds(settingStreamTimeout)
+	if err != nil {
+		return t, 0, err
+	}
+	failoverGrace, err := s.Seconds(settingFailoverGrace)
+	if err != nil {
+		return t, 0, err
+	}
+	t.ClientTimeout = streamTimeout + failoverGrace
+	if t.KeepaliveInterval, err = s.Seconds(settingKeepaliveInterval); err != nil {
+		return t, 0, err
+	}
+	if t.MaxKeepalive, err = s.Seconds(settingMaxKeepalive); err != nil {
 		return t, 0, err
 	}
 	readSize, err := s.Int(settingReadSize)
@@ -126,11 +183,27 @@ func StreamHandler(deps StreamDeps) http.HandlerFunc {
 			http.Error(w, "no channel in the request", http.StatusBadRequest)
 			return
 		}
+		// request_is_internal (apps/proxy/internal_auth.py): the DVR's own
+		// fetch carries the static X-Dispatcharr-Internal and no bound
+		// counterpart, and views.py:461 reads it off the decision to keep a
+		// Redirect channel from 302ing that header to a provider.
+		internal := control.IsInternalPrincipal(deps.Secret, r.Header.Get(control.HeaderInternal))
 
 		ch, release, err := deps.Channels.Attach(id, client, func() (channel.Started, error) {
-			return startTune(r.Context(), deps.Control, id)
+			return startTune(r.Context(), tuneDeps{control: deps.Control, probe: deps.Probe, log: log}, id, internal)
 		})
 		if err != nil {
+			var redirect *redirectAnswer
+			if errors.As(err, &redirect) {
+				// The Redirect architecture: no channel, no ring, no bytes
+				// (views.py:526-540). HttpResponseRedirect's 302 for an HTTP
+				// URL, a hand-built 301 for rtsp/rtp/udp, which Django's
+				// redirect class refuses.
+				log.Info("redirecting the client to the provider", "channel", id, "status", redirect.Status)
+				w.Header().Set("Location", redirect.Location)
+				w.WriteHeader(redirect.Status)
+				return
+			}
 			writeTuneFailure(w, log, id, err)
 			return
 		}
@@ -268,9 +341,11 @@ func peerAddress(r *http.Request) string {
 	return host
 }
 
-// ErrUnservedKind is returned when the channel's Stream Profile is one this
-// relay does not serve yet: Redirect, until 2c-5. 2c-2's ErrNotProxyKind,
-// renamed when the transcode kind started being served.
+// ErrUnservedKind is returned when the channel's Stream Profile kind is one
+// this relay does not know: not proxy, transcode or redirect, which since
+// 2c-5 are all served, so only a control plane newer than this relay can
+// produce it. 2c-2's ErrNotProxyKind, renamed when the transcode kind
+// started being served.
 type ErrUnservedKind struct{ Kind string }
 
 func (e *ErrUnservedKind) Error() string {
@@ -339,13 +414,26 @@ var ErrNoSource = errors.New("the control plane has no source for this channel")
 // context.WithoutCancel keeps any values on the request context while dropping
 // its cancellation, and the timeout puts back a bound of the right shape: the
 // control client's own worst case rather than the viewer's patience.
-func startTune(parent context.Context, client *control.Client, id string) (channel.Started, error) {
+// tuneDeps is what startTune needs beyond the request: the control client,
+// the Redirect probe and a logger.
+type tuneDeps struct {
+	control *control.Client
+	probe   *http.Client
+	log     *slog.Logger
+}
+
+func startTune(parent context.Context, deps tuneDeps, id string, internal bool) (channel.Started, error) {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(parent), tuneBudget)
 	defer cancel()
+	client := deps.control
 
 	answer, err := client.NextSource(ctx, id, control.NextSourceRequest{
 		ExcludeStreamIDs: []int{},
 		Reason:           "initial",
+		// generate_stream_url asks for the alternates on the initial call
+		// (url_utils.py:55-58) and caches them for the degraded fallback and
+		// the Redirect fall-through; 2c-2 did not ask, having neither.
+		IncludeAlternates: true,
 	})
 	if err != nil {
 		return channel.Started{}, err
@@ -377,32 +465,28 @@ func startTune(parent context.Context, client *control.Client, id string) (chann
 	// channel as Proxy and stream a provider URL that should have been a 302 --
 	// silently, and to the wrong architecture. `kind` is the field 2c-1 Task 0
 	// added for exactly this.
-	var source channel.Source
-	switch kind := answer.Source.StreamProfile.Kind; {
-	case kind == control.KindProxy && channel.NeedsFFmpeg(answer.Source.URL):
-		// force_ffmpeg: the Proxy reader cannot follow a playlist or speak
-		// RTSP, so the locked ffmpeg profile plays the URL instead.
-		if answer.Source.FFmpegStreamProfile == nil {
-			return channel.Started{}, ErrNoFFmpegProfile
+	kind := answer.Source.StreamProfile.Kind
+	switch kind {
+	case control.KindProxy, control.KindTranscode:
+	case control.KindRedirect:
+		if !internal {
+			// views.py:468-547: probe, fall through the cached alternates,
+			// release the slot, and hand the client the provider URL.
+			return channel.Started{}, redirectTune(ctx, deps, id, answer, defaultUserAgent)
 		}
-		source, err = transcodeSource(answer.Source.FFmpegStreamProfile, answer.Source.URL, userAgent, readSize)
-	case kind == control.KindProxy:
-		// The defaulted agent here too: Python's HTTP reader sends
-		// self.user_agent (input/manager.py:165), which :73 has already
-		// defaulted, so a blank user_agent reaches the provider as
-		// DEFAULT_USER_AGENT on both architectures. Found by review; the
-		// first draft defaulted only the transcode arms, and a blank agent
-		// on the Proxy path would have reached a provider as Go's own.
-		source = channel.ProxySource{
-			URL:       answer.Source.URL,
-			UserAgent: userAgent,
-			ChunkSize: readSize,
-		}
-	case kind == control.KindTranscode:
-		source, err = transcodeSource(&answer.Source.StreamProfile, answer.Source.URL, userAgent, readSize)
+		// views.py:462-467: an internal principal (the DVR) on a Redirect
+		// channel is served through Proxy instead, because ffmpeg re-sends
+		// its -headers line -- X-Dispatcharr-Internal included -- to
+		// whatever a 302 names. `transcode` is forced False there; here the
+		// kind is read as Proxy from this point on, force_ffmpeg included.
+		deps.log.Info("internal principal on a Redirect-profile channel: serving via Proxy", "channel", id)
+		kind = control.KindProxy
 	default:
 		return channel.Started{}, &ErrUnservedKind{Kind: kind}
 	}
+
+	build := sourceBuilder{kind: kind, userAgent: userAgent, readSize: readSize}
+	source, err := build.source(answer.Source)
 	if err != nil {
 		return channel.Started{}, err
 	}
@@ -410,16 +494,72 @@ func startTune(parent context.Context, client *control.Client, id string) (chann
 	return channel.Started{
 		Source: source,
 		Tuning: tuning,
-		Info: channel.SourceInfo{
-			URL:             answer.Source.URL,
-			StreamProfileID: answer.Source.StreamProfile.ID,
-			StreamID:        answer.Source.StreamID,
-			StreamName:      answer.Source.StreamName,
-			ChannelName:     answer.Source.ChannelName,
-			M3UProfileID:    answer.Source.M3UProfileID,
-			M3UProfileName:  answer.Source.M3UProfileName,
+		Info:   infoFrom(answer.Source),
+		Resolver: &resolver{
+			control:    client,
+			id:         id,
+			build:      build,
+			alternates: answer.Alternates,
+			log:        deps.log,
 		},
 	}, nil
+}
+
+// infoFrom is what the status endpoints render about a source.
+func infoFrom(source *control.Source) channel.SourceInfo {
+	return channel.SourceInfo{
+		URL:             source.URL,
+		StreamProfileID: source.StreamProfile.ID,
+		StreamID:        source.StreamID,
+		StreamName:      source.StreamName,
+		ChannelName:     source.ChannelName,
+		M3UProfileID:    source.M3UProfileID,
+		M3UProfileName:  source.M3UProfileName,
+	}
+}
+
+// sourceBuilder turns a control.Source into the Source that plays it, for
+// the initial tune and for every failover candidate after it: the kind is
+// the channel's profile and never changes across candidates (the answer's
+// stream_profile is the channel's, apps/proxy/next_source.py:609-622), the
+// user agent is defaulted once (input/manager.py:73), and force_ffmpeg is
+// decided per candidate from its own URL (:445-453, on every pass of the
+// main loop).
+type sourceBuilder struct {
+	kind      string
+	userAgent string
+	readSize  int
+}
+
+func (b sourceBuilder) source(candidate *control.Source) (channel.Source, error) {
+	userAgent := candidate.UserAgent
+	if userAgent == "" {
+		userAgent = b.userAgent
+	}
+	switch {
+	case b.kind == control.KindProxy && channel.NeedsFFmpeg(candidate.URL):
+		// force_ffmpeg: the Proxy reader cannot follow a playlist or speak
+		// RTSP, so the locked ffmpeg profile plays the URL instead.
+		if candidate.FFmpegStreamProfile == nil {
+			return nil, ErrNoFFmpegProfile
+		}
+		return transcodeSource(candidate.FFmpegStreamProfile, candidate.URL, userAgent, b.readSize)
+	case b.kind == control.KindProxy:
+		// The defaulted agent here too: Python's HTTP reader sends
+		// self.user_agent (input/manager.py:165), which :73 has already
+		// defaulted, so a blank user_agent reaches the provider as
+		// DEFAULT_USER_AGENT on both architectures. Found by review; the
+		// first draft defaulted only the transcode arms, and a blank agent
+		// on the Proxy path would have reached a provider as Go's own.
+		return channel.ProxySource{
+			URL:       candidate.URL,
+			UserAgent: userAgent,
+			ChunkSize: b.readSize,
+		}, nil
+	case b.kind == control.KindTranscode:
+		return transcodeSource(&candidate.StreamProfile, candidate.URL, userAgent, b.readSize)
+	}
+	return nil, &ErrUnservedKind{Kind: b.kind}
 }
 
 // transcodeSource builds the transcode architecture's source from a profile
@@ -456,6 +596,12 @@ func writeTuneFailure(w http.ResponseWriter, log *slog.Logger, id string, err er
 	var absent *control.ErrSettingAbsent
 
 	switch {
+	case errors.Is(err, ErrRedirectValidationFailed):
+		// views.py:542-547: JsonResponse({"error": ...}, status=502).
+		log.Error("every redirect candidate failed validation", "channel", id)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = w.Write([]byte(`{"error": "All available streams failed validation"}`))
 	case errors.As(err, &unserved):
 		log.Warn("refusing a tune for an unsupported stream profile", "channel", id, "kind", unserved.Kind)
 		http.Error(w, "this stream profile is not served yet", http.StatusNotImplemented)
@@ -502,18 +648,47 @@ func writeTuneFailure(w http.ResponseWriter, log *slog.Logger, id string, err er
 	}
 }
 
-// serveClient is the client loop: position once, then read, write, wait.
+// keepaliveAfterEmptyReads is _should_send_keepalive's `consecutive_empty < 5`
+// (output/ts/generator.py:546): a client at the head of an unhealthy channel
+// receives keepalives only once five successive reads have found nothing.
+const keepaliveAfterEmptyReads = 5
+
+// serveClient is the client loop: position once, then read, write, wait --
+// the port of _stream_data_generator (output/ts/generator.py:325-420) with
+// its two health-gated mechanisms, both of which 2c-2 and 2c-3 left out
+// because nothing could lower the flag they are gated on until 2c-5's
+// health monitor arrived:
 //
-// NO KEEPALIVE PACKETS AND NO CLIENT TIMEOUT, and both omissions are parity
-// rather than scope-cutting. Python sends a keepalive only when
-// _should_send_keepalive says so, and that requires the owner's
-// stream_manager.healthy to be FALSE (output/ts/generator.py:546-551);
-// _is_timeout likewise disconnects only when the same flag is false (:592).
-// Nothing lowers that flag except the health monitor and the failover
-// machinery, which are 2c-5's. The error packets at :209-250 are the other
-// half of the same story: every one of them is inside
-// _wait_for_initialization, the path a follower takes while another worker
-// elects itself owner -- deleted outright by D2, not ported.
+//   - KEEPALIVES (:371-389, :542-551): a client waiting at the buffer head
+//     of an UNHEALTHY channel, after five empty reads, is sent one null TS
+//     packet every KeepaliveInterval, each refreshing its last-yield time,
+//     for at most MaxKeepalive of wall clock, after which it is dropped.
+//   - THE CLIENT TIMEOUT (:583-604): a client with no yielded chunk for
+//     ClientTimeout on an UNHEALTHY channel is dropped. Its url_switching
+//     exemption (:593-596) is not ported -- see the branch itself for why.
+//     Row 12's Notes record what this means on the TS path:
+//     the keepalives refresh the very timer this reads, so on a channel
+//     that is unhealthy for long enough to reach it, it is the keepalive cap
+//     that actually ends the client. Ported as it is, because it is the
+//     condition Python evaluates; pinned through the cap, because that is
+//     the exit a client can reach.
+//
+// The standard wait (:400-403) sleeps min(0.1 * consecutive_empty, 1.0) and
+// re-checks; here Ring.Wait is bounded by the same backoff so the health
+// flag is re-read at Python's cadence, and each timeout counts as one empty
+// read.
+//
+// THE ERROR PACKET (:235-239, utils.py:71-98): a client that has received
+// NOTHING when its channel ends in error is handed one 188-byte packet
+// carrying "Error: <message>" before the body closes -- what the first
+// client of a channel whose every source failed sees in Python (row 3's own
+// pin reads it), and what Amendment A2.5 recorded 2c-2 as not sending. A
+// client already streaming when the channel errors gets a closed body and
+// no packet, as _check_resources gives it (:455-459). The initialization
+// timeout packet (:249-251, after CLIENT_WAIT_TIMEOUT with no ready state)
+// is NOT ported: this relay has no initializing wait a client can time out
+// in, and a channel whose source never delivers is ended by the health
+// monitor's init grace period instead.
 //
 // AND NO GHOST-CLIENT DISCONNECT. output/ts/generator.py:579-581's
 // _is_ghost_client needs consecutive_empty > 100 AND the buffer 50 chunks
@@ -543,6 +718,10 @@ func serveClient(
 		cursor = ring.Join(tuning.JoinBehind)
 	}
 
+	var sent int
+	lastYield := time.Now()
+	var keepaliveStart time.Time
+	empties := 0
 	for {
 		chunks, next, skipped := ring.Read(cursor)
 		if skipped > 0 {
@@ -560,23 +739,87 @@ func serveClient(
 			if !writeChunks(w, rc, chunks) {
 				return
 			}
+			for _, c := range chunks {
+				sent += len(c)
+			}
+			lastYield = time.Now()
+			keepaliveStart = time.Time{}
+			empties = 0
 			continue
 		}
 
-		err := ring.Wait(ctx, cursor)
-		if err == nil {
-			continue
+		empties++
+		wait := min(time.Duration(empties)*100*time.Millisecond, time.Second)
+		if !ch.Healthy() && empties >= keepaliveAfterEmptyReads {
+			if keepaliveStart.IsZero() {
+				keepaliveStart = time.Now()
+			}
+			if time.Since(keepaliveStart) > tuning.MaxKeepalive {
+				log.Warn("keepalive duration exceeded with no stream recovery, disconnecting",
+					"channel", ch.ID(), "client", client.ID, "max", tuning.MaxKeepalive)
+				return
+			}
+			if !writeChunks(w, rc, [][]byte{signalPacket("")}) {
+				return
+			}
+			sent += buffer.TSPacketSize
+			lastYield = time.Now()
+			wait = tuning.KeepaliveInterval
+		} else if time.Since(lastYield) > tuning.ClientTimeout && !ch.Healthy() {
+			// _is_timeout (:583-604) minus its url_switching exemption
+			// (:593-596), which is not ported: url_switching is true only
+			// inside update_url's own body (input/manager.py:1476-1540), a
+			// window of at most the old process's kill-and-join, and a
+			// client reprieved there is dropped on its next poll anyway.
+			log.Warn("no data and the stream is unhealthy, disconnecting",
+				"channel", ch.ID(), "client", client.ID, "timeout", tuning.ClientTimeout)
+			return
 		}
-		if errors.Is(err, buffer.ErrClosed) {
+
+		waitCtx, cancel := context.WithTimeout(ctx, max(wait, time.Millisecond))
+		err := ring.Wait(waitCtx, cursor)
+		cancel()
+		switch {
+		case err == nil:
+			continue
+		case errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil:
+			// One empty read; round again.
+			continue
+		case errors.Is(err, buffer.ErrClosed):
 			// One last read. The writer may have published between the Read
 			// above and Close, and without this the tail of a stream that
 			// ended cleanly is dropped.
 			if final, _, _ := ring.Read(cursor); len(final) > 0 {
 				writeChunks(w, rc, final)
+				sent += len(final[0])
+			}
+			if sent == 0 {
+				if message := errorPacketMessage(ch); message != "" {
+					writeChunks(w, rc, [][]byte{signalPacket(message)})
+				}
 			}
 		}
 		return
 	}
+}
+
+// errorPacketMessage is the text _wait_for_initialization puts in the error
+// packet for a channel that ended before the client's first byte
+// (output/ts/generator.py:235-239): the error message the channel recorded,
+// "Unknown error" when a stopped channel recorded none, and nothing for a
+// channel that is still running.
+func errorPacketMessage(ch *channel.Channel) string {
+	switch ch.State() {
+	case channel.StateError:
+		var exhausted *channel.ErrSourcesExhausted
+		if errors.As(ch.Err(), &exhausted) {
+			return "Error: " + exhausted.Message()
+		}
+		return "Error: Unknown error"
+	case channel.StateStopped, channel.StateStopping:
+		return "Error: Unknown error"
+	}
+	return ""
 }
 
 // writeChunks writes and flushes, reporting whether the client is still there.
