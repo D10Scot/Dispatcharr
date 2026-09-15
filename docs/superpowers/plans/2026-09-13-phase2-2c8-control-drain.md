@@ -885,7 +885,7 @@ git ls-files -s docker/healthcheck.sh     # must print 100755, not 100644
 
 **AND `unhealthy` IS THE SAME WORD FOR BOTH**, which is why the break-check below asserts the exit code and not the status. "The probe ran and the relay is down" and "the probe could not run at all" are the same one-word answer from `docker inspect`; −1 against 7 is what separates them.
 
-**Note that 0644 is not anomalous in this tree** — six of the eleven shell scripts under `docker/` are committed 0644 (`docker/init/*.sh`, `docker/tests/*.sh`), because they are sourced or invoked as `bash <file>` rather than exec'd. Only `entrypoint.sh`, `build-dev.sh` and `supervisord.d/wait-for-stores.sh` are 0755. So "match the neighbours" is not the argument; "exec form cannot exec a non-executable file" is.
+**Note that 0644 is not anomalous in this tree** — counted with `git ls-files -s docker/ | grep '\.sh$'` at `d6d71f97`, **eight of the eleven** shell scripts under `docker/` are committed 0644: the six under `docker/init/` (`00-fix-pg-ssl-key`, `01-user-setup`, `02-postgres`, `03-init-dispatcharr`, `04-check-hwaccel`, `99-init-dev`) and the two under `docker/tests/` (`test-puid-pgid`, `test-tls-postgres`), because they are sourced or invoked as `bash <file>` rather than exec'd. Only **three** are 0755: `entrypoint.sh`, `build-dev.sh` and `supervisord.d/wait-for-stores.sh`. So "match the neighbours" is not the argument; "exec form cannot exec a non-executable file" is.
 
 hadolint, with the interpreter form, verified:
 
@@ -1147,7 +1147,7 @@ Every row was run. The **message** column is the actual output, not a prediction
 | 21 | `StopClient` signals nothing | `TestDeletingOneClientDisconnectsItAndLeavesTheOtherStreaming` | yes | `timed out after 15s waiting for the stopped client to leave the registry` |
 | 22 | the events budget is not clamped | `TestADependencyThatHangsDoesNotOverrunTheBudget` | yes, **after the test was restructured** | `the drain has not returned after 5s against a 300ms budget` |
 | 23 | `chmod -x docker/healthcheck.sh` **and** revert the `CMD` to the bare `["/app/docker/healthcheck.sh"]` | a real container: `docker build`, `docker run -d`, then `docker inspect --format '{{range .State.Health.Log}}{{.ExitCode}} {{.Output}}{{end}}'` | yes | exit **−1**, `OCI runtime exec failed: … exec: "/app/docker/healthcheck.sh"`. **Assert the EXIT CODE, not the status**: `unhealthy` is the same word for "the probe ran and the relay is down" (exit 7, `curl: (7) Failed to connect to 127.0.0.1:5658`) and "the probe could not run at all" (−1), and a row that checked the status alone would be hollow. With the interpreter form and the same 0644 file, the probe runs and answers 7 |
-| 24 | one of the six new routes escapes the dev flag (move `GET /{username}/{password}/{channelID}` outside the `if cfg.DevRoutes` block) | `TestStreamRouteIsUnregisteredWithoutTheDevFlag` | yes, **on a different clause than predicted** | a `nil pointer dereference` panic rather than a status mismatch: a `DevRoutes: false` Config carries no `Channels` or `Control`, so the handler panics on the first dereference. The panic IS the evidence — a 404 would mean the route was never registered, and reaching the handler at all is what the row tests. Recorded per Constraint 30 rather than tidied into a nicer failure |
+| 24 | one of the six new routes escapes the dev flag (move `GET /{username}/{password}/{channelID}` outside the `if cfg.DevRoutes` block) | `TestStreamRouteIsUnregisteredWithoutTheDevFlag` | yes, **on a different clause than predicted** | a `nil pointer dereference` panic rather than a status mismatch: a `DevRoutes: false` Config carries no `Channels` or `Control`, so the handler panics on the first dereference. The panic IS the evidence — a 404 would mean the route was never registered, and reaching the handler at all is what the row tests. Recorded per Constraint 30 rather than tidied into a nicer failure. **One route at a time**: a panic aborts the whole package run, so if two routes escaped the flag only the first would be named — re-run the row per route rather than reading one panic as a clean bill for the other five |
 | 25 | a channel announces its ending twice (`c.emitStop()` added to `Manager.Stop`) | `TestStoppingAChannelRaisesChannelStop` | yes, **after the assertion was made exact** | `the control plane saw 2 channel_stop events, want exactly 1: a channel announces its ending from ONE place, run's deferred emitStop (Ruling R9)`. **It stayed green 6/6 in the at-least-one shape**: `eventsOf` returns as soon as the first event lands, so a second raise arriving a moment later was invisible to the `len()` check immediately after. Closing the emitter before counting is what makes "exactly one" mean it — Constraint 55's latch hazard, relocated from a wait into an assertion |
 
 ### The nine statements Gate 2 found uncovered, and what closed each
@@ -2836,7 +2836,7 @@ import (
 const userAgentEventLimit = 100
 
 // clientEventDetails is the four details both client transitions carry
-// (output/ts/generator.py:132-144, output/fmp4/generator.py:114-127):
+// (output/ts/generator.py:132-144, output/fmp4/generator.py:114-126):
 // client_ip, client_id, a user agent cut at 100 characters, and the user id
 // with an empty one sent as null.
 //
@@ -2875,7 +2875,7 @@ func clientEventDetails(client *channel.Client) map[string]any {
 }
 
 // emitClientConnect is client_connect, raised for BOTH client types
-// (Amendment A6.5): output/ts/generator.py:132-143 for a TS client and
+// (Amendment A6.5): output/ts/generator.py:132-144 for a TS client and
 // output/fmp4/generator.py:114-126 for an fMP4 one, each at the point its
 // setup has succeeded and before its first byte of media.
 func emitClientConnect(ch *channel.Channel, client *channel.Client) {
