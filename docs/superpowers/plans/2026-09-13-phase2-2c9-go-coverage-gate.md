@@ -116,7 +116,14 @@ A `workflow_dispatch` input (`census: true`) was considered and rejected: it wou
 
 **The stopping rule is the Python gate's**: dispatch `go-tests.yml` on the branch repeatedly, read `this run missing=` from each `Coverage gate` job, and stop when the **maximum has been unchanged for ≥6 consecutive rounds, with ≥12 rounds total**. Record every round, in order — a bare min/max cannot show the rule was met. `missing` is set to `max(rounds)`, by hand, because `--write-floor` writes the figure from the run it just took and cannot know it is the Nth of a campaign.
 
-**Local draws are for design, not for the number.** A 12-round local census on `a635190c` measured **587–588, max 588, min 587, spread 1**, in order: `588 587 588 587 588 588 587 588 587 588 588 588`. The maximum was set at round 1 and held for eleven more. The single flapping block is `relay/buffer/ring.go:262.3,263.1`, the empty-ring arm of `Ring.Oldest()`, covered when some test happens to call it before the first write — **the same one block as on the 2c-7 seed**, which is two trees agreeing rather than one tree's accident. That is two orders of magnitude tighter than the Python gate's 104-statement flappy set, and it is expected: the Go tests inject clocks and poll for conditions where the Python relay's spread comes from gevent background housekeeping this implementation deleted. It is **not** a reason to take fewer CI rounds.
+**Local draws are for design, not for the number.** A 12-round local census on `a635190c` measured **587–588** here, in order: `588 587 588 587 588 588 587 588 587 588 588 588`. A second rig drew **586** on the same tree, so the local range across both is **586–588** and **two** blocks flap, not one:
+
+| block | what it is | seen |
+|---|---|---|
+| `relay/buffer/ring.go:262.3,263.1` | the empty-ring arm of `Ring.Oldest()`, covered when a test calls it before the first write | here, 4 of 12 draws; also on the 2c-7 seed |
+| `relay/httpapi/fmp4.go:188.4,189.1` | the `ctx.Err() != nil` early return in the fMP4 client loop | on the second rig; **uncovered in all 12 draws here** |
+
+Two rigs agreeing on the *kind* of flap — a branch whose execution depends on which goroutine wins a start-up race — and disagreeing on *which* blocks flap is the reason the number comes from CI and not from either of them. **Do not carry either block forward as the census**: Task 8 re-derives it from the CI draws' own profiles. That is two orders of magnitude tighter than the Python gate's 104-statement flappy set, and it is expected: the Go tests inject clocks and poll for conditions where the Python relay's spread comes from gevent background housekeeping this implementation deleted. It is **not** a reason to take fewer CI rounds.
 
 ### R6 — A draw beyond the census, and the one part of #312 the Go gate does not inherit
 
@@ -161,9 +168,11 @@ This also **disconfirms the mechanism the review proposed** (an unhealthy check 
 
 | break-check | observed |
 |---|---|
-| `maxUnhealthyChecks = 2` (acts on the second check) | **red** at 350.99 ms against 395 ms — 44 ms of margin |
+| `maxUnhealthyChecks = 2` (acts on the second check) | **red** at 350.99 ms against 395 ms — 44 ms of margin — but **intermittently so**, see below |
 | `maxUnhealthyChecks = 1` (acts on the first) | **red**, but through the earlier `sawUnhealthy` assertion on this host |
 | unmodified | green, eight consecutive `-race` runs |
+
+**The `= 2` row is itself intermittent, and the plan says so rather than presenting it as deterministic.** Measured here: 36 red of 36, gaps 350.1–352.0 ms, across an unloaded run of 12 and a loaded run of 24. Measured on a second rig: **9 red of 12, and 3 green at 400.17, 401.74 and 401.80 ms.** The greens are the same phase effect the mechanism above describes, one step earlier: whether the first tick past `ConnectionTimeout` lands at ~301 ms or ~351 ms depends on where the tick grid sits relative to the last byte, and with the monitor acting on the *second* check that difference puts the action at ~351 ms or ~401 ms. **The greens are above 400 ms, so the 5 ms tolerance is not what lets them through** — they would have passed the old bound too. Re-run until red; a single green run is not evidence the break-check is broken, and roughly a quarter of runs on one rig were green. That it did not reproduce here at all is itself the point: the phase is a property of the host, not of the test.
 
 **The `= 1` row is host-dependent and is stated as such rather than as a property of the test.** On this host the switch happens too fast for the poll to observe the unhealthy window, so it reddens through `the channel was never observed unhealthy before it switched`; on the reviewer's host it reddens through the gap assertion at 301 ms. Either way it is not the row to cite as evidence about the gap, which is why `= 2` is the one the plan uses.
 
@@ -475,6 +484,8 @@ failover_test.go:390: the resolver was asked 350.988791ms after the last byte, u
 
 44 ms of margin against a 5 ms tolerance, which is what says the tolerance did not buy the fix at the cost of the assertion.
 
+**Re-run until red: this break-check is itself intermittent.** 36 of 36 red here (12 unloaded, 24 loaded, gaps 350.1–352.0 ms), but 9 of 12 on a second rig, with 3 green at 400.17, 401.74 and 401.80 ms. The greens are the phase effect one step earlier — whether the first tick past `ConnectionTimeout` lands at ~301 ms or ~351 ms decides whether the *second* check lands at ~351 ms or ~401 ms — and they are **above 400 ms**, so the tolerance is not what lets them through; they would have passed the old bound too. A single green run is not evidence the break-check is broken.
+
 **`maxUnhealthyChecks = 1` is host-dependent and must not be cited as the evidence.** On this host it reddens through the earlier `the channel was never observed unhealthy before it switched` — the switch outruns the poll — while on another it reddens through the gap at ~301 ms. Run it if you like; quote `= 2`.
 
 Restore `3` and confirm eight consecutive green `-race` runs of the package before committing.
@@ -572,7 +583,7 @@ Expected: a **ten**-row per-package table, two `~out of scope` lines naming `int
 coverage_relay_go: shape=go-race-per-package/v1  packages=10  statements=3696  missing=587  coverage=84.12%
 ```
 
-`missing` will be 587 or 588 — one block flaps (R5). **Record whatever it prints; it is Task 8's local design figure, not the floor.** `statements=3696` and `packages=10` are not expected to vary at all: if either does, something is in the denominator that this plan did not measure, and that is Task 0 Step 2's stop-and-report arriving late.
+`missing` will be **586, 587 or 588** — two blocks flap and which of them does is host-dependent (R5). **Record whatever it prints; it is Task 8's local design figure, not the floor.** `statements=3696` and `packages=10` are not expected to vary at all: if either does, something is in the denominator that this plan did not measure, and that is Task 0 Step 2's stop-and-report arriving late.
 
 - [ ] **Step 3: Verify the bootstrap branch**
 
@@ -1142,7 +1153,7 @@ Use **Appendix E** as the template. It must carry, at minimum:
 1. That `missing` is a **maximum**, lower is better, set from the worst of ≥12 CI rounds, which is why there is no tolerance parameter.
 2. The full ordered sequence, `max`/`min`/`spread`/`n`, and the round the maximum was set in.
 3. The branch and the SHA it was measured on.
-4. The flappy-block census, derived **first-hand** from two draws' own profiles: `awk 'NR>1 && $3==0 {print $1}' <profile> | sort` on a low draw and a high draw, diffed. On the seed tree this was **one block**, `relay/buffer/ring.go:262.3,263.1` — the empty-ring arm of `Ring.Oldest()`.
+4. The flappy-block census, derived **first-hand from the CI draws' own profiles** — `awk 'NR>1 && $3==0 {print $1}' <profile> | LC_ALL=C sort` on a low draw and a high draw, diffed — and **not** carried over from the local campaign. Two rigs measuring `a635190c` locally found different sets: one saw `relay/buffer/ring.go:262.3,263.1` (the empty-ring arm of `Ring.Oldest()`) flap in 4 of 12 draws with `relay/httpapi/fmp4.go:188.4,189.1` (the `ctx.Err()` early return in the fMP4 client loop) uncovered throughout, the other drew one lower and only the second block explains it. Same kind of flap, different set; the CI draws are the ones this file records.
 5. That `shape`, `packages` and `gomod` are **equality** checks, not comparisons, and `statements` is recorded provenance that is never compared.
 6. The local-versus-CI note: the local 12-round census's own numbers, so the next campaign can see whether the gap reproduces. **Never a fixed offset to budget against** — the Python gate measured +35 once and +13 the next time.
 7. The #312 rule: a draw above `missing` is a finding to investigate; the fix is a re-measurement PR of its own, never a floor bump on the PR that drew it.
@@ -2641,10 +2652,21 @@ as a placeholder in the committed file.
 #
 # THE FLAPPY-BLOCK CENSUS, derived first-hand from two of these draws' own
 # retained profiles (a maximum draw and a minimum draw, block sets diffed with
-# the awk above), NOT inherited from a citation:
+# the awk above), NOT inherited from a citation and NOT copied from the local
+# campaign:
 #   <one line per flapping block, file:range and the function it is in>
 # <total> block(s) flap, and <total> == <MAX - MIN>, so on this tree that set
 # IS the spread rather than merely a contributor to it.
+#
+# RE-DERIVE IT; DO NOT CARRY THE LOCAL SET FORWARD. Two rigs measuring the same
+# tree locally found DIFFERENT flapping blocks: one saw
+# relay/buffer/ring.go:262.3,263.1 (the empty-ring arm of Ring.Oldest()) flap in
+# 4 of 12 draws with relay/httpapi/fmp4.go:188.4,189.1 (the ctx.Err() early
+# return in the fMP4 client loop) uncovered in all 12, and the other drew a
+# figure one lower that only the second block explains. Same kind of flap in
+# both cases -- a branch whose execution depends on which goroutine wins a
+# start-up race -- and a different set. That is why the enforced number comes
+# from CI and why this census is the CI draws', not a local campaign's.
 #
 # CAVEAT, stated because this is the shape that lets such a list go stale
 # unnoticed: unobserved-to-vary across <N> rounds is not proof of stability,
