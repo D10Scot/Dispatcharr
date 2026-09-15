@@ -603,7 +603,7 @@ class OutputProfilesOnTheContractTests(RelayApiTestCase):
             str(seeded.id), self._next_source(self.channel.uuid)["output_profiles"]
         )
 
-    def test_a_malformed_active_profile_is_skipped_not_a_500(self):
+    def test_a_malformed_active_profile_carries_a_null_argv_not_a_500(self):
         # Review finding B1. OutputProfileSerializer validates nothing,
         # so an unbalanced quote in `parameters` can already be sitting
         # in the database. Before output_profiles existed, a malformed
@@ -611,8 +611,17 @@ class OutputProfilesOnTheContractTests(RelayApiTestCase):
         # active profile into EVERY next-source answer means one bad row
         # would otherwise 500 next-source for every channel on every
         # tune, failover and resume -- regardless of which profile that
-        # channel uses. Assert absence explicitly: a call that merely
-        # succeeds could still be silently missing the good rows too.
+        # channel uses.
+        #
+        # 2c-7 changed the rescue from OMITTING the entry to sending it
+        # with a null argv. Omission made a broken profile look exactly
+        # like a deactivated one, and the two get opposite answers: a
+        # client selecting a broken profile gets a 500 (build_command
+        # raises inside stream_ts's try), and a client whose profile was
+        # deactivated is served with no profile at all. A relay reading
+        # this map could only reproduce one of the two. The null is what
+        # keeps them apart, and it is the same three-state shape
+        # stream_profile.argv already uses.
         from core.models import OutputProfile
 
         good = OutputProfile.objects.create(
@@ -626,6 +635,16 @@ class OutputProfilesOnTheContractTests(RelayApiTestCase):
             command="ffmpeg",
             parameters='-i pipe:0 "unterminated',
             is_active=True,
+        )
+        # A DEACTIVATED ROW, created BEFORE the call below so the answer
+        # really had the chance to carry it. It is the other half of the
+        # distinction this test exists for: "present with a null argv" and
+        # "absent" are only being told apart if both appear in one answer.
+        gone = OutputProfile.objects.create(
+            name="2b2-deactivated",
+            command="ffmpeg",
+            parameters="-i pipe:0 -c:a ac3 pipe:1",
+            is_active=False,
         )
         # Confirm the fixture actually reproduces the failure mode this
         # test exists to guard -- if shlex ever stops raising on this
@@ -645,8 +664,25 @@ class OutputProfilesOnTheContractTests(RelayApiTestCase):
             f"no ERROR log named the malformed profile's id ({bad.id}): {logs.output}",
         )
 
-        self.assertNotIn(str(bad.id), answer["output_profiles"])
-        self.assertIn(str(good.id), answer["output_profiles"])
+        # PRESENT, with a null argv -- not absent. The presence is asserted
+        # first and by name: without it the equality below reports a bare
+        # KeyError, which says which key is missing but not why that matters.
+        self.assertIn(
+            str(bad.id), answer["output_profiles"],
+            "a profile whose parameters shlex could not split is absent from "
+            "output_profiles; it must be present with a null argv, or a relay "
+            "cannot tell it from a DEACTIVATED profile and will serve the "
+            "client plain where Python answers 500",
+        )
+        # Asserted as the whole entry rather than as `argv is None`, so a
+        # serializer that started dropping the id would fail here too.
+        self.assertEqual(
+            answer["output_profiles"][str(bad.id)],
+            {"id": bad.id, "argv": None},
+        )
+        self.assertNotIn(str(gone.id), answer["output_profiles"])
+        # And the good row is untouched: a call that merely succeeds could
+        # still be silently missing the rows that build.
         self.assertEqual(
             answer["output_profiles"][str(good.id)],
             {
