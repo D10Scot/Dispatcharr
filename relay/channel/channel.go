@@ -476,7 +476,7 @@ func (c *Channel) noteStable() {
 // releaseSlot gives the provider slot back once the source goroutine has
 // returned: the one place this relay releases, where the Python relay
 // releases from the stop path's _release_stream_resources
-// (live_proxy/server.go:2335-2385). Once per channel by construction, which
+// (live_proxy/server.py:2335-2385). Once per channel by construction, which
 // is what the metadata hdels CLAUDE.md records under #190 exist to
 // guarantee against a duplicate release, and why they have no analogue here.
 func (c *Channel) releaseSlot() {
