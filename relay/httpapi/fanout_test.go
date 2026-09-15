@@ -14,6 +14,7 @@ import (
 	"github.com/D10Scot/Dispatcharr/relay/buffer"
 	"github.com/D10Scot/Dispatcharr/relay/control"
 	"github.com/D10Scot/Dispatcharr/relay/internal/relaytest"
+	"github.com/D10Scot/Dispatcharr/relay/output"
 )
 
 // rigAssetPackets is how many packets the fan-out tests' upstream loops.
@@ -48,20 +49,20 @@ func rigSettings(overrides map[string]any) map[string]any {
 
 // fanRig is newRig with the long asset and the rig's settings, which is what
 // every test in this file wants.
-func fanRig(t *testing.T, up relaytest.Config, overrides map[string]any) *rig {
+func fanRig(t *testing.T, up relaytest.Config, overrides map[string]any, opts ...rigOption) *rig {
 	t.Helper()
-	return fanRigWith(t, relaytest.ControlPlaneConfig{}, up, overrides)
+	return fanRigWith(t, relaytest.ControlPlaneConfig{}, up, overrides, opts...)
 }
 
 // fanRigWith is fanRig with control over the fake Django as well, for the
 // tests that need it slow.
-func fanRigWith(t *testing.T, cp relaytest.ControlPlaneConfig, up relaytest.Config, overrides map[string]any) *rig {
+func fanRigWith(t *testing.T, cp relaytest.ControlPlaneConfig, up relaytest.Config, overrides map[string]any, opts ...rigOption) *rig {
 	t.Helper()
 	if up.Payload == nil {
 		up.Payload = relaytest.SyntheticTS(rigAssetPackets, 0x100)
 	}
 	cp.Settings = rigSettings(overrides)
-	return newRig(t, cp, up)
+	return newRig(t, cp, up, opts...)
 }
 
 // tuneAs opens a stream for channelID as clientID, over the trusted path.
@@ -430,12 +431,37 @@ func TestAnUntrustedRequestIsNotBelievedForAnyRelayHeader(t *testing.T) {
 // control plane is asked.
 func TestAnOutputThisRelayDoesNotServeIsRefused(t *testing.T) {
 	for _, tc := range []struct {
-		name   string
-		header string
-		value  string
+		name    string
+		header  string
+		value   string
+		andFMP4 bool
 	}{
-		{"an output format it does not serve", "X-Relay-Output-Format", "fmp4"},
-		{"an Output Profile", "X-Relay-Output", "7"},
+		// 2c-6 SERVES fmp4, so this row moved to a format NEITHER relay has.
+		// `hls` is the honest choice: apps/proxy/hls_proxy/ exists, is 1,206
+		// lines, is 0% covered and is routed nowhere, and
+		// _OUTPUT_FORMAT_MANAGERS (server.py:1352-1353) registers only fmp4 --
+		// so Python's own resolved format can never be this and the refusal is
+		// what both implementations do. Before 2c-6 this row said "fmp4"; a
+		// row that still did would now be asserting the opposite of what this
+		// PR ships.
+		{"an output format it does not serve", "X-Relay-Output-Format", "hls", false},
+		{"an Output Profile", "X-Relay-Output", "7", false},
+		// 2c-6 SERVES fmp4 and 2c-7 will serve Output Profiles; a tune asking
+		// for BOTH is still refused, and nothing else here covers the pair --
+		// the rows above vary one header each, so an identify that served a
+		// recognised format and never looked at the profile would satisfy
+		// both of them.
+		//
+		// NOT ABOUT THE ORDER OF THE TWO CHECKS, and this was measured rather
+		// than assumed: swapping them so the format is tested first leaves all
+		// three subtests passing, because the profile arm refuses
+		// unconditionally wherever it sits. What this row actually guards is
+		// an identify that RETURNED EARLY on a format it serves -- a plausible
+		// tidy-up once there are two served formats -- which would accept this
+		// tune and stream plain fMP4 while silently dropping the Output
+		// Profile the operator configured. Python runs the `fmp4:p7` pipeline
+		// for it instead (server.py's _parse_output_key).
+		{"an Output Profile on an fMP4 tune", "X-Relay-Output", "7", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r := fanRig(t, relaytest.Config{Rate: 4}, nil)
@@ -443,6 +469,9 @@ func TestAnOutputThisRelayDoesNotServeIsRefused(t *testing.T) {
 			header.Set(control.HeaderAuthorized, control.RelayTrustToken(testSecret))
 			header.Set("X-Relay-Channel", "c-output")
 			header.Set(tc.header, tc.value)
+			if tc.andFMP4 {
+				header.Set("X-Relay-Output-Format", output.FormatFMP4)
+			}
 
 			response := r.tune(t, "/proxy/ts/stream/c-output", header)
 			defer func() { _ = response.Body.Close() }()

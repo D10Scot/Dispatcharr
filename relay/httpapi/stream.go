@@ -14,6 +14,7 @@ import (
 	"github.com/D10Scot/Dispatcharr/relay/buffer"
 	"github.com/D10Scot/Dispatcharr/relay/channel"
 	"github.com/D10Scot/Dispatcharr/relay/control"
+	"github.com/D10Scot/Dispatcharr/relay/output"
 	"github.com/D10Scot/Dispatcharr/relay/redact"
 )
 
@@ -39,6 +40,14 @@ type StreamDeps struct {
 	// channel's provider with. Nil means one built from probeTimeout that
 	// follows redirects, as requests does there.
 	Probe *http.Client
+
+	// Remux is the process an fMP4 tune spawns. Its zero value is the
+	// production remux (output.RemuxCommand and output.RemuxArgv), which is
+	// what main.go leaves it as; a test substitutes a stand-in. It is on
+	// StreamDeps rather than on channel.ManagerConfig because it is a property
+	// of what this handler serves, not of how a channel is owned -- and 2c-7's
+	// Output Profile command arrives the same way.
+	Remux output.Remux
 }
 
 // The proxy_settings keys this PR reads. Named constants rather than literals
@@ -150,7 +159,9 @@ func tuningFrom(s control.Settings) (channel.Tuning, int, error) {
 // OutputFormatMPEGTS is the only output format this relay serves.
 //
 // The value channel_status.py:567 records when no format was chosen
-// (`output_format or 'mpegts'`). fMP4 is 2c-6's.
+// (`output_format or 'mpegts'`). The other one this relay serves is
+// output.FormatFMP4, from 2c-6; it is named in that package because the
+// pipeline that produces it is keyed on it.
 const OutputFormatMPEGTS = "mpegts"
 
 // tuneBudget bounds a DETACHED next-source call -- see startProxyTune.
@@ -209,6 +220,16 @@ func StreamHandler(deps StreamDeps) http.HandlerFunc {
 		}
 		defer release()
 
+		// views.py:789-818's branch, at the same point: after the channel is
+		// up and the client is registered, and on the client's OWN resolved
+		// format rather than on anything about the channel -- a TS viewer and
+		// an fMP4 viewer share one channel, one upstream and one ring, and
+		// differ only from here down.
+		if client.OutputFormat == output.FormatFMP4 {
+			serveFMP4(w, r, deps, ch, client, log)
+			return
+		}
+
 		w.Header().Set("Content-Type", "video/mp2t")
 		w.Header().Set("Cache-Control", "no-cache")
 		w.WriteHeader(http.StatusOK)
@@ -227,8 +248,10 @@ func StreamHandler(deps StreamDeps) http.HandlerFunc {
 // Refused rather than served, for 2c-2's reason on stream_profile.kind: a
 // relay that logged "fmp4" in its registry and then wrote MPEG-TS would be
 // wrong in a way nothing on the wire says, and serving it under the label
-// "mpegts" would be a lie in the payload /proxy/stats/ renders. 2c-6 brings
-// fMP4 and 2c-7 the Output Profiles.
+// "mpegts" would be a lie in the payload /proxy/stats/ renders. 2c-6 brought
+// fMP4, so Format now only ever names a format NEITHER implementation has;
+// 2c-7 brings the Output Profiles, and ProfileID is still every tune that
+// asks for one.
 type ErrUnsupportedOutput struct {
 	Format    string
 	ProfileID string
@@ -273,8 +296,16 @@ func identify(r *http.Request, secret string, now func() time.Time) (string, *ch
 	if profileID := header("X-Relay-Output"); profileID != "" {
 		return id, nil, &ErrUnsupportedOutput{ProfileID: profileID}
 	}
-	if format := header("X-Relay-Output-Format"); format != "" && format != OutputFormatMPEGTS {
-		return id, nil, &ErrUnsupportedOutput{Format: format}
+	// 2c-6: fmp4 joins mpegts. Anything else is still refused rather than
+	// served under a label that is not true -- and there is no third format to
+	// refuse today (_OUTPUT_FORMAT_MANAGERS registers only fmp4,
+	// server.py:1352-1353, and apps/proxy/hls_proxy/ is dead and unrouted).
+	outputFormat := OutputFormatMPEGTS
+	if format := header("X-Relay-Output-Format"); format != "" {
+		if format != OutputFormatMPEGTS && format != output.FormatFMP4 {
+			return id, nil, &ErrUnsupportedOutput{Format: format}
+		}
+		outputFormat = format
 	}
 
 	clientID := header("X-Relay-Client")
@@ -306,7 +337,7 @@ func identify(r *http.Request, secret string, now func() time.Time) (string, *ch
 		UserID:       userID,
 		IPAddress:    ip,
 		UserAgent:    userAgent,
-		OutputFormat: OutputFormatMPEGTS,
+		OutputFormat: outputFormat,
 		ConnectedAt:  now(),
 	}, nil
 }
