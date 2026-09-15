@@ -1801,10 +1801,10 @@ of what the ten pre-existing workflows pin.
 | 2c-2 | `migration/phase2c-vertical-slice` | The Proxy stream-profile architecture only (no ffmpeg spawn yet): one client, in-memory ring buffer, MPEG-TS passthrough for a single upstream. Proves the buffer/fan-out shape end to end before ffmpeg complexity is added. | New Go tests pass with `-race`; parity matrix rows 7, 9 (chunk monotonicity, 188-byte realignment) get a Go column | 2c-1 |
 | 2c-3 | `migration/phase2c-fanout` | Multi-client fan-out, join-5s-behind, the client registry, `?clients=all` on `GET /proxy/relay/channels` | Rows 8, 10, 13 get a Go column | 2c-2 |
 | 2c-4 | `migration/phase2c-ffmpeg` | ffmpeg spawn via `os/exec` + `syscall.SysProcAttr{Setpgid, Pdeathsig}` (D5 exception 1), the `log_parsers.py` port, Amendment A4.1 (Django builds `stream_profile.argv`; no Go word splitter), the seven ffmpeg-derived fields on `GET /proxy/relay/channels`, and the Go credential-logging guard (#283) | Row 4 (the `speed=` arming delay) gets a Go column with its own real-ffmpeg test, mirroring 2a's harness; rows 5, 28 and 29 too (Amendment A4.4) | 2c-3 |
-| 2c-5 | `migration/phase2c-failover` | The three failover triggers, the control-plane client's remaining routes (`release`, `events`; `next-source` landed in 2c-2, Amendment A2.1), the degraded fallback to the cached candidate list, and the Redirect Stream Profile architecture — the 302, `validate_stream_url`'s provider probe, the fall-through to the cached alternates, and the internal-principal override that serves a Redirect channel through Proxy instead (`apps/proxy/live_proxy/views.py:462-480`). Added by Amendment A1.2: no row named Redirect, and Gate 1 being closed means an `owed:` marker cannot carry it. The health flag this PR introduces is what `ClientTimeout`, `KeepaliveInterval` and `MaxKeepalive` gate (Amendment A2.5); `channel_shutdown_delay` already landed in 2c-3, not here (Amendment A3.3), and the client registry's TTL/heartbeat/ghost sweep it might have implied are deleted rather than ported (Amendment A3.1), so this PR has no registry expiry to build. The buffering-timeout arm 2c-4's `TranscodeSource` ends the tune on (`ErrBufferingTimeout`), the `channel_buffering` and `channel_failover` events, and `healthy` (Amendment A4.3). | Rows 1, 2, 3, 5, 6 get a Go column | 2c-4 |
+| 2c-5 | `migration/phase2c-failover` | The three failover triggers (rows 1, 2, 3) as one port of `StreamManager.run`'s two loops; the control-plane client's remaining routes (`release`, `events`; `next-source` landed in 2c-2, Amendment A2.1) and an emitter that batches and logs an outage once; the degraded fallback to the candidate list cached at channel start, never on a refusal; the Redirect Stream Profile architecture — the 302, `validate_stream_url`'s provider probe, the fall-through to the cached alternates, the internal-principal override that serves it through Proxy (`views.py:462-480`), publishing no channel (Amendment A5.5); the health flag, the keepalives, the client timeout and the error packet (Amendments A2.5, A5.6); and the six events the failover machinery raises (A5.3). | Rows 1, 2, 3 and 6 get a Go column; row 7 gains a pin across a switch | 2c-4 |
 | 2c-6 | `migration/phase2c-fmp4` | fMP4 output format, including row 12's known timeout gap, reproduced not fixed | Row 12 gets a Go column | 2c-5 |
 | 2c-7 | `migration/phase2c-output-profile` | Output Profile shared transcode per `(channel, profile)` | Row 11 gets a Go column | 2c-6 |
-| 2c-8 | `migration/phase2c-control-drain` | Remaining control routes (single-channel `GET`/`DELETE`, `advance`; the collection `GET` landed in 2c-3), the detail endpoint's five extra client fields and row 14's `owner` asymmetry (Amendment A3.4), SIGTERM drain (D6), the dev-only `POST /_dispatcharr/authorize-internal` fallback (D5 exception 2, now fully specified — § The contract, including why it needs its own nginx-unshielded path and `IsInternalRelay` gating) | Every remaining un-Go'd matrix row gets a column | 2c-7 |
+| 2c-8 | `migration/phase2c-control-drain` | Remaining control routes (single-channel `GET`/`DELETE`, `advance`; the collection `GET` landed in 2c-3), the detail endpoint's five extra client fields and row 14's `owner` asymmetry (Amendment A3.4), SIGTERM drain (D6), the dev-only `POST /_dispatcharr/authorize-internal` fallback (D5 exception 2, now fully specified — § The contract, including why it needs its own nginx-unshielded path and `IsInternalRelay` gating); the four events the tune and stop paths raise — `channel_start`, `channel_stop`, `client_connect`, `client_disconnect` (Amendment A5.3) | Every remaining un-Go'd matrix row gets a column | 2c-7 |
 | 2c-9 | `migration/phase2c-go-coverage-gate` | `go test ./... -race -cover` wired into a new `scripts/coverage_live_path_go.floor` ratchet, raised to ≥80%; parity matrix's Python test-reference column gains its Go counterpart on every row | A new `go-tests.yml` **`Go result`** aggregate green, built in the four-part shape `CLAUDE.md` § Testing prescribes for every requireable check (no `paths:` filter on `pull_request`, a cheap always-running change detector, an `if: always()` aggregate with the three branches, a skipped heavy job on a required run failing the aggregate) — **note, added in this fix round, that making `Go result` an actually-required check on the Main ruleset is a repo-settings action, the same class this spec already flags for Renovate elsewhere, not something this PR's commit alone accomplishes** | 2c-8, matrix 100% Go-columned |
 
 #### Amendment A1 (2c-1) — Redirect had no contract field and has no owning PR
@@ -2172,6 +2172,120 @@ matching the runner's own OS, which is how
 `spawn_linux_test.go`'s unused-parameter finding (CI fix round item 1)
 went unseen by every darwin-hosted local run.
 
+#### Amendment A5 (2c-5) — eight corrections and inputs from the failover
+
+**A5.1 — a clean upstream EOF is a retried connection failure, and the
+loop is ported whole.** `fetch_chunk` reads an empty chunk as "Server closed
+connection" (`input/manager.py:1868-1872`); `_process_stream_data` returns;
+the retry loop records a failure and reconnects with backoff (`:557-568`),
+three times, and only then asks for the next source (`:533-538`, `:600-616`).
+2c-2 ended the channel on the first EOF and pinned it, which was the honest
+shape before there was a loop; 2c-5 replaces `Channel.run` with the port of
+`StreamManager.run`'s two loops (`relay/channel/channel.go`) and reshapes
+that test. The key-family table's "Timing/telemetry" row is now closed:
+`connection_attempt`, `last_data` and `transcode_active` are the channel's
+`connStart`, `lastData` and `connected` fields.
+
+**A5.2 — the Resolver seam, and where the degraded fallback lives.**
+`channel.Resolver` is how a channel asks for its next source; `httpapi`
+implements it over `control.Client` and holds the candidate list the initial
+answer carried (`IncludeAlternates: true`, as `url_utils.py:60-61` asks) --
+the in-memory form of `channel_source_cache`. Only a `control.Unavailable`
+falls back to it, after the client's own retry; a `Refused` fails the switch
+loudly (§ Error handling per hop, `input/manager.py:2095-2112`). The timing
+shape CLAUDE.md records -- "after up to ~14 s per control-plane call" -- is
+the client's two attempts of (2 s, 5 s) plus the retry delay, spent before
+the cache is read, and is pinned at compressed values.
+
+**A5.3 — the events client lands with six types; four are 2c-8's.**
+`control.Emitter` posts fire-and-forget through one worker and a bounded
+queue, batching up to the route's `max_length` of 200, logging an outage
+once on the way in and once on the way out, and losing -- not queuing --
+what is raised during it. The relay raises `channel_buffering`,
+`channel_failover`, `stream_switch`, `channel_reconnect` and `channel_error`
+(`connection_failed`, `degraded_failover`): `input/manager.py`'s five, the
+`channel_reconnect{reason: health_monitor}` shape excluded because it lives
+inside `_attempt_reconnect`, which A5.7 shows Python cannot reach.
+`channel_start`, `channel_stop`, `client_connect` and `client_disconnect`
+are raised from the tune path and the coordinated stop (`views.py`,
+`server.py`, `output/ts/generator.py:129`) and **belong to 2c-8** with the
+control routes; the 2c-8 row is amended to say so.
+
+**A5.4 — the #190 `hdel`s need no move and no Redis read; an input for
+2d.** `Channel.release_stream()`'s `hdel` of `STREAM_ID`/`M3U_PROFILE` from
+the relay's metadata hash guards a duplicate release against a double
+`DECR`. The Go relay has no hash, so Django's `hdel` is a no-op against it,
+and the property is met structurally: `Channel.run`'s deferred release is
+the one call, once per channel. The two Django-side fallback reads
+(`release_stream()`'s recovery branch, `_release_stale_stream_assignment`)
+run only when Django's own `stream_profile:` key is already gone
+(`apps/channels/models.py:501-542`) and find nothing under the Go relay,
+warning "profile_connections may leak" -- the corner Python already
+documents. 2d deletes the hash and the reads together. `channel_pk` is sent
+as null: it is on no contract field and Django uses it only in that
+fallback.
+
+**A5.5 — a Redirect tune publishes no channel, because Python renders none.**
+`stream_ts`'s Redirect branch (`views.py:468-547`) returns before
+`initialize_channel`, the only writer of the metadata hash the list endpoint
+renders, and passes through the `finally` at `:645-648` that releases the
+ownership it took. The Go tune returns the 302 as an error out of the start
+function; `Manager.Attach` publishes nothing; `GET /proxy/relay/channels`
+shows nothing. The internal-principal override reads the request's own
+static `X-Dispatcharr-Internal` (`request_is_internal`, `views.py:461`) and
+serves the channel through Proxy, force-ffmpeg included, exactly as
+`transcode = False` at `:467` does.
+
+**A5.6 — Amendment A2.5 closes.** `channel.Tuning` carries `ClientTimeout`
+(the sum `_is_timeout` computes, `output/ts/generator.py:585-587`),
+`KeepaliveInterval` and `MaxKeepalive`; `Channel.Healthy()` is the flag
+`_monitor_health` lowers and raises; `serveClient` sends keepalives at the
+head of an unhealthy channel after five empty reads, caps them, and
+evaluates `_is_timeout`'s condition -- reachable on TS only through the cap,
+as row 12's Notes record -- minus its `url_switching` exemption
+(`output/ts/generator.py:593-596`), which is not ported: `url_switching` is
+true only inside `update_url`'s own body (set at `input/manager.py:1476-1477`, cleared at `:1540`), and
+a client reprieved in that window is dropped on its next poll. The error TS packet is ported for the client that
+received nothing when its channel ended (`:229-231`, the message from
+`run`'s finally block); the initialization-timeout packet (`:252-254`) is
+not, because this relay has no initializing wait a client can time out in.
+`healthy` is on the list payload and leaves the golden's `NOT_SERVED_YET`.
+
+**A5.7 — the stated divergences.** The health monitor cancels the running
+attempt where Python's loop notices its flag between `fetch_chunk` calls
+(`:1364-1365`), each blocking up to `CHUNK_TIMEOUT` in `select` (`:1845`), so
+the Go relay acts up to five seconds sooner and `CHUNK_TIMEOUT` is not read;
+the outer loop's `_attempt_reconnect` branch (`:414-426`) is not ported,
+because Python cannot reach it -- the monitor sets `needs_reconnect` only
+while connected (`:1565`) and the inner loop clears it on every pass
+(`:527`) before the outer loop's top can see it -- so a health reconnect is
+the inner loop's fall-through (`:521-534`) here as there, and no
+`channel_reconnect{reason: health_monitor}` is raised; after a
+buffering-triggered switch the new source starts as attempt 1 with a clean
+history, where Python's main loop may record one failure for the attempt the
+switch ended (`:533-534`) unless `update_url`'s clear (`:1512`) lands after
+it; `channel_reconnect` is raised as a retry attempt starts rather than once
+established; event URLs
+go through `redact.Line` (scheme and host) where `redact_url` keeps more;
+one emitter worker and batching where Python spawns a greenlet per event;
+`URL_SWITCH_TIMEOUT` and `RETRY_WAIT_INTERVAL` are not read (the first
+resets a flag the synchronous switch cannot leave stuck, the second has no
+Python caller); the slot is released when the source goroutine returns
+rather than at the stop path's cleanup; a second client arriving during a
+Redirect tune gets its own probe and 302 rather than Python's follower wait.
+Every one is in the safe direction and none is client-observable streaming
+behaviour.
+
+**A5.8 — a Python defect the port carries.** A buffering timeout whose
+`_try_next_stream()` fails leaves the buffering flag set, and the next
+`speed=` record -- every ~0.5 s -- reaches the timeout branch again
+(`input/manager.py:1178-1211`): one control-plane call per progress record
+for as long as the speed stays low. Reproduced per D5
+(`TestABufferingTimeoutWithNoAlternateKeepsPlayingAndAsksOnEveryRecord`),
+recorded in `CLAUDE.md` § Known defects, filed as
+[#302](https://github.com/D10Scot/Dispatcharr/issues/302), not fixed here
+(D10).
+
 ## Stage 2d — cutover, and its trap
 
 **The historical bug this stage exists to not repeat.** Every live-bound nginx location today carries
@@ -2495,6 +2609,7 @@ Filled in as PRs merge; this spec lands as its own PR 0.
 | 2c-2 review fix round -- opus review against `b5e62fcf` found a credential-echoing gap on the malformed-URL request-build path, `StateActive` unreachable (one mechanism replaced two), and Global Constraint 8's file:line ratchet missing for five constants (two of the reviewer's own citations corrected against this tree in the process); a downstream implementer independently verified and fixed three further defects (a `release`/`Attach` race, a per-tune transport leak, a `Ring.Read` cursor latent bug) before the review's findings arrived | `migration/phase2c-vertical-slice` | pending |
 | 2c-3 -- multi-client fan-out: the client registry (`relay/channel/client.go`, seven fields, the TTL/heartbeat/ghost sweep deleted rather than ported, Amendment A3.1), the manager's arrival and departure under one lock (the last-client rule and a concurrent attach are one decision, R5), `channel_shutdown_delay` (Amendment A3.3), the bounded read (`buffer.MaxChunksPerRead`, Amendment A3.2), `GET /proxy/relay/channels[?clients=all]` with its golden payload rendered by Django and asserted by both languages, and the tune's next-source call detached from the calling client's request context (Amendment A3.6). Parity matrix rows 8, 10, 13 get a Go column. | `migration/phase2c-fanout` | pending |
 | 2c-4 -- the Go relay's ffmpeg source: `relay/ffmpeg`'s spawn (`os/exec` + `SysProcAttr{Setpgid, Pdeathsig}`, D5 exception 1), the `log_parsers.py` port and the clock-injected buffering detector, `relay/channel`'s `TranscodeSource` and the package-private `attachable` seam, Amendment A4.1 (Django builds `stream_profile.argv`; no Go word splitter), the Go credential-logging guard `relay/internal/credlint` (#283) plus its `scripts/check_go_credential_logging.sh`, and the seven ffmpeg-derived fields on `GET /proxy/relay/channels`. Parity matrix rows 4 (real-ffmpeg), 5, 28 and 29 get a Go column (Amendment A4.4). Two Python-relay defects found and filed rather than fixed, per D10: the provider-URL INFO leak through ffmpeg's stderr preamble ([#295](https://github.com/D10Scot/Dispatcharr/issues/295)) and the UDP filter's dangling flag ([#296](https://github.com/D10Scot/Dispatcharr/issues/296)). CI fix round (2026-09-14): golangci-lint's darwin/linux build-tag blind spot fixed, the fixture-vs-migration-seed argv mismatch fixed, and row 4's real-ffmpeg pin moved onto the base image's production ffmpeg after both relays' shared `frame=` progress gate was found structurally blind to ffmpeg 6.x, filed rather than fixed as [#299](https://github.com/D10Scot/Dispatcharr/issues/299) (Amendment A4.7). | `migration/phase2c-ffmpeg` | pending |
+| 2c-5 -- the Go relay's failover: the three triggers (rows 1, 2, 3) as one port of `StreamManager.run`'s two loops, a clean EOF ported as a retried connection failure (R1); the control-plane client's `release` and `events` routes and an emitter that batches and logs an outage once (R12); the degraded fallback to the candidate list cached at channel start, never on a refusal (R2); the Redirect Stream Profile architecture -- the 302, the provider probe, the fall-through to the cached alternates, the internal-principal override, publishing no channel (R7, R8); the health flag, the keepalives, the client timeout and the error packet closing Amendment A2.5 (R14, R15); the six events the failover machinery raises (R11). Parity matrix rows 1, 2, 3 and 6 get a Go column; row 7 gains a pin across a switch. A pre-existing Python defect (one `next-source` call per buffering progress record when no alternate exists) reproduced per D5 and filed as [#302](https://github.com/D10Scot/Dispatcharr/issues/302) (R6). | `migration/phase2c-failover` | pending |
 
 ## Risks
 
