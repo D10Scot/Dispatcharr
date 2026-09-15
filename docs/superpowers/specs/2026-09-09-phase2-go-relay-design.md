@@ -2462,6 +2462,157 @@ disambiguated only by the logger's `format=` field, not by the message
 itself — a one-line rename that belongs with Ruling R1's recommended
 `fmp4.go` split, for 2c-9.
 
+#### Amendment A8 (2c-8) — nine corrections and inputs from the control routes and the drain
+
+**A8.1 — the XC live roots had no owning PR, and 2c-8 builds them.**
+§ Stage 2c's "It serves" names `GET /proxy/ts/stream/<id>` and *the XC
+live roots*; the nine-PR table names the roots in no row. Walked: 2c-2
+is the Proxy architecture, 2c-3 fan-out, 2c-4 ffmpeg, 2c-5 failover and
+Redirect, 2c-6 fMP4, 2c-7 Output Profiles, 2c-9 the coverage ratchet.
+The same shape as 2c-1's Finding F2 about Redirect, and the parity
+matrix does not compensate either: row 15 is the roots' only row and no
+PR owed it. **2c-8 adds both**, as a wrapper around the TS handler
+rather than a second one — the channel a root serves is the one the hop
+resolved (`X-Relay-Channel`) or the one the dev fallback's decision
+named, never the numeric path id, which this relay cannot map to a uuid
+without an ORM query. The extension is the one thing the path
+contributes and it contributes it to the *output format*: `.mp4` forces
+fMP4 and `.ts` forces MPEG-TS (`views.py:872-878`), overriding the hop,
+because `resolve_output_format`'s `force` parameter is one the hop
+deliberately never passes.
+
+**The split was considered and not taken.** The roots are real scope the
+2c-8 row does not name, and lifting them into a PR of their own would
+have kept this one to its written brief. It was rejected on Gate 1:
+row 15 is a parity-matrix row, D7 requires every externally-observable
+live-path behaviour to carry a Go column before 2d, and a row whose
+owning PR does not exist is how it came to be open in the first place —
+splitting would have left it open past 2c-8 with no owner again, which
+is the same failure one stage later. A spec that names a deliverable in
+its prose and omits it from its table is factually wrong at that step,
+and an in-PR amendment is what this phase does with those, rather than
+carrying the error forward.
+
+**A8.2 — the advance route needs the stream profile, and Django sends
+it.** `RelayAdvanceRequestSerializer` carries a url and no profile,
+which was sufficient while the relay rebuilt the command from the
+`StreamManager`'s own `stream_profile` (`input/manager.py:1462-1540`).
+Amendment A4.1 took that away: Django builds the argv for each Source's
+own URL, so a Go relay handed a url alone has nothing to spawn. The
+serializer gains **`stream_profile`, `ffmpeg_stream_profile` and
+`transcode`** — the three fields of `SourceSerializer` the flat fields
+do not already duplicate — and `relay_client.advance()` forwards them
+from the resolved source both producers already hold. The **bare-url**
+branch of `change_stream` (a `url` with no `stream_id`, reachable only
+by a hand-crafted admin call; the UI always sends `stream_id`) resolves
+no Stream row, so it asks the **channel** for its own effective profile
+through a new `next_source.channel_stream_profile_ref()` — the same
+profile the Python relay uses there, built in the process that has the
+ORM. A channel identifier that names no row leaves the three fields
+unset and the Go relay answers 400, which is the truth.
+
+**A8.3 — `RequireInternal` was verifying the signature against an empty
+body.** The bound token signs `sha256(BODY)`
+(`internal_auth.py:126-152`), and every route 2c-3 put behind that gate
+was a GET or a bodyless DELETE — so verifying `nil` was right by
+accident. `POST .../advance` carries a body, and the gate 403'd every
+call. Fixed by buffering the body (bounded at `MaxInternalBody`, 1 MiB,
+with a 413 beyond it) and handing the handler a reader over the same
+bytes. Found by the first run of
+`TestAnAdvanceSwitchesTheChannelAndKeepsTheClientFed`.
+
+**A8.4 — the first client of every channel bypassed `addClient`.**
+`Manager.publish` seeded its registry as
+`map[string]*Client{client.ID: client}`, so the first client of a
+channel never ran the code that installs its transfer counters and its
+stop signal — while the second and every later one, arriving through
+`claim`, did. A `DELETE .../clients/<id>` for that client reported
+`locally_processed: false` about a client the registry was listing, and
+its detail row carried no byte counters. One mechanism now: `publish`
+builds an empty map and calls `addClient`. Found by
+`TestDeletingOneClientDisconnectsItAndLeavesTheOtherStreaming`, not by
+review.
+
+**A8.5 — `control.Emitter` could panic on a drain, and `Close` was not
+idempotent.** The drain closes the emitter, and a client goroutine
+still unwinding raises `client_disconnect` as it returns — a send on a
+closed channel, which panics the goroutine serving that client. `Emit`
+now drops an event raised after `Close`, which is the disposition this
+type already has for a full queue and which `control_plane.py`'s own
+contract states ("an event raised while the control plane is down is
+LOST, not queued"); `Close` is idempotent, because the drain and a
+test's own cleanup both call it. Found by
+`TestTheDrainStopsTheChannelEndsTheClientAndFlushesTheEvents`.
+
+**A8.6 — the drain's budget is derived from supervisord, and the events
+flush is RESERVED.** `docker/supervisord.d/relay-go.conf` carries
+`stopwaitsecs=20` at `priority=205`, shared with `relay-uwsgi`, so that
+group costs `max(20, 20)` and the container's stop budget is 155s
+against a 160s `stop_grace_period`. Twenty seconds is the ceiling;
+`DefaultBudget` is **15s**, leaving five. Inside it: a **5s** client
+grace (D6's "lets running clients finish", which for a live stream means
+the bound), the channel teardown and the server shutdown sharing what is
+left, and a **3s** events flush **reserved out of the total** rather
+than taking what remains — a teardown that used the whole budget would
+otherwise raise one `channel_stop` per channel and deliver none of them,
+which is the one thing the flush is for. `Manager.StopAll` became
+concurrent for the same arithmetic: sequential, ten channels at
+`StopWait` is fifty seconds against a twenty-second window.
+
+**A8.7 — `/readyz` reports the drain and the counts, and deliberately
+does NOT probe the control plane.** A relay that marked itself unready
+during a Django outage would be taken out of nginx's rotation at stage
+2d — and a running stream needs nothing from Django once it is running
+(`CLAUDE.md` § Operationally: stopping `api-uwsgi` "does not disturb a
+running stream"), so deregistering would turn a degraded new-tune path
+into a total outage for viewers who were fine. `/healthz` stays a static
+200 and stays liveness: it answers 200 throughout the drain, because a
+supervisor that restarted the process mid-drain would defeat it. The
+Docker `HEALTHCHECK` is role-aware through `docker/healthcheck.sh`,
+which reads the role `entrypoint.sh` now writes to `/run/dispatcharr-role`
+— `HEALTHCHECK` runs as a fresh process with the container's own
+environment, which carries `DISPATCHARR_ROLE` only when the operator set
+it explicitly.
+
+**A8.8 — two detail-endpoint fields are unreachable in BOTH relays, and
+one Go divergence is stated.** `source_bitrate` has no writer anywhere
+in the tree (`channel_status.py:359` is its only reference beside the
+constant), and `ffmpeg_bitrate` is read under
+`ChannelMetadataField.FFMPEG_BITRATE` while the only writer
+(`input/manager.py:1269`) writes `FFMPEG_OUTPUT_BITRATE` — two different
+strings at `constants.py:90-91` — so the operator's output bitrate never
+reaches the payload in either relay. Reproduced as absences per D5 and
+filed, the same shape as `logo_id` on the list endpoint. Separately, row
+18's Go answer is **absent**, not filled: `get_detailed_channel_info`
+falls back to an ORM lookup for `stream_name` and `m3u_profile_name`
+when the hash has none, and the Go relay has no fallback and can have
+none — those two queries are exactly what D2 forbids. 2b-1 put both
+names on the wire so the case is unreachable in practice; the
+divergence is stated rather than hidden.
+
+**A8.9 — `source=` does not rename an INPUT field in DRF, and the
+hyphenated header never arrived.** `AuthorizeInternalHeadersSerializer`
+declares the third credential header as `x_api_key =
+serializers.CharField(source="x-api-key", ...)`, because `x-api-key` is
+not a Python identifier. **That is the wrong half of the mapping.** DRF
+reads INPUT by a field's NAME and uses `source` only to decide where the
+value lands in `validated_data`, so a body carrying `"x-api-key"` — what
+§ The contract specifies and what the Go relay sends — deserialized to
+`None`, `HTTP_X_API_KEY` was never set on the synthesised request, and an
+API-key client would have resolved to **anonymous** in the nginx-less
+shape and to its real user in production. That is the exact cross-shape
+divergence D5 exists to prevent, and the one this third field was added
+to close. Fixed with three lines of `to_internal_value`. **Found by a
+Gate 2 coverage test, not by review**: the first measurement listed the
+`HTTP_X_API_KEY` assignment among nine uncovered new statements, and
+writing a test for it produced a 200 where a rejected key must give 401.
+Every earlier reading had looked past a declaration that names the wire
+key on the line above the comment explaining why the wire key matters.
+Recorded here because the shape generalises: any `source=` on a field
+whose wire name is not a Python identifier is silently input-blind, and
+this contract has one more such field waiting to be added the moment a
+fourth credential header is discovered.
+
 ## Stage 2d — cutover, and its trap
 
 **The historical bug this stage exists to not repeat.** Every live-bound nginx location today carries
@@ -2788,6 +2939,7 @@ Filled in as PRs merge; this spec lands as its own PR 0.
 | 2c-5 -- the Go relay's failover: the three triggers (rows 1, 2, 3) as one port of `StreamManager.run`'s two loops, a clean EOF ported as a retried connection failure (R1); the control-plane client's `release` and `events` routes and an emitter that batches and logs an outage once (R12); the degraded fallback to the candidate list cached at channel start, never on a refusal (R2); the Redirect Stream Profile architecture -- the 302, the provider probe, the fall-through to the cached alternates, the internal-principal override, publishing no channel (R7, R8); the health flag, the keepalives, the client timeout and the error packet closing Amendment A2.5 (R14, R15); the five events the failover machinery raises (R11). Parity matrix rows 1, 2, 3 and 6 get a Go column; row 7 gains a pin across a switch. A pre-existing Python defect (one `next-source` call per buffering progress record when no alternate exists) reproduced per D5 and filed as [#302](https://github.com/D10Scot/Dispatcharr/issues/302) (R6). | `migration/phase2c-failover` | pending |
 | 2c-6 -- the Go relay's fMP4 output format (`migration/phase2c-fmp4`). One remux per channel reading the shared ring on `pipe:0`, the init segment replayed to every client, a refcounted lifecycle with no shutdown delay, and parity-matrix row 12 ([#222](https://github.com/D10Scot/Dispatcharr/issues/222)) reproduced, pinned and filed rather than fixed. Row 12 gets its Go pin. Amendment A6. [#304](https://github.com/D10Scot/Dispatcharr/issues/304) (a pre-existing 2c-4 defect, the stderr pipe truncated by a reap racing its drain) fixed in `relay/ffmpeg/spawn.go`, repairing `relay/channel/source_transcode.go` without editing it. Two Python-side findings from the port, reproduced and filed rather than fixed: the fMP4 scanner's resynchronisation arm discarding the whole working buffer ([#306](https://github.com/D10Scot/Dispatcharr/issues/306)) and the dead stop-during-restart guard in `_handle_bsf_error` ([#307](https://github.com/D10Scot/Dispatcharr/issues/307)). Three plan corrections found and fixed in the plan document as committed, run rather than read: Task 4 Step 7's break-check rows 16-18 name tests defined in `relay/httpapi/fmp4_test.go`, Task 6's file, and had to run there rather than in Task 4; Task 1 Step 2's expected result for `TestEveryStderrLineSurvivesTheWaitThatPrecedesTheJoin` describes a runtime failure the package cannot yet produce, since the two `StartPiped` tests appended in the same step leave it uncompilable until Step 3's implementation lands; and the issue-number-placeholder slot count was corrected from six to five (an instruction about the slots had been counted as one) with Task 8 Step 5's own verification grep narrowed to the paths that can carry a real slot, since run unscoped over all of `docs/` it could never return empty. | `migration/phase2c-fmp4` | pending |
 | 2c-7 -- the Go relay's Output Profiles (`migration/phase2c-output-profile`). One transcode per active `(channel, profile)` pair reading the channel's shared ring on `pipe:0` and writing a second in-process MPEG-TS ring, shared by every client on that profile; an fMP4 client on a profile runs it and 2c-6's remux chained, under `mpegts:p<id>` and `fmp4:p<id>`. Parity-matrix row 11 gets its Go pin, counted in spawns. The contract gained a null `argv` so a broken Output Profile can be told from a deactivated one. Amendment A7. Three plan corrections found, disclosed and **fixed in the plan document as committed**, run rather than read: Task 4 Step 5 and Task 7 Step 5 misassigned which break-check rows belong to which task -- rows 3-7 name `httpapi`-package tests Task 7 creates (Appendix P) and rows 8 and 11 name `output`-package tests Task 4 creates (Appendix I), so Task 4's Step 5 now reads "rows 8 and 11" and Task 7's now reads "rows 2, 3, 4, 5, 6, 7, 9, 10, 12, 13, 16, 17, 18", the amended lists this PR actually ran each row against; rows 16, 17 and 18 were re-checked against the same test rather than assumed correct, and confirmed already in Task 7's list -- `TestTheDeactivatedProfileCorrectionDoesNotRaceTheListEndpoint` and `TestAFailoverRefreshesTheProfileSetAndADegradedOneDoesNot` (both arms) are in `relay/httpapi/profile_test.go`, and no channel-package location for either exists. Task 5 Step 3's "Expected: green" for the whole-module `go build ./...` did not hold and is amended to name what actually goes green at that step: `go build`/`vet`/`golangci-lint` scoped to `./channel/... ./output/... ./control/... ./buffer/... ./ffmpeg/... ./internal/...` (every package but `httpapi`), `go test -race ./channel/...`, and `gofmt -l .` over the whole tree -- **commit `38669dba` (Task 5) does not build alone**, because `httpapi/fmp4.go` and `stream.go` still call `AttachOutput` with the pre-2c-7 signature; the whole-module build, vet, test and lint first go green at Task 6 Step 4 once `httpapi`'s own edits land, so a `go build ./...` bisect on this branch lands on Task 6's commit for a defect that is Task 5's incompleteness, not Task 6's own. No commit was ever made against a genuinely broken working tree regardless, since Task 6 was written and verified before either commit. Third, Task 9 Step 3's `ffmpeg.StartPiped`/`.Start` call-site breakdown named the wrong two files ("two in spawn.go, one in output/fmp4.go, one in output/profile.go"); the actual four are one in `output/profile.go`, two in `output/fmp4.go` (the initial spawn and the bitstream-filter retry) and one in `channel/source_transcode.go` -- the total of 4 was already right. | `migration/phase2c-output-profile` | pending |
+| 2c-8 -- the Go relay's control routes and drain (`migration/phase2c-control-drain`). The four remaining `/proxy/relay/…` routes (the single-channel `GET` with its `?fields=state` form, the channel `DELETE`, the client `DELETE` and `advance`), the detail endpoint with its five extra client fields and row 14's `owner` asymmetry, the XC live roots (Ruling R1: spec D1 scopes them and no PR owned them), the four events the tune and stop paths raise, the dev-only `POST /_dispatcharr/authorize-internal` fallback and the Go half that calls it, and D6's SIGTERM drain with a real `/readyz` and a role-aware Docker `HEALTHCHECK`. Thirteen parity-matrix rows get a Go pin, taking the matrix to 28 of 28 pinnable rows, and the ten authorize-matrix rows among them gain a Notes clause saying the Go pin covers the relay's ask-and-obey share and not the decision, which stays Django's. Amendment A8. Four defects found and fixed, three in code this PR did not write: `RequireInternal` verifying the bound signature against an empty body (A8.3), `Manager.publish` bypassing `addClient` for the first client of every channel (A8.4), `control.Emitter` panicking on a send after `Close` and on a second `Close` (A8.5), and -- in this PR's own first draft, found by a Gate 2 coverage test -- the `x-api-key` body field that never arrived, because DRF reads input by a field's NAME and `source=` maps only the output (A8.9). Two Python-side findings reproduced and filed rather than fixed: `source_bitrate` and `ffmpeg_bitrate` are read by `channel_status.py` and written by nothing, the second because the reader and the writer name two different constants ([#314](https://github.com/D10Scot/Dispatcharr/issues/314)). Four break-checks stayed green on a first attempt and each produced a better test or deleted unreachable code. | `migration/phase2c-control-drain` | pending |
 
 ## Risks
 
