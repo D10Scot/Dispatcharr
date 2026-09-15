@@ -11,12 +11,15 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/signal"
 	"strconv"
+	"syscall"
 	"time"
 
 	"github.com/D10Scot/Dispatcharr/relay/channel"
 	"github.com/D10Scot/Dispatcharr/relay/config"
 	"github.com/D10Scot/Dispatcharr/relay/control"
+	"github.com/D10Scot/Dispatcharr/relay/drain"
 	"github.com/D10Scot/Dispatcharr/relay/httpapi"
 )
 
@@ -53,16 +56,21 @@ func main() {
 		Events:  httpapi.EventSink(emitter),
 		Release: httpapi.ReleaseVia(client, slog.Default()),
 	})
+	// ONE Lifecycle, shared by the tune path, /readyz and the drain. Two
+	// would let the probe say "ready" while the handler refused every tune.
+	lifecycle := &httpapi.Lifecycle{}
 	srv := &http.Server{
 		Addr: net.JoinHostPort("0.0.0.0", strconv.Itoa(cfg.Port)),
 		Handler: httpapi.New(httpapi.Config{
 			DevRoutes: cfg.DevRoutes,
 			Stream: httpapi.StreamDeps{
-				Secret:   cfg.Secret,
-				Channels: channels,
-				Control:  client,
+				Secret:    cfg.Secret,
+				Channels:  channels,
+				Control:   client,
+				Lifecycle: lifecycle,
 			},
 			Control: httpapi.ControlDeps{Secret: cfg.Secret, Channels: channels},
+			Health:  httpapi.HealthDeps{Channels: channels, Lifecycle: lifecycle},
 		}).Handler(),
 
 		// ReadHeaderTimeout only. A read or write deadline on the whole
@@ -83,13 +91,33 @@ func main() {
 		IdleTimeout: 120 * time.Second,
 	}
 
-	// No graceful shutdown here. D6's SIGTERM drain is 2c-8's, and a
-	// half-implemented drain -- one that stops accepting but does not wait for
-	// anything, because there is nothing to wait for yet -- would look like
-	// the feature while being the default. supervisord's stopwaitsecs=20
-	// bounds the stop either way.
+	// D6's drain. The handler is installed BEFORE ListenAndServe, so a
+	// SIGTERM that arrives during startup is still drained rather than
+	// killing the process with channels running -- supervisord sends one the
+	// moment a `docker stop` lands, which can be inside startsecs=5.
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, syscall.SIGTERM, syscall.SIGINT)
+	drained := make(chan struct{})
+	go func() {
+		defer close(drained)
+		sig := <-signals
+		log.Printf("received %s, draining", sig)
+		drain.Run(drain.Deps{
+			Gate:     lifecycle,
+			Channels: channels,
+			Server:   srv,
+			Events:   emitter,
+			Log:      slog.Default(),
+		})
+	}()
+
 	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Printf("server stopped: %v", err) // credential-logging: ok - a net.Listen or Serve error naming the bind address
 		os.Exit(1)
 	}
+	// ErrServerClosed means Shutdown was called, which only the drain does,
+	// so wait for the rest of its sequence -- the emitter flush in
+	// particular, which runs AFTER Shutdown returns. Exiting here would drop
+	// every channel_stop of the shutdown.
+	<-drained
 }

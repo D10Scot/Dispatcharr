@@ -51,6 +51,10 @@ type rig struct {
 	Control  *relaytest.ControlPlane
 	Manager  *channel.Manager
 	Emitter  *control.Emitter
+
+	// Lifecycle is the drain flag the tune path and /readyz share, so a test
+	// can raise it the way the SIGTERM handler does (2c-8).
+	Lifecycle *Lifecycle
 }
 
 // rigOption adjusts the StreamDeps the rig is built with, for the one thing a
@@ -106,10 +110,12 @@ func newRigWithClient(t *testing.T, cp relaytest.ControlPlaneConfig, up relaytes
 	t.Cleanup(emitter.Close)
 	t.Cleanup(manager.StopAll)
 
+	lifecycle := &Lifecycle{}
 	stream := StreamDeps{
-		Secret:   testSecret,
-		Channels: manager,
-		Control:  client,
+		Secret:    testSecret,
+		Channels:  manager,
+		Control:   client,
+		Lifecycle: lifecycle,
 	}
 	for _, opt := range opts {
 		opt(&stream)
@@ -121,11 +127,15 @@ func newRigWithClient(t *testing.T, cp relaytest.ControlPlaneConfig, up relaytes
 		// an empty map while the tune path filled another, and every assertion
 		// about what the list shows would be about the wrong object.
 		Control: ControlDeps{Secret: testSecret, Channels: manager},
+		Health:  HealthDeps{Channels: manager, Lifecycle: lifecycle},
 	})
 	relay := httptest.NewServer(server.Handler())
 	t.Cleanup(relay.Close)
 
-	return &rig{Relay: relay, Upstream: upstream, Control: controlPlane, Manager: manager, Emitter: emitter}
+	return &rig{
+		Relay: relay, Upstream: upstream, Control: controlPlane,
+		Manager: manager, Emitter: emitter, Lifecycle: lifecycle,
+	}
 }
 
 func (r *rig) tune(t *testing.T, path string, header http.Header) *http.Response {

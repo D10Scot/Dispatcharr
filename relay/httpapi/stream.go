@@ -42,6 +42,11 @@ type StreamDeps struct {
 	// follows redirects, as requests does there.
 	Probe *http.Client
 
+	// Lifecycle is the drain flag. A tune that arrives after SIGTERM is
+	// refused rather than started: D6's "stops accepting tunes". Nil is
+	// never draining, which is every test that is not about the drain.
+	Lifecycle *Lifecycle
+
 	// Remux is the process an fMP4 tune spawns. Its zero value is the
 	// production remux (output.RemuxCommand and output.RemuxArgv), which is
 	// what main.go leaves it as; a test substitutes a stand-in. It is on
@@ -186,6 +191,17 @@ func StreamHandler(deps StreamDeps) http.HandlerFunc {
 	}
 
 	return func(w http.ResponseWriter, r *http.Request) {
+		if deps.Lifecycle.Draining() {
+			// FIRST, before the channel is even identified: a tune started
+			// now would be torn down seconds later by the drain that is
+			// already running, after reserving a provider slot Django would
+			// then have to see released. 503 rather than 500 because the
+			// condition is temporary and naming it that way is what lets a
+			// client retry into the replacement process.
+			w.Header().Set("Retry-After", "1")
+			http.Error(w, "the relay is shutting down", http.StatusServiceUnavailable)
+			return
+		}
 		// D5, exception 2: with no nginx there is no auth_request, and a Go
 		// process cannot import authorize_stream, so the decision is asked
 		// for over HTTP. On every ordinary nginx-fronted tune this returns

@@ -21,6 +21,11 @@ type Config struct {
 	// set.
 	Stream StreamDeps
 
+	// Health is what /readyz needs. Read in every shape: the operational
+	// endpoints are not behind the dev flag, because a probe must work in
+	// the deployment the drain runs in.
+	Health HealthDeps
+
 	// Control is what the internal control routes need. Only read when
 	// DevRoutes is set.
 	Control ControlDeps
@@ -46,13 +51,13 @@ func New(cfg Config) *Server {
 	// Always served, in every shape. D6: the Python relay has neither a
 	// health endpoint nor a readiness probe, and both are a few lines here.
 	//
-	// Both are a static 200 at 2c-1, which is what this PR's row specifies.
-	// /readyz becomes meaningful in 2c-8, when the SIGTERM drain gives it
-	// something to report -- and that is also why this PR adds no Docker
+	// /healthz stays a static 200 -- LIVENESS: the process is up. /readyz
+	// became real in 2c-8, when the SIGTERM drain gives it something to
+	// report -- and that is also why 2c-1 through 2c-7 added no Docker
 	// HEALTHCHECK: a probe wired to a static 200 reports healthy through
 	// every failure it exists to catch.
 	s.mux.HandleFunc("GET /healthz", ok)
-	s.mux.HandleFunc("GET /readyz", ok)
+	s.mux.Handle("GET /readyz", ReadyHandler(cfg.Health))
 
 	if cfg.DevRoutes {
 		// The dev-only route flag spec line 1795 names.

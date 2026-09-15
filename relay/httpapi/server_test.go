@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -9,17 +10,42 @@ import (
 // Drives the real mux and asserts what a client would see. A test that built
 // its own http.HandlerFunc and asserted it was called would pass with this
 // whole package deleted.
+// The two endpoints answer 200 and they answer DIFFERENTLY, which is 2c-8's
+// change to 2c-1's shape: /healthz is still liveness and still the literal
+// "ok", and /readyz now reports something real (spec D6).
 func TestHealthEndpointsAnswer200(t *testing.T) {
 	srv := New(Config{DevRoutes: false})
-	for _, path := range []string{"/healthz", "/readyz"} {
-		rec := httptest.NewRecorder()
-		srv.Handler().ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, path, nil))
-		if rec.Code != http.StatusOK {
-			t.Errorf("GET %s = %d, want 200", path, rec.Code)
-		}
-		if got := rec.Body.String(); got != "ok\n" {
-			t.Errorf("GET %s body = %q, want %q", path, got, "ok\n")
-		}
+
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/healthz", nil))
+	if rec.Code != http.StatusOK {
+		t.Errorf("GET /healthz = %d, want 200", rec.Code)
+	}
+	if got := rec.Body.String(); got != "ok\n" {
+		t.Errorf("GET /healthz body = %q, want %q", got, "ok\n")
+	}
+
+	rec = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/readyz", nil))
+	if rec.Code != http.StatusOK {
+		t.Errorf("GET /readyz = %d, want 200", rec.Code)
+	}
+	var body struct {
+		Status   string `json:"status"`
+		Channels int    `json:"channels"`
+		Clients  int    `json:"clients"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("GET /readyz body %q is not JSON: %v", rec.Body.String(), err)
+	}
+	if body.Status != StatusReady {
+		t.Errorf("GET /readyz status = %q, want %q", body.Status, StatusReady)
+	}
+	// Asserted as well as the status, because a body that reported only
+	// "ready" would be the static 200 under a new name -- which is exactly
+	// what 2c-1 refused to wire a HEALTHCHECK to.
+	if body.Channels != 0 || body.Clients != 0 {
+		t.Errorf("GET /readyz counted %d channels and %d clients on an empty relay", body.Channels, body.Clients)
 	}
 }
 
