@@ -14,17 +14,17 @@
 
 ---
 
-## Sequencing: this plan sits on 2c-7 as merged, whose tree the orchestrator names as `<2C7_MERGED_SHA>`
+## Sequencing: this plan sits on 2c-7 as merged, at `d6d71f97`
 
-**2c-7 was not merged and not implemented when this plan was written.** Its plan lives on branch `docs/phase2c7-plan` and was under review; no branch, no worktree and no commit carried `relay/output/profile.go`, `channel.OutputSpec`, `control.OutputProfileRef` or `httpapi/profile.go`. So this plan could not obey the brief's "seed from the implemented tree, never from a plan's appendices" rule for its predecessor, and says so rather than hiding it — the same position 2c-6 and 2c-7 were each in with respect to theirs.
+**2c-7 is merged, on `main` at `d6d71f97`** (PR #311, a squash of `migration/phase2c-output-profile` at `002e1e82`; 28 files, +2483/−97). Read its plan with `git -C <repo> show "d6d71f97:docs/superpowers/plans/2026-09-13-phase2-2c7-output-profiles.md"` — cite `main`, not the `docs/phase2c7-plan` branch, which may be deleted, and **brace the expansion in zsh** or the `:path` is eaten as a history modifier and you get the tip commit's diff instead, exit code 0 and all.
 
-**What it did instead, and what that buys.** Every appendix here was built and verified on `main` at **`eb7fac07`** (2c-6 as merged) **with 2c-7's own appendices applied over it**, extracted mechanically from that plan's fenced blocks rather than retyped: six whole files written out and fifteen diffs applied with `git apply`. **All fifteen applied with no fuzz and no rejects**, and the resulting module built, vetted, linted at zero issues and passed `go test -race ./...` green before a line of 2c-8 was written. That is the strongest evidence available that 2c-7's appendices describe a tree that compiles against `eb7fac07`, and it is not evidence that the tree 2c-7 *merges* is that tree. The 2c-7 plan was read at `7497babb` and may move; cite `main` once it has merged, not the branch.
+**This plan has been re-seeded from that SHA, tests included, and every appendix re-captured against it.** Nothing here was built against 2c-7's appendices any more; `git archive d6d71f97 relay` is the baseline every diff below is taken from. The history is worth one sentence because it is what the ledger is for: the appendices were first built on `eb7fac07` with 2c-7's own plan appendices applied over it, at a point when 2c-7 was neither merged nor implemented, and the ledger below was written as the set of expectations that seeding created.
 
-**THAT BRANCH HAS ALREADY MOVED ONCE SINCE THIS PLAN'S APPENDICES WERE BUILT**, and the ledger below has been adjusted for it without re-seeding. The appendices were built against `7497babb`; its review fix round then landed as `896bffe3` and `284f5717`. Five shapes this plan touches changed, and each has a ledger row of its own: `relaytest.ControlPlane` gains `SetOutputProfiles` with its **own `hasProfs` flag** (a nil map means the empty object Django sends, so a nil check would be wrong) plus `OutputProfiles`, `OutputProfilesAbsent` and `OutputProfileConfig`; `channel/failover.go`'s profile refresh is now **pinned**, by `TestAFailoverRefreshesTheProfileSetAndADegradedOneDoesNot`, where before the fix round deleting those two lines left the entire suite green; `httpapi/profile.go` **lost** its unlocked `client.OutputProfileID = nil`, because the locked setter is the single writer and that line raced the list endpoint; `httpapi/profile_test.go` gained a permanent race probe whose oracle is the registry value; and 2c-7's own Appendices R, S and T are diff hunks now rather than whole files, which changes how a seeding script extracts them. **This is an adjustment of expectations, not a re-seed**: the implementation may differ from the plan again, so the real reconciliation is still Task 0 against the merge SHA.
+**What the re-seed found, which is the only number that matters here: of seventeen Go hunks, SIXTEEN applied to the merged tree unchanged and ONE did not** — `internal/relaytest/controlplane.go`, which the ledger had already flagged as "the one file both PRs edit in the same two structs and the same answer builder". Its five additions were re-applied by hand and re-captured. Every whole-file appendix is byte-identical to what was verified before the re-seed. Task 0's own ledger walk found **no other difference**: `control.Source` still carries the profile fields, `Resolved` still carries `OutputProfiles`, `sourceBuilder`/`infoFrom`/`resolver.build` are unchanged, `Manager.publish` still seeds its client map with the literal Ruling R4 replaces, `relaytest` has `SetOutputProfiles` with its own `hasProfs`, `httpapi/profile.go`'s unlocked write is gone, and `TestAFailoverRefreshesTheProfileSetAndADegradedOneDoesNot` exists and stays green through Task 1's `applySwitch` extraction.
 
-**The orchestrator fills `<2C7_MERGED_SHA>` when 2c-7 merges, and this plan is re-seeded from that SHA — every `_test.go` included — and every appendix re-verified byte for byte, and every DOCUMENT hunk re-captured (Constraint 53), before it is reviewed.** Until then, Task 0 is the diff between what this plan expects of 2c-7 and what merged.
+**Two of the three document hunks had to be re-captured, exactly as the plan predicted.** Appendix AN's spec hunk was anchored where A6 ended and 2c-7 inserted A7 there; its Done-log placeholder row for 2c-7 is gone, replaced by the real row 2c-7 merged. Appendix AM's matrix hunk moved because row 11 now carries a Go pin and Notes of its own. Appendix AO's `CLAUDE.md` hunk was re-captured too and its content is unchanged. **The Python/Docker hunk applied to the merged tree without a change** beyond one blob index line.
 
-**Task 0's stop rule is binding.** A symbol that differs from the ledger below is a **stop-and-report**, never a reconciliation in passing.
+**`d6d71f97` is `d6d71f97`.** Task 0 remains in the plan as the check a later reader re-runs, not as work still owed.
 
 ### The 2c-7 dependency ledger
 
@@ -248,7 +248,9 @@ Every test this PR adds is bound by all six, and every task that adds an asserti
 ### Working rules
 
 - Run the four checks after every task (Constraint 16), then `scripts/check_go_credential_logging.sh relay` and `scripts/check_go_stdlib_only.sh relay` (Constraints 21 and 3). Both scripts take the module directory **relative to the repo root** and must be invoked from there, not from inside `relay/`.
-- **Run this PR's own test subset at least eight times consecutively under `-race` before Task 8 is committed**, and the whole module three times before Task 10. Measured here: the subset eight for eight, the whole module three for three at ~95s per round (`relay/httpapi` dominates).
+- **Run this PR's own test subset at least eight times consecutively under `-race` before Task 8 is committed, the whole module three times under `-race`, AND three times WITHOUT it, before Task 10.** The no-race rounds are not ceremony: this PR's one flaky test was green 8/8 under `-race` and failed roughly half of all no-race rounds, because the detector's own overhead was hiding a latching wait (Constraint 55). Measured on the re-seeded tree: subset 8/8, whole module 3/3 under `-race` and 3/3 without, ~90s per round (`relay/httpapi` dominates).
+
+55. **A WAIT ON A LATCH THAT FIRES EARLY IS A FLAKE `-race` WILL HIDE FROM YOU.** `TestAnAdvanceSwitchesTheChannelAndKeepsTheClientFed` waited for `listedStreamID == 2` and then asserted the alternate upstream had been contacted. `applySwitch` sets the channel's `SourceInfo` on the **handler's own goroutine**, so that condition is true the instant the advance returns — before the run loop has taken the parked source and dialled anything. Under `-race` the extra instrumentation let the dial land first and the test was green 8/8; without it, it failed about half the time. **Wait on the thing the test is about** — here, `alternate.Requests() >= 1` — and assert the cheap derived fact afterwards, when it is no longer a latch that fires early. Constraint 31 still holds in the other direction: widen the window, never lower the count; nothing here weakened an assertion, the wait moved to the right signal and a second assertion was added.
 - Stage and commit in separate Bash calls; write commit messages to a file and use `-F`.
 - Every commit message ends with the attribution lines this session was given.
 - **Every Go file in this plan has been built, vetted (native, `GOOS=linux`, `GOOS=darwin`), race-tested and linted at zero findings before this plan was written**, in a scratch module seeded as § Sequencing describes; every Python change has been run in a private container across all sixteen backend labels. Where you find a discrepancy, **your tree is the fact and this plan is the claim — stop and report it** (Task 0 Step 0).
@@ -425,16 +427,16 @@ The tempting implementation asks Django whether it is reachable and reports unre
 **Files:** none. This task writes nothing.
 
 **Interfaces:**
-- Consumes: the merged 2c-7 tree at `<2C7_MERGED_SHA>`.
+- Consumes: the merged 2c-7 tree at `d6d71f97`.
 - Produces: a go/stop for every task after it.
 
 - [ ] **Step 0: Seed your scratch module from the merged tree, tests included**
 
 ```bash
-# <2C7_MERGED_SHA> is filled in by the orchestrator when 2c-7 merges.
+# d6d71f97 is filled in by the orchestrator when 2c-7 merges.
 cd <your worktree>
 git fetch origin main
-git log --oneline -1 <2C7_MERGED_SHA>
+git log --oneline -1 d6d71f97
 
 # relaytest/corpus.go locates the repo from its OWN path -- four levels above
 # relay/internal/relaytest/corpus.go -- so the Python harness's fixtures must
@@ -887,7 +889,7 @@ for i in $(seq 1 8); do
 done
 ```
 
-Expected: eight silent rounds. Measured here: 8/8.
+Expected: eight silent rounds. Measured on the re-seeded tree: 8/8. **Then run the whole module three times WITHOUT `-race` as well** (Constraint 55): this PR's one flaky test was green 8/8 under the detector and failed about half of all no-race rounds.
 
 - [ ] **Step 12: Commit.**
 
@@ -1012,9 +1014,9 @@ golangci-lint run ./... && GOOS=linux golangci-lint run ./... && GOOS=darwin gol
 
 Expected: `0 issues.` three times, `gofmt -l` silent.
 
-- [ ] **Step 2: The whole module three times under `-race`**
+- [ ] **Step 2: The whole module three times under `-race`, and three times without**
 
-Expected: 3/3. Measured here at ~95s per round.
+Expected: 3/3 and 3/3. Measured on the re-seeded tree at ~90s per round. **Both, and the second is the one that found this PR's only flake** — Constraint 55.
 
 - [ ] **Step 3: The two Go guards**
 
@@ -1040,16 +1042,18 @@ COVERAGE_ISOLATED_PREFIX=<yourname> COVERAGE_ISOLATED_OUT=/tmp/cov \
   bash scripts/coverage_live_path_isolated.sh --gate
 ```
 
-Expected, measured on this PR's own tree:
+Expected, measured on the re-seeded tree:
 
 ```
-coverage_live_path: floor missing=1525  this run missing=1498  coverage 81.74%
-coverage_live_path: 27 FEWER missed than the floor.
+coverage_live_path: floor missing=1525  this run missing=1491  coverage 81.82%
+coverage_live_path: 34 FEWER missed than the floor.
 ```
+
+**And know that a CI draw can exceed a local one** ([#312](https://github.com/D10Scot/Dispatcharr/issues/312)): the floor is the worst of twelve CI rounds, one CI draw can sit above a local census's maximum, and re-measuring means re-running the whole workflow, not one job.
 
 **A regression is attributed per file and then per line** from `live-path.json` (Constraint 54 carries the command) **and covered with a real test in one of the gate's three labels**. **The floor is never raised** — "27 fewer missed" is not an invitation to run `--write-floor` either; that belongs to a PR that earned it with a census.
 
-**And a local pass is not a CI pass.** The floor was set from the worst of twelve CI rounds and the last campaign's local-to-CI delta was +13 at the maximum. 27 of margin absorbs that; 3 would not.
+**And a local pass is not a CI pass.** The floor was set from the worst of twelve CI rounds and the last campaign's local-to-CI delta was +13 at the maximum. 34 of margin absorbs that; 3 would not.
 
 - [ ] **Step 5: All sixteen backend labels**
 
@@ -1084,7 +1088,7 @@ Expected: `27 with, 3 without` on a tree where 2c-7 has landed row 11 — no: **
 
 - [ ] **Step 8: Write the PR description**
 
-In this order: what this PR does; **Ruling R1** and how the XC live roots were found to have no owner; **Ruling R2** and the three-field contract extension, with the bare-url branch's own answer; **the four break-checks that did not redden on a first attempt** (rows 2, 3, 9, 10) and what closed each — the golden fixture that supplied both values the builder computes, the fMP4 read that stopped at the init segment, and the denial table that had no body-less row; **the one break-check that deleted code** (3b, the unreachable index filter); **the four defects this PR found** — three in code it did not write (`RequireInternal` verifying against an empty body, R3; `publish` bypassing `addClient`, R4; `Emitter` panicking on a drain, R10) and one in its own first draft, the hyphenated header that never arrived because `source=` is the wrong half of DRF's input mapping (R13), found by a coverage test rather than by review; **the credlint census** — two markers added, three `redact.Error` calls, twelve packages clean; **zero suppressions**; **the two lint findings fixed rather than suppressed**; **the measurements** — 8/8 on the subset, 3/3 on the module, 16/16 on the backend labels, and Gate 2 at missing=1498 against the floor's 1525 with zero added-and-missing lines; **the stated divergences**, as a list: the drain itself, which D6 makes an improvement on `die-on-term` rather than parity; `channel_stop` from one place where Python has several (R9); the per-client counters live where Python's are 1-second-throttled (R8); `last_active` the true last write rather than the last flush (R8); row 18's names absent where Python falls back to the ORM (R7, Constraint 44); `client_connect`'s `user_agent` carrying the registry's `"unknown"` where Python's event carries null; `round1`'s half-away-from-zero where Python rounds half-to-even; `worker_id` and `owner` the literal `"unknown"` because there is no worker to name; `event_published` always false and `stop_key_set` meaning the signal rather than a Redis `SETEX` (R6); **the edits no test pins**, stated: `writeJSONStatus`'s encode-failure arm, `Authorize`'s 3xx arm, `readInternalBody`'s read-error arm, and `drain.Run`'s nil-dependency arms; **what this PR does not do**: no Go coverage ratchet and no CodeQL Go pack (2c-9), no nginx route (2d), no HLS (Phase 4), no `metrics/curated` update — milestones are per stage and the 2c goal milestone lands with 2c-9.
+In this order: what this PR does; **Ruling R1** and how the XC live roots were found to have no owner; **Ruling R2** and the three-field contract extension, with the bare-url branch's own answer; **the four break-checks that did not redden on a first attempt** (rows 2, 3, 9, 10) and what closed each — the golden fixture that supplied both values the builder computes, the fMP4 read that stopped at the init segment, and the denial table that had no body-less row; **the one break-check that deleted code** (3b, the unreachable index filter); **the four defects this PR found** — three in code it did not write (`RequireInternal` verifying against an empty body, R3; `publish` bypassing `addClient`, R4; `Emitter` panicking on a drain, R10) and one in its own first draft, the hyphenated header that never arrived because `source=` is the wrong half of DRF's input mapping (R13), found by a coverage test rather than by review; **the credlint census** — two markers added, three `redact.Error` calls, twelve packages clean; **zero suppressions**; **the two lint findings fixed rather than suppressed**; **the measurements** — 8/8 on the subset, 3/3 on the module, 16/16 on the backend labels, and Gate 2 at missing=1491 against the floor's 1525 with zero added-and-missing lines in all five in-scope files; **the stated divergences**, as a list: the drain itself, which D6 makes an improvement on `die-on-term` rather than parity; `channel_stop` from one place where Python has several (R9); the per-client counters live where Python's are 1-second-throttled (R8); `last_active` the true last write rather than the last flush (R8); row 18's names absent where Python falls back to the ORM (R7, Constraint 44); `client_connect`'s `user_agent` carrying the registry's `"unknown"` where Python's event carries null; `round1`'s half-away-from-zero where Python rounds half-to-even; `worker_id` and `owner` the literal `"unknown"` because there is no worker to name; `event_published` always false and `stop_key_set` meaning the signal rather than a Redis `SETEX` (R6); **the edits no test pins**, stated: `writeJSONStatus`'s encode-failure arm, `Authorize`'s 3xx arm, `readInternalBody`'s read-error arm, and `drain.Run`'s nil-dependency arms; **what this PR does not do**: no Go coverage ratchet and no CodeQL Go pack (2c-9), no nginx route (2d), no HLS (Phase 4), no `metrics/curated` update — milestones are per stage and the 2c goal milestone lands with 2c-9.
 
 - [ ] **Step 9: Commit and open the PR.**
 
@@ -2932,7 +2936,7 @@ Three additions in one diff: `Nameless` (Task 2, row 18), `ClientID` on `Recorde
  	// Delay holds every answer for this long before writing it. Zero is the
  	// ordinary immediate answer. 2c-3's R11 test needs a next-source call
  	// still in flight when a client disconnects, and there is no other way
-@@ -169,14 +182,83 @@
+@@ -169,16 +182,84 @@
  type ControlPlane struct {
  	server *httptest.Server
  
@@ -2942,26 +2946,29 @@ Three additions in one diff: `Nameless` (Task 2, row 18), `ClientID` on `Recorde
 -	settings map[string]any
 -	status   int
 -	delay    time.Duration
+-	profiles map[string]OutputProfileConfig
+-	hasProfs bool
 +	mu        sync.Mutex
 +	requests  []RecordedRequest
 +	events    []RecordedEvent
 +	settings  map[string]any
 +	status    int
 +	delay     time.Duration
++	profiles  map[string]OutputProfileConfig
++	hasProfs  bool
 +	authorize *AuthorizeDecision
-+}
-+
+ }
+ 
 +// AuthorizeDecision is what the fake answers POST
 +// /_dispatcharr/authorize-internal with: the seven X-Relay-* headers on a
 +// 200, or a status and a body on a denial.
 +//
-+// THE DEFAULT IS DELIBERATELY MINIMAL -- the channel out of the URI and the
-+// client address out of the body, and nothing else. Django resolves more
-+// than that on every live tune (it always mints a client id, for one), and
-+// filling those in here by default would silently change what every
-+// untrusted rig from 2c-2 onward observes. A test that is ABOUT the
-+// authorize hop sets the fields it is about, which is what keeps the
-+// default from pinning anything.
++// THE DEFAULT IS DELIBERATELY MINIMAL -- the channel out of the URI, and
++// nothing else. Django resolves more than that on every live tune (it always
++// mints a client id), and filling those in here by default would silently
++// change what every untrusted rig from 2c-2 onward observes. A test that is
++// ABOUT the authorize hop sets the fields it is about, which is what keeps
++// the default from pinning anything.
 +type AuthorizeDecision struct {
 +	Channel      string
 +	Output       string
@@ -2981,8 +2988,8 @@ Three additions in one diff: `Nameless` (Task 2, row 18), `ClientID` on `Recorde
 +	// The relay must NOT forward such a body to a viewer, and a test that
 +	// only ever configured a JSON one could not tell the two branches apart.
 +	NonJSONBody bool
- }
- 
++}
++
 +// SetAuthorize replaces what every LATER authorize call is answered with.
 +func (c *ControlPlane) SetAuthorize(decision *AuthorizeDecision) {
 +	c.mu.Lock()
@@ -3022,7 +3029,7 @@ Three additions in one diff: `Nameless` (Task 2, row 18), `ClientID` on `Recorde
  // SetSettings replaces the proxy_settings every LATER answer carries. It is
  // how a test changes a setting between two tunes, the way an operator's
  // save does, to show that a channel already running does not pick it up
-@@ -221,8 +303,12 @@
+@@ -238,8 +319,12 @@
  	Type        string
  	ChannelID   string
  	ChannelName string
@@ -3037,24 +3044,23 @@ Three additions in one diff: `Nameless` (Task 2, row 18), `ClientID` on `Recorde
  }
  
  // NewControlPlane starts a fake control plane. Register Close with t.Cleanup.
-@@ -284,6 +370,16 @@
+@@ -301,6 +386,15 @@
  			return
  		}
  
-+		// The authorize route is answered BEFORE the three forced-failure
-+		// arms above would have a say -- no, it is answered here, after
-+		// them, deliberately: a test that forces a 503 on the control plane
++		// The authorize route is answered AFTER the three forced-failure arms
++		// above, deliberately: a test that forces a 503 on the control plane
 +		// is testing an outage, and an outage takes the authorize call down
 +		// with everything else.
 +		if strings.HasSuffix(r.URL.Path, AuthorizePath) {
-+			c.writeAuthorize(w, cfg, r.URL.Path)
++			c.writeAuthorize(w, cfg)
 +			return
 +		}
 +
  		w.Header().Set("Content-Type", "application/json")
  		switch {
  		case strings.HasSuffix(r.URL.Path, "/release"):
-@@ -309,6 +405,7 @@
+@@ -326,6 +420,7 @@
  			Type        string         `json:"type"`
  			ChannelID   string         `json:"channel_id"`
  			ChannelName string         `json:"channel_name"`
@@ -3062,7 +3068,7 @@ Three additions in one diff: `Nameless` (Task 2, row 18), `ClientID` on `Recorde
  			StreamID    *int           `json:"stream_id"`
  			Details     map[string]any `json:"details"`
  		} `json:"events"`
-@@ -319,7 +416,10 @@
+@@ -336,7 +431,10 @@
  	c.mu.Lock()
  	defer c.mu.Unlock()
  	for _, e := range batch.Events {
@@ -3074,7 +3080,7 @@ Three additions in one diff: `Nameless` (Task 2, row 18), `ClientID` on `Recorde
  	}
  }
  
-@@ -398,6 +498,12 @@
+@@ -415,6 +513,12 @@
  			ua = userAgent
  		}
  		candidates = append(candidates, candidate{alt.StreamID, alt.URL, ua, alt.Argv})
@@ -3087,7 +3093,7 @@ Three additions in one diff: `Nameless` (Task 2, row 18), `ClientID` on `Recorde
  	}
  	render := func(cand candidate) map[string]any {
  		return map[string]any{
-@@ -407,9 +513,9 @@
+@@ -424,9 +528,9 @@
  			"transcode":             kind == "transcode",
  			"m3u_profile_id":        1,
  			"slot_reserved":         slotReserved,
@@ -3100,13 +3106,13 @@ Three additions in one diff: `Nameless` (Task 2, row 18), `ClientID` on `Recorde
  			"stream_profile":        profile(1, cfg.Command, cand.argv),
  			"ffmpeg_stream_profile": ffmpegProfile,
  		}
-@@ -509,3 +615,66 @@
+@@ -533,3 +637,64 @@
  // transport failure on its next call, which is the other shape of
  // control.Unavailable beside SetStatus's 5xx.
  func (c *ControlPlane) Close() { c.server.Close() }
 +
 +// writeAuthorize answers the dev fallback.
-+func (c *ControlPlane) writeAuthorize(w http.ResponseWriter, cfg ControlPlaneConfig, path string) {
++func (c *ControlPlane) writeAuthorize(w http.ResponseWriter, cfg ControlPlaneConfig) {
 +	c.mu.Lock()
 +	decision := c.authorize
 +	c.mu.Unlock()
@@ -3117,8 +3123,7 @@ Three additions in one diff: `Nameless` (Task 2, row 18), `ClientID` on `Recorde
 +		// The minimal default: the channel the URI named, so a relay that
 +		// believed an unverified X-Relay-Channel is still caught, and
 +		// nothing else.
-+		last := c.lastAuthorizedURI()
-+		decision = &AuthorizeDecision{Channel: channelFromURI(last)}
++		decision = &AuthorizeDecision{Channel: channelFromURI(c.lastAuthorizedURI())}
 +	}
 +	if decision.Status != 0 && decision.Status != http.StatusOK {
 +		if decision.NonJSONBody {
@@ -3144,7 +3149,6 @@ Three additions in one diff: `Nameless` (Task 2, row 18), `ClientID` on `Recorde
 +	w.Header().Set("X-Relay-Output-Format", decision.OutputFormat)
 +	w.Header().Set("X-Relay-Client-IP", decision.ClientIP)
 +	w.WriteHeader(http.StatusOK)
-+	_ = path
 +}
 +
 +// lastAuthorizedURI is the uri field of the most recent authorize call.
@@ -4257,9 +4261,22 @@ func TestAnAdvanceSwitchesTheChannelAndKeepsTheClientFed(t *testing.T) {
 		t.Errorf("direct_update is %v, want true: one process is always the owner", body["direct_update"])
 	}
 
-	waitFor(t, "the list to show the new stream", 15*time.Second, func() bool { return listedStreamID(t, r) == 2 })
+	// WAIT ON THE ALTERNATE, NOT ON THE LISTED STREAM ID. `applySwitch` sets
+	// the channel's SourceInfo on the handler's own goroutine, so
+	// listedStreamID flips the instant the advance returns -- before the run
+	// loop has picked up the parked source and dialled anything. Waiting on
+	// that and then asserting the upstream was contacted is a race the
+	// assertion loses about half the time without `-race` to slow it down
+	// (measured: 8/8 green under -race, 2/3 without). The alternate being
+	// contacted is what this test is about, so it is what the wait is on;
+	// the listed id is asserted afterwards, when it is no longer a latch
+	// that fires early.
+	waitFor(t, "the alternate to be contacted", 15*time.Second, func() bool { return alternate.Requests() >= 1 })
 	if n := alternate.Requests(); n != 1 {
 		t.Fatalf("the alternate saw %d requests, want 1", n)
+	}
+	if got := listedStreamID(t, r); got != 2 {
+		t.Fatalf("stream_id = %d after the advance, want 2", got)
 	}
 	// The client is still attached and still receiving whole packets from
 	// the NEW upstream: readAligned rather than packetRun, because the two
@@ -4388,7 +4405,12 @@ func TestResetTriedClearsTheExclusionListAndOmittingItDoesNot(t *testing.T) {
 			if status != http.StatusOK {
 				t.Fatalf("the advance answered %d: %s", status, raw)
 			}
-			waitFor(t, "the switch", 15*time.Second, func() bool { return listedStreamID(t, r) == 2 })
+			// The alternate again, for the reason above: the listed id flips
+			// on the handler's goroutine and the dial happens later.
+			waitFor(t, "the alternate to be contacted", 15*time.Second, func() bool { return alternate.Requests() >= 1 })
+			if got := listedStreamID(t, r); got != 2 {
+				t.Fatalf("stream_id = %d after the advance, want 2", got)
+			}
 
 			excluded := excludedStreamIDs(t, r)
 			if tc.resetTried {
@@ -5792,7 +5814,7 @@ index 30054e5a..0fe22095 100644
  
          if result.get("status") == "error":
 diff --git a/apps/proxy/next_source.py b/apps/proxy/next_source.py
-index f6930fd4..6858b04e 100644
+index f35b5c43..0cf12f12 100644
 --- a/apps/proxy/next_source.py
 +++ b/apps/proxy/next_source.py
 @@ -155,6 +155,31 @@ def _stream_profile_ref(profile, *, url, user_agent, pk):
@@ -8084,11 +8106,11 @@ The mechanism pin, which the drain test could not carry because `net/http` recov
 
 **THE NOTES CLAUSE IS NOT DECORATION.** Ten of the thirteen rows are authorize-matrix rows whose decisions are Django's and stay Django's; the relay's whole share is to ask the complete question and obey the answer exactly, which is what the named Go test pins. `Notes` is where a reader learns what a pin covers, so leaving that to the PR description would let the next reader conclude that a Go test now decides who may watch what. Rows 15 and 21 take a different clause from the other eight, because on the XC path the relay's share is larger — one authorization per tune, and the hop's resolved channel served rather than the numeric path id.
 
-**Captured against `eb7fac07`.** On re-seed to `<2C7_MERGED_SHA>` it must be **re-captured**, not re-used: 2c-7 edits row 11's `Pin` cell in this same table, and while that row is two `<!-- block: -->` markers away from any of these thirteen, a hunk's context lines are what decide, not the distance.
+**Captured against `d6d71f97`, and it WAS re-captured**: the first version of this hunk was taken on `eb7fac07`, and row 11 has gained a Go pin and Notes of its own since, which moved the context around row 11's block. The prediction that it "probably survives" was wrong, which is why Task 9 Step 0 checks rather than assumes.
 
 ```diff
 diff --git a/docs/relay-parity-matrix.md b/docs/relay-parity-matrix.md
-index 4b82eb7e..8d533280 100644
+index 79f10bbb..884a54af 100644
 --- a/docs/relay-parity-matrix.md
 +++ b/docs/relay-parity-matrix.md
 @@ -169,25 +169,25 @@ PR's first, which is the distance git needs to merge them cleanly.
@@ -8116,7 +8138,7 @@ index 4b82eb7e..8d533280 100644
 +| 18 | What the status payload's `stream_name` and `m3u_profile_name` contain when the channel metadata hash was never written one | `apps/proxy/live_proxy/channel_status.py:74`, `apps/proxy/live_proxy/channel_status.py:106` | `apps/proxy/live_proxy/tests/test_zero_orm_reads.py::StatusNameFallbackTests::test_the_key_is_absent_when_redis_has_no_name_and_no_row_exists`, `apps/proxy/live_proxy/tests/test_zero_orm_reads.py::StatusNameFallbackTests::test_the_orm_fills_the_name_when_redis_has_none_and_the_row_exists`, `relay/httpapi/control_test.go::TestTheNamesComeOffTheWireAndAreAbsentWhenTheAnswerCarriedNone` | 2b-3's answer: **absence is the contract.** The key is absent from the payload entirely — not null, not `''`, not the id — because `channel_status.py` only assigns it inside a truthy branch and `RelayChannelDetailSerializer` declares both `required=False`. Python's ORM fallback is best-effort enrichment on top of that: it fills the key when the row still exists and leaves it absent when the row is gone. The Go relay has no database and always omits it, which is inside the contract rather than a divergence from it. 2c: omit the key; never substitute null, `''` or the numeric id. The reads are NOT deleted — every name write in the tree guards the name on a value `url_utils.py:31-42`'s `tune_extras` degrades to `None` for a control plane that predates 2b-1, and the relay and control plane are separately deployable, so both fallbacks are reachable under version skew (`views.py:553-566` records it). They are allowlisted in `zero_orm_allowlist.py` and deleted wholesale in 2d. One production path defeats the repair rather than needing it — a degraded failover writes the new id and leaves the old name standing, so the key is present and wrong ([#265](https://github.com/D10Scot/Dispatcharr/issues/265)); that is a distinct defect from this row, cited not fixed. Coverage reads the two fallbacks as asymmetric (`:72-78` missing in 13/13, `:103-110` covered in 13/13) but that is one fixture's shape — `test_live_db_cleanup.py:322-344` supplies a `stream_name` and not an `m3u_profile_name`, mocks the query, and asserts nothing about either fallback. The spec and this row previously cited `:92`; 2b-1 moved it to `:106` |
  <!-- block: already pinned -->
  | 10 | Multi-client upstream sharing: three clients on one channel share exactly one upstream connection, and closing every client releases it | `apps/proxy/live_proxy/server.py:629-648`, `apps/proxy/live_proxy/server.py:2017-2052` | `e2e/tests/streaming/shared-upstream.spec.ts::three clients share exactly one upstream connection`, `e2e/tests/streaming/shared-upstream.spec.ts::closing every client releases the upstream`, `apps/proxy/live_proxy/tests/test_relay_client_stream.py::ClientSetTests::test_the_client_set_from_three_sharing_clients_to_an_empty_channel`, `relay/httpapi/fanout_test.go::TestEveryClientGetsAnUnbrokenRunFromItsOwnJoinPoint`, `relay/channel/fanout_test.go::TestNClientsShareOneSourceAndTheChannelOutlivesAllButTheLast` | The row asserts two things, so it cites both tests in the same file: the first proves the sharing, the second proves the release. `initialize_channel` reuses the buffer/client manager when the channel is already active (`:629-648`); the cleanup loop's `last_client_disconnect`/`channel_shutdown_delay` timer stops it once every client has gone (`:2017-2052`). The harness test does not exercise either citation directly: it never closes its own clients (it stops the channel by operator command instead), so `:2017-2052`'s disconnect-driven teardown is not reached, and with `:637`'s reuse check patched out the test still passed, because `views.py:619-622` already short-circuits `initialize_channel` within one process. What it actually proves: three clients share one upstream request; an operator-issued stop ends every stream with the upstream's request count still 1, and no reconnect happens. Release-on-client-disconnect stays e2e-only, carried by the two `shared-upstream.spec.ts` references, which stand |
- | 11 | One transcode process runs per active `(channel, profile)` pair across the cluster: a second client on the same Output Profile attaches to the existing process's buffer instead of spawning its own | `apps/proxy/live_proxy/output/profile/manager.py:67-122`, `apps/proxy/live_proxy/output/profile/manager.py:312-321` | `e2e/tests/streaming-greybox/output-profile-sharing.spec.ts::two clients on one output profile share a single transcode`, `apps/proxy/live_proxy/tests/test_output_profile_sharing.py::OutputProfileSharingTests::test_two_clients_on_one_output_profile_share_a_single_transcode` | Ten AC3 clients cost one ffmpeg. 2a-6 added the second pin, an in-process harness test that counts SPAWNS of the profile's own command rather than surviving processes: the channel runs the locked Proxy stream profile, which spawns nothing, so every line in the spawn log is an Output Profile transcode. Both stand — the e2e spec proves the same claim through nginx in a container. |
+ | 11 | One transcode process runs per active `(channel, profile)` pair across the cluster: a second client on the same Output Profile attaches to the existing process's buffer instead of spawning its own | `apps/proxy/live_proxy/output/profile/manager.py:67-122`, `apps/proxy/live_proxy/output/profile/manager.py:312-321` | `e2e/tests/streaming-greybox/output-profile-sharing.spec.ts::two clients on one output profile share a single transcode`, `apps/proxy/live_proxy/tests/test_output_profile_sharing.py::OutputProfileSharingTests::test_two_clients_on_one_output_profile_share_a_single_transcode`, `relay/httpapi/profile_test.go::TestTwoClientsOnOneOutputProfileShareOneTranscode` | Ten AC3 clients cost one ffmpeg. 2a-6 added the second pin, an in-process harness test that counts SPAWNS of the profile's own command rather than surviving processes: the channel runs the locked Proxy stream profile, which spawns nothing, so every line in the spawn log is an Output Profile transcode. Both stand — the e2e spec proves the same claim through nginx in a container. Go column added in Phase 2 stage 2c-7, counting SPAWNS as the two Python pins do: with `Channel.AttachOutput`'s reuse branch disabled the registry assertion and both PID assertions stay green and only the count reddens. The Go relay reaches the same claim with one process and no owner lock — spec D2 deletes `output_owner`/`output_state`, so "across the cluster" becomes "in the one relay process" and the sharing is the registry's refcount. |
 -| 21 | Authorize matrix — **XC credentials** (`<user>/<pass>` path segments, compared with `hmac.compare_digest`): every check enforced; `hidden_from_output` and adult filtering answer 403 | `apps/proxy/authorize.py:148-174`, `apps/proxy/authorize.py:420-442` | `e2e/tests/streaming/authorize-matrix.spec.ts::a hidden channel is refused on the XC live root to an ordinary XC user`, `apps/proxy/live_proxy/tests/test_authorize_matrix_over_http.py::test_an_xc_user_with_hide_adult_content_is_refused_on_the_live_root` | `resolve_xc_user` is the constant-time comparison CLAUDE.md's Known defects section already names. `hidden_from_output` is pinned on-path by the cited e2e test; the adult-filter half for this principal is now also pinned on-path by the cited Python test, a live-root equivalent to the catch-up-root test that used to be this row's only proof of it (drives `/timeshift/...`, off the matrix's live-path scope) |
 -| 22 | Authorize matrix — **JWT / API key / query-param JWT**, non-admin: every check enforced | `apps/proxy/authorize.py:227-265`, `apps/proxy/authorize.py:420-442` | `e2e/tests/streaming/authorize-matrix.spec.ts::an adult channel is refused on the native stream route to a hide_adult_content viewer` | `_drf_user` runs the DRF authenticator set explicitly rather than relying on the calling view's own `authentication_classes`. Drives `/proxy/ts/stream/<uuid>` with an `X-API-Key` principal, in scope; the plan's first draft pinned this row to a catch-up test, which the matrix's own scope paragraph excludes |
 -| 24 | Authorize matrix — **Anonymous** (a bare channel UUID): the ACL applies, `hidden_from_output` answers 403, and every user-scoped check is inapplicable — an anonymous request with a valid UUID still streams an ordinary channel | `apps/proxy/authorize.py:316`, `apps/proxy/authorize.py:325-327`, `apps/proxy/authorize.py:386-389` | `e2e/tests/streaming/authorize-matrix.spec.ts::a channel hidden from output is refused even to an anonymous request`, `e2e/tests/streaming/authorize-matrix.spec.ts::an ordinary channel still streams with no credential at all` | `hidden_from_output` is checked with no principal at all, which is why it is the one check anonymous also fails |
@@ -8136,18 +8158,18 @@ index 4b82eb7e..8d533280 100644
 
 **A `git diff` hunk, not a "paste this after A6".** One hunk carries both edits: A8's eight items, inserted between the end of A6 and `## Stage 2d`, and the two Done-log rows appended after 2c-6's.
 
-**Captured against `eb7fac07`, where A6 is the LAST amendment and 2c-6's is the last Done-log row.** After 2c-7 merges both anchors move — A7 sits where this hunk's leading context is, and 2c-7's Done-log row sits where its trailing context is — so this hunk **will not apply** to the merged tree and **must be re-captured on re-seed**. That is expected, not drift: the 2c-7 Done-log row this hunk carries is a placeholder whose own text says so, and it exists only to make the failure loud if someone applies a stale hunk. Re-capturing means re-running the two edits against the merged spec and taking `git diff` again, which is Task 9's own step.
+**Captured against `d6d71f97`, and it WAS re-captured.** The first version was anchored between the end of A6 and `## Stage 2d`, and 2c-7 inserted A7 exactly there; its Done-log context moved the same way. The placeholder 2c-7 Done-log row the earlier version carried — whose own text said it would go stale — is gone, replaced by the real row 2c-7 merged, and A8 now sits after A7 where it belongs.
 
 ```diff
 diff --git a/docs/superpowers/specs/2026-09-09-phase2-go-relay-design.md b/docs/superpowers/specs/2026-09-09-phase2-go-relay-design.md
-index d0f95a25..640da7fa 100644
+index f2f07da2..bf787c6e 100644
 --- a/docs/superpowers/specs/2026-09-09-phase2-go-relay-design.md
 +++ b/docs/superpowers/specs/2026-09-09-phase2-go-relay-design.md
-@@ -2367,6 +2367,134 @@ a Go test that hands the ring a finite asset once has to make the asset long
- enough. 2c-7's Output Profile transcode reads the same ring and will meet the
- same threshold if its test asset is short.
+@@ -2462,6 +2462,157 @@ disambiguated only by the logger's `format=` field, not by the message
+ itself — a one-line rename that belongs with Ruling R1's recommended
+ `fmp4.go` split, for 2c-9.
  
-+#### Amendment A8 (2c-8) — seven corrections and inputs from the control routes and the drain
++#### Amendment A8 (2c-8) — nine corrections and inputs from the control routes and the drain
 +
 +**A8.1 — the XC live roots had no owning PR, and 2c-8 builds them.**
 +§ Stage 2c's "It serves" names `GET /proxy/ts/stream/<id>` and *the XC
@@ -8275,15 +8297,37 @@ index d0f95a25..640da7fa 100644
 +names on the wire so the case is unreachable in practice; the
 +divergence is stated rather than hidden.
 +
++**A8.9 — `source=` does not rename an INPUT field in DRF, and the
++hyphenated header never arrived.** `AuthorizeInternalHeadersSerializer`
++declares the third credential header as `x_api_key =
++serializers.CharField(source="x-api-key", ...)`, because `x-api-key` is
++not a Python identifier. **That is the wrong half of the mapping.** DRF
++reads INPUT by a field's NAME and uses `source` only to decide where the
++value lands in `validated_data`, so a body carrying `"x-api-key"` — what
++§ The contract specifies and what the Go relay sends — deserialized to
++`None`, `HTTP_X_API_KEY` was never set on the synthesised request, and an
++API-key client would have resolved to **anonymous** in the nginx-less
++shape and to its real user in production. That is the exact cross-shape
++divergence D5 exists to prevent, and the one this third field was added
++to close. Fixed with three lines of `to_internal_value`. **Found by a
++Gate 2 coverage test, not by review**: the first measurement listed the
++`HTTP_X_API_KEY` assignment among nine uncovered new statements, and
++writing a test for it produced a 200 where a rejected key must give 401.
++Every earlier reading had looked past a declaration that names the wire
++key on the line above the comment explaining why the wire key matters.
++Recorded here because the shape generalises: any `source=` on a field
++whose wire name is not a Python identifier is silently input-blind, and
++this contract has one more such field waiting to be added the moment a
++fourth credential header is discovered.
++
  ## Stage 2d — cutover, and its trap
  
  **The historical bug this stage exists to not repeat.** Every live-bound nginx location today carries
-@@ -2692,6 +2820,8 @@ Filled in as PRs merge; this spec lands as its own PR 0.
- | 2c-4 -- the Go relay's ffmpeg source: `relay/ffmpeg`'s spawn (`os/exec` + `SysProcAttr{Setpgid, Pdeathsig}`, D5 exception 1), the `log_parsers.py` port and the clock-injected buffering detector, `relay/channel`'s `TranscodeSource` and the package-private `attachable` seam, Amendment A4.1 (Django builds `stream_profile.argv`; no Go word splitter), the Go credential-logging guard `relay/internal/credlint` (#283) plus its `scripts/check_go_credential_logging.sh`, and the seven ffmpeg-derived fields on `GET /proxy/relay/channels`. Parity matrix rows 4 (real-ffmpeg), 5, 28 and 29 get a Go column (Amendment A4.4). Two Python-relay defects found and filed rather than fixed, per D10: the provider-URL INFO leak through ffmpeg's stderr preamble ([#295](https://github.com/D10Scot/Dispatcharr/issues/295)) and the UDP filter's dangling flag ([#296](https://github.com/D10Scot/Dispatcharr/issues/296)). CI fix round (2026-09-14): golangci-lint's darwin/linux build-tag blind spot fixed, the fixture-vs-migration-seed argv mismatch fixed, and row 4's real-ffmpeg pin moved onto the base image's production ffmpeg after both relays' shared `frame=` progress gate was found structurally blind to ffmpeg 6.x, filed rather than fixed as [#299](https://github.com/D10Scot/Dispatcharr/issues/299) (Amendment A4.7). | `migration/phase2c-ffmpeg` | pending |
+@@ -2788,6 +2939,7 @@ Filled in as PRs merge; this spec lands as its own PR 0.
  | 2c-5 -- the Go relay's failover: the three triggers (rows 1, 2, 3) as one port of `StreamManager.run`'s two loops, a clean EOF ported as a retried connection failure (R1); the control-plane client's `release` and `events` routes and an emitter that batches and logs an outage once (R12); the degraded fallback to the candidate list cached at channel start, never on a refusal (R2); the Redirect Stream Profile architecture -- the 302, the provider probe, the fall-through to the cached alternates, the internal-principal override, publishing no channel (R7, R8); the health flag, the keepalives, the client timeout and the error packet closing Amendment A2.5 (R14, R15); the five events the failover machinery raises (R11). Parity matrix rows 1, 2, 3 and 6 get a Go column; row 7 gains a pin across a switch. A pre-existing Python defect (one `next-source` call per buffering progress record when no alternate exists) reproduced per D5 and filed as [#302](https://github.com/D10Scot/Dispatcharr/issues/302) (R6). | `migration/phase2c-failover` | pending |
  | 2c-6 -- the Go relay's fMP4 output format (`migration/phase2c-fmp4`). One remux per channel reading the shared ring on `pipe:0`, the init segment replayed to every client, a refcounted lifecycle with no shutdown delay, and parity-matrix row 12 ([#222](https://github.com/D10Scot/Dispatcharr/issues/222)) reproduced, pinned and filed rather than fixed. Row 12 gets its Go pin. Amendment A6. [#304](https://github.com/D10Scot/Dispatcharr/issues/304) (a pre-existing 2c-4 defect, the stderr pipe truncated by a reap racing its drain) fixed in `relay/ffmpeg/spawn.go`, repairing `relay/channel/source_transcode.go` without editing it. Two Python-side findings from the port, reproduced and filed rather than fixed: the fMP4 scanner's resynchronisation arm discarding the whole working buffer ([#306](https://github.com/D10Scot/Dispatcharr/issues/306)) and the dead stop-during-restart guard in `_handle_bsf_error` ([#307](https://github.com/D10Scot/Dispatcharr/issues/307)). Three plan corrections found and fixed in the plan document as committed, run rather than read: Task 4 Step 7's break-check rows 16-18 name tests defined in `relay/httpapi/fmp4_test.go`, Task 6's file, and had to run there rather than in Task 4; Task 1 Step 2's expected result for `TestEveryStderrLineSurvivesTheWaitThatPrecedesTheJoin` describes a runtime failure the package cannot yet produce, since the two `StartPiped` tests appended in the same step leave it uncompilable until Step 3's implementation lands; and the issue-number-placeholder slot count was corrected from six to five (an instruction about the slots had been counted as one) with Task 8 Step 5's own verification grep narrowed to the paths that can carry a real slot, since run unscoped over all of `docs/` it could never return empty. | `migration/phase2c-fmp4` | pending |
-+| 2c-7 -- the Go relay's Output Profiles (`migration/phase2c-output-profile`). *(2c-7's own row. If it is absent when you apply this hunk, 2c-7 has not merged and this plan's Task 0 should have stopped; if it is present, this hunk's context has moved and it must be re-captured -- which is the re-seed step's job.)* | `migration/phase2c-output-profile` | pending |
-+| 2c-8 -- the Go relay's control routes and drain (`migration/phase2c-control-drain`). The four remaining `/proxy/relay/…` routes (the single-channel `GET` with its `?fields=state` form, the channel `DELETE`, the client `DELETE` and `advance`), the detail endpoint with its five extra client fields and row 14's `owner` asymmetry, the XC live roots (Ruling R1: spec D1 scopes them and no PR owned them), the four events the tune and stop paths raise, the dev-only `POST /_dispatcharr/authorize-internal` fallback and the Go half that calls it, and D6's SIGTERM drain with a real `/readyz` and a role-aware Docker `HEALTHCHECK`. Thirteen parity-matrix rows get a Go pin, taking the matrix to 28 of 28 pinnable rows, and the ten authorize-matrix rows among them gain a Notes clause saying the Go pin covers the relay's ask-and-obey share and not the decision, which stays Django's. Amendment A8. Three defects found in code this PR did not write and fixed: `RequireInternal` verifying the bound signature against an empty body (A8.3), `Manager.publish` bypassing `addClient` for the first client of every channel (A8.4), and `control.Emitter` panicking on a send after `Close` and on a second `Close` (A8.5). Two Python-side findings reproduced and filed rather than fixed: `source_bitrate` and `ffmpeg_bitrate` are read by `channel_status.py` and written by nothing, the second because the reader and the writer name two different constants ([#NNN](https://github.com/D10Scot/Dispatcharr/issues/NNN)). Four break-checks stayed green on a first attempt and each produced a better test or deleted unreachable code. | `migration/phase2c-control-drain` | pending |
+ | 2c-7 -- the Go relay's Output Profiles (`migration/phase2c-output-profile`). One transcode per active `(channel, profile)` pair reading the channel's shared ring on `pipe:0` and writing a second in-process MPEG-TS ring, shared by every client on that profile; an fMP4 client on a profile runs it and 2c-6's remux chained, under `mpegts:p<id>` and `fmp4:p<id>`. Parity-matrix row 11 gets its Go pin, counted in spawns. The contract gained a null `argv` so a broken Output Profile can be told from a deactivated one. Amendment A7. Three plan corrections found, disclosed and **fixed in the plan document as committed**, run rather than read: Task 4 Step 5 and Task 7 Step 5 misassigned which break-check rows belong to which task -- rows 3-7 name `httpapi`-package tests Task 7 creates (Appendix P) and rows 8 and 11 name `output`-package tests Task 4 creates (Appendix I), so Task 4's Step 5 now reads "rows 8 and 11" and Task 7's now reads "rows 2, 3, 4, 5, 6, 7, 9, 10, 12, 13, 16, 17, 18", the amended lists this PR actually ran each row against; rows 16, 17 and 18 were re-checked against the same test rather than assumed correct, and confirmed already in Task 7's list -- `TestTheDeactivatedProfileCorrectionDoesNotRaceTheListEndpoint` and `TestAFailoverRefreshesTheProfileSetAndADegradedOneDoesNot` (both arms) are in `relay/httpapi/profile_test.go`, and no channel-package location for either exists. Task 5 Step 3's "Expected: green" for the whole-module `go build ./...` did not hold and is amended to name what actually goes green at that step: `go build`/`vet`/`golangci-lint` scoped to `./channel/... ./output/... ./control/... ./buffer/... ./ffmpeg/... ./internal/...` (every package but `httpapi`), `go test -race ./channel/...`, and `gofmt -l .` over the whole tree -- **commit `38669dba` (Task 5) does not build alone**, because `httpapi/fmp4.go` and `stream.go` still call `AttachOutput` with the pre-2c-7 signature; the whole-module build, vet, test and lint first go green at Task 6 Step 4 once `httpapi`'s own edits land, so a `go build ./...` bisect on this branch lands on Task 6's commit for a defect that is Task 5's incompleteness, not Task 6's own. No commit was ever made against a genuinely broken working tree regardless, since Task 6 was written and verified before either commit. Third, Task 9 Step 3's `ffmpeg.StartPiped`/`.Start` call-site breakdown named the wrong two files ("two in spawn.go, one in output/fmp4.go, one in output/profile.go"); the actual four are one in `output/profile.go`, two in `output/fmp4.go` (the initial spawn and the bitstream-filter retry) and one in `channel/source_transcode.go` -- the total of 4 was already right. | `migration/phase2c-output-profile` | pending |
++| 2c-8 -- the Go relay's control routes and drain (`migration/phase2c-control-drain`). The four remaining `/proxy/relay/…` routes (the single-channel `GET` with its `?fields=state` form, the channel `DELETE`, the client `DELETE` and `advance`), the detail endpoint with its five extra client fields and row 14's `owner` asymmetry, the XC live roots (Ruling R1: spec D1 scopes them and no PR owned them), the four events the tune and stop paths raise, the dev-only `POST /_dispatcharr/authorize-internal` fallback and the Go half that calls it, and D6's SIGTERM drain with a real `/readyz` and a role-aware Docker `HEALTHCHECK`. Thirteen parity-matrix rows get a Go pin, taking the matrix to 28 of 28 pinnable rows, and the ten authorize-matrix rows among them gain a Notes clause saying the Go pin covers the relay's ask-and-obey share and not the decision, which stays Django's. Amendment A8. Four defects found and fixed, three in code this PR did not write: `RequireInternal` verifying the bound signature against an empty body (A8.3), `Manager.publish` bypassing `addClient` for the first client of every channel (A8.4), `control.Emitter` panicking on a send after `Close` and on a second `Close` (A8.5), and -- in this PR's own first draft, found by a Gate 2 coverage test -- the `x-api-key` body field that never arrived, because DRF reads input by a field's NAME and `source=` maps only the output (A8.9). Two Python-side findings reproduced and filed rather than fixed: `source_bitrate` and `ffmpeg_bitrate` are read by `channel_status.py` and written by nothing, the second because the reader and the writer name two different constants ([#NNN](https://github.com/D10Scot/Dispatcharr/issues/NNN)). Four break-checks stayed green on a first attempt and each produced a better test or deleted unreachable code. | `migration/phase2c-control-drain` | pending |
  
  ## Risks
  
@@ -8295,11 +8339,11 @@ index d0f95a25..640da7fa 100644
 
 Two edits, one hunk: the § Architecture sentence that still says "At 2c-1 it serves `/healthz` and `/readyz` and nothing else", and one bullet appended to § Known defects' Correctness list.
 
-**Captured against `eb7fac07`. Re-capture on re-seed** — `CLAUDE.md` is edited by nearly every PR in this stage, and 2c-7 touches § Video path, which is close enough to matter.
+**Captured against `d6d71f97`.** Re-captured on the re-seed and its content is unchanged: 2c-7 appended to the Output Profile parenthetical, which is far enough from both anchors that this hunk still applied — checked, not assumed.
 
 ```diff
 diff --git a/CLAUDE.md b/CLAUDE.md
-index a38fc18b..c1a227f9 100644
+index 31609244..7f18ce9b 100644
 --- a/CLAUDE.md
 +++ b/CLAUDE.md
 @@ -70,7 +70,7 @@ scripts/check_go_stdlib_only.sh relay           # the module must stay stdlib-on
