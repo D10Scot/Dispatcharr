@@ -63,4 +63,23 @@ type Client struct {
 
 	// ConnectedAt is when the client attached.
 	ConnectedAt time.Time
+
+	// meter is this client's transfer counters (clientstats.go), installed
+	// by addClient and shared with every value copy ClientSnapshot hands
+	// out. Unexported so nothing outside this package can build a Client
+	// that reports counters nobody is writing.
+	meter *clientMeter
+
+	// stop is closed by StopClient: the in-memory form of
+	// live:channel:{id}:clients:{cid}:stop, the key
+	// ChannelService.stop_client SETEXes and the generator's loop polls
+	// (services/channel_service.py:665-673). Installed by addClient, so a
+	// Client that was never registered has a nil channel and Stopped()
+	// blocks for ever -- which is the correct answer for a client nothing
+	// can stop.
+	stop chan struct{}
 }
+
+// Stopped is closed when an admin has asked for this client to go away.
+// serveClient and serveFMP4 derive their context from it.
+func (c Client) Stopped() <-chan struct{} { return c.stop }

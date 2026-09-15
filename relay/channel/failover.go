@@ -225,6 +225,36 @@ func (c *Channel) failover(ctx context.Context, why string) (Resolved, bool) {
 	}
 
 	c.log.Info("switching stream", "channel", c.id, "trigger", why, "stream", resolved.Info.StreamID, "m3u_profile", resolved.Info.M3UProfileID)
+	c.applySwitch(resolved)
+
+	c.mu.Lock()
+	degradedBefore := c.failoverDegraded
+	c.failoverDegraded = resolved.Degraded
+	c.mu.Unlock()
+	if !resolved.Degraded && degradedBefore {
+		// Django is answering again: say, once, that an earlier failover ran
+		// blind on the cached list and may have exceeded max_streams
+		// (:2191-2202).
+		c.emit("channel_error", map[string]any{"reason": "degraded_failover"})
+	}
+	return resolved, true
+}
+
+// applySwitch is update_url's success path (input/manager.py:1479-1530)
+// minus the connection teardown, which a Source's own cancellation does:
+// the packetiser is reset, the source info and the current stream id are
+// swapped, the failure history is cleared and stream_switch is raised.
+//
+// ONE MECHANISM FOR TWO CALLERS (Global Constraint 18). An automatic
+// failover reaches it through failover() above and an operator's switch
+// reaches it through Advance (advance.go), which is exactly the sharing
+// Python has -- _try_next_stream calls update_url (:2139) and
+// ChannelService.change_stream_url calls the same method (:493). What the
+// two do NOT share is the tried-set bookkeeping, which is why that stays
+// with each caller: failover records the candidate BEFORE it checks the URL
+// so a rejected candidate is still excluded next time, and update_url
+// records it AFTER, inside the success path.
+func (c *Channel) applySwitch(resolved Resolved) {
 	c.mu.Lock()
 	c.ring.ResetPosition()
 	c.source = resolved.Info
@@ -248,18 +278,6 @@ func (c *Channel) failover(ctx context.Context, why string) (Resolved, bool) {
 		"new_url":   truncate(redact.Line(resolved.Info.URL), 100),
 		"stream_id": resolved.Info.StreamID,
 	})
-
-	c.mu.Lock()
-	degradedBefore := c.failoverDegraded
-	c.failoverDegraded = resolved.Degraded
-	c.mu.Unlock()
-	if !resolved.Degraded && degradedBefore {
-		// Django is answering again: say, once, that an earlier failover ran
-		// blind on the cached list and may have exceeded max_streams
-		// (:2191-2202).
-		c.emit("channel_error", map[string]any{"reason": "degraded_failover"})
-	}
-	return resolved, true
 }
 
 // failoverFromBuffering is the stderr reader's entry: _parse_ffmpeg_stats'

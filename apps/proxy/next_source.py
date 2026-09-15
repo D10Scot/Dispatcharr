@@ -155,6 +155,31 @@ def _stream_profile_ref(profile, *, url, user_agent, pk):
     }
 
 
+def channel_stream_profile_ref(channel, *, url, user_agent):
+    """The CHANNEL's own effective stream profile, built for `url`.
+
+    Phase 2 PR 2c-8. /proxy/ts/change_stream/ can be called with a bare url
+    and no stream_id -- reachable only by a hand-crafted admin call, never by
+    the UI, which always sends stream_id -- and that path resolves no Stream
+    row, so there is no source dict to take a stream_profile out of. The Go
+    relay builds no command line (Amendment A4.1), so without one it has
+    nothing to spawn.
+
+    The profile is the channel's, which is also what the Python relay uses
+    on that path: StreamManager keeps its own stream_profile and transcode
+    flag across update_url (input/manager.py:1462-1540) and rebuilds the
+    command from them. Same profile, built here instead of there.
+
+    Returns (transcode, stream_profile_ref, ffmpeg_stream_profile_ref), the
+    three fields relay_client.advance carries.
+    """
+    profile = channel.get_stream_profile()
+    transcode = not (profile.is_proxy() or profile.is_redirect())
+    ref = _stream_profile_ref(profile, url=url, user_agent=user_agent, pk=channel.id)
+    locked = _LockedFfmpegProfile().ref(url=url, user_agent=user_agent, pk=channel.id)
+    return transcode, ref, locked
+
+
 def _locked_ffmpeg_profile():
     """The locked 'ffmpeg' StreamProfile ROW, or None.
 

@@ -27,6 +27,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"math"
 	"sort"
 	"sync"
 	"time"
@@ -118,6 +119,9 @@ type Channel struct {
 	mu      sync.RWMutex
 	state   State
 	lastErr error
+	// stateChangedAt is ChannelMetadataField.STATE_CHANGED_AT, set by
+	// setState on every transition.
+	stateChangedAt time.Time
 	// source is what the channel is playing NOW. Guarded by mu since 2c-5,
 	// because a failover rewrites it (input/manager.py:2160-2171's hset).
 	source SourceInfo
@@ -214,7 +218,46 @@ func (c *Channel) addClient(cl *Client) bool {
 	if _, taken := c.clients[cl.ID]; taken {
 		return false
 	}
+	// The counters and the stop signal are installed HERE rather than by the
+	// caller, so a Client that reached the registry always has both and one
+	// that did not has neither: Sent, Touch and Stats are no-ops on a nil
+	// meter, and Stopped() on a nil channel blocks for ever, which is the
+	// right answer for a client nothing can stop.
+	cl.meter = newClientMeter(cl.ConnectedAt)
+	cl.stop = make(chan struct{})
 	c.clients[cl.ID] = cl
+	return true
+}
+
+// StopClient signals one client to disconnect: ChannelService.stop_client's
+// stop key (services/channel_service.py:665-673), which the generator's loop
+// polls and answers by returning.
+//
+// IT DOES NOT REMOVE THE CLIENT FROM THE REGISTRY, deliberately. The serving
+// goroutine's deferred release is the one mechanism by which a client leaves
+// (Global Constraint 18), and removing it here would be a second one --
+// which matters more than it sounds, because release is also what decides
+// whether the channel was left idle. Python removes it here AND lets the
+// generator's own cleanup remove it again (`if self.client_id in
+// client_manager.clients`, output/ts/generator.py:643), so the registry is
+// the same shape either way; only the number of mechanisms differs.
+//
+// Reports whether a client of that id was registered, which is
+// stop_client's locally_processed.
+func (c *Channel) StopClient(id string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	cl, registered := c.clients[id]
+	if !registered || cl.stop == nil {
+		return false
+	}
+	select {
+	case <-cl.stop:
+		// Already signalled. Closing twice panics, and a second DELETE for
+		// the same client is an ordinary thing for an admin to do.
+	default:
+		close(cl.stop)
+	}
 	return true
 }
 
@@ -289,6 +332,16 @@ func (c *Channel) SetClientOutputProfile(clientID string, profileID *int) {
 	}
 }
 
+// Resolver is the channel's own resolver, the one its tune built. Exported
+// so the operator-switch handler can reuse the SAME source builder the tune
+// and every failover use, rather than assembling a second one out of the
+// request: Python's update_url keeps the manager's own transcode flag and
+// stream profile across a switch (input/manager.py:1462-1540), so a second
+// builder here would be free to disagree with it.
+//
+// Nil for a channel with no failover, which is a test shape.
+func (c *Channel) Resolver() Resolver { return c.resolver }
+
 // Source is what the next-source answer said about this channel's stream --
 // the CURRENT one, after any failover.
 func (c *Channel) Source() SourceInfo {
@@ -303,10 +356,46 @@ func (c *Channel) StartedAt() time.Time { return c.startedAt }
 func (c *Channel) setState(state State, err error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if state != c.state {
+		// state_changed_at (ChannelMetadataField.STATE_CHANGED_AT), written
+		// beside every state hset and read by the detail endpoint
+		// (channel_status.py:124-127). On a CHANGE only: Python writes the
+		// pair together, so a re-assertion of the same state moves it there
+		// too -- but every Python writer asserts a state it is entering,
+		// never one it is already in, so the two agree on every reachable
+		// path and this guard makes the field mean what its name says.
+		c.stateChangedAt = c.now()
+	}
 	c.state = state
 	if err != nil {
 		c.lastErr = err
 	}
+}
+
+// StateChangedAt is when State last changed, for the detail endpoint's
+// state_changed_at and state_duration (channel_status.py:124-127).
+func (c *Channel) StateChangedAt() time.Time {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.stateChangedAt
+}
+
+// Local is the detail endpoint's local_manager block
+// (channel_status.py:315-322): the four StreamManager fields the answering
+// process can only report because it holds the manager. This relay always
+// holds it for a channel in its map, so the block is never absent here where
+// Python omits it on a non-owning worker.
+type Local struct {
+	Healthy   bool
+	Connected bool
+	LastData  time.Time
+}
+
+// Local is a snapshot of those four fields.
+func (c *Channel) Local() Local {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return Local{Healthy: c.healthy, Connected: c.connected, LastData: c.lastData}
 }
 
 // attachable is the optional interface a Source implements to be handed the
@@ -346,6 +435,11 @@ type attachable interface{ attach(*Channel) }
 func (c *Channel) run(ctx context.Context, first Source) {
 	defer c.releaseSlot()
 	defer close(c.done)
+	// BEFORE close(c.done), and that ordering is load-bearing: stop() returns
+	// the moment done closes, so an emit after it would race the SIGTERM
+	// drain's own emitter flush and lose the last channel_stop of a
+	// shutdown -- the one it most matters to keep.
+	defer c.emitStop()
 	defer c.ring.Close()
 	// stop_all_output_formats (server.py:1771), in the one place a channel
 	// ends. Deferred calls run last-in first-out, so this runs BEFORE the ring
@@ -529,6 +623,38 @@ func (c *Channel) noteStable() {
 	if c.currentStreamID != 0 {
 		c.tried[c.currentStreamID] = true
 	}
+}
+
+// emitStop is channel_stop (live_proxy/server.py:1568-1601): the runtime and
+// the byte total, snapshotted as the channel ends.
+//
+// RAISED FROM THE ONE PLACE A CHANNEL ENDS, where Python raises it from
+// ProxyServer.stop_channel's owner branch (:1827, :1842) -- which the admin
+// stop, the last-client disconnect sweep and the orphan sweep all reach, and
+// which a channel whose sources are exhausted reaches through the cleanup
+// thread. One mechanism here, several there, and the set of endings that
+// announce themselves is the same or slightly larger: a stated divergence in
+// the safe direction, since an ending that raised nothing would be a missing
+// event rather than a spurious one.
+//
+// channel_name falls back to the channel's id exactly as
+// _collect_channel_stop_event_data's `or str(channel_id)` does (:1570).
+func (c *Channel) emitStop() {
+	name := c.channelName
+	if name == "" {
+		name = c.id
+	}
+	// round(time.time() - init_time, 2) at :1577.
+	runtime := math.Round(c.now().Sub(c.startedAt).Seconds()*100) / 100
+	c.events.Emit(Event{
+		Type:        "channel_stop",
+		ChannelID:   c.id,
+		ChannelName: name,
+		Details: map[string]any{
+			"runtime":     runtime,
+			"total_bytes": c.ring.TotalBytes(),
+		},
+	})
 }
 
 // releaseSlot gives the provider slot back once the source goroutine has

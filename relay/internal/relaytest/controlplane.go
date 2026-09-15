@@ -78,6 +78,19 @@ type ControlPlaneConfig struct {
 	// of the error table.
 	Body string
 
+	// Nameless sends the three name fields as empty strings, which is what
+	// an answer looks like when Django resolved a Source whose rows carry no
+	// name -- the state parity-matrix row 18 is about. Every producer in
+	// next_source.py reads them off a loaded row, so the real shape is
+	// "always present, possibly empty"; the Go relay's payload omits an
+	// empty one, where Python would fall back to an ORM lookup it has no
+	// way to make.
+	Nameless bool
+
+	// Authorize is what POST /_dispatcharr/authorize-internal answers with.
+	// Nil means the minimal default below.
+	Authorize *AuthorizeDecision
+
 	// Delay holds every answer for this long before writing it. Zero is the
 	// ordinary immediate answer. 2c-3's R11 test needs a next-source call
 	// still in flight when a client disconnects, and there is no other way
@@ -169,15 +182,83 @@ type ProfileConfig struct {
 type ControlPlane struct {
 	server *httptest.Server
 
-	mu       sync.Mutex
-	requests []RecordedRequest
-	events   []RecordedEvent
-	settings map[string]any
-	status   int
-	delay    time.Duration
-	profiles map[string]OutputProfileConfig
-	hasProfs bool
+	mu        sync.Mutex
+	requests  []RecordedRequest
+	events    []RecordedEvent
+	settings  map[string]any
+	status    int
+	delay     time.Duration
+	profiles  map[string]OutputProfileConfig
+	hasProfs  bool
+	authorize *AuthorizeDecision
 }
+
+// AuthorizeDecision is what the fake answers POST
+// /_dispatcharr/authorize-internal with: the seven X-Relay-* headers on a
+// 200, or a status and a body on a denial.
+//
+// THE DEFAULT IS DELIBERATELY MINIMAL -- the channel out of the URI, and
+// nothing else. Django resolves more than that on every live tune (it always
+// mints a client id), and filling those in here by default would silently
+// change what every untrusted rig from 2c-2 onward observes. A test that is
+// ABOUT the authorize hop sets the fields it is about, which is what keeps
+// the default from pinning anything.
+type AuthorizeDecision struct {
+	Channel      string
+	Output       string
+	Client       string
+	User         string
+	Name         string
+	OutputFormat string
+	ClientIP     string
+
+	// Status, when non-zero, is answered instead of 200. Body is the JSON
+	// denial that goes with it.
+	Status int
+	Body   string
+
+	// NonJSONBody answers the denial with a text/html body instead, which
+	// is what a proxy's own error document or a Django 500 page looks like.
+	// The relay must NOT forward such a body to a viewer, and a test that
+	// only ever configured a JSON one could not tell the two branches apart.
+	NonJSONBody bool
+}
+
+// SetAuthorize replaces what every LATER authorize call is answered with.
+func (c *ControlPlane) SetAuthorize(decision *AuthorizeDecision) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.authorize = decision
+}
+
+// AuthorizeRequest is one decoded POST to the authorize route.
+type AuthorizeRequest struct {
+	URI      string `json:"uri"`
+	ClientIP string `json:"client_ip"`
+	Internal bool   `json:"internal"`
+	Headers  struct {
+		Authorization *string `json:"authorization"`
+		Cookie        *string `json:"cookie"`
+		APIKey        *string `json:"x-api-key"`
+	} `json:"headers"`
+}
+
+// AuthorizeRequests is every authorize call the fake has been sent, decoded,
+// in order.
+func (c *ControlPlane) AuthorizeRequests() []AuthorizeRequest {
+	var out []AuthorizeRequest
+	for _, r := range c.RequestsTo(AuthorizePath) {
+		var decoded AuthorizeRequest
+		if err := json.Unmarshal(r.Body, &decoded); err == nil {
+			out = append(out, decoded)
+		}
+	}
+	return out
+}
+
+// AuthorizePath is the route the Go relay's dev fallback calls, spelled here
+// so a test naming it cannot drift from control.AuthorizePath.
+const AuthorizePath = "/_dispatcharr/authorize-internal"
 
 // SetSettings replaces the proxy_settings every LATER answer carries. It is
 // how a test changes a setting between two tunes, the way an operator's
@@ -238,8 +319,12 @@ type RecordedEvent struct {
 	Type        string
 	ChannelID   string
 	ChannelName string
-	StreamID    *int
-	Details     map[string]any
+	// ClientID is the second key emit_event lifts out of details to the top
+	// level (control_plane.py:331-333's two-name loop). Added in 2c-8, with
+	// the first events that carry one.
+	ClientID string
+	StreamID *int
+	Details  map[string]any
 }
 
 // NewControlPlane starts a fake control plane. Register Close with t.Cleanup.
@@ -301,6 +386,15 @@ func NewControlPlane(cfg ControlPlaneConfig) *ControlPlane {
 			return
 		}
 
+		// The authorize route is answered AFTER the three forced-failure arms
+		// above, deliberately: a test that forces a 503 on the control plane
+		// is testing an outage, and an outage takes the authorize call down
+		// with everything else.
+		if strings.HasSuffix(r.URL.Path, AuthorizePath) {
+			c.writeAuthorize(w, cfg)
+			return
+		}
+
 		w.Header().Set("Content-Type", "application/json")
 		switch {
 		case strings.HasSuffix(r.URL.Path, "/release"):
@@ -326,6 +420,7 @@ func (c *ControlPlane) recordEvents(body []byte) {
 			Type        string         `json:"type"`
 			ChannelID   string         `json:"channel_id"`
 			ChannelName string         `json:"channel_name"`
+			ClientID    string         `json:"client_id"`
 			StreamID    *int           `json:"stream_id"`
 			Details     map[string]any `json:"details"`
 		} `json:"events"`
@@ -336,7 +431,10 @@ func (c *ControlPlane) recordEvents(body []byte) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	for _, e := range batch.Events {
-		c.events = append(c.events, RecordedEvent{Type: e.Type, ChannelID: e.ChannelID, ChannelName: e.ChannelName, StreamID: e.StreamID, Details: e.Details})
+		c.events = append(c.events, RecordedEvent{
+			Type: e.Type, ChannelID: e.ChannelID, ChannelName: e.ChannelName,
+			ClientID: e.ClientID, StreamID: e.StreamID, Details: e.Details,
+		})
 	}
 }
 
@@ -416,6 +514,12 @@ func (c *ControlPlane) nextSourceAnswer(cfg ControlPlaneConfig, body []byte) map
 		}
 		candidates = append(candidates, candidate{alt.StreamID, alt.URL, ua, alt.Argv})
 	}
+	names := func(value string) string {
+		if cfg.Nameless {
+			return ""
+		}
+		return value
+	}
 	render := func(cand candidate) map[string]any {
 		return map[string]any{
 			"stream_id":             cand.id,
@@ -424,9 +528,9 @@ func (c *ControlPlane) nextSourceAnswer(cfg ControlPlaneConfig, body []byte) map
 			"transcode":             kind == "transcode",
 			"m3u_profile_id":        1,
 			"slot_reserved":         slotReserved,
-			"channel_name":          "Test Channel",
-			"stream_name":           "Test Stream",
-			"m3u_profile_name":      "Test Profile",
+			"channel_name":          names("Test Channel"),
+			"stream_name":           names("Test Stream"),
+			"m3u_profile_name":      names("Test Profile"),
 			"stream_profile":        profile(1, cfg.Command, cand.argv),
 			"ffmpeg_stream_profile": ffmpegProfile,
 		}
@@ -533,3 +637,64 @@ func (c *ControlPlane) EventsOfType(typ string) []RecordedEvent {
 // transport failure on its next call, which is the other shape of
 // control.Unavailable beside SetStatus's 5xx.
 func (c *ControlPlane) Close() { c.server.Close() }
+
+// writeAuthorize answers the dev fallback.
+func (c *ControlPlane) writeAuthorize(w http.ResponseWriter, cfg ControlPlaneConfig) {
+	c.mu.Lock()
+	decision := c.authorize
+	c.mu.Unlock()
+	if decision == nil {
+		decision = cfg.Authorize
+	}
+	if decision == nil {
+		// The minimal default: the channel the URI named, so a relay that
+		// believed an unverified X-Relay-Channel is still caught, and
+		// nothing else.
+		decision = &AuthorizeDecision{Channel: channelFromURI(c.lastAuthorizedURI())}
+	}
+	if decision.Status != 0 && decision.Status != http.StatusOK {
+		if decision.NonJSONBody {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.WriteHeader(decision.Status)
+			_, _ = w.Write([]byte("<html>relaytest: a non-JSON denial</html>"))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(decision.Status)
+		body := decision.Body
+		if body == "" {
+			body = `{"error":"relaytest: configured denial"}`
+		}
+		_, _ = w.Write([]byte(body))
+		return
+	}
+	w.Header().Set("X-Relay-Channel", decision.Channel)
+	w.Header().Set("X-Relay-Output", decision.Output)
+	w.Header().Set("X-Relay-Client", decision.Client)
+	w.Header().Set("X-Relay-User", decision.User)
+	w.Header().Set("X-Relay-Name", decision.Name)
+	w.Header().Set("X-Relay-Output-Format", decision.OutputFormat)
+	w.Header().Set("X-Relay-Client-IP", decision.ClientIP)
+	w.WriteHeader(http.StatusOK)
+}
+
+// lastAuthorizedURI is the uri field of the most recent authorize call.
+func (c *ControlPlane) lastAuthorizedURI() string {
+	seen := c.AuthorizeRequests()
+	if len(seen) == 0 {
+		return ""
+	}
+	return seen[len(seen)-1].URI
+}
+
+// channelFromURI is the last path segment of a tune URI, which for
+// /proxy/ts/stream/<uuid> is the channel -- the same thing Django's resolver
+// pulls out of the URL pattern.
+func channelFromURI(uri string) string {
+	path := strings.SplitN(uri, "?", 2)[0]
+	idx := strings.LastIndex(path, "/")
+	if idx < 0 {
+		return path
+	}
+	return path[idx+1:]
+}

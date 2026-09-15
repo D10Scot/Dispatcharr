@@ -18,7 +18,10 @@
 """
 
 import logging
-from django.http import JsonResponse
+from importlib import import_module
+
+from django.conf import settings as django_settings
+from django.http import HttpRequest, JsonResponse, parse_cookie
 from django.urls import Resolver404, resolve
 from drf_spectacular.utils import OpenApiResponse, extend_schema
 from rest_framework import serializers
@@ -41,6 +44,7 @@ from apps.proxy.authorize import (
 )
 from apps.proxy.internal_auth import (
     HEADER_AUTHORIZE_STATUS,
+    META_INTERNAL,
     HEADER_RELAY_CHANNEL,
     HEADER_RELAY_CLIENT,
     HEADER_RELAY_CLIENT_IP,
@@ -56,9 +60,11 @@ from apps.proxy.internal_auth import (
     META_RELAY_OUTPUT,
     META_RELAY_OUTPUT_FORMAT,
     META_RELAY_USER,
+    internal_principal_token,
     request_is_internal,
     request_is_relay_trusted,
 )
+from apps.proxy.permissions import IsInternalRelay
 
 logger = logging.getLogger(__name__)
 
@@ -351,6 +357,248 @@ def authorize_view(request):
     # not re-read a User row (output_format) and does not need
     # get_client_ip's trusted-proxy configuration (client_ip).
     response[HEADER_RELAY_OUTPUT_FORMAT] = result.output_format
+    response[HEADER_RELAY_CLIENT_IP] = result.client_ip
+    return response
+
+
+# --- The Go relay's dev fallback (spec D5, exception 2) -----------------
+#
+# POST /_dispatcharr/authorize-internal. ITS OWN PATH, not the nginx-facing
+# `= /_dispatcharr/authorize` above, and the distinct path is the whole
+# point: that location is declared `internal;` in docker/nginx.conf:120, an
+# EXACT-match location that wins over every prefix and regex one, so a POST
+# to it is 404'd by nginx before Django sees it in every nginx-fronted
+# deployment. Harmless for the fallback's intended use (a shape with no
+# nginx has no nginx to 404 it) and NOT harmless for the failure mode Phase
+# 1 deliberately made safe: when nginx's rendered RELAY_TRUST_TOKEN and a
+# relay's own derived token disagree, request_is_relay_trusted() returns
+# False and the Python relay falls through to an inline authorize_stream
+# call, warning once per process (_TRUST_MISMATCH_WARNED above). Reusing
+# the shielded path here would turn that degraded-but-working mode into
+# every live tune failing outright post-cutover.
+#
+# THE VIEW BUILDS THE REQUEST IT AUTHORIZES ENTIRELY FROM THE BODY AND
+# INHERITS NOTHING FROM THE TRANSPORT REQUEST. Every field below is
+# load-bearing and each has its own failure signature, all of them silent:
+#
+#   uri        the full path and query string, X-Original-URI's equivalent.
+#              _surface_for resolves the surface from it, and
+#              authorize_view:299 reads session_id off its query for the
+#              catch-up surface.
+#   client_ip  REMOTE_ADDR. authorize.py:425 evaluates the STREAMS ACL
+#              against the request's own address, so a view that passed its
+#              own transport request through would judge the RELAY's address
+#              -- wrong in exactly the nginx-less deployments this exists
+#              for, where there is no auth_request subrequest inheriting the
+#              client's.
+#   internal   whether the CLIENT's request was internal. Never the
+#              transport's own X-Dispatcharr-Internal header, which
+#              IsInternalRelay requires the relay to send and which
+#              therefore says only "this caller is part of the deployment".
+#              authorize_stream:417-419 reads request_is_internal off the
+#              request it is handed, and _resolve_principal:309-310 returns
+#              INTERNAL_PRINCIPAL before any channel flag, adult filter,
+#              profile membership or XC credential is looked at -- so
+#              passing the transport request through would authorize every
+#              tune in every nginx-less deployment, unconditionally.
+#   headers    the three credential-bearing headers the authenticator union
+#              can consume: authorization, cookie and x-api-key.
+#              ApiKeyAuthentication (apps/accounts/authentication.py:46-85)
+#              checks X-API-Key BEFORE falling back to an
+#              `Authorization: ApiKey ...` header, so omitting the third
+#              would resolve such a client to anonymous here and to its real
+#              user in production -- the cross-shape divergence D5 exists to
+#              prevent.
+#
+# They travel in the BODY rather than as headers because the bound token
+# (internal_auth.internal_request_token) signs exactly five fields -- the
+# context, the method, the full path, the timestamp and sha256(BODY) -- and
+# headers are not among them. A captured X-Dispatcharr-Internal-Request for
+# this path would otherwise stay valid for 120 seconds against ANY
+# combination of forwarded headers.
+
+
+class AuthorizeInternalHeadersSerializer(serializers.Serializer):
+    """The three credential-bearing headers, each null when the client sent
+    none. A `headers` sub-object rather than three flat fields so a fourth
+    credential header discovered later is a field, not a body-shape
+    redesign."""
+
+    authorization = serializers.CharField(
+        required=False, allow_null=True, allow_blank=True, default=None
+    )
+    cookie = serializers.CharField(
+        required=False, allow_null=True, allow_blank=True, default=None
+    )
+    # The wire name is the lowercased header, hyphen and all, which is not a
+    # Python identifier. `source=` alone is NOT enough and getting that wrong
+    # is silent: DRF reads INPUT by a field's NAME (`x_api_key`) and uses
+    # `source` only for where the value lands in validated_data, so a body
+    # carrying `"x-api-key"` would deserialize to None and an API-key client
+    # would resolve to ANONYMOUS here and to its real user in production --
+    # the exact cross-shape divergence D5 exists to prevent, and the one
+    # § The contract added this third field to close. Found by a coverage
+    # test, not by review. to_internal_value below is what makes the wire
+    # name the wire name.
+    x_api_key = serializers.CharField(
+        source="x-api-key",
+        required=False,
+        allow_null=True,
+        allow_blank=True,
+        default=None,
+    )
+
+    def to_internal_value(self, data):
+        if isinstance(data, dict) and "x-api-key" in data:
+            data = {**data, "x_api_key": data["x-api-key"]}
+        return super().to_internal_value(data)
+
+
+class AuthorizeInternalRequestSerializer(serializers.Serializer):
+    """The question this route answers, in full, so sha256(body) binds it."""
+
+    uri = serializers.CharField()
+    client_ip = serializers.CharField(allow_blank=True)
+    internal = serializers.BooleanField()
+    headers = AuthorizeInternalHeadersSerializer(required=False)
+
+
+def _synthetic_request(data) -> HttpRequest:
+    """The request authorize_stream is handed, built from the body alone.
+
+    Nothing here reads the incoming POST. The session is loaded the way
+    django.contrib.sessions.middleware.SessionMiddleware.process_request
+    loads it, from the body's cookie, because _session_user
+    (authorize.py:268-287) calls django.contrib.auth.get_user(request) --
+    which reads the SESSION, not request.user -- and a view that forwarded
+    the cookie but resolved the principal from request.user would downgrade
+    a session viewer to anonymous with NO ERROR: a hidden channel would
+    still 403, so the visible half of authorization would look correct,
+    while an ordinary channel streamed a 200 with real bytes and
+    user_level, Channel Profile membership, adult filtering and the
+    per-user stream limit had all quietly stopped applying.
+    """
+    split = urlsplit(data["uri"])
+    # authorize_view's own two decode steps, for its own reasons: a
+    # percent-encoded XC credential segment, and a raw-UTF-8 one that
+    # arrived latin-1 decoded.
+    path = split.path
+    try:
+        path = path.encode("latin-1").decode("utf-8")
+    except UnicodeError:
+        pass
+    path = unquote(path)
+
+    headers = data.get("headers") or {}
+    cookie = headers.get("cookie") or ""
+
+    request = HttpRequest()
+    request.method = "GET"
+    request.path = path
+    request.path_info = path
+    request.META = {
+        "REQUEST_METHOD": "GET",
+        "PATH_INFO": path,
+        "QUERY_STRING": split.query,
+        # get_client_ip reads REMOTE_ADDR and honours X-Real-IP /
+        # X-Forwarded-For only when REMOTE_ADDR is a trusted proxy. Neither
+        # forwarded header is set here -- the body carries no such field --
+        # so the address the relay observed is the address judged.
+        "REMOTE_ADDR": data["client_ip"],
+    }
+    if headers.get("authorization"):
+        request.META["HTTP_AUTHORIZATION"] = headers["authorization"]
+    if cookie:
+        request.META["HTTP_COOKIE"] = cookie
+    if headers.get("x-api-key"):
+        request.META["HTTP_X_API_KEY"] = headers["x-api-key"]
+    if data["internal"]:
+        # From the BODY's flag, minted here -- never copied from the
+        # transport request's own header. Absent entirely when the body
+        # says false, so request_is_internal answers False.
+        request.META[META_INTERNAL] = internal_principal_token()
+
+    request.GET = _query_dict(split.query)
+    request.COOKIES = parse_cookie(cookie)
+    engine = import_module(django_settings.SESSION_ENGINE)
+    request.session = engine.SessionStore(
+        request.COOKIES.get(django_settings.SESSION_COOKIE_NAME)
+    )
+    return request
+
+
+@extend_schema(
+    operation_id="internal_authorize_stream_post",
+    description=(
+        "Internal. The Go relay's fallback when no nginx auth_request "
+        "authorized the tune: the same authorize_stream() decision, reached "
+        "over HTTP because a Go process cannot import Python. Registered in "
+        "every deployment shape and never called in one that runs nginx. "
+        "Not part of the client API."
+    ),
+    request=AuthorizeInternalRequestSerializer,
+    responses={
+        200: OpenApiResponse(
+            description=(
+                "Authorized; the decision is in the seven X-Relay-* headers, "
+                "the same set a relay-bound nginx location carries."
+            )
+        ),
+        401: AuthorizeDenialSerializer,
+        403: AuthorizeDenialSerializer,
+        404: AuthorizeDenialSerializer,
+        429: AuthorizeDenialSerializer,
+    },
+    tags=["internal"],
+)
+@api_view(["POST"])
+@authentication_classes([])
+@permission_classes([IsInternalRelay])
+def authorize_internal_view(request):
+    payload = AuthorizeInternalRequestSerializer(data=request.data)
+    payload.is_valid(raise_exception=True)
+    data = payload.validated_data
+
+    http_request = _synthetic_request(data)
+
+    try:
+        match = resolve(http_request.path)
+    except Resolver404:
+        return authorize_error_response(AuthorizeDenied(404, "Not found"))
+
+    surface, identity = _surface_for(match)
+    if surface is None:
+        return authorize_error_response(AuthorizeDenied(403, "Forbidden"))
+    if surface == SURFACE_CATCHUP_XC and not identity:
+        identity = {
+            "identifier": (http_request.GET.get("stream") or "").removesuffix(".ts"),
+            "username": http_request.GET.get("username"),
+            "password": http_request.GET.get("password"),
+        }
+    if surface == SURFACE_CATCHUP:
+        identity["session_id"] = http_request.GET.get("session_id")
+
+    try:
+        result = authorize_stream(http_request, surface, **identity)
+    except AuthorizeDenied as exc:
+        # THE TRUE STATUS, never subrequest_error_response's 403 collapse.
+        # That shape exists only because ngx_http_auth_request_module can
+        # transport a 2xx, a 401 or a 403 and nothing else; a direct POST
+        # has no such constraint, and collapsing here would hand the Go
+        # relay a 403 where production answers 404 for an unknown channel
+        # or 429 for a user over their stream limit.
+        return authorize_error_response(exc)
+
+    response = Response(status=200)
+    response[HEADER_RELAY_CHANNEL] = result.channel_uuid
+    response[HEADER_RELAY_OUTPUT] = result.output_profile_id
+    response[HEADER_RELAY_CLIENT] = result.client_id
+    response[HEADER_RELAY_USER] = result.user_id
+    response[HEADER_RELAY_NAME] = result.relay_name
+    response[HEADER_RELAY_OUTPUT_FORMAT] = result.output_format
+    # In the nginx-less shape this response is the ONLY source of
+    # ip_address -- there is no hop-set header to read -- which is what
+    # closes parity-matrix row 17's stated gap for the Go relay.
     response[HEADER_RELAY_CLIENT_IP] = result.client_ip
     return response
 

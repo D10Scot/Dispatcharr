@@ -105,9 +105,9 @@ func TestATranscodeTuneDeliversTheChildsOutput(t *testing.T) {
 	if n := r.Upstream.Requests(); n != 1 {
 		t.Fatalf("the provider saw %d requests, want exactly 1 -- from the child, not the relay", n)
 	}
-	seen := r.Control.Requests()
+	seen := r.Control.RequestsTo("/next-source")
 	if len(seen) != 1 || !strings.HasSuffix(seen[0].Path, "/c-transcode/next-source") {
-		t.Fatalf("the control plane saw %d calls: %+v", len(seen), seen)
+		t.Fatalf("the control plane saw %d next-source calls: %+v", len(seen), seen)
 	}
 }
 

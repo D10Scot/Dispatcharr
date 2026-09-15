@@ -88,6 +88,30 @@ RUN if [ -n "$TIMESTAMP" ]; then \
     cat /app/version.py; \
     fi
 
+# The container health probe (spec D6). Role-aware, because this image runs
+# four different program sets and only three of the rungs start relay-go;
+# docker/healthcheck.sh exits 0 for the roles that do not have one.
+#
+# interval/timeout/retries are sized against relay-go's own supervisord
+# settings: startsecs=5 and startretries=20, so start-period=30s covers a
+# cold start plus a couple of restarts, and 3 retries at 15s means a genuinely
+# dead relay is reported unhealthy inside a minute.
+# Exec form, not shell form: hadolint's DL3025 warns on the latter, and the
+# repo's Dockerfiles are at zero hadolint findings.
+#
+# AND IT NAMES THE INTERPRETER RATHER THAN RELYING ON THE SCRIPT'S MODE BIT.
+# Exec form does not go through a shell, so `CMD ["/app/docker/healthcheck.sh"]`
+# needs the file to be executable: at 0644 every probe fails with
+# `permission denied` and the container reports `unhealthy` for ever, with
+# nothing in the build or the test suite saying so -- hadolint is clean either
+# way and no Go or Python test reads this file. The script IS committed 0755
+# (`git ls-files -s docker/healthcheck.sh`), and this form means a mode bit
+# lost to a patch that does not carry modes, an editor, or a file written by
+# hand cannot silently disable the probe. Belt and braces, deliberately: the
+# mode is the intent and the interpreter is the guarantee.
+HEALTHCHECK --interval=15s --timeout=5s --start-period=30s --retries=3 \
+    CMD ["/bin/sh", "/app/docker/healthcheck.sh"]
+
 # No static `USER` here: the container starts as root by design so
 # entrypoint.sh can create a user at the PUID/PGID the operator supplies (NAS
 # self-hosting convention, same as linuxserver.io images) and chown bind

@@ -18,6 +18,8 @@ this PR must leave alone.
 
 from rest_framework import serializers
 
+from apps.proxy.serializers import StreamProfileRefSerializer
+
 
 class RelayChannelClientSerializer(serializers.Serializer):
     """One row of get_basic_channel_info's `clients` list."""
@@ -210,6 +212,24 @@ class RelayAdvanceRequestSerializer(serializers.Serializer):
     )
     m3u_profile_name = serializers.CharField(
         required=False, allow_blank=True, allow_null=True, default=None
+    )
+    # Phase 2 PR 2c-8. THE GO RELAY BUILDS NO COMMAND LINE (Amendment A4.1:
+    # Django sends the argv it built for this source's own URL, user agent
+    # and object), so an advance carrying only a url has nothing the relay
+    # can spawn. These three carry the rest of what the tune path's own
+    # answer carries, in the same shapes: they are the fields of
+    # apps/proxy/serializers.py's SourceSerializer that the flat fields
+    # above do not already duplicate.
+    #
+    # required=False because the PYTHON relay's own handler ignores them and
+    # both relays run through the whole of stage 2c (spec D3); the Go relay
+    # refuses an advance with no stream_profile with a 400, which is what
+    # DRF answers here for a missing required field anyway. Every producer
+    # sends all three.
+    transcode = serializers.BooleanField(required=False, default=False)
+    stream_profile = StreamProfileRefSerializer(required=False, allow_null=True, default=None)
+    ffmpeg_stream_profile = StreamProfileRefSerializer(
+        required=False, allow_null=True, default=None
     )
     # /proxy/ts/change_stream/ has always cleared the running manager's
     # tried_stream_ids so an operator's manual switch does not inherit a

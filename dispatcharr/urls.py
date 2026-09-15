@@ -5,7 +5,7 @@ from django.conf.urls.static import static
 from django.views.generic import TemplateView, RedirectView
 from .routing import websocket_urlpatterns
 from apps.output.views import xc_player_api, xc_panel_api, xc_get, xc_xmltv
-from apps.proxy.authorize_views import authorize_view
+from apps.proxy.authorize_views import authorize_internal_view, authorize_view
 from apps.proxy.live_proxy.views import stream_xc
 from apps.proxy.vod_proxy.views import stream_xc_movie, stream_xc_episode
 from apps.timeshift.views import timeshift_proxy, timeshift_proxy_query
@@ -34,6 +34,21 @@ urlpatterns = [
     # the container in every shape that runs nginx; in dev, where nothing
     # runs nginx, the stream views authorize inline and never call it.
     path("_dispatcharr/authorize", authorize_view, name="authorize"),
+    # Internal: the Go relay's dev fallback (Phase 2 spec D5, exception 2).
+    # ITS OWN PATH, deliberately not the one above: `= /_dispatcharr/authorize`
+    # is an `internal;` exact-match location in docker/nginx.conf, so a POST
+    # to it is 404'd by nginx before Django sees it in every nginx-fronted
+    # shape -- which would turn a SECRET_KEY mismatch between roles from
+    # today's silent-but-working degrade into every live tune failing.
+    # Registered unconditionally, because Django cannot know at boot whether
+    # the relay it will talk to has nginx in front of it; gated by
+    # IsInternalRelay, which is the only protection it has since it sits
+    # outside nginx's shield by design.
+    path(
+        "_dispatcharr/authorize-internal",
+        authorize_internal_view,
+        name="authorize-internal",
+    ),
     # xc
     re_path("player_api.php", xc_player_api, name="xc_player_api"),
     re_path("panel_api.php", xc_panel_api, name="xc_panel_api"),

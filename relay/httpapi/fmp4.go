@@ -96,6 +96,12 @@ func serveFMP4(
 		log.Error("the fMP4 init segment disappeared", "channel", ch.ID(), "client", client.ID)
 		return
 	}
+	// client_connect, at generator.py:113-127's own point: after
+	// _wait_for_fmp4_ready and _setup_streaming have both succeeded and
+	// BEFORE the init segment is yielded (:129-134). Amendment A6.5 owes
+	// this to both client types and this is the fMP4 half.
+	emitClientConnect(ch, client)
+
 	if !writeChunks(w, rc, [][]byte{init}) {
 		return
 	}
@@ -175,6 +181,12 @@ func serveFMP4Client(
 
 	lastYield := time.Now()
 	for {
+		if ctx.Err() != nil {
+			// serveClient's reason: the admin stop and the hang-up both
+			// land here, and a buffer that always has a fragment never
+			// reaches the wait below.
+			return
+		}
 		frags, next, skipped := fragments.Read(cursor)
 		if skipped > 0 {
 			log.Warn("fMP4 client fell behind the fragment buffer",
@@ -187,6 +199,12 @@ func serveFMP4Client(
 				return
 			}
 			lastYield = time.Now()
+			// Touch, not Sent: the fMP4 generator writes last_active and no
+			// byte counter (output/fmp4/generator.py:288-295), so an fMP4
+			// client's detail row carries no bytes_sent, avg_rate_KBps or
+			// current_rate_KBps -- reproduced as an absence with a
+			// mechanism rather than a format check in the renderer.
+			client.Touch(lastYield)
 			continue
 		}
 

@@ -476,7 +476,7 @@ grep -n 'defer c.releaseSlot\|defer close(c.done)\|defer c.ring.Close\|defer c.s
 grep -rn 'StateActive' channel/*.go | grep -v '_test.go'
 ```
 
-Expected before this PR: **four hits, two of them writes** (`addClient`'s insert at `channel.go:228` and `SetClientOutputProfile`'s update) and two reads (`addClient`'s duplicate check, `StopClient`'s lookup). **This grep cannot see `publish`'s map literal at all** — `clients: map[string]*Client{client.ID: client}` contains no `c.clients[` — which is exactly how the defect survived: the obvious census misses the third writer. **Step 1's `clients: *map\[string\]\*Client` grep is what catches it**, and the two belong together. Also expected: four defers in `run`; two writers of `StateActive`. Task 10 counts all three again.
+**Plan correction, found on the merged tree and disclosed here rather than left standing:** the text below originally said "four hits, two of them writes... and two reads (`addClient`'s duplicate check, `StopClient`'s lookup)". Measured on the actual merged 2c-7 tree, before Task 1's `StopClient` exists at all, the grep gives **three hits, one write and two reads**: `addClient`'s insert at `channel.go:217` (write), `addClient`'s duplicate check at `channel.go:214` (read), and `SetClientOutputProfile`'s `c.clients[clientID]` lookup at `channel.go:287` (a read of the map that then mutates the found client's own field through the pointer, not a second map write). `StopClient` does not exist yet on this tree — it is Task 1's own addition — so citing its lookup as part of the *before* count was itself the error. **This grep cannot see `publish`'s map literal at all** — `clients: map[string]*Client{client.ID: client}` contains no `c.clients[` — which is exactly how the defect survived: the obvious census misses the third writer. **Step 1's `clients: *map\[string\]\*Client` grep is what catches it**, and the two belong together. Also expected: four defers in `run`; two writers of `StateActive`. Task 10 counts all three again, after `StopClient` exists, when the count legitimately becomes four hits.
 
 - [ ] **Step 3: List the rows this PR owes, and expect the count**
 
@@ -535,7 +535,7 @@ Four things land here and each is separable:
 cd <your worktree>/relay && go build ./... && go vet ./... && go test -race ./... && golangci-lint run ./...
 ```
 
-Expected: green. `relay/channel` takes ~75s.
+Expected: green. **Plan correction, disclosed here rather than worked around silently, and RESOLVED within this task rather than left red:** Appendix E's `channel_start` emit inside `publish` is what Global Constraint 33 already describes ("channel_start posts to /api/relay/events on every tune, so five existing assertions that counted requests across the whole fake went from 1 to 2"), and the plan's own fix for it — narrowing those five assertions to `RequestsTo("/next-source")` — was written into Appendix U and part of Appendix AJ, scheduled at **Task 4 Step 5**, three tasks after the emit call itself lands here. Applying Appendices C–F alone therefore leaves `relay/httpapi` red (measured: `TestTheTuningClientLeavingDoesNotFailTheTuneForEveryoneElse` in fanout_test.go, `TestATuneMakesOneSignedControlPlaneCall` in stream_test.go, `TestATranscodeTuneDeliversTheChildsOutput` in transcode_test.go, all "the control plane saw 2 calls, want 1"; the other two of the five pass by the timing Constraint 33 already flags), and the repo's own commit gate (`.claude/hooks/pre-commit-tests.sh`) blocks a commit on any red `go test -race ./...`, which a "fix it in Task 4" plan cannot satisfy at Task 1's own commit step. **Rather than defer past a blocking gate, the five narrowing edits were pulled forward into this task's commit**: Appendix U's two hunks (`fanout_test.go`, `transcode_test.go`) applied unchanged, plus ONLY the three `RequestsTo("/next-source")` narrowing hunks out of Appendix AJ's `stream_test.go` diff — not that diff's `Lifecycle`/`HealthDeps` additions, which are Task 8's and would not build yet. Task 4 Step 5 is accordingly a **no-op confirmation** when you reach it: the five assertions are already narrowed; re-check them against Appendix U/AJ's text and move on. `go build`, `go vet`, `gofmt -l` and `golangci-lint run` are all zero throughout, and `go test -race ./...` is green end to end after this resolution — verified with `go clean -testcache` before the final run.
 
 - [ ] **Step 5: Break-check 4 — restore the map literal**
 
@@ -570,6 +570,8 @@ git commit -F <message file>
 **Interfaces:**
 - Consumes: Task 1's `Ring.Sample`, `Client.Stats`, `Channel.StateChangedAt`, `Channel.Local`.
 - Produces: `httpapi.ChannelHandler(ControlDeps) http.HandlerFunc`, `OwnerUnknown`, `WorkerUnknown`, `describeChannelDetail`, `describeBufferStats`, `humanBytes`, `unixFloat`, `pythonFloat`, `detailPayload`, `statePayload`.
+
+**Disclosure: Tasks 2, 3 and 4 landed in one commit, not three.** Building each in isolation surfaced a three-link chain the plan's task boundaries do not show: `detail.go` (Task 2) needs `control.go` (Task 3) to compile once both live in `httpapi`, and `control_test.go`'s break-check 4 needs `stream.go`'s `stopContext` (Task 4). Rather than commit a red `./httpapi`, all three tasks' Go and Python changes were staged and committed together, along with Ruling R10's `Emitter.Emit`/`Close` idempotency guards (pulled forward from Task 8 Step 1 for the same reason — Task 4's new `events_test.go` case needs the fix to pass) and the self-contained pieces of Task 8 (the `docker/Dockerfile`, `docker/entrypoint.sh` and `docker/healthcheck.sh` changes, which depend on nothing this PR adds later and were folded in rather than held for a fourth commit). See the cross-reference at Task 8's opening for the mirror of this note.
 
 - [ ] **Step 1: Write the Python golden fixture** — Appendix X, in full.
 
@@ -715,9 +717,11 @@ Expected: green, and `apps.proxy.tests` at **403** tests (398 before this PR, pl
 
 Five edits: `client_connect` before `serveClient` and `client_disconnect` after it; `client_connect` inside `serveFMP4` at `generator.py:113-127`'s own point; `client.Sent` per chunk and per keepalive; `client.Touch` per fragment batch; and `stopContext`, applied to the **request** so both output formats inherit it.
 
-- [ ] **Step 5: Narrow the five request-count assertions** — Appendix U.
+- [ ] **Step 5: Narrow the five request-count assertions** — Appendix U. **ALREADY DONE, at Task 1 Step 4 — confirm, do not re-apply.**
 
 **This is Constraint 33 becoming load-bearing.** `channel_start` posts to `/api/relay/events` on every tune, so five assertions that counted requests across the whole fake went from 1 to 2 — three in `stream_test.go`, one in `fanout_test.go` and one in `transcode_test.go`. They are narrowed to `RequestsTo("/next-source")`. **Two of the three in `stream_test.go` were passing by timing, not by correctness**: they never read the body, so the emitter had usually not posted yet when the assertion ran. Narrowing removes a latent flake as well as a failure.
+
+**Plan correction (cross-reference):** the repo's commit gate blocks a commit on any red `go test -race ./...`, so this narrowing could not wait for Task 4 without leaving Task 1's own commit blocked. It was pulled forward into Task 1 Step 4's commit — Appendix U applied there in full, plus only the three `RequestsTo` hunks out of Appendix AJ's `stream_test.go` diff (not that diff's `Lifecycle`/`HealthDeps` additions, which belong to Task 8 and would not have built yet). By the time you reach this step, `git diff` against Appendix U and against Appendix AJ's three stream_test.go hunks should show nothing to apply — confirm that and move on to Step 6.
 
 - [ ] **Step 6: Add `ClientID` to `RecordedEvent`** — Appendix M's second half.
 
@@ -804,6 +808,8 @@ The decision is checked **first** in `identify`'s one closure, so a request that
 
 **Break-check 10's scar is in the test.** `writeAuthorizeFailure` has two branches — a JSON body is forwarded verbatim, a non-JSON one answers with the status text — and every row of the first draft supplied a body, so patching the second branch stayed GREEN. The table now carries three body-less rows, and the fake grew `NonJSONBody` to produce them.
 
+**Disclosure: `runningIDs` and `containsString` are defined here, in `authorize_test.go`, not in Task 7's `xc_test.go`.** Appendix AA calls both; Appendix AC (Task 7) also calls `runningIDs` but the plan places its definition in Task 7's file. `authorize_test.go` is written first (Task 6 precedes Task 7), so the definitions were kept where the first caller needed them and Task 7's file was written to call, not redefine, them — see the disclosure at Task 7 Step 3.
+
 - [ ] **Step 6: Run the four checks and commit.**
 
 ---
@@ -825,6 +831,8 @@ The decision is checked **first** in `identify`'s one closure, so a request that
 
 - [ ] **Step 3: Write `xc_test.go` and run break-checks 15 and 16** — Appendix AC.
 
+**Disclosure: `xc_test.go` calls `runningIDs`, and does NOT redefine it here.** Task 6's `authorize_test.go` already defines both `runningIDs` and `containsString` in the same package (`httpapi`), so a second definition in this file would not compile. Appendix AC below omits the definitions Appendix AA already supplies.
+
 - [ ] **Step 4: Run the four checks and break-check 24, then commit.**
 
 **`TestStreamRouteIsUnregisteredWithoutTheDevFlag` now loops over all seven gated paths**, not one. Six of them are new in this PR, and `GET /{username}/{password}/{channelID}` is the broadest pattern this relay has ever registered — three bare wildcards at the site root. The plan's opening claim is inertness in every deployment, and one path of seven cannot carry it. The same test also asserts `/healthz` and `/readyz` still answer 200, so "the mux is empty" cannot be why the seven pass.
@@ -840,7 +848,9 @@ The decision is checked **first** in `identify`'s one closure, so a request that
 **Interfaces:**
 - Produces: `drain.Run`, `Deps`, `DefaultBudget`, `DefaultClientGrace`, `DefaultEventsBudget`; `httpapi.Lifecycle`, `HealthDeps`, `ReadyHandler`, `StatusReady`, `StatusDraining`.
 
-- [ ] **Step 1: Make `Emitter.Emit` safe after `Close` and `Close` idempotent** — Appendix AK. **Ruling R10.**
+**Cross-reference: this ruling's fix and two of its files landed early.** Ruling R10 (below, Step 1) was implemented and committed with Tasks 2-4, not here — `events_test.go`'s new Task 4 case needs `Emit`/`Close` idempotent to pass, so building Task 4 in isolation surfaced the dependency before this task's own step number was reached. `docker/Dockerfile`, `docker/entrypoint.sh` and `docker/healthcheck.sh` (Step 9 below) landed there too, since they depend on nothing this task adds later. See Task 2's opening disclosure for the full chain; Step 1 and Step 9 below say "already done" at the point each would otherwise introduce the same content again.
+
+- [ ] **Step 1: Make `Emitter.Emit` safe after `Close` and `Close` idempotent** — Appendix AK. **Ruling R10. ALREADY DONE, with Tasks 2-4 — confirm, do not re-apply.**
 
 - [ ] **Step 2: Pin both directly** — Appendix AL's addition to `control/events_test.go`, and break-checks 18 and 18b.
 
@@ -851,6 +861,8 @@ The decision is checked **first** in `identify`'s one closure, so a request that
 - [ ] **Step 4: Write `relay/httpapi/health.go` and wire `Lifecycle` through** — Appendices AF, J, N, AJ.
 
 One `Lifecycle`, shared by the tune path, `/readyz` and the drain. Two would let the probe say "ready" while the handler refused every tune.
+
+**Disclosure: `New`'s `/healthz`/`/readyz` doc comment was rewritten as one coherent block, not left as Appendix J's literal hunk.** That hunk keeps the 2c-1 paragraph's context lines unmodified — "...that is also why **this PR** adds no Docker HEALTHCHECK" — and appends a second, separately-worded paragraph about `/readyz` becoming real underneath it; applied as written, the result says both "this PR adds no Docker HEALTHCHECK" and, two lines later, describes the drain and Step 9's HEALTHCHECK this same PR adds, immediately below a paragraph that still calls itself 2c-1's. The two paragraphs were merged into one instead (`relay/httpapi/server.go`, `New`'s opening comment), replacing "this PR adds no Docker HEALTHCHECK" with "2c-1 through 2c-7 added no Docker HEALTHCHECK" and stating plainly that `/readyz` became real in 2c-8. Appendix J's hunk text below has been regenerated to match what was actually applied.
 
 - [ ] **Step 5: Update 2c-1's health test** — Appendix AJ's `server_test.go` hunk.
 
@@ -868,7 +880,7 @@ The handler is installed **before** `ListenAndServe`, so a SIGTERM during startu
 
 Three tests, and the clock in each starts **before** `drain.Run` (Constraint 28).
 
-- [ ] **Step 9: Add the `HEALTHCHECK`, the role file and the probe** — Appendix Y's `Dockerfile` and `entrypoint.sh` hunks, and Appendix AH.
+- [ ] **Step 9: Add the `HEALTHCHECK`, the role file and the probe** — Appendix Y's `Dockerfile` and `entrypoint.sh` hunks, and Appendix AH. **ALREADY DONE, with Tasks 2-4 — confirm, do not re-apply.**
 
 **`docker/healthcheck.sh` MUST BE COMMITTED EXECUTABLE, and the `HEALTHCHECK` must not depend on that.** Both, and the reason each is there:
 
@@ -2747,12 +2759,14 @@ Ruling R3: `RequireInternal` buffers the body, verifies the bound signature agai
 
 The routing table. **One diff, referenced by Tasks 3, 7 and 8**: the four control routes, the two XC roots and `/readyz`'s handler all land here. One gate per route rather than a wrapper around the mux -- the health endpoints must stay ungated.
 
+**Regenerated.** The hunk first drafted here kept the 2c-1 `/healthz`/`/readyz` doc-comment paragraph's context lines unmodified and appended a second, separately-worded paragraph below them — applied as written, the result keeps "...that is also why **this PR** adds no Docker HEALTHCHECK" (2c-1's own claim about itself) sitting directly above a paragraph describing the drain and the HEALTHCHECK this PR (2c-8) adds at Step 9. That is the "two contradictory paragraphs" the implementation replaced with one merged paragraph instead (see Task 8 Step 4's disclosure). The hunk below is round-tripped from the applied tree (`git diff 4f564b0f -- relay/httpapi/server.go`, its paths made module-relative to match every other Go appendix in this plan), confirmed to apply cleanly to the pre-2c-8 file from the module root (`relay/`) and to produce a byte-identical result.
+
 **`relay/httpapi/server.go`**
 
 ```diff
 --- a/httpapi/server.go
 +++ b/httpapi/server.go
-@@ -21,6 +21,11 @@
+@@ -21,6 +21,11 @@ type Config struct {
  	// set.
  	Stream StreamDeps
  
@@ -2764,14 +2778,18 @@ The routing table. **One diff, referenced by Tasks 3, 7 and 8**: the four contro
  	// Control is what the internal control routes need. Only read when
  	// DevRoutes is set.
  	Control ControlDeps
-@@ -51,17 +56,40 @@
- 	// something to report -- and that is also why this PR adds no Docker
+@@ -46,22 +51,41 @@ func New(cfg Config) *Server {
+ 	// Always served, in every shape. D6: the Python relay has neither a
+ 	// health endpoint nor a readiness probe, and both are a few lines here.
+ 	//
+-	// Both are a static 200 at 2c-1, which is what this PR's row specifies.
+-	// /readyz becomes meaningful in 2c-8, when the SIGTERM drain gives it
+-	// something to report -- and that is also why this PR adds no Docker
++	// /healthz stays a static 200 -- LIVENESS: the process is up. /readyz
++	// became real in 2c-8, when the SIGTERM drain gives it something to
++	// report -- and that is also why 2c-1 through 2c-7 added no Docker
  	// HEALTHCHECK: a probe wired to a static 200 reports healthy through
  	// every failure it exists to catch.
-+	//
-+	// /healthz stays a static 200 -- LIVENESS: the process is up. /readyz
-+	// became real in 2c-8 and reports the drain plus the channel and client
-+	// counts (health.go).
  	s.mux.HandleFunc("GET /healthz", ok)
 -	s.mux.HandleFunc("GET /readyz", ok)
 +	s.mux.Handle("GET /readyz", ReadyHandler(cfg.Health))
@@ -8261,7 +8279,7 @@ index 79f10bbb..884a54af 100644
 
 ```diff
 diff --git a/docs/superpowers/specs/2026-09-09-phase2-go-relay-design.md b/docs/superpowers/specs/2026-09-09-phase2-go-relay-design.md
-index f2f07da2..bf787c6e 100644
+index f2f07da2..6fdbc2d1 100644
 --- a/docs/superpowers/specs/2026-09-09-phase2-go-relay-design.md
 +++ b/docs/superpowers/specs/2026-09-09-phase2-go-relay-design.md
 @@ -2462,6 +2462,157 @@ disambiguated only by the logger's `format=` field, not by the message
@@ -8426,7 +8444,7 @@ index f2f07da2..bf787c6e 100644
  | 2c-5 -- the Go relay's failover: the three triggers (rows 1, 2, 3) as one port of `StreamManager.run`'s two loops, a clean EOF ported as a retried connection failure (R1); the control-plane client's `release` and `events` routes and an emitter that batches and logs an outage once (R12); the degraded fallback to the candidate list cached at channel start, never on a refusal (R2); the Redirect Stream Profile architecture -- the 302, the provider probe, the fall-through to the cached alternates, the internal-principal override, publishing no channel (R7, R8); the health flag, the keepalives, the client timeout and the error packet closing Amendment A2.5 (R14, R15); the five events the failover machinery raises (R11). Parity matrix rows 1, 2, 3 and 6 get a Go column; row 7 gains a pin across a switch. A pre-existing Python defect (one `next-source` call per buffering progress record when no alternate exists) reproduced per D5 and filed as [#302](https://github.com/D10Scot/Dispatcharr/issues/302) (R6). | `migration/phase2c-failover` | pending |
  | 2c-6 -- the Go relay's fMP4 output format (`migration/phase2c-fmp4`). One remux per channel reading the shared ring on `pipe:0`, the init segment replayed to every client, a refcounted lifecycle with no shutdown delay, and parity-matrix row 12 ([#222](https://github.com/D10Scot/Dispatcharr/issues/222)) reproduced, pinned and filed rather than fixed. Row 12 gets its Go pin. Amendment A6. [#304](https://github.com/D10Scot/Dispatcharr/issues/304) (a pre-existing 2c-4 defect, the stderr pipe truncated by a reap racing its drain) fixed in `relay/ffmpeg/spawn.go`, repairing `relay/channel/source_transcode.go` without editing it. Two Python-side findings from the port, reproduced and filed rather than fixed: the fMP4 scanner's resynchronisation arm discarding the whole working buffer ([#306](https://github.com/D10Scot/Dispatcharr/issues/306)) and the dead stop-during-restart guard in `_handle_bsf_error` ([#307](https://github.com/D10Scot/Dispatcharr/issues/307)). Three plan corrections found and fixed in the plan document as committed, run rather than read: Task 4 Step 7's break-check rows 16-18 name tests defined in `relay/httpapi/fmp4_test.go`, Task 6's file, and had to run there rather than in Task 4; Task 1 Step 2's expected result for `TestEveryStderrLineSurvivesTheWaitThatPrecedesTheJoin` describes a runtime failure the package cannot yet produce, since the two `StartPiped` tests appended in the same step leave it uncompilable until Step 3's implementation lands; and the issue-number-placeholder slot count was corrected from six to five (an instruction about the slots had been counted as one) with Task 8 Step 5's own verification grep narrowed to the paths that can carry a real slot, since run unscoped over all of `docs/` it could never return empty. | `migration/phase2c-fmp4` | pending |
  | 2c-7 -- the Go relay's Output Profiles (`migration/phase2c-output-profile`). One transcode per active `(channel, profile)` pair reading the channel's shared ring on `pipe:0` and writing a second in-process MPEG-TS ring, shared by every client on that profile; an fMP4 client on a profile runs it and 2c-6's remux chained, under `mpegts:p<id>` and `fmp4:p<id>`. Parity-matrix row 11 gets its Go pin, counted in spawns. The contract gained a null `argv` so a broken Output Profile can be told from a deactivated one. Amendment A7. Three plan corrections found, disclosed and **fixed in the plan document as committed**, run rather than read: Task 4 Step 5 and Task 7 Step 5 misassigned which break-check rows belong to which task -- rows 3-7 name `httpapi`-package tests Task 7 creates (Appendix P) and rows 8 and 11 name `output`-package tests Task 4 creates (Appendix I), so Task 4's Step 5 now reads "rows 8 and 11" and Task 7's now reads "rows 2, 3, 4, 5, 6, 7, 9, 10, 12, 13, 16, 17, 18", the amended lists this PR actually ran each row against; rows 16, 17 and 18 were re-checked against the same test rather than assumed correct, and confirmed already in Task 7's list -- `TestTheDeactivatedProfileCorrectionDoesNotRaceTheListEndpoint` and `TestAFailoverRefreshesTheProfileSetAndADegradedOneDoesNot` (both arms) are in `relay/httpapi/profile_test.go`, and no channel-package location for either exists. Task 5 Step 3's "Expected: green" for the whole-module `go build ./...` did not hold and is amended to name what actually goes green at that step: `go build`/`vet`/`golangci-lint` scoped to `./channel/... ./output/... ./control/... ./buffer/... ./ffmpeg/... ./internal/...` (every package but `httpapi`), `go test -race ./channel/...`, and `gofmt -l .` over the whole tree -- **commit `38669dba` (Task 5) does not build alone**, because `httpapi/fmp4.go` and `stream.go` still call `AttachOutput` with the pre-2c-7 signature; the whole-module build, vet, test and lint first go green at Task 6 Step 4 once `httpapi`'s own edits land, so a `go build ./...` bisect on this branch lands on Task 6's commit for a defect that is Task 5's incompleteness, not Task 6's own. No commit was ever made against a genuinely broken working tree regardless, since Task 6 was written and verified before either commit. Third, Task 9 Step 3's `ffmpeg.StartPiped`/`.Start` call-site breakdown named the wrong two files ("two in spawn.go, one in output/fmp4.go, one in output/profile.go"); the actual four are one in `output/profile.go`, two in `output/fmp4.go` (the initial spawn and the bitstream-filter retry) and one in `channel/source_transcode.go` -- the total of 4 was already right. | `migration/phase2c-output-profile` | pending |
-+| 2c-8 -- the Go relay's control routes and drain (`migration/phase2c-control-drain`). The four remaining `/proxy/relay/…` routes (the single-channel `GET` with its `?fields=state` form, the channel `DELETE`, the client `DELETE` and `advance`), the detail endpoint with its five extra client fields and row 14's `owner` asymmetry, the XC live roots (Ruling R1: spec D1 scopes them and no PR owned them), the four events the tune and stop paths raise, the dev-only `POST /_dispatcharr/authorize-internal` fallback and the Go half that calls it, and D6's SIGTERM drain with a real `/readyz` and a role-aware Docker `HEALTHCHECK`. Thirteen parity-matrix rows get a Go pin, taking the matrix to 28 of 28 pinnable rows, and the ten authorize-matrix rows among them gain a Notes clause saying the Go pin covers the relay's ask-and-obey share and not the decision, which stays Django's. Amendment A8. Four defects found and fixed, three in code this PR did not write: `RequireInternal` verifying the bound signature against an empty body (A8.3), `Manager.publish` bypassing `addClient` for the first client of every channel (A8.4), `control.Emitter` panicking on a send after `Close` and on a second `Close` (A8.5), and -- in this PR's own first draft, found by a Gate 2 coverage test -- the `x-api-key` body field that never arrived, because DRF reads input by a field's NAME and `source=` maps only the output (A8.9). Two Python-side findings reproduced and filed rather than fixed: `source_bitrate` and `ffmpeg_bitrate` are read by `channel_status.py` and written by nothing, the second because the reader and the writer name two different constants ([#NNN](https://github.com/D10Scot/Dispatcharr/issues/NNN)). Four break-checks stayed green on a first attempt and each produced a better test or deleted unreachable code. | `migration/phase2c-control-drain` | pending |
++| 2c-8 -- the Go relay's control routes and drain (`migration/phase2c-control-drain`). The four remaining `/proxy/relay/…` routes (the single-channel `GET` with its `?fields=state` form, the channel `DELETE`, the client `DELETE` and `advance`), the detail endpoint with its five extra client fields and row 14's `owner` asymmetry, the XC live roots (Ruling R1: spec D1 scopes them and no PR owned them), the four events the tune and stop paths raise, the dev-only `POST /_dispatcharr/authorize-internal` fallback and the Go half that calls it, and D6's SIGTERM drain with a real `/readyz` and a role-aware Docker `HEALTHCHECK`. Thirteen parity-matrix rows get a Go pin, taking the matrix to 28 of 28 pinnable rows, and the ten authorize-matrix rows among them gain a Notes clause saying the Go pin covers the relay's ask-and-obey share and not the decision, which stays Django's. Amendment A8. Four defects found and fixed, three in code this PR did not write: `RequireInternal` verifying the bound signature against an empty body (A8.3), `Manager.publish` bypassing `addClient` for the first client of every channel (A8.4), `control.Emitter` panicking on a send after `Close` and on a second `Close` (A8.5), and -- in this PR's own first draft, found by a Gate 2 coverage test -- the `x-api-key` body field that never arrived, because DRF reads input by a field's NAME and `source=` maps only the output (A8.9). Two Python-side findings reproduced and filed rather than fixed: `source_bitrate` and `ffmpeg_bitrate` are read by `channel_status.py` and written by nothing, the second because the reader and the writer name two different constants ([#314](https://github.com/D10Scot/Dispatcharr/issues/314)). Four break-checks stayed green on a first attempt and each produced a better test or deleted unreachable code. Five plan-text corrections found and made in-tree, none changing the shipped code: Task 0 Step 2's expected `c.clients[` grep count on the merged 2c-7 tree said four hits including `StopClient`'s lookup, but `StopClient` does not exist until this PR's own Task 1 -- the measured count on the tree Task 0 actually ran against is three (one write, two reads); Appendix U's request-count fix, written for Task 4 Step 5, was applied at Task 1 instead so Task 1's own commit would not land with `./httpapi` red under Constraint 33, and both steps now say so; Tasks 2, 3 and 4 landed in one commit rather than three, plus Ruling R10's `Emitter` guards and Task 8's self-contained Docker/entrypoint/healthcheck pieces, because building each task in isolation surfaced a three-link build/test dependency chain the plan's task boundaries did not show; `authorize_test.go` (Task 6) defines `runningIDs` and `containsString`, and `xc_test.go` (Task 7) calls rather than redefines them, the reverse of where the plan first placed them; and `server.go`'s `/healthz`/`/readyz` doc comment was rewritten as one coherent paragraph rather than applied as Appendix J's original hunk, which would have left a stale 2c-1 sentence ("this PR adds no Docker HEALTHCHECK") sitting directly above the paragraph describing the HEALTHCHECK this PR adds -- Appendix J's hunk text is regenerated to match. | `migration/phase2c-control-drain` | pending |
  
  ## Risks
  
@@ -8442,7 +8460,7 @@ Two edits, one hunk: the § Architecture sentence that still says "At 2c-1 it se
 
 ```diff
 diff --git a/CLAUDE.md b/CLAUDE.md
-index 31609244..7f18ce9b 100644
+index 31609244..436e2777 100644
 --- a/CLAUDE.md
 +++ b/CLAUDE.md
 @@ -70,7 +70,7 @@ scripts/check_go_stdlib_only.sh relay           # the module must stay stdlib-on
@@ -8458,7 +8476,7 @@ index 31609244..7f18ce9b 100644
  - **`get_user_active_connections` has four callers, and one of them still triggers a relay side effect on every call.** Three timeshift helpers (`_session_has_active_timeshift_stream`, `_preempt_playback_streams`, `_terminate_previous_timeshift_sessions`) pass `include_live=False` (`apps/proxy/utils.py`), added by a whole-branch-review fix after one of them — reached from `_serve_catchup`, a relay-served view — was making the relay call itself over HTTP per catch-up tune for a live client list it always discarded. The fourth caller, `apps/output/views.py`'s `xc_get_info` (the Xtream `player_api.php` handshake, every XC session), is deliberately left asking for the live count — `active_cons` needs it — so that call still reaches `GET /proxy/relay/channels?clients=all` on every handshake, and `get_basic_channel_info` there runs `ClientManager.remove_ghost_clients`, an `SREM` write across every running channel that the old direct Redis scan never performed. That side effect has no Go analogue: the Go relay's client registry is a map in process memory (Phase 2 stage 2c-3), where a client entry cannot outlive the goroutine that made it, so it disappears at the 2d cutover rather than being fixed.
  - **The UDP user-agent filter leaves dangling flags** (`apps/proxy/live_proxy/input/manager.py:808-812`): on a `udp://` upstream every argument containing the user agent or `user-agent`/`user_agent` is dropped, and the flag that introduced it is kept, so `-headers 'User-Agent: X'` spawns as a bare `-headers` whose value becomes the next argument, `-i`. The filter also runs over `cmd[0]`, the command itself. The Go relay reproduces the dangling flag per D5 and not the `cmd[0]` case. Filed as [#296](https://github.com/D10Scot/Dispatcharr/issues/296).
  - **Both relays' buffering-progress gate is structurally blind on ffmpeg 6.x, not merely quantitatively different.** `input/manager.py:1017` and the Go port at `relay/ffmpeg/progress.go:40` both key `IsProgressLine`/progress parsing on the literal `frame=`, but a stream-copy (`-c copy`) progress line's leading token on ffmpeg 6.x is `size=`, never `frame=` — so neither relay ever records a `speed=` reading against ffmpeg 6.x, and the buffering detector can never arm. Found when go-tests.yml's `build` job briefly ran on ubuntu-latest's own apt ffmpeg (6.1.1) and parity-matrix row 4's real-ffmpeg pin failed; fixed for CI by running that job against the production ffmpeg (8.1.2) instead (below), not by widening the parser or the test. Filed as [#299](https://github.com/D10Scot/Dispatcharr/issues/299).
-+- **Two fields on `GET /proxy/ts/status/<uuid>` are read by `channel_status.py` and written by nothing**, so neither relay has ever emitted them ([#NNN](https://github.com/D10Scot/Dispatcharr/issues/NNN)). `source_bitrate`: `ChannelMetadataField.SOURCE_BITRATE` has no writer anywhere in the tree, and `channel_status.py:359` is its only reference beside the constant. `ffmpeg_bitrate`: `channel_status.py:404` reads `ChannelMetadataField.FFMPEG_BITRATE` (`"ffmpeg_bitrate"`) while the only writer, `input/manager.py:1269`, writes `FFMPEG_OUTPUT_BITRATE` (`"ffmpeg_output_bitrate"`) — two different strings at `constants.py:90-91` — so the operator's ffmpeg output bitrate never reaches the status payload at all. The same shape as `logo_id` on the collection endpoint. Found by Phase 2 stage 2c-8 walking the detail endpoint field by field; reproduced as absences in the Go relay per spec D5, not fixed.
++- **Two fields on `GET /proxy/ts/status/<uuid>` are read by `channel_status.py` and written by nothing**, so neither relay has ever emitted them ([#314](https://github.com/D10Scot/Dispatcharr/issues/314)). `source_bitrate`: `ChannelMetadataField.SOURCE_BITRATE` has no writer anywhere in the tree, and `channel_status.py:359` is its only reference beside the constant. `ffmpeg_bitrate`: `channel_status.py:404` reads `ChannelMetadataField.FFMPEG_BITRATE` (`"ffmpeg_bitrate"`) while the only writer, `input/manager.py:1269`, writes `FFMPEG_OUTPUT_BITRATE` (`"ffmpeg_output_bitrate"`) — two different strings at `constants.py:90-91` — so the operator's ffmpeg output bitrate never reaches the status payload at all. The same shape as `logo_id` on the collection endpoint. Found by Phase 2 stage 2c-8 walking the detail endpoint field by field; reproduced as absences in the Go relay per spec D5, not fixed.
  
  Dead or unwired: `apps/proxy/hls_proxy/`; `dispatcharr/persistent_lock.py` (no callers; `refresh()` sets `has_lock = False` on success, and an attribute shadows the `has_lock` method); `_attempt_health_recovery()`; `head_vod()` (no route); `MAX_HEALTH_RECOVERY_ATTEMPTS` / `MAX_RECONNECT_ATTEMPTS` / `MIN_STABLE_TIME_BEFORE_RECONNECT` (`config.py` — real values are bare literals in the health-monitor body); `M3UAccount.stream_profile`; `HDHRDevice.tuner_count`.
  

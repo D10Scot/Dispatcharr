@@ -196,3 +196,41 @@ func TestEmitNeverBlocksOnAFullQueue(t *testing.T) {
 }
 
 var _ = errors.Is
+
+// An event raised after Close is DROPPED, and Close twice is a no-op.
+//
+// BOTH ARE PANICS WITHOUT THE GUARD, and both are reachable from the SIGTERM
+// drain: it closes the emitter while a client goroutine is still unwinding
+// and raising client_disconnect (a send on a closed channel), and a test's
+// own cleanup closes an emitter the drain already closed (a second close).
+//
+// PINNED HERE RATHER THAN THROUGH THE DRAIN, deliberately: the drain test
+// that first produced the panic no longer reproduces it, because net/http
+// RECOVERS a panic in the goroutine serving a request -- the test saw
+// "http: panic serving" in the log and still passed. A recovered panic that
+// kills one viewer's connection and nothing else is exactly the failure a
+// test asserting an outcome cannot see, so this asserts the mechanism.
+func TestTheEmitterDropsEventsRaisedAfterCloseAndCloseIsIdempotent(t *testing.T) {
+	fake := relaytest.NewControlPlane(relaytest.ControlPlaneConfig{})
+	t.Cleanup(fake.Close)
+	emitter := NewEmitter(&Client{Secret: testSecret, BaseURL: fake.URL()}, nil)
+
+	emitter.Emit(Event{Type: "channel_start", ChannelID: "c-1"})
+	emitter.Close()
+
+	// The drain's own shape: the queue is closed and a goroutine still
+	// unwinding raises one more.
+	emitter.Emit(Event{Type: "client_disconnect", ChannelID: "c-1"})
+	// And the second Close a test's cleanup makes.
+	emitter.Close()
+
+	// The event raised BEFORE the close was delivered, so "nothing is ever
+	// delivered" cannot be what makes this pass.
+	if got := fake.EventsOfType("channel_start"); len(got) != 1 {
+		t.Fatalf("the control plane saw %d channel_start events, want 1", len(got))
+	}
+	if got := fake.EventsOfType("client_disconnect"); len(got) != 0 {
+		t.Errorf("an event raised after Close was delivered (%d): the queue is closed and "+
+			"control_plane.py's own contract is that such an event is LOST", len(got))
+	}
+}

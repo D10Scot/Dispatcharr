@@ -912,6 +912,9 @@ def change_stream(request, channel_id):
         stream_name = None
         channel_name = None
         m3u_profile_name = None
+        transcode = False
+        stream_profile = None
+        ffmpeg_stream_profile = None
 
         # Coerce at the boundary: the Stats card's Select yields a string id
         # and, in the split deployment, this travels to the relay as JSON
@@ -958,10 +961,40 @@ def change_stream(request, channel_id):
             stream_name = stream_info.get("stream_name")
             channel_name = stream_info.get("channel_name")
             m3u_profile_name = stream_info.get("m3u_profile_name")
+            # Phase 2 PR 2c-8: the Go relay builds no command line, so the
+            # profile Django resolved travels with the source.
+            transcode = stream_info.get("transcode", False)
+            stream_profile = stream_info.get("stream_profile")
+            ffmpeg_stream_profile = stream_info.get("ffmpeg_stream_profile")
         elif not new_url:
             return JsonResponse(
                 {"error": "Either url or stream_id must be provided"}, status=400
             )
+
+        if not stream_id:
+            # A bare url with no stream_id: nothing resolved a Stream row, so
+            # the profile is the CHANNEL's own -- which is what the Python
+            # relay uses on this path too, since StreamManager keeps its own
+            # across update_url. Built here because the Go relay builds no
+            # command line (Phase 2 PR 2c-8, Amendment A4.1).
+            from apps.proxy.next_source import channel_stream_profile_ref
+
+            try:
+                channel = get_stream_object(channel_id)
+            except Http404:
+                # Best-effort enrichment of a call that did no DB lookup at
+                # all before 2c-8. An identifier that names no row leaves the
+                # three fields unset, exactly as they were, and the Go relay
+                # answers 400 because it genuinely cannot spawn without an
+                # argv -- honest, and not a new 404 on a path that never had
+                # one.
+                channel = None
+            if channel is not None:
+                transcode, stream_profile, ffmpeg_stream_profile = (
+                    channel_stream_profile_ref(
+                        channel, url=new_url, user_agent=user_agent
+                    )
+                )
 
         logger.info(
             f"Attempting to change stream for channel {channel_id} to {redact_url(new_url)}"
@@ -983,6 +1016,9 @@ def change_stream(request, channel_id):
             channel_name=channel_name,
             m3u_profile_name=m3u_profile_name,
             reset_tried=True,
+            transcode=transcode,
+            stream_profile=stream_profile,
+            ffmpeg_stream_profile=ffmpeg_stream_profile,
         )
 
         if result.get("status") == "error":
@@ -1317,6 +1353,11 @@ def next_stream(request, channel_id):
             stream_name=stream_info.get("stream_name"),
             channel_name=stream_info.get("channel_name"),
             m3u_profile_name=stream_info.get("m3u_profile_name"),
+            # Phase 2 PR 2c-8: the Go relay builds no command line, so the
+            # profile Django resolved travels with the source.
+            transcode=stream_info.get("transcode", False),
+            stream_profile=stream_info.get("stream_profile"),
+            ffmpeg_stream_profile=stream_info.get("ffmpeg_stream_profile"),
         )
 
         if result.get("status") == "error":

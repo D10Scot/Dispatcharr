@@ -89,8 +89,9 @@ type Emitter struct {
 	queue chan Event
 	done  chan struct{}
 
-	mu   sync.Mutex
-	down bool
+	mu     sync.Mutex
+	down   bool
+	closed bool
 }
 
 // EmitterQueueDepth is how many events may wait for the worker. At one
@@ -115,8 +116,24 @@ func NewEmitter(client *Client, log *slog.Logger) *Emitter {
 }
 
 // Emit queues one event. It never blocks and never fails: a full queue is
-// logged and the event dropped.
+// logged and the event dropped, and so is an event raised after Close.
+//
+// THE CLOSED CHECK IS 2c-8'S AND IT CLOSES A PANIC, not a tidiness gap. The
+// SIGTERM drain calls Close, and a client goroutine that is still unwinding
+// raises client_disconnect as it returns -- a send on a closed channel, which
+// panics the goroutine serving that client. Found by
+// TestTheDrainStopsTheChannelEndsTheClientAndFlushesTheEvents, which panicked
+// with "send on closed channel" on its first run. Dropping such an event is
+// the right answer and the one this type already gives for a full queue:
+// control_plane.py's own contract is that an event raised during an outage is
+// lost, not queued.
 func (e *Emitter) Emit(event Event) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.closed {
+		e.log.Debug("relay event dropped: the emitter is closed", "type", event.Type, "channel", event.ChannelID)
+		return
+	}
 	select {
 	case e.queue <- event:
 	default:
@@ -125,10 +142,23 @@ func (e *Emitter) Emit(event Event) {
 }
 
 // Close stops the worker once the queue has drained. It is what the SIGTERM
-// drain (2c-8) will call; tests call it to know every posted batch has been
-// recorded by the fake.
+// drain calls (relay/drain), and what tests call to know every posted batch
+// has been recorded by the fake.
+//
+// IDEMPOTENT, also 2c-8's: the drain closes the emitter and so does a test's
+// own cleanup, and a second close(e.queue) panics. A second call waits for
+// the worker exactly as the first does, so a caller cannot return before the
+// flush either way.
 func (e *Emitter) Close() {
+	e.mu.Lock()
+	if e.closed {
+		e.mu.Unlock()
+		<-e.done
+		return
+	}
+	e.closed = true
 	close(e.queue)
+	e.mu.Unlock()
 	<-e.done
 }
 

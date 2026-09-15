@@ -39,5 +39,21 @@ func (c *Channel) emit(typ string, details map[string]any) {
 	if id, ok := details["stream_id"].(int); ok {
 		event.StreamID = &id
 	}
+	// client_id is the OTHER key emit_event lifts (control_plane.py:331-333's
+	// own two-name loop), and it is left in Details as well. 2c-8's two
+	// client transitions are the first events that carry one.
+	if id, ok := details["client_id"].(string); ok {
+		event.ClientID = id
+	}
 	c.events.Emit(event)
 }
+
+// Emit raises one event for this channel from outside this package.
+//
+// The two client transitions -- client_connect and client_disconnect -- are
+// raised by the handler that serves the client, not by the channel, because
+// the channel never learns that a particular client started or finished
+// reading it. Everything else in this package calls the unexported emit;
+// this is the same function under an exported name rather than a second
+// path, so the stream_id/client_id lifting above applies to all of them.
+func (c *Channel) Emit(typ string, details map[string]any) { c.emit(typ, details) }
