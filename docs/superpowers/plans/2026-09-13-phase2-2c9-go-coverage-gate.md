@@ -51,6 +51,16 @@ Measured on `a635190c`, same run, same command:
 
 **The margin narrowed between 2c-7 and 2c-8, and that is worth stating rather than burying.** On the 2c-7 seed the same measurement gave 3,670 / 870 / 76.29% and 2,956 / 338 / 88.57%. 2c-8 added 740 linked statements carrying 249 missing ones — a **marginal coverage of 66.4%** on its own additions — which is what took the module from 88.57% to 84.12%. The 80% ceiling is `3696 - ceil(0.8 × 3696)` = **739**, so the margin is **152 statements**, where on the seed it was 253. One more PR of 2c-8's shape would breach it. Task 7 Step 4 is what acts on that if CI measures worse; the floor's header records it so the next stage reads it before, not after.
 
+**And the gate is a TOTAL, which is worth saying out loud because D7's purpose is not.** D7 wants Gate 2 to catch a subtle regression; a single module-wide `missing` cannot tell one package getting worse from another getting better. Two packages are individually under 80% on `a635190c` and between them hold more than half the module's shortfall:
+
+| package | statements | missing | coverage | share of the 587 |
+|---|---|---|---|---|
+| `relay/channel` | 1,063 | 219 | 79.40% | 37.3% |
+| `relay/control` | 404 | 94 | 76.73% | 16.0% |
+| **both** | 1,467 | **313** | 78.66% | **53.3%** |
+
+So a future PR can add well-covered `httpapi` code and offset a `channel` regression with the total unmoved and the gate green. **`channel` and `control` are the packages that owe the shortfall**, and the next PR that adds to either should read the per-package table `--report` prints rather than the one number `--gate` compares. This plan does **not** add a per-package floor: a second ratchet is a second thing to re-measure and re-baseline, and stage 2c is closing rather than opening machinery. Naming the two packages in the floor's own header is the cheaper half, and it is what 2d reads before writing.
+
 **The rule is decided by kind, not by number.** `scripts/coverage_live_path.coveragerc` excludes exactly these two kinds on the Python side — `omit = */tests/*` takes the harness out, and no script under `scripts/` is in its ten-module boundary list. The Go gate applies the same rule to the same kinds. The difference from the Python gate's own declined exclusion (§ Gate 2, "Denominator exclusion was considered and declined") is that that one was proposed *in order to reach a threshold it could not reach anyway*; this one is the scope rule the sibling gate already uses, and the threshold is met with 253 statements of margin either way.
 
 It is derived mechanically rather than listed by hand so it cannot rot — and the derived list is hashed into the floor (`packages=`) with the sorted list committed beside it, so a package entering or leaving the binary is a deliberate re-baseline and never a silent denominator move.
@@ -1088,7 +1098,9 @@ gh run view --repo D10Scot/Dispatcharr <run-id> --log --job "Coverage gate" | gr
 
 Compute the ceiling from the run's own denominator: `ceiling = statements - ceil(0.8 × statements)`. On `a635190c` that is `3696 - 2957 = 739` against a local `missing` of 587–588 — **151–152 statements of margin**. (On the 2c-7 seed it was `2956 - 2365 = 591` against 338, a margin of 253: 2c-8's own additions are 66.4% covered at the margin and that is where the other hundred went.) A CI draw is expected to be worse than a local one, and 151 statements absorbs far more than the Python gate's largest observed local-to-CI delta of 35.
 
-If `max(rounds)` exceeds the ceiling, the spec's ≥80% is not met, and there are exactly two legitimate responses: **name the packages that owe the shortfall** (from the per-package table) and add tests in this PR, or **amend the spec in-PR with a Done-log entry** saying the requirement moved and to whom. A lower floor with no statement either way is not one of them.
+If `max(rounds)` exceeds the ceiling, the spec's ≥80% is not met, and there are exactly two legitimate responses: **name the packages that owe the shortfall** and add tests in this PR, or **amend the spec in-PR with a Done-log entry** saying the requirement moved and to whom. A lower floor with no statement either way is not one of them.
+
+The per-package table `--report` prints is where that naming comes from, and on `a635190c` the answer is already known: `relay/channel` (219 missing of 1,063, 79.40%) and `relay/control` (94 of 404, 76.73%) hold **313 of the 587** between them, and are the only two packages individually under 80%. Read that table, not the single total — the total cannot tell one package worsening from another improving, which is the shape D7 exists to catch.
 
 - [ ] **Step 5: Record the census**
 
@@ -1135,7 +1147,8 @@ Use **Appendix E** as the template. It must carry, at minimum:
 6. The local-versus-CI note: the local 12-round census's own numbers, so the next campaign can see whether the gap reproduces. **Never a fixed offset to budget against** — the Python gate measured +35 once and +13 the next time.
 7. The #312 rule: a draw above `missing` is a finding to investigate; the fix is a re-measurement PR of its own, never a floor bump on the PR that drew it.
 8. The note that a Go coverprofile's first column is an **import path**, so CI's artifact parses locally with no remapping — the half of #312 this gate does not inherit.
-9. A `HOW TO MOVE THIS FLOOR` section distinguishing a `missing` move (steps 1–5, the census) from a `--shape-only` re-baseline (one run, one command, `missing` untouched).
+9. **Which packages owe the shortfall**, with their per-package figures, and the statement that `missing` is a module total and so cannot tell one package worsening from another improving. On `a635190c` that is `relay/channel` (219 missing of 1,063, 79.40%) and `relay/control` (94 of 404, 76.73%) — 313 of the 587 between them. Re-derive from `--report`'s own table on the tree the floor is set on; do not copy these two rows forward if the numbers have moved.
+10. A `HOW TO MOVE THIS FLOOR` section distinguishing a `missing` move (steps 1–5, the census) from a `--shape-only` re-baseline (one run, one command, `missing` untouched).
 
 - [ ] **Step 4: Gate against the floor you just wrote, locally**
 
@@ -1240,7 +1253,7 @@ Separately: `git commit -F /tmp/2c9-msg-8.txt`, subject `docs(phase2): Amendment
 
 - [ ] **Step 1: Write the PR description**
 
-In this order: what this PR does; **the sixteen rulings**, each in a sentence with its measured figure where it has one; **the CI census**, in full, with the stopping rule and the ceiling computation; **the seven gate break-checks** with their actual first lines; **#309's fix and the A/B that reshaped it** — the stamp move measured not to reduce the failure rate, the margin found to be ticker drift rather than a tick interval, and the bound widened by a tenth of an interval with the count unchanged; the `= 1` break-check named as host-dependent; **R16's drain test**, with its five break-checks and, in particular, the `stopwaitsecs=60` control that proves the assertion is a bound and not an equality; **the `differential` job's piped runner**, which reported green on a failing test until this PR redirected instead, with the two exit codes and the third assertion that now reads the final status line; **the differential test's three measurements** (the 178-versus-0 join point, the 6.5 s runtime of which ~5 s is 2c-8's drain grace, and the corrupting-relay break-check) and **the realignment test that was built and dropped**, with the loop-phase argument; **the credlint census** (`scripts/check_go_credential_logging.sh relay`, 12 packages clean) and **the suppression census** (18 grep hits and 16 real on `a635190c`, 19 and 17 after this PR, the one addition being `drain_test.go`'s `#nosec G304` with its reason); **`go.sum` verified absent** and `go list -m all` printing exactly one module — the last confirmation the spec's § Requirements table owes to 2c-9; **the stated divergences and declines**: R14 (no matrix line-number refresh), R15 (no `fmp4.go` split, no `"remux stderr"` rename), and `relay/main.go`'s one-line comment correction, disclosed as a one-liner outside this PR's subject with the reason it was not declined alongside the rename; and **what this PR does not do**: no nginx route (2d), no ADR (2d's docs PR), no `metrics/curated` update (R13), no HLS (Phase 4).
+In this order: what this PR does; **the sixteen rulings**, each in a sentence with its measured figure where it has one; **the CI census**, in full, with the stopping rule and the ceiling computation, **and which packages owe the shortfall** — `relay/channel` and `relay/control`, 313 of 587 missing between them, the only two individually under 80%, named so 2d reads it before writing rather than after CI says so; **the seven gate break-checks** with their actual first lines; **#309's fix and the A/B that reshaped it** — the stamp move measured not to reduce the failure rate, the margin found to be ticker drift rather than a tick interval, and the bound widened by a tenth of an interval with the count unchanged; the `= 1` break-check named as host-dependent; **R16's drain test**, with its five break-checks and, in particular, the `stopwaitsecs=60` control that proves the assertion is a bound and not an equality; **the `differential` job's piped runner**, which reported green on a failing test until this PR redirected instead, with the two exit codes and the third assertion that now reads the final status line; **the differential test's three measurements** (the 178-versus-0 join point, the 6.5 s runtime of which ~5 s is 2c-8's drain grace, and the corrupting-relay break-check) and **the realignment test that was built and dropped**, with the loop-phase argument; **the credlint census** (`scripts/check_go_credential_logging.sh relay`, 12 packages clean) and **the suppression census** (18 grep hits and 16 real on `a635190c`, 19 and 17 after this PR, the one addition being `drain_test.go`'s `#nosec G304` with its reason); **`go.sum` verified absent** and `go list -m all` printing exactly one module — the last confirmation the spec's § Requirements table owes to 2c-9; **the stated divergences and declines**: R14 (no matrix line-number refresh), R15 (no `fmp4.go` split, no `"remux stderr"` rename), and `relay/main.go`'s one-line comment correction, disclosed as a one-liner outside this PR's subject with the reason it was not declined alongside the rename; and **what this PR does not do**: no nginx route (2d), no ADR (2d's docs PR), no `metrics/curated` update (R13), no HLS (Phase 4).
 
 - [ ] **Step 2: Undraft, and wait for the required checks**
 
@@ -2113,7 +2126,7 @@ index 099f8b26..2556c2c9 100644
      name: Analyze (${{ matrix.language }})
      runs-on: ubuntu-latest
 diff --git a/.github/workflows/go-tests.yml b/.github/workflows/go-tests.yml
-index 26be35e8..f1a4371a 100644
+index 26be35e8..565f5c36 100644
 --- a/.github/workflows/go-tests.yml
 +++ b/.github/workflows/go-tests.yml
 @@ -8,9 +8,11 @@ name: Go Tests
@@ -2176,7 +2189,7 @@ index 26be35e8..f1a4371a 100644
  
        - name: Assert the module is standard-library only
          working-directory: .
-@@ -269,12 +292,181 @@ jobs:
+@@ -269,12 +292,184 @@ jobs:
            version: v2.13.2
            working-directory: relay
  
@@ -2232,11 +2245,14 @@ index 26be35e8..f1a4371a 100644
 +              exit 1
 +            fi
 +            echo "no floor on either side; nothing to compare"
-+            echo "Expected exactly once, on the PR that introduces the floor."
++            echo "This is the census state: the floor-introducing PR before its own"
++            echo "floor commit lands. Expected on EVERY run until it does, and never"
++            echo "again afterwards -- once a floor is on the base ref, its absence"
++            echo "here is the deletion the branch above refuses."
 +            exit 0
 +          fi
 +          if [ -z "$OLD_BLOB" ]; then
-+            echo "no floor on ${BASE_REF} (${BASE}); nothing to compare"
++            echo "no floor on ${BASE_REF} (${BASE}); this head introduces one"
 +            echo "Expected exactly once, on the PR that introduces the floor."
 +            exit 0
 +          fi
@@ -2359,7 +2375,7 @@ index 26be35e8..f1a4371a 100644
      if: always()
      timeout-minutes: 5
      steps:
-@@ -283,9 +475,11 @@ jobs:
+@@ -283,9 +478,11 @@ jobs:
            CHANGES_RESULT: ${{ needs.changes.result }}
            BUILD_RESULT: ${{ needs.build.result }}
            LINT_RESULT: ${{ needs.lint.result }}
@@ -2372,7 +2388,7 @@ index 26be35e8..f1a4371a 100644
            if [ "$CHANGES_RESULT" != "success" ]; then
              echo "Change detection itself failed — cannot prove the Go jobs were unnecessary."
              exit 1
-@@ -296,10 +490,11 @@ jobs:
+@@ -296,10 +493,11 @@ jobs:
            fi
            # `skipped` here means a gated job never ran on a run that needed
            # it, so only an exact `success` may report green.
@@ -2543,22 +2559,20 @@ as a placeholder in the committed file.
 # floor came from a 21-round LOCAL campaign whose maximum the very first CI run
 # exceeded -- and this file inherits the lesson rather than re-learning it.
 #
-# WHAT IS MEASURED. The ten packages `go list -deps .` reports from relay/ on
-# a635190c, `drain` included -- the packages the SHIPPED BINARY LINKS.
-# relay/internal/relaytest (the Go
+# WHAT IS MEASURED. The nine packages `go list -deps .` reports from relay/:
+# the packages the SHIPPED BINARY LINKS. relay/internal/relaytest (the Go
 # counterpart of apps/proxy/live_proxy/tests/harness/) and
 # relay/internal/credlint (a lint tool run with `go run`) are in the module and
 # in NEITHER, by the same rule scripts/coverage_live_path.coveragerc applies on
 # the Python side. The difference is large and stated rather than buried:
-# measured on one run at a635190c, the whole module is 4,463 statements / 1,172
-# missing / 73.74%; the ten linked packages are 3,696 / 587 / 84.12%; and the
-# two excluded packages are 767 statements of which 585 are missing -- HALF the
-# module's shortfall is test scaffolding and a lint tool.
+# measured on one run, the whole module is 3,670 statements / 870 missing /
+# 76.29%; the nine linked packages are 2,956 / 338 / 88.57%, and relaytest
+# alone is 499 of the 870 missing.
 #
 # HOW. `go test -count=1 -race -covermode=atomic -coverprofile=... ./...`, per
 # package -- NOT -coverpkg, which counts a package as covered when a
-# neighbour's test walks through it (measured on the same tree: 316 missing
-# instead of 587, a 271-statement, 7.33-point difference). A -coverpkg profile
+# neighbour's test walks through it (measured on the same tree: 221 missing
+# instead of 338, a 117-statement, 3.95-point difference). A -coverpkg profile
 # repeats every block once per test binary and --gate refuses one outright.
 # -count=1 is load-bearing: `go test` replays a cached coverage profile
 # verbatim, so a census without it is one run reported N times.
@@ -2639,7 +2653,7 @@ as a placeholder in the committed file.
 # permanent.
 #
 # LOCAL VS CI. A 12-round LOCAL census on the same tree ran <lo>-<hi> (spread
-# <s>; on a635190c it was 587-588, spread 1, one block). Recorded so the next campaign can see whether the gap reproduces, and
+# <s>). Recorded so the next campaign can see whether the gap reproduces, and
 # NOT as an offset to budget against: the Python gate measured local+35 in one
 # campaign and local+13 in the next, which is itself the evidence that the gap
 # is not a constant. The correct response stays "measure in CI".
@@ -2647,11 +2661,26 @@ as a placeholder in the committed file.
 # THE THRESHOLD. D7 requires >=80% on the live path, transferring to Go at
 # >=80%. The ceiling is statements - ceil(0.8 * statements) = <CEILING>;
 # `missing` is <MAX>, so the margin is <CEILING - MAX> statements and coverage
-# at the floor is <PERCENT>%. AT a635190c THAT MARGIN IS 152 STATEMENTS (739 -
-# 587), DOWN FROM 253 AT THE 2c-7 SEED: 2c-8 added 740 linked statements
-# carrying 249 missing ones, a marginal coverage of 66.4% on its own additions.
-# Recorded because the next PR of that shape breaches the gate, and the right
-# time to know that is before it is written, not when CI says so.
+# at the floor is <PERCENT>%.
+#
+# WHICH PACKAGES OWE THE SHORTFALL, and why this file names them. `missing` is
+# a MODULE TOTAL, so it cannot tell one package getting worse from another
+# getting better: a PR that adds well-covered code to one package can offset a
+# regression in another with this number unmoved and the gate green. D7's
+# stated purpose is catching a subtle regression, which is exactly the shape
+# that hides in a total. On a635190c two packages are individually under 80%
+# and between them hold more than half the shortfall:
+#
+#   relay/channel   1063 statements   219 missing   79.40%   37.3% of the 587
+#   relay/control    404 statements    94 missing   76.73%   16.0% of the 587
+#   both            1467 statements   313 missing   78.66%   53.3% of the 587
+#
+# So THOSE TWO are what a later stage should read before adding to either, and
+# `--report`'s per-package table is where to read it -- not the one number
+# `--gate` compares. No per-package floor is enforced here, deliberately: a
+# second ratchet is a second thing to re-measure and re-baseline every time the
+# module moves, and 2c-9 closes stage 2c rather than opening machinery for it.
+# Naming them is the cheaper half of the same job.
 #
 # HOW TO MOVE THIS FLOOR (read before running --write-floor).
 #
@@ -2693,7 +2722,7 @@ percent=<PERCENT>
 measured=<DATE>
 runs=<N>
 packages=<HASH>
-package_count=<COUNT>
+package_count=9
 gomod=<HASH>
 ```
 
