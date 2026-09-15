@@ -242,9 +242,9 @@ func TestATuneMakesOneSignedControlPlaneCall(t *testing.T) {
 		t.Fatalf("reading the stream: %v", err)
 	}
 
-	seen := rig.Control.Requests()
+	seen := rig.Control.RequestsTo("/next-source")
 	if len(seen) != 1 {
-		t.Fatalf("the control plane saw %d calls, want 1", len(seen))
+		t.Fatalf("the control plane saw %d next-source calls, want 1", len(seen))
 	}
 	if !strings.HasSuffix(seen[0].Path, "/a-channel-uuid/next-source") {
 		t.Fatalf("the call went to %s", seen[0].Path)
@@ -347,9 +347,9 @@ func TestXRelayChannelIsIgnoredWithoutTheTrustMarker(t *testing.T) {
 	})
 	defer func() { _ = response.Body.Close() }()
 
-	seen := rig.Control.Requests()
+	seen := rig.Control.RequestsTo("/next-source")
 	if len(seen) != 1 {
-		t.Fatalf("the control plane saw %d calls, want 1", len(seen))
+		t.Fatalf("the control plane saw %d next-source calls, want 1", len(seen))
 	}
 	if !strings.Contains(seen[0].Path, "from-the-path") {
 		t.Fatalf("the tune asked about %s: an unverified X-Relay-Channel was believed", seen[0].Path)
@@ -364,9 +364,9 @@ func TestXRelayChannelIsUsedWithTheTrustMarker(t *testing.T) {
 	})
 	defer func() { _ = response.Body.Close() }()
 
-	seen := rig.Control.Requests()
+	seen := rig.Control.RequestsTo("/next-source")
 	if len(seen) != 1 {
-		t.Fatalf("the control plane saw %d calls, want 1", len(seen))
+		t.Fatalf("the control plane saw %d next-source calls, want 1", len(seen))
 	}
 	if !strings.Contains(seen[0].Path, "from-the-header") {
 		t.Fatalf("the tune asked about %s: the authorize hop's resolved channel was ignored", seen[0].Path)

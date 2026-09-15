@@ -382,9 +382,13 @@ func TestAnUntrustedRequestIsNotBelievedForAnyRelayHeader(t *testing.T) {
 			"shape and still streams", response.StatusCode)
 	}
 
-	calls := r.Control.Requests()
+	// NAMED BY ROUTE, not counted across the whole fake (Global Constraint
+	// 33): since 2c-8 every published channel also posts channel_start to
+	// /api/relay/events, so a bare Requests() count here would be 2 and would
+	// say nothing about the tune.
+	calls := r.Control.RequestsTo("/next-source")
 	if len(calls) != 1 {
-		t.Fatalf("the relay made %d control-plane calls, want 1", len(calls))
+		t.Fatalf("the relay made %d next-source calls, want 1", len(calls))
 	}
 	if got := calls[0].Path; got != "/api/relay/channels/c-untrusted/next-source" {
 		t.Fatalf("the tune asked about %s: an unverified X-Relay-Channel was believed", got)
@@ -682,7 +686,7 @@ func TestTheTuningClientLeavingDoesNotFailTheTuneForEveryoneElse(t *testing.T) {
 		t.Fatal("the second client neither started nor failed within twenty seconds")
 	}
 
-	if got := r.Control.Requests(); len(got) != 1 {
+	if got := r.Control.RequestsTo("/next-source"); len(got) != 1 {
 		t.Fatalf("the relay made %d next-source calls, want 1 -- the first client's disconnect "+
 			"cancelled next-source for the client waiting behind it, which then had to call again", len(got))
 	}

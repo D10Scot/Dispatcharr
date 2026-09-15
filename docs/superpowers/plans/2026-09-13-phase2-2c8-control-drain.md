@@ -535,7 +535,7 @@ Four things land here and each is separable:
 cd <your worktree>/relay && go build ./... && go vet ./... && go test -race ./... && golangci-lint run ./...
 ```
 
-Expected: green. `relay/channel` takes ~75s.
+Expected: green. **Plan correction, disclosed here rather than worked around silently, and RESOLVED within this task rather than left red:** Appendix E's `channel_start` emit inside `publish` is what Global Constraint 33 already describes ("channel_start posts to /api/relay/events on every tune, so five existing assertions that counted requests across the whole fake went from 1 to 2"), and the plan's own fix for it — narrowing those five assertions to `RequestsTo("/next-source")` — was written into Appendix U and part of Appendix AJ, scheduled at **Task 4 Step 5**, three tasks after the emit call itself lands here. Applying Appendices C–F alone therefore leaves `relay/httpapi` red (measured: `TestTheTuningClientLeavingDoesNotFailTheTuneForEveryoneElse` in fanout_test.go, `TestATuneMakesOneSignedControlPlaneCall` in stream_test.go, `TestATranscodeTuneDeliversTheChildsOutput` in transcode_test.go, all "the control plane saw 2 calls, want 1"; the other two of the five pass by the timing Constraint 33 already flags), and the repo's own commit gate (`.claude/hooks/pre-commit-tests.sh`) blocks a commit on any red `go test -race ./...`, which a "fix it in Task 4" plan cannot satisfy at Task 1's own commit step. **Rather than defer past a blocking gate, the five narrowing edits were pulled forward into this task's commit**: Appendix U's two hunks (`fanout_test.go`, `transcode_test.go`) applied unchanged, plus ONLY the three `RequestsTo("/next-source")` narrowing hunks out of Appendix AJ's `stream_test.go` diff — not that diff's `Lifecycle`/`HealthDeps` additions, which are Task 8's and would not build yet. Task 4 Step 5 is accordingly a **no-op confirmation** when you reach it: the five assertions are already narrowed; re-check them against Appendix U/AJ's text and move on. `go build`, `go vet`, `gofmt -l` and `golangci-lint run` are all zero throughout, and `go test -race ./...` is green end to end after this resolution — verified with `go clean -testcache` before the final run.
 
 - [ ] **Step 5: Break-check 4 — restore the map literal**
 
@@ -715,9 +715,11 @@ Expected: green, and `apps.proxy.tests` at **403** tests (398 before this PR, pl
 
 Five edits: `client_connect` before `serveClient` and `client_disconnect` after it; `client_connect` inside `serveFMP4` at `generator.py:113-127`'s own point; `client.Sent` per chunk and per keepalive; `client.Touch` per fragment batch; and `stopContext`, applied to the **request** so both output formats inherit it.
 
-- [ ] **Step 5: Narrow the five request-count assertions** — Appendix U.
+- [ ] **Step 5: Narrow the five request-count assertions** — Appendix U. **ALREADY DONE, at Task 1 Step 4 — confirm, do not re-apply.**
 
 **This is Constraint 33 becoming load-bearing.** `channel_start` posts to `/api/relay/events` on every tune, so five assertions that counted requests across the whole fake went from 1 to 2 — three in `stream_test.go`, one in `fanout_test.go` and one in `transcode_test.go`. They are narrowed to `RequestsTo("/next-source")`. **Two of the three in `stream_test.go` were passing by timing, not by correctness**: they never read the body, so the emitter had usually not posted yet when the assertion ran. Narrowing removes a latent flake as well as a failure.
+
+**Plan correction (cross-reference):** the repo's commit gate blocks a commit on any red `go test -race ./...`, so this narrowing could not wait for Task 4 without leaving Task 1's own commit blocked. It was pulled forward into Task 1 Step 4's commit — Appendix U applied there in full, plus only the three `RequestsTo` hunks out of Appendix AJ's `stream_test.go` diff (not that diff's `Lifecycle`/`HealthDeps` additions, which belong to Task 8 and would not have built yet). By the time you reach this step, `git diff` against Appendix U and against Appendix AJ's three stream_test.go hunks should show nothing to apply — confirm that and move on to Step 6.
 
 - [ ] **Step 6: Add `ClientID` to `RecordedEvent`** — Appendix M's second half.
 

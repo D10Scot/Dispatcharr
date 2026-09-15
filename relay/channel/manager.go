@@ -260,13 +260,19 @@ func (m *Manager) publish(id string, client *Client, started Started) *Channel {
 		outputRegistry: outputRegistry{outputs: map[string]*outputEntry{}},
 		outputProfiles: started.OutputProfiles,
 		startedAt:      now(),
+		// Seeded here, not left zero, because state is assigned in this
+		// literal rather than through setState: Python writes state and
+		// state_changed_at together in initialize_channel
+		// (services/channel_service.py:276-380), so a channel has always had
+		// one by the time any status read can see it.
+		stateChangedAt: now(),
 		now:            now,
 		resolver:       started.Resolver,
 		events:         events,
 		release:        m.cfg.Release,
 		ctx:            ctx,
 		state:          StateInitializing,
-		clients:        map[string]*Client{client.ID: client},
+		clients:        map[string]*Client{},
 		// StreamManager.__init__ (input/manager.py:76-78, :93-96): healthy
 		// until the monitor says otherwise, the initial stream already in
 		// the tried set, and the failure window from the tune's settings.
@@ -281,10 +287,30 @@ func (m *Manager) publish(id string, client *Client, started Started) *Channel {
 	if started.Info.StreamID != 0 {
 		c.tried[started.Info.StreamID] = true
 	}
+	// THROUGH addClient, not by seeding the map literal above with
+	// {client.ID: client}. addClient is where a registered client gets its
+	// transfer counters and its stop signal (clientstats.go, client.go), and
+	// the literal skipped both -- so the FIRST client of every channel had a
+	// nil meter and could not be stopped by id, while the second and every
+	// later one could. Found by
+	// TestDeletingOneClientDisconnectsItAndLeavesTheOtherStreaming, whose
+	// DELETE reported locally_processed false for a client the registry was
+	// listing. One mechanism (Global Constraint 18).
+	c.addClient(client)
 
 	m.mu.Lock()
 	m.channels[id] = c
 	m.mu.Unlock()
+
+	// channel_start (live_proxy/server.py:832-842), raised where Python
+	// raises it: right after the StreamManager is constructed and installed,
+	// and before its goroutine starts. stream_name and stream_id are the two
+	// details it carries; emit lifts stream_id to the top level and leaves it
+	// in details, as emit_event does.
+	c.emit("channel_start", map[string]any{
+		"stream_name": started.Info.StreamName,
+		"stream_id":   started.Info.StreamID,
+	})
 
 	go c.run(ctx, started.Source)
 	return c
@@ -320,13 +346,30 @@ func (m *Manager) take(id string) *Channel {
 	return c
 }
 
-// StopAll tears every channel down. The SIGTERM drain that calls it in
-// anger is 2c-8's; this exists so a test and a shutdown path have one way to
-// do it.
+// StopAll tears every channel down, CONCURRENTLY, and returns once every one
+// of them has stopped or timed out.
+//
+// Concurrent since 2c-8, and the drain is why. Stop waits up to
+// cfg.StopWait (5s) for one channel's source goroutine, so a sequential walk
+// costs N x StopWait in the worst case -- ten channels is fifty seconds
+// against a supervisord stopwaitsecs of twenty, which SIGKILLs the process
+// mid-teardown and loses every release and every channel_stop. Concurrent,
+// the whole sweep costs StopWait however many channels there are, because
+// the waits overlap.
+//
+// Nothing here is shared between the goroutines: each takes its own channel
+// out of the map under m.mu (take) and then works on an object nobody else
+// holds.
 func (m *Manager) StopAll() {
+	var wg sync.WaitGroup
 	for _, id := range m.ids() {
-		m.Stop(id)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			m.Stop(id)
+		}()
 	}
+	wg.Wait()
 }
 
 func (m *Manager) ids() []string {
