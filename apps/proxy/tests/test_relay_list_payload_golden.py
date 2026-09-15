@@ -45,9 +45,10 @@ GOLDEN = (
 # Every RelayChannelSerializer field the Go relay does not produce yet, and
 # why. A field in neither this mapping nor the fully-populated fixture channel
 # fails test_the_fixture_covers_every_serializer_field, which is what stops
-# the golden from silently narrowing as the endpoint grows. 2c-3 excused nine;
-# 2c-4's transcode source produces seven of them (the input format included --
-# it is log_parsers.py's parse_input_format, not 2c-5's).
+# the golden from silently narrowing as the endpoint grows. 2c-3 excused
+# nine; 2c-4's transcode source produced seven of them (the input format
+# included -- it is log_parsers.py's parse_input_format), and 2c-5's health
+# monitor produced `healthy` (channel_status.py:527-529). One remains.
 NOT_SERVED_YET = {
     "logo_id": (
         "ChannelMetadataField.LOGO_ID is written only into the TIMESHIFT key "
@@ -55,7 +56,6 @@ NOT_SERVED_YET = {
         "never into the live:channel:<uuid>:metadata hash channel_status.py:486 "
         "reads, so the live list endpoint never emits it in Python either"
     ),
-    "healthy": "needs StreamManager.healthy, which arrives in 2c-5",
 }
 
 
@@ -83,6 +83,9 @@ def fixture():
                 "total_bytes": 9999888,
                 "avg_bitrate_kbps": 2665.3034666666666,
                 "avg_bitrate": "2.67 Mbps",
+                # Phase 2 PR 2c-5: the health monitor's flag, present on every
+                # channel the relay process holds (channel_status.py:527-529).
+                "healthy": True,
                 # The seven ffmpeg-derived fields, Phase 2 PR 2c-4: present only
                 # when a transcode process reported them (channel_status.py:
                 # 605-627). source_fps is a FLOAT on this endpoint and a string
