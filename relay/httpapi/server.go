@@ -57,6 +57,13 @@ func New(cfg Config) *Server {
 	if cfg.DevRoutes {
 		// The dev-only route flag spec line 1795 names.
 		s.mux.Handle("GET /proxy/ts/stream/{channelID}", StreamHandler(cfg.Stream))
+		// The XC live roots, spec D1's other half of this relay's scope.
+		// Both shapes dispatcharr/urls.py:69-78 registers, and the bare
+		// three-segment one does NOT shadow /proxy/relay/channels: net/http's
+		// mux prefers the more specific pattern, and three literal segments
+		// beat three wildcards.
+		s.mux.Handle("GET /live/{username}/{password}/{channelID}", XCHandler(cfg.Stream))
+		s.mux.Handle("GET /{username}/{password}/{channelID}", XCHandler(cfg.Stream))
 		// Gated with the rest: nginx routes nothing to this process until
 		// stage 2d, and Django still calls the Python relay's copy of these
 		// routes. All five of § The contract's Django-to-relay table are here

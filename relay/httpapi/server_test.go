@@ -43,10 +43,40 @@ func TestHealthEndpointsIgnoreTheDevFlag(t *testing.T) {
 // pass with the route registered and the handler erroring.
 func TestStreamRouteIsUnregisteredWithoutTheDevFlag(t *testing.T) {
 	srv := New(Config{DevRoutes: false})
-	rec := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/proxy/ts/stream/abc", nil))
-	if rec.Code != http.StatusNotFound {
-		t.Fatalf("GET /proxy/ts/stream/abc with DevRoutes=false = %d, want 404 (the route must not be registered at all)", rec.Code)
+
+	// EVERY GATED ROUTE, not just the first one. 2c-8 adds six -- the two XC
+	// live roots and the four control routes -- and one of them,
+	// GET /{username}/{password}/{channelID}, is the broadest pattern this
+	// relay has ever registered: three bare wildcards at the site root. The
+	// plan's opening claim is that this PR is inert in every deployment, and
+	// a test that checks one path of seven cannot carry it.
+	for _, tc := range []struct {
+		method, path string
+	}{
+		{http.MethodGet, "/proxy/ts/stream/abc"},
+		{http.MethodGet, "/live/user/pass/12345"},
+		{http.MethodGet, "/user/pass/12345"},
+		{http.MethodGet, "/proxy/relay/channels"},
+		{http.MethodGet, "/proxy/relay/channels/abc"},
+		{http.MethodDelete, "/proxy/relay/channels/abc/clients/client-a"},
+		{http.MethodPost, "/proxy/relay/channels/abc/advance"},
+	} {
+		rec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), tc.method, tc.path, nil))
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("%s %s with DevRoutes=false = %d, want 404 (the route must not be registered at all)",
+				tc.method, tc.path, rec.Code)
+		}
+	}
+
+	// And the two operational endpoints are still served, so "the mux is
+	// empty" cannot be what makes the seven above pass.
+	for _, path := range []string{"/healthz", "/readyz"} {
+		rec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, path, nil))
+		if rec.Code != http.StatusOK {
+			t.Errorf("GET %s with DevRoutes=false = %d, want 200", path, rec.Code)
+		}
 	}
 }
 
