@@ -571,6 +571,8 @@ git commit -F <message file>
 - Consumes: Task 1's `Ring.Sample`, `Client.Stats`, `Channel.StateChangedAt`, `Channel.Local`.
 - Produces: `httpapi.ChannelHandler(ControlDeps) http.HandlerFunc`, `OwnerUnknown`, `WorkerUnknown`, `describeChannelDetail`, `describeBufferStats`, `humanBytes`, `unixFloat`, `pythonFloat`, `detailPayload`, `statePayload`.
 
+**Disclosure: Tasks 2, 3 and 4 landed in one commit, not three.** Building each in isolation surfaced a three-link chain the plan's task boundaries do not show: `detail.go` (Task 2) needs `control.go` (Task 3) to compile once both live in `httpapi`, and `control_test.go`'s break-check 4 needs `stream.go`'s `stopContext` (Task 4). Rather than commit a red `./httpapi`, all three tasks' Go and Python changes were staged and committed together, along with Ruling R10's `Emitter.Emit`/`Close` idempotency guards (pulled forward from Task 8 Step 1 for the same reason — Task 4's new `events_test.go` case needs the fix to pass) and the self-contained pieces of Task 8 (the `docker/Dockerfile`, `docker/entrypoint.sh` and `docker/healthcheck.sh` changes, which depend on nothing this PR adds later and were folded in rather than held for a fourth commit). See the cross-reference at Task 8's opening for the mirror of this note.
+
 - [ ] **Step 1: Write the Python golden fixture** — Appendix X, in full.
 
 It is the sibling of `test_relay_list_payload_golden.py` and follows its shape exactly, including the completeness assertion that stops the fixture narrowing as the endpoint grows. **`NEVER_WRITTEN` is this one's `NOT_SERVED_YET`**, and it names the two fields Ruling R7 found unreachable in both relays.
@@ -806,6 +808,8 @@ The decision is checked **first** in `identify`'s one closure, so a request that
 
 **Break-check 10's scar is in the test.** `writeAuthorizeFailure` has two branches — a JSON body is forwarded verbatim, a non-JSON one answers with the status text — and every row of the first draft supplied a body, so patching the second branch stayed GREEN. The table now carries three body-less rows, and the fake grew `NonJSONBody` to produce them.
 
+**Disclosure: `runningIDs` and `containsString` are defined here, in `authorize_test.go`, not in Task 7's `xc_test.go`.** Appendix AA calls both; Appendix AC (Task 7) also calls `runningIDs` but the plan places its definition in Task 7's file. `authorize_test.go` is written first (Task 6 precedes Task 7), so the definitions were kept where the first caller needed them and Task 7's file was written to call, not redefine, them — see the disclosure at Task 7 Step 3.
+
 - [ ] **Step 6: Run the four checks and commit.**
 
 ---
@@ -827,6 +831,8 @@ The decision is checked **first** in `identify`'s one closure, so a request that
 
 - [ ] **Step 3: Write `xc_test.go` and run break-checks 15 and 16** — Appendix AC.
 
+**Disclosure: `xc_test.go` calls `runningIDs`, and does NOT redefine it here.** Task 6's `authorize_test.go` already defines both `runningIDs` and `containsString` in the same package (`httpapi`), so a second definition in this file would not compile. Appendix AC below omits the definitions Appendix AA already supplies.
+
 - [ ] **Step 4: Run the four checks and break-check 24, then commit.**
 
 **`TestStreamRouteIsUnregisteredWithoutTheDevFlag` now loops over all seven gated paths**, not one. Six of them are new in this PR, and `GET /{username}/{password}/{channelID}` is the broadest pattern this relay has ever registered — three bare wildcards at the site root. The plan's opening claim is inertness in every deployment, and one path of seven cannot carry it. The same test also asserts `/healthz` and `/readyz` still answer 200, so "the mux is empty" cannot be why the seven pass.
@@ -842,7 +848,9 @@ The decision is checked **first** in `identify`'s one closure, so a request that
 **Interfaces:**
 - Produces: `drain.Run`, `Deps`, `DefaultBudget`, `DefaultClientGrace`, `DefaultEventsBudget`; `httpapi.Lifecycle`, `HealthDeps`, `ReadyHandler`, `StatusReady`, `StatusDraining`.
 
-- [ ] **Step 1: Make `Emitter.Emit` safe after `Close` and `Close` idempotent** — Appendix AK. **Ruling R10.**
+**Cross-reference: this ruling's fix and two of its files landed early.** Ruling R10 (below, Step 1) was implemented and committed with Tasks 2-4, not here — `events_test.go`'s new Task 4 case needs `Emit`/`Close` idempotent to pass, so building Task 4 in isolation surfaced the dependency before this task's own step number was reached. `docker/Dockerfile`, `docker/entrypoint.sh` and `docker/healthcheck.sh` (Step 9 below) landed there too, since they depend on nothing this task adds later. See Task 2's opening disclosure for the full chain; Step 1 and Step 9 below say "already done" at the point each would otherwise introduce the same content again.
+
+- [ ] **Step 1: Make `Emitter.Emit` safe after `Close` and `Close` idempotent** — Appendix AK. **Ruling R10. ALREADY DONE, with Tasks 2-4 — confirm, do not re-apply.**
 
 - [ ] **Step 2: Pin both directly** — Appendix AL's addition to `control/events_test.go`, and break-checks 18 and 18b.
 
@@ -853,6 +861,8 @@ The decision is checked **first** in `identify`'s one closure, so a request that
 - [ ] **Step 4: Write `relay/httpapi/health.go` and wire `Lifecycle` through** — Appendices AF, J, N, AJ.
 
 One `Lifecycle`, shared by the tune path, `/readyz` and the drain. Two would let the probe say "ready" while the handler refused every tune.
+
+**Disclosure: `New`'s `/healthz`/`/readyz` doc comment was rewritten as one coherent block, not left as Appendix J's literal hunk.** That hunk keeps the 2c-1 paragraph's context lines unmodified — "...that is also why **this PR** adds no Docker HEALTHCHECK" — and appends a second, separately-worded paragraph about `/readyz` becoming real underneath it; applied as written, the result says both "this PR adds no Docker HEALTHCHECK" and, two lines later, describes the drain and Step 9's HEALTHCHECK this same PR adds, immediately below a paragraph that still calls itself 2c-1's. The two paragraphs were merged into one instead (`relay/httpapi/server.go`, `New`'s opening comment), replacing "this PR adds no Docker HEALTHCHECK" with "2c-1 through 2c-7 added no Docker HEALTHCHECK" and stating plainly that `/readyz` became real in 2c-8. Appendix J's hunk text below has been regenerated to match what was actually applied.
 
 - [ ] **Step 5: Update 2c-1's health test** — Appendix AJ's `server_test.go` hunk.
 
@@ -870,7 +880,7 @@ The handler is installed **before** `ListenAndServe`, so a SIGTERM during startu
 
 Three tests, and the clock in each starts **before** `drain.Run` (Constraint 28).
 
-- [ ] **Step 9: Add the `HEALTHCHECK`, the role file and the probe** — Appendix Y's `Dockerfile` and `entrypoint.sh` hunks, and Appendix AH.
+- [ ] **Step 9: Add the `HEALTHCHECK`, the role file and the probe** — Appendix Y's `Dockerfile` and `entrypoint.sh` hunks, and Appendix AH. **ALREADY DONE, with Tasks 2-4 — confirm, do not re-apply.**
 
 **`docker/healthcheck.sh` MUST BE COMMITTED EXECUTABLE, and the `HEALTHCHECK` must not depend on that.** Both, and the reason each is there:
 
@@ -2749,12 +2759,14 @@ Ruling R3: `RequireInternal` buffers the body, verifies the bound signature agai
 
 The routing table. **One diff, referenced by Tasks 3, 7 and 8**: the four control routes, the two XC roots and `/readyz`'s handler all land here. One gate per route rather than a wrapper around the mux -- the health endpoints must stay ungated.
 
+**Regenerated.** The hunk first drafted here kept the 2c-1 `/healthz`/`/readyz` doc-comment paragraph's context lines unmodified and appended a second, separately-worded paragraph below them — applied as written, the result keeps "...that is also why **this PR** adds no Docker HEALTHCHECK" (2c-1's own claim about itself) sitting directly above a paragraph describing the drain and the HEALTHCHECK this PR (2c-8) adds at Step 9. That is the "two contradictory paragraphs" the implementation replaced with one merged paragraph instead (see Task 8 Step 4's disclosure). The hunk below is round-tripped from the applied tree (`git diff 4f564b0f -- relay/httpapi/server.go`), confirmed to apply cleanly to the pre-2c-8 file and to produce a byte-identical result.
+
 **`relay/httpapi/server.go`**
 
 ```diff
---- a/httpapi/server.go
-+++ b/httpapi/server.go
-@@ -21,6 +21,11 @@
+--- a/relay/httpapi/server.go
++++ b/relay/httpapi/server.go
+@@ -21,6 +21,11 @@ type Config struct {
  	// set.
  	Stream StreamDeps
  
@@ -2766,14 +2778,18 @@ The routing table. **One diff, referenced by Tasks 3, 7 and 8**: the four contro
  	// Control is what the internal control routes need. Only read when
  	// DevRoutes is set.
  	Control ControlDeps
-@@ -51,17 +56,40 @@
- 	// something to report -- and that is also why this PR adds no Docker
+@@ -46,22 +51,41 @@ func New(cfg Config) *Server {
+ 	// Always served, in every shape. D6: the Python relay has neither a
+ 	// health endpoint nor a readiness probe, and both are a few lines here.
+ 	//
+-	// Both are a static 200 at 2c-1, which is what this PR's row specifies.
+-	// /readyz becomes meaningful in 2c-8, when the SIGTERM drain gives it
+-	// something to report -- and that is also why this PR adds no Docker
++	// /healthz stays a static 200 -- LIVENESS: the process is up. /readyz
++	// became real in 2c-8, when the SIGTERM drain gives it something to
++	// report -- and that is also why 2c-1 through 2c-7 added no Docker
  	// HEALTHCHECK: a probe wired to a static 200 reports healthy through
  	// every failure it exists to catch.
-+	//
-+	// /healthz stays a static 200 -- LIVENESS: the process is up. /readyz
-+	// became real in 2c-8 and reports the drain plus the channel and client
-+	// counts (health.go).
  	s.mux.HandleFunc("GET /healthz", ok)
 -	s.mux.HandleFunc("GET /readyz", ok)
 +	s.mux.Handle("GET /readyz", ReadyHandler(cfg.Health))
