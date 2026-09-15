@@ -768,9 +768,9 @@ Then **eight consecutive runs** (Working rules):
 for i in 1 2 3 4 5 6 7 8; do go test -race -count=1 ./output/ | tail -1; done
 ```
 
-- [ ] **Step 5: Break-check rows 3, 4, 5, 6, 7, 8**
+- [ ] **Step 5: Break-check rows 8 and 11**
 
-Run § Break-check's rows 3 through 8 and record each message. Row 8 is the one whose first form did not redden usefully; re-read it before running.
+**Plan correction, found running this task rather than read in advance**: an earlier draft of this step said "rows 3 through 8", but rows 3, 4, 5, 6 and 7 all name tests in `relay/httpapi/profile_test.go` (Appendix P), which Task 7 creates — they cannot run here and are Task 7 Step 5's, not this task's. Row 11 names `TestAProfileWithNoCommandIsRefusedRatherThanDefaultedToTheRemux`, which IS in this task's own `relay/output/profile_test.go` (Appendix I, test 3) and belongs here, not in Task 7's list where an earlier draft of that step placed it. Run § Break-check's rows 8 and 11 and record each message. Row 8 is the one whose first form did not redden usefully; re-read it before running.
 
 - [ ] **Step 6: Run the four checks and commit**
 
@@ -951,9 +951,9 @@ Then **eight consecutive runs of the Output Profile subset**:
 for i in 1 2 3 4 5 6 7 8; do go test -race -count=1 -run 'Profile|Transcode|Chained|Output' ./httpapi/ | tail -1; done
 ```
 
-- [ ] **Step 5: Break-check rows 2, 9, 10, 11, 12, 13, 16, 17, 18**
+- [ ] **Step 5: Break-check rows 2, 3, 4, 5, 6, 7, 9, 10, 12, 13, 16, 17, 18**
 
-Run § Break-check's rows 2 and 9 through 13 and record each message. **Row 2's registry half is Global Constraint 35's demonstration**: with `AttachOutput`'s reuse branch disabled, comment out the spawn assertion and confirm the registry and PID assertions stay **green**. Restore the assertion afterwards.
+**Plan correction, carried over from Task 4 Step 5**: an earlier draft of this step said "rows 2, 9, 10, 11, 12, 13, 16, 17, 18", but row 11 names a test in `relay/output/profile_test.go` (Appendix I), which Task 4 creates — it is Task 4 Step 5's row, not this task's, and this task's list gains rows 3, 4, 5, 6 and 7 in its place, since their tests (`TestTwoClientsOnOneOutputProfileShareOneTranscode` and its siblings) are this task's own `relay/httpapi/profile_test.go` (Appendix P). Rows 16, 17 and 18 were re-checked against this correction and confirmed correctly placed here: `TestTheDeactivatedProfileCorrectionDoesNotRaceTheListEndpoint` (row 16) and `TestAFailoverRefreshesTheProfileSetAndADegradedOneDoesNot` (rows 17 and 18, both arms — Appendix P's own list, item 12) are both in this task's `relay/httpapi/profile_test.go`; there is no channel-package location for either. Run § Break-check's rows 2, 3, 4, 5, 6, 7, 9, 10, 12, 13, 16, 17 and 18 and record each message. **Row 2's registry half is Global Constraint 35's demonstration**: with `AttachOutput`'s reuse branch disabled, comment out the spawn assertion and confirm the registry and PID assertions stay **green**. Restore the assertion afterwards.
 
 - [ ] **Step 6: Run the four checks and commit**
 
