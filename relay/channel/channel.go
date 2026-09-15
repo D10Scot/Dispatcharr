@@ -84,6 +84,16 @@ type Channel struct {
 	tuning    Tuning
 	startedAt time.Time
 	now       func() time.Time
+
+	// budgetBytes is the ring's own byte budget, kept so an output pipeline's
+	// fragment buffer can be sized from the same number rather than from a
+	// second copy of the manager's config (2c-6).
+	budgetBytes int
+
+	// outputRegistry is 2c-6's: the fMP4 remux and, from 2c-7, the Output
+	// Profile transcodes. Its own mutex, never nested with mu -- see
+	// output.go's lock-order note.
+	outputRegistry
 	// channelName is StreamManager.channel_name: resolved once at construction
 	// (input/manager.py:41-44) and carried on every event, unchanged by a
 	// failover -- the SourceInfo's name can move, this one does not.
@@ -294,6 +304,11 @@ func (c *Channel) run(ctx context.Context, first Source) {
 	defer c.releaseSlot()
 	defer close(c.done)
 	defer c.ring.Close()
+	// stop_all_output_formats (server.py:1771), in the one place a channel
+	// ends. Deferred calls run last-in first-out, so this runs BEFORE the ring
+	// closes: a remux still draining the ring sees its stop the way any stopped
+	// one does rather than racing the close.
+	defer c.stopOutputs()
 
 	c.setState(StateWaitingForClients, nil)
 	go c.promoteOnFirstChunk(ctx)
