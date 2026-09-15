@@ -4,7 +4,7 @@
 
 **Goal:** Serve **Output Profiles** from the Go relay: an optional downstream transcode reading the channel's shared ring on `pipe:0` and writing MPEG-TS on `pipe:1`, **one process per active `(channel, profile)` pair shared by every client on that profile** — parity-matrix **row 11**, "ten AC3 clients cost one ffmpeg". A client on a profile reads that process's output instead of the channel's own ring; an fMP4 client on a profile runs **two chained processes**, the transcode under `mpegts:p<id>` and 2c-6's remux under `fmp4:p<id>` reading it, exactly as `views.py:765-792` composes them. Row 11 gets a Go pin.
 
-**Architecture:** `relay/output`'s `Pipeline` — 2c-6's spawn, writer, supervisor and stop — gains **a second sink**: an Output Profile transcode writes a `buffer.Ring` of MPEG-TS where the fMP4 remux writes a `buffer.Fragments` of MP4 boxes. A second constructor, `output.StartProfile`, names it; `Channel.AttachOutput`'s refcount, its registry and its key are untouched, and the key is already the compound string `_parse_output_key` splits. The profile's argv comes off the wire — `output_profiles[*].argv` on the `next-source` answer (2b-2), cached per channel and refreshed by every later answer — so the relay builds no command line and splits no words (Amendment A4.1). `httpapi` resolves the client's profile against that cache, attaches the transcode, and hands the resulting ring to `serveClient` or to the remux, at exactly the point `views.py:765-776` does.
+**Architecture:** `relay/output`'s `Pipeline` — 2c-6's spawn, writer, supervisor and stop — gains **a second sink**: an Output Profile transcode writes a `buffer.Ring` of MPEG-TS where the fMP4 remux writes a `buffer.Fragments` of MP4 boxes. That is a second constructor, `output.StartProfile`, **and an edit to `Pipeline` itself**: it binds `*buffer.Fragments` in five places — the struct field, the constructor, the accessor, `run`'s deferred close and `reader`'s scanner — and all five are reached (Ruling R11, which corrects 2c-6's R1 on exactly this point). `Channel.AttachOutput`'s refcount, its registry and its key **are** untouched, and the key is already the compound string `_parse_output_key` splits. The profile's argv comes off the wire — `output_profiles[*].argv` on the `next-source` answer (2b-2), cached per channel and refreshed by every later answer — so the relay builds no command line and splits no words (Amendment A4.1). `httpapi` resolves the client's profile against that cache, attaches the transcode, and hands the resulting ring to `serveClient` or to the remux, at exactly the point `views.py:765-776` does.
 
 **This PR stays inert in every deployment**: every route is behind 2c-1's dev flag, and nginx routes nothing to port 5658 until stage 2d.
 
@@ -22,6 +22,8 @@
 
 **What it did instead, and what that buys.** Every appendix here was built and verified on `main` at **`9d666f8c`** (2c-5 as merged) **with 2c-6's own appendices applied over it**, extracted mechanically from that plan's fenced blocks rather than retyped: eleven whole files written out, seven diffs applied with `git apply`. **All seven applied with no fuzz and no rejects**, and the resulting module built, vetted, linted at zero issues and passed `go test -race ./...` green before a line of 2c-7 was written. That is the strongest evidence available that 2c-6's appendices describe a tree that compiles against `9d666f8c`, and it is not evidence that the tree 2c-6 *merges* is that tree.
 
+**The 2c-6 tip is known to be moving**: a fix round was in progress when this plan was written, and one of its corrections is to 2c-6's own Ruling R1 — that sentence promising 2c-7 a second constructor and a second sink type overstated the constructor's share, and Ruling R11 below is this plan's half of the correction. The appendices here were built against `f142bf90`; a fix round that reshapes `Pipeline` itself moves Appendix G's anchors and is a Task 0 stop.
+
 **The orchestrator fills `<2C6_MERGED_SHA>` when 2c-6 merges, and this plan is re-seeded from that SHA — every `_test.go` included — and every appendix re-verified byte for byte, before it is reviewed.** Until then, Task 0 is the diff between what this plan expects of 2c-6 and what merged.
 
 **Task 0's stop rule is binding.** A symbol that differs from the ledger below is a **stop-and-report**, never a reconciliation in passing.
@@ -30,7 +32,7 @@
 
 | 2c-6 shape this plan builds on | Where 2c-7 touches it | If your tree differs |
 |---|---|---|
-| `relay/output` exists, with `Pipeline`, `Config`, `Remux`, `Start`, `run`, `generation`, `writer`, `reader`, `scanner`, `readSize`, `stopJoinWait`, `FormatFMP4`, `InitSegmentTimeout` | Task 4 adds a `ring` field, a `bsf` field, `closeSink`, `read`, `Ring()` and one guard in `generation`'s stderr callback, all in `output/fmp4.go`; everything else is new in `output/profile.go` | a renamed `Pipeline`, `Config` or `Start` moves every anchor in Appendix A — **stop and report** rather than re-deriving |
+| `relay/output` exists, with `Pipeline`, `Config`, `Remux`, `Start`, `run`, `generation`, `writer`, `reader`, `scanner`, `readSize`, `stopJoinWait`, `FormatFMP4`, `InitSegmentTimeout`. **`Pipeline` binds `*buffer.Fragments` at five sites**: the struct field, `Start`'s constructor, the `Fragments()` accessor, `run`'s `defer p.frags.Close()` and `reader`'s `scanner{out: p.frags}` | Task 4 reaches **all five** (Ruling R11) — a `ring` field beside `frags`, a `Ring()` beside `Fragments()`, `defer p.closeSink()`, `generation` calling `p.read(proc)` — plus a `bsf` field and one guard in `generation`'s stderr callback; everything else is new in `output/profile.go` | a renamed `Pipeline`, `Config` or `Start` moves every anchor in Appendix G — **stop and report** rather than re-deriving. **A `Pipeline` that already carries a sink abstraction means 2c-6's fix round went further than this plan knows: read Ruling R11 before writing anything** |
 | `Pipeline.run`'s retry arm calls `ffmpeg.StartPiped(ctx, p.cfg.command(), p.cfg.argvNoBSF())` | Task 4 leaves it alone and fills `cfg.Remux` for the profile pipeline so it could never spawn the fMP4 remux — Ruling R3's second half | if `run` no longer restarts at all, Ruling R3's structural guard is moot; say so and keep the field assignment |
 | `Config.command()` returns `RemuxCommand` for an empty `Command`, and `Config.argv()` returns `RemuxArgv()` for a nil `Argv` | **Not used by the profile path**, deliberately (Ruling R3) | a `Config` whose zero value is no longer the production remux removes R3's reason; re-read it before simplifying |
 | `channel/output.go` with `outputEntry`, `AttachOutput(format string, remux output.Remux)`, `releaseOutput`, `stopOutputs`, `outputRegistry`, `OutputFormats` | Task 5 changes `AttachOutput`'s second parameter to `OutputSpec` and adds one branch; the refcount, the lock order and both stop paths are **untouched** | a different `AttachOutput` signature is a one-line edit; a registry that is no longer a `map[string]*outputEntry` is a **stop** |
@@ -293,6 +295,28 @@ Python's `StreamGenerator` is handed its buffer (`output/ts/generator.py:673-698
 
 Decided against `ch.Buffer(profileID)`: `get_buffer`'s Python signature exists because `ProxyServer` owns both maps, and reproducing it would put the profile registry back inside `Channel` where `AttachOutput` already keeps it.
 
+### R11 — The second sink is two nil-able fields and three branches on `Pipeline`, not a sink interface and not a second pipeline type
+
+**2c-6's R1 sentence — that 2c-7 "adds a second `Pipeline` constructor and a second sink type, not a change to the lifecycle, the refcount or the spawn" — overstates the constructor's share of the work, and this ruling is the correction.** The refcount and the key really are ready: `AttachOutput(format string, …)` keys on an arbitrary string, so `mpegts:p3` and `fmp4:p3` slot in with no edit at all. But `Pipeline` **binds `*buffer.Fragments` in five places**, and a transcode emits MPEG-TS, so every one of them has to be reached:
+
+| | site in 2c-6's `output/fmp4.go` | what 2c-7 does |
+|---|---|---|
+| 1 | the struct field, `frags *buffer.Fragments` (`:338`) | a sibling field `ring *buffer.Ring` |
+| 2 | `Start`'s constructor, `frags: buffer.NewFragments(…)` (`:375`) | `StartProfile` builds its own `Pipeline` with `ring:` set and `frags` nil |
+| 3 | the accessor `Fragments()` (`:388`) | a sibling `Ring()`, nil for the other kind |
+| 4 | `run`'s `defer p.frags.Close()` (`:428`) | `defer p.closeSink()` |
+| 5 | `reader`'s `s := &scanner{out: p.frags}` (`:583`) | `generation` calls `p.read(proc)`, which branches |
+
+plus one caller outside the package, `httpapi/fmp4.go:53`'s `pipeline.Fragments()`, which is untouched because an fMP4 client still wants fragments.
+
+**Ruled: two nil-able fields, three branches on `p.ring != nil`, and exactly one of the two non-nil for a pipeline's life** — set by its constructor, never reassigned, so the branches need no lock and `-race` has nothing to find.
+
+**Decided against a `sink` interface** (`write([]byte) error; final(); Close()`, unexported so nothing outside the package can implement it). It is the tidier shape and it does not fit, for a reason that only appears on the retry path: `reader` builds a **fresh** `scanner` per generation, deliberately, because the no-bitstream-filter restart must re-scan generation 2's leading bytes as an init segment (`SetInit` then keeps the first, 2c-6's R10). A single long-lived sink object on `Pipeline` cannot express that, so the interface would need a **factory** field plus a separate close field — two function-typed fields where the branch is one boolean test, and a reader of `generation` would have to follow both to learn what the process's output does.
+
+**Decided against a second `Transcode` type.** `outputEntry.pipeline` is a `*output.Pipeline` and `AttachOutput` returns one; two types means the registry, the refcount and both stop paths become generic over them — which is precisely the "change to the lifecycle, the refcount or the spawn" 2c-6's R1 promised not to make, arrived at from the other direction.
+
+**The honest size, stated so a reviewer can check it rather than take it:** Appendix G is a **127-line diff** to `output/fmp4.go`, of which about half is comment; Appendix H is a new 202-line file. Small and localised, and not "a constructor".
+
 ---
 
 ## File Structure
@@ -371,6 +395,9 @@ Run each of these and compare against § Sequencing's table. **Every grep must f
 cd <your worktree>/relay
 grep -n "func Start(ctx context.Context, cfg Config)" output/fmp4.go          # expect exactly 1
 grep -n "type Pipeline struct" -A 10 output/fmp4.go                          # expect cfg, log, frags, cancel, done -- no ring, no bsf
+grep -n "p\.frags" output/fmp4.go                                            # expect exactly 3: run's defer, reader's scanner, the accessor
+grep -n "frags: buffer.NewFragments\|func (p \*Pipeline) Fragments" output/fmp4.go   # expect 1 each -- the other two of Ruling R11's five sites
+grep -n "pipeline.Fragments()" httpapi/fmp4.go                               # expect exactly 1, and it stays
 grep -n "func (p \*Pipeline) reader\|func (p \*Pipeline) writer\|func (p \*Pipeline) run\|func (p \*Pipeline) generation" output/fmp4.go   # expect 4
 grep -n "readSize = 65536\|stopJoinWait = 5" output/fmp4.go                  # expect both
 grep -n "func (c \*Channel) AttachOutput" output/channel_output_NOPE 2>/dev/null; \
@@ -390,6 +417,8 @@ grep -n '"output_profiles"' internal/relaytest/controlplane.go               # e
 grep -n "output_profiles is deliberately not" control/nextsource.go          # expect 1 -- 2c-4's placeholder comment this PR replaces
 grep -rn "StateActive" channel/ --include=*.go | grep -v _test.go            # expect exactly 2 WRITERS plus the const and one comment
 ```
+
+**Ruling R11's five sites are the ones to check hardest.** If `grep -n "p\.frags"` returns anything but three, or if `Pipeline` already carries a sink abstraction of its own, 2c-6's fix round reshaped the type and Appendix G's anchors are stale — **stop and report** rather than re-deriving the diff.
 
 - [ ] **Step 2: Count the `StateActive` writers and name their lines**
 
@@ -615,7 +644,7 @@ git -C <your worktree> commit -F <message file>
 - Create: `relay/output/profile_real_test.go` (Appendix J)
 
 **Interfaces:**
-- Consumes: `Pipeline`, `Config`, `Remux`, `Start`, `run`, `generation`, `writer`, `reader`, `readSize`, `stopJoinWait` from 2c-6; `ffmpeg.StartPiped`; `buffer.New`/`Ring`; `relaytest.StandInCommand`, `SpawnCount`, `PacketPID`, `AlignmentProblem`; 2c-6's `requireFFmpeg` and `buildFragmentableAsset`.
+- Consumes: `Pipeline`, `Config`, `Remux`, `Start`, `run`, `generation`, `writer`, `reader`, `readSize`, `stopJoinWait` from 2c-6 — **and edits `Pipeline` itself**, at Ruling R11's five `*buffer.Fragments` bindings; `ffmpeg.StartPiped`; `buffer.New`/`Ring`; `relaytest.StandInCommand`, `SpawnCount`, `PacketPID`, `AlignmentProblem`; 2c-6's `requireFFmpeg` and `buildFragmentableAsset`.
 - Produces: `output.FormatMPEGTS`, `output.ProfileKey(int) string`, `output.FormatKey(string, *int) string`, `output.ErrProfileCommandAbsent`, `output.ProfileConfig`, `output.StartProfile(ctx, ProfileConfig) (*Pipeline, error)`, `(*Pipeline).Ring() *buffer.Ring`. Task 5 calls `StartProfile` and `ProfileKey`; Task 6 calls `FormatKey` and `Ring`.
 
 - [ ] **Step 1: Write the failing tests**
@@ -641,13 +670,24 @@ Expected: FAIL to compile — `undefined: StartProfile`, `undefined: ProfileConf
 
 Apply Appendix G to `output/fmp4.go` and write `output/profile.go` from Appendix H.
 
-`fmp4.go`'s five edits, all additive:
+`fmp4.go`'s edits, all additive. **Ruling R11's five `*buffer.Fragments` bindings are the checklist** — work through them in order and tick each, because missing one still compiles and then panics on a nil `frags` the first time a profile client tunes:
 
-- `Pipeline` gains `ring *buffer.Ring` and `bsf bool`. **Exactly one of `ring` and `frags` is non-nil for the life of a pipeline**, set by the constructor and never changed, so the branches that read it need no lock.
-- `closeSink()` and `read(proc)` branch on `p.ring != nil`; `run`'s `defer p.frags.Close()` becomes `defer p.closeSink()`; `generation`'s reader goroutine calls `p.read(proc)`.
+| # | site in 2c-6's `output/fmp4.go` | edit |
+|---|---|---|
+| 1 | the struct field `frags *buffer.Fragments` | add `ring *buffer.Ring` beside it, and `bsf bool` |
+| 2 | `Start`'s `frags: buffer.NewFragments(...)` | add `bsf: true`; `StartProfile` (Appendix H) builds the other shape |
+| 3 | `func (p *Pipeline) Fragments()` | add `func (p *Pipeline) Ring()` beside it |
+| 4 | `run`'s `defer p.frags.Close()` | `defer p.closeSink()`, which branches |
+| 5 | `reader`'s `s := &scanner{out: p.frags}` | leave `reader` alone; `generation`'s reader goroutine calls `p.read(proc)`, which branches |
+
+**Exactly one of `ring` and `frags` is non-nil for the life of a pipeline**, set by its constructor and never reassigned, so the three branches need no lock and `-race` has nothing to find.
+
+Two edits that are not on that list:
+
 - `generation`'s stderr callback gains `p.bsf &&` in front of the bitstream-filter condition.
-- `Start` sets `bsf: true`; `Ring()` joins `Fragments()` as an accessor.
 - `readSize`'s comment gains `output/profile/manager.py:231`, and the package doc gains Ruling R1's paragraph.
+
+**`scanner.out` stays `*buffer.Fragments` and is not generalised.** The scanner is the fMP4 box splitter and a transcode has no boxes to split; `profileReader` writes to the ring directly and constructs no scanner at all.
 
 `profile.go` is new and holds nothing shared. Three things to get right:
 
