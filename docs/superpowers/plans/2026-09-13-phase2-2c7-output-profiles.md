@@ -76,8 +76,10 @@ Every number below was produced on the merged tree with this plan's appendices a
 | `scripts/check_go_stdlib_only.sh relay` | `OK: relay depends on the standard library only.` |
 | `relay/go.sum` | absent; `go.mod` is two lines with no `require` |
 | `go test -race -count=1 ./...` | green **×3** |
-| `go test -race ./channel ./output ./httpapi` | green **×8** (`channel` 74.7–75.4s, `output` 2.8–3.2s, `httpapi` 67.9–69.7s) |
-| `go test ./ffmpeg ./channel ./output` **without** `-race` | green **×3** (`channel` ~58s) |
+| `go test -race ./channel ./output ./httpapi` | green **×8** (`channel` 74.8–75.9s, `output` 2.7–3.2s, `httpapi` 70.0–71.4s) |
+| `go test ./ffmpeg ./channel ./output` **without** `-race` | green **×3** (`channel` 57.7–58.3s) |
+| the two tests the review round added | `TestTheDeactivatedProfileCorrectionDoesNotRaceTheListEndpoint` 0.13s, `TestAFailoverRefreshesTheProfileSetAndADegradedOneDoesNot` 1.99s |
+| suppressions in the module | **18** — sixteen on the merged 2c-6 tree, two this PR's |
 | `TestARealAC3ProfileTranscodesTheChannelsRing` | PASS on the host at **ffmpeg 9.0.1** (0.15s) **and in the base image at 8.1.2** (0.12s) |
 | `apps.proxy.tests` with the Django change applied | `Ran 379 tests … OK`, in a dedicated container on a **fresh** DB volume |
 | the seeded `OutputProfile` rows | both present after that run — `1 Media Server (AC3 Audio) t t`, `2 Web Player (AAC Audio) t t` |
@@ -140,9 +142,9 @@ Every task's requirements implicitly include this section. Constraints 1–38 ar
 
 13. **A control-plane setting is read from the wire or the tune fails. Never from a Go-side default.** This PR reads **no new setting**: the transcode's join window is the channel's `Tuning.JoinBehind`, its retention `Tuning.Retention`, its write unit `Tuning.ChunkBytes` and its byte budget the manager's `BudgetBytes`. The **argv** is on the wire too (`output_profiles[*].argv`, 2b-2) and Ruling R3 is why it gets no Go-side fallback at all.
 
-14. **Parity is against the code, not against the summary.** Every behavioural claim here carries a `file:line`. **Five places where reading the source — or running it — changed this plan**, each recorded in the ruling or the test that carries it: the Output Profile's Redis namespace is the literal `mpegts:p{id}` at five sites **whatever the client's output format**, so fMP4-plus-profile is a CHAIN of two processes and not one process under a combined key (`output/profile/manager.py:303`, `views.py:790-792`); `output_profiles[*].argv` carries the command as element 0 where `stream_profile.argv` does not (`apps/proxy/serializers.py:230` against `next_source.py`'s `_stream_profile_ref`); a profile omitted from that map is indistinguishable from a deactivated one, which is why Ruling R4 changes Django; the profile's `_stderr_loop` parses **nothing** where the remux's watches for the bitstream filter (`output/profile/manager.py:270-295`); and `transcode_active` is an input-side key with one reference in the whole tree — a `delete` — and no writer and no reader (Ruling R8).
+14. **Parity is against the code, not against the summary.** Every behavioural claim here carries a `file:line`. **Five places where reading the source — or running it — changed this plan**, each recorded in the ruling or the test that carries it: the Output Profile's Redis namespace is the literal `mpegts:p{id}` at six sites **whatever the client's output format**, so fMP4-plus-profile is a CHAIN of two processes and not one process under a combined key (`output/profile/manager.py:303`, `views.py:790-792`); `output_profiles[*].argv` carries the command as element 0 where `stream_profile.argv` does not (`apps/proxy/serializers.py:230` against `next_source.py`'s `_stream_profile_ref`); a profile omitted from that map is indistinguishable from a deactivated one, which is why Ruling R4 changes Django; the profile's `_stderr_loop` parses **nothing** where the remux's watches for the bitstream filter (`output/profile/manager.py:270-295`); and `transcode_active` is an input-side key with one USE in the whole tree — a `delete` — and no writer and no reader (Ruling R8; three grep lines, two of them the key helper's own def and return).
 
-15. **Decide every lint finding in this plan, and re-lint after every `#nosec`.** This PR adds **no suppression**. Three findings on the first lint were fixed rather than suppressed and each changed the code for the better: two `nilerr` reports on `profileReader`'s `return nil` under an error check (closed by giving that function no error return at all — it has nothing to report), and one `unused` on a `setOutputProfiles` method the failover path did not end up calling (closed by deleting it and keeping one writer). Task 9 Step 5 lists them as zero new against 2c-6's zero.
+15. **Decide every lint finding in this plan, and re-lint after every `#nosec`.** This PR adds **two suppressions**, both in test-support code and both reasoned at the line: `internal/relaytest/standin.go`'s `os.ReadFile(path) // #nosec G304` in `StdinPacketPID` (a path the test itself chose, the same reason `SpawnCount`'s own G304 beside it carries) and `output/profile_real_test.go`'s `exec.CommandContext(...) // #nosec G204` on the ffprobe call (a `LookPath` result and fixed arguments, the reason `output/real_test.go`'s two carry). **An earlier draft of this constraint said "no suppression", which was simply wrong** — caught by review, and recorded rather than quietly corrected, because a census nobody recounts is how the next one drifts. Three OTHER findings were fixed rather than suppressed, and each changed the code for the better: two `nilerr` reports on `profileReader`'s `return nil` under an error check (closed by giving that function no error return at all — it has nothing to report), and one `unused` on a `setOutputProfiles` method the failover path did not end up calling (closed by deleting it and keeping one writer). Task 9 Step 5 lists the two additions by file and line. **Measured on `eb7fac07`: sixteen in the module before this PR, eighteen after** — 2c-6's own plan recounts fourteen for its own scope, so use the grep rather than either number.
 
 16. **Run the four checks after every task, from the module root**, and treat any of the four failing as a stop:
 
@@ -154,13 +156,13 @@ Every task's requirements implicitly include this section. Constraints 1–38 ar
 
 17. **An ordering bug is not a data race, and `-race` is silent on every one of them.** This PR's instructive one: a `Pipeline` whose writer starts at `Source.Head()` on a ring nothing is still filling feeds its child **nothing at all**, for ever. Correct behaviour, and a fixture that never produces a byte — the first draft of Task 4's ring test failed after fifteen seconds with "the ring holds 0 chunks" and read as a broken pipeline. `JoinBehind` wider than the fixture is what makes it a test; production reads `new_client_behind_seconds`, which `output/profile/manager.py:180-184` sets for exactly this reason ("so the buffer is pre-populated by the time the first client connects").
 
-18. **One mechanism per invariant.** This PR adds **no third writer of `StateActive`**: `promoteOnFirstChunk` (`channel/channel.go:583`) and `reportBuffering`'s guarded recovery edge (`channel/stats.go:129`) stay the only two, and an output pipeline never touches channel state. Task 0 counts two, Task 9 counts two, and both name the lines. A pipeline is still stopped by exactly two mechanisms that cannot overlap — `releaseOutput` at a refcount of zero, and `stopOutputs` from `run`'s defers. The **failure** paths were collapsed to one for the same reason: see Ruling R4's last paragraph.
+18. **One mechanism per invariant.** This PR adds **no third writer of `StateActive`**: `promoteOnFirstChunk`'s assignment (`channel/channel.go:540` on `eb7fac07`, `:583` once Appendix L applies) and `reportBuffering`'s guarded recovery edge (`channel/stats.go:129`) stay the only two, and an output pipeline never touches channel state. Task 0 counts two, Task 9 counts two, and both name the lines. A pipeline is still stopped by exactly two mechanisms that cannot overlap — `releaseOutput` at a refcount of zero, and `stopOutputs` from `run`'s defers. The **failure** paths were collapsed to one for the same reason: see Ruling R4's last paragraph.
 
 19. **The borrowed-slice contract is asserted, not enforced.** `Ring.Read` returns slice headers into the ring's own arrays, and 2c-3 named **this PR** as one of the two most likely to want to mutate one. It does not: the transcode's writer hands each chunk straight to `os.File.Write`, and `profileReader` hands its own read buffer to `Ring.Write`, which copies (2c-2's `TestAPublishedChunkIsNeverRewritten` asserts that by content).
 
 20. **Do not widen the endpoint.** `GET /proxy/relay/channels` gains **no field and no route**: the only wire change on that endpoint is that a client's existing `output_profile_id` can now be a non-null integer. The single-channel `GET`/`DELETE`, the client `DELETE` and `advance` are 2c-8's.
 
-21. **Every error-typed argument to a formatting or logging call in `relay/` passes through `redact.Error`, or carries `// credential-logging: ok - <reason>`.** `scripts/check_go_credential_logging.sh relay` reports the module clean at zero findings after this PR, across eleven packages. This PR adds **one marker** (the `encoding/json` type error in `OutputProfileRef.UnmarshalJSON`, the same shape 2c-4 and 2c-5 added for the other decoders) and one `redact.Error` call, in `attachOutputProfile`'s failure log.
+21. **Every error-typed argument to a formatting or logging call in `relay/` passes through `redact.Error`, or carries `// credential-logging: ok - <reason>`.** `scripts/check_go_credential_logging.sh relay` reports the module clean at zero findings after this PR, across eleven packages. This PR adds **two markers**, both `encoding/json` type errors naming a JSON shape and never a value — `OutputProfileRef.UnmarshalJSON` and `NextSourceAnswer.UnmarshalJSON` (`control/nextsource.go`, the same shape 2c-4 and 2c-5 added for the other decoders) — and one `redact.Error` call, in `attachOutputProfile`'s failure log. **An earlier draft said one**; there are two decoders and each needs its own.
 
 22. **Every line the stand-in writes to stderr came out of a real ffmpeg**, or is declared where it is written with the reason. This PR adds **none** — its stand-in additions are all on fd 0 and fd 1.
 
@@ -286,7 +288,9 @@ Python resolves the Output Profile row **per client** (`views.py:150-155`, reach
 
 **A DEGRADED resolution refreshes nothing**, and that falls out rather than being arranged: it came from the candidate list cached at channel start and carries no answer, so `Resolved.OutputProfiles.Known` is false and the channel keeps what it had.
 
-**The residual divergence, stated:** an operator who edits an Output Profile's `parameters` while a channel is running reaches new clients on that channel only after its next `next-source` call — a failover, a resume, or a restart — where Python reaches them on the next tune. Not fixed, because fixing it needs the per-client route 2b-2's R3 rejected. **Not tested either**, and that is deliberate: there is no Python behaviour here to pin, only the absence of one.
+**The residual divergence, stated:** an operator who edits an Output Profile's `parameters` while a channel is running reaches new clients on that channel only after its next `next-source` call — a failover, a resume, or a restart — where Python reaches them on the next tune. Not fixed, because fixing it needs the per-client route 2b-2's R3 rejected, and not tested, because there is no Python behaviour there to pin — only the absence of one.
+
+**The REFRESH itself is tested, and an earlier draft of this ruling wrongly implied it was not.** That draft said only the divergence went unpinned, which left the impression that everything else here was covered; it was not. Deleting the two-line assignment in `channel/failover.go` left the **entire** suite green — found by review, not by this plan. `TestAFailoverRefreshesTheProfileSetAndADegradedOneDoesNot` now pins both halves of the rule in one test: an operator changes the active set between two answers and a failover that reaches Django picks it up (break-check 17), while a **degraded** failover leaves the channel's copy alone (break-check 18). Both arms belong together, because a relay that refreshed from the cached candidate list would CLEAR the map rather than update it, and a one-armed test would call that a pass.
 
 **The read hands out the map without copying it, and that is safe because nothing mutates it in place** — every write replaces the whole struct. `OutputProfiles()` takes `RLock`; the failover writes under the switch's `Lock`. `AttachOutput` never reads it, so `outMu` still never nests with `mu`.
 
@@ -316,7 +320,7 @@ Recorded so the next reader of the brief does not go looking, and left alone: de
 
 ### R9 — fMP4 and an Output Profile COMPOSE, as a chain of two processes, and the registry key is Python's own compound string
 
-The brief asks whether the two combine and, if not, with what status they are refused. **They combine.** `views.py` runs `ensure_output_profile` first (`:765-767`), resolves `get_buffer(channel_id, profile=id)` second (`:773-776`), and hands **that** buffer to `ensure_output_format` as `source_buffer` under the key `f'fmp4:p{id}'` (`:731-734`, `:790-792`). The transcode's own Redis namespace is the literal `f"mpegts:p{self.profile_id}"` at five sites in `output/profile/manager.py` — **always `mpegts`, whatever the client asked for** — because an Output Profile's output *is* MPEG-TS (`core/models.py:173-174`). So the two live under two keys that cannot collide, and the second reads the first.
+The brief asks whether the two combine and, if not, with what status they are refused. **They combine.** `views.py` runs `ensure_output_profile` first (`:765-767`), resolves `get_buffer(channel_id, profile=id)` second (`:773-776`), and hands **that** buffer to `ensure_output_format` as `source_buffer` under the key `f'fmp4:p{id}'` (`:731-734`, `:790-792`). The transcode's own Redis namespace is the literal `f"mpegts:p{self.profile_id}"` at six sites in `output/profile/manager.py` — **always `mpegts`, whatever the client asked for** — because an Output Profile's output *is* MPEG-TS (`core/models.py:173-174`). So the two live under two keys that cannot collide, and the second reads the first.
 
 **Ruled: one registry, keyed by the compound string, and the composition lives in `httpapi` where `views.py` puts it.** `output.ProfileKey(id)` is `mpegts:p<id>`; `output.FormatKey(format, id)` is `views.py:731-734`'s `f'{fmt}:p{id}' if profile else fmt`. `attachOutputProfile` returns the ring, and `serveFMP4` passes it as the remux's `Source`. Two `defer`s in the handler, released in the right order by Go's own LIFO rule.
 
@@ -339,8 +343,8 @@ Decided against `ch.Buffer(profileID)`: `get_buffer`'s Python signature exists b
 | 1 | the struct field, `frags *buffer.Fragments` (`:338`) | a sibling field `ring *buffer.Ring` |
 | 2 | `Start`'s constructor, `frags: buffer.NewFragments(…)` (`:375`) | `StartProfile` builds its own `Pipeline` with `ring:` set and `frags` nil |
 | 3 | the accessor `Fragments()` (`:388`) | a sibling `Ring()`, nil for the other kind |
-| 4 | `run`'s `defer p.frags.Close()` (`:428`) | `defer p.closeSink()` |
-| 5 | `reader`'s `s := &scanner{out: p.frags}` (`:583`) | `generation` calls `p.read(proc)`, which branches |
+| 4 | `run`'s `defer p.frags.Close()` (`:431`) | `defer p.closeSink()` |
+| 5 | `reader`'s `s := &scanner{out: p.frags}` (`:594`) | `generation` calls `p.read(proc)`, which branches |
 
 plus one caller outside the package, `httpapi/fmp4.go:53`'s `pipeline.Fragments()`, which is untouched because an fMP4 client still wants fragments.
 
@@ -363,8 +367,8 @@ plus one caller outside the package, `httpapi/fmp4.go:53`'s `pipeline.Fragments(
 | `output/profile.go` | The Output Profile transcode: `FormatMPEGTS`, `ProfileKey`, `FormatKey`, `ErrProfileCommandAbsent`, `ProfileConfig`, `StartProfile`, `profileReader`. | 202 |
 | `output/profile_test.go` | The key table, the ring, the empty command, the absent bitstream-filter retry, the two stops. | 231 |
 | `output/profile_real_test.go` | The one real-ffmpeg test, on the migration's own AC3 argv, with ffprobe reading the codec back. | 137 |
-| `httpapi/profile.go` | `attachOutputProfile` (the three wire states and their three answers), `writeProfileFailure`, `outputProfilesFrom`. | 138 |
-| `httpapi/profile_test.go` | Row 11's pin, the mixed channel, the chain, the registry's profile id, and the four failure shapes. | 615 |
+| `httpapi/profile.go` | `attachOutputProfile` (the three wire states and their three answers), `writeProfileFailure`, `outputProfilesFrom`. | 139 |
+| `httpapi/profile_test.go` | Row 11's pin, the mixed channel, the chain, the registry's profile id, the four failure shapes, the concurrent-list race pin and the failover refresh. | 778 |
 | `control/outputprofile_test.go` | The argv's command-first shape and the decoder's three states. | 112 |
 
 **Modified:**
@@ -385,7 +389,7 @@ plus one caller outside the package, `httpapi/fmp4.go:53`'s `pipeline.Fragments(
 | `internal/relaytest/asset.go` | `PacketPID`. |
 | `internal/relaytest/asset_test.go` | Its pin, including `rewritePID`'s carry. |
 | `internal/relaytest/standin.go` | `--ts-pid`, `--stdin-pid-log`, `rewritePID`, `StdinPacketPID`. |
-| `internal/relaytest/controlplane.go` | `OutputProfiles`, `OutputProfilesAbsent`, `OutputProfileConfig`, and the answer builder's new block. |
+| `internal/relaytest/controlplane.go` | `OutputProfiles`, `OutputProfilesAbsent`, `OutputProfileConfig`, `SetOutputProfiles` (the mutable override a mid-channel edit needs), and the answer builder's new block. |
 | `apps/proxy/serializers.py` | `OutputProfileRefSerializer.argv` gains `allow_null=True` (Ruling R4). |
 | `apps/proxy/next_source.py` | `_with_output_profiles`'s `except` sets `argv = None` instead of `continue` (Ruling R4). |
 | `apps/proxy/tests/test_next_source_api.py` | The malformed-profile test renamed and inverted; a deactivated row added. |
@@ -461,13 +465,13 @@ grep -rn "StateActive" channel/ --include=*.go | grep -v _test.go            # e
 
 - [ ] **Step 2: Count the `StateActive` writers and name their lines**
 
-Constraint 18. Expected: exactly two — `promoteOnFirstChunk` in `channel/channel.go` (`:583` at `9d666f8c` + 2c-6) and `reportBuffering`'s guarded recovery edge in `channel/stats.go` (`:129`). The other two hits are the constant's declaration in `state.go` and a comment in `failover.go`. **Three writers is a stop.** Record both line numbers; Task 9 counts them again.
+Constraint 18. Expected: exactly two — `promoteOnFirstChunk`'s assignment in `channel/channel.go` (**`:540`** on `eb7fac07`, in the function that starts at `:529`; the file is 555 lines, so a citation of `:583` is only true AFTER Appendix L adds its field block, and this task runs BEFORE that) and `reportBuffering`'s guarded recovery edge in `channel/stats.go` (`:129`, unmoved). The other two hits are the constant's declaration in `state.go` and a comment in `failover.go`. **Three writers is a stop.** Record both line numbers; Task 9 counts them again.
 
 - [ ] **Step 3: Check the Python side is what this plan read**
 
 ```bash
 cd <your worktree>
-grep -n "mpegts:p" apps/proxy/live_proxy/output/profile/manager.py            # expect 5, all f"mpegts:p{self.profile_id}"
+grep -n "mpegts:p" apps/proxy/live_proxy/output/profile/manager.py            # expect 7 LINES: SIX f"mpegts:p{self.profile_id}" sites (:303 :315 :325 :332 :349 :364) plus :361, a docstring
 grep -n "read_size = 65536" apps/proxy/live_proxy/output/profile/manager.py   # expect 1 (:231)
 grep -n "t.join(timeout=5)" apps/proxy/live_proxy/output/profile/manager.py   # expect 1 (:141)
 grep -n "def _stderr_loop" -A 26 apps/proxy/live_proxy/output/profile/manager.py   # expect NO aac_adtstoasc, NO retry
@@ -475,10 +479,10 @@ grep -n "log_system_event\|post_events" apps/proxy/live_proxy/output/profile/man
 grep -n "resolved_output_format}:p{resolved_output_profile.id}" apps/proxy/live_proxy/views.py   # expect 2 (:621, :732)
 grep -n "source_buffer=source_buffer if resolved_output_profile else None" apps/proxy/live_proxy/views.py  # expect 1 (:792)
 grep -n "Failed to start output profile transcode" apps/proxy/live_proxy/views.py  # expect 1 (:771)
-grep -n "argv = serializers.ListField" apps/proxy/serializers.py              # expect 1, WITHOUT allow_null
+grep -n "argv = serializers.ListField" apps/proxy/serializers.py              # expect 2: :64 is StreamProfileRefSerializer's and ALREADY has allow_null=True; :230 is OutputProfileRefSerializer's and does not -- :230 is the one Task 2 edits
 grep -n "continue" apps/proxy/next_source.py | head                            # expect the _with_output_profiles skip
 grep -n "def build_command" -A 4 core/models.py                                # expect [self.command] + shlex_split(...)
-grep -rn "transcode_active" apps/ --include=*.py                               # expect 2: the key helper and ONE delete
+grep -rn "transcode_active" apps/ --include=*.py                               # expect 3 LINES: the helper's def and its return (redis_keys.py:89, :91) and ONE delete (input/manager.py:1797). No writer, no reader
 ```
 
 If `views.py:771`'s body string or the `mpegts:p` literal differs by a character, **stop**: Constraint 8's pins are those strings.
@@ -632,7 +636,7 @@ git -C <your worktree> commit -F <message file>
 
 **Interfaces:**
 - Consumes: `ControlPlaneConfig`, `standInOptions`, `RunStandIn`, `SyntheticTS`, `PacketIndex` as 2c-6 left them.
-- Produces: `relaytest.OutputProfileConfig{ID int; Argv []string; ArgvNull bool}`; `ControlPlaneConfig.OutputProfiles map[string]OutputProfileConfig` and `.OutputProfilesAbsent bool`; the stand-in flags `--ts-pid N` and `--stdin-pid-log PATH`; `relaytest.PacketPID(packet []byte) int` and `relaytest.StdinPacketPID(path string) int`. Tasks 4 and 7 use all of them.
+- Produces: `relaytest.OutputProfileConfig{ID int; Argv []string; ArgvNull bool}`; `ControlPlaneConfig.OutputProfiles map[string]OutputProfileConfig` and `.OutputProfilesAbsent bool`; `(*ControlPlane).SetOutputProfiles(map[string]OutputProfileConfig)`, which replaces the map every LATER answer carries — the mutator Task 7's refresh test needs, mirroring `SetSettings`; the stand-in flags `--ts-pid N` and `--stdin-pid-log PATH`; `relaytest.PacketPID(packet []byte) int` and `relaytest.StdinPacketPID(path string) int`. Tasks 4 and 7 use all of them.
 
 **Why the two stand-in flags exist** (Constraint 41): the stand-in's `-i pipe:0` copy loop makes its output equal its input, so a profile client's bytes and a plain client's bytes are identical and **no assertion on them can fail**. `--ts-pid` rewrites every whole packet's 13-bit PID, which keeps the output a valid same-length transport stream and makes its provenance readable from any packet — what an Output Profile does in miniature. `--stdin-pid-log` writes the PID of the first whole packet a process reads on fd 0, which is the only way to see which ring a *chained* process was fed, because the fMP4 stand-in ignores its input entirely.
 
@@ -653,7 +657,7 @@ Apply Appendices D, E and F. Three independent edits:
 
 - `asset.go` gains `PacketPID`, beside `PacketIndex` and reading the same layout.
 - `standin.go` gains the two flags, `rewritePID` and `StdinPacketPID`. The PID rewrite runs **inside the existing copy loop** with a `carry` across reads; `--stdin-pid-log` runs in `runFMP4StandIn`'s drain goroutine, before the `io.Copy(io.Discard, …)`.
-- `controlplane.go` gains the config fields and a block that builds the `output_profiles` object, replacing the unconditional `"output_profiles": map[string]any{}` literal. `OutputProfilesAbsent` leaves the key out; a nil map sends `{}`; `ArgvNull` sends `"argv": null`; a nil `Argv` sends `[]`. An entry's `ID` defaults to its map key parsed as an integer.
+- `controlplane.go` gains the config fields, `SetOutputProfiles` and a block that builds the `output_profiles` object, replacing the unconditional `"output_profiles": map[string]any{}` literal. **`SetOutputProfiles` needs its own `hasProfs` flag rather than a nil check**, for `ControlPlaneConfig.OutputProfiles`' own reason: nil means "the empty object Django sends when nothing is active", which a test may set deliberately. `OutputProfilesAbsent` leaves the key out; a nil map sends `{}`; `ArgvNull` sends `"argv": null`; a nil `Argv` sends `[]`. An entry's `ID` defaults to its map key parsed as an integer.
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
@@ -794,7 +798,9 @@ git -C <your worktree> commit -F <message file>
 - Consumes: `output.StartProfile`, `output.ProfileConfig`, `output.ProfileKey` from Task 4.
 - Produces: `channel.OutputProfile{ID int; Argv []string}` with `Command()`/`Args()`; `channel.OutputProfiles{Known bool; ByID map[string]OutputProfile}` with `Lookup(string) (OutputProfile, bool)`; `channel.OutputSpec{Source *buffer.Ring; Profile *OutputProfile; Remux output.Remux}`; `AttachOutput(format string, spec OutputSpec)`; `(*Channel).OutputProfiles() OutputProfiles`; `(*Channel).SetClientOutputProfile(clientID string, profileID *int)`; `Started.OutputProfiles`; `Resolved.OutputProfiles`. Task 6 uses every one.
 
-**This task has no tests of its own**, and that is deliberate rather than an omission. Everything it adds is exercised end to end by Task 7, in a package whose suite runs in five seconds rather than seventy-five, and every one of its behaviours has a break-check there (rows 2, 7, 9, 10, 11, 12, 13). A `channel`-package test would duplicate those against a hand-built `Manager` and add a minute to every run. Task 9 Step 3 states this as an accepted gap, not a covered one.
+**This task has no tests of its own**, and that is deliberate rather than an omission. Everything it adds is exercised end to end by Task 7, in a package whose suite runs in five seconds rather than seventy-five, and every one of its behaviours has a break-check there (rows 2, 7, 9, 10, 11, 12, 13, 16, 17, 18). A `channel`-package test would duplicate those against a hand-built `Manager` and add a minute to every run.
+
+**The failover refresh is among them, and it did not used to be.** An earlier draft shipped `channel/failover.go`'s two-line assignment with nothing exercising it — deleting it left the whole suite green — and Ruling R5 argued for the mechanism while the plan left it unpinned. Task 7's `TestAFailoverRefreshesTheProfileSetAndADegradedOneDoesNot` closes it in both directions. Task 9 Step 3 no longer names it as an accepted gap.
 
 - [ ] **Step 1: Apply Appendix K to `relay/channel/output.go`**
 
@@ -899,12 +905,12 @@ git -C <your worktree> commit -F <message file>
 - Modify: `relay/httpapi/golden_test.go` (Appendix Q)
 
 **Interfaces:**
-- Consumes: `fanRig`, `fanRigWith`, `tuneAs`, `listChannels`, `waitForHead`, `withRemux`, `standInRemux`, `readAtLeast`, `channelListPayload`; `relaytest.OutputProfileConfig`, `SpawnCount`, `PacketPID`, `StdinPacketPID`, `SyntheticFMP4Init`, `FMP4ShapeProblem`.
+- Consumes: `fanRig`, `fanRigWith`, `tuneAs`, `listChannels`, `waitForHead`, `waitFor`, `withRemux`, `standInRemux`, `readAtLeast`, `channelListPayload`, `rigAssetPackets`, `rigChunkBytes`; `relaytest.OutputProfileConfig`, `SetOutputProfiles`, `NewUpstream`, `AlternateConfig`, `SpawnCount`, `PacketPID`, `StdinPacketPID`, `SyntheticFMP4Init`, `FMP4ShapeProblem`; `Channel.ClientSnapshot`, `Channel.OutputProfiles`.
 - Produces: nothing other tasks use.
 
 - [ ] **Step 1: Write `relay/httpapi/profile_test.go`**
 
-Appendix P. Ten tests. Read `transcodePID`'s comment first: it is Constraint 41 in one paragraph, and without it three of these tests cannot fail.
+Appendix P. Twelve tests. Read `transcodePID`'s comment first: it is Constraint 41 in one paragraph, and without it three of these tests cannot fail.
 
 1. **`TestTwoClientsOnOneOutputProfileShareOneTranscode` — parity-matrix row 11.** One spawn for two clients, both reading the transcode's PID, one upstream request, one `next-source` call, one registry key.
 2. `TestAProfileClientAndAPlainClientShareOneUpstream` — opposite halves of one claim: the profile client's packets carry the transcode's PID **and only** it; the plain client's carry the asset's **and only** it.
@@ -916,6 +922,8 @@ Appendix P. Ten tests. Read `transcodePID`'s comment first: it is Constraint 41 
 8. `TestATuneNamingAProfileAgainstAnOlderControlPlaneIsABadGateway` — 502, **and** an ordinary tune unaffected.
 9. `TestTheLastProfileClientLeavingStopsTheTranscodeAndNotTheChannel`.
 10. `TestStoppingTheChannelStopsItsProfileTranscode` — with a **second reference the test never releases**, which is what makes it about `stopOutputs` rather than about the refcount. Read its comment: without that reference the break-check stays green.
+11. `TestTheDeactivatedProfileCorrectionDoesNotRaceTheListEndpoint` — a reader hammering `ClientSnapshot` for the whole of a tune whose profile is not in the answer. **Its oracle is the registry value, not the detector**: a test whose only assertion is "no race" passes on any run where the goroutines miss each other, which is the silence-read-as-pass shape. Run it with `-race` or it pins only the value (break-check 16).
+12. `TestAFailoverRefreshesTheProfileSetAndADegradedOneDoesNot` — Ruling R5's mechanism, both arms (break-checks 17 and 18).
 
 - [ ] **Step 2: Run them to verify they fail**
 
@@ -941,7 +949,7 @@ Then **eight consecutive runs of the Output Profile subset**:
 for i in 1 2 3 4 5 6 7 8; do go test -race -count=1 -run 'Profile|Transcode|Chained|Output' ./httpapi/ | tail -1; done
 ```
 
-- [ ] **Step 5: Break-check rows 2, 9, 10, 11, 12, 13**
+- [ ] **Step 5: Break-check rows 2, 9, 10, 11, 12, 13, 16, 17, 18**
 
 Run § Break-check's rows 2 and 9 through 13 and record each message. **Row 2's registry half is Global Constraint 35's demonstration**: with `AttachOutput`'s reuse branch disabled, comment out the spawn assertion and confirm the registry and PID assertions stay **green**. Restore the assertion afterwards.
 
@@ -1017,6 +1025,8 @@ for i in 1 2 3; do go test -race -count=1 -timeout 900s ./... ; done
 
 Expected: every package `ok`, three times. Measured here: `channel` ~75s, `httpapi` ~70s, everything else under 9s.
 
+**The Linux pins run in the base image, and on an arm64 host that needs one variable.** `ffmpeg` there dies with `symbol lookup error: undefined symbol: rist_peer_config_defaults_set_versioned` unless `LD_LIBRARY_PATH=/usr/local/lib` is set — issue [#226](https://github.com/D10Scot/Dispatcharr/issues/226), the workaround `harness/asset.py:95` already applies on the Python side. **amd64, which is what CI pulls, is fine and needs nothing**; this is a local-host step only, and Task 4 Step 4 carries the exact invocation.
+
 - [ ] **Step 2: Three GOOS, build, vet and lint**
 
 ```bash
@@ -1026,6 +1036,14 @@ golangci-lint run ./... && GOOS=linux golangci-lint run ./... && GOOS=darwin gol
 ```
 
 Expected: `gofmt -l` silent, `0 issues.` three times.
+
+**And list every suppression, not just the count** (Constraint 15). Expected: **eighteen** in the module — sixteen on the merged 2c-6 tree plus **two of this PR's** —
+
+```bash
+cd <your worktree>/relay && grep -rn "#nosec\|nolint" --include='*.go' . | sort
+```
+
+`internal/relaytest/standin.go`'s `#nosec G304` in `StdinPacketPID` and `output/profile_real_test.go`'s `#nosec G204` on the ffprobe call. Any other new one is a finding this plan did not decide — stop and report it rather than reasoning about it in the PR description.
 
 - [ ] **Step 3: The two module-level checks, and the counts**
 
@@ -1039,7 +1057,7 @@ grep -rn "AttachOutput" relay/ --include=*.go | grep -v _test.go          # expe
 grep -rn "ffmpeg.StartPiped\|ffmpeg.Start(" relay/ --include=*.go | grep -v _test.go  # expect 4: two in spawn.go, one in output/fmp4.go, one in output/profile.go
 ```
 
-**Name the accepted gap here rather than leaving it implied:** Task 5 added no test of its own, and `channel.OutputProfiles`, `SetClientOutputProfile`, `OutputSpec` and the failover refresh are covered only end-to-end through `httpapi`. The failover **refresh** specifically has no test at all (Ruling R5's last paragraph); it is pinned by nothing and is stated as such.
+**Name the accepted gap here rather than leaving it implied:** Task 5 added no test of its own, so `channel.OutputProfiles`, `SetClientOutputProfile`, `OutputSpec` and the failover refresh are covered only end-to-end through `httpapi` — which for each of them is a real pin with a break-check, not an absence. What remains genuinely unpinned is narrower and is stated in Ruling R5: the **staleness window** between two `next-source` answers, which has no Python counterpart to compare against.
 
 - [ ] **Step 4: Run the Django label once more**
 
@@ -1047,19 +1065,19 @@ The same `docker exec` as Task 2 Step 4, on `apps.proxy.tests`. Expected: `OK`.
 
 - [ ] **Step 5: Write the PR description**
 
-In this order: what this PR does; **Ruling R9** and the chain it found in `views.py`; **Ruling R4** and what it cost on the Django side, wire shape included; **the three break-checks that did not redden on a first attempt** (rows 2, 8 and 12) and what closed each — the pass-through stand-in that made a ring invisible, the retry that spawned a real ffmpeg instead of the stand-in, and the remux whose input nothing could see; **the substring assertion that `os/exec` satisfied** (Constraint 42); **the break-check whose anchor did not match and ran green against unmodified code** (Constraint 36); **the credlint census** — one marker added, one `redact.Error`, eleven packages clean; **zero suppressions**; **the measurements** — the real-ffmpeg numbers on your host and ffmpeg version, next to this plan's (ffmpeg 9.0.1, four chunks in 0.3s, ffprobe reporting `ac3` twice because `+resend_headers` repeats the PMT), and the eight-times-eight run counts; **the stated divergences**, as a list: the unbuildable-profile 500's body (R4); the profile set refreshed per channel rather than per client (R5); a malformed `X-Relay-Output` answered 400 where Python's hop answers 403 a hop earlier (R6); `redact.Line` on the transcode's stderr where Python logs raw (Constraint 12); the owner lock, state key and TTL refresh deleted (R2); **the edits no test pins**: the failover's profile refresh, `Channel.OutputProfiles`'s and `SetClientOutputProfile`'s own concurrency, and `FormatKey`'s nil arm on the fMP4 path (a no-profile fMP4 client, which 2c-6's tests already cover by name); **what this PR does not do**: no detail endpoint, no `advance`, no drain, no `client_connect` (2c-8); no Go coverage ratchet and no CodeQL Go pack (2c-9); no nginx route (2d); no HLS (Phase 4); no `metrics/curated` update.
+In this order: what this PR does; **Ruling R9** and the chain it found in `views.py`; **Ruling R4** and what it cost on the Django side, wire shape included; **the three break-checks that did not redden on a first attempt** (rows 2, 8 and 12) and what closed each — the pass-through stand-in that made a ring invisible, the retry that spawned a real ffmpeg instead of the stand-in, and the remux whose input nothing could see; **the substring assertion that `os/exec` satisfied** (Constraint 42); **the break-check whose anchor did not match and ran green against unmodified code** (Constraint 36); **the credlint census** — **two** markers added (`control/nextsource.go`'s two decoders), one `redact.Error`, eleven packages clean; **two suppressions**, `internal/relaytest/standin.go`'s `#nosec G304` in `StdinPacketPID` and `output/profile_real_test.go`'s `#nosec G204` on the ffprobe call, each with its line and reason; **the measurements** — the real-ffmpeg numbers on your host and ffmpeg version, next to this plan's (ffmpeg 9.0.1, four chunks in 0.3s, ffprobe reporting `ac3` twice because `+resend_headers` repeats the PMT), and the eight-times-eight run counts; **the stated divergences**, as a list: the unbuildable-profile 500's body (R4); the profile set refreshed per channel rather than per client (R5); a malformed `X-Relay-Output` answered 400 where Python's hop answers 403 a hop earlier (R6); `redact.Line` on the transcode's stderr where Python logs raw (Constraint 12); the owner lock, state key and TTL refresh deleted (R2); **the edits no test pins**: the failover's profile refresh, `Channel.OutputProfiles`'s and `SetClientOutputProfile`'s own concurrency, and `FormatKey`'s nil arm on the fMP4 path (a no-profile fMP4 client, which 2c-6's tests already cover by name); **what this PR does not do**: no detail endpoint, no `advance`, no drain, no `client_connect` (2c-8); no Go coverage ratchet and no CodeQL Go pack (2c-9); no nginx route (2d); no HLS (Phase 4); no `metrics/curated` update.
 
 ---
 
 ## Break-check × what each can redden
 
-Fifteen. Every row was run in the scratch module described in § Sequencing, and the **Message** column is what actually appeared, not what was predicted. **Apply every patch with a script that asserts its anchor is present and prints on success** (Constraint 36); one row below was first run with a wrong-indentation anchor, the patch silently did nothing, and the test ran green against unmodified code.
+Eighteen. Every row was run in the scratch module described in § Sequencing, and the **Message** column is what actually appeared, not what was predicted. **Apply every patch with a script that asserts its anchor is present and prints on success** (Constraint 36); one row below was first run with a wrong-indentation anchor, the patch silently did nothing, and the test ran green against unmodified code.
 
 | # | Patch | Test | Verified message |
 |---|---|---|---|
 | 1 | `apps/proxy/next_source.py`: `argv = None` + fall-through → `continue` | `OutputProfilesOnTheContractTests::test_a_malformed_active_profile_carries_a_null_argv_not_a_500` | RED — `AssertionError: '36' not found in {'35': {...}} : a profile whose parameters shlex could not split is absent from output_profiles; it must be present with a null argv, or a relay cannot tell it from a DEACTIVATED profile and will serve the client plain where Python answers 500` |
-| 2 | `channel/output.go`: `if entry, running := c.outputs[format]; running` → `; running && false` | `TestTwoClientsOnOneOutputProfileShareOneTranscode` | RED — `the relay spawned 2 transcodes for two clients on one Output Profile, want 1`. **And the registry and PID assertions stayed GREEN**, which is Global Constraint 35's demonstration: with the spawn assertion commented out the whole test passed while a process leaked per client |
-| 3 | `output/profile.go`: `FormatKey`'s body → `return format` | `TestTwoClientsOnOneOutputProfileShareOneTranscode`, `…Chained` | RED — `the channel's output registry holds [mpegts], want exactly one mpegts:p3` and `holds [mpegts fmp4], want exactly mpegts:p3 and fmp4:p3` |
+| 2 | `channel/output.go`: **`	if entry, running := c.outputs[format]; running {\n		entry.refs++`** → `; running && false {` — the bare `if entry, running := c.outputs[format]; running` occurs **twice** (`AttachOutput` and `releaseOutput`), so the anchor must carry the following line (Constraints 36 and 45) | `TestTwoClientsOnOneOutputProfileShareOneTranscode` | RED — `the relay spawned 2 transcodes for two clients on one Output Profile, want 1`. **And the registry and PID assertions stayed GREEN**, which is Global Constraint 35's demonstration: with the spawn assertion commented out the whole test passed while a process leaked per client |
+| 3 | `output/profile.go`: `FormatKey`'s body → **`_ = strconv.Itoa; return format`** — a bare `return format` leaves `strconv` unused and the package fails to BUILD, which is not the mechanism under test (Constraint 44's sibling: a break-check must redden on its own claim, not on a compile error) | `TestTwoClientsOnOneOutputProfileShareOneTranscode`, `…Chained` | RED — `the channel's output registry holds [mpegts], want exactly one mpegts:p3` and `holds [mpegts fmp4], want exactly mpegts:p3 and fmp4:p3` |
 | 4 | `httpapi/stream.go`: `serveClient(…, source, …)` → `serveClient(…, ch.Ring(), …)` | `TestTwoClientsOnOneOutputProfileShareOneTranscode`, `…ShareOneUpstream` | RED — `the first client's packets carry PIDs map[256:174], want only the transcode's 0x1ff`. **This is the row `--ts-pid` exists for**: with a pass-through stand-in both rings hold the same bytes and this patch is invisible |
 | 5 | `httpapi/profile.go`: the not-found branch → `writeProfileFailure(w); return nil, nil, false` | `TestAProfileMissingFromTheAnswerIsServedWithoutOne` | RED — `a tune naming a deactivated profile answered 500, want 200` |
 | 6 | `httpapi/profile.go`: `if !profiles.Known {` → `if false {` | `TestATuneNamingAProfileAgainstAnOlderControlPlaneIsABadGateway` | RED — `a tune naming a profile against a control plane with no output_profiles answered 200, want 502` |
@@ -1073,6 +1091,10 @@ Fifteen. Every row was run in the scratch module described in § Sequencing, and
 | 14 | `control/nextsource.go`: `Command()`'s `return p.Argv[0]` → `p.Argv[len(p.Argv)-1]` | `TestTheOutputProfileArgvCarriesTheCommandFirst` | RED — `Command() is "pipe:1", want argv[0] -- ffmpeg` |
 | 15 | `control/nextsource.go`: `Args()`'s `return p.Argv[1:]` → `p.Argv` | `TestTheOutputProfileArgvCarriesTheCommandFirst` | RED — `Args() is [ffmpeg -i pipe:0 -c:a ac3 pipe:1], want everything after argv[0]: [-i pipe:0 -c:a ac3 pipe:1]` |
 
+| 16 | `httpapi/profile.go`: reinstate `client.OutputProfileID = nil` after `ch.SetClientOutputProfile(client.ID, nil)` | `TestTheDeactivatedProfileCorrectionDoesNotRaceTheListEndpoint` | RED — `WARNING: DATA RACE`, a write at `httpapi/profile.go:94` against a read at `channel/channel.go:243` (`ClientSnapshot`). **This row exists because the line was IN the plan** until the review found it: it looks free — same field, same value, a pointer this goroutine created — and it races the list endpoint, because `Attach` put that pointer in the channel's registry. Run this row with `-race` or it proves nothing |
+| 17 | `channel/failover.go`: delete the two-line `if resolved.OutputProfiles.Known { c.outputProfiles = … }` | `TestAFailoverRefreshesTheProfileSetAndADegradedOneDoesNot` | RED — `the channel still holds map[3:{…}] after a failover whose answer carried profile 9: the refresh at channel/failover.go did not happen`. **Before this test existed the same deletion left the ENTIRE suite green**, which is what the review found: Ruling R5 argued for a mechanism nothing exercised |
+| 18 | `channel/failover.go`: drop the `Known` guard so the refresh is unconditional | the same test | RED — `a DEGRADED failover cleared the profile set to map[]: the cached candidate list carries no answer, so Resolved.OutputProfiles.Known is false and the channel keeps what it had`. The other half of one rule, and the reason both arms are in one test: a relay refreshing from the degraded cache would CLEAR the map rather than update it |
+
 **And one more, on the real-ffmpeg test**, kept separate because it patches a fixture rather than the relay: changing the AC3 argv's `-c:a ac3` to `-c:a copy` reddens `TestARealAC3ProfileTranscodesTheChannelsRing` with `the transcode's audio codec is "aac", want ac3`, which is what makes the ffprobe assertion a transcode claim rather than a plumbing one.
 
 ---
@@ -1081,7 +1103,7 @@ Fifteen. Every row was run in the scratch module described in § Sequencing, and
 
 1. The merged 2c-6 SHA you seeded from, and every ledger row as matched or differing (Task 0).
 2. The two `StateActive` writer lines, counted at Task 0 and again at Task 9.
-3. The fifteen break-check messages, **as they appeared**, with the three that needed a second form called out.
+3. The eighteen break-check messages, **as they appeared**, with the three that needed a second form called out, and rows 16–18 run under `-race` (16 proves nothing without it).
 4. The eight consecutive `relay/output` runs, the eight `httpapi` subset runs, and the three whole-module runs.
 5. The ffmpeg version your real test logged and what it measured.
 6. `credlint: 11 package(s) clean`, `OK: relay depends on the standard library only`, `go.sum` absent, `0 issues.` under three GOOS.
@@ -1540,7 +1562,7 @@ The fake control plane's `output_profiles`. Three shapes a test needs: the empty
  	"strings"
  	"sync"
  	"time"
-@@ -118,6 +119,33 @@
+@@ -118,8 +119,35 @@
  	// SlotReserved is the source's slot_reserved flag. Nil means true, the
  	// value every earlier fixture sent.
  	SlotReserved *bool
@@ -1556,8 +1578,8 @@ The fake control plane's `output_profiles`. Three shapes a test needs: the empty
 +	// control plane older than Phase 2 PR 2b-2, which the relay must report
 +	// as a contract mismatch rather than as "no profiles are configured".
 +	OutputProfilesAbsent bool
-+}
-+
+ }
+ 
 +// OutputProfileConfig is one entry of the fake's output_profiles map.
 +type OutputProfileConfig struct {
 +	// ID is the entry's id field. Zero means the map key parsed as an int.
@@ -1571,10 +1593,43 @@ The fake control plane's `output_profiles`. Three shapes a test needs: the empty
 +	// ArgvNull sends argv as null: a profile whose parameters shlex could
 +	// not split.
 +	ArgvNull bool
++}
++
+ // AlternateConfig is one alternate stream the fake offers. Argv is the
+ // built argv for THIS stream's URL, as Django builds one per candidate
+ // (Amendment A4.1); nil renders as [] under the config's Command.
+@@ -147,6 +175,8 @@
+ 	settings map[string]any
+ 	status   int
+ 	delay    time.Duration
++	profiles map[string]OutputProfileConfig
++	hasProfs bool
  }
  
- // AlternateConfig is one alternate stream the fake offers. Argv is the
-@@ -388,12 +416,31 @@
+ // SetSettings replaces the proxy_settings every LATER answer carries. It is
+@@ -159,6 +189,21 @@
+ 	c.settings = settings
+ }
+ 
++// SetOutputProfiles replaces the output_profiles map every LATER answer
++// carries. It is how a test changes the active Output Profile set between two
++// next-source calls, the way an operator editing a profile does, to show that
++// a running channel picks the change up on its next answer and NOT from the
++// degraded cache (2c-7's Ruling R5).
++//
++// A separate `hasProfs` flag rather than a nil check, for ControlPlaneConfig.
++// OutputProfiles' own reason: nil means "the empty object Django sends when
++// nothing is active", which a test may want to set deliberately.
++func (c *ControlPlane) SetOutputProfiles(profiles map[string]OutputProfileConfig) {
++	c.mu.Lock()
++	defer c.mu.Unlock()
++	c.profiles, c.hasProfs = profiles, true
++}
++
+ // SetStatus makes every LATER call answer with status, whatever the route:
+ // 503 is an outage the client retries once and then degrades on, 403 a
+ // refusal it never degrades on. Zero restores the configured behaviour. It is
+@@ -388,11 +433,37 @@
  	}
  
  	answer := map[string]any{
@@ -1587,10 +1642,17 @@ The fake control plane's `output_profiles`. Three shapes a test needs: the empty
 +		"error":          nil,
 +		"proxy_settings": settings,
 +		"source":         nil,
- 	}
++	}
++	c.mu.Lock()
++	liveProfiles, overridden := c.profiles, c.hasProfs
++	c.mu.Unlock()
++	configured := cfg.OutputProfiles
++	if overridden {
++		configured = liveProfiles
++	}
 +	if !cfg.OutputProfilesAbsent {
 +		profiles := map[string]any{}
-+		for key, entry := range cfg.OutputProfiles {
++		for key, entry := range configured {
 +			id := entry.ID
 +			if id == 0 {
 +				id, _ = strconv.Atoi(key)
@@ -1607,10 +1669,9 @@ The fake control plane's `output_profiles`. Three shapes a test needs: the empty
 +			profiles[key] = object
 +		}
 +		answer["output_profiles"] = profiles
-+	}
+ 	}
  	chosen := -1
  	for i, cand := range candidates {
- 		if excluded[cand.id] || (req.CurrentURL != "" && cand.url == req.CurrentURL) {
 ```
 
 
@@ -2033,7 +2094,9 @@ const FormatMPEGTS = "mpegts"
 // ProfileKey is the registry key an Output Profile transcode runs under:
 // `mpegts:p<id>`, which is EXACTLY the Redis format namespace
 // OutputProfileManager builds for itself (output/profile/manager.py:303, :315,
-// :332, :349, :364 -- five sites, all the literal f"mpegts:p{self.profile_id}").
+// :325, :332, :349, :364 -- SIX sites, all the literal
+// f"mpegts:p{self.profile_id}". A seventh line, :361, carries the same text in
+// a docstring and is not a site).
 //
 // ALWAYS mpegts, WHATEVER THE CLIENT'S OUTPUT FORMAT, and that is Python's
 // shape rather than a simplification: the transcode's own output is MPEG-TS
@@ -2982,8 +3045,16 @@ func attachOutputProfile(
 		// the client with no profile at all and records null; so does this.
 		log.Info("the Output Profile this tune named is no longer active, serving without one",
 			"channel", ch.ID(), "client", client.ID, "output_profile", id)
+		// SetClientOutputProfile IS THE WRITE, and there is deliberately no
+		// second one here. An earlier draft also assigned
+		// `client.OutputProfileID = nil` directly, which reads as harmless --
+		// same value, same field, the struct the caller already holds -- and is
+		// a DATA RACE: Attach registered this pointer in the channel's own
+		// registry, so the list endpoint reads the field under RLock
+		// (channel/channel.go's ClientSnapshot) while this goroutine writes it
+		// under no lock at all. Caught by the review, reproduced with `-race`,
+		// and pinned by TestTheDeactivatedProfileCorrectionDoesNotRaceTheListEndpoint.
 		ch.SetClientOutputProfile(client.ID, nil)
-		client.OutputProfileID = nil
 		return ch.Ring(), noop, true
 	}
 	// ONE FAILURE BRANCH FOR TWO FAULTS, deliberately (Global Constraint 18).
@@ -3314,6 +3385,7 @@ import (
 	"net/http"
 	"path/filepath"
 	"strconv"
+	"sync"
 	"testing"
 	"time"
 
@@ -3737,6 +3809,75 @@ func TestAProfileMissingFromTheAnswerIsServedWithoutOne(t *testing.T) {
 	}
 }
 
+// THE DEACTIVATED-PROFILE CORRECTION DOES NOT RACE THE LIST ENDPOINT, which is
+// the one place this PR writes to a *channel.Client the channel already holds.
+//
+// FOUND BY REVIEW, NOT BY DESIGN. attachOutputProfile's not-found arm corrects
+// the client's registry row to null, and an earlier draft did it twice -- once
+// through Channel.SetClientOutputProfile, which takes the channel's write lock,
+// and once as a bare `client.OutputProfileID = nil` on the struct the caller
+// already holds. The second looks free: same field, same value, a pointer this
+// goroutine created. It is a data race, because Attach put that pointer in the
+// channel's registry and ClientSnapshot reads the field under RLock. `-race`
+// reported it as a write at httpapi/profile.go against a read at
+// channel/channel.go's ClientSnapshot.
+//
+// THE ASSERTION IS THE REGISTRY VALUE, NOT "NO RACE". A test whose only oracle
+// is the detector passes on any run where the two goroutines happen not to
+// overlap, which is the "silence read as pass" shape. So this asserts what the
+// correction is FOR -- the client ends up listed with a null profile -- and the
+// detector is what makes the concurrent reader worth having. Run it with
+// -race or it pins only the value.
+func TestTheDeactivatedProfileCorrectionDoesNotRaceTheListEndpoint(t *testing.T) {
+	// An answer carrying a DIFFERENT active profile, so the map is known and
+	// non-empty and the only thing missing is the one this tune names -- the
+	// arm that performs the correction.
+	r := profileRig(t, "8", relaytest.OutputProfileConfig{
+		ID:   8,
+		Argv: standInProfileArgv(t),
+	}, relaytest.Config{Rate: 4}, nil)
+
+	// A reader hammering ClientSnapshot for the whole of the tune, which is
+	// the exact call GET /proxy/relay/channels?clients=all makes.
+	stop := make(chan struct{})
+	var readers sync.WaitGroup
+	readers.Add(1)
+	go func() {
+		defer readers.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			if ch := r.Manager.Get("c-race"); ch != nil {
+				_ = ch.ClientSnapshot()
+			}
+		}
+	}()
+
+	response := r.tuneProfile(t, "c-race", "client-a", "3", "")
+	defer func() { _ = response.Body.Close() }()
+	close(stop)
+	readers.Wait()
+
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("the tune answered %d, want 200", response.StatusCode)
+	}
+	ch := r.Manager.Get("c-race")
+	if ch == nil {
+		t.Fatal("the channel is gone")
+	}
+	clients := ch.ClientSnapshot()
+	if len(clients) != 1 {
+		t.Fatalf("the channel has %d clients, want 1", len(clients))
+	}
+	if clients[0].OutputProfileID != nil {
+		t.Fatalf("the client is registered with output_profile_id %d, want null: "+
+			"the profile it named is not in the answer's map", *clients[0].OutputProfileID)
+	}
+}
+
 // A PROFILE DJANGO COULD NOT BUILD IS A 500 WITH views.py:771's OWN BODY.
 //
 // The wire says `argv: null`, which is _with_output_profiles reporting that
@@ -3811,6 +3952,99 @@ func TestATuneNamingAProfileAgainstAnOlderControlPlaneIsABadGateway(t *testing.T
 	defer func() { _ = plain.Body.Close() }()
 	if got := readAtLeast(plain.Body, buffer.TSPacketSize, 15*time.Second); len(got) == 0 {
 		t.Fatal("a tune with no Output Profile received nothing against a control plane with no output_profiles")
+	}
+}
+
+// THE PROFILE SET IS REFRESHED BY A FAILOVER'S next-source ANSWER, AND NOT BY
+// A DEGRADED ONE. Ruling R5's mechanism, pinned in both directions.
+//
+// WHY IT NEEDS A TEST AT ALL. R5 argues the relay should refresh the cached set
+// on every answer rather than snapshot it at channel start, because Python
+// re-reads the OutputProfile row per client and a start-time snapshot would go
+// stale for a channel's whole life. That argument is only worth anything if the
+// refresh happens: deleting `channel/failover.go`'s two-line assignment left the
+// ENTIRE suite green before this test existed, found by review.
+//
+// BOTH ARMS IN ONE TEST, deliberately. The refresh and its exception are one
+// rule -- refresh from an answer, never from the cache -- and a test that only
+// proved the first would pass a relay that refreshed from the degraded
+// candidate list too, which is the failure R5 actually warns about: that list
+// was cached at channel start and carries no profile set at all, so refreshing
+// from it would clear the map rather than update it.
+//
+// The primary and the first alternate each stop after two chunks, so each is
+// exhausted after three quick EOFs -- TestAFailoverFallsBackToTheCachedCandidates
+// WhenTheControlPlaneIsDown's own fixture shape, for the same reason.
+func TestAFailoverRefreshesTheProfileSetAndADegradedOneDoesNot(t *testing.T) {
+	second := relaytest.NewUpstream(relaytest.Config{Payload: relaytest.SyntheticTS(rigAssetPackets, assetPID), StopAfterBytes: rigChunkBytes * 2})
+	t.Cleanup(second.Close)
+	third := relaytest.NewUpstream(relaytest.Config{Payload: relaytest.SyntheticTS(rigAssetPackets, assetPID)})
+	t.Cleanup(third.Close)
+
+	// At the tune, profile 3 is the only active one.
+	cp := relaytest.ControlPlaneConfig{
+		Alternates: []relaytest.AlternateConfig{
+			{StreamID: 2, URL: second.URL()},
+			{StreamID: 3, URL: third.URL()},
+		},
+		OutputProfiles: map[string]relaytest.OutputProfileConfig{
+			"3": {ID: 3, Argv: standInProfileArgv(t)},
+		},
+	}
+	r := fanRigWith(t, cp, relaytest.Config{Payload: relaytest.SyntheticTS(rigAssetPackets, assetPID), StopAfterBytes: rigChunkBytes * 2}, nil)
+
+	response := r.tuneAs(t, "c-refresh", "client-a")
+	defer func() { _ = response.Body.Close() }()
+	waitForHead(t, r, "c-refresh", 1)
+
+	ch := r.Manager.Get("c-refresh")
+	if ch == nil {
+		t.Fatal("the channel is gone")
+	}
+	if _, found := ch.OutputProfiles().Lookup("3"); !found {
+		t.Fatal("the channel did not cache the tune's own profile set")
+	}
+	if _, found := ch.OutputProfiles().Lookup("9"); found {
+		t.Fatal("the channel already holds profile 9, which no answer has carried")
+	}
+
+	// THE OPERATOR EDITS THE SET between answers: 3 is deactivated and 9
+	// appears. Nothing tells the running channel; only its next answer can.
+	r.Control.SetOutputProfiles(map[string]relaytest.OutputProfileConfig{
+		"9": {ID: 9, Argv: standInProfileArgv(t)},
+	})
+
+	// The primary exhausts, the failover reaches Django, and the answer it
+	// gets carries the NEW set.
+	waitFor(t, "the failover to the second stream", 15*time.Second, func() bool { return second.Requests() >= 1 })
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, found := ch.OutputProfiles().Lookup("9"); found {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if _, found := ch.OutputProfiles().Lookup("9"); !found {
+		t.Fatalf("the channel still holds %v after a failover whose answer carried profile 9: "+
+			"the refresh at channel/failover.go did not happen", ch.OutputProfiles().ByID)
+	}
+	if _, found := ch.OutputProfiles().Lookup("3"); found {
+		t.Fatal("the channel still holds profile 3: the set is REPLACED by an answer, not merged into")
+	}
+
+	// AND THE DEGRADED ARM. The control plane goes down, the second stream
+	// exhausts, and the failover falls back to the candidate list cached at
+	// channel start -- which carries no profile set. The channel must keep
+	// the one it has rather than clear it.
+	r.Control.SetStatus(http.StatusServiceUnavailable)
+	waitFor(t, "the degraded failover to the third stream", 20*time.Second, func() bool { return third.Requests() >= 1 })
+	if _, found := ch.OutputProfiles().Lookup("9"); !found {
+		t.Fatalf("a DEGRADED failover cleared the profile set to %v: the cached candidate list "+
+			"carries no answer, so Resolved.OutputProfiles.Known is false and the channel keeps what it had",
+			ch.OutputProfiles().ByID)
+	}
+	if !ch.OutputProfiles().Known {
+		t.Fatal("a degraded failover made the channel's set unknown, which would 502 every later profile tune")
 	}
 }
 
@@ -4094,7 +4328,7 @@ and the registry key is Python's own compound string.** `views.py` runs
 profile=id)` second (`:773-776`), and hands that buffer to
 `ensure_output_format` as `source_buffer` under the key `f'fmp4:p{id}'`
 (`:731-734`, `:790-792`). The transcode's own namespace is the literal
-`f"mpegts:p{self.profile_id}"` at five sites in `output/profile/manager.py`
+`f"mpegts:p{self.profile_id}"` at six sites in `output/profile/manager.py`
 — **always `mpegts`, whatever the client asked for**, because an Output
 Profile's output *is* MPEG-TS (`core/models.py:173-174`). So an fMP4 client
 on a profile runs two processes under two keys that cannot collide, and the
