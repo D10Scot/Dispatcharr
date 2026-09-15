@@ -617,8 +617,11 @@ Run each, confirm the message **names the mechanism**, and restore between them.
 | 5 | append five duplicate block lines to the profile | `the profile repeats block …` — and the message must say `-coverpkg` |
 | 6 | `grep -v '^github.com/D10Scot/Dispatcharr/relay/redact/' /tmp/p.bak > …/relay.coverprofile` | `these linked packages are in the scope list but have NO block in the profile: …/redact` |
 | 7 | `grep -v '/redact$' /tmp/rp.bak > …/relay.packages` | `GATE FAILED -- the linked package set changed.` plus a `< …/redact` diff line |
+| 8 | set `missing=<MAX>` in the floor (an unfilled template) | `GATE FAILED -- the floor's missing= is [<MAX>], not a decimal integer.` |
 
-All seven were verified on the seed tree; each exits 1.
+All eight were verified on `a635190c`; each exits 1.
+
+**Row 8 is the one this gate nearly shipped without.** `[ "$missing" -gt "<MAX>" ]` does not abort the script: bash prints "integer expected", the test exits 2, the `if` is false, and the gate reported `GATE PASSED` on a floor it could not read — a check green because it could not look, which is the exact failure this whole file exists to prevent one level up. It was found by running Appendix E's template through the tool rather than by reading either, and it is why Task 8 Step 4 gates against the floor it just wrote instead of assuming a hand-edit landed.
 
 - [ ] **Step 6: Verify `--write-floor --shape-only` preserves prose**
 
@@ -1602,6 +1605,20 @@ gate() {
   fi
 
   local floor_missing; floor_missing="$(floor_field missing)"
+  # A floor whose `missing` is not a decimal integer must FAIL LOUDLY, not fall
+  # through. `[ "$missing" -gt "<MAX>" ]` does not error out of the script: bash
+  # prints "integer expected", the test exits 2, the `if` is false, and the gate
+  # says GATE PASSED on a floor it could not read. That is this whole file's own
+  # failure mode -- a check that is green because it could not look -- and the
+  # placeholder case is real: the floor template ships `missing=<MAX>` for a
+  # campaign to fill in, so an unfilled template would otherwise gate nothing.
+  case "$floor_missing" in
+    ""|*[!0-9]*)
+      echo "coverage_relay_go: GATE FAILED -- the floor's missing= is [$floor_missing], not a decimal integer." >&2
+      echo "        An unfilled template placeholder looks exactly like this. A floor that cannot be" >&2
+      echo "        read cannot be compared, and a gate that cannot compare must not report green." >&2
+      exit 1 ;;
+  esac
   say "denominator: floor $(floor_field statements) statements  this run $statements statements"
   say "floor missing=$floor_missing  this run missing=$missing  coverage $percent%"
   if [ "$missing" -gt "$floor_missing" ]; then
@@ -2551,10 +2568,32 @@ index ea0bdb0b..6dfd06b7 100644
 `--write-floor` creates the file with a stub header and then only ever edits
 its `key=value` lines, never its prose — verified in Task 2 Step 6. So this
 header is written once, by hand, in Task 8, and survives every later
-re-baseline.
+re-baseline. Exercised as the real file: written as `scripts/coverage_relay_go.floor`,
+put through `--write-floor --shape-only` (shape, `packages`, `package_count`
+and `gomod` updated; every line of prose and every measurement placeholder
+untouched) and then through `--write-floor` and `--gate` (`GATE PASSED`, prose
+still intact).
 
 Every `<placeholder>` is filled from Task 7's census. Nothing here may be left
-as a placeholder in the committed file.
+as a placeholder in the committed file — **and since the fix round the gate
+enforces that** rather than trusting it: a `missing=` that is not a decimal
+integer now fails, because `[ "$missing" -gt "<MAX>" ]` does not abort the
+script. Bash prints "integer expected", the test exits 2, the `if` is false and
+the old code fell through to `GATE PASSED` on a floor it could not read. Found
+by running this template through the tool rather than by reading it.
+
+**This appendix regressed once and the check that should have caught it could
+not**, which is worth recording where the next person splices an appendix. The
+re-seed corrected these figures **in the plan document**, in place; the scratch
+file this fence is spliced from kept the 2c-7 seed's. A later commit edited that
+scratch file and re-spliced, silently restoring the old numbers into the one
+appendix that becomes a committed file. The verification compared the fence
+against **the same scratch file it was spliced from**, so it proved the splice
+worked and could never prove the source was right — a tautological oracle, in
+the shape this plan warns about elsewhere. The check that found it was a
+reviewer reading the appendix against an earlier commit, and the durable fix is
+below: every appendix source is now regenerated from the tree or from a named
+commit, never hand-edited in one place and spliced from another.
 
 ```text
 # The Go relay's ratchet floor -- Gate 2's counterpart for relay/. See
@@ -2570,20 +2609,22 @@ as a placeholder in the committed file.
 # floor came from a 21-round LOCAL campaign whose maximum the very first CI run
 # exceeded -- and this file inherits the lesson rather than re-learning it.
 #
-# WHAT IS MEASURED. The nine packages `go list -deps .` reports from relay/:
-# the packages the SHIPPED BINARY LINKS. relay/internal/relaytest (the Go
+# WHAT IS MEASURED. The ten packages `go list -deps .` reports from relay/ on
+# a635190c, `drain` included -- the packages the SHIPPED BINARY LINKS.
+# relay/internal/relaytest (the Go
 # counterpart of apps/proxy/live_proxy/tests/harness/) and
 # relay/internal/credlint (a lint tool run with `go run`) are in the module and
 # in NEITHER, by the same rule scripts/coverage_live_path.coveragerc applies on
 # the Python side. The difference is large and stated rather than buried:
-# measured on one run, the whole module is 3,670 statements / 870 missing /
-# 76.29%; the nine linked packages are 2,956 / 338 / 88.57%, and relaytest
-# alone is 499 of the 870 missing.
+# measured on one run at a635190c, the whole module is 4,463 statements / 1,172
+# missing / 73.74%; the ten linked packages are 3,696 / 587 / 84.12%; and the
+# two excluded packages are 767 statements of which 585 are missing -- HALF the
+# module's shortfall is test scaffolding and a lint tool.
 #
 # HOW. `go test -count=1 -race -covermode=atomic -coverprofile=... ./...`, per
 # package -- NOT -coverpkg, which counts a package as covered when a
-# neighbour's test walks through it (measured on the same tree: 221 missing
-# instead of 338, a 117-statement, 3.95-point difference). A -coverpkg profile
+# neighbour's test walks through it (measured on the same tree: 316 missing
+# instead of 587, a 271-statement, 7.33-point difference). A -coverpkg profile
 # repeats every block once per test binary and --gate refuses one outright.
 # -count=1 is load-bearing: `go test` replays a cached coverage profile
 # verbatim, so a census without it is one run reported N times.
@@ -2675,7 +2716,8 @@ as a placeholder in the committed file.
 # permanent.
 #
 # LOCAL VS CI. A 12-round LOCAL census on the same tree ran <lo>-<hi> (spread
-# <s>). Recorded so the next campaign can see whether the gap reproduces, and
+# <s>; on a635190c it was 586-588 across two rigs, spread 2, TWO blocks --
+# and they were not the same two on each rig, which is the point). Recorded so the next campaign can see whether the gap reproduces, and
 # NOT as an offset to budget against: the Python gate measured local+35 in one
 # campaign and local+13 in the next, which is itself the evidence that the gap
 # is not a constant. The correct response stays "measure in CI".
@@ -2683,7 +2725,11 @@ as a placeholder in the committed file.
 # THE THRESHOLD. D7 requires >=80% on the live path, transferring to Go at
 # >=80%. The ceiling is statements - ceil(0.8 * statements) = <CEILING>;
 # `missing` is <MAX>, so the margin is <CEILING - MAX> statements and coverage
-# at the floor is <PERCENT>%.
+# at the floor is <PERCENT>%. AT a635190c THAT MARGIN IS 152 STATEMENTS (739 -
+# 587), DOWN FROM 253 AT THE 2c-7 SEED: 2c-8 added 740 linked statements
+# carrying 249 missing ones, a marginal coverage of 66.4% on its own additions.
+# Recorded because the next PR of that shape breaches the gate, and the right
+# time to know that is before it is written, not when CI says so.
 #
 # WHICH PACKAGES OWE THE SHORTFALL, and why this file names them. `missing` is
 # a MODULE TOTAL, so it cannot tell one package getting worse from another
@@ -2744,7 +2790,7 @@ percent=<PERCENT>
 measured=<DATE>
 runs=<N>
 packages=<HASH>
-package_count=9
+package_count=<COUNT>
 gomod=<HASH>
 ```
 
