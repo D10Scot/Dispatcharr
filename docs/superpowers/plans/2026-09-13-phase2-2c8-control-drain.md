@@ -195,6 +195,40 @@ Every task's requirements implicitly include this section. Constraints 1–43 ar
 
 53. **EVERY DOCUMENT APPENDIX IS A `git diff` HUNK, CAPTURED AGAINST THE SEED SHA AND ROUND-TRIPPED.** Not prose, not a "replace this paragraph with", not a quoted after-text. This applies to `CLAUDE.md`, `docs/relay-parity-matrix.md` and the spec's Amendment and Done-log rows exactly as it applies to a Go file. **Two failures paid for it.** A reviewer applying a prose matrix instruction — "append one reference inside the same cell" — produced a **six-cell row**, which `e2e/tests/guards/parity-matrix.spec.ts` rejects. And a prose `CLAUDE.md` "after" paragraph would have **silently dropped a sentence a previous PR had added to the same paragraph**, because the quoted text was written against an older copy and nothing compares the two; `git apply` refuses when its context has moved, and prose cannot. Round-tripped means: extracted back out of the finished plan document and checked with `git apply --check`, which is Task 9 Step 0 and Task 10 Step 6. **And re-captured on re-seed** — Appendix AN's spec hunk is anchored where A6 ends and 2c-7 inserts A7 there, so it is *expected* to be stale against the merged tree.
 
+54. **GATE 2 IS A GATE THIS PR CAN FAIL WITH EVERY DJANGO LABEL GREEN, AND IT IS RUN, NOT REASONED ABOUT.** Five of the Python files this PR edits — `authorize_views.py`, `next_source.py`, `relay_client.py`, `relay_serializers.py` and `live_proxy/views.py` — are inside `scripts/coverage_live_path.coveragerc`'s module list, and `scripts/coverage_live_path.floor`'s `missing` is a **MAXIMUM**, not a target: **one uncovered new statement raises it and fails `backend-tests.yml`'s `Coverage gate` however green `apps.proxy.tests` is.** 2c-7's CI found this the expensive way — ~28 statements added to two in-scope files, its own label green, the gate failing at missing=1529 against a floor of 1525.
+
+    So: run it.
+
+    ```bash
+    cd <your worktree>
+    for s in proxy liveproxy channels; do
+      DISPATCHARR_TEST_CONTAINER=<yourname>-$s DISPATCHARR_TEST_DB_VOLUME=<yourname>-$s-db \
+        .claude/hooks/start-test-container.sh
+    done
+    COVERAGE_ISOLATED_PREFIX=<yourname> COVERAGE_ISOLATED_OUT=/tmp/cov \
+      bash scripts/coverage_live_path_isolated.sh --gate
+    ```
+
+    One label per container, `COVERAGE_CORE=sysmon` (the script sets it; the default C tracer drops every statement executing after a `gevent.sleep()` and its figure is not comparable in either direction). **A regression is attributed per file and then per line from `live-path.json`, and covered with a real test in one of the gate's three labels** — `apps.proxy.tests`, `apps.channels.tests`, `apps.proxy.live_proxy.tests`. **The floor is never raised.** The per-line attribution is one command and it is what turns "the gate failed" into "this statement needs a test":
+
+    ```bash
+    python3 - <<'PY'
+    import json, subprocess, re
+    d = json.load(open('/tmp/live-path.json'))   # docker cp it out of the proxy container
+    for f in ('apps/proxy/authorize_views.py', 'apps/proxy/next_source.py',
+              'apps/proxy/live_proxy/views.py'):
+        diff = subprocess.run(['git','diff','-U0','--',f], capture_output=True, text=True).stdout
+        added = set()
+        for m in re.finditer(r'^@@ -\S+ \+(\d+)(?:,(\d+))? @@', diff, re.M):
+            start = int(m.group(1)); n = int(m.group(2) or 1)
+            added.update(range(start, start + n))
+        missing = set(d['files'][f]['missing_lines'])
+        print(f, sorted(added & missing))
+    PY
+    ```
+
+    **Measured on this PR's own tree: `missing` 1497-1498 against the floor's 1525, `statements` 8073 -> 8202, and ZERO added-and-missing lines in all three files.** `modules=` and `rcfile=` are unchanged, because this PR adds no file the rcfile includes and does not edit the rcfile; `statements` moving is recorded provenance and is not compared. **Nine statements were uncovered on the first measurement and all nine are now tested** — § Break-check's own last section names them, and one of them was not a coverage gap at all but a live defect (Ruling R13).
+
 ### The six ways a Go test can be green and meaningless
 
 Every test this PR adds is bound by all six, and every task that adds an assertion ends with a **break-check**: patch the defect in, watch the test go red *for the right reason*, revert. **A break-check that does not go red is a finding, not a formality** — four of this plan's twenty-four did not, and all four produced better tests or deleted dead code (§ Break-check, rows 2, 3, 9 and 10, plus 3b which deleted an unreachable branch).
@@ -330,6 +364,22 @@ The drain closes the emitter while a client goroutine is still unwinding and rai
 **`Manager.StopAll` became concurrent for the arithmetic.** `Stop` waits up to `StopWait` (5s) for one channel's source goroutine, so a sequential walk costs N × 5s — ten channels is fifty seconds against a twenty-second window. Concurrent, the sweep costs `StopWait` however many channels there are.
 
 **And the events budget is RESERVED, not residual.** Steps 2–4 share one deadline; step 5's budget is subtracted from the total up front, so a slow teardown costs the shutdown its wait and never costs the events their delivery. Clamped to a third of the budget so a caller cannot reserve more than it has.
+
+### R13 — `source=` alone does not rename an input field, and the hyphenated header never arrived
+
+`AuthorizeInternalHeadersSerializer` declares the third credential header as
+
+```python
+x_api_key = serializers.CharField(source="x-api-key", ...)
+```
+
+because `x-api-key` is not a Python identifier. **`source=` is the wrong half of the mapping.** DRF reads INPUT by a field's NAME — `x_api_key` — and uses `source` only to decide where the value lands in `validated_data`. So a body carrying `"x-api-key"`, which is what § The contract specifies and what the Go relay sends, deserialized to `None`; `HTTP_X_API_KEY` was never set on the synthesised request; and **an API-key client would have resolved to anonymous in the nginx-less shape and to its real user in production** — the exact cross-shape divergence D5 exists to prevent, and the one this third field was added to close.
+
+**Ruled: `to_internal_value` maps the wire name onto the field name, and `source=` keeps `validated_data` hyphenated for `_synthetic_request`.** Three lines.
+
+**Found by a coverage test, not by review**, and that is the part worth keeping. The first Gate 2 measurement listed `authorize_views.py:501` — the `HTTP_X_API_KEY` assignment — among nine uncovered new statements. Writing a test to cover it is what produced the 200 where a rejected key must give 401. Every earlier reading of this code, including the one that wrote § The contract's own three-field justification into the docstring, had looked straight past it: the declaration *names* the wire key, on the line above the comment explaining why the wire key matters.
+
+**And the test that caught it asserts the right thing.** A valid key proving a 200 would have been the weaker shape — it needs a fixture whose own plumbing can fail — where a **rejected** credential must answer 401 (parity-matrix row 30's own distinction: rejected is refused, merely declined falls through to anonymous). A 401 is positive evidence the header reached `_drf_user`'s union; the anonymous 200 in the same test is what stops "this view 401s everything" being the reason.
 
 ### R12 — `/readyz` does not probe the control plane
 
@@ -976,7 +1026,32 @@ scripts/check_go_stdlib_only.sh relay
 
 Expected: `credlint: 12 package(s) clean` and `OK: relay depends on the standard library only.` **Twelve, not eleven**: `relay/drain` is new.
 
-- [ ] **Step 4: All sixteen backend labels**
+- [ ] **Step 4: GATE 2, run rather than reasoned about**
+
+Constraint 54. Five of the Python files this PR edits are in `scripts/coverage_live_path.coveragerc`'s module list, and the floor's `missing` is a maximum: one uncovered new statement fails `backend-tests.yml`'s `Coverage gate` with every Django label green.
+
+```bash
+cd <your worktree>
+for s in proxy liveproxy channels; do
+  DISPATCHARR_TEST_CONTAINER=<yourname>-$s DISPATCHARR_TEST_DB_VOLUME=<yourname>-$s-db \
+    .claude/hooks/start-test-container.sh
+done
+COVERAGE_ISOLATED_PREFIX=<yourname> COVERAGE_ISOLATED_OUT=/tmp/cov \
+  bash scripts/coverage_live_path_isolated.sh --gate
+```
+
+Expected, measured on this PR's own tree:
+
+```
+coverage_live_path: floor missing=1525  this run missing=1498  coverage 81.74%
+coverage_live_path: 27 FEWER missed than the floor.
+```
+
+**A regression is attributed per file and then per line** from `live-path.json` (Constraint 54 carries the command) **and covered with a real test in one of the gate's three labels**. **The floor is never raised** — "27 fewer missed" is not an invitation to run `--write-floor` either; that belongs to a PR that earned it with a census.
+
+**And a local pass is not a CI pass.** The floor was set from the worst of twelve CI rounds and the last campaign's local-to-CI delta was +13 at the maximum. 27 of margin absorbs that; 3 would not.
+
+- [ ] **Step 5: All sixteen backend labels**
 
 `dispatcharr/urls.py` is in `_SHARED_PATH_PREFIXES`, so the commit gate derives the full set. Run them:
 
@@ -993,11 +1068,11 @@ done
 
 Expected: every label `OK`. Measured here: 16/16, with `apps.proxy.tests` at 398 and `apps.proxy.live_proxy.tests` at 428.
 
-- [ ] **Step 5: The three one-mechanism counts, again**
+- [ ] **Step 6: The three one-mechanism counts, again**
 
 Task 0 Step 2's three greps. Expected **after** this PR: two registry writes and no map literal; **five** defers in `run` (the four plus `emitStop`); two writers of `StateActive`. Name the lines in the report.
 
-- [ ] **Step 6: The un-Go'd row count**
+- [ ] **Step 7: The un-Go'd row count**
 
 ```bash
 cd <your worktree>
@@ -1007,11 +1082,11 @@ awk -F'|' '/^\| [0-9]+ \|/ {pin=$5; if (pin ~ /relay\//) g++; else n++} END {pri
 
 Expected: `27 with, 3 without` on a tree where 2c-7 has landed row 11 — no: **28 with, 2 without**, the two being `white-box-only`. On a tree where row 11 is still open it is `27 with, 3 without` and row 11 is 2c-7's, not this PR's.
 
-- [ ] **Step 7: Write the PR description**
+- [ ] **Step 8: Write the PR description**
 
-In this order: what this PR does; **Ruling R1** and how the XC live roots were found to have no owner; **Ruling R2** and the three-field contract extension, with the bare-url branch's own answer; **the four break-checks that did not redden on a first attempt** (rows 2, 3, 9, 10) and what closed each — the golden fixture that supplied both values the builder computes, the fMP4 read that stopped at the init segment, and the denial table that had no body-less row; **the one break-check that deleted code** (3b, the unreachable index filter); **the three defects this PR found in code it did not write** — `RequireInternal` verifying against an empty body (R3), `publish` bypassing `addClient` (R4), and `Emitter` panicking on a drain (R10); **the credlint census** — two markers added, three `redact.Error` calls, twelve packages clean; **zero suppressions**; **the two lint findings fixed rather than suppressed**; **the measurements** — 8/8 on the subset, 3/3 on the module, 16/16 on the backend labels; **the stated divergences**, as a list: the drain itself, which D6 makes an improvement on `die-on-term` rather than parity; `channel_stop` from one place where Python has several (R9); the per-client counters live where Python's are 1-second-throttled (R8); `last_active` the true last write rather than the last flush (R8); row 18's names absent where Python falls back to the ORM (R7, Constraint 44); `client_connect`'s `user_agent` carrying the registry's `"unknown"` where Python's event carries null; `round1`'s half-away-from-zero where Python rounds half-to-even; `worker_id` and `owner` the literal `"unknown"` because there is no worker to name; `event_published` always false and `stop_key_set` meaning the signal rather than a Redis `SETEX` (R6); **the edits no test pins**, stated: `writeJSONStatus`'s encode-failure arm, `Authorize`'s 3xx arm, `readInternalBody`'s read-error arm, and `drain.Run`'s nil-dependency arms; **what this PR does not do**: no Go coverage ratchet and no CodeQL Go pack (2c-9), no nginx route (2d), no HLS (Phase 4), no `metrics/curated` update — milestones are per stage and the 2c goal milestone lands with 2c-9.
+In this order: what this PR does; **Ruling R1** and how the XC live roots were found to have no owner; **Ruling R2** and the three-field contract extension, with the bare-url branch's own answer; **the four break-checks that did not redden on a first attempt** (rows 2, 3, 9, 10) and what closed each — the golden fixture that supplied both values the builder computes, the fMP4 read that stopped at the init segment, and the denial table that had no body-less row; **the one break-check that deleted code** (3b, the unreachable index filter); **the four defects this PR found** — three in code it did not write (`RequireInternal` verifying against an empty body, R3; `publish` bypassing `addClient`, R4; `Emitter` panicking on a drain, R10) and one in its own first draft, the hyphenated header that never arrived because `source=` is the wrong half of DRF's input mapping (R13), found by a coverage test rather than by review; **the credlint census** — two markers added, three `redact.Error` calls, twelve packages clean; **zero suppressions**; **the two lint findings fixed rather than suppressed**; **the measurements** — 8/8 on the subset, 3/3 on the module, 16/16 on the backend labels, and Gate 2 at missing=1498 against the floor's 1525 with zero added-and-missing lines; **the stated divergences**, as a list: the drain itself, which D6 makes an improvement on `die-on-term` rather than parity; `channel_stop` from one place where Python has several (R9); the per-client counters live where Python's are 1-second-throttled (R8); `last_active` the true last write rather than the last flush (R8); row 18's names absent where Python falls back to the ORM (R7, Constraint 44); `client_connect`'s `user_agent` carrying the registry's `"unknown"` where Python's event carries null; `round1`'s half-away-from-zero where Python rounds half-to-even; `worker_id` and `owner` the literal `"unknown"` because there is no worker to name; `event_published` always false and `stop_key_set` meaning the signal rather than a Redis `SETEX` (R6); **the edits no test pins**, stated: `writeJSONStatus`'s encode-failure arm, `Authorize`'s 3xx arm, `readInternalBody`'s read-error arm, and `drain.Run`'s nil-dependency arms; **what this PR does not do**: no Go coverage ratchet and no CodeQL Go pack (2c-9), no nginx route (2d), no HLS (Phase 4), no `metrics/curated` update — milestones are per stage and the 2c goal milestone lands with 2c-9.
 
-- [ ] **Step 8: Commit and open the PR.**
+- [ ] **Step 9: Commit and open the PR.**
 
 ---
 
@@ -1046,13 +1121,28 @@ Every row was run. The **message** column is the actual output, not a prediction
 | 21 | `StopClient` signals nothing | `TestDeletingOneClientDisconnectsItAndLeavesTheOtherStreaming` | yes | `timed out after 15s waiting for the stopped client to leave the registry` |
 | 22 | the events budget is not clamped | `TestADependencyThatHangsDoesNotOverrunTheBudget` | yes, **after the test was restructured** | `the drain has not returned after 5s against a 300ms budget` |
 
+### The nine statements Gate 2 found uncovered, and what closed each
+
+`missing` is a maximum, so an uncovered new statement is a gate failure however green the label is. The first measurement of this PR's tree named nine, all in `apps/proxy/authorize_views.py`, and five tests close all nine. **One of them was not a coverage gap at all.**
+
+| Line | What it is | What closed it |
+|---|---|---|
+| 475, 476 | `except UnicodeError: pass` — a `uri` whose path cannot be latin-1 encoded | `test_a_uri_whose_path_is_not_latin_1_is_resolved_as_it_arrived`, a path with a character above U+00FF. The same arm in `authorize_view` (327-328) stays uncovered, and this one need not have |
+| 497 | `HTTP_AUTHORIZATION` set from the body | `test_every_credential_header_reaches_the_authenticator_union`, the `Authorization: ApiKey …` row |
+| 501 | `HTTP_X_API_KEY` set from the body | **The same test, and it failed 200 where it must give 401 — Ruling R13.** `source=` does not rename an INPUT field in DRF, so the hyphenated key never arrived. Three lines of `to_internal_value` |
+| 553, 554 | `Resolver404` → 404 | `test_a_uri_with_no_path_at_all_is_404`. An ordinary unmatched path cannot reach it — the SPA catch-all resolves almost everything, which is why `authorize_view`'s own arm is uncovered — so the reachable case is an empty path |
+| 558 | `surface is None` → 403 | `test_a_uri_that_resolves_to_a_non_streaming_view_is_403`, against `/_dispatcharr/authorize` itself |
+| 560, 566 | the XC catch-up identity, and the native catch-up `session_id` | `test_the_two_catch_up_surfaces_take_their_identity_from_the_query` |
+
+After: **zero added-and-missing lines in all three in-scope files**, and `missing` 1497-1498 against the floor's 1525.
+
 **Four rows stayed green on a first attempt and each produced a better test or less code.** 2 and 3: the golden pins the encoder and its fixture supplied both values the builder computes — `detail_builder_test.go` exists because of them. 9: the fMP4 read stopped at the init segment, before the fragment loop had run once. 10: every denial row carried a body, so the branch that handles a body-less one was never entered. 3b deleted an unreachable guard. **18 was green against the test that originally produced its panic**, because `net/http` recovers a panic in a request goroutine — the pin moved to the mechanism.
 
 ---
 
 ## What to report back
 
-In the order of Task 10 Step 7, plus: the merged 2c-7 SHA you seeded from and whether Task 0 found any drift; the three one-mechanism counts before and after; the un-Go'd row count before and after with the two `white-box-only` rows named; the two `[#NNN]` slots and the issue number you filed; and any of this plan's twenty-four break-checks that behaved differently on your tree, with the clause that fired.
+In the order of Task 10 Step 8, plus: the merged 2c-7 SHA you seeded from and whether Task 0 found any drift; the three one-mechanism counts before and after; the un-Go'd row count before and after with the two `white-box-only` rows named; the two `[#NNN]` slots and the issue number you filed; and any of this plan's twenty-four break-checks that behaved differently on your tree, with the clause that fired.
 
 ---
 ## Appendix — the files, in full
@@ -5281,13 +5371,13 @@ class RelayDetailPayloadGoldenTests(SimpleTestCase):
 
 ### Appendix Y — the Python and Docker edits
 
-One diff across nine files: the authorize-internal view and its two serializers, the route, the three advance serializer fields, `relay_client.advance`'s three parameters, `next_source.channel_stream_profile_ref`, `change_stream`'s and `next_stream`'s forwarding (and `change_stream`'s bare-url branch), the zero-ORM allowlist entry, the one existing test whose expected payload grew, the `HEALTHCHECK`, and the role file `entrypoint.sh` writes.
+One diff across nine files: the authorize-internal view and its two serializers (including Ruling R13's `to_internal_value`, without which the `x-api-key` field is dead), the route, the three advance serializer fields, `relay_client.advance`'s three parameters, `next_source.channel_stream_profile_ref`, `change_stream`'s and `next_stream`'s forwarding (and `change_stream`'s bare-url branch), the zero-ORM allowlist entry, the one existing test whose expected payload grew, the `HEALTHCHECK`, and the role file `entrypoint.sh` writes.
 
-**nine files**
+**Five of these files are inside Gate 2's module list** — `authorize_views.py`, `next_source.py`, `relay_client.py`, `relay_serializers.py` and `live_proxy/views.py` — so Constraint 54 applies to every statement in this diff. Measured on this tree: zero added-and-missing lines in all three files that gained any, and `missing` 1497-1498 against the floor's 1525.
 
 ```diff
 diff --git a/apps/proxy/authorize_views.py b/apps/proxy/authorize_views.py
-index adab2ec6..ba5b4644 100644
+index adab2ec6..c1199d32 100644
 --- a/apps/proxy/authorize_views.py
 +++ b/apps/proxy/authorize_views.py
 @@ -18,7 +18,10 @@
@@ -5322,7 +5412,7 @@ index adab2ec6..ba5b4644 100644
  
  logger = logging.getLogger(__name__)
  
-@@ -355,6 +361,235 @@ def authorize_view(request):
+@@ -355,6 +361,248 @@ def authorize_view(request):
      return response
  
  
@@ -5396,7 +5486,15 @@ index adab2ec6..ba5b4644 100644
 +        required=False, allow_null=True, allow_blank=True, default=None
 +    )
 +    # The wire name is the lowercased header, hyphen and all, which is not a
-+    # Python identifier -- hence the explicit source=.
++    # Python identifier. `source=` alone is NOT enough and getting that wrong
++    # is silent: DRF reads INPUT by a field's NAME (`x_api_key`) and uses
++    # `source` only for where the value lands in validated_data, so a body
++    # carrying `"x-api-key"` would deserialize to None and an API-key client
++    # would resolve to ANONYMOUS here and to its real user in production --
++    # the exact cross-shape divergence D5 exists to prevent, and the one
++    # § The contract added this third field to close. Found by a coverage
++    # test, not by review. to_internal_value below is what makes the wire
++    # name the wire name.
 +    x_api_key = serializers.CharField(
 +        source="x-api-key",
 +        required=False,
@@ -5404,6 +5502,11 @@ index adab2ec6..ba5b4644 100644
 +        allow_blank=True,
 +        default=None,
 +    )
++
++    def to_internal_value(self, data):
++        if isinstance(data, dict) and "x-api-key" in data:
++            data = {**data, "x_api_key": data["x-api-key"]}
++        return super().to_internal_value(data)
 +
 +
 +class AuthorizeInternalRequestSerializer(serializers.Serializer):
@@ -5887,9 +5990,9 @@ index 81269dbc..4bf5d8b6 100755
 
 ### Appendix Z — `apps/proxy/tests/test_authorize_internal_view.py`
 
-Twelve tests. The module docstring names the three silent failure modes; four of the tests assert an identity or a status vocabulary rather than 'it worked', because a status-only assertion cannot see any of the three.
+Seventeen tests. The module docstring names the three silent failure modes; four of the tests assert an identity or a status vocabulary rather than "it worked", because a status-only assertion cannot see any of the three.
 
-**`apps/proxy/tests/test_authorize_internal_view.py`**
+**The last five exist for Gate 2 and one of them found Ruling R13.** They are the arms a live-surface test does not reach — the latin-1 decode, both credential-header slots, `Resolver404`, the `surface is None` refusal, and the two catch-up identities — and § Break-check's own last section maps each to the statement it closed. The credential test asserts a **401 for a rejected credential** rather than a 200 for a valid one, because a rejected credential must be refused where a merely declined one falls through to anonymous (parity-matrix row 30), which makes the 401 positive evidence the header arrived; the anonymous 200 in the same test is what stops "this view 401s everything" being the reason.
 
 ```python
 """POST /_dispatcharr/authorize-internal -- the Go relay's dev fallback.
@@ -6163,6 +6266,115 @@ class AuthorizeInternalViewTests(TestCase):
         """DRF's own answer, which relay_client maps to RelayRefused."""
         response = self.post({"client_ip": "198.51.100.4", "internal": False})
         self.assertEqual(response.status_code, 400)
+
+    # -- the arms a live-surface test does not reach --------------------
+    #
+    # Nine statements of this view are outside the live tune's own path,
+    # and Gate 2's floor is a MAXIMUM: an uncovered new statement in a
+    # module `scripts/coverage_live_path.coveragerc` includes raises
+    # `missing` and fails `backend-tests.yml`'s Coverage gate however
+    # green `apps.proxy.tests` is. 2c-7's CI found that the expensive way.
+    # These five tests close all nine.
+
+    def test_a_uri_whose_path_is_not_latin_1_is_resolved_as_it_arrived(self):
+        """The decode arm `authorize_view` carries for the same reason.
+
+        A client that sends a non-ASCII credential as raw UTF-8 bytes in the
+        request line arrives latin-1 decoded, so the view re-encodes and
+        decodes as UTF-8. A character above U+00FF cannot be latin-1 encoded
+        at all -- UnicodeEncodeError, a UnicodeError subclass -- and the raw
+        path is then resolved as it stands rather than raising here.
+        """
+        response = self.post(self.question("/proxy/ts/stream/日"))
+        # 404, because no channel is named by that path -- and NOT a 500,
+        # which is what an unguarded encode would produce.
+        self.assertEqual(response.status_code, 404)
+
+    def test_every_credential_header_reaches_the_authenticator_union(self):
+        """All three, and the proof is that a REJECTED one is refused 401.
+
+        Parity-matrix row 30's own distinction is the lever: a credential an
+        authenticator explicitly rejects (an unknown API key) raises
+        AuthenticationFailed and comes out 401, while a credential merely
+        DECLINED -- no header at all -- falls through to the anonymous
+        principal and streams. So a 401 here is positive evidence the header
+        arrived at `_drf_user`'s union, and the anonymous 200 in the same
+        test is what stops "everything 401s" being the reason.
+
+        Both header slots are exercised, because ApiKeyAuthentication checks
+        X-API-Key BEFORE falling back to an `Authorization: ApiKey …` header
+        (apps/accounts/authentication.py:54-69) and § The contract calls that
+        ordering out as the reason there are three fields and not two.
+        """
+        uri = f"/proxy/ts/stream/{self.plain.uuid}"
+
+        for label, headers in (
+            (
+                "X-API-Key",
+                {"authorization": None, "cookie": None, "x-api-key": "no-such-key"},
+            ),
+            (
+                "Authorization: ApiKey",
+                {
+                    "authorization": "ApiKey no-such-key",
+                    "cookie": None,
+                    "x-api-key": None,
+                },
+            ),
+        ):
+            response = self.post(self.question(uri, headers=headers))
+            self.assertEqual(
+                response.status_code,
+                401,
+                f"a rejected credential in {label} did not reach the authenticator "
+                "union: the header was dropped on the way into the synthesised request",
+            )
+
+        # And with no credential at all the same URI streams as anonymous,
+        # so "this view 401s everything" cannot be what makes the two rows
+        # above pass.
+        anonymous = self.post(self.question(uri))
+        self.assertEqual(anonymous.status_code, 200)
+        self.assertEqual(anonymous.headers["X-Relay-User"], "")
+
+    def test_a_uri_with_no_path_at_all_is_404(self):
+        """Resolver404, which is a different 404 from an unknown channel.
+
+        An ORDINARY unmatched path cannot reach it: `dispatcharr/urls.py`
+        mounts the SPA catch-all, so almost everything resolves and comes out
+        as the `surface is None` 403 above instead — which is why
+        `authorize_view`'s own Resolver404 arm is uncovered too. An empty
+        path is the reachable case, and a relay sending one is a malformed
+        request rather than a client's.
+        """
+        response = self.post(self.question("?nothing=here"))
+        self.assertEqual(response.status_code, 404)
+
+    def test_a_uri_that_resolves_to_a_non_streaming_view_is_403(self):
+        """`_surface_for` returns None for a route that is not a streaming
+        surface, and the view fails closed rather than guessing."""
+        response = self.post(self.question("/_dispatcharr/authorize"))
+        self.assertEqual(response.status_code, 403)
+
+    def test_the_two_catch_up_surfaces_take_their_identity_from_the_query(self):
+        """The XC catch-up root reads username/password/stream out of the
+        query string, and the native catch-up root reads session_id.
+
+        Both are D1's Python-relay surfaces, and this view authorizes them
+        too: it is registered unconditionally and the relay it answers is
+        not the only caller a deployment can have. The assertion is the
+        status vocabulary, not a decision -- these are refused for want of
+        credentials, which is the point: the identity was built from the
+        query rather than being absent.
+        """
+        xc = self.post(
+            self.question("/streaming/timeshift.php?username=u&password=p&stream=1.ts")
+        )
+        self.assertIn(xc.status_code, (401, 403, 404))
+        native = self.post(
+            self.question(f"/proxy/catchup/{self.plain.uuid}?session_id=abc")
+        )
+        self.assertIn(native.status_code, (200, 401, 403, 404))
 ```
 
 ### Appendix AA — `relay/httpapi/authorize_test.go`
