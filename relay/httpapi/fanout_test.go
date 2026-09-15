@@ -48,20 +48,20 @@ func rigSettings(overrides map[string]any) map[string]any {
 
 // fanRig is newRig with the long asset and the rig's settings, which is what
 // every test in this file wants.
-func fanRig(t *testing.T, up relaytest.Config, overrides map[string]any) *rig {
+func fanRig(t *testing.T, up relaytest.Config, overrides map[string]any, opts ...rigOption) *rig {
 	t.Helper()
-	return fanRigWith(t, relaytest.ControlPlaneConfig{}, up, overrides)
+	return fanRigWith(t, relaytest.ControlPlaneConfig{}, up, overrides, opts...)
 }
 
 // fanRigWith is fanRig with control over the fake Django as well, for the
 // tests that need it slow.
-func fanRigWith(t *testing.T, cp relaytest.ControlPlaneConfig, up relaytest.Config, overrides map[string]any) *rig {
+func fanRigWith(t *testing.T, cp relaytest.ControlPlaneConfig, up relaytest.Config, overrides map[string]any, opts ...rigOption) *rig {
 	t.Helper()
 	if up.Payload == nil {
 		up.Payload = relaytest.SyntheticTS(rigAssetPackets, 0x100)
 	}
 	cp.Settings = rigSettings(overrides)
-	return newRig(t, cp, up)
+	return newRig(t, cp, up, opts...)
 }
 
 // tuneAs opens a stream for channelID as clientID, over the trusted path.

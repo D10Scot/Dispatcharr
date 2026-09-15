@@ -12,6 +12,7 @@ import (
 	"github.com/D10Scot/Dispatcharr/relay/channel"
 	"github.com/D10Scot/Dispatcharr/relay/control"
 	"github.com/D10Scot/Dispatcharr/relay/internal/relaytest"
+	"github.com/D10Scot/Dispatcharr/relay/output"
 )
 
 const testSecret = "phase2c1-test-secret"
@@ -52,15 +53,26 @@ type rig struct {
 	Emitter  *control.Emitter
 }
 
-func newRig(t *testing.T, cp relaytest.ControlPlaneConfig, up relaytest.Config) *rig {
+// rigOption adjusts the StreamDeps the rig is built with, for the one thing a
+// test cannot express through the fake control plane or the fake provider: the
+// process an fMP4 tune spawns (2c-6). A variadic option rather than a fourth
+// positional parameter, so every existing call site is unchanged.
+type rigOption func(*StreamDeps)
+
+// withRemux makes an fMP4 tune spawn the stand-in instead of ffmpeg.
+func withRemux(remux output.Remux) rigOption {
+	return func(d *StreamDeps) { d.Remux = remux }
+}
+
+func newRig(t *testing.T, cp relaytest.ControlPlaneConfig, up relaytest.Config, opts ...rigOption) *rig {
 	t.Helper()
-	return newRigWithClient(t, cp, up, control.NewHTTPClient())
+	return newRigWithClient(t, cp, up, control.NewHTTPClient(), opts...)
 }
 
 // newRigWithClient is newRig with the control client's transport chosen by
 // the test: how the budget-shape test compresses ConnectTimeout+ReadTimeout
 // to something a test can wait out.
-func newRigWithClient(t *testing.T, cp relaytest.ControlPlaneConfig, up relaytest.Config, httpClient *http.Client) *rig {
+func newRigWithClient(t *testing.T, cp relaytest.ControlPlaneConfig, up relaytest.Config, httpClient *http.Client, opts ...rigOption) *rig {
 	t.Helper()
 
 	upstream := relaytest.NewUpstream(up)
@@ -94,13 +106,17 @@ func newRigWithClient(t *testing.T, cp relaytest.ControlPlaneConfig, up relaytes
 	t.Cleanup(emitter.Close)
 	t.Cleanup(manager.StopAll)
 
+	stream := StreamDeps{
+		Secret:   testSecret,
+		Channels: manager,
+		Control:  client,
+	}
+	for _, opt := range opts {
+		opt(&stream)
+	}
 	server := New(Config{
 		DevRoutes: true,
-		Stream: StreamDeps{
-			Secret:   testSecret,
-			Channels: manager,
-			Control:  client,
-		},
+		Stream:    stream,
 		// THE SAME manager, not a second one. Two would give the list endpoint
 		// an empty map while the tune path filled another, and every assertion
 		// about what the list shows would be about the wrong object.
