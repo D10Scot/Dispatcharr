@@ -77,6 +77,15 @@ func SyntheticTS(n, pid int) []byte {
 	return out
 }
 
+// PacketPID reads back the 13-bit PID from one packet's second and third
+// bytes -- the field SyntheticTS writes and the one --ts-pid rewrites.
+func PacketPID(packet []byte) int {
+	if len(packet) < 3 {
+		panic(fmt.Sprintf("relaytest: a packet is %d bytes, got %d", PacketSize, len(packet)))
+	}
+	return int(packet[1]&0x1F)<<8 | int(packet[2])
+}
+
 // PacketIndex reads back the index SyntheticTS embedded in one packet.
 func PacketIndex(packet []byte) int {
 	if len(packet) < 8 {

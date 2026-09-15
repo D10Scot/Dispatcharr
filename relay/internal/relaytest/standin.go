@@ -74,6 +74,18 @@ import (
 //	--fmp4-exit              exit after the last fragment instead of staying
 //	                         alive producing nothing -- a remux that ENDED,
 //	                         where the default is one that STALLED
+//	--ts-pid N               rewrite the 13-bit PID of every 188-byte packet
+//	                         it copies to N, so a test can tell this process's
+//	                         output from its input. What an Output Profile
+//	                         transcode does in miniature: the bytes on fd 1 are
+//	                         still a transport stream and are still the same
+//	                         length, and they are not the bytes on fd 0.
+//	--stdin-pid-log PATH     write the PID of the first whole transport-stream
+//	                         packet it reads on fd 0 to PATH, so a test can
+//	                         assert WHICH ring a chained process was fed. Only
+//	                         meaningful with --fmp4-fragments, whose output
+//	                         ignores its input entirely; without it nothing
+//	                         about a remux's fd 0 is observable from outside.
 //	--spawn-log PATH         append this process's pid to PATH before doing
 //	                         anything else, so a test can count how many times
 //	                         the relay spawned it. apps/proxy/live_proxy/tests/
@@ -122,6 +134,9 @@ type standInOptions struct {
 	fmp4BSFError   bool
 	fmp4Exit       bool
 	spawnLog       string
+	tsPID          int
+	haveTSPID      bool
+	stdinPIDLog    string
 	haveExitAfter  bool
 	haveDeadAir    bool
 	positional     []string
@@ -173,6 +188,11 @@ func parseStandIn(args []string) standInOptions {
 			o.haveFMP4 = true
 		case "--fmp4-exit":
 			o.fmp4Exit = true
+		case "--ts-pid":
+			o.tsPID, _ = strconv.Atoi(next())
+			o.haveTSPID = true
+		case "--stdin-pid-log":
+			o.stdinPIDLog = next()
 		case "--spawn-log":
 			o.spawnLog = next()
 		case "-i":
@@ -292,10 +312,24 @@ func RunStandIn(args []string) int {
 
 	copied := 0
 	buf := make([]byte, 8192)
+	// The PID rewrite carries a partial packet between reads: 8192 is not a
+	// multiple of 188, so a packet header can straddle two Read calls and a
+	// per-read rewrite would miss every packet that did.
+	var carry []byte
 	for {
 		n, err := source.Read(buf)
 		if n > 0 {
 			chunk := buf[:n]
+			if o.haveTSPID {
+				chunk, carry = rewritePID(append(carry, chunk...), o.tsPID)
+				n = len(chunk)
+				if n == 0 {
+					if err != nil {
+						return o.exitCode
+					}
+					continue
+				}
+			}
 			if o.haveExitAfter && copied+n >= o.exitAfter {
 				_, _ = os.Stdout.Write(chunk[:o.exitAfter-copied])
 				return o.exitCode
@@ -323,6 +357,21 @@ func RunStandIn(args []string) int {
 			return o.exitCode
 		}
 	}
+}
+
+// rewritePID sets the 13-bit PID of every WHOLE packet in data and returns the
+// rewritten prefix plus the trailing bytes that are not yet a whole packet.
+//
+// It assumes data begins on a packet boundary, which it does: the relay's ring
+// hands the writer whole 188-byte chunks, and every byte after that is
+// accounted for by the carry.
+func rewritePID(data []byte, pid int) (whole, rest []byte) {
+	full := (len(data) / PacketSize) * PacketSize
+	for offset := 0; offset < full; offset += PacketSize {
+		data[offset+1] = (data[offset+1] &^ 0x1F) | byte((pid>>8)&0x1F)
+		data[offset+2] = byte(pid & 0xFF)
+	}
+	return data[:full], append([]byte(nil), data[full:]...)
 }
 
 // pumpStderr replays a capture: the preamble at once, then one progress
@@ -381,6 +430,9 @@ func runFMP4StandIn(o standInOptions) int {
 	// ffmpeg reads continuously too; a stand-in that did not would turn every
 	// test into a deadlock that looked like a slow one.
 	go func() {
+		if o.stdinPIDLog != "" {
+			logFirstPacketPID(os.Stdin, o.stdinPIDLog)
+		}
 		_, _ = io.Copy(io.Discard, os.Stdin)
 	}()
 
@@ -408,6 +460,43 @@ func runFMP4StandIn(o standInOptions) int {
 	for {
 		time.Sleep(time.Second)
 	}
+}
+
+// logFirstPacketPID reads until it has one whole transport-stream packet and
+// writes that packet's PID to path as decimal. It gives up silently after a
+// bounded read: a caller that never sends a transport stream is a test whose
+// own assertion will say so more usefully than this could.
+func logFirstPacketPID(source io.Reader, path string) {
+	buf := make([]byte, 0, 4*PacketSize)
+	chunk := make([]byte, PacketSize)
+	for len(buf) < 4*PacketSize {
+		n, err := source.Read(chunk)
+		buf = append(buf, chunk[:n]...)
+		for offset := 0; offset+PacketSize <= len(buf); offset++ {
+			if buf[offset] != SyncByte {
+				continue
+			}
+			_ = os.WriteFile(path, []byte(strconv.Itoa(PacketPID(buf[offset:offset+PacketSize]))), 0o600)
+			return
+		}
+		if err != nil {
+			return
+		}
+	}
+}
+
+// StdinPacketPID reads back what --stdin-pid-log wrote, or -1 when the file
+// does not exist -- which is what a process that was fed nothing leaves.
+func StdinPacketPID(path string) int {
+	raw, err := os.ReadFile(path) // #nosec G304 -- a path the test itself chose
+	if err != nil {
+		return -1
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(raw)))
+	if err != nil {
+		return -1
+	}
+	return pid
 }
 
 // SpawnCount is how many lines a --spawn-log holds: how many times the relay

@@ -81,3 +81,49 @@ func TestNominalByteRateAndWriteChunkMatchThePythonHarness(t *testing.T) {
 		t.Errorf("WriteChunk = %d, want 9400 (apps/proxy/live_proxy/tests/harness/upstream.py:31)", WriteChunk)
 	}
 }
+
+// THE PID ROUND-TRIPS, and the rewrite the stand-in performs is visible
+// through it. PacketPID and --ts-pid are the mechanism the Output Profile
+// tests use to tell a transcode's output from its input (2c-7), so the two
+// halves are pinned against each other here rather than only inside the tests
+// that depend on them.
+func TestPacketPIDReadsBackWhatSyntheticTSWroteAndWhatRewritePIDSets(t *testing.T) {
+	asset := SyntheticTS(4, 0x100)
+	for offset := 0; offset < len(asset); offset += PacketSize {
+		if got := PacketPID(asset[offset : offset+PacketSize]); got != 0x100 {
+			t.Fatalf("packet at %d carries PID %#x, want the 0x100 SyntheticTS wrote", offset, got)
+		}
+	}
+
+	// A VALUE THAT EXERCISES BOTH BYTES: 0x1FF needs the low five bits of
+	// byte 1 as well as the whole of byte 2, so a rewrite that touched only
+	// one of them would fail here and pass for any PID under 0x100.
+	whole, rest := rewritePID(append([]byte(nil), asset...), 0x1FF)
+	if len(rest) != 0 {
+		t.Fatalf("a whole number of packets left %d bytes over", len(rest))
+	}
+	for offset := 0; offset < len(whole); offset += PacketSize {
+		packet := whole[offset : offset+PacketSize]
+		if got := PacketPID(packet); got != 0x1FF {
+			t.Fatalf("packet at %d carries PID %#x after the rewrite, want 0x1FF", offset, got)
+		}
+		if packet[0] != SyncByte {
+			t.Fatalf("the rewrite broke the sync byte at %d", offset)
+		}
+		if got := PacketIndex(packet); got != offset/PacketSize {
+			t.Fatalf("the rewrite moved packet %d's embedded index to %d", offset/PacketSize, got)
+		}
+	}
+
+	// A PARTIAL TRAILING PACKET IS CARRIED, NOT REWRITTEN: 8192-byte reads do
+	// not land on 188-byte boundaries, and a rewrite that assumed they did
+	// would corrupt every packet after the first short read.
+	partial := append([]byte(nil), asset[:PacketSize+7]...)
+	done, carry := rewritePID(partial, 0x1FF)
+	if len(done) != PacketSize {
+		t.Fatalf("rewritePID returned %d whole bytes, want one packet", len(done))
+	}
+	if len(carry) != 7 {
+		t.Fatalf("rewritePID carried %d bytes, want the 7 that are not yet a packet", len(carry))
+	}
+}

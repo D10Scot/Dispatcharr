@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -118,6 +119,33 @@ type ControlPlaneConfig struct {
 	// SlotReserved is the source's slot_reserved flag. Nil means true, the
 	// value every earlier fixture sent.
 	SlotReserved *bool
+
+	// OutputProfiles is the answer's output_profiles map, keyed by
+	// stringified id (2c-7). Nil sends the empty object Django sends when no
+	// profile is active -- apps/proxy/tests/test_next_source_api.py::
+	// test_no_active_profiles_is_an_empty_object_not_a_missing_key pins that
+	// it is an object and not a missing key.
+	OutputProfiles map[string]OutputProfileConfig
+
+	// OutputProfilesAbsent leaves the key out entirely: the shape of a
+	// control plane older than Phase 2 PR 2b-2, which the relay must report
+	// as a contract mismatch rather than as "no profiles are configured".
+	OutputProfilesAbsent bool
+}
+
+// OutputProfileConfig is one entry of the fake's output_profiles map.
+type OutputProfileConfig struct {
+	// ID is the entry's id field. Zero means the map key parsed as an int.
+	ID int
+
+	// Argv is build_command() in full, COMMAND FIRST -- the shape
+	// OutputProfileRefSerializer sends (apps/proxy/serializers.py:230),
+	// which is not stream_profile.argv's shape.
+	Argv []string
+
+	// ArgvNull sends argv as null: a profile whose parameters shlex could
+	// not split.
+	ArgvNull bool
 }
 
 // AlternateConfig is one alternate stream the fake offers. Argv is the
@@ -147,6 +175,8 @@ type ControlPlane struct {
 	settings map[string]any
 	status   int
 	delay    time.Duration
+	profiles map[string]OutputProfileConfig
+	hasProfs bool
 }
 
 // SetSettings replaces the proxy_settings every LATER answer carries. It is
@@ -157,6 +187,21 @@ func (c *ControlPlane) SetSettings(settings map[string]any) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.settings = settings
+}
+
+// SetOutputProfiles replaces the output_profiles map every LATER answer
+// carries. It is how a test changes the active Output Profile set between two
+// next-source calls, the way an operator editing a profile does, to show that
+// a running channel picks the change up on its next answer and NOT from the
+// degraded cache (2c-7's Ruling R5).
+//
+// A separate `hasProfs` flag rather than a nil check, for ControlPlaneConfig.
+// OutputProfiles' own reason: nil means "the empty object Django sends when
+// nothing is active", which a test may want to set deliberately.
+func (c *ControlPlane) SetOutputProfiles(profiles map[string]OutputProfileConfig) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.profiles, c.hasProfs = profiles, true
 }
 
 // SetStatus makes every LATER call answer with status, whatever the route:
@@ -388,11 +433,37 @@ func (c *ControlPlane) nextSourceAnswer(cfg ControlPlaneConfig, body []byte) map
 	}
 
 	answer := map[string]any{
-		"alternates":      []any{},
-		"error":           nil,
-		"proxy_settings":  settings,
-		"output_profiles": map[string]any{},
-		"source":          nil,
+		"alternates":     []any{},
+		"error":          nil,
+		"proxy_settings": settings,
+		"source":         nil,
+	}
+	c.mu.Lock()
+	liveProfiles, overridden := c.profiles, c.hasProfs
+	c.mu.Unlock()
+	configured := cfg.OutputProfiles
+	if overridden {
+		configured = liveProfiles
+	}
+	if !cfg.OutputProfilesAbsent {
+		profiles := map[string]any{}
+		for key, entry := range configured {
+			id := entry.ID
+			if id == 0 {
+				id, _ = strconv.Atoi(key)
+			}
+			object := map[string]any{"id": id}
+			switch {
+			case entry.ArgvNull:
+				object["argv"] = nil
+			case entry.Argv == nil:
+				object["argv"] = []string{}
+			default:
+				object["argv"] = entry.Argv
+			}
+			profiles[key] = object
+		}
+		answer["output_profiles"] = profiles
 	}
 	chosen := -1
 	for i, cand := range candidates {
