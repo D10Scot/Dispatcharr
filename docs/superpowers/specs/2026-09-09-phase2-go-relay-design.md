@@ -2286,6 +2286,87 @@ recorded in `CLAUDE.md` § Known defects, filed as
 [#302](https://github.com/D10Scot/Dispatcharr/issues/302), not fixed here
 (D10).
 
+#### Amendment A6 (2c-6) — six corrections and inputs from the fMP4 output
+
+**A6.1 — the output-side process needed a package the layout paragraph does
+not name, and 2c-7 extends it rather than replacing it.** § Stage 2c's repo
+layout names `channel`, `buffer`, `ffmpeg`, `control` and `httpapi`. An
+output-side process is none of those: the first four answer "where do this
+channel's bytes come from" and this answers "what else is made out of them
+once they are here". `relay/output` holds it, on the same "split by concern"
+principle 2c-1 already applied when it added `config`, `redact` and
+`internal/*`. **What 2c-7 reuses**: `Pipeline`'s spawn, writer, supervisor
+and stop; `Channel.AttachOutput`'s refcount and its format key, which is
+already the compound string `_parse_output_key` splits (`fmp4`, `fmp4:p3`);
+and `output.Remux` as the seam that names the process. What 2c-7 **adds** is
+a second sink type — a `buffer.Ring` of MPEG-TS where fMP4 writes a
+`buffer.Fragments` of MP4 boxes — and a second constructor. Not a change to
+the lifecycle, the refcount or the spawn.
+
+**A6.2 — an fMP4 channel holds TWO buffers, and § Stage 2c's sizing note is
+stated per channel.** The remux reads the channel's TS ring and writes a
+second buffer of fragments, so at the same budget an fMP4 channel costs
+roughly twice a TS-only channel's resident memory — roughly rather than
+exactly, because a `-c copy` remux's output is close to but not equal to its
+input. This is a consequence of reproducing Python's architecture, not a
+choice the Go design makes: `FMP4StreamBuffer` is a second Redis keyspace
+there for the same reason. **The fragment buffer takes the same BOTH-BOUNDS
+treatment `buffer.Ring` already has** (`output/fmp4/buffer.py` bounds itself
+with a Redis TTL alone), so the doubling is bounded rather than open-ended.
+§ Risks' pre-deployment sizing item should be read as "per channel, doubled
+for every channel with an fMP4 viewer".
+
+**A6.3 — the remux argv is a Python LITERAL and gets no contract field.**
+Amendment A1.4's rule is about `proxy_settings` — values an operator changes
+and Python reads through `ConfigHelper`. `FFMPEG_REMUX_CMD`
+(`output/fmp4/manager.py:32-45`) is a module constant in the relay's own
+source, in the same class as `ffmpeg.KillWait`. A contract field for it would
+put a build-time constant of the relay's on the wire, which is the opposite
+of what A1.4 asks for. It is held by the "every Go constant mirroring a
+Python literal carries its `file:line` and is pinned" rule instead, token for
+token, both lists. **Note `FFMPEG_REMUX_CMD_NO_BSF` drops `-map 0` as well as
+the bitstream filter** (`:46-57`) — easy to miss, reproduced rather than
+tidied.
+
+**A6.4 — two Python behaviours were NOT ported, and one of them contradicts
+its own comment.** The writer's catch-up branch (`manager.py:237-240`) is
+reachable only through `get_optimized_client_data`'s expiry arm
+(`input/buffer.py:353-357`), a state `buffer.Ring.Read` cannot return —
+eviction and the read are under one lock, and a cursor behind the oldest
+resident chunk is advanced TO it with `skipped` reporting the gap. The
+recovery is performed by a different mechanism and recovers FURTHER BACK
+(the oldest resident chunk, not `head - 5`): a divergence in the safe
+direction. Separately, `_flush_complete_fragments`'s resynchronisation arm
+(`:259-266`) says "drop bytes until we find one" and **discards the whole
+working buffer instead**: its rescan starts at offset 1, which re-reads the
+four-byte length field at a one-byte shift, yields a bogus size for any real
+box, jumps past every following box and returns -1, and the code then calls
+`frag_buf.clear()`. Verified by running `_find_moof_offset` itself. Ported
+exactly, pinned, and FILED as [#306](https://github.com/D10Scot/Dispatcharr/issues/306) alongside the dead
+stop-during-restart guard below ([#307](https://github.com/D10Scot/Dispatcharr/issues/307)). It is unreachable in a healthy stream --
+the working buffer begins at a `moof` after the init split and after every
+publish -- which is why it is filed rather than fixed.
+
+**A6.5 — `client_connect` is owed by 2c-8 for BOTH client types.**
+`output/fmp4/generator.py:114-126` emits it for an fMP4 client and
+`output/ts/generator.py` for a TS one. Amendment A5's Ruling R11 places
+`client_connect` in 2c-8 for the TS path; 2c-6 raises none either, because an
+fMP4 client raising it would make it the only client type that did, a stage
+early. 2c-8's planner owes both.
+
+**A6.6 — an input for 2c-7: a remux emits nothing until it has seen enough
+input, and a finite test asset has to be long enough.** `-movflags
+... delay_moov` holds the movie header until ffmpeg knows the streams.
+**Measured on ffmpeg 8.1.2 (the base image, what `go-tests.yml` runs since
+A4.7) and on 9.0.1: two seconds of the harness asset on `fd 0` with the pipe
+held open produces ZERO bytes on `fd 1`, indefinitely; eight seconds produces
+the init segment and fragments within about a second.** Not
+version-dependent, unlike A4.7's `frame=` gap. The Python suite does not meet
+it because `harness.upstream.FakeUpstream` LOOPS its two-second payload;
+a Go test that hands the ring a finite asset once has to make the asset long
+enough. 2c-7's Output Profile transcode reads the same ring and will meet the
+same threshold if its test asset is short.
+
 ## Stage 2d — cutover, and its trap
 
 **The historical bug this stage exists to not repeat.** Every live-bound nginx location today carries
@@ -2610,6 +2691,7 @@ Filled in as PRs merge; this spec lands as its own PR 0.
 | 2c-3 -- multi-client fan-out: the client registry (`relay/channel/client.go`, seven fields, the TTL/heartbeat/ghost sweep deleted rather than ported, Amendment A3.1), the manager's arrival and departure under one lock (the last-client rule and a concurrent attach are one decision, R5), `channel_shutdown_delay` (Amendment A3.3), the bounded read (`buffer.MaxChunksPerRead`, Amendment A3.2), `GET /proxy/relay/channels[?clients=all]` with its golden payload rendered by Django and asserted by both languages, and the tune's next-source call detached from the calling client's request context (Amendment A3.6). Parity matrix rows 8, 10, 13 get a Go column. | `migration/phase2c-fanout` | pending |
 | 2c-4 -- the Go relay's ffmpeg source: `relay/ffmpeg`'s spawn (`os/exec` + `SysProcAttr{Setpgid, Pdeathsig}`, D5 exception 1), the `log_parsers.py` port and the clock-injected buffering detector, `relay/channel`'s `TranscodeSource` and the package-private `attachable` seam, Amendment A4.1 (Django builds `stream_profile.argv`; no Go word splitter), the Go credential-logging guard `relay/internal/credlint` (#283) plus its `scripts/check_go_credential_logging.sh`, and the seven ffmpeg-derived fields on `GET /proxy/relay/channels`. Parity matrix rows 4 (real-ffmpeg), 5, 28 and 29 get a Go column (Amendment A4.4). Two Python-relay defects found and filed rather than fixed, per D10: the provider-URL INFO leak through ffmpeg's stderr preamble ([#295](https://github.com/D10Scot/Dispatcharr/issues/295)) and the UDP filter's dangling flag ([#296](https://github.com/D10Scot/Dispatcharr/issues/296)). CI fix round (2026-09-14): golangci-lint's darwin/linux build-tag blind spot fixed, the fixture-vs-migration-seed argv mismatch fixed, and row 4's real-ffmpeg pin moved onto the base image's production ffmpeg after both relays' shared `frame=` progress gate was found structurally blind to ffmpeg 6.x, filed rather than fixed as [#299](https://github.com/D10Scot/Dispatcharr/issues/299) (Amendment A4.7). | `migration/phase2c-ffmpeg` | pending |
 | 2c-5 -- the Go relay's failover: the three triggers (rows 1, 2, 3) as one port of `StreamManager.run`'s two loops, a clean EOF ported as a retried connection failure (R1); the control-plane client's `release` and `events` routes and an emitter that batches and logs an outage once (R12); the degraded fallback to the candidate list cached at channel start, never on a refusal (R2); the Redirect Stream Profile architecture -- the 302, the provider probe, the fall-through to the cached alternates, the internal-principal override, publishing no channel (R7, R8); the health flag, the keepalives, the client timeout and the error packet closing Amendment A2.5 (R14, R15); the five events the failover machinery raises (R11). Parity matrix rows 1, 2, 3 and 6 get a Go column; row 7 gains a pin across a switch. A pre-existing Python defect (one `next-source` call per buffering progress record when no alternate exists) reproduced per D5 and filed as [#302](https://github.com/D10Scot/Dispatcharr/issues/302) (R6). | `migration/phase2c-failover` | pending |
+| 2c-6 -- the Go relay's fMP4 output format (`migration/phase2c-fmp4`). One remux per channel reading the shared ring on `pipe:0`, the init segment replayed to every client, a refcounted lifecycle with no shutdown delay, and parity-matrix row 12 ([#222](https://github.com/D10Scot/Dispatcharr/issues/222)) reproduced, pinned and filed rather than fixed. Row 12 gets its Go pin. Amendment A6. [#304](https://github.com/D10Scot/Dispatcharr/issues/304) (a pre-existing 2c-4 defect, the stderr pipe truncated by a reap racing its drain) fixed in `relay/ffmpeg/spawn.go`, repairing `relay/channel/source_transcode.go` without editing it. Two Python-side findings from the port, reproduced and filed rather than fixed: the fMP4 scanner's resynchronisation arm discarding the whole working buffer ([#306](https://github.com/D10Scot/Dispatcharr/issues/306)) and the dead stop-during-restart guard in `_handle_bsf_error` ([#307](https://github.com/D10Scot/Dispatcharr/issues/307)). | `migration/phase2c-fmp4` | pending |
 
 ## Risks
 

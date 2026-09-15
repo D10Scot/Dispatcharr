@@ -413,7 +413,7 @@ func (p *Pipeline) Stop() {
 // enforce it. A remux that fails for any OTHER reason is not restarted, by
 // either implementation.
 //
-// THE DEAD BRANCH IS NOT REPRODUCED, AND IS FILED AS [#NNN].
+// THE DEAD BRANCH IS NOT REPRODUCED, AND IS FILED AS [#307].
 // manager.py:403-413 sets `self.running = True` and then tests
 // `if not self.running:` to catch a stop() that arrived during the restart --
 // a condition that cannot hold two statements after the assignment, so the

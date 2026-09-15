@@ -194,7 +194,7 @@ func TestAMisalignedWorkingBufferIsDiscardedWholeRatherThanResynchronised(t *tes
 	// _find_moof_offset(buf, start=1) returns -1 where a correct resynchronisation
 	// would return 72.
 	//
-	// FILED AS [#NNN] and reproduced rather than fixed. It is unreachable in a
+	// FILED AS [#306] and reproduced rather than fixed. It is unreachable in a
 	// healthy stream -- after the init segment the working buffer begins at a
 	// moof, and after every publish it begins at the next moof, so it takes a
 	// corrupt box length to enter -- which is why it is filed rather than
