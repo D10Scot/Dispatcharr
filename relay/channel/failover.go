@@ -45,6 +45,13 @@ type Resolved struct {
 	Source   Source
 	Info     SourceInfo
 	Degraded bool
+
+	// OutputProfiles is the active set the SAME next-source answer carried
+	// (2c-7). Zero -- Known false -- for a degraded resolution, which came
+	// from the candidate list cached at channel start and has no answer of
+	// its own, and the channel's existing set is then kept rather than
+	// cleared.
+	OutputProfiles OutputProfiles
 }
 
 // ErrNoAlternate is "No alternate stream available" (input/manager.py:2110).
@@ -223,6 +230,15 @@ func (c *Channel) failover(ctx context.Context, why string) (Resolved, bool) {
 	c.source = resolved.Info
 	c.currentStreamID = resolved.Info.StreamID
 	c.failures.clear()
+	// The Output Profile set travels on every next-source answer, so a
+	// failover that reached Django refreshes it and a DEGRADED one -- which
+	// never called Django -- leaves the channel-start copy in place (2c-7's
+	// Ruling R5). Under the same Lock as the rest of the switch, so a client
+	// attaching mid-switch reads one state or the other and never half of
+	// each.
+	if resolved.OutputProfiles.Known {
+		c.outputProfiles = resolved.OutputProfiles
+	}
 	c.mu.Unlock()
 
 	// stream_switch (:1523-1532): the URL through redact_url and cut at 100

@@ -94,6 +94,11 @@ type Channel struct {
 	// Profile transcodes. Its own mutex, never nested with mu -- see
 	// output.go's lock-order note.
 	outputRegistry
+
+	// outputProfiles is the active OutputProfile set as the control plane
+	// last described it, under mu. REPLACED WHOLESALE, never mutated in
+	// place, so OutputProfiles() can hand its map out without copying it.
+	outputProfiles OutputProfiles
 	// channelName is StreamManager.channel_name: resolved once at construction
 	// (input/manager.py:41-44) and carried on every event, unchanged by a
 	// failover -- the SourceInfo's name can move, this one does not.
@@ -244,6 +249,44 @@ func (c *Channel) ClientSnapshot() []Client {
 		return out[i].ID < out[j].ID
 	})
 	return out
+}
+
+// OutputProfiles is the active OutputProfile set from the most recent
+// next-source answer this channel received.
+//
+// PER CHANNEL, NOT PER CLIENT, and that is 2b-2's Ruling R3 rather than a
+// simplification here: next-source runs once per channel while Python resolves
+// the profile once per client (views.py:605 and :712 re-read the row), so the
+// whole active set travels on every answer and the relay serves every later
+// client from this copy. The divergence that leaves is stated in the 2c-7
+// plan's Ruling R5 and is bounded by the refresh below: a profile edited
+// between two next-source calls reaches a new client only after the next one.
+//
+// The returned map is the one the channel holds. It is never mutated in place
+// -- setOutputProfiles replaces it -- so a reader that keeps it keeps a
+// consistent snapshot.
+func (c *Channel) OutputProfiles() OutputProfiles {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.outputProfiles
+}
+
+// SetClientOutputProfile records which Output Profile this client is actually
+// being served under, once the handler has resolved it against the set above.
+//
+// A SECOND WRITE RATHER THAN A LATER FIRST ONE, because the resolution needs
+// the channel and Attach is what creates it: identify() records the id the
+// authorize hop asked for, and this corrects it to null on the one path where
+// the two differ -- a profile deactivated between the hop and the tune, which
+// Python reproduces by re-reading the row with is_active=True and getting None
+// (views.py:150-155), then registering the client with that None
+// (views.py:751).
+func (c *Channel) SetClientOutputProfile(clientID string, profileID *int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if client, attached := c.clients[clientID]; attached {
+		client.OutputProfileID = profileID
+	}
 }
 
 // Source is what the next-source answer said about this channel's stream --
