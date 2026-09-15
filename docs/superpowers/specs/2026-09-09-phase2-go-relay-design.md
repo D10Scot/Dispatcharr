@@ -2447,7 +2447,7 @@ zero with **no** shutdown delay — Python's disconnect sweep runs at
 `server.py:1216-1219`, before the `if total == 0` branch at `:1221` that
 honours `channel_shutdown_delay`.
 
-**A7.7 — two inputs for later stages.** First, `transcode_active`
+**A7.7 — three inputs for later stages.** First, `transcode_active`
 (`apps/proxy/live_proxy/redis_keys.py:89-91`) has **one** reference in the
 non-test tree — a `delete` at `input/manager.py:1797` — and no writer and no
 reader. It is an input-side key about the channel's own ffmpeg, it appears on
@@ -2455,7 +2455,12 @@ no payload, and it is dead in the Python relay already; 2d deletes it with
 the rest. Second, A6.6's eight-second `delay_moov` floor **does not apply to
 an Output Profile transcode**: its output is `-f mpegts`, not fragmented MP4,
 so it produces bytes as soon as it has input. Measured on ffmpeg 9.0.1: four
-chunks out of the same eight-second asset in 0.3 seconds.
+chunks out of the same eight-second asset in 0.3 seconds. Third, an Output
+Profile transcode's stderr is logged under the inherited message `"remux
+stderr"` (`relay/output/fmp4.go:534`), shared with the fMP4 remux and
+disambiguated only by the logger's `format=` field, not by the message
+itself — a one-line rename that belongs with Ruling R1's recommended
+`fmp4.go` split, for 2c-9.
 
 ## Stage 2d — cutover, and its trap
 
