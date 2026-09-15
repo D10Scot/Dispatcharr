@@ -1,8 +1,308 @@
 {
  "detail": null,
- "fetched_at": "2026-09-14T11:55:22+00:00",
+ "fetched_at": "2026-09-15T11:11:26+00:00",
  "kind": "issues",
  "records": [
+  {
+   "closed_at": null,
+   "created_at": "2026-09-15T09:27:30Z",
+   "id": 309,
+   "label_events": [
+    {
+     "at": "2026-09-15T09:27:32Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    }
+   ],
+   "labels": [
+    "needs-triage"
+   ],
+   "state": "open",
+   "title": "relay/channel: TestDeadAirOnAYoungConnectionSwitchesStreams flakes at the 400 ms floor under load (399.97 ms)",
+   "updated_at": "2026-09-15T09:27:30Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-09-15T05:15:09Z",
+   "id": 307,
+   "label_events": [
+    {
+     "at": "2026-09-15T06:13:20Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    }
+   ],
+   "labels": [
+    "needs-triage"
+   ],
+   "state": "open",
+   "title": "fMP4 remux's stop-during-restart guard is unreachable dead code",
+   "updated_at": "2026-09-15T06:13:20Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-09-15T05:14:59Z",
+   "id": 306,
+   "label_events": [
+    {
+     "at": "2026-09-15T06:13:19Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    }
+   ],
+   "labels": [
+    "needs-triage"
+   ],
+   "state": "open",
+   "title": "fMP4 fragment scanner's resynchronisation arm discards the whole working buffer instead of resynchronising",
+   "updated_at": "2026-09-15T06:13:19Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-09-15T01:22:07Z",
+   "id": 304,
+   "label_events": [
+    {
+     "at": "2026-09-15T01:22:09Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    }
+   ],
+   "labels": [
+    "needs-triage"
+   ],
+   "state": "open",
+   "title": "relay/ffmpeg: Process.Wait closes the stderr pipe before ReadStderr has drained it \u2014 trailing progress records lost at teardown",
+   "updated_at": "2026-09-15T01:22:07Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-09-15T00:21:44Z",
+   "id": 302,
+   "label_events": [
+    {
+     "at": "2026-09-15T00:21:45Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    }
+   ],
+   "labels": [
+    "needs-triage"
+   ],
+   "state": "open",
+   "title": "A buffering timeout with no alternate stream calls next-source on every ffmpeg progress record",
+   "updated_at": "2026-09-15T00:21:44Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-09-14T19:39:15Z",
+   "id": 300,
+   "label_events": [
+    {
+     "at": "2026-09-14T19:39:17Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    }
+   ],
+   "labels": [
+    "needs-triage"
+   ],
+   "state": "open",
+   "title": "relaytest upstream throttle caps the sleep at 250 ms, so slow-rate fixtures deliver up to 3x faster than configured",
+   "updated_at": "2026-09-14T19:39:15Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-09-14T19:39:13Z",
+   "id": 299,
+   "label_events": [
+    {
+     "at": "2026-09-14T19:39:14Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    }
+   ],
+   "labels": [
+    "needs-triage"
+   ],
+   "state": "open",
+   "title": "Both relays' ffmpeg progress parser is blind on ffmpeg 6.x: stream-copy progress lines begin size=, not frame=",
+   "updated_at": "2026-09-14T19:39:13Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-09-14T18:42:51Z",
+   "id": 297,
+   "label_events": [
+    {
+     "at": "2026-09-14T18:42:52Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    }
+   ],
+   "labels": [
+    "needs-triage"
+   ],
+   "state": "open",
+   "title": "core: StreamProfile.parameters has a pending (help_text-only) migration on main; makemigrations --check fails",
+   "updated_at": "2026-09-14T18:42:51Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-09-14T18:31:05Z",
+   "id": 296,
+   "label_events": [
+    {
+     "at": "2026-09-14T18:31:06Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    }
+   ],
+   "labels": [
+    "needs-triage"
+   ],
+   "state": "open",
+   "title": "The UDP user-agent filter leaves dangling flags in the transcode argv",
+   "updated_at": "2026-09-14T18:31:05Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-09-14T18:30:59Z",
+   "id": 295,
+   "label_events": [
+    {
+     "at": "2026-09-14T18:31:01Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    }
+   ],
+   "labels": [
+    "needs-triage"
+   ],
+   "state": "open",
+   "title": "Python relay logs the provider URL at INFO through ffmpeg's stderr preamble",
+   "updated_at": "2026-09-14T19:19:19Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-09-14T16:01:35Z",
+   "id": 293,
+   "label_events": [
+    {
+     "at": "2026-09-14T16:01:37Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    },
+    {
+     "at": "2026-09-14T16:01:37Z",
+     "event": "labeled",
+     "label": "priority:p1"
+    }
+   ],
+   "labels": [
+    "needs-triage",
+    "priority:p1"
+   ],
+   "state": "open",
+   "title": "[codeql] py/clear-text-logging-sensitive-data: Clear-text logging of sensitive information (apps/timeshift/views.py:3264)",
+   "updated_at": "2026-09-14T16:01:35Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-09-14T16:01:33Z",
+   "id": 292,
+   "label_events": [
+    {
+     "at": "2026-09-14T16:01:35Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    },
+    {
+     "at": "2026-09-14T16:01:35Z",
+     "event": "labeled",
+     "label": "priority:p1"
+    }
+   ],
+   "labels": [
+    "needs-triage",
+    "priority:p1"
+   ],
+   "state": "open",
+   "title": "[codeql] py/clear-text-logging-sensitive-data: Clear-text logging of sensitive information (apps/timeshift/views.py:3263)",
+   "updated_at": "2026-09-14T16:01:33Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-09-14T16:01:30Z",
+   "id": 291,
+   "label_events": [
+    {
+     "at": "2026-09-14T16:01:32Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    },
+    {
+     "at": "2026-09-14T16:01:32Z",
+     "event": "labeled",
+     "label": "priority:p1"
+    }
+   ],
+   "labels": [
+    "needs-triage",
+    "priority:p1"
+   ],
+   "state": "open",
+   "title": "[codeql] py/clear-text-logging-sensitive-data: Clear-text logging of sensitive information (apps/timeshift/views.py:3228)",
+   "updated_at": "2026-09-14T16:01:30Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-09-14T16:01:28Z",
+   "id": 290,
+   "label_events": [
+    {
+     "at": "2026-09-14T16:01:29Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    },
+    {
+     "at": "2026-09-14T16:01:29Z",
+     "event": "labeled",
+     "label": "priority:p1"
+    }
+   ],
+   "labels": [
+    "needs-triage",
+    "priority:p1"
+   ],
+   "state": "open",
+   "title": "[codeql] py/clear-text-logging-sensitive-data: Clear-text logging of sensitive information (apps/timeshift/views.py:3227)",
+   "updated_at": "2026-09-14T16:01:28Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-09-14T16:01:25Z",
+   "id": 289,
+   "label_events": [
+    {
+     "at": "2026-09-14T16:01:26Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    },
+    {
+     "at": "2026-09-14T16:01:26Z",
+     "event": "labeled",
+     "label": "priority:p1"
+    }
+   ],
+   "labels": [
+    "needs-triage",
+    "priority:p1"
+   ],
+   "state": "open",
+   "title": "[codeql] py/clear-text-logging-sensitive-data: Clear-text logging of sensitive information (apps/timeshift/views.py:3214)",
+   "updated_at": "2026-09-14T16:01:25Z"
+  },
   {
    "closed_at": null,
    "created_at": "2026-09-13T13:40:33Z",
@@ -764,7 +1064,7 @@
    "labels": [],
    "state": "open",
    "title": "fMP4 generator's _is_timeout() lacks the TS generator's url_switching exemption \u2014 viewers dropped at 40s during a slow failover",
-   "updated_at": "2026-09-09T23:33:34Z"
+   "updated_at": "2026-09-15T05:16:19Z"
   },
   {
    "closed_at": null,
