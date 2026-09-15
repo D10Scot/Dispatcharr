@@ -14,23 +14,28 @@
 
 ---
 
-## Sequencing: this plan sits on 2c-6 as merged, whose tree the orchestrator names as `<2C6_MERGED_SHA>`
+## Sequencing: this plan sits on 2c-6 as merged, on `main` at `eb7fac07`
 
 2c-6's plan is **merged, on `main` at `9823cded`** (PR #305, `docs/superpowers/plans/2026-09-13-phase2-2c6-fmp4.md`; read it with `git -C <repo> show "9823cded:docs/superpowers/plans/2026-09-13-phase2-2c6-fmp4.md"` — cite `main`, not the `docs/phase2c6-plan` branch, which may be deleted — **brace the expansion in zsh**, or the `:path` is eaten as a history modifier and you get the tip commit's diff instead, exit code 0 and all).
 
-**2c-6 was not merged and not implemented when this plan was written.** No branch, no worktree and no commit carried `relay/output`, `buffer.Fragments`, `ffmpeg.StartPiped` or `channel/output.go`. So this plan could not obey the brief's "seed from the implemented tree, never from a plan's appendices" rule for its predecessor, and says so rather than hiding it — the same position 2c-6 itself was in with respect to 2c-5.
+**2c-6 IS MERGED, and this plan has been re-seeded from it.** `main` is **`eb7fac07`** (the squash of PR #308; `git diff --quiet 63e6494f eb7fac07` is empty, so the merge commit's tree is the branch head's). Every appendix here was re-extracted against that tree and the whole gate re-run on it — the results are in § What was verified on `eb7fac07` below.
 
-**What it did instead, and what that buys.** Every appendix here was built and verified on `main` at **`9d666f8c`** (2c-5 as merged) **with 2c-6's own appendices applied over it**, extracted mechanically from that plan's fenced blocks rather than retyped: eleven whole files written out, seven diffs applied with `git apply`. **All seven applied with no fuzz and no rejects**, and the resulting module built, vetted, linted at zero issues and passed `go test -race ./...` green before a line of 2c-7 was written. That is the strongest evidence available that 2c-6's appendices describe a tree that compiles against `9d666f8c`, and it is not evidence that the tree 2c-6 *merges* is that tree.
+**The module this plan's appendices were developed in was seeded with `git archive eb7fac07 relay`, every `_test.go` included** — 91 Go files, 42 of them tests — not from 2c-6's appendices and not from a reconstruction. That is the brief's rule, and this plan obeys it now where its first three drafts could not.
 
-**That branch moved twice while this plan was being written**, `f142bf90` → `d5ad9aac` → merged as `9823cded`: a rebase onto `9d666f8c`, one fix round, then the merge. **The merge changed no Go appendix**, verified mechanically rather than taken on report: the eleven whole files and seven diffs re-extracted from `9823cded` produce a tree byte-identical to `d5ad9aac`'s, and Appendix G still applies to it with `git apply --check`. Its delta is prose — a six-slot `[#NNN]` table and one extra Task 8 step, which renumbers that task's later steps. **Every appendix here was re-extracted from `d5ad9aac` and the whole module re-verified after it** — build, vet and `golangci-lint` at zero under native, `GOOS=linux` and `GOOS=darwin`, a full `-race` run green, credlint clean over eleven packages.
+**The implementation differs from its own plan's appendices in four files, and none of them moves an anchor of this PR's.** Diffed file by file:
 
-Seven Go files changed in that round and **four of them are files this PR also edits**. Three changed in comments only, and `output/fmp4.go`'s sole code change is a moved `<-stderrDone` in `generation` that touches none of Ruling R11's five anchors: the regenerated Appendix G diff is **byte-identical** to the one built on `f142bf90`. `ffmpeg/spawn.go` really changed — #304's parent-owned stderr pipe — and this PR does not touch it. **The one substantive collision is `httpapi/fanout_test.go`**, and Task 7 Step 3 is where it is resolved: the fix round added a THIRD 501 row, `"an Output Profile on an fMP4 tune"`, which is exactly the combination 2c-7 makes work.
+| File | Delta | Touches 2c-7? |
+|---|---|---|
+| `output/fmp4.go` | one comment line: `[#NNN]` → `[#307]` | edited by Appendix G, 15 lines from its nearest anchor — applied clean |
+| `output/scanner_test.go` | one comment line: `[#NNN]` → `[#306]` | not touched |
+| `httpapi/fmp4_test.go` | an 11-line doc comment above the row-12 test, rewritten (the stall is on the UPSTREAM, not the remux) | not touched |
+| `ffmpeg/spawn_test.go` | **+121 lines, 80 of them code**: a new `TestAPipedProcessCanBeFedOnItsStandardInput` | not touched |
 
-One of that round's corrections is to 2c-6's own Ruling R1 — the sentence promising 2c-7 a second constructor and a second sink type overstated the constructor's share — and Ruling R11 below is this plan's half of it. A **later** fix round that reshapes `Pipeline` itself would move Appendix G's anchors and is a Task 0 stop.
+The fourth is worth naming because it is the one the orchestrator's summary did not: the implementation **added a test beyond its plan's appendices**, pinning `StartPiped`'s fd 0 round trip. Non-comment code changed in exactly that one file, and it is a file this PR does not edit.
 
-**The orchestrator fills `<2C6_MERGED_SHA>` when 2c-6 merges, and this plan is re-seeded from that SHA — every `_test.go` included — and every appendix re-verified byte for byte, before it is reviewed.** Until then, Task 0 is the diff between what this plan expects of 2c-6 and what merged.
+**All fifteen of this plan's diff appendices applied to the real merged tree with `git apply` and no fuzz**, and the six whole-file appendices were copied in unchanged. That is a stronger statement than the earlier drafts could make, and it is what § What was verified rests on.
 
-**Task 0's stop rule is binding.** A symbol that differs from the ledger below is a **stop-and-report**, never a reconciliation in passing.
+**Task 0's stop rule is still binding**, and it is now a confirmation rather than a discovery: every row of the ledger below was checked against `eb7fac07` while writing this, with the counts each row states. A symbol that differs from it means your seed is not `eb7fac07` — **stop and report**, never reconcile in passing.
 
 ### The 2c-6 dependency ledger
 
@@ -45,7 +50,7 @@ One of that round's corrections is to 2c-6's own Ruling R1 — the sentence prom
 | `channel/failover.go`'s `Resolved{Source, Info, Degraded}` and the switch's `c.mu.Lock()` block | Task 5 adds one field and three lines | a reshaped switch is a stop |
 | `httpapi/stream.go`'s `StreamDeps{Secret, Channels, Control, Log, Now, Probe, Remux}`, `identify`'s `X-Relay-Output` **refusal**, `serveClient(ctx, w, rc, ch, client, log)`, `StreamHandler`'s `defer release()` → fMP4 branch → TS headers, `writeTuneFailure`'s switch | Task 6 replaces the refusal, adds a `ring` parameter to `serveClient`, inserts one block before the fMP4 branch and one case in `writeTuneFailure` | Appendix K gives every anchor; a handler that no longer branches on `client.OutputFormat` is a stop |
 | `httpapi/fmp4.go`'s `serveFMP4(w, r, deps, ch, client, log)` and `ch.AttachOutput(output.FormatFMP4, deps.Remux)` | Task 6 adds a `source *buffer.Ring` parameter and composes the key | Appendix J |
-| `httpapi/fanout_test.go`'s `fanRig`, `fanRigWith`, `rigSettings`, `tuneAs`, `listChannels`, `waitForHead`, and `TestAnOutputThisRelayDoesNotServeIsRefused`'s **three** rows with an `andFMP4 bool` field and an `output` import (the third row and both are `d5ad9aac`'s fix round) | Task 7 replaces all three profile-bearing rows and removes the `andFMP4` field, the `output` import and the `if tc.andFMP4` block with them; the helpers are used unchanged | **two** rows and no `andFMP4` means you seeded from before that fix round — re-seed. A test that no longer refuses `hls` is a stop |
+| `httpapi/fanout_test.go`'s `fanRig`, `fanRigWith`, `rigSettings`, `tuneAs`, `listChannels`, `waitForHead`, and `TestAnOutputThisRelayDoesNotServeIsRefused`'s **three** rows with an `andFMP4 bool` field and an `output` import (the third row and both arrived in 2c-6's fix round) | Task 7 replaces all three profile-bearing rows and removes the `andFMP4` field, the `output` import and the `if tc.andFMP4` block with them; the helpers are used unchanged | **two** rows and no `andFMP4` means you seeded from before `eb7fac07` — re-seed. A test that no longer refuses `hls` is a stop |
 | `httpapi/fmp4_test.go`'s `standInRemux`, `readAtLeast`, `rig.tuneFMP4` | Task 7 calls all three unchanged | a renamed helper is a find-and-replace in Appendix N |
 | `httpapi/stream_test.go`'s `rigOption`, `withRemux`, variadic `newRig`/`newRigWithClient` | Task 7 uses `withRemux` unchanged | |
 | `httpapi/golden_test.go`'s `TestTheLiveEndpointProducesTheGoldensKeySet`, whose live-row assertion says `output_profile_id` must be null "because 2c-3 serves no Output Profile yet" | Task 7 rewrites that **message** and keeps the assertion (Ruling R7) | |
@@ -58,11 +63,32 @@ One of that round's corrections is to 2c-6's own Ruling R1 — the sentence prom
 
 **Seed your scratch module from the merged tree INCLUDING its `_test.go` files.** Task 0 Step 0 is where the two are reconciled.
 
+### What was verified on `eb7fac07`
+
+Every number below was produced on the merged tree with this plan's appendices applied, in the foreground, and is what Task 9's own gate should reproduce.
+
+| Gate | Result |
+|---|---|
+| `gofmt -l .` | silent |
+| `go build ./...`, `go vet ./...` × native / `GOOS=linux` / `GOOS=darwin` | green |
+| `golangci-lint run ./...` × the same three | `0 issues.` each |
+| `scripts/check_go_credential_logging.sh relay` | `credlint: 11 package(s) clean` |
+| `scripts/check_go_stdlib_only.sh relay` | `OK: relay depends on the standard library only.` |
+| `relay/go.sum` | absent; `go.mod` is two lines with no `require` |
+| `go test -race -count=1 ./...` | green **×3** |
+| `go test -race ./channel ./output ./httpapi` | green **×8** (`channel` 74.7–75.4s, `output` 2.8–3.2s, `httpapi` 67.9–69.7s) |
+| `go test ./ffmpeg ./channel ./output` **without** `-race` | green **×3** (`channel` ~58s) |
+| `TestARealAC3ProfileTranscodesTheChannelsRing` | PASS on the host at **ffmpeg 9.0.1** (0.15s) **and in the base image at 8.1.2** (0.12s) |
+| `apps.proxy.tests` with the Django change applied | `Ran 379 tests … OK`, in a dedicated container on a **fresh** DB volume |
+| the seeded `OutputProfile` rows | both present after that run — `1 Media Server (AC3 Audio) t t`, `2 Web Player (AAC Audio) t t` |
+| `OutputProfileRefSerializer().fields['argv'].allow_null` | `True`, and `{'id': 9, 'argv': None}` renders as JSON null |
+
+
 ---
 
 ## Global Constraints
 
-Every task's requirements implicitly include this section. Constraints 1–38 are 2c-1's through 2c-6's, restated because this plan is executed by an agent who has not read them; 39–43 are new.
+Every task's requirements implicitly include this section. Constraints 1–38 are 2c-1's through 2c-6's, restated because this plan is executed by an agent who has not read them; 39–45 are new, and 44 and 45 are inherited from 2c-6's own implementation round.
 
 1. **Anchor every command with an absolute path, or open it with a `cd` into your own worktree.** The shell's working directory has been observed drifting into another agent's worktree with no `cd` issued.
 
@@ -179,6 +205,10 @@ Every task's requirements implicitly include this section. Constraints 1–38 ar
 42. **A substring assertion pins nothing when the string has more than one source, and `os/exec` is a source.** Paid for here: `TestAProfileWithNoCommandIsRefusedRatherThanDefaultedToTheRemux` asserted `strings.Contains(err, "no command")` and stayed **green** with the guard it tests removed, because `os/exec`'s own message for an empty `Path` is literally `exec: no command`. Closed with `errors.Is(err, ErrProfileCommandAbsent)`.
 
 43. **`relay/output`'s `fmp4.go` now holds the shared pipeline and is not renamed.** Ruling R1. Its package doc says so; a future PR may split it, and this one deliberately does not.
+
+44. **A gate this plan writes must be able to PASS, and a grep whose emptiness you interpret must be scoped by path.** Inherited from 2c-6, which wrote a `grep -rn '\[#NNN\]' relay/ docs/` gate that could not: `docs/` recursively contains 2c-6's own plan, whose `[#NNN]` table lists the slots, so the gate matched its own documentation and could never return empty. **This plan is now a second such file** — it carries four `[#NNN]` occurrences of its own, in the ledger row about `output/fmp4.go:416` and in this constraint — so a recursive `docs/` grep is further from passing today than when 2c-6 wrote it, which is the point: a gate whose corpus grows cannot be fixed by tidying one file. **Scope by path, never `docs/` recursively**, and name the files. This PR writes exactly one grep whose emptiness is the assertion — Task 9 Step 3's `ls relay/go.sum`, which is a single path — plus the `[#NNN]` check it does **not** write, because this PR files no issue and leaves no slot (Task 8's amendment and matrix row carry real references only). If you add one, check it can fail: create the thing it looks for, watch it go red, delete it. And never `2>/dev/null` it, and never read `$?` through a pipe.
+
+45. **A break-check's revert targets a string that occurs exactly once in the file.** Already Constraint 36 here, and restated as 2c-6's own implementation round re-learned it. Constraint 36's other half — that every patch **asserts its anchor and prints on success** — is what this plan pays for in § Break-check row 7.
 
 ### The six ways a Go test can be green and meaningless
 
@@ -367,22 +397,24 @@ plus one caller outside the package, `httpapi/fmp4.go:53`'s `pipeline.Fragments(
 
 ---
 
-## Task 0: Diff the merged 2c-6 tree against this plan's expectations
+## Task 0: Confirm the merged 2c-6 tree is what this plan's appendices were built on
 
 **Files:** none changed. This task produces a report, and a stop if anything differs.
 
 **Interfaces:**
-- Consumes: the merged 2c-6 tree at `<2C6_MERGED_SHA>`.
+- Consumes: the merged 2c-6 tree at `eb7fac07` (`main`, the squash of PR #308).
 - Produces: a verified statement that every symbol in § Sequencing's ledger exists with the shape this plan's appendices were built against.
 
 - [ ] **Step 0: Seed your scratch module from the merged 2c-6 tree, tests included**
 
 ```bash
-# <2C6_MERGED_SHA> is filled in by the orchestrator when 2c-6 merges.
 cd /Users/dion/git/Dispatcharr
 git fetch origin main
-git worktree add <your worktree> -b migration/phase2c-output-profile <2C6_MERGED_SHA>
-mkdir -p <scratch>/2c7 && cp -R <your worktree>/relay <scratch>/2c7/relay
+git rev-parse eb7fac07^{tree} >/dev/null   # a bad ref says so; never 2>/dev/null this
+git worktree add <your worktree> -b migration/phase2c-output-profile eb7fac07
+# git archive, not cp -R: it takes exactly what the commit holds, tests and
+# all, with no chance of an untracked file from another run coming along.
+mkdir -p <scratch>/2c7 && git archive eb7fac07 relay | tar -x -C <scratch>/2c7 --strip-components=0
 cp <your worktree>/.golangci.yml <scratch>/2c7/relay/.golangci.yml
 # relaytest/corpus.go locates the repo from its own path, so the Python
 # harness's fixtures must be reachable at the same relative depth.
@@ -390,7 +422,9 @@ ln -sfn <your worktree>/apps <scratch>/2c7/apps
 cd <scratch>/2c7/relay && go build ./... && go vet ./... && go test -race ./... && golangci-lint run ./...
 ```
 
-Expected: all four green on the untouched tree. If they are not, the merge is broken and nothing below is your problem — **stop and report**.
+Expected: all four green on the untouched tree, and `find relay -name '*.go' | wc -l` = **91**, of which **42** are `_test.go`. If they are not, the merge is broken and nothing below is your problem — **stop and report**.
+
+**Measured on `eb7fac07` while this plan was written**, so you have something to compare against: `gofmt -l` silent; build and vet green; `golangci-lint` `0 issues.`; `go test -race -count=1 ./...` green with `channel` ~75s, `httpapi` ~67s, `ffmpeg` ~10s and everything else under 4s.
 
 - [ ] **Step 1: Check every symbol in the dependency ledger**
 
@@ -452,6 +486,8 @@ If `views.py:771`'s body string or the `mpegts:p` literal differs by a character
 - [ ] **Step 4: Report**
 
 State: the merged SHA, every ledger row as matched or differing, the two `StateActive` writer lines, and whether the Python constants are unchanged. **If anything differs, stop here and report before writing a line of Go.**
+
+**Every one of these greps was run against `eb7fac07` while this plan was written and returned the counts stated.** A difference therefore means your seed is not `eb7fac07`, not that the plan guessed — check `git rev-parse HEAD` in your worktree before reporting a mismatch.
 
 ---
 
@@ -705,6 +741,21 @@ Two edits that are not on that list:
 Run: `cd <scratch>/2c7/relay && go test -race -count=1 ./output/`
 Expected: PASS, including `TestARealAC3ProfileTranscodesTheChannelsRing` if ffmpeg is on your PATH. Record the ffmpeg version the test logs.
 
+**Run it in the production base image too**, which is where `go-tests.yml` runs it (Amendment A4.7) and which ships ffmpeg **8.1.2** where a developer host is likely to have something newer. There is no Go toolchain in that image, so cross-compile the package's test binary and run that:
+
+```bash
+cd <scratch>/2c7/relay
+GOOS=linux GOARCH=arm64 go test -c -o /tmp/output.test ./output/     # GOARCH=amd64 on an Intel host
+docker run --rm -e LD_LIBRARY_PATH=/usr/local/lib -e CI=1 \
+  -v /tmp/output.test:/tmp/output.test:ro \
+  --entrypoint /tmp/output.test ghcr.io/d10scot/dispatcharr:base \
+  -test.run='TestARealAC3ProfileTranscodesTheChannelsRing' -test.v
+```
+
+**`LD_LIBRARY_PATH=/usr/local/lib` is not optional and it is issue [#226](https://github.com/D10Scot/Dispatcharr/issues/226)**, the same workaround `apps/proxy/live_proxy/tests/harness/asset.py:95`'s `_FFMPEG_ENV` applies on the Python side. Without it, on the arm64 base image, `ffmpeg -version` dies with `symbol lookup error: undefined symbol: rist_peer_config_defaults_set_versioned` — measured — and the test then fails inside `buildFragmentableAsset` with a message about the asset rather than about the image. Whether the amd64 image CI pulls has the same defect was **not** verified here; say which architecture you ran.
+
+Measured for comparison: **8.1.2 in the base image, 0.12s; 9.0.1 on this host, 0.15s** — the codec assertion and the "an Output Profile transcode has no `delay_moov` threshold" measurement (Amendment A7.7) hold identically on both, unlike A6.6's fMP4 threshold which had to be measured twice to say so.
+
 Then **eight consecutive runs** (Working rules):
 
 ```bash
@@ -873,7 +924,7 @@ Expected: with Task 6 applied they **pass**; with Task 6 reverted they fail to c
 
 - [ ] **Step 3: Fix the 501 subtest and the golden message**
 
-Apply Appendix Q. `TestAnOutputThisRelayDoesNotServeIsRefused`'s table gains a `status` column and loses `d5ad9aac`'s `andFMP4 bool`; **both** of its profile-bearing rows go — the bare `X-Relay-Output: 7` row and the `"an Output Profile on an fMP4 tune"` row that 2c-6's fix round added — replaced by `"seven"` and `"0"`, both expecting **400**. The `if tc.andFMP4` block goes with them, and so does the `output` import, which that fix round added for that row alone and which `go vet` reports as unused the moment the row is deleted.
+Apply Appendix Q. `TestAnOutputThisRelayDoesNotServeIsRefused`'s table gains a `status` column and loses the merged tree's `andFMP4 bool`; **both** of its profile-bearing rows go — the bare `X-Relay-Output: 7` row and the `"an Output Profile on an fMP4 tune"` row that 2c-6's fix round added — replaced by `"seven"` and `"0"`, both expecting **400**. The `if tc.andFMP4` block goes with them, and so does the `output` import, which that fix round added for that row alone and which `go vet` reports as unused the moment the row is deleted.
 
 **Do not read this as dropping the concern that row guarded.** Its comment named an identify that returned early on a format it serves and so silently dropped the Output Profile — a real hazard, and under 2c-7 no longer a 501 question at all, because the profile is resolved after the channel is up rather than refused in `identify`. `TestAnFMP4ClientOnAnOutputProfileRunsTheTranscodeAndTheRemuxChained` is the stronger form of the same guard: it asserts the transcode really spawned, that both `mpegts:p3` and `fmp4:p3` are registered, and that the remux's own fd 0 carried the transcode's packets. A relay that dropped the profile and streamed plain fMP4 passes a status check and fails all three. Say so in the PR description rather than letting a reviewer find a deleted row.
 
@@ -1041,7 +1092,7 @@ Fifteen. Every row was run in the scratch module described in § Sequencing, and
 
 ## Appendix — the files, in full
 
-Every file below was built, vetted under three GOOS, race-tested and linted at zero findings in the scratch module § Sequencing describes, **re-verified against `d5ad9aac`** after 2c-6's fix round. Whole files are given whole; edits to 2c-6's files are given as diffs against the tree that plan's appendices produce.
+Every file below was built, vetted under three GOOS, race-tested and linted at zero findings in the scratch module § Sequencing describes, **built and re-verified against the MERGED 2c-6 tree, `main` at `eb7fac07`**, whose 91 Go files (42 of them tests) were taken with `git archive`. All fifteen diffs below applied to it with `git apply` and no fuzz. Whole files are given whole; edits to 2c-6's files are given as diffs against the tree that plan's appendices produce.
 
 
 ### Appendix A — `relay/control/nextsource.go`
@@ -3875,7 +3926,7 @@ func TestStoppingTheChannelStopsItsProfileTranscode(t *testing.T) {
 
 ### Appendix Q — `relay/httpapi/fanout_test.go` and `golden_test.go`
 
-Both of `d5ad9aac`'s profile-bearing rows go — the bare one and the `andFMP4` one its fix round added, which is the combination 2c-7 makes work — replaced by two malformed-value rows at 400, plus an assertion that the refused value is never echoed. The `andFMP4` field, its `if` block and the `output` import go with them; `go vet` reports that import unused the moment the row is deleted. The golden's live-row message stops citing a stage that no longer describes it (Ruling R7).
+Both of the merged tree's profile-bearing rows go — the bare one and the `andFMP4` one its fix round added, which is the combination 2c-7 makes work — replaced by two malformed-value rows at 400, plus an assertion that the refused value is never echoed. The `andFMP4` field, its `if` block and the `output` import go with them; `go vet` reports that import unused the moment the row is deleted. The golden's live-row message stops citing a stage that no longer describes it (Ruling R7).
 
 
 **`relay/httpapi/fanout_test.go`**
