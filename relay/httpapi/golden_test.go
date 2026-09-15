@@ -295,8 +295,9 @@ func TestTheLiveEndpointProducesTheGoldensKeySet(t *testing.T) {
 	// null or as a bare integer -- both carry the key -- so a *Client.OutputProfileID
 	// that lost its pointer and became an int would pass undetected.
 	if got := liveRow["output_profile_id"]; got != nil {
-		t.Fatalf("the live client reports output_profile_id %v, want null: 2c-3 serves "+
-			"no Output Profile yet, so every attached client's OutputProfileID is nil", got)
+		t.Fatalf("the live client reports output_profile_id %v, want null: this tune named "+
+			"no Output Profile, and channel_status.py:579-582 renders null for such a "+
+			"client rather than omitting the key", got)
 	}
 }
 

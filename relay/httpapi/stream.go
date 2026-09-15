@@ -9,6 +9,7 @@ import (
 	"math/big"
 	"net"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/D10Scot/Dispatcharr/relay/buffer"
@@ -220,13 +221,24 @@ func StreamHandler(deps StreamDeps) http.HandlerFunc {
 		}
 		defer release()
 
+		// views.py:765-776, BEFORE the format branch and in that order: the
+		// Output Profile transcode is started (or joined) first, and the
+		// buffer everything below reads is get_buffer(channel, profile) --
+		// the profile's output ring when one is running, the channel's own
+		// when none is. 2c-7.
+		source, releaseProfile, ok := attachOutputProfile(w, ch, client, log)
+		if !ok {
+			return
+		}
+		defer releaseProfile()
+
 		// views.py:789-818's branch, at the same point: after the channel is
 		// up and the client is registered, and on the client's OWN resolved
 		// format rather than on anything about the channel -- a TS viewer and
 		// an fMP4 viewer share one channel, one upstream and one ring, and
 		// differ only from here down.
 		if client.OutputFormat == output.FormatFMP4 {
-			serveFMP4(w, r, deps, ch, client, log)
+			serveFMP4(w, r, deps, ch, client, source, log)
 			return
 		}
 
@@ -238,7 +250,7 @@ func StreamHandler(deps StreamDeps) http.HandlerFunc {
 			return
 		}
 
-		serveClient(r.Context(), w, rc, ch, client, log)
+		serveClient(r.Context(), w, rc, ch, source, client, log)
 	}
 }
 
@@ -249,9 +261,12 @@ func StreamHandler(deps StreamDeps) http.HandlerFunc {
 // relay that logged "fmp4" in its registry and then wrote MPEG-TS would be
 // wrong in a way nothing on the wire says, and serving it under the label
 // "mpegts" would be a lie in the payload /proxy/stats/ renders. 2c-6 brought
-// fMP4, so Format now only ever names a format NEITHER implementation has;
-// 2c-7 brings the Output Profiles, and ProfileID is still every tune that
-// asks for one.
+// fMP4 and 2c-7 the Output Profiles, so this now only ever names a format
+// NEITHER implementation has -- `hls`, whose Python manager does not exist
+// either (_OUTPUT_FORMAT_MANAGERS registers only fmp4, server.py:1352-1353).
+// ProfileID is kept on the struct and is never set: it is what the 501's log
+// line named for two stages and removing it would silently narrow the
+// message.
 type ErrUnsupportedOutput struct {
 	Format    string
 	ProfileID string
@@ -261,7 +276,7 @@ func (e *ErrUnsupportedOutput) Error() string {
 	if e.ProfileID != "" {
 		return fmt.Sprintf("the Go relay serves no Output Profile yet, and this tune asked for %q", e.ProfileID)
 	}
-	return fmt.Sprintf("the Go relay serves only %q, not %q", OutputFormatMPEGTS, e.Format)
+	return fmt.Sprintf("the Go relay serves only %q and %q, not %q", OutputFormatMPEGTS, output.FormatFMP4, e.Format)
 }
 
 // identify resolves which channel this request is for and who is asking.
@@ -291,10 +306,25 @@ func identify(r *http.Request, secret string, now func() time.Time) (string, *ch
 		id = r.PathValue("channelID")
 	}
 
-	// Refused before anything is registered or attached, so a tune this relay
-	// cannot serve never reaches the control plane.
+	// 2c-7: X-Relay-Output is SERVED rather than refused. Its value is the
+	// OutputProfile primary key apps/proxy/authorize.py:483-488 resolved, and
+	// apps/proxy/authorize_views.py:154-162 has already rejected anything but
+	// "" or a digit string with a 403 -- so a non-digit here means the
+	// internal contract is broken and never reaches a deployment through
+	// nginx. Refused with a 400 rather than guessed at: there is no Python
+	// counterpart to reproduce, because Python's hop denies it a hop earlier.
+	//
+	// WHAT IS RECORDED HERE IS WHAT THE HOP ASKED FOR, not what the tune ends
+	// up serving. The set that resolves it is the channel's, and the channel
+	// does not exist yet; attachOutputProfile corrects this to null on the
+	// one path where the two differ.
+	var outputProfileID *int
 	if profileID := header("X-Relay-Output"); profileID != "" {
-		return id, nil, &ErrUnsupportedOutput{ProfileID: profileID}
+		parsed, convErr := strconv.Atoi(profileID)
+		if convErr != nil || parsed <= 0 {
+			return id, nil, &ErrOutputProfileMalformed{Value: profileID}
+		}
+		outputProfileID = &parsed
 	}
 	// 2c-6: fmp4 joins mpegts. Anything else is still refused rather than
 	// served under a label that is not true -- and there is no third format to
@@ -333,13 +363,25 @@ func identify(r *http.Request, secret string, now func() time.Time) (string, *ch
 	}
 
 	return id, &channel.Client{
-		ID:           clientID,
-		UserID:       userID,
-		IPAddress:    ip,
-		UserAgent:    userAgent,
-		OutputFormat: outputFormat,
-		ConnectedAt:  now(),
+		ID:              clientID,
+		UserID:          userID,
+		IPAddress:       ip,
+		UserAgent:       userAgent,
+		OutputFormat:    outputFormat,
+		OutputProfileID: outputProfileID,
+		ConnectedAt:     now(),
 	}, nil
+}
+
+// ErrOutputProfileMalformed is an X-Relay-Output that is not a positive
+// integer on a trusted request. Unreachable through nginx -- the authorize
+// hop answers 403 for it (apps/proxy/authorize_views.py:154-162) -- and
+// answered 400 rather than 403 here because it is this relay saying the
+// header it was handed is not a profile id, not an authorization decision.
+type ErrOutputProfileMalformed struct{ Value string }
+
+func (e *ErrOutputProfileMalformed) Error() string {
+	return fmt.Sprintf("X-Relay-Output is %q, which is not an Output Profile id", e.Value)
 }
 
 // mintClientID is apps/proxy/authorize.py:145-147's mint_client_id, spelled the
@@ -523,9 +565,10 @@ func startTune(parent context.Context, deps tuneDeps, id string, internal bool) 
 	}
 
 	return channel.Started{
-		Source: source,
-		Tuning: tuning,
-		Info:   infoFrom(answer.Source),
+		Source:         source,
+		Tuning:         tuning,
+		Info:           infoFrom(answer.Source),
+		OutputProfiles: outputProfilesFrom(answer),
 		Resolver: &resolver{
 			control:    client,
 			id:         id,
@@ -621,6 +664,7 @@ func writeTuneFailure(w http.ResponseWriter, log *slog.Logger, id string, err er
 	var argvAbsent *ErrProfileArgvAbsent
 	var unbuildable *ErrProfileUnbuildable
 	var unsupported *ErrUnsupportedOutput
+	var malformedProfile *ErrOutputProfileMalformed
 	var refused *control.Refused
 	var unavailable *control.Unavailable
 	var misconfigured *control.ErrNotConfigured
@@ -651,6 +695,11 @@ func writeTuneFailure(w http.ResponseWriter, log *slog.Logger, id string, err er
 		log.Warn("refusing a tune for an unsupported output",
 			"channel", id, "format", unsupported.Format, "output_profile", unsupported.ProfileID)
 		http.Error(w, "this output is not served yet", http.StatusNotImplemented)
+	case errors.As(err, &malformedProfile):
+		// The value is NOT echoed: an internal header this relay was handed
+		// is not something to reflect into a response body.
+		log.Error("X-Relay-Output is not an Output Profile id", "channel", id)
+		http.Error(w, "malformed output profile", http.StatusBadRequest)
 	case errors.Is(err, channel.ErrDuplicateClient):
 		// views.py:748-753's 503: a client id already attached to this channel
 		// is a client that never released, not a new viewer.
@@ -733,11 +782,11 @@ func serveClient(
 	w http.ResponseWriter,
 	rc *http.ResponseController,
 	ch *channel.Channel,
+	ring *buffer.Ring,
 	client *channel.Client,
 	log *slog.Logger,
 ) {
 	tuning := ch.Tuning()
-	ring := ch.Ring()
 
 	// POSITIONED ONCE, at setup, exactly as output/ts/generator.py:264-302
 	// positions a client -- and this is the call parity-matrix row 8 is

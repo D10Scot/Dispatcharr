@@ -34,9 +34,18 @@ func serveFMP4(
 	deps StreamDeps,
 	ch *channel.Channel,
 	client *channel.Client,
+	source *buffer.Ring,
 	log *slog.Logger,
 ) {
-	pipeline, releaseOutput, err := ch.AttachOutput(output.FormatFMP4, deps.Remux)
+	// THE KEY CARRIES THE PROFILE AND THE SOURCE IS THE PROFILE'S RING, both
+	// 2c-7's and both straight off views.py: :731-734 composes the format key
+	// as f'{fmt}:p{id}' when a profile is active, and :790-792 hands
+	// ensure_output_format the profile's buffer as the remux's input. So an
+	// fMP4 client on an Output Profile runs TWO chained processes -- the
+	// transcode under `mpegts:p3` writing a TS ring, and this remux under
+	// `fmp4:p3` reading it -- and an fMP4 client with no profile runs one.
+	key := output.FormatKey(output.FormatFMP4, client.OutputProfileID)
+	pipeline, releaseOutput, err := ch.AttachOutput(key, channel.OutputSpec{Remux: deps.Remux, Source: source})
 	if err != nil {
 		// views.py:789-798's JsonResponse({"error": ...}, status=500), body and
 		// all: a relay that answered a bare 500 here would be distinguishable

@@ -106,7 +106,7 @@ Every task's requirements implicitly include this section. Constraints 1–38 ar
 
 6. **zizmor blocks on every finding in any workflow file you touch.** This PR touches no workflow. `go-tests.yml` already runs in the base image (Amendment A4.7), which is what Task 4's real-ffmpeg test needs.
 
-7. **Do not add a Docker `HEALTHCHECK`, a SIGTERM drain, or a `/readyz` that reports anything real.** Those are 2c-8's.
+7. **Do not add a Docker `HEALTHCHECK`, a SIGTERM drain, or a `/readyz` that reports anything real.** Those are 2c-8's. **2c-9 handoff**: an Output Profile transcode's stderr is logged under the inherited message `"remux stderr"` (`relay/output/fmp4.go:534`), shared with the fMP4 remux and disambiguated only by the logger's `format=` field, not by the message itself. A one-line rename belongs with Ruling R1's recommended `fmp4.go` split, not this PR.
 
 8. **Every Go constant that mirrors a Python literal carries its source `file:line` in a comment and is pinned by a test naming the same location.** This PR adds **no new numeric constant**: `readSize` (65536) gains `output/profile/manager.py:231` as a second citation beside `output/fmp4/manager.py:294`, and `stopJoinWait` (5s) gains `output/profile/manager.py:141`. The two **string** constants it does add are key shapes — `FormatMPEGTS` and the `:p<id>` suffix — pinned token for token by `TestTheProfileKeyIsMPEGTSWhateverTheClientFormat` against `views.py:731-734` and `output/profile/manager.py:303`.
 
@@ -350,7 +350,7 @@ Decided against `ch.Buffer(profileID)`: `get_buffer`'s Python signature exists b
 
 plus one caller outside the package, `httpapi/fmp4.go:53`'s `pipeline.Fragments()`, which is untouched because an fMP4 client still wants fragments.
 
-**Ruled: two nil-able fields, three branches on `p.ring != nil`, and exactly one of the two non-nil for a pipeline's life** — set by its constructor, never reassigned, so the branches need no lock and `-race` has nothing to find.
+**Ruled: two nil-able fields, two branches on `p.ring != nil`, and exactly one of the two non-nil for a pipeline's life** — set by its constructor, never reassigned, so the branches need no lock and `-race` has nothing to find. **Correction**: an earlier draft of this sentence said "three branches"; the implementation has two — `closeSink` and `read` — plus `Ring()`, a bare accessor with no branch of its own, and `generation`'s stderr guard, which branches on `p.bsf`, not on `p.ring`.
 
 **Decided against a `sink` interface** (`write([]byte) error; final(); Close()`, unexported so nothing outside the package can implement it). It is the tidier shape and it does not fit, for a reason that only appears on the retry path: `reader` builds a **fresh** `scanner` per generation, deliberately, because the no-bitstream-filter restart must re-scan generation 2's leading bytes as an init segment (`SetInit` then keeps the first, 2c-6's R10). A single long-lived sink object on `Pipeline` cannot express that, so the interface would need a **factory** field plus a separate close field — two function-typed fields where the branch is one boolean test, and a reader of `generation` would have to follow both to learn what the process's output does.
 
@@ -768,9 +768,9 @@ Then **eight consecutive runs** (Working rules):
 for i in 1 2 3 4 5 6 7 8; do go test -race -count=1 ./output/ | tail -1; done
 ```
 
-- [ ] **Step 5: Break-check rows 3, 4, 5, 6, 7, 8**
+- [ ] **Step 5: Break-check rows 8 and 11**
 
-Run § Break-check's rows 3 through 8 and record each message. Row 8 is the one whose first form did not redden usefully; re-read it before running.
+**Plan correction, found running this task rather than read in advance**: an earlier draft of this step said "rows 3 through 8", but rows 3, 4, 5, 6 and 7 all name tests in `relay/httpapi/profile_test.go` (Appendix P), which Task 7 creates — they cannot run here and are Task 7 Step 5's, not this task's. Row 11 names `TestAProfileWithNoCommandIsRefusedRatherThanDefaultedToTheRemux`, which IS in this task's own `relay/output/profile_test.go` (Appendix I, test 3) and belongs here, not in Task 7's list where an earlier draft of that step placed it. Run § Break-check's rows 8 and 11 and record each message. Row 8 is the one whose first form did not redden usefully; re-read it before running.
 
 - [ ] **Step 6: Run the four checks and commit**
 
@@ -827,7 +827,7 @@ Three new types above `AttachOutput`, and one branch inside it.
 cd <your worktree>/relay && go build ./... && go vet ./... && go test -race ./... && golangci-lint run ./... && gofmt -l .
 ```
 
-Expected: green. `relay/channel`'s own suite (~75s) must be unaffected: nothing this task adds is reached by any existing test.
+**Plan correction, found running this task**: an earlier draft said "Expected: green" for this whole-module invocation, but it cannot be, and is not a formality to work around -- `httpapi/fmp4.go` and `stream.go` still call `AttachOutput` with the pre-2c-7 `(format string, remux output.Remux)` signature until Task 6's Appendix N and O land, so `go build ./...` fails in exactly one package. Run the four checks scoped to what this task actually changes instead: `go build ./channel/... ./output/... ./control/... ./buffer/... ./ffmpeg/... ./internal/...` (every package except `httpapi`), `go vet` over the same set, `go test -race ./channel/...` (~75s, unaffected -- nothing this task adds is reached by any existing test), `golangci-lint run` over the same set, and `gofmt -l .` over the whole tree (formatting has no compile dependency). Expected: green on all of those. The WHOLE-MODULE build, vet, test and lint first go green at Task 6 Step 4, once `httpapi` compiles again -- **a bisect on `go build ./...` red therefore lands on this task's commit, not on a defect in it**: the failure is `httpapi`'s pre-existing call sites not yet updated, resolved by the very next commit, and never left in a state the commit gate would have accepted on its own (Task 6's edits were written and verified before either commit was made, so the working tree the gate saw was always the union of both).
 
 - [ ] **Step 4: Commit**
 
@@ -951,9 +951,9 @@ Then **eight consecutive runs of the Output Profile subset**:
 for i in 1 2 3 4 5 6 7 8; do go test -race -count=1 -run 'Profile|Transcode|Chained|Output' ./httpapi/ | tail -1; done
 ```
 
-- [ ] **Step 5: Break-check rows 2, 9, 10, 11, 12, 13, 16, 17, 18**
+- [ ] **Step 5: Break-check rows 2, 3, 4, 5, 6, 7, 9, 10, 12, 13, 16, 17, 18**
 
-Run § Break-check's rows 2 and 9 through 13 and record each message. **Row 2's registry half is Global Constraint 35's demonstration**: with `AttachOutput`'s reuse branch disabled, comment out the spawn assertion and confirm the registry and PID assertions stay **green**. Restore the assertion afterwards.
+**Plan correction, carried over from Task 4 Step 5**: an earlier draft of this step said "rows 2, 9, 10, 11, 12, 13, 16, 17, 18", but row 11 names a test in `relay/output/profile_test.go` (Appendix I), which Task 4 creates — it is Task 4 Step 5's row, not this task's, and this task's list gains rows 3, 4, 5, 6 and 7 in its place, since their tests (`TestTwoClientsOnOneOutputProfileShareOneTranscode` and its siblings) are this task's own `relay/httpapi/profile_test.go` (Appendix P). Rows 16, 17 and 18 were re-checked against this correction and confirmed correctly placed here: `TestTheDeactivatedProfileCorrectionDoesNotRaceTheListEndpoint` (row 16) and `TestAFailoverRefreshesTheProfileSetAndADegradedOneDoesNot` (rows 17 and 18, both arms — Appendix P's own list, item 12) are both in this task's `relay/httpapi/profile_test.go`; there is no channel-package location for either. Run § Break-check's rows 2, 3, 4, 5, 6, 7, 9, 10, 12, 13, 16, 17 and 18 and record each message. **Row 2's registry half is Global Constraint 35's demonstration**: with `AttachOutput`'s reuse branch disabled, comment out the spawn assertion and confirm the registry and PID assertions stay **green**. Restore the assertion afterwards.
 
 - [ ] **Step 6: Run the four checks and commit**
 
@@ -1060,7 +1060,7 @@ scripts/check_go_stdlib_only.sh relay            # expect: OK: relay depends on 
 ls relay/go.sum                                   # expect: No such file or directory
 grep -rn "StateActive" relay/channel/ --include=*.go | grep -v _test.go   # expect the SAME two writers Task 0 recorded
 grep -rn "AttachOutput" relay/ --include=*.go | grep -v _test.go          # expect 3: the definition and two call sites
-grep -rn "ffmpeg.StartPiped\|ffmpeg.Start(" relay/ --include=*.go | grep -v _test.go  # expect 4: two in spawn.go, one in output/fmp4.go, one in output/profile.go
+grep -rn "ffmpeg.StartPiped\|ffmpeg.Start(" relay/ --include=*.go | grep -v _test.go  # expect 4: one in output/profile.go, two in output/fmp4.go (initial spawn and the bitstream-filter retry), one in channel/source_transcode.go -- an earlier draft's breakdown ("two in spawn.go, one in output/fmp4.go, one in output/profile.go") named the wrong two files for the total's other half; the total of 4 was already correct
 ```
 
 **Name the accepted gap here rather than leaving it implied:** Task 5 added no test of its own, so `channel.OutputProfiles`, `SetClientOutputProfile`, `OutputSpec` and the failover refresh are covered only end-to-end through `httpapi` — which for each of them is a real pin with a break-check, not an absence. What remains genuinely unpinned is narrower and is stated in Ruling R5: the **staleness window** between two `next-source` answers, which has no Python counterpart to compare against.
@@ -1085,7 +1085,7 @@ Eighteen. Every row was run in the scratch module described in § Sequencing, an
 | 2 | `channel/output.go`: **`	if entry, running := c.outputs[format]; running {\n		entry.refs++`** → `; running && false {` — the bare `if entry, running := c.outputs[format]; running` occurs **twice** (`AttachOutput` and `releaseOutput`), so the anchor must carry the following line (Constraints 36 and 45) | `TestTwoClientsOnOneOutputProfileShareOneTranscode` | RED — `the relay spawned 2 transcodes for two clients on one Output Profile, want 1`. **And the registry and PID assertions stayed GREEN**, which is Global Constraint 35's demonstration: with the spawn assertion commented out the whole test passed while a process leaked per client |
 | 3 | `output/profile.go`: `FormatKey`'s body → **`_ = strconv.Itoa; return format`** — a bare `return format` leaves `strconv` unused and the package fails to BUILD, which is not the mechanism under test (Constraint 44's sibling: a break-check must redden on its own claim, not on a compile error) | `TestTwoClientsOnOneOutputProfileShareOneTranscode`, `…Chained` | RED — `the channel's output registry holds [mpegts], want exactly one mpegts:p3` and `holds [mpegts fmp4], want exactly mpegts:p3 and fmp4:p3` |
 | 4 | `httpapi/stream.go`: `serveClient(…, source, …)` → `serveClient(…, ch.Ring(), …)` | `TestTwoClientsOnOneOutputProfileShareOneTranscode`, `…ShareOneUpstream` | RED — `the first client's packets carry PIDs map[256:174], want only the transcode's 0x1ff`. **This is the row `--ts-pid` exists for**: with a pass-through stand-in both rings hold the same bytes and this patch is invisible |
-| 5 | `httpapi/profile.go`: the not-found branch → `writeProfileFailure(w); return nil, nil, false` | `TestAProfileMissingFromTheAnswerIsServedWithoutOne` | RED — `a tune naming a deactivated profile answered 500, want 200` |
+| 5 | `httpapi/profile.go`: the not-found branch → `writeProfileFailure(w); return nil, nil, false` — **this text is character-identical to the existing spawn-failure branch at `:114-115`, so Constraint 45's string-based revert cannot target it: a string search for `writeProfileFailure(w)\n\t\treturn nil, nil, false` now matches twice. Revert by restoring the file from a pristine copy (or `git checkout` the one file), not by string** | `TestAProfileMissingFromTheAnswerIsServedWithoutOne` | RED — `a tune naming a deactivated profile answered 500, want 200` |
 | 6 | `httpapi/profile.go`: `if !profiles.Known {` → `if false {` | `TestATuneNamingAProfileAgainstAnOlderControlPlaneIsABadGateway` | RED — `a tune naming a profile against a control plane with no output_profiles answered 200, want 502` |
 | 7 | `channel/output.go`: `if entry.refs <= 0 {` → `if false {` | `TestTheLastProfileClientLeavingStopsTheTranscodeAndNotTheChannel` | RED — `the channel still runs [mpegts:p3] fifteen seconds after its last profile client left`. **First run used a wrong-indentation anchor, the patch did nothing, and the test ran green** — Constraint 36's scar |
 | 8 | `output/profile.go`: `bsf: false` → `bsf: true` | `TestAProfileStderrIsNotWatchedForTheBitstreamFilterError` | RED — `the relay spawned 2 transcodes for one Output Profile whose stderr named the bitstream filter, want 1`. **Its first form did not say that.** With `cfg.Remux` left empty the retry spawned a REAL ffmpeg remux (`Config.command()` falls back to `RemuxCommand`), the spawn log stayed at 1 because the second process was not the stand-in, and the test reported `the transcode was still running fifteen seconds after its process exited` after a 15s wait. Two fixes, both kept: `StartProfile` now fills `cfg.Remux` from the profile's own command line (Ruling R3), and the test asserts the **count** before the liveness. The row now reddens in 0.02s |

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -14,7 +15,6 @@ import (
 	"github.com/D10Scot/Dispatcharr/relay/buffer"
 	"github.com/D10Scot/Dispatcharr/relay/control"
 	"github.com/D10Scot/Dispatcharr/relay/internal/relaytest"
-	"github.com/D10Scot/Dispatcharr/relay/output"
 )
 
 // rigAssetPackets is how many packets the fan-out tests' upstream loops.
@@ -431,10 +431,10 @@ func TestAnUntrustedRequestIsNotBelievedForAnyRelayHeader(t *testing.T) {
 // control plane is asked.
 func TestAnOutputThisRelayDoesNotServeIsRefused(t *testing.T) {
 	for _, tc := range []struct {
-		name    string
-		header  string
-		value   string
-		andFMP4 bool
+		name   string
+		header string
+		value  string
+		status int
 	}{
 		// 2c-6 SERVES fmp4, so this row moved to a format NEITHER relay has.
 		// `hls` is the honest choice: apps/proxy/hls_proxy/ exists, is 1,206
@@ -444,24 +444,31 @@ func TestAnOutputThisRelayDoesNotServeIsRefused(t *testing.T) {
 		// what both implementations do. Before 2c-6 this row said "fmp4"; a
 		// row that still did would now be asserting the opposite of what this
 		// PR ships.
-		{"an output format it does not serve", "X-Relay-Output-Format", "hls", false},
-		{"an Output Profile", "X-Relay-Output", "7", false},
-		// 2c-6 SERVES fmp4 and 2c-7 will serve Output Profiles; a tune asking
-		// for BOTH is still refused, and nothing else here covers the pair --
-		// the rows above vary one header each, so an identify that served a
-		// recognised format and never looked at the profile would satisfy
-		// both of them.
+		{"an output format it does not serve", "X-Relay-Output-Format", "hls", http.StatusNotImplemented},
+		// 2c-7 SERVES Output Profiles, so 2c-6's two profile rows are GONE and
+		// neither is replaced by a 501: the bare-profile row is now
+		// TestTwoClientsOnOneOutputProfileShareOneTranscode's subject, and the
+		// fMP4-plus-profile row 2c-6's fix round added is
+		// TestAnFMP4ClientOnAnOutputProfileRunsTheTranscodeAndTheRemuxChained's.
 		//
-		// NOT ABOUT THE ORDER OF THE TWO CHECKS, and this was measured rather
-		// than assumed: swapping them so the format is tested first leaves all
-		// three subtests passing, because the profile arm refuses
-		// unconditionally wherever it sits. What this row actually guards is
-		// an identify that RETURNED EARLY on a format it serves -- a plausible
-		// tidy-up once there are two served formats -- which would accept this
-		// tune and stream plain fMP4 while silently dropping the Output
-		// Profile the operator configured. Python runs the `fmp4:p7` pipeline
-		// for it instead (server.py's _parse_output_key).
-		{"an Output Profile on an fMP4 tune", "X-Relay-Output", "7", true},
+		// THE CONCERN THAT ROW GUARDED IS NOT DROPPED WITH IT. Its comment
+		// named an identify that RETURNED EARLY on a format it serves and so
+		// silently dropped the Output Profile -- which under 2c-7 is no longer
+		// a 501 question at all, because the profile is resolved after the
+		// channel is up rather than refused in identify. The chained test is
+		// the stronger form of the same guard: it asserts the transcode really
+		// spawned, that both `mpegts:p3` and `fmp4:p3` are registered, and that
+		// the remux's own fd 0 carried the TRANSCODE's packets. A relay that
+		// dropped the profile and streamed plain fMP4 passes a status check and
+		// fails all three.
+		//
+		// What is still refused is a value that is not a positive integer,
+		// which apps/proxy/authorize_views.py:154-162 denies 403 one hop
+		// earlier, so it reaches a relay only when the internal contract is
+		// broken. 400, not 501: the relay serves this output, it just cannot
+		// read the header.
+		{"a malformed Output Profile id", "X-Relay-Output", "seven", http.StatusBadRequest},
+		{"a zero Output Profile id", "X-Relay-Output", "0", http.StatusBadRequest},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r := fanRig(t, relaytest.Config{Rate: 4}, nil)
@@ -469,15 +476,17 @@ func TestAnOutputThisRelayDoesNotServeIsRefused(t *testing.T) {
 			header.Set(control.HeaderAuthorized, control.RelayTrustToken(testSecret))
 			header.Set("X-Relay-Channel", "c-output")
 			header.Set(tc.header, tc.value)
-			if tc.andFMP4 {
-				header.Set("X-Relay-Output-Format", output.FormatFMP4)
-			}
 
 			response := r.tune(t, "/proxy/ts/stream/c-output", header)
 			defer func() { _ = response.Body.Close() }()
-			if response.StatusCode != http.StatusNotImplemented {
-				t.Fatalf("a tune asking for %s=%s answered %d, want 501",
-					tc.header, tc.value, response.StatusCode)
+			if response.StatusCode != tc.status {
+				t.Fatalf("a tune asking for %s=%s answered %d, want %d",
+					tc.header, tc.value, response.StatusCode, tc.status)
+			}
+			// And the refused value is never echoed into the body.
+			body, _ := io.ReadAll(response.Body)
+			if strings.Contains(string(body), tc.value) {
+				t.Fatalf("the refusal body repeats the rejected value %q: %q", tc.value, body)
 			}
 			if got := len(r.Control.Requests()); got != 0 {
 				t.Fatalf("the relay made %d control-plane calls for a tune it cannot serve, "+

@@ -93,6 +93,11 @@ type Started struct {
 	Tuning   Tuning
 	Info     SourceInfo
 	Resolver Resolver
+
+	// OutputProfiles is the active OutputProfile set the tune's next-source
+	// answer carried (2c-7), cached on the channel and refreshed by every
+	// later answer a failover receives.
+	OutputProfiles OutputProfiles
 }
 
 // Attach returns the channel for id, starting it from start() if it is not
@@ -253,6 +258,7 @@ func (m *Manager) publish(id string, client *Client, started Started) *Channel {
 		channelName:    started.Info.ChannelName,
 		budgetBytes:    m.cfg.BudgetBytes,
 		outputRegistry: outputRegistry{outputs: map[string]*outputEntry{}},
+		outputProfiles: started.OutputProfiles,
 		startedAt:      now(),
 		now:            now,
 		resolver:       started.Resolver,

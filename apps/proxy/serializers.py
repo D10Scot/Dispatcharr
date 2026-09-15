@@ -227,7 +227,20 @@ class OutputProfileRefSerializer(serializers.Serializer):
     """
 
     id = serializers.IntegerField()
-    argv = serializers.ListField(child=serializers.CharField(allow_blank=True))
+    # allow_null, Phase 2 PR 2c-7: null means Django could NOT build the
+    # list -- shlex refused the profile's `parameters` (an unbalanced
+    # quote), which OutputProfileSerializer validates nothing against, so
+    # such a row can already be sitting in the database. Sending the entry
+    # with a null argv rather than omitting it is what lets a relay tell
+    # "this profile is broken" (Python answers 500 to the client that
+    # selected it) from "this profile is not active" (Python serves that
+    # client with no profile at all). Omitted, the two are the same
+    # absence on the wire and the second answer would be given to both.
+    # The same three-state shape StreamProfileRefSerializer's argv already
+    # has, for the same reason (Amendment A4.1).
+    argv = serializers.ListField(
+        child=serializers.CharField(allow_blank=True), allow_null=True
+    )
 
 
 class NextSourceResponseSerializer(serializers.Serializer):

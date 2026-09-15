@@ -19,6 +19,13 @@
 // Config.Command/Config.Argv and Channel.AttachOutput's format key are those
 // three seams; what 2c-7 adds is a second Pipeline constructor and a second
 // sink type, not a change to the lifecycle, the refcount or the spawn.
+//
+// 2c-7 DID EXACTLY THAT, and this file's name is now narrower than its
+// contents: Pipeline, its supervisor, its writer and its stop are shared by
+// both processes and live here, while profile.go holds only what the Output
+// Profile adds. The file is NOT split, deliberately -- a move shows in a diff
+// as a whole delete and a whole add, and every line of 2c-6's reviewed prose
+// would re-enter review to buy a better file name (the 2c-7 plan's Ruling R1).
 package output
 
 import (
@@ -104,6 +111,9 @@ const (
 	MaxInitSegmentBytes = 10 * 1024 * 1024
 
 	// readSize is manager.py:294's 65536: the read off the remux's fd 1.
+	// output/profile/manager.py:231 is the same literal for the Output
+	// Profile transcode, so both processes read in the same unit and one
+	// constant carries both citations (2c-7).
 	readSize = 65536
 
 	// stopJoinWait is manager.py:168's `t.join(timeout=5)`: how long a stop
@@ -337,8 +347,46 @@ type Pipeline struct {
 	log   *slog.Logger
 	frags *buffer.Fragments
 
+	// ring is the SECOND SINK, 2c-7's: an Output Profile transcode writes
+	// MPEG-TS into a buffer.Ring where the remux writes MP4 boxes into
+	// frags. Exactly one of the two is non-nil for the life of a pipeline,
+	// set by the constructor and never changed, so the three branches that
+	// read it need no lock.
+	ring *buffer.Ring
+
+	// bsf is whether this pipeline's stderr is watched for the
+	// aac_adtstoasc refusal and restarted without the filter. TRUE ONLY FOR
+	// THE REMUX: an Output Profile's argv is the operator's, and Python's
+	// OutputProfileManager never scans its stderr for anything
+	// (output/profile/manager.py:270-295), so a profile that happened to
+	// carry `-bsf:a aac_adtstoasc` must not be restarted here when Python
+	// would leave it dead.
+	bsf bool
+
 	cancel context.CancelFunc
 	done   chan struct{}
+}
+
+// closeSink shuts whichever buffer this pipeline writes, which is what wakes a
+// client waiting on it and ends every read loop.
+func (p *Pipeline) closeSink() {
+	if p.ring != nil {
+		p.ring.Close()
+		return
+	}
+	p.frags.Close()
+}
+
+// read is one generation's fd 1 into this pipeline's sink.
+//
+// Only the fMP4 reader can fail -- ErrNoInitSegment, the 10 MB abort -- so the
+// transcode arm reports nothing and this returns nil for it.
+func (p *Pipeline) read(proc *ffmpeg.Process) error {
+	if p.ring != nil {
+		p.profileReader(proc)
+		return nil
+	}
+	return p.reader(proc)
 }
 
 // Start spawns the remux and returns once its process is running. The pipeline
@@ -377,6 +425,7 @@ func Start(ctx context.Context, cfg Config) (*Pipeline, error) {
 			Retention:   cfg.Retention,
 			Now:         cfg.Now,
 		}),
+		bsf:    true,
 		cancel: cancel,
 		done:   make(chan struct{}),
 	}
@@ -384,8 +433,13 @@ func Start(ctx context.Context, cfg Config) (*Pipeline, error) {
 	return p, nil
 }
 
-// Fragments is the buffer clients read.
+// Fragments is the buffer an fMP4 client reads. Nil for an Output Profile
+// transcode, whose sink is Ring.
 func (p *Pipeline) Fragments() *buffer.Fragments { return p.frags }
+
+// Ring is the buffer an Output Profile transcode writes and its clients read.
+// Nil for the fMP4 remux, whose sink is Fragments.
+func (p *Pipeline) Ring() *buffer.Ring { return p.ring }
 
 // Done is closed once the pipeline's process has ended and its buffer is shut.
 func (p *Pipeline) Done() <-chan struct{} { return p.done }
@@ -428,7 +482,7 @@ func (p *Pipeline) run(ctx context.Context, proc *ffmpeg.Process) {
 	// The buffer closes with the pipeline, which is what wakes a client
 	// waiting for an init segment that will now never arrive and what ends a
 	// client's read loop.
-	defer p.frags.Close()
+	defer p.closeSink()
 
 	for generation := 0; ; generation++ {
 		bsf, err := p.generation(ctx, proc)
@@ -478,7 +532,7 @@ func (p *Pipeline) generation(parent context.Context, proc *ffmpeg.Process) (bsf
 			// (manager.py:372), the same divergence 2c-4's Ruling R8 records
 			// for the input side.
 			p.log.Warn("remux stderr", "line", redact.Line(line))
-			if strings.Contains(line, bsfErrorFilter) && strings.Contains(line, bsfErrorPhrase) {
+			if p.bsf && strings.Contains(line, bsfErrorFilter) && strings.Contains(line, bsfErrorPhrase) {
 				wantRetry = true
 				// manager.py:374-378 starts a thread that kills the process
 				// (:387-389). Kill is that SIGKILL to the whole group; cancel
@@ -499,7 +553,7 @@ func (p *Pipeline) generation(parent context.Context, proc *ffmpeg.Process) (bsf
 	var readErr error
 	go func() {
 		defer close(readerDone)
-		readErr = p.reader(proc)
+		readErr = p.read(proc)
 	}()
 
 	select {

@@ -871,13 +871,25 @@ def _with_output_profiles(answer):
             # next-source answer means one bad row would otherwise 500
             # next-source for every channel, on every tune, failover and
             # resume, regardless of which profile that channel uses.
-            # Skip it and keep the rest of the map serving.
+            #
+            # Phase 2 PR 2c-7 changed the shape of that rescue and not
+            # its purpose: the entry is sent with a NULL argv instead of
+            # being omitted. Omitting it made a broken profile
+            # indistinguishable on the wire from a DEACTIVATED one, and
+            # those get opposite answers -- Python 500s the client that
+            # selected a broken profile (build_command raises inside
+            # stream_ts's try) and serves the client whose profile was
+            # deactivated with no profile at all (views.py:150-155
+            # re-reads the row with is_active=True and gets None). A Go
+            # relay reading this map could only reproduce one of the two.
+            # next-source itself still answers, which is what this arm
+            # exists for.
+            argv = None
             logger.error(
-                "OutputProfile %s has unparseable parameters; omitting "
-                "it from next-source's output_profiles map",
+                "OutputProfile %s has unparseable parameters; its entry "
+                "in next-source's output_profiles map carries a null argv",
                 profile.id,
             )
-            continue
         output_profiles[str(profile.id)] = {"id": profile.id, "argv": argv}
     answer["output_profiles"] = output_profiles
     return answer
