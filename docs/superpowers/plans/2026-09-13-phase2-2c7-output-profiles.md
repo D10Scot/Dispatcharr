@@ -78,6 +78,8 @@ Every number below was produced on the merged tree with this plan's appendices a
 | `go test -race -count=1 ./...` | green **×3** |
 | `go test -race ./channel ./output ./httpapi` | green **×8** (`channel` 74.8–75.9s, `output` 2.7–3.2s, `httpapi` 70.0–71.4s) |
 | `go test ./ffmpeg ./channel ./output` **without** `-race` | green **×3** (`channel` 57.7–58.3s) |
+| Appendices R, S and T re-applied as diffs | all three clean under `git apply --check` |
+| `npx playwright test --project=guards parity-matrix` | **7 passed** with `relay/httpapi/profile_test.go` present; without it, one failure naming that file, which is correct on a plan-only branch |
 | the two tests the review round added | `TestTheDeactivatedProfileCorrectionDoesNotRaceTheListEndpoint` 0.13s, `TestAFailoverRefreshesTheProfileSetAndADegradedOneDoesNot` 1.99s |
 | suppressions in the module | **18** — sixteen on the merged 2c-6 tree, two this PR's |
 | `TestARealAC3ProfileTranscodesTheChannelsRing` | PASS on the host at **ffmpeg 9.0.1** (0.15s) **and in the base image at 8.1.2** (0.12s) |
@@ -982,23 +984,27 @@ git -C <your worktree> commit -F <message file>
 
 - [ ] **Step 1: Add row 11's Go pin**
 
-Appendix R. **One line changes and only its `Pin` cell grows** (Amendment A2.2: a Go pin is a reference appended to the existing cell, not a new column). Read the HTML comment at the top of that file before touching it: one row is one line, cells are never padded, and no Markdown formatter may be run over it.
+Appendix R, which is a **diff** — apply it, do not hand-edit. One line changes and only its `Pin` and `Notes` cells grow (Amendment A2.2: a Go pin is a reference appended to the existing cell, not a new column). Read the HTML comment at the top of that file anyway: one row is one line, cells are never padded, and no Markdown formatter may be run over it.
+
+**The reviewer of this plan mis-applied the prose version** and put the reference after the row's closing pipe, making a six-cell row the guard rejects. That is why it is a diff now.
 
 - [ ] **Step 2: Run the matrix guard**
 
 ```bash
-cd <your worktree>/e2e && npx playwright test --project=guards parity-matrix
+cd <your worktree>/e2e && npm ci && npx playwright test --project=guards parity-matrix
 ```
 
-Expected: PASS. It needs no container.
+Expected: **7 passed**, and it needs no container. **`npm ci` first** — a fresh worktree has no `e2e/node_modules` and `npx playwright` without it reports nothing useful.
+
+**Run this AFTER Task 7**, not before: the guard's `every pin resolves` test opens every file a Pin cell names, and `relay/httpapi/profile_test.go` does not exist until Task 7 creates it. Run it early and you get one failure reading `pin names no such file: relay/httpapi/profile_test.go`, which is correct and tells you only that you are out of order.
 
 - [ ] **Step 3: Append Amendment A7 after A6, and one Done-log line**
 
-Appendix S. Seven items: the chain and its two keys (R9); the three wire states and the Django change (R4); the profile set is cached per channel and refreshed on failover, with its stated divergence (R5); `ProfileConfig` rather than `Remux`, and why (R3); the owner lock and TTL refresh deleted (R2); `transcode_active` is dead (R8); and the measurement 2c-8 needs — an Output Profile transcode has **no `delay_moov` threshold**, so A6.6's eight-second floor does not apply to it.
+Appendix S, also a **diff**: A7 lands after A6.6 and before `## Stage 2d`, and the Done-log row after the last existing `| 2c-6 ` row. Seven items: the chain and its two keys (R9); the three wire states and the Django change (R4); the profile set is cached per channel and refreshed on failover, with its stated divergence (R5); `ProfileConfig` rather than `Remux`, and why (R3); the owner lock and TTL refresh deleted (R2); `transcode_active` is dead (R8); and the measurement 2c-8 needs — an Output Profile transcode has **no `delay_moov` threshold**, so A6.6's eight-second floor does not apply to it.
 
 - [ ] **Step 4: Update `CLAUDE.md`**
 
-Appendix T. One sentence in § Video path.
+Appendix T, a **diff**. One sentence in § Video path, **appended to the existing parenthetical rather than replacing the paragraph** — that paragraph already gained a 2c-6 sentence about fMP4, and a replacement written against the older text would silently drop it.
 
 - [ ] **Step 5: Commit**
 
@@ -1075,7 +1081,7 @@ Eighteen. Every row was run in the scratch module described in § Sequencing, an
 
 | # | Patch | Test | Verified message |
 |---|---|---|---|
-| 1 | `apps/proxy/next_source.py`: `argv = None` + fall-through → `continue` | `OutputProfilesOnTheContractTests::test_a_malformed_active_profile_carries_a_null_argv_not_a_500` | RED — `AssertionError: '36' not found in {'35': {...}} : a profile whose parameters shlex could not split is absent from output_profiles; it must be present with a null argv, or a relay cannot tell it from a DEACTIVATED profile and will serve the client plain where Python answers 500` |
+| 1 | `apps/proxy/next_source.py`: the **two-line** anchor `	argv = None\n	logger.error(` at twelve spaces' indent → `	logger.error(` plus a `continue` after the call. **A bare `argv = None` is NOT unique after this PR's own edit** — it occurs at `:148` too, in `_stream_profile_ref`'s pre-existing `stream_profile.argv` rescue, at eight spaces — so the patch would land in the wrong function (Constraints 36 and 45). Measured on the edited tree: the twelve-space two-line form occurs exactly once | `OutputProfilesOnTheContractTests::test_a_malformed_active_profile_carries_a_null_argv_not_a_500` | RED — `AssertionError: '36' not found in {'35': {...}} : a profile whose parameters shlex could not split is absent from output_profiles; it must be present with a null argv, or a relay cannot tell it from a DEACTIVATED profile and will serve the client plain where Python answers 500` |
 | 2 | `channel/output.go`: **`	if entry, running := c.outputs[format]; running {\n		entry.refs++`** → `; running && false {` — the bare `if entry, running := c.outputs[format]; running` occurs **twice** (`AttachOutput` and `releaseOutput`), so the anchor must carry the following line (Constraints 36 and 45) | `TestTwoClientsOnOneOutputProfileShareOneTranscode` | RED — `the relay spawned 2 transcodes for two clients on one Output Profile, want 1`. **And the registry and PID assertions stayed GREEN**, which is Global Constraint 35's demonstration: with the spawn assertion commented out the whole test passed while a process leaked per client |
 | 3 | `output/profile.go`: `FormatKey`'s body → **`_ = strconv.Itoa; return format`** — a bare `return format` leaves `strconv` unused and the package fails to BUILD, which is not the mechanism under test (Constraint 44's sibling: a break-check must redden on its own claim, not on a compile error) | `TestTwoClientsOnOneOutputProfileShareOneTranscode`, `…Chained` | RED — `the channel's output registry holds [mpegts], want exactly one mpegts:p3` and `holds [mpegts fmp4], want exactly mpegts:p3 and fmp4:p3` |
 | 4 | `httpapi/stream.go`: `serveClient(…, source, …)` → `serveClient(…, ch.Ring(), …)` | `TestTwoClientsOnOneOutputProfileShareOneTranscode`, `…ShareOneUpstream` | RED — `the first client's packets carry PIDs map[256:174], want only the transcode's 0x1ff`. **This is the row `--ts-pid` exists for**: with a pass-through stand-in both rings hold the same bytes and this patch is invisible |
@@ -4295,138 +4301,168 @@ Both of the merged tree's profile-bearing rows go — the bare one and the `andF
  
 ```
 
-### Appendix R — `docs/relay-parity-matrix.md`, row 11's Pin cell
+### Appendix R — `docs/relay-parity-matrix.md`, row 11's Go pin
 
-**One line changes, and only its `Pin` cell grows.** Amendment A2.2: a Go pin is a reference appended to the existing cell, not a new column. Read the HTML comment at the top of that file first — one row is one line, cells are never padded, and no Markdown formatter may be run over it.
+**A DIFF, not an instruction, and that is a correction.** An earlier draft said "append one reference, comma-separated, inside the same cell", and the reviewer applying it put the reference after the row's closing pipe — a six-cell row the matrix guard rejects. Every other appendix in this plan applies mechanically; this one now does too.
 
-The Pin cell today ends:
+Read the HTML comment at the top of that file before touching it regardless: one row is one line, cells are never padded, and no Markdown formatter may be run over it.
 
-```
-`apps/proxy/live_proxy/tests/test_output_profile_sharing.py::OutputProfileSharingTests::test_two_clients_on_one_output_profile_share_a_single_transcode`
-```
+**Verified**: applied to `docs/relay-parity-matrix.md` at `eb7fac07`, the row stays **five cells** with no padding, and `cd e2e && npx playwright test --project=guards parity-matrix` passes **7/7** with `relay/httpapi/profile_test.go` present. Without that file the guard fails one test, `every pin resolves`, naming exactly `relay/httpapi/profile_test.go` — which is correct and expected on a branch that carries the plan and not the implementation.
 
-Append one reference, comma-separated, inside the same cell:
+**`docs/relay-parity-matrix.md`**
 
-```
-, `relay/httpapi/profile_test.go::TestTwoClientsOnOneOutputProfileShareOneTranscode`
-```
-
-And append to the Notes cell, in the same line:
-
-```
- Go column added in Phase 2 stage 2c-7, counting SPAWNS as the two Python pins do: with `Channel.AttachOutput`'s reuse branch disabled the registry assertion and both PID assertions stay green and only the count reddens. The Go relay reaches the same claim with one process and no owner lock — spec D2 deletes `output_owner`/`output_state`, so "across the cluster" becomes "in the one relay process" and the sharing is the registry's refcount.
-```
-
-### Appendix S — Amendment A7, verbatim, after A6 in the spec
-
-```markdown
-#### Amendment A7 (2c-7) — seven findings and rulings from the Output Profile
-
-**A7.1 — fMP4 and an Output Profile COMPOSE, as a chain of two processes,
-and the registry key is Python's own compound string.** `views.py` runs
-`ensure_output_profile` first (`:765-767`), resolves `get_buffer(channel_id,
-profile=id)` second (`:773-776`), and hands that buffer to
-`ensure_output_format` as `source_buffer` under the key `f'fmp4:p{id}'`
-(`:731-734`, `:790-792`). The transcode's own namespace is the literal
-`f"mpegts:p{self.profile_id}"` at six sites in `output/profile/manager.py`
-— **always `mpegts`, whatever the client asked for**, because an Output
-Profile's output *is* MPEG-TS (`core/models.py:173-174`). So an fMP4 client
-on a profile runs two processes under two keys that cannot collide, and the
-second reads the first. One registry, keyed by the compound string
-`_parse_output_key` splits; the composition lives in `httpapi` where
-`views.py` puts it.
-
-**A7.2 — the contract could not tell a BROKEN Output Profile from a
-DEACTIVATED one, and they get opposite answers. CLOSED in 2c-7.**
-`_with_output_profiles` skipped a profile whose `parameters` `shlex` could
-not split, so one bad row could not 500 next-source for every channel. But a
-profile deactivated between the authorize hop and the tune is also absent
-from the map, and Python serves that client with **no profile at all**
-(`views.py:150-155`, `:725-751`) where it **500s** the client that selects a
-broken one (`build_command()` raises inside `stream_ts`'s try, `:823-827`).
-A relay reading this map could reproduce one and not the other, and the one
-it would get wrong silently hands a device the original audio. Closed by
-sending the entry with `"argv": null` instead of omitting it —
-`OutputProfileRefSerializer.argv` gains `allow_null=True` — which is exactly
-`stream_profile.argv`'s three-state shape from Amendment A4.1: a list is the
-built command, null is "Django could not build it", the key absent is a
-control plane older than 2b-2. Three files, no migration, no new field.
-
-**A7.3 — the Output Profile argv carries the COMMAND as element 0 and
-`stream_profile.argv` does not.** `core/models.py:200-203`'s `build_command`
-is `[self.command] + shlex_split(self.parameters)` and
-`apps/proxy/serializers.py:230` sends the result whole, where
-`next_source.py`'s `_stream_profile_ref` sends `command` in its own field and
-the rest in `argv`. Reproduced rather than tidied; the split happens in
-exactly two places and both are pinned token for token.
-
-**A7.4 — the profile set is cached PER CHANNEL and refreshed by every
-next-source answer, never per client.** Python re-reads the row per client
-(`views.py:150-155`); the relay cannot, because next-source runs once per
-channel and the second client makes no control-plane call at all
-(`views.py:712`) — Amendment A1/2b-2's Ruling R3 rejected a per-client route.
-The set arrives on every answer, so the channel replaces its copy on every
-non-degraded failover; a degraded resolution came from the cached candidate
-list and carries no answer, so it leaves the copy alone. **Residual
-divergence, stated and untested**: an operator editing a profile's
-`parameters` mid-channel reaches new clients on that channel only after its
-next next-source call, where Python reaches them on the next tune. Untested
-deliberately — there is no Python behaviour here to pin, only the absence of
-one.
-
-**A7.5 — `output.Config`'s zero value is the fMP4 remux, which makes it the
-wrong type for an Output Profile.** `Config.command()` returns
-`RemuxCommand` for an empty `Command` and `Config.argv()` returns
-`RemuxArgv()` for a nil `Argv`. A profile reaching that with a blank command
-would silently become an ffmpeg remux, where Python fails the tune. So
-`StartProfile` takes its own `ProfileConfig` with no fallback and refuses an
-empty command before spawning. The same trap survives inside `Pipeline` —
-`run`'s bitstream-filter retry calls `cfg.command()`/`cfg.argvNoBSF()` — and
-is closed structurally by filling `cfg.Remux` from the profile's own command
-line even though the retry is unreachable for a profile. **Found by a
-break-check**: with those fields empty, forcing the retry spawned a real
-ffmpeg remux and the spawn-log assertion could not see it.
-
-**A7.6 — the owner lock, the state key and the TTL refresh are deleted with
-the lease.** `output/profile/manager.py:312-358`'s `_acquire_owner_lock`,
-`_set_state` and `_refresh_redis_ttls`, and `ensure_output_profile`'s
-five-arm staleness question including its 5-second `live:events:` round trip
-(`server.py:1406-1538`), exist so a second uWSGI worker can discover another
-worker's process. With one relay process the registry map is that discovery,
-and nothing can be orphaned. `PROFILE_KEY_TTL` and
-`PROFILE_TTL_REFRESH_INTERVAL` go with them, as does `_cleanup_redis`'s
-chunk-key scan. What survives is the refcount, which stops the transcode at
-zero with **no** shutdown delay — Python's disconnect sweep runs at
-`server.py:1216-1219`, before the `if total == 0` branch at `:1221` that
-honours `channel_shutdown_delay`.
-
-**A7.7 — two inputs for later stages.** First, `transcode_active`
-(`apps/proxy/live_proxy/redis_keys.py:89-91`) has **one** reference in the
-non-test tree — a `delete` at `input/manager.py:1797` — and no writer and no
-reader. It is an input-side key about the channel's own ffmpeg, it appears on
-no payload, and it is dead in the Python relay already; 2d deletes it with
-the rest. Second, A6.6's eight-second `delay_moov` floor **does not apply to
-an Output Profile transcode**: its output is `-f mpegts`, not fragmented MP4,
-so it produces bytes as soon as it has input. Measured on ffmpeg 9.0.1: four
-chunks out of the same eight-second asset in 0.3 seconds.
+```diff
+diff --git a/docs/relay-parity-matrix.md b/docs/relay-parity-matrix.md
+index 4b82eb7e..79f10bbb 100644
+--- a/docs/relay-parity-matrix.md
++++ b/docs/relay-parity-matrix.md
+@@ -181,7 +181,7 @@ PR's first, which is the distance git needs to merge them cleanly.
+ | 18 | What the status payload's `stream_name` and `m3u_profile_name` contain when the channel metadata hash was never written one | `apps/proxy/live_proxy/channel_status.py:74`, `apps/proxy/live_proxy/channel_status.py:106` | `apps/proxy/live_proxy/tests/test_zero_orm_reads.py::StatusNameFallbackTests::test_the_key_is_absent_when_redis_has_no_name_and_no_row_exists`, `apps/proxy/live_proxy/tests/test_zero_orm_reads.py::StatusNameFallbackTests::test_the_orm_fills_the_name_when_redis_has_none_and_the_row_exists` | 2b-3's answer: **absence is the contract.** The key is absent from the payload entirely — not null, not `''`, not the id — because `channel_status.py` only assigns it inside a truthy branch and `RelayChannelDetailSerializer` declares both `required=False`. Python's ORM fallback is best-effort enrichment on top of that: it fills the key when the row still exists and leaves it absent when the row is gone. The Go relay has no database and always omits it, which is inside the contract rather than a divergence from it. 2c: omit the key; never substitute null, `''` or the numeric id. The reads are NOT deleted — every name write in the tree guards the name on a value `url_utils.py:31-42`'s `tune_extras` degrades to `None` for a control plane that predates 2b-1, and the relay and control plane are separately deployable, so both fallbacks are reachable under version skew (`views.py:553-566` records it). They are allowlisted in `zero_orm_allowlist.py` and deleted wholesale in 2d. One production path defeats the repair rather than needing it — a degraded failover writes the new id and leaves the old name standing, so the key is present and wrong ([#265](https://github.com/D10Scot/Dispatcharr/issues/265)); that is a distinct defect from this row, cited not fixed. Coverage reads the two fallbacks as asymmetric (`:72-78` missing in 13/13, `:103-110` covered in 13/13) but that is one fixture's shape — `test_live_db_cleanup.py:322-344` supplies a `stream_name` and not an `m3u_profile_name`, mocks the query, and asserts nothing about either fallback. The spec and this row previously cited `:92`; 2b-1 moved it to `:106` |
+ <!-- block: already pinned -->
+ | 10 | Multi-client upstream sharing: three clients on one channel share exactly one upstream connection, and closing every client releases it | `apps/proxy/live_proxy/server.py:629-648`, `apps/proxy/live_proxy/server.py:2017-2052` | `e2e/tests/streaming/shared-upstream.spec.ts::three clients share exactly one upstream connection`, `e2e/tests/streaming/shared-upstream.spec.ts::closing every client releases the upstream`, `apps/proxy/live_proxy/tests/test_relay_client_stream.py::ClientSetTests::test_the_client_set_from_three_sharing_clients_to_an_empty_channel`, `relay/httpapi/fanout_test.go::TestEveryClientGetsAnUnbrokenRunFromItsOwnJoinPoint`, `relay/channel/fanout_test.go::TestNClientsShareOneSourceAndTheChannelOutlivesAllButTheLast` | The row asserts two things, so it cites both tests in the same file: the first proves the sharing, the second proves the release. `initialize_channel` reuses the buffer/client manager when the channel is already active (`:629-648`); the cleanup loop's `last_client_disconnect`/`channel_shutdown_delay` timer stops it once every client has gone (`:2017-2052`). The harness test does not exercise either citation directly: it never closes its own clients (it stops the channel by operator command instead), so `:2017-2052`'s disconnect-driven teardown is not reached, and with `:637`'s reuse check patched out the test still passed, because `views.py:619-622` already short-circuits `initialize_channel` within one process. What it actually proves: three clients share one upstream request; an operator-issued stop ends every stream with the upstream's request count still 1, and no reconnect happens. Release-on-client-disconnect stays e2e-only, carried by the two `shared-upstream.spec.ts` references, which stand |
+-| 11 | One transcode process runs per active `(channel, profile)` pair across the cluster: a second client on the same Output Profile attaches to the existing process's buffer instead of spawning its own | `apps/proxy/live_proxy/output/profile/manager.py:67-122`, `apps/proxy/live_proxy/output/profile/manager.py:312-321` | `e2e/tests/streaming-greybox/output-profile-sharing.spec.ts::two clients on one output profile share a single transcode`, `apps/proxy/live_proxy/tests/test_output_profile_sharing.py::OutputProfileSharingTests::test_two_clients_on_one_output_profile_share_a_single_transcode` | Ten AC3 clients cost one ffmpeg. 2a-6 added the second pin, an in-process harness test that counts SPAWNS of the profile's own command rather than surviving processes: the channel runs the locked Proxy stream profile, which spawns nothing, so every line in the spawn log is an Output Profile transcode. Both stand — the e2e spec proves the same claim through nginx in a container. |
++| 11 | One transcode process runs per active `(channel, profile)` pair across the cluster: a second client on the same Output Profile attaches to the existing process's buffer instead of spawning its own | `apps/proxy/live_proxy/output/profile/manager.py:67-122`, `apps/proxy/live_proxy/output/profile/manager.py:312-321` | `e2e/tests/streaming-greybox/output-profile-sharing.spec.ts::two clients on one output profile share a single transcode`, `apps/proxy/live_proxy/tests/test_output_profile_sharing.py::OutputProfileSharingTests::test_two_clients_on_one_output_profile_share_a_single_transcode`, `relay/httpapi/profile_test.go::TestTwoClientsOnOneOutputProfileShareOneTranscode` | Ten AC3 clients cost one ffmpeg. 2a-6 added the second pin, an in-process harness test that counts SPAWNS of the profile's own command rather than surviving processes: the channel runs the locked Proxy stream profile, which spawns nothing, so every line in the spawn log is an Output Profile transcode. Both stand — the e2e spec proves the same claim through nginx in a container. Go column added in Phase 2 stage 2c-7, counting SPAWNS as the two Python pins do: with `Channel.AttachOutput`'s reuse branch disabled the registry assertion and both PID assertions stay green and only the count reddens. The Go relay reaches the same claim with one process and no owner lock — spec D2 deletes `output_owner`/`output_state`, so "across the cluster" becomes "in the one relay process" and the sharing is the registry's refcount. |
+ | 21 | Authorize matrix — **XC credentials** (`<user>/<pass>` path segments, compared with `hmac.compare_digest`): every check enforced; `hidden_from_output` and adult filtering answer 403 | `apps/proxy/authorize.py:148-174`, `apps/proxy/authorize.py:420-442` | `e2e/tests/streaming/authorize-matrix.spec.ts::a hidden channel is refused on the XC live root to an ordinary XC user`, `apps/proxy/live_proxy/tests/test_authorize_matrix_over_http.py::test_an_xc_user_with_hide_adult_content_is_refused_on_the_live_root` | `resolve_xc_user` is the constant-time comparison CLAUDE.md's Known defects section already names. `hidden_from_output` is pinned on-path by the cited e2e test; the adult-filter half for this principal is now also pinned on-path by the cited Python test, a live-root equivalent to the catch-up-root test that used to be this row's only proof of it (drives `/timeshift/...`, off the matrix's live-path scope) |
+ | 22 | Authorize matrix — **JWT / API key / query-param JWT**, non-admin: every check enforced | `apps/proxy/authorize.py:227-265`, `apps/proxy/authorize.py:420-442` | `e2e/tests/streaming/authorize-matrix.spec.ts::an adult channel is refused on the native stream route to a hide_adult_content viewer` | `_drf_user` runs the DRF authenticator set explicitly rather than relying on the calling view's own `authentication_classes`. Drives `/proxy/ts/stream/<uuid>` with an `X-API-Key` principal, in scope; the plan's first draft pinned this row to a catch-up test, which the matrix's own scope paragraph excludes |
+ | 24 | Authorize matrix — **Anonymous** (a bare channel UUID): the ACL applies, `hidden_from_output` answers 403, and every user-scoped check is inapplicable — an anonymous request with a valid UUID still streams an ordinary channel | `apps/proxy/authorize.py:316`, `apps/proxy/authorize.py:325-327`, `apps/proxy/authorize.py:386-389` | `e2e/tests/streaming/authorize-matrix.spec.ts::a channel hidden from output is refused even to an anonymous request`, `e2e/tests/streaming/authorize-matrix.spec.ts::an ordinary channel still streams with no credential at all` | `hidden_from_output` is checked with no principal at all, which is why it is the one check anonymous also fails |
 ```
 
-Plus one line in the spec's **Done log**:
+### Appendix S — Amendment A7 and the Done-log line
 
-```markdown
-- **2c-7 — the Go relay's Output Profiles** (`migration/phase2c-output-profile`). One transcode per active `(channel, profile)` pair reading the channel's shared ring on `pipe:0` and writing a second in-process MPEG-TS ring, shared by every client on that profile; an fMP4 client on a profile runs it and 2c-6's remux chained, under `mpegts:p<id>` and `fmp4:p<id>`. Parity-matrix row 11 gets its Go pin, counted in spawns. The contract gained a null `argv` so a broken Output Profile can be told from a deactivated one. Amendment A7.
+Applied as a diff for Appendix R's reason. A7 goes after A6.6 and before `## Stage 2d`; the Done-log row goes after the last existing `| 2c-6 ` row.
+
+**`docs/superpowers/specs/2026-09-09-phase2-go-relay-design.md`**
+
+```diff
+diff --git a/docs/superpowers/specs/2026-09-09-phase2-go-relay-design.md b/docs/superpowers/specs/2026-09-09-phase2-go-relay-design.md
+index d0f95a25..b8d43476 100644
+--- a/docs/superpowers/specs/2026-09-09-phase2-go-relay-design.md
++++ b/docs/superpowers/specs/2026-09-09-phase2-go-relay-design.md
+@@ -2367,6 +2367,96 @@ a Go test that hands the ring a finite asset once has to make the asset long
+ enough. 2c-7's Output Profile transcode reads the same ring and will meet the
+ same threshold if its test asset is short.
+ 
++#### Amendment A7 (2c-7) — seven findings and rulings from the Output Profile
++
++**A7.1 — fMP4 and an Output Profile COMPOSE, as a chain of two processes,
++and the registry key is Python's own compound string.** `views.py` runs
++`ensure_output_profile` first (`:765-767`), resolves `get_buffer(channel_id,
++profile=id)` second (`:773-776`), and hands that buffer to
++`ensure_output_format` as `source_buffer` under the key `f'fmp4:p{id}'`
++(`:731-734`, `:790-792`). The transcode's own namespace is the literal
++`f"mpegts:p{self.profile_id}"` at six sites in `output/profile/manager.py`
++— **always `mpegts`, whatever the client asked for**, because an Output
++Profile's output *is* MPEG-TS (`core/models.py:173-174`). So an fMP4 client
++on a profile runs two processes under two keys that cannot collide, and the
++second reads the first. One registry, keyed by the compound string
++`_parse_output_key` splits; the composition lives in `httpapi` where
++`views.py` puts it.
++
++**A7.2 — the contract could not tell a BROKEN Output Profile from a
++DEACTIVATED one, and they get opposite answers. CLOSED in 2c-7.**
++`_with_output_profiles` skipped a profile whose `parameters` `shlex` could
++not split, so one bad row could not 500 next-source for every channel. But a
++profile deactivated between the authorize hop and the tune is also absent
++from the map, and Python serves that client with **no profile at all**
++(`views.py:150-155`, `:725-751`) where it **500s** the client that selects a
++broken one (`build_command()` raises inside `stream_ts`'s try, `:823-827`).
++A relay reading this map could reproduce one and not the other, and the one
++it would get wrong silently hands a device the original audio. Closed by
++sending the entry with `"argv": null` instead of omitting it —
++`OutputProfileRefSerializer.argv` gains `allow_null=True` — which is exactly
++`stream_profile.argv`'s three-state shape from Amendment A4.1: a list is the
++built command, null is "Django could not build it", the key absent is a
++control plane older than 2b-2. Three files, no migration, no new field.
++
++**A7.3 — the Output Profile argv carries the COMMAND as element 0 and
++`stream_profile.argv` does not.** `core/models.py:200-203`'s `build_command`
++is `[self.command] + shlex_split(self.parameters)` and
++`apps/proxy/serializers.py:230` sends the result whole, where
++`next_source.py`'s `_stream_profile_ref` sends `command` in its own field and
++the rest in `argv`. Reproduced rather than tidied; the split happens in
++exactly two places and both are pinned token for token.
++
++**A7.4 — the profile set is cached PER CHANNEL and refreshed by every
++next-source answer, never per client.** Python re-reads the row per client
++(`views.py:150-155`); the relay cannot, because next-source runs once per
++channel and the second client makes no control-plane call at all
++(`views.py:712`) — Amendment A1/2b-2's Ruling R3 rejected a per-client route.
++The set arrives on every answer, so the channel replaces its copy on every
++non-degraded failover; a degraded resolution came from the cached candidate
++list and carries no answer, so it leaves the copy alone. **Residual
++divergence, stated and untested**: an operator editing a profile's
++`parameters` mid-channel reaches new clients on that channel only after its
++next next-source call, where Python reaches them on the next tune. Untested
++deliberately — there is no Python behaviour here to pin, only the absence of
++one.
++
++**A7.5 — `output.Config`'s zero value is the fMP4 remux, which makes it the
++wrong type for an Output Profile.** `Config.command()` returns
++`RemuxCommand` for an empty `Command` and `Config.argv()` returns
++`RemuxArgv()` for a nil `Argv`. A profile reaching that with a blank command
++would silently become an ffmpeg remux, where Python fails the tune. So
++`StartProfile` takes its own `ProfileConfig` with no fallback and refuses an
++empty command before spawning. The same trap survives inside `Pipeline` —
++`run`'s bitstream-filter retry calls `cfg.command()`/`cfg.argvNoBSF()` — and
++is closed structurally by filling `cfg.Remux` from the profile's own command
++line even though the retry is unreachable for a profile. **Found by a
++break-check**: with those fields empty, forcing the retry spawned a real
++ffmpeg remux and the spawn-log assertion could not see it.
++
++**A7.6 — the owner lock, the state key and the TTL refresh are deleted with
++the lease.** `output/profile/manager.py:312-358`'s `_acquire_owner_lock`,
++`_set_state` and `_refresh_redis_ttls`, and `ensure_output_profile`'s
++five-arm staleness question including its 5-second `live:events:` round trip
++(`server.py:1406-1538`), exist so a second uWSGI worker can discover another
++worker's process. With one relay process the registry map is that discovery,
++and nothing can be orphaned. `PROFILE_KEY_TTL` and
++`PROFILE_TTL_REFRESH_INTERVAL` go with them, as does `_cleanup_redis`'s
++chunk-key scan. What survives is the refcount, which stops the transcode at
++zero with **no** shutdown delay — Python's disconnect sweep runs at
++`server.py:1216-1219`, before the `if total == 0` branch at `:1221` that
++honours `channel_shutdown_delay`.
++
++**A7.7 — two inputs for later stages.** First, `transcode_active`
++(`apps/proxy/live_proxy/redis_keys.py:89-91`) has **one** reference in the
++non-test tree — a `delete` at `input/manager.py:1797` — and no writer and no
++reader. It is an input-side key about the channel's own ffmpeg, it appears on
++no payload, and it is dead in the Python relay already; 2d deletes it with
++the rest. Second, A6.6's eight-second `delay_moov` floor **does not apply to
++an Output Profile transcode**: its output is `-f mpegts`, not fragmented MP4,
++so it produces bytes as soon as it has input. Measured on ffmpeg 9.0.1: four
++chunks out of the same eight-second asset in 0.3 seconds.
++
+ ## Stage 2d — cutover, and its trap
+ 
+ **The historical bug this stage exists to not repeat.** Every live-bound nginx location today carries
+@@ -2692,6 +2782,7 @@ Filled in as PRs merge; this spec lands as its own PR 0.
+ | 2c-4 -- the Go relay's ffmpeg source: `relay/ffmpeg`'s spawn (`os/exec` + `SysProcAttr{Setpgid, Pdeathsig}`, D5 exception 1), the `log_parsers.py` port and the clock-injected buffering detector, `relay/channel`'s `TranscodeSource` and the package-private `attachable` seam, Amendment A4.1 (Django builds `stream_profile.argv`; no Go word splitter), the Go credential-logging guard `relay/internal/credlint` (#283) plus its `scripts/check_go_credential_logging.sh`, and the seven ffmpeg-derived fields on `GET /proxy/relay/channels`. Parity matrix rows 4 (real-ffmpeg), 5, 28 and 29 get a Go column (Amendment A4.4). Two Python-relay defects found and filed rather than fixed, per D10: the provider-URL INFO leak through ffmpeg's stderr preamble ([#295](https://github.com/D10Scot/Dispatcharr/issues/295)) and the UDP filter's dangling flag ([#296](https://github.com/D10Scot/Dispatcharr/issues/296)). CI fix round (2026-09-14): golangci-lint's darwin/linux build-tag blind spot fixed, the fixture-vs-migration-seed argv mismatch fixed, and row 4's real-ffmpeg pin moved onto the base image's production ffmpeg after both relays' shared `frame=` progress gate was found structurally blind to ffmpeg 6.x, filed rather than fixed as [#299](https://github.com/D10Scot/Dispatcharr/issues/299) (Amendment A4.7). | `migration/phase2c-ffmpeg` | pending |
+ | 2c-5 -- the Go relay's failover: the three triggers (rows 1, 2, 3) as one port of `StreamManager.run`'s two loops, a clean EOF ported as a retried connection failure (R1); the control-plane client's `release` and `events` routes and an emitter that batches and logs an outage once (R12); the degraded fallback to the candidate list cached at channel start, never on a refusal (R2); the Redirect Stream Profile architecture -- the 302, the provider probe, the fall-through to the cached alternates, the internal-principal override, publishing no channel (R7, R8); the health flag, the keepalives, the client timeout and the error packet closing Amendment A2.5 (R14, R15); the five events the failover machinery raises (R11). Parity matrix rows 1, 2, 3 and 6 get a Go column; row 7 gains a pin across a switch. A pre-existing Python defect (one `next-source` call per buffering progress record when no alternate exists) reproduced per D5 and filed as [#302](https://github.com/D10Scot/Dispatcharr/issues/302) (R6). | `migration/phase2c-failover` | pending |
+ | 2c-6 -- the Go relay's fMP4 output format (`migration/phase2c-fmp4`). One remux per channel reading the shared ring on `pipe:0`, the init segment replayed to every client, a refcounted lifecycle with no shutdown delay, and parity-matrix row 12 ([#222](https://github.com/D10Scot/Dispatcharr/issues/222)) reproduced, pinned and filed rather than fixed. Row 12 gets its Go pin. Amendment A6. [#304](https://github.com/D10Scot/Dispatcharr/issues/304) (a pre-existing 2c-4 defect, the stderr pipe truncated by a reap racing its drain) fixed in `relay/ffmpeg/spawn.go`, repairing `relay/channel/source_transcode.go` without editing it. Two Python-side findings from the port, reproduced and filed rather than fixed: the fMP4 scanner's resynchronisation arm discarding the whole working buffer ([#306](https://github.com/D10Scot/Dispatcharr/issues/306)) and the dead stop-during-restart guard in `_handle_bsf_error` ([#307](https://github.com/D10Scot/Dispatcharr/issues/307)). Three plan corrections found and fixed in the plan document as committed, run rather than read: Task 4 Step 7's break-check rows 16-18 name tests defined in `relay/httpapi/fmp4_test.go`, Task 6's file, and had to run there rather than in Task 4; Task 1 Step 2's expected result for `TestEveryStderrLineSurvivesTheWaitThatPrecedesTheJoin` describes a runtime failure the package cannot yet produce, since the two `StartPiped` tests appended in the same step leave it uncompilable until Step 3's implementation lands; and the issue-number-placeholder slot count was corrected from six to five (an instruction about the slots had been counted as one) with Task 8 Step 5's own verification grep narrowed to the paths that can carry a real slot, since run unscoped over all of `docs/` it could never return empty. | `migration/phase2c-fmp4` | pending |
++- **2c-7 — the Go relay's Output Profiles** (`migration/phase2c-output-profile`). One transcode per active `(channel, profile)` pair reading the channel's shared ring on `pipe:0` and writing a second in-process MPEG-TS ring, shared by every client on that profile; an fMP4 client on a profile runs it and 2c-6's remux chained, under `mpegts:p<id>` and `fmp4:p<id>`. Parity-matrix row 11 gets its Go pin, counted in spawns. The contract gained a null `argv` so a broken Output Profile can be told from a deactivated one. Amendment A7.
+ 
+ ## Risks
+ 
 ```
 
 ### Appendix T — `CLAUDE.md`, one sentence
 
-**§ Video path's Output Profile sentence** gains the Go half. Before:
+§ Video path's Output Profile sentence gains the Go half. **Note it is APPENDED to the existing parenthetical rather than replacing the paragraph**: that paragraph already gained a 2c-6 sentence about fMP4, and a replacement written against the older text would silently drop it.
 
-```markdown
-**Do not confuse Stream Profile (upstream) with Output Profile** (optional downstream transcode reading the shared buffer on `pipe:0`, shared per `(channel, profile)` clusterwide — ten AC3 clients cost one ffmpeg).
-```
+**`CLAUDE.md`**
 
-After:
-
-```markdown
-**Do not confuse Stream Profile (upstream) with Output Profile** (optional downstream transcode reading the shared buffer on `pipe:0`, shared per `(channel, profile)` clusterwide — ten AC3 clients cost one ffmpeg). Since Phase 2 stage 2c-7 the Go relay serves them too, from `relay/output`: one transcode per pair, started by the first client on that profile and stopped by the last with no shutdown delay, writing a second in-process `buffer.Ring` its clients read instead of the channel's. Its argv is `output_profiles[*].argv` off the `next-source` answer, cached per channel (an edit mid-channel reaches new clients only after the next answer, where Python re-reads the row per client), and an entry with a **null** argv is Django saying `shlex` refused that profile's parameters — a 500 for the client that selects it, where a profile merely absent from the map was deactivated and that client is served with no profile at all. An fMP4 client on a profile runs **two** chained processes, `mpegts:p<id>` then `fmp4:p<id>`, exactly as `views.py:765-792` composes them.
+```diff
+diff --git a/CLAUDE.md b/CLAUDE.md
+index a38fc18b..31609244 100644
+--- a/CLAUDE.md
++++ b/CLAUDE.md
+@@ -80,7 +80,7 @@ Django 6 + DRF, React 19 SPA same-origin, Celery, Redis for broker/cache/channel
+ 
+ **State.** PostgreSQL holds durable rows — including settings, but **`CoreSettings` is one row per settings *group*, not per setting**: `key` unique, `value` a `JSONField`, eight groups (`core/models.py:201-208`). Every group is instance-wide, so there is no scoped settings write — treat any as blast radius (E2E allowlists them; see `docs/adr/0003`). `epg_settings` has no seeding migration, so POST it before you can PATCH it. Redis holds ownership leases, channel metadata, client sets, counters and switch requests (TTL'd), **the video bytes** in a ring buffer (**~256 KB chunks** — `input/buffer.py`'s `target_chunk_size` reads `ConfigHelper.get('BUFFER_CHUNK_SIZE', TS_PACKET_SIZE * 5644)`, but `ConfigHelper.get` is `getattr(Config, name, default)` and `BaseConfig.BUFFER_CHUNK_SIZE` **exists**, at `apps/proxy/config.py:15`, as `188 * 1361` = 255,868 bytes, so the `5644` literal is an unreachable default and the effective chunk is a quarter of what it looks like; at a 54 KB/s trickle a chunk takes ~4.7s to roll, not ~20s — 60s TTL), `live:events:*` pub/sub, plus Celery broker / Channels layer / Django cache. All share **DB 0**, so video memory pressure takes out the task queue and cache. `scripts/wait_for_redis.py` is wait-only — it never flushes, in any role. AIO's Redis starts empty because supervisord runs it non-persistent (`--save "" --appendonly no`), not because anything wipes it, so a control-plane restart leaves a running relay's keys untouched. Since Phase 2 stage 2c-2, the Go relay's ring is a per-channel in-process buffer, not Redis-backed: a 300-chunk / 76,760,400-byte cap and the same 60-second retention as the Python relay, whichever binds first, sized from `BUFFER_CHUNK_SIZE` on the `next-source` answer (Amendment A1.4) rather than from a Go-side constant. Since stage 2c-3, the Go relay's client registry is likewise a map in process memory with no TTL, no heartbeat and no ghost sweep, because with one process a client entry cannot outlive the goroutine that made it; `GET /proxy/relay/channels[?clients=all]` is served from it and performs no write. Since 2c-4 the Go relay serves the FFmpeg/VLC/Streamlink architecture too: Django builds the argv (`StreamProfile.build_command`) and sends it as `stream_profile.argv` (Amendment A4.1); the relay spawns it with `Setpgid` and, on Linux, `Pdeathsig SIGKILL`, kills with SIGKILL, parses stderr with `relay/ffmpeg`'s port of `log_parsers.py`, and ends the tune with `ErrBufferingTimeout` until 2c-5 wires failover. Since 2c-5 the Go relay fails over: the three triggers drive one port of `StreamManager.run`'s loops (`relay/channel/channel.go`), a clean EOF is a retried connection failure, the buffering-triggered switch bypasses `MAX_STREAM_SWITCHES` as in Python (row 6), the degraded fallback reads the candidate list the initial `next-source` answer carried and never a Redis key, a Redirect channel is a 302 with no channel published, and `GET /proxy/relay/channels` carries `healthy`.
+ 
+-**Video path.** Three locked built-in **Stream Profiles** = three architectures: *Redirect* (302 to provider — no bytes through us, no failover after connect), *Proxy* (raw HTTP into the ring buffer, no subprocess, dead-air failover only), *FFmpeg/VLC/Streamlink* (spawn, read stdout, parse stderr, full failover). Default FFmpeg profile is a remux, not a transcode. **Do not confuse Stream Profile (upstream) with Output Profile** (optional downstream transcode reading the shared buffer on `pipe:0`, shared per `(channel, profile)` clusterwide — ten AC3 clients cost one ffmpeg). **There is no HLS output**: `_OUTPUT_FORMAT_MANAGERS` registers only `fmp4`, MPEG-TS (default) uses no output-side ffmpeg, and the 1,206-line `apps/proxy/hls_proxy/` is dead. Since Phase 2 stage 2c-6 the Go relay serves fMP4 too, from `relay/output`: one remux per channel spawned by the first fMP4 client and stopped by the last, reading the channel's shared ring on `pipe:0` and writing a second in-process buffer of whole fragments (`buffer.Fragments`, not `buffer.Ring` — the write unit is a variable-length fragment and the client-positioning rules differ), so an fMP4 channel costs roughly twice a TS-only channel's resident memory. It refuses any other format 501, as `hls` has no manager on either side. HLS *upstreams* are handled by forcing the ffmpeg profile.
++**Video path.** Three locked built-in **Stream Profiles** = three architectures: *Redirect* (302 to provider — no bytes through us, no failover after connect), *Proxy* (raw HTTP into the ring buffer, no subprocess, dead-air failover only), *FFmpeg/VLC/Streamlink* (spawn, read stdout, parse stderr, full failover). Default FFmpeg profile is a remux, not a transcode. **Do not confuse Stream Profile (upstream) with Output Profile** (optional downstream transcode reading the shared buffer on `pipe:0`, shared per `(channel, profile)` clusterwide — ten AC3 clients cost one ffmpeg). Since Phase 2 stage 2c-7 the Go relay serves them too, from `relay/output`: one transcode per pair, started by the first client on that profile and stopped by the last with no shutdown delay, writing a second in-process `buffer.Ring` its clients read instead of the channel's. Its argv is `output_profiles[*].argv` off the `next-source` answer, cached per channel and refreshed by every later answer a non-degraded failover receives (an edit mid-channel reaches new clients only after the next one, where Python re-reads the row per client), and an entry with a **null** argv is Django saying `shlex` refused that profile's parameters — a 500 for the client that selects it, where a profile merely absent from the map was deactivated and that client is served with no profile at all. An fMP4 client on a profile runs **two** chained processes, `mpegts:p<id>` then `fmp4:p<id>`, exactly as `views.py:765-792` composes them. **There is no HLS output**: `_OUTPUT_FORMAT_MANAGERS` registers only `fmp4`, MPEG-TS (default) uses no output-side ffmpeg, and the 1,206-line `apps/proxy/hls_proxy/` is dead. Since Phase 2 stage 2c-6 the Go relay serves fMP4 too, from `relay/output`: one remux per channel spawned by the first fMP4 client and stopped by the last, reading the channel's shared ring on `pipe:0` and writing a second in-process buffer of whole fragments (`buffer.Fragments`, not `buffer.Ring` — the write unit is a variable-length fragment and the client-positioning rules differ), so an fMP4 channel costs roughly twice a TS-only channel's resident memory. It refuses any other format 501, as `hls` has no manager on either side. HLS *upstreams* are handled by forcing the ffmpeg profile.
+ 
+ One uWSGI worker owns a channel's upstream, elected by `redis.set("live:channel:{id}:owner", worker_id, nx=True, ex=30)` (`live_proxy/server.py`); followers serve their own clients from the same keys and ask the owner to act over `live:events:{id}`. `_ensure_owner_or_stop()` runs each main-loop iteration. `input/buffer.py` realigns to 188-byte TS packets before writing chunks. **The chunk index is monotonic for the channel's life, never reset by a stream switch** — why a switch doesn't touch clients; new clients start ~5s behind live via the timestamp zset.
+ 
 ```
