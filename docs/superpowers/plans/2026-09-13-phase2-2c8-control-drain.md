@@ -8,7 +8,7 @@
 
 **This PR stays inert in every deployment**: every route is behind 2c-1's dev flag except `/healthz` and `/readyz`, and nginx routes nothing to port 5658 until stage 2d.
 
-**Tech Stack:** Go 1.27.1, standard library only; six Python files changed and two added; two Docker files changed and one added.
+**Tech Stack:** Go 1.27.1, standard library only; **eight Python files touched — six changed and two added** (of the six, one is an existing test whose expected payload grows); two Docker files changed and one added, the added one committed executable.
 
 **Spec:** `docs/superpowers/specs/2026-09-09-phase2-go-relay-design.md` — D1 (scope: the live TS route **and the XC live roots**), D2, **D5 and its exception 2** (§ The contract's dev-fallback section in full), **D6** (the drain, the health endpoints, the supervisord and `HEALTHCHECK` wiring), D7; the 2c-8 row of the nine-PR table (~line 1807); § The contract's Django→relay table and its four field-level quirks; the corrected per-hop error table; Amendments A1.4, A2.2, A3.1, A3.4, A4.1, A5.3, A6.5, and A7 as 2c-7 lands it. This plan amends the spec in Task 9 where its text is silent or wrong, and says so in the Done log.
 
@@ -77,7 +77,7 @@ Every task's requirements implicitly include this section. Constraints 1–43 ar
 
 9. **Prefer `t.Setenv` over manual environment save/restore, and never run an environment-mutating test with `t.Parallel()`.** Every test that spawns the fMP4 stand-in calls `t.Setenv(relaytest.StandInEnv, "1")`, so none of them may be parallel.
 
-10. **This PR DOES need a Django test run, and it must not be the shared `dispatcharr-testrunner` container.** Six Python files change and two are added. Start your own container from your own worktree:
+10. **This PR DOES need a Django test run, and it must not be the shared `dispatcharr-testrunner` container.** Eight Python files are touched: six changed (`authorize_views.py`, `next_source.py`, `relay_client.py`, `relay_serializers.py`, `live_proxy/views.py`, and `live_proxy/tests/zero_orm_allowlist.py`), one existing test amended (`tests/test_relay_client.py`) and two added. Start your own container from your own worktree:
 
     ```bash
     cd <your worktree>
@@ -274,7 +274,7 @@ Every test this PR adds is bound by all six, and every task that adds an asserti
 
 **Amendment A4.1 took that away.** Django builds `stream_profile.argv` for *each Source's own URL, user agent and object*, "so the Go relay carries no word splitter and no substitution table". A Go relay handed a url alone therefore has **nothing it can spawn**: the argv it holds embeds the URL it is switching away from.
 
-**Ruled: the serializer gains three fields — `stream_profile`, `ffmpeg_stream_profile` and `transcode`** — rendered by the same `StreamProfileRefSerializer` the `next-source` answer uses, which is exactly the set of `SourceSerializer`'s fields the flat fields do not already duplicate. `relay_client.advance()` forwards them; `change_stream` and `next_stream` each already hold the resolved `stream_info` dict that carries all three. They are `required=False` on the serializer because the **Python** relay's handler ignores them and both relays run through the whole of stage 2c (D3); the **Go** relay refuses an advance with no `stream_profile` with a 400, which is what DRF answers for a missing required field anyway.
+**Ruled: the serializer gains three fields — `stream_profile`, `ffmpeg_stream_profile` and `transcode`** — rendered by the same `StreamProfileRefSerializer` the `next-source` answer uses, which are the three of `SourceSerializer`'s fields the flat fields do not already duplicate **and that the relay needs**. `slot_reserved` is in that set too and is deliberately NOT sent: Django moved the provider slot when it resolved this candidate (Phase 1 PR 6), and the relay releases only what it reserved, so an advance that claimed a reservation would make the channel's own release double-release — `advanceSource` sets it false and says so. `m3u_profile_id` and `m3u_profile_name` ARE duplicated by flat fields and so need nothing. `relay_client.advance()` forwards them; `change_stream` and `next_stream` each already hold the resolved `stream_info` dict that carries all three. They are `required=False` on the serializer because the **Python** relay's handler ignores them and both relays run through the whole of stage 2c (D3); the **Go** relay refuses an advance with no `stream_profile` with a 400, which is what DRF answers for a missing required field anyway.
 
 **One producer had no profile to send, and it now builds one.** `change_stream` accepts a bare `url` with no `stream_id` — reachable only by a hand-crafted admin call, never by the UI, whose `switchStream` always sends `stream_id` (`frontend/src/api.js:3314-3322`) — and that path resolves no `Stream` row. It asks the **channel** for its own effective profile through a new `next_source.channel_stream_profile_ref()`, which is the same profile the Python relay uses there. A channel identifier that names no row leaves the three fields unset and the Go relay answers 400, which is the truth; the lookup is wrapped in `except Http404` so this adds no 404 to a path that never had one.
 
@@ -415,7 +415,7 @@ The tempting implementation asks Django whether it is reachable and reports unre
 **Go, modified (17):** `channel/{channel,client,events,failover,manager}.go`, `control/{events,events_test}.go`, `httpapi/{channels,fmp4,server,stream}.go`, `httpapi/{fanout,server,stream,transcode}_test.go`, `internal/relaytest/controlplane.go`, `main.go`.
 
 **Python, created (2):** `apps/proxy/tests/test_authorize_internal_view.py`, `apps/proxy/tests/test_relay_detail_payload_golden.py`.
-**Python, modified (7):** `apps/proxy/{authorize_views,next_source,relay_client,relay_serializers}.py`, `apps/proxy/live_proxy/views.py`, `apps/proxy/live_proxy/tests/zero_orm_allowlist.py`, `apps/proxy/tests/test_relay_client.py`, `dispatcharr/urls.py`.
+**Python, modified (6 production and allowlist files, plus 1 existing test):** `apps/proxy/{authorize_views,next_source,relay_client,relay_serializers}.py`, `apps/proxy/live_proxy/views.py`, `apps/proxy/live_proxy/tests/zero_orm_allowlist.py`, `apps/proxy/tests/test_relay_client.py`, `dispatcharr/urls.py`.
 
 **Docker, created (1):** `docker/healthcheck.sh`. **Modified (2):** `docker/Dockerfile`, `docker/entrypoint.sh`.
 
@@ -476,7 +476,7 @@ grep -n 'defer c.releaseSlot\|defer close(c.done)\|defer c.ring.Close\|defer c.s
 grep -rn 'StateActive' channel/*.go | grep -v '_test.go'
 ```
 
-Expected before this PR: two registry writes (`addClient`'s insert and `dropClient`'s delete) **plus** `publish`'s map literal, which is the third and is the defect; four defers in `run`; two writers of `StateActive`. Task 10 counts all three again.
+Expected before this PR: **four hits, two of them writes** (`addClient`'s insert at `channel.go:228` and `SetClientOutputProfile`'s update) and two reads (`addClient`'s duplicate check, `StopClient`'s lookup). **This grep cannot see `publish`'s map literal at all** — `clients: map[string]*Client{client.ID: client}` contains no `c.clients[` — which is exactly how the defect survived: the obvious census misses the third writer. **Step 1's `clients: *map\[string\]\*Client` grep is what catches it**, and the two belong together. Also expected: four defers in `run`; two writers of `StateActive`. Task 10 counts all three again.
 
 - [ ] **Step 3: List the rows this PR owes, and expect the count**
 
@@ -686,7 +686,7 @@ docker exec ... <yourname> /dispatcharrpy/bin/python /repo/manage.py test \
   apps.proxy.tests apps.proxy.live_proxy.tests --keepdb
 ```
 
-Expected: green, and `apps.proxy.tests` at 398 tests. **Two existing Python tests move in this step** and both are in Appendix Y: `test_advance_sends_the_resolved_source_and_the_long_budget` gains the three new payload keys, and `test_stream_id_is_coerced_to_int_before_reaching_the_service` went 500 until the bare-url branch was gated on `if not stream_id:` rather than on `if stream_profile is None:` — a mocked `resolve_source` answer carries no `stream_profile`, and the looser condition sent that path into a channel lookup it had no row for.
+Expected: green, and `apps.proxy.tests` at **403** tests (398 before this PR, plus the five Ruling R13 / Gate 2 tests Task 5 adds). **Two existing Python tests move in this step** and both are in Appendix Y: `test_advance_sends_the_resolved_source_and_the_long_budget` gains the three new payload keys, and `test_stream_id_is_coerced_to_int_before_reaching_the_service` went 500 until the bare-url branch was gated on `if not stream_id:` rather than on `if stream_profile is None:` — a mocked `resolve_source` answer carries no `stream_profile`, and the looser condition sent that path into a channel lookup it had no row for.
 
 - [ ] **Step 8: Commit** (stage and commit in separate calls). Stage `relay/channel/advance.go` with the rest.
 
@@ -721,7 +721,9 @@ Five edits: `client_connect` before `serveClient` and `client_disconnect` after 
 
 - [ ] **Step 6: Add `ClientID` to `RecordedEvent`** — Appendix M's second half.
 
-- [ ] **Step 7: Write `events_test.go` and run the break-checks** — Appendix T; break-checks 8 and 9.
+- [ ] **Step 7: Write `events_test.go` and run the break-checks** — Appendix T; break-checks 8, 9 and **25**.
+
+**`TestStoppingAChannelRaisesChannelStop` closes the emitter before it counts**, and that is not tidiness: `eventsOf` returns on the first matching event, so a second raise landing a moment later is invisible to a `len()` check that runs immediately after it. `Emitter.Close` drains the queue and waits for the worker, so after it nothing is in flight. Break-check 25 is the proof, and it passed 6/6 without this.
 
 **Break-check 9's scar is in the test.** It stayed GREEN until the fMP4 read was widened past the init segment: `serveFMP4` writes the init **before** the fragment loop starts, so a read that stopped there queried the detail endpoint before the loop had run once — and an fMP4 row with no counters proves nothing when a client that has sent nothing has none either way.
 
@@ -758,7 +760,7 @@ Five edits: `client_connect` before `serveClient` and `client_disconnect` after 
 
 - [ ] **Step 3: Write the tests** — Appendix Z, in full.
 
-Twelve tests. The four that matter most assert an **identity or a status vocabulary**, never "it worked": the hidden channel that must still 403 with `internal: false` while every call carries the transport header; the same channel authorizing with `internal: true`, so "nothing is ever internal" cannot be what makes the first pass; `X-Relay-User` carrying the real user id for a forwarded session cookie; and the unknown channel answering **404** with no `X-Authorize-Status`, which is how you tell `authorize_error_response` was called and not `subrequest_error_response`.
+Seventeen tests, twelve of them about the decision and five about Gate 2 (Task 5 Step 3's own note). The four that matter most assert an **identity or a status vocabulary**, never "it worked": the hidden channel that must still 403 with `internal: false` while every call carries the transport header; the same channel authorizing with `internal: true`, so "nothing is ever internal" cannot be what makes the first pass; `X-Relay-User` carrying the real user id for a forwarded session cookie; and the unknown channel answering **404** with no `X-Authorize-Status`, which is how you tell `authorize_error_response` was called and not `subrequest_error_response`.
 
 - [ ] **Step 4: Run the label**
 
@@ -767,7 +769,7 @@ docker exec ... <yourname> /dispatcharrpy/bin/python /repo/manage.py test \
   apps.proxy.tests.test_authorize_internal_view --keepdb
 ```
 
-Expected: `Ran 12 tests`, `OK`.
+Expected: `Ran 17 tests`, `OK` — twelve plus the five Gate 2 tests below.
 
 - [ ] **Step 5: Commit.**
 
@@ -823,7 +825,9 @@ The decision is checked **first** in `identify`'s one closure, so a request that
 
 - [ ] **Step 3: Write `xc_test.go` and run break-checks 15 and 16** — Appendix AC.
 
-- [ ] **Step 4: Run the four checks and commit.**
+- [ ] **Step 4: Run the four checks and break-check 24, then commit.**
+
+**`TestStreamRouteIsUnregisteredWithoutTheDevFlag` now loops over all seven gated paths**, not one. Six of them are new in this PR, and `GET /{username}/{password}/{channelID}` is the broadest pattern this relay has ever registered — three bare wildcards at the site root. The plan's opening claim is inertness in every deployment, and one path of seven cannot carry it. The same test also asserts `/healthz` and `/readyz` still answer 200, so "the mux is empty" cannot be why the seven pass.
 
 ---
 
@@ -866,17 +870,33 @@ Three tests, and the clock in each starts **before** `drain.Run` (Constraint 28)
 
 - [ ] **Step 9: Add the `HEALTHCHECK`, the role file and the probe** — Appendix Y's `Dockerfile` and `entrypoint.sh` hunks, and Appendix AH.
 
-**Exec form, not shell form**: hadolint's DL3025 warns on the latter and both Dockerfiles are at zero findings. Verified:
+**`docker/healthcheck.sh` MUST BE COMMITTED EXECUTABLE, and the `HEALTHCHECK` must not depend on that.** Both, and the reason each is there:
 
 ```bash
 cd <your worktree>
+chmod +x docker/healthcheck.sh
+git add docker/healthcheck.sh
+git ls-files -s docker/healthcheck.sh     # must print 100755, not 100644
+```
+
+**Exec form does not go through a shell**, so `CMD ["/app/docker/healthcheck.sh"]` on a 0644 file cannot start at all. Measured, in a real container: the probe reports **exit −1** with `OCI runtime exec failed: … exec: "/app/docker/healthcheck.sh"` and the container is `unhealthy` for ever. **Nothing else in this plan would catch it** — hadolint is clean either way, and no Go or Python test reads this file.
+
+**So the `CMD` names the interpreter**, `["/bin/sh", "/app/docker/healthcheck.sh"]`, and the mode is set as well. Belt and braces on purpose: the mode is the intent, the interpreter is the guarantee, and a mode bit is exactly the thing lost when a file is written from a plan's appendix by hand, or applied by a patch that does not carry modes. Measured with the same container, same 0644 file: the interpreter form runs, and answers **exit 7** (`curl: (7) Failed to connect to 127.0.0.1:5658`) because the relay is not there — which is the probe working.
+
+**AND `unhealthy` IS THE SAME WORD FOR BOTH**, which is why the break-check below asserts the exit code and not the status. "The probe ran and the relay is down" and "the probe could not run at all" are the same one-word answer from `docker inspect`; −1 against 7 is what separates them.
+
+**Note that 0644 is not anomalous in this tree** — six of the eleven shell scripts under `docker/` are committed 0644 (`docker/init/*.sh`, `docker/tests/*.sh`), because they are sourced or invoked as `bash <file>` rather than exec'd. Only `entrypoint.sh`, `build-dev.sh` and `supervisord.d/wait-for-stores.sh` are 0755. So "match the neighbours" is not the argument; "exec form cannot exec a non-executable file" is.
+
+hadolint, with the interpreter form, verified:
+
+```bash
 docker run --rm -i hadolint/hadolint@sha256:32dac94127fd60b7b7e3fbfc65e1383b9b5e25c9bfd7b8536de7a539fe68a12d \
   hadolint - < docker/Dockerfile
 ```
 
-Expected: no output, on this tree and on `main`.
+Expected: no output, on this tree and on `main`. Then run break-check 23.
 
-- [ ] **Step 10: Run the break-checks** — 13, 14, 17 and 22.
+- [ ] **Step 10: Run the break-checks** — 13, 14, 17, 22 and **23**, the container one.
 
 - [ ] **Step 11: Run this PR's subset eight times**
 
@@ -980,7 +1000,7 @@ grep -rn '\[#NNN\]' docs/relay-parity-matrix.md docs/superpowers/specs/ CLAUDE.m
 
 Expected after the fill: no output. **Scoped to the paths that can carry a real slot**, which is 2c-6's own correction — run unscoped over all of `docs/` it can never return empty.
 
-There are **two** slots in this PR, both in Appendix AN's A8.8 and Appendix AO: the issue filed for `source_bitrate`/`ffmpeg_bitrate` being unreachable in both relays. File one issue covering both, against `D10Scot/Dispatcharr` with an explicit `--repo`.
+There are **two** slots in this PR and they are in the spec's **Done-log row** (Appendix AN) and in **`CLAUDE.md`** (Appendix AO), not in A8.8's prose — A8.8 says the two dead fields are "filed" and carries no reference, deliberately, because the amendment's job is the finding and the ledger's is the number. File one issue covering both fields, against `D10Scot/Dispatcharr` with an explicit `--repo`, and put its number in the two slots.
 
 - [ ] **Step 6: Re-capture the three hunks and check them against a clean tree**
 
@@ -1049,6 +1069,8 @@ coverage_live_path: floor missing=1525  this run missing=1491  coverage 81.82%
 coverage_live_path: 34 FEWER missed than the floor.
 ```
 
+**Expect a RANGE, not that number.** Measured on this tree across separate local rounds: **1491-1504**, i.e. 21-34 under the floor. The floor's own header documents a local spread of 1484-1512 on the tree that set it, so a draw anywhere in that band is the measurement working, not a regression — what would be a regression is a draw ABOVE 1525, or any added-and-missing line in the attribution below.
+
 **And know that a CI draw can exceed a local one** ([#312](https://github.com/D10Scot/Dispatcharr/issues/312)): the floor is the worst of twelve CI rounds, one CI draw can sit above a local census's maximum, and re-measuring means re-running the whole workflow, not one job.
 
 **A regression is attributed per file and then per line** from `live-path.json` (Constraint 54 carries the command) **and covered with a real test in one of the gate's three labels**. **The floor is never raised** — "27 fewer missed" is not an invitation to run `--write-floor` either; that belongs to a PR that earned it with a census.
@@ -1070,7 +1092,7 @@ for label in apps.accounts.tests apps.backups.tests apps.channels.tests apps.con
 done
 ```
 
-Expected: every label `OK`. Measured here: 16/16, with `apps.proxy.tests` at 398 and `apps.proxy.live_proxy.tests` at 428.
+Expected: every label `OK`. Measured here: 16/16, with `apps.proxy.tests` at **403** and `apps.proxy.live_proxy.tests` at 428. **`apps.proxy.live_proxy.tests` carries a pre-existing flake** — `test_manager_stderr_failover`'s liveness guard, which fails roughly one run in two in isolation on `main` and is unrelated to this PR. Re-run the label; do not weaken the assertion.
 
 - [ ] **Step 6: The three one-mechanism counts, again**
 
@@ -1088,7 +1110,7 @@ Expected: `27 with, 3 without` on a tree where 2c-7 has landed row 11 — no: **
 
 - [ ] **Step 8: Write the PR description**
 
-In this order: what this PR does; **Ruling R1** and how the XC live roots were found to have no owner; **Ruling R2** and the three-field contract extension, with the bare-url branch's own answer; **the four break-checks that did not redden on a first attempt** (rows 2, 3, 9, 10) and what closed each — the golden fixture that supplied both values the builder computes, the fMP4 read that stopped at the init segment, and the denial table that had no body-less row; **the one break-check that deleted code** (3b, the unreachable index filter); **the four defects this PR found** — three in code it did not write (`RequireInternal` verifying against an empty body, R3; `publish` bypassing `addClient`, R4; `Emitter` panicking on a drain, R10) and one in its own first draft, the hyphenated header that never arrived because `source=` is the wrong half of DRF's input mapping (R13), found by a coverage test rather than by review; **the credlint census** — two markers added, three `redact.Error` calls, twelve packages clean; **zero suppressions**; **the two lint findings fixed rather than suppressed**; **the measurements** — 8/8 on the subset, 3/3 on the module, 16/16 on the backend labels, and Gate 2 at missing=1491 against the floor's 1525 with zero added-and-missing lines in all five in-scope files; **the stated divergences**, as a list: the drain itself, which D6 makes an improvement on `die-on-term` rather than parity; `channel_stop` from one place where Python has several (R9); the per-client counters live where Python's are 1-second-throttled (R8); `last_active` the true last write rather than the last flush (R8); row 18's names absent where Python falls back to the ORM (R7, Constraint 44); `client_connect`'s `user_agent` carrying the registry's `"unknown"` where Python's event carries null; `round1`'s half-away-from-zero where Python rounds half-to-even; `worker_id` and `owner` the literal `"unknown"` because there is no worker to name; `event_published` always false and `stop_key_set` meaning the signal rather than a Redis `SETEX` (R6); **the edits no test pins**, stated: `writeJSONStatus`'s encode-failure arm, `Authorize`'s 3xx arm, `readInternalBody`'s read-error arm, and `drain.Run`'s nil-dependency arms; **what this PR does not do**: no Go coverage ratchet and no CodeQL Go pack (2c-9), no nginx route (2d), no HLS (Phase 4), no `metrics/curated` update — milestones are per stage and the 2c goal milestone lands with 2c-9.
+In this order: what this PR does; **Ruling R1** and how the XC live roots were found to have no owner; **Ruling R2** and the three-field contract extension, with the bare-url branch's own answer; **the four break-checks that did not redden on a first attempt** (rows 2, 3, 9, 10) and what closed each — the golden fixture that supplied both values the builder computes, the fMP4 read that stopped at the init segment, and the denial table that had no body-less row; **the one break-check that deleted code** (3b, the unreachable index filter); **the four defects this PR found** — three in code it did not write (`RequireInternal` verifying against an empty body, R3; `publish` bypassing `addClient`, R4; `Emitter` panicking on a drain, R10) and one in its own first draft, the hyphenated header that never arrived because `source=` is the wrong half of DRF's input mapping (R13), found by a coverage test rather than by review; **the credlint census** — two markers added, three `redact.Error` calls, twelve packages clean; **zero suppressions**; **the two lint findings fixed rather than suppressed**; **the measurements** — 8/8 on the subset, 3/3 on the module, 16/16 on the backend labels, and Gate 2 at missing=1491-1504 against the floor's 1525 with zero added-and-missing lines in all five in-scope files; **the stated divergences**, as a list: the drain itself, which D6 makes an improvement on `die-on-term` rather than parity; `channel_stop` from one place where Python has several (R9); the per-client counters live where Python's are 1-second-throttled (R8); `last_active` the true last write rather than the last flush (R8); row 18's names absent where Python falls back to the ORM (R7, Constraint 44); `client_connect`'s `user_agent` carrying the registry's `"unknown"` where Python's event carries null; `round1`'s half-away-from-zero where Python rounds half-to-even; `worker_id` and `owner` the literal `"unknown"` because there is no worker to name; `event_published` always false and `stop_key_set` meaning the signal rather than a Redis `SETEX` (R6); **the edits no test pins**, stated: `writeJSONStatus`'s encode-failure arm, `Authorize`'s 3xx arm, `readInternalBody`'s read-error arm, and `drain.Run`'s nil-dependency arms; **what this PR does not do**: no Go coverage ratchet and no CodeQL Go pack (2c-9), no nginx route (2d), no HLS (Phase 4), no `metrics/curated` update — milestones are per stage and the 2c goal milestone lands with 2c-9.
 
 - [ ] **Step 9: Commit and open the PR.**
 
@@ -1096,7 +1118,7 @@ In this order: what this PR does; **Ruling R1** and how the XC live roots were f
 
 ## Break-check × what each can redden
 
-Every row was run. The **message** column is the actual output, not a prediction.
+Every row was run. The **message** column is the actual output, not a prediction. Rows 23-25 were added in the fix round; 23 runs in a container, as its own row says.
 
 | # | The defect patched in | Test | Red? | The message that appeared |
 |---|---|---|---|---|
@@ -1115,7 +1137,7 @@ Every row was run. The **message** column is the actual output, not a prediction
 | 12 | the credential headers are dropped from the body | `TestAnUntrustedTuneAsksDjangoAndSendsTheQuestionInTheBody` | yes | `the relay sent no "authorization" in the body: …` |
 | 13 | the drain gate is removed from the tune path | `TestATuneArrivingDuringTheDrainIsRefusedBeforeAnythingIsReserved` | yes | `a tune during the drain answered 200, want 503` |
 | 14 | the drain flushes the events first | `TestTheDrainStopsTheChannelEndsTheClientAndFlushesTheEvents` | yes | `the control plane saw 0 channel_stop events, want 1: the flush runs AFTER the teardown for exactly this reason` |
-| 15 | the XC root uses the numeric path id | `TestAnXCTuneServesTheHopsChannelAndAuthorizesOnce` | yes | `the relay is running [12345], not the uuid the hop resolved` |
+| 15 | the XC root uses the numeric path id — **the injected edit must SET it**, `r.Header.Del("X-Relay-Channel")` in `XCHandler` before it calls the inner handler, so `identify` falls back to the path value | `TestAnXCTuneServesTheHopsChannelAndAuthorizesOnce` | yes | `the relay is running [12345], not the uuid the hop resolved`. **There is no omission that produces this defect**: `XCHandler` never reads the channel, so deleting a line from it is a no-op and an implementer who patches one records a false green. The edit has to make the handler discard the hop's answer |
 | 16 | the XC extension does not override the format | `TestTheXCExtensionOverridesTheHopsOutputFormat` | yes | `the client's output_format is "mpegts", want "fmp4"` |
 | 17 | `/readyz` ignores the drain flag | `TestReadyzReportsTheChannelCountAndTheDrain` | yes | `a draining relay answered 200 {Status:ready Channels:1 Clients:1}, want 503 draining` |
 | 18 | `Emit`'s closed guard is removed | `TestTheEmitterDropsEventsRaisedAfterCloseAndCloseIsIdempotent` | yes, **after the pin moved off the drain test** | `panic: send on closed channel` |
@@ -1124,6 +1146,9 @@ Every row was run. The **message** column is the actual output, not a prediction
 | 20 | `DELETE` reports success without stopping | `TestDeletingAChannelStopsItAndReportsItsPreviousState` | yes | `the channel is still in the manager after a DELETE` |
 | 21 | `StopClient` signals nothing | `TestDeletingOneClientDisconnectsItAndLeavesTheOtherStreaming` | yes | `timed out after 15s waiting for the stopped client to leave the registry` |
 | 22 | the events budget is not clamped | `TestADependencyThatHangsDoesNotOverrunTheBudget` | yes, **after the test was restructured** | `the drain has not returned after 5s against a 300ms budget` |
+| 23 | `chmod -x docker/healthcheck.sh` **and** revert the `CMD` to the bare `["/app/docker/healthcheck.sh"]` | a real container: `docker build`, `docker run -d`, then `docker inspect --format '{{range .State.Health.Log}}{{.ExitCode}} {{.Output}}{{end}}'` | yes | exit **−1**, `OCI runtime exec failed: … exec: "/app/docker/healthcheck.sh"`. **Assert the EXIT CODE, not the status**: `unhealthy` is the same word for "the probe ran and the relay is down" (exit 7, `curl: (7) Failed to connect to 127.0.0.1:5658`) and "the probe could not run at all" (−1), and a row that checked the status alone would be hollow. With the interpreter form and the same 0644 file, the probe runs and answers 7 |
+| 24 | one of the six new routes escapes the dev flag (move `GET /{username}/{password}/{channelID}` outside the `if cfg.DevRoutes` block) | `TestStreamRouteIsUnregisteredWithoutTheDevFlag` | yes, **on a different clause than predicted** | a `nil pointer dereference` panic rather than a status mismatch: a `DevRoutes: false` Config carries no `Channels` or `Control`, so the handler panics on the first dereference. The panic IS the evidence — a 404 would mean the route was never registered, and reaching the handler at all is what the row tests. Recorded per Constraint 30 rather than tidied into a nicer failure |
+| 25 | a channel announces its ending twice (`c.emitStop()` added to `Manager.Stop`) | `TestStoppingAChannelRaisesChannelStop` | yes, **after the assertion was made exact** | `the control plane saw 2 channel_stop events, want exactly 1: a channel announces its ending from ONE place, run's deferred emitStop (Ruling R9)`. **It stayed green 6/6 in the at-least-one shape**: `eventsOf` returns as soon as the first event lands, so a second raise arriving a moment later was invisible to the `len()` check immediately after. Closing the emitter before counting is what makes "exactly one" mean it — Constraint 55's latch hazard, relocated from a wait into an assertion |
 
 ### The nine statements Gate 2 found uncovered, and what closed each
 
@@ -1140,7 +1165,7 @@ Every row was run. The **message** column is the actual output, not a prediction
 
 After: **zero added-and-missing lines in all three in-scope files**, and `missing` 1497-1498 against the floor's 1525.
 
-**Four rows stayed green on a first attempt and each produced a better test or less code.** 2 and 3: the golden pins the encoder and its fixture supplied both values the builder computes — `detail_builder_test.go` exists because of them. 9: the fMP4 read stopped at the init segment, before the fragment loop had run once. 10: every denial row carried a body, so the branch that handles a body-less one was never entered. 3b deleted an unreachable guard. **18 was green against the test that originally produced its panic**, because `net/http` recovers a panic in a request goroutine — the pin moved to the mechanism.
+**Five rows stayed green on a first attempt and each produced a better test or less code.** 2 and 3: the golden pins the encoder and its fixture supplied both values the builder computes — `detail_builder_test.go` exists because of them. 9: the fMP4 read stopped at the init segment, before the fragment loop had run once. 10: every denial row carried a body, so the branch that handles a body-less one was never entered. 3b deleted an unreachable guard. **25 was green in its at-least-one shape** until the assertion stopped racing the second raise. **18 was green against the test that originally produced its panic**, because `net/http` recovers a panic in a request goroutine — the pin moved to the mechanism.
 
 ---
 
@@ -2804,12 +2829,14 @@ import (
 )
 
 // userAgentEventLimit is the cut both generators apply before the user agent
-// reaches an event: `self.client_user_agent[:100]`
-// (output/ts/generator.py:137, output/fmp4/generator.py:119).
+// reaches an event: `self.client_user_agent[:100]`, at
+// output/ts/generator.py:138 (client_connect) and :658 (client_disconnect),
+// and output/fmp4/generator.py:120 (client_connect, the only event that file
+// raises).
 const userAgentEventLimit = 100
 
 // clientEventDetails is the four details both client transitions carry
-// (output/ts/generator.py:132-143, output/fmp4/generator.py:114-126):
+// (output/ts/generator.py:132-144, output/fmp4/generator.py:114-127):
 // client_ip, client_id, a user agent cut at 100 characters, and the user id
 // with an empty one sent as null.
 //
@@ -4582,9 +4609,21 @@ func TestStoppingAChannelRaisesChannelStop(t *testing.T) {
 	}
 	_ = response.Body.Close()
 
-	stops := eventsOf(t, r, "channel_stop", 1)
+	// CLOSE THE EMITTER BEFORE COUNTING, and that is the whole difference
+	// between "at least one" and "exactly one". eventsOf returns as soon as
+	// the first event lands, so a second raise arriving a moment later is
+	// invisible to a len() check that runs immediately after it -- the same
+	// latch-that-fires-early hazard Constraint 55 names, relocated from a
+	// wait into an assertion. Close drains the queue and waits for the
+	// worker, so after it there is nothing in flight to arrive late.
+	// Demonstrated: with a second c.emitStop() injected into Manager.Stop,
+	// the at-least-one shape passed 6/6 and this one reddens.
+	eventsOf(t, r, "channel_stop", 1)
+	r.Emitter.Close()
+	stops := r.Control.EventsOfType("channel_stop")
 	if len(stops) != 1 {
-		t.Fatalf("the control plane saw %d channel_stop events, want 1", len(stops))
+		t.Fatalf("the control plane saw %d channel_stop events, want exactly 1: a channel "+
+			"announces its ending from ONE place, run's deferred emitStop (Ruling R9)", len(stops))
 	}
 	if stops[0].ChannelID != "c-stopevent" {
 		t.Errorf("channel_stop named %q", stops[0].ChannelID)
@@ -5968,10 +6007,10 @@ index 10a6ad18..b9c42e41 100644
      re_path("player_api.php", xc_player_api, name="xc_player_api"),
      re_path("panel_api.php", xc_panel_api, name="xc_panel_api"),
 diff --git a/docker/Dockerfile b/docker/Dockerfile
-index 8173d6d1..4cabd0ec 100644
+index 8173d6d1..6f2a3465 100644
 --- a/docker/Dockerfile
 +++ b/docker/Dockerfile
-@@ -88,6 +88,19 @@ RUN if [ -n "$TIMESTAMP" ]; then \
+@@ -88,6 +88,30 @@ RUN if [ -n "$TIMESTAMP" ]; then \
      cat /app/version.py; \
      fi
  
@@ -5985,8 +6024,19 @@ index 8173d6d1..4cabd0ec 100644
 +# dead relay is reported unhealthy inside a minute.
 +# Exec form, not shell form: hadolint's DL3025 warns on the latter, and the
 +# repo's Dockerfiles are at zero hadolint findings.
++#
++# AND IT NAMES THE INTERPRETER RATHER THAN RELYING ON THE SCRIPT'S MODE BIT.
++# Exec form does not go through a shell, so `CMD ["/app/docker/healthcheck.sh"]`
++# needs the file to be executable: at 0644 every probe fails with
++# `permission denied` and the container reports `unhealthy` for ever, with
++# nothing in the build or the test suite saying so -- hadolint is clean either
++# way and no Go or Python test reads this file. The script IS committed 0755
++# (`git ls-files -s docker/healthcheck.sh`), and this form means a mode bit
++# lost to a patch that does not carry modes, an editor, or a file written by
++# hand cannot silently disable the probe. Belt and braces, deliberately: the
++# mode is the intent and the interpreter is the guarantee.
 +HEALTHCHECK --interval=15s --timeout=5s --start-period=30s --retries=3 \
-+    CMD ["/app/docker/healthcheck.sh"]
++    CMD ["/bin/sh", "/app/docker/healthcheck.sh"]
 +
  # No static `USER` here: the container starts as root by design so
  # entrypoint.sh can create a user at the PUID/PGID the operator supplies (NAS
@@ -7191,7 +7241,8 @@ import (
 func TestTheBudgetFitsInsideSupervisordsStopWindow(t *testing.T) {
 	// docker/supervisord.d/relay-go.conf:34. Written here as a literal
 	// because it lives in a file this package cannot read, and the plan's
-	// Task 7 says to change both together.
+	// docker/supervisord.d/relay-go.conf:34, which the plan's Task 8 changes
+	// together with this constant when either moves.
 	const supervisordStopWait = 20 * time.Second
 
 	if DefaultBudget >= supervisordStopWait {
@@ -7679,9 +7730,11 @@ func (r *rig) healthz(t *testing.T) int {
 }
 ```
 
-### Appendix AH — `docker/healthcheck.sh`
+### Appendix AH — `docker/healthcheck.sh` (committed mode **100755**)
 
 Constraint 52. Role-aware, reading the role `entrypoint.sh` writes, and exiting 0 for a role with no `relay-go` to probe.
+
+**THE MODE IS PART OF THE FILE.** `git ls-files -s docker/healthcheck.sh` must print `100755`; a plan appendix is text and carries no mode, so Task 8 Step 9 runs `chmod +x` before staging. The `HEALTHCHECK` also names the interpreter (`["/bin/sh", …]`) so that a lost mode bit cannot silently disable the probe — measured in a container: bare exec form at 0644 gives exit −1 and `OCI runtime exec failed`, the interpreter form at the same 0644 runs and gives exit 7. Break-check 23.
 
 **`docker/healthcheck.sh`**
 
@@ -7883,6 +7936,52 @@ One `Lifecycle` shared three ways, the signal handler installed before `ListenAn
  }
  
  // The health endpoints must not depend on the dev flag: a deployment with the
+@@ -43,11 +69,41 @@
+ // pass with the route registered and the handler erroring.
+ func TestStreamRouteIsUnregisteredWithoutTheDevFlag(t *testing.T) {
+ 	srv := New(Config{DevRoutes: false})
+-	rec := httptest.NewRecorder()
+-	srv.Handler().ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/proxy/ts/stream/abc", nil))
+-	if rec.Code != http.StatusNotFound {
+-		t.Fatalf("GET /proxy/ts/stream/abc with DevRoutes=false = %d, want 404 (the route must not be registered at all)", rec.Code)
++
++	// EVERY GATED ROUTE, not just the first one. 2c-8 adds six -- the two XC
++	// live roots and the four control routes -- and one of them,
++	// GET /{username}/{password}/{channelID}, is the broadest pattern this
++	// relay has ever registered: three bare wildcards at the site root. The
++	// plan's opening claim is that this PR is inert in every deployment, and
++	// a test that checks one path of seven cannot carry it.
++	for _, tc := range []struct {
++		method, path string
++	}{
++		{http.MethodGet, "/proxy/ts/stream/abc"},
++		{http.MethodGet, "/live/user/pass/12345"},
++		{http.MethodGet, "/user/pass/12345"},
++		{http.MethodGet, "/proxy/relay/channels"},
++		{http.MethodGet, "/proxy/relay/channels/abc"},
++		{http.MethodDelete, "/proxy/relay/channels/abc/clients/client-a"},
++		{http.MethodPost, "/proxy/relay/channels/abc/advance"},
++	} {
++		rec := httptest.NewRecorder()
++		srv.Handler().ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), tc.method, tc.path, nil))
++		if rec.Code != http.StatusNotFound {
++			t.Errorf("%s %s with DevRoutes=false = %d, want 404 (the route must not be registered at all)",
++				tc.method, tc.path, rec.Code)
++		}
+ 	}
++
++	// And the two operational endpoints are still served, so "the mux is
++	// empty" cannot be what makes the seven above pass.
++	for _, path := range []string{"/healthz", "/readyz"} {
++		rec := httptest.NewRecorder()
++		srv.Handler().ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, path, nil))
++		if rec.Code != http.StatusOK {
++			t.Errorf("GET %s with DevRoutes=false = %d, want 200", path, rec.Code)
++		}
++	}
+ }
+ 
+ // ServeMux's method matching, asserted because it is doing real work here:
 ```
 
 **`relay/httpapi/stream_test.go`**
