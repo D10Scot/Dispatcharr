@@ -1,0 +1,201 @@
+# The Go relay's ratchet floor -- Gate 2's counterpart for relay/. See
+# docs/superpowers/specs/2026-09-09-phase2-go-relay-design.md (Stage 2c, the
+# 2c-9 row, and Amendment A9) and
+# docs/superpowers/plans/2026-09-13-phase2-2c9-go-coverage-gate.md.
+#
+# `missing` is the ratchet -- a MAXIMUM, not a target, and lower is better. It
+# is set from the WORST run of at least twelve IN CI, where the gate is
+# enforced, which is why this gate carries no separate tolerance parameter: the
+# measured spread is already inside the number. The floor is NOT set from a
+# local census. The Python gate learned that the expensive way -- its first
+# floor came from a 21-round LOCAL campaign whose maximum the very first CI run
+# exceeded -- and this file inherits the lesson rather than re-learning it.
+#
+# WHAT IS MEASURED. The ten packages `go list -deps .` reports from relay/ on
+# a635190c, `drain` included -- the packages the SHIPPED BINARY LINKS.
+# relay/internal/relaytest (the Go
+# counterpart of apps/proxy/live_proxy/tests/harness/) and
+# relay/internal/credlint (a lint tool run with `go run`) are in the module and
+# in NEITHER, by the same rule scripts/coverage_live_path.coveragerc applies on
+# the Python side. The difference is large and stated rather than buried:
+# measured on one run at a635190c, the whole module is 4,463 statements / 1,172
+# missing / 73.74%; the ten linked packages are 3,696 / 587 / 84.12%; and the
+# two excluded packages are 767 statements of which 585 are missing -- HALF the
+# module's shortfall is test scaffolding and a lint tool.
+#
+# HOW. `go test -count=1 -race -covermode=atomic -coverprofile=... ./...`, per
+# package -- NOT -coverpkg, which counts a package as covered when a
+# neighbour's test walks through it (measured on the same tree: 316 missing
+# instead of 587, a 271-statement, 7.33-point difference). A -coverpkg profile
+# repeats every block once per test binary and --gate refuses one outright.
+# -count=1 is load-bearing: `go test` replays a cached coverage profile
+# verbatim, so a census without it is one run reported N times.
+#
+# -race IS PART OF THE SHAPE, not an option. A figure measured without it is
+# not comparable with one measured with it in either direction, the same
+# argument scripts/coverage_live_path.sh makes about COVERAGE_CORE.
+#
+# `shape`, `packages` and `gomod` are EQUALITY checks, not comparisons. A
+# different measurement shape, package set or measurement DEFINITION makes two
+# numbers incomparable rather than better or worse, and the gate says so
+# instead of ratcheting.
+#
+# `packages` is a sha256 (first 12 hex chars) of the sorted list of this
+# module's linked import paths -- WHICH packages are in scope, not how big they
+# are -- with the full sorted list committed alongside this file in
+# scripts/coverage_relay_go.floor.packages so a --gate mismatch can name the
+# packages added and removed, not just show two unequal hashes. gate() verifies
+# the companion against `packages` on EVERY run, independent of the current
+# profile, because the two are written in separate steps by --write-floor and
+# could otherwise drift silently.
+#
+# `gomod` is a sha256 (first 12 hex chars) of relay/go.mod's raw BYTES. It is
+# the counterpart of the Python gate's `rcfile=`: go.mod fixes the toolchain
+# version the measurement ran under (CI reads it through `go-version-file`) and
+# the module's dependency set, and either moving makes two numbers
+# incomparable. `packages` alone is blind to a toolchain bump.
+#
+# `statements` is NOT compared -- it is recorded provenance only. It moves
+# whenever ANY statement is added to or removed from an already-included
+# package, which is ordinary code work, not a scope change; comparing it for
+# equality would fire on every PR that touches the relay.
+#
+# A DRAW ABOVE `missing` IS A FINDING TO INVESTIGATE, NOT NOISE. Attribute it
+# per package and then per BLOCK -- diff the uncovered block SETS between a red
+# draw's profile and a green one's, never difference the totals:
+#
+#   awk 'NR>1 && $3==0 {print $1}' relay.coverprofile | LC_ALL=C sort
+#
+# If it turns out to be the documented flap exceeding its recorded envelope,
+# the fix is a re-measurement PR of its own -- more CI draws, then `missing`
+# raised to the new worst with the census updated -- NEVER a floor bump on the
+# PR that happened to draw it. Issue #312 is the Python gate's worked instance
+# of exactly this.
+#
+# ONE HALF OF #312 CANNOT ARISE HERE, and it is worth knowing why. Its second
+# operational note is that CI's coverage artifacts are unusable locally,
+# because coverage.py records absolute paths (/__w/Dispatcharr/Dispatcharr/...)
+# and the committed rcfile has no [paths] section. A Go coverprofile's first
+# column is an IMPORT PATH --
+# github.com/D10Scot/Dispatcharr/relay/buffer/ring.go:31.42,35.3 -- so a
+# downloaded artifact parses identically on any machine with no remapping. The
+# attribution command above works on a CI artifact as-is -- confirmed here:
+# both round-1 (max) and round-3 (min) artifacts were downloaded and diffed
+# directly with no path remapping.
+#
+# Written by:  scripts/coverage_relay_go.sh --write-floor
+# Enforced by: scripts/coverage_relay_go.sh --gate  (go-tests.yml, job coverage)
+#
+# PROVENANCE (Phase 2 PR 2c-9, Task 8 -- measured in CI, where the gate is
+# enforced). `missing` below is the WORST of 12 rounds of go-tests.yml's own
+# build + coverage jobs, on migration/phase2c-go-coverage-gate at
+# ea4265c2286a5ab2b28d3983ce745cdc22502f7a, 2026-09-16. Full sequence, in
+# order (run ids: 35043677915, 35044213100, 35044545217, 35044883830,
+# 35045187271, 35045499422, 35045813510, 35046127210, 35046483138,
+# 35046806295, 35047130356, 35047444966):
+#   589 589 588 588 589 589 589 588 588 588 588 589
+# max=589 (round 1)  min=588  spread=1  n=12
+# The stopping rule (maximum unchanged for >=6 consecutive rounds, minimum 12)
+# was already satisfied on the 6-consecutive-rounds half by round 6 (the
+# running max was set at round 1 and never moved through round 6, let alone
+# round 12); the campaign continued to round 12 purely to satisfy the
+# >=12-total half, so the rule was met at round 12 with both halves holding
+# simultaneously and no round after the first ever exceeding 589.
+#
+# THE FLAPPY-BLOCK CENSUS, derived first-hand from two of these draws' own
+# retained profiles (round 1, a maximum draw at 589, and round 3, a minimum
+# draw at 588; block sets diffed with the awk command above), NOT inherited
+# from a citation and NOT copied from the local campaign:
+#   relay/buffer/ring.go:262.3,263.1 -- the empty-ring arm of Ring.Oldest()
+#     (`if len(r.chunks) == 0 { return 0, false }`), covered only when some
+#     test happens to call it before the channel's first write lands.
+# 1 block flaps, and 1 == (589 - 588), so on this tree that set IS the spread
+# rather than merely a contributor to it.
+#
+# RE-DERIVE IT; DO NOT CARRY THIS SET FORWARD UNCHANGED. Two LOCAL rigs
+# measuring the same tree earlier found a second candidate block flap too
+# (relay/httpapi/fmp4.go:188.4,189.1, the ctx.Err() early return in the fMP4
+# client loop) -- it did not appear in either of these two CI profiles' diff,
+# which is itself the point: unobserved-to-vary across two draws is not proof
+# a second block cannot flap, only absence of observed variance in this
+# sample. A future correction should re-derive from CI artifacts again rather
+# than assume today's one-block set is permanent.
+#
+# LOCAL VS CI. A 12-round LOCAL census on this same tree (Ruling R5) ran
+# 586-588 across two rigs (spread 2, TWO blocks flapping -- ring.go's above
+# plus fmp4.go's ctx.Err() arm -- and not the same two on each rig). The CI
+# census above ran 588-589 (spread 1, one block). Recorded so the next
+# campaign can see whether the gap reproduces, and NOT as an offset to budget
+# against: the Python gate measured local+35 in one campaign and local+13 in
+# the next, which is itself the evidence that the gap is not a constant. The
+# correct response stays "measure in CI".
+#
+# THE THRESHOLD. D7 requires >=80% on the live path, transferring to Go at
+# >=80%. The ceiling is statements - ceil(0.8 * statements) = 739; `missing`
+# is 589, so the margin is 150 statements and coverage at the floor is 84.06%.
+# DOWN FROM 253 AT THE 2c-7 SEED (2c-8 added 740 linked statements carrying
+# 249 missing ones, a marginal coverage of 66.4% on its own additions).
+# Recorded because the next PR of that shape breaches the gate, and the right
+# time to know that is before it is written, not when CI says so.
+#
+# WHICH PACKAGES OWE THE SHORTFALL, and why this file names them. `missing` is
+# a MODULE TOTAL, so it cannot tell one package getting worse from another
+# getting better: a PR that adds well-covered code to one package can offset a
+# regression in another with this number unmoved and the gate green. D7's
+# stated purpose is catching a subtle regression, which is exactly the shape
+# that hides in a total. On this tree two packages are individually under 80%
+# and between them hold more than half the shortfall:
+#
+#   relay/channel   1063 statements   219 missing   79.40%   37.2% of the 589
+#   relay/control    404 statements    94 missing   76.73%   16.0% of the 589
+#   both            1467 statements   313 missing   78.66%   53.1% of the 589
+#
+# So THOSE TWO are what a later stage should read before adding to either, and
+# `--report`'s per-package table is where to read it -- not the one number
+# `--gate` compares. No per-package floor is enforced here, deliberately: a
+# second ratchet is a second thing to re-measure and re-baseline every time the
+# module moves, and 2c-9 closes stage 2c rather than opening machinery for it.
+# Naming them is the cheaper half of the same job.
+#
+# HOW TO MOVE THIS FLOOR (read before running --write-floor).
+#
+# THESE ARE TWO DIFFERENT KINDS OF MOVE, and only one of them needs a campaign.
+# A `missing` move changes what the ratchet PERMITS and can only be justified
+# by a real measurement of the spread -- steps 1-5 below. A
+# `shape`/`packages`/`gomod`-only re-baseline (the linked package set or
+# relay/go.mod changed, deliberately, and `missing` is UNCHANGED) is not a
+# claim about the spread at all: it tells the gate "the thing being measured is
+# different now, here is its new identity". That needs exactly ONE clean run
+# and a single `--write-floor --shape-only`, which writes FEWER fields -- it
+# never touches `missing`, `percent`, `measured` or `runs`, so there is no new
+# figure to earn. Say which kind of move it is in the PR either way.
+#
+#   1. Measure IN CI: dispatch go-tests.yml on the branch repeatedly and read
+#      `this run missing=` from each Coverage gate job, until the MAXIMUM has
+#      been unchanged for >=6 consecutive rounds, >=12 total. Record every
+#      round, in order -- a bare min/max cannot show the rule was met. Note
+#      go-tests.yml's concurrency group is per-ref with cancel-in-progress, so
+#      rounds on one branch are sequential, not parallel. Local rounds are
+#      worth taking (they are far faster and they attribute per block) but they
+#      do NOT set the number.
+#   2. Take max(rounds). That number, not any single run's figure, is `missing`.
+#   3. Run plain --write-floor once, from a writable checkout, to get the file
+#      FORMAT, `shape`, `statements`, `packages`, `package_count` and `gomod`
+#      machine-produced -- and scripts/coverage_relay_go.floor.packages
+#      rewritten to match. Commit both; the companion is what lets a future
+#      mismatch name packages rather than hashes.
+#   4. Hand-edit `missing` to max(rounds) and recompute
+#      `percent` = (1 - missing/statements) * 100. This hand-edit is the
+#      honest, documented step: --write-floor writes the figure from the run it
+#      JUST took and cannot know it is the Nth of a campaign.
+#   5. Re-run --gate and confirm it exits 0 against the new floor before
+#      committing.
+shape=go-race-per-package/v1
+statements=3696
+missing=589
+percent=84.06
+measured=2026-09-16
+runs=12
+packages=0321b777fc5d
+package_count=10
+gomod=92baf312d30d
