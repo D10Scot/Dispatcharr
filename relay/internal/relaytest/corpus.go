@@ -38,6 +38,17 @@ func repoRoot() string {
 	return filepath.Dir(filepath.Dir(filepath.Dir(filepath.Dir(file))))
 }
 
+// RepoRoot is the repository root, resolved from this file's own compiled-in
+// path. Exported because this package is the module's ONE answer to "where is
+// the repo from a test": relay/drain's own test reads
+// docker/supervisord.d/relay-go.conf through it, and a second, independently
+// maintained directory walk is the kind of drift that goes wrong quietly.
+//
+// runtime.Caller rather than the working directory, for the reason repoRoot's
+// own comment gives: `go test` sets the cwd to the PACKAGE directory, which is
+// a different depth for every package that asks.
+func RepoRoot() string { return repoRoot() }
+
 // CorpusPath is the absolute path of one capture.
 func CorpusPath(name string) string {
 	for _, known := range CorpusNames {
