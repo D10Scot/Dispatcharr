@@ -2613,7 +2613,7 @@ whose wire name is not a Python identifier is silently input-blind, and
 this contract has one more such field waiting to be added the moment a
 fourth credential header is discovered.
 
-#### Amendment A9 (2c-9) — eleven rulings from the Go coverage gate and 2c's close-out
+#### Amendment A9 (2c-9) — twelve rulings from the Go coverage gate and 2c's close-out
 
 **A9.1 — the gate's files are `scripts/coverage_relay_go.*`, not the 2c-9 row's
 `scripts/coverage_live_path_go.floor`.** `dispatcharr/test_discovery.py`'s
@@ -3067,7 +3067,7 @@ remainder of Phase 3.
 |---|---|---|
 | The live relay performs zero ORM reads. | **Met**, with the honesty caveat § Stage 2b's own table states: some of the deleted fallback reads may turn out on inspection to still be needed, and the guard test — not the table's row count — is the actual close criterion. | 2b-1, 2b-2, 2b-3 |
 | No live client keys exist in Redis. | **Met, and already half-true before this phase started** — `_live_connections` already asks the relay over HTTP (D4). | 2c-3 |
-| The Go binary links no Postgres driver, no Redis client. | **Met by construction**, walked family-by-family in § Stage 2c; recorded honestly as a walk, not a guarantee, until 2c-9 confirms it against the finished `go.sum` (which should still be empty). | 2c-9 |
+| The Go binary links no Postgres driver, no Redis client. | **Met by construction**, walked family-by-family in § Stage 2c, and confirmed at 2c-9 against the finished tree: `go.sum` absent and `go list -m all` prints exactly `github.com/D10Scot/Dispatcharr/relay`, so the walk is no longer standing alone as a guarantee. | 2c-9 |
 | Strict behavioural parity on every externally-observable live-path behaviour, defects included. | **Met**, by the parity matrix reaching 100% Go-columned rows in 2c-9, with the two named D5 exceptions recorded as deliberate, not accidental, divergence. | 2c-9 |
 | The ownership lease's un-fenced write path is closed. | **Met, by elimination rather than by fencing.** D2 deletes the lease outright; there is no analogous defect in a single-owner-per-process design. `CLAUDE.md`'s carried defect is retired, not fixed in place. | 2c-2 |
 | A drain on shutdown, a readiness probe, a health check. | **Met**, new capability the Python relay never had (D6). | 2c-8 |
