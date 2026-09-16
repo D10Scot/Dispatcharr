@@ -174,10 +174,19 @@ func (c *timeCell) get() time.Time  { c.mu.Lock(); defer c.mu.Unlock(); return c
 
 func (s deadAirSource) Run(ctx context.Context, sink io.Writer) error {
 	payload := relaytest.SyntheticTS(s.packets, 0x100)
+	// Stamped BEFORE the write, because dataClock.Write records the channel's
+	// own lastData at the START of the write (health.go's dataClock) and the
+	// monitor measures from THAT -- so a stamp taken afterwards is later than
+	// the monitor's clock by however long the ring write took, and the
+	// assertion below is a `>=` on the gap. Directional, and MEASURED NOT TO
+	// BE SUFFICIENT on its own: under load this shape still drew 2 sub-400 ms
+	// gaps in 60 runs against the unfixed shape's 1 in 60. The bound below is
+	// what actually closes #309; this is the perturbation it was cheap to
+	// remove first.
+	s.lastWrite.set(time.Now())
 	if _, err := sink.Write(payload); err != nil {
 		return err
 	}
-	s.lastWrite.set(time.Now())
 	<-ctx.Done()
 	return ctx.Err()
 }
@@ -356,8 +365,29 @@ func TestDeadAirOnAYoungConnectionSwitchesStreams(t *testing.T) {
 		t.Fatal("the channel was never observed unhealthy before it switched")
 	}
 	asked, wrote := resolver.firstCallAt(), lastWrite.get()
-	if gap := asked.Sub(wrote); gap < tuning.ConnectionTimeout+2*tuning.HealthCheckInterval {
-		t.Fatalf("the resolver was asked %s after the last byte, under CONNECTION_TIMEOUT + two more checks (%s): the monitor did not wait for three consecutive checks", gap, tuning.ConnectionTimeout+2*tuning.HealthCheckInterval)
+	// THE CLAIM IS THREE CHECKS AND IT IS NOT WEAKENED; what moves is the
+	// clock tolerance, and #309 is why.
+	//
+	// The monitor's first unhealthy check is the first TICK whose inactivity
+	// exceeds CONNECTION_TIMEOUT, and the tick grid is phased on the monitor's
+	// start rather than on the last byte. Instrumented on this tree, the six
+	// ticks to 300 ms land at 301.093 ms -- 1.09 ms past, that overshoot being
+	// the ticker's accumulated drift -- and the third unhealthy check two ticks
+	// later at ~400.6 ms. So the margin above a floor of exactly
+	// CONNECTION_TIMEOUT + 2 intervals is the DRIFT ALONE, about a
+	// millisecond, not the 50 ms interval it looks like. Any sub-millisecond
+	// perturbation breaches it: measured at 399.966, 399.960 and 399.995 ms on
+	// a loaded host, with and without the stamp fix above alike.
+	//
+	// A tenth of an interval -- 5 ms here -- is two orders of magnitude below
+	// the 50 ms that separates this from acting one check early, so the test
+	// still reddens on a monitor that acts on the second check (~350.6 ms
+	// measured) or the first (~301 ms), which is what it exists to catch.
+	// Measured with this bound: 30 loaded runs, zero failures, minimum gap
+	// 399.989 ms -- 5 ms of real margin where the old bound had 40 microseconds.
+	floor := tuning.ConnectionTimeout + 2*tuning.HealthCheckInterval - tuning.HealthCheckInterval/10
+	if gap := asked.Sub(wrote); gap < floor {
+		t.Fatalf("the resolver was asked %s after the last byte, under CONNECTION_TIMEOUT + two more checks less a tenth of an interval (%s): the monitor did not wait for three consecutive checks", gap, floor)
 	} else if gap > 3*time.Second {
 		t.Fatalf("the resolver was asked %s after the last byte: the dead air was not acted on", gap)
 	}
