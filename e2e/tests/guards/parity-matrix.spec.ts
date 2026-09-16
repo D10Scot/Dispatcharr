@@ -20,7 +20,9 @@
  *   5. `white-box-only` rows are exactly the allowlisted ones, each with a
  *      justification in its `Notes` cell;
  *   6. unpinned rows are exactly the ones the guard still owes;
- *   7. rows owed by one PR are contiguous in file order.
+ *   7. rows owed by one PR are contiguous in file order;
+ *   8. every pinned row cites at least one `.go` test, once GO_PARITY_CLOSED
+ *      says the matrix is 100% Go-columned.
  *
  * Checks 5 and 6 duplicate a fact between the document and this directory on
  * purpose, in `capabilities.spec.ts`'s idiom and for its reason: `toEqual`,
@@ -109,6 +111,8 @@ import {
   citationProblem,
   citationsIn,
   GATE_1_CLOSED,
+  GO_PARITY_CLOSED,
+  goRefs,
   HIGHEST_ROW_ID,
   MATRIX_REL,
   parseMatrix,
@@ -330,6 +334,43 @@ test('Gate 1: the matrix is fully pinned when the flag says so', { tag: '@charac
       `${kinds.filter((k) => k === 'test').length} pinned, ` +
       `${kinds.filter((k) => k === 'owed').length} owed, ` +
       `${kinds.filter((k) => k === 'white-box-only').length} white-box-only.`,
+  );
+});
+
+test('Gate 1 in Go: every pinnable row carries a Go reference', { tag: '@characterization' }, async () => {
+  const rows = parseMatrix(await readMatrix());
+
+  // Only `test` pins are in scope. An `owed:` pin is Gate 1's business and is
+  // already empty; a white-box-only pin is a row the Go relay is not held to
+  // at all, and the allowlist check above is what keeps that set honest.
+  const pinned = rows.filter((row) => parsePin(row.pin)?.kind === 'test');
+  const bare = pinned
+    .filter((row) => goRefs(parsePin(row.pin)).length === 0)
+    .map((row) => row.id)
+    .sort((a, b) => a - b);
+
+  if (GO_PARITY_CLOSED) {
+    expect(
+      bare,
+      'GO_PARITY_CLOSED is true, so every pinned row must cite at least one `.go` test. This ' +
+        "matrix is stage 2d's cutover checklist — its own header says every row must show a " +
+        'passing Go-side equivalent before nginx\'s live locations move — and a row that loses ' +
+        'its Go reference loses that evidence silently. Rows with a Python pin and no Go one: ' +
+        `${bare.join(', ') || '(none)'}.`,
+    ).toEqual([]);
+  } else {
+    expect(
+      bare.length,
+      'No pinned row lacks a Go reference any more — you just closed the last one. Flip ' +
+        'GO_PARITY_CLOSED to true in e2e/tests/guards/parity-matrix.ts, in this same commit: ' +
+        'the matrix is 100% Go-columned, and from here the guard asserts it stays so.',
+    ).toBeGreaterThan(0);
+  }
+
+  const goPinned = pinned.length - bare.length;
+  console.log(
+    `parity matrix (Go): ${goPinned} of ${pinned.length} pinned rows carry a Go reference; ` +
+      `${rows.length - pinned.length} row(s) are not pinnable.`,
   );
 });
 
