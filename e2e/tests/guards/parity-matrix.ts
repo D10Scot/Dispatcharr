@@ -568,3 +568,37 @@ export const HIGHEST_ROW_ID = 30;
  * `true`, so Gate 1 cannot silently reopen.
  */
 export const GATE_1_CLOSED = true;
+
+/**
+ * Whether every pinnable row now carries a **Go** test reference as well as a
+ * Python one.
+ *
+ * The second half of Gate 1, and the thing stage 2d's cutover checklist
+ * actually depends on: `docs/relay-parity-matrix.md`'s own header says "every
+ * row must show a passing Go-side equivalent before nginx's live locations
+ * move", and until 2c-9 nothing checked it. Amendment A2.2 ruled that "gets a
+ * Go column" means one more backticked `path::symbol` in the `Pin` cell a row
+ * already has, not a sixth table column — so the property is "every `test` pin
+ * carries at least one `.go` reference", and it is invisible to every other
+ * check here: `testRefProblem` verifies that a `.go` reference RESOLVES, and
+ * says nothing about whether one is present.
+ *
+ * The two white-box-only rows are exempt by construction rather than by an
+ * exemption list: their pin is not a `test` pin at all, so they never enter
+ * this check. That the set of such rows is exactly {26, 27} is already a
+ * two-sided `toEqual` above, which is what stops "white-box-only" being used
+ * to make an un-ported row stop counting here.
+ *
+ * Same two-branch shape as GATE_1_CLOSED, for the same reason: while `false`
+ * the guard asserts at least one row is still bare, so the PR that closes the
+ * last one is TOLD to flip this rather than discovering later that nobody
+ * noticed; once `true` it asserts none is, so the property cannot silently
+ * reopen when 2d starts deleting Python.
+ */
+export const GO_PARITY_CLOSED = true;
+
+/** The `.go` references in a pin, empty for every other pin kind. */
+export function goRefs(pin: Pin | undefined): TestRef[] {
+  if (pin?.kind !== 'test') return [];
+  return pin.refs.filter((ref) => ref.file.endsWith('.go'));
+}

@@ -2,10 +2,60 @@ package drain
 
 import (
 	"context"
+	"os"
+	"path/filepath"
+	"regexp"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/D10Scot/Dispatcharr/relay/internal/relaytest"
 )
+
+// supervisordStopWaitRe finds the ONE key this test's claim rests on. Anchored
+// and comment-aware: `#stopwaitsecs=99` in a note must not be read as the
+// setting, and supervisord's own ini parser would not read it either.
+var supervisordStopWaitRe = regexp.MustCompile(`(?m)^[ \t]*stopwaitsecs[ \t]*=[ \t]*([0-9]+)[ \t]*$`)
+
+// supervisordStopWait reads relay-go's stopwaitsecs out of the conf that
+// actually ships, rather than restating it as a Go constant.
+//
+// WHY THIS IS READ AND NOT COPIED. The number is a THRESHOLD DERIVED FROM
+// ANOTHER FILE, and a derived threshold restated as a literal goes stale
+// silently: change the conf and this test keeps asserting against the number
+// it was written with, reporting green about a window that no longer exists.
+// The comment this replaces said the conf "lives in a file this package cannot
+// read" -- which is not so, and the counter-example is in this module:
+// relay/internal/relaytest/corpus.go reads the Python harness's stderr
+// fixtures from a test, by the same runtime.Caller walk RepoRoot exposes here.
+//
+// It FAILS rather than skips or defaults when the file or the key is missing.
+// A helper that fell back to 20 would turn a renamed key into a permanently
+// green test asserting a number nothing in the repository says any more, which
+// is the silence-read-as-pass shape this test exists to avoid one level up.
+func supervisordStopWait(t *testing.T) time.Duration {
+	t.Helper()
+	rel := filepath.Join("docker", "supervisord.d", "relay-go.conf")
+	path := filepath.Join(relaytest.RepoRoot(), rel)
+	raw, err := os.ReadFile(path) // #nosec G304 -- a path this test computed from the repo root
+	if err != nil {
+		t.Fatalf("cannot read %s: %v -- this test's whole claim is a relationship between the "+
+			"drain's budget and that file's stopwaitsecs, so it must not pass without reading it",
+			rel, err)
+	}
+	match := supervisordStopWaitRe.FindSubmatch(raw)
+	if match == nil {
+		t.Fatalf("%s declares no stopwaitsecs=<n>. Either supervisord's stop window for relay-go "+
+			"moved to another key, or it was removed -- both change what this test is asserting, "+
+			"so neither may be defaulted through", rel)
+	}
+	seconds, err := strconv.Atoi(string(match[1]))
+	if err != nil { // unreachable while the pattern is [0-9]+, kept so a widened pattern cannot pass silently
+		t.Fatalf("%s: stopwaitsecs=%q is not an integer: %v", rel, match[1], err)
+	}
+	return time.Duration(seconds) * time.Second
+}
 
 // The three budgets are Go-side constants that answer to ONE external number:
 // docker/supervisord.d/relay-go.conf's stopwaitsecs=20, after which
@@ -13,11 +63,10 @@ import (
 // rather than as three literals, so a later change to any of them has to keep
 // the sum inside the window it exists to fit.
 func TestTheBudgetFitsInsideSupervisordsStopWindow(t *testing.T) {
-	// docker/supervisord.d/relay-go.conf:34. Written here as a literal
-	// because it lives in a file this package cannot read, and the plan's
-	// docker/supervisord.d/relay-go.conf:34, which the plan's Task 8 changes
-	// together with this constant when either moves.
-	const supervisordStopWait = 20 * time.Second
+	// READ from docker/supervisord.d/relay-go.conf, not restated here: this
+	// assertion is a relationship between a Go constant and that file's
+	// number, and a copy of the number cannot notice the file changing.
+	supervisordStopWait := supervisordStopWait(t)
 
 	if DefaultBudget >= supervisordStopWait {
 		t.Fatalf("DefaultBudget is %s against a stopwaitsecs of %s: the drain would be "+
