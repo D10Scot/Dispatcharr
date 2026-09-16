@@ -9,9 +9,10 @@ name: Go Tests
 # check "Expected" forever and blocking the merge.
 #
 # The coverage ratchet IS here, as of 2c-9: `build` measures (one `go test
-# -race` run, now with -coverprofile) and `coverage` gates against
-# scripts/coverage_relay_go.floor on a bare runner, both in `Go result`'s
-# needs below.
+# -race` run, now with -coverprofile), `coverage` gates against
+# scripts/coverage_relay_go.floor on a bare runner, and `differential` runs
+# the one test that drives BOTH relays from the same bytes. All three are in
+# `Go result`'s needs below.
 on:
   push:
     branches: [main]
@@ -108,8 +109,9 @@ jobs:
           # prefix is a _PATH_ALIASES entry in dispatcharr/test_discovery.py
           # that routes to three DJANGO labels, so a file named
           # coverage_live_path_go.sh would have run the Python backend suite
-          # for a Go-only change.
-          pattern='^(relay/|\.golangci\.yml$|scripts/check_go_stdlib_only\.sh$|scripts/check_go_credential_logging\.sh$|scripts/coverage_relay_go\.|\.github/workflows/go-tests\.yml$|apps/proxy/live_proxy/tests/harness/fixtures/ffmpeg_stderr/)'
+          # for a Go-only change. The differential test is named too, because
+          # it is the one Python file this workflow's `differential` job runs.
+          pattern='^(relay/|\.golangci\.yml$|scripts/check_go_stdlib_only\.sh$|scripts/check_go_credential_logging\.sh$|scripts/coverage_relay_go\.|\.github/workflows/go-tests\.yml$|apps/proxy/live_proxy/tests/harness/|apps/proxy/live_proxy/tests/test_relay_differential\.py$)'
           if printf '%s\n' "$changed" | grep -qE "$pattern"; then
             echo "go=true" >> "$GITHUB_OUTPUT"
           else
@@ -362,12 +364,112 @@ jobs:
             exit 1
           fi
 
+  # Spec Amendment A2.4: the one test that drives BOTH relays from the same
+  # synthetic asset and compares what each delivers. It lives with the Python
+  # harness because that is what can start a real Django, a real Redis and a
+  # real fake upstream — and it runs HERE rather than in a backend label
+  # because it needs a compiled relay-go, which the base image does not ship
+  # and backend-tests.yml has no reason to build.
+  #
+  # It SKIPS when DISPATCHARR_RELAY_GO_BIN is unset, which is every other run
+  # of apps.proxy.live_proxy.tests — deterministically, in both
+  # backend-tests.yml's `test` and its `coverage-label` jobs, so Gate 2's
+  # Python census sees the same thing either way and is not perturbed. The
+  # step below asserts the skip did NOT happen here, because a silently
+  # skipped differential test is green for the one reason it must never be.
+  differential:
+    name: Cross-implementation differential
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.go == 'true'
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: read
+    container:
+      image: ${{ needs.changes.outputs.base_image }} # zizmor: ignore[unpinned-images]
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: --entrypoint "" --init
+    env:
+      DISPATCHARR_ENV: aio
+      DJANGO_SECRET_KEY: ci-test-secret-key
+      POSTGRES_DB: dispatcharr
+      POSTGRES_USER: dispatch
+      POSTGRES_PASSWORD: secret
+      DISPATCHARR_LOG_LEVEL: WARNING
+      SYNC_PYTHON_DEPS: 'true'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: relay/go.mod
+
+      - name: Build relay-go
+        working-directory: ./relay
+        run: go build -o /tmp/relay-go .
+
+      - name: Drive both relays from the same bytes
+        shell: bash
+        env:
+          GITHUB_WORKSPACE: ${{ github.workspace }}
+          DISPATCHARR_RELAY_GO_BIN: /tmp/relay-go
+          # REDIRECTED, NOT PIPED, and the difference is the whole job.
+          # ci_bootstrap_backend.sh runs this through `exec bash -c "$CI_BACKEND_RUNNER"`
+          # -- a fresh shell with no `pipefail` -- so `… | tee` would exit with
+          # tee's 0 and a FAILING differential would report green. Verified:
+          # `bash -c 'bash -c "exit 7" 2>&1 | tee /tmp/x'` exits 0, and the
+          # same command with `> /tmp/x 2>&1` exits 7. The two other
+          # CI_BACKEND_RUNNER call sites in this repository are single commands,
+          # so nothing upstream was protecting this one.
+          CI_BACKEND_RUNNER: >-
+            python manage.py test --keepdb -v2
+            apps.proxy.live_proxy.tests.test_relay_differential
+            > /tmp/differential.log 2>&1
+        run: bash scripts/ci_bootstrap_backend.sh
+
+      - name: Show the differential log
+        if: always()
+        shell: bash
+        run: cat /tmp/differential.log
+
+      # THREE assertions, because the step above can only be trusted for two
+      # of them. A skip is the "silence read as pass" shape -- the job green
+      # because the test never ran -- and Django prints "skipped=N" in its
+      # summary only when something skipped, so its absence is the assertion.
+      # A nonzero "Ran N tests" says the module ran at all. And the FINAL
+      # STATUS LINE must be exactly OK: "Ran 1 test … FAILED (failures=1)"
+      # satisfies both of the other two, which is what makes the third one
+      # load-bearing rather than belt-and-braces.
+      - name: Assert the differential test ran and passed
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -qE '^Ran [1-9][0-9]* tests?' /tmp/differential.log \
+            || { echo "the runner reported no tests; the module did not run"; exit 1; }
+          if grep -q 'skipped=' /tmp/differential.log; then
+            echo "the differential test SKIPPED in the one job that must not skip it:"
+            grep -n 'skipped\|DISPATCHARR_RELAY_GO_BIN' /tmp/differential.log | head -20
+            exit 1
+          fi
+          if ! grep -qE '^OK$' /tmp/differential.log; then
+            echo "the differential test RAN and did not pass:"
+            grep -nE '^(FAILED|ERROR|OK)' /tmp/differential.log | head -5
+            exit 1
+          fi
+
   # The one check in this workflow that may be required. It always reports,
   # because it is not gated on anything — see the comment on the triggers.
   go-result:
     name: Go result
     runs-on: ubuntu-latest
-    needs: [changes, build, lint, coverage]
+    needs: [changes, build, lint, coverage, differential]
     if: always()
     timeout-minutes: 5
     steps:
@@ -377,9 +479,10 @@ jobs:
           BUILD_RESULT: ${{ needs.build.result }}
           LINT_RESULT: ${{ needs.lint.result }}
           COVERAGE_RESULT: ${{ needs.coverage.result }}
+          DIFFERENTIAL_RESULT: ${{ needs.differential.result }}
           GO_REQUIRED: ${{ needs.changes.outputs.go }}
         run: |
-          echo "changes=$CHANGES_RESULT build=$BUILD_RESULT lint=$LINT_RESULT coverage=$COVERAGE_RESULT go-required=$GO_REQUIRED"
+          echo "changes=$CHANGES_RESULT build=$BUILD_RESULT lint=$LINT_RESULT coverage=$COVERAGE_RESULT differential=$DIFFERENTIAL_RESULT go-required=$GO_REQUIRED"
           if [ "$CHANGES_RESULT" != "success" ]; then
             echo "Change detection itself failed — cannot prove the Go jobs were unnecessary."
             exit 1
@@ -390,10 +493,11 @@ jobs:
           fi
           # `skipped` here means a gated job never ran on a run that needed
           # it, so only an exact `success` may report green.
-          for pair in "build:$BUILD_RESULT" "lint:$LINT_RESULT" "coverage:$COVERAGE_RESULT"; do
+          for pair in "build:$BUILD_RESULT" "lint:$LINT_RESULT" \
+                      "coverage:$COVERAGE_RESULT" "differential:$DIFFERENTIAL_RESULT"; do
             if [ "${pair#*:}" != "success" ]; then
               echo "The Go jobs were required and ${pair%%:*} did not succeed."
               exit 1
             fi
           done
-          echo "Go build, vet, tests, lint and the coverage gate passed."
+          echo "Go build, vet, tests, lint, the coverage gate and the differential passed."
