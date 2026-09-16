@@ -697,14 +697,15 @@ Then, separately: `git commit -F /tmp/2c9-msg-2.txt`, subject `build(relay): the
 - [ ] **Step 1: Re-resolve every action pin this PR uses**
 
 ```bash
-gh api repos/actions/upload-artifact/commits/v4.6.2 --jq .sha --repo D10Scot/Dispatcharr 2>/dev/null || \
-  gh api repos/actions/upload-artifact/commits/v4.6.2 --jq .sha
+gh api repos/actions/upload-artifact/commits/v4.6.2 --jq .sha
 gh api repos/actions/download-artifact/commits/v4.3.0 --jq .sha
 gh api repos/actions/checkout/commits/v7.0.1 --jq .sha
 gh api repos/actions/setup-go/commits/v7.0.0 --jq .sha
 ```
 
-Expected: four 40-character SHAs. **Use whatever the tool returns today**, not the values written in Appendix C — those are what the seed tree already carries and are reproduced so the diff applies, not as authority. If any differs, update the appendix's line and say so in the PR description. Confirm each `<owner>/<repo>` is the real publisher before pinning.
+**Corrected during 2c-9's implementation** (see the spec's Amendment A9.12 and the Done-log row): the earlier text here appended a `--repo D10Scot/Dispatcharr` flag to the first call. `gh api` has no `--repo` flag — it errors `unknown flag: --repo` — and the flag would have been semantically wrong even if it existed: the endpoint's own path (`repos/actions/upload-artifact/...`) already names the repository whose tag is being resolved, and it is not this fork. Run without the flag, as above.
+
+Expected: four 40-character SHAs. **Use whatever the tool returns today**, not the values written in Appendix C — those are what the seed tree already carries and are reproduced so the diff applies, not as authority. If any differs, update the appendix's line and say so in the PR description. Confirm each `<owner>/<repo>` is the real publisher before pinning (e.g. `gh api repos/actions/checkout --jq '.full_name, .owner.login'`).
 
 - [ ] **Step 2: Apply the `go-tests.yml` half of Appendix C**
 
