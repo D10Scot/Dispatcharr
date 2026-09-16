@@ -8,9 +8,10 @@ name: Go Tests
 # workflow that never triggers reports nothing at all, leaving a required
 # check "Expected" forever and blocking the merge.
 #
-# The coverage ratchet is NOT here. It arrives in 2c-9, which adds a job to
-# this workflow and a floor file beside it; the aggregate below already has
-# the shape to take it.
+# The coverage ratchet IS here, as of 2c-9: `build` measures (one `go test
+# -race` run, now with -coverprofile) and `coverage` gates against
+# scripts/coverage_relay_go.floor on a bare runner, both in `Go result`'s
+# needs below.
 on:
   push:
     branches: [main]
@@ -102,7 +103,13 @@ jobs:
           # nothing here to verify. docker-build.yml would catch a broken
           # relay-builder stage, but only for a Dockerfile change and only
           # AFTER merge -- it triggers on push to main, not on PRs.
-          pattern='^(relay/|\.golangci\.yml$|scripts/check_go_stdlib_only\.sh$|scripts/check_go_credential_logging\.sh$|\.github/workflows/go-tests\.yml$|apps/proxy/live_proxy/tests/harness/fixtures/ffmpeg_stderr/)'
+          # scripts/coverage_relay_go.* is here and NOT under the Python
+          # gate's scripts/coverage_live_path prefix, deliberately: that
+          # prefix is a _PATH_ALIASES entry in dispatcharr/test_discovery.py
+          # that routes to three DJANGO labels, so a file named
+          # coverage_live_path_go.sh would have run the Python backend suite
+          # for a Go-only change.
+          pattern='^(relay/|\.golangci\.yml$|scripts/check_go_stdlib_only\.sh$|scripts/check_go_credential_logging\.sh$|scripts/coverage_relay_go\.|\.github/workflows/go-tests\.yml$|apps/proxy/live_proxy/tests/harness/fixtures/ffmpeg_stderr/)'
           if printf '%s\n' "$changed" | grep -qE "$pattern"; then
             echo "go=true" >> "$GITHUB_OUTPUT"
           else
@@ -200,10 +207,24 @@ jobs:
       # gevent-cooperative to OS-thread-parallel goroutines in this phase, so
       # a data race the Python implementation made structurally impossible
       # becomes possible for the first time (spec § Testing).
-      - name: Test with the race detector
-        env:
-          CGO_ENABLED: "1"
-        run: go test -race ./...
+      #
+      # ONE run, not two. --measure IS `go test -count=1 -race
+      # -covermode=atomic -coverprofile=... ./...`, so adding the ratchet adds
+      # a profile, not a second pass over a 90-second suite. It exits non-zero
+      # and DELETES the profile when any package fails, so the `coverage` job
+      # below can never gate on a partial measurement.
+      - name: Test with the race detector, and measure coverage
+        working-directory: .
+        run: bash scripts/coverage_relay_go.sh --measure /tmp/relay-go-coverage
+
+      # The profile and the linked-package list travel to the `coverage` job,
+      # which needs neither Go nor this container to read them.
+      - name: Upload the coverage profile
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: relay-go-coverage
+          path: /tmp/relay-go-coverage
+          retention-days: 1
 
       - name: Assert the module is standard-library only
         working-directory: .
@@ -269,12 +290,84 @@ jobs:
           version: v2.13.2
           working-directory: relay
 
+  # Gate 2's Go counterpart (spec § Stage 2c, the 2c-9 row; § Testing). A bare
+  # runner, deliberately: the gate parses the profile with awk and compares
+  # hashes, so it needs no Go toolchain and no base image — and it needs git
+  # and a full history, which this repo's base image does not ship (see
+  # backend-tests.yml's coverage-gate, which installs git for exactly this).
+  coverage:
+    name: Coverage gate
+    runs-on: ubuntu-latest
+    needs: [changes, build]
+    if: needs.changes.outputs.go == 'true'
+    timeout-minutes: 10
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Download the coverage profile
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: relay-go-coverage
+          path: /tmp/relay-go-coverage
+
+      - name: Compare against the floor
+        run: bash scripts/coverage_relay_go.sh --gate /tmp/relay-go-coverage
+
+      # Two questions, asked separately, in backend-tests.yml's idiom and for
+      # its reason. A floor that is RAISED permits more missed statements; a
+      # floor that is DELETED turns --gate's documented bootstrap branch ("no
+      # floor, this run is a census draw") into a permanent off switch. The
+      # base ref is what tells the two apart from the legitimate one-time
+      # absence on the PR that introduces the floor.
+      - name: Refuse a floor edited downward or deleted
+        if: always()
+        env:
+          BASE_REF: ${{ github.base_ref || github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          git fetch --depth=1 origin "$BASE_REF"
+          # FETCH_HEAD, not origin/$BASE_REF: the fetch above prints only
+          # "-> FETCH_HEAD", and whether it also moves the remote-tracking ref
+          # depends on the refspec actions/checkout left behind.
+          BASE=$(git rev-parse --verify FETCH_HEAD)
+          OLD_BLOB=$(git rev-parse --verify --quiet "${BASE}:scripts/coverage_relay_go.floor") || true
+          if [ ! -f scripts/coverage_relay_go.floor ]; then
+            if [ -n "$OLD_BLOB" ]; then
+              echo "The floor exists on ${BASE_REF} (${BASE}) and is GONE on this head."
+              echo "Deleting it makes --gate's bootstrap branch a permanent off switch."
+              exit 1
+            fi
+            echo "no floor on either side; nothing to compare"
+            echo "This is the census state: the floor-introducing PR before its own"
+            echo "floor commit lands. Expected on EVERY run until it does, and never"
+            echo "again afterwards -- once a floor is on the base ref, its absence"
+            echo "here is the deletion the branch above refuses."
+            exit 0
+          fi
+          if [ -z "$OLD_BLOB" ]; then
+            echo "no floor on ${BASE_REF} (${BASE}); this head introduces one"
+            echo "Expected exactly once, on the PR that introduces the floor."
+            exit 0
+          fi
+          OLD=$(git cat-file blob "$OLD_BLOB" | grep -E '^missing=' | cut -d= -f2)
+          NEW=$(grep -E '^missing=' scripts/coverage_relay_go.floor | cut -d= -f2)
+          echo "floor: base=$OLD head=$NEW"
+          if [ "$NEW" -gt "$OLD" ]; then
+            echo "The floor was raised ($OLD -> $NEW): more missed statements are now permitted."
+            echo "A floor may rise only in a PR that earns and explains the rise."
+            exit 1
+          fi
+
   # The one check in this workflow that may be required. It always reports,
   # because it is not gated on anything — see the comment on the triggers.
   go-result:
     name: Go result
     runs-on: ubuntu-latest
-    needs: [changes, build, lint]
+    needs: [changes, build, lint, coverage]
     if: always()
     timeout-minutes: 5
     steps:
@@ -283,9 +376,10 @@ jobs:
           CHANGES_RESULT: ${{ needs.changes.result }}
           BUILD_RESULT: ${{ needs.build.result }}
           LINT_RESULT: ${{ needs.lint.result }}
+          COVERAGE_RESULT: ${{ needs.coverage.result }}
           GO_REQUIRED: ${{ needs.changes.outputs.go }}
         run: |
-          echo "changes=$CHANGES_RESULT build=$BUILD_RESULT lint=$LINT_RESULT go-required=$GO_REQUIRED"
+          echo "changes=$CHANGES_RESULT build=$BUILD_RESULT lint=$LINT_RESULT coverage=$COVERAGE_RESULT go-required=$GO_REQUIRED"
           if [ "$CHANGES_RESULT" != "success" ]; then
             echo "Change detection itself failed — cannot prove the Go jobs were unnecessary."
             exit 1
@@ -296,10 +390,10 @@ jobs:
           fi
           # `skipped` here means a gated job never ran on a run that needed
           # it, so only an exact `success` may report green.
-          for pair in "build:$BUILD_RESULT" "lint:$LINT_RESULT"; do
+          for pair in "build:$BUILD_RESULT" "lint:$LINT_RESULT" "coverage:$COVERAGE_RESULT"; do
             if [ "${pair#*:}" != "success" ]; then
               echo "The Go jobs were required and ${pair%%:*} did not succeed."
               exit 1
             fi
           done
-          echo "Go build, vet, tests and lint passed."
+          echo "Go build, vet, tests, lint and the coverage gate passed."
