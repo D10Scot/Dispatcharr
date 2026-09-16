@@ -40,8 +40,10 @@ func main() {
 
 	// The secret is never logged, in any form, at any level -- not its value,
 	// not its length, not a prefix. scripts/check_credential_logging.py polices
-	// the Python side of this rule; there is no Go equivalent yet, so it is
-	// held by hand here.
+	// the Python side of this rule and scripts/check_go_credential_logging.sh
+	// (relay/internal/credlint, 2c-4) polices this one -- but neither sees a
+	// secret that is not an ERROR, so this particular line is still held by
+	// hand: credlint checks error-typed arguments, and cfg.Secret is a string.
 	log.Printf("starting on port %d (dev routes: %t)", cfg.Port, cfg.DevRoutes)
 
 	// THE SAME manager, not a second one. Two would give the list endpoint
