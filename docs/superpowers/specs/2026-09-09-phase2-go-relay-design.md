@@ -268,7 +268,9 @@ correction fixes.
 
 **564 Python test functions cover the live path, and not one survives a rewrite into another
 language.** Subtracting the 3 greybox specs 2d rewrites in place (they assert nginx configuration,
-which still exists and still needs asserting, just pointed at a different upstream), roughly **63
+which still exists and still needs asserting, just pointed at a different upstream — **the count is
+2 on the merged 2c tree, and the third greybox file is VOD and is untouched by 2d; see Amendment
+A10.10**, which also corrects which PR owns each rewrite), roughly **63
 tests** — the PORTABLE bucket minus those three — are what stands between this project and an
 unverified byte-path rewrite before 2a adds anything. This is the fact that makes 2a's existence
 non-optional rather than a nice-to-have, and it leads § Testing below for that reason.
@@ -1618,7 +1620,7 @@ Phase 1's table (written forward-looking at PR 4, now three PRs stale per the br
 | `url_utils.py:247`, `get_connections_left(m3u_profile_id)` — `M3UAccountProfile.objects.get(id=m3u_profile_id)` | `M3UAccountProfile` | **New row, added in this fix round** — this spec's first draft incorrectly claimed this function was already deleted (§ What the code says). `grep -rn "get_connections_left" apps/proxy/` finds no caller outside `test_live_db_cleanup.py:167-172`'s own test. 2b's fix: delete the function and its test unless a real caller surfaces during 2b's own audit, in which case fold its answer into the `next-source`/`advance` response the same way as the `StreamProfile` row above. |
 | `next_source.py:69-79`'s `get_stream_object`, `Stream.objects.select_related(...).get(stream_hash=id)` fallback used by the single-stream admin-preview surface (parity matrix row 16) | `Stream` | **New row, added in this fix round** (§ M15 in the review). `/proxy/ts/stream/<stream_hash>` has no `Channel` to resolve via `next-source`'s existing channel-uuid path. 2b extends `next-source`'s identifier resolution to accept either shape and answer the same payload either way — the relay already sends whatever identifier arrived in the URL; Django's resolution (`Channel` first, `Stream.stream_hash` fallback) is exactly what `get_stream_object` already does, moved to the contract side unchanged. |
 | `views.py:152`, `OutputProfile.objects.filter(id=..., is_active=True).first()` so `build_command()` can be called | `OutputProfile` | Phase 1's Amendment S3 left this in deliberately — "the header contract cannot carry a built ffmpeg command." A control-plane **response body** can, unlike a header. **Decided in this fix round** (this spec's first draft left two shapes open with no decision, an implementer-facing gap flagged in review as m23): fold the built command into `next-source`'s response rather than a separate route — `next-source` already runs once per tune with the ORM open, and a separate `GET /api/relay/output-profiles/<id>/command` route would be a second round trip for data available at the same moment. **Corrected 2026-09-12, during 2b-2's own planning, and the "when `X-Relay-Output` names a profile" half of that decision is withdrawn: the response carries EVERY `is_active=True` profile, keyed by stringified id, as `{"id": int, "argv": [str, ...]}`.** `next-source` is a per-**channel** call (initial tune, failover, resume — `live_proxy/url_utils.py:56`, `input/manager.py:2076`, `services/channel_service.py:154`), while the Output Profile is resolved per **client** (`live_proxy/views.py:605` on the owner's init path, `:712` on every other client), and the second client on an already-running channel makes no `next-source` call at all. One profile per request therefore answers no client's question but the first's. The Go relay caches the map at tune and serves every later client from memory. **The Python relay does not consume the field** — `views.py:152`'s `OutputProfile.objects.filter(...)` survives 2b-2 deliberately, because closing it in Python would need a cache whose staleness semantics nothing here specifies (today an `OutputProfile` edit reaches the next client; cached, it would reach only the next tune), and it is Python that 2d deletes wholesale — the same reasoning this table already applies to the `channel_status.py` fallback rows above. 2b-3 records it in `zero_orm_allowlist.py` with this paragraph as its citation. |
-| `apps/proxy/authorize_views.py:112-141`'s `User.objects.filter(id=int(user_id)).first()` inside `result_from_headers`, run on **every** trusted tune inside the relay process, from both `stream_ts` (`views.py:168`) and `stream_xc` (`views.py:825`) (§ What the code says) | `User` | The relay never needs the `User` row itself — only `user.custom_properties.get('output_format')` (`_resolve_output_format`, `live_proxy/views.py:112-131`) and the value `add_client` stores for display. Carry `output_format` as a resolved string on the trusted response — a sixth `X-Relay-*` header, `X-Relay-Output-Format`, set by `authorize_view` (which already resolved the `User` row to answer `output_profile_id`) — and store the raw `user_id` string for display/registration without ever re-querying it. Closes the last ORM read on the ordinary tune path. **Blast radius, named explicitly (§ M10 in the review):** this sixth header touches `docker/dispatcharr_api_params.conf` (currently exactly five `uwsgi_param HTTP_X_… "";` lines — becomes six), all nine relay-bound `docker/nginx.conf` locations (each needs a sixth `auth_request_set`/`uwsgi_param` pair, or `proxy_set_header` post-2d-flip on the three that move), `e2e/tests/streaming-greybox/nginx-stream-buffering.spec.ts`'s `AUTH_REQUEST_SET_VARS` set (six today — five `$relay_*` plus `$authorize_status` — becomes seven), and `apps/proxy/authorize_views.py`'s `result_from_headers` docstring/`internal_auth.py`'s `HEADER_RELAY_*`/`META_RELAY_*` pairs (a sixth name each). All four are part of this 2b PR's file list, not a follow-up. **A seventh header, `X-Relay-Client-IP`, joins it in the same PR** — found later in this fix round (§ Stage 2d's NB1 finding): the Go relay cannot derive the true client address from `REMOTE_ADDR`/forwarded headers the way the Python relay can, so `authorize_view` resolves it once via `get_client_ip(request)` and carries it the same way as `X-Relay-Output-Format`, in the same four files, bringing every one of this row's counts up by one more (seven `uwsgi_param`/`auth_request_set` lines, eight `AUTH_REQUEST_SET_VARS` entries). Bundled here rather than into 2d because it is a contract addition like the others, even though only the Go relay reads it — the Python relay ignores it exactly as it ignores today's five. |
+| `apps/proxy/authorize_views.py:112-141`'s `User.objects.filter(id=int(user_id)).first()` inside `result_from_headers`, run on **every** trusted tune inside the relay process, from both `stream_ts` (`views.py:168`) and `stream_xc` (`views.py:825`) (§ What the code says) | `User` | The relay never needs the `User` row itself — only `user.custom_properties.get('output_format')` (`_resolve_output_format`, `live_proxy/views.py:112-131`) and the value `add_client` stores for display. Carry `output_format` as a resolved string on the trusted response — a sixth `X-Relay-*` header, `X-Relay-Output-Format`, set by `authorize_view` (which already resolved the `User` row to answer `output_profile_id`) — and store the raw `user_id` string for display/registration without ever re-querying it. Closes the last ORM read on the ordinary tune path. **Blast radius, named explicitly (§ M10 in the review):** this sixth header touches `docker/dispatcharr_api_params.conf` (currently exactly five `uwsgi_param HTTP_X_… "";` lines — becomes six), all nine relay-bound `docker/nginx.conf` locations (each needs a sixth `auth_request_set`/`uwsgi_param` pair, or `proxy_set_header` post-2d-flip on the three that move), `e2e/tests/streaming-greybox/nginx-stream-buffering.spec.ts`'s `AUTH_REQUEST_SET_VARS` set (six today — five `$relay_*` plus `$authorize_status` — becomes seven), and `apps/proxy/authorize_views.py`'s `result_from_headers` docstring/`internal_auth.py`'s `HEADER_RELAY_*`/`META_RELAY_*` pairs (a sixth name each). All four are part of this 2b PR's file list, not a follow-up. **A seventh header, `X-Relay-Client-IP`, joins it in the same PR** — found later in this fix round (§ Stage 2d's NB1 finding): the Go relay cannot derive the true client address from `REMOTE_ADDR`/forwarded headers the way the Python relay can, so `authorize_view` resolves it once via `get_client_ip(request)` and carries it the same way as `X-Relay-Output-Format`, in the same four files, bringing every one of this row's counts up by one more (seven `uwsgi_param`/`auth_request_set` lines, eight `AUTH_REQUEST_SET_VARS` entries). Bundled here rather than into 2d because it is a contract addition like the others. **Corrected by Amendment A10.12: the Python relay does NOT ignore this one.** The sentence that stood here — "even though only the Go relay reads it — the Python relay ignores it exactly as it ignores today's five" — contradicted parity-matrix row 17 inside this same document. `result_from_headers` reads it (`apps/proxy/authorize_views.py:185`) and `live_proxy/views.py:202-206` prefers `decision.client_ip` over `get_client_ip(request)` on the trusted path, pinned by `apps/proxy/live_proxy/tests/test_client_ip_provenance.py:103`. The header is therefore exercised in production before the cutover, not first at it. |
 
 **Also folded into the contract, not a read but the trap that motivates finishing this table:**
 `proxy_settings` (`apps/proxy/config.py`'s `BaseConfig._proxy_settings_cache`, 10-second
@@ -2819,7 +2821,7 @@ said "All eight were verified" — the heading undercounted by one against its
 own table. Task 10 Step 1's PR-description instruction carried the same
 "seven." Both corrected to "eight" in the plan document in this commit.
 
-#### Amendment A10 (stage 2d inputs) — fourteen findings from the merged 2c tree
+#### Amendment A10 (stage 2d inputs) — seventeen findings from the merged 2c tree
 
 **Verified at `1326de3e`**, the merge of 2c-9 and the first tree on which all nine 2c PRs exist
 together. Every `file:line` in this amendment was opened at that SHA. § Stage 2d below was written
@@ -2886,24 +2888,66 @@ is a Django route, not a Go one; the Go side reaches it only when the trust mark
 forwarded params, so the fallback is simply never taken in production — it does not need disabling,
 and disabling it would break `DISPATCHARR_ENV=dev`, which has no nginx.
 
-**A10.3 — the module-level boot trap is FIVE sites, not one, and four of them are inside
-`apps/proxy/` itself.** The deletion list's PR 1 names only `apps/channels/models.py:6-7`. Grepped
-and opened at this SHA, the module-level imports of `apps.proxy.live_proxy` outside the package are:
+**A10.3 — the module-level boot trap is NINE sites, not one, and the first draft of this amendment
+missed the boot-fatal one.** The deletion list's PR 1 names only `apps/channels/models.py:6-7`. The
+enumeration below is the whole of
 
-1. `apps/channels/models.py:6-7` — `RedisKeys`, `ChannelMetadataField`. The known one.
-2. `apps/proxy/relay_views.py:34-41` — **five** imports: `channel_status.{ChannelStatus,
+```
+grep -rn "live_proxy" --include='*.py' apps dispatcharr core scripts metrics tests \
+  | grep -v "^apps/proxy/live_proxy/" | grep -v "/tests/" | grep -v "test_"
+```
+
+re-run at this SHA and filtered to real import statements. **Module level** — every one of these is
+loaded by every Django process in every role, so with `apps/proxy/live_proxy/` deleted and any of
+them present, nothing starts:
+
+1. **`dispatcharr/settings.py:107` — `"apps.proxy.live_proxy"` in `INSTALLED_APPS`.** The boot-fatal
+   one, and the word `INSTALLED_APPS` appears nowhere else in this spec. It is also the mechanism
+   that moves the label count 16 → 15, since `dispatcharr/test_discovery.py` derives its labels by
+   AST-parsing this list — the deletion list's PR 4 gate already states the outcome without naming
+   the cause.
+2. `apps/channels/models.py:6-7` — `RedisKeys`, `ChannelMetadataField`. The known one.
+3. `apps/proxy/relay_views.py:34-41` — **five** imports: `channel_status.{ChannelStatus,
    build_live_channel_stats_data}`, `constants.ChannelMetadataField`, `redis_keys.RedisKeys`,
    `server.ProxyServer`, `services.channel_service.ChannelService`.
-3. `apps/proxy/relay_client.py:61` — `from apps.proxy.live_proxy.constants import ChannelState`.
-4. `dispatcharr/urls.py:9` — `from apps.proxy.live_proxy.views import stream_xc`, in the **root
+4. `apps/proxy/relay_client.py:61` — `from apps.proxy.live_proxy.constants import ChannelState`.
+5. `dispatcharr/urls.py:9` — `from apps.proxy.live_proxy.views import stream_xc`, in the **root
    urlconf**.
-5. `apps/proxy/urls.py:10` — `path('ts/', include('apps.proxy.live_proxy.urls'))`.
+6. `apps/proxy/urls.py:10` — `path('ts/', include('apps.proxy.live_proxy.urls'))`.
+7. **`apps/proxy/tasks.py:6` — `from apps.proxy.live_proxy.channel_status import
+   build_live_channel_stats_data`**, in a file Celery autodiscovers in every worker. This one is not
+   an import to rehome, it is a **capability decision 2d-4 must make**: its consumer
+   `fetch_channel_stats` (`:15`, calling at `:19`) is the `channel_stats` WebSocket emission, and
+   `build_live_channel_stats_data` (`channel_status.py:633`) works by scanning
+   `live:channel:*:metadata` (`:644`) — keys the Go relay never writes. The beat entry is
+   `dispatcharr/settings.py:429-433` with `"enabled": False` at `:432`, which
+   `e2e/COVERAGE.md:190` already records as shipping disabled, so the task is inert on a stock
+   instance and the decision is "delete, or re-point at `relay_client.list_channels()`", not a
+   silent rehome.
+8. **`apps/timeshift/views.py:40-41`** (`config_helper.ConfigHelper`;
+   `constants.{ChannelMetadataField, ChannelState}`) and **`apps/timeshift/stats.py:13`**
+   (`ChannelMetadataField`). These matter more than their size suggests: **timeshift is catch-up,
+   the surface § Stage 2d explicitly KEEPS.** 2d-1's relocation covers `ChannelMetadataField` only
+   — **`ChannelState` and `ConfigHelper` are assigned a home by nobody in this spec**, and both are
+   imported by surviving code (`ChannelState` also at site 4). Naming their destination is 2d-1's,
+   not 2d-4's, because a surviving surface cannot be left pointing at a directory scheduled for
+   deletion three PRs later.
+9. **`apps/proxy/apps.py:9-15` — `ProxyConfig.ready()` imports `.live_proxy.server.ProxyServer`
+   (`:12`) and instantiates the singleton (`:15`) in every process that is not `manage.py`.** Its
+   two consumers reach it by `getattr(proxy_app, 'live_proxy', None)` — `apps/proxy/signals.py:17-20`
+   and `apps/proxy/management/commands/proxy.py:40-69` — so **no import grep finds them** and a
+   deletion pass driven by imports alone leaves two live `getattr` call sites against an attribute
+   nothing sets.
 
-Function-local imports that also die with the package: `apps/proxy/authorize.py:380`
-(`url_utils.get_stream_object`, reached from `authorize_stream`'s live surface — i.e. on **every**
-tune, in the API process) and `apps/proxy/next_source.py:348`, `:474`, `:1115` (`RedisKeys`).
+**Function-local, red the moment the package goes** (they do not break boot, they break the request
+or task that reaches them): `apps/proxy/authorize.py:380` (`url_utils.get_stream_object`, reached
+from `authorize_stream`'s live surface — i.e. on **every** tune, in the API process),
+`apps/proxy/next_source.py:348`, `:474`, `:1115` (`RedisKeys`), `apps/m3u/connection_pool.py:81` and
+`dispatcharr/consumers.py:120` (`url_utils.transform_url`), `core/utils.py:759` (`RedisKeys`),
+`apps/channels/tasks.py:1125` (`ConfigHelper`) and `:2445` (`ChannelMetadataField`).
 
-Site 2 is the sharpest, and it is the mirror image of the trap this programme already knows.
+Site 3 is the sharpest of the ones inside `apps/proxy/`, and it is the mirror image of the trap this
+programme already knows.
 `apps/proxy/relay_urls.py:12` imports `relay_views`, and `:17`, `:20`, `:25`, `:30` register the five
 `/proxy/relay/…` routes on it; `apps/proxy/urls.py:9` includes that module. So `relay_views.py` — a
 **surviving** file, one of Gate 2's ten boundary modules, outside the directory 2d-4 deletes — is
@@ -2913,9 +2957,26 @@ check` for every command in every role, which is the same failure mode as the fa
 mentioned anywhere in § Stage 2d.
 
 **Ruling.** 2d-1's scope is widened in place (see the edited deletion list): relocating `RedisKeys`
-and `ChannelMetadataField` is necessary and covers site 1 and part of sites 2 and 3, but `ChannelState`,
-`ProxyServer`, `ChannelService`, `ChannelStatus`/`build_live_channel_stats_data`,
-`get_stream_object` and the two urlconf edges are not covered by it and are named as 2d-4's own work.
+and `ChannelMetadataField` is necessary and covers site 2 and part of sites 3, 8 and 9, **and 2d-1
+additionally owns `ChannelState` and `ConfigHelper`**, because sites 4 and 8 leave surviving code —
+`relay_client.py` and the whole catch-up surface — importing a doomed directory otherwise. Everything
+else (`ProxyServer`, `ChannelService`, `ChannelStatus`/`build_live_channel_stats_data`,
+`get_stream_object`, `transform_url`, `INSTALLED_APPS`, the two urlconf edges, `apps.py`'s `ready()`
+and its two `getattr` consumers) is named as 2d-4's own work.
+
+**One consequence for 2d-1's own gate, which the deletion list states and should say why**: 2d-1's
+gate is "`manage.py check` green", and `manage.py check` **passes today with `live_proxy/` present**,
+so it proves the relocation did not break boot and proves nothing about the eight remaining sites.
+The gate that would catch those is deleting the directory, which is 2d-4's. 2d-1 cannot verify its
+own completeness, and this enumeration is the substitute.
+
+**2d-1 also silently disarms the guard that exists for exactly this.**
+`.claude/hooks/run-affected-tests.sh:136-145`'s `case` arm matches
+`apps/proxy/live_proxy/constants.py|apps/proxy/live_proxy/redis_keys.py` **by literal path** and runs
+`manage.py check` on an edit to either. After the relocation the arm matches nothing — no error, no
+output, the `case` simply falls through — so the boot check silently stops running on the two files
+it was written for, in the PR that moves them. 2d-1 re-points the arm in the same commit, and
+`CLAUDE.md` § Test hooks (which names the same two paths in prose) is updated with it.
 **Whether `relay_views.py`/`relay_urls.py` are deleted outright or kept as a Django-side twin is left
 to the 2d-4 plan**, because it turns on a question this amendment cannot settle from the tree: after
 the flip, nothing dials those routes in any shape (A10.11), but keeping them costs a rewrite against
@@ -2945,7 +3006,7 @@ plus `--write-floor --shape-only` for the latter. **Ruling: 2d-1 ships a `--shap
 re-baseline, `missing` unchanged at 1525, and says so in one line.** No census. Nothing about #312
 changes this: #312 is a claim about the *spread* of a number this move does not claim.
 
-**2d-4 is the harder half, and it needs a sixth PR.** Deleting 28 modules moves `modules=` again and
+**2d-4 is the harder half, and it needs a PR of its own.** Deleting 28 modules moves `modules=` again and
 drops the real draw by most of its value, so a `--shape-only` re-baseline there leaves a floor of
 1525 over a denominator of perhaps a tenth that — mechanically green, substantively toothless. A
 genuine re-scope needs a new `missing`, and a new `missing` needs the worst of ≥12 **CI** rounds on
@@ -2955,9 +3016,17 @@ different thing. Re-scoping rather than retiring is the right call — the ten s
 control plane every Go tune depends on, and dropping all coverage enforcement over them at the exact
 moment they become the only Python left on the live path is a regression D7 would not have allowed —
 but it cannot be one PR with the delete. **Ruling: 2d-4 lands `--write-floor --shape-only` to keep
-`Backend result` green and states plainly that the gate is slack; a sixth PR,
-`migration/phase2d-gate2-recensus`, immediately follows it and carries the ≥12-round CI census that
-makes the number real.** The deletion list is edited to six PRs. The named risk is that a
+`Backend result` green and states plainly that the gate is slack; a dedicated PR,
+**2d-5** (`migration/phase2d-gate2-recensus`), immediately follows it and carries the ≥12-round CI
+census that makes the number real.** The deletion list is edited to six PRs, and the docs PR becomes
+**2d-6**; every reference in this spec uses the list's own positions.
+
+**And the census tree is not fully determined by 2d-4's deletion alone.** A10.14's thirteen
+surviving test files include four under `apps/proxy/tests/`, whose execution is part of what covers
+the ten survivors today; whether 2d-4 deletes, rewrites or merely un-imports each of them changes
+the denominator's coverage before a single round is measured. **2d-5 therefore cannot be planned
+until 2d-4's per-file dispositions are settled**, and its plan states which disposition each file
+received rather than treating the tree as a given. The named risk is that a
 deliberately slack gate is exactly the kind of thing that never gets tightened, which is why the
 recensus PR is written into the list rather than left as a follow-up.
 
@@ -2970,7 +3039,7 @@ ceases to exist; and `dispatcharr/test_discovery.py:58`'s `("scripts/coverage_li
 (the expected set at `:70`). The deletion list already names the **other** alias
 (`dispatcharr/test_discovery.py:57`) and `test_ci_test_routing.py`; it names neither of these two.
 
-**A10.5 — the parity matrix's Python column must be replaced in 2d-4, not 2d-5, and two rows have no
+**A10.5 — the parity matrix's Python column must be replaced in 2d-4, not the docs PR, and two rows have no
 Go source to point at.** `e2e/tests/guards/parity-matrix.spec.ts:196`'s "every row cites source that
 resolves" runs every `Source` citation through `citationProblem`
 (`e2e/tests/guards/parity-matrix.ts:366-378`), which returns `no such file: ${rel}` at `:369`; and
@@ -2982,15 +3051,26 @@ over `docs/relay-parity-matrix.md` at this SHA: **30 rows; 86 Source citations o
 rows — 1, 2, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 15, 18, 26, 27, 28, 29 — have **no** Source citation
 outside the deleted directory. So the delete reddens `guards`, which is inside `E2E result`, which is
 a required check; and `guards` needs no container, so this is not a slow discovery. **Ruling: the
-matrix's Python column replacement moves from 2d-5 to 2d-4 and lands in the same commit as the
-delete.** § Stage 2d's PR 5 entry is edited accordingly.
+matrix's Python column replacement moves from the docs PR to 2d-4 and lands in the same commit as
+the delete.** § Stage 2d's PR 6 entry is edited accordingly.
 
 The mechanical parts are safe. `GATE_1_CLOSED` (`parity-matrix.ts:570`) asserts no row is `owed:` and
 is unaffected. `GO_PARITY_CLOSED` (`:598`) asserts every `test` pin carries at least one `.go`
 reference — dropping the Python half of a pin leaves the Go half and keeps it true; its own doc
 comment at `:592-596` was written for exactly this ("the property cannot silently reopen when 2d
 starts deleting Python"). `HIGHEST_ROW_ID = 30` (`:552`) and `WHITE_BOX_ONLY` (`:523-537`) are stored
-constants no row edit touches.
+constants no row edit touches. And "24 distinct `live_proxy` paths" is the **union** of the two
+cells — 10 distinct paths cited in `Source` and 14 referenced in `Pin`, with no overlap, since one
+column names production files and the other names tests.
+
+**A10.5 and A10.10 meet on exactly one row, and the two must be edited together.** Row 11's `Pin`
+(`docs/relay-parity-matrix.md:184`) includes
+`` `e2e/tests/streaming-greybox/output-profile-sharing.spec.ts::two clients on one output profile
+share a single transcode` ``, and `testRefProblem` resolves a `.spec.ts` reference by **literal test
+title** (`parity-matrix.ts:481-489`, via `literalTitles` at `:461-468`). The rewrite of that spec is
+2d-3's (A10.10), not 2d-4's, so **2d-3 must either keep that exact title or edit row 11's pin in the
+same commit** — and the file it would be editing is a matrix whose Python column 2d-4 rewrites one PR
+later. Keeping the title is the cheap answer and the one to prefer.
 
 **Rows 26 and 27 are the exception, and they need a decision rather than an edit.** Their `Pin` is the
 `white-box-only` sentinel, so `testRefProblem` never sees them — but the Source check has no such
@@ -3006,8 +3086,11 @@ shapes are a real trade this amendment should not pre-empt**: teach `citationPro
 form; re-point both Sources at a surviving file that describes the same deleted mechanism; or accept
 a guard edit that exempts the two `white-box-only` rows from the Source check as they are already
 exempt from the Pin check. Whichever is chosen, it is a guard edit plus a matrix edit in one commit,
-and the third option is the one to argue hardest against — it widens an exemption that
-`parity-matrix.ts:513-522` deliberately keeps narrow.
+and the third option is the one to argue hardest against, in the guard's own words: `WHITE_BOX_ONLY`
+is compared with `toEqual` because, as `parity-matrix.ts:513-522` puts it, "this marker is the one
+word that can make an inconvenient row stop counting, so both adding and removing one must be a
+deliberate edit with a stated reason." Widening what that word exempts is the same move one level
+up.
 
 **A10.6 — the Go suite opens files inside the directory 2d-4 deletes, and the reads are real reads,
 not citations.** Separated, because the two need different fixes.
@@ -3018,10 +3101,11 @@ the module's only `filepath.Join` naming `apps`, building
 at `:26`; `Corpus` reads it at `:65` and **panics** rather than skipping if it cannot. The file's own
 header at `:13-22` states the policy — "READ IN PLACE from the Python harness's own fixtures
 directory and never copied into this module … two copies of a corpus that must not be edited is one
-copy nobody remembers to regenerate." Sixteen test call sites in `relay/ffmpeg`, `relay/httpapi` and
-`relay/channel` reach it in-process, and a further twelve hand `CorpusPath(...)` to the exec'd
-stand-in, which opens the same file again in a child process
-(`relay/internal/relaytest/standin.go:381`). Separately,
+copy nobody remembers to regenerate." **Thirteen** test lines in `relay/ffmpeg`, `relay/httpapi` and `relay/channel` reach it in-process
+(`grep -rn 'relaytest\.\(Corpus\|CorpusSpeeds\|CorpusElapsed\)(' relay/`), and a further
+**eleven** hand `CorpusPath(...)` to the exec'd stand-in, which opens the same file again in a child
+process (`relay/internal/relaytest/standin.go:381`) — `grep -rn 'CorpusPath(' relay/` minus the
+definition in `corpus.go`. Separately,
 `relay/internal/relaytest/asset_test.go:17-24` pins the Go synthetic TS asset to the Python
 harness's `synthetic_ts()` by a hard-coded SHA-256 (`:18`, over `SyntheticTS(512, 0x100)` at `:19`,
 length-checked at `:20`) — a functional dependency on `apps/proxy/live_proxy/tests/harness/asset.py`'s
@@ -3029,12 +3113,16 @@ length-checked at `:20`) — a functional dependency on `apps/proxy/live_proxy/t
 nothing will ever notice going stale. `relay/internal/relaytest/asset_test.go:76-82` has the same
 shape against `harness/upstream.py:29` and `:31`. There is no `go:embed` anywhere in `relay/`.
 
-**Textual (cited, never opened).** 45 lines under `relay/` name an `apps/proxy/live_proxy/…` path;
-exactly one of them (`corpus.go:56`) is functional, so **44 are dangling references** after the
-delete, spread over `relaytest` (11), `relay/channel` (13), `relay/buffer` (6), `relay/httpapi` (6),
-`relay/ffmpeg` (4), `relay/output` (2), `relay/control` (2). A further ~41 cite harness files by a
-relative spelling (`harness/…`, `standin.py`, `output_support.py`) that a `live_proxy` grep misses.
-None of them breaks a build; all of them become instructions pointing at nothing.
+**Textual (cited, never opened), and the number is a floor, not a budget.** Measured at this SHA:
+`grep -rn 'apps/proxy/live_proxy' relay/` is **37** lines and `grep -rn 'live_proxy' relay/` is
+**45**, so eight cite the tree without the `apps/proxy/` prefix; one of the 45 (`corpus.go:56`) is
+the functional read above. But the real figure is much larger and in a different shape:
+`grep -rn '\.py' relay/ | grep -v live_proxy` is **694** lines, and the most-cited bare names are
+all files 2d-4 deletes — `input/manager.py` ×140, `views.py` ×74, `channel_status.py` ×52. **Several
+hundred lines of Go comments, doc comments and test names cite the deleted Python by bare filename,
+and NONE of them is fixed in 2d.** They break no build and they are not worth a 2d PR; they are
+recorded so nobody mistakes "44 dangling references" for the size of the problem or for a budget to
+work through.
 
 **Ruling, two parts.** (1) **The corpus moves into the Go module** — `relay/internal/relaytest/testdata/ffmpeg_stderr/`
 alongside `CAPTURE.md`, with `corpus.go`'s `repoRoot()` walk replaced by a package-relative path — in
@@ -3056,21 +3144,24 @@ same commit.** `apps/proxy/live_proxy/tests/test_relay_differential.py` is a leg
 (A9.6; PR #317's own "What stage 2d needs from this PR" says so explicitly: "it does not need the
 differential test to survive the cutover"). The mechanical consequence is the one A9 does not state.
 `.github/workflows/go-tests.yml:380` declares the `differential` job; `:472` lists it in `go-result`'s
-`needs`; and `:494-500` requires each of `build`, `lint`, `coverage`, `differential` to be exactly
-`success`, with `skipped` explicitly failing (the comment at `:490-491` says so). `:114`'s change
+`needs`; and the loop at `:496-501` requires each of `build`, `lint`, `coverage`, `differential` to
+be exactly `success`, with `skipped` explicitly failing (the comment at `:494-495` says so). `:114`'s change
 detector also names `apps/proxy/live_proxy/tests/harness/` and
 `apps/proxy/live_proxy/tests/test_relay_differential\.py` in its path pattern. **The exact edit, in
 2d-4:** delete the `differential` job (`:367-465`, comment included), remove it from `:472`'s `needs`
-and from `:493`'s loop, drop `DIFFERENTIAL_RESULT` from the `env` block, and remove the two
+and from the `:496-501` loop, drop `DIFFERENTIAL_RESULT` from the `env` block, and remove the two
 `live_proxy` clauses from `:114`'s pattern.
 
-**Nothing replaces it, and one capability is genuinely lost.** The `differential` job is the only job
-anywhere in CI that builds `relay-go` and boots Postgres and Redis together — it is the only place the
-Go binary meets a real Django (`test_relay_differential.py` runs it against its own
-`LiveServerTestCase`, so the `next-source` call is real, with the real `SECRET_KEY`). E2E does **not**
-carry that today: no Playwright project has ever driven `relay-go` (A10.10). After 2d-3 the E2E
-container serves live traffic from the Go relay and therefore does exercise it against a real
-Django — but through nginx, end to end, not as a focused assertion. **Ruling: the loss is acceptable
+**Nothing replaces it, and one capability is genuinely lost — but state the loss precisely, because
+the obvious phrasing is wrong.** It is *not* the only place `relay-go` runs beside real stores:
+`docker/Dockerfile:50` builds the binary and `:79` installs it, `docker/supervisord/all.conf:19`
+starts it in every AIO container, and `docker/healthcheck.sh:28-34` probes its `/healthz` — so every
+E2E container already runs it next to a real Postgres and Redis, and a `relay-go` crash already makes
+that container unhealthy. What the `differential` job uniquely does is **DRIVE** it: it is the only
+job that sends the Go binary a tune and asserts on the bytes that come back, against a real Django
+(`test_relay_differential.py` runs it against its own `LiveServerTestCase`, so the `next-source` call
+is real, with the real `SECRET_KEY`). No Playwright project drives `relay-go` today (A10.10); after
+2d-3 the E2E container does, through nginx, end to end, rather than as a focused assertion. **Ruling: the loss is acceptable
 and must be stated rather than papered over.** What the differential proved — two implementations
 agreeing byte for byte — has no meaning once there is one implementation; what it incidentally
 provided — a Go-binary-against-real-Django integration point — is assumed by 2d-3's E2E coverage, and
@@ -3090,11 +3181,15 @@ asserted, which is strictly stronger for the relay itself.
 entries is under it; scope 2 follows import edges **out of** that package (`zero_orm_scan.py:123-147`,
 skipping `apps.proxy.live_proxy*` at `:141-142`), so the twelve `EdgeEntry` entries reach exactly four
 modules — `apps/proxy/next_source.py`, `apps/proxy/authorize.py`, `apps/proxy/authorize_views.py` and
-`apps/proxy/config.py`. Those four keep serving the Go relay after the cutover, and after 2d-4 nothing
+`apps/proxy/config.py`. **`apps/proxy/config.py` is the awkward one: it carries FIVE of the twelve
+edges** (`zero_orm_allowlist.py:419`, `:446`, `:455`, `:464`, `:473`, all `TSConfig`) **and it is in
+neither gate after 2d-4** — it is not one of the coveragerc's ten boundary modules either (A10.4), so
+the single most-edged module in Gate 1's scope-2 walk loses its ORM ratchet and has no coverage floor
+over it at the same moment. Those four keep serving the Go relay after the cutover, and after 2d-4 nothing
 ratchets their ORM behaviour. **Ruling: record the gap, do not build a replacement in 2d.** A
 Django-side "these four modules read the ORM only here" guard is a new test with a new allowlist in a
 new home — real work, unrelated to the cutover, and precisely the widening this phase's charter warns
-against. It belongs in the post-2d list alongside the coverage re-scope, and the 2d-5 docs pass should
+against. It belongs in the post-2d list alongside the coverage re-scope, and the 2d-6 docs pass should
 note in CLAUDE.md § Testing that Gate 1's static half is retired rather than met.
 
 **A10.9 — the stop budget is asserted only from one side, and `relay-go` is missing the `nice` its
@@ -3120,10 +3215,15 @@ health endpoints. **It joins the uWSGI nice level in 2c-2, when it starts carryi
 `relay-uwsgi.conf:2` and `api-uwsgi.conf:2` both prefix `nice -n %(ENV_UWSGI_NICE_LEVEL)s`. At the
 default (`docker/entrypoint.sh:141`: `UWSGI_NICE_LEVEL` default 0, `CELERY_NICE_LEVEL` default 5) this
 is inert. For an operator who took the documented recommendation — `UWSGI_NICE_LEVEL=-5`, printed as a
-commented example in all three compose files (`docker/docker-compose.aio.yml:41`,
-`docker-compose.dev.yml:38`, `docker-compose.debug.yml:38`) — the flip makes the **byte-carrying
-process the lowest-priority of the three**, behind both uWSGIs at -5 and level with nothing. **Ruling:
-one line in 2d-3's `docker/` diff** (`nice -n %(ENV_UWSGI_NICE_LEVEL)s` ahead of `setpriv`, matching
+commented example in **four** compose files at **five** places (`docker/docker-compose.aio.yml:41`,
+`docker-compose.dev.yml:38`, `docker-compose.debug.yml:38`, and `docker/docker-compose.yml:116` for
+`web:` and `:190` for `relay:`, the container `relay-go` actually runs in) — the flip makes the
+**byte-carrying process the lowest-priority of the three**, behind both uWSGIs at -5 and level with
+nothing. **The failure mode of the fix is mild, which is why it is safe to make in 2d-3**: every one
+of those five blocks pairs the example with a commented `cap_add: SYS_NICE`, and GNU `nice` asked for
+a negative value without that capability warns on stderr and **still execs** the program, so adding
+the prefix degrades to today's behaviour rather than putting `relay-go` into a supervisord BACKOFF
+loop. **Ruling: one line in 2d-3's `docker/` diff** (`nice -n %(ENV_UWSGI_NICE_LEVEL)s` ahead of `setpriv`, matching
 `relay-uwsgi.conf:2` exactly) and the stale comment at `:21-23` rewritten. It is a one-line
 deployment fix in the PR that first sends traffic there, not a widening: the alternative is shipping a
 cutover that silently degrades exactly the deployments whose operators followed the documentation.
@@ -3140,7 +3240,7 @@ asserts `uwsgi_pass relay_py` on `^~ /proxy/relay/` and `:434` its `uwsgi_read_t
 change with the fourth flipped location. § Stage 2d already specifies all four rewrites in detail and
 the deletion list already lands them with the flip in PR 3. That part is right.
 
-**Also at the flip, and not named anywhere:**
+**Also at the flip, and the deletion list scheduled its fix at the DELETE — which cannot work.**
 `e2e/tests/streaming-greybox/output-profile-sharing.spec.ts:142-144` builds
 `live:channel:${channel.uuid}:output:mpegts:p${output.id}:owner`, reads it through
 `greyboxRedis().keys(...)` and asserts `toHaveLength(1)`. The Go relay writes no `live:channel:*` key
@@ -3148,10 +3248,30 @@ at all, so this returns `[]`. It is the **only** Redis-reading assertion in the 
 `output-profile-sharing.spec.ts:5` is the only importer of `e2e/fixtures/greybox/redis.ts`. Its
 sibling half — `countFfmpegProcesses()` asserted `toBe(1)` at `:123` — is language-agnostic and
 survives, since `relay/output` spawns one transcode per `(channel, profile)` pair. Removing the Redis
-half forces an `allowlist.ts` edit in the same commit: `e2e/tests/guards/allowlist.ts:79-83`'s
+half forces an `allowlist.ts` edit in the same commit: `e2e/tests/guards/allowlist.ts:76-83`'s
 `GREYBOX_REDIS.allow` is compared with `toEqual`
-(`e2e/tests/guards/capabilities.spec.ts`), so *removing* a use reddens `guards` exactly as adding one
-would.
+(`e2e/tests/guards/capabilities.spec.ts:130`), so *removing* a use reddens `guards` exactly as adding
+one would.
+
+**This is a scheduling error in § Stage 2d, not just a missing name, and it is fixed in place.** PR 3
+is the flip and its gate is "`E2E result` green"; the Redis assertion fails the moment PR 3 lands, so
+PR 3 cannot pass its own gate while its fix sits in PR 4. **Ruling: the Redis-half removal, the
+`allowlist.ts` edit and the matching `e2e/COVERAGE.md` line (`:259-261`, which cites "the shared owner
+key" as half of what that spec verifies) all move from PR 4's entry to PR 3's** — the identical "not
+green before the flip it is asserting, nor red after" rule § Stage 2d already applies to the
+buffering spec, and for the identical reason. What stays in PR 4 is nothing of this spec at all.
+
+**Which PR owns each edit, since "breaks at X" and "fixed in Y" have been conflated once already:**
+
+| Edit | Breaks at | Owner |
+|---|---|---|
+| `nginx-stream-buffering.spec.ts`'s four-test rewrite | the flip | **PR 3** (already) |
+| `output-profile-sharing.spec.ts` Redis half + `allowlist.ts` + `COVERAGE.md:259-261` | the flip | **PR 3** (moved) |
+| Row 11's pin, if PR 3's rewrite changes its test title | the flip | **PR 3** (see A10.5) |
+| `process-restart.spec.ts` Scenario B's vacuity | the flip (silently) | **PR 3** — a vacuous `@characterization` test is still green, so this is a judgement call the flip's plan must make rather than discover |
+| the parity matrix's Python column | the delete | **PR 4** (see A10.5) |
+| `COVERAGE.md`'s rows naming `live_proxy` paths (`:190`, `:192`, `:193`, `:203`) | the delete | **PR 4** |
+| `COVERAGE.md:50`'s ownership-lease `todo` row and `:202`'s reconnect open question | the flip (as claims), the delete (as citations) | **PR 6**, with the rest of the docs — they describe mechanisms rather than assert them |
 
 `e2e/tests/streaming-split/process-restart.spec.ts` Scenario B (`supervisorctl(['restart',
 'relay-uwsgi'])` at `:595`, `expectRunning(…, 'relay-uwsgi', …)` at `:630`) does not fail at the
@@ -3172,16 +3292,18 @@ is a Redis key string and a `pgrep`. (The same stale count appears in § Stage 2
 ["the 3 greybox specs 2d rewrites in place"], measured at `a948cd8a`; left as the historical
 measurement it is, and flagged here so a 2d planner does not read it as current.)
 
-**The unknown is the large part, and it is not enumerable from the tree.** Twenty-three specs in
-`e2e/tests/streaming/` and six in `e2e/tests/streaming-failover/` drive the live path black-box, and
+**The unknown is the large part, and it is not enumerable from the tree.** Twenty-two specs in
+`e2e/tests/streaming/` (the twenty-third file there is `helpers.ts`) and six in
+`e2e/tests/streaming-failover/` drive the live path black-box, and
 at the flip every one of them meets a relay no Playwright test has ever run against. The observable
 surface they lean on is narrow and already Go-implemented — `client_count`, `buffer_index`,
 `stream_id`, `total_bytes` (`streaming/single-client.spec.ts:36`), `ffmpeg_speed`
 (`streaming/stream-profiles.spec.ts:69`), `clients[].output_profile_id` — and no spec asserts `owner`,
 `state`, `source_fps`, `source_bitrate`, `ffmpeg_bitrate` or `ip_address`, so #314's absences and row
-14's `owner` asymmetry cost nothing here. But `e2e/fixtures/types.ts:455` and `:497` type `worker_id`
-and `owner` as **required** fields of a concept the Go relay does not have, and "the assertions we can
-enumerate all pass" is not the same claim as "the suite passes." **Ruling: 2d-3's plan opens with a
+14's `owner` asymmetry cost nothing here. But `e2e/fixtures/types.ts` types three fields of a concept
+the Go relay does not have, or does not fill, as **required** properties — `worker_id: string`
+(`:455`), `ip_address: string` (`:456`) and `owner: string | null` (`:498`) — and "the assertions we
+can enumerate all pass" is not the same claim as "the suite passes." **Ruling: 2d-3's plan opens with a
 measurement task before any rewrite is designed** — flip nginx in a scratch container, run the full
 `migration/**` matrix (every Playwright project plus both bash suites in `lifecycle-tests.yml`; the
 branch name alone bypasses the path filters), and record the failure set — in the same idiom every
@@ -3200,8 +3322,13 @@ file dials 5657; every Python mention of it is a comment. The `dev` branch is th
 `/proxy/relay/…` is served by the API uWSGI rather than either relay, which CLAUDE.md § Commands
 already records, and which the dev-routes decision of A10.2 does not change.
 
-**Every `relay_client` call site is live-path, and VOD/catch-up already route around it.** Fifteen
-call sites outside the module: the tune-path reuse check (`apps/channels/models.py:494`), the live
+**Every `relay_client` call site is live-path, and VOD/catch-up already route around it.** Sixteen
+call sites outside the module — fifteen live, and one in dead code: `core/tasks.py:428` imports the
+module and `:431` calls `list_channels()` inside `fetch_channel_stats`, whose only caller is
+`beat_periodic_task` (`core/tasks.py:50`), which no schedule, migration or other module references —
+`e2e/COVERAGE.md:190` records it as "referenced by no schedule or migration — unreachable on a stock
+instance." **Deletable in 2d-4** along with the rest of that emission path (A10.3 site 7). The fifteen
+live ones: the tune-path reuse check (`apps/channels/models.py:494`), the live
 branch of `get_user_active_connections` (`apps/proxy/utils.py:280`), `attempt_stream_termination`'s
 live arm (`apps/proxy/utils.py:197`), `combined_stats`' live section
 (`apps/proxy/stats_views.py:34`), the five admin wrappers
@@ -3215,8 +3342,8 @@ and M3U deletion (`apps/channels/api_views.py:105`, `:3813-3839`, `apps/m3u/api_
 all** — its VOD and catch-up surfaces reach Redis and Django directly, exactly as they do today, and
 the answer to "what do the VOD/catch-up callers need" is: there are none.
 
-**A10.12 — four contract fields become load-bearing in production for the first time at the flip, and
-two of them have never been read by anything in a deployed shape.**
+**A10.12 — THREE contract fields become load-bearing in production for the first time at the flip;
+the fourth was this amendment's own error and is corrected here.**
 
 - **`stream_profile.argv`** and **`output_profiles[*].argv`** (including the null form, A7/R4) are
   built by Django on every `next-source` answer — `apps/proxy/next_source.py:139-154` for the stream
@@ -3232,25 +3359,36 @@ two of them have never been read by anything in a deployed shape.**
   `apps/proxy/serializers.py:184`, sourced from `apps/proxy/config.py:15`. The Python relay does not
   read it from the answer either — `apps/proxy/live_proxy/input/buffer.py:42` reads it from
   `ConfigHelper` in-process. Same shape: produced in production, consumed only by Go.
-- **The seven `X-Relay-*` params and the marker are different, and better.** All eight
+- **The seven `X-Relay-*` params and the marker are production-proven, `X-Relay-Client-IP`
+  included — this amendment's first draft said otherwise and was wrong.** All eight
   `auth_request_set` variables and all seven forwarded `uwsgi_param HTTP_X_RELAY_*`/
   `HTTP_X_DISPATCHARR_AUTHORIZED` lines already exist on all nine relay-bound locations
   (`docker/nginx.conf:90-107` and repeated per location through `:519`), and the blanking twin exists
   at `docker/dispatcharr_api_params.conf:23-29`. The Python relay consumes them today, so the
-  **plumbing** is production-proven; what changes is the parser. **One exception, and it is the one
-  § Stage 2d already cares about**: `X-Relay-Client-IP` is set by Django
-  (`apps/proxy/authorize_views.py:360`, `:602`) and read by **nothing** in the Python relay — which
-  takes its address from `get_client_ip(request)` at `apps/proxy/live_proxy/views.py:205`, since under
-  `uwsgi_pass` `REMOTE_ADDR` already carries it. The only consumer is Go
-  (`relay/httpapi/stream.go:402`). So parity-matrix row 17's field is produced-but-unconsumed in
-  production today and becomes the *sole* source of `ip_address` on both status endpoints at the flip.
+  plumbing is production-proven; what changes is the parser. **And the Python relay does read
+  `X-Relay-Client-IP`**: `apps/proxy/authorize_views.py:185` pulls `META_RELAY_CLIENT_IP` into the
+  decision inside `result_from_headers`, and `apps/proxy/live_proxy/views.py:202-206` prefers
+  `decision.client_ip` over `get_client_ip(request)` whenever the decision is trusted and the value
+  non-empty — the comment at `:195-201` names parity-matrix row 17 as the reason, and
+  `apps/proxy/live_proxy/tests/test_client_ip_provenance.py:103` is row 17's Python pin, written to
+  prove the header wins on the trusted path by sending two different TEST-NET addresses. **This is
+  good news for 2d-3**: row 17's field is exercised in production today rather than first at the
+  flip, and the 2c contract's genuinely unconsumed fields are the three above, not four. **The error
+  was inherited, not invented**, which is why the fix is in two places: § Stage 2b's own contract
+  table at `:1621` says the seventh header is "bundled here rather than into 2d because it is a
+  contract addition like the others, even though only the Go relay reads it — the Python relay
+  ignores it exactly as it ignores today's five," and that contradicts parity-matrix row 17
+  (spec `:909`) inside this same document. `:1621` is corrected in place.
 
-**Ruling: not a 2d deliverable, a 2d-3 acceptance criterion.** The flip's plan names these four as the
-first things its post-flip smoke check exercises — a transcode tune (argv), an Output Profile tune
-(the profile map, and a deliberately-broken profile for the null arm), a fresh channel's chunk sizing,
-and `ip_address` on `GET /proxy/ts/status/<uuid>` read back as a real client address rather than
-nginx's — because "only unit-level evidence" is a statement about what a smoke test must cover, not an
-argument for more unit tests.
+**Ruling: not a 2d deliverable, a 2d-3 acceptance criterion.** The flip's plan names the three
+unconsumed fields as the first things its post-flip smoke check exercises — a transcode tune (argv),
+an Output Profile tune (the profile map, and a deliberately-broken profile for the null arm) and a
+fresh channel's chunk sizing — because "only unit-level evidence" is a statement about what a smoke
+test must cover, not an argument for more unit tests. **`ip_address` on
+`GET /proxy/ts/status/<uuid>` stays on that list for a different reason**: not because the header is
+new, but because the *transport* under it is — `proxy_set_header`'s replace-not-merge rule is what
+§ Stage 2d's own fix addresses, and a value that arrives correctly under `uwsgi_pass` says nothing
+about one `proxy_pass` block having been written correctly.
 
 **A10.13 — #318 must be fixed before 2d-4, and only two 2d PRs run it at all.**
 [#318](https://github.com/D10Scot/Dispatcharr/issues/318) is
@@ -3258,17 +3396,84 @@ argument for more unit tests.
 timing out at a hard 15s under host load. `go-tests.yml:114`'s change detector fires on `^relay/`, so
 of the 2d PRs only those that touch the Go module run it: **2d-4** (the corpus relocation of A10.6,
 and the `go-tests.yml` edit of A10.7) and **2d-3** if it takes A10.9's supervisord assertion as a Go
-test. 2d-1, 2d-2 and 2d-5 touch no Go and run none of it. **Ruling: fix it before 2d-4**, as a
+test. 2d-1, 2d-2, 2d-5 and 2d-6 touch no Go and run none of it. **Ruling: fix it before 2d-4**, as a
 one-file follow-up of its own — widen the window, or wait on the client's own `done` channel before
 polling the registry, and **never lower the asserted count**, which is the same rule #309 and #273 sit
 under. It is cheap and it is worth doing first for one reason: 2d-4 is the largest single deletion in
 the phase, and a flake that reddens its CI is a flake that gets attributed to the deletion.
 
-**A10.14 — follow-ups that are NOT stage 2d's, each with its one-line reason.** Recorded so a 2d
+**A10.14 — thirteen test files OUTSIDE the deleted package import it, across three surviving labels,
+and each errors at import and fails its whole label.** Re-derived at this SHA by counting
+`from apps.proxy.live_proxy` / `import apps.proxy.live_proxy` per file outside the package:
+
+- **`apps.channels.tests`** (7 files): `test_ts_proxy_teardown.py` (9 imports),
+  `test_ts_proxy_ghost_clients.py` (9), `test_ts_proxy_keepalive.py` (4),
+  `test_ts_proxy_initializing.py` (3), `test_get_stream_assignment.py` (2),
+  `test_ts_proxy_keepalive_duration.py` (1), `test_channel_stream_reuse.py` (1).
+- **`apps.proxy.tests`** (4 files): `test_stream_switch.py` (6), `test_boundary_error_arms.py` (3),
+  `test_relay_status_shape.py` (2), `test_combined_stats.py` (1).
+- **`apps.timeshift.tests`** (2 files): `test_views.py` (4), `test_stats.py` (1).
+
+A Python import error is not a test failure that can be tolerated per-test: it fails collection for
+the module and therefore the label. **Two of those three labels — `apps.proxy.tests` and
+`apps.channels.tests` — are in `.github/workflows/backend-tests.yml:180`'s coverage matrix**, so
+`coverage-gate` fails with them, on top of the plain `test` matrix. Note the shape: `apps.timeshift`
+is the **catch-up** label, the surface 2d keeps, and it is dragged in by A10.3's site 8.
+
+**Ruling: 2d-4's plan gives a per-file disposition, and this amendment does not choose them.** There
+are three legitimate shapes and the right one differs per file — **delete** (the test's subject is
+gone, e.g. the `ts_proxy` teardown and ghost-client files, whose Go counterparts already exist),
+**rewrite against the Go relay** (the test asserts a behaviour that survives, e.g. the relay status
+shape), or **keep by dropping the import** (the test's subject is Django's, and the `live_proxy`
+import is incidental, e.g. a constant it could name directly). Picking these from the outside would
+be guessing at what each file asserts; enumerating them so none is discovered by a red CI run is what
+this item is for. **And the choices feed A10.4**: the four under `apps/proxy/tests/` contribute part
+of what covers the ten surviving Gate 2 modules today, so 2d-5's census tree is not determined until
+2d-4 has settled them.
+
+**A10.15 — three `metrics/curated/defects.yml` rows cite test files 2d-4 deletes, and the validator
+checks that the path exists.** `metrics/build/curated.py:320-325` resolves every defect's `test`
+against the repo and appends `test path … does not exist` at `:324-325`; `:314-315` separately
+requires a `status: pinned` defect to carry **both** an issue and a test, so the rows cannot simply
+drop the field. The three, all `status: pinned`:
+
+- `metrics/curated/defects.yml:21` — `max-stream-switches-unbounded` (#221) →
+  `apps/proxy/live_proxy/tests/test_manager_stderr_failover.py`
+- `:22` — `fmp4-timeout-no-switch-exemption` (#222) →
+  `apps/proxy/live_proxy/tests/test_fmp4_client_timeout.py`
+- `:32` — `ffmpeg-speed-scientific-notation` (#227) → the same
+  `test_manager_stderr_failover.py`
+
+Each has a Go pin to move to (rows 6, 12 and the `speed=` parsing pin respectively), so re-pointing
+is the natural fix and a status change is the fallback. **The timing is the trap**: this breaks at
+PR 4, while every `metrics/curated/` edit in § Stage 2d sits in the docs PR — and the commit gate
+runs `python -m metrics.build --validate-only` only when a `metrics/` path is staged
+(`.claude/hooks/pre-commit-tests.sh:185`, the validate call at `:193`), so a PR 4 that deletes the
+tests without touching `metrics/` is **not** told. It would first surface in `pages.yml:90` on `main`
+after merge, i.e. on the dashboard build, with nothing red on the PR. **Ruling: the three-row
+re-point moves into PR 4's entry, and `python -m metrics.build --validate-only` is added to PR 4's
+gate** so the PR that breaks it is the PR that runs it.
+
+**A10.16 — `DISPATCHARR_RELAY_GO_PORT` is honoured everywhere except the nginx upstream § Stage 2d
+specifies.** `relay/config/config.go:63` binds from it and `docker/healthcheck.sh:33` probes it
+(`"${DISPATCHARR_RELAY_GO_PORT:-5658}"`), but § Stage 2d's PR 3 text bakes the literal into the new
+sed — "`127.0.0.1:5658` outside modular, `<relay host>:5658` in modular" at `:3392-3394` — and
+`docker/entrypoint.sh:231` exports a default for `DISPATCHARR_RELAY_PORT` only, with no
+`DISPATCHARR_RELAY_GO_PORT` beside it. **After the flip an operator who sets the variable gets the Go
+relay listening on their port and nginx proxying to 5658: a 502 on every tune**, in exactly the
+deployments that customise ports because something else already occupies the defaults. **Ruling: 2d-3's
+`RELAY_GO_UPSTREAM` sed reads the variable with the default-and-validate shape
+`docker/init/03-init-dispatcharr.sh:88-93` already uses for `DISPATCHARR_RELAY_PORT`** (default on a
+non-integer, warn, carry on) **and `docker/entrypoint.sh` exports a default beside `:231`.** The § Stage
+2d paragraph is edited in place. This is the same class as A10.2 and A10.9 — a deployment variable the
+Go relay already honours that the cutover's own configuration does not — and it is cheapest to fix in
+the PR that writes the sed for the first time.
+
+**A10.17 — follow-ups that are NOT stage 2d's, each with its one-line reason.** Recorded so a 2d
 planner can decline them by citation rather than by judgement.
 
 - **[#273](https://github.com/D10Scot/Dispatcharr/issues/273)** — a `--shuffle` flake in a Python
-  `live_proxy` test. **Deleted by 2d-4; do not fix.** Closing it is 2d-5's ledger edit.
+  `live_proxy` test. **Deleted by 2d-4; do not fix.** Closing it is 2d-6's ledger edit.
 - **[#295](https://github.com/D10Scot/Dispatcharr/issues/295)** (the provider-URL INFO leak through
   ffmpeg's stderr preamble) — **closes by deletion, verified single-site.** The leak is
   `apps/proxy/live_proxy/input/manager.py:1092-1094` and there is no analogue outside the package:
@@ -3291,21 +3496,39 @@ planner can decline them by citation rather than by judgement.
   deletes those five ranges**, and 2d-1's relocation of `ChannelMetadataField` will carry them along
   unchanged unless someone looks. Named in the edited deletion list.
 - **The `remove_ghost_clients` side effect on the XC handshake** — **closes by deletion.** The sweep
-  runs *inside* the relay (`apps/proxy/live_proxy/client_manager.py:447`, reached from
-  `channel_status.py:537-539` when `apps/proxy/relay_views.py` serves `GET
-  /proxy/relay/channels?clients=all`), and Django's side is a pure HTTP read. Once nginx routes that
-  route to Go it is served from an in-process map with no write. `apps/output/views.py:417`'s
-  `xc_get_info` keeps asking for the live count; only the `SREM` disappears.
+  runs *inside* the relay (`apps/proxy/live_proxy/client_manager.py:447`), and Django's side is a
+  pure HTTP read. `channel_status.py:537-539` is its only **live** caller, reached when
+  `apps/proxy/relay_views.py` serves `GET /proxy/relay/channels?clients=all`; the second reader of
+  the same builder, `channel_status.py:654` via `apps/proxy/tasks.py`, is inert because that beat
+  entry ships disabled (A10.3 site 7), and `server.py:2291`'s call is relay-internal. Once nginx
+  routes the control route to Go it is served from an in-process map with no write.
+  `apps/output/views.py:417`'s `xc_get_info` keeps asking for the live count; only the `SREM`
+  disappears.
 - **[#222](https://github.com/D10Scot/Dispatcharr/issues/222), #296, #302, #299, #314** — reproduced
   in Go per D5. After 2d-4 they stop being parity obligations and become ordinary Go defects, because
   D5's "reproduce, do not fix" has no second implementation left to agree with. **Fixing them is
-  post-2d, not 2d.** One knock-on for 2d-5's docs pass: CLAUDE.md currently says a #222 fix "changes
+  post-2d, not 2d.** One knock-on for 2d-6's docs pass: CLAUDE.md currently says a #222 fix "changes
   five artefacts together: both loops, both tests and the matrix row" — after 2d-4 it is **three**
   (`relay/httpapi/fmp4.go`, `relay/httpapi/fmp4_test.go`, the matrix row), and the same arithmetic
-  shrinks for each of the other four.
+  shrinks for each of the other four. **Two further CLAUDE.md corrections are 2d-6's, assigned here
+  so neither is rediscovered**: § Structural constraints and § Known defects both say
+  `release_stream()` has "two fallback-path reads" where there are three
+  (`apps/channels/models.py:747-750`, below), and § Test hooks names
+  `live_proxy/{constants,redis_keys}.py` as the boot-check paths, which 2d-1 relocates (A10.3).
 - **The stage-2c `metrics/curated/` milestone row** — its own one-line PR, as #276 was for 2b, for
   A9.9's reason: a milestone row carries the merge SHA and a merge commit cannot name itself. **Not
   2d's, and it should land before 2d-1** so the dashboard does not show 2c open while 2d runs.
+- **Two docs-PR items with no other owner, recorded so they are not lost.** (i)
+  `.github/workflows/domain-fuzz-campaign.md:96` names the deleted tree in its `live-relay` domain
+  description, and the generated `.lock.yml:562` carries the same string — both regenerate with a
+  bare `gh aw compile`, never by hand-editing the lock. (ii) `metrics/curated/catalogue.yml:37-38`'s
+  `models_boot_trap_imports` metric reads `/models_module_level_live_proxy_imports`, which
+  `scripts/metrics/collect_architecture.py:159-182` computes over **`apps/channels/models.py` only**
+  — so it reaches zero at **2d-1** and deserves a milestone line there, and it will read zero while
+  eight other module-level sites are still live (A10.3). Worth saying once in its note text rather
+  than leaving a zero to be read as "the trap is gone." (Unlike its neighbours at `:35` and `:39` it
+  carries no `headline: true`, so it is a dashboard row rather than a tile — which is why one
+  sentence in the note is the whole fix.)
 - **zizmor 1.30.1 against the pinned 1.29.0**, and **the parity matrix's line-number refresh** (A9.9)
   — both are chores with no cutover dependency. The matrix refresh is specifically *not* worth folding
   into A10.5's column replacement: that edit rewrites the cells it touches anyway, and the guard
@@ -3532,17 +3755,25 @@ share a PR with the delete that makes it measurable).
 1. **`migration/phase2d-boot-trap-relocation`** — relocate `RedisKeys` and `ChannelMetadataField` out
    of `apps/proxy/live_proxy/`. `apps/channels/models.py:6-7` imports both at module level, loaded by
    every migration and management command (`CLAUDE.md` § Structural constraints: "one import added to
-   `live_proxy/constants.py` and Django stops booting"). **Amendment A10.3: this is one of FIVE
-   module-level import sites, and the other four are inside `apps/proxy/` itself** —
-   `apps/proxy/relay_views.py:34-41` (five names), `apps/proxy/relay_client.py:61` (`ChannelState`),
-   `dispatcharr/urls.py:9` (`stream_xc`, in the root urlconf) and `apps/proxy/urls.py:10`
-   (`include('apps.proxy.live_proxy.urls')`). This PR closes only the `RedisKeys`/
-   `ChannelMetadataField` half; the rest is PR 4's, named there. **Amendment A10.4: this PR moves two
-   files out of Gate 2's denominator and therefore trips `modules=` on its first push** — it ships a
+   `live_proxy/constants.py` and Django stops booting"). **Amendment A10.3: this is one of NINE
+   module-level import sites, the boot-fatal one being `dispatcharr/settings.py:107`'s
+   `INSTALLED_APPS` entry, and the rest are enumerated there.** This PR owns four things: the
+   `RedisKeys`/`ChannelMetadataField` relocation; **`ChannelState` and `ConfigHelper`, which this
+   spec previously assigned to nobody** and which surviving code imports at module level
+   (`apps/proxy/relay_client.py:61`, and the whole catch-up surface at
+   `apps/timeshift/views.py:40-41` and `apps/timeshift/stats.py:13` — the surface 2d KEEPS, so it
+   must not be left pointing at a directory PR 4 deletes); re-pointing
+   `.claude/hooks/run-affected-tests.sh:136-145`'s boot-check `case` arm, which matches the two old
+   paths **by literal path** and silently stops running otherwise, plus the same two path names in
+   `CLAUDE.md` § Test hooks; and a milestone line for `metrics/curated/`'s
+   `models_boot_trap_imports`, which reaches zero here (A10.17). Everything else is PR 4's, named
+   there. **Amendment A10.4: this PR moves two files out of Gate 2's denominator and therefore trips
+   `modules=` on its first push** — it ships a
    `scripts/coverage_live_path.sh --write-floor --shape-only` re-baseline, `missing` unchanged at
    1525, and says which kind of move it is in one line, per the floor's own procedure. Gate:
    `manage.py check` green, every backend label green, `Backend result` green including the
-   coverage gate.
+   coverage gate — noting that `manage.py check` passes today with the directory present, so it
+   proves this relocation did not break boot and proves nothing about the other eight sites.
 2. **`migration/phase2d-admin-wrappers`** — move `live_proxy/views.py`'s Django-side `IsAdmin`
    wrappers (`channel_status`, `stop_channel`, `stop_client`, `change_stream`, `next_stream`) to
    `apps/proxy/`, keeping URLs, names and permission classes unchanged so `frontend/src/api.js` never
@@ -3557,7 +3788,20 @@ share a PR with the delete that makes it measurable).
    (b) A10.9 — `nice -n %(ENV_UWSGI_NICE_LEVEL)s` ahead of `setpriv` on the same file's `command=`,
    matching `relay-uwsgi.conf:2`, plus a rewrite of the now-false comment at `:21-23`; (c) A10.9 —
    a Go test beside `relay/drain/drain_test.go` asserting `relay-go.conf` and `relay-uwsgi.conf`
-   share `priority=205`, read through `relaytest.RepoRoot()`. **A10.1 is a precondition, not a
+   share `priority=205`, read through `relaytest.RepoRoot()`; (d) A10.16 — the `RELAY_GO_UPSTREAM`
+   sed reads `DISPATCHARR_RELAY_GO_PORT` with `03-init-dispatcharr.sh:88-93`'s default-and-validate
+   shape rather than baking `5658`, and `docker/entrypoint.sh` exports a default for it beside
+   `:231`, or an operator who sets the variable gets a 502 on every tune.
+   **Amendment A10.10 moves three E2E edits INTO this PR from PR 4**, because they break at the flip
+   and this PR's gate is `E2E result` green: `e2e/tests/streaming-greybox/output-profile-sharing
+   .spec.ts`'s Redis half (`:142-144`, the `live:channel:*:output:*:owner` assertion — the `pgrep`
+   half at `:123` stays), the `e2e/tests/guards/allowlist.ts:76-83` `GREYBOX_REDIS` entry that
+   `capabilities.spec.ts:130` compares with `toEqual` (so *removing* the last use reddens `guards`
+   unless the allowlist is emptied in the same commit), and `e2e/COVERAGE.md:259-261`, which cites
+   "the shared owner key" as half of what that spec verifies. **If that rewrite changes the spec's
+   test title, parity-matrix row 11's pin (`docs/relay-parity-matrix.md:184`) changes with it in the
+   same commit** — `testRefProblem` resolves a `.spec.ts` reference by literal title
+   (`parity-matrix.ts:481-489`). Keeping the title is the cheaper answer. **A10.1 is a precondition, not a
    deliverable**: `Go result` must be a required check on the Main ruleset before this merges, and
    the plan records the `gh api … /rulesets/21229979` output proving it. **A10.10: this PR's plan
    opens with a measurement task** — flip nginx in a scratch container, run the full `migration/**`
@@ -3569,14 +3813,23 @@ share a PR with the delete that makes it measurable).
    client address rather than nginx's. Gate: `E2E result` green including the rewritten buffering
    spec and the re-pointed forged-marker test.
 4. **`migration/phase2d-delete-live-proxy`** — delete `apps/proxy/live_proxy/` and its ~564 tests
-   wholesale. **Six additions and one correction from Amendment A10.** (a) A10.3 — close the four
-   remaining module-level import sites (`apps/proxy/relay_views.py:34-41`,
-   `apps/proxy/relay_client.py:61`, `dispatcharr/urls.py:9`, `apps/proxy/urls.py:10`) and the
+   wholesale. **Eight additions and one correction from Amendment A10.** (a) A10.3 — close the
+   remaining module-level import sites: **`dispatcharr/settings.py:107`'s `INSTALLED_APPS` entry**
+   (without which nothing starts in any role), `apps/proxy/relay_views.py:34-41`,
+   `dispatcharr/urls.py:9`, `apps/proxy/urls.py:10`, `apps/proxy/tasks.py:6`, and
+   `apps/proxy/apps.py:9-15`'s `ready()` **together with its two `getattr(proxy_app, 'live_proxy')`
+   consumers, `apps/proxy/signals.py:17-20` and
+   `apps/proxy/management/commands/proxy.py:40-69`, which no import grep finds**; plus the
    function-local ones (`apps/proxy/authorize.py:380`'s `get_stream_object`,
-   `apps/proxy/next_source.py:348`/`:474`/`:1115`); whether `relay_views.py`/`relay_urls.py` are
+   `apps/proxy/next_source.py:348`/`:474`/`:1115`, `apps/m3u/connection_pool.py:81`,
+   `dispatcharr/consumers.py:120`, `core/utils.py:759`, `apps/channels/tasks.py:1125` and `:2445`).
+   `apps/proxy/tasks.py` is a capability decision, not a rehome: `fetch_channel_stats` is the
+   `channel_stats` WebSocket emission and its builder scans Redis keys the Go relay never writes, so
+   delete it (with `core/tasks.py:428-436`'s dead twin, A10.11) or re-point it at
+   `relay_client.list_channels()`. Whether `relay_views.py`/`relay_urls.py` are
    deleted outright or rewritten against the Go relay is this PR's plan to decide. (b) A10.5 — the
    parity matrix's Python column replacement lands **here**, in the same commit as the delete, not
-   in PR 5: `e2e/tests/guards/parity-matrix.ts:369` and `:476` both fail on a path that no longer
+   in the docs PR: `e2e/tests/guards/parity-matrix.ts:369` and `:476` both fail on a path that no longer
    exists, and 53 of the matrix's 86 Source citations and all 38 of its Python pins are inside the
    deleted directory. Rows 26 and 27 need a decision, not an edit — see A10.5. (c) A10.6 — move the
    ffmpeg stderr corpus into `relay/internal/relaytest/testdata/` and re-point
@@ -3588,42 +3841,62 @@ share a PR with the delete that makes it measurable).
    — edit `.github/workflows/backend-tests.yml:180`'s coverage matrix and
    `dispatcharr/test_discovery.py:58`'s `scripts/coverage_live_path` alias, both of which name the
    dead `apps.proxy.live_proxy.tests` label, and ship a `--shape-only` re-baseline that keeps the
-   gate green while stating plainly that it is slack until PR 6. (f) A10.14 — delete #190's five
+   gate green while stating plainly that it is slack until PR 5. (f) A10.17 — delete #190's five
    metadata-hash ranges in `apps/channels/models.py` (three reads at `:516-519`, `:696-702` and
    `:747-750`; two `hdel`s at `:717-721` and `:773-778`),
    which PR 1's relocation otherwise carries along unchanged and which read and write a key the Go
-   relay never writes. **The correction**: rewrite the **one** remaining greybox spec,
-   `e2e/tests/streaming-greybox/output-profile-sharing.spec.ts` (its Redis half at `:142-144`; the
-   `pgrep` half at `:123` survives) — there is no "multi-client sharing" greybox spec, that is
-   `e2e/tests/streaming/shared-upstream.spec.ts` and it is black-box and needs no rewrite, and
-   nothing in `e2e/` ever imported relay internals directly;
-   update `e2e/COVERAGE.md` and `e2e/tests/guards/allowlist.ts`'s `GREYBOX_REDIS` entry
-   (the live half of what it guarded is gone; the VOD/catch-up half stays); **added in this fix
-   round** — remove `dispatcharr/test_discovery.py`'s `_PATH_ALIASES` entry
+   relay never writes. (g) A10.14 — **thirteen test files outside the deleted package import it**,
+   across `apps.channels.tests` (7 files), `apps.proxy.tests` (4) and `apps.timeshift.tests` (2);
+   each errors at import and fails its whole label, and two of those labels are in
+   `.github/workflows/backend-tests.yml:180`'s coverage matrix, so `coverage-gate` fails with them.
+   **This PR's plan gives a per-file disposition** — delete, rewrite against the Go relay, or keep by
+   dropping the import — rather than discovering them from a red run. (h) A10.15 — re-point the three
+   `metrics/curated/defects.yml` rows whose `test` path this PR deletes (`:21` #221, `:22` #222,
+   `:32` #227) at their Go pins or change their status; `metrics/build/curated.py:320-325` fails on a
+   missing path and `:314-315` forbids a `pinned` row without one. **The correction**: the greybox
+   rewrite named here is **not** this PR's — A10.10 moved it to PR 3, because it breaks at the flip —
+   and the entry that stood here was wrong three ways regardless: there is no "multi-client sharing"
+   greybox spec (that is `e2e/tests/streaming/shared-upstream.spec.ts`, black-box, needing no
+   rewrite), the third greybox file is VOD and 2d does not touch it, and nothing in `e2e/` ever
+   imported relay internals directly. What remains here is
+   `e2e/COVERAGE.md`'s rows that CITE deleted paths (`:190`, `:192`, `:193`, `:203`); **added in an
+   earlier fix round** — remove `dispatcharr/test_discovery.py`'s `_PATH_ALIASES` entry
    `("apps/proxy/live_proxy/", ("apps.proxy.live_proxy", "apps.channels"))`, which this spec's first
    draft never named despite its own gate depending on exactly this file, and update
    `tests/test_ci_test_routing.py`, which `CLAUDE.md` § Testing records as pinning "all of it" — one
    edit, two pinning tests, since `_SHARED_PATH_PREFIXES` and the commit gate both derive labels from
    the same `scripts/ci_backend_test_labels.py`. Gate: `Backend result` green with 15 labels instead
-   of 16 (`apps.proxy.live_proxy.tests` no longer exists to run), `tests/test_ci_test_routing.py`
-   green, `E2E result` green.
+   of 16 (`apps.proxy.live_proxy.tests` no longer exists to run — the mechanism is
+   `dispatcharr/settings.py:107`, which this PR removes), `tests/test_ci_test_routing.py`
+   green, `E2E result` green, and **`python -m metrics.build --validate-only` green** (A10.15: the
+   commit gate runs it only when a `metrics/` path is staged, `.claude/hooks/pre-commit-tests.sh:185`,
+   so without this the three broken rows first surface in `pages.yml:90` on `main` after merge).
 5. **`migration/phase2d-gate2-recensus`** — **new, Amendment A10.4.** Re-scope Gate 2 to the ten
    surviving boundary modules (`scripts/coverage_live_path.coveragerc`'s `[report] include` loses
    `apps/proxy/live_proxy/*`), and set `missing` from the worst of a ≥12-round **CI** census on the
-   post-delete tree, under the stopping rule `scripts/coverage_live_path.floor:284-312` prescribes.
+   post-delete tree, under the stopping rule `scripts/coverage_live_path.floor:283-312` prescribes.
    It cannot merge with PR 4: the ten survivors are executed in large part by the ~564 tests PR 4
-   removes, so a census taken before the delete measures a different thing. Gate: `Backend result`
+   removes, so a census taken before the delete measures a different thing. **Nor can it be planned
+   before PR 4's A10.14 dispositions are settled** — four of the thirteen affected test files are
+   under `apps/proxy/tests/` and contribute to covering the very modules this gate will measure, so
+   the plan states which disposition each received. Gate: `Backend result`
    green, and the floor's own header records the full round sequence in order.
 6. **`migration/phase2d-docs`** — `CLAUDE.md` (the relay is now two processes across two languages;
    every `apps/proxy/live_proxy/` reference in § Architecture, § Known defects, § Testing rewritten
-   or removed — including the #222 artefact count, which Amendment A10.14 reduces from five to
+   or removed — including the #222 artefact count, which Amendment A10.17 reduces from five to
    three, and Gate 1's static half, which A10.8 records as retired rather than met), `CONTEXT.md`, a
    new ADR for the Go boundary (recording D2/D3's reasoning as durable decision history the way ADR
    0005 recorded ADR-worthy Phase 1 reasoning), and `metrics/curated/` updated in the same PR per
    `docs/agents/metrics.md`'s standing rule — closing #273, #295 and the `remove_ghost_clients`
-   side effect by deletion (A10.14), and **not** #190, which closes only because PR 4 deleted its
-   five ranges. The parity matrix's Python column is **not** here: A10.5 moved it to PR 4. Gate:
-   `python -m metrics.build --validate-only` green.
+   side effect by deletion (A10.17), and **not** #190, which closes only because PR 4 deleted its
+   five ranges. Three further items A10.17 assigns here: `.github/workflows/domain-fuzz-campaign.md:96`
+   and its generated `.lock.yml:562` name the deleted tree and are regenerated with a **bare**
+   `gh aw compile`; `metrics/curated/catalogue.yml:37-38`'s `models_boot_trap_imports` note gains one
+   sentence saying it counts `apps/channels/models.py` only, so its zero is not "the trap is gone";
+   and CLAUDE.md's "two fallback-path reads" becomes three. `e2e/COVERAGE.md:50` (the ownership-lease
+   `todo` row) and `:202` (the reconnect open question) are also here rather than PR 4 — they
+   describe mechanisms rather than cite paths. The parity matrix's Python column is **not** here:
+   A10.5 moved it to PR 4. Gate: `python -m metrics.build --validate-only` green.
 
 `docker/uwsgi.relay.ini` and the Python relay process **stay**, narrowed to VOD and catch-up for the
 remainder of Phase 3.
@@ -3714,7 +3987,7 @@ Filled in as PRs merge; this spec lands as its own PR 0.
 | 2c-7 -- the Go relay's Output Profiles (`migration/phase2c-output-profile`). One transcode per active `(channel, profile)` pair reading the channel's shared ring on `pipe:0` and writing a second in-process MPEG-TS ring, shared by every client on that profile; an fMP4 client on a profile runs it and 2c-6's remux chained, under `mpegts:p<id>` and `fmp4:p<id>`. Parity-matrix row 11 gets its Go pin, counted in spawns. The contract gained a null `argv` so a broken Output Profile can be told from a deactivated one. Amendment A7. Three plan corrections found, disclosed and **fixed in the plan document as committed**, run rather than read: Task 4 Step 5 and Task 7 Step 5 misassigned which break-check rows belong to which task -- rows 3-7 name `httpapi`-package tests Task 7 creates (Appendix P) and rows 8 and 11 name `output`-package tests Task 4 creates (Appendix I), so Task 4's Step 5 now reads "rows 8 and 11" and Task 7's now reads "rows 2, 3, 4, 5, 6, 7, 9, 10, 12, 13, 16, 17, 18", the amended lists this PR actually ran each row against; rows 16, 17 and 18 were re-checked against the same test rather than assumed correct, and confirmed already in Task 7's list -- `TestTheDeactivatedProfileCorrectionDoesNotRaceTheListEndpoint` and `TestAFailoverRefreshesTheProfileSetAndADegradedOneDoesNot` (both arms) are in `relay/httpapi/profile_test.go`, and no channel-package location for either exists. Task 5 Step 3's "Expected: green" for the whole-module `go build ./...` did not hold and is amended to name what actually goes green at that step: `go build`/`vet`/`golangci-lint` scoped to `./channel/... ./output/... ./control/... ./buffer/... ./ffmpeg/... ./internal/...` (every package but `httpapi`), `go test -race ./channel/...`, and `gofmt -l .` over the whole tree -- **commit `38669dba` (Task 5) does not build alone**, because `httpapi/fmp4.go` and `stream.go` still call `AttachOutput` with the pre-2c-7 signature; the whole-module build, vet, test and lint first go green at Task 6 Step 4 once `httpapi`'s own edits land, so a `go build ./...` bisect on this branch lands on Task 6's commit for a defect that is Task 5's incompleteness, not Task 6's own. No commit was ever made against a genuinely broken working tree regardless, since Task 6 was written and verified before either commit. Third, Task 9 Step 3's `ffmpeg.StartPiped`/`.Start` call-site breakdown named the wrong two files ("two in spawn.go, one in output/fmp4.go, one in output/profile.go"); the actual four are one in `output/profile.go`, two in `output/fmp4.go` (the initial spawn and the bitstream-filter retry) and one in `channel/source_transcode.go` -- the total of 4 was already right. | `migration/phase2c-output-profile` | pending |
 | 2c-8 -- the Go relay's control routes and drain (`migration/phase2c-control-drain`). The four remaining `/proxy/relay/…` routes (the single-channel `GET` with its `?fields=state` form, the channel `DELETE`, the client `DELETE` and `advance`), the detail endpoint with its five extra client fields and row 14's `owner` asymmetry, the XC live roots (Ruling R1: spec D1 scopes them and no PR owned them), the four events the tune and stop paths raise, the dev-only `POST /_dispatcharr/authorize-internal` fallback and the Go half that calls it, and D6's SIGTERM drain with a real `/readyz` and a role-aware Docker `HEALTHCHECK`. Thirteen parity-matrix rows get a Go pin, taking the matrix to 28 of 28 pinnable rows, and the ten authorize-matrix rows among them gain a Notes clause saying the Go pin covers the relay's ask-and-obey share and not the decision, which stays Django's. Amendment A8. Four defects found and fixed, three in code this PR did not write: `RequireInternal` verifying the bound signature against an empty body (A8.3), `Manager.publish` bypassing `addClient` for the first client of every channel (A8.4), `control.Emitter` panicking on a send after `Close` and on a second `Close` (A8.5), and -- in this PR's own first draft, found by a Gate 2 coverage test -- the `x-api-key` body field that never arrived, because DRF reads input by a field's NAME and `source=` maps only the output (A8.9). Two Python-side findings reproduced and filed rather than fixed: `source_bitrate` and `ffmpeg_bitrate` are read by `channel_status.py` and written by nothing, the second because the reader and the writer name two different constants ([#314](https://github.com/D10Scot/Dispatcharr/issues/314)). Four break-checks stayed green on a first attempt and each produced a better test or deleted unreachable code. Five plan-text corrections found and made in-tree, none changing the shipped code: Task 0 Step 2's expected `c.clients[` grep count on the merged 2c-7 tree said four hits including `StopClient`'s lookup, but `StopClient` does not exist until this PR's own Task 1 -- the measured count on the tree Task 0 actually ran against is three (one write, two reads); Appendix U's request-count fix, written for Task 4 Step 5, was applied at Task 1 instead so Task 1's own commit would not land with `./httpapi` red under Constraint 33, and both steps now say so; Tasks 2, 3 and 4 landed in one commit rather than three, plus Ruling R10's `Emitter` guards and Task 8's self-contained Docker/entrypoint/healthcheck pieces, because building each task in isolation surfaced a three-link build/test dependency chain the plan's task boundaries did not show; `authorize_test.go` (Task 6) defines `runningIDs` and `containsString`, and `xc_test.go` (Task 7) calls rather than redefines them, the reverse of where the plan first placed them; and `server.go`'s `/healthz`/`/readyz` doc comment was rewritten as one coherent paragraph rather than applied as Appendix J's original hunk, which would have left a stale 2c-1 sentence ("this PR adds no Docker HEALTHCHECK") sitting directly above the paragraph describing the HEALTHCHECK this PR adds -- Appendix J's hunk text is regenerated to match. | `migration/phase2c-control-drain` | pending |
 | 2c-9 -- the Go coverage gate and stage 2c's close-out (`migration/phase2c-go-coverage-gate`). `scripts/coverage_relay_go.sh` measures the ten packages the shipped binary LINKS (not `./...`: `internal/relaytest` and `internal/credlint` are out by the same rule the Python rcfile applies, worth 73.74% vs 84.12% on one run at `a635190c`) under `go test -count=1 -race -covermode=atomic`, and gates on `missing` against a floor whose number is the worst of a 12-round CI census (sequence 589 589 588 588 589 589 589 588 588 588 588 589; max set at round 1, unchanged through round 12), with `shape=`/`packages=`/`gomod=` as equality checks and `statements` recorded but never compared. `go-tests.yml` gains `coverage` and `differential` jobs, both in `Go result`'s needs; `codeql.yml` gains a Go job of its own with `build-mode: manual`, verified live via a manual `workflow_dispatch` since it carries no `pull_request` trigger. The parity matrix's Go half becomes mechanical: an eighth guard check plus `GO_PARITY_CLOSED`, with rows 26 and 27 exempt by construction rather than by an exemption list; on this tree 28 of 28 pinned rows already carry a Go reference. Amendment A2.4's cross-implementation differential lands as one harness test that starts `relay-go` against the test's own `LiveServerTestCase` Django, green on the first attempt (Ran 1 test in 6.5s); a second differential (row 9's realignment) was built, run and dropped because `FakeUpstream`'s looping payload cannot express a mid-packet start without re-breaking every loop. [#309](https://github.com/D10Scot/Dispatcharr/issues/309) fixed by widening the dead-air bound by a tenth of a check interval, the asserted count of three unchanged -- the stamp move first proposed for it was measured not to reduce the failure rate (2 sub-400 ms gaps in 60 loaded runs against 1 in 60 unmodified, independently reproduced on a third host at 1-in-30 for both shapes) and the margin turned out to be the health monitor's ticker drift, about a millisecond, rather than the 50 ms interval the floor looks like. 2c-8's `relay/drain/drain_test.go` stops restating `docker/supervisord.d/relay-go.conf`'s `stopwaitsecs` as a Go constant and reads it, through a newly exported `relaytest.RepoRoot()`, failing rather than defaulting when the key is gone -- five break-checks, the load-bearing one being `stopwaitsecs=60` staying green so the assertion is a bound and not an equality. Amendment A9, twelve rulings including A9.12: a plan-text defect found and fixed in this PR, where Task 3 Step 1's example `gh api` command carried a `--repo` flag that tool does not have (and would have been semantically wrong regardless, since the endpoint's own path already names the target repository); corrected in the plan document as committed, and the four resolved action pins matched Appendix C's existing ones exactly, confirming no drift; a second, smaller miscount in the same plan ("seven" break-check failure modes against a table and later text both saying eight, in Task 2 Step 5's heading and Task 10 Step 1's PR-description instruction) found and corrected alongside it. One commit-sequencing self-correction, disclosed rather than silently fixed: Appendix C's `go-tests.yml` diff is written as one hunk spanning both the `coverage` and `differential` jobs, but Tasks 3 and 4 describe them as separate commits; the whole appendix was applied and committed together on the first pass, then split into the two intended commits via `git reset --soft` before anything was pushed. Three handoffs declined with reasons (the matrix line-number refresh, the `fmp4.go` split and its `"remux stderr"` rename, the milestone row). | `migration/phase2c-go-coverage-gate` | pending |
-| Amendment A10 -- what stage 2d inherits from stage 2c (`docs/phase2d-inputs-amendment`). Fourteen findings verified against the merged 2c tree at `1326de3e`, the first tree on which all nine 2c PRs exist together, and seven in-place corrections to § Stage 2d's deletion list, which grows from five PRs to six. The load-bearing ones: `Go result` is not a required check on the Main ruleset (ruleset `21229979` requires six contexts and not that one), so 2d-3 has a precondition no commit can satisfy; every route beyond `/healthz` and `/readyz` is behind `DISPATCHARR_RELAY_GO_DEV_ROUTES` (`relay/config/config.go:146-155`, `relay/httpapi/server.go:62-89`), which `relay-go.conf` does not set, so pointing nginx at 5658 today 404s every tune; the module-level boot trap is FIVE sites and four of them are inside `apps/proxy/` itself, the sharpest being `apps/proxy/relay_views.py:34-41` -- a surviving Gate 2 boundary module that is Django's implementation of the five routes the Go relay takes over; Gate 2's Python gate loses 28 of its 38 modules and is tripped by 2d-1 on its first push, so 2d-1 ships a `--shape-only` re-baseline and a sixth PR carries the post-delete CI census; the parity matrix's Python column replacement moves from 2d-5 to 2d-4 because `parity-matrix.ts:369` and `:476` both fail on a deleted path (measured: 53 of 86 Source citations and all 38 Python pins are inside the directory), with rows 26 and 27 left to the 2d-4 plan since they are `white-box-only` behaviours with no Go source to re-point at and the guard has no retired form; the Go suite opens the Python harness's ffmpeg corpus in place (`relay/internal/relaytest/corpus.go:56-57`, `:65`) and 44 further Go citations into `live_proxy/` dangle; deleting the differential test breaks `Go result` unless `go-tests.yml:472` and `:494-500` are edited in the same commit, and nothing replaces the only CI job that boots the Go binary against a real Django. Three findings of the amendment's own, not on the brief: the four extra boot-trap sites; `relay-go.conf:21-23`'s comment promising a `nice` level "in 2c-2" that nine PRs later is still absent, which makes the byte-carrying process the lowest-priority of three for any operator who took the documented `UWSGI_NICE_LEVEL=-5`; and [#190](https://github.com/D10Scot/Dispatcharr/issues/190) NOT closing by deletion, since all five of its metadata-hash ranges (one of them previously unrecorded, `apps/channels/models.py:747-750`) are in a file 2d does not delete. Two corrections to § Stage 2d's own text: there is no "multi-client sharing" greybox spec and nothing in `e2e/` ever imported relay internals, so 2d-4 rewrites one greybox spec rather than two. | `docs/phase2d-inputs-amendment` | pending |
+| Amendment A10 -- what stage 2d inherits from stage 2c (`docs/phase2d-inputs-amendment`). Seventeen findings verified against the merged 2c tree at `1326de3e`, the first tree on which all nine 2c PRs exist together, and seven in-place corrections to § Stage 2d's deletion list, which grows from five PRs to six. The load-bearing ones: `Go result` is not a required check on the Main ruleset (ruleset `21229979` requires six contexts and not that one), so 2d-3 has a precondition no commit can satisfy; every route beyond `/healthz` and `/readyz` is behind `DISPATCHARR_RELAY_GO_DEV_ROUTES` (`relay/config/config.go:146-155`, `relay/httpapi/server.go:62-89`), which `relay-go.conf` does not set, so pointing nginx at 5658 today 404s every tune; the module-level boot trap is FIVE sites and four of them are inside `apps/proxy/` itself, the sharpest being `apps/proxy/relay_views.py:34-41` -- a surviving Gate 2 boundary module that is Django's implementation of the five routes the Go relay takes over; Gate 2's Python gate loses 28 of its 38 modules and is tripped by 2d-1 on its first push, so 2d-1 ships a `--shape-only` re-baseline and a sixth PR carries the post-delete CI census; the parity matrix's Python column replacement moves from 2d-5 to 2d-4 because `parity-matrix.ts:369` and `:476` both fail on a deleted path (measured: 53 of 86 Source citations and all 38 Python pins are inside the directory), with rows 26 and 27 left to the 2d-4 plan since they are `white-box-only` behaviours with no Go source to re-point at and the guard has no retired form; the Go suite opens the Python harness's ffmpeg corpus in place (`relay/internal/relaytest/corpus.go:56-57`, `:65`) and 44 further Go citations into `live_proxy/` dangle; deleting the differential test breaks `Go result` unless `go-tests.yml:472` and `:494-500` are edited in the same commit, and nothing replaces the only CI job that boots the Go binary against a real Django. Three findings of the amendment's own, not on the brief: the four extra boot-trap sites; `relay-go.conf:21-23`'s comment promising a `nice` level "in 2c-2" that nine PRs later is still absent, which makes the byte-carrying process the lowest-priority of three for any operator who took the documented `UWSGI_NICE_LEVEL=-5`; and [#190](https://github.com/D10Scot/Dispatcharr/issues/190) NOT closing by deletion, since all five of its metadata-hash ranges (one of them previously unrecorded, `apps/channels/models.py:747-750`) are in a file 2d does not delete. Two corrections to § Stage 2d's own text: there is no "multi-client sharing" greybox spec and nothing in `e2e/` ever imported relay internals, so one greybox spec is rewritten rather than two. **Opus review fix round (four blocking, nine should-fix, all reproduced before applying).** The boot-trap enumeration was incomplete in the way that matters and went from five sites to NINE: it missed `dispatcharr/settings.py:107`'s `INSTALLED_APPS` entry (boot-fatal in every role, and the mechanism behind the 16-to-15 label count the spec already asserted without naming), `apps/proxy/tasks.py:6` (a Celery-autodiscovered module whose `channel_stats` emission scans Redis keys the Go relay never writes -- a capability decision, not a rehome), `apps/timeshift/views.py:40-41` and `stats.py:13` (catch-up, the surface 2d KEEPS, and the source of `ChannelState`/`ConfigHelper` having no assigned home in this spec at all -- now 2d-1's), `apps/proxy/apps.py:9-15` plus its two `getattr(proxy_app, 'live_proxy')` consumers that no import grep finds, and five further function-local imports. The greybox Redis rewrite and its `allowlist.ts`/`COVERAGE.md` twins were scheduled at the DELETE while breaking at the FLIP, so PR 3 could not have passed its own `E2E result` gate: moved to PR 3, with a table saying which PR OWNS each E2E edit rather than only which event breaks it. Thirteen test files outside the deleted package import it -- seven in `apps.channels.tests`, four in `apps.proxy.tests`, two in `apps.timeshift.tests` -- each failing its whole label at import, two of those labels inside the coverage matrix; enumerated as A10.14, with per-file dispositions required of the 2d-4 plan and 2d-5's census tied to them. Three `metrics/curated/defects.yml` rows cite test files 2d-4 deletes and `metrics/build/curated.py:320-325` fails on a missing path, first surfacing on `main` after merge because the commit gate runs the validator only for staged `metrics/` paths: moved into PR 4 with `--validate-only` added to its gate (A10.15). One inherited factual error corrected in two places: the Python relay DOES read `X-Relay-Client-IP` (`authorize_views.py:185`, `live_proxy/views.py:202-206`, pinned by `test_client_ip_provenance.py:103`), so row 17's field is production-proven before the cutover rather than first at it -- and the sentence at spec line 1621 that said otherwise, which contradicted row 17 inside this same document, is fixed in place. Also: a sixteenth `relay_client` call site in dead code (`core/tasks.py:428-436`); `DISPATCHARR_RELAY_GO_PORT` honoured by the binary and the healthcheck but baked as a literal in the cutover's own sed, a 502 on every tune for an operator who sets it (A10.16); the dangling-citation count restated as a floor rather than a budget (694 `.py` lines under `relay/` cite deleted files by bare name, none fixed in 2d); and re-measured call-site counts (13 in-process, 11 `CorpusPath(`) against the first draft's 16 and 12. | `docs/phase2d-inputs-amendment` | pending |
 
 ## Risks
 
