@@ -613,7 +613,7 @@ documented asymmetry reproduced per D5, not a gap.
 | `e2e/tests/streaming-split/process-restart.spec.ts` | Scenario B: two restarts, two clocks | R9 |
 | `e2e/COVERAGE.md` | four rows: `:196`, `:197`, `:200`, `:259-261` | R5, R7, R9 |
 | `CLAUDE.md` | six passages | Appendix F |
-| `docs/superpowers/specs/2026-09-09-phase2-go-relay-design.md` | Amendment A13 + three in-place corrections + the Done-log row | Appendix G |
+| `docs/superpowers/specs/2026-09-09-phase2-go-relay-design.md` | Amendment A13 + **eight** in-place corrections + the Done-log row — ten edits, measured | Appendix G |
 
 **2 created + 12 modified = 14 paths**, which is exactly what Task 9 Step 1 asserts
 `git diff --stat origin/main` names. Five are `docker/`, four are `e2e/` test or allowlist source,
@@ -743,12 +743,18 @@ no `frontend/`, no `.github/workflows/`, no `metrics/`.
       `DISPATCHARR_RELAY_GO_PORT` export, D.3 `relay-go.conf`'s env var + `nice` prefix + comment).
 - [ ] **Step 2 — verify:**
       ```
-      grep -n 'RELAY_GO_UPSTREAM' docker/init/03-init-dispatcharr.sh docker/nginx.conf   # 2 lines: the sed, the placeholder
+      grep -n 'RELAY_GO_UPSTREAM' docker/init/03-init-dispatcharr.sh docker/nginx.conf   # 3 lines, measured
       grep -n 'DISPATCHARR_RELAY_GO_PORT' docker/entrypoint.sh docker/init/03-init-dispatcharr.sh
       grep -n 'DISPATCHARR_RELAY_GO_DEV_ROUTES' docker/supervisord.d/relay-go.conf
       grep -n '^command=' docker/supervisord.d/relay-go.conf   # must begin: command=nice -n %(ENV_UWSGI_NICE_LEVEL)s setpriv
       grep -n 'priority=205' docker/supervisord.d/relay-go.conf
       ```
+      **Three** lines from the first grep, not two: the sed in `03-init-dispatcharr.sh`, the
+      `server RELAY_GO_UPSTREAM;` placeholder at `nginx.conf:36`, and — easy to forget, because
+      this plan wrote it — the word inside Appendix A's own `upstream relay_go` comment at
+      `nginx.conf:29`, which explains where the placeholder is sed'd from. Two lines means the
+      comment did not land; one means the upstream block did not.
+
       The `priority=205` line must be **unchanged** — R10's new test asserts it and R11's edit must
       not disturb it.
 - [ ] **Step 3 — `bash -n` both scripts.** `bash -n docker/init/03-init-dispatcharr.sh && bash -n
@@ -841,8 +847,20 @@ no `frontend/`, no `.github/workflows/`, no `metrics/`.
 - [ ] **Step 1** — run Appendix F's replacement script. It is **verbatim-string** replacement, not
       line-anchored: 2d-1 and 2d-2 both edit this file first and every line number below 200 moves.
       The script asserts each anchor is found **exactly once** and exits non-zero otherwise.
-- [ ] **Step 2 — verify:** `git diff --stat -- CLAUDE.md` shows one file; `git diff -- CLAUDE.md`
-      shows six hunks and no seventh. If a hunk is missing, the anchor moved — **STOP and report.**
+- [ ] **Step 2 — verify by REPLACEMENT count, not by hunk count.** The script's own last line is
+      the assertion: `ok, 6 replacements`. It cannot print that without having found all six
+      anchors exactly once, and it exits non-zero naming the offender otherwise — so a missing
+      anchor is already a STOP before this step runs. Then:
+      ```
+      git diff --stat -- CLAUDE.md     # expect exactly:  CLAUDE.md | 10 +++++-----
+      ```
+      **Six replacements are 5 changed lines and 4 diff hunks, measured** — do not expect six of
+      either. Two of them (the relay uWSGI process's route list and the Go relay's own paragraph)
+      live in the same `**Two uWSGI processes**` paragraph and land on **one** line, `:73`; and
+      that line's hunk merges with `:79`'s under `git diff`'s default three lines of context, since
+      they are six apart. `git diff -U0 -- CLAUDE.md | grep -c '^@@'` is **5** if you want a hunk
+      number that tracks changed lines rather than context windows. A different `--stat` line means
+      an anchor matched somewhere unintended — **STOP and report.**
 
 ## Task 7: Build, smoke, and the full local gate
 
@@ -889,14 +907,19 @@ no `frontend/`, no `.github/workflows/`, no `metrics/`.
       **500**, the null-`argv` arm.
 - [ ] **Step 4 — the remaining projects locally:** `--project=seeded --project=guards
       --project=frontend --project=dvr --project=lifecycle --project=pristine`. All green.
-- [ ] **Step 5 — remove your container, volume and network** when Task 8 has pushed.
+- [ ] **Step 5 — remove your container, volume and network** when Task 9 has pushed.
 
-## Task 8: Amendment A13, the in-place spec corrections, and the Done-log row
+## Task 8: Amendment A13, the eight in-place spec corrections, and the Done-log row
 
 **Files:** `docs/superpowers/specs/2026-09-09-phase2-go-relay-design.md`.
 
-- [ ] **Step 1** — run Appendix G's replacement script: Amendment A13 (appended after A12), three
-      in-place corrections to § Stage 2d / the deletion list, and the Done-log row.
+- [ ] **Step 1** — run Appendix G's replacement script: **eight** in-place corrections, Amendment
+      A13 (inserted before `## Stage 2d`, which puts it after A12), and the Done-log row — ten
+      edits, and the script prints `ok, 10 edits`. The eight are A10.1's ruling, § Stage 2d's
+      `upstream relay_go` snippet, deletion-list entry 3's measurement task, entry 3's Gate line,
+      § Stage 2d's own "re-pointed" sentence, § Testing's, A10.2's "four tests" miscount and
+      A10.10's `types.ts` paragraph. Appendix G's heading says eight; this step used to say three,
+      which was the count before A13.3's third sentence, A13.10's two and A13.2's one were added.
 - [ ] **Step 2 — verify the spec carries no contradicting pair.**
 Each of these greps must distinguish the post-edit state from the pre-edit one, which is why
       they name the **new** strings rather than the old ones a surviving anchor would also match:
@@ -2675,6 +2698,22 @@ index 869729a2..5e956489 100644
 
 Every `file:line` cited above was opened at the seed and confirmed. What follows is the record of
 both passes.
+
+### Round-2 fix, after the opus review of `1a3f1509`
+
+PASS WITH FIXES: 0 blocking, 2 should-fix, 1 note. All nineteen round-1 items were reproduced as
+fixed, the Done-log remedy was confirmed right, and the N3 count of 69 was confirmed. Three
+expected-output figures in the Tasks were wrong; none touches an appendix, and the ten diffs were
+re-extracted from the document and re-applied after the edits to prove it.
+
+| # | Finding | Disposition |
+|---|---|---|
+| **R2-1** | Task 6 Step 2 expected six `CLAUDE.md` hunks; `git diff` produces four under default context | **Accepted, fixed, and reproduced**: six replacements are **5 changed lines** and **4 hunks** (5 at `-U0`). Two replacements land on the same line, `:73` — the relay uWSGI route list and the Go relay's paragraph share the `**Two uWSGI processes**` block — and that hunk merges with `:79`'s, six lines away, inside `git diff`'s default three lines of context. The step now verifies by the script's own `ok, 6 replacements` (which cannot print without all six anchors matching exactly once) plus an exact `--stat` line, and states the measured hunk figures so neither is a surprise. |
+| **R2-2** | Task 2 Step 2's first grep said "2 lines" and prints three | **Accepted, fixed, and reproduced.** The third is `nginx.conf:29`, inside Appendix A's own `upstream relay_go` comment explaining where the placeholder is sed'd from — a line this plan wrote, which is exactly why it was not counted. Now `# 3 lines, measured`, with a sentence naming all three and what two or one would mean. |
+| **R2-3** | Task 8 Step 1 said "three in-place corrections"; Appendix G does eight | **Accepted, fixed.** Step 1 now names all eight and says the script prints `ok, 10 edits`; the File-structure row and the Task heading match. Three was the count before A13.3's third sentence, A13.10's two and A13.2's one were added — the number was never updated with the appendix. |
+
+One unflagged nit corrected in the same pass: Task 7 Step 5 said to remove the scratch container
+"when Task 8 has pushed"; Task 9 is the one that pushes.
 
 ### Fix round, after the opus review of `e15d9b24`
 
