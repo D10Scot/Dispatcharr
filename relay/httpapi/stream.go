@@ -248,6 +248,14 @@ func StreamHandler(deps StreamDeps) http.HandlerFunc {
 		}
 		defer release()
 
+		// Created here, before the format branch, so stopContext (below) can
+		// force a blocked Write to return when an admin stops this client --
+		// #318. It wraps w, not a connection of its own, so creating it this
+		// early has no effect until one of its methods is actually called,
+		// and the TS branch below reuses this same value rather than making
+		// a second one.
+		rc := http.NewResponseController(w)
+
 		// From here down the request's context also ends when an admin
 		// stops THIS client: DELETE /proxy/relay/channels/<id>/clients/<cid>
 		// closes the signal Channel.StopClient owns, which is the in-memory
@@ -256,7 +264,7 @@ func StreamHandler(deps StreamDeps) http.HandlerFunc {
 		// to the request rather than to one call so both output formats
 		// inherit it -- one mechanism, and neither loop can be the one that
 		// forgot.
-		stopCtx, stopCancel := stopContext(r.Context(), client)
+		stopCtx, stopCancel := stopContext(r.Context(), client, rc)
 		defer stopCancel()
 		r = r.WithContext(stopCtx)
 
@@ -284,7 +292,6 @@ func StreamHandler(deps StreamDeps) http.HandlerFunc {
 		w.Header().Set("Content-Type", "video/mp2t")
 		w.Header().Set("Cache-Control", "no-cache")
 		w.WriteHeader(http.StatusOK)
-		rc := http.NewResponseController(w)
 		if err := rc.Flush(); err != nil {
 			return
 		}
@@ -434,7 +441,28 @@ func identify(r *http.Request, secret string, now func() time.Time, decision *co
 // A goroutine rather than context.AfterFunc because the trigger is a channel
 // close, not a parent context; it returns as soon as either side fires, and
 // the caller's deferred cancel guarantees the second one always does.
-func stopContext(parent context.Context, client *channel.Client) (context.Context, context.CancelFunc) {
+//
+// #318: CANCELLING ctx IS NOT ENOUGH BY ITSELF. serveClient and
+// serveFMP4Client check ctx.Err() only between writes, at the top of their
+// loop, so a client whose w.Write is ALREADY BLOCKED in the kernel -- its own
+// TCP receive window full because it stopped reading, indistinguishable from
+// the admin's side from an ordinary slow viewer -- never gets back to that
+// check: cancelling ctx does nothing to a syscall already in flight. Caught
+// under host load with a goroutine dump (control_test.go's own repro): the
+// stuck stack is serveClient -> writeChunks -> (*http.response).Write ->
+// net.(*conn).Write -> IO wait, unmoved by stopCancel firing below, for as
+// long as the peer leaves the socket unread -- in production that is
+// minutes, bounded only by the OS's own retransmission timeout, not the 15 s
+// this test happens to wait. rc.SetWriteDeadline is what actually unblocks
+// it: (*http.response).SetWriteDeadline forwards straight to the underlying
+// net.Conn (net/http/server.go), and a deadline set on a net.Conn from
+// another goroutine applies to a write already in progress, not only to the
+// next one -- the same mechanism net/http's own IdleTimeout uses to end a
+// stalled connection. Scoped to the stop signal alone, never set
+// unconditionally: this process deliberately carries no server-wide
+// WriteTimeout (main.go), because serving a long-lived stream with no
+// deadline is why it exists.
+func stopContext(parent context.Context, client *channel.Client, rc *http.ResponseController) (context.Context, context.CancelFunc) {
 	stop := client.Stopped()
 	if stop == nil {
 		// A client that never reached the registry cannot be stopped by id,
@@ -445,6 +473,14 @@ func stopContext(parent context.Context, client *channel.Client) (context.Contex
 	go func() {
 		select {
 		case <-stop:
+			// Unstick a Write already blocked on this client's connection
+			// -- and refuse any future one -- rather than leave the serving
+			// goroutine parked until the peer's socket drains or the OS
+			// gives up on it. The error is ignored deliberately: a
+			// ResponseWriter that cannot honour a deadline (never true for
+			// the real server; only for a test double with no net.Conn
+			// underneath) leaves cancel() below to do what it always did.
+			_ = rc.SetWriteDeadline(time.Now())
 			cancel()
 		case <-ctx.Done():
 		}
