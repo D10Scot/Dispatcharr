@@ -24,7 +24,7 @@ What 2d-1 does and does not do to this PR's files, read from its plan's File str
 | `apps/proxy/live_proxy/urls.py` | **No** | Appendix B applies unchanged. |
 | `apps/proxy/urls.py` | **No** (2d-1 lists it under "deliberately not touched", A10.3 site 6, 2d-4's) | Appendix B applies unchanged. |
 | `apps/proxy/tests/test_stream_switch.py` | **No** — 2d-1's R5 explicitly leaves `:12`/`:13` alone | Appendix B's last hunk applies unchanged. |
-| `apps/proxy/live_proxy/tests/zero_orm_allowlist.py` | **Yes** — deletes one `Site` at `:111-130` and re-points one `EdgeEntry` at `:445` | Appendix D's hunk sits at `:280-363`, **below** the deleted Site and **above** the re-pointed edge, so it applies with a line offset of about −20. `git apply` tolerates an offset; Task 0 Step 6 checks and says what to do if it does not. |
+| `apps/proxy/live_proxy/tests/zero_orm_allowlist.py` | **Yes**, in seven places — it deletes one `Site` at `:111-130`, re-points one `EdgeEntry` at `:445`, and corrects six prose citations of `config_helper.py:50` at `:439`, `:629`, `:636`, `:639`, `:665` and `:672` (its own R7 and Appendix E) | Appendix D's three hunks sit at old lines 277-366, 368-380 and 393-399 — **below** the deleted `Site` and **above** every one of 2d-1's other six edits, so none of them overlaps. The `Site` deletion above shifts the hunks by about −20; `git apply` tolerates an offset, and Task 0 Step 6 checks it and says what to do if it does not. |
 | `CLAUDE.md` | **Yes** — § Test hooks (two sentences) and § Structural constraints (one bullet) | Different sentences from this PR's (§ Commands line 50, § Routing line 93). Appendix F is a **verbatim-string replacement script**, not a hunk, precisely so 2d-1's edits cannot move it. |
 | `docs/superpowers/specs/2026-09-09-phase2-go-relay-design.md` | **Yes** — adds Amendment A11, four in-place corrections, a Done-log row | Appendix G is a verbatim-string replacement script for the same reason, and its Done-log insertion anchors on the `## Risks` heading rather than on 2d-1's row. |
 
@@ -41,7 +41,7 @@ Every task's requirements implicitly include all of these. A conflict with any i
 5. **Do not remove a single import from `apps/proxy/live_proxy/views.py`,** including the five the move orphans. R3 is the measurement; it costs six Gate 1 `lineno` edits and stales about twenty prose citations in the allowlist, for nothing.
 6. **Do not edit `scripts/coverage_live_path.{sh,coveragerc,floor,floor.modules}`.** R7 is why. If `--gate` fails, that is a **STOP and report**, not a re-baseline.
 7. **Do not edit `docker/`, `.github/workflows/`, `frontend/`, `e2e/`, `relay/`, `metrics/curated/` or `docs/relay-parity-matrix.md`.** Each was checked and none of them needs to move (R11); if you believe one does, stop and report rather than editing it.
-8. **Do not touch `dispatcharr/settings.py`, `dispatcharr/urls.py`, `apps/proxy/apps.py`, `apps/proxy/tasks.py`, `apps/proxy/relay_views.py`, `apps/proxy/relay_urls.py`** — A10.3 sites 1, 3, 5, 7, 9, all 2d-4's.
+8. **Do not touch `dispatcharr/settings.py`, `dispatcharr/urls.py`, `apps/proxy/apps.py`, `apps/proxy/tasks.py`, `apps/proxy/relay_views.py`, `apps/proxy/relay_urls.py`** — A10.3 sites 1, 3, 5, 7, 9, all 2d-4's. **Site 6 is the exception and it is deliberate:** `apps/proxy/urls.py:10`'s `include('apps.proxy.live_proxy.urls')` is A10.3's site 6 and stays 2d-4's one-line deletion — this PR touches that file **by addition only**, adding a second `ts/` include above it (Task 2) and changing nothing else in it. If you find yourself editing or removing line 10, stop: that is 2d-4's, and Task 2 Step 3's six-line `path(` check is what catches it.
 9. **`scripts/check_credential_logging.py` stays at zero findings** for every `*.py` this PR touches. Measured zero on the finished shape.
 10. **A channel UUID and a provider URL are secrets.** Nothing this PR adds may print either. The one moved line that formats a URL already goes through `redact_url`, and it stays that way.
 11. **Do not use the shared `dispatcharr-testrunner` container.** Start your own, named for this PR, and remove it and its volume when you finish. The `PostToolUse` hook does not see `DISPATCHARR_TEST_CONTAINER` and always uses the shared name against whichever worktree it is mounted at; its refusal on a mount mismatch is correct behaviour, not a problem to work around.
@@ -92,7 +92,7 @@ and `apps/proxy/live_proxy/urls.py` drops six of its seven patterns, keeping `st
 | view module | `apps.proxy.live_proxy.views` | `apps.proxy.ts_admin_views` |
 | namespace | `proxy:live_proxy:<name>` | `proxy:ts_admin:<name>` |
 
-**The namespace is the one thing that changes, and nothing consumes it.** `grep -rn "reverse(" apps/ core/ dispatcharr/ tests/` returns two hits in `apps/proxy/` and neither names any of these six (`test_authorize_internal_view.py:89`'s `reverse("authorize-internal")` and an unrelated `list.reverse()`); nothing anywhere in the tree reverses `live_proxy:` under any spelling. `frontend/src/api.js` dials literal paths (`:2465`, `:2548`, `:2561`, `:2617`, `:3317`, `:3334`). The alternative — giving the new module `app_name = 'live_proxy'` to preserve the namespace — registers two resolvers under one instance namespace, where the later silently wins the `namespace_dict` entry and reverse lookups into the earlier one fail; a landmine bought to preserve a name nothing reads. Declined, and recorded in Amendment A12.2.
+**The namespace is the one thing that changes, and nothing consumes it.** Two measurements, and the second is the decisive one. `grep -rn "reverse(" apps/ core/ dispatcharr/ tests/` returns **21** hits tree-wide, **two** of them in `apps/proxy/`, and neither of those two names any of these six (`test_authorize_internal_view.py:89`'s `reverse("authorize-internal")` and an unrelated `list.reverse()`); none of the other nineteen names a `live_proxy` route either. More directly: `git grep -n "live_proxy:"` over the whole tracked tree returns **nothing** outside this plan document, so no namespaced reverse of any of these names exists to break. `frontend/src/api.js` dials literal paths (`:2465`, `:2548`, `:2561`, `:2617`, `:3317`, `:3334`). The alternative — giving the new module `app_name = 'live_proxy'` to preserve the namespace — registers two resolvers under one instance namespace, where the later silently wins the `namespace_dict` entry and reverse lookups into the earlier one fail; a landmine bought to preserve a name nothing reads. Declined, and recorded in Amendment A12.2.
 
 **The strongest evidence that the surface did not move is not the dump.** `manage.py spectacular` was run on the seed and on the finished shape and the two YAML files are **byte-identical** (`diff -q` → no output, exit 0; 12 `proxy/ts` lines on both). drf-spectacular walks the urlconf, resolves every callable and reads its permission classes, so an identical schema is a stronger statement than any hand-written assertion about six routes. Task 6 Step 1 is that diff.
 
@@ -114,7 +114,7 @@ listed but gone (delete the entry -- the ratchet runs both ways ...):
   apps/proxy/live_proxy/views.py:468   apps/proxy/live_proxy/views.py:766
 ```
 
-Six SITES, every one of them shifted by exactly five. Each would need its `lineno` edited, and `zero_orm_allowlist.py` cites those six numbers **in prose** at roughly twenty further places (`:78`, `:169-175`, `:205-206`, `:212-213`, `:238`, `:329-330`, `:371-376`, `:396`, `:406`, `:487`, `:510`, `:519`, `:568`, `:582`, `:591`, `:599-603`, `:643`, `:709`, `:742`), every one of which would go stale — the exact failure this programme keeps finding and 2d-1's R7 names. Deleting the five *functions* shifts nothing, because all six SITES are above line 898.
+Six SITES, every one of them shifted by exactly five. **Twenty-one edits, counted rather than estimated**: the six `lineno=` assignments themselves (`zero_orm_allowlist.py:133`, `:155`, `:183`, `:218`, `:243`, `:263`) plus **fifteen** prose citations of those six numbers, one per line, at `:169`, `:170`, `:205`, `:206`, `:212`, `:213`, `:238`, `:487`, `:510`, `:519`, `:582`, `:591`, `:603`, `:643`, `:742` — measured with `grep -nE "views\.py:(132|152|444|462|468|766)"`, which returns exactly those fifteen. Every one would go stale: the exact failure this programme keeps finding and 2d-1's R7 names. (`:462` and `:468` are cited nowhere in prose; `:444` is cited six times and `:152` five, which is what makes the tidy-up expensive rather than tedious.) Deleting the five *functions* shifts nothing, because all six SITES are above line 898.
 
 So: **`views.py` loses lines 896–1417 and nothing else.** Five unused imports ride along in a file 2d-4 deletes wholesale. Note that **four names in that import block were already unused at the seed, before this PR touches anything** — `re` (`:3`), `UUID` (`:37`), `permission_classes_by_method` and `permission_classes_by_action` (`:25-26`) — so a tidy-up here would not even be a tidy-up of this PR's making. Recorded as a finding, not fixed.
 
@@ -365,11 +365,12 @@ Expected: **no output, `exit=1`**. If any of 2d-1's four names appears in the fi
 - [ ] **Step 4: The `relay_client` call sites A10.11 names**
 
 ```bash
-grep -n "relay_client\.\(advance\|get_channel\|list_channels\|stop_channel\|stop_client\)(" \
-  apps/proxy/live_proxy/views.py
+grep -nE "= relay_client\." apps/proxy/live_proxy/views.py
 ```
 
 Expected exactly seven, at **1009, 1107, 1114, 1159, 1206, 1261, 1343** — A10.11's list verbatim. Task 9 re-points it at the new module's seven.
+
+**The pattern is anchored on the assignment for a reason.** The obvious spelling, `grep -n "relay_client\.\(advance\|get_channel\|list_channels\|stop_channel\|stop_client\)("`, returns **nine** lines at the seed: the seven call sites plus two comments that name `relay_client.advance()` in prose (`:942` and `:1324`). Counting those as call sites is how a re-measurement of A10.11 drifts from seven to nine.
 
 - [ ] **Step 5: The `/proxy/ts/` URL table, before**
 
@@ -429,11 +430,11 @@ Expected: `rc=0`, `12`.
 
 ```bash
 cd /Users/dion/git/Dispatcharr/.worktrees/phase2d-admin-wrappers
-grep -n "importer=" apps/proxy/live_proxy/tests/zero_orm_allowlist.py
+grep -n "^        importer=" apps/proxy/live_proxy/tests/zero_orm_allowlist.py
 git apply --check /path/to/appendix-d.diff && echo "APPENDIX D APPLIES"
 ```
 
-Expected: **twelve** `importer=` lines, of which the **first two** are `apps/proxy/live_proxy/views.py` and the **third** is `apps/proxy/live_proxy/services/channel_service.py`. 2d-1 deletes a `Site` above this block and re-points an `EdgeEntry` below it, so the hunk should apply with a line offset (`git apply` prints `Hunk #1 succeeded at N (offset -20 lines)` or similar, and that is fine).
+Expected: **twelve** `importer=` lines, of which the **first two** are `apps/proxy/live_proxy/views.py` and the **third** is `apps/proxy/live_proxy/services/channel_service.py`. The pattern is anchored to the eight-space indent of a real `EdgeEntry` field because Appendix D's own replacement block comment contains the token `importer="apps/proxy/live_proxy/views.py"`, so an unanchored `grep -c` counts eleven after the edit rather than ten (Task 4 Step 3). 2d-1 deletes a `Site` above this block and re-points an `EdgeEntry` below it, so the hunk should apply with a line offset (`git apply` prints `Hunk #1 succeeded at N (offset -20 lines)` or similar, and that is fine).
 
 **If `git apply --check` fails**, do not force it and do not hand-edit blind. Re-derive the range: the block to delete runs from the `EdgeEntry(` line whose next line is `importer="apps/proxy/live_proxy/views.py"` (the first of the twelve) through the `),` immediately **before** the `EdgeEntry(` whose importer is `channel_service.py`. R6(iv) is the first draft getting that boundary wrong by one entry.
 
@@ -621,11 +622,12 @@ It does three things: deletes the two `EdgeEntry` rows, leaves a twelve-line blo
 - [ ] **Step 3: Confirm the count**
 
 ```bash
+grep -c "^        importer=" apps/proxy/live_proxy/tests/zero_orm_allowlist.py
 grep -c "importer=" apps/proxy/live_proxy/tests/zero_orm_allowlist.py
 grep -n "the views.py edge above" apps/proxy/live_proxy/tests/zero_orm_allowlist.py; echo "exit=$?"
 ```
 
-Expected: **ten** `importer=` lines (twelve minus two), and **no output, `exit=1`** from the second — no surviving entry may point at a deleted one.
+Expected, measured on the applied tree: **ten** from the first (twelve minus two) and **eleven** from the second — the unanchored count includes the token inside Appendix D's own replacement block comment, which is why Task 0 Step 6 and this step both anchor on the eight-space indent. An unanchored `10` would mean the block comment did not land. And **no output, `exit=1`** from the third: no surviving entry may point at a deleted one.
 
 ---
 
@@ -655,10 +657,18 @@ One line. Leave `:11`'s `from apps.proxy.live_proxy import views as views_module
 - [ ] **Step 4: Confirm nothing else in either test file changed**
 
 ```bash
-git diff --cached -M --stat -- apps/proxy/tests/
+git diff --cached -M --stat -- apps/proxy/tests/ apps/proxy/live_proxy/tests/
 ```
 
-Expected: `test_admin_control_views.py` shown as a rename with `43 +-`, `test_stream_switch.py` with `2 +-`.
+Expected, measured on the applied and staged tree:
+
+```
+ apps/proxy/live_proxy/tests/zero_orm_allowlist.py  | 111 ++++-----------------
+ .../tests/test_admin_control_views.py              |  43 +++++++-
+ apps/proxy/tests/test_stream_switch.py             |   2 +-
+```
+
+**Both directories must be in the pathspec.** `git diff -M` pairs a rename only when both halves are inside it, so `-- apps/proxy/tests/` alone shows the moved file as a 450-line addition and hides the fact that it is a rename at all — which reads exactly like an implementer having retyped the file instead of moving it. A `450 +++` line here is a **STOP**: either the pathspec was narrowed or `git mv` was not used.
 
 ---
 
@@ -762,7 +772,7 @@ Five, run in order, each reverted before the next. Two of them are the interesti
 |---|---|---|---|
 | BC-1 | delete `@permission_classes([IsAdmin])` from `stop_channel` in `ts_admin_views.py` | **GREEN** — `Ran 25 tests ... OK` | Nothing. `dispatcharr/settings.py:325-327` makes `IsAdmin` the DRF default, so the decorator's absence is the same behaviour. Run it anyway: the point is that R9's new tests pin the **effective authorization**, not the decorator, and a reader who assumes otherwise will write a weaker test next time. |
 | BC-2 | change that same decorator to `@permission_classes([AllowAny])` (adding the import) | **RED** — `FAILED (failures=3)`, `AssertionError: 503 != 401` and `403` twice, each naming `route='/proxy/ts/stop/abc'` | The realistic mistake. `AllowAny` is eleven lines from `IsAdmin` in the file being copied from — `stream_ts`'s own decorator — and before R9 nothing in the tree would have caught it. |
-| BC-3 | hoist `from apps.proxy.next_source import resolve_source` to module level in `ts_admin_views.py`, deleting both function-local copies | **RED** — `FAILED (failures=2)`, `AssertionError: 500 != 200`, both `change_stream` tests | R5. The four `mock.patch("apps.proxy.next_source.resolve_source")` targets reach the view only through late binding. |
+| BC-3 | hoist `from apps.proxy.next_source import resolve_source` to module level in `ts_admin_views.py`, deleting **`change_stream`'s copy only** (the one at `:100`; leave `next_stream`'s at `:485`) | **RED** — `FAILED (failures=2)`, `AssertionError: 500 != 200`, both `change_stream` tests | R5. The four `mock.patch("apps.proxy.next_source.resolve_source")` targets reach the view only through late binding. |
 | BC-4 | swap the two `ts/` includes in `apps/proxy/urls.py` so `live_proxy` comes first | **GREEN** — `Ran 25 tests ... OK` | R2. Django's resolver continues past a non-matching include, so the order is a readability and 2d-4-convenience choice, not a correctness one. Recording it stops a future reader treating the order as load-bearing. |
 | BC-5 | delete the `ts_admin_urls` include line entirely | **RED** — `FAILED (failures=29, errors=12)` | The routing is what the tests actually reach; a green run here would mean the six routes were resolving through some other path. |
 
@@ -771,6 +781,10 @@ Five, run in order, each reverted before the next. Two of them are the interesti
 Each against `apps.proxy.tests.test_admin_control_views` alone (25 tests, ~0.12s), restoring the file from a copy taken first. Record the exact failure text of BC-2 for the PR body.
 
 - [ ] **Step 2: Run BC-3**
+
+**Why BC-3 is deliberately the narrow reversion.** Deleting **both** function-local copies is the fuller experiment and it was run: `FAILED (failures=3, errors=11)`, the three failures being the two `change_stream` tests and `test_next_stream_passes_channel_name_and_m3u_profile_name_through`, all `500 != 200`. The eleven errors are not additional findings — they are the `psycopg.OperationalError: the connection is closed` cascade the moved file's own `setUp` comment (`:30-38`) describes, set off once a fourth affected test errors inside the `TestCase`'s atomic block. That cascade buries the signal, so the break-check the table prescribes is the one-copy form, whose output is two named failures and nothing else. Both were measured; if you run the both-copies form instead, expect `failures=3, errors=11` and read it as the same finding.
+
+Note also that the two copies are **not** the same string: `change_stream`'s sits at twelve spaces of indent inside its `if stream_id:` block, `next_stream`'s at eight. A `str.replace(..., 2)` over one spelling silently edits one of them and reports success — which is how this plan's first draft came to describe a two-copy reversion while quoting a one-copy result.
 
 - [ ] **Step 3: Run BC-4 and BC-5**
 
@@ -973,7 +987,7 @@ Every appendix below was produced by making the change in a scratch worktree at 
 
 ### Appendix A — `apps/proxy/ts_admin_views.py`, whole file
 
-577 lines. Lines 45 onward are `apps/proxy/live_proxy/views.py:898-1417` verbatim, with two insertions: the comment-plus-import block at `:50-58` and its one-line echo at `:401-402` (R4 iii).
+577 lines. Lines 45 onward are `apps/proxy/live_proxy/views.py:898-1417` verbatim, with exactly two insertions: the nine-line comment-plus-import block at `:50-58` and its three-line echo at `:401-403` (comment, import, blank — R4 iii). The two `ProxyServer` imports land at `:58` and `:402`, which is what Task 1 Step 2's grep asserts.
 
 ```python
 """The five IsAdmin control views the admin Stats UI drives.
@@ -2012,7 +2026,10 @@ that matter and only *arguably* equal in a shape where the singleton predates a 
 constraint is no behaviour change rather than no visible difference. **PR 4 must decide what
 `worker_id` means once there is no Python relay** — it has been the API worker's id, not the
 relay's, since Phase 1 PR 4 routed these views to the api role — and the answer is a contract
-decision about four response bodies, not a rehome.
+decision about four response bodies, not a rehome. One measurement to start that decision from
+rather than re-derive: **`grep -rn "worker_id" frontend/src` returns nothing**, so the SPA does not
+read the field on any of these four responses, and whatever PR 4 chooses, no frontend change follows
+from it.
 
 **A12.4 — the moved code keeps the logger name `live_proxy.views`.** `views.py` builds it through
 `live_proxy/utils.py`'s `get_logger()`, which derives `live_proxy.<calling module basename>`. The
@@ -2131,4 +2148,25 @@ Every `file:line` this plan cites was re-opened at `57618a28` with `sed -n "<n>p
 
 - **The post-2d-1 numbers.** Every figure keyed to the tree 2d-1 produces — the Gate 2 `statements` baseline (7983, from 2d-1's own Task 7 rather than from a run of this plan's), the three label counts, and the exact line offset Appendix D applies at — is recorded here as an expectation and re-measured by Task 0. 2d-1 does not touch any file whose line numbers this plan depends on except `zero_orm_allowlist.py`, which is why that one has a re-derivation procedure rather than a fixed range.
 - **Whether the E2E suite exercises `stop_channel`, `stop_client` or `next_stream`.** `readChannelStatus` and one `change_stream` POST were found; no Playwright spec was found driving the other three, so the only coverage those three have is the moved Django tests. That is a gap this PR inherits rather than creates, and it is not this PR's to close.
-- **Whether `worker_id` in the four response bodies is read by anything.** `frontend/src/api.js` returns the whole JSON to its callers and the Stats page renders selected fields; a full trace of which ones was out of scope. 2d-4 needs the answer before it decides what `worker_id` means with no Python relay (A12.3), and it is flagged there rather than resolved here.
+- **Whether `worker_id` in the four response bodies is read by anything.** Half-answered after review: `grep -rn "worker_id" frontend/src` returns **nothing**, so the SPA does not read it and no frontend change follows from whatever 2d-4 decides. That measured fact is now in A12.3. What is still open is whether any non-SPA consumer reads it — a plugin, a Connect webhook payload, or an operator's own script — which cannot be answered from this tree at all, and which is why A12.3 states the decision rather than making it.
+
+### Review round (opus, against `3a9ae0ae`)
+
+Verdict PASS WITH FIXES: 0 blocking, 4 should-fix, 8 notes. The reviewer applied every appendix to the seed and ran it — three labels, the Gate 1 label, the Gate 2 probe, `spectacular` both sides, the resolver dump both sides, all five break-checks plus a sixth variant, the R3 experiment, `GlobMatcher`, `PythonParser`, the frontend four and the label routing — and **every headline number reproduced exactly**. All four should-fixes were wrong **expected outputs in verification steps**, each of which would have stopped a faithful implementer on a mismatch that is not a problem. Each was reproduced here before being applied.
+
+| # | finding | reproduced | disposition |
+|---|---|---|---|
+| S1 | Task 4 Step 3 expected `grep -c "importer="` = 10; it prints **11**, because Appendix D's own block comment carries the token | yes — 11 unanchored / 10 anchored after, 12 both ways at the seed | **applied**: both Task 0 Step 6 and Task 4 Step 3 anchor on `^        importer=`, and Task 4 Step 3 now asserts **both** counts so a missing block comment is caught too |
+| S2 | Task 5 Step 4's `git diff --cached -M --stat -- apps/proxy/tests/` cannot pair the rename — the source path is outside the pathspec | yes — it prints `450 +++` for the moved file | **applied**: both directories in the pathspec, the exact three-line output given, and `450 +++` named as a STOP meaning the file was retyped rather than moved |
+| S3 | BC-3's reversion says "deleting both function-local copies" but its expected `failures=2` is the **one-copy** result | yes — both copies gives `FAILED (failures=3, errors=11)`; one copy gives the stated `failures=2` | **applied**: the row narrows to `change_stream`'s copy only, and Task 7 Step 2 records the both-copies figure, why the eleven errors are a connection cascade rather than findings, and that the two copies differ in indentation — which is how the draft came to describe one experiment and quote another |
+| S4 | Task 0 Step 4's grep returns **nine** lines, not seven — two are comments naming `relay_client.advance()` | yes | **applied**: the step uses `grep -nE "= relay_client\."` (exactly seven) and names the nine-line trap as the way a re-measurement of A10.11 drifts |
+| N1 | the `reverse(` sentence is scoped to `apps/proxy/` but reads tree-wide | yes — 21 hits tree-wide, 2 in `apps/proxy/` | **applied**: both figures given, plus the decisive one — `git grep "live_proxy:"` returns nothing in the tracked tree |
+| N2 | Appendix A's second insertion is three lines at `:401-403`, not "one line at `:401-402`" | yes | **applied** |
+| N3 | R3's "roughly twenty further places" is generous and several of the cited line numbers are unrelated | yes — **15** prose citations on 15 lines, plus the six `lineno=` assignments | **applied**: the measured 21 edits enumerated, with the observation that `:444` and `:152` carry eleven of the fifteen between them |
+| N4 | the "is `worker_id` read by anything" open question is half-answerable in one command | yes — `grep -rn "worker_id" frontend/src` returns nothing | **applied**: folded into A12.3 as a measured fact for 2d-4, and the self-review's open question narrowed to non-SPA consumers |
+| N5 | the re-seed table understates 2d-1's footprint in `zero_orm_allowlist.py` (seven edits, not two) | yes — 2d-1's R7 corrects prose at `:439`, `:629`, `:636`, `:639`, `:665`, `:672` besides the `Site` and the `EdgeEntry` | **applied**: all seven named, and Appendix D's three hunk ranges (277-366, 368-380, 393-399) given so the non-overlap is checkable rather than asserted |
+| N6 | the moved test file keeps a comment citing a path 2d-4 deletes | — | **declined**, agreeing with the reviewer: inherited, not created, and editing it widens this PR's diff into the doomed package for nothing |
+| N7 | Constraint 8 lists A10.3 sites 1, 3, 5, 7, 9 and silently omits site 6, which this PR edits | yes | **applied**: Constraint 8 now names site 6 as touched **by addition only**, with line 10 explicitly still 2d-4's |
+| N8 | the 2d-1 branch has moved (`ceea871e` → `7193860c`) | yes | **no edit needed**: this plan pins no 2d-1 SHA, referring to the branch and PR #322 only — which is what makes the re-seed table survive 2d-1 moving. The overlap facts were re-read at `7193860c` and all still hold. |
+
+Appendix G was edited by N4 and was re-run against the seed afterwards (`spec: 5 edits`, all five `count == 1` assertions holding) and reverted; Appendix F and the four diff appendices were re-checked unchanged. No ruling changed in this round.
