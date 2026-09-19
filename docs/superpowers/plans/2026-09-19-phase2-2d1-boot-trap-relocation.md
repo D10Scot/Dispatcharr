@@ -4,7 +4,7 @@
 
 **Goal:** Move the four names surviving code imports out of `apps/proxy/live_proxy/` — `RedisKeys`, `ChannelMetadataField`, `ChannelState` and `ConfigHelper` — into Django-owned modules, so that no file stage 2d KEEPS points at the directory stage 2d-4 deletes, and so the module-level boot trap `apps/channels/models.py:6-7` carries has a home that outlives the relay package.
 
-**Architecture:** Three new modules under `apps/proxy/` (`redis_keys.py`, `constants.py`, `config_helper.py`) take the four names. The three old modules stay in place as one-statement re-export shims, so the 25 relay modules and 31 in-package test files that import them need no edit and Gate 2's resolved file set does not move. Nineteen import statements in ten files outside the package are re-pointed at the new homes. Gate 1's allowlist follows `ConfigHelper` out of scope-1. The boot-check hook arm, which matches by literal path, is re-pointed in the same commit — otherwise it silently stops running in the PR that moves its subject.
+**Architecture:** Three new modules under `apps/proxy/` (`redis_keys.py`, `constants.py`, `config_helper.py`) take the four names. The three old modules stay in place as re-export shims, so the 25 relay modules and 31 in-package test files that import them need no edit and Gate 2's resolved file set — a set of paths — does not move. Nineteen import statements in ten files outside the package are re-pointed at the new homes. Gate 1's allowlist follows `ConfigHelper` out of scope-1. The boot-check hook arm, which matches by literal path, is re-pointed in the same commit — otherwise it silently stops running in the PR that moves its subject.
 
 **Tech Stack:** Python 3.13 / Django 6; no new dependency, no migration, no Go, no workflow edit, no `docker/` edit. `coverage` 7.16.0 for the Gate 2 measurement; `manage.py check` + `manage.py showmigrations` for the boot path.
 
@@ -63,7 +63,7 @@ grep -rn --include='*.py' -E "\b(TS_PACKET_SIZE|EventType|StreamType|REDIS_TTL_[
   apps dispatcharr core scripts | grep -v "^apps/proxy/live_proxy/"
 ```
 
-which returns exactly one line at the seed, `apps/proxy/tests/test_effective_proxy_settings.py:120`, and that is a **comment** mentioning `TS_PACKET_SIZE * 5644`, not an import. Moving them anyway would deliver dead code into Django-owned space: after 2d-4 the Go relay has its own copies and nothing in Python would read them. The split costs one extra hunk and leaves 2d-4's delete clean.
+which returns exactly one line at the seed, `apps/proxy/tests/test_effective_proxy_settings.py:120`, and that is a **comment** mentioning `TS_PACKET_SIZE * 5644`, not an import. (It takes explicit directory arguments rather than `.`, so it needs no `./`-anchored filter and returns the same line under either `grep` on this harness — verified. Re-run **after** Task 1 and it returns three: the two extra are `apps/proxy/constants.py`'s own docstring naming the constants it left behind.) Moving them anyway would deliver dead code into Django-owned space: after 2d-4 the Go relay has its own copies and nothing in Python would read them. The split costs one extra hunk and leaves 2d-4's delete clean.
 
 ### R3 — The old modules survive as re-export shims until 2d-4
 
@@ -128,7 +128,7 @@ git grep -nE "^[[:space:]]*from [A-Za-z_. ]*(redis_keys|constants|config_helper)
   | grep -v 'apps\.timeshift\.redis_keys'
 ```
 
-The last filter is load-bearing and its absence is what made an earlier draft of this command return 63 instead of 19: **`apps/timeshift/redis_keys.py`'s `TimeshiftRedisKeys as RedisKeys` alias matches the pattern from forty-five sites**, not the one in `apps/proxy/tests/test_stream_limits.py` an earlier parenthetical claimed. The two `':!apps/*/tests/*'` pathspecs exclude the test files 2d-4 disposes of while keeping `apps/timeshift/tests/`, which R6 re-points here.
+The last filter is load-bearing and its absence is what made an earlier draft of this command return 63 instead of 19: **`apps/timeshift/redis_keys.py`'s `TimeshiftRedisKeys` matches the pattern from forty-five sites** — forty of them through the `as RedisKeys` alias, the rest through the class's own name — not the one in `apps/proxy/tests/test_stream_limits.py` an earlier parenthetical claimed. The two `':!apps/*/tests/*'` pathspecs exclude the test files 2d-4 disposes of while keeping `apps/timeshift/tests/`, which R6 re-points here.
 
 | # | site | names | A10.3 site | disposition |
 |---|---|---|---|---|
@@ -361,7 +361,7 @@ python3 scripts/metrics/collect_architecture.py | python3 -c "import sys,json; p
 
 Expected: `140`, `19`, `33`, `31`, `2`, `29` — all six measured at the seed. Print the nineteen and diff them against R5's table; they match row for row.
 
-**The `apps.timeshift.redis_keys` filter is not optional.** `apps/timeshift/redis_keys.py` holds a different class, `TimeshiftRedisKeys`, which forty-five sites import `as RedisKeys`; without that filter the second command returns **63**. A different 140 or 19 means R3's and R5's tables need re-deriving before anything is edited — **stop and report** with the actual list.
+**The `apps.timeshift.redis_keys` filter is not optional.** `apps/timeshift/redis_keys.py` holds a different class, `TimeshiftRedisKeys`, which forty-five sites import — forty of them `as RedisKeys`, which is why they look like hits. Without that filter the second command returns **63**. A different 140 or 19 means R3's and R5's tables need re-deriving before anything is edited — **stop and report** with the actual list.
 
 - [ ] **Step 4: Record the floor's current values and the pre-existing migration drift**
 
@@ -557,7 +557,7 @@ assert RedisKeys is R2 and ChannelMetadataField is C2 and ConfigHelper is H2
 print('shims re-export the same objects: OK')"
 ```
 
-Expected, exit 0: `shims re-export the same objects: OK`. This is strictly stronger than an import check — it proves the shim is a re-export and not a second definition, and it proves the nine names Appendix B leaves behind are still importable from the old path. Note the command is deliberately **not** piped: Global Constraint 14, and this is the exact step where an earlier draft laundered a real failure into a plausible pass by reading `$?` after a `| tail -3`.
+Expected: **exit 0**, with `shims re-export the same objects: OK` as the **last line**. `django.setup()` first emits stderr noise in this container — a `RuntimeWarning: Accessing the database during app initialization is discouraged` and two `WARNING … relation "core_coresettings"/"core_systemnotification" does not exist` lines — because the hook container migrates only the **test** database and `django.setup()` touches the app one. Measured identical on the seed; it is pre-existing and not a failure. **The exit status and the final line are the assertions.** This is strictly stronger than an import check — it proves the shim is a re-export and not a second definition, and it proves the nine names Appendix B leaves behind are still importable from the old path. Note the command is deliberately **not** piped: Global Constraint 14, and this is the exact step where an earlier draft laundered a real failure into a plausible pass by reading `$?` after a `| tail -3`.
 
 Then the boot path:
 
@@ -591,11 +591,12 @@ Every change is a single line turning `apps.proxy.live_proxy.<module>` into `app
 
 - [ ] **Step 2: Verify nothing outside the package still names the four symbols through the old path**
 
+**`git grep` with a pathspec, and no `grep -v` at all** — the same reason Task 0 Step 3 and R5 give: a `grep -v "^./apps/proxy/live_proxy/"` filter over `grep -r .` output is a no-op under any `grep` that does not emit the `./` prefix, and this step's stop rule fires on exactly what then survives. Measured on this PR's own tree: **12** lines with `/usr/bin/grep`, **44** under this harness's wrapped `grep`, **12** with the form below under either.
+
 ```bash
 cd /Users/dion/git/Dispatcharr/.worktrees/phase2d-boot-trap-relocation
-set -o pipefail
-grep -rn --include='*.py' -E "^[[:space:]]*from apps\.proxy\.live_proxy\.(redis_keys|constants|config_helper) import" . \
-  | grep -v "^./apps/proxy/live_proxy/"
+git grep -nE "^[[:space:]]*from apps\.proxy\.live_proxy\.(redis_keys|constants|config_helper) import" \
+  -- '*.py' ':!apps/proxy/live_proxy/*'
 ```
 
 Expected: exactly **seven files, twelve lines** — `apps/proxy/tests/test_stream_switch.py:12` and `:13`, `apps/proxy/tests/test_boundary_error_arms.py:15`, `apps/channels/tests/test_ts_proxy_teardown.py:7` and `:10`, `apps/channels/tests/test_get_stream_assignment.py:9` and `:10`, `apps/channels/tests/test_ts_proxy_initializing.py:14` and `:15`, `apps/channels/tests/test_channel_stream_reuse.py:15`, `apps/channels/tests/test_ts_proxy_ghost_clients.py:15` and `:16`. **Nothing under `apps/timeshift/` and nothing outside `*/tests/`.** A timeshift hit means R6's five lines were missed; a non-test hit means one of R5's nineteen was.
@@ -1069,9 +1070,10 @@ imports at all) and `apps/proxy/config_helper.py` (imports only `apps.proxy.conf
 the TS packet constants stay behind and die with the package at 2d-4, because nothing
 outside it imports them.
 
-The three old paths stay as one-statement re-export shims. That is what keeps the diff to
+The three old paths stay as re-export shims. That is what keeps the diff to
 **19 import statements in 10 files** out of the 140 in the tree that name these symbols,
-and what keeps Gate 2's resolved file set byte-identical.
+and what keeps Gate 2's resolved file set byte-identical — the gate hashes a set of paths,
+so a path that still exists cannot leave the set whatever its statement count.
 
 ## The trap moved house; it did not go away
 
@@ -2589,7 +2591,7 @@ index db4e7df9..e70d363f 100644
 
 ```diff
 diff --git a/docs/superpowers/specs/2026-09-09-phase2-go-relay-design.md b/docs/superpowers/specs/2026-09-09-phase2-go-relay-design.md
-index 08c861ef..e9747193 100644
+index 08c861ef..c2c0238a 100644
 --- a/docs/superpowers/specs/2026-09-09-phase2-go-relay-design.md
 +++ b/docs/superpowers/specs/2026-09-09-phase2-go-relay-design.md
 @@ -2996,18 +2996,33 @@ census that makes the survivor gate real cannot be taken until after the delete.
@@ -2818,8 +2820,8 @@ index 08c861ef..e9747193 100644
 +   milestone row carries the merge SHA and a merge commit cannot name itself (A9.9), so the row is a
 +   one-line PR after 2d-1 merges. Everything else is PR 4's, named
 +   there. **Amendment A11.2 corrects A10.4 here: this PR does NOT trip `modules=` and ships no floor
-+   edit at all.** The relocated names leave the denominator, but the old paths stay as one-statement
-+   re-export shims, so coverage's resolved `files` set is byte-identical — `8cb5c65dac3e`, 38 files,
++   edit at all.** The relocated names leave the denominator, but the old PATHS stay as
++   re-export shims, and coverage's resolved `files` set is a set of paths, so it is byte-identical — `8cb5c65dac3e`, 38 files,
 +   measured both ways — and `missing` can only fall (measured 1505 against the floor's 1525). The
 +   `--shape-only` re-baseline A10.4 ordered is 2d-4's. Gate:
     `manage.py check` green, every backend label green, `Backend result` green including the
@@ -2853,6 +2855,18 @@ index 08c861ef..e9747193 100644
 ---
 
 ## Self-review
+
+### Round-2 fix, after the review of `ec8d394f`
+
+One blocking finding and three notes, all four reproduced here and all four correct.
+
+**NEW-1 was a miss of exactly the kind the round-1 fix was about.** B1 and S6 converted Task 0 Step 3 and R5 to `git grep` and wrote the reason into both; **Task 3 Step 2 carries the same `grep -r . | grep -v "^./apps/proxy/live_proxy/"` shape and was not converted with them.** Measured on this PR's tree: **12** lines under `/usr/bin/grep`, **44** under this harness's wrapped `grep` — and the thirty-two extra are every non-test file in the package, against a stop rule reading "a non-test hit means one of R5's nineteen was [missed]". Converted to `git grep -nE … -- '*.py' ':!apps/proxy/live_proxy/*'`, which returns the twelve under either implementation with no `grep -v` at all. The reviewer swept the rest and this was the only survivor; R2's (`:62`, explicit directory args), R3's (`:75`, no path filter) and R9's (`:220`, expects empty) are all safe under both, and I re-confirmed that.
+
+**NEW-2**: three places still read as though the shim's statement count were what keeps the file set stable — the Architecture paragraph, the PR body, and Appendix H's deletion-list entry 1 sentence — four hundred lines from A11.3's "not that they still carry a statement". None was false; all three now say "paths". The purely descriptive "Becomes a one-statement re-export shim" in the File-structure table stays.
+
+**NEW-3**: "forty-five sites import `as RedisKeys`" conflates two numbers. Measured: **45** lines name `apps.timeshift.redis_keys` (that is what the filter removes), of which **40** carry the `as RedisKeys` alias; the other five match through `TimeshiftRedisKeys` itself. Both figures now stated.
+
+**NEW-4**: Task 2 Step 3's `django.setup()` check emits `RuntimeWarning: Accessing the database during app initialization` and two `relation … does not exist` warnings on stderr, because the hook container migrates only the **test** database. Measured identical on the seed. The step is a stop-on-anything-else check, so it now names them as pre-existing and states that the exit status and the final line are the assertions.
 
 ### Fix round, after the opus review of `ceea871e`
 
