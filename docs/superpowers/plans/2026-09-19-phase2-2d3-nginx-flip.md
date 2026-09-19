@@ -586,7 +586,7 @@ documented asymmetry reproduced per D5, not a gap.
 | `docker/dispatcharr_api_params_proxy.conf` | The `proxy_set_header` twin of `dispatcharr_api_params.conf`, 7 blanking lines + header comment (Appendix B) |
 | `relay/drain/supervisord_priority_test.go` | R10's assertion that both relay confs share `priority=205` (Appendix E) |
 
-**Modified (11)**
+**Modified (12)**
 
 | Path | What | Ruling |
 |---|---|---|
@@ -603,9 +603,10 @@ documented asymmetry reproduced per D5, not a gap.
 | `CLAUDE.md` | six passages | Appendix F |
 | `docs/superpowers/specs/2026-09-09-phase2-go-relay-design.md` | Amendment A13 + three in-place corrections + the Done-log row | Appendix G |
 
-(Twelve rows for eleven files is not an error — the table lists `CLAUDE.md` and the spec as one row
-each; the count of modified files is 12. Task 8 verifies `git diff --stat` names exactly these 14
-paths.)
+**2 created + 12 modified = 14 paths**, which is exactly what Task 9 Step 1 asserts
+`git diff --stat origin/main` names. Five are `docker/`, four are `e2e/` test or allowlist source,
+one is `e2e/COVERAGE.md`, one is `relay/`, and two are docs (`CLAUDE.md` and the spec). No `*.py`,
+no `frontend/`, no `.github/workflows/`, no `metrics/`.
 
 **Deliberately not touched**, each checked rather than assumed:
 
