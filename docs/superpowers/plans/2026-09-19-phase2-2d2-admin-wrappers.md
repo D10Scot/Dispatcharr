@@ -10,25 +10,29 @@
 
 **Spec:** `docs/superpowers/specs/2026-09-09-phase2-go-relay-design.md` — § Stage 2d's `### Deletion order — one PR each` entry **2**, Amendment **A10.3** (its closing paragraph assigns these five to 2d-2 and names `apps/proxy/live_proxy/urls.py:8-13`), **A10.11** (the seven `relay_client` call sites inside the five — corrected in place here, see R12), **A10.14** (the four `apps.proxy.tests` files — one import count corrected here). This PR adds **Amendment A12** and its Done-log row.
 
-**Seed:** `57618a28ed86820a46012776e65d6b7d8beb356d` — `metrics(curated): the stage-2c milestone row (#321)`. Every `file:line`, count, hash and expected output below was measured at that commit, in a container named `plan2d2` bind-mounted at the planning worktree.
+**Seed:** `d5be64d58940eeb4a3ad3e6af0bd2e6c1eb32410` — `relay(phase2): 2d-1 — the boot-trap relocation (#325)`. Every `file:line`, count, hash and expected output below was measured at that commit. The plan was first written against `57618a28`, the commit before 2d-1 merged, and **re-seeded here against 2d-1's merge**: every appendix was re-applied to `d5be64d5` and re-run, and the figures 2d-1 moved are marked below with what they were and what they are.
 
-## THIS PLAN MUST BE RE-SEEDED BEFORE IT IS IMPLEMENTED
+## Re-seeded against 2d-1's merge
 
-**Stage 2d-1 is planned but not merged.** Its plan is `docs/superpowers/plans/2026-09-19-phase2-2d1-boot-trap-relocation.md` on branch `docs/phase2d1-plan` (draft PR #322). 2d-2 is implemented on the tree 2d-1's merge produces, which does not exist yet. Task 0 is written to verify the seed against that tree and to **stop** where it cannot.
+**Stage 2d-1 merged as `d5be64d5` (PR #325).** This plan was written against `57618a28`, the commit before it, and its header promised a re-seed; this section is that re-seed, run rather than reasoned. Every appendix was re-applied to `d5be64d5` and every figure re-measured. **Nothing in the plan's rulings changed and no appendix needed regenerating** — the three predictions that mattered all held:
 
-What 2d-1 does and does not do to this PR's files, read from its plan's File structure table and its Rulings R5/R7:
+- Appendix D applies to the real post-2d-1 `zero_orm_allowlist.py` **cleanly, at offset −20 on all three hunks**, which is what the plan predicted to the line.
+- Appendices F and G — the two verbatim-string scripts written specifically because 2d-1 edits their files — run with all seven `count == 1` assertions holding, and their anchors place Amendment A12 **after** A11 (`:3708` against `:3588`) and the 2d-2 Done-log row **immediately after** 2d-1's (`:4276` against `:4275`), without this plan ever naming either.
+- The five views and their six patterns are untouched by 2d-1: `live_proxy/views.py` is still 1417 lines with the same 26 imports and the same five `def` line numbers, so Appendices A and C hold verbatim.
 
-| This PR's file | 2d-1 touches it? | Consequence for this plan |
+What 2d-1 actually did to this PR's files, verified at `d5be64d5` rather than read from its plan:
+
+| This PR's file | 2d-1 touched it? | Verified consequence at `d5be64d5` |
 |---|---|---|
-| `apps/proxy/live_proxy/views.py` | **No** | Appendix C applies unchanged; every line number in R1–R5 holds. |
-| `apps/proxy/live_proxy/urls.py` | **No** | Appendix B applies unchanged. |
-| `apps/proxy/urls.py` | **No** (2d-1 lists it under "deliberately not touched", A10.3 site 6, 2d-4's) | Appendix B applies unchanged. |
-| `apps/proxy/tests/test_stream_switch.py` | **No** — 2d-1's R5 explicitly leaves `:12`/`:13` alone | Appendix B's last hunk applies unchanged. |
-| `apps/proxy/live_proxy/tests/zero_orm_allowlist.py` | **Yes**, in seven places — it deletes one `Site` at `:111-130`, re-points one `EdgeEntry` at `:445`, and corrects six prose citations of `config_helper.py:50` at `:439`, `:629`, `:636`, `:639`, `:665` and `:672` (its own R7 and Appendix E) | Appendix D's three hunks sit at old lines 277-366, 368-380 and 393-399 — **below** the deleted `Site` and **above** every one of 2d-1's other six edits, so none of them overlaps. The `Site` deletion above shifts the hunks by about −20; `git apply` tolerates an offset, and Task 0 Step 6 checks it and says what to do if it does not. |
-| `CLAUDE.md` | **Yes** — § Test hooks (two sentences) and § Structural constraints (one bullet) | Different sentences from this PR's (§ Commands line 50, § Routing line 93). Appendix F is a **verbatim-string replacement script**, not a hunk, precisely so 2d-1's edits cannot move it. |
-| `docs/superpowers/specs/2026-09-09-phase2-go-relay-design.md` | **Yes** — adds Amendment A11, four in-place corrections, a Done-log row | Appendix G is a verbatim-string replacement script for the same reason, and its Done-log insertion anchors on the `## Risks` heading rather than on 2d-1's row. |
+| `apps/proxy/live_proxy/views.py` | **No** | Confirmed: still **1417 lines**, **26** imports, the five `def`s still at `:901`, `:1088`, `:1152`, `:1194`, `:1242`, `@csrf_exempt` still at `:898`. Appendix C applies unchanged and every line number in R1–R6 holds. |
+| `apps/proxy/live_proxy/urls.py` | **No** | Appendix B.2 accepted by `git apply --check` at `d5be64d5`. |
+| `apps/proxy/urls.py` | **No** — 2d-1 listed it under "deliberately not touched" (A10.3 site 6, 2d-4's) | Same hunk, accepted. |
+| `apps/proxy/tests/test_stream_switch.py` | **No** — 2d-1's R5 explicitly left `:12`/`:13` alone | Appendix B.3 accepted. |
+| `apps/proxy/live_proxy/tests/zero_orm_allowlist.py` | **Yes**, in seven places — one `Site` deleted at `:111-130`, one `EdgeEntry` re-pointed (now `apps.proxy.config_helper`/`ConfigHelper`, `hits=1`, at `apps/proxy/config_helper.py:66`), six prose citations rewritten | **Measured**: `git apply` accepts Appendix D with `Hunk #1 succeeded at 257 (offset -20 lines)` and the same −20 on #2 and #3 — the offset the plan predicted, to the line. The two `views.py` `EdgeEntry` rows moved `:281`→**`:261`** and `:322`→**`:302`**, and `channel_service.py`'s `:365`→**`:345`**, so the range Task 4 deletes is now **`:260`–`:343`** rather than `:280`–`:363`. Twelve `importer=` lines still, and the re-pointed `config_helper` entry sits at `:427`, well below every hunk. |
+| `CLAUDE.md` | **Yes** — § Test hooks and § Structural constraints | Different sentences from this PR's. Appendix F ran at `d5be64d5` with both `count == 1` assertions holding: `CLAUDE.md: 2 replacements`. Writing it as a verbatim-string script rather than a hunk is what made that a non-event. |
+| `docs/superpowers/specs/2026-09-09-phase2-go-relay-design.md` | **Yes** — Amendment A11, in-place corrections to deletion-list entries 1 and 4, A10.14 rewritten to eleven files across two labels, a Done-log row | Appendix G ran with all five `count == 1` assertions holding: `spec: 5 edits`. The anchors did their job — **A12 landed at `:3708`, after A11 at `:3588`**, and the 2d-2 Done-log row at `:4276`, **immediately after** 2d-1's at `:4275`, without this plan naming either. |
 
-None of the four names 2d-1 relocates — `RedisKeys`, `ChannelMetadataField`, `ChannelState`, `ConfigHelper` — is used by any of the five views this PR moves. Measured at the seed with an AST walk over `views.py` (Task 0 Step 3 reproduces it): the five use thirteen module-level imported names and `logger`, and none of the thirteen is one of those four. **So there is no import in this PR that must be re-pointed at 2d-1's new homes, and nothing this PR writes may import `apps.proxy.live_proxy.{redis_keys,constants,config_helper}` under either spelling.**
+None of the four names 2d-1 relocated — `RedisKeys`, `ChannelMetadataField`, `ChannelState`, `ConfigHelper` — is used by any of the five views this PR moves. Re-measured at `d5be64d5`: `sed -n '898,1417p' … | grep -E "\b(RedisKeys|ChannelMetadataField|ChannelState|ConfigHelper)\b"` returns **nothing, exit 1**. (`views.py` still imports all three in-package names at module level, from 2d-1's shims, but only `stream_ts` and its helpers use them.) **So there is no import in this PR that must be re-pointed at 2d-1's new homes, and nothing this PR writes may import `apps.proxy.live_proxy.{redis_keys,constants,config_helper}` under either spelling.**
 
 ## Global Constraints
 
@@ -162,7 +166,7 @@ Nothing in § Stage 2d or Amendment A10 anticipates a Gate 1 consequence for 2d-
 
 **(iii) One surviving entry cites the deleted one twice, and the first draft left both dangling.** The `channel_service.py` → `resolve_source` entry opens "The same symbol as the views.py edge **above**" and closes `closed_by="As the views.py edge above -- ..."`. Both are rewritten in place by Appendix D, and a block comment replaces the deleted rows so the deletion is legible to whoever reads `EDGES` next.
 
-**(iv) A first-draft error worth recording, because the same mistake is easy to repeat.** Deleting "the two `views.py` entries" by line range deleted **three**: the `channel_service.py` entry begins at `:364` and the second `views.py` entry ends at `:363`, and the label reported `('apps/proxy/live_proxy/services/channel_service.py', 'apps.proxy.next_source', 'resolve_source')` as found-but-not-allowed. The exact range is `:280`–`:363` inclusive, and Task 4's step asserts on the three boundary lines before touching anything.
+**(iv) A first-draft error worth recording, because the same mistake is easy to repeat.** Deleting "the two `views.py` entries" by line range deleted **three**: the `channel_service.py` entry begins at `:364` and the second `views.py` entry ends at `:363`, and the label reported `('apps/proxy/live_proxy/services/channel_service.py', 'apps.proxy.next_source', 'resolve_source')` as found-but-not-allowed. The exact range was `:280`–`:363` at the pre-2d-1 seed and is **`:260`–`:343`** at `d5be64d5`, which is the point: Task 4 Step 1 derives it from the file rather than quoting either number, and asserts on the three boundary lines before touching anything.
 
 ### R7 — Gate 2: `modules=` cannot move, `statements` falls by 216, `missing` cannot rise, and this PR ships no floor edit
 
@@ -183,12 +187,13 @@ The two new files are outside the ten named boundary modules and outside `apps/p
 
 | tree | digest | files | statements |
 |---|---|---|---|
-| seed `57618a28` | `8cb5c65dac3e` | 38 | **8202** |
-| this PR's shape | `8cb5c65dac3e` | 38 | **7986** |
+| seed `d5be64d5` | `8cb5c65dac3e` | 38 | **7983** |
+| this PR's shape | `8cb5c65dac3e` | 38 | **7767** |
+| (pre-2d-1, for provenance) `57618a28` → its shape | `8cb5c65dac3e` | 38 | 8202 → 7986 |
 
 `8cb5c65dac3e` / 38 is `scripts/coverage_live_path.floor`'s own `modules=`/`module_count=`. The 216-statement drop is exactly the five views' statement count, measured independently with `coverage.parser.PythonParser`: `views.py` holds 620 statements, 216 of them in lines 898–1417 and 404 below. `live_proxy/urls.py` contributes nothing to the move — `urlpatterns = [...]` is one statement whether it holds one pattern or seven. `rcfile=` cannot move: the rcfile is not edited (Constraint 6).
 
-**The seed figures here are the pre-2d-1 ones.** 2d-1's own probe measured `8cb5c65dac3e` / 38 / **7983** on its shape, and the digest is the same because 2d-1's shims keep every old path in the set. So on the tree this PR is actually implemented against, expect `statements` **7983 → 7767** and the same digest. Task 0 Step 7 records what the probe actually prints; a digest that is not `8cb5c65dac3e` is a **STOP**.
+**The drop is 216 on either tree, because it is the five views' own statement count and nothing else.** 2d-1 moved the baseline from 8202 to 7983 — its three shims hold 1, 25 and 1 statements where the originals held 85, 88 and 73 — and left the digest alone, because a shim still matches `apps/proxy/live_proxy/*` and still carries a statement. `views.py` is untouched by 2d-1, so `PythonParser` still reports **620 / 216 / 404** on it. Task 0 Step 7 records what the probe actually prints; a digest that is not `8cb5c65dac3e` is a **STOP**.
 
 **`missing` can only fall.** Every one of the 216 statements leaves the denominator carrying its own missing-or-covered status with it, and this PR adds no statement to any file inside the denominator (`urls.py` loses six list elements from one statement; `views.py` loses functions and gains nothing). So `missing` falls by however many of the 216 were uncovered and never rises. **And the floor is not lowered either**, for the reason `scripts/coverage_live_path.floor:277-283` gives: plain `--write-floor` writes one local run's figure where this floor's policy is the worst of ≥12 rounds measured in CI. 2d-5 (`migration/phase2d-gate2-recensus`) is the PR where `missing` legitimately moves. A drop bought by removing statements from the denominator is not a coverage improvement anyone should ratchet on — the identical argument 2d-1's R4 makes, one PR later.
 
@@ -252,7 +257,9 @@ Per the standing per-PR convention (§ Documentation, "a PR that changes a fact 
 
 ### R13 — Two known non-failures on this tree, and neither is this PR's
 
-- **`test_a_buffering_threshold_change_does_not_reach_a_running_channel`** (`apps.proxy.live_proxy.tests.test_manager_stderr_failover`) is issue **#259**, 2d-1's R12. It fired once during this plan's measurements and passed on every other run of the same label on the same tree. **Re-run; do not attribute it to this PR, and never lower the asserted count.** Three consecutive failures on this branch is a stop-and-report.
+- **`test_a_buffering_threshold_change_does_not_reach_a_running_channel`** (`apps.proxy.live_proxy.tests.test_manager_stderr_failover`) is issue **#259**, carried from 2d-1's R12 — **with its stopping rule corrected, because 2d-1's implementer measured the rule itself and it was unsound.** On that host the test fails roughly **eight runs in ten on the unmodified tree**, so "three in a row is new, stop" would fire on a clean checkout more often than not. What this plan asks instead: **re-run; do not attribute it to this PR, and never lower the asserted count.** Escalate only if it fires **in CI**, or on a host where the same label has just been shown green on `origin/main` — a quiescent machine. Anything else is measuring the host's load, not the branch.
+
+  This plan's own runs are a case in point and are recorded rather than generalised from: it fired once during the pre-2d-1 measurements and passed on **six** subsequent runs of that label across both seeds, including all four at `d5be64d5`. That is the same distribution seen from the other side; neither sample says anything about the code.
 - **`manage.py check` reports one warning in the test container, before and after**: `?: (staticfiles.W004) The directory '/repo/frontend/dist' in the STATICFILES_DIRS setting does not exist.` Exit code 0. It is the container having no built frontend, not a finding. Expect it; the gate is exit 0 and no `ERRORS:` section.
 
 ### R14 — The frontend gate is four files, 149 tests, and zero frontend edits
@@ -307,7 +314,7 @@ Measured at the seed: `Test Files  4 passed (4)`, `Tests  149 passed (149)`. The
 
 ## Task 0: Verify the seed, on the tree 2d-1's merge produced
 
-Runs before anything else. Every figure in this plan was measured at `57618a28`, **before stage 2d-1 merged**; this task is what re-seeds it and records the numbers later tasks compare against.
+Runs before anything else. Every figure in this plan was measured at `d5be64d5`, the merge of stage 2d-1; this task is what confirms the tree still is that one and records the numbers later tasks compare against.
 
 **Files:** none modified.
 
@@ -327,7 +334,7 @@ DISPATCHARR_TEST_CONTAINER=plan2d2impl DISPATCHARR_TEST_DB_VOLUME=plan2d2impl-ho
   /Users/dion/git/Dispatcharr/.claude/hooks/start-test-container.sh
 ```
 
-Record the SHA. **It must be a commit whose history contains 2d-1's merge** — check with `git log --oneline -20 | grep -i "boot-trap"`. If 2d-1 has not merged, **STOP and report**: this PR's Gate 1 hunk, CLAUDE.md edits and spec edits are all written against a tree that has it.
+Record the SHA. **It must be `d5be64d5` or a descendant** — check with `git merge-base --is-ancestor d5be64d5 HEAD && echo ok`. If it is not, **STOP and report**: this PR's Gate 1 hunk, its CLAUDE.md edits and its spec edits are all written against a tree that has 2d-1 in it. If it is a *later* descendant, the appendices should still apply — Appendix D is the one to watch, and Task 0 Step 6 is where you find out.
 
 Every later `docker exec` in this plan uses that container. A convenience wrapper, mirroring `.claude/hooks/run-affected-tests.sh:87-92`:
 
@@ -454,7 +461,7 @@ print(\"digest\", hashlib.sha256(\"\n\".join(f).encode()).hexdigest()[:12], \"fi
 "'
 ```
 
-Expected on the post-2d-1 tree: `digest 8cb5c65dac3e files 38 statements 7983` (this plan measured `8202` on the pre-2d-1 seed; 2d-1's own Task 7 measured `7983` on its shape). **A digest that is not `8cb5c65dac3e` is a STOP** — record the number, whatever it is, because Task 6 compares against it.
+Expected, measured at `d5be64d5`: `digest 8cb5c65dac3e files 38 statements 7983`. **A digest that is not `8cb5c65dac3e` is a STOP** — record the number, whatever it is, because Task 6 compares against it.
 
 - [ ] **Step 8: Three green labels and the frontend four**
 
@@ -467,7 +474,7 @@ for L in apps.proxy.tests apps.proxy.live_proxy.tests apps.channels.tests; do
 done
 ```
 
-Expected, on the pre-2d-1 seed and unchanged by 2d-1 (which adds no test to these labels and re-points imports only): `apps.proxy.tests` **403 OK**, `apps.proxy.live_proxy.tests` **429 OK (skipped=1)**, `apps.channels.tests` **441 OK**. Record whatever they actually are; Task 6 expects +25 / −23 / 0 against **these** numbers, not against the ones printed above. R13's flake may fire on the second label — re-run it once before treating a failure as real.
+Expected, measured at `d5be64d5` and identical to the pre-2d-1 figures (2d-1 adds no test to these labels and re-points imports only): `apps.proxy.tests` **403 OK**, `apps.proxy.live_proxy.tests` **429 OK (skipped=1)**, `apps.channels.tests` **441 OK**. Record whatever they actually are; Task 6 expects +25 / −23 / 0 against **these** numbers, not against the ones printed above. R13's flake may fire on the second label — re-run it once before treating a failure as real.
 
 ```bash
 cd /Users/dion/git/Dispatcharr/.worktrees/phase2d-admin-wrappers/frontend && npm ci
@@ -720,9 +727,9 @@ for L in apps.proxy.tests apps.proxy.live_proxy.tests apps.channels.tests; do
 done
 ```
 
-Expected, against Task 0 Step 8's recorded numbers: `apps.proxy.tests` **+25** and OK, `apps.proxy.live_proxy.tests` **−23** and OK, `apps.channels.tests` **unchanged** and OK. On the pre-2d-1 seed those were 428, 406 and 441. Do not pipe these — redirect and read `$?` and `^OK` separately (Constraint 15; `CI_BACKEND_RUNNER` pipes have laundered an exit status before).
+Expected, against Task 0 Step 8's recorded numbers: `apps.proxy.tests` **+25** and OK, `apps.proxy.live_proxy.tests` **−23** and OK, `apps.channels.tests` **unchanged** and OK. Measured at `d5be64d5` with the change applied, those are **428**, **406** and **441**, all green. Do not pipe these — redirect and read `$?` and `^OK` separately (Constraint 15; `CI_BACKEND_RUNNER` pipes have laundered an exit status before).
 
-R13's flake lives on the middle label. If it fires, re-run that label once; if it fires three times consecutively, stop and report.
+R13's flake lives on the middle label. If it fires, **re-run that label and move on** — it fails about eight runs in ten on a loaded host even on an unmodified tree, so a local repeat count proves nothing about this branch. Escalate only if it fires in CI, or on a host where the same label has just been shown green on `origin/main`.
 
 - [ ] **Step 4: `manage.py check` and the credential-logging ratchet**
 
@@ -740,7 +747,7 @@ Expected: `System check identified 1 issue (0 silenced).` with only `staticfiles
 
 - [ ] **Step 5: The Gate 2 probe, after**
 
-Re-run Task 0 Step 7's command unchanged. Expected: **the same digest and the same file count as Step 7 recorded**, and `statements` exactly **216 lower**. On the pre-2d-1 seed that was `8202 → 7986`; on the post-2d-1 tree expect `7983 → 7767`.
+Re-run Task 0 Step 7's command unchanged. Expected: **the same digest and the same file count as Step 7 recorded**, and `statements` exactly **216 lower** — measured at `d5be64d5`, `7983 → 7767`.
 
 A different digest is a **STOP**: the likely cause is a new module accidentally created under `apps/proxy/live_proxy/`, or `views.py` reduced to zero statements (`skip_empty = True` drops such a file from the report). Do not re-baseline; diff the printed file list against `scripts/coverage_live_path.floor.modules`.
 
@@ -983,7 +990,7 @@ empty; `E2E result` green, with ten specs driving the moved views;
 
 ## Appendices
 
-Every appendix below was produced by making the change in a scratch worktree at the seed, running it, and capturing the result — not by writing it out. Appendices A and B.1 are whole new files, verbatim. Appendices B.2, B.3, C, D and E are unified diffs that `git apply --check` accepted at `57618a28`. Appendices F and G are verbatim-string replacement scripts rather than diffs, because 2d-1 edits both of their files and a hunk against the pre-2d-1 line numbers would not apply; each asserts its `OLD` string is present exactly once before writing, so a silent miss is impossible.
+Every appendix below was produced by making the change in a scratch worktree at the seed, running it, and capturing the result — not by writing it out. Appendices A and B.1 are whole new files, verbatim. Appendices B.2, B.3, C, D and E are unified diffs; all were generated at `57618a28` and **re-verified against `d5be64d5`** after 2d-1 merged (B.2, B.3 and D accepted by `git apply --check`, D at offset −20; E accepted after the `git mv`; C's assertions re-run). Appendices F and G are verbatim-string replacement scripts rather than diffs, because 2d-1 edits both of their files and a hunk against the pre-2d-1 line numbers would not apply; each asserts its `OLD` string is present exactly once before writing, so a silent miss is impossible. Both were re-run against `d5be64d5` and every assertion held.
 
 ### Appendix A — `apps/proxy/ts_admin_views.py`, whole file
 
@@ -1679,7 +1686,7 @@ Expected: `views.py is now 895 lines`. The three assertions are the whole safety
 
 ### Appendix D — `apps/proxy/live_proxy/tests/zero_orm_allowlist.py`
 
-Generated at `57618a28`; on the post-2d-1 tree it applies with a line offset of roughly −20 (2d-1 deletes a `Site` above this block). Task 0 Step 6 checks that, and Task 4 Step 1 re-derives the boundaries from the file itself if it does not.
+Generated at `57618a28` and **verified against `d5be64d5`**: `git apply` accepts it with `Hunk #1 succeeded at 257 (offset -20 lines)` and the same −20 on hunks #2 and #3, because 2d-1 deletes a twenty-line `Site` above this block and edits nothing inside it. Task 0 Step 6 checks that, and Task 4 Step 1 re-derives the boundaries from the file itself if a later commit moves them again.
 
 ```diff
 diff --git a/apps/proxy/live_proxy/tests/zero_orm_allowlist.py b/apps/proxy/live_proxy/tests/zero_orm_allowlist.py
@@ -1889,7 +1896,7 @@ index 4f2658d1..8bde3385 100644
 
 ### Appendix F — `CLAUDE.md`, two sentences
 
-A replacement script rather than a diff hunk: 2d-1 edits § Test hooks and § Structural constraints in this same file, so line numbers move. Both `OLD` strings were read out of `CLAUDE.md` at `57618a28` and neither sits in a paragraph 2d-1 touches.
+A replacement script rather than a diff hunk: 2d-1 edits § Test hooks and § Structural constraints in this same file, so line numbers move. Both `OLD` strings were read out of `CLAUDE.md` at `57618a28`, neither sits in a paragraph 2d-1 touched, and both were re-confirmed present exactly once at `d5be64d5`.
 
 ```bash
 cd /Users/dion/git/Dispatcharr/.worktrees/phase2d-admin-wrappers
@@ -2128,7 +2135,7 @@ PY
 
 ## Self-review
 
-Every `file:line` this plan cites was re-opened at `57618a28` with `sed -n "<n>p" <file>` after the plan was written, and every count was re-derived. What that found:
+Every `file:line` this plan cites was re-opened with `sed -n "<n>p" <file>` after the plan was written — first at `57618a28`, then again at `d5be64d5` for everything 2d-1 could have moved — and every count was re-derived. What that found:
 
 **Confirmed, unchanged:** `views.py:898` (`@csrf_exempt`), `:1417` (`close_old_connections()`), `:114` (`_resolve_output_format`), `:136` (`_output_profile_for`), `:1039`/`:1053`/`:1381`/`:1394` (the four `worker_id` response fields — exactly four, no more), `:433`/`:436` (the two `RedisKeys` reads that keep CLAUDE.md § Known defects true); `live_proxy/urls.py:7` (`stream/`); `apps/proxy/urls.py:10` (the `ts/` include); `next_source.py:244` (`def get_stream_object`), `:38` (`logging.getLogger("live_proxy")`); `url_utils.py:24` (the re-export); `live_proxy/utils.py:102` (`def get_logger`); `server.py:96`/`:98` (`os.getpid()`, `worker_id`); `settings.py:326` (`apps.accounts.permissions.IsAdmin` as the DRF default); `nginx.conf:62` (`location = /proxy/ts/status`), `:248` (`location ^~ /proxy/`); `relay_urls.py:14` (`app_name = "relay_control"`) and its 33 lines; `api.js:2465`, `:3317`; `test_stream_switch.py:16`; `test_zero_orm_reads.py:214` (the bare `assertEqual(found, allowed)`); `coveragerc:23` (`include =`); `backend-tests.yml:180` (the three-label coverage matrix); `floor:277-283` (the "`--write-floor` writes the figure from the run it JUST took" paragraph this plan leans on to decline a re-baseline).
 
@@ -2142,11 +2149,11 @@ Every `file:line` this plan cites was re-opened at `57618a28` with `sed -n "<n>p
 
 **Two verification steps in the plan's own text were wrong and are fixed:** Task 9 Step 2 originally expected `grep "live_proxy/views.py:1009"` to return nothing, but Appendix G deliberately **keeps** the old call-site list as provenance inside A10.11's corrected sentence — so the check is now "exactly one hit, and it carries `before 2d-2 moved them`". The same step expected one hit for `ts_admin_views.py:166`; running Appendix G produced **two** (A10.11 and A12.1). Both expectations were measured by executing Appendices F and G against the seed tree and then reverting it.
 
-**Measured, not asserted, and each with the command in the task that re-runs it:** the byte-identical OpenAPI schema; the seven-line `/proxy/ts/` resolver dump before and after; `views.py`'s 620 statements and the 216 in the moved range; the `8cb5c65dac3e`/38/8202→7986 probe; coverage's `GlobMatcher` returning `False` for both new modules; the three label counts 403→428, 429→406, 441→441; the four frontend files at 149 tests; anonymous 401 and non-admin 403 on all six routes; zero credential-logging findings; `staticfiles.W004` present before and after.
+**Measured, not asserted, and each with the command in the task that re-runs it:** the byte-identical OpenAPI schema; the seven-line `/proxy/ts/` resolver dump before and after; `views.py`'s 620 statements and the 216 in the moved range; the `8cb5c65dac3e`/38 probe, `7983 → 7767` at `d5be64d5` (`8202 → 7986` at the first seed); coverage's `GlobMatcher` returning `False` for both new modules; the three label counts 403→428, 429→406, 441→441; the four frontend files at 149 tests; anonymous 401 and non-admin 403 on all six routes; zero credential-logging findings; `staticfiles.W004` present before and after.
 
 **What this plan could not settle from the tree**, listed rather than guessed:
 
-- **The post-2d-1 numbers.** Every figure keyed to the tree 2d-1 produces — the Gate 2 `statements` baseline (7983, from 2d-1's own Task 7 rather than from a run of this plan's), the three label counts, and the exact line offset Appendix D applies at — is recorded here as an expectation and re-measured by Task 0. 2d-1 does not touch any file whose line numbers this plan depends on except `zero_orm_allowlist.py`, which is why that one has a re-derivation procedure rather than a fixed range.
+- ~~**The post-2d-1 numbers.**~~ **Settled** — 2d-1 merged as `d5be64d5` and this plan was re-seeded against it (see § Re-seeded against 2d-1's merge). The Gate 2 baseline is **7983 → 7767** measured rather than inferred, the three label counts are unchanged at 403/429/441 → 428/406/441, and Appendix D applies at **exactly** the −20 predicted. The one figure that moved and is worth naming: the `EdgeEntry` range Task 4 deletes, `:280`–`:363` → **`:260`–`:343`**, which is why that task derives it from the file rather than quoting it.
 - **Whether the E2E suite exercises `stop_channel`, `stop_client` or `next_stream`.** `readChannelStatus` and one `change_stream` POST were found; no Playwright spec was found driving the other three, so the only coverage those three have is the moved Django tests. That is a gap this PR inherits rather than creates, and it is not this PR's to close.
 - **Whether `worker_id` in the four response bodies is read by anything.** Half-answered after review: `grep -rn "worker_id" frontend/src` returns **nothing**, so the SPA does not read it and no frontend change follows from whatever 2d-4 decides. That measured fact is now in A12.3. What is still open is whether any non-SPA consumer reads it — a plugin, a Connect webhook payload, or an operator's own script — which cannot be answered from this tree at all, and which is why A12.3 states the decision rather than making it.
 
@@ -2170,3 +2177,32 @@ Verdict PASS WITH FIXES: 0 blocking, 4 should-fix, 8 notes. The reviewer applied
 | N8 | the 2d-1 branch has moved (`ceea871e` → `7193860c`) | yes | **no edit needed**: this plan pins no 2d-1 SHA, referring to the branch and PR #322 only — which is what makes the re-seed table survive 2d-1 moving. The overlap facts were re-read at `7193860c` and all still hold. |
 
 Appendix G was edited by N4 and was re-run against the seed afterwards (`spec: 5 edits`, all five `count == 1` assertions holding) and reverted; Appendix F and the four diff appendices were re-checked unchanged. No ruling changed in this round.
+
+### Re-seed round (2d-1 merged as `d5be64d5`)
+
+The plan's header promised a re-seed before implementation. This is it, run rather than reasoned: a throwaway worktree at `d5be64d5`, its own container, every appendix re-applied, every figure re-measured, then reverted. **No ruling changed and no appendix was regenerated.** Sixteen figures were checked; three moved, and all three were things the plan had already said would move.
+
+| figure | at `57618a28` | at `d5be64d5` | |
+|---|---|---|---|
+| Gate 2 probe, before | `8cb5c65dac3e` / 38 / **8202** | `8cb5c65dac3e` / 38 / **7983** | moved — 2d-1's three shims hold 1/25/1 statements where the originals held 85/88/73 |
+| Gate 2 probe, after | `8cb5c65dac3e` / 38 / **7986** | `8cb5c65dac3e` / 38 / **7767** | moved with it; the drop is **216** on both trees, because it is the five views' own count |
+| the `EdgeEntry` range Task 4 deletes | `:280`–`:363` | **`:260`–`:343`** | moved — the two `views.py` rows are now at `:261` and `:302`, `channel_service.py` at `:345` |
+| Appendix D | applies | applies, **offset −20 on all three hunks** | the prediction held to the line |
+| Appendices B.2, B.3 | apply | apply | unchanged |
+| Appendix E (after `git mv`) | applies | applies | unchanged |
+| Appendix C's four assertions | hold, 1417 → 895 lines | hold, 1417 → 895 lines | `views.py` untouched by 2d-1 |
+| Appendix F | 2 replacements | **2 replacements**, both `count == 1` | the reason it is a script and not a hunk |
+| Appendix G | 5 edits | **5 edits**, all `count == 1` | A12 lands at `:3708` after A11 at `:3588`; the Done-log row at `:4276` after 2d-1's at `:4275` |
+| `views.py` shape | 1417 lines, 26 imports, five `def`s | identical | |
+| `PythonParser` on `views.py` | 620 / 216 / 404 | identical | |
+| Task 0 Step 3 (four relocated names in the moved range) | nothing, exit 1 | nothing, exit 1 | |
+| Task 0 Step 4 (`= relay_client.`) | seven, at 1009…1343 | identical | |
+| label baselines | 403 / 429 / 441 | identical, all green | |
+| labels with the change applied | 428 / 406 / 441 | identical, all green | |
+| OpenAPI schema before vs after | `SCHEMA IDENTICAL` | `SCHEMA IDENTICAL` | |
+| resolver dump, `manage.py check`, credlint | as stated | identical (`staticfiles.W004` only; `credlint rc=0`) | |
+| `git diff --stat 57618a28 d5be64d5 -- frontend/` | — | **empty** | so R14's four files and 149 tests stand without a re-run |
+
+Two things 2d-1 changed that this plan deliberately does **not** follow: `docs/relay-parity-matrix.md` row 9 now cites `apps/proxy/constants.py:40`, and `metrics/curated/catalogue.yml` gained a sentence. Neither is in this PR's scope, and R11's own checks were re-run against the new tree — the parity matrix's four `live_proxy/views.py` citations are still `:162-166`, `:195-206`, `:825` and `:845-851`, all below 896, and `metrics/curated/*.yml` still cites no path this PR moves.
+
+One rule was corrected rather than re-measured: R13's stopping rule for #259. 2d-1's implementer measured the flake on this host at roughly **eight failures in ten on an unmodified tree**, which makes "three in a row is new" fire on a clean checkout more often than not. The rule is now "re-run and move on; escalate only in CI or on a demonstrably quiescent host." This plan's own six passes across two seeds are recorded beside that as a sample that says nothing either — the same evidence from the other side.
