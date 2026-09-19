@@ -3232,7 +3232,7 @@ class TimeshiftStatsClientTests(TestCase):
         self.user = MagicMock(id=5, username="viewer")
 
     def test_register_stats_preserves_connected_at_on_reregister(self):
-        from apps.proxy.live_proxy.constants import ChannelMetadataField
+        from apps.proxy.constants import ChannelMetadataField
         from apps.timeshift.redis_keys import TimeshiftRedisKeys as RedisKeys, TimeshiftRedisKeys
 
         client_key = RedisKeys.client_metadata(self.stats_channel_id, self.client_id)
@@ -3475,7 +3475,7 @@ class TimeshiftStatsClientTests(TestCase):
         self.assertNotEqual(self.redis.hget(client_key, "position_anchor_at"), "1000.0")
 
     def test_register_stats_seeds_stream_stats_from_memory(self):
-        from apps.proxy.live_proxy.constants import ChannelMetadataField
+        from apps.proxy.constants import ChannelMetadataField
         from apps.timeshift.redis_keys import TimeshiftRedisKeys as RedisKeys, TimeshiftRedisKeys
 
         metadata_key = RedisKeys.channel_metadata(self.stats_channel_id)
@@ -3505,7 +3505,7 @@ class TimeshiftStatsClientTests(TestCase):
         self.assertEqual(self.redis.hget(metadata_key, ChannelMetadataField.STREAM_ID), "42")
 
     def test_register_stats_skips_stream_stats_when_stream_unchanged(self):
-        from apps.proxy.live_proxy.constants import ChannelMetadataField
+        from apps.proxy.constants import ChannelMetadataField
         from apps.timeshift.redis_keys import TimeshiftRedisKeys as RedisKeys, TimeshiftRedisKeys
 
         metadata_key = RedisKeys.channel_metadata(self.stats_channel_id)
@@ -3532,7 +3532,7 @@ class TimeshiftStatsClientTests(TestCase):
         self.assertEqual(self.redis.hget(metadata_key, ChannelMetadataField.RESOLUTION), "1280x720")
 
     def test_register_stats_updates_stream_stats_on_failover_stream_change(self):
-        from apps.proxy.live_proxy.constants import ChannelMetadataField
+        from apps.proxy.constants import ChannelMetadataField
         from apps.timeshift.redis_keys import TimeshiftRedisKeys as RedisKeys, TimeshiftRedisKeys
 
         metadata_key = RedisKeys.channel_metadata(self.stats_channel_id)

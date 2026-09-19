@@ -345,7 +345,7 @@ def get_stream_info_for_switch(channel_id: str, target_stream_id: Optional[int] 
     channel = None
     try:
         from core.utils import RedisClient
-        from apps.proxy.live_proxy.redis_keys import RedisKeys
+        from apps.proxy.redis_keys import RedisKeys
 
         channel = get_object_or_404(Channel, uuid=channel_id)
         redis_client = RedisClient.get_client()
@@ -471,7 +471,7 @@ def get_alternate_streams(channel_id: str, current_stream_id: Optional[int] = No
     """
     try:
         from core.utils import RedisClient
-        from apps.proxy.live_proxy.redis_keys import RedisKeys
+        from apps.proxy.redis_keys import RedisKeys
 
         # Get channel object
         channel = get_stream_object(channel_id)
@@ -1112,7 +1112,7 @@ def release_source(identifier, *, stream_id=None, m3u_profile_id=None, channel_p
 
     from core.utils import RedisClient
     from apps.m3u.connection_pool import release_profile_slot
-    from apps.proxy.live_proxy.redis_keys import RedisKeys
+    from apps.proxy.redis_keys import RedisKeys
 
     redis_client = RedisClient.get_client()
     if not redis_client:

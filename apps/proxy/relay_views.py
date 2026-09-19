@@ -35,8 +35,8 @@ from apps.proxy.live_proxy.channel_status import (
     ChannelStatus,
     build_live_channel_stats_data,
 )
-from apps.proxy.live_proxy.constants import ChannelMetadataField
-from apps.proxy.live_proxy.redis_keys import RedisKeys
+from apps.proxy.constants import ChannelMetadataField
+from apps.proxy.redis_keys import RedisKeys
 from apps.proxy.live_proxy.server import ProxyServer
 from apps.proxy.live_proxy.services.channel_service import ChannelService
 from apps.proxy.permissions import IsInternalRelay

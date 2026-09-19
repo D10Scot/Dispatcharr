@@ -194,37 +194,31 @@ class QueryCaptureTests(TransactionTestCase):
 
     def test_a_query_with_a_relay_frame_is_attributed_to_the_relay(self):
         """The discriminating half. Without it, the test above passes
-        with an attributor that returns [] for everything."""
-        from apps.proxy.live_proxy.config_helper import ConfigHelper
+        with an attributor that returns [] for everything.
+
+        The driver was ConfigHelper.new_client_behind_seconds() until
+        Phase 2 stage 2d-1 moved ConfigHelper to
+        apps/proxy/config_helper.py: the read still fires, but no frame
+        in its stack is under apps/proxy/live_proxy/ any more, so it
+        stopped being an example of what this test is about. views.py's
+        _output_profile_for is the replacement -- a module-level
+        function in the package, reached with a stub decision and no
+        Redis, whose OutputProfile.objects.filter at views.py:152 is
+        itself one of zero_orm_allowlist.py's SITES.
+        """
+        from types import SimpleNamespace
+
+        from apps.proxy.live_proxy.views import _output_profile_for
         from .harness.queries import capture_queries, relay_queries
 
-        # Two caches sit in front of the query this test wants to see fire,
-        # and both must be cold or the ORM read never happens at all --
-        # Global Constraint 1 applied to a fixture, not just a header.
-        #
-        # 1. CoreSettings.get_proxy_settings() is itself backed by a
-        #    Django-cache (Redis) group ("proxy_settings"), so a warm Redis
-        #    entry answers without ever reaching Postgres.
-        # 2. TSConfig.get_proxy_settings() (config_helper.py:50 calls it)
-        #    additionally keeps a 10-second process-local copy. Clearing it
-        #    via BaseConfig.clear_proxy_settings_cache() -- what
-        #    CoreSettings.invalidate_group_cache() itself calls -- is the
-        #    documented #232 trap: `cls._proxy_settings_cache = ...` inside
-        #    the classmethod means the first fetch made *through TSConfig*
-        #    creates a TSConfig-owned attribute that shadows BaseConfig's,
-        #    and clearing BaseConfig's copy leaves that shadow warm. Clear
-        #    TSConfig's own directly.
-        from core.models import CoreSettings, PROXY_SETTINGS_KEY
-        from apps.proxy.config import TSConfig
-        CoreSettings.invalidate_group_cache(PROXY_SETTINGS_KEY)
-        TSConfig.clear_proxy_settings_cache()
+        decision = SimpleNamespace(trusted=True, output_profile_id=1)
 
         with capture_queries() as captured:
-            ConfigHelper.new_client_behind_seconds()
+            _output_profile_for(decision, None, None)
 
         self.assertTrue(
             relay_queries(captured),
-            "a query issued from apps/proxy/live_proxy/config_helper.py "
+            "a query issued from apps/proxy/live_proxy/views.py "
             "was not attributed to the relay",
         )
 
