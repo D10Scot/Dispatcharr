@@ -1122,7 +1122,7 @@ def _dvr_ffmpeg_retry_window_seconds():
     """Max continuous outage duration before giving up on FFmpeg restarts.
     """
     try:
-        from apps.proxy.live_proxy.config_helper import ConfigHelper
+        from apps.proxy.config_helper import ConfigHelper
         return ConfigHelper.stream_timeout() + ConfigHelper.failover_grace_period()
     except Exception:
         return 80.0
@@ -2442,7 +2442,7 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
         # Try to get stream stats from the relay's status payload
         try:
             from apps.proxy import relay_client
-            from apps.proxy.live_proxy.constants import ChannelMetadataField
+            from apps.proxy.constants import ChannelMetadataField
 
             # Phase 1 PR 7: this runs in the dvr Celery worker, which has
             # no business reading the channel's metadata hash directly.
