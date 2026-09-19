@@ -1,0 +1,172 @@
+"""Redis key patterns for the live relay's channel state.
+
+Moved here from ``apps/proxy/live_proxy/redis_keys.py`` in Phase 2 stage
+2d-1 (spec Amendment A10.3), because ``apps/channels/models.py`` imports
+``RedisKeys`` at module level and must not point at a directory stage 2d-4
+deletes.
+
+THIS MODULE MUST STAY A LEAF -- no imports, at all. It is loaded by every
+migration and every management command through that models.py import, so a
+cycle added here is not a failing test, it is a container that does not
+start. ``.claude/hooks/run-affected-tests.sh``'s boot-check ``case`` arm
+names this file for exactly that reason.
+
+``apps/proxy/live_proxy/redis_keys.py`` re-exports ``RedisKeys`` from here
+until stage 2d-4 deletes the package.
+"""
+
+class RedisKeys:
+    @staticmethod
+    def channel_metadata(channel_id):
+        """Key for channel metadata hash"""
+        return f"live:channel:{channel_id}:metadata"
+
+    @staticmethod
+    def buffer_index(channel_id):
+        """Key for tracking input buffer index"""
+        return f"live:channel:{channel_id}:input:buffer:index"
+
+    @staticmethod
+    def buffer_chunk(channel_id, chunk_index):
+        """Key for specific input buffer chunk"""
+        return f"live:channel:{channel_id}:input:buffer:chunk:{chunk_index}"
+
+    @staticmethod
+    def buffer_chunk_prefix(channel_id):
+        """Prefix for input buffer chunks"""
+        return f"live:channel:{channel_id}:input:buffer:chunk:"
+
+    @staticmethod
+    def channel_stopping(channel_id):
+        """Key indicating channel is stopping"""
+        return f"live:channel:{channel_id}:stopping"
+
+    @staticmethod
+    def client_stop(channel_id, client_id):
+        """Key requesting client stop"""
+        return f"live:channel:{channel_id}:client:{client_id}:stop"
+
+    @staticmethod
+    def events_channel(channel_id):
+        """PubSub channel for events"""
+        return f"live:events:{channel_id}"
+
+    @staticmethod
+    def switch_request(channel_id):
+        """Key for stream switch request"""
+        return f"live:channel:{channel_id}:switch_request"
+
+    @staticmethod
+    def channel_owner(channel_id):
+        """Key for storing channel owner worker ID"""
+        return f"live:channel:{channel_id}:owner"
+
+    @staticmethod
+    def clients(channel_id):
+        """Key for set of client IDs"""
+        return f"live:channel:{channel_id}:clients"
+
+    @staticmethod
+    def last_client_disconnect(channel_id):
+        """Key for last client disconnect timestamp"""
+        return f"live:channel:{channel_id}:last_client_disconnect_time"
+
+    @staticmethod
+    def connection_attempt(channel_id):
+        """Key for connection attempt timestamp"""
+        return f"live:channel:{channel_id}:connection_attempt_time"
+
+    @staticmethod
+    def last_data(channel_id):
+        """Key for last data timestamp"""
+        return f"live:channel:{channel_id}:last_data"
+
+    @staticmethod
+    def switch_status(channel_id):
+        """Key for stream switch status"""
+        return f"live:channel:{channel_id}:switch_status"
+
+    @staticmethod
+    def worker_heartbeat(worker_id):
+        """Key for worker heartbeat"""
+        return f"live:worker:{worker_id}:heartbeat"
+
+    @staticmethod
+    def chunk_timestamps(channel_id):
+        """Sorted set mapping chunk receive-timestamps (score) to chunk indices (member).
+        Used for time-based client positioning."""
+        return f"live:channel:{channel_id}:input:buffer:chunk_timestamps"
+
+    @staticmethod
+    def transcode_active(channel_id):
+        """Key indicating active transcode process"""
+        return f"live:channel:{channel_id}:transcode_active"
+
+    @staticmethod
+    def client_metadata(channel_id, client_id):
+        """Key for client metadata hash"""
+        return f"live:channel:{channel_id}:clients:{client_id}"
+
+    # Output format buffer keys - parameterized by format name (e.g. 'fmp4').
+    # Adding a new output format only requires a new manager; the key structure
+    # is shared so no new key methods are needed.
+    @staticmethod
+    def output_buffer_index(channel_id, fmt):
+        return f"live:channel:{channel_id}:output:{fmt}:buffer:index"
+
+    @staticmethod
+    def output_buffer_chunk(channel_id, fmt, chunk_index):
+        return f"live:channel:{channel_id}:output:{fmt}:buffer:chunk:{chunk_index}"
+
+    @staticmethod
+    def output_buffer_chunk_prefix(channel_id, fmt):
+        return f"live:channel:{channel_id}:output:{fmt}:buffer:chunk:"
+
+    @staticmethod
+    def output_init(channel_id, fmt):
+        """Binary init segment for formats that require one (e.g. fMP4 ftyp+moov)."""
+        return f"live:channel:{channel_id}:output:{fmt}:init"
+
+    @staticmethod
+    def output_state(channel_id, fmt):
+        """Remux/transcode manager state for this output format."""
+        return f"live:channel:{channel_id}:output:{fmt}:state"
+
+    @staticmethod
+    def output_owner(channel_id, fmt):
+        """Worker ID owning the output format manager."""
+        return f"live:channel:{channel_id}:output:{fmt}:owner"
+
+    @staticmethod
+    def output_chunk_timestamps(channel_id, fmt):
+        """Sorted set mapping fragment receive-timestamps to fragment indices."""
+        return f"live:channel:{channel_id}:output:{fmt}:buffer:chunk_timestamps"
+
+    @staticmethod
+    def channel_source_cache(channel_id):
+        """Resolved failover candidates, cached at channel start.
+
+        Read by two callers, neither of which reserves anything or moves
+        the provider slot: views.py's stream_ts, trying the next candidate
+        when a Redirect profile's primary URL fails validation at tune
+        time (unconditionally, not just on an outage); and
+        input/manager.py's _try_next_stream degraded fallback, only when
+        the control plane is unreachable at failover time (Phase 1 PR 6).
+        Both treat the list as stale and unenforced.
+        """
+        return f"live:channel:{channel_id}:source_cache"
+
+    # Written only by apps/channels/models.py — Channel.get_stream(),
+    # release_stream(), update_stream_profile() — and reached only through
+    # apps/proxy/next_source.py since Phase 1 PR 6. They were hand-rolled
+    # f-strings on both sides of the boundary, which is what made them
+    # split-brain; naming them here is what makes a second writer visible.
+    @staticmethod
+    def channel_stream(channel_pk):
+        """Stream id currently assigned to this channel (numeric channel pk)."""
+        return f"channel_stream:{channel_pk}"
+
+    @staticmethod
+    def stream_profile(stream_id):
+        """M3U account profile id serving this stream."""
+        return f"stream_profile:{stream_id}"

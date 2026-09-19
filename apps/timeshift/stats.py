@@ -10,7 +10,7 @@ from datetime import timezone as dt_timezone
 
 from apps.channels.models import Channel
 from apps.m3u.models import M3UAccountProfile
-from apps.proxy.live_proxy.constants import ChannelMetadataField
+from apps.proxy.constants import ChannelMetadataField
 from apps.timeshift.redis_keys import TimeshiftRedisKeys, parse_stats_channel_id
 from apps.timeshift.helpers import parse_catchup_timestamp
 from core.utils import RedisClient

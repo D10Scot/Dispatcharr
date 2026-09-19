@@ -37,8 +37,8 @@ from apps.m3u.connection_pool import (
 )
 from apps.m3u.models import M3UAccount, M3UAccountProfile
 from apps.m3u.tasks import get_transformed_credentials
-from apps.proxy.live_proxy.config_helper import ConfigHelper
-from apps.proxy.live_proxy.constants import ChannelMetadataField, ChannelState
+from apps.proxy.config_helper import ConfigHelper
+from apps.proxy.constants import ChannelMetadataField, ChannelState
 from apps.timeshift.redis_keys import (
     TimeshiftRedisKeys,
     mint_session_id,

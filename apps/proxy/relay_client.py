@@ -58,7 +58,7 @@ from apps.proxy.internal_auth import (
     internal_principal_token,
 )
 from apps.proxy.internal_base_url import resolve_base_url
-from apps.proxy.live_proxy.constants import ChannelState
+from apps.proxy.constants import ChannelState
 
 logger = logging.getLogger(__name__)
 
