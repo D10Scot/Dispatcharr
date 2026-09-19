@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -279,6 +281,131 @@ func TestDeletingOneClientDisconnectsItAndLeavesTheOtherStreaming(t *testing.T) 
 	if body := decodeObject(t, raw); body["status"] != "error" {
 		t.Errorf("an unknown channel answered %s, want the error shape", raw)
 	}
+}
+
+// blockedWriterState reports the goroutine header and full stack of a
+// goroutine currently parked inside writeChunks with a socket write beneath
+// it, or "" for both when no such goroutine exists right now.
+//
+// This is the #318 precondition made checkable: client-a's serving
+// goroutine actually stuck in the kernel write, not merely idle in
+// ring.Wait waiting for more data. Matching on the frame names rather than
+// on goroutine state text ("IO wait") because that text is a runtime
+// implementation detail; the frame names are this package's own code plus
+// the two net/http and net frames the #318 investigation's goroutine dump
+// showed beneath it.
+func blockedWriterState() (head, stack string) {
+	buf := make([]byte, 1<<22)
+	buf = buf[:runtime.Stack(buf, true)]
+	for _, g := range strings.Split(string(buf), "\n\ngoroutine ") {
+		if !strings.Contains(g, "httpapi.writeChunks") {
+			continue
+		}
+		if !strings.Contains(g, "net.(*conn).Write") && !strings.Contains(g, "poll.(*FD).Write") {
+			continue
+		}
+		head = g
+		if i := strings.Index(g, "\n"); i > 0 {
+			head = g[:i]
+		}
+		return head, g
+	}
+	return "", ""
+}
+
+// TestStoppingAClientBlockedInAWriteRemovesItFromTheRegistry is #318's pin.
+//
+// TestDeletingOneClientDisconnectsItAndLeavesTheOtherStreaming (above) only
+// reddens under host load, and rarely (measured ~5.7%, 4/70 runs) -- a
+// lottery ticket, not a pin, because it races the DELETE against the write
+// filling client-a's socket buffer rather than waiting for that precondition.
+// This test removes the race: it polls a goroutine dump until client-a's
+// serving goroutine is ACTUALLY parked inside the write syscall (client-a
+// never reads past its first packet, so the rig's unthrottled fixture floods
+// its connection's send buffer within tens of milliseconds -- fanRig uses
+// relaytest.Config{}, which has no Rate and so no pacing), fails loudly if
+// that never happens within five seconds (the precondition is itself part of
+// what #318 claims: an unreachable precondition means the mechanism was
+// never exercised and this run proves nothing about it, per the review round
+// that replaced the load-dependent repro with this one), and only THEN
+// issues the admin DELETE. Unfixed, this reddens every run, not
+// occasionally; fixed, it is green every run -- confirmed both ways before
+// this test shipped.
+func TestStoppingAClientBlockedInAWriteRemovesItFromTheRegistry(t *testing.T) {
+	r := fanRig(t, relaytest.Config{}, nil)
+	first := r.tuneAs(t, "c-blocked-write", "client-a")
+	defer func() { _ = first.Body.Close() }()
+	second := r.tuneAs(t, "c-blocked-write", "client-b")
+	defer func() { _ = second.Body.Close() }()
+	packetRun(t, "client-a", first.Body, 1)
+	packetRun(t, "client-b", second.Body, 1)
+	waitFor(t, "both clients to register", 15*time.Second, func() bool {
+		ch := r.Manager.Get("c-blocked-write")
+		return ch != nil && ch.Clients() == 2
+	})
+
+	// Neither client reads again from here. Wait for the precondition
+	// itself -- client-a's serving goroutine actually parked in the write
+	// syscall -- rather than for a fixed sleep: that is what turns this
+	// from a race into a pin.
+	var head, stack string
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if head, stack = blockedWriterState(); head != "" {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if head == "" {
+		// Explicit here too, not just deferred: on an unfixed tree that
+		// never reaches this branch there is nothing to leak, but a
+		// harness change that broke the precondition without breaking the
+		// fix should not also hang the rest of the package's run.
+		_ = first.Body.Close()
+		_ = second.Body.Close()
+		t.Fatalf("PRECONDITION UNREACHABLE: no serving goroutine parked in a write after 5s -- " +
+			"#318's mechanism was never exercised, so this run proves nothing")
+	}
+	t.Logf("client-a's serving goroutine parked in a write:\n%s", stack)
+
+	started := time.Now()
+	status, raw := r.internalCall(t, http.MethodDelete, "/proxy/relay/channels/c-blocked-write/clients/client-a", nil)
+	if status != http.StatusOK {
+		_ = first.Body.Close()
+		_ = second.Body.Close()
+		t.Fatalf("the client DELETE answered %d: %s", status, raw)
+	}
+
+	dropped := false
+	for time.Since(started) < 5*time.Second {
+		if ch := r.Manager.Get("c-blocked-write"); ch != nil && ch.Clients() == 1 {
+			dropped = true
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !dropped {
+		// Close the bodies HERE, in the failure path, rather than counting
+		// on the deferred close at the end of the test function: on an
+		// unfixed tree this goroutine is the whole point of the test, and
+		// the rig's own httptest.Server.Close() (via t.Cleanup) blocks
+		// until every in-flight handler returns -- leaving it parked into
+		// the rest of the package's run would turn one red test into a
+		// hung test binary. Closing the response bodies here (this drops
+		// the underlying connections, which the still-unfixed handler
+		// eventually notices as a write error) is what keeps a genuine
+		// regression a clean, fast failure instead of a CI timeout.
+		h2, s2 := blockedWriterState()
+		_ = first.Body.Close()
+		_ = second.Body.Close()
+		t.Fatalf("REPRODUCED #318: client-a was still in the registry %s after the DELETE, "+
+			"with its serving goroutine still %s\n%s", time.Since(started), h2, s2)
+	}
+	t.Logf("client-a left the registry %v after the DELETE", time.Since(started))
+
+	// The other client is still being served, exactly as the sibling test
+	// above asserts -- the fix must not disturb it.
+	packetRun(t, "client-b", second.Body, 1)
 }
 
 // ROW 18, answered for the Go relay: the names come OFF THE WIRE, and when
