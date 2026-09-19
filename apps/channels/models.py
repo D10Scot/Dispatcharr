@@ -3,8 +3,8 @@ from django.core.exceptions import ValidationError
 from django.conf import settings
 from core.models import StreamProfile, CoreSettings
 from core.utils import RedisClient, custom_properties_as_dict
-from apps.proxy.live_proxy.redis_keys import RedisKeys
-from apps.proxy.live_proxy.constants import ChannelMetadataField
+from apps.proxy.redis_keys import RedisKeys
+from apps.proxy.constants import ChannelMetadataField
 import logging
 import uuid
 from django.utils import timezone

@@ -756,7 +756,7 @@ def dispatch_event_system(event_type, channel_id=None, channel_name=None, **deta
         from apps.channels.models import Channel, Stream
         from core.models import StreamProfile
         from core.utils import RedisClient
-        from apps.proxy.live_proxy.redis_keys import RedisKeys
+        from apps.proxy.redis_keys import RedisKeys
 
         payload = dict(details)
 

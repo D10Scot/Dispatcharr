@@ -131,14 +131,26 @@ if [[ "$REL" == */models.py || "$REL" == models.py ]]; then
 fi
 
 # -------------------------------------------------------------- boot check ---
-# apps/channels/models.py:6-7 imports these two leaf modules at module level, so
-# one added import here stops Django booting for every migration and command.
+# apps/channels/models.py:6-7 imports apps/proxy/redis_keys.py and
+# apps/proxy/constants.py at module level, so one added import in either stops
+# Django booting for every migration and command. Phase 2 stage 2d-1 moved those
+# two names out of apps/proxy/live_proxy/ (spec Amendment A10.3) along with
+# ConfigHelper, which the catch-up surface imports at module level -- the trap
+# moved house, it did not go away, and this arm moved with it.
+#
+# The three apps/proxy/live_proxy/ paths stay until stage 2d-4 deletes the
+# package: they are re-export shims every relay module still imports, and
+# apps/proxy/apps.py's ready() reaches them in every process that is not
+# manage.py. THIS ARM MATCHES BY LITERAL PATH -- a file renamed out of it stops
+# being checked with no error and no output, which is how it would be lost.
 case "$REL" in
-  apps/proxy/live_proxy/constants.py|apps/proxy/live_proxy/redis_keys.py)
+  apps/proxy/constants.py|apps/proxy/redis_keys.py|apps/proxy/config_helper.py|\
+  apps/proxy/live_proxy/constants.py|apps/proxy/live_proxy/redis_keys.py|\
+  apps/proxy/live_proxy/config_helper.py)
     if container_ok; then
       OUT="$(dexec manage.py check)"; [ $? -eq 0 ] ||
         block "django check failed after editing ${REL}" \
-              "$(printf '%s' "$OUT" | grep -E 'Error|error:' | head -12)"$'\n\n'"apps/channels/models.py imports this module at module level; a cycle here breaks every management command."
+              "$(printf '%s' "$OUT" | grep -E 'Error|error:' | head -12)"$'\n\n'"apps/channels/models.py or the catch-up surface imports this module at module level; a cycle here breaks every management command."
     elif [ -z "$_container_mismatched" ]; then
       note "Did NOT run 'manage.py check' after editing ${REL} — container '${CONTAINER}' is not running."
     fi

@@ -109,26 +109,6 @@ SITES = (
         closed_by="As :74 -- absence is the contract. Row 18.",
     ),
     Site(
-        path="apps/proxy/live_proxy/config_helper.py",
-        lineno=50,
-        pr="2b-1",
-        reason=(
-            "TSConfig.get_proxy_settings() -> CoreSettings.get_proxy_settings "
-            "(core/models.py) through apps/proxy/config.py's 10-second "
-            "process-local cache. Issue #253 item 3: 2b-1 put proxy_settings "
-            "on next-source's response and deliberately did not wire "
-            "StreamManager to prefer it, so the read is still live at the end "
-            "of 2b. Same precedent as 2b-1's own 'nothing in the Python relay "
-            "consumes this yet, deliberately'."
-        ),
-        closed_by=(
-            "proxy_settings on next-source's response (2b-1). The Go relay "
-            "takes channel-start values from the tune answer and never reads "
-            "CoreSettings, which also collapses #232's 10-second staleness "
-            "window to zero for every value that matters at channel start."
-        ),
-    ),
-    Site(
         path="apps/proxy/live_proxy/views.py",
         lineno=132,
         pr="2b-2",
@@ -435,19 +415,38 @@ EDGES = (
             "per importer, and TSConfig is imported into five relay files."
         ),
         closed_by=(
-            "proxy_settings on next-source's response (2b-1), same as "
-            "config_helper.py:50's SITE entry above. The Go relay takes "
-            "channel-start values from the tune answer and never reads "
-            "CoreSettings."
+            "proxy_settings on next-source's response (2b-1). That read had its "
+            "own SITE entry here until stage 2d-1 moved ConfigHelper to "
+            "apps/proxy/config_helper.py:66 and out of scope 1, which "
+            "deleted the entry; the runtime half still covers the read. "
+            "The Go relay takes channel-start values from the tune answer "
+            "and never reads CoreSettings."
         ),
     ),
     EdgeEntry(
         importer="apps/proxy/live_proxy/config_helper.py",
-        module="apps.proxy.config",
-        name="TSConfig",
-        hits=5,
+        module="apps.proxy.config_helper",
+        name="ConfigHelper",
+        hits=1,
         pr="2b-1",
-        reason="As the client_manager.py entry above -- same symbol, same 5-hit subtree, a second importer.",
+        reason=(
+            "Was (apps.proxy.config, TSConfig, 5 hits) until stage 2d-1 moved "
+            "ConfigHelper to apps/proxy/config_helper.py and left this file a "
+            "re-export shim. The SAME read is still reached -- "
+            "apps/proxy/config_helper.py:66's TSConfig.get_proxy_settings(), "
+            "which was apps/proxy/live_proxy/config_helper.py:50's SITE entry "
+            "before the move (the code is byte-identical; the read sits sixteen "
+            "lines lower because the new module's docstring is longer) -- but "
+            "scan_edge() is transitive WITHIN THE MODULE "
+            "ONLY (Ruling R4), so it now sees one hit where it saw TSConfig's "
+            "five same-module classmethods. That is a real one-hop narrowing of "
+            "the static half, disclosed rather than absorbed: the five classmethods "
+            "are now two hops out and invisible to it. The runtime half is "
+            "unaffected and still catches the read -- SQL_SIGNATURES' "
+            "proxy_settings_group matches it on every drive. `pr` stays 2b-1: the "
+            "PR that CLEARED this read is unchanged, only the path it travels is, "
+            "and AllowlistShapeTests' own regex admits no 2d value."
+        ),
         closed_by="As the client_manager.py entry above.",
     ),
     EdgeEntry(
@@ -626,17 +625,19 @@ SQL_SIGNATURES = (
         # should not have).
         params_fragment="'proxy_settings'",
         table_model="core.CoreSettings",
-        # NOT marked exercised: config_helper.py:50's TSConfig.get_proxy_
+        # NOT marked exercised: apps/proxy/config_helper.py:66's TSConfig.get_proxy_
         # settings sits behind a 10-second process-local cache whose
         # warm/cold state depends on what ran earlier in the same test
         # process -- this programme has already measured flapping regions
         # from exactly this kind of state and Task 4 Step 3 says mark
         # exercised_by only where a drive makes the read deterministic.
         # Present so a cache-cold run does not fail with "no allowlisted
-        # signature" for an already-allowlisted SITE (config_helper.py:50).
+        # signature" for a read that left scope 1 at stage 2d-1
+        # (apps/proxy/config_helper.py:66) and is now covered by the
+        # runtime half alone.
         exercised_by="",
         reason=(
-            "config_helper.py:50's TSConfig.get_proxy_settings() reads "
+            "apps/proxy/config_helper.py:66's TSConfig.get_proxy_settings() reads "
             "this group through a 10-second process-local cache; whether "
             "it fires on a given run depends on cache state this guard "
             "does not control, so it is recorded but not required. "
@@ -662,14 +663,14 @@ INLINE_AUTHORIZE_SIGNATURES = (
         # Q5 (review round): SQL_SIGNATURES' proxy_settings_group is not
         # eligible on this list -- the untrusted drive also tunes (it
         # runs channel.get_stream_profile() etc. exactly as a trusted
-        # tune does), so config_helper.py:50's TSConfig.get_proxy_
+        # tune does), so apps/proxy/config_helper.py:66's TSConfig.get_proxy_
         # settings() could equally fire here on a cache-cold run. Not
         # marked exercised for the same reason as the SQL_SIGNATURES
         # entry: whether it fires depends on cache state this guard does
         # not control.
         exercised_by="",
         reason=(
-            "As SQL_SIGNATURES' proxy_settings_group: config_helper.py:50's "
+            "As SQL_SIGNATURES' proxy_settings_group: apps/proxy/config_helper.py:66's "
             "TSConfig.get_proxy_settings() reads this group through a "
             "10-second process-local cache, reachable from the untrusted "
             "tune's own channel-setup path exactly as from a trusted one."
