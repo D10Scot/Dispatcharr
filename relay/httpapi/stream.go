@@ -248,6 +248,14 @@ func StreamHandler(deps StreamDeps) http.HandlerFunc {
 		}
 		defer release()
 
+		// Created here, before the format branch, so stopContext (below) can
+		// force a blocked Write to return when an admin stops this client --
+		// #318. It wraps w, not a connection of its own, so creating it this
+		// early has no effect until one of its methods is actually called,
+		// and the TS branch below reuses this same value rather than making
+		// a second one.
+		rc := http.NewResponseController(w)
+
 		// From here down the request's context also ends when an admin
 		// stops THIS client: DELETE /proxy/relay/channels/<id>/clients/<cid>
 		// closes the signal Channel.StopClient owns, which is the in-memory
@@ -256,7 +264,7 @@ func StreamHandler(deps StreamDeps) http.HandlerFunc {
 		// to the request rather than to one call so both output formats
 		// inherit it -- one mechanism, and neither loop can be the one that
 		// forgot.
-		stopCtx, stopCancel := stopContext(r.Context(), client)
+		stopCtx, stopCancel := stopContext(r.Context(), client, rc)
 		defer stopCancel()
 		r = r.WithContext(stopCtx)
 
@@ -284,7 +292,6 @@ func StreamHandler(deps StreamDeps) http.HandlerFunc {
 		w.Header().Set("Content-Type", "video/mp2t")
 		w.Header().Set("Cache-Control", "no-cache")
 		w.WriteHeader(http.StatusOK)
-		rc := http.NewResponseController(w)
 		if err := rc.Flush(); err != nil {
 			return
 		}
@@ -433,8 +440,65 @@ func identify(r *http.Request, secret string, now func() time.Time, decision *co
 //
 // A goroutine rather than context.AfterFunc because the trigger is a channel
 // close, not a parent context; it returns as soon as either side fires, and
-// the caller's deferred cancel guarantees the second one always does.
-func stopContext(parent context.Context, client *channel.Client) (context.Context, context.CancelFunc) {
+// the caller's deferred cancel guarantees the second one always does -- and,
+// since the #318 fix round, guarantees the goroutine has ALREADY returned by
+// the time the deferred cancel itself returns (see below).
+//
+// #318: CANCELLING ctx IS NOT ENOUGH BY ITSELF. serveClient and
+// serveFMP4Client check ctx.Err() only between writes, at the top of their
+// loop, so a client whose w.Write is ALREADY BLOCKED in the kernel -- its own
+// TCP receive window full because it stopped reading, indistinguishable from
+// the admin's side from an ordinary slow viewer -- never gets back to that
+// check: cancelling ctx does nothing to a syscall already in flight. Caught
+// under host load with a goroutine dump (control_test.go's own repro, later
+// made deterministic by TestStoppingAClientBlockedInAWriteRemovesItFromTheRegistry):
+// the stuck stack is serveClient -> writeChunks -> (*http.response).Write ->
+// net.(*conn).Write -> IO wait, unmoved by stopCancel firing below.
+//
+// A PAUSED-BUT-CONNECTED PEER BLOCKS THE WRITE FOREVER, not merely for a
+// while: once its receive window closes, TCP falls back to zero-window
+// persist probes and the write stays parked until the peer either reads
+// again or the connection is torn down from this end -- there is no
+// retransmission timeout to fall back on, because nothing is being
+// retransmitted. A peer that has actually vanished (network path gone, box
+// powered off) is the bounded case, and even that is minutes, not the
+// handful of seconds an admin action should take.
+//
+// rc.SetWriteDeadline is what actually unblocks it, and the correct
+// attribution for that mechanism is net/http's OWN Server.WriteTimeout
+// (server.go's readRequest, which calls the identical
+// c.rwc.SetWriteDeadline(time.Now().Add(d)) before serving a request) --
+// NOT IdleTimeout, which only ever sets a READ deadline for the gap between
+// requests on a keep-alive connection and has no access to a write already
+// in progress. What we're doing here is that same primitive, WriteTimeout's
+// SetWriteDeadline, used as a one-shot fired by the stop signal rather than
+// as a blanket policy: (*http.response).SetWriteDeadline forwards straight
+// to the underlying net.Conn, and a deadline set on a net.Conn from another
+// goroutine applies to a write already in progress, not only to the next
+// one. Scoped to the stop signal alone, never set unconditionally: this
+// process deliberately carries no server-wide WriteTimeout (main.go),
+// because serving a long-lived stream with no deadline is why it exists.
+//
+// THE WATCHER MUST FINISH INSIDE ServeHTTP, or it can poison the next
+// request on a reused connection. net/http clears any write deadline once
+// the handler returns (finishRequest's own c.rwc.SetWriteDeadline(time.Time{}),
+// server.go) -- so a watcher that is still deciding whether to call
+// SetWriteDeadline(time.Now()) when close(cl.stop) and the handler's own
+// return land together could fire AFTER that reset, on the now-idle
+// keep-alive connection, and the next request reads a deadline that has
+// already passed. A Go client transparently retries a request that fails
+// this way; a media player would not. `done` is what rules it out: the
+// returned CancelFunc cancels ctx and then blocks on `done`, so by the time
+// it returns, this goroutine has necessarily already taken its branch and
+// exited -- no deadlock, because cancelling ctx is exactly what makes the
+// `<-ctx.Done()` arm ready if `<-stop` did not already fire.
+//
+// THE SAME SHAPE OF DEFECT EXISTS IN THE PYTHON RELAY, unfixed here (D10):
+// output/ts/generator.py polls the stop key between yields (:307-318) while
+// uWSGI performs the write beneath it, so a greenlet parked in a blocked
+// write reaches the next poll no sooner than this loop reaches ctx.Err() --
+// the same race, one level up the stack. Left as a follow-up.
+func stopContext(parent context.Context, client *channel.Client, rc *http.ResponseController) (context.Context, context.CancelFunc) {
 	stop := client.Stopped()
 	if stop == nil {
 		// A client that never reached the registry cannot be stopped by id,
@@ -442,14 +506,27 @@ func stopContext(parent context.Context, client *channel.Client) (context.Contex
 		return parent, func() {}
 	}
 	ctx, cancel := context.WithCancel(parent)
+	done := make(chan struct{})
 	go func() {
+		defer close(done)
 		select {
 		case <-stop:
+			// Unstick a Write already blocked on this client's connection
+			// -- and refuse any future one -- rather than leave the serving
+			// goroutine parked until the peer reads again or the OS gives
+			// up on it. The error is ignored deliberately: a ResponseWriter
+			// that cannot honour a deadline (never true for the real
+			// server; only for a test double with no net.Conn underneath)
+			// leaves cancel() below to do what it always did.
+			_ = rc.SetWriteDeadline(time.Now())
 			cancel()
 		case <-ctx.Done():
 		}
 	}()
-	return ctx, cancel
+	return ctx, func() {
+		cancel()
+		<-done
+	}
 }
 
 // ErrOutputProfileMalformed is an X-Relay-Output that is not a positive

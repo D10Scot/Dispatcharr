@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -279,6 +281,152 @@ func TestDeletingOneClientDisconnectsItAndLeavesTheOtherStreaming(t *testing.T) 
 	if body := decodeObject(t, raw); body["status"] != "error" {
 		t.Errorf("an unknown channel answered %s, want the error shape", raw)
 	}
+}
+
+// parkedWriters reports how many goroutines are currently ACTUALLY PARKED
+// inside a writeChunks socket write, and a sample stack from one of them.
+//
+// THIS IS THE SECOND FORM, TIGHTENED IN THE #318 FIX ROUND: the first form
+// matched only on frame names (httpapi.writeChunks plus net.(*conn).Write or
+// poll.(*FD).Write) and was HOLLOW UNDER LOAD -- a review round measured it
+// at 28/40 red against the unfixed tree with 12 FALSE GREEN under 28 CPU
+// spinners on 14 cores, independently reproduced here (2/40 false green on a
+// smaller run). The cause: those frames are also on the stack of a goroutine
+// that syscall.Write has already WOKEN and is about to retry or complete --
+// runtime.Stack reports it "[runnable]", not "[IO wait]" -- so under
+// scheduler contention the precondition wait can observe a goroutine that
+// merely PASSED THROUGH the write path a moment ago, issue the DELETE, and
+// have it succeed on a still-unfixed tree exactly as the old, load-dependent
+// test did. Requiring internal/poll.runtime_pollWait on the stack closes
+// this: that frame is present only while the goroutine is genuinely blocked
+// in the netpoller waiting for the socket to become writable, and absent
+// the instant it is runnable again (still a FRAME name, so this keeps this
+// package's stated preference for frame names over goroutine state text,
+// which is a runtime implementation detail).
+//
+// REQUIRING AT LEAST TWO also closes a second hole: a detector that reports
+// on the FIRST match cannot tell client-a's parked writer from client-b's,
+// so a run where only one of the two ever gets to writeChunks before the
+// DELETE (client-b usually lags client-a slightly, since it tunes second)
+// could pass the precondition on the wrong client's goroutine. With exactly
+// two clients tuned and both never reading past their first packet, "at
+// least two parked" can only be true when BOTH are parked, and client-a's is
+// therefore necessarily among them -- true rather than merely probable.
+func parkedWriters() (n int, sample string) {
+	buf := make([]byte, 1<<22)
+	buf = buf[:runtime.Stack(buf, true)]
+	for _, g := range strings.Split(string(buf), "\n\ngoroutine ") {
+		if !strings.Contains(g, "httpapi.writeChunks") {
+			continue
+		}
+		if !strings.Contains(g, "internal/poll.runtime_pollWait") {
+			continue
+		}
+		n++
+		if sample == "" {
+			sample = g
+		}
+	}
+	return n, sample
+}
+
+// TestStoppingAClientBlockedInAWriteRemovesItFromTheRegistry is #318's pin.
+//
+// TestDeletingOneClientDisconnectsItAndLeavesTheOtherStreaming (above) only
+// reddens under host load, and rarely (measured ~5.7%, 4/70 runs) -- a
+// lottery ticket, not a pin, because it races the DELETE against the write
+// filling client-a's socket buffer rather than waiting for that precondition.
+// This test removes the race: it polls a goroutine dump until BOTH clients'
+// serving goroutines are ACTUALLY parked inside the write syscall (client-a
+// and client-b never read past their first packet each, so the rig's
+// unthrottled fixture floods both connections' send buffers within tens of
+// milliseconds -- fanRig uses relaytest.Config{}, which has no Rate and so
+// no pacing), fails loudly if that never happens within five seconds (the
+// precondition is itself part of what #318 claims: an unreachable
+// precondition means the mechanism was never exercised and this run proves
+// nothing about it), and only THEN issues the admin DELETE for client-a.
+// Unfixed, this reddens every run, with zero false greens; fixed, it is
+// green every run, including under the same load -- confirmed all three
+// ways (parkedWriters's own doc comment has the measurements) before this
+// test shipped in its tightened form.
+func TestStoppingAClientBlockedInAWriteRemovesItFromTheRegistry(t *testing.T) {
+	r := fanRig(t, relaytest.Config{}, nil)
+	first := r.tuneAs(t, "c-blocked-write", "client-a")
+	defer func() { _ = first.Body.Close() }()
+	second := r.tuneAs(t, "c-blocked-write", "client-b")
+	defer func() { _ = second.Body.Close() }()
+	packetRun(t, "client-a", first.Body, 1)
+	packetRun(t, "client-b", second.Body, 1)
+	waitFor(t, "both clients to register", 15*time.Second, func() bool {
+		ch := r.Manager.Get("c-blocked-write")
+		return ch != nil && ch.Clients() == 2
+	})
+
+	// Neither client reads again from here. Wait for the precondition
+	// itself -- BOTH serving goroutines actually parked in the write
+	// syscall, per parkedWriters's doc comment -- rather than for a fixed
+	// sleep: that is what turns this from a race into a pin, and requiring
+	// both (not just one) is what makes "client-a's goroutine" a guarantee
+	// rather than a probability.
+	var n int
+	var sample string
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if n, sample = parkedWriters(); n >= 2 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if n < 2 {
+		// Explicit here too, not just deferred: on an unfixed tree that
+		// never reaches this branch there is nothing to leak, but a
+		// harness change that broke the precondition without breaking the
+		// fix should not also hang the rest of the package's run.
+		_ = first.Body.Close()
+		_ = second.Body.Close()
+		t.Fatalf("PRECONDITION UNREACHABLE: only %d serving goroutine(s) parked in a write after "+
+			"5s, want 2 -- #318's mechanism was never exercised, so this run proves nothing", n)
+	}
+	t.Logf("both serving goroutines parked in a write; one sample:\n%s", sample)
+
+	started := time.Now()
+	status, raw := r.internalCall(t, http.MethodDelete, "/proxy/relay/channels/c-blocked-write/clients/client-a", nil)
+	if status != http.StatusOK {
+		_ = first.Body.Close()
+		_ = second.Body.Close()
+		t.Fatalf("the client DELETE answered %d: %s", status, raw)
+	}
+
+	dropped := false
+	for time.Since(started) < 5*time.Second {
+		if ch := r.Manager.Get("c-blocked-write"); ch != nil && ch.Clients() == 1 {
+			dropped = true
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !dropped {
+		// Close the bodies HERE, in the failure path, rather than counting
+		// on the deferred close at the end of the test function: on an
+		// unfixed tree this goroutine is the whole point of the test, and
+		// the rig's own httptest.Server.Close() (via t.Cleanup) blocks
+		// until every in-flight handler returns -- leaving it parked into
+		// the rest of the package's run would turn one red test into a
+		// hung test binary. Closing the response bodies here (this drops
+		// the underlying connections, which the still-unfixed handler
+		// eventually notices as a write error) is what keeps a genuine
+		// regression a clean, fast failure instead of a CI timeout.
+		n2, s2 := parkedWriters()
+		_ = first.Body.Close()
+		_ = second.Body.Close()
+		t.Fatalf("REPRODUCED #318: client-a was still in the registry %s after the DELETE, "+
+			"with %d serving goroutine(s) still parked\n%s", time.Since(started), n2, s2)
+	}
+	t.Logf("client-a left the registry %v after the DELETE", time.Since(started))
+
+	// The other client is still being served, exactly as the sibling test
+	// above asserts -- the fix must not disturb it.
+	packetRun(t, "client-b", second.Body, 1)
 }
 
 // ROW 18, answered for the Go relay: the names come OFF THE WIRE, and when
