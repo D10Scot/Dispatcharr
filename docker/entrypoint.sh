@@ -229,6 +229,10 @@ export DISPATCHARR_API_HARAKIRI=${DISPATCHARR_API_HARAKIRI:-120}
 export DISPATCHARR_API_MAX_REQUESTS=${DISPATCHARR_API_MAX_REQUESTS:-5000}
 export DISPATCHARR_RELAY_GEVENT=${DISPATCHARR_RELAY_GEVENT:-1600}
 export DISPATCHARR_RELAY_PORT=${DISPATCHARR_RELAY_PORT:-5657}
+# Not a uWSGI $(VAR): relay-go reads it directly (relay/config/config.go),
+# docker/healthcheck.sh probes it, and 03-init-dispatcharr.sh seds the nginx
+# upstream from it. Exported here so all three see one value.
+export DISPATCHARR_RELAY_GO_PORT=${DISPATCHARR_RELAY_GO_PORT:-5658}
 
 # Translate Dispatcharr POSTGRES_SSL_* env vars into libpq-recognized PGSSL*
 # env vars. Called once before any external PostgreSQL connection; all child
