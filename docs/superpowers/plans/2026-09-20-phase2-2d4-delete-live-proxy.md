@@ -25,9 +25,12 @@ every Playwright project plus both bash suites in `lifecycle-tests.yml`, bypassi
 
 ## THIS PLAN MUST BE RE-SEEDED BEFORE IT IS IMPLEMENTED
 
-**Seed as written: the squash-merge of #327 (`migration/phase2d-admin-wrappers`), tree-identical to
-`dbe56e745cb418c91c52f98fc1b016ced0d02bc4`.** Every `file:line`, every count and every appendix in
-this plan was opened and measured at that tree.
+**Seed as written: `e1a7b91f1f66bf8d79b0bd21afdbc1675fc0c464`** — the squash-merge of #327
+(`migration/phase2d-admin-wrappers`), now on `main`. Every `file:line`, every count and every
+appendix in this plan was opened and measured at that tree. The plan was written before #327 merged
+and measured against its branch head `dbe56e74`; the two are the **same tree object**
+(`ea83ea94342a407bbed3a5ef6c731a357d3d3199`, and `git diff --stat dbe56e74 e1a7b91f` is empty), so
+nothing measured at `dbe56e74` needs re-deriving for the swap — only 2d-3's merge does, below.
 
 **2d-3 (`migration/phase2d-nginx-flip`, plan `docs/superpowers/plans/2026-09-19-phase2-2d3-nginx-flip.md`)
 merges before this PR is implemented.** It touches fourteen paths, four of which this PR also
@@ -752,7 +755,7 @@ diffing against the committed `scripts/coverage_relay_go.floor.packages`.
 
 `apps/proxy/live_proxy/tests/test_relay_differential.py` is inside the deleted directory, and
 A9.6 and PR #317 both record it as a legitimate 2d deletion. The mechanical consequence A10.7 names,
-verified at this seed with **no line drift from `1326de3e`** (`git diff --name-only 1326de3e dbe56e74`
+verified at this seed with **no line drift from `1326de3e`** (`git diff --name-only 1326de3e e1a7b91f`
 touches neither workflow):
 
 | Edit | Line(s) at the seed |
@@ -1027,6 +1030,16 @@ test_internal_base_url}.py`;
       `git log --oneline -1` and `git status --porcelain`. The head must be the merge of
       **2d-3** (`migration/phase2d-nginx-flip`), and `git status` must be empty. If 2d-3 has not
       merged, STOP: this plan's Task 0 Steps 6–9 are written against its tree.
+      **2d-3 is being implemented now** and merges before this PR is. Its merge is the ONLY thing
+      between this plan's seed and the tree you are about to edit: #327 has merged as
+      `e1a7b91f1f66bf8d79b0bd21afdbc1675fc0c464`, which is this plan's seed, so
+      ```
+      git diff --stat e1a7b91f HEAD
+      ```
+      must name **only** the fourteen paths 2d-3's own File structure lists. Anything else is a
+      commit this plan has not seen — STOP and report it. The re-seed table above says which of
+      this plan's figures that merge is expected to move (line numbers in `CLAUDE.md`, the spec and
+      `e2e/COVERAGE.md`, and nothing else); Steps 6–9 re-derive them by content.
 - [ ] **Step 2 — the package is still whole.**
       `find apps/proxy/live_proxy -type f | wc -l` → **101**;
       `find apps/proxy/live_proxy -name '*.py' | wc -l` → **96**;
@@ -5558,7 +5571,7 @@ S=/private/tmp/claude-501/-Users-dion-git-Dispatcharr/58c32b58-c2f1-479a-a5cb-62
 A=$S/final
 R=/Users/dion/git/Dispatcharr
 W=$R/.worktrees/plan2d4-replay
-SEED=dbe56e745cb418c91c52f98fc1b016ced0d02bc4
+SEED=e1a7b91f1f66bf8d79b0bd21afdbc1675fc0c464
 
 git -C "$R" worktree remove "$W" --force >/dev/null 2>&1 || true
 git -C "$R" worktree add "$W" "$SEED" --detach >/dev/null
