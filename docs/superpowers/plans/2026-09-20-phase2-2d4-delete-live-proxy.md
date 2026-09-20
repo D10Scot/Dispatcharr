@@ -401,8 +401,13 @@ gone). Every DELETE names its Go cover or says there is none.
 | 17 | `apps/proxy/tests/test_internal_base_url.py` | 8 | proxy | **REWRITE**, 1 test + 1 rename | **Found by executing the plan**, same blind spot: it pins `get_relay_control_base_url()` at `http://127.0.0.1:5656` in dev, which is exactly the property R1's `dev_url` change breaks. `test_dev_is_the_single_runserver_process` becomes `test_dev_names_the_go_relay_in_one_direction_and_django_in_the_other` and asserts **both** directions — the better pin, since the half a careless edit breaks silently is `control_plane`'s. Its sibling `…_share_one_address_and_differ_only_in_override` is renamed `…_outside_dev_and_…`, because that is now what it asserts. |
 | 15 | `core/tests/test_fetch_channel_stats.py` | 4 | core | **KEEP**, one test's docstring | Three tests are untouched. `test_core_tasks_no_longer_imports_a_relay_module_at_module_level` stays **green** but becomes tautological — it asserts the absence of a module that no longer exists anywhere. Kept, with one sentence added to its docstring saying so, because deleting it would remove the only guard against `core/tasks.py` growing a module-level relay import again, and `apps.proxy.relay_client` (which it must *not* import at module level, for the reason `:5-7` gives) is still a module it could import. |
 
-**Net: 5 files deleted whole, 5 split, 6 kept by re-pointing, 1 rewritten** (the two extra
-deletes are the addendum's). Test-count effect,
+**Net: 5 deleted whole, 5 split, 5 kept, 2 rewritten** — the four labels in the table above,
+counted. Two of those five keeps are worth naming because the bucket is not uniform: rows 1, 2, 3
+and 13 are kept by **re-pointing an import or a patch string**, while row 15
+(`core/tests/test_fetch_channel_stats.py`) is kept by adding **one docstring sentence** and has
+nothing to re-point. The two rewrites are rows 14 and 17, both of which change assertions rather
+than imports. (An earlier draft said "6 kept by re-pointing, 1 rewritten", which matched neither
+the table's labels nor row 15's actual edit.) Test-count effect,
 measured by counting `def test_` in each deleted region:
 
 | Label | Removed | Added | Net |
@@ -1658,9 +1663,12 @@ everything that pointed at it.
   `ProxyServer.worker_id` returned. The four response bodies are unchanged.
 - **#190's five metadata-hash ranges deleted** from `apps/channels/models.py`, with a new test for
   the behaviour that changes — because nothing in the tree observed it in either direction.
-- **Fifteen test files disposed of** per-file: 3 deleted whole, 5 split, 6 kept by re-pointing an
-  import, 1 rewritten. Every delete names the Go test that covers the same behaviour or says
-  plainly that none exists.
+- **Seventeen test files disposed of** per-file: 5 deleted whole, 5 split, 5 kept (four by
+  re-pointing an import, one by a docstring), 2 rewritten. Every delete names the Go test that
+  covers the same behaviour or says plainly that none exists. **Two of the seventeen name
+  `live_proxy` nowhere** and are broken by this PR's own rulings rather than by the directory's
+  absence — `test_relay_control_api.py` (it imports `relay_views`) and `test_internal_base_url.py`
+  (it pins the dev address). Only executing the plan found them.
 - **The parity matrix's Python column replaced** with Go citations, and rows 26/27 given a
   `retired:` Source sentinel the guard learns to read — backed by a `RETIRED_SOURCES` allowlist
   compared with `toEqual`, in `WHITE_BOX_ONLY`'s idiom.
@@ -5393,7 +5401,8 @@ silently is `control_plane`'s). **The generalisable lesson**: a deletion's blast
 that name the deleted thing PLUS the files that name anything else the deletion forces you to
 remove, and only executing the plan finds the second set.
 
-**A14.4 — the disposition is 5 deleted whole, 5 split, 6 kept by re-pointing, 1 rewritten**, and
+**A14.4 — the disposition is 5 deleted whole, 5 split, 5 kept (four by re-pointing an import, one
+by a docstring) and 2 rewritten**, and
 every delete names its Go cover or says plainly there is none. Behaviours with no cover on either
 side after this PR, recorded as gaps rather than claimed: the non-owner keepalive branch,
 `_do_stats_update`'s WebSocket fan-out, `remove_client`'s non-blocking latency,
@@ -5488,8 +5497,8 @@ DONE_LOG_ROW = """- **2d-4** (`migration/phase2d-delete-live-proxy`) — deleted
   recomputed `worker_id` locally; deleted #190's five metadata-hash ranges with a break-check for
   the behaviour they changed; kept the live URL patterns, pointed at a new `apps/proxy/stream_routes.py`,
   because the authorize hop resolves the tune URI through Django's own urlconf and deleting them
-  403s every live tune behind nginx; disposed of seventeen outside test files (5 deleted, 5 split,
-  6 re-pointed, 1 rewritten); replaced the parity matrix's Python column with Go citations and gave
+  403s every live tune behind nginx; disposed of seventeen outside test files (5 deleted whole, 5 split,
+  5 kept, 2 rewritten); replaced the parity matrix's Python column with Go citations and gave
   rows 26/27 a guard-checked `retired:` sentinel; moved the ffmpeg stderr corpus into
   `relay/internal/relaytest/testdata/`; deleted `go-tests.yml`'s `differential` job; took the label
   count 16 → 15 and Gate 2's module list 38 → 9 with a `--shape-only` re-baseline that leaves
