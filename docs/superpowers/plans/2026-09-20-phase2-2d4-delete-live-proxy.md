@@ -1862,6 +1862,17 @@ So the published text is what was tested, not a description of it. (Task 1 Step 
 edits — `CAPTURE.md`'s and `capture_ffmpeg_stderr.py`'s path mentions — are replayed by copy, since
 `CAPTURE.md` is a `git mv` in the same task and a diff over it would fight the rename.)
 
+**This replay proof was taken at the implementation's first commit, `5604d41b`, before two rounds
+of post-review fixes landed on top of it (`99aa6338`, and this commit).** Five appendices carry
+fix-round content the proof above never saw: **K** (CLAUDE.md) and **N** (the spec) had a further
+edit appended to their own scripts and are still independently verified byte-identical to the
+final files by their own fresh replays (Task 12's re-run, documented at each fix); **D.1**, **C.3**
+and **A.2** are diff-based and therefore carry a prose "amended in a post-review fix round" note
+beside the unmodified original diff rather than a rewritten hunk, since the diff itself is the
+historical record of what its Task actually committed. The 28-appendix, IDENTICAL replay above is
+still true of `5604d41b`; it is not re-run against the fixed-up tree, and this paragraph is what
+stands in for that second proof.
+
 **What was run against the composed tree.** All fifteen labels green, **2,083 tests**:
 
 | Label | Tests | | Label | Tests |
@@ -2695,6 +2706,13 @@ index 175b5dc1..d4b98e43 100644
 
 Five tests, including the one that pins the direction a careless edit breaks silently.
 
+**Amended in a post-review fix round (round 2, N1), on top of this diff rather than inside it,
+since Task 4 already committed this exact text.** Deleting `LiveProxyAppsReadyTests` left four
+consecutive blank lines between `ConfigHelperDefaultLadderTests` and
+`UserCanAccessChannelAdminBypassTests` — an artefact this diff itself carries, since the repo runs
+no Python formatter or linter to catch it. The fix round trims it to the two blank lines every
+other class boundary in the file uses.
+
 ```diff
 diff --git a/apps/proxy/tests/test_boundary_error_arms.py b/apps/proxy/tests/test_boundary_error_arms.py
 index e730941a..08a42271 100644
@@ -3228,6 +3246,16 @@ index b9c42e41..11bddcd4 100644
 `test_get_stream_assignment.py` (M.2) and `test_boundary_error_arms.py` (C.3) are NOT here:
 the set is disjoint by file. `test_urls_xc_three_segment.py` keeps all five assertions and
 takes a docstring paragraph — an earlier draft rewrote it, which R6's reversal undoes.
+
+**Amended in a post-review fix round (round 1, F5), on top of this diff rather than inside it,
+since Task 7 already committed this exact text.** `test_ts_proxy_keepalive.py`'s split below keeps
+`KeepaliveTimingTests` untouched and deletes the seventeen tests around it — this diff's own hunk
+is `@@ -18,290 +18,9 @@`, so the module docstring and four now-unused imports (`threading`, `time`,
+`MagicMock`, `patch`) are context it never touches. The docstring went on advertising five
+coverages the file no longer has, and a dangling banner comment (`# _should_send_keepalive: owner
+worker path` with nothing under it) survived too. The fix round rewrites the docstring in
+`test_ts_proxy_initializing.py`'s own idiom below (what was here, what left, where the Go cover
+is) and drops the dead comment and imports.
 
 ```diff
 diff --git a/apps/channels/tests/test_channel_stream_reuse.py b/apps/channels/tests/test_channel_stream_reuse.py
