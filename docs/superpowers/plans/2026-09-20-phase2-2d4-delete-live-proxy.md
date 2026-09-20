@@ -1120,25 +1120,41 @@ This task is first because it is the only edit that makes the Go module depend o
       → no hits. The script itself needs **no** code change (it takes `out_dir` as `sys.argv[1]`)
       and **stays where it is**: `relay/channel/source_transcode_real_test.go:15`, `:38` and `:93`
       cite it at three live `file:line`s.
-- [ ] **Step 5 — run the Go module, all of it.** From `relay/`:
+- [ ] **Step 4 — run the Go module, all of it.** From `relay/`:
       ```
       go build ./... && go vet ./... && go test -race ./... && golangci-lint run ./...
       ```
       All four green. Then `GOOS=linux golangci-lint run ./...` — build-tagged files are invisible
       to a darwin-only lint pass.
-- [ ] **Step 6 — the break-check, RUN not read.** The relocation's whole risk is that a
-      package-relative path resolves against the **caller's** directory. Temporarily replace
-      `pkgDir()`'s body with `return "testdata"` (a cwd-relative string, i.e. the wrong answer) and
-      run `go test -race ./ffmpeg/ ./httpapi/ ./channel/`. Expect a panic from `corpus.go`'s read
-      site naming `testdata/ffmpeg_stderr/normal.stderr`:
-      `relaytest: reading the corpus: open testdata/ffmpeg_stderr/normal.stderr: no such file or directory`
-      — **and `go test ./internal/relaytest/` still PASSING**, because that package's own cwd is the
-      right one. Both halves matter: the second is why a bare relative string would have looked
-      correct in the one package a maintainer would test first. Revert.
-- [ ] **Step 7 — the stdlib-only and credential-logging assertions.**
+- [ ] **Step 5 — the break-check, RUN not read.** The relocation's whole risk is that a
+      package-relative path resolves against the **caller's** directory. Replace `pkgDir()`'s body
+      with a cwd-relative string — **but keep `runtime` used**, or the reversion does not compile
+      and proves nothing:
+      ```go
+      func pkgDir() string {
+          _, _, _, _ = runtime.Caller(0)   // keep the import live; A14.8 makes this the
+          return "testdata"                // module's ONLY runtime.Caller site, so dropping
+      }                                    // it orphans the import and every package fails
+      ```
+      (Without the blank use: `vet: internal/relaytest/corpus.go:9:2: "runtime" imported and not
+      used`, and `./ffmpeg`, `./httpapi` and `./channel` all report `[build failed]` — a compile
+      error, not the property under test. An earlier draft of this step said to delete the body
+      outright and would have produced exactly that.)
+
+      Then `go test -race ./ffmpeg/`. Expect, verbatim:
+      ```
+      panic: relaytest: reading the slow-trickle corpus: open testdata/testdata/ffmpeg_stderr/slow-trickle.stderr: no such file or directory
+      ```
+      **Note the doubled `testdata/testdata/`**: `CorpusPath` is
+      `filepath.Join(pkgDir(), "testdata", …)`, so substituting `"testdata"` for `pkgDir()`
+      prefixes rather than replaces — which is itself a reminder that the value must stay absolute.
+      Then `go test -race ./internal/relaytest/` → **`ok`**. Both halves matter: the second is why a
+      bare relative string would have looked correct in the one package a maintainer would test
+      first. Revert and `go build ./...`.
+- [ ] **Step 6 — the stdlib-only and credential-logging assertions.**
       `scripts/check_go_stdlib_only.sh relay` and `scripts/check_go_credential_logging.sh`, both
       clean, both from the repo root.
-- [ ] **Step 8 — the Go coverage gate does not move.** From the repo root,
+- [ ] **Step 7 — the Go coverage gate does not move.** From the repo root,
       `bash scripts/coverage_relay_go.sh --gate`. Expect exit 0 with `packages=0321b777fc5d`
       unchanged. If any shape hash moved, STOP: R12 says it cannot, and a move is a finding, not a
       floor to rewrite (Constraint 11).
@@ -1234,8 +1250,13 @@ test in `apps/proxy/tests/test_boundary_error_arms.py`. **Ruling:** R1.
 - [ ] **Step 1 — `git apply` Appendix M.1.** The five ranges and `models.py:7`'s now-unused
       `ChannelMetadataField` import.
 - [ ] **Step 2 — verify the import is genuinely unused before you trust the patch.**
-      `grep -n "ChannelMetadataField" apps/channels/models.py` → **zero** lines after the patch.
-      `grep -n "RedisKeys" apps/channels/models.py | wc -l` → **26**, unchanged: `:6` stays.
+      `grep -c "ChannelMetadataField" apps/channels/models.py` → **0** after the patch.
+      Then, for `RedisKeys`, check the **property** rather than a line count, because the count does
+      move: `grep -n "^from apps.proxy.redis_keys import RedisKeys" apps/channels/models.py` → line
+      **6**, still present, and `grep -c "RedisKeys" apps/channels/models.py` → **25**, down from
+      **31** at the seed (M.1 removes eight such lines and adds two). An earlier draft said "26,
+      unchanged" — 26 is CLAUDE.md's count of *sites that reach these keys*, a different
+      measurement, and it was never this file's line count.
 - [ ] **Step 3 — `git apply` Appendix M.2**: `MetadataOnlyReleaseTests`, two tests plus the
       `hdel` its fake Redis needs. They seed **only** the metadata hash and assert that
       `release_stream()` returns `False` without releasing a provider slot, and that the hash is
@@ -1350,7 +1371,7 @@ R7. **Rulings:** R7, R1.
       `:15` to `apps.proxy.live_proxy.config_helper` and run the label. Expect, **measured**:
       ```
       ERROR: apps.proxy.tests.test_boundary_error_arms (unittest.loader._FailedTest…)
-      ModuleNotFoundError: No module named 'apps.proxy.live_proxy'
+      ModuleNotFoundError: No module named 'apps.proxy.live_proxy.config_helper'
       Ran 363 tests in 1.372s
       FAILED (errors=1)
       ```
@@ -1391,8 +1412,9 @@ R7. **Rulings:** R7, R1.
 - [ ] **Step 7 — the break-check, RUN not read.** Delete the
       `("scripts/coverage_live_path", …)` alias entirely and run
       `python manage.py test --keepdb tests.test_ci_test_routing`. Expect
-      `test_coverage_gate_script_change_runs_its_own_two_labels` red with
-      `AssertionError: [] != {'apps.channels.tests', 'apps.proxy.tests'}`. Revert. This is the
+      `test_coverage_gate_script_change_runs_its_own_two_labels` red. The message is
+      `assertSetEqual`'s — `AssertionError: Items in the second set but not the first:` followed by
+      the two labels — not a bare `!=`. Revert. This is the
       PR #252 gap in its current form and the reason the alias must not simply be deleted along
       with its sibling.
 - [ ] **Step 8 — zizmor on both edited workflows.** At the version pinned in
@@ -1516,20 +1538,50 @@ R7. **Rulings:** R7, R1.
       replacements, each `assert count == 1`. It prints exactly `ok, 19 edits`. Verbatim-string
       replacement, not line-anchored hunks, because 2d-3 moved every line number in this file (see
       the re-seed table).
-- [ ] **Step 3 — verify by replacement count and by grep**, not by eye:
-      `grep -c "apps/proxy/live_proxy" CLAUDE.md` → **13** at the measured seed. The nineteen
-      replacements close every sentence this PR makes false; what remains describes deleted
-      behaviour in § Known defects and is 2d-6's. Record the count and the line numbers so 2d-6 has
-      its worklist. **Then grep for the two contradictions this PR would otherwise introduce** —
-      `grep -n "three .live_proxy/. re-export shims" CLAUDE.md` and
-      `grep -c "The \*\*differential\*\* job" CLAUDE.md` — both must be **zero**.
+- [ ] **Step 3 — verify by replacement count and by grep**, not by eye. **Two patterns, two
+      different numbers — do not conflate them**, which an earlier draft of this step did:
+      ```
+      grep -c "apps/proxy/live_proxy" CLAUDE.md   # -> 7   (full paths)
+      grep -c "live_proxy" CLAUDE.md              # -> 13  (paths + bare mentions + logger names)
+      ```
+      The nineteen replacements close every sentence this PR makes **false**; what remains describes
+      deleted behaviour in § Known defects, or names the `live_proxy` logger, and is 2d-6's. Record
+      both counts and the line numbers so 2d-6 has its worklist.
+- [ ] **Step 3b — the two contradictions this PR would otherwise introduce are gone.** Both must
+      print **0**:
+      ```
+      grep -c "and their three .live_proxy/. re-export shims" CLAUDE.md
+      grep -c "The \*\*differential\*\* job" CLAUDE.md
+      ```
+      **Note the first pattern carefully.** The clause to be rid of is § Test hooks' blocking
+      **list**, which named the shims as live. The bullet three lines below deliberately still says
+      "stage 2d-4 **deleted** the three `live_proxy/` re-export shims" — past tense, and the
+      correction itself — so a looser `grep -c "three .live_proxy/. re-export shims"` prints **1**
+      and would STOP a correct run on its own fix.
 - [ ] **Step 4 — run Appendix N's script** (the spec): Amendment **A14** (twelve items) inserted
       before `## Stage 2d` so it lands after A13, **four** in-place corrections, and the Done-log
       row. `assert count == 1` on all six anchors; it prints exactly `ok, 6 edits`.
-- [ ] **Step 5 — verify the spec carries no contradicting pair.** For each of A14's four
-      corrections, grep the spec for the OLD sentence's distinguishing phrase and expect **zero**
-      hits. The list is in Appendix N's preamble. A spec that carries both an old sentence and its
-      contradiction is the failure mode every amendment in this document is written to avoid.
+- [ ] **Step 5 — verify the spec carries no contradicting pair.** The requirement is that no old
+      sentence stands **unqualified** beside its contradiction — not that the old words vanish.
+      Appendix N corrects two of its four sites by **annotating in place**, which is the right idiom
+      for a document whose amendments are a change log, so the old phrase survives *inside* the
+      superseding sentence. The measured expectations, and each is a STOP if it differs:
+      ```
+      grep -c   "Deletable in 2d-4"                            # -> 0  (correction 1: replaced)
+      grep -c   "Re-scope Gate 2 to the ten"                   # -> 0  (correction 4: replaced)
+      grep -c   "Eleven across two labels by the time 2d-4"    # -> 1  (correction 2: annotated in
+                                                               #        place; the hit is INSIDE
+                                                               #        "Amendment A14.3 supersedes
+                                                               #        this count: SEVENTEEN…")
+      grep -ic  "ten survivors"                                # -> 5  (correction 3 annotates the
+                                                               #        DEFINITION at A10.4 with
+                                                               #        "(nine after A14.1)"; the
+                                                               #        four later uses inherit it)
+      ```
+      For the two annotated ones, read the hit rather than counting it: correction 2's must be
+      preceded by its superseding clause, and correction 3's definition site must carry the
+      parenthetical. A bare old sentence with no annotation **is** the failure mode every amendment
+      in this document is written to avoid.
 - [ ] **Step 6 — `python -m metrics.build --validate-only`** once more (Appendix N touches no
       `metrics/` path, but Task 11 did and this is the last chance to notice).
 
@@ -1550,8 +1602,13 @@ R7. **Rulings:** R7, R1.
       `npx playwright test --project=guards`. Both green, no container needed. The heavy projects
       run in CI; this PR touches no `e2e/` test file other than the guards' own source.
 - [ ] **Step 5 — `git diff --stat origin/main` names exactly the paths in § File structure**, and
-      no others. Count them and say the number in your report. Expect **155**: 106 deletions (97 in
-      the package, 9 standalone), 4 renames, 1 new file and 44 modifications.
+      no others. Count them and say the number in your report. Expect **154**, which is what
+      § File structure's own groups sum to: **106** deletions (97 in the package, 9 standalone),
+      **4** renames, **1** new file and **43** modifications (13 Python production + 12 tests +
+      3 Go + 8 routing/gates/CI + 7 guards/docs/metrics). Two of the 43 arrive late and are easy to
+      miss when counting early: `scripts/capture_ffmpeg_stderr.py` (Task 1 Step 3, a by-hand
+      docstring edit) and `scripts/coverage_live_path.floor.modules` (Task 9 Step 3, written by
+      `--write-floor --shape-only`).
 - [ ] **Step 6 — stage and commit in separate Bash calls**, message written with the Write tool and
       committed with `git commit -F <file>`. End it with the two attribution lines from
       brief-common rule 5.
@@ -1719,8 +1776,8 @@ caused by this plan rather than inherited. `iter_test_package_labels()` returns 
 - **e2e** — the gap the first draft could not close: `npm ci`, `npx tsc --noEmit` exit 0,
   `npx playwright test --project=guards` **18 passed**, with
   `parity matrix (Go): 28 of 28 pinned rows carry a Go reference; 2 row(s) are not pinnable.`
-- **Break-checks run**: the corpus's package-relative path (panics from three packages, passes in
-  `relaytest`'s own); the re-homed detail assertion (one struct tag); the `dev_url` reversion; the
+- **Break-checks run**: the corpus's package-relative path (Task 1 Step 5 — panics from the calling
+  packages, passes in `relaytest`'s own); the re-homed detail assertion (one struct tag); the `dev_url` reversion; the
   `_PATH_ALIASES` deletion; and the #190 reversion, which is quoted verbatim in R8 and Task 5.
 
 **What changed because the plan was executed, and could not have been found by reading it.**
@@ -5454,12 +5511,13 @@ def main():
     # --- correction 2: A10.14's count.
     sub(
         "(**Eleven across two labels by the time 2d-4",
-        " **Amendment A14.3 supersedes this count: FIFTEEN files across FOUR labels, and the "
+        " **Amendment A14.3 supersedes this count: SEVENTEEN files across FOUR labels, and the "
         "breakage has three kinds** — nine fail collection, four fail per-test at run time (two "
         "of them listed below as collection-breakers although their imports are function-local, "
         "and two not listed here at all), and two carry assertions that go false with no import "
         "or patch anywhere. The enumeration below counts import STATEMENTS, which is why it "
-        "misses the last six.** (**Eleven across two labels by the time 2d-4",
+        "misses the last six, and two more that name `live_proxy` nowhere at all.** "
+        "(**Eleven across two labels by the time 2d-4",
     )
 
     # --- correction 3: A10.4's "ten survivors".
