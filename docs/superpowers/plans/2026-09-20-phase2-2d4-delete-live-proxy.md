@@ -1068,14 +1068,26 @@ test_internal_base_url}.py`;
       appendices — so `git apply` cannot conflict whichever order they run in, and this check is
       therefore complete rather than indicative. Any failure is a STOP: it means the re-seed moved
       a file an appendix was generated against.
-- [ ] **Step 4 — the nine module-level import sites.**
+- [ ] **Step 4 — the module-level import lines.**
       ```
       grep -rn "live_proxy" --include='*.py' apps dispatcharr core scripts metrics tests \
         | grep -v "^apps/proxy/live_proxy/" | grep -cE "^[^:]+:[0-9]+:(from|import) "
       ```
-      Expect **12** (the nine A10.3 names minus the three 2d-1 closed, plus the three
-      function-local `url_utils` importers and `ts_admin_views`' two). Appendix A's per-file table
-      is the authority; this is the cheap cross-check.
+      **Corrected in execution (Amendment): expect 29, not 12.** The command counts every
+      non-indented `live_proxy` import LINE outside the package, across both production and test
+      files — it does not distinguish A10.3's function-local production sites (which do not match
+      this pattern at all, being indented) from R7's nine module-level-breaking test files. Measured
+      at this seed: **24** lines across exactly R7's nine files
+      (`test_relay_status_shape.py`×2, `test_combined_stats.py`×1, `test_stream_switch.py`×5,
+      `test_boundary_error_arms.py`×1, `test_ts_proxy_teardown.py`×6, `test_get_stream_assignment.py`×2,
+      `test_ts_proxy_initializing.py`×3, `test_channel_stream_reuse.py`×1,
+      `test_ts_proxy_ghost_clients.py`×3) plus **5** production lines
+      (`apps/proxy/tasks.py`×1, `apps/proxy/relay_views.py`×3, `dispatcharr/urls.py`×1) = **29**.
+      The original "12" and its derivation described a different quantity (A10.3's reverse-import
+      *sites*, mostly function-local and therefore invisible to this exact grep) and never matched
+      what the command measures; R7's table, not a separate "Appendix A", is the per-file authority.
+      A count other than 29 here is the STOP condition — it means a `live_proxy` import line exists
+      outside the nine R7 files and the three named production sites.
 - [ ] **Step 5 — the two coverage floors.**
       `grep -E "^(modules|module_count|rcfile|missing|statements)=" scripts/coverage_live_path.floor`
       → `modules=8cb5c65dac3e`, `module_count=38`, `rcfile=3af0a78b9b6f`, `missing=1525`,
@@ -1246,8 +1258,20 @@ test in `apps/proxy/tests/test_boundary_error_arms.py`. **Ruling:** R1.
       variable and falls back; the operator override still wins; and
       `get_control_plane_base_url()`'s dev branch is **still** 5656, which is the half a careless
       edit would break silently.
-- [ ] **Step 6 — run `apps.proxy.tests`.** `^OK`. It is still collectable at this point because
-      Task 7 has not run: `test_boundary_error_arms.py:15` still imports the shim.
+- [ ] **Step 6 — run `apps.proxy.tests`.** **Corrected in execution (Amendment): expect
+      `FAILED (failures=1, errors=1)` here, not `^OK`, and this is not a STOP.** Task 4's own
+      rulings (R1, R1's `dev_url`) are exactly what R7 rows 16 and 17 say break "by this plan's own
+      rulings rather than by the directory's absence" — and both rows' fixes are Task 7's, not
+      Task 4's, so the tree is genuinely red between here and Task 7 Step 3/Step 2. Measured:
+      `ERROR: apps.proxy.tests.test_relay_control_api … ImportError: cannot import name
+      'relay_views' from 'apps.proxy'` (R7 #16 — this file is not disposed of until Task 7 Step 2)
+      and `FAIL: test_dev_is_the_single_runserver_process …
+      AssertionError: 'http://127.0.0.1:5658' != 'http://127.0.0.1:5656'` (R7 #17 — this file is not
+      rewritten until Task 7 Step 3's Appendix A.2). 403 of 428 tests collected and run; the other
+      25 are `test_relay_control_api.py`'s. Confirm no OTHER test is red — a third failure here
+      would be a real finding. `test_boundary_error_arms.py:15` is still collectable, as stated
+      (that one is unaffected: it imports the surviving `apps.proxy.live_proxy.config_helper` shim,
+      not `relay_views` or the dev-address function this task changed).
 - [ ] **Step 7 — the break-check, RUN not read.** Revert `relay_client.py`'s `dev_url=` argument
       (so both directions resolve to 5656 again) and re-run. Expect the new
       `test_the_dev_branch_reaches_the_go_relay_not_the_api` red with
@@ -1378,7 +1402,22 @@ R7. **Rulings:** R7, R1.
       Both green. **The second is not redundant**: A11.8 measured that `DISPATCHARR_ROLE` appears in
       no Python file in the tree, so "check in every role" is one check — what the pair covers is
       `check` plus a command that drives the **migration loader**, which is the boot trap's victim.
-- [ ] **Step 6 — the whole backend suite, label by label.** Run all **15**. Every one `^OK`. Then
+- [ ] **Step 6 — the whole backend suite, label by label.** Run all **15**.
+      **Corrected in execution (Amendment): `tests` is NOT `^OK` here, and this is not a STOP.**
+      Appendix I.1 (`dispatcharr/test_discovery.py`'s `_PATH_ALIASES` and
+      `tests/test_ci_test_routing.py` itself) is Task 8's, not Task 7's, so the two tests that
+      assert the now-removed `apps/proxy/live_proxy/` alias are still red until then. Measured:
+      `FAILED (failures=2)`, `Ran 159 tests` —
+      `test_live_proxy_change_runs_channels_tests` (`AssertionError:
+      'apps.proxy.live_proxy.tests' not found in {...}`) and
+      `test_coverage_gate_script_change_runs_its_own_three_labels` (`AssertionError: {...,
+      'apps.proxy.live_proxy.tests', ...} not less than or equal to {...}`). The other 14 labels
+      are `^OK`: `apps.accounts.tests` 28, `apps.backups.tests` 73, `apps.channels.tests` 343,
+      `apps.connect.tests` 5, `apps.dashboard.tests` 0 (no test files), `apps.epg.tests` 295,
+      `apps.m3u.tests` 164, `apps.output.tests` 71, `apps.plugins.tests` 12, `apps.proxy.tests` 380,
+      `apps.proxy.vod_proxy.tests` 53, `apps.timeshift.tests` 349, `apps.vod.tests` 47, `core.tests`
+      105 — 1925 tests, plus `tests`' 159 (2 failing) = **2084**, which becomes the self-review's
+      **2083** once Task 8 deletes the one test that has no post-alias-removal replacement. Then
       `python -c "import sys; sys.path.insert(0,'.'); ..."` on
       `dispatcharr/test_discovery.py:iter_test_package_labels()` → a 15-element list with no
       `apps.proxy.live_proxy.tests`. Record the list and each label's test count; Task 12 needs
@@ -1530,14 +1569,32 @@ R7. **Rulings:** R7, R1.
 - [ ] **Step 3 — the break-check, RUN not read.** Point `defects.yml:21`'s `test` at
       `relay/channel/does_not_exist_test.go` and re-run. Expect
       `defects.yml … test path relay/channel/does_not_exist_test.go does not exist`. Revert.
-- [ ] **Step 4 — `git apply` Appendix J.2**: `e2e/COVERAGE.md`'s five rows citing a deleted path.
+- [ ] **Step 4 — apply Appendix J.2's four row replacements.** **Corrected in execution
+      (Amendment): `git apply` fails on this diff — its hunk headers are stale relative to the
+      current tree and its second hunk's own context line was independently rewritten by 2d-3.**
+      Apply the four old→new line pairs as exact whole-line string substitutions instead (each old
+      line is still byte-identical to what is in the tree; verify with `assert text.count(old) == 1`
+      before replacing, Appendices K/N's idiom). `e2e/COVERAGE.md`'s four rows cite a deleted path.
       Each re-points at the surviving mechanism (three at the Go relay's route, two at
       `apps/proxy/next_source.py`'s `transform_url`), and none is one of the four rows 2d-3 rewrote.
 - [ ] **Step 5 — `grep -n "apps/proxy/live_proxy" e2e/COVERAGE.md`** → **exactly one line,
       `:202`**, the reconnect open question, which A10.10's own table assigns to **2d-6** along with
       `:50` (both describe mechanisms rather than cite paths). Zero would mean you edited a row this
-      PR does not own. `grep -rn "apps/proxy/live_proxy" e2e/ --include='*.ts' | wc -l` → **17**,
-      all prose comments, 2d-6's (R18). Record both so 2d-6 has them.
+      PR does not own. **Corrected in execution (Amendment): the `.ts` count is 15, not 17, and
+      R18's 17 cannot be reconciled — do not STOP on the difference.** R18's figure was measured at
+      this plan's seed, before 2d-3 merged; 2d-3's own File structure removed two of those mentions
+      directly (`e2e/tests/streaming-greybox/output-profile-sharing.spec.ts`'s `:130`/`:132`, per
+      2d-3's own re-seed table entry — "removes the Redis half... its two live_proxy mentions...
+      are prose comments") and rewrote `e2e/tests/streaming-split/process-restart.spec.ts` by 134
+      lines, which this task does not re-derive line-by-line. Separately, **this PR's own Task 10**
+      (Appendix F) added one new mention, in `RETIRED_SOURCES[26].why`'s justification prose
+      (`e2e/tests/guards/parity-matrix.ts`) — so even a seed-accurate prediction would need
+      adjusting for a citation this same PR introduces. Measured now:
+      `grep -rn "apps/proxy/live_proxy" e2e/ --include='*.ts' | wc -l` → **15**, across 7 files
+      (`fixtures/channel-status.ts`, `fixtures/stream-client.ts`, `fixtures/types.ts`,
+      `tests/frontend/stats.spec.ts`, `tests/guards/parity-matrix.ts`,
+      `tests/seeded/ws-product-events.spec.ts`, `tests/streaming-split/process-restart.spec.ts`),
+      all prose comments, 2d-6's (R18). Record **15**, not 17, so 2d-6 has the right worklist.
 - [ ] **Step 6 — no `milestones.yml` row** (R14). `git diff --name-only metrics/` must name
       `metrics/curated/defects.yml` and nothing else.
 
@@ -1620,12 +1677,19 @@ R7. **Rulings:** R7, R1.
       `npx playwright test --project=guards`. Both green, no container needed. The heavy projects
       run in CI; this PR touches no `e2e/` test file other than the guards' own source.
 - [ ] **Step 5 — `git diff --stat origin/main` names exactly the paths in § File structure**, and
-      no others. Count them and say the number in your report. Expect **154**, which is what
-      § File structure's own groups sum to: **106** deletions (97 in the package, 9 standalone),
-      **4** renames, **1** new file and **43** modifications (13 Python production + 12 tests +
-      3 Go + 8 routing/gates/CI + 7 guards/docs/metrics). Two of the 43 arrive late and are easy to
-      miss when counting early: `scripts/capture_ffmpeg_stderr.py` (Task 1 Step 3, a by-hand
-      docstring edit) and `scripts/coverage_live_path.floor.modules` (Task 9 Step 3, written by
+      no others but one. Count them and say the number in your report. Expect **154** from
+      § File structure's own groups: **106** deletions (97 in the package, 9 standalone), **4**
+      renames, **1** new file and **43** modifications (13 Python production + 12 tests +
+      3 Go + 8 routing/gates/CI + 7 guards/docs/metrics). **Plus one more the plan cannot count
+      itself into: this plan document.** Every in-execution correction (Task 0 Step 4's count, Task
+      4 Step 6's and Task 7 Step 6's expected-red labels, Task 11 Step 5's `.ts` count, Appendix
+      J.2's stale hunks, Appendix N's N8 table-row fix, and any other disclosed fix) is an edit to
+      `docs/superpowers/plans/2026-09-20-phase2-2d4-delete-live-proxy.md` itself, which is already
+      tracked on `main` (merged with #328) — so it shows as a 44th modification, not a 155th
+      untracked surprise. Expect **155** total, and the diff of everything but that one file
+      matching § File structure exactly. Two of the 43 plan-scoped modifications arrive late and
+      are easy to miss when counting early: `scripts/capture_ffmpeg_stderr.py` (Task 1 Step 3, a
+      by-hand docstring edit) and `scripts/coverage_live_path.floor.modules` (Task 9 Step 3, written by
       `--write-floor --shape-only`).
 - [ ] **Step 6 — stage and commit in separate Bash calls**, message written with the Write tool and
       committed with `git commit -F <file>`. End it with the two attribution lines from
@@ -4999,6 +5063,18 @@ index 837b7539..c96f921b 100644
 Four rows, seven mentions. `:202` is deliberately left, with `:50` — A10.10's own table
 assigns both to 2d-6, and Task 11 Step 5 expects exactly one survivor for that reason.
 
+**Corrected in execution (Amendment): this diff's hunk headers are stale and `git apply`
+refuses it.** The four target rows' line numbers drifted from the seed (`187`/`188`/`189`→
+`190`/`192`/`193`, `200`→`203` for the fourth) because of edits elsewhere in the table this
+plan did not track file-wide, and the second hunk's own leading context line ("Bounded relay
+restart: …") was independently rewritten by 2d-3 to cover both relay processes — so the hunk
+would not apply even at the right line. **Every one of the four old/new line pairs below is
+still byte-identical to what is actually in the tree** (verified: `md5sum` of each `-` line
+against the live file's line matches exactly), so the fix is to apply the four replacements as
+exact whole-line string substitutions (`assert text.count(old) == 1` before replacing), the same
+idiom Appendices K and N already use for this reason, rather than as a positional patch. Do not
+re-derive line numbers by hand; locate each row by its content.
+
 ```diff
 diff --git a/e2e/COVERAGE.md b/e2e/COVERAGE.md
 index 869729a2..badc8327 100644
@@ -5489,21 +5565,22 @@ than carrying it, which is a decision rather than an oversight. `reverse_imports
 
 """
 
-DONE_LOG_ROW = """- **2d-4** (`migration/phase2d-delete-live-proxy`) — deleted `apps/proxy/live_proxy/` (97 files,
-  26,371 lines, 406 tests) and with it `relay_views.py`, `relay_urls.py`, `apps/proxy/tasks.py` and
-  the `proxy` management command; closed the eight remaining module-level import sites including
-  `INSTALLED_APPS`; re-pointed the three `url_utils` importers at `apps.proxy.next_source` and
-  gave `resolve_base_url()` a per-direction `dev_url` so the dev shape reaches the Go relay;
-  recomputed `worker_id` locally; deleted #190's five metadata-hash ranges with a break-check for
-  the behaviour they changed; kept the live URL patterns, pointed at a new `apps/proxy/stream_routes.py`,
-  because the authorize hop resolves the tune URI through Django's own urlconf and deleting them
-  403s every live tune behind nginx; disposed of seventeen outside test files (5 deleted whole, 5 split,
-  5 kept, 2 rewritten); replaced the parity matrix's Python column with Go citations and gave
-  rows 26/27 a guard-checked `retired:` sentinel; moved the ffmpeg stderr corpus into
-  `relay/internal/relaytest/testdata/`; deleted `go-tests.yml`'s `differential` job; took the label
-  count 16 → 15 and Gate 2's module list 38 → 9 with a `--shape-only` re-baseline that leaves
-  `missing` slack until 2d-5. Amendment A14.
-"""
+DONE_LOG_ROW = ("| 2d-4 -- delete `apps/proxy/live_proxy/` (`migration/phase2d-delete-live-proxy`). "
+    "Deleted `apps/proxy/live_proxy/` (97 files, 26,371 lines, 406 tests) and with it "
+    "`relay_views.py`, `relay_urls.py`, `apps/proxy/tasks.py` and the `proxy` management command; "
+    "closed the eight remaining module-level import sites including `INSTALLED_APPS`; re-pointed "
+    "the three `url_utils` importers at `apps.proxy.next_source` and gave `resolve_base_url()` a "
+    "per-direction `dev_url` so the dev shape reaches the Go relay; recomputed `worker_id` "
+    "locally; deleted #190's five metadata-hash ranges with a break-check for the behaviour they "
+    "changed; kept the live URL patterns, pointed at a new `apps/proxy/stream_routes.py`, because "
+    "the authorize hop resolves the tune URI through Django's own urlconf and deleting them 403s "
+    "every live tune behind nginx; disposed of seventeen outside test files (5 deleted whole, 5 "
+    "split, 5 kept, 2 rewritten); replaced the parity matrix's Python column with Go citations and "
+    "gave rows 26/27 a guard-checked `retired:` sentinel; moved the ffmpeg stderr corpus into "
+    "`relay/internal/relaytest/testdata/`; deleted `go-tests.yml`'s `differential` job; took the "
+    "label count 16 -> 15 and Gate 2's module list 38 -> 9 with a `--shape-only` re-baseline that "
+    "leaves `missing` slack until 2d-5. Amendment A14. | `migration/phase2d-delete-live-proxy` | "
+    "pending |\n")
 
 
 def sub(old, new):
@@ -5555,9 +5632,17 @@ def main():
         "Re-scope Gate 2 to the **nine**\n   surviving boundary modules and set `missing` from the worst of a ≥12-round **CI** census on the\n   post-delete tree. **Amendment A14.5 moves the rcfile edit itself to PR 4**, which removes both\n   dead `[report] include` lines with its `--shape-only` re-baseline — one command rewrites\n   `modules=` and `rcfile=` together, so there is no reason for a config line to name a deleted\n   directory for a whole PR. What remains here is the NUMBER,",
     )
 
-    # --- the Done-log row.
-    sub("## Done log\n\nFilled in as PRs merge; this spec lands as its own PR 0.\n",
-        "## Done log\n\nFilled in as PRs merge; this spec lands as its own PR 0.\n\n" + DONE_LOG_ROW)
+    # --- the Done-log row. Corrected in execution (N8): this is a TABLE ROW appended
+    # after the last existing row (2d-3's), not a bullet above the table header --
+    # every other entry in this table is a `| Item | PR | Merged |` row, and the
+    # first draft's anchor on the section's intro line landed the bullet ABOVE the
+    # header instead. Anchor on 2d-3's own row ending so the new row lands after it.
+    sub(
+        "and `ip_address` reading the real client rather than nginx. | "
+        "`migration/phase2d-nginx-flip` | pending |\n",
+        "and `ip_address` reading the real client rather than nginx. | "
+        "`migration/phase2d-nginx-flip` | pending |\n" + DONE_LOG_ROW,
+    )
 
     print(f"ok, {edits} edits")
 

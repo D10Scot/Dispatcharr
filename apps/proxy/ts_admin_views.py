@@ -13,13 +13,14 @@ the API socket; only `^~ /proxy/ts/stream/` is relay-bound). Stage 2d-4
 deletes apps/proxy/live_proxy/ and this surface has to survive it, which is
 the whole reason for the move.
 
-The two remaining live_proxy references are function-local on purpose and
-are named in the stage 2d-4 dependency list: ProxyServer, for worker_id,
-inside change_stream and next_stream.
+Stage 2d-4 removed the two function-local ProxyServer imports 2d-2 left
+here. See _worker_id() below.
 """
 
 import json
 import logging
+import os
+import socket
 
 from django.core.exceptions import ImproperlyConfigured
 from django.db import close_old_connections
@@ -42,22 +43,31 @@ from dispatcharr.utils import redact_url
 logger = logging.getLogger("live_proxy.views")
 
 
+def _worker_id():
+    """The value ProxyServer.worker_id carried, computed where it is read.
+
+    f"{hostname}:{pid}" -- apps/proxy/live_proxy/server.py:95-98 verbatim,
+    which is what change_stream and next_stream wanted the singleton for and
+    the only thing they wanted it for. Stage 2d-2 declined to recompute it
+    because its constraint was no behaviour change and the singleton's pid
+    could in principle predate a fork; with the package deleted this is the
+    only way to keep the same value, and the fork caveat inverts -- getpid()
+    at request time names the worker actually answering, which is what this
+    field has been since Phase 1 PR 4 routed these views to the api role.
+
+    It has never been the RELAY's worker id and there is no Python relay for
+    it to be misread as any more. Renaming or removing it is a contract
+    change to four response bodies with no forcing function here; it is on
+    the post-2d list beside this module's logger name.
+    """
+    return f"{socket.gethostname()}:{os.getpid()}"
+
+
 @csrf_exempt
 @api_view(["POST"])
 @permission_classes([IsAdmin])
 def change_stream(request, channel_id):
     """Change stream URL for existing channel with enhanced diagnostics"""
-    # Function-local, in this module's own idiom (D10) and for the reason
-    # 2d-2 exists: ProxyServer lives in the package 2d-4 deletes, this
-    # module survives it, and a module-level import here would be a tenth
-    # boot-trap site (Amendment A10.3) in a surviving file. worker_id --
-    # hostname:pid, server.py:96-98 -- is the only thing these two views
-    # want from it, and it is in both of their response bodies. Called
-    # here rather than lazily at the two bodies that read it so the
-    # singleton is constructed at exactly the point it is today.
-    from apps.proxy.live_proxy.server import ProxyServer
-
-    proxy_server = ProxyServer.get_instance()
     from apps.proxy import relay_client
 
     try:
@@ -193,7 +203,7 @@ def change_stream(request, channel_id):
                 "channel": channel_id,
                 "url": new_url,
                 "owner": result.get("direct_update", False),
-                "worker_id": proxy_server.worker_id,
+                "worker_id": _worker_id(),
             }
             if stream_id:
                 error_data["stream_id"] = stream_id
@@ -207,7 +217,7 @@ def change_stream(request, channel_id):
             "channel": channel_id,
             "url": new_url,
             "owner": result.get("direct_update", False),
-            "worker_id": proxy_server.worker_id,
+            "worker_id": _worker_id(),
         }
 
         # Include stream_id in response if it was used
@@ -399,10 +409,6 @@ def stop_client(request, channel_id):
 @permission_classes([IsAdmin])
 def next_stream(request, channel_id):
     """Switch to the next available stream for a channel"""
-    # Function-local: see change_stream above.
-    from apps.proxy.live_proxy.server import ProxyServer
-
-    proxy_server = ProxyServer.get_instance()
     from apps.proxy import relay_client
 
     try:
@@ -539,7 +545,7 @@ def next_stream(request, channel_id):
                     "current_stream_id": current_stream_id,
                     "next_stream_id": next_stream_id,
                     "owner": result.get("direct_update", False),
-                    "worker_id": proxy_server.worker_id,
+                    "worker_id": _worker_id(),
                 },
                 status=504 if result.get("confirmed") is False else 502,
             )
@@ -552,7 +558,7 @@ def next_stream(request, channel_id):
             "new_stream_id": next_stream_id,
             "new_url": stream_info["url"],
             "owner": result.get("direct_update", False),
-            "worker_id": proxy_server.worker_id,
+            "worker_id": _worker_id(),
         }
 
         return JsonResponse(response_data)

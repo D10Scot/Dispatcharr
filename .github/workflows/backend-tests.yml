@@ -177,7 +177,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        label: [apps.proxy.tests, apps.proxy.live_proxy.tests, apps.channels.tests]
+        label: [apps.proxy.tests, apps.channels.tests]
     container:
       image: ${{ needs.plan.outputs.base_image }} # zizmor: ignore[unpinned-images]
       credentials:

@@ -57,7 +57,7 @@ from apps.proxy.internal_auth import (
     build_internal_request_header,
     internal_principal_token,
 )
-from apps.proxy.internal_base_url import resolve_base_url
+from apps.proxy.internal_base_url import dev_relay_url, resolve_base_url
 from apps.proxy.constants import ChannelState
 
 logger = logging.getLogger(__name__)
@@ -110,11 +110,18 @@ class RelayRefused(Exception):
 
 
 def get_relay_control_base_url():
-    """Where the relay answers, for this deployment shape (D9)."""
+    """Where the relay answers, for this deployment shape (D9).
+
+    dev_url is the one branch that differs from the Django-bound
+    direction: since stage 2d-4 Django serves no /proxy/relay/ route, so
+    in dev -- the only shape with no nginx in front -- this direction
+    names the Go relay's own listener rather than the API's.
+    """
     return resolve_base_url(
         override_var="DISPATCHARR_RELAY_BASE_URL",
         modular_host_var="DISPATCHARR_WEB_HOST",
         modular_host_default="web",
+        dev_url=dev_relay_url(),
     )
 
 

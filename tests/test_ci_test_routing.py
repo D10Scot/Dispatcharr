@@ -41,21 +41,14 @@ class ChangedPathRoutingTests(SimpleTestCase):
         self.assertIn("apps.vod.tests", labels)
         self.assertIn("apps.output.tests", labels)
 
-    def test_live_proxy_change_runs_channels_tests(self):
-        """Pins: apps/proxy/live_proxy/ had no alias and matched by prefix only.
+    # test_live_proxy_change_runs_channels_tests stood here until Phase 2
+    # stage 2d-4. It pinned the apps/proxy/live_proxy/ alias -- which existed
+    # because prefix matching selected apps.proxy.live_proxy.tests alone and
+    # skipped apps/channels/tests/test_ts_proxy_teardown.py. Both the alias and
+    # the directory it named were deleted with the package, and a routing test
+    # for a path that cannot change is not a pin.
 
-        Prefix matching selected apps.proxy.live_proxy.tests alone, skipping
-        apps/channels/tests/test_ts_proxy_teardown.py -- the richest proxy
-        coverage in the tree, and the only place a real ProxyServer is built.
-        """
-        self.assertIn("apps.proxy.live_proxy.tests", self.available)
-        self.assertIn("apps.channels.tests", self.available)
-
-        labels = self._labels("apps/proxy/live_proxy/server.py")
-        self.assertIn("apps.proxy.live_proxy.tests", labels)
-        self.assertIn("apps.channels.tests", labels)
-
-    def test_coverage_gate_script_change_runs_its_own_three_labels(self):
+    def test_coverage_gate_script_change_runs_its_own_two_labels(self):
         """Pins: scripts/coverage_live_path* had no alias and matched no app prefix.
 
         _labels_under_installed_app_tree only matches a path under an app's own
@@ -67,7 +60,7 @@ class ChangedPathRoutingTests(SimpleTestCase):
         the one kind of change most likely to need it -- exactly the gap #252's
         module-list fix landed into unexercised.
         """
-        expected = {"apps.proxy.tests", "apps.proxy.live_proxy.tests", "apps.channels.tests"}
+        expected = {"apps.proxy.tests", "apps.channels.tests"}
         self.assertLessEqual(expected, self.available)
 
         for path in (

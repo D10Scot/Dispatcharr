@@ -4,7 +4,6 @@ from django.conf import settings
 from core.models import StreamProfile, CoreSettings
 from core.utils import RedisClient, custom_properties_as_dict
 from apps.proxy.redis_keys import RedisKeys
-from apps.proxy.constants import ChannelMetadataField
 import logging
 import uuid
 from django.utils import timezone
@@ -512,22 +511,6 @@ class Channel(models.Model):
                     profile_id_bytes,
                 )
 
-        if profile_id is None:
-            metadata_key = RedisKeys.channel_metadata(str(self.uuid))
-            meta_profile_id = redis_client.hget(
-                metadata_key, ChannelMetadataField.M3U_PROFILE
-            )
-            if meta_profile_id:
-                try:
-                    profile_id = int(meta_profile_id)
-                except (ValueError, TypeError):
-                    logger.debug(
-                        "Invalid profile ID in metadata for stale assignment on "
-                        "channel %s: %s",
-                        self.uuid,
-                        meta_profile_id,
-                    )
-
         if profile_id is not None:
             release_profile_slot(profile_id, redis_client)
         else:
@@ -690,42 +673,19 @@ class Channel(models.Model):
 
         stream_id = redis_client.get(RedisKeys.channel_stream(self.id))
         if not stream_id:
-            # Primary key missing — try metadata hash fallback.
-            # The proxy may have already cleaned up channel_stream/stream_profile
-            # keys, but the metadata hash can still have the stream_id and profile.
-            metadata_key = RedisKeys.channel_metadata(str(self.uuid))
-            meta_stream_id = redis_client.hget(
-                metadata_key, ChannelMetadataField.STREAM_ID
-            )
-            meta_profile_id = redis_client.hget(
-                metadata_key, ChannelMetadataField.M3U_PROFILE
-            )
-
-            if meta_stream_id and meta_profile_id:
-                stream_id = int(meta_stream_id)
-                profile_id = int(meta_profile_id)
-                logger.debug(
-                    f"Channel {self.uuid}: recovered stream_id={stream_id}, "
-                    f"profile_id={profile_id} from metadata fallback"
-                )
-                # Clean up any remaining keys
-                redis_client.delete(RedisKeys.channel_stream(self.id))
-                redis_client.delete(RedisKeys.stream_profile(stream_id))
-
-                # Clear metadata fields so duplicate release_stream() calls
-                # won't find them and DECR again
-                redis_client.hdel(
-                    metadata_key,
-                    ChannelMetadataField.STREAM_ID,
-                    ChannelMetadataField.M3U_PROFILE,
-                )
-
-                release_profile_slot(profile_id, redis_client)
-                return True
-
+            # The metadata-hash fallback that stood here -- issue #190's
+            # recovery branch, which read STREAM_ID and M3U_PROFILE out of
+            # live:channel:<uuid>:metadata and hdel'd them afterwards so a
+            # duplicate release could not DECR twice -- was deleted by
+            # Phase 2 stage 2d-4. That hash is the relay's, and the Go relay
+            # writes no live:channel:* key at all (spec D2), so every read
+            # here returned None and every hdel was a no-op from the 2d-3
+            # cutover onward. What is lost is a recovery that could not
+            # recover; what is gained is that this method no longer touches
+            # a relay-owned key from the API process.
             logger.debug(
-                f"Channel {self.uuid}: no stream info found in primary keys "
-                f"or metadata fallback"
+                f"Channel {self.uuid}: no stream info found for "
+                f"{RedisKeys.channel_stream(self.id)}"
             )
             return False
 
@@ -743,23 +703,13 @@ class Channel(models.Model):
             redis_client.delete(RedisKeys.stream_profile(stream_id))  # Remove profile association
             profile_id = int(profile_id)
         else:
-            # stream_profile key missing — try metadata hash fallback
-            metadata_key = RedisKeys.channel_metadata(str(self.uuid))
-            meta_profile_id = redis_client.hget(
-                metadata_key, ChannelMetadataField.M3U_PROFILE
+            # The metadata-hash fallback read that stood here went with the
+            # rest of #190 in Phase 2 stage 2d-4 (see the branch above).
+            logger.warning(
+                f"Channel {self.uuid}: no profile found for "
+                f"{RedisKeys.stream_profile(stream_id)}"
             )
-            if meta_profile_id:
-                profile_id = int(meta_profile_id)
-                logger.debug(
-                    f"Channel {self.uuid}: recovered profile_id={profile_id} "
-                    f"from metadata fallback ({RedisKeys.stream_profile(stream_id)} was missing)"
-                )
-            else:
-                logger.warning(
-                    f"Channel {self.uuid}: no profile found for "
-                    f"{RedisKeys.stream_profile(stream_id)} or in metadata fallback"
-                )
-                return False
+            return False
         logger.debug(
             f"Channel {self.uuid}: found profile_id={profile_id} for "
             f"stream {stream_id}"
@@ -767,16 +717,12 @@ class Channel(models.Model):
 
         release_profile_slot(profile_id, redis_client)
 
-        # Clear metadata fields so duplicate release_stream() calls
-        # (e.g. from _clean_redis_keys or ChannelService.stop_channel)
-        # won't find them via fallback and DECR again
-        metadata_key = RedisKeys.channel_metadata(str(self.uuid))
-        redis_client.hdel(
-            metadata_key,
-            ChannelMetadataField.STREAM_ID,
-            ChannelMetadataField.M3U_PROFILE,
-        )
-
+        # The unconditional hdel of the relay's metadata hash that ran here
+        # on EVERY successful release -- the largest of issue #190's five
+        # ranges -- went in Phase 2 stage 2d-4. It existed so a duplicate
+        # release could not find STREAM_ID/M3U_PROFILE via the fallback and
+        # DECR the provider counter twice; with the fallback gone there is
+        # nothing for it to clear and nothing left to find.
         return True
 
     def update_stream_profile(self, new_profile_id):

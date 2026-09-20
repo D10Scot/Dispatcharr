@@ -46,6 +46,9 @@ logger = logging.getLogger(__name__)
 # than one per call. Callers still see the exception every time.
 _host_validation_warned = False
 
+# Same one-warning-per-process policy, for the dev relay port.
+_relay_go_port_warned = False
+
 
 def _var_only_subject(var_name):
     # Used where the value itself must not be echoed at all -- a
@@ -145,7 +148,57 @@ def validated_base_url(url, var_name=None):
     )
 
 
-def resolve_base_url(*, override_var, modular_host_var, modular_host_default):
+DEV_API_URL = "http://127.0.0.1:5656"
+
+# The Go relay's default listener (relay/config/config.go:63,
+# docker/healthcheck.sh:33, docker/supervisord.d/relay-go.conf). Only the
+# dev branch needs it: every other branch reaches nginx, which routes
+# ^~ /proxy/relay/ to the Go relay itself since stage 2d-3.
+RELAY_GO_DEFAULT_PORT = "5658"
+
+
+def dev_relay_url():
+    """Where /proxy/relay/... answers in dev, now that Django does not.
+
+    Stage 2d-4 deleted apps/proxy/relay_views.py and relay_urls.py with
+    the package they wrapped, so the API process serves no /proxy/relay/
+    route at all. In every shape but dev that is invisible -- nginx has
+    routed those four paths to the Go relay since 2d-3 -- but dev runs no
+    nginx (docker/supervisord/all-dev.conf), so this direction must name
+    the Go relay's own port rather than the API's.
+
+    Reads DISPATCHARR_RELAY_GO_PORT with the default-and-validate shape
+    docker/init/03-init-dispatcharr.sh:88-93 already uses for
+    DISPATCHARR_RELAY_PORT, and which Amendment A10.16 required of the
+    RELAY_GO_UPSTREAM sed: a non-integer or out-of-range value logs once
+    naming the variable and falls back, rather than raising. A bad port in
+    a dev-only address is not worth failing a tune for, and the operator
+    override DISPATCHARR_RELAY_BASE_URL still wins ahead of this.
+    """
+    raw = os.environ.get("DISPATCHARR_RELAY_GO_PORT", "").strip()
+    port = RELAY_GO_DEFAULT_PORT
+    if raw:
+        try:
+            value = int(raw)
+        except ValueError:
+            value = None
+        if value is not None and 1 <= value <= 65535:
+            port = str(value)
+        else:
+            global _relay_go_port_warned
+            if not _relay_go_port_warned:
+                logger.warning(
+                    "DISPATCHARR_RELAY_GO_PORT is not a port number; "
+                    "using %s for the dev relay address.",
+                    RELAY_GO_DEFAULT_PORT,
+                )
+                _relay_go_port_warned = True
+    return f"http://127.0.0.1:{port}"
+
+
+def resolve_base_url(
+    *, override_var, modular_host_var, modular_host_default, dev_url=DEV_API_URL
+):
     """The D9 four-branch formula, once, for whichever direction asks.
 
     Same shape as get_dvr_stream_base_url() (apps/channels/tasks.py),
@@ -154,15 +207,14 @@ def resolve_base_url(*, override_var, modular_host_var, modular_host_default):
     DISPATCHARR_PORT. Every branch validates before returning, so a
     misconfigured host fails loudly here instead of as an opaque 400.
 
-    The dev branch has no nginx to go through, so it names the
-    application port directly. What answers there depends on how dev
-    was started: a bare `manage.py runserver 5656` is one process
-    serving both sides, while docker/supervisord/all-dev.conf runs
-    api-uwsgi AND relay-uwsgi with no nginx, so :5656 is the API
-    uWSGI and /proxy/relay/... is served by the API process. Both
-    work -- one Redis, and ChannelService reaches a channel's owner
-    over live:events: pub/sub either way -- but the second cannot
-    clear a StreamManager it does not hold (see reset_tried).
+    The dev branch has no nginx to go through, so it names an application
+    port directly -- and since stage 2d-4 the two directions name
+    DIFFERENT ones, which is why it is a parameter. Relay -> Django is
+    still :5656, Django's own port under both `manage.py runserver 5656`
+    and docker/supervisord/all-dev.conf's api-uwsgi. Django -> relay is
+    the Go relay's :5658 (dev_relay_url), because Django no longer serves
+    /proxy/relay/ in any shape. DISPATCHARR_PORT is read by neither: it
+    names vite's port in dev (CLAUDE.md section Commands).
     """
     explicit = os.environ.get(override_var)
     if explicit:
@@ -173,9 +225,6 @@ def resolve_base_url(*, override_var, modular_host_var, modular_host_default):
         port = os.environ.get("DISPATCHARR_PORT", "9191")
         return validated_base_url(f"http://{host}:{port}", modular_host_var)
     if env == "dev":
-        # Hardcoded, not read from DISPATCHARR_PORT: in dev the port
-        # that answers is uWSGI's / runserver's own, not nginx's, and
-        # DISPATCHARR_PORT names vite's (CLAUDE.md section Commands).
-        return validated_base_url("http://127.0.0.1:5656")
+        return validated_base_url(dev_url)
     port = os.environ.get("DISPATCHARR_PORT", "9191")
     return validated_base_url(f"http://127.0.0.1:{port}")

@@ -4,15 +4,16 @@ exactly. Every line enumerated from a fresh live-path.json measurement,
 not the plan's own table -- authorize.py alone drifted +17 statements
 since the reachability brief.
 """
+import os
 from unittest.mock import MagicMock, patch
 
 from django.test import SimpleTestCase
 from rest_framework.exceptions import APIException
 
 from apps.accounts.models import User
-from apps.proxy import authorize, control_plane, relay_client
+from apps.proxy import authorize, control_plane, internal_base_url, relay_client
 from apps.proxy.config import TSConfig as Config
-from apps.proxy.live_proxy.config_helper import ConfigHelper
+from apps.proxy.config_helper import ConfigHelper
 
 
 class ConfigHelperDefaultLadderTests(SimpleTestCase):
@@ -42,26 +43,6 @@ class ConfigHelperDefaultLadderTests(SimpleTestCase):
         delegate.assert_called_once()
 
 
-class LiveProxyAppsReadyTests(SimpleTestCase):
-    def test_ready_starts_the_proxy_server_outside_manage_py(self):
-        from apps.proxy.live_proxy.apps import LiveProxyConfig
-
-        config = LiveProxyConfig.__new__(LiveProxyConfig)
-        with patch("sys.argv", ["/usr/bin/uwsgi"]), patch(
-            "apps.proxy.live_proxy.server.ProxyServer.get_instance"
-        ) as get_instance:
-            config.ready()
-        get_instance.assert_called_once()
-
-    def test_ready_is_a_no_op_under_manage_py(self):
-        from apps.proxy.live_proxy.apps import LiveProxyConfig
-
-        config = LiveProxyConfig.__new__(LiveProxyConfig)
-        with patch("sys.argv", ["manage.py", "test"]), patch(
-            "apps.proxy.live_proxy.server.ProxyServer.get_instance"
-        ) as get_instance:
-            config.ready()
-        get_instance.assert_not_called()
 
 
 class UserCanAccessChannelAdminBypassTests(SimpleTestCase):
@@ -172,3 +153,60 @@ class RelayClientStopChannelsGenericExceptionArmTests(SimpleTestCase):
         self.assertEqual(seen, ["a", "b", "c"])
         self.assertEqual(stopped, ["a", "c"])
         self.assertIn("Failed to stop proxy session for channel b", logs.output[0])
+
+
+class DevRelayAddressTests(SimpleTestCase):
+    """Stage 2d-4's dev branch: the two internal directions stopped agreeing.
+
+    apps/proxy/relay_views.py and relay_urls.py were deleted with the package
+    they wrapped, so Django serves no /proxy/relay/ route in any shape. Every
+    shape but dev reaches nginx, which has routed ^~ /proxy/relay/ to the Go
+    relay since 2d-3; dev runs no nginx -- docker/supervisord/all-dev.conf,
+    which DOES start relay-go -- so the Django -> relay direction must name the
+    Go relay's own listener.
+    """
+
+    def setUp(self):
+        internal_base_url._relay_go_port_warned = False
+
+    def _dev(self, **env):
+        base = {"DISPATCHARR_ENV": "dev", "DISPATCHARR_RELAY_BASE_URL": ""}
+        base.update(env)
+        return patch.dict(os.environ, base, clear=False)
+
+    def test_the_dev_branch_reaches_the_go_relay_not_the_api(self):
+        with self._dev(DISPATCHARR_RELAY_GO_PORT=""):
+            self.assertEqual(
+                relay_client.get_relay_control_base_url(), "http://127.0.0.1:5658"
+            )
+
+    def test_an_explicit_relay_go_port_is_honoured(self):
+        with self._dev(DISPATCHARR_RELAY_GO_PORT="15658"):
+            self.assertEqual(
+                relay_client.get_relay_control_base_url(), "http://127.0.0.1:15658"
+            )
+
+    def test_a_non_integer_relay_go_port_warns_once_and_falls_back(self):
+        with self._dev(DISPATCHARR_RELAY_GO_PORT="not-a-port"):
+            with self.assertLogs(internal_base_url.logger, level="WARNING") as logs:
+                first = relay_client.get_relay_control_base_url()
+            second = relay_client.get_relay_control_base_url()
+        self.assertEqual(first, "http://127.0.0.1:5658")
+        self.assertEqual(second, "http://127.0.0.1:5658")
+        self.assertEqual(len(logs.output), 1)
+        self.assertIn("DISPATCHARR_RELAY_GO_PORT", logs.output[0])
+
+    def test_the_operator_override_still_wins_ahead_of_the_default(self):
+        with self._dev(DISPATCHARR_RELAY_BASE_URL="http://relay.example:9999"):
+            self.assertEqual(
+                relay_client.get_relay_control_base_url(), "http://relay.example:9999"
+            )
+
+    def test_the_relay_to_django_direction_is_still_the_api_port(self):
+        # The half a careless edit would break silently: control_plane asks
+        # DJANGO, which is still :5656 in dev under both `runserver 5656` and
+        # docker/supervisord/all-dev.conf's api-uwsgi.
+        with self._dev(DISPATCHARR_INTERNAL_API_BASE_URL=""):
+            self.assertEqual(
+                control_plane.get_control_plane_base_url(), "http://127.0.0.1:5656"
+            )

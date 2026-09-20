@@ -510,6 +510,49 @@ export async function testRefProblem(ref: TestRef): Promise<string | undefined> 
 
 export type WhiteBoxRow = { id: number; why: string };
 
+/** The `retired:` Source sentinel, matched on the whole trimmed cell. */
+const RETIRED_SOURCE = /^retired:\s*\S/;
+
+/** True when a row's Source cell is the retired sentinel rather than citations. */
+export function isRetiredSource(source: string): boolean {
+  return RETIRED_SOURCE.test(source.trim());
+}
+
+/**
+ * Rows whose Source is `retired:` — the behaviour was deleted, not ported, so
+ * there is no file in the tree to cite.
+ *
+ * Compared with `toEqual`, in WHITE_BOX_ONLY's idiom and for exactly its
+ * reason. `retired:` is a second word that can make an inconvenient row stop
+ * being checked, and the objection to simply exempting white-box rows from the
+ * Source check was that such an exemption is retroactive and silent: every
+ * future white-box row would stop needing a citation with no edit anywhere to
+ * notice. This list is the answer to that objection rather than a way around
+ * it — the word is counted, and adding one is two deliberate edits.
+ *
+ * Note these are NOT required to be white-box rows. 26 and 27 happen to be
+ * both, but the two properties are independent: `white-box-only` says no
+ * client can observe the behaviour, `retired:` says the code that produced it
+ * is gone. Row 12's fMP4 timeout is close to the first and very much alive in
+ * Go.
+ */
+export const RETIRED_SOURCES: readonly WhiteBoxRow[] = [
+  {
+    id: 26,
+    why:
+      "server.py's greenlet and OS-thread topology went with apps/proxy/live_proxy/ in Phase 2 " +
+      'stage 2d-4. Spec D2 replaces it with goroutines behind a sync.RWMutex, so no Go file ' +
+      'implements the mechanism this row records and none can honestly be cited as its source.',
+  },
+  {
+    id: 27,
+    why:
+      '_execute_redis_command went with the package in stage 2d-4. D2 removes Redis from the ' +
+      'live path entirely, so there is no analogous call in the Go relay -- citing one would ' +
+      'invert what the Source column means.',
+  },
+];
+
 /**
  * Rows no test can pin, because no client can observe them.
  *

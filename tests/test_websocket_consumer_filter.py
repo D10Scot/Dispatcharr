@@ -230,7 +230,7 @@ class ConsumerM3UProfileTestReceiveTests(SimpleTestCase):
             "replace": "b",
         }
         with patch(
-            "apps.proxy.live_proxy.url_utils.transform_url",
+            "apps.proxy.next_source.transform_url",
             return_value="http://example.com/b",
         ) as mock_transform:
             async_to_sync(consumer.receive)(json.dumps(payload))
@@ -253,7 +253,7 @@ class ConsumerM3UProfileTestReceiveTests(SimpleTestCase):
             "replace": "b",
         }
         with patch(
-            "apps.proxy.live_proxy.url_utils.transform_url"
+            "apps.proxy.next_source.transform_url"
         ) as mock_transform, patch(
             "dispatcharr.consumers.regex.sub"
         ) as mock_sub:
@@ -311,7 +311,7 @@ class ConsumerM3UProfileTestReceiveTests(SimpleTestCase):
             "replace": "b",
         }
         with patch(
-            "apps.proxy.live_proxy.url_utils.transform_url",
+            "apps.proxy.next_source.transform_url",
             return_value="http://example.com/b",
         ), patch(
             "dispatcharr.consumers.regex.sub",
