@@ -257,90 +257,18 @@ SITES = (
 )
 
 EDGES = (
-    EdgeEntry(
-        importer="apps/proxy/live_proxy/views.py",
-        module="apps.proxy.next_source",
-        name="channel_stream_profile_ref",
-        hits=7,
-        pr="2c-8",
-        reason=(
-            "Phase 2 PR 2c-8. change_stream can be called with a bare url and "
-            "no stream_id -- reachable only by a hand-crafted admin call, "
-            "never by the UI, whose switchStream always sends stream_id "
-            "(frontend/src/api.js:3314-3322) -- and that path resolves no "
-            "Stream row, so there is no source dict to take a stream_profile "
-            "out of. The Go relay builds no command line (Amendment A4.1), so "
-            "without one it has nothing to spawn. This helper asks the "
-            "CHANNEL for its own effective profile and builds the argv "
-            "against the supplied url, which is the same profile the Python "
-            "relay uses on that path: StreamManager keeps its own across "
-            "update_url (input/manager.py:1462-1540) and rebuilds the command "
-            "from it. "
-            "SEVEN FLAGGED SITES in the reachable subtree, measured rather "
-            "than asserted: Channel.get_stream_profile's "
-            "effective_stream_profile_obj and its CoreSettings default "
-            "lookup, is_proxy() and is_redirect() (which compare self.locked "
-            "and self.name on a loaded instance, core/models.py:127-135 -- "
-            "flagged CALL SITES, not queries), _stream_profile_ref's "
-            "build_command (pure, core/models.py:137-160), and "
-            "_LockedFfmpegProfile.ref reaching _locked_ffmpeg_profile's "
-            "StreamProfile.objects.filter, which IS a query. "
-            "IN THE API PROCESS EITHER WAY: PR 4's routing put change_stream "
-            "on the api role, so this import is not executed in the relay "
-            "process at all -- the same structural reason the six inline "
-            "authorize edges carry."
-        ),
-        closed_by=(
-            "POST /proxy/relay/channels/<id>/advance carrying stream_profile, "
-            "ffmpeg_stream_profile and transcode -- the three fields 2c-8 "
-            "adds to RelayAdvanceRequestSerializer. Django resolves the "
-            "profile in the API process, where the ORM is, and the relay "
-            "spawns the argv it is handed."
-        ),
-    ),
-    EdgeEntry(
-        importer="apps/proxy/live_proxy/views.py",
-        module="apps.proxy.next_source",
-        name="resolve_source",
-        hits=39,
-        pr="2b-3",
-        reason=(
-            "SETTLED HERE, and issue #253 left it open: resolve_source is NOT "
-            "dead in the relay. It is called in-process at views.py:942 "
-            "(change_stream) and views.py:1291 (next_stream) -- the operator "
-            "switch paths, both relay-served. Its reachable subtree is 36 "
-            "ORM sites (measured at 04841a47; the 2b-3 plan's own worked "
-            "example measured 34 at 93900a6f) spanning "
-            "get_stream_info_for_switch's get_object_or_404 chain, "
-            "resolve_initial_source, _source_from_info's "
-            "StreamProfile.objects.get, _resolve_alternates, _commit, "
-            "_with_proxy_settings and _with_output_profiles. #253's "
-            "'looks like API-process or dead code; they were read, not "
-            "executed' is withdrawn. "
-            "2c-1 raised this from 36 to 38: next_source.py's new "
-            "_profile_kind() helper calls is_redirect() and is_proxy(), two "
-            "model-method names the scanner flags, inside resolve_source's "
-            "reachable subtree. Neither issues a query (core/models.py:127-135 "
-            "compares self.locked and self.name on a loaded instance); the count "
-            "moved because two flagged CALL SITES exist, which is the ratchet "
-            "working rather than a number tuned to fit. "
-            "2c-4 raised this from 38 to 39: spec Amendment A4.1 has "
-            "_stream_profile_ref call profile.build_command(url, user_agent, "
-            "pk) to build the argv the Go relay spawns, one flagged CALL SITE "
-            "inside resolve_source's reachable subtree. build_command is pure "
-            "(core/models.py:137-160, shlex.split and string substitution over "
-            "a loaded row's own fields); it issues no query. The count moved "
-            "because one new flagged call site exists, the ratchet working "
-            "exactly as designed."
-        ),
-        closed_by=(
-            "POST /api/relay/channels/<id>/next-source with target_stream_id "
-            "-- already on the contract (apps/proxy/control_plane.py, and "
-            "next_source.resolve_source's own target_stream_id parameter). "
-            "The Go relay makes the operator switch a control-plane round "
-            "trip instead of an import; 2c-8 owns the route."
-        ),
-    ),
+    # Phase 2 stage 2d-2 deleted two entries that stood here, both
+    # importer="apps/proxy/live_proxy/views.py": apps.proxy.next_source
+    # .channel_stream_profile_ref (7 hits, cleared by 2c-8) and
+    # .resolve_source (39 hits, cleared by 2b-3). Neither read went
+    # anywhere -- change_stream and next_stream, the only importers of
+    # either, moved to apps/proxy/ts_admin_views.py, outside
+    # zero_orm_scan.scan_relay_package's scope 1. Both entries' own
+    # reasons already said the reads run "IN THE API PROCESS EITHER
+    # WAY", so this is the file layout catching up with the process
+    # layout rather than a narrowing of what the relay may do; the
+    # runtime half never drove either view. The channel_service.py entry
+    # below is the surviving half of the second one.
     EdgeEntry(
         importer="apps/proxy/live_proxy/services/channel_service.py",
         module="apps.proxy.next_source",
@@ -348,13 +276,16 @@ EDGES = (
         hits=39,
         pr="2b-3",
         reason=(
-            "The same symbol as the views.py edge above, and a SEPARATE "
-            "entry because Ruling R3 allowlists per (importer, module, "
-            "name): channel_service.py:415 calls resolve_source directly "
+            "The last in-package importer of this symbol, and the one "
+            "the 2d-2 note above leaves standing. It was a SEPARATE entry "
+            "from the views.py one because Ruling R3 allowlists per "
+            "(importer, module, name): channel_service.py:415 calls "
+            "resolve_source directly "
             "for the pub/sub-driven operator switch (server.py's switch "
             "listener), a second in-process call site #253 did not "
-            "separately record. Same 39-hit subtree as the views.py edge; "
-            "the count is identical by construction, since scan_edge "
+            "separately record. The 39-hit subtree is the one the deleted "
+            "views.py edge also cleared; the count does not depend on who "
+            "imports the symbol, since scan_edge "
             "depends only on the target module and symbol, never on who "
             "imports it. "
             "2c-1 raised this from 36 to 38: next_source.py's new "
@@ -373,7 +304,7 @@ EDGES = (
             "because one new flagged call site exists, the ratchet working "
             "exactly as designed."
         ),
-        closed_by="As the views.py edge above -- POST .../next-source with target_stream_id.",
+        closed_by="POST .../next-source with target_stream_id.",
     ),
     EdgeEntry(
         importer="apps/proxy/live_proxy/url_utils.py",
