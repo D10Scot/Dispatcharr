@@ -2,7 +2,6 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { test, expect, expectTsAligned, readChannelStatus } from '../../fixtures';
 import { lockedProfile, newStreamClient } from '../streaming/helpers';
-import { greyboxRedis } from '../../fixtures/greybox/redis';
 
 const execFileAsync = promisify(execFile);
 
@@ -120,28 +119,19 @@ test('two clients on one output profile share a single transcode', { tag: '@char
     // use an ffmpeg-based stream profile, that upstream-side ffmpeg would
     // also match `pgrep -x ffmpeg` and this assertion's basis breaks silently
     // — update this comment and the count if that happens.
-    expect(await countFfmpegProcesses()).toBe(1);
-
-    // The process count proves the row's literal claim; the owner lock below
-    // is complementary, not redundant — it proves the *lock* correctly
-    // tracks the (channel, profile) pair, and its key name is more useful in
-    // a failure message than a bare process count would be.
     //
-    // `RedisKeys.output_owner(channel_id, fmt)` (apps/proxy/live_proxy/redis_keys.py)
-    // builds `live:channel:{channel_id}:output:{fmt}:owner`. The output
-    // profile manager (apps/proxy/live_proxy/output/profile/manager.py)
-    // namespaces its format as `mpegts:p{profile_id}`, and — like every
-    // live_proxy endpoint — `channel_id` here is the channel's UUID string,
-    // never its numeric DB id (confirmed via `stream_ts`'s
-    // `<str:channel_id>` route and `OutputProfileManager`'s own
-    // `channel_id[:8]` log slicing, which only makes sense for a UUID). The
-    // owner key is a single CAS'd string (`SET NX`), not a per-worker set, so
-    // this is an exact key, not a wildcard: KEYS on it can only ever return 0
-    // or 1 result. Length 1 says a manager holds the lock; length 0 would
-    // mean the transcode never started or the key shape above is wrong.
-    const ownerKey = `live:channel:${channel.uuid}:output:mpegts:p${output.id}:owner`;
-    const owners = await greyboxRedis().keys(ownerKey);
-    expect(owners).toHaveLength(1);
+    // There was a second, complementary half here until stage 2d-3: a
+    // `greyboxRedis().keys()` read of
+    // `live:channel:{uuid}:output:mpegts:p{id}:owner`, asserting the manager
+    // held the CAS'd lock. The Go relay writes no `live:channel:*` key at all
+    // — spec D2 deletes `output_owner`/`output_state`, and the sharing is an
+    // in-process registry's refcount — so that assertion returned [] the
+    // moment nginx routed this location to it. Removed rather than rewritten:
+    // there is no Go-side key to point it at, and the process count below
+    // proves the row's literal claim on its own. It was the only
+    // Redis-reading assertion in the whole suite; `e2e/tests/guards/allowlist.ts`'s
+    // GREYBOX_REDIS allowlist is empty as a result.
+    expect(await countFfmpegProcesses()).toBe(1);
   } finally {
     await Promise.all(clients.map((c) => c.close().catch(() => {})));
   }

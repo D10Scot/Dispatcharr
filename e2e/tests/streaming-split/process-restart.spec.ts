@@ -77,12 +77,25 @@ const API_PROBE = '/api/accounts/initialize-superuser/';
 const RUNNING_TIMEOUT_MS = 60_000;
 
 /**
- * The spec's ceiling for a bounded relay restart, and its own justification:
- * "`stopwaitsecs=20` plus process start has to fit inside it or the restart is
- * not bounded in any useful sense". `docker/supervisord.d/relay-uwsgi.conf`
- * carries `stopwaitsecs=20` and `startsecs=5`, so 25s is the configured worst
- * case and 30s is the budget it has to fit inside. Measured from the moment
- * the restart command is issued, not from when it returns.
+ * The ceiling for a bounded restart of EITHER relay process, and its own
+ * justification: "`stopwaitsecs` plus process start has to fit inside it or
+ * the restart is not bounded in any useful sense". Both
+ * `docker/supervisord.d/relay-go.conf` and
+ * `docker/supervisord.d/relay-uwsgi.conf` carry `stopwaitsecs=20` and
+ * `startsecs=5`, so 25s is the configured worst case for each and 30s is the
+ * budget it has to fit inside. Measured from the moment each restart command
+ * is issued, not from when it returns.
+ *
+ * The two processes spend that window very differently, which is why this
+ * spec restarts both and times them separately rather than restarting one.
+ * `relay-uwsgi` is `die-on-term` and returns in well under a second;
+ * `relay-go` runs D6's drain — a five-second client grace, a concurrent
+ * channel teardown, an `http.Server.Shutdown` and a three-second events flush
+ * reserved out of the total — inside its own `stopwaitsecs`. Measured on a
+ * developer laptop with a stream running: relay-go 17311ms to first bytes,
+ * relay-uwsgi 6867ms. A single `supervisorctl restart relay-uwsgi relay-go`
+ * was measured at 23946ms and rejected: supervisorctl stops each in turn, so
+ * its configured worst case is 20 + 20 = 40s, past this ceiling.
  *
  * What this ceiling covers is the *process*: the relay serving tunes again.
  * Whether a viewer reconnecting to the SAME channel is bounded too is an open
@@ -466,16 +479,18 @@ test(
 );
 
 test(
-  'a relay restart is bounded, and leaves a Celery task queued across it to finish',
+  'both relay processes restart bounded, and a Celery task queued across the uWSGI one still finishes',
   { tag: '@contract' },
   async ({ instance, api, seed, upstream, streamClient, baseURL }) => {
     await expectRunning(instance, 'api-uwsgi', 'api-uwsgi was not RUNNING before this test began');
     await expectRunning(instance, 'relay-uwsgi', 'relay-uwsgi was not RUNNING before this test began');
+    await expectRunning(instance, 'relay-go', 'relay-go was not RUNNING before this test began');
 
     const scenario = await upstream.scenario({
       channels: [
         { id: 1, name: 'split relay running', tvgId: 'split-relay-running.e2e', logo: null },
-        { id: 2, name: 'split relay after', tvgId: 'split-relay-after.e2e', logo: null },
+        { id: 2, name: 'split relay after go', tvgId: 'split-relay-after-go.e2e', logo: null },
+        { id: 3, name: 'split relay after uwsgi', tvgId: 'split-relay-after-uwsgi.e2e', logo: null },
       ],
       rate: 20,
     });
@@ -528,8 +543,14 @@ test(
       channelIds: [1],
       streamProfileId: proxy.id,
     });
-    const { channel: after } = await seed.upstreamChannel(scenario, {
+    // Two cold channels, one per restart: re-tuning the same channel after
+    // the second restart would measure a warm channel rather than a cold one.
+    const { channel: afterGo } = await seed.upstreamChannel(scenario, {
       channelIds: [2],
+      streamProfileId: proxy.id,
+    });
+    const { channel: afterUwsgi } = await seed.upstreamChannel(scenario, {
+      channelIds: [3],
       streamProfileId: proxy.id,
     });
 
@@ -544,6 +565,58 @@ test(
     // `e2e/COVERAGE.md`, which needs a channel this project left streaming
     // and has no other way to learn its uuid.
     console.log(`[relay-restart] channel ${running.uuid} is streaming before the restart`);
+
+    // ---- restart 1: relay-go, the process that now carries live traffic ----
+    //
+    // Before stage 2d-3 this spec restarted only relay-uwsgi, which was then
+    // the live relay. After the flip a relay-uwsgi restart is invisible to a
+    // viewer — the test did not fail, it went VACUOUS, asserting that a tune
+    // succeeded after restarting a process that had nothing to do with it.
+    // This half restores the claim by restarting the process that does.
+    const goRestartBegan = Date.now();
+    await instance.supervisorctl(['restart', 'relay-go']);
+    console.log(
+      `[relay-restart] relay-go: supervisorctl returned after ${Date.now() - goRestartBegan}ms`
+    );
+
+    // The running stream died with the process it was served by. Closing the
+    // client here is bookkeeping, not an assertion: nothing processed its
+    // disconnect.
+    await streamClient.close();
+    await expectRunning(instance, 'relay-go', 'relay-go did not return to RUNNING');
+
+    const goClient = newStreamClient(baseURL!);
+    await expect
+      .poll(async () => openOutcome(goClient, `/proxy/ts/stream/${afterGo.uuid}`), {
+        // Deliberately above the ceiling. The assertion below is on the
+        // measured number, so an over-budget restart fails with the number it
+        // took rather than with a bare poll timeout — the shape
+        // `tests/streaming/time-to-first-byte.spec.ts` uses.
+        timeout: 120_000,
+        intervals: [1_000],
+        message: 'the Go relay never served a tune after the restart',
+      })
+      .toBe('ok');
+    // 200, not 1: a channel coming up can emit a single synthetic packet that
+    // satisfies expectTsAligned and proves nothing. readPackets throws if the
+    // stream ends short, so a channel that never truly starts fails loudly.
+    const goPacket = await withDeadline(
+      goClient.readPackets(200),
+      60_000,
+      'the first 200 TS packets after the relay-go restart'
+    );
+    const goElapsedMs = Date.now() - goRestartBegan;
+    console.log(
+      `[relay-restart] relay-go: first TS bytes ${goElapsedMs}ms after the restart began ` +
+        `(ceiling ${RELAY_RESTART_CEILING_MS}ms)`
+    );
+    expectTsAligned(goPacket);
+    expect(
+      goElapsedMs,
+      `relay-go served its first bytes ${goElapsedMs}ms after the restart began; the ceiling is ` +
+        `${RELAY_RESTART_CEILING_MS}ms (stopwaitsecs=20 + startsecs=5, with D6's 15s drain inside it)`
+    ).toBeLessThanOrEqual(RELAY_RESTART_CEILING_MS);
+    await goClient.close();
 
     const before = await api.json<M3uAccount>(
       await api.get(`/api/m3u/accounts/${account.id}/`),
@@ -591,10 +664,23 @@ test(
         'refresh is not actually contending for a worker slot'
     ).toBe(true);
 
-    const restartBegan = Date.now();
+    // ---- restart 2: relay-uwsgi, for D15's Celery half ----
+    //
+    // relay-uwsgi no longer serves live traffic, but it still exists (narrowed
+    // to VOD and catch-up) and its start path still runs
+    // docker/supervisord.d/wait-for-stores.sh -> scripts/wait_for_redis.py.
+    // That is the one place a reintroduced flush of Redis DB 0 could bite, and
+    // DB 0 holds the Celery broker and result backend as well as the relay's
+    // channel state. relay-go cannot make this claim: it has no
+    // wait-for-stores.sh wrapper by design, because it opens no Redis
+    // connection at all (relay-go.conf's own header). So this restart stays
+    // pointed here — and the tune assertion below is deliberately a SECOND,
+    // independent bounded measurement rather than a repeat of the first.
+    const uwsgiRestartBegan = Date.now();
     await instance.supervisorctl(['restart', 'relay-uwsgi']);
     console.log(
-      `[relay-restart] supervisorctl restart returned after ${Date.now() - restartBegan}ms`
+      `[relay-restart] relay-uwsgi: supervisorctl returned after ` +
+        `${Date.now() - uwsgiRestartBegan}ms`
     );
 
     // In-flight proof, taken the instant the blocking restart call returns:
@@ -621,19 +707,17 @@ test(
         'the poll below would prove nothing about surviving the relay start path'
     ).not.toBe('success:bumped');
 
-    // The running stream died with the process it was served by. Closing the
-    // client here is bookkeeping, not an assertion: nothing processed its
-    // disconnect, so its entry stays in the channel's client set until the
-    // relay's own ghost-client sweep removes it.
-    await streamClient.close();
-
     await expectRunning(instance, 'relay-uwsgi', 'relay-uwsgi did not return to RUNNING');
 
-    // The bounded half: a tune the relay has never served answers with real,
-    // aligned TS bytes inside the ceiling.
+    // The bounded half, second measurement: a tune the Go relay has never
+    // served answers with real, aligned TS bytes inside the same ceiling,
+    // across a restart of the OTHER relay process. After 2d-3 this is the
+    // weaker of the two claims — relay-uwsgi carries no live traffic — but it
+    // is not vacuous: a start path that flushed Redis DB 0 would take the
+    // running relay's channel state with it.
     const client = newStreamClient(baseURL!);
     await expect
-      .poll(async () => openOutcome(client, `/proxy/ts/stream/${after.uuid}`), {
+      .poll(async () => openOutcome(client, `/proxy/ts/stream/${afterUwsgi.uuid}`), {
         // Deliberately above the ceiling. The assertion below is on the
         // measured number, so an over-budget restart fails with the number it
         // took rather than with a bare poll timeout — the shape
@@ -659,18 +743,18 @@ test(
     const packet = await withDeadline(
       client.readPackets(200),
       60_000,
-      'the first 200 TS packets after the relay restart'
+      'the first 200 TS packets after the relay-uwsgi restart'
     );
-    const elapsedMs = Date.now() - restartBegan;
+    const elapsedMs = Date.now() - uwsgiRestartBegan;
     console.log(
-      `[relay-restart] first TS bytes ${elapsedMs}ms after the restart began ` +
+      `[relay-restart] relay-uwsgi: first TS bytes ${elapsedMs}ms after the restart began ` +
         `(ceiling ${RELAY_RESTART_CEILING_MS}ms)`
     );
     expectTsAligned(packet);
     expect(
       elapsedMs,
-      `the relay served its first bytes ${elapsedMs}ms after the restart began; the ceiling is ` +
-        `${RELAY_RESTART_CEILING_MS}ms (stopwaitsecs=20 + startsecs=5)`
+      `relay-uwsgi served its first bytes ${elapsedMs}ms after the restart began; the ceiling ` +
+        `is ${RELAY_RESTART_CEILING_MS}ms (stopwaitsecs=20 + startsecs=5)`
     ).toBeLessThanOrEqual(RELAY_RESTART_CEILING_MS);
     await client.close();
 
