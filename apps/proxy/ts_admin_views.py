@@ -254,9 +254,10 @@ def channel_status(request, channel_id=None):
     the two new statuses below exist because "the relay did not answer"
     is a thing that can now happen and 500 would say nothing useful.
     """
-    # Function-local (D10): this module also hosts stream_ts and
-    # stream_xc, which run in the relay process, and relay_client is
-    # Django's side of that boundary.
+    # Function-local (D10): relay_client is Django's side of the relay
+    # boundary, kept local here in this module's own idiom -- matching
+    # the ProxyServer and next_source imports elsewhere in this file --
+    # rather than promoted to module level.
     from apps.proxy import relay_client
 
     try:
