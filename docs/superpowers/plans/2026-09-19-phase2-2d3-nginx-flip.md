@@ -913,18 +913,35 @@ no `frontend/`, no `.github/workflows/`, no `metrics/`.
       Then create an Output Profile whose `parameters` are `-i pipe:0 -c copy "unterminated -f
       mpegts pipe:1` (the API accepts it, **201**) and tune with `?output_profile=<id>`: expect
       **500**, the null-`argv` arm.
-- [ ] **Step 4 — the remaining projects locally, as separate invocations, not one combined
-      command.** Same defect class as Step 3, worse here: `package.json`'s own bare `npm test`
-      message and `e2e/README.md:129-136` both state that `pristine` cannot share a container with
-      `seeded`/`frontend`/`dvr` (it needs an instance with **no** superuser, and `bootstrap` — which
-      those three depend on — creates one) and that `dvr` "must be run alone locally"; `lifecycle`
-      **destroys the container** every other project shares, so combining it with anything is not
-      merely a contention risk but a guaranteed teardown mid-run. Run, in this order:
-      `--project=guards` (needs no container); `--project=seeded --project=frontend` (may share,
-      neither is flagged solo); `--project=dvr` alone; `./scripts/e2e_up.sh --reset` then
-      `--project=pristine` alone (the reset gives it the superuser-less instance it needs);
-      `--project=lifecycle` alone (destroys the container — run it last, or accept that anything run
-      after it needs a fresh container). All green.
+- [ ] **Step 4 — the remaining projects locally, EACH AS ITS OWN INVOCATION against its own
+      freshly-reset instance.** Same defect class as Step 3, worse here: `package.json`'s own bare
+      `npm test` message says plainly that every population "need[s] different container states and
+      cannot share one invocation" — not a rule scoped to the projects `e2e/README.md`'s table
+      happens to mark "must be run alone", a blanket statement about all of them, `pristine` because
+      it needs an instance with **no** superuser (`bootstrap`, which `seeded`/`frontend`/`dvr`
+      depend on, creates one) and `lifecycle` because it **destroys the container** outright.
+      **Measured, not assumed, after a first draft of this step tried `seeded` and `frontend`
+      together on the reasoning that neither is individually flagged solo**: on a byte-for-byte
+      fresh container (fresh Postgres/Redis volume, not merely a fresh container name reusing an old
+      volume — the first attempt at this measurement was invalidated exactly that way), `frontend`
+      alone is 24/24 green and `seeded` alone is 148/149 green with one flaky
+      `output-epg.spec.ts` failure that passes in isolation and that CI's own per-job-isolated
+      `seeded` run does not reproduce — but `seeded` + `frontend` together fail **17** tests, mostly
+      `frontend`'s `render.spec.ts`/`stats.spec.ts`/`settings.spec.ts`/`users.spec.ts`, because
+      `seeded`'s four parallel workers churn container-wide state (`render.spec.ts`'s `pageErrors`
+      check and `stats.spec.ts`'s exact-connection-count assertion cannot tell "the flip broke this"
+      from "another project's workers are mutating the instance under me"). **Ruling: no pair is
+      assumed safe merely because neither name is on the README's "must run alone" list; run every
+      population as `package.json`'s own `test:*` scripts do, one at a time.** In order:
+      `--project=guards` (needs no container, may run anywhere); `./scripts/e2e_up.sh` (fresh) then
+      `--project=seeded` alone; fresh again, `--project=frontend` alone; fresh again,
+      `--project=dvr` alone; `./scripts/e2e_up.sh --reset` then `--project=pristine` alone (the
+      reset gives it the superuser-less instance it needs); `--project=lifecycle` alone last (it
+      destroys the container). Where a fresh local rebuild-and-bootstrap cycle for every population
+      is disproportionate to what it buys beyond CI's already-isolated per-job matrix, CI's own
+      green result for that project's job (each one *is* genuinely isolated, one container per job,
+      exactly the property this step is trying to approximate locally) may stand in for a repeated
+      local run — record which projects were verified which way.
 - [ ] **Step 5 — remove your container, volume and network** when Task 9 has pushed.
 
 ## Task 8: Amendment A13, the eight in-place spec corrections, and the Done-log row
