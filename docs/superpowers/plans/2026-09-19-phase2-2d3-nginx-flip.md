@@ -1715,12 +1715,43 @@ REPLACEMENTS = [
      "uWSGIs from the same commit, and `relay/drain/supervisord_priority_test.go` asserts the "
      "shared `priority=205` by reading both confs."),
 
-    # 3. § Architecture -- the uwsgi_buffering bullet.
-    ("- nginx **`uwsgi_buffering off`** on every relay-bound location",
+    # 3. § Architecture -- the uwsgi_buffering bullet. Replaces the WHOLE
+    # sentence, not a prefix: a prefix-only replacement (this appendix's own
+    # first draft) leaves the pre-2d-3 nine-location parenthetical and the
+    # "asserts the exact set of the nine top-level ones" / "carries no
+    # uwsgi_buffering off" trailing sentences hanging after the new
+    # two-family prefix, self-contradicting the sentence it opens (found in
+    # PR review, second round).
+    ("- nginx **`uwsgi_buffering off`** on every relay-bound location "
+     "(`/proxy/ts/stream/`, `/proxy/vod/`, `/proxy/catchup/`, `/live/`, `/movie/`, `/series/`, "
+     "`/timeshift/`, `/streaming/timeshift.php`, the XC three-segment regex, and the nested "
+     "`^/api/channels/recordings/\\d+/file/$` regex — the one long-lived response under `/api/`) "
+     "is load-bearing — a past bug used `proxy_buffering off` (wrong directive family for "
+     "`uwsgi_pass`) and nginx spooled live TS to disk. Pinned by "
+     "`e2e/tests/streaming-greybox/nginx-stream-buffering.spec.ts`, which asserts the exact set "
+     "of the nine top-level ones; the tenth is nested inside `^~ /api/`, and that spec's own "
+     "`parseLocationBlocks` folds a nested block into its parent's body rather than giving it a "
+     "target of its own. `^~ /proxy/relay/` is relay-bound too, but deliberately carries **no** "
+     "`uwsgi_buffering off` — it serves short JSON, not a long-lived stream — pinned by that same "
+     "spec's fourth test.",
      "- nginx **buffering off, in the directive family that location's `_pass` speaks** — "
      "`proxy_buffering off` on the three Go-bound since stage 2d-3 (`/proxy/ts/stream/`, `/live/`, "
      "the XC three-segment regex), `uwsgi_buffering off` on every relay-bound location still on "
-     "`uwsgi_pass`"),
+     "`uwsgi_pass` (`/proxy/vod/`, `/proxy/catchup/`, `/movie/`, `/series/`, `/timeshift/`, "
+     "`/streaming/timeshift.php`, and the nested `^/api/channels/recordings/\\d+/file/$` regex — "
+     "the one long-lived response under `/api/`) is load-bearing — a past bug used "
+     "`proxy_buffering off` (wrong directive family for `uwsgi_pass`) and nginx spooled live TS "
+     "to disk. Pinned by `e2e/tests/streaming-greybox/nginx-stream-buffering.spec.ts`, which "
+     "since stage 2d-3 asserts the exact set on each side of the split — the six top-level "
+     "`uwsgi_buffering off` ones and the three top-level `proxy_buffering off` ones, each its own "
+     "sorted `toEqual`; the tenth (the nested recordings regex) is folded into `^~ /api/`'s own "
+     "body by that spec's `parseLocationBlocks`, which walks by brace depth and never gives a "
+     "nested location a `target` of its own, so it is pinned by `docker/nginx.conf` review "
+     "instead. `^~ /proxy/relay/` is relay-bound too and also `proxy_pass http://relay_go` since "
+     "2d-3, but deliberately carries **no** buffering directive of either family — it serves "
+     "short JSON, not a long-lived stream — pinned by that same spec's fourth test, which also "
+     "asserts its `dispatcharr_api_params_proxy.conf` include, `proxy_read_timeout 30s` and "
+     "`proxy_connect_timeout 60s`."),
 
     # 4. § Auth -- the param count and the blanking mechanism.
     ("the marker `X-Dispatcharr-Authorized` (an HMAC of `SECRET_KEY`) and the four `X-Relay-*` "
