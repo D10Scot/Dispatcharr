@@ -158,11 +158,19 @@ naming the variable and carry on with the default rather than raising. Appendix 
 - **Gate 2's denominator goes from ten boundary modules to nine.** The `[report] include` line naming
   it is removed with it (R9), and 2d-5's census measures nine. Said in the PR body, because 2d-5's
   plan cannot be written against a module list it has to rediscover.
-- **`IsInternalRelay` keeps exactly one user**, `apps/proxy/authorize_views.py`'s
-  `authorize_internal_view` — the Go relay's dev authorize fallback (`dispatcharr/urls.py:47-51`).
-  So the permission class does not become dead; `apps/proxy/permissions.py` stays in Gate 2's list.
-  Verified: `grep -rn "IsInternalRelay" --include='*.py' .` at the seed returns `permissions.py`'s
-  definition, `relay_views.py` ×5, `authorize_views.py` ×1 and their tests.
+- **`IsInternalRelay` keeps four users, not one.** **Corrected in a post-review fix round (F3):**
+  the original grep undercounted, on two files it did cite and one it never mentioned. It keeps
+  `apps/proxy/authorize_views.py`'s `authorize_internal_view` — the Go relay's dev authorize
+  fallback (`dispatcharr/urls.py:47-51`) — **and** `apps/proxy/api_views.py`'s three
+  `/api/relay/…` views (`next_source_view`, `release_view`, `events_view`), which were already in
+  the tree at the seed and this ruling's own verification command should have found. So the
+  permission class does not become dead — more strongly true than the original ruling said — and
+  `apps/proxy/permissions.py` stays in Gate 2's list. Re-verified at the seed
+  (`git show 803db6e0:<path> | grep -c IsInternalRelay`, since `relay_views.py` is deleted by this
+  PR): `permissions.py` ×1 (the definition, as R1 said), `relay_views.py` ×**6** (not 5 — five call
+  sites plus an import), `authorize_views.py` ×**3** (not 1 — the import, a comment, and the
+  decorator), `api_views.py` ×**5** (a docstring line, an import, and three decorators) — the file
+  R1's own grep never reported at all — plus their test files.
 - **The five routes' OpenAPI entries disappear from the schema.** They are `@extend_schema`'d
   internal routes on a surface the client API does not document as public; `manage.py spectacular`
   is not byte-stable across this PR and is deliberately **not** in the gate (contrast 2d-2, where
@@ -415,8 +423,14 @@ measured by counting `def test_` in each deleted region:
 | `apps.proxy.live_proxy.tests` | **406** — the whole label (53 test files) | — | label ceases to exist |
 | `apps.channels.tests` | **100** (13 + 14 + 17 + 4 + 52) | **1** (R8's break-check) | −99 |
 | `apps.proxy.tests` | **24** (2 + 3 + 10 + 9) | — | −24 |
-| `tests` | **4** (1 in `test_ci_test_routing.py`, 3 in `test_urls_xc_three_segment.py`) | **1** (R6's new catch-all assertion) | −3 |
+| `tests` | **1** (`test_ci_test_routing.py`'s `test_live_proxy_change_runs_channels_tests`, R10/Task 8) | — | −1 |
 | `core.tests` | — | — | 0 |
+
+**Corrected in a post-review fix round** (a review finding outside its numbered list): the `tests`
+row above previously read "4 (1 in `test_ci_test_routing.py`, 3 in `test_urls_xc_three_segment.py`)
+… −3", stale text from a draft R6 replaced — `test_urls_xc_three_segment.py` keeps all five of its
+tests (R6 says so explicitly), so the true net for this label is **−1**, matching the measured
+159→158 drop across Tasks 7→8.
 
 The 406 figure is A12.6's, measured one PR ago; the spec's "~564 tests" in the deletion-list entry
 predates 2d-2 moving a 23-test file out of the package and is left as the historical measurement it
@@ -984,14 +998,22 @@ slow-trickle.stderr, truncation.stderr}` → `relay/internal/relaytest/testdata/
 | `apps/channels/models.py` | #190's five ranges and the now-unused `ChannelMetadataField` import | R8 |
 | `scripts/capture_ffmpeg_stderr.py` | two docstring lines | R12 |
 
-**Modified — tests (12)**
+**Modified — tests (13)**
+
+**Corrected in a post-review fix round (F1): the heading said "Twelve" over the thirteen filenames
+already listed below it, and R7 row 15's own disposition of the thirteenth
+(`core/tests/test_fetch_channel_stats.py`, "KEEP, one test's docstring") was never executed at
+Task 12 — the file shipped byte-identical to the seed, so the true count at that commit was
+twelve, matching the heading and contradicting the list. The docstring is added in the fix round;
+the count is now genuinely thirteen, and the heading is corrected to match rather than the list
+trimmed to match the heading, because the substance R7 wanted recorded is real.**
 
 `apps/channels/tests/{test_channel_stream_reuse, test_get_stream_assignment, test_recording_pipeline,
 test_ts_proxy_initializing, test_ts_proxy_keepalive}.py`;
 `apps/proxy/tests/{test_boundary_error_arms, test_combined_stats, test_stream_switch,
 test_internal_base_url}.py`;
 `tests/{test_websocket_consumer_filter, test_ci_test_routing, test_urls_xc_three_segment}.py`;
-`core/tests/test_fetch_channel_stats.py` (one docstring). R6, R7. **Twelve.**
+`core/tests/test_fetch_channel_stats.py` (one docstring). R6, R7. **Thirteen.**
 
 **Modified — Go (3)**
 
@@ -1610,9 +1632,13 @@ R7. **Rulings:** R7, R1.
       script takes them as arguments rather than baking them, because every predecessor plan that
       baked a measured number into an appendix shipped a stale one.
 - [ ] **Step 2 — run Appendix K's script** (CLAUDE.md). **Nineteen** verbatim-string
-      replacements, each `assert count == 1`. It prints exactly `ok, 19 edits`. Verbatim-string
-      replacement, not line-anchored hunks, because 2d-3 moved every line number in this file (see
-      the re-seed table).
+      replacements at Task 12 itself, each `assert count == 1`. It printed exactly `ok, 19 edits`
+      at this task. **Corrected in a post-review fix round (F2): a twentieth edit (§ Commands'
+      dev-address bullet) was added to Appendix K afterward** because it never contains the string
+      `live_proxy` and R15's own enumeration is grep-driven off that string, so it could not have
+      been found here — the script now prints `ok, 20 edits`. Verbatim-string replacement, not
+      line-anchored hunks, because 2d-3 moved every line number in this file (see the re-seed
+      table).
 - [ ] **Step 3 — verify by replacement count and by grep**, not by eye. **Two patterns, two
       different numbers — do not conflate them**, which an earlier draft of this step did:
       ```
@@ -1677,19 +1703,24 @@ R7. **Rulings:** R7, R1.
       `npx playwright test --project=guards`. Both green, no container needed. The heavy projects
       run in CI; this PR touches no `e2e/` test file other than the guards' own source.
 - [ ] **Step 5 — `git diff --stat origin/main` names exactly the paths in § File structure**, and
-      no others but one. Count them and say the number in your report. Expect **154** from
-      § File structure's own groups: **106** deletions (97 in the package, 9 standalone), **4**
-      renames, **1** new file and **43** modifications (13 Python production + 12 tests +
-      3 Go + 8 routing/gates/CI + 7 guards/docs/metrics). **Plus one more the plan cannot count
-      itself into: this plan document.** Every in-execution correction (Task 0 Step 4's count, Task
-      4 Step 6's and Task 7 Step 6's expected-red labels, Task 11 Step 5's `.ts` count, Appendix
-      J.2's stale hunks, Appendix N's N8 table-row fix, and any other disclosed fix) is an edit to
+      no others but one. Count them and say the number in your report. Expect **155** from
+      § File structure's own groups, corrected in a post-review fix round (F1) from the figure
+      first measured here: **106** deletions (97 in the package, 9 standalone), **4** renames,
+      **1** new file and **44** modifications (13 Python production + 13 tests + 3 Go +
+      8 routing/gates/CI + 7 guards/docs/metrics — the tests group is 13, not the original 12,
+      because F1 finally executed R7 row 15's docstring disposition on
+      `core/tests/test_fetch_channel_stats.py`, which the first Task 12 run shipped
+      byte-identical to the seed despite the ruling and § File structure's own list both naming
+      it). **Plus one more the plan cannot count itself into: this plan document.** Every
+      in-execution correction (Task 0 Step 4's count, Task 4 Step 6's and Task 7 Step 6's
+      expected-red labels, Task 11 Step 5's `.ts` count, Appendix J.2's stale hunks, Appendix N's
+      N8 table-row fix, a post-merge review's F1-F5, and any other disclosed fix) is an edit to
       `docs/superpowers/plans/2026-09-20-phase2-2d4-delete-live-proxy.md` itself, which is already
-      tracked on `main` (merged with #328) — so it shows as a 44th modification, not a 155th
-      untracked surprise. Expect **155** total, and the diff of everything but that one file
-      matching § File structure exactly. Two of the 43 plan-scoped modifications arrive late and
-      are easy to miss when counting early: `scripts/capture_ffmpeg_stderr.py` (Task 1 Step 3, a
-      by-hand docstring edit) and `scripts/coverage_live_path.floor.modules` (Task 9 Step 3, written by
+      tracked on `main` — so it shows as one modification, not an untracked surprise. Expect
+      **156** total, and the diff of everything but that one file matching § File structure
+      exactly. Two of the 44 planned modifications arrive late and are easy to miss when counting
+      early: `scripts/capture_ffmpeg_stderr.py` (Task 1 Step 3, a by-hand docstring edit) and
+      `scripts/coverage_live_path.floor.modules` (Task 9 Step 3, written by
       `--write-floor --shape-only`).
 - [ ] **Step 6 — stage and commit in separate Bash calls**, message written with the Write tool and
       committed with `git commit -F <file>`. End it with the two attribution lines from
@@ -1985,6 +2016,17 @@ are not in the diff — `git status` must show four `R` entries and no `D`+`A` p
 `RepoRoot()` is re-expressed on top of it, so there is a single `runtime.Caller` call site and
 `relay/drain`'s tests keep working. `CorpusPath` still returns an ABSOLUTE path, which the
 eleven argv callers require.
+
+**Amended in a post-review fix round (F4), on top of this diff rather than inside it, since Task 1
+already committed this exact text.** `TestSyntheticTSHasThePacketCountAndSizeItsCallersAssume`'s
+derived form (`if want := 512 * PacketSize; len(data) != want`) pins nothing about `PacketSize`
+itself — change `PacketSize` from 188 to 189 and the assertion moves with it and stays green,
+which is exactly the drift the deleted cross-implementation digest used to catch. R12's own text
+says the 96,256-byte literal assertion **stays**, and after this diff it had stopped appearing
+anywhere in the module (`grep -rn '96256\|96_256' relay/` was empty). The fix round adds a literal
+`if len(data) != 96256` check and an explicit `if PacketSize != 188` check ahead of the derived
+form, in the same test function, so the derived form now has something checking its own inputs
+rather than only the arithmetic around them.
 
 ```diff
 diff --git a/relay/internal/relaytest/asset_test.go b/relay/internal/relaytest/asset_test.go
@@ -5107,9 +5149,22 @@ index 869729a2..badc8327 100644
 
 ### Appendix K — `CLAUDE.md` (R15), Task 12
 
-**Nineteen** replacements. Takes the measured label count, backend test count and suite wall
-time as **arguments**, because every predecessor plan that baked a measured number into an
-appendix shipped a stale one. Prints `ok, 19 edits`.
+**Twenty** replacements (nineteen at Task 12, plus edit 17 added in a post-review fix round, F2 —
+see below). Takes the measured label count, backend test count and suite wall time as
+**arguments**, because every predecessor plan that baked a measured number into an appendix
+shipped a stale one. Prints `ok, 20 edits`.
+
+**Corrected in a post-review fix round (F2):** § Commands' dev-address bullet (`CLAUDE.md:50`)
+never contains the string `live_proxy`, so R15's grep-driven enumeration of its nineteen
+replacements could not reach it, and it shipped false in four clauses — the two dev directions no
+longer share a port (Django→relay is `:5658` now, not `:5656`), a bare `manage.py runserver 5656`
+with no `relay-go` running gets a connection refusal rather than working "three levels deep",
+`/proxy/relay/…` is served by nobody in the API process any more (R1 deleted the routes), and
+`reset_tried` is no longer a no-op under `all-dev` because that rung's `relay-go` is now a real
+out-of-process relay with a real registry. Edit 17, inserted below, is the fix; `sub()`'s own
+`assert count == 1` is what would have caught this at Task 12 if the passage had matched the
+grep that drove R15's enumeration in the first place — it never could, since R15 targets sentences
+containing `live_proxy` and this one does not.
 
 ```python
 #!/usr/bin/env python3
@@ -5366,6 +5421,18 @@ def main(labels, tests, seconds):
         "`live_proxy/`",
     )
 
+    # 17 -- section Commands, the dev-address bullet's closing sentence.
+    # Corrected in a post-review fix round (F2): the two dev directions no
+    # longer share a port, a bare `runserver 5656` with no `relay-go` gets a
+    # connection refusal (caught, logged, falls back to a Redis-only reuse
+    # check) rather than working "three levels deep", `/proxy/relay/...` is
+    # served by nobody in the API process any more, and `reset_tried` is no
+    # longer a no-op under `all-dev` because that rung runs a real relay-go.
+    sub(
+        'Since PR 7 the dev process also calls *itself* in the other direction: `Channel.get_stream()` asks the relay whether a channel is still running, and in `dev` that call goes to `http://127.0.0.1:5656` too. What answers depends on how dev was started. Under a bare `manage.py runserver 5656` one process serves everything, so a re-tune is three levels deep — request, `next-source`, then the reuse check — and it works only because `runserver` is threaded by default; **`--nothreading` makes the outer request wait forever on a nested one it will never serve, so do not pass it.** Inside Docker, `DISPATCHARR_ENV=dev` selects the `all-dev` rung, which starts **both** `api-uwsgi` and `relay-uwsgi` and no nginx, so `:5656` is the API uWSGI and `/proxy/relay/…` is served by the API process rather than the relay. Status reads still work (one Redis) and stops and `advance` still work (`ChannelService` reaches the owner over `live:events:` pub/sub), but `reset_tried` is a silent no-op there: the API process holds no `StreamManager` to clear.',
+        'Since Phase 2 stage 2d-4 the dev process also calls *itself* in the other direction, but the two directions no longer share a port: `Channel.get_stream()`\'s reuse check and every other `relay_client` call (`advance`, `stop_channels`, …) resolve through `resolve_base_url(..., dev_url=dev_relay_url())`, so in `dev` they go to `http://127.0.0.1:5658` — the Go relay\'s own port (`DISPATCHARR_RELAY_GO_PORT`) — never `:5656`, because Django itself serves no `/proxy/relay/…` route in any shape any more (R1 deleted `relay_views.py`/`relay_urls.py` with the package). Under a bare `manage.py runserver 5656` nothing listens on `:5658` unless `relay-go` is started separately, so the call gets a connection refusal: `relay_client.channel_snapshot()` catches it as `RelayUnavailable`, logs one WARNING (`"Relay could not answer for channel %s: %s"`) and returns `present=False, active=False` — not a 500 — so `_stream_assignment_is_reusable()` falls back to a bare Redis `stream_profile`-key check instead of the relay\'s real answer. Start `relay-go` alongside a bare `runserver`, or point `DISPATCHARR_RELAY_BASE_URL` at wherever one answers, to get the relay\'s actual state instead of the fallback. Inside Docker, `DISPATCHARR_ENV=dev` selects the `all-dev` rung, which DOES start `relay-go` (`docker/supervisord/all-dev.conf`\'s `[include]` lists `relay-go.conf`), so every `relay_client` call there reaches a real out-of-process relay with a real channel registry — `reset_tried` is no longer a silent no-op there, because that was a property of the old in-process Python relay answering on the API process with an empty `stream_managers`, and that process no longer exists in any shape.',
+    )
+
     print(f"ok, {edits} edits")
 
 
@@ -5418,9 +5485,11 @@ trade from the tree. Measured: `relay_views.py` is a 257-line HTTP wrapper over 
 four inside the deleted directory. "Keeping it" means writing a second implementation of the Go
 relay's in-process channel registry in Python over Redis keys the Go relay never writes. Two
 consequences are stated rather than absorbed: Gate 2's denominator goes from ten boundary modules
-to **nine**, which 2d-5's census must be planned against; and `IsInternalRelay` keeps exactly one
-user, `authorize_views.py`'s `authorize_internal_view`, so `permissions.py` stays in the gate's
-list.
+to **nine**, which 2d-5's census must be planned against; and `IsInternalRelay` keeps **four**
+users, not one as first measured here — `authorize_views.py`'s `authorize_internal_view` and
+`api_views.py`'s three `/api/relay/…` views (`next_source_view`, `release_view`, `events_view`),
+which this ruling's own grep missed (2d-4 fix round, F3) — so `permissions.py` stays in the gate's
+list, more strongly than this amendment first said.
 
 **A14.1b — THE URL PATTERNS DO NOT GO WITH THE IMPORTS, and nothing in A10 says so.** A10.3 lists
 `dispatcharr/urls.py:9` (site 5) and `apps/proxy/urls.py:10` (site 6) as module-level import sites
@@ -5578,7 +5647,7 @@ DONE_LOG_ROW = ("| 2d-4 -- delete `apps/proxy/live_proxy/` (`migration/phase2d-d
     "split, 5 kept, 2 rewritten); replaced the parity matrix's Python column with Go citations and "
     "gave rows 26/27 a guard-checked `retired:` sentinel; moved the ffmpeg stderr corpus into "
     "`relay/internal/relaytest/testdata/`; deleted `go-tests.yml`'s `differential` job; took the "
-    "label count 16 -> 15 and Gate 2's module list 38 -> 9 with a `--shape-only` re-baseline that "
+    "label count 16 → 15 and Gate 2's module list 38 → 9 with a `--shape-only` re-baseline that "
     "leaves `missing` slack until 2d-5. Amendment A14. | `migration/phase2d-delete-live-proxy` | "
     "pending |\n")
 

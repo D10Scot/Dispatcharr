@@ -42,9 +42,6 @@ class ConfigHelperDefaultLadderTests(SimpleTestCase):
             self.assertEqual(ConfigHelper.channel_client_wait_period(), 77)
         delegate.assert_called_once()
 
-
-
-
 class UserCanAccessChannelAdminBypassTests(SimpleTestCase):
     def test_an_admin_passes_regardless_of_channel_profile_membership(self):
         user = MagicMock()

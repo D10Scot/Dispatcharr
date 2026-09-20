@@ -17,8 +17,22 @@ import (
 // What survives is the SHAPE, which still pins the asset against the e2e fake
 // provider rather than against a deleted Python file: 512 packets of 188
 // bytes is 96,256, and PacketSize/PacketPID below read the same bytes back.
+//
+// Corrected in a post-review fix round (F4): the derived form alone
+// (`512 * PacketSize`) pins nothing about PacketSize itself -- change it to
+// 189 and this assertion moves with it and stays green, where the deleted
+// cross-implementation digest would have caught the drift. The literal
+// 96256 and the explicit PacketSize == 188 check restore that: R12's own
+// text says the 96,256-byte assertion stays, and it had stopped appearing
+// anywhere in the module (`grep -rn '96256\|96_256' relay/` was empty).
 func TestSyntheticTSHasThePacketCountAndSizeItsCallersAssume(t *testing.T) {
+	if PacketSize != 188 {
+		t.Fatalf("PacketSize = %d, want 188 -- the production TS packet size", PacketSize)
+	}
 	data := SyntheticTS(512, 0x100)
+	if len(data) != 96256 {
+		t.Fatalf("SyntheticTS(512, 0x100) is %d bytes, want 96256 (512 x 188)", len(data))
+	}
 	if want := 512 * PacketSize; len(data) != want {
 		t.Fatalf("SyntheticTS(512, 0x100) is %d bytes, want %d (512 x %d)",
 			len(data), want, PacketSize)

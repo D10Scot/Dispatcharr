@@ -3962,9 +3962,11 @@ trade from the tree. Measured: `relay_views.py` is a 257-line HTTP wrapper over 
 four inside the deleted directory. "Keeping it" means writing a second implementation of the Go
 relay's in-process channel registry in Python over Redis keys the Go relay never writes. Two
 consequences are stated rather than absorbed: Gate 2's denominator goes from ten boundary modules
-to **nine**, which 2d-5's census must be planned against; and `IsInternalRelay` keeps exactly one
-user, `authorize_views.py`'s `authorize_internal_view`, so `permissions.py` stays in the gate's
-list.
+to **nine**, which 2d-5's census must be planned against; and `IsInternalRelay` keeps **four**
+users, not one as first measured here — `authorize_views.py`'s `authorize_internal_view` and
+`api_views.py`'s three `/api/relay/…` views (`next_source_view`, `release_view`, `events_view`),
+which this ruling's own grep missed (2d-4 fix round, F3) — so `permissions.py` stays in the gate's
+list, more strongly than this amendment first said.
 
 **A14.1b — THE URL PATTERNS DO NOT GO WITH THE IMPORTS, and nothing in A10 says so.** A10.3 lists
 `dispatcharr/urls.py:9` (site 5) and `apps/proxy/urls.py:10` (site 6) as module-level import sites

@@ -1,25 +1,28 @@
-"""Tests for ts_proxy keepalive and stats-update behavior.
+"""Keepalive/DVR-timeout timing invariants -- CONNECTION_TIMEOUT and
+KEEPALIVE_INTERVAL, off apps/proxy/config.py, not the deleted relay.
 
-Covers:
-  - stream_generator._should_send_keepalive() owner vs non-owner worker paths
-  - stream_generator._should_send_keepalive() Redis last_data health check
-  - client_manager._do_stats_update() error handling and WebSocket dispatch
-  - client_manager.remove_client() non-blocking stats update
-  - Keepalive/DVR-timeout timing invariants
+This file used to carry two more halves, seventeen tests total. Phase 2
+stage 2d-4 deleted both with apps/proxy/live_proxy/:
+
+  - stream_generator._should_send_keepalive()'s owner and non-owner worker
+    paths (the owner branch reads a local StreamManager; the non-owner
+    branch reads a Redis last_data timestamp through ProxyServer). Go cover:
+    relay/httpapi/keepalive_test.go::TestAnUnhealthyChannelSendsKeepalivesAtTheBufferHeadAndAHealthyOneDoesNot
+    (whose header comment cites output/ts/generator.py:387-405, :542-551 by
+    line) and ::TestHealthyOnTheListPayloadFollowsTheHealthMonitor. There is
+    no Go analogue of the non-owner branch -- there is no non-owner.
+  - client_manager._do_stats_update()'s error handling and WebSocket
+    dispatch, and client_manager.remove_client()'s non-blocking stats
+    update. Go cover for the client-with-no-bytes case:
+    relay/httpapi/keepalive_test.go::TestAClientWithNoBytesGetsAnErrorPacketWhenEverySourceFails.
+    No Go analogue for the WebSocket fan-out (the Go relay posts to
+    /api/relay/events instead; relay/httpapi/events_test.go) or for
+    remove_client()'s non-blocking latency assertion.
+
+Recorded in the 2d-4 plan's ruling R7 (file 6) so this is a decision rather
+than an oversight.
 """
-import threading
-import time
-from unittest.mock import MagicMock, patch
-
 from django.test import TestCase
-
-
-# ---------------------------------------------------------------------------
-# _should_send_keepalive: owner worker path
-# ---------------------------------------------------------------------------
-
-
-
 
 
 class KeepaliveTimingTests(TestCase):
