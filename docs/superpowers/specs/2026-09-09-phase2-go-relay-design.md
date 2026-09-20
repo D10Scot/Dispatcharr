@@ -4177,7 +4177,9 @@ share a PR with the delete that makes it measurable).
    and its generated `.lock.yml:562` name the deleted tree and are regenerated with a **bare**
    `gh aw compile`; `metrics/curated/catalogue.yml:37-38`'s `models_boot_trap_imports` note gains one
    sentence saying it counts `apps/channels/models.py` only, so its zero is not "the trap is gone";
-   and CLAUDE.md's "two fallback-path reads" becomes three. `e2e/COVERAGE.md:50` (the ownership-lease
+   CLAUDE.md's "two fallback-path reads" becomes three; and
+   `apps/proxy/ts_admin_views.py`'s `logging.getLogger("live_proxy.views")` (2d-2, A12.4) is
+   renamed now that the directory behind the name is gone. `e2e/COVERAGE.md:50` (the ownership-lease
    `todo` row) and `:202` (the reconnect open question) are also here rather than PR 4 — they
    describe mechanisms rather than cite paths. The parity matrix's Python column is **not** here:
    A10.5 moved it to PR 4. Gate: `python -m metrics.build --validate-only` green.
