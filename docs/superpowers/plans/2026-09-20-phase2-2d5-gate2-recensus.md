@@ -390,11 +390,17 @@ at.
 1. **Capture the newest `workflow_dispatch` run id BEFORE dispatching and poll until it changes.**
    That is the id of this round, positively identified rather than inferred from a timer.
 2. **Assert the harvested `run_id` differs from every row already in `census.tsv`.** `run_id` is
-   already a column; the check is one `cut | grep`. It catches the failure even if defence 1 is
-   subverted by something this plan has not thought of.
+   already a column. It catches the failure even if defence 1 is subverted by something this plan
+   has not thought of. **Written `grep -qx "$RUN" < <(cut -f2 "$LOG")`, never `cut … | grep -qx`**:
+   under `pipefail` the pipeline form fails OPEN, because `grep -q` exits on the match, `cut` takes
+   SIGPIPE and exits 141, and pipefail makes 141 the pipeline's status — a found duplicate reading
+   as "not found". Measured, deterministically, from about 2,000 rows up. A real `census.tsv` is
+   12-20 rows and would have worked, which is exactly why the pipeline form could not stay: this
+   guard has no second chance, and its correctness must not rest on the pipe buffer.
 
-Appendix E implements both, and Task 3 Step 6 is its break-check: run the driver twice against a
-deliberately stale "previous id" and confirm the second invocation refuses rather than recording.
+Appendix E implements both. **Task 3 Step 3 is the break-check, and it uses a 20,000-row file on
+purpose** — at census scale the broken form passes, so a break-check sized to a real campaign would
+have been a test that cannot fail (Constraint 8).
 
 **Waited for to completion, not to the gate.** `backend-tests.yml`'s concurrency group is
 `backend-tests-<workflow>-<ref>` with `cancel-in-progress: true` (`:30-32`), so dispatching round
@@ -934,16 +940,32 @@ census starts** (R6).
       `<scratchpad>/impl-2d5/round.sh`. It establishes the run id by polling until the newest
       `workflow_dispatch` id **changes**, and refuses any id already present in `census.tsv` (R6).
       **Break-check, run rather than read** — the duplicate guard is the one defence whose failure is
-      invisible after the fact:
+      invisible after the fact, and **it must be checked on a file large enough to expose the
+      SIGPIPE fail-open**, not on the two-row file an earlier draft of this plan used:
       ```
-      printf '1\t35512184360\tabc\tsuccess\tsuccess\tsuccess\t1474\t7767\tvalid\n' > /tmp/fake-census.tsv
-      cut -f2 /tmp/fake-census.tsv | grep -qx 35512184360 && echo "duplicate detected (expected)"
-      cut -f2 /tmp/fake-census.tsv | grep -qx 35512184361 || echo "new id accepted (expected)"
+      python3 -c "open('/tmp/dup.tsv','w').writelines(['1\t35512184360\tx\n'] + \
+        ['%d\t%d\tx\n' % (i, 90000000000+i) for i in range(2, 20001)])"
+
+      # 1. the form this plan ORIGINALLY shipped, which the review caught -- must print MISSED
+      bash -c 'set -uo pipefail; cut -f2 /tmp/dup.tsv | grep -qx 35512184360 \
+                 && echo "old form: DETECTED" || echo "old form: MISSED (fails open)"'
+      # 2. the form Appendix E uses -- must print DETECTED
+      bash -c 'set -uo pipefail; grep -qx 35512184360 < <(cut -f2 /tmp/dup.tsv) \
+                 && echo "new form: DETECTED" || echo "new form: MISSED"'
+      # 3. and must not false-positive
+      bash -c 'set -uo pipefail; grep -qx 99999999999 < <(cut -f2 /tmp/dup.tsv) \
+                 && echo "FALSE POSITIVE" || echo "new form: new id accepted"'
       ```
-      Both lines must print. Then, on the branch's **first** dispatch only, confirm the polling
-      defence by watching the driver's own `newest before dispatch = <none>` line — a branch with no
-      prior `workflow_dispatch` prints nothing and exits 0, which `// empty` turns into an empty
-      `BEFORE`. Paste both outputs into the PR body.
+      Expected, in order: **`old form: MISSED (fails open)`**, `new form: DETECTED`,
+      `new form: new id accepted`. **If line 1 prints DETECTED, the break-check is not biting** —
+      raise the row count until it does, and say so; the threshold is machine-dependent (measured
+      here: ≤1,000 rows detects, ≥2,000 misses). **A real `census.tsv` is 12-20 rows and is below
+      that threshold**, so this check demonstrates the mechanism rather than a live failure — which
+      is the honest reading, and the reason the guard was changed anyway (R6).
+
+      Then, on the branch's **first** dispatch only, confirm the polling defence by watching the
+      driver's own `newest before dispatch = <none>` line — a branch with no prior
+      `workflow_dispatch` prints nothing and exits 0. Paste all four outputs into the PR body.
 - [ ] **Step 4 — one round.** `bash <scratchpad>/impl-2d5/round.sh <N> <frozen-sha> <census.tsv>`.
       Repeat until Task 4's stopping rule is met. The driver asserts, in this order and before
       reading any log:
@@ -1406,6 +1428,31 @@ figure reproduced. What changed:
     `full_suite=false` round is **7** jobs, not ~5 (N4); and Task 5 Step 6 gained the contingency it
     lacked for a local `--gate` draw above the CI maximum — STOP and report, never raise the floor
     (N5).
+
+**Round-2 review (PASS; one should-fix and one note, both reproduced).** The reviewer re-measured S5
+from scratch with an AST class-stripper and got byte-identical missing sets, and found two defects
+**in the S1 fix itself** — which is the right place to look, since that fix was written in the same
+round it was reviewed:
+
+16. **R2-S1 — the duplicate guard failed open under the very `pipefail` this plan mandates.**
+    `cut -f2 "$LOG" | grep -qx "$RUN"`: `grep -q` exits on the match, `cut` takes SIGPIPE and exits
+    141, `pipefail` makes 141 the pipeline's status, and the `if` reads a found duplicate as "not
+    found". Reproduced exactly — `pipeline exit=141` on a 100k-row file with the match on line 1,
+    and `MISSED (fails open)` — then bisected: ≤1,000 rows detects, ≥2,000 misses, five runs each,
+    deterministic. **A real `census.tsv` is 12-20 rows and would have worked**, so this was a latent
+    fail-open in the one guard with no second chance rather than a live one. Fixed with
+    `grep -qx "$RUN" < <(cut -f2 "$LOG")`, verified detecting at 20/2,000/20,000 rows with no false
+    positive. **And the break-check was rewritten around it**: the old two-row check could not have
+    caught this, so Task 3 Step 3 now uses a 20,000-row file, asserts the OLD form prints
+    `MISSED (fails open)` first, and says plainly that the check demonstrates the mechanism rather
+    than a census-scale failure. A break-check that cannot fail is the defect this plan's own
+    Constraint 8 exists to prevent.
+17. **R2-N1 — the stated reason for `// empty` was not reproducible.** The note claimed that without
+    it "`jq` prints `null`". Bare `jq` does (`echo '[]' | jq -r '.[0].databaseId'` → `null`), but
+    **`gh --jq` does not**: measured on gh 2.100.0 against a branch with no dispatch run, the output
+    without `// empty` is exactly one byte (`\n`) and with it zero bytes, and through `$( )` both
+    yield a zero-length `BEFORE`. `// empty` is kept — it states the intent and survives the command
+    being run outside a substitution — but it is no longer described as load-bearing.
 
 **What could not be settled from the tree, and why.** `statements` and `missing` for the
 implementation seed: the tree does not exist. R4 carries the measured reference over the same nine
@@ -2073,7 +2120,15 @@ fi
 echo "round $R: run $RUN"
 
 # Defence 2: an id already in census.tsv is a duplicate, whatever produced it.
-if [ -f "$LOG" ] && cut -f2 "$LOG" | grep -qx "$RUN"; then
+#
+# Process substitution, NOT `cut ... | grep -qx`. Under `pipefail` the pipeline
+# form FAILS OPEN: `grep -q` exits the moment it matches, `cut` then takes
+# SIGPIPE and exits 141, and pipefail makes 141 the pipeline's status -- so a
+# FOUND duplicate reads as "not found". Measured: deterministic from about 2,000
+# rows up on this machine, and a real census.tsv (12-20 rows) is far below that,
+# so the pipeline form would have worked here and stayed a latent fail-open in
+# the one guard that has no second chance.
+if [ -f "$LOG" ] && grep -qx "$RUN" < <(cut -f2 "$LOG"); then
   echo "round $R: REFUSING -- run $RUN is already recorded in $LOG. A duplicate row is a"
   echo "round $R: fake observation of stability under the stopping rule. Investigate before retrying."
   exit 1
@@ -2119,12 +2174,26 @@ by itself a reason to discard a round; the job set decides (R7).
 round 1:**
 
 - `gh run list … --event workflow_dispatch --limit 1 --json databaseId --jq '.[0].databaseId // empty'`
-  on a branch with no dispatch prints **nothing and exits 0** — which is why `BEFORE` may legitimately
-  be empty on the first round, and why `// empty` is load-bearing (without it, `jq` prints `null`
-  and `null != ""` makes the first poll succeed against a run that does not exist).
+  on a branch with no dispatch prints **nothing and exits 0**, which is why `BEFORE` may legitimately
+  be empty on the first round. **`// empty` is intent, not a fix**, and an earlier draft of this note
+  claimed otherwise: it said that without it "`jq` prints `null`". Bare `jq` does — `echo '[]' | jq -r
+  '.[0].databaseId'` prints `null` — but **`gh --jq` does not**. Measured on gh 2.100.0 against a
+  branch with no dispatch run: without `// empty` the output is exactly one byte, `\n`; with it,
+  zero bytes; and through `$( )` both give a zero-length `BEFORE`. Keep `// empty` because it says
+  what is meant and survives the command being run outside a substitution, not because the poll
+  would otherwise chase a run that does not exist.
 - The gate log is fetched **once** into `$GATELOG` and grepped twice. The first draft called
   `gh run view --log` twice, which is two API round trips for one answer and two chances for the
   second to come back different from the first.
-- `cut -f2 "$LOG" | grep -qx "$RUN"` is the duplicate check, verified against a real run id
-  (`35512184360`): it matches that id and does not match `35512184361`. `-x` matters — without it a
-  future id that merely *contains* an earlier one would false-positive.
+- **The duplicate check is `grep -qx "$RUN" < <(cut -f2 "$LOG")` and not a pipeline**, for a
+  reason worth stating because it is the opposite of the usual advice. Under `set -o pipefail` —
+  which this script and Global Constraint 2 both require — `cut -f2 "$LOG" | grep -qx "$RUN"`
+  **fails open**: `grep -q` exits as soon as it matches, `cut` takes SIGPIPE writing to the closed
+  pipe and exits **141**, and pipefail hands 141 to the `if`, which reads it as "no duplicate".
+  Measured on this machine: ≤1,000 rows detects, ≥2,000 rows misses, deterministically
+  (`pipeline exit=141` on a 100k-row file with the match on line 1). **A real `census.tsv` is
+  12-20 rows, far below the threshold, so the pipeline form would have worked here** — which is
+  precisely why it had to go: a guard that has no second chance must not depend on the pipe buffer.
+  The process-substitution form detects at 20, 2,000 and 20,000 rows and false-positives at none.
+- `-x` matters independently — without it a future run id that merely *contains* an earlier one
+  would match. Verified: `35512184360` matches, `35512184361` and `99999999999` do not.
