@@ -884,9 +884,17 @@ no `frontend/`, no `.github/workflows/`, no `metrics/`.
       ```
       Expected: `test is successful`; `server 127.0.0.1:5658` (the sed resolved, no placeholder
       left); `4`; all ten programs `RUNNING` including `relay-go`.
-- [ ] **Step 3 — the A10.12 smoke check.** Run
-      `npx playwright test --project=streaming --project=streaming-greybox --project=streaming-failover --project=streaming-split`
-      against it and confirm, from the run's own output rather than by inspection:
+- [ ] **Step 3 — the A10.12 smoke check.** Run these as **separate** invocations, one project
+      each: `npx playwright test --project=streaming`, then `--project=streaming-greybox`, then
+      `--project=streaming-failover`, then `--project=streaming-split`. **Not** a single command
+      naming all four: `e2e/README.md` documents that `streaming-greybox` and `streaming-split`
+      "must be run alone locally" because each mutates or takes away container-wide state (a
+      supervisord program, in `streaming-split`'s case) that a concurrently-running project would
+      observe. Combining them was measured to fail exactly that way — `streaming-split`'s Scenario A
+      restarting `api-uwsgi` mid-run produced cascading `502`s across every other project's `seed.*`
+      calls, reproducibly (same 41-test failure set on two separate combined runs), while each
+      project is fully green run alone. Confirm, from each run's own output rather than by
+      inspection:
       - `streaming/stream-profiles.spec.ts:37` (`the FFmpeg profile spawns a subprocess and reports
         its progress`) **green** — `stream_profile.argv`.
       - `streaming-greybox/output-profile-sharing.spec.ts` **green** — `output_profiles[*].argv`,
@@ -905,8 +913,35 @@ no `frontend/`, no `.github/workflows/`, no `metrics/`.
       Then create an Output Profile whose `parameters` are `-i pipe:0 -c copy "unterminated -f
       mpegts pipe:1` (the API accepts it, **201**) and tune with `?output_profile=<id>`: expect
       **500**, the null-`argv` arm.
-- [ ] **Step 4 — the remaining projects locally:** `--project=seeded --project=guards
-      --project=frontend --project=dvr --project=lifecycle --project=pristine`. All green.
+- [ ] **Step 4 — the remaining projects locally, EACH AS ITS OWN INVOCATION against its own
+      freshly-reset instance.** Same defect class as Step 3, worse here: `package.json`'s own bare
+      `npm test` message says plainly that every population "need[s] different container states and
+      cannot share one invocation" — not a rule scoped to the projects `e2e/README.md`'s table
+      happens to mark "must be run alone", a blanket statement about all of them, `pristine` because
+      it needs an instance with **no** superuser (`bootstrap`, which `seeded`/`frontend`/`dvr`
+      depend on, creates one) and `lifecycle` because it **destroys the container** outright.
+      **Measured, not assumed, after a first draft of this step tried `seeded` and `frontend`
+      together on the reasoning that neither is individually flagged solo**: on a byte-for-byte
+      fresh container (fresh Postgres/Redis volume, not merely a fresh container name reusing an old
+      volume — the first attempt at this measurement was invalidated exactly that way), `frontend`
+      alone is 24/24 green and `seeded` alone is 148/149 green with one flaky
+      `output-epg.spec.ts` failure that passes in isolation and that CI's own per-job-isolated
+      `seeded` run does not reproduce — but `seeded` + `frontend` together fail **17** tests, mostly
+      `frontend`'s `render.spec.ts`/`stats.spec.ts`/`settings.spec.ts`/`users.spec.ts`, because
+      `seeded`'s four parallel workers churn container-wide state (`render.spec.ts`'s `pageErrors`
+      check and `stats.spec.ts`'s exact-connection-count assertion cannot tell "the flip broke this"
+      from "another project's workers are mutating the instance under me"). **Ruling: no pair is
+      assumed safe merely because neither name is on the README's "must run alone" list; run every
+      population as `package.json`'s own `test:*` scripts do, one at a time.** In order:
+      `--project=guards` (needs no container, may run anywhere); `./scripts/e2e_up.sh` (fresh) then
+      `--project=seeded` alone; fresh again, `--project=frontend` alone; fresh again,
+      `--project=dvr` alone; `./scripts/e2e_up.sh --reset` then `--project=pristine` alone (the
+      reset gives it the superuser-less instance it needs); `--project=lifecycle` alone last (it
+      destroys the container). Where a fresh local rebuild-and-bootstrap cycle for every population
+      is disproportionate to what it buys beyond CI's already-isolated per-job matrix, CI's own
+      green result for that project's job (each one *is* genuinely isolated, one container per job,
+      exactly the property this step is trying to approximate locally) may stand in for a repeated
+      local run — record which projects were verified which way.
 - [ ] **Step 5 — remove your container, volume and network** when Task 9 has pushed.
 
 ## Task 8: Amendment A13, the eight in-place spec corrections, and the Done-log row
@@ -1073,14 +1108,22 @@ touches none of them either (its Global Constraint 7 forbids it).
 
 ### Appendix A — `docker/nginx.conf`
 
-One diff, four changes: the new `upstream relay_go` block, the `map` comment's stale sentence
-(R2), the three byte-path bodies, and `^~ /proxy/relay/` with the two sentences of its own comment
-that become false.
+One diff, five changes: the new `upstream relay_go` block, the `map` comment's stale sentence
+(R2), the three byte-path bodies, `^~ /proxy/relay/` with the two sentences of its own comment
+that become false, and an explicit `proxy_connect_timeout 60s;` on all four flipped locations
+(A13.11, added in PR review after `docker/nginx.conf:64`'s pre-existing server-level
+`proxy_connect_timeout 75;` — set for an unrelated `proxy_pass` — was found silently inherited,
+exceeding `test-puid-pgid.sh`'s `test_role_split` 70s budget: `uwsgi_pass` never set
+`uwsgi_connect_timeout` on these locations, so they used nginx's implicit 60s default, and
+`proxy_pass` needs the same value stated explicitly rather than left to inherit whatever the
+server block happens to carry for something else). **This appendix was regenerated as the actual
+`git diff` from the seed to the merged PR head**, not hand-edited, so re-applying it reproduces
+the fix along with the original four changes.
 
 
 ```diff
 diff --git a/docker/nginx.conf b/docker/nginx.conf
-index b9155b83..6be88610 100644
+index b9155b83..897e0522 100644
 --- a/docker/nginx.conf
 +++ b/docker/nginx.conf
 @@ -22,6 +22,20 @@ upstream relay_py {
@@ -1119,7 +1162,7 @@ index b9155b83..6be88610 100644
  map $relay_name $relay_upstream {
      default relay_py;
      py      relay_py;
-@@ -278,19 +296,44 @@ server {
+@@ -278,19 +296,55 @@ server {
          auth_request_set $authorize_status $upstream_http_x_authorize_status;
          error_page 403 = @authorize_denied;
  
@@ -1170,13 +1213,24 @@ index b9155b83..6be88610 100644
 +        proxy_http_version 1.1;
 +        proxy_read_timeout 300s;
 +        proxy_send_timeout 300s;
++        # Explicit, for the same reason the six proxy_set_header lines above
++        # are: this location's uwsgi_pass predecessor never set
++        # uwsgi_connect_timeout, so it used nginx's implicit 60s default.
++        # proxy_pass has no such luck here -- this server block sets its own
++        # proxy_connect_timeout 75 (:64, for a proxy_pass elsewhere in this
++        # file), which a location inherits normally since it is a simple
++        # directive. 75s exceeds docker/tests/test-puid-pgid.sh's
++        # test_role_split 70s client-side budget for "the relay container is
++        # stopped, expect 502/503/504" -- measured as the CI regression
++        # ERR:timed out rather than one of the three accepted codes.
++        proxy_connect_timeout 60s;
          client_max_body_size 0;
 -        uwsgi_pass $relay_upstream;
 +        proxy_pass http://relay_go;
      }
      location ^~ /proxy/vod/ {
          auth_request /_dispatcharr/authorize;
-@@ -361,18 +404,24 @@ server {
+@@ -361,18 +415,31 @@ server {
      # blanking include is still here, so a client-supplied X-Relay-*
      # header never reaches the relay on this path.
      #
@@ -1202,11 +1256,18 @@ index b9155b83..6be88610 100644
 -        uwsgi_pass relay_py;
 +        include /etc/nginx/dispatcharr_api_params_proxy.conf;
 +        proxy_read_timeout 30s;
++        # Same reason as the three byte-path locations: uwsgi_pass relay_py
++        # never set uwsgi_connect_timeout (60s implicit default), and
++        # proxy_pass would otherwise silently inherit this server block's
++        # proxy_connect_timeout 75 (:64). relay_client.py's own 2s connect
++        # timeout fires first in practice, but this keeps nginx's own budget
++        # matching the pre-flip default rather than an unrelated directive.
++        proxy_connect_timeout 60s;
 +        proxy_pass http://relay_go;
      }
      location ^~ /live/ {
          auth_request /_dispatcharr/authorize;
-@@ -386,19 +435,44 @@ server {
+@@ -386,19 +453,55 @@ server {
          auth_request_set $authorize_status $upstream_http_x_authorize_status;
          error_page 403 = @authorize_denied;
  
@@ -1257,13 +1318,24 @@ index b9155b83..6be88610 100644
 +        proxy_http_version 1.1;
 +        proxy_read_timeout 300s;
 +        proxy_send_timeout 300s;
++        # Explicit, for the same reason the six proxy_set_header lines above
++        # are: this location's uwsgi_pass predecessor never set
++        # uwsgi_connect_timeout, so it used nginx's implicit 60s default.
++        # proxy_pass has no such luck here -- this server block sets its own
++        # proxy_connect_timeout 75 (:64, for a proxy_pass elsewhere in this
++        # file), which a location inherits normally since it is a simple
++        # directive. 75s exceeds docker/tests/test-puid-pgid.sh's
++        # test_role_split 70s client-side budget for "the relay container is
++        # stopped, expect 502/503/504" -- measured as the CI regression
++        # ERR:timed out rather than one of the three accepted codes.
++        proxy_connect_timeout 60s;
          client_max_body_size 0;
 -        uwsgi_pass $relay_upstream;
 +        proxy_pass http://relay_go;
      }
      location ^~ /movie/ {
          auth_request /_dispatcharr/authorize;
-@@ -509,19 +583,44 @@ server {
+@@ -509,19 +612,55 @@ server {
          auth_request_set $authorize_status $upstream_http_x_authorize_status;
          error_page 403 = @authorize_denied;
  
@@ -1314,6 +1386,17 @@ index b9155b83..6be88610 100644
 +        proxy_http_version 1.1;
 +        proxy_read_timeout 300s;
 +        proxy_send_timeout 300s;
++        # Explicit, for the same reason the six proxy_set_header lines above
++        # are: this location's uwsgi_pass predecessor never set
++        # uwsgi_connect_timeout, so it used nginx's implicit 60s default.
++        # proxy_pass has no such luck here -- this server block sets its own
++        # proxy_connect_timeout 75 (:64, for a proxy_pass elsewhere in this
++        # file), which a location inherits normally since it is a simple
++        # directive. 75s exceeds docker/tests/test-puid-pgid.sh's
++        # test_role_split 70s client-side budget for "the relay container is
++        # stopped, expect 502/503/504" -- measured as the CI regression
++        # ERR:timed out rather than one of the three accepted codes.
++        proxy_connect_timeout 60s;
          client_max_body_size 0;
 -        uwsgi_pass $relay_upstream;
 +        proxy_pass http://relay_go;
@@ -1632,17 +1715,48 @@ REPLACEMENTS = [
      "uWSGIs from the same commit, and `relay/drain/supervisord_priority_test.go` asserts the "
      "shared `priority=205` by reading both confs."),
 
-    # 3. § Architecture -- the uwsgi_buffering bullet.
-    ("- nginx **`uwsgi_buffering off`** on every relay-bound location",
+    # 3. § Architecture -- the uwsgi_buffering bullet. Replaces the WHOLE
+    # sentence, not a prefix: a prefix-only replacement (this appendix's own
+    # first draft) leaves the pre-2d-3 nine-location parenthetical and the
+    # "asserts the exact set of the nine top-level ones" / "carries no
+    # uwsgi_buffering off" trailing sentences hanging after the new
+    # two-family prefix, self-contradicting the sentence it opens (found in
+    # PR review, second round).
+    ("- nginx **`uwsgi_buffering off`** on every relay-bound location "
+     "(`/proxy/ts/stream/`, `/proxy/vod/`, `/proxy/catchup/`, `/live/`, `/movie/`, `/series/`, "
+     "`/timeshift/`, `/streaming/timeshift.php`, the XC three-segment regex, and the nested "
+     "`^/api/channels/recordings/\\d+/file/$` regex — the one long-lived response under `/api/`) "
+     "is load-bearing — a past bug used `proxy_buffering off` (wrong directive family for "
+     "`uwsgi_pass`) and nginx spooled live TS to disk. Pinned by "
+     "`e2e/tests/streaming-greybox/nginx-stream-buffering.spec.ts`, which asserts the exact set "
+     "of the nine top-level ones; the tenth is nested inside `^~ /api/`, and that spec's own "
+     "`parseLocationBlocks` folds a nested block into its parent's body rather than giving it a "
+     "target of its own. `^~ /proxy/relay/` is relay-bound too, but deliberately carries **no** "
+     "`uwsgi_buffering off` — it serves short JSON, not a long-lived stream — pinned by that same "
+     "spec's fourth test.",
      "- nginx **buffering off, in the directive family that location's `_pass` speaks** — "
      "`proxy_buffering off` on the three Go-bound since stage 2d-3 (`/proxy/ts/stream/`, `/live/`, "
      "the XC three-segment regex), `uwsgi_buffering off` on every relay-bound location still on "
-     "`uwsgi_pass`"),
+     "`uwsgi_pass` (`/proxy/vod/`, `/proxy/catchup/`, `/movie/`, `/series/`, `/timeshift/`, "
+     "`/streaming/timeshift.php`, and the nested `^/api/channels/recordings/\\d+/file/$` regex — "
+     "the one long-lived response under `/api/`) is load-bearing — a past bug used "
+     "`proxy_buffering off` (wrong directive family for `uwsgi_pass`) and nginx spooled live TS "
+     "to disk. Pinned by `e2e/tests/streaming-greybox/nginx-stream-buffering.spec.ts`, which "
+     "since stage 2d-3 asserts the exact set on each side of the split — the six top-level "
+     "`uwsgi_buffering off` ones and the three top-level `proxy_buffering off` ones, each its own "
+     "sorted `toEqual`; the tenth (the nested recordings regex) is folded into `^~ /api/`'s own "
+     "body by that spec's `parseLocationBlocks`, which walks by brace depth and never gives a "
+     "nested location a `target` of its own, so it is pinned by `docker/nginx.conf` review "
+     "instead. `^~ /proxy/relay/` is relay-bound too and also `proxy_pass http://relay_go` since "
+     "2d-3, but deliberately carries **no** buffering directive of either family — it serves "
+     "short JSON, not a long-lived stream — pinned by that same spec's fourth test, which also "
+     "asserts its `dispatcharr_api_params_proxy.conf` include, `proxy_read_timeout 30s` and "
+     "`proxy_connect_timeout 60s`."),
 
     # 4. § Auth -- the param count and the blanking mechanism.
     ("the marker `X-Dispatcharr-Authorized` (an HMAC of `SECRET_KEY`) and the four `X-Relay-*` "
      "params are overridden to empty on every other location",
-     "the marker `X-Dispatcharr-Authorized` (an HMAC of `SECRET_KEY`) and the seven `X-Relay-*` "
+     "the marker `X-Dispatcharr-Authorized` (an HMAC of `SECRET_KEY`) and the six `X-Relay-*` "
      "params are overridden to empty on every other location — by "
      "`dispatcharr_api_params.conf`'s `uwsgi_param … \"\"` lines, and since stage 2d-3 by "
      "`dispatcharr_api_params_proxy.conf`'s `proxy_set_header … \"\"` twin on `^~ /proxy/relay/`"),
@@ -2668,7 +2782,7 @@ index 869729a2..5e956489 100644
  | Streaming | Relay events: a `dead-air` failover posts `stream_switch` to `/api/relay/events` (not `channel_failover` — that type is reachable only from the ffmpeg buffering-timeout path, structurally dead for the Proxy profile this test locks), Django writes the `SystemEvent` row that `GET /api/core/system-events/` returns, and pushes a `relay_event` WebSocket message whose payload carries the channel uuid and no provider URL | P1 | done |
 -| Streaming | Relay control API: `^~ /proxy/relay/` reaches the relay (`uwsgi_pass relay_py`), is not `internal;` so Django can dial it as an ordinary client from the worker role and through the api role's own nginx, runs no `auth_request` because the internal token is the whole gate, still blanks the four `X-Relay-*` params and the `X-Dispatcharr-Authorized` marker, and carries a read timeout above the 15s the owner-confirmation poll can take | P1 | done |
 -| Streaming | Time to first byte through nginx: a live channel answers with a valid 188-byte-aligned TS packet within a 10s liveness ceiling, through whichever process serves `/proxy/ts/stream/<uuid>` — written before PR 4 gave that route its own nginx location and unchanged after it, which is what makes it a routing guard rather than a performance test. Deliberately **not** a spooling detector: at the scenario's `rate: 20` a buffered nginx would still forward inside 10s, so the `uwsgi_buffering off` directive is pinned statically in `streaming-greybox/nginx-stream-buffering.spec.ts` instead. `tests/streaming/time-to-first-byte.spec.ts` | P1 | done |
-+| Streaming | Relay control API: `^~ /proxy/relay/` reaches the relay (`uwsgi_pass relay_py` until Phase 2 stage 2d-3, `proxy_pass http://relay_go` since), is not `internal;` so Django can dial it as an ordinary client from the worker role and through the api role's own nginx, runs no `auth_request` because the internal token is the whole gate, still blanks the seven `X-Relay-*` params (by `proxy_set_header … ""` since 2d-3) and the `X-Dispatcharr-Authorized` marker, and carries a read timeout above the 15s the owner-confirmation poll can take | P1 | done |
++| Streaming | Relay control API: `^~ /proxy/relay/` reaches the relay (`uwsgi_pass relay_py` until Phase 2 stage 2d-3, `proxy_pass http://relay_go` since), is not `internal;` so Django can dial it as an ordinary client from the worker role and through the api role's own nginx, runs no `auth_request` because the internal token is the whole gate, still blanks the six `X-Relay-*` params (by `proxy_set_header … ""` since 2d-3) and the `X-Dispatcharr-Authorized` marker, and carries a read timeout above the 15s the owner-confirmation poll can take | P1 | done |
 +| Streaming | Time to first byte through nginx: a live channel answers with a valid 188-byte-aligned TS packet within a 10s liveness ceiling, through whichever process serves `/proxy/ts/stream/<uuid>` — written before PR 4 gave that route its own nginx location and unchanged after it, which is what makes it a routing guard rather than a performance test. Deliberately **not** a spooling detector: at the scenario's `rate: 20` a buffered nginx would still forward inside 10s, so the buffering directive is pinned statically in `streaming-greybox/nginx-stream-buffering.spec.ts` instead — `proxy_buffering off` on this route since Phase 2 stage 2d-3, `uwsgi_buffering off` on the six locations still on `uwsgi_pass`. `tests/streaming/time-to-first-byte.spec.ts` | P1 | done |
  | Streaming | The SPA three-segment route still serves the SPA: a deep link shaped like the Xtream `/<user>/<pass>/<id>` root form falls through to the frontend catch-all instead of `stream_xc`, because PR 2 narrowed the URL pattern's `channel_id` segment (`XC_STREAM_ID_PATTERN`) to the numeric-with-optional-extension shape a real stream id has. Without it the route matched first and DRF's exception handler absorbed `get_object_or_404`'s `Http404` before Django's catch-all ever saw it. `tests/streaming/spa-three-segment-route.spec.ts` | P1 | done |
  | Streaming | Django down: with `api-uwsgi` stopped, an already-running stream keeps delivering aligned TS (nothing on the byte path calls Django once a stream runs), an ordinary `/api/` route answers **502** (`uwsgi_pass` failing directly) and a new tune answers **500** (the `auth_request` subrequest failing, which `ngx_http_auth_request_module` reports as its own error — the two codes in one outage are the distinction). Starting `api-uwsgi` again restores tunes, and the pre-existing stream is still flowing afterwards, which is D15 in observable form: no start path flushes Redis DB 0. `tests/streaming-split/process-restart.spec.ts` | P1 | done |

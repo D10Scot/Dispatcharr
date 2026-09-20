@@ -92,6 +92,22 @@ if [[ "$DISPATCHARR_ROLE" == "all" || "$DISPATCHARR_ROLE" == "api" ]]; then
     fi
     sed -i "s/RELAY_UPSTREAM/${RELAY_HOST}:${RELAY_PORT}/g" /etc/nginx/sites-enabled/default
 
+    # The Go relay's upstream (Phase 2 stage 2d), same shape and the same
+    # RELAY_HOST -- so modular gets the relay service name and every other
+    # shape gets loopback, with no second hostname-validation branch. Read
+    # from DISPATCHARR_RELAY_GO_PORT rather than baking 5658:
+    # relay/config/config.go binds from that variable and
+    # docker/healthcheck.sh probes it, so an operator who sets it would
+    # otherwise get the relay on their port and nginx proxying to 5658 --
+    # a 502 on every tune, in exactly the deployments that customise ports
+    # because something else already occupies the defaults.
+    RELAY_GO_PORT="${DISPATCHARR_RELAY_GO_PORT:-5658}"
+    if ! [[ "$RELAY_GO_PORT" =~ ^[0-9]+$ ]]; then
+        echo "⚠️  Warning: DISPATCHARR_RELAY_GO_PORT is not a valid integer, using default port 5658"
+        RELAY_GO_PORT=5658
+    fi
+    sed -i "s/RELAY_GO_UPSTREAM/${RELAY_HOST}:${RELAY_GO_PORT}/g" /etc/nginx/sites-enabled/default
+
     # The relay's trust marker: HMAC(SECRET_KEY, "relay-trust"), the value
     # nginx puts in X-Dispatcharr-Authorized on every relay-bound location
     # (Phase 1 PR 5, D11). python3 rather than openssl: the entrypoint

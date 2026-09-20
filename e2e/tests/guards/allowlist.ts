@@ -76,10 +76,17 @@ export const SUBPROCESS: Capability = {
 export const GREYBOX_REDIS: Capability = {
   name: 'the grey-box Redis helper',
   why: 'Reads Redis key shapes directly. The keys are internal and the extraction is expected to change them.',
-  allow: [
-    // The one spec the original quarantine.spec.ts allowlisted.
-    'tests/streaming-greybox/output-profile-sharing.spec.ts',
-  ],
+  // EMPTY since Phase 2 stage 2d-3, and deliberately still here rather than
+  // deleted along with `fixtures/greybox/redis.ts`. The suite's last Redis
+  // read — output-profile-sharing.spec.ts's owner-lock assertion — went with
+  // the nginx flip, because the Go relay writes no `live:channel:*` key
+  // (spec D2). An empty allowlist is a STRONGER ratchet than a deleted
+  // guard: with it, any reintroduction of Redis coupling anywhere under
+  // tests/, fixtures/ or setup/ reddens `guards` by name. The helper itself
+  // survives as Phase 3's single-grep bookmark for "every greybox test is
+  // rewritten or deleted", and stays on SUBPROCESS.allow above because it
+  // still imports node:child_process.
+  allow: [],
 };
 
 export const CONTAINER_INTROSPECTION: Capability = {

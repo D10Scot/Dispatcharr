@@ -113,81 +113,126 @@ function parseLocationBlocks(config: string): LocationBlock[] {
  * elsewhere would still let a request into a non-relay-bound Django view
  * carry a forged `X-Relay-Channel`, since both processes share one urlconf
  * (D1). The pair together is what makes the trust marker unforgeable.
+ *
+ * Stage 2d-3 splits every assertion below by DIRECTIVE FAMILY rather than
+ * changing what any of them claims. Three of the nine relay-bound locations
+ * moved from uwsgi_pass to proxy_pass http://relay_go, where uwsgi_buffering
+ * is inert and uwsgi_param is meaningless; the properties are identical and
+ * the spellings are not. One assertion is genuinely NEW and is the reason
+ * this file earns its keep at the flip: proxy_set_header is an ARRAY
+ * directive, so a location declaring any of its own inherits none of the six
+ * the server block declares -- and a config that pastes the working uwsgi
+ * block and changes only _pass passes every other assertion here while
+ * reporting nginx's own address as every viewer's ip_address.
  */
 
 /**
- * Every relay-bound location as of Phase 1 PR 4 (docker/nginx.conf), by the
- * exact `target` `parseLocationBlocks` produces for it. Widened from the
- * original single `/proxy/` prefix once that block split into eight
- * relay-bound locations plus the XC three-segment regex — this list is what
- * keeps the buffering pin covering the whole relay surface rather than the
- * one route it happened to be written against.
+ * The six relay-bound locations still served by the Python relay over
+ * `uwsgi_pass` after stage 2d-3: VOD, catch-up, the XC VOD roots and
+ * timeshift.
  *
  * **Exact targets, deliberately, not `startsWith` prefixes.** A prefix test
  * on `/proxy/vod/` also matches the `= /proxy/vod/stats/` and
  * `= /proxy/vod/stop_client/` exact locations, which stay on the API and
- * correctly carry no `uwsgi_buffering off` — the same trap applies to the
- * three `/proxy/catchup/` control routes. Comparing whole targets keeps the
- * filter naming exactly the nine blocks it means.
- *
- * Two locations are absent on purpose, for different reasons: `^~ /proxy/`
- * stays on the API — it is the API's own short IsAdmin control routes, never
- * `uwsgi_pass relay_py`. `^~ /proxy/relay/` *is* relay-bound
- * (`uwsgi_pass relay_py`) but carries no `uwsgi_buffering off`, correctly:
- * it is the relay control API Phase 1 PR 7 mounted, and it serves short
- * JSON rather than a stream. Its own properties are pinned by the fourth
- * test in this file.
- *
- * A third is absent because it cannot appear: PR 4 also routes
- * `^/api/channels/recordings/\d+/file/$` to the relay, but that location is
- * **nested inside `^~ /api/`**, and `parseLocationBlocks` walks by brace
- * depth from each `location` header — so the nested block's lines are part
- * of `/api/`'s own `body`, and it never surfaces as a separate entry with a
- * `target` of its own. Adding it to this list would make the set assertion
- * below fail on a correct config. Its `uwsgi_buffering off` is pinned by
- * `docker/nginx.conf` review and Task 5's grep counts instead.
- *
- * The last entry is the XC three-segment root form: `parseLocationBlocks`
- * strips a regex location's leading `^` from its `target`, so this is the
- * literal the parser produces for
- * `location ~ ^/[^/]+/[^/]+/\d+(?:\.[A-Za-z0-9]+)?$`.
+ * correctly carry no buffering directive at all — the same trap applies to
+ * the three `/proxy/catchup/` control routes. Comparing whole targets keeps
+ * the filter naming exactly the blocks it means.
  */
-const RELAY_BOUND_TARGETS = [
-  '/proxy/ts/stream/',
+const UWSGI_BOUND_TARGETS = [
   '/proxy/vod/',
   '/proxy/catchup/',
-  '/live/',
   '/movie/',
   '/series/',
   '/timeshift/',
   '/streaming/timeshift.php',
+];
+
+/**
+ * The three relay-bound locations stage 2d-3 moved to the Go relay over
+ * `proxy_pass http://relay_go`. The last entry is the XC three-segment root
+ * form: `parseLocationBlocks` strips a regex location's leading `^` from its
+ * `target`, so this is the literal the parser produces for
+ * `location ~ ^/[^/]+/[^/]+/\d+(?:\.[A-Za-z0-9]+)?$`.
+ */
+const PROXY_BOUND_TARGETS = [
+  '/proxy/ts/stream/',
+  '/live/',
   '/[^/]+/[^/]+/\\d+(?:\\.[A-Za-z0-9]+)?$',
 ];
 
+/**
+ * Both halves, for the assertions that are directive-family-agnostic: the
+ * authorize subrequest, the eight `auth_request_set` variables and the
+ * `error_page` that restores the hop's real status.
+ *
+ * Two locations are absent on purpose, for different reasons, and a third
+ * because it cannot appear. `^~ /proxy/` stays on the API — it is the API's
+ * own short IsAdmin control routes, never relay-bound. `^~ /proxy/relay/`
+ * *is* relay-bound — Go-bound since 2d-3 — but runs no hop and carries no
+ * buffering directive, correctly: it is the relay control API Phase 1 PR 7
+ * mounted, and it serves short JSON rather than a stream. Its own properties
+ * are pinned by the fourth test in this file.
+ *
+ * The third is absent because it cannot appear: PR 4 also routes
+ * `^/api/channels/recordings/\d+/file/$` to the relay, but that location is
+ * **nested inside `^~ /api/`**, and `parseLocationBlocks` walks by brace
+ * depth from each `location` header — so the nested block's lines are part
+ * of `/api/`'s own `body`, and it never surfaces as a separate entry with a
+ * `target` of its own. Adding it to either list would make the set
+ * assertions below fail on a correct config. Its `uwsgi_buffering off` is
+ * pinned by `docker/nginx.conf` review and the plan's grep counts instead.
+ */
+const RELAY_BOUND_TARGETS = [...UWSGI_BOUND_TARGETS, ...PROXY_BOUND_TARGETS];
+
+/**
+ * The six the `server` block declares at `docker/nginx.conf:51-56`. Every
+ * `proxy_pass` location must re-declare all six, because `proxy_set_header`
+ * is an array directive and declaring one of your own discards the lot.
+ * Names only: the values are nginx variables this test has no business
+ * duplicating.
+ */
+const SERVER_LEVEL_PROXY_HEADERS = [
+  'X-Real-IP',
+  'X-Forwarded-For',
+  'X-Forwarded-Host',
+  'X-Forwarded-Proto',
+  'Host',
+  'X-Forwarded-Port',
+];
+
 test(
-  'every relay-bound location keeps uwsgi_buffering off',
+  'every relay-bound location keeps buffering off, in its own directive family',
   { tag: '@contract' },
   async () => {
     const { stdout } = await execFileAsync('docker', ['exec', CONTAINER_NAME, 'nginx', '-T']);
     const blocks = parseLocationBlocks(stdout);
-    const relayBlocks = blocks.filter((b) => RELAY_BOUND_TARGETS.includes(b.target));
 
-    // Vacuous-pass guard: if nginx's config ever stops declaring these
-    // locations (renamed, merged, or the relay split reverted), the loop
-    // below would pass over an empty array and this test would silently
-    // stop meaning anything. Fail loudly instead — and assert the full set,
-    // not just "more than zero", so losing eight of the nine is a failure
-    // rather than a pass.
-    expect(
-      relayBlocks.map((b) => b.target).sort(),
-      `expected every relay-bound location in nginx -T's output (${RELAY_BOUND_TARGETS.join(', ')}); found blocks: ${blocks.map((b) => b.header).join(', ')}`
-    ).toEqual([...RELAY_BOUND_TARGETS].sort());
-
-    for (const block of relayBlocks) {
+    // Two halves, two vacuous-pass guards. uwsgi_buffering is INERT under
+    // proxy_pass and proxy_buffering is inert under uwsgi_pass, so asserting
+    // one directive over all nine would pass six and silently mean nothing on
+    // the other three — which is exactly the trap CLAUDE.md's historical
+    // incident describes, arriving from the opposite direction.
+    //
+    // Each half asserts the full set rather than "more than zero", so losing
+    // five of the six (or two of the three) is a failure rather than a pass.
+    for (const [targets, directive] of [
+      [UWSGI_BOUND_TARGETS, 'uwsgi_buffering'],
+      [PROXY_BOUND_TARGETS, 'proxy_buffering'],
+    ] as const) {
+      const found = blocks.filter((b) => targets.includes(b.target));
       expect(
-        block.body.some((line) => /^\s*uwsgi_buffering\s+off\s*;/.test(line)),
-        `location block "${block.header}" does not set uwsgi_buffering off:\n${block.body.map((l) => l.replace(/"[0-9a-f]{64}"/, '"<marker>"')).join('\n')}`
-      ).toBe(true);
+        found.map((b) => b.target).sort(),
+        `expected every ${directive} relay-bound location in nginx -T's output ` +
+          `(${targets.join(', ')}); found blocks: ${blocks.map((b) => b.header).join(', ')}`
+      ).toEqual([...targets].sort());
+
+      for (const block of found) {
+        expect(
+          block.body.some((line) => new RegExp(`^\\s*${directive}\\s+off\\s*;`).test(line)),
+          `location block "${block.header}" does not set ${directive} off:\n` +
+            block.body.map((l) => l.replace(/"[0-9a-f]{64}"/, '"<marker>"')).join('\n')
+        ).toBe(true);
+      }
     }
   }
 );
@@ -218,14 +263,22 @@ const AUTH_REQUEST_SET_VARS = [
 // principle 5: capturing a variable and forwarding it are two different
 // things, and a test that checks only the first leaves nine locations'
 // worth of middle unpinned.
-const FORWARDED_RELAY_PARAMS = [
-  'HTTP_X_RELAY_CHANNEL',
-  'HTTP_X_RELAY_OUTPUT',
-  'HTTP_X_RELAY_CLIENT',
-  'HTTP_X_RELAY_USER',
-  'HTTP_X_RELAY_OUTPUT_FORMAT',
-  'HTTP_X_RELAY_CLIENT_IP',
+//
+// HEADER names, not uwsgi_param names: since 2d-3 the same seven values
+// travel as `uwsgi_param HTTP_X_RELAY_CHANNEL` on six locations and
+// `proxy_set_header X-Relay-Channel` on three. One list, two spellings
+// derived from it, so the halves cannot drift apart.
+const FORWARDED_RELAY_HEADERS = [
+  'X-Relay-Channel',
+  'X-Relay-Output',
+  'X-Relay-Client',
+  'X-Relay-User',
+  'X-Relay-Output-Format',
+  'X-Relay-Client-IP',
 ];
+
+/** `X-Relay-Channel` -> `HTTP_X_RELAY_CHANNEL`, nginx's HTTP_-prefixed form. */
+const uwsgiParamName = (header: string) => `HTTP_${header.toUpperCase().replace(/-/g, '_')}`;
 
 test(
   'every relay-bound location authorizes through the hop',
@@ -257,18 +310,21 @@ test(
         ).toBe(true);
       }
 
+      const proxied = PROXY_BOUND_TARGETS.includes(block.target);
+
       // The other half of the chain. auth_request_set copies the
-      // subrequest's response header into a variable; only a
-      // uwsgi_param sends it to the relay -- and the HTTP_-prefixed
-      // form is also what overrides whatever the client sent under the
-      // same name. A location that captures but does not forward looks
-      // correct in the config and silently strips the header.
-      for (const param of FORWARDED_RELAY_PARAMS) {
+      // subrequest's response header into a variable; only a uwsgi_param or
+      // a proxy_set_header sends it to the relay -- and either form is also
+      // what overrides whatever the client sent under the same name. A
+      // location that captures but does not forward looks correct in the
+      // config and silently strips the header.
+      for (const header of FORWARDED_RELAY_HEADERS) {
+        const pattern = proxied
+          ? new RegExp(`^\\s*proxy_set_header\\s+${header}\\s+\\$relay_`)
+          : new RegExp(`^\\s*uwsgi_param\\s+${uwsgiParamName(header)}\\s+\\$relay_`);
         expect(
-          block.body.some((line) =>
-            new RegExp(`^\\s*uwsgi_param\\s+${param}\\s+\\$relay_`).test(line)
-          ),
-          `location "${block.header}" captures but does not forward ${param}`
+          block.body.some((line) => pattern.test(line)),
+          `location "${block.header}" captures but does not forward ${header}`
         ).toBe(true);
       }
 
@@ -277,11 +333,58 @@ test(
       // value is a 64-character hex digest, and the placeholder itself
       // reaching a running container means 03-init-dispatcharr.sh did not
       // substitute it — which would 403 every tune.
-      const marker = block.body.find((line) =>
-        /uwsgi_param\s+HTTP_X_DISPATCHARR_AUTHORIZED/.test(line)
-      );
+      const markerRe = proxied
+        ? /proxy_set_header\s+X-Dispatcharr-Authorized/
+        : /uwsgi_param\s+HTTP_X_DISPATCHARR_AUTHORIZED/;
+      const marker = block.body.find((line) => markerRe.test(line));
       expect(marker, `location "${block.header}" sets no trust marker`).toBeTruthy();
       expect(marker).toMatch(/"[0-9a-f]{64}"/);
+
+      // NEW at 2d-3, and the reason this file earns its keep at the flip.
+      // proxy_set_header is an ARRAY directive: the moment this location
+      // declares one of its own it inherits NONE of the six the server block
+      // declares at nginx.conf:51-56. A config that pastes the working uwsgi
+      // block and changes only _pass satisfies every assertion above and
+      // reports nginx's own address as every viewer's ip_address on both
+      // status endpoints -- invisible in dev, invisible in a smoke test,
+      // wrong in production, while VOD and catch-up keep reporting
+      // correctly. Only the three proxy_pass locations: the fourth flipped
+      // location, ^~ /proxy/relay/, deliberately needs none of the six --
+      // its client is Django, not a viewer -- and is covered by the fourth
+      // test instead.
+      if (proxied) {
+        for (const header of SERVER_LEVEL_PROXY_HEADERS) {
+          expect(
+            block.body.some((line) =>
+              new RegExp(`^\\s*proxy_set_header\\s+${header}\\s`).test(line)
+            ),
+            `location "${block.header}" does not re-declare the server-level ` +
+              `proxy_set_header ${header}; declaring any proxy_set_header of its own ` +
+              'discards all six'
+          ).toBe(true);
+        }
+
+        // A second simple-directive trap, found only after the flip shipped:
+        // proxy_connect_timeout is a SIMPLE directive (unlike the six above)
+        // and inherits normally -- but nginx.conf:64 sets a server-level
+        // proxy_connect_timeout 75 for an unrelated proxy_pass elsewhere in
+        // this file. uwsgi_pass never set uwsgi_connect_timeout on these
+        // locations, so they used nginx's implicit 60s default; proxy_pass
+        // silently inherited the unrelated 75s instead. 75s exceeds
+        // docker/tests/test-puid-pgid.sh's test_role_split 70s client-side
+        // budget for "the relay container is stopped, expect
+        // 502/503/504" -- measured as a real CI regression (ERR:timed out),
+        // not a flake, and puid-pgid only runs in full mode
+        // (migration/** or workflow_dispatch), so this is the only
+        // assertion of it that runs on an ordinary PR touching docker/.
+        expect(
+          block.body.some((line) => /^\s*proxy_connect_timeout\s+60s\s*;/.test(line)),
+          `location "${block.header}" does not set proxy_connect_timeout 60s; without it, ` +
+            'this proxy_pass location silently inherits the server block\'s ' +
+            'proxy_connect_timeout 75 (set for an unrelated location), which exceeds ' +
+            "test-puid-pgid.sh's test_role_split 70s budget"
+        ).toBe(true);
+      }
 
       // Without this, a 404 or 429 decision reaches the viewer as 500:
       // the auth_request module denies verbatim on 401 and 403 only.
@@ -326,7 +429,6 @@ test(
       '/output/',
       '/hdhr',
       '/proxy/',
-      '/proxy/relay/',
       '/proxy/ts/status',
       '/proxy/vod/stats/',
       '/proxy/vod/stop_client/',
@@ -353,17 +455,41 @@ test(
     // Asserting the include's presence alone cannot tell a five-name
     // file from a seven-name one, which is exactly the drift 2b-2
     // introduces.
+    //
+    // The uwsgi_param spelling is derived from FORWARDED_RELAY_HEADERS
+    // rather than listed again: 2d-3 changed that constant to hold header
+    // names so the two families cannot drift, and a second hand-written
+    // list here would reintroduce exactly the drift it removed.
     const paramsFile = stdout.match(
       /# configuration file \/etc\/nginx\/dispatcharr_api_params\.conf:\n([\s\S]*?)(?=\n# configuration file |\n*$)/
     );
     expect(paramsFile, 'nginx -T did not dump dispatcharr_api_params.conf').toBeTruthy();
     for (const param of [
       'HTTP_X_DISPATCHARR_AUTHORIZED',
-      ...FORWARDED_RELAY_PARAMS,
+      ...FORWARDED_RELAY_HEADERS.map(uwsgiParamName),
     ]) {
       expect(
         new RegExp(`^\\s*uwsgi_param\\s+${param}\\s+""\\s*;`, 'm').test(paramsFile![1]),
         `dispatcharr_api_params.conf does not blank ${param}`
+      ).toBe(true);
+    }
+
+    // The proxy_pass twin, new at 2d-3 and asserted for the same reason.
+    // ^~ /proxy/relay/ is the only location that includes it, and the fourth
+    // test below asserts that it does; this asserts the file's contents.
+    const proxyParamsFile = stdout.match(
+      /# configuration file \/etc\/nginx\/dispatcharr_api_params_proxy\.conf:\n([\s\S]*?)(?=\n# configuration file |\n*$)/
+    );
+    expect(
+      proxyParamsFile,
+      'nginx -T did not dump dispatcharr_api_params_proxy.conf'
+    ).toBeTruthy();
+    for (const header of ['X-Dispatcharr-Authorized', ...FORWARDED_RELAY_HEADERS]) {
+      expect(
+        new RegExp(`^\\s*proxy_set_header\\s+${header}\\s+""\\s*;`, 'm').test(
+          proxyParamsFile![1]
+        ),
+        `dispatcharr_api_params_proxy.conf does not blank ${header}`
       ).toBe(true);
     }
 
@@ -397,9 +523,12 @@ test(
     // reads a relay-owned Redis key, which only works if they reach the
     // relay. A literal upstream group, not $relay_upstream: no
     // subrequest runs here, so $relay_name is unset and a variable pass
-    // nothing feeds is a thing a reader has to disprove.
+    // nothing feeds is a thing a reader has to disprove -- and since 2d-3
+    // the group is relay_go, hardcoded rather than mapped, because D3 keeps
+    // the map and relay_py untouched for the five locations that did not
+    // move.
     expect(
-      block!.body.some((line) => /^\s*uwsgi_pass\s+relay_py\s*;/.test(line)),
+      block!.body.some((line) => /^\s*proxy_pass\s+http:\/\/relay_go\s*;/.test(line)),
       'the relay control API must reach the relay'
     ).toBe(true);
 
@@ -422,7 +551,7 @@ test(
     // A client-supplied X-Relay-* header still never reaches the relay
     // on this path.
     expect(
-      block!.body.some((line) => /dispatcharr_api_params\.conf\s*;/.test(line)),
+      block!.body.some((line) => /dispatcharr_api_params_proxy\.conf\s*;/.test(line)),
       'the relay control API must still blank the trust params'
     ).toBe(true);
 
@@ -431,8 +560,20 @@ test(
     // An explicit window above both keeps the client's timeout the one
     // that fires rather than nginx's 60s default.
     expect(
-      block!.body.some((line) => /^\s*uwsgi_read_timeout\s+30s\s*;/.test(line)),
+      block!.body.some((line) => /^\s*proxy_read_timeout\s+30s\s*;/.test(line)),
       'the relay control API needs a read timeout above the advance budget'
+    ).toBe(true);
+
+    // Same simple-directive trap as the three byte-path locations (see the
+    // second test's comment): without an explicit proxy_connect_timeout this
+    // location inherits nginx.conf:64's server-level proxy_connect_timeout 75,
+    // set for an unrelated proxy_pass. relay_client.py's own 2s connect
+    // timeout fires first in practice, but nginx's own budget should still
+    // match the pre-flip uwsgi default rather than an unrelated directive.
+    expect(
+      block!.body.some((line) => /^\s*proxy_connect_timeout\s+60s\s*;/.test(line)),
+      'the relay control API does not set proxy_connect_timeout 60s; without it, it silently ' +
+        "inherits the server block's proxy_connect_timeout 75 (set for an unrelated location)"
     ).toBe(true);
   }
 );
