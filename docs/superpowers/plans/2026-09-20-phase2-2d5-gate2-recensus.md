@@ -71,6 +71,10 @@ and report, never a judgement call.**
    cwd is shared or correlated across concurrent agents (`CLAUDE.md` § Repository and direction).
 2. **`set -o pipefail` on every pipeline whose emptiness or exit status you intend to read**, and
    never `2>/dev/null` a git query you will interpret. `git show "${ref}:path"` with braces, always.
+   **And note the polarity trap in this plan's own verification steps: `grep -c` prints `0` and
+   *exits 1* when there are no matches, and in seven steps below `0` is the PASS.** Run those greps
+   as bare commands and read the number, or append `|| true`; chaining one with `&&` under `set -e`
+   aborts on success. The steps that expect `0` say so individually.
 3. **Stage and commit in separate Bash calls**, and write the commit message with the Write tool,
    committing with `git commit -F <file>`. The commit gate matches on command text.
 4. **The floor's `missing` comes from CI and from nowhere else.** A local round is for design, for
@@ -83,9 +87,13 @@ and report, never a judgement call.**
    reported 3,230 statements where the same tree with it reported 3,169 — a 61-statement inflation
    moving the way a regression moves. A round with any non-`success` coverage job is **discarded and
    not counted**, not averaged in and not recorded as a low draw (R7).
-6. **`shape=`, `modules=` and `module_count=` must not move in this PR.** They are 2d-4's and they
-   are equality checks; if `--write-floor` rewrites any of the three to a different value, that is a
-   finding about the tree, not a number to commit (Task 5 Step 4). **`rcfile=` moves exactly once,
+6. **`shape=`, `modules=` and `module_count=` must not move in this PR.** They are 2d-4's; if
+   `--write-floor` rewrites any of the three to a different value, that is a finding about the tree,
+   not a number to commit (Task 5 Step 4). **`shape` and `modules` are equality checks in `gate()`;
+   `module_count` is not** — it is printed inside the `modules` mismatch diagnostic
+   (`scripts/coverage_live_path.sh:337-339`) and never compared. It still must not move, for the
+   same reason `modules` must not: the two are written together and a `module_count` that disagreed
+   with the list would be evidence of a broken write, not of a wider scope. **`rcfile=` moves exactly once,
    by design** — R15's comment-only rcfile edit, recomputed by the same `--write-floor` command that
    writes the number, and never by hand.
 7. **No production code is edited.** This PR changes `scripts/coverage_live_path.sh` (a comment and
@@ -93,10 +101,13 @@ and report, never a judgement call.**
    `scripts/coverage_live_path.floor`, `scripts/coverage_live_path.floor.modules`, `CLAUDE.md` and
    the spec. Nothing under `apps/`, `relay/`, `docker/`, `e2e/` or `frontend/`. A step that appears
    to need one of those is a STOP.
-8. **No test is added or deleted.** There is therefore no break-check in the Constraint-8 sense
-   anywhere in this plan, and Task 1 says so explicitly rather than leaving its absence to be
-   noticed. The one *behaviour* this PR changes — the script's no-argument path — is verified by
-   running it (Task 1 Step 3), which is the same discipline in the only form available here.
+8. **No test is added or deleted**, so there is no break-check in the usual sense, and Task 1 says
+   so explicitly rather than leaving its absence to be noticed. **Two things are nonetheless
+   verified by running, not by reading**, because both are guards whose failure is silent: the
+   script's no-argument path, run before and after Appendix A (Task 1 Step 3), and the census
+   driver's duplicate-round refusal, run against a real run id before the first round (Task 3
+   Step 3). The second is the more important of the two — a duplicate round is unfalsifiable after
+   the fact except by auditing `census.tsv`, which Task 3 Step 7 also does.
 9. **The branch is frozen for the duration of the census.** A commit mid-census makes the rounds
    measurements of different trees. Task 3 records the frozen SHA and Task 4 checks every harvested
    round against it.
@@ -109,6 +120,13 @@ and report, never a judgement call.**
     refuses to write a worse one without `COVERAGE_LIVE_PATH_ALLOW_REGRESSION=1`
     (`scripts/coverage_live_path.sh:443-452`); **that variable is not set anywhere in this PR**, and
     a step that appears to need it is a STOP.
+13. **Appendices B, C, D, E and F are scratchpad files, never repository files.** Write each to
+    `<scratchpad>/impl-2d5/` and run it from the worktree root
+    (`cd <worktree> && python3 <scratchpad>/impl-2d5/appendix_c.py`). They are `.py` and `.sh`
+    helpers for this PR, not deliverables: writing one into the tree would fire the `*.py`
+    credential-logging hook, add a file to the diff, and break Task 8 Step 5's "no `*.py` in the
+    diff" check. Nothing in `File structure` lists them, and that is the assertion.
+
 
 ---
 
@@ -224,7 +242,10 @@ The other three of the seventeen are in labels outside the coverage matrix
 
 **The summary a reader needs:** the tests that cover the nine are overwhelmingly *kept*. Of the
 seventeen dispositions, exactly one deletion (#16) reaches into the denominator, and R4 measures
-what it costs. This is not luck — the boundary modules were covered by 2b-4's own campaign, which
+what it costs. **This table's per-file reasoning is confirmed, not relied on**: R4's second
+measurement composes *all* of these dispositions — the five whole-file deletions and the 45 tests
+removed from the five SPLIT files — and the answer is the same two statements, so the SPLIT rows'
+"none of the nine" claims are a measurement rather than an argument. This is not luck — the boundary modules were covered by 2b-4's own campaign, which
 targeted them deliberately, and the deleted tests are the live-relay ones.
 
 ### R4 — the measured reference band, and why it is a reference and not the answer
@@ -250,12 +271,18 @@ The per-file figures come from the combined run's `live-path.json`, summed over 
 `apps/proxy/relay_views.py` measured 64 statements / 0 missing on the same run and is **excluded**:
 2d-4's R1 deletes it.
 
-**Second measurement, closer to the post-2d-4 tree.** The five test files 2d-4 deletes *whole* from
-the two coverage labels — `test_relay_control_api.py`, `test_relay_status_shape.py`,
-`test_ts_proxy_ghost_clients.py`, `test_ts_proxy_keepalive_duration.py`, `test_ts_proxy_teardown.py`
-— were moved out of the worktree and the two labels re-run (both `^OK`; the tree was restored and
-`git status` verified clean afterwards). The nine measured **1281 / 33 / 97.42%**. The two added
-missing statements are named:
+**Second measurement: every one of 2d-4's test dispositions in the two coverage labels, composed.**
+Not just the whole-file deletions — **all five wholly-deleted files plus the 45 tests 2d-4 removes
+from the five SPLIT files**, so the composition is complete rather than partial:
+
+| kind | what was removed |
+|---|---|
+| whole files (5) | `test_relay_control_api.py`, `test_relay_status_shape.py`, `test_ts_proxy_ghost_clients.py`, `test_ts_proxy_keepalive_duration.py`, `test_ts_proxy_teardown.py` |
+| classes (5 files, 45 tests) | `test_combined_stats.py::BuildLiveChannelStatsDataTests` (3); `test_boundary_error_arms.py::LiveProxyAppsReadyTests` (2); `test_stream_switch.py::{OwnerPathTests,NonOwnerPathTests}` (9); `test_ts_proxy_initializing.py::StreamManagerFinallyBlockTests` (14); `test_ts_proxy_keepalive.py::{OwnerWorkerKeepaliveTests,NonOwnerWorkerKeepaliveTests,DoStatsUpdateTests,ClientRemoveIntegrationTests}` (17) |
+
+Both labels re-run, both `^OK`; the tree was restored and `git status` verified clean afterwards.
+The nine measured **1281 / 33 / 97.42%**, and the missing-line sets are identical to the run with
+only the five whole files removed. The two added missing statements are named:
 
 - `apps/proxy/relay_client.py:132` — `headers["Content-Type"] = "application/json"`, the
   POST-with-payload arm.
@@ -263,7 +290,22 @@ missing statements are named:
   reachable=True)`, the "relay answered, channel absent" arm.
 
 Both were reached only by `test_relay_control_api.py`. **So the entire coverage cost of 2d-4's
-seventeen dispositions, over the nine modules, is two statements.**
+seventeen dispositions, over the nine modules, is two statements — and the 45 tests deleted from the
+SPLIT files cost zero, measured rather than argued.** (An earlier draft of this ruling composed only
+the five whole-file deletions and left R3's per-file reasoning to carry the SPLIT half; a review
+asked whether the composition was complete, and the answer is now a measurement.)
+
+**What the composition still does NOT include**, and neither does any local measurement:
+
+- 2d-4's **production-code** changes (the three listed below), which move the denominator.
+- The three affected test files in labels outside the coverage matrix
+  (`tests/test_websocket_consumer_filter.py`, `tests/test_ci_test_routing.py`,
+  `core/tests/test_fetch_channel_stats.py`) — they cannot reach this measurement at all, because
+  `coverage-label`'s matrix runs only `apps.proxy.tests` and `apps.channels.tests`.
+- The **re-pointed imports** in the KEEP files: the composed tree still imports from
+  `apps.proxy.live_proxy`'s shims, where the post-2d-4 tree imports from `apps/proxy/`'s own
+  modules. Behaviour-identical by construction (2d-4's R7 row 3: the shim re-exports the same class
+  object), and neither path is in the denominator.
 
 **Why this is a reference band and not a prediction of the census figure.** Three things still move
 between the measurement seed and the implementation seed, all of them 2d-4's:
@@ -316,8 +358,9 @@ gh workflow run backend-tests.yml --repo D10Scot/Dispatcharr \
 jobs are unaffected either way: `coverage-label`'s matrix is hard-coded at `:180` and deliberately
 *not* taken from `plan.outputs.labels`, for exactly the reason the comment at `:165-170` gives ("a
 PR touching only apps/epg/ would measure a different label set and the floor would compare
-quantities that are not comparable"). So a `full_suite=false` round runs ~5 jobs instead of ~19 and
-produces a byte-for-byte equivalent coverage measurement.
+quantities that are not comparable"). So a `full_suite=false` round runs **7** jobs — `plan`, two `test`, two `coverage-label`,
+`coverage-gate`, `Backend result` — where `full_suite=true` runs about twenty, and produces a
+byte-for-byte equivalent coverage measurement.
 
 **This is why Task 1 comes before the census.** `full_suite=false` selects labels from the tip
 commit's own paths, so the branch's tip at census time must be a commit that routes somewhere.
@@ -330,6 +373,28 @@ Task 3 Step 3's first check catches this by name.
 `gh run rerun` was considered and rejected: a rerun is a new *attempt* on the same run id, so the
 earlier rounds' logs move behind `--attempt` and harvesting twelve of them becomes fiddly for no
 saving. A dispatch gives each round its own run id.
+
+**The run id comes from watching the list change, never from `--limit 1` after a sleep.** This is
+the one place a census can corrupt itself silently. `gh workflow run` does **not** return a run id,
+so the obvious idiom is "sleep, then take the newest `workflow_dispatch` run". If GitHub has not yet
+registered the new run, that returns the **previous round's** id — which is already `completed`, so
+the wait returns instantly, the frozen-SHA check passes, all three coverage jobs read `success`, and
+**the previous round's `missing` is appended a second time as a fresh row**. The stopping rule is
+"maximum unchanged for ≥6 consecutive rounds", so a duplicate is a free fake observation of
+stability: it makes the rule easier to satisfy in exactly the direction that ends the census early.
+Nothing downstream can detect it, because the two rows are identical in every field a reader looks
+at.
+
+**Two defences, both cheap, and the plan takes both:**
+
+1. **Capture the newest `workflow_dispatch` run id BEFORE dispatching and poll until it changes.**
+   That is the id of this round, positively identified rather than inferred from a timer.
+2. **Assert the harvested `run_id` differs from every row already in `census.tsv`.** `run_id` is
+   already a column; the check is one `cut | grep`. It catches the failure even if defence 1 is
+   subverted by something this plan has not thought of.
+
+Appendix E implements both, and Task 3 Step 6 is its break-check: run the driver twice against a
+deliberately stale "previous id" and confirm the second invocation refuses rather than recording.
 
 **Waited for to completion, not to the gate.** `backend-tests.yml`'s concurrency group is
 `backend-tests-<workflow>-<ref>` with `cancel-in-progress: true` (`:30-32`), so dispatching round
@@ -404,7 +469,11 @@ with the package. **So on this tree a failed coverage label is a genuine finding
 flake**, and the plan says so rather than carrying forward advice that can no longer apply.
 
 **If the maximum is still moving at round 12**, keep going (2a-7's own census ran to 15 for this
-reason) and record the extra rounds. `runs` in the floor is the total taken, not twelve.
+reason) and record the extra rounds. **`runs` in the floor is the number of VALID rounds** — the
+ones `missing` was taken from — not twelve and not the number of dispatches. Discarded rounds stay
+in `census.tsv` with their reason, because the campaign log is provenance and a discarded round is
+part of what happened, but they are not counted in `runs` and not in the sequence the floor
+header prints.
 
 ### R8 — how the floor is written: plain `--write-floor`, then the documented hand-edit
 
@@ -492,8 +561,11 @@ gate by hand.
 The edit is a comment block, a usage line and one array entry. **The rest of the file's historical
 prose is deliberately not touched** — the `68 FEWER missed statements` paragraph, the tracer-core
 note and the 7,978/3,977/50.15% baseline all cite deleted code, and all three are *history of why
-the guard exists*, which stays true. They are 2d-6's consolidation, and Appendix A's own comment
-says which is which.
+the guard exists*, which stays true. They are 2d-6's consolidation, **and Appendix A's added
+comment says so in the file itself** — naming those three notes and the files they attribute to, so
+a maintainer reading `scripts/coverage_live_path.sh` after this PR is told they describe the
+pre-2d-4 tree. A deferral stated only in a plan appendix is invisible to the person who will next
+open the script.
 
 ### R11 — the percentage is recorded, never targeted; and `stream_routes.py` stays out of the rcfile
 
@@ -539,10 +611,17 @@ that is a `--shape-only` move plus a fresh census, and A15 records it on the pos
 3. *"**Stage 2a ended at 74.30%, not the spec's ≥80%**; the shortfall is owned by `2b-4` and D7 still
    blocks every 2c PR until it closes."* — **already false before this PR**, by two stages: 2b-4
    closed it at 81.11% and 2c is complete. **Corrected here anyway, and the reason is disclosed
-   rather than assumed**: it is the sentence immediately following the one this PR rewrites, in the
-   same paragraph, about the same number. Leaving a two-stages-stale claim adjacent to a freshly
-   measured one makes the new one harder to trust, not easier. It is one sentence and it is not
-   scope creep by volume; it is flagged in the PR body as an out-of-strict-scope correction.
+   rather than assumed: no other PR in this stage will take it.** Spec § Stage 2d entry 6 scopes
+   2d-6 to *"every `apps/proxy/live_proxy/` reference in § Architecture, § Known defects,
+   § Testing rewritten or removed"* — and this sentence contains no such reference, so deferring it
+   most likely loses it entirely. It is also the last sentence of the same § Testing paragraph whose
+   other two sentences this PR rewrites, and it is about this gate's own number, so 2d-5 is where a
+   reader would look for it. One sentence, flagged in the PR body as an out-of-strict-scope
+   correction. *(An earlier draft justified this by calling it "the sentence immediately following"
+   the one this PR rewrites. Measured on the post-2d-4 CLAUDE.md, the paragraph runs A2 → "Per-container
+   isolation…" → "A failed label invalidates…" → A3, so A3 is two sentences later, not adjacent. The
+   edit is right; that reason was not — and "immediately following" was wrong under either way of
+   counting where A2's anchor ends.)*
 
 **The spec, four in-place corrections and one insertion** (Appendix D):
 
@@ -570,8 +649,10 @@ suites in `lifecycle-tests.yml`, path filters bypassed.
 
 **Accepted, and the cost is smaller than it looks**, because of where it is paid:
 
-- The heavy matrices trigger on **push**, not on `workflow_dispatch` of `backend-tests.yml`. The
-  twelve-plus census rounds cost `backend-tests.yml` only.
+- The heavy matrices trigger on the **`pull_request`** event (opened/synchronize — a draft PR
+  raises both), not on `workflow_dispatch` of `backend-tests.yml`. `e2e-tests.yml`'s `push:` is
+  `branches: [main]` with a `paths:` filter, so pushing the census branch triggers nothing on
+  `push` at all. Either way the twelve-plus census rounds cost `backend-tests.yml` only.
 - This plan pushes **three times**: the census anchor (Task 1), the floor and docs (Tasks 5-7), and
   at most one fix round. Three full E2E matrices, not fifteen.
 - The PR touches no `e2e/`, `docker/`, `relay/` or `apps/` path, so every heavy job is running the
@@ -688,6 +769,8 @@ marked informational.
       wc -l < scripts/coverage_live_path.floor.modules               # → 9
       grep -c '^apps/proxy/live_proxy/' scripts/coverage_live_path.floor.modules   # → 0
       ```
+      **Three of these expect `0`, which `grep -c` prints while exiting 1** (Constraint 2). Run them
+      bare and read the numbers; do not chain them with `&&`.
       **Scoped to the `include` block, not the whole file, and that is not fussiness:** 2d-4's own
       comment block names both `apps/proxy/live_proxy/*` and `relay_views.py` while explaining that
       it removed them, so a whole-file `grep -c 'live_proxy'` returns **2** and `relay_views`
@@ -714,31 +797,55 @@ marked informational.
       This must equal whatever `rcfile=` says. If the two disagree, the floor and the rcfile have
       drifted — **STOP**, `--gate` would fail on it.
 
-- [ ] **Step 5 — the gate is green and slack, and the slack figure is recorded.** Start one
-      read-only container and run the two labels and the gate through
-      `scripts/coverage_live_path_isolated.sh --gate` (Task 2's containers; take this measurement
-      there rather than twice). Expect exit 0 and a large "FEWER missed than the floor" figure.
-      **Record it in the campaign log**: it is the slack this PR removes, and the PR body quotes it.
+- [ ] **Step 5 — start the two containers.** They are needed from here on: this step's gate run,
+      Task 1 Step 3's before/after evidence, Task 2's reference rounds and Task 5's write all use
+      them. Per `CLAUDE.md` § Test hooks, the shared `dispatcharr-testrunner` is **not** yours:
+      ```
+      for s in proxy channels; do
+        DISPATCHARR_TEST_CONTAINER=impl2d5-$s DISPATCHARR_TEST_DB_VOLUME=impl2d5-$s-hookdb \
+        CLAUDE_HOOK_REPO_ROOT=/Users/dion/git/Dispatcharr/.worktrees/impl-2d5 \
+        /Users/dion/git/Dispatcharr/.claude/hooks/start-test-container.sh
+      done
+      ```
+      `scripts/coverage_live_path_isolated.sh` addresses them as `${COVERAGE_ISOLATED_PREFIX}-proxy`
+      and `-channels`, so every invocation below carries `COVERAGE_ISOLATED_PREFIX=impl2d5`. Both are
+      removed in Task 8 Step 9.
 
-- [ ] **Step 6 — the `LABELS` bug is still there** (R10):
+- [ ] **Step 6 — the gate is green and slack, and the slack figure is recorded.**
+      `COVERAGE_ISOLATED_PREFIX=impl2d5 bash scripts/coverage_live_path_isolated.sh --gate` (it needs
+      **both** containers — its `PAIRS` list is two entries after 2d-4's R10). Expect exit 0 and a
+      large "FEWER missed than the floor" figure. **Record it in the campaign log**: it is the slack
+      this PR removes, and the PR body quotes it.
+
+- [ ] **Step 7 — the `LABELS` bug is still there** (R10):
       ```
       grep -n 'LABELS=' scripts/coverage_live_path.sh
       ```
-      must print `LABELS=(apps.proxy.tests apps.proxy.live_proxy.tests apps.channels.tests)`. **If it
-      does not — if 2d-4's fix round already fixed it — Appendix A no longer applies**: drop Task 1's
-      Step 2, keep Task 1's commit (it still needs to exist as the census anchor, R6), and make it
-      the CLAUDE.md edit instead, which routes to no label and therefore forces `full_suite=true`
-      dispatches; record the change of plan in the PR body. Report the situation to the orchestrator
-      before proceeding.
+      must print `LABELS=(apps.proxy.tests apps.proxy.live_proxy.tests apps.channels.tests)`.
 
-- [ ] **Step 7 — the routing is two labels.**
+      **If it does not — if 2d-4's fix round already fixed it — Appendix A no longer applies.** Drop
+      Task 1 Step 2 and keep Task 1's commit, which still has to exist as the census anchor (R6) and
+      still has to route to both coverage labels. **Make it a comment-only edit to
+      `scripts/coverage_live_path.floor`'s header** — one sentence recording that the census is in
+      progress and what it is for. That path routes to both labels through the same
+      `("scripts/coverage_live_path", …)` alias, and a floor *comment* cannot disturb a round:
+      `gate()` reads the floor only through `floor_value()`'s `grep -E "^$1="`
+      (`scripts/coverage_live_path.sh:275`), so nothing but a `key=value` line is ever parsed, and
+      unlike the coveragerc the floor's bytes are not hashed by anything.
+      **Do NOT fall back to a CLAUDE.md edit**: measured,
+      `labels_for_changed_paths(['CLAUDE.md'])` is `[]`, so `plan` would set `has_tests=false`, the
+      coverage jobs would skip, and every round would need `full_suite=true` — ~15 test jobs instead
+      of 2, twelve or more times over, for a measurement that is identical either way.
+      Record the change of plan in the PR body and report it to the orchestrator before proceeding.
+
+- [ ] **Step 8 — the routing is two labels.**
       ```
       python3 -c "import sys;sys.path.insert(0,'.');from dispatcharr.test_discovery import labels_for_changed_paths as f;print(f(['scripts/coverage_live_path.sh']));print(f(['scripts/coverage_live_path.floor']))"
       ```
       Both must print `['apps.channels.tests', 'apps.proxy.tests']`. This is what makes R6's
       `full_suite=false` dispatch shape work. **STOP** on anything else.
 
-- [ ] **Step 8 — the anchors exist.** Run each of Appendices B, C, D and F in `--check` mode (each
+- [ ] **Step 9 — the anchors exist.** Run each of Appendices B, C, D and F in `--check` mode (each
       script takes `--check` and asserts every anchor is present exactly once, writing nothing).
       Expect `ok, 3 anchors` / `ok, 3 anchors` / `ok, 7 anchors` / `ok, 1 anchor`.
       **Any anchor that is absent or duplicated is a STOP** — it means 2d-4 landed different text
@@ -746,7 +853,7 @@ marked informational.
       (All four were verified this way against a *simulated* post-2d-4 tree — see Self-review — so a
       failure here is real news about 2d-4's fix round, not an expected wobble.)
 
-- [ ] **Step 9 — `git apply --check --whitespace=error` Appendix A.** Clean, or STOP.
+- [ ] **Step 10 — `git apply --check --whitespace=error` Appendix A.** Clean, or STOP.
 
 ---
 
@@ -765,13 +872,17 @@ census starts** (R6).
       `rcfile=`, and `coverage-gate` would then exit 1 on every census round with "the coveragerc's
       bytes changed" — twelve invalid rounds that look like a coverage problem and are not (R15).
       That edit is Task 5 Step 0.
-- [ ] **Step 3 — run the thing that was broken.** From the read-only container of Task 2, with
-      Postgres and Redis up:
+- [ ] **Step 3 — run the thing that was broken.** In `impl2d5-proxy` (started in Task 0 Step 5; it
+      carries its own Postgres and Redis, which the script's no-argument path needs):
       ```
-      docker exec <container> bash -lc 'export PATH=/dispatcharrpy/bin:$PATH; \
+      docker exec impl2d5-proxy bash -lc 'export PATH=/dispatcharrpy/bin:$PATH; \
         export DJANGO_SECRET_KEY=hook-test-secret; cd /repo && rm -rf /tmp/bare && \
         COVERAGE_LIVE_PATH_DATA_DIR=/tmp/bare bash scripts/coverage_live_path.sh'
       ```
+      One container is right here and two would be wrong: this is the script's **own** no-argument
+      path, which runs every label in one container by design — the opposite of the per-container
+      shape `--gate` requires. Nothing measured here is floor-eligible; the assertion is the exit
+      status and the two `OK` lines, not the figure.
       Expect exit 0, two `OK` lines, and a final `coverage_live_path: statements …  missing …`
       line. **Before the fix this exits 1 with "label(s) failed under coverage:
       apps.proxy.live_proxy.tests" and "THE FIGURES BELOW ARE INVALID"** — run it that way first, on
@@ -790,16 +901,11 @@ census starts** (R6).
 
 **Not floor-eligible.** Constraint 4. This exists so Task 4 can recognise a wild CI round.
 
-- [ ] **Step 1 — two containers**, per `CLAUDE.md` § Test hooks (the shared
-      `dispatcharr-testrunner` is NOT yours):
-      ```
-      for s in proxy channels; do
-        DISPATCHARR_TEST_CONTAINER=impl2d5-$s DISPATCHARR_TEST_DB_VOLUME=impl2d5-$s-hookdb \
-        CLAUDE_HOOK_REPO_ROOT=/Users/dion/git/Dispatcharr/.worktrees/impl-2d5 \
-        /Users/dion/git/Dispatcharr/.claude/hooks/start-test-container.sh
-      done
-      ```
-      Remove both, and both volumes, at the end of the PR.
+- [ ] **Step 1 — the containers are already running.** `impl2d5-proxy` and `impl2d5-channels` were
+      started in **Task 0 Step 5** and have been used by Task 0 Step 6 and Task 1 Step 3. Confirm
+      with `docker ps --filter name=impl2d5 --format '{{.Names}}'` (two lines) rather than starting
+      them again — `start-test-container.sh` does a `docker rm -f` first, so re-running it here would
+      throw away the Postgres the earlier steps warmed. They are removed in Task 8 Step 9.
 - [ ] **Step 2 — one round** via `COVERAGE_ISOLATED_PREFIX=impl2d5 bash
       scripts/coverage_live_path_isolated.sh --report`. (After 2d-4's R10 edit its `PAIRS` list is
       two entries, `proxy` and `channels`, matching the container names above.) **Both labels must
@@ -824,40 +930,49 @@ census starts** (R6).
       dispatch: `round<TAB>run_id<TAB>head_sha<TAB>proxy<TAB>channels<TAB>gate<TAB>missing<TAB>statements<TAB>verdict`.
       `verdict` is `valid` or `discarded: <reason>`. **This file is the provenance the floor header
       quotes** and it is written as the census runs, never reconstructed afterwards.
-- [ ] **Step 3 — one round.** Repeat until Task 4's stopping rule is met.
+- [ ] **Step 3 — the driver, and its break-check BEFORE the first real round.** Write Appendix E to
+      `<scratchpad>/impl-2d5/round.sh`. It establishes the run id by polling until the newest
+      `workflow_dispatch` id **changes**, and refuses any id already present in `census.tsv` (R6).
+      **Break-check, run rather than read** — the duplicate guard is the one defence whose failure is
+      invisible after the fact:
       ```
-      gh workflow run backend-tests.yml --repo D10Scot/Dispatcharr \
-        --ref migration/phase2d-gate2-recensus -f full_suite=false
-      sleep 10
-      RUN=$(gh run list --repo D10Scot/Dispatcharr --workflow backend-tests.yml \
-              --branch migration/phase2d-gate2-recensus --event workflow_dispatch \
-              --limit 1 --json databaseId --jq '.[0].databaseId')
-      gh run watch "$RUN" --repo D10Scot/Dispatcharr --exit-status || true
-      gh run view "$RUN" --repo D10Scot/Dispatcharr --json headSha,jobs \
-        --jq '.headSha, (.jobs[] | [.name, .conclusion] | @tsv)'
+      printf '1\t35512184360\tabc\tsuccess\tsuccess\tsuccess\t1474\t7767\tvalid\n' > /tmp/fake-census.tsv
+      cut -f2 /tmp/fake-census.tsv | grep -qx 35512184360 && echo "duplicate detected (expected)"
+      cut -f2 /tmp/fake-census.tsv | grep -qx 35512184361 || echo "new id accepted (expected)"
       ```
-      **Assert, in this order, before reading any log:**
-      1. `headSha` equals the frozen SHA. If not, the branch moved — Constraint 9 was broken; stop.
-      2. `Coverage apps.proxy.tests`, `Coverage apps.channels.tests` and `Coverage gate` all read
+      Both lines must print. Then, on the branch's **first** dispatch only, confirm the polling
+      defence by watching the driver's own `newest before dispatch = <none>` line — a branch with no
+      prior `workflow_dispatch` prints nothing and exits 0, which `// empty` turns into an empty
+      `BEFORE`. Paste both outputs into the PR body.
+- [ ] **Step 4 — one round.** `bash <scratchpad>/impl-2d5/round.sh <N> <frozen-sha> <census.tsv>`.
+      Repeat until Task 4's stopping rule is met. The driver asserts, in this order and before
+      reading any log:
+      1. A **new** run id appeared (not the one that was newest before the dispatch). If none does
+         within five minutes it exits 1 and records nothing.
+      2. That id is **not already in `census.tsv`**. A duplicate is refused, not recorded.
+      3. `headSha` equals the frozen SHA. If not, the branch moved — Constraint 9 was broken; stop.
+      4. `Coverage apps.proxy.tests`, `Coverage apps.channels.tests` and `Coverage gate` all read
          `success`. **Any `skipped` here means `plan` selected no labels and the round is not a
          round** — check the tip commit's paths against Task 0 Step 7 before dispatching again.
          Any `failure`/`cancelled` and the round is `discarded` with the reason (R7).
-      3. Only then harvest:
-      ```
-      JOB=$(gh run view "$RUN" --repo D10Scot/Dispatcharr --json jobs \
-              --jq '.jobs[] | select(.name=="Coverage gate") | .databaseId')
-      gh run view --repo D10Scot/Dispatcharr --job "$JOB" --log \
-        | grep -E 'this run missing=|denominator: floor'
-      ```
-      **An empty grep is never "the number was not printed"** — it is a skipped job or an expired
-      log (artifacts and logs are short-lived; `retention-days: 1` on the gate-data artifacts). Go
-      back to assertion 2.
-- [ ] **Step 4 — never dispatch round N+1 before round N's run has `completed`.** The concurrency
+
+      Only then does it harvest `this run missing=` and the denominator from the `Coverage gate`
+      job's log. **An empty grep is never "the number was not printed"** — it is a skipped job or an
+      expired log (`retention-days: 1` on the gate-data artifacts, `backend-tests.yml:241`), so the
+      driver exits 1 rather than recording a blank round.
+- [ ] **Step 5 — never dispatch round N+1 before round N's run has `completed`.** The concurrency
       group cancels in progress (R6), and 2b-4's census damaged three of its twelve runs exactly
-      this way. `gh run watch` above is what enforces it; do not replace it with a poll on the gate
-      job alone.
-- [ ] **Step 5 — if a round is discarded, dispatch a replacement.** A discarded round is not a low
+      this way. The driver's `gh run watch` is what enforces it; do not replace it with a poll on the
+      gate job alone, and do not run two copies of the driver concurrently.
+- [ ] **Step 6 — if a round is discarded, dispatch a replacement.** A discarded round is not a low
       draw and does not count toward the twelve (Constraint 5).
+- [ ] **Step 7 — before leaving this task, prove there are no duplicate run ids** across the whole
+      campaign, not just adjacent rows:
+      ```
+      cut -f2 <census.tsv> | sort | uniq -d
+      ```
+      **Must print nothing.** The driver refuses a duplicate at write time; this is the
+      after-the-fact audit that survives a driver bug, a hand-added row, or an interrupted round.
 
 ---
 
@@ -945,6 +1060,17 @@ census starts** (R6).
       scripts/coverage_live_path_isolated.sh --gate` from the ordinary **read-only** containers.
       Exit 0. Expect it to print either an exact match or a small "FEWER missed" figure — the
       local round is one draw against a maximum of N.
+
+      **If it exits 1 — a local draw ABOVE the CI maximum — STOP; do not raise the floor.** R5
+      predicts this cannot happen (the local rounds in Task 2 were identical and every known
+      flapping statement was deleted at 2d-4), so it is a finding, not a tolerance problem. Two
+      things it could mean, and they are distinguished by the same method the gate's own failure
+      message prescribes — diff the per-file `missing_lines` **sets**, never difference totals:
+      either the local shape is measuring something CI is not (a container difference, a stale data
+      directory), or the census sequence was not the whole story and the CI rounds understated the
+      spread. **Report to the orchestrator before touching the floor.** Raising `missing` to swallow
+      a local draw would defeat the entire PR, and `COVERAGE_LIVE_PATH_ALLOW_REGRESSION` is
+      forbidden here by Constraint 12.
 - [ ] **Step 7 — stop the writable container** (`docker rm -f impl2d5-rw`) before doing anything
       else, so nothing else in this PR can write into the tree through it.
 
@@ -987,6 +1113,7 @@ census starts** (R6).
       grep -c 'three regions are known to flap' CLAUDE.md   # → 0
       grep -c 'D7 still blocks every 2c PR' CLAUDE.md # → 0
       ```
+      All three expect `0`, and `grep -c` exits 1 while printing it (Constraint 2) — run them bare.
 - [ ] **Step 3 — `python3 <Appendix D> --check`**, then run it. Prints `ok, 6 edits` (A15, four
       in-place corrections, the Done-log row).
 - [ ] **Step 4 — grep the spec's old phrases to zero:**
@@ -998,7 +1125,8 @@ census starts** (R6).
       replacement (*"superseding this sentence's original 'four of the thirteen'"*) and the Done-log
       row (*"A10.4's 'four of the thirteen affected test files' is six of seventeen"*) quote the old
       phrase deliberately, so a grep without the trailing word returns 2 and looks like a failed
-      edit. Measured on the simulated tree; the grep was corrected because of it.
+      edit. Measured on the simulated tree; the grep was corrected because of it. Both expect `0`,
+      which `grep -c` prints while exiting 1 (Constraint 2) — run them bare.
 - [ ] **Step 5 — the Done-log row is the table's LAST row.**
       ```
       python3 -c "import pathlib;s=pathlib.Path('docs/superpowers/specs/2026-09-09-phase2-go-relay-design.md').read_text();h,_=s.split('\n## Risks\n',1);print(h.rstrip().splitlines()[-1][:60])"
@@ -1074,11 +1202,13 @@ more files — and 2d-4 deleted all of them. The measured spread here is <d>.
 ## Why the coverage did not fall when the tests did
 
 2d-4 disposed of seventeen test files. Six are under `apps/proxy/tests/`, the label this gate
-measures most. Measured at `7fc4ddbd` by removing the five wholly-deleted files from the two
-coverage labels and re-running: the nine modules went from 31 missed to 33. **The entire
-coverage cost of 2d-4's dispositions, over this denominator, is two statements** —
-`relay_client.py:132` and `:339`, both reached only by `test_relay_control_api.py`. The tests that
-cover the boundary are the ones 2d-4 kept.
+measures most. Measured at `7fc4ddbd` by composing **every** one of those dispositions that lands
+in the two coverage labels — the five wholly-deleted files **and** the 45 tests removed from the
+five SPLIT files — and re-running both: the nine modules went from 31 missed to 33, with identical
+missing-line sets either way. **The entire coverage cost of 2d-4's dispositions, over this
+denominator, is two statements** — `relay_client.py:132` and `:339`, both reached only by
+`test_relay_control_api.py`; the 45 SPLIT-class tests cost zero. The tests that cover the boundary
+are the ones 2d-4 kept.
 
 ## Also in this PR
 
@@ -1095,8 +1225,10 @@ cover the boundary are the ones 2d-4 kept.
   only. It lands *after* the census on purpose: editing it earlier would have failed
   `coverage-gate` on every round with "the coveragerc's bytes changed".
 - **One out-of-strict-scope correction, flagged:** CLAUDE.md's "Stage 2a ended at 74.30% … D7 still
-  blocks every 2c PR until it closes" has been false since 2b-4, two stages ago. It is the sentence
-  immediately after the one this PR rewrites, in the same paragraph, about the same number.
+  blocks every 2c PR until it closes" has been false since 2b-4, two stages ago. It is corrected
+  here because **no other PR in this stage will take it**: spec § Stage 2d entry 6 scopes 2d-6 to
+  `apps/proxy/live_proxy/` references, and this sentence contains none. It also closes the same
+  § Testing paragraph whose other two sentences this PR rewrites.
 
 ## What this PR does NOT do
 
@@ -1224,6 +1356,57 @@ unbuilt tree should show, and it is why Task 0 Step 8 exists.
    corrected phrase deliberately. The grep gained a trailing `are`, which measures 0. A grep whose
    expected count is wrong is worse than no grep: it teaches the implementer to ignore it.
 
+**Corrections made after review (PR #330, 8 should-fix, 0 blocking; every finding reproduced before
+being applied).** The review re-measured R4 both ways, R5's spread, R6's harvest against run
+`35512184360` and all four appendices on its own independently-composed post-2d-4 tree, and every
+figure reproduced. What changed:
+
+8. **S1 — the census driver could record one CI run twice.** `gh workflow run` returns no run id, so
+   Appendix E took `gh run list --limit 1` after a fixed sleep; if GitHub had not yet registered the
+   new run that returns the *previous* round's id, already `completed`, and every assertion passes
+   against it. Under a "maximum unchanged for ≥6 consecutive rounds" rule a duplicate is a free fake
+   observation of stability, and it is invisible afterwards. The driver now establishes the id by
+   polling until the newest `workflow_dispatch` id **changes**, refuses any id already in
+   `census.tsv`, and Task 3 Step 3 break-checks the duplicate guard against a real run id before the
+   first round; Step 7 audits the whole file with `cut -f2 | sort | uniq -d`. **This was the review's
+   own "would not merge without".**
+9. **S5 — R4's second measurement composed only five of 2d-4's nine deletion events.** It has been
+   re-taken with **all** of them — the five whole files plus the 45 tests from the five SPLIT files
+   — and the answer is the same 1281/33/97.42% with identical missing-line sets, so the SPLIT rows'
+   "none of the nine" claims in R3 are now a measurement rather than an argument. The caveat list
+   also names what no local composition can include (2d-4's production-code changes, the three
+   files in labels outside the coverage matrix, the re-pointed imports).
+10. **S8 — Task 0's fallback census anchor was the most expensive one available.** If 2d-4's fix
+    round has already fixed `LABELS`, the plan sent the implementer to a CLAUDE.md edit, which
+    routes to **no** label (measured) and would have forced `full_suite=true` on all twelve-plus
+    rounds. The fallback is now a comment-only edit to the floor's header: it routes to both
+    coverage labels through the same alias, and `gate()` parses the floor only through
+    `floor_value()`'s `grep -E "^$1="`, so a comment there cannot disturb a round — unlike the
+    coveragerc, whose bytes are hashed.
+11. **S2 — two tasks used containers a later task created.** Task 0 Step 5 now starts them and Task 2
+    Step 1 confirms rather than re-creates (re-running `start-test-container.sh` does a `docker rm
+    -f` first and would discard the warmed Postgres). Task 1 Step 3 names `impl2d5-proxy` and says
+    why one container is right there and two would be wrong.
+12. **S3 — R12's justification for the 74.30%/D7 edit was factually wrong.** That sentence is not
+    "immediately following" the one this PR rewrites. The edit stands on a better reason: 2d-6's
+    scope is `apps/proxy/live_proxy/` references and this sentence has none, so deferring it loses
+    it.
+13. **S4 — R10 claimed "Appendix A's own comment says which is which" about a comment that said no
+    such thing.** The added block now names the three historical notes (gevent housekeeping, the C
+    tracer, the 7,978/3,977/50.15% baseline) and records that they describe the pre-2d-4 tree — in
+    the script, where a maintainer will see it, not only in a plan appendix they will not.
+14. **S6/S7 — two ways to hand an implementer a step that fails on success.** `grep -c` prints `0`
+    and exits 1, and seven steps expect `0`; Constraint 2 now says so and each step repeats it.
+    And the plan never said where Appendices B–F live: new Constraint 13 puts them in the
+    scratchpad, since a `.py` written into the tree would fire the credential-logging hook and
+    break Task 8 Step 5's own "no `*.py` in the diff" assertion.
+15. Four notes applied: `runs` counts **valid** rounds (N1); `module_count` is not compared by
+    `gate()` and the constraint no longer says it is (N2); the `migration/**` cost comes from the
+    `pull_request` event, not `push` — `e2e-tests.yml`'s `push:` is `branches: [main]` (N3); a
+    `full_suite=false` round is **7** jobs, not ~5 (N4); and Task 5 Step 6 gained the contingency it
+    lacked for a local `--gate` draw above the CI maximum — STOP and report, never raise the floor
+    (N5).
+
 **What could not be settled from the tree, and why.** `statements` and `missing` for the
 implementation seed: the tree does not exist. R4 carries the measured reference over the same nine
 files instead, with the three named reasons it will move, and every task step that needs the real
@@ -1243,7 +1426,7 @@ true *as history of why the guard exists*; they are 2d-6's.
 
 ```diff
 diff --git a/scripts/coverage_live_path.sh b/scripts/coverage_live_path.sh
-index 068db6e4..0af31d25 100755
+index 068db6e4..67501d91 100755
 --- a/scripts/coverage_live_path.sh
 +++ b/scripts/coverage_live_path.sh
 @@ -1,8 +1,10 @@
@@ -1259,7 +1442,7 @@ index 068db6e4..0af31d25 100755
  #   scripts/coverage_live_path.sh --label <label>       run one label, leave its data file
  #   scripts/coverage_live_path.sh --report [dir]        combine and report; over <dir> if given
  #   scripts/coverage_live_path.sh --combine-from <dir>  combine data collected elsewhere, then report
-@@ -91,10 +93,22 @@ set -uo pipefail
+@@ -91,10 +93,30 @@ set -uo pipefail
  REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
  cd "$REPO_ROOT"
  
@@ -1280,6 +1463,14 @@ index 068db6e4..0af31d25 100755
 +# scripts/coverage_live_path_isolated.sh carries its own PAIRS list (2d-4 edited
 +# both). This array's only caller is a maintainer typing the script's own name
 +# with no arguments -- the invocation this file's usage block puts first.
++#
++# WHAT 2d-5 DELIBERATELY DID NOT TOUCH, so a reader does not take it for live
++# fact: the notes ABOVE about gevent daemon threads, the C tracer's losses and
++# the clean-tree baseline (7,978 statements / 3,977 missing / 50.15%, and the
++# per-file attribution to server.py / input/manager.py / channel_service.py)
++# all describe the PRE-2d-4 tree, whose files no longer exist. They are kept as
++# the history of why the shape guard and the sysmon export are here, which is
++# still true; consolidating them is stage 2d-6's.
 +LABELS=(apps.proxy.tests apps.channels.tests)
  
  export COVERAGE_LIVE_PATH_DATA_DIR="${COVERAGE_LIVE_PATH_DATA_DIR:-/tmp/dispatcharr-coverage-live-path}"
@@ -1845,17 +2036,48 @@ A scratchpad script, not a repository file. It dispatches one round, waits for t
 ```bash
 #!/usr/bin/env bash
 # One census round. Usage: bash round.sh <round-number> <frozen-sha> <census.tsv>
+#
+# The run id is established by WATCHING THE LIST CHANGE, never by `--limit 1`
+# after a sleep: `gh workflow run` returns no id, and a list taken before
+# GitHub has registered the new run returns the PREVIOUS round's -- already
+# completed, so every assertion below passes and the previous round's figure is
+# recorded twice. A duplicate is a free fake observation of stability under a
+# "maximum unchanged for >=6 consecutive rounds" rule. Two defences: poll until
+# the newest id changes, and refuse an id already in census.tsv.
 set -uo pipefail
 R="$1"; FROZEN="$2"; LOG="$3"
 REPO=D10Scot/Dispatcharr
 BRANCH=migration/phase2d-gate2-recensus
 
+newest() {
+  gh run list --repo "$REPO" --workflow backend-tests.yml --branch "$BRANCH" \
+    --event workflow_dispatch --limit 1 --json databaseId --jq '.[0].databaseId // empty'
+}
+
+BEFORE=$(newest)            # may be empty on the very first round; that is fine
+echo "round $R: newest before dispatch = ${BEFORE:-<none>}"
+
 gh workflow run backend-tests.yml --repo "$REPO" --ref "$BRANCH" -f full_suite=false || exit 1
-sleep 15
-RUN=$(gh run list --repo "$REPO" --workflow backend-tests.yml --branch "$BRANCH" \
-        --event workflow_dispatch --limit 1 --json databaseId --jq '.[0].databaseId')
-[ -n "$RUN" ] || { echo "round $R: no run id"; exit 1; }
+
+# Defence 1: poll until the newest id is not the one that was there before.
+RUN=""
+for _ in $(seq 1 60); do
+  sleep 5
+  CAND=$(newest)
+  if [ -n "$CAND" ] && [ "$CAND" != "$BEFORE" ]; then RUN="$CAND"; break; fi
+done
+if [ -z "$RUN" ]; then
+  echo "round $R: no NEW workflow_dispatch run appeared within 5 minutes -- do not record; investigate"
+  exit 1
+fi
 echo "round $R: run $RUN"
+
+# Defence 2: an id already in census.tsv is a duplicate, whatever produced it.
+if [ -f "$LOG" ] && cut -f2 "$LOG" | grep -qx "$RUN"; then
+  echo "round $R: REFUSING -- run $RUN is already recorded in $LOG. A duplicate row is a"
+  echo "round $R: fake observation of stability under the stopping rule. Investigate before retrying."
+  exit 1
+fi
 
 # Wait for the RUN, not the gate job -- the concurrency group cancels in
 # progress, so dispatching the next round early clips this one's tail.
@@ -1878,11 +2100,12 @@ if [ "$P$C$G" != "successsuccesssuccess" ]; then
 fi
 
 JOB=$(printf '%s' "$jobs_json" | jq -r '.jobs[]|select(.name=="Coverage gate")|.databaseId')
-LINE=$(gh run view --repo "$REPO" --job "$JOB" --log | grep -E 'this run missing=' | tail -1)
+GATELOG=$(gh run view --repo "$REPO" --job "$JOB" --log)
+LINE=$(printf '%s' "$GATELOG" | grep -E 'this run missing=' | tail -1)
 [ -n "$LINE" ] || { echo "round $R: gate job logged no figure -- investigate, do not record"; exit 1; }
 M=$(printf '%s' "$LINE" | sed -E 's/.*this run missing=([0-9]+).*/\1/')
-S=$(gh run view --repo "$REPO" --job "$JOB" --log \
-      | grep -E 'denominator: floor' | tail -1 | sed -E 's/.*this run ([0-9]+) statements.*/\1/')
+S=$(printf '%s' "$GATELOG" | grep -E 'denominator: floor' | tail -1 \
+      | sed -E 's/.*this run ([0-9]+) statements.*/\1/')
 printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\tvalid\n' "$R" "$RUN" "$SHA" "$P" "$C" "$G" "$M" "$S" >> "$LOG"
 echo "round $R: missing=$M statements=$S"
 ```
@@ -1891,3 +2114,17 @@ echo "round $R: missing=$M statements=$S"
 — an empty grep is a skipped job or an expired log, never "the number was not printed" (R6). And
 `gh run watch`'s status is deliberately discarded, because a non-`success` overall conclusion is not
 by itself a reason to discard a round; the job set decides (R7).
+
+**Three mechanics verified at the measurement seed, so the implementer does not discover them at
+round 1:**
+
+- `gh run list … --event workflow_dispatch --limit 1 --json databaseId --jq '.[0].databaseId // empty'`
+  on a branch with no dispatch prints **nothing and exits 0** — which is why `BEFORE` may legitimately
+  be empty on the first round, and why `// empty` is load-bearing (without it, `jq` prints `null`
+  and `null != ""` makes the first poll succeed against a run that does not exist).
+- The gate log is fetched **once** into `$GATELOG` and grepped twice. The first draft called
+  `gh run view --log` twice, which is two API round trips for one answer and two chances for the
+  second to come back different from the first.
+- `cut -f2 "$LOG" | grep -qx "$RUN"` is the duplicate check, verified against a real run id
+  (`35512184360`): it matches that id and does not match `35512184361`. `-x` matters — without it a
+  future id that merely *contains* an earlier one would false-positive.
