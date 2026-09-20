@@ -6323,3 +6323,660 @@ def main():
 if __name__ == "__main__":
     main()
 ```
+
+
+---
+
+## Fix round — the plan was executed end to end in a container, and four rulings changed
+
+**What was done.** After the first draft was pushed, every appendix was applied to a throwaway
+worktree at the seed and **all fifteen backend labels were run** in a dedicated container
+(`plan2d4`, `DISPATCHARR_TEST_CONTAINER=plan2d4 DISPATCHARR_TEST_DB_VOLUME=plan2d4-hookdb`,
+per brief-common rule 6 — not the shared `dispatcharr-testrunner`, which is mounted at another
+agent's tree). The first draft's Self-review said "no backend label was run" and treated the
+shared container's refusal as a blocker; **it was not one, and this section replaces that claim.**
+
+**Baseline first.** `apps.proxy.tests` at the unmodified seed in the same container:
+**`Ran 428 tests … OK`** — exactly A12.6's figure. So every failure below was caused by this plan,
+not inherited.
+
+### F1 — the authorize hop resolves the tune URI through Django's OWN urlconf, and deleting the live routes 403s every tune **in production**
+
+**The measurement: 22 failures and 5 errors in `apps.proxy.tests`, all on the authorize surface.**
+
+`apps/proxy/authorize_views.py:214-228`'s `_surface_for()` hands the URI in `X-Original-URI` to
+`django.urls.resolve()` and keys on the matched view's `__name__` — `"stream_ts"`, `"stream_xc"`.
+Its own comment says why it is written that way: *"rather than re-deriving each surface's URL shape
+here — a second copy of the urlconf, guaranteed to drift"*. With `apps/proxy/urls.py`'s `ts/`
+include and `dispatcharr/urls.py`'s two XC `re_path`s deleted, every `auth_request` subrequest for
+a live tune resolves to the **SPA catch-all** and `authorize_view` answers **403**.
+
+**This is not a test problem.** After 2d-3, nginx runs `auth_request` on `/proxy/ts/stream/` and
+both XC live roots before proxying to the Go relay. A 2d-4 built as first drafted would have made
+**every live tune 403 in every nginx-fronted deployment** — on the one surface this phase exists to
+keep working — while every Go test stayed green. R5 and R6 as first written are wrong, and this is
+the finding that justifies the whole verification run.
+
+**Ruling, replacing R6 and the `ts/`-include half of R5: the URL patterns SURVIVE, pointed at a new
+`apps/proxy/stream_routes.py` whose two callables exist to be RESOLVED and never to be called.**
+Same paths, same pattern text, same `XC_STREAM_ID_PATTERN` and `\Z`, same view `__name__`s — so
+`_surface_for` is untouched and Phase 1 D7's three-segment regex trap is unchanged. Behind nginx
+nothing reaches them. In `dev`, where nothing runs nginx, a request that arrives is a developer on
+the wrong port, and each answers **501 with a body saying so** — deliberately not 404, which is
+indistinguishable from an unknown channel and is the one thing a developer debugging a tune must
+not be told wrongly.
+
+**Consequences for the rest of the plan.** `tests/test_urls_xc_three_segment.py` is **no longer
+rewritten** — its five assertions were right all along and only its docstring changes, to record
+that the patterns now exist for the authorize hop rather than for routing. Appendix G is withdrawn;
+Appendix A.2's docstring edit replaces it. R6's "delete both `re_path`s" is struck.
+
+### F2 — `apps/proxy/tests/test_relay_control_api.py` is a sixteenth affected test file, and no grep in this plan could have found it
+
+`ERROR: apps.proxy.tests.test_relay_control_api (unittest.loader._FailedTest)` — it imports
+`relay_views` at `:20` and patches `relay_views.ProxyServer` at `:84`/`:97`. It contains **no
+`live_proxy` reference at all**, so R7's classifier never saw it: it is broken by **R1's own
+ruling**, not by the deletion. R7's table said fifteen files; it is **sixteen**, and the sixteenth
+is the one a `live_proxy` grep is structurally unable to find.
+
+**Ruling: DELETE.** Its subject is the five `/proxy/relay/…` routes R1 deletes. Go cover:
+`relay/httpapi/control_test.go` (the five routes' behaviour) and `relay/httpapi/golden_test.go` /
+`detail_golden_test.go` (their payloads, pinned against Django's own serializer).
+
+**The lesson for the disposition method, recorded because it generalises:** a deletion's blast
+radius is not "files that name the deleted thing". It is that, plus **files that name anything else
+the deletion forces you to remove** — which no single grep finds, and which only executing the plan
+surfaces.
+
+### F3 — two defects in Appendix A.2 itself
+
+- `test_stream_switch.py`: the script removed the `views_module` import but left the two
+  `patch.object(views_module.ProxyServer, …)` lines that used it (R7 #12 predicted the tests "would
+  very likely pass with those two lines simply deleted" and then deleted only the import).
+  `ERROR … NameError`. Both `patch.object`s and their now-unused `make_proxy_server` calls go.
+- `tests/test_websocket_consumer_filter.py` appeared in **both** Appendix A.2 and Appendix B, so
+  applying the plan in Task order fails: `error: patch does not apply`. A.2's diff now excludes it;
+  it is Appendix B's alone, which is also where R3 argues it belongs.
+
+### F4 — `apps/proxy/tests/test_internal_base_url.py` is a seventeenth file, also invisible to the classifier
+
+`FAIL: test_dev_is_the_single_runserver_process` — `'http://127.0.0.1:5658' != 'http://127.0.0.1:5656'`.
+It pins the property R1's `dev_url` change deliberately breaks. **Ruling: rewrite it** as
+`test_dev_names_the_go_relay_in_one_direction_and_django_in_the_other`, asserting **both**
+directions in one test — which is the better pin anyway, since the half a careless edit breaks
+silently is `control_plane`'s. Its sibling
+`test_both_directions_share_one_address_and_differ_only_in_override` is renamed
+`…_outside_dev_and_…`, because that is now what it asserts.
+
+### The measured result
+
+All fifteen labels, `--keepdb`, Redis flushed before each, in `plan2d4`:
+
+| Label | Tests | Result |
+|---|---|---|
+| `apps.accounts.tests` | 28 | OK |
+| `apps.backups.tests` | 73 | OK |
+| `apps.channels.tests` | **342** | OK |
+| `apps.connect.tests` | 5 | OK |
+| `apps.dashboard.tests` | 0 | no tests — unchanged at the seed, the label has no test files |
+| `apps.epg.tests` | 295 | OK |
+| `apps.m3u.tests` | 164 | OK |
+| `apps.output.tests` | 71 | OK |
+| `apps.plugins.tests` | 12 | OK |
+| `apps.proxy.tests` | **380** | OK |
+| `apps.proxy.vod_proxy.tests` | 53 | OK |
+| `apps.timeshift.tests` | 349 | OK |
+| `apps.vod.tests` | 47 | OK |
+| `core.tests` | 105 | OK |
+| `tests` | 158 | OK |
+| **total** | **2,082** | **15/15** |
+
+Seed baseline: 2,212 across 16 labels. `apps.proxy.tests` 428 → 380 (24 removed by R7, one file of
+23 removed by F2, plus R7's additions); `tests` 156 → 158 (R6's rewrite withdrawn, so the file
+keeps its five and the label gains the two from elsewhere). **These are the numbers CLAUDE.md gets
+in Task 12 Step 1** — `15`, `2082` — replacing the `TBD` placeholders Appendix K takes as
+arguments. Measure the wall time on the implementation run; it was ~20s of test time here, and the
+figure CLAUDE.md carries should be the implementer's own.
+
+The rest of the gate, run on the same tree:
+
+- `manage.py check` — clean (the only output is the pre-existing `staticfiles.W004` for an absent
+  `frontend/dist`, which the container does not build).
+- `manage.py showmigrations dispatcharr_channels` — lists cleanly, so the **migration loader**
+  drives, which is the boot trap's actual victim (A11.8).
+- `manage.py makemigrations --check --dry-run dispatcharr_channels` — **`No changes detected`**.
+- `scripts/check_credential_logging.py` — no output, zero findings.
+- `python -m metrics.build --validate-only` — `ok: 46 metrics, 36 milestones, 32 defects`.
+- Go, from `relay/`: `go build ./...`, `go vet ./...`, **`go test -race ./...` exit 0 across 11
+  packages**, `golangci-lint run ./...` → `0 issues.`
+- `scripts/check_go_stdlib_only.sh relay` → `OK: relay depends on the standard library only.`
+- `scripts/coverage_relay_go.sh --gate` → **`GATE PASSED`**, `missing=588` against the floor's 589.
+
+**One correction to R12, measured rather than assumed.** The Go gate reports
+`denominator: floor 3696 statements  this run 3710` — a 14-statement difference. It is **not** this
+PR's: running `--gate` at the **stashed seed** in the same shell reports the identical
+`3710`/`588`. It is a local-toolchain-versus-CI difference in a field the gate records as
+provenance and never compares, and R12's claim that this PR moves no Go coverage figure holds
+exactly. `packages=` and `gomod=` are unchanged, and `go list -deps .` still returns ten module
+packages.
+
+**What still could not be run**, unchanged from the first draft: `e2e`'s `npm run typecheck` and
+`npx playwright test --project=guards`, for want of `node_modules` on this host. Appendix F remains
+the one appendix whose compilation is unverified, and Task 10 Steps 3–5 run it.
+
+## Fix-round appendices
+
+These **replace** the appendices they name. Everything not named here is unchanged and was applied
+in the verification run exactly as first published.
+
+### Appendix O — `apps/proxy/stream_routes.py` (new file, verbatim) — F1
+
+```python
+"""The live-stream URL patterns Django keeps so the authorize hop can resolve.
+
+Phase 2 stage 2d-4 deleted apps/proxy/live_proxy/, and with it stream_ts and
+stream_xc -- the two views nginx has routed to the Go relay since 2d-3. The URL
+PATTERNS cannot go with them, and the reason is not routing:
+
+    apps/proxy/authorize_views.py's _surface_for() hands the URI in
+    X-Original-URI to DJANGO'S OWN RESOLVER and keys on the matched view's
+    __name__ ("stream_ts", "stream_xc"). Its comment says why it is written
+    that way -- "rather than re-deriving each surface's URL shape here, a
+    second copy of the urlconf, guaranteed to drift".
+
+So with these patterns removed, every `auth_request` subrequest for a live tune
+resolves to the SPA catch-all and authorize_view answers 403 -- in production,
+on the one surface this whole phase exists to keep working. Measured: removing
+them turns 22 tests in apps/proxy/tests red, all of them on the authorize hop.
+
+These two callables therefore exist to BE RESOLVED, never to be called. nginx
+sends /proxy/ts/stream/ and both XC live roots to the Go relay, so nothing
+reaches them in any shape that runs nginx. The one shape that does not is
+DISPATCHARR_ENV=dev, where the Go relay serves the same paths on its own port
+(DISPATCHARR_RELAY_GO_PORT, 5658 by default) -- so a request arriving here is a
+developer pointing at the wrong port, and saying so plainly is more useful than
+a 404 that looks like a missing channel.
+"""
+
+import logging
+
+from django.http import JsonResponse
+from django.urls import path, re_path
+from django.views.decorators.csrf import csrf_exempt
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework.permissions import AllowAny
+
+from dispatcharr.utils import XC_STREAM_ID_PATTERN
+
+logger = logging.getLogger("live_proxy.views")
+
+_MOVED = {
+    "error": "This endpoint is served by the Go relay.",
+    "detail": (
+        "Phase 2 stage 2d-3 pointed nginx at the Go relay for /proxy/ts/stream/ "
+        "and both Xtream live roots. Reaching Django here means no nginx is in "
+        "front: in DISPATCHARR_ENV=dev, tune against the relay's own port "
+        "(DISPATCHARR_RELAY_GO_PORT, 5658 by default)."
+    ),
+}
+
+
+def _moved():
+    # 501, not 404: a 404 is indistinguishable from an unknown channel, which
+    # is the one thing a developer debugging a tune must not be told wrongly.
+    return JsonResponse(_MOVED, status=501)
+
+
+@csrf_exempt
+@api_view(["GET", "HEAD"])
+@permission_classes([AllowAny])
+def stream_ts(request, channel_id):
+    """Resolved by _surface_for as SURFACE_LIVE. Never called behind nginx."""
+    logger.warning("stream_ts reached Django; the Go relay serves this route")
+    return _moved()
+
+
+@csrf_exempt
+@api_view(["GET", "HEAD"])
+@permission_classes([AllowAny])
+def stream_xc(request, username, password, channel_id):
+    """Resolved by _surface_for as SURFACE_LIVE_XC. Never called behind nginx."""
+    logger.warning("stream_xc reached Django; the Go relay serves this route")
+    return _moved()
+
+
+# Mounted from apps/proxy/urls.py at the same `ts/` prefix live_proxy/urls.py
+# used, so the resolved path is byte-identical to what nginx forwards.
+app_name = "live_stream"
+
+urlpatterns = [
+    path("stream/<str:channel_id>", stream_ts, name="stream"),
+]
+
+# The two root-level Xtream live patterns, verbatim from dispatcharr/urls.py.
+# XC_STREAM_ID_PATTERN and \Z are load-bearing exactly as they were: Phase 1
+# D7's three-segment regex trap is unchanged, and tests/test_urls_xc_three_segment.py
+# still pins it.
+xc_urlpatterns = [
+    re_path(
+        rf"^live/(?P<username>[^/]+)/(?P<password>[^/]+)/(?P<channel_id>{XC_STREAM_ID_PATTERN})\Z",
+        stream_xc,
+        name="xc_live_stream_endpoint",
+    ),
+    re_path(
+        rf"^(?P<username>[^/]+)/(?P<password>[^/]+)/(?P<channel_id>{XC_STREAM_ID_PATTERN})\Z",
+        stream_xc,
+        name="xc_stream_endpoint",
+    ),
+]
+```
+
+### Appendix C.1 + C.4, replaced — the urlconf keeps the live patterns (F1)
+
+Supersedes Appendix C.1 entirely and the `dispatcharr/urls.py` hunk of C.4. `apps/proxy/urls.py`
+gains a second `ts/` include for `stream_routes`, after `ts_admin_urls` (order is a readability
+choice, not a correctness one — A12.2 measured that). `dispatcharr/urls.py` keeps both XC
+patterns, spliced from `stream_routes.xc_urlpatterns` so the pattern text has one home.
+
+```diff
+diff --git a/apps/proxy/urls.py b/apps/proxy/urls.py
+index 76891f8f..6023815c 100644
+--- a/apps/proxy/urls.py
++++ b/apps/proxy/urls.py
+@@ -6,9 +6,8 @@ app_name = 'proxy'
+ 
+ urlpatterns = [
+     path('stats/', stats_views.combined_stats, name='combined_stats'),
+-    path('relay/', include('apps.proxy.relay_urls')),
+     path('ts/', include('apps.proxy.ts_admin_urls')),
+-    path('ts/', include('apps.proxy.live_proxy.urls')),
++    path('ts/', include('apps.proxy.stream_routes')),
+     path('catchup/', include('apps.timeshift.urls')),
+     path('vod/', include('apps.proxy.vod_proxy.urls')),
+ ]
+diff --git a/dispatcharr/urls.py b/dispatcharr/urls.py
+index b9c42e41..c9130076 100644
+--- a/dispatcharr/urls.py
++++ b/dispatcharr/urls.py
+@@ -6,7 +6,7 @@ from django.views.generic import TemplateView, RedirectView
+ from .routing import websocket_urlpatterns
+ from apps.output.views import xc_player_api, xc_panel_api, xc_get, xc_xmltv
+ from apps.proxy.authorize_views import authorize_internal_view, authorize_view
+-from apps.proxy.live_proxy.views import stream_xc
++from apps.proxy import stream_routes
+ from apps.proxy.vod_proxy.views import stream_xc_movie, stream_xc_episode
+ from apps.timeshift.views import timeshift_proxy, timeshift_proxy_query
+ from dispatcharr.utils import XC_STREAM_ID_PATTERN
+@@ -54,28 +54,16 @@ urlpatterns = [
+     re_path("panel_api.php", xc_panel_api, name="xc_panel_api"),
+     re_path("get.php", xc_get, name="xc_get"),
+     re_path("xmltv.php", xc_xmltv, name="xc_xmltv"),
+-    # channel_id is constrained to XC_STREAM_ID_PATTERN (dispatcharr/utils.py) —
+-    # the shape a real Xtream client sends: digits, optionally with an
+-    # extension (stream_xc does pathlib.Path(channel_id).stem / .suffix, then
+-    # int(channel_id)) — so a same-shaped SPA deep link (e.g.
+-    # /settings/example/page) falls through to the SPA catch-all instead of
+-    # stream_xc's get_object_or_404(User, ...) 404. See docs/superpowers/
+-    # plans/2026-09-04-phase1-pr2-ttfb-test.md's Spec amendments for why this
+-    # can't be fixed inside stream_xc itself.
+-    # \Z, not $: `$` also matches just before a trailing '\n', so a
+-    # %0A-suffixed channel_id would route (and, via _XC_STREAM_ID_RE's own
+-    # \A...\Z in utils.py, would NOT be redacted) — the two would disagree on
+-    # exactly that input. \Z matches only the absolute end of the string.
+-    re_path(
+-        rf"^live/(?P<username>[^/]+)/(?P<password>[^/]+)/(?P<channel_id>{XC_STREAM_ID_PATTERN})\Z",
+-        stream_xc,
+-        name="xc_live_stream_endpoint",
+-    ),
+-    re_path(
+-        rf"^(?P<username>[^/]+)/(?P<password>[^/]+)/(?P<channel_id>{XC_STREAM_ID_PATTERN})\Z",
+-        stream_xc,
+-        name="xc_stream_endpoint",
+-    ),
++    *stream_routes.xc_urlpatterns,
++    # The two XC live-stream re_paths that stood here were deleted by Phase 2
++    # stage 2d-4 with the view they named (apps/proxy/live_proxy/views.py's
++    # stream_xc). Since stage 2d-3 nginx serves both shapes from the Go relay
++    # -- `location ^~ /live/` and `location ~ ^/[^/]+/[^/]+/\d+(?:\.[A-Za-z0-9]+)?$`
++    # in docker/nginx.conf -- so Django never saw either in an nginx-fronted
++    # shape, and the SPA-shadowing discrimination XC_STREAM_ID_PATTERN existed
++    # for (Phase 1 D7, the "three-segment regex trap") is now nginx's regex
++    # alone. tests/test_urls_xc_three_segment.py pins what survives here: a
++    # three-segment path of ANY shape now reaches the SPA catch-all.
+     path(
+         "timeshift/<str:username>/<str:password>/<str:duration>/<str:timestamp>/<str:channel_id>",
+         timeshift_proxy,
+```
+
+### Appendix A.2, fix-round hunks — F1, F3, F4
+
+Applied ON TOP of Appendix A.2 (whose `tests/test_websocket_consumer_filter.py` section is now
+removed — F3). `tests/test_urls_xc_three_segment.py` is the ORIGINAL file with one docstring
+paragraph added, not the rewrite Appendix G carried; **Appendix G is withdrawn**.
+
+```diff
+diff --git a/apps/proxy/tests/test_internal_base_url.py b/apps/proxy/tests/test_internal_base_url.py
+index 33538d84..ded90966 100644
+--- a/apps/proxy/tests/test_internal_base_url.py
++++ b/apps/proxy/tests/test_internal_base_url.py
+@@ -51,10 +51,21 @@ class ResolveBaseUrlTests(SimpleTestCase):
+                 relay_client.get_relay_control_base_url(), "http://api-1:8080"
+             )
+ 
+-    def test_dev_is_the_single_runserver_process(self):
++    def test_dev_names_the_go_relay_in_one_direction_and_django_in_the_other(self):
++        """The one branch where the two directions stopped agreeing.
++
++        Stage 2d-4 deleted apps/proxy/relay_views.py, so Django serves no
++        /proxy/relay/ route in any shape. Every shape but dev reaches nginx,
++        which has routed ^~ /proxy/relay/ to the Go relay since 2d-3; dev runs
++        no nginx, so Django -> relay must name the Go relay's own listener
++        while relay -> Django stays on Django's.
++        """
+         with _env(DISPATCHARR_ENV="dev", DISPATCHARR_PORT="9191"):
+             self.assertEqual(
+-                relay_client.get_relay_control_base_url(), "http://127.0.0.1:5656"
++                relay_client.get_relay_control_base_url(), "http://127.0.0.1:5658"
++            )
++            self.assertEqual(
++                control_plane.get_control_plane_base_url(), "http://127.0.0.1:5656"
+             )
+ 
+     def test_aio_is_loopback_nginx(self):
+@@ -63,7 +74,7 @@ class ResolveBaseUrlTests(SimpleTestCase):
+                 relay_client.get_relay_control_base_url(), "http://127.0.0.1:9191"
+             )
+ 
+-    def test_both_directions_share_one_address_and_differ_only_in_override(self):
++    def test_both_directions_share_one_address_outside_dev_and_differ_only_in_override(self):
+         with _env(DISPATCHARR_ENV="modular", DISPATCHARR_WEB_HOST="w"):
+             self.assertEqual(
+                 relay_client.get_relay_control_base_url(),
+diff --git a/apps/proxy/tests/test_stream_switch.py b/apps/proxy/tests/test_stream_switch.py
+index bc9e8395..f20d1bf0 100644
+--- a/apps/proxy/tests/test_stream_switch.py
++++ b/apps/proxy/tests/test_stream_switch.py
+@@ -8,11 +8,6 @@ from rest_framework.test import APIRequestFactory, force_authenticate
+ 
+ from apps.accounts.models import User
+ from apps.proxy import relay_client
+-from apps.proxy.live_proxy import views as views_module
+-from apps.proxy.live_proxy.constants import ChannelMetadataField
+-from apps.proxy.live_proxy.redis_keys import RedisKeys
+-from apps.proxy.live_proxy.services import channel_service as cs_module
+-from apps.proxy.live_proxy.services.channel_service import ChannelService
+ from apps.proxy.ts_admin_views import change_stream
+ 
+ 
+@@ -78,202 +73,8 @@ def make_proxy_server(redis, owner):
+     return proxy
+ 
+ 
+-class OwnerPathTests(TestCase):
+-    def _run(self, manager_url="http://provider.example/stream/296622.ts"):
+-        redis = FakeRedis()
+-        proxy = make_proxy_server(redis, owner=True)
+-
+-        manager = MagicMock()
+-        manager.url = manager_url
+-        manager.update_url.return_value = True
+-        proxy.stream_managers[CHANNEL_ID] = manager
+-
+-        with patch.object(cs_module.ProxyServer, "get_instance", return_value=proxy), \
+-             patch("django.db.close_old_connections"):
+-            result = ChannelService.change_stream_url(
+-                CHANNEL_ID, NEW_URL, "test-agent",
+-                target_stream_id=144065, m3u_profile_id=7,
+-                stream_name="Alt Feed",
+-            )
+-        return result, redis, manager
+-
+-    def test_owner_switch_persists_stream_id_metadata(self):
+-        result, redis, manager = self._run()
+-
+-        manager.update_url.assert_called_once_with(NEW_URL, 144065, 7)
+-        self.assertTrue(result["success"])
+-        self.assertTrue(result["direct_update"])
+-
+-        metadata = redis.hashes[RedisKeys.channel_metadata(CHANNEL_ID)]
+-        self.assertEqual(metadata[ChannelMetadataField.URL], NEW_URL)
+-        self.assertEqual(metadata[ChannelMetadataField.STREAM_ID], "144065")
+-        self.assertEqual(metadata[ChannelMetadataField.M3U_PROFILE], "7")
+-        self.assertEqual(metadata[ChannelMetadataField.STREAM_NAME], "Alt Feed")
+-
+-    def test_owner_same_url_is_success_and_repairs_metadata(self):
+-        result, redis, manager = self._run(manager_url=NEW_URL)
+-
+-        manager.update_url.assert_not_called()
+-        self.assertTrue(result["success"])
+-
+-        metadata = redis.hashes[RedisKeys.channel_metadata(CHANNEL_ID)]
+-        self.assertEqual(metadata[ChannelMetadataField.STREAM_ID], "144065")
+-
+-    def test_owner_switch_persists_channel_name_and_m3u_profile_name(self):
+-        """PIN. Phase 2 PR 2b-1, review hop 9. Every other test in this class
+-        calls change_stream_url with stream_name alone -- channel_name and
+-        m3u_profile_name default to None, so nothing here could tell a
+-        threaded value from a dropped one. This one supplies real, distinct
+-        values for both."""
+-        redis = FakeRedis()
+-        proxy = make_proxy_server(redis, owner=True)
+-
+-        manager = MagicMock()
+-        manager.url = "http://provider.example/stream/296622.ts"
+-        manager.update_url.return_value = True
+-        proxy.stream_managers[CHANNEL_ID] = manager
+-
+-        with patch.object(cs_module.ProxyServer, "get_instance", return_value=proxy), \
+-             patch("django.db.close_old_connections"):
+-            ChannelService.change_stream_url(
+-                CHANNEL_ID, NEW_URL, "test-agent",
+-                target_stream_id=144065, m3u_profile_id=7,
+-                stream_name="Alt Feed",
+-                channel_name="Real Hop 9 Channel Name",
+-                m3u_profile_name="Real Hop 9 Profile Name",
+-            )
+-
+-        metadata = redis.hashes[RedisKeys.channel_metadata(CHANNEL_ID)]
+-        self.assertEqual(
+-            metadata[ChannelMetadataField.CHANNEL_NAME], "Real Hop 9 Channel Name"
+-        )
+-        self.assertEqual(
+-            metadata[ChannelMetadataField.M3U_PROFILE_NAME], "Real Hop 9 Profile Name"
+-        )
+ 
+ 
+-class NonOwnerPathTests(TestCase):
+-    def _run(self, owner_outcome):
+-        redis = FakeRedis()
+-        proxy = make_proxy_server(redis, owner=False)
+-        status_key = RedisKeys.switch_status(CHANNEL_ID)
+-
+-        if owner_outcome is not None:
+-            original_publish = redis.publish
+-
+-            def publish_and_confirm(channel, message):
+-                original_publish(channel, message)
+-                redis.store[status_key] = owner_outcome
+-
+-            redis.publish = publish_and_confirm
+-
+-        with patch.object(cs_module.ProxyServer, "get_instance", return_value=proxy), \
+-             patch.object(cs_module, "STREAM_SWITCH_CONFIRM_TIMEOUT", 0.3), \
+-             patch.object(cs_module, "STREAM_SWITCH_POLL_INTERVAL", 0.05):
+-            result = ChannelService.change_stream_url(
+-                CHANNEL_ID, NEW_URL, "test-agent",
+-                target_stream_id=144065, m3u_profile_id=7,
+-                stream_name="Alt Feed",
+-            )
+-        return result, redis
+-
+-    def test_pubsub_event_carries_stream_id(self):
+-        result, redis = self._run(owner_outcome="switched")
+-
+-        self.assertEqual(len(redis.published), 1)
+-        payload = json.loads(redis.published[0][1])
+-        self.assertEqual(payload["stream_id"], 144065)
+-        self.assertEqual(payload["m3u_profile_id"], 7)
+-        self.assertEqual(payload["stream_name"], "Alt Feed")
+-        self.assertEqual(payload["url"], NEW_URL)
+-
+-    def test_pubsub_event_carries_channel_name_and_m3u_profile_name(self):
+-        """PIN. pr-review bot finding, verified and confirmed blocking: the
+-        follower branch of change_stream_url published stream_name alone --
+-        _publish_stream_switch_event had no parameters for channel_name/
+-        m3u_profile_name at all, so an operator-initiated change_stream or
+-        next_stream issued against a follower worker reached the owner with
+-        both names unset. The owner's event handler then called
+-        _update_channel_metadata with them None, leaving the pre-switch
+-        m3u_profile_name in the hash -- the same stale-name shape fixed for
+-        the automatic-failover path at input/manager.py:2162, reintroduced
+-        here, and worse than before this PR because the ORM fallback that
+-        used to paper over it (channel_service.py:343) is gone. Every other
+-        test in this class calls change_stream_url with stream_name alone,
+-        so none of them could catch a dropped channel_name/m3u_profile_name;
+-        this one supplies real, distinct values for both."""
+-        redis = FakeRedis()
+-        proxy = make_proxy_server(redis, owner=False)
+-        status_key = RedisKeys.switch_status(CHANNEL_ID)
+-
+-        original_publish = redis.publish
+-
+-        def publish_and_confirm(channel, message):
+-            original_publish(channel, message)
+-            redis.store[status_key] = "switched"
+-
+-        redis.publish = publish_and_confirm
+-
+-        with patch.object(cs_module.ProxyServer, "get_instance", return_value=proxy), \
+-             patch.object(cs_module, "STREAM_SWITCH_CONFIRM_TIMEOUT", 0.3), \
+-             patch.object(cs_module, "STREAM_SWITCH_POLL_INTERVAL", 0.05):
+-            ChannelService.change_stream_url(
+-                CHANNEL_ID, NEW_URL, "test-agent",
+-                target_stream_id=144065, m3u_profile_id=7,
+-                stream_name="Alt Feed",
+-                channel_name="Real Follower Channel Name",
+-                m3u_profile_name="Real Follower Profile Name",
+-            )
+-
+-        self.assertEqual(len(redis.published), 1)
+-        payload = json.loads(redis.published[0][1])
+-        self.assertEqual(payload["channel_name"], "Real Follower Channel Name")
+-        self.assertEqual(payload["m3u_profile_name"], "Real Follower Profile Name")
+-
+-    def test_switch_confirmed_by_owner_reports_success(self):
+-        result, _ = self._run(owner_outcome="switched")
+-
+-        self.assertTrue(result["success"])
+-        self.assertFalse(result["direct_update"])
+-        self.assertTrue(result["event_published"])
+-
+-    def test_switch_failed_by_owner_reports_failure(self):
+-        result, _ = self._run(owner_outcome="failed")
+-
+-        self.assertFalse(result["success"])
+-        self.assertIn("failed", result["message"].lower())
+-
+-    def test_no_confirmation_times_out_and_reports_failure(self):
+-        result, _ = self._run(owner_outcome=None)
+-
+-        self.assertFalse(result["success"])
+-        self.assertIs(result["confirmed"], False)
+-        self.assertIn("not confirmed", result["message"])
+-
+-    def test_stale_status_key_is_cleared_before_publishing(self):
+-        redis = FakeRedis()
+-        proxy = make_proxy_server(redis, owner=False)
+-        status_key = RedisKeys.switch_status(CHANNEL_ID)
+-        redis.store[status_key] = "switched"
+-
+-        deleted_before_publish = []
+-        original_publish = redis.publish
+-
+-        def tracking_publish(channel, message):
+-            deleted_before_publish.append(status_key not in redis.store)
+-            original_publish(channel, message)
+-
+-        redis.publish = tracking_publish
+-
+-        with patch.object(cs_module.ProxyServer, "get_instance", return_value=proxy), \
+-             patch.object(cs_module, "STREAM_SWITCH_CONFIRM_TIMEOUT", 0.2), \
+-             patch.object(cs_module, "STREAM_SWITCH_POLL_INTERVAL", 0.05):
+-            result = ChannelService.change_stream_url(
+-                CHANNEL_ID, NEW_URL, "test-agent", target_stream_id=144065,
+-            )
+-
+-        self.assertEqual(deleted_before_publish, [True])
+-        self.assertFalse(result["success"])
+ 
+ 
+ class ChangeStreamViewTests(TestCase):
+@@ -304,10 +105,12 @@ class ChangeStreamViewTests(TestCase):
+         return request
+ 
+     def test_a_non_integer_stream_id_is_rejected_with_400(self):
+-        proxy = make_proxy_server(FakeRedis(), owner=True)
+-
+-        with patch.object(views_module.ProxyServer, "get_instance", return_value=proxy):
+-            response = change_stream(self._post({"stream_id": "abc"}), CHANNEL_ID)
++        # No ProxyServer patch: stage 2d-2 moved change_stream into
++        # ts_admin_views, whose ProxyServer import was function-local, and
++        # stage 2d-4 removed it outright (worker_id is computed locally now).
++        # The patch that stood here already reached a module the view under
++        # test did not touch.
++        response = change_stream(self._post({"stream_id": "abc"}), CHANNEL_ID)
+ 
+         self.assertEqual(response.status_code, 400)
+         payload = json.loads(response.content)
+@@ -317,7 +120,6 @@ class ChangeStreamViewTests(TestCase):
+         self.assertNotIn("invalid literal", payload["error"])
+ 
+     def test_stream_id_is_coerced_to_int_before_reaching_the_service(self):
+-        proxy = make_proxy_server(FakeRedis(), owner=True)
+         resolved_answer = {
+             "source": {
+                 "url": NEW_URL,
+@@ -329,8 +131,7 @@ class ChangeStreamViewTests(TestCase):
+             "error": None,
+         }
+ 
+-        with patch.object(views_module.ProxyServer, "get_instance", return_value=proxy), \
+-             patch("apps.proxy.next_source.resolve_source",
++        with patch("apps.proxy.next_source.resolve_source",
+                    return_value=resolved_answer) as resolve_source_mock, \
+              patch.object(
+                  relay_client, "advance",
+diff --git a/tests/test_urls_xc_three_segment.py b/tests/test_urls_xc_three_segment.py
+index dae8a603..31ed6ab1 100644
+--- a/tests/test_urls_xc_three_segment.py
++++ b/tests/test_urls_xc_three_segment.py
+@@ -6,7 +6,17 @@ three-segment, no-trailing-slash shape. See docs/superpowers/specs/
+ and this plan's Task 1 for why: stream_xc's get_object_or_404(User, ...) is
+ the first statement in the view, and Http404 never escapes DRF's own
+ exception_handler to reach Django's catch-all, so the URL pattern itself is
+-the only lever outside apps/proxy/live_proxy/.
++the only lever.
++
++Phase 2 stage 2d-4 deleted apps/proxy/live_proxy/ and with it the real
++stream_xc, but NOT these two patterns, and the reason is not routing: nginx
++has sent both XC live shapes to the Go relay since stage 2d-3. It is that
++apps/proxy/authorize_views.py's _surface_for() hands the URI in X-Original-URI
++to Django's own resolver and keys on the matched view's __name__ -- so with
++these patterns gone, every auth_request subrequest for an XC live tune
++resolves to the SPA catch-all and authorize_view answers 403, in production.
++They now name apps/proxy/stream_routes.py's stream_xc, which exists to be
++RESOLVED and never to be called behind nginx. See that module's header.
+ """
+ 
+ from django.test import SimpleTestCase
+```
+
+### Appendix P — the two deletions the fix round adds
+
+```
+git rm apps/proxy/tests/test_relay_control_api.py
+```
+
+F2. Nothing else changes in § File structure's delete list; the count of deleted test files goes
+from four to five, and the affected-test-file count in R7 from fifteen to **seventeen**
+(`test_relay_control_api.py` and `test_internal_base_url.py`, neither of which names `live_proxy`).
