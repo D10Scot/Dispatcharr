@@ -377,7 +377,7 @@ def _resolve_channel(surface, identifier):
     from apps.channels.models import Channel
 
     if surface == SURFACE_LIVE:
-        from apps.proxy.live_proxy.url_utils import get_stream_object
+        from apps.proxy.next_source import get_stream_object
 
         try:
             target = get_stream_object(identifier)

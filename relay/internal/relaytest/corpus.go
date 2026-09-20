@@ -10,51 +10,63 @@ import (
 	"strconv"
 )
 
-// The captured real-ffmpeg stderr corpus, READ IN PLACE from the Python
-// harness's own fixtures directory and never copied into this module.
+// The captured real-ffmpeg stderr corpus, in this package's own testdata
+// directory since Phase 2 stage 2d-4.
 //
-// apps/proxy/live_proxy/tests/harness/fixtures/ffmpeg_stderr/CAPTURE.md is
-// the authority on what these files are: verbatim captures from ffmpeg 8.1.2,
-// CR separators included, never hand-edited. Two copies of a corpus that must
-// not be edited is one copy nobody remembers to regenerate, so the Go tests
-// open the same bytes the Python tests open. Every rule that file states
-// about the corpus -- the digits are a timing measurement, only the SHAPE is
-// asserted -- binds the Go tests too.
+// It used to be READ IN PLACE from the Python harness's fixtures directory
+// and never copied, because "two copies of a corpus that must not be edited
+// is one copy nobody remembers to regenerate". Stage 2d-4 deleted
+// apps/proxy/live_proxy/, so there is no second copy to diverge from and the
+// rationale went with it; the files moved here rather than being duplicated.
+//
+// testdata/ffmpeg_stderr/CAPTURE.md moved with them and is still the
+// authority on what they are: verbatim captures from ffmpeg 8.1.2, CR
+// separators included, never hand-edited, regenerated only by
+// scripts/capture_ffmpeg_stderr.py. Every rule it states about the corpus --
+// the digits are a timing measurement, only the SHAPE is asserted -- binds
+// these tests.
 
-// CorpusNames are the three captures, harness/ffmpeg_stderr.py:15's
-// CORPUS_NAMES.
+// CorpusNames are the three captures.
 var CorpusNames = []string{"normal", "slow-trickle", "truncation"}
 
-// repoRoot locates the repository from this file's own path: relay/internal/
-// relaytest/corpus.go is four levels below it. runtime.Caller rather than
-// the working directory, because `go test` sets the cwd to the PACKAGE
-// directory, which is a different depth for every package that reads the
-// corpus.
-func repoRoot() string {
+// pkgDir is this file's own directory, from its compiled-in path.
+//
+// runtime.Caller rather than a relative string, and this is the whole reason
+// the corpus move needed a code change at all: `go test` sets the working
+// directory to the PACKAGE being tested, and Corpus() is called from
+// relay/ffmpeg, relay/httpapi and relay/channel as well as from here. A bare
+// "testdata/..." resolves against the CALLER's directory and is found only in
+// this package -- green in the one place a maintainer would look first, and
+// a panic everywhere else.
+//
+// The value stays ABSOLUTE because CorpusPath's eleven callers hand it through
+// argv to a re-exec'd stand-in (standin.go), which has no cwd of its own to
+// resolve against. Note -trimpath would defeat this; nothing runs `go test`
+// with it (docker/Dockerfile's `go build -trimpath` is the production binary).
+func pkgDir() string {
 	_, file, _, ok := runtime.Caller(0)
 	if !ok {
 		panic("relaytest: runtime.Caller failed")
 	}
-	return filepath.Dir(filepath.Dir(filepath.Dir(filepath.Dir(file))))
+	return filepath.Dir(file)
 }
 
 // RepoRoot is the repository root, resolved from this file's own compiled-in
-// path. Exported because this package is the module's ONE answer to "where is
-// the repo from a test": relay/drain's own test reads
+// path: relay/internal/relaytest is three levels below it. Exported because
+// this package is the module's ONE answer to "where is the repo from a test",
+// and since stage 2d-4 moved the corpus into testdata/ it is the module's only
+// repo-relative read left: relay/drain's tests read
 // docker/supervisord.d/relay-go.conf through it, and a second, independently
 // maintained directory walk is the kind of drift that goes wrong quietly.
-//
-// runtime.Caller rather than the working directory, for the reason repoRoot's
-// own comment gives: `go test` sets the cwd to the PACKAGE directory, which is
-// a different depth for every package that asks.
-func RepoRoot() string { return repoRoot() }
+func RepoRoot() string {
+	return filepath.Dir(filepath.Dir(filepath.Dir(pkgDir())))
+}
 
 // CorpusPath is the absolute path of one capture.
 func CorpusPath(name string) string {
 	for _, known := range CorpusNames {
 		if known == name {
-			return filepath.Join(repoRoot(), "apps", "proxy", "live_proxy", "tests", "harness",
-				"fixtures", "ffmpeg_stderr", name+".stderr")
+			return filepath.Join(pkgDir(), "testdata", "ffmpeg_stderr", name+".stderr")
 		}
 	}
 	panic(fmt.Sprintf("relaytest: unknown corpus %q", name))

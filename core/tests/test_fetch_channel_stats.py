@@ -48,6 +48,12 @@ class FetchChannelStatsTests(TestCase):
         pushed.assert_not_called()
 
     def test_core_tasks_no_longer_imports_a_relay_module_at_module_level(self):
+        """Tautological since Phase 2 stage 2d-4 deleted apps/proxy/live_proxy/:
+        this now asserts the absence of a module that exists nowhere. Kept
+        because it is the only guard against core/tasks.py growing a
+        module-level relay import again -- apps.proxy.relay_client is still a
+        module it could import, for the reason :5-7 gives.
+        """
         import inspect
 
         source = inspect.getsource(tasks)

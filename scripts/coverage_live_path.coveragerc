@@ -17,18 +17,23 @@ omit =
 parallel = True
 data_file = ${COVERAGE_LIVE_PATH_DATA_DIR}/.coverage
 
-# The ten Phase 1 boundary modules plus the relay, and nothing else: vod_proxy
-# and the dead hls_proxy stay out, matching D1's scope line.
+# The nine surviving Phase 1 boundary modules, and nothing else: vod_proxy and
+# the dead hls_proxy stay out, matching D1's scope line. Phase 2 stage 2d-4
+# removed `apps/proxy/live_proxy/*` with the package and `relay_views.py` with
+# the four /proxy/relay/ routes the Go relay took over at 2d-3, taking the
+# resolved file set from 38 to 9. apps/proxy/stream_routes.py is deliberately
+# NOT added: it is nine statements of stub on a path nginx never sends to
+# Django, and adding it would move `modules=` a second time for no ratchet
+# value. 2d-5's re-census may take it. THE FLOOR'S `missing` IS DELIBERATELY
+# SLACK UNTIL THEN -- see scripts/coverage_live_path.floor's header.
 [report]
 include =
-    apps/proxy/live_proxy/*
     apps/proxy/authorize.py
     apps/proxy/authorize_views.py
     apps/proxy/control_plane.py
     apps/proxy/next_source.py
     apps/proxy/relay_client.py
     apps/proxy/relay_serializers.py
-    apps/proxy/relay_views.py
     apps/proxy/permissions.py
     apps/proxy/internal_auth.py
     apps/proxy/internal_base_url.py

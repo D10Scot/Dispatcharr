@@ -78,7 +78,7 @@ def _fingerprint_from_profile_stream_url(profile) -> Optional[str]:
         return None
 
     try:
-        from apps.proxy.live_proxy.url_utils import transform_url
+        from apps.proxy.next_source import transform_url
 
         transformed = transform_url(
             sample_url,

@@ -104,7 +104,6 @@ INSTALLED_APPS = [
     "apps.m3u",
     "apps.output",
     "apps.proxy.apps.ProxyConfig",
-    "apps.proxy.live_proxy",
     "apps.vod.apps.VODConfig",
     "apps.connect.apps.ConnectConfig",
     "core",
@@ -424,13 +423,6 @@ CELERY_WORKER_MAX_MEMORY_PER_CHILD = 524_288  # 512 MB in KB
 
 CELERY_BEAT_SCHEDULER = "django_celery_beat.schedulers.DatabaseScheduler"
 CELERY_BEAT_SCHEDULE = {
-    # Explicitly disable the old fetch-channel-statuses task
-    # This ensures it gets disabled when DatabaseScheduler syncs
-    "fetch-channel-statuses": {
-        "task": "apps.proxy.tasks.fetch_channel_stats",
-        "schedule": 2.0,  # Original schedule (doesn't matter since disabled)
-        "enabled": False,  # Explicitly disabled
-    },
     # Keep the file scanning task
     "scan-files": {
         "task": "core.tasks.scan_and_process_files",  # Direct task call

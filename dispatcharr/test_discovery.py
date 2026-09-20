@@ -30,10 +30,6 @@ _SHARED_PATH_PREFIXES: tuple[str, ...] = (
 #                          Xtream surfaces, so both must run.
 #   apps/hdhr/             no tests of its own; the HDHomeRun lineup is built
 #                          from channels and shares the output app's listing.
-#   apps/proxy/live_proxy/  the proxy has its own tests, but its richest ones
-#                           are apps/channels/tests/test_ts_proxy_teardown.py,
-#                           which builds a real ProxyServer ten times. Editing
-#                           the proxy is the worst moment to skip them.
 #   scripts/coverage_live_path  not an app directory at all -- this is Gate 2's
 #                           own measurement script, rcfile, floor and floor
 #                           companion. Before this alias existed, editing any
@@ -45,7 +41,7 @@ _SHARED_PATH_PREFIXES: tuple[str, ...] = (
 #                           job (gated on that same flag, see backend-tests.yml)
 #                           never ran, so the shape guard this script implements
 #                           was never exercised by the one kind of change most
-#                           likely to need it. Routes to Gate 2's own three
+#                           likely to need it. Routes to Gate 2's own two
 #                           labels (the same fixed set backend-tests.yml's
 #                           coverage-label matrix always runs), not "__all__":
 #                           editing the measurement script has no bearing on
@@ -54,8 +50,7 @@ _PATH_ALIASES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("apps/api/", ("__all__",)),
     ("apps/vod/", ("apps.vod", "apps.output")),
     ("apps/hdhr/", ("apps.output", "apps.channels")),
-    ("apps/proxy/live_proxy/", ("apps.proxy.live_proxy", "apps.channels")),
-    ("scripts/coverage_live_path", ("apps.proxy", "apps.proxy.live_proxy", "apps.channels")),
+    ("scripts/coverage_live_path", ("apps.proxy", "apps.channels")),
 )
 
 

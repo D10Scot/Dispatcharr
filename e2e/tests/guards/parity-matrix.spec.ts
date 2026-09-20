@@ -114,11 +114,13 @@ import {
   GO_PARITY_CLOSED,
   goRefs,
   HIGHEST_ROW_ID,
+  isRetiredSource,
   MATRIX_REL,
   parseMatrix,
   parsePin,
   PRS,
   readMatrix,
+  RETIRED_SOURCES,
   WHITE_BOX_ONLY,
   testRefProblem,
 } from './parity-matrix';
@@ -198,12 +200,17 @@ test('every row cites source that resolves', { tag: '@characterization' }, async
   const findings: string[] = [];
 
   for (const row of rows) {
+    // A `retired:` row cites nothing because there is nothing left to cite.
+    // It is not a free pass: the row must be in RETIRED_SOURCES, which the
+    // allowlist test below compares with toEqual.
+    if (isRetiredSource(row.source)) continue;
     const citations = citationsIn(row.source);
     if (citations.length === 0) {
       findings.push(
         `${MATRIX_REL}:${row.line} (row ${row.id}) — Source cell carries no citation. ` +
-          'Every row names the Python source it was derived from, as `path:line` or ' +
-          '`path:start-end` in backticks.',
+          'Every row names the source it was derived from, as `path:line` or ' +
+          '`path:start-end` in backticks, or the `retired: <reason>` sentinel for a ' +
+          'behaviour whose code no longer exists.',
       );
       continue;
     }
@@ -300,6 +307,41 @@ test('white-box-only rows are confined to an allowlist', { tag: '@characterizati
   expect(
     unexplained,
     'Every WHITE_BOX_ONLY entry must carry a non-empty `why` — the allowlist half of the ' +
+      'justification this test requires from the matrix half above.',
+  ).toEqual([]);
+});
+
+test('retired-source rows are confined to an allowlist', { tag: '@characterization' }, async () => {
+  const rows = parseMatrix(await readMatrix());
+
+  const marked = rows.filter((row) => isRetiredSource(row.source));
+  const actual = marked.map((row) => row.id).sort((a, b) => a - b);
+  const allowed = RETIRED_SOURCES.map((row) => row.id).sort((a, b) => a - b);
+
+  // `toEqual`, not `toContain`, for WHITE_BOX_ONLY's reason one level up: the
+  // word `retired:` is the only thing that can make a row stop citing source,
+  // so both adding and removing one must be a deliberate edit in two places.
+  expect(
+    actual,
+    'A row whose Source is `retired:` cites no file, so marking one is a deliberate edit in ' +
+      'two places: the matrix, and RETIRED_SOURCES in e2e/tests/guards/parity-matrix.ts, where ' +
+      'it must carry a `why`. Say in the diff what deleted the code.',
+  ).toEqual(allowed);
+
+  const unjustified = marked
+    .filter((row) => row.notes === '')
+    .map((row) => `${MATRIX_REL}:${row.line} (row ${row.id})`);
+  expect(
+    unjustified,
+    'A retired row must justify itself in its Notes cell, not only in the guard.',
+  ).toEqual([]);
+
+  const unexplained = RETIRED_SOURCES.filter((row) => row.why.trim() === '').map(
+    (row) => `RETIRED_SOURCES[id=${row.id}]`,
+  );
+  expect(
+    unexplained,
+    'Every RETIRED_SOURCES entry must carry a non-empty `why` — the allowlist half of the ' +
       'justification this test requires from the matrix half above.',
   ).toEqual([]);
 });

@@ -131,22 +131,23 @@ if [[ "$REL" == */models.py || "$REL" == models.py ]]; then
 fi
 
 # -------------------------------------------------------------- boot check ---
-# apps/channels/models.py:6-7 imports apps/proxy/redis_keys.py and
-# apps/proxy/constants.py at module level, so one added import in either stops
-# Django booting for every migration and command. Phase 2 stage 2d-1 moved those
-# two names out of apps/proxy/live_proxy/ (spec Amendment A10.3) along with
-# ConfigHelper, which the catch-up surface imports at module level -- the trap
-# moved house, it did not go away, and this arm moved with it.
+# apps/channels/models.py:6 imports apps/proxy/redis_keys.py at module level,
+# so one added import there stops Django booting for every migration and
+# command. Phase 2 stage 2d-1 moved that name -- with ChannelMetadataField,
+# ChannelState and ConfigHelper -- out of apps/proxy/live_proxy/ (spec
+# Amendment A10.3): the trap moved house, it did not go away, and this arm
+# moved with it. apps/proxy/constants.py and config_helper.py stay in the arm
+# although models.py imports neither any more (stage 2d-4 deleted its
+# ChannelMetadataField import with issue #190's five ranges):
+# apps/timeshift/views.py:40-41 imports both at module level, and the urlconf
+# is loaded by manage.py check.
 #
-# The three apps/proxy/live_proxy/ paths stay until stage 2d-4 deletes the
-# package: they are re-export shims every relay module still imports, and
-# apps/proxy/apps.py's ready() reaches them in every process that is not
-# manage.py. THIS ARM MATCHES BY LITERAL PATH -- a file renamed out of it stops
-# being checked with no error and no output, which is how it would be lost.
+# Stage 2d-4 deleted the three apps/proxy/live_proxy/ re-export shims that
+# stood beside these three, with the package. THIS ARM MATCHES BY LITERAL PATH
+# -- a file renamed out of it stops being checked with no error and no output,
+# which is how it would be lost.
 case "$REL" in
-  apps/proxy/constants.py|apps/proxy/redis_keys.py|apps/proxy/config_helper.py|\
-  apps/proxy/live_proxy/constants.py|apps/proxy/live_proxy/redis_keys.py|\
-  apps/proxy/live_proxy/config_helper.py)
+  apps/proxy/constants.py|apps/proxy/redis_keys.py|apps/proxy/config_helper.py)
     if container_ok; then
       OUT="$(dexec manage.py check)"; [ $? -eq 0 ] ||
         block "django check failed after editing ${REL}" \

@@ -117,7 +117,7 @@ class MyWebSocketConsumer(AsyncWebsocketConsumer):
             if not user_is_admin(self.scope.get("user")):
                 return
 
-            from apps.proxy.live_proxy.url_utils import transform_url
+            from apps.proxy.next_source import transform_url
 
             url = data.get("url") or ""
             search = data.get("search") or ""

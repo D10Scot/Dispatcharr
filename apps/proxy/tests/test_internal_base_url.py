@@ -51,10 +51,22 @@ class ResolveBaseUrlTests(SimpleTestCase):
                 relay_client.get_relay_control_base_url(), "http://api-1:8080"
             )
 
-    def test_dev_is_the_single_runserver_process(self):
+    def test_dev_names_the_go_relay_in_one_direction_and_django_in_the_other(self):
+        """The one branch where the two directions stopped agreeing.
+
+        Stage 2d-4 deleted apps/proxy/relay_views.py, so Django serves no
+        /proxy/relay/ route in any shape. Every shape but dev reaches nginx,
+        which has routed ^~ /proxy/relay/ to the Go relay since 2d-3; dev runs
+        no nginx (docker/supervisord/all-dev.conf, which does start relay-go),
+        so Django -> relay must name the Go relay's own listener while
+        relay -> Django stays on Django's.
+        """
         with _env(DISPATCHARR_ENV="dev", DISPATCHARR_PORT="9191"):
             self.assertEqual(
-                relay_client.get_relay_control_base_url(), "http://127.0.0.1:5656"
+                relay_client.get_relay_control_base_url(), "http://127.0.0.1:5658"
+            )
+            self.assertEqual(
+                control_plane.get_control_plane_base_url(), "http://127.0.0.1:5656"
             )
 
     def test_aio_is_loopback_nginx(self):
@@ -63,7 +75,7 @@ class ResolveBaseUrlTests(SimpleTestCase):
                 relay_client.get_relay_control_base_url(), "http://127.0.0.1:9191"
             )
 
-    def test_both_directions_share_one_address_and_differ_only_in_override(self):
+    def test_both_directions_share_one_address_outside_dev_and_differ_only_in_override(self):
         with _env(DISPATCHARR_ENV="modular", DISPATCHARR_WEB_HOST="w"):
             self.assertEqual(
                 relay_client.get_relay_control_base_url(),

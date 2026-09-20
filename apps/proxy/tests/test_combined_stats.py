@@ -8,45 +8,8 @@ from rest_framework.test import APIRequestFactory, force_authenticate
 
 from apps.accounts.models import User
 from apps.proxy import stats_views
-from apps.proxy.live_proxy.channel_status import build_live_channel_stats_data
 
 
-class BuildLiveChannelStatsDataTests(TestCase):
-    @patch("apps.proxy.live_proxy.channel_status.ChannelStatus.get_basic_channel_info")
-    def test_builds_channel_list_from_metadata_scan(self, mock_get_info):
-        mock_get_info.side_effect = lambda ch_id, **kwargs: {"channel_id": ch_id}
-
-        redis = MagicMock()
-        redis.scan.return_value = (
-            0,
-            [
-                "live:channel:abc-uuid:metadata",
-                "live:channel:def-uuid:metadata",
-            ],
-        )
-
-        result = build_live_channel_stats_data(redis)
-
-        self.assertEqual(result["count"], 2)
-        self.assertEqual(
-            [ch["channel_id"] for ch in result["channels"]],
-            ["abc-uuid", "def-uuid"],
-        )
-
-    def test_returns_empty_when_redis_unavailable(self):
-        result = build_live_channel_stats_data(None)
-        self.assertEqual(result, {"channels": [], "count": 0})
-
-    @patch("apps.proxy.live_proxy.channel_status.ChannelStatus.get_basic_channel_info")
-    def test_returns_empty_on_error(self, mock_get_info):
-        mock_get_info.side_effect = RuntimeError("redis blew up")
-
-        redis = MagicMock()
-        redis.scan.return_value = (0, ["live:channel:abc-uuid:metadata"])
-
-        result = build_live_channel_stats_data(redis)
-
-        self.assertEqual(result, {"channels": [], "count": 0})
 
 
 class CombinedStatsApiTests(TestCase):

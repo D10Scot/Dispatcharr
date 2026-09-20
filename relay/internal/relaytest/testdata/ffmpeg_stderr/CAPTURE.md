@@ -7,7 +7,7 @@ with:
 ```bash
 docker exec -w /repo dispatcharr-testrunner bash -lc \
   'export PATH=/dispatcharrpy/bin:$PATH; python scripts/capture_ffmpeg_stderr.py \
-     apps/proxy/live_proxy/tests/harness/fixtures/ffmpeg_stderr'
+     relay/internal/relaytest/testdata/ffmpeg_stderr'
 ```
 
 then copy the three `.stderr` files out of the (read-only-mounted) container

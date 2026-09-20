@@ -24,7 +24,6 @@ DJANGO_SECRET_KEY_FOR_EXEC="${DJANGO_SECRET_KEY:-hook-test-secret}"
 
 declare -a PAIRS=(
   "proxy:apps.proxy.tests"
-  "liveproxy:apps.proxy.live_proxy.tests"
   "channels:apps.channels.tests"
 )
 
