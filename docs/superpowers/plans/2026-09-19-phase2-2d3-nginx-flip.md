@@ -884,9 +884,17 @@ no `frontend/`, no `.github/workflows/`, no `metrics/`.
       ```
       Expected: `test is successful`; `server 127.0.0.1:5658` (the sed resolved, no placeholder
       left); `4`; all ten programs `RUNNING` including `relay-go`.
-- [ ] **Step 3 — the A10.12 smoke check.** Run
-      `npx playwright test --project=streaming --project=streaming-greybox --project=streaming-failover --project=streaming-split`
-      against it and confirm, from the run's own output rather than by inspection:
+- [ ] **Step 3 — the A10.12 smoke check.** Run these as **separate** invocations, one project
+      each: `npx playwright test --project=streaming`, then `--project=streaming-greybox`, then
+      `--project=streaming-failover`, then `--project=streaming-split`. **Not** a single command
+      naming all four: `e2e/README.md` documents that `streaming-greybox` and `streaming-split`
+      "must be run alone locally" because each mutates or takes away container-wide state (a
+      supervisord program, in `streaming-split`'s case) that a concurrently-running project would
+      observe. Combining them was measured to fail exactly that way — `streaming-split`'s Scenario A
+      restarting `api-uwsgi` mid-run produced cascading `502`s across every other project's `seed.*`
+      calls, reproducibly (same 41-test failure set on two separate combined runs), while each
+      project is fully green run alone. Confirm, from each run's own output rather than by
+      inspection:
       - `streaming/stream-profiles.spec.ts:37` (`the FFmpeg profile spawns a subprocess and reports
         its progress`) **green** — `stream_profile.argv`.
       - `streaming-greybox/output-profile-sharing.spec.ts` **green** — `output_profiles[*].argv`,
@@ -905,8 +913,18 @@ no `frontend/`, no `.github/workflows/`, no `metrics/`.
       Then create an Output Profile whose `parameters` are `-i pipe:0 -c copy "unterminated -f
       mpegts pipe:1` (the API accepts it, **201**) and tune with `?output_profile=<id>`: expect
       **500**, the null-`argv` arm.
-- [ ] **Step 4 — the remaining projects locally:** `--project=seeded --project=guards
-      --project=frontend --project=dvr --project=lifecycle --project=pristine`. All green.
+- [ ] **Step 4 — the remaining projects locally, as separate invocations, not one combined
+      command.** Same defect class as Step 3, worse here: `package.json`'s own bare `npm test`
+      message and `e2e/README.md:129-136` both state that `pristine` cannot share a container with
+      `seeded`/`frontend`/`dvr` (it needs an instance with **no** superuser, and `bootstrap` — which
+      those three depend on — creates one) and that `dvr` "must be run alone locally"; `lifecycle`
+      **destroys the container** every other project shares, so combining it with anything is not
+      merely a contention risk but a guaranteed teardown mid-run. Run, in this order:
+      `--project=guards` (needs no container); `--project=seeded --project=frontend` (may share,
+      neither is flagged solo); `--project=dvr` alone; `./scripts/e2e_up.sh --reset` then
+      `--project=pristine` alone (the reset gives it the superuser-less instance it needs);
+      `--project=lifecycle` alone (destroys the container — run it last, or accept that anything run
+      after it needs a fresh container). All green.
 - [ ] **Step 5 — remove your container, volume and network** when Task 9 has pushed.
 
 ## Task 8: Amendment A13, the eight in-place spec corrections, and the Done-log row
