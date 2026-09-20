@@ -363,6 +363,27 @@ test(
               'discards all six'
           ).toBe(true);
         }
+
+        // A second simple-directive trap, found only after the flip shipped:
+        // proxy_connect_timeout is a SIMPLE directive (unlike the six above)
+        // and inherits normally -- but nginx.conf:64 sets a server-level
+        // proxy_connect_timeout 75 for an unrelated proxy_pass elsewhere in
+        // this file. uwsgi_pass never set uwsgi_connect_timeout on these
+        // locations, so they used nginx's implicit 60s default; proxy_pass
+        // silently inherited the unrelated 75s instead. 75s exceeds
+        // docker/tests/test-puid-pgid.sh's test_role_split 70s client-side
+        // budget for "the relay container is stopped, expect
+        // 502/503/504" -- measured as a real CI regression (ERR:timed out),
+        // not a flake, and puid-pgid only runs in full mode
+        // (migration/** or workflow_dispatch), so this is the only
+        // assertion of it that runs on an ordinary PR touching docker/.
+        expect(
+          block.body.some((line) => /^\s*proxy_connect_timeout\s+60s\s*;/.test(line)),
+          `location "${block.header}" does not set proxy_connect_timeout 60s; without it, ` +
+            'this proxy_pass location silently inherits the server block\'s ' +
+            'proxy_connect_timeout 75 (set for an unrelated location), which exceeds ' +
+            "test-puid-pgid.sh's test_role_split 70s budget"
+        ).toBe(true);
       }
 
       // Without this, a 404 or 429 decision reaches the viewer as 500:
@@ -541,6 +562,18 @@ test(
     expect(
       block!.body.some((line) => /^\s*proxy_read_timeout\s+30s\s*;/.test(line)),
       'the relay control API needs a read timeout above the advance budget'
+    ).toBe(true);
+
+    // Same simple-directive trap as the three byte-path locations (see the
+    // second test's comment): without an explicit proxy_connect_timeout this
+    // location inherits nginx.conf:64's server-level proxy_connect_timeout 75,
+    // set for an unrelated proxy_pass. relay_client.py's own 2s connect
+    // timeout fires first in practice, but nginx's own budget should still
+    // match the pre-flip uwsgi default rather than an unrelated directive.
+    expect(
+      block!.body.some((line) => /^\s*proxy_connect_timeout\s+60s\s*;/.test(line)),
+      'the relay control API does not set proxy_connect_timeout 60s; without it, it silently ' +
+        "inherits the server block's proxy_connect_timeout 75 (set for an unrelated location)"
     ).toBe(true);
   }
 );

@@ -1108,14 +1108,22 @@ touches none of them either (its Global Constraint 7 forbids it).
 
 ### Appendix A — `docker/nginx.conf`
 
-One diff, four changes: the new `upstream relay_go` block, the `map` comment's stale sentence
-(R2), the three byte-path bodies, and `^~ /proxy/relay/` with the two sentences of its own comment
-that become false.
+One diff, five changes: the new `upstream relay_go` block, the `map` comment's stale sentence
+(R2), the three byte-path bodies, `^~ /proxy/relay/` with the two sentences of its own comment
+that become false, and an explicit `proxy_connect_timeout 60s;` on all four flipped locations
+(A13.11, added in PR review after `docker/nginx.conf:64`'s pre-existing server-level
+`proxy_connect_timeout 75;` — set for an unrelated `proxy_pass` — was found silently inherited,
+exceeding `test-puid-pgid.sh`'s `test_role_split` 70s budget: `uwsgi_pass` never set
+`uwsgi_connect_timeout` on these locations, so they used nginx's implicit 60s default, and
+`proxy_pass` needs the same value stated explicitly rather than left to inherit whatever the
+server block happens to carry for something else). **This appendix was regenerated as the actual
+`git diff` from the seed to the merged PR head**, not hand-edited, so re-applying it reproduces
+the fix along with the original four changes.
 
 
 ```diff
 diff --git a/docker/nginx.conf b/docker/nginx.conf
-index b9155b83..6be88610 100644
+index b9155b83..897e0522 100644
 --- a/docker/nginx.conf
 +++ b/docker/nginx.conf
 @@ -22,6 +22,20 @@ upstream relay_py {
@@ -1154,7 +1162,7 @@ index b9155b83..6be88610 100644
  map $relay_name $relay_upstream {
      default relay_py;
      py      relay_py;
-@@ -278,19 +296,44 @@ server {
+@@ -278,19 +296,55 @@ server {
          auth_request_set $authorize_status $upstream_http_x_authorize_status;
          error_page 403 = @authorize_denied;
  
@@ -1205,13 +1213,24 @@ index b9155b83..6be88610 100644
 +        proxy_http_version 1.1;
 +        proxy_read_timeout 300s;
 +        proxy_send_timeout 300s;
++        # Explicit, for the same reason the six proxy_set_header lines above
++        # are: this location's uwsgi_pass predecessor never set
++        # uwsgi_connect_timeout, so it used nginx's implicit 60s default.
++        # proxy_pass has no such luck here -- this server block sets its own
++        # proxy_connect_timeout 75 (:64, for a proxy_pass elsewhere in this
++        # file), which a location inherits normally since it is a simple
++        # directive. 75s exceeds docker/tests/test-puid-pgid.sh's
++        # test_role_split 70s client-side budget for "the relay container is
++        # stopped, expect 502/503/504" -- measured as the CI regression
++        # ERR:timed out rather than one of the three accepted codes.
++        proxy_connect_timeout 60s;
          client_max_body_size 0;
 -        uwsgi_pass $relay_upstream;
 +        proxy_pass http://relay_go;
      }
      location ^~ /proxy/vod/ {
          auth_request /_dispatcharr/authorize;
-@@ -361,18 +404,24 @@ server {
+@@ -361,18 +415,31 @@ server {
      # blanking include is still here, so a client-supplied X-Relay-*
      # header never reaches the relay on this path.
      #
@@ -1237,11 +1256,18 @@ index b9155b83..6be88610 100644
 -        uwsgi_pass relay_py;
 +        include /etc/nginx/dispatcharr_api_params_proxy.conf;
 +        proxy_read_timeout 30s;
++        # Same reason as the three byte-path locations: uwsgi_pass relay_py
++        # never set uwsgi_connect_timeout (60s implicit default), and
++        # proxy_pass would otherwise silently inherit this server block's
++        # proxy_connect_timeout 75 (:64). relay_client.py's own 2s connect
++        # timeout fires first in practice, but this keeps nginx's own budget
++        # matching the pre-flip default rather than an unrelated directive.
++        proxy_connect_timeout 60s;
 +        proxy_pass http://relay_go;
      }
      location ^~ /live/ {
          auth_request /_dispatcharr/authorize;
-@@ -386,19 +435,44 @@ server {
+@@ -386,19 +453,55 @@ server {
          auth_request_set $authorize_status $upstream_http_x_authorize_status;
          error_page 403 = @authorize_denied;
  
@@ -1292,13 +1318,24 @@ index b9155b83..6be88610 100644
 +        proxy_http_version 1.1;
 +        proxy_read_timeout 300s;
 +        proxy_send_timeout 300s;
++        # Explicit, for the same reason the six proxy_set_header lines above
++        # are: this location's uwsgi_pass predecessor never set
++        # uwsgi_connect_timeout, so it used nginx's implicit 60s default.
++        # proxy_pass has no such luck here -- this server block sets its own
++        # proxy_connect_timeout 75 (:64, for a proxy_pass elsewhere in this
++        # file), which a location inherits normally since it is a simple
++        # directive. 75s exceeds docker/tests/test-puid-pgid.sh's
++        # test_role_split 70s client-side budget for "the relay container is
++        # stopped, expect 502/503/504" -- measured as the CI regression
++        # ERR:timed out rather than one of the three accepted codes.
++        proxy_connect_timeout 60s;
          client_max_body_size 0;
 -        uwsgi_pass $relay_upstream;
 +        proxy_pass http://relay_go;
      }
      location ^~ /movie/ {
          auth_request /_dispatcharr/authorize;
-@@ -509,19 +583,44 @@ server {
+@@ -509,19 +612,55 @@ server {
          auth_request_set $authorize_status $upstream_http_x_authorize_status;
          error_page 403 = @authorize_denied;
  
@@ -1349,6 +1386,17 @@ index b9155b83..6be88610 100644
 +        proxy_http_version 1.1;
 +        proxy_read_timeout 300s;
 +        proxy_send_timeout 300s;
++        # Explicit, for the same reason the six proxy_set_header lines above
++        # are: this location's uwsgi_pass predecessor never set
++        # uwsgi_connect_timeout, so it used nginx's implicit 60s default.
++        # proxy_pass has no such luck here -- this server block sets its own
++        # proxy_connect_timeout 75 (:64, for a proxy_pass elsewhere in this
++        # file), which a location inherits normally since it is a simple
++        # directive. 75s exceeds docker/tests/test-puid-pgid.sh's
++        # test_role_split 70s client-side budget for "the relay container is
++        # stopped, expect 502/503/504" -- measured as the CI regression
++        # ERR:timed out rather than one of the three accepted codes.
++        proxy_connect_timeout 60s;
          client_max_body_size 0;
 -        uwsgi_pass $relay_upstream;
 +        proxy_pass http://relay_go;
@@ -1677,7 +1725,7 @@ REPLACEMENTS = [
     # 4. § Auth -- the param count and the blanking mechanism.
     ("the marker `X-Dispatcharr-Authorized` (an HMAC of `SECRET_KEY`) and the four `X-Relay-*` "
      "params are overridden to empty on every other location",
-     "the marker `X-Dispatcharr-Authorized` (an HMAC of `SECRET_KEY`) and the seven `X-Relay-*` "
+     "the marker `X-Dispatcharr-Authorized` (an HMAC of `SECRET_KEY`) and the six `X-Relay-*` "
      "params are overridden to empty on every other location — by "
      "`dispatcharr_api_params.conf`'s `uwsgi_param … \"\"` lines, and since stage 2d-3 by "
      "`dispatcharr_api_params_proxy.conf`'s `proxy_set_header … \"\"` twin on `^~ /proxy/relay/`"),
@@ -2703,7 +2751,7 @@ index 869729a2..5e956489 100644
  | Streaming | Relay events: a `dead-air` failover posts `stream_switch` to `/api/relay/events` (not `channel_failover` — that type is reachable only from the ffmpeg buffering-timeout path, structurally dead for the Proxy profile this test locks), Django writes the `SystemEvent` row that `GET /api/core/system-events/` returns, and pushes a `relay_event` WebSocket message whose payload carries the channel uuid and no provider URL | P1 | done |
 -| Streaming | Relay control API: `^~ /proxy/relay/` reaches the relay (`uwsgi_pass relay_py`), is not `internal;` so Django can dial it as an ordinary client from the worker role and through the api role's own nginx, runs no `auth_request` because the internal token is the whole gate, still blanks the four `X-Relay-*` params and the `X-Dispatcharr-Authorized` marker, and carries a read timeout above the 15s the owner-confirmation poll can take | P1 | done |
 -| Streaming | Time to first byte through nginx: a live channel answers with a valid 188-byte-aligned TS packet within a 10s liveness ceiling, through whichever process serves `/proxy/ts/stream/<uuid>` — written before PR 4 gave that route its own nginx location and unchanged after it, which is what makes it a routing guard rather than a performance test. Deliberately **not** a spooling detector: at the scenario's `rate: 20` a buffered nginx would still forward inside 10s, so the `uwsgi_buffering off` directive is pinned statically in `streaming-greybox/nginx-stream-buffering.spec.ts` instead. `tests/streaming/time-to-first-byte.spec.ts` | P1 | done |
-+| Streaming | Relay control API: `^~ /proxy/relay/` reaches the relay (`uwsgi_pass relay_py` until Phase 2 stage 2d-3, `proxy_pass http://relay_go` since), is not `internal;` so Django can dial it as an ordinary client from the worker role and through the api role's own nginx, runs no `auth_request` because the internal token is the whole gate, still blanks the seven `X-Relay-*` params (by `proxy_set_header … ""` since 2d-3) and the `X-Dispatcharr-Authorized` marker, and carries a read timeout above the 15s the owner-confirmation poll can take | P1 | done |
++| Streaming | Relay control API: `^~ /proxy/relay/` reaches the relay (`uwsgi_pass relay_py` until Phase 2 stage 2d-3, `proxy_pass http://relay_go` since), is not `internal;` so Django can dial it as an ordinary client from the worker role and through the api role's own nginx, runs no `auth_request` because the internal token is the whole gate, still blanks the six `X-Relay-*` params (by `proxy_set_header … ""` since 2d-3) and the `X-Dispatcharr-Authorized` marker, and carries a read timeout above the 15s the owner-confirmation poll can take | P1 | done |
 +| Streaming | Time to first byte through nginx: a live channel answers with a valid 188-byte-aligned TS packet within a 10s liveness ceiling, through whichever process serves `/proxy/ts/stream/<uuid>` — written before PR 4 gave that route its own nginx location and unchanged after it, which is what makes it a routing guard rather than a performance test. Deliberately **not** a spooling detector: at the scenario's `rate: 20` a buffered nginx would still forward inside 10s, so the buffering directive is pinned statically in `streaming-greybox/nginx-stream-buffering.spec.ts` instead — `proxy_buffering off` on this route since Phase 2 stage 2d-3, `uwsgi_buffering off` on the six locations still on `uwsgi_pass`. `tests/streaming/time-to-first-byte.spec.ts` | P1 | done |
  | Streaming | The SPA three-segment route still serves the SPA: a deep link shaped like the Xtream `/<user>/<pass>/<id>` root form falls through to the frontend catch-all instead of `stream_xc`, because PR 2 narrowed the URL pattern's `channel_id` segment (`XC_STREAM_ID_PATTERN`) to the numeric-with-optional-extension shape a real stream id has. Without it the route matched first and DRF's exception handler absorbed `get_object_or_404`'s `Http404` before Django's catch-all ever saw it. `tests/streaming/spa-three-segment-route.spec.ts` | P1 | done |
  | Streaming | Django down: with `api-uwsgi` stopped, an already-running stream keeps delivering aligned TS (nothing on the byte path calls Django once a stream runs), an ordinary `/api/` route answers **502** (`uwsgi_pass` failing directly) and a new tune answers **500** (the `auth_request` subrequest failing, which `ngx_http_auth_request_module` reports as its own error — the two codes in one outage are the distinction). Starting `api-uwsgi` again restores tunes, and the pre-existing stream is still flowing afterwards, which is D15 in observable form: no start path flushes Redis DB 0. `tests/streaming-split/process-restart.spec.ts` | P1 | done |

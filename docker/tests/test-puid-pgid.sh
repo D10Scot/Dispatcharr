@@ -1460,17 +1460,24 @@ PY
 
     if [ -n "$channel_uuid" ]; then
         # Second assertion: stop the relay container. A new tune must fail —
-        # nginx's uwsgi_pass to relay_py gets connection-refused, so it
-        # answers 502 — while the api container stays up and keeps answering
-        # its own DB-backed routes.
+        # nginx's proxy_pass to relay_go (uwsgi_pass to relay_py before
+        # Phase 2 stage 2d-3) gets connection-refused, so it answers 502 —
+        # while the api container stays up and keeps answering its own
+        # DB-backed routes.
         #
         # timeout=70, not 10. A stopped container's IP simply vanishes from
         # the bridge; nginx normally gets EHOSTUNREACH within a few seconds
         # and answers 502, but on some network drivers it waits out
-        # uwsgi_connect_timeout (60s default) and answers 504. A 10s client
-        # timeout would turn that second, equally correct outcome into
-        # `ERR:timed out` and a spurious log_fail. 70 lets nginx be the one
-        # that decides, and both of its verdicts are accepted below.
+        # proxy_connect_timeout (uwsgi_connect_timeout before 2d-3) and
+        # answers 504. Both directives are explicitly set to 60s on this
+        # location (docker/nginx.conf) rather than left to inherit: a bare
+        # proxy_pass here would otherwise silently pick up nginx.conf:64's
+        # server-level proxy_connect_timeout 75, set for an unrelated
+        # location, and 75s exceeds this test's own 70s budget below --
+        # found as a real CI regression in stage 2d-3, not a flake. A 10s
+        # client timeout would turn the 504 outcome into `ERR:timed out`
+        # and a spurious log_fail. 70 lets nginx be the one that decides,
+        # and both of its verdicts are accepted below.
         docker stop "$relay_name" >/dev/null
         sleep 2
 
