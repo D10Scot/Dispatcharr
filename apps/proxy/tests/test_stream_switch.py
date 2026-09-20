@@ -13,7 +13,7 @@ from apps.proxy.live_proxy.constants import ChannelMetadataField
 from apps.proxy.live_proxy.redis_keys import RedisKeys
 from apps.proxy.live_proxy.services import channel_service as cs_module
 from apps.proxy.live_proxy.services.channel_service import ChannelService
-from apps.proxy.live_proxy.views import change_stream
+from apps.proxy.ts_admin_views import change_stream
 
 
 class FakeRedis:

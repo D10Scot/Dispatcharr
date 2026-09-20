@@ -16,7 +16,7 @@ from apps.accounts.models import User
 from apps.channels.models import Channel, ChannelStream, Stream
 from apps.m3u.models import M3UAccount
 from apps.proxy import relay_client
-from apps.proxy.live_proxy import views
+from apps.proxy import ts_admin_views as views
 from core.models import StreamProfile
 
 
@@ -407,3 +407,44 @@ class AdminControlViewTests(TestCase):
         self.assertEqual(response.status_code, 500)
         self.assertEqual(response.json(), {"error": "Relay configuration error"})
         self.assertIn("DISPATCHARR_RELAY_BASE_URL", "\n".join(caught.output))
+
+
+class AdminControlPermissionTests(TestCase):
+    """PIN, new in 2d-2. The stage's own gate is "URLs, names and
+    permission classes unchanged", and before this class nothing in the
+    tree asserted the last of those: all 23 tests above authenticate as
+    an admin, so a move that dropped @permission_classes([IsAdmin]) from
+    any of the five views would have been green in every label and would
+    have exposed the whole live control surface to any signed-in viewer.
+
+    Measured at the seed, unauthenticated is 401 and an authenticated
+    non-admin is 403, on all six routes.
+    """
+
+    ROUTES = (
+        ("get", "/proxy/ts/status"),
+        ("get", "/proxy/ts/status/abc"),
+        ("post", "/proxy/ts/stop/abc"),
+        ("post", "/proxy/ts/stop_client/abc"),
+        ("post", "/proxy/ts/change_stream/abc"),
+        ("post", "/proxy/ts/next_stream/abc"),
+    )
+
+    def test_every_route_401s_for_an_anonymous_caller(self):
+        client = APIClient()
+        for method, path in self.ROUTES:
+            with self.subTest(route=path):
+                response = getattr(client, method)(path)
+                self.assertEqual(response.status_code, 401)
+
+    def test_every_route_403s_for_a_signed_in_non_admin(self):
+        for level in (User.UserLevel.STREAMER, User.UserLevel.STANDARD):
+            user = User.objects.create_user(
+                username=f"non-admin-{level}", password="p", user_level=level
+            )
+            client = APIClient()
+            client.force_authenticate(user=user)
+            for method, path in self.ROUTES:
+                with self.subTest(route=path, user_level=level):
+                    response = getattr(client, method)(path)
+                    self.assertEqual(response.status_code, 403)
