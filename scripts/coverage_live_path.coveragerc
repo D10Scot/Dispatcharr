@@ -24,8 +24,18 @@ data_file = ${COVERAGE_LIVE_PATH_DATA_DIR}/.coverage
 # resolved file set from 38 to 9. apps/proxy/stream_routes.py is deliberately
 # NOT added: it is nine statements of stub on a path nginx never sends to
 # Django, and adding it would move `modules=` a second time for no ratchet
-# value. 2d-5's re-census may take it. THE FLOOR'S `missing` IS DELIBERATELY
-# SLACK UNTIL THEN -- see scripts/coverage_live_path.floor's header.
+# value. Stage 2d-5's re-census DECLINED to take it, on a stronger reason than
+# 2d-4's: both of its callables exist to be RESOLVED by the authorize hop and
+# never to be called (apps/proxy/stream_routes.py's own header says so), so
+# their bodies are unreachable by design and including the file would raise
+# `missing` by an amount NO TEST COULD EVER CLOSE -- the one thing a ratchet
+# must not contain. THE FLOOR'S `missing` WAS DELIBERATELY SLACK BETWEEN 2d-4
+# AND 2d-5 AND NO LONGER IS: 2d-5 measured this module list over >=12 CI
+# rounds. Note for whoever edits this file next -- a COMMENT-ONLY edit here
+# still moves the floor's `rcfile=` field, which hashes these BYTES and not
+# the resolved file set, so any edit ships with a --write-floor in the same
+# PR. The floor's own header calls that an accepted false positive and says
+# what it costs.
 [report]
 include =
     apps/proxy/authorize.py
