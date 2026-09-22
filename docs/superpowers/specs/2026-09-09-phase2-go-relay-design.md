@@ -4179,6 +4179,196 @@ contain. Adding it would also move `modules=` in the same PR that moves `missing
 kinds of move the floor's header separates at length. On the post-2d list: a `--shape-only` move
 plus a fresh census, if ever.
 
+#### Amendment A16 (stage 2d-6: the docs consolidation, and the close of this spec)
+
+**This is the last amendment.** Stage 2d-6 is the final PR of Phase 2; what
+remains after it is one follow-up one-liner adding the `phase-done` milestone
+row, which a merge commit cannot add for itself (A9.9).
+
+**A16.1 — the A12.4 logger rename is THREE loggers, not one, and three tests
+bind to the string.** § Stage 2d entry 6 names
+`apps/proxy/ts_admin_views.py:42`'s `logging.getLogger("live_proxy.views")`.
+`apps/proxy/next_source.py:38` carries `logging.getLogger("live_proxy")` for
+exactly the same reason, put there by 2d-1's relocation. **And PR 4 creates a
+third**: `apps/proxy/stream_routes.py:42`, whose own comment assigns the
+rename here and counts "TWO sites -- this one and
+`apps/proxy/ts_admin_views.py`'s", missing `next_source.py`. Measured on the
+post-2d-4 tree, `grep -rn 'getLogger("live_proxy' --include='*.py' .` returns
+three. Renaming any subset leaves the tree with a `live_proxy` logger, so all
+three go. **`app_name = "live_proxy"` at `stream_routes.py:85` is NOT touched**
+— it is the URL namespace PR 4 deliberately preserves so
+`proxy:live_proxy:stream` stays reversible, and a sweep that took it would
+break a route name. The cost that is not obvious: `assertLogs("live_proxy", ...)` appears
+at `apps/proxy/tests/test_next_source_api.py:660`,
+`test_next_source_edges.py:349` and `test_next_source_resolution.py:352`
+(`assertNoLogs`), all three binding the *parent* logger by string rather than
+the logger object, so they move to `"apps.proxy"` in the same commit or
+`apps.proxy.tests` goes red. `test_admin_control_views.py` binds
+`views.logger`, the object, and needs no edit — which is why the breakage is
+one-sided and easy to miss.
+
+**The rename is behaviour-preserving, measured rather than assumed.**
+`dispatcharr/settings.py`'s `LOGGING` declares `apps.proxy` with
+`handlers: ["console"], level: LOG_LEVEL, propagate: False`, and `root` with
+the same handler at the same level; a logger named `live_proxy` matched
+neither and fell through to `root`. So the handler and the effective level are
+identical before and after, and the only observable change is the `{name}`
+field the `verbose` formatter prints. Stated because "rename a logger" is
+otherwise exactly the kind of edit that silently moves a level.
+
+**A16.2 — a bare `gh aw compile` was PREDICTED to rewrite four lock files;
+found at implementation to rewrite two.** Entry 6 treats
+`domain-fuzz-campaign.lock.yml` as this PR's only generated diff; this plan's
+own R5, measured at the `803db6e0` seed, predicted three more —
+`claude-md-maintenance.lock.yml`, `issue-triage.lock.yml` and
+`pr-review.lock.yml` — each carrying `GH_AW_ACTION_FAILURE_ISSUE_EXPIRES_HOURS:
+"168"` from an earlier single-file compile, which a bare compile corrects to
+`"0"`. **Found on the real, implemented tree: only `domain-fuzz-campaign.md`
+and its own `.lock.yml` change.** #335, merged to `main` before this branch,
+already carried a bare `gh aw compile` that normalized those three locks (plus
+a fifth, `issue-remediation.lock.yml`, added to the repo after R5 was
+written) to `"0"`. Task 0's own check confirmed no `compiler_version` drift —
+every lock reads the same `gh aw` version this PR's compile ran under — so
+this is R5's baseline going stale between when the plan was written and when
+it was implemented, not a new defect. The general point R5 existed to make
+survives unchanged: a bare compile can rewrite lock files this PR's `.md` edit
+did not touch, they are not reverted, and a hand-edited lock is the one thing
+the gh-aw rules forbid outright.
+
+**A16.3 — the ledger closes five rows, not the two entry 6 names.**
+`docs/agents/metrics.md` opens with "One entry per item in CLAUDE.md 'Known
+defects and traps'", and this PR rewrites or deletes five such items.
+`unfenced-ownership-lease`, `release-stream-relay-key-fallback` (#190),
+`fmp4-bsf-retry-dead-branch` (#244), `channel-stopping-ttl-race` and
+`ffmpeg-survives-worker-death` all move `open -> fixed`;
+`no-health-or-metrics` keeps its status and gains a clause saying the Go relay
+has had `/healthz`, `/readyz` and a drain since 2c-8, so the row is about the
+control plane and the VOD/catch-up relay only. `fixed_in` names **2d-4's**
+merged PR, not 2d-6's: `metrics/build/curated.py:326` verifies that number is
+a merged PR, and the PR that deleted the code is the honest answer to which
+merged PR fixed it. One thing the #244 closure deliberately does **not**
+assert: `relay/output/fmp4.go`'s own bitstream-filter retry is a rewrite and
+nobody has audited it for the same unreachable-branch shape. Recorded in the
+row's own title.
+
+**A16.4 — `e2e/COVERAGE.md`'s two rows need no new status word.** Both are
+Gap/Observation rows, and that file's own legend (`:7-11`) already defines
+`done` for such a row as "the note is written and, where relevant, confirmed
+against the code or a live run, with no further action expected here" and
+`todo` as "a live open question left for a later goal to resolve". A mechanism
+that has been deleted expects no further action, so both move to `done` and
+each body says it closed by elimination rather than by a test. This matters
+because `scripts/metrics/collect_tests.py:39`'s `COVERAGE_ROW_RE` matches
+exactly `done|known-bug|todo` and silently drops any other word from all three
+counters — a `retired` status would have looked like tidiness and read as two
+rows vanishing.
+
+**A16.5 — `CONTEXT.md` was further out of date than entry 6 implies, and it is
+the file agents read first.** `docs/agents/domain.md` tells every exploring
+agent to read `CONTEXT.md` and the ADRs *before* the code. Its "Programme
+terms" section defines Phase 0 and Phase 1 and has **no Phase 2 term at all**,
+and its "Relay (data plane)" term describes one process running "the same
+Django code and the same URL config as the API process" — which after 2d-4 is
+true of the VOD/catch-up relay and false of the live one. Four edits: the
+surfaces list at `:54`, the "Relay (data plane)" term split into a Go relay and
+a Python relay, the "Relay name" term's canary sentence (A16.6), and new
+**Phase 2**, **Phase 3** and **Parity matrix** terms.
+
+**A16.6 — ADR 0006 records D2 and D3 as ONE decision, and that framing is the
+amendment.** The spec treats "state in memory, not Redis" and "hard cutover,
+no canary" as two decisions with separate reasoning. Writing the ADR made the
+dependency explicit: a canary needs two implementations serving the same
+channel set concurrently, and two implementations that share no state cannot
+do that — a viewer whose second request landed on the other relay would find
+no channel, no buffer and no client registry. Choosing memory is choosing one
+live relay process at a time, and choosing one process is what makes the lease
+unnecessary. The ADR also records the three couplings the cutover found and
+the spec records only as PR-local findings: the `auth_request` resolver
+coupling that keeps the live URL patterns in Django's urlconf (2d-4's R6),
+`proxy_set_header`'s replace-not-merge inheritance (A13), and a
+`proxy_connect_timeout` a `proxy_pass` location silently inherits from a
+server block its `uwsgi_pass` predecessor never consulted (A13.11).
+
+**A16.7 — `docker/nginx.conf` contradicts itself about the canary, and this PR
+does not fix it.** `:28-29` says the Go relay is a second literal upstream
+group rather than a map entry because `$relay_name` is one process-wide
+constant, "and ADR 0005's canary machinery is deliberately not used here";
+`:47-48`, twenty lines later, still says "Phase 2's canary is a second map
+entry and a second upstream block — not a code change on either side (ADR
+0005)". Both were true when written and the second is now stale. It is
+**not** edited here: 2d-6 changes no `docker/` file, and a config comment is a
+deployment-shaped edit that belongs with whoever next touches that block.
+Recorded so it is a decision rather than an omission; ADR 0006's Consequences
+state the correct version.
+
+**A16.8 — CLAUDE.md's measured numbers all moved, and the prose never named
+who measured them.** Deleting 26,371 lines and 96 Python files moved every LOC
+and style-debt figure in the document. All of them are re-measured from the
+repo's own collectors (`scripts/metrics/collect_code_health.py`,
+`collect_architecture.py`) and the prose now names the collector, because two
+of them did not previously agree with it: CLAUDE.md said "602 function-local
+imports ... in apps/ alone" where the collector counts repo-wide, and
+`reverse_imports_into_proxy` falls 29 -> 28 for 2d-4's own reason (R18). Every
+such number is an **argument** to the appendix script rather than a literal,
+which is 2d-4's Appendix K lesson applied.
+
+**A16.9 — `hypothesis` stays a main dependency, for a different subject.**
+CLAUDE.md justified `hypothesis` and `coverage` being in the main dependency
+list rather than a dev group by the fuzz campaign's property modules, all of
+which were `apps/proxy/live_proxy/tests/test_property_*.py` and went at 2d-4.
+Measured on the post-delete tree, `tests/test_redaction.py` is the only
+`@given` module left in the repository — so the dependency is still
+load-bearing and still for the same mechanism (CI installs `--no-dev`; a
+module that fails to import makes its label report errors, and a coverage
+measurement over such a label is inflated rather than merely noisy), but for
+one file in the root `tests` label rather than for the relay's own.
+
+**A16.10 — five issues close with this PR, and one of them closes as obsolete
+rather than fixed.** #190, #244, #273 and #295 close by deletion (A10.17's
+list plus the two the ledger rule adds). [#195](https://github.com/D10Scot/Dispatcharr/issues/195),
+the same-channel-reconnect open question, closes as **obsolete**: every
+mechanism in it — `_channel_setup_needed`, `_check_orphaned_metadata`, the
+`live:worker:<id>:heartbeat` key — was deleted at 2d-4, and a restarted Go
+relay starts with an empty registry, so a reconnecting viewer's tune finds no
+channel and starts one rather than attaching to an ownerless follower. The
+question is unanswerable against the current tree and needs no answer. Said
+plainly rather than silently dropping a `todo` row.
+
+**A16.11 — the e2e suite carries twenty-one prose citations of the deleted
+tree, and one of them is not a citation.** Ten `.ts` files plus
+`e2e-upstream/README.md` name `apps/proxy/live_proxy/…` in comments — A10.6
+counted seventeen, before 2d-3 removed `output-profile-sharing.spec.ts`'s two,
+and the measured figure on the post-2d-4 tree is twenty-one across twelve
+files. The twenty-first is `e2e/tests/guards/parity-matrix.ts:577-579`, which
+quotes `docs/relay-parity-matrix.md`'s header **verbatim** ("every row must
+show a passing Go-side equivalent before nginx's live locations move") — a
+sentence 2d-6 re-tenses, and one a `live_proxy` sweep cannot see. All
+twenty-one are comments: no test title, no assertion, no import, no
+guard-checked string, so `tsc --noEmit` and every Playwright project behave
+identically. The branch is `migration/**`, which runs the full matrix
+whatever it touches, so the usual argument against editing `e2e/` in a docs PR
+does not apply here. The parity matrix's own header takes three prose edits in
+the same pass; nothing inside its table moves.
+
+**A16.12 — what Phase 2 leaves for whoever comes next**, recorded here because
+the Done log records what happened and not what is owed:
+
+1. The `phase-done` milestone row (A9.9's one-liner).
+2. Making `Go result` an actually-required check on the Main ruleset — a
+   repo-settings action, recorded as unsatisfiable by any commit since A10.1.
+3. The Django-side ORM ratchet Gate 1's retirement left behind, over
+   `apps/proxy/{next_source,authorize,authorize_views,config}.py` — A10.8's
+   "record the gap, build no replacement", still recorded and still unbuilt.
+4. #222, #296, #299, #302 and #314: ordinary Go defects now, fixable without a
+   parity obligation, each costing three artefacts rather than five.
+5. `apps/proxy/hls_proxy/`, 1,206 dead lines, explicitly Phase 4's.
+6. The `docker/nginx.conf` comment of A16.7.
+7. `RedisKeys.channel_owner` and `RedisKeys.channel_output_owner`
+   (`apps/proxy/redis_keys.py:62`, `:138`) build keys nothing writes or reads
+   any more. Left because PR 1 moved that module whole and PR 4 did not audit
+   it; deleting a key builder is a small edit with a real chance of catching
+   a caller nobody grepped for.
+
 ## Stage 2d — cutover, and its trap
 
 **The historical bug this stage exists to not repeat.** Every live-bound nginx location today carries
@@ -4557,21 +4747,36 @@ share a PR with the delete that makes it measurable).
 6. **`migration/phase2d-docs`** — `CLAUDE.md` (the relay is now two processes across two languages;
    every `apps/proxy/live_proxy/` reference in § Architecture, § Known defects, § Testing rewritten
    or removed — including the #222 artefact count, which Amendment A10.17 reduces from five to
-   three, and Gate 1's static half, which A10.8 records as retired rather than met), `CONTEXT.md`, a
+   three. **Gate 1 was PR 4's item, not this one's, and it is not just the static half**:
+   `test_zero_orm_reads.py` and `zero_orm_allowlist.py` carried BOTH halves -- the AST
+   scan and the runtime SQL record -- and both lived inside the deleted package, so
+   nothing of Gate 1 survives (A10.8's own title says *runtime*). PR 4's Appendix K
+   already rewrote the § Testing paragraph, because deleting the package made the old
+   sentence false in that PR rather than merely stale), `CONTEXT.md`, a
    new ADR for the Go boundary (recording D2/D3's reasoning as durable decision history the way ADR
    0005 recorded ADR-worthy Phase 1 reasoning), and `metrics/curated/` updated in the same PR per
    `docs/agents/metrics.md`'s standing rule — closing #273, #295 and the `remove_ghost_clients`
-   side effect by deletion (A10.17), and **not** #190, which closes only because PR 4 deleted its
-   five ranges. Three further items A10.17 assigns here: `.github/workflows/domain-fuzz-campaign.md:96`
+   side effect by deletion (A10.17), and #190, which closes because PR 4 deleted its five
+   ranges. **Amendment A16.3: five ledger rows move, not two**, because the standing rule is one
+   entry per CLAUDE.md defect item and this PR rewrites five of them. Three further items A10.17 assigns here: `.github/workflows/domain-fuzz-campaign.md:96`
    and its generated `.lock.yml:562` name the deleted tree and are regenerated with a **bare**
-   `gh aw compile`; `metrics/curated/catalogue.yml:37-38`'s `models_boot_trap_imports` note gains one
-   sentence saying it counts `apps/channels/models.py` only, so its zero is not "the trap is gone";
-   CLAUDE.md's "two fallback-path reads" becomes three; and
+   `gh aw compile`; `metrics/curated/catalogue.yml`'s `models_boot_trap_imports` note was
+   written at **2d-1** instead (A11.5) and is only re-tensed here, since the eight sites it
+   describes as pending went at PR 4; CLAUDE.md's "two fallback-path reads" becomes three, of
+   which PR 4 made the § Known defects copy itself; and
    `apps/proxy/ts_admin_views.py`'s `logging.getLogger("live_proxy.views")` (2d-2, A12.4) is
-   renamed now that the directory behind the name is gone. `e2e/COVERAGE.md:50` (the ownership-lease
+   renamed now that the directory behind the name is gone — **together with
+   `apps/proxy/next_source.py:38`'s `getLogger("live_proxy")` and the three `assertLogs`
+   call sites that bind that string, which Amendment A16.1 enumerates**. `e2e/COVERAGE.md:50` (the ownership-lease
    `todo` row) and `:202` (the reconnect open question) are also here rather than PR 4 — they
    describe mechanisms rather than cite paths. The parity matrix's Python column is **not** here:
-   A10.5 moved it to PR 4. Gate: `python -m metrics.build --validate-only` green.
+   A10.5 moved it to PR 4. Gate: `python -m metrics.build --validate-only` and
+   `scripts/run_metrics_tests.sh` green; the `guards` Playwright project green (it reads
+   `docs/relay-parity-matrix.md` and this PR edits its header); `tsc --noEmit` green in `e2e/`
+   and `e2e-upstream/` (**twenty-one** comment-only edits across twelve files,
+   Amendment A16.11); zizmor at zero on all five `.lock.yml` files
+   (A16.2 — a bare compile was predicted to rewrite four, found to rewrite two); and, for the logger rename,
+   `manage.py check` plus green `apps.proxy` and `apps.m3u` labels.
 
 `docker/uwsgi.relay.ini` and the Python relay process **stay**, narrowed to VOD and catch-up for the
 remainder of Phase 3.
@@ -4584,10 +4789,10 @@ remainder of Phase 3.
 | No live client keys exist in Redis. | **Met, and already half-true before this phase started** — `_live_connections` already asks the relay over HTTP (D4). | 2c-3 |
 | The Go binary links no Postgres driver, no Redis client. | **Met by construction**, walked family-by-family in § Stage 2c, and confirmed at 2c-9 against the finished tree: `go.sum` absent and `go list -m all` prints exactly `github.com/D10Scot/Dispatcharr/relay`, so the walk is no longer standing alone as a guarantee. | 2c-9 |
 | Strict behavioural parity on every externally-observable live-path behaviour, defects included. | **Met**, by the parity matrix reaching 100% Go-columned rows in 2c-9, with the two named D5 exceptions recorded as deliberate, not accidental, divergence. | 2c-9 |
-| The ownership lease's un-fenced write path is closed. | **Met, by elimination rather than by fencing.** D2 deletes the lease outright; there is no analogous defect in a single-owner-per-process design. `CLAUDE.md`'s carried defect is retired, not fixed in place. | 2c-2 |
+| The ownership lease's un-fenced write path is closed. | **Met, by elimination rather than by fencing.** D2 deleted the lease outright; there is no analogous defect in a single-owner-per-process design. The code itself went at 2d-4 with `apps/proxy/live_proxy/`, and 2d-6 moved `CLAUDE.md`'s carried defect and its `defects.yml` row to retired-by-elimination rather than fixed-in-place. ADR 0006 records why this and the hard cutover are one decision. | 2c-2, 2d-4, 2d-6 |
 | A drain on shutdown, a readiness probe, a health check. | **Met**, new capability the Python relay never had (D6). | 2c-8 |
 | Third-party Go dependencies: none. | **Met**, `go.sum` verified empty at 2c-9. | 2c-1..2c-9 |
-| Coverage on the live path: ≥80% before Go starts, transferring to Go at ≥80%. | **Met**, Gate 2 (2a-7) and the Go ratchet (2c-9). | 2a-7, 2c-9 |
+| Coverage on the live path: ≥80% before Go starts, transferring to Go at ≥80%. | **Met**, Gate 2 (2a-7, at 81.11% after 2b-4) and the Go ratchet (2c-9, 84.12% over the ten linked packages). 2d-5 re-scoped the Python gate to the nine boundary modules that survived the delete and set its floor from a fresh CI census; the ≥80% claim is the Go ratchet's from there on. | 2a-7, 2b-4, 2c-9, 2d-5 |
 | nginx's live-bound locations, all four of them, carry the correct buffering directive (or none) for their protocol. | **Met**, and the specific historical trap is named and guarded against explicitly (§ Stage 2d) — corrected in this fix round to cover `/proxy/relay/` alongside the three byte-path locations, not just the three. | `migration/phase2d-nginx-flip` |
 
 ## Testing
@@ -4649,6 +4854,16 @@ remainder of Phase 3.
 
 Filled in as PRs merge; this spec lands as its own PR 0.
 
+**Phase 2 is complete with stage 2d-6.** The Go relay in `relay/` has carried every live
+viewer since stage 2d-3 flipped four nginx locations to it, stage 2d-4 deleted the 101-file
+Python implementation it replaced, stage 2d-5 re-measured Gate 2 over what survived, and stage
+2d-6 brought the standing documentation into line with the tree. Both gates are closed: Gate 1
+by its runtime half proving zero ORM reads before its static half was retired with the package
+(A10.8), Gate 2 by the Python ratchet's re-census and the Go ratchet beside it. What is owed
+after this row is one follow-up PR adding the `phase-done` milestone, for A9.9's reason, and
+the items Amendment A16.11 lists. `docker/uwsgi.relay.ini` and its uWSGI process stay, narrowed
+to VOD and catch-up, until Phase 3 has a reason to touch them.
+
 | Item | PR | Merged |
 |---|---|---|
 | This spec | — | — |
@@ -4669,6 +4884,7 @@ Filled in as PRs merge; this spec lands as its own PR 0.
 | 2d-3 -- the nginx flip (`migration/phase2d-nginx-flip`). Four locations move from `uwsgi_pass` to `proxy_pass http://relay_go` -- the three byte-path ones plus `^~ /proxy/relay/`, without which Django keeps asking the Python relay for a client list it no longer has and every live stream-limit check fails open -- behind a new `upstream relay_go` sed'd at boot from `DISPATCHARR_RELAY_GO_PORT` (A10.16) and a new `dispatcharr_api_params_proxy.conf` blanking twin, with the `COPY` line § Stage 2d never named (A13.7). The three byte-path locations RE-DECLARE all six server-level `proxy_set_header` lines, because `proxy_set_header` is an array directive and a location declaring any of its own inherits none -- uncaught, every live client's `ip_address` silently becomes nginx's own address while VOD and catch-up keep reporting correctly; `/proxy/relay/` deliberately re-declares none. `relay-go.conf` gains `DISPATCHARR_RELAY_GO_DEV_ROUTES="1"` (A10.2, without which every tune 404s) and the `nice` prefix its own comment promised at 2c-2 (A10.9), and `relay/drain/supervisord_priority_test.go` asserts both relay confs share `priority=205` by reading them. The plan opened with A10.10's measurement rather than a guess -- the minimal flip on a throwaway `migration/**` branch, full matrix -- and the failure set was exactly five assertions in two greybox specs, with all twenty-two black-box `streaming` specs passing against the Go relay through nginx for the first time. Amendment A13, eleven items (a11th added in PR review), five of which correct A10 or § Stage 2d in place: the forged-marker test needs re-VERIFYING, not re-pointing, because it already requests one of the flipped locations -- and the spec said otherwise in three places, not two (A13.3); `e2e/fixtures/types.ts`'s three required fields are measured present, so nothing is relaxed (A13.2); `streaming-split` Scenario B becomes two restarts with two clocks rather than a retarget, because `relay-go.conf` carries no `wait-for-stores.sh` and a one-command restart of both measured 23,946ms against a 30,000ms ceiling (A13.5); A10.1's precondition is recorded as satisfied (A13.1); A10.2's own "four tests" is corrected to five (A13.10); and a simple directive (`proxy_connect_timeout`) silently inherited an unrelated server-level value, exceeding `test_role_split`'s 70s budget -- fixed to an explicit `60s` on all four flipped locations and pinned in `nginx-stream-buffering.spec.ts` since `puid-pgid` only runs in full mode (A13.11). A10.12's four contract fields were exercised through the flipped nginx before the plan was written: a transcode tune, an Output Profile tune, the null-`argv` arm answering 500, `avg_chunk_size` at 255,868 (188 x 1361, off the `next-source` answer) and `ip_address` reading the real client rather than nginx. | `migration/phase2d-nginx-flip` | pending |
 | 2d-4 -- delete `apps/proxy/live_proxy/` (`migration/phase2d-delete-live-proxy`). Deleted `apps/proxy/live_proxy/` (97 files, 26,371 lines, 406 tests) and with it `relay_views.py`, `relay_urls.py`, `apps/proxy/tasks.py` and the `proxy` management command; closed the eight remaining module-level import sites including `INSTALLED_APPS`; re-pointed the three `url_utils` importers at `apps.proxy.next_source` and gave `resolve_base_url()` a per-direction `dev_url` so the dev shape reaches the Go relay; recomputed `worker_id` locally; deleted #190's five metadata-hash ranges with a break-check for the behaviour they changed; kept the live URL patterns, pointed at a new `apps/proxy/stream_routes.py`, because the authorize hop resolves the tune URI through Django's own urlconf and deleting them 403s every live tune behind nginx; disposed of seventeen outside test files (5 deleted whole, 5 split, 5 kept, 2 rewritten); replaced the parity matrix's Python column with Go citations and gave rows 26/27 a guard-checked `retired:` sentinel; moved the ffmpeg stderr corpus into `relay/internal/relaytest/testdata/`; deleted `go-tests.yml`'s `differential` job; took the label count 16 → 15 and Gate 2's module list 38 → 9 with a `--shape-only` re-baseline that leaves `missing` slack until 2d-5. Amendment A14. | `migration/phase2d-delete-live-proxy` | pending |
 | 2d-5 -- the Gate 2 re-census (`migration/phase2d-gate2-recensus`). The floor 2d-4 left on main permitted 1525 missed statements over a denominator of 1298 -- larger than the thing it bounded, so every possible run passed and `--gate` printed "1492 FEWER missed than the floor". A 12-round CI census under the floor's own stopping rule sets `missing` to **33** (97.46%), with the full sequence recorded in the floor's header and a measured spread of 0. Amendment A15, six rulings, three of which correct A10 or § Stage 2d in place: A10.4's "a denominator of perhaps a tenth that" understated it (the floor exceeded the whole denominator); A10.4's "four of the thirteen affected test files" is six of seventeen after A14.3; and entry 5's line-number citation into the floor was already wrong before this PR, since 2d-4's own header edit moved those lines -- replaced with a name-based one. The census cost of 2d-4's seventeen dispositions, measured by removing the five wholly-deleted files and re-running both coverage labels, is **two statements** (`relay_client.py:132` and `:339`, reached only by the deleted `test_relay_control_api.py`): the tests covering the boundary are the ones 2d-4 kept. The 104-statement flappy set the previous floor recorded was entirely inside the deleted package, which is why this campaign's spread is what it is rather than anything this PR engineered. Also fixed: `scripts/coverage_live_path.sh:97`'s `LABELS` array, which 2d-4's six-site label-count edit missed, leaving the script's own no-argument invocation failing loudly since that merge. No percentage target is set -- the ratchet is `missing`, and D7's >=80% was a claim about the 38-module denominator, met at 2b-4. | `migration/phase2d-gate2-recensus` | pending |
+| 2d-6 -- the docs consolidation and the Go-boundary ADR (`migration/phase2d-docs`). `CLAUDE.md`'s 46 remaining passages describing a relay that no longer exists, `CONTEXT.md`'s glossary (which had no Phase 2 term at all and described the relay as one uWSGI running Django), a new **ADR 0006** recording D2 and D3 as one decision plus the three couplings the cutover found, `e2e/COVERAGE.md`'s two mechanism rows, twenty-one prose citations of the deleted tree across twelve `e2e/` files, the parity matrix's header, `metrics/curated/` and `domain-fuzz-campaign.md`. Amendment A16, twelve items, four of which correct § Stage 2d entry 6 in place: the A12.4 logger rename is **three** loggers -- PR 4's own `stream_routes.py` creates the third and its comment counts two -- and takes three `assertLogs` call sites with it, and is behaviour-preserving only because `root` and `apps.proxy` share a handler and a level (A16.1); a bare `gh aw compile` was predicted to rewrite four lock files rather than one, found at implementation to rewrite two -- an earlier PR (#335) had already normalized the three unrelated ones on `main` (A16.2); the ledger closes **five** rows rather than two, since `docs/agents/metrics.md`'s rule is one entry per CLAUDE.md defect item (A16.3); and `COVERAGE.md`'s two rows go to `done` under that file's own Gap legend rather than needing a new status word `collect_tests.py` would silently drop (A16.4). Five issues close, one of them (#195) as obsolete rather than fixed. One contradiction found and deliberately not fixed: `docker/nginx.conf:47-48` still describes the canary this phase did not use, twenty lines below `:28-29` saying so (A16.7). | `migration/phase2d-docs` | #341 |
 
 ## Risks
 
