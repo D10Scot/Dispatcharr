@@ -4,7 +4,8 @@ Split out of apps/proxy/live_proxy/urls.py by Phase 2 stage 2d-2 so the
 routing leaves the directory stage 2d-4 deletes along with the views it
 points at. The five paths and the five `name=` strings are byte-identical
 to the ones they replace; apps/proxy/urls.py mounts this module at the same
-`ts/` prefix, ahead of the live_proxy include that still carries `stream/`.
+`ts/` prefix, ahead of the `stream_routes` include that carries `stream/`
+(it was `live_proxy`'s until stage 2d-4).
 
 The app namespace is this module's own, in apps/proxy/relay_urls.py's
 idiom. It is the one thing about these five routes that is not identical
