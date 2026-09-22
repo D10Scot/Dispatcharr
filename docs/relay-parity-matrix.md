@@ -1,14 +1,19 @@
 # The relay parity matrix
 
-Every externally-observable behaviour of the **live** relay path, the Python source it was derived
-from, and what pins it.
+Every externally-observable behaviour of the **live** relay path, where it lives now, and what
+pins it. The Source column cited `apps/proxy/live_proxy/` until Phase 2 stage 2d-4 deleted that
+package; it now cites `relay/`, and the two rows whose behaviour was white-box-only with no Go
+source to point at carry a `retired:` sentinel instead.
 
-This document is Phase 2's load-bearing artifact
-(`docs/superpowers/specs/2026-09-09-phase2-go-relay-design.md` § Stage 2a, Gate 1). It is 2a's own
-checklist, 2c's implementation spec — each Go PR closes a named set of rows — and 2d's cutover
-checklist: every row must show a passing Go-side equivalent before nginx's live locations move.
-Rows are addressed **by number** everywhere in the phase, so **an id is never reused and never
-renumbered**; a retired row keeps its id and says so in its Notes.
+This document was Phase 2's load-bearing artifact
+(`docs/superpowers/specs/2026-09-09-phase2-go-relay-design.md` § Stage 2a, Gate 1): 2a's own
+checklist, 2c's implementation spec — each Go PR closed a named set of rows — and 2d's cutover
+checklist, whose rule was that every row show a passing Go-side equivalent before nginx's live
+locations moved. **That gate is met and the cutover is done** (stage 2d-3 flipped the locations,
+stage 2d-4 deleted the Python implementation), so what the document is *now* is the regression
+catalogue for the one implementation left: the list a change to `relay/` is read against, and the
+place a newly found live behaviour gets a row. Rows are addressed **by number**, so **an id is never
+reused and never renumbered**; a retired row keeps its id and says so in its Notes.
 
 Rows were derived by reading the source, not by cataloguing tests that happen to exist. Most rows
 therefore start life with no test at all — that is the gap 2a-3 through 2a-6 exist to close, and the
@@ -23,11 +28,13 @@ no container: `cd e2e && npx playwright test --project=guards parity-matrix`.
 <!--
   READ THIS BEFORE EDITING THE TABLE BELOW.
 
-  Five pull requests fill in test references in this table: 2a-3, 2a-4, 2a-5
-  and 2a-6 (developed in parallel — they depend only on 2a-2 and touch disjoint
-  source files), plus 2b-3, which closes the last row later. The ONLY thing
-  their merges contend on is this table. Four
-  properties keep that contention trivial. Three of them are asserted by
+  Five pull requests filled in test references in this table: 2a-3, 2a-4, 2a-5
+  and 2a-6 (developed in parallel — they depended only on 2a-2 and touched
+  disjoint source files), plus 2b-3, which closed the last row later. The ONLY
+  thing their merges contended on was this table, and the four properties below
+  are what kept that contention trivial. They still bind: the file is edited
+  one row at a time by whoever changes the behaviour, which is the same shape.
+  Three of the four are asserted by
   e2e/tests/guards/parity-matrix.spec.ts, because a property nobody checks is a
   property the next person to run a Markdown formatter destroys.
 

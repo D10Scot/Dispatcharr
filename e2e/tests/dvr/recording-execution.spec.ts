@@ -109,7 +109,7 @@ test('a scheduled recording fires, plays back in progress, completes and is serv
   //
   // This is the assertion that makes the test end to end: DVR records
   // `f"{base}/proxy/ts/stream/{channel.uuid}"` (tasks.py:1632), so a live
-  // provider connection proves bytes flowed provider -> live_proxy -> FFmpeg.
+  // provider connection proves bytes flowed provider -> the relay -> FFmpeg.
   let lastLiveCount: number | undefined;
   await waitFor.condition(
     async () => {

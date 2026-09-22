@@ -207,7 +207,8 @@ in the log, so a probe is distinguishable from a real client there.
 That validation issues a **GET**, not just a HEAD, as a fallback, and the product never explicitly
 closes it. That GET does count toward `maxConnections` and can transiently hold a slot — but only
 on a **Redirect**-profile channel: `validate_stream_url` is reached only from
-`if stream_profile.is_redirect():` in `apps/proxy/live_proxy/views.py`, so Proxy and ffmpeg
+the Redirect branch of the relay's tune path (`relay/channel`, ported from the deleted
+`apps/proxy/live_proxy/views.py`), so Proxy and ffmpeg
 profiles never issue it at all. A Proxy stream produces exactly one `request GET → open → close`
 in the provider log; only Redirect can show the transient extra slot. Don't generalize the hazard
 to every profile — it is Redirect-specific.

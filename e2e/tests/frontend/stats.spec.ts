@@ -146,7 +146,7 @@ test('the Refresh Now button re-reads the connection list', { tag: '@contract' }
   const refreshNow = statsPage.getByRole('button', { name: 'Refresh Now', exact: true });
 
   // What actually proves the click does something: `ClientManager.remove_client`
-  // (apps/proxy/live_proxy/client_manager.py) fires its own WebSocket
+  // (the deleted apps/proxy/live_proxy/client_manager.py) fired its own WebSocket
   // `channel_stats` broadcast the moment the server notices the client is
   // gone, and `WebSocket.jsx`'s `channel_stats` handler calls `setChannelStats`
   // completely unconditionally — no page gating, no dependency on the poll
@@ -176,7 +176,7 @@ test('the Refresh Now button re-reads the connection list', { tag: '@contract' }
   // `ClientManager`'s ghost-client scan, the fallback for a client whose
   // stream generator never got a clean `GeneratorExit`, only fires after
   // `heartbeat_interval * GHOST_CLIENT_MULTIPLIER`
-  // (`apps/proxy/live_proxy/client_manager.py`), which `apps/proxy/config.py`
+  // (the deleted `apps/proxy/live_proxy/client_manager.py`), which `apps/proxy/config.py`
   // sets to 5s * 10.0 = 50s by default (`CLIENT_HEARTBEAT_INTERVAL`,
   // `GHOST_CLIENT_MULTIPLIER`) — longer than the 30s this test tried, and
   // eating most of what's left of this project's 120s per-test timeout on

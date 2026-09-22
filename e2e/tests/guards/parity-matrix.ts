@@ -617,9 +617,10 @@ export const GATE_1_CLOSED = true;
  * Python one.
  *
  * The second half of Gate 1, and the thing stage 2d's cutover checklist
- * actually depends on: `docs/relay-parity-matrix.md`'s own header says "every
- * row must show a passing Go-side equivalent before nginx's live locations
- * move", and until 2c-9 nothing checked it. Amendment A2.2 ruled that "gets a
+ * actually depended on: `docs/relay-parity-matrix.md`'s own header states
+ * the cutover rule as "every row show a passing Go-side equivalent before
+ * nginx's live locations moved", and until 2c-9 nothing checked it. The
+ * locations moved at stage 2d-3 and this check is what let them. Amendment A2.2 ruled that "gets a
  * Go column" means one more backticked `path::symbol` in the `Pin` cell a row
  * already has, not a sixth table column — so the property is "every `test` pin
  * carries at least one `.go` reference", and it is invisible to every other
