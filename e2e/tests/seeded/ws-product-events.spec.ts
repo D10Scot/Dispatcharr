@@ -34,7 +34,9 @@ import type { EpgSource } from '../../fixtures';
  * `channel_stats` traffic — `e2e/fixtures/ws.ts`'s own doc comment says "a
  * socket on a live instance sees `channel_stats` roughly once a second".
  * That is true of an actively *streaming* channel (`ClientManager` fires it
- * on client connect/disconnect — `apps/proxy/live_proxy/client_manager.py`),
+ * on client connect/disconnect — the deleted
+ * `apps/proxy/live_proxy/client_manager.py`; the Go relay's registry raises
+ * the same events),
  * but false of this file's idle `seeded`-project instance, and there is no
  * Celery Beat entry driving it either way:
  *
@@ -50,7 +52,7 @@ import type { EpgSource } from '../../fixtures';
  * Confirmed empirically: a socket connected to this idle instance received
  * zero `channel_stats` frames over a 25s window. The only two things that do
  * emit it are request/event-driven, not periodic: `GET /proxy/ts/status`
- * (`apps/proxy/live_proxy/views.py:channel_status`, the bare collection form
+ * (`apps/proxy/ts_admin_views.py:channel_status`, the bare collection form
  * with no `channel_id` — `e2e/fixtures/channel-status.ts` already documents
  * this as a reason to avoid that form elsewhere) and a client connecting to
  * an active channel. So test 15 below drives the emission itself, by polling
@@ -168,7 +170,7 @@ test('the admin-only filter: an admin socket receives channel_stats, a Streamer 
     // a foreign message can only strengthen that guard, never weaken it.
     // Nothing else in `seeded` emits `channel_stats`: `channel-status.ts`
     // reads the per-channel form (`GET /proxy/ts/status/<uuid>`), which does
-    // not broadcast (`apps/proxy/live_proxy/views.py:24-48`) — only the bare
+    // not broadcast (`apps/proxy/ts_admin_views.py`'s per-channel form) — only the bare
     // collection form polled below does.
     const adminWait = ws.waitForMessage('channel_stats', { timeoutMs: WINDOW_MS });
     const streamerWait = streamer.waitForMessage('channel_stats', { timeoutMs: WINDOW_MS });

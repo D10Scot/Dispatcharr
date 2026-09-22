@@ -33,14 +33,18 @@ from apps.proxy.next_source import get_stream_object
 from core.utils import send_websocket_update
 from dispatcharr.utils import redact_url
 
-# The same logger name these five lines log to today. views.py builds it
-# with live_proxy/utils.py's get_logger(), which derives "live_proxy" plus
-# the calling module's basename -- "live_proxy.views" for all five. Naming
-# it literally here is apps/proxy/next_source.py:34-38's precedent applied
-# one level down: that module took "live_proxy" rather than reintroduce the
-# import, "so every moved line still logs to the stream it logs to today."
-# Renaming it once the directory behind the name is gone is 2d-6's.
-logger = logging.getLogger("live_proxy.views")
+# Stage 2d-2 moved these five views here and kept the name they logged to
+# in live_proxy/views.py -- "live_proxy.views", built by that package's
+# get_logger() from "live_proxy" plus the calling module's basename -- so
+# that no moved log line changed. Stage 2d-4 deleted the directory behind
+# the name and 2d-6 renamed it (A16.1). The rename is
+# behaviour-preserving, which is not obvious and was measured:
+# dispatcharr/settings.py declares "apps.proxy" with handlers ["console"]
+# at LOG_LEVEL and propagate False, and "root" with the same handler at the
+# same level, while "live_proxy.views" matched no loggers entry and fell
+# through to root. Handler and effective level are identical; only the
+# {name} the verbose formatter prints moves.
+logger = logging.getLogger("apps.proxy.ts_admin_views")
 
 
 def _worker_id():

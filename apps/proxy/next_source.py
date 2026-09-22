@@ -31,11 +31,14 @@ from core.models import StreamProfile
 from dispatcharr.utils import redact_url
 
 # next_source.py gets its own logger rather than reusing url_utils's (built
-# from .utils.get_logger, another live_proxy import that would reintroduce
-# the module-level cycle this move is meant to close). "live_proxy" is the
-# same logger name services/channel_service.py already uses, so every moved
-# line still logs to the stream it logs to today.
-logger = logging.getLogger("live_proxy")
+# from that package's get_logger, an import that would have reintroduced
+# the module-level cycle the move was meant to close). It took the literal
+# name "live_proxy" so that every moved line kept logging to the stream it
+# had logged to, and stage 2d-6 renamed it once stage 2d-4 deleted the
+# directory behind that name (A16.1). Renaming this one and not
+# ts_admin_views.py's -- or the reverse -- would have left the tree with a
+# live_proxy logger and the follow-up still owed.
+logger = logging.getLogger("apps.proxy.next_source")
 
 
 def _resolve_live_stream_url(stream, m3u_account, m3u_profile):

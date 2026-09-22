@@ -392,7 +392,7 @@
  *                             `GET /proxy/ts/status/<channel_id>` (admin-only,
  *                             hence `api` rather than `streamClient`). Takes
  *                             the channel's **uuid**, not its numeric id —
- *                             every `live_proxy` endpoint, this one included,
+ *                             every `/proxy/ts/` endpoint, this one included,
  *                             is keyed by the same UUID string used to open
  *                             `/proxy/ts/stream/<channel_id>`; the numeric id
  *                             404s. G4's primary assertion surface for owner,

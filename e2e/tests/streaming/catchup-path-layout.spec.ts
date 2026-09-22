@@ -35,7 +35,7 @@ test('a catch-up request reaches the provider in the PATH layout with the right 
   const start = catchupTimestamp(new Date(Date.now() - 2 * 60 * 60 * 1000));
 
   // The root XC PATH route: /timeshift/<user>/<pass>/<duration>/<start>/<Channel.id>.ts
-  // Note Channel.id, the numeric PK — unlike every live_proxy endpoint, which
+  // Note Channel.id, the numeric PK — unlike every /proxy/ts/ endpoint, which
   // is keyed by the UUID. `streamClient.open` follows the 301 this route
   // mints a session_id with on a first, session-less request (fetch's
   // default redirect: 'follow'), so the immediate 200 stream below is really

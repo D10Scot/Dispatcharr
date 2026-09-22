@@ -130,7 +130,7 @@ export type ChannelProfile = {
  *
  * **The XC username is the Django username.** There is no `xc_username`
  * custom property anywhere in the product: `xc_get_user`
- * (`apps/output/views.py`), `stream_xc` (`apps/proxy/live_proxy/views.py`)
+ * (`apps/output/views.py`), `stream_xc` (`apps/proxy/stream_routes.py`)
  * and `_authenticate_user` (`apps/timeshift/views.py`) all look the user up
  * by `username` and then compare `custom_properties["xc_password"]` with
  * `!=`. The `xc_username` locals in `apps/timeshift/views.py` are *provider*
@@ -442,8 +442,9 @@ export type ProgramSearchPage = {
 /**
  * One entry of {@link ChannelStatus}'s `clients` array — one row per client
  * currently reading the channel. Built by hand in
- * `apps/proxy/live_proxy/channel_status.py`
- * (`ChannelStatus.get_detailed_channel_info`), not a DRF serializer, so field
+ * `relay/httpapi/detail.go` (`describeDetailClient`), ported verbatim from
+ * the deleted `apps/proxy/live_proxy/channel_status.py` and still not a DRF
+ * serializer, so field
  * names and optionality are read off that function directly rather than off
  * `Meta.fields`: the six required fields are always assigned with a fallback
  * default (`'unknown'`, `'0'`, `'mpegts'`); the rest are only set when the

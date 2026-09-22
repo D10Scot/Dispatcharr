@@ -346,7 +346,7 @@ class ResolveInitialSourcePreviewTests(NextSourceFixture, TestCase):
         self.channel.release_stream = MagicMock(return_value=False)
         with patch(
             "apps.proxy.next_source.get_stream_object", return_value=self.channel
-        ), self.assertLogs("live_proxy", level="WARNING") as logs:
+        ), self.assertLogs("apps.proxy", level="WARNING") as logs:
             answer = resolve_initial_source(str(self.channel.uuid))
         self.assertIsNone(answer["source"])
         self.assertTrue(

@@ -657,7 +657,7 @@ class OutputProfilesOnTheContractTests(RelayApiTestCase):
         # row 500s nothing. Assert the id is IN the message, not merely
         # that something was logged -- a message without the id gives an
         # operator nothing to act on.
-        with self.assertLogs("live_proxy", level="ERROR") as logs:
+        with self.assertLogs("apps.proxy", level="ERROR") as logs:
             answer = self._next_source(self.channel.uuid)
         self.assertTrue(
             any(str(bad.id) in message for message in logs.output),

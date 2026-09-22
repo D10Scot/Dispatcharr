@@ -93,7 +93,7 @@ pre-agent-steps:
 
       # slug -> (description, suggested test labels)
       DOMAINS = {
-          "live-relay": ("live stream relay/proxy path (apps/proxy live_proxy + ts_proxy code in apps/channels)",
+          "live-relay": ("live stream relay control plane (apps/proxy next_source/authorize/relay_client + ts_proxy code in apps/channels); the byte path itself is the Go relay in relay/, outside this campaign",
                           "apps.proxy apps.channels"),
           "timeshift": ("timeshift/catch-up path (apps/timeshift)", "apps.timeshift"),
           "m3u": ("M3U ingestion/sync (apps/m3u)", "apps.m3u"),

@@ -35,11 +35,13 @@ from rest_framework.permissions import AllowAny
 
 from dispatcharr.utils import XC_STREAM_ID_PATTERN
 
-# "live_proxy", not "live_proxy.views": apps/proxy/next_source.py:34-38's
-# precedent, and this is not a views module. Renaming it once the directory
-# behind the name is gone is 2d-6's, which now has TWO sites -- this one and
-# apps/proxy/ts_admin_views.py's (spec Amendment A12.4).
-logger = logging.getLogger("live_proxy")
+# Named for the module rather than for the deleted package. Stage 2d-4
+# created this file with the literal name "live_proxy", following
+# apps/proxy/next_source.py's precedent, and stage 2d-6 renamed all THREE
+# such loggers together (A16.1) -- this one, next_source.py's and
+# ts_admin_views.py's. Note `app_name` below is a different thing and is
+# deliberately NOT renamed: it is the URL namespace.
+logger = logging.getLogger("apps.proxy.stream_routes")
 
 _MOVED = {
     "error": "This endpoint is served by the Go relay.",

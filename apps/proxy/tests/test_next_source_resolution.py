@@ -349,7 +349,7 @@ class NextSourceResolutionTests(NextSourceFixture, TestCase):
         # logged "Stream is not a channel" at ERROR.
         from apps.proxy.next_source import resolve_source
 
-        with self.assertNoLogs("live_proxy", level="ERROR"):
+        with self.assertNoLogs("apps.proxy", level="ERROR"):
             answer = resolve_source(self.stream_a.stream_hash, include_alternates=True)
 
         self.assertIsNotNone(answer["source"])

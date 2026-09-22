@@ -2,7 +2,8 @@
 
 _resolve_live_stream_url moved to apps/proxy/next_source.py in Phase 1
 PR 6 along with the rest of source resolution; it has no re-export in
-apps.proxy.live_proxy.url_utils (private, leading underscore), so this
+apps.proxy.next_source (private, leading underscore; it was
+apps.proxy.live_proxy.url_utils until stage 2d-1 moved it), so this
 import points at its new home.
 """
 

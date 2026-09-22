@@ -5,8 +5,9 @@ export const TS_SYNC_BYTE = 0x47;
 
 /**
  * Asserts a buffer is 188-byte-aligned MPEG-TS: every packet boundary carries
- * the 0x47 sync byte. apps/proxy/live_proxy/input/buffer.py realigns to this
- * before writing chunks, so a misaligned read is a real defect.
+ * the 0x47 sync byte. relay/buffer realigns to this before writing chunks
+ * (verbatim from the deleted apps/proxy/live_proxy/input/buffer.py), so a
+ * misaligned read is a real defect.
  */
 export function expectTsAligned(buffer: Buffer): void {
   expect(

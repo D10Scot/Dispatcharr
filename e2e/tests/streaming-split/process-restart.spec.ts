@@ -50,7 +50,8 @@
  *    path waits for it.
  *
  * This file asserts the first of those four; the other three are covered by
- * unit tests PR 6 shipped (`apps/proxy/live_proxy/tests/test_try_next_stream.py`)
+ * unit tests PR 6 shipped (deleted with `apps/proxy/live_proxy/` at Phase 2
+ * stage 2d-4; `relay/channel`'s failover tests are their successors)
  * and are described here so the numbers live beside the scenario that
  * motivates them.
  */
@@ -100,7 +101,8 @@ const RUNNING_TIMEOUT_MS = 60_000;
  * What this ceiling covers is the *process*: the relay serving tunes again.
  * Whether a viewer reconnecting to the SAME channel is bounded too is an open
  * question this test does not answer. Read on its own, the code says it should
- * be worse: `_channel_setup_needed` (apps/proxy/live_proxy/views.py) returns
+ * have been worse: `_channel_setup_needed` (the deleted
+ * apps/proxy/live_proxy/views.py) returned
  * "no setup needed" for a channel whose metadata still says `active` without
  * consulting the dead owner's heartbeat, so a reconnecting client would attach
  * as a follower to a channel nobody owns until `_check_orphaned_metadata`'s
@@ -355,7 +357,8 @@ test(
     await streamClient.open(`/proxy/ts/stream/${running.uuid}`);
     // 200, not 1: the TS generator emits a synthetic 'error' packet and a
     // keepalive while a channel is still coming up
-    // (apps/proxy/live_proxy/output/ts/generator.py:200-241,380), and
+    // (ported into relay/httpapi/stream.go from the deleted
+    // live_proxy/output/ts/generator.py:200-241,380), and
     // `expectTsAligned` only checks 188-byte alignment and the sync byte, so
     // either one passes it. Matches the failover project's own precondition
     // idiom (`tests/streaming-failover/mid-stream-switch.spec.ts:24`).
@@ -557,7 +560,8 @@ test(
     await streamClient.open(`/proxy/ts/stream/${running.uuid}`);
     // 200, not 1: matches Scenario A's precondition idiom. The TS generator
     // emits a synthetic 'error' packet and a keepalive while a channel is
-    // still coming up (apps/proxy/live_proxy/output/ts/generator.py:200-241,380),
+    // still coming up (relay/httpapi/stream.go, ported from the deleted
+    // live_proxy/output/ts/generator.py:200-241,380),
     // and `expectTsAligned` only checks 188-byte alignment and the sync byte,
     // so either one passes it.
     expectTsAligned(await streamClient.readPackets(200));
@@ -727,7 +731,8 @@ test(
         message: 'the relay never served a tune after the restart',
       })
       .toBe('ok');
-    // 200, not 1: create_ts_packet (apps/proxy/live_proxy/utils.py:82-100)
+    // 200, not 1: the synthetic-packet builder (relay/httpapi, ported from
+    // the deleted live_proxy/utils.py:82-100's create_ts_packet)
     // returns a valid-looking 188-byte packet for a synthetic 'error' or
     // 'keepalive' TS packet too, which the generator emits on every abort
     // path while a channel is coming up — so a single packet cannot tell a

@@ -240,7 +240,7 @@ test(
     // merely reflecting a row that is already gone. Not attributed to a
     // specific mechanism: `_stop_dvr_clients()` (api_views.py:3915, run from
     // the background thread via `_background_cancel` at :3910-3931) reaching
-    // live_proxy and run_recording's own ~2s poll noticing the row is gone
+    // the relay and run_recording's own ~2s poll noticing the row is gone
     // (`_sc is None` at tasks.py:~1874-1889, which SIGINTs FFmpeg and exits
     // the loop) both release the same upstream connection, and there is no
     // way to tell from outside the container which one this run actually
