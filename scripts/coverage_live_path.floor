@@ -139,16 +139,27 @@
 #
 # `missing` below is the WORST of 12 rounds of backend-tests.yml's own
 # coverage-label + coverage-gate jobs, on migration/phase2d-gate2-recensus at
-# 2683cb32b05afab2a53a1374139da02dd942c352, 2026-09-22. Full sequence, in order:
+# 2683cb32b05afab2a53a1374139da02dd942c352, 2026-09-20 (the twelve rounds ran
+# 20:17Z-22:14Z that day; the floor itself was written 2026-09-22 -- see
+# `measured=` below). Full sequence, in order:
 #   33 33 33 33 33 33 33 33 33 33 33 33
 # max=33 (round 1)  min=33 (round 1)  spread=0  n=12
 # The stopping rule (maximum unchanged for >=6 consecutive rounds, minimum 12)
 # was met at round 12.
 #
+# REBASE NOTE. 2683cb32 is the pre-rebase census anchor, tagged
+# `gate2-census-2d5` because it is reachable from no branch (it was stacked on
+# 2d-4's pre-merge head 30865598, which no ref retains once 2d-4 merged). The
+# branch was rebased onto merged main (b6ae174b, #332) after the census,
+# landing the SAME commit as 934d4729 -- verified byte-identical for all nine
+# denominator modules and both coverage labels' whole test trees (the rebase
+# pulled in .github/ only, from #335).
+#
 # `statements` moved 8073 -> 1298, and the move is the
 # whole point rather than drift: 8073 was 2b-4's 38-module
 # denominator, which --write-floor --shape-only cannot rewrite (it writes the
-# four shape fields only, scripts/coverage_live_path.sh:516-520), so 2d-4 left
+# four shape fields only -- write_floor()'s `fields` list, above the
+# `if not shape_only` branch), so 2d-4 left
 # it standing over nine modules. `modules`, `module_count` and `rcfile` are
 # UNCHANGED from 2d-4's own --shape-only write: this PR moves the NUMBER and
 # nothing about the denominator's identity.
