@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # Gate 2's measurement (Phase 2 spec, § Stage 2a > Gate 2): statement coverage
-# over apps/proxy/live_proxy/** plus the ten Phase 1 boundary modules.
+# over the nine surviving Phase 1 boundary modules. It measured
+# apps/proxy/live_proxy/** plus ten boundary modules until Phase 2 stage 2d-4
+# deleted the package and relay_views.py with it.
 #
-#   scripts/coverage_live_path.sh                       run all three labels, then report
+#   scripts/coverage_live_path.sh                       run both labels, then report
 #   scripts/coverage_live_path.sh --label <label>       run one label, leave its data file
 #   scripts/coverage_live_path.sh --report [dir]        combine and report; over <dir> if given
 #   scripts/coverage_live_path.sh --combine-from <dir>  combine data collected elsewhere, then report
@@ -91,10 +93,30 @@ set -uo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
-# The three labels whose tests reach the modules in the denominator. Hard-coded
+# The two labels whose tests reach the modules in the denominator. Hard-coded
 # rather than derived: the spec names exactly these, and a 16-label control run
 # at a948cd8a moved live_proxy by zero statements.
-LABELS=(apps.proxy.tests apps.proxy.live_proxy.tests apps.channels.tests)
+#
+# Three until Phase 2 stage 2d-4, which deleted apps/proxy/live_proxy/ and with
+# it the label apps.proxy.live_proxy.tests. A label that no longer exists fails
+# `manage.py test`, run_label() returns non-zero, and the no-argument path below
+# then prints "label(s) failed under coverage" and refuses to quote the figures
+# -- loud rather than silent, but the default invocation was broken from 2d-4's
+# merge until stage 2d-5 fixed this line. Nothing in CI noticed, and that is the
+# point worth recording: backend-tests.yml's coverage-label matrix calls --label
+# once per container and carries its own hard-coded list, and
+# scripts/coverage_live_path_isolated.sh carries its own PAIRS list (2d-4 edited
+# both). This array's only caller is a maintainer typing the script's own name
+# with no arguments -- the invocation this file's usage block puts first.
+#
+# WHAT 2d-5 DELIBERATELY DID NOT TOUCH, so a reader does not take it for live
+# fact: the notes ABOVE about gevent daemon threads, the C tracer's losses and
+# the clean-tree baseline (7,978 statements / 3,977 missing / 50.15%, and the
+# per-file attribution to server.py / input/manager.py / channel_service.py)
+# all describe the PRE-2d-4 tree, whose files no longer exist. They are kept as
+# the history of why the shape guard and the sysmon export are here, which is
+# still true; consolidating them is stage 2d-6's.
+LABELS=(apps.proxy.tests apps.channels.tests)
 
 export COVERAGE_LIVE_PATH_DATA_DIR="${COVERAGE_LIVE_PATH_DATA_DIR:-/tmp/dispatcharr-coverage-live-path}"
 RC="$REPO_ROOT/scripts/coverage_live_path.coveragerc"

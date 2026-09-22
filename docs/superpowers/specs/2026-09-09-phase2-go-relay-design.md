@@ -982,6 +982,14 @@ that is held to parity has one.
 > now records `missing=1,525`; D7's threshold half is green, and — with Gate 1 closed in 2b-3 —
 > both halves of D7 are.
 >
+> **RE-SCOPED in 2d-5, and the figures above are no longer this gate's.** Stage 2d-4 deleted
+> 29 of the 38 modules and re-baselined the floor's shape only, leaving `missing=1,525` over a
+> denominator of 1298 — a floor larger than the thing it bounds. A 12-round CI census on
+> `migration/phase2d-gate2-recensus` sets `missing=33` over `statements=1298`
+> (**97.46%**), spread 0, with the full sequence in `scripts/coverage_live_path.floor`.
+> **No percentage threshold is enforced and none is claimed**: D7's ≥80% was a claim about the
+> 38-module denominator, met at 2b-4, and the ratchet here is `missing` (Amendment A15).
+>
 > **Why the number was not reached, and why it was not bought.** Every reachability estimate in this
 > document was checked during 2a and none survived — three checked, three wrong, two pessimistic and
 > one optimistic. Closing 455 statements from where 2a ends means 2-4 further PRs against a pool
@@ -3028,7 +3036,9 @@ instruction it recorded is corrected here and in the deletion list.
 
 **2d-4 is the harder half, and it needs a PR of its own.** Deleting 28 modules moves `modules=` again and
 drops the real draw by most of its value, so a `--shape-only` re-baseline there leaves a floor of
-1525 over a denominator of perhaps a tenth that — mechanically green, substantively toothless. A
+1525 over a denominator of perhaps a tenth that — mechanically green, substantively toothless. **Measured at 2d-5 and understated here: the denominator is 1298
+statements, so the floor did not merely dwarf it — it EXCEEDED it, and every possible run in that
+window passed, including one covering nothing at all (Amendment A15.1).** A
 genuine re-scope needs a new `missing`, and a new `missing` needs the worst of ≥12 **CI** rounds on
 the tree that earned it. That tree can only exist after the delete: the ten survivors are executed in
 large part **by** the ~564 tests 2d-4 removes, so a census taken before the delete measures a
@@ -4109,6 +4119,66 @@ went with the package — the frozenset is four lines and re-deriving it for Pha
 than carrying it, which is a decision rather than an oversight. `reverse_imports_into_proxy` falls
 29 → 28, expected drift on a headline tile with no gate.
 
+#### Amendment A15 (stage 2d-5) — six rulings from the Gate 2 re-census
+
+**Measured on the merged 2d-4 tree.** Where an item contradicts a sentence in A10 or in § Stage 2d's
+deletion list, that sentence is **edited in place** and the item says so.
+
+**A15.1 — the gate was not merely slack between 2d-4 and 2d-5; the floor was larger than the
+denominator.** A10.4 predicted "a floor of 1525 over a denominator of perhaps a tenth that —
+mechanically green, substantively toothless". Measured: the denominator is **1298**
+statements, so the floor permitted more missed statements than existed. Every possible run passed,
+including one covering nothing at all. A10.4's sentence is corrected in place. The prediction was
+right in kind and understated in degree, which is worth recording because the same arithmetic
+governs any future stage that deletes most of a ratchet's subject.
+
+**A15.2 — the census, and its number.** `missing=33` over `statements=1298`
+(**97.46%**), the worst of **12** CI rounds on `migration/phase2d-gate2-recensus` under the
+stopping rule the floor's own **HOW TO MOVE THIS FLOOR** section prescribes. The full sequence is in
+the floor's header, in order, as § Stage 2d's entry 5 requires. `shape`, `modules`, `module_count`
+and `rcfile` are unchanged from 2d-4's `--shape-only` write: this PR moved the number and nothing
+about the denominator's identity.
+
+**A15.3 — the spread collapsed, and not because anything was engineered.** The pre-delete floor
+recorded 104 flapping statements, measured first-hand from 2b-4's twelve retained CI artifacts.
+**All 104 were inside `apps/proxy/live_proxy/`** — 73 in `server.py`, 17 in `input/manager.py`, 14
+across eight further files — and 2d-4 deleted the package. The measured spread across this
+campaign's 12 rounds is **0**. The gate still carries no tolerance parameter, and the
+floor's own CAVEAT still applies: unobserved-to-vary is not proof of stability. What changes is what
+a non-flat sequence now *means* — on this tree it is a finding to attribute per line.
+
+**A15.4 — A10.4's worry about the census tree, measured and answered.** A10.4 required this plan to
+state which disposition each affected test file received, "because whether 2d-4 deletes, rewrites or
+merely un-imports each of them changes the denominator's coverage before a single round is
+measured." A14.3 settled seventeen files, **six** of them under `apps/proxy/tests/` (A10.4 said four
+of thirteen; corrected in place). Measured directly at `7fc4ddbd` by removing the five wholly-deleted
+files from the two coverage labels and re-running both: the nine modules went **31 → 33 missed**.
+**The entire coverage cost of the seventeen dispositions, over this denominator, is two
+statements** — `apps/proxy/relay_client.py:132` and `:339`, both reached only by
+`test_relay_control_api.py`. The worry was correct to raise and the answer is that the tests covering
+the boundary are the ones 2d-4 kept.
+
+**A15.5 — `scripts/coverage_live_path.sh`'s `LABELS` array survived 2d-4 naming the deleted label,
+and § Stage 2d names no owner for it.** 2d-4's R10 edited
+`scripts/coverage_live_path_isolated.sh`'s `PAIRS`, `backend-tests.yml`'s coverage matrix,
+`dispatcharr/test_discovery.py`'s two aliases, `tests/test_ci_test_routing.py` and the boot-check
+hook arm — six places that knew the label count — but not `scripts/coverage_live_path.sh:97`, whose
+one caller is the script's own no-argument path. From 2d-4's merge until this PR, the invocation the
+file's usage block lists first exited 1 with "label(s) failed under coverage" and "THE FIGURES BELOW
+ARE INVALID". Loud rather than silent, and harmless to CI (which calls `--label` per container), but
+it is the command a maintainer reproducing this gate by hand types. Fixed here, in the PR whose
+subject it is.
+
+**A15.6 — `apps/proxy/stream_routes.py` is deliberately NOT in the denominator, and the reason is
+not scope.** 2d-4's R9 declined it and left the question open here. Declined again: A14's own
+Appendix O states that the module's two callables "exist to BE RESOLVED, never to be called" —
+nginx routes both paths to the Go relay, and the one shape without nginx serves them from the Go
+relay's own port — so their bodies are unreachable by design and including the file would raise
+`missing` by an amount **no test could ever close**, which is the one thing a ratchet must not
+contain. Adding it would also move `modules=` in the same PR that moves `missing`, mixing the two
+kinds of move the floor's header separates at length. On the post-2d list: a `--shape-only` move
+plus a fresh census, if ever.
+
 ## Stage 2d — cutover, and its trap
 
 **The historical bug this stage exists to not repeat.** Every live-bound nginx location today carries
@@ -4471,12 +4541,18 @@ share a PR with the delete that makes it measurable).
    post-delete tree. **Amendment A14.5 moves the rcfile edit itself to PR 4**, which removes both
    dead `[report] include` lines with its `--shape-only` re-baseline — one command rewrites
    `modules=` and `rcfile=` together, so there is no reason for a config line to name a deleted
-   directory for a whole PR. What remains here is the NUMBER, under the stopping rule `scripts/coverage_live_path.floor:283-312` prescribes.
-   It cannot merge with PR 4: the ten survivors are executed in large part by the ~564 tests PR 4
-   removes, so a census taken before the delete measures a different thing. **Nor can it be planned
-   before PR 4's A10.14 dispositions are settled** — four of the thirteen affected test files are
-   under `apps/proxy/tests/` and contribute to covering the very modules this gate will measure, so
-   the plan states which disposition each received. Gate: `Backend result`
+   directory for a whole PR. What remains here is the NUMBER, under the stopping rule the floor's own
+   **HOW TO MOVE THIS FLOOR** section prescribes — named rather than cited by line, because
+   2d-4's and 2d-5's header edits each move those lines and the citation was already wrong
+   when 2d-5 opened it. **DONE at 2d-5** (Amendment A15): `missing=33` over `statements=1298`
+   (**97.46%**), the worst of 12 CI rounds, sequence in the floor's header.
+   It cannot merge with PR 4: the **nine** survivors are executed in large part by the ~564
+   tests PR 4 removes, so a census taken before the delete measures a different thing. **Nor can it be planned
+   before PR 4's A10.14 dispositions are settled** — **six of the seventeen affected test files**
+   (A14.3's count, superseding this sentence's original "four of the thirteen") are under
+   `apps/proxy/tests/` and contribute to covering the very modules this gate will measure, so
+   the plan states which disposition each received. **Measured at 2d-5: the coverage cost of
+   all seventeen, over the nine modules, is two statements** (A15.4). Gate: `Backend result`
    green, and the floor's own header records the full round sequence in order.
 6. **`migration/phase2d-docs`** — `CLAUDE.md` (the relay is now two processes across two languages;
    every `apps/proxy/live_proxy/` reference in § Architecture, § Known defects, § Testing rewritten
@@ -4592,6 +4668,7 @@ Filled in as PRs merge; this spec lands as its own PR 0.
 | 2d-2 -- the admin wrappers relocation (`migration/phase2d-admin-wrappers`). The five `IsAdmin` control views and the six URL patterns that register them move out of `apps/proxy/live_proxy/` into `apps/proxy/ts_admin_views.py` and `apps/proxy/ts_admin_urls.py`, with the resolved paths, the `name=` strings and the permission class byte-identical and `manage.py spectacular` producing a byte-identical OpenAPI document as the proof. The app namespace is the one difference and nothing reverses it. Amendment A12, eight rulings, five of which changed when the label was run rather than read: Gate 1 loses two `EdgeEntry` rows whose only importers left the package (and a surviving entry's prose citing them is rewritten, after a first draft deleted three rows instead of two by taking the range to the wrong boundary); `live_proxy/views.py` keeps the five imports the move orphans, because removing them shifts all six of that file's Gate 1 `Site` linenos by five and stales about twenty prose citations; nothing in the tree ever pinned the permission class, so a move that dropped `IsAdmin` would have been green in every label, closed here by a new `AdminControlPermissionTests` whose own obvious break-check is disclosed as **not** biting, since `DEFAULT_PERMISSION_CLASSES` is the same class; two function-local `ProxyServer` imports are handed to 2d-4 with the `worker_id` contract decision behind them; and the logger keeps the name `live_proxy.views` so no moved log line changes, with the rename listed for 2d-6. Gate 2's `modules=` unchanged at `8cb5c65dac3e`/38 with `statements` down 216 and no floor edit. | `migration/phase2d-admin-wrappers` | pending |
 | 2d-3 -- the nginx flip (`migration/phase2d-nginx-flip`). Four locations move from `uwsgi_pass` to `proxy_pass http://relay_go` -- the three byte-path ones plus `^~ /proxy/relay/`, without which Django keeps asking the Python relay for a client list it no longer has and every live stream-limit check fails open -- behind a new `upstream relay_go` sed'd at boot from `DISPATCHARR_RELAY_GO_PORT` (A10.16) and a new `dispatcharr_api_params_proxy.conf` blanking twin, with the `COPY` line § Stage 2d never named (A13.7). The three byte-path locations RE-DECLARE all six server-level `proxy_set_header` lines, because `proxy_set_header` is an array directive and a location declaring any of its own inherits none -- uncaught, every live client's `ip_address` silently becomes nginx's own address while VOD and catch-up keep reporting correctly; `/proxy/relay/` deliberately re-declares none. `relay-go.conf` gains `DISPATCHARR_RELAY_GO_DEV_ROUTES="1"` (A10.2, without which every tune 404s) and the `nice` prefix its own comment promised at 2c-2 (A10.9), and `relay/drain/supervisord_priority_test.go` asserts both relay confs share `priority=205` by reading them. The plan opened with A10.10's measurement rather than a guess -- the minimal flip on a throwaway `migration/**` branch, full matrix -- and the failure set was exactly five assertions in two greybox specs, with all twenty-two black-box `streaming` specs passing against the Go relay through nginx for the first time. Amendment A13, eleven items (a11th added in PR review), five of which correct A10 or § Stage 2d in place: the forged-marker test needs re-VERIFYING, not re-pointing, because it already requests one of the flipped locations -- and the spec said otherwise in three places, not two (A13.3); `e2e/fixtures/types.ts`'s three required fields are measured present, so nothing is relaxed (A13.2); `streaming-split` Scenario B becomes two restarts with two clocks rather than a retarget, because `relay-go.conf` carries no `wait-for-stores.sh` and a one-command restart of both measured 23,946ms against a 30,000ms ceiling (A13.5); A10.1's precondition is recorded as satisfied (A13.1); A10.2's own "four tests" is corrected to five (A13.10); and a simple directive (`proxy_connect_timeout`) silently inherited an unrelated server-level value, exceeding `test_role_split`'s 70s budget -- fixed to an explicit `60s` on all four flipped locations and pinned in `nginx-stream-buffering.spec.ts` since `puid-pgid` only runs in full mode (A13.11). A10.12's four contract fields were exercised through the flipped nginx before the plan was written: a transcode tune, an Output Profile tune, the null-`argv` arm answering 500, `avg_chunk_size` at 255,868 (188 x 1361, off the `next-source` answer) and `ip_address` reading the real client rather than nginx. | `migration/phase2d-nginx-flip` | pending |
 | 2d-4 -- delete `apps/proxy/live_proxy/` (`migration/phase2d-delete-live-proxy`). Deleted `apps/proxy/live_proxy/` (97 files, 26,371 lines, 406 tests) and with it `relay_views.py`, `relay_urls.py`, `apps/proxy/tasks.py` and the `proxy` management command; closed the eight remaining module-level import sites including `INSTALLED_APPS`; re-pointed the three `url_utils` importers at `apps.proxy.next_source` and gave `resolve_base_url()` a per-direction `dev_url` so the dev shape reaches the Go relay; recomputed `worker_id` locally; deleted #190's five metadata-hash ranges with a break-check for the behaviour they changed; kept the live URL patterns, pointed at a new `apps/proxy/stream_routes.py`, because the authorize hop resolves the tune URI through Django's own urlconf and deleting them 403s every live tune behind nginx; disposed of seventeen outside test files (5 deleted whole, 5 split, 5 kept, 2 rewritten); replaced the parity matrix's Python column with Go citations and gave rows 26/27 a guard-checked `retired:` sentinel; moved the ffmpeg stderr corpus into `relay/internal/relaytest/testdata/`; deleted `go-tests.yml`'s `differential` job; took the label count 16 → 15 and Gate 2's module list 38 → 9 with a `--shape-only` re-baseline that leaves `missing` slack until 2d-5. Amendment A14. | `migration/phase2d-delete-live-proxy` | pending |
+| 2d-5 -- the Gate 2 re-census (`migration/phase2d-gate2-recensus`). The floor 2d-4 left on main permitted 1525 missed statements over a denominator of 1298 -- larger than the thing it bounded, so every possible run passed and `--gate` printed "1492 FEWER missed than the floor". A 12-round CI census under the floor's own stopping rule sets `missing` to **33** (97.46%), with the full sequence recorded in the floor's header and a measured spread of 0. Amendment A15, six rulings, three of which correct A10 or § Stage 2d in place: A10.4's "a denominator of perhaps a tenth that" understated it (the floor exceeded the whole denominator); A10.4's "four of the thirteen affected test files" is six of seventeen after A14.3; and entry 5's line-number citation into the floor was already wrong before this PR, since 2d-4's own header edit moved those lines -- replaced with a name-based one. The census cost of 2d-4's seventeen dispositions, measured by removing the five wholly-deleted files and re-running both coverage labels, is **two statements** (`relay_client.py:132` and `:339`, reached only by the deleted `test_relay_control_api.py`): the tests covering the boundary are the ones 2d-4 kept. The 104-statement flappy set the previous floor recorded was entirely inside the deleted package, which is why this campaign's spread is what it is rather than anything this PR engineered. Also fixed: `scripts/coverage_live_path.sh:97`'s `LABELS` array, which 2d-4's six-site label-count edit missed, leaving the script's own no-argument invocation failing loudly since that merge. No percentage target is set -- the ratchet is `missing`, and D7's >=80% was a claim about the 38-module denominator, met at 2b-4. | `migration/phase2d-gate2-recensus` | pending |
 
 ## Risks
 
