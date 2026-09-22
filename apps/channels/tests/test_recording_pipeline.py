@@ -509,8 +509,8 @@ class FfmpegRetryTests(TestCase):
         self.assertEqual(dvr_tasks._dvr_ffmpeg_retry_backoff_seconds(1), 0.25)
         self.assertEqual(dvr_tasks._dvr_ffmpeg_retry_backoff_seconds(12), 3.0)
 
-    @patch("apps.proxy.live_proxy.config_helper.ConfigHelper.stream_timeout", return_value=60)
-    @patch("apps.proxy.live_proxy.config_helper.ConfigHelper.failover_grace_period", return_value=20)
+    @patch("apps.proxy.config_helper.ConfigHelper.stream_timeout", return_value=60)
+    @patch("apps.proxy.config_helper.ConfigHelper.failover_grace_period", return_value=20)
     def test_retry_window_matches_live_proxy_timeouts(self, _grace, _stream):
         from apps.channels.tasks import _dvr_ffmpeg_retry_window_seconds
 

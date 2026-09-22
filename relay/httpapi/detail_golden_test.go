@@ -243,3 +243,58 @@ func TestTheDetailPayloadOmitsTheTwoFieldsNothingWrites(t *testing.T) {
 		}
 	}
 }
+
+// RE-HOMED BY PHASE 2 STAGE 2d-4. The one assertion of
+// apps/proxy/tests/test_relay_status_shape.py's ten that had no cover on
+// either side -- its test_the_three_dvr_fields_are_absent_when_redis_has_none.
+// That file drove the deleted ChannelStatus builders directly, so it went with
+// apps/proxy/live_proxy/; the property it pinned did not, and the golden above
+// cannot carry it because its fixture is one fully-populated channel.
+//
+// The three fields are `string` + `,omitempty` at detail.go:159-161 and are
+// assigned only when the source stats carry them (:311-318), so an unset field
+// must VANISH rather than render as "" -- the same contract
+// TestEveryOptionalFieldIsAbsentRatherThanNull holds the LIST payload to, and
+// a distinct one, because width/height/video_bitrate exist on the detail
+// payload alone.
+func TestTheDetailPayloadOmitsTheDVRVideoFieldsWhenNothingSetThem(t *testing.T) {
+	payload := detailGoldenPayload()
+	payload.Width = ""
+	payload.Height = ""
+	payload.VideoBitrate = ""
+
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("encoding the payload: %v", err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatalf("decoding: %v", err)
+	}
+	for _, key := range []string{"width", "height", "video_bitrate"} {
+		if _, present := decoded[key]; present {
+			t.Errorf("an unset %q still renders, as %v: DRF declares it required=False "+
+				"with no default, so the key must vanish rather than carry an empty "+
+				"string", key, decoded[key])
+		}
+	}
+	// And they DO render when set, so a struct-tag typo cannot make this pass.
+	for _, key := range []string{"width", "height", "video_bitrate"} {
+		if _, present := mustDecodeDetail(t, detailGoldenPayload())[key]; !present {
+			t.Errorf("the populated detail payload is missing %q", key)
+		}
+	}
+}
+
+func mustDecodeDetail(t *testing.T, payload any) map[string]any {
+	t.Helper()
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("encoding the payload: %v", err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatalf("decoding: %v", err)
+	}
+	return decoded
+}

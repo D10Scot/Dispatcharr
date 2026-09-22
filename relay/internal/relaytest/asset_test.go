@@ -1,29 +1,41 @@
 package relaytest
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"testing"
 )
 
-// THE CROSS-IMPLEMENTATION PIN. This digest was produced by the PYTHON
-// harness's synthetic_ts() -- apps/proxy/live_proxy/tests/harness/asset.py --
-// not by the Go above it, so it proves the two implementations agree rather
-// than that this one is deterministic (hollow shape 1). Regenerate it with the
-// snippet in this PR's Task, never by running the Go.
+// THE CROSS-IMPLEMENTATION DIGEST PIN WAS DELETED BY PHASE 2 STAGE 2d-4, AND
+// THAT IS THE POINT. Its own header said what it was for: the sha256 came from
+// the PYTHON harness's synthetic_ts(), "so it proves the two implementations
+// agree rather than that this one is deterministic (hollow shape 1)". With
+// apps/proxy/live_proxy/ deleted there is one implementation, and the digest
+// would prove only that SyntheticTS is a pure function of its arguments --
+// which is the hollow shape the pin was written to avoid. It was deleted
+// rather than regenerated from the Go, because regenerating it is exactly the
+// move its own comment forbade.
 //
-// It is what makes a differential test possible at all: drive the Python relay
-// and the Go relay from the same bytes and compare what each client receives.
-func TestSyntheticTSMatchesThePythonHarness(t *testing.T) {
-	const want = "e565411f3bbe6d0ab88a4dcd45d9e2a9ca1f65e049846dc5f61a2ec162f57f89"
+// What survives is the SHAPE, which still pins the asset against the e2e fake
+// provider rather than against a deleted Python file: 512 packets of 188
+// bytes is 96,256, and PacketSize/PacketPID below read the same bytes back.
+//
+// Corrected in a post-review fix round (F4): the derived form alone
+// (`512 * PacketSize`) pins nothing about PacketSize itself -- change it to
+// 189 and this assertion moves with it and stays green, where the deleted
+// cross-implementation digest would have caught the drift. The literal
+// 96256 and the explicit PacketSize == 188 check restore that: R12's own
+// text says the 96,256-byte assertion stays, and it had stopped appearing
+// anywhere in the module (`grep -rn '96256\|96_256' relay/` was empty).
+func TestSyntheticTSHasThePacketCountAndSizeItsCallersAssume(t *testing.T) {
+	if PacketSize != 188 {
+		t.Fatalf("PacketSize = %d, want 188 -- the production TS packet size", PacketSize)
+	}
 	data := SyntheticTS(512, 0x100)
 	if len(data) != 96256 {
-		t.Fatalf("SyntheticTS(512, 0x100) is %d bytes, want 96256", len(data))
+		t.Fatalf("SyntheticTS(512, 0x100) is %d bytes, want 96256 (512 x 188)", len(data))
 	}
-	sum := sha256.Sum256(data)
-	if got := hex.EncodeToString(sum[:]); got != want {
-		t.Fatalf("SyntheticTS(512, 0x100) hashes to %s, want %s -- the Go asset has "+
-			"diverged from harness/asset.py's synthetic_ts()", got, want)
+	if want := 512 * PacketSize; len(data) != want {
+		t.Fatalf("SyntheticTS(512, 0x100) is %d bytes, want %d (512 x %d)",
+			len(data), want, PacketSize)
 	}
 }
 
@@ -68,17 +80,22 @@ func corrupted(packet []byte) []byte {
 	return out
 }
 
-// Global Constraint 8's ratchet, found missing by review: NominalByteRate and
-// WriteChunk named a file with no line and nothing asserted them.
-// apps/proxy/live_proxy/tests/harness/upstream.py:29 (NOMINAL_BYTE_RATE) and
-// :31 (_WRITE_CHUNK) are what these mirror, verified against this tree.
-func TestNominalByteRateAndWriteChunkMatchThePythonHarness(t *testing.T) {
-	if NominalByteRate != 250000 {
-		t.Errorf("NominalByteRate = %d, want 250000 (apps/proxy/live_proxy/tests/harness/upstream.py:29)",
-			NominalByteRate)
+// These two mirrored apps/proxy/live_proxy/tests/harness/upstream.py:29
+// (NOMINAL_BYTE_RATE) and :31 (_WRITE_CHUNK), which stage 2d-4 deleted. The
+// assertions are kept, re-anchored on the DERIVATIONS rather than the deleted
+// file, so the numbers stay checkable:
+//
+//	NominalByteRate = 2_000_000 / 8 -- "rate 1.0" is 2 Mbit/s, the bitrate
+//	e2e-upstream/scripts/make-asset.sh builds its own asset at. That file
+//	survives 2d and is the right anchor.
+//	WriteChunk = PacketSize * 50 -- fifty whole TS packets per write.
+func TestNominalByteRateAndWriteChunkKeepTheirDerivations(t *testing.T) {
+	if want := 2_000_000 / 8; NominalByteRate != want {
+		t.Errorf("NominalByteRate = %d, want %d (2 Mbit/s in bytes per second, "+
+			"e2e-upstream/scripts/make-asset.sh's bitrate)", NominalByteRate, want)
 	}
-	if WriteChunk != 9400 {
-		t.Errorf("WriteChunk = %d, want 9400 (apps/proxy/live_proxy/tests/harness/upstream.py:31)", WriteChunk)
+	if want := PacketSize * 50; WriteChunk != want {
+		t.Errorf("WriteChunk = %d, want %d (fifty whole TS packets)", WriteChunk, want)
 	}
 }
 

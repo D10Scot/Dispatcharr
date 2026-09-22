@@ -6,7 +6,17 @@ three-segment, no-trailing-slash shape. See docs/superpowers/specs/
 and this plan's Task 1 for why: stream_xc's get_object_or_404(User, ...) is
 the first statement in the view, and Http404 never escapes DRF's own
 exception_handler to reach Django's catch-all, so the URL pattern itself is
-the only lever outside apps/proxy/live_proxy/.
+the only lever.
+
+Phase 2 stage 2d-4 deleted apps/proxy/live_proxy/ and with it the real
+stream_xc, but NOT these two patterns, and the reason is not routing: nginx
+has sent both XC live shapes to the Go relay since stage 2d-3. It is that
+apps/proxy/authorize_views.py's _surface_for() hands the URI in X-Original-URI
+to Django's own resolver and keys on the matched view's __name__ -- so with
+these patterns gone, every auth_request subrequest for an XC live tune
+resolves to the SPA catch-all and authorize_view answers 403, in production.
+They now name apps/proxy/stream_routes.py's stream_xc, which exists to be
+RESOLVED and never to be called behind nginx. See that module's header.
 """
 
 from django.test import SimpleTestCase

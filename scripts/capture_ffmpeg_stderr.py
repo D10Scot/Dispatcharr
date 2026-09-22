@@ -5,7 +5,7 @@ Run inside the backend test container:
 
     docker exec -w /repo dispatcharr-testrunner bash -lc \
       'export PATH=/dispatcharrpy/bin:$PATH; python scripts/capture_ffmpeg_stderr.py \
-         apps/proxy/live_proxy/tests/harness/fixtures/ffmpeg_stderr'
+         relay/internal/relaytest/testdata/ffmpeg_stderr'
 
 Drives the PRODUCTION ffmpeg command -- core/migrations/0003_preload_stream_profiles.py's
 `ffmpeg -i {streamUrl} -c:v copy -c:a copy -f mpegts pipe:1`, no -loglevel, so the

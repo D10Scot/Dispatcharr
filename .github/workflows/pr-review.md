@@ -36,13 +36,25 @@ steps:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       REPO: ${{ github.repository }}
       PR_NUMBER: ${{ github.event.pull_request.number }}
+      BASE_REF: ${{ github.event.pull_request.base.ref }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
     run: |
       set -euo pipefail
       mkdir -p .pr-review
       gh pr view "$PR_NUMBER" --repo "$REPO" \
         --json number,title,body,baseRefName,headRefName,additions,deletions,changedFiles,files \
         > .pr-review/pr.json
-      gh pr diff "$PR_NUMBER" --repo "$REPO" > .pr-review/pr.diff
+      if ! gh pr diff "$PR_NUMBER" --repo "$REPO" > .pr-review/pr.diff 2> .pr-review/pr.diff.err; then
+        # GitHub caps the diff API at 20,000 lines (HTTP 406 on a large PR);
+        # the local three-dot diff is the same content with no cap. The
+        # checkout above is shallow (fetch-depth: 1) and anchored at the
+        # PR's merge/head ref, not at these two refs, so this fetch has no
+        # existing shallow point to reuse for either one and falls back to a
+        # full-history fetch -- that is what makes the merge base reachable.
+        cat .pr-review/pr.diff.err >&2
+        git fetch --no-tags origin "+refs/heads/${BASE_REF}:refs/remotes/origin/${BASE_REF}" "${HEAD_SHA}"
+        git diff "origin/${BASE_REF}...${HEAD_SHA}" > .pr-review/pr.diff
+      fi
       # Annotate every '+' and context line with its RIGHT-side (new file) line
       # number so inline comments land on lines that exist in the diff without
       # the agent having to count hunk offsets by hand.

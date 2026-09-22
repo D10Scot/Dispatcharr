@@ -12,7 +12,7 @@ from django.test import TestCase
 
 from apps.channels.models import Channel
 from apps.proxy import relay_client
-from apps.proxy.live_proxy.redis_keys import RedisKeys
+from apps.proxy.redis_keys import RedisKeys
 
 
 class _Redis:

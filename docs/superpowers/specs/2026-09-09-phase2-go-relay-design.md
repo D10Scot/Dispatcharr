@@ -2993,7 +2993,7 @@ wrappers (`channel_status`, `stop_channel`, `stop_client`, `change_stream`, `nex
 **A10.4 — Gate 2 (Python) loses 28 of its 38 modules, 2d-1 trips it on its first push, and the
 census that makes the survivor gate real cannot be taken until after the delete.**
 `scripts/coverage_live_path.floor.modules` lists 38 paths; **28** are under
-`apps/proxy/live_proxy/` (lines 6-33). The **ten survivors** are lines 1-5 and 34-38:
+`apps/proxy/live_proxy/` (lines 6-33). The **ten survivors** are lines 1-5 and 34-38 (**nine after Amendment A14.1**, which deletes `relay_views.py`):
 `apps/proxy/authorize.py`, `authorize_views.py`, `control_plane.py`, `internal_auth.py`,
 `internal_base_url.py`, `next_source.py`, `permissions.py`, `relay_client.py`, `relay_serializers.py`,
 `relay_views.py` — the Phase 1 boundary, i.e. the control plane the Go relay calls.
@@ -3353,7 +3353,7 @@ call sites outside the module — fifteen live, and one in dead code: `core/task
 module and `:431` calls `list_channels()` inside `fetch_channel_stats`, whose only caller is
 `beat_periodic_task` (`core/tasks.py:50`), which no schedule, migration or other module references —
 `e2e/COVERAGE.md:190` records it as "referenced by no schedule or migration — unreachable on a stock
-instance." **Deletable in 2d-4** along with the rest of that emission path (A10.3 site 7). The fifteen
+instance." **Amendment A14.2 narrows this: `core/tasks.py`'s half is KEPT** -- it already goes through `relay_client.list_channels()`, degrades correctly on all three exception classes and carries four green tests, and its caller's unreferencedness is a property 2d-4 neither creates nor cures. What 2d-4 deletes is `apps/proxy/tasks.py` (A10.3 site 7), whose builder scans `live:channel:*:metadata`, and the disabled beat entry that names it. The fifteen
 live ones: the tune-path reuse check (`apps/channels/models.py:494`), the live
 branch of `get_user_active_connections` (`apps/proxy/utils.py:280`), `attempt_stream_termination`'s
 live arm (`apps/proxy/utils.py:197`), `combined_stats`' live section
@@ -3432,7 +3432,7 @@ under. It is cheap and it is worth doing first for one reason: 2d-4 is the large
 the phase, and a flake that reddens its CI is a flake that gets attributed to the deletion.
 
 **A10.14 — thirteen test files OUTSIDE the deleted package import it, across three surviving labels,
-and each errors at import and fails its whole label.** (**Eleven across two labels by the time 2d-4
+and each errors at import and fails its whole label.**  **Amendment A14.3 supersedes this count: SEVENTEEN files across FOUR labels, and the breakage has three kinds** — nine fail collection, four fail per-test at run time (two of them listed below as collection-breakers although their imports are function-local, and two not listed here at all), and two carry assertions that go false with no import or patch anywhere. The enumeration below counts import STATEMENTS, which is why it misses the last six, and two more that name `live_proxy` nowhere at all.** (**Eleven across two labels by the time 2d-4
 runs — Amendment A11.4**, which moves the two `apps.timeshift.tests` files to 2d-1; the enumeration
 below is the one measured at `1326de3e` and is left as measured.) Re-derived at this SHA by counting
 `from apps.proxy.live_proxy` / `import apps.proxy.live_proxy` per file outside the package:
@@ -3949,6 +3949,166 @@ ordinary PR touching `docker/` exercises. R1's classification of `proxy_connect_
 the trap generalizes to any simple directive a `proxy_pass` location does not set explicitly,
 whenever the same server block already carries one for an unrelated location.
 
+#### Amendment A14 (stage 2d-4) — twelve rulings from deleting the Python relay
+
+**Measured on the merged 2d-3 tree**, with every disposition opened at the file rather than
+inferred from a grep. Where an item contradicts a sentence in A10 or in § Stage 2d's deletion list,
+that sentence is **edited in place** and the item says so.
+
+**A14.1 — `relay_views.py` and `relay_urls.py` are deleted, and a "Django-side twin" was never a
+thing that could be built.** A10.3 left the choice to this plan because it could not settle the
+trade from the tree. Measured: `relay_views.py` is a 257-line HTTP wrapper over `ChannelStatus`,
+`build_live_channel_stats_data`, `ProxyServer` and `ChannelService`, reached at eight sites — all
+four inside the deleted directory. "Keeping it" means writing a second implementation of the Go
+relay's in-process channel registry in Python over Redis keys the Go relay never writes. Two
+consequences are stated rather than absorbed: Gate 2's denominator goes from ten boundary modules
+to **nine**, which 2d-5's census must be planned against; and `IsInternalRelay` keeps **four**
+users, not one as first measured here — `authorize_views.py`'s `authorize_internal_view` and
+`api_views.py`'s three `/api/relay/…` views (`next_source_view`, `release_view`, `events_view`),
+which this ruling's own grep missed (2d-4 fix round, F3) — so `permissions.py` stays in the gate's
+list, more strongly than this amendment first said.
+
+**A14.1b — THE URL PATTERNS DO NOT GO WITH THE IMPORTS, and nothing in A10 says so.** A10.3 lists
+`dispatcharr/urls.py:9` (site 5) and `apps/proxy/urls.py:10` (site 6) as module-level import sites
+to close, which they are. What it does not say is that the PATTERNS those imports feed must stay.
+`apps/proxy/authorize_views.py:214-228`'s `_surface_for()` hands the URI in `X-Original-URI` to
+**Django's own resolver** and keys on the matched view's `__name__` — `"stream_ts"`, `"stream_xc"` —
+deliberately, as its own comment says: "rather than re-deriving each surface's URL shape here — a
+second copy of the urlconf, guaranteed to drift". Delete the patterns and every `auth_request`
+subrequest for a live tune resolves to the **SPA catch-all**, so `authorize_view` answers **403** and
+nginx never reaches the Go relay: **every live tune fails, in every nginx-fronted deployment, on the
+one surface this phase exists to keep working** — and every Go test stays green through it. Measured
+by executing the plan: 22 failures and 5 errors in `apps.proxy.tests`, all on the authorize hop,
+against a seed baseline of 428 OK. **Ruling: the patterns survive, pointed at a new
+`apps/proxy/stream_routes.py`** whose two callables exist to be RESOLVED and never called — same
+paths, same pattern text, same `XC_STREAM_ID_PATTERN` and `\Z`, same view `__name__`s, same
+`app_name = "live_proxy"` namespace, so `_surface_for` is untouched and Phase 1 D7's three-segment
+regex trap is unchanged. Behind nginx nothing reaches them; in `dev` each answers **501 naming the
+Go relay's port**, deliberately not 404, which is indistinguishable from an unknown channel.
+`tests/test_urls_xc_three_segment.py` therefore keeps all five of its assertions and takes a
+docstring paragraph instead of the rewrite an earlier draft gave it.
+
+**A14.2 — the deletion breaks the `dev` shape, and A10.11's "deletable in 2d-4" is narrowed in
+place.** `internal_base_url.py`'s `dev` branch hardcodes `http://127.0.0.1:5656` for **both**
+directions because `resolve_base_url()` is shared, and dev runs no nginx — so after the delete
+every `relay_client` call in dev reaches a Django with no `/proxy/relay/` route and gets a 404.
+`resolve_base_url()` therefore gains a `dev_url` parameter and `get_relay_control_base_url()`
+passes the Go relay's port, read from `DISPATCHARR_RELAY_GO_PORT` with A10.16's
+default-and-validate shape. **Separately, `core/tasks.py`'s `fetch_channel_stats` is KEPT**: it
+already goes through `relay_client.list_channels()`, it degrades correctly on all three exception
+classes, and it carries four green tests. A10.11 called it dead because `beat_periodic_task` is
+unreferenced — a property 2d-4 neither creates nor cures, and deleting working tested code for it
+is the widening this phase's charter warns against. `apps/proxy/tasks.py` IS deleted, with the
+disabled beat entry that names it: its builder scans `live:channel:*:metadata`.
+
+**A14.3 — fifteen test files outside the package are affected, not eleven, and the breakage has
+three kinds — and SEVENTEEN once the plan was executed.** A10.14 counts *import statements*. Re-derived with a classifier that separates
+module-level imports, function-local imports, `mock.patch` **string** targets and prose: **nine**
+files fail collection (and redden their whole label); **four** fail per-test at run time —
+including `test_ts_proxy_keepalive.py` and `test_ts_proxy_keepalive_duration.py`, which A10.14
+lists as collection-breakers and which have only function-local imports, plus
+`test_recording_pipeline.py` and `tests/test_websocket_consumer_filter.py`, which A10.14 does not
+list at all; and **two** carry assertions that go false with no import or patch anywhere
+(`tests/test_ci_test_routing.py`, three of whose five tests fail, and
+`core/tests/test_fetch_channel_stats.py`, which stays green and goes tautological). A fourth label,
+the bare repo-root `tests`, is dragged in. A10.14's enumeration is edited in place.
+
+**Two more were found only by executing the plan, and neither names `live_proxy` anywhere**, so no
+grep over the deleted directory could have reached them: `apps/proxy/tests/test_relay_control_api.py`
+imports `relay_views`, which **A14.1's own ruling** deletes (disposition: delete; Go cover
+`relay/httpapi/control_test.go` and the two golden tests); and
+`apps/proxy/tests/test_internal_base_url.py` pins the exact dev address **A14.2** changes
+(disposition: rewrite, asserting both directions in one test, since the half a careless edit breaks
+silently is `control_plane`'s). **The generalisable lesson**: a deletion's blast radius is the files
+that name the deleted thing PLUS the files that name anything else the deletion forces you to
+remove, and only executing the plan finds the second set.
+
+**A14.4 — the disposition is 5 deleted whole, 5 split, 5 kept (four by re-pointing an import, one
+by a docstring) and 2 rewritten**, and
+every delete names its Go cover or says plainly there is none. Behaviours with no cover on either
+side after this PR, recorded as gaps rather than claimed: the non-owner keepalive branch,
+`_do_stats_update`'s WebSocket fan-out, `remove_client`'s non-blocking latency,
+`_init_wait_abort_reason`'s "stalled" arm, `_pre_active_no_clients_should_stop`'s two-timeout
+selection, the follower pub/sub switch-confirmation protocol and the ghost-client sweep — the last
+two deliberately, by D2 and 2c-3. One orphaned assertion is re-homed rather than lost:
+`width`/`height`/`video_bitrate` must be ABSENT when unset, which nothing pins on either side, and
+which is re-homed as `relay/httpapi/detail_golden_test.go::TestTheDetailPayloadOmitsTheDVRVideoFieldsWhenNothingSetThem`
+— the DETAIL golden, not the list one, because `width`/`height`/`video_bitrate` exist on the detail
+payload alone (`relay/httpapi/detail.go:159-161`) and the list test's absence list could never have
+carried them. Its break-check is one struct tag: dropping `,omitempty` from `Width` reddens it.
+
+**A14.5 — the rcfile edit moves from 2d-5 to 2d-4, and the deletion list's PR 5 entry is corrected
+in place.** `--write-floor --shape-only` recomputes `modules=`, `module_count=` **and** `rcfile=`
+in one command, so removing the two dead `[report] include` lines here costs nothing and leaves no
+config line pointing at a deleted directory. What stays 2d-5's is `missing` — the number, which is
+the whole substance of "re-scope" and which needs the worst of ≥12 CI rounds on a tree that can
+only exist after the delete. The floor's header gains a paragraph saying, in as many words, that
+the gate is slack in that window and that a green run there proves the shape checks and not
+coverage.
+
+**A14.6 — the parity matrix's Source column names where the behaviour LIVES, and rows 26 and 27 get
+a `retired:` sentinel the guard learns to read.** A10.5's three candidate shapes, with the third
+argued hardest against as it asked. Exempting `white-box-only` rows from the Source check is
+refused for two reasons beyond the one A10.5 gives: it is **retroactive** — every future white-box
+row silently stops needing a citation, with no edit anywhere to notice — and it **conflates** "no
+black-box test can reach this" with "this code no longer exists", which are independent (row 12's
+fMP4 timeout is close to the first and very much alive in Go). Re-pointing both Sources at a
+surviving file is refused as dishonest for row 27 in particular: citing a Go file as the source of
+a behaviour the Go relay does not have inverts what the column means. The chosen form is backed by
+a **`RETIRED_SOURCES` allowlist compared with `toEqual`**, in `WHITE_BOX_ONLY`'s exact idiom and
+with its two sibling assertions, so the one word that makes a row stop citing source is itself
+counted. It is explicitly **not** tied to `white-box-only`: 26 and 27 happen to be both, and the
+two properties are independent.
+
+**A14.7 — every A10.5 figure is confirmed exactly at the merged 2d-2 tree**, including the
+eighteen-row list, and zero citations are broken before this PR — so every breakage is its own. One
+thing A10.5 does not mention was found and is repaired as a side effect: **row 15's Source has been
+stale since 2b-2**, whose 38-line shift in `views.py` made `:825` a blank line and `:845-851`
+`stream_ts`'s exception handler rather than `stream_xc`'s hand-off. The guard cannot see it — it
+checks that a line exists, never that it is the right line.
+
+**A14.8 — the corpus relocation needs `runtime.Caller`, and a bare relative path was measured
+wrong rather than reasoned wrong.** A three-package probe reproducing the topology confirmed that
+`"testdata/..."` resolves against the **calling** package's directory and is found only inside
+`relaytest` itself — green in the one package a maintainer would test first, a panic in the three
+that actually read the corpus. `corpus.go` already uses the idiom (`repoRoot()` is a four-deep
+`runtime.Caller` walk), so the edit shortens it to a one-deep `pkgDir()` with `RepoRoot()`
+re-expressed on top, keeping one `runtime.Caller` call site. The return value stays **absolute**,
+which is load-bearing: eleven callers hand it through argv to a re-exec'd child. `testdata/` under
+a Go package adds no package, no module and no import path, so `go build`, `go vet`,
+`golangci-lint` and `scripts/check_go_stdlib_only.sh` are all unaffected — each verified rather
+than assumed. One inherited fragility is recorded rather than introduced: `-trimpath` defeats any
+`runtime.Caller`-derived path, and it appears once in the repo, on `docker/Dockerfile:50`'s
+production `go build`, never on a `go test`.
+
+**A14.9 — the Go coverage gate provably does not move, so this PR runs no `--write-floor` on it.**
+Three independent reasons: `packages=` hashes `go list -deps .`, which returns the same ten linked
+packages (`relaytest` was already outside the linked set); `gomod=` hashes a file this PR does not
+touch; and `statements`/`missing` are measured per linked package, so an edit inside `relaytest`
+moves neither. A PR that runs one is doing something the measurement says it should not need to.
+
+**A14.10 — #190 closes, and the delete is test-invisible in both directions.** All five ranges go,
+and with them `apps/channels/models.py`'s `ChannelMetadataField` import, which has no other user in
+the file. Exhaustively checked: **no test in the tree would fail if all five were deleted** —
+every caller seeds the primary Django-owned keys, which is exactly the branch that skips all four
+fallback reads; nothing asserts the `hdel` (the one test-side occurrence is a tolerance stub whose
+own comment says so); and two of the fakes have no `hget` at all. So this PR ships a break-check
+rather than trusting a green run: a new test seeds ONLY the metadata hash and asserts
+`release_stream()` returns `False`. **The ledger row is 2d-6's**, not this PR's:
+`metrics/build/curated.py` requires a `fixed` row to carry a `fixed_in` PR number and checks it is
+merged, and a PR cannot name itself.
+
+**A14.11 — what this PR deliberately leaves, each with its reason.** `apps/proxy/hls_proxy/` is
+Phase 4's, which is why `signals.py`'s `hls_proxy` branch is kept verbatim beside the deleted
+`live_proxy` one. The ~694 Go doc-comment citations of deleted Python filenames are not fixed
+(A10.6). The 23 prose `live_proxy` comments under `e2e/` and the two in
+`.github/workflows/domain-fuzz-campaign.{md,lock.yml}` are 2d-6's; the five `e2e/COVERAGE.md`
+rows that cite a *path* are this PR's, and `COVERAGE.md:50` and `:202` stay 2d-6's per A10.10's own
+table. `ChannelState.PRE_ACTIVE` keeps its seven-test shape pin although its last production reader
+went with the package — the frozenset is four lines and re-deriving it for Phase 3 would cost more
+than carrying it, which is a decision rather than an oversight. `reverse_imports_into_proxy` falls
+29 → 28, expected drift on a headline tile with no gate.
+
 ## Stage 2d — cutover, and its trap
 
 **The historical bug this stage exists to not repeat.** Every live-bound nginx location today carries
@@ -4306,10 +4466,12 @@ share a PR with the delete that makes it measurable).
    green, `E2E result` green, and **`python -m metrics.build --validate-only` green** (A10.15: the
    commit gate runs it only when a `metrics/` path is staged, `.claude/hooks/pre-commit-tests.sh:185`,
    so without this the three broken rows first surface in `pages.yml:90` on `main` after merge).
-5. **`migration/phase2d-gate2-recensus`** — **new, Amendment A10.4.** Re-scope Gate 2 to the ten
-   surviving boundary modules (`scripts/coverage_live_path.coveragerc`'s `[report] include` loses
-   `apps/proxy/live_proxy/*`), and set `missing` from the worst of a ≥12-round **CI** census on the
-   post-delete tree, under the stopping rule `scripts/coverage_live_path.floor:283-312` prescribes.
+5. **`migration/phase2d-gate2-recensus`** — **new, Amendment A10.4.** Re-scope Gate 2 to the **nine**
+   surviving boundary modules and set `missing` from the worst of a ≥12-round **CI** census on the
+   post-delete tree. **Amendment A14.5 moves the rcfile edit itself to PR 4**, which removes both
+   dead `[report] include` lines with its `--shape-only` re-baseline — one command rewrites
+   `modules=` and `rcfile=` together, so there is no reason for a config line to name a deleted
+   directory for a whole PR. What remains here is the NUMBER, under the stopping rule `scripts/coverage_live_path.floor:283-312` prescribes.
    It cannot merge with PR 4: the ten survivors are executed in large part by the ~564 tests PR 4
    removes, so a census taken before the delete measures a different thing. **Nor can it be planned
    before PR 4's A10.14 dispositions are settled** — four of the thirteen affected test files are
@@ -4429,6 +4591,7 @@ Filled in as PRs merge; this spec lands as its own PR 0.
 | 2d-1 -- the boot-trap relocation (`migration/phase2d-boot-trap-relocation`). `RedisKeys`, `ChannelMetadataField`, `ChannelState` and `ConfigHelper` move out of `apps/proxy/live_proxy/` into three Django-owned modules -- `apps/proxy/redis_keys.py` and `apps/proxy/constants.py`, both leaves with no imports at all, and `apps/proxy/config_helper.py`, which imports only `apps.proxy.config` -- with `constants.py` SPLIT rather than moved whole so `EventType`, `StreamType`, `REDIS_TTL_*` and the TS packet constants die with the package at 2d-4. The three old PATHS stay as re-export shims, which is what keeps the diff to 19 import statements in 10 files out of the 140 in the tree that name these symbols, and what keeps Gate 2's `modules=` byte-identical -- the gate hashes a set of paths, so a path that still exists cannot leave the set whatever its statement count. Amendment A11, eight rulings, four of which correct A10 or § Stage 2d in place: **A10.4 was wrong that this PR trips `modules=`** (measured `8cb5c65dac3e`/38 files with and without the new modules, and two full isolated rounds at `missing=1505` and `1509` against the floor's 1525, both green -- the total is bimodal by design, which is why only the exit status and the shape fields are assertions) so **no floor edit ships at all** and the `--shape-only` re-baseline becomes 2d-4's alone; A10.14's thirteen test files become **eleven**, because all five `live_proxy` imports in `apps/timeshift/tests/{test_views,test_stats}.py` name the relocated constants and re-pointing them takes the catch-up label off the deleted package; A10.17's `models_boot_trap_imports` catalogue note moves here from 2d-6 since the tile reads 0 from this merge (the milestone ROW stays a post-merge one-liner, A9.9's reason); and two gate items are restated -- `DISPATCHARR_ROLE` appears in no Python file, so "green in every role" is one `manage.py check` plus a migration-loader command, and `makemigrations --check` is already dirty at the seed (`core/0028_alter_streamprofile_parameters`), pre-existing and neither caused nor fixed here. Gate 1 moves with `ConfigHelper` and nothing in the spec anticipated it: one SITE deleted (12 -> 11), one EDGE re-pointed with `hits` 5 -> 1 -- a real one-hop narrowing of the static half, since `scan_edge` is transitive within the module only -- and `test_zero_orm_scan.py`'s attribution driver replaced with `views.py`'s `_output_profile_for`, whose own ORM read is already an allowlisted SITE. The boot-check hook arm and `CLAUDE.md`'s two prose copies of it take six literal paths instead of two; the trap moved house rather than away, measured as `ImportError: cannot import name 'Channel' from partially initialized module` when a cycling import is added to the new `apps/proxy/constants.py`. #190's five ranges in `apps/channels/models.py` are carried along unchanged, as A10.17 rules. | `migration/phase2d-boot-trap-relocation` | pending |
 | 2d-2 -- the admin wrappers relocation (`migration/phase2d-admin-wrappers`). The five `IsAdmin` control views and the six URL patterns that register them move out of `apps/proxy/live_proxy/` into `apps/proxy/ts_admin_views.py` and `apps/proxy/ts_admin_urls.py`, with the resolved paths, the `name=` strings and the permission class byte-identical and `manage.py spectacular` producing a byte-identical OpenAPI document as the proof. The app namespace is the one difference and nothing reverses it. Amendment A12, eight rulings, five of which changed when the label was run rather than read: Gate 1 loses two `EdgeEntry` rows whose only importers left the package (and a surviving entry's prose citing them is rewritten, after a first draft deleted three rows instead of two by taking the range to the wrong boundary); `live_proxy/views.py` keeps the five imports the move orphans, because removing them shifts all six of that file's Gate 1 `Site` linenos by five and stales about twenty prose citations; nothing in the tree ever pinned the permission class, so a move that dropped `IsAdmin` would have been green in every label, closed here by a new `AdminControlPermissionTests` whose own obvious break-check is disclosed as **not** biting, since `DEFAULT_PERMISSION_CLASSES` is the same class; two function-local `ProxyServer` imports are handed to 2d-4 with the `worker_id` contract decision behind them; and the logger keeps the name `live_proxy.views` so no moved log line changes, with the rename listed for 2d-6. Gate 2's `modules=` unchanged at `8cb5c65dac3e`/38 with `statements` down 216 and no floor edit. | `migration/phase2d-admin-wrappers` | pending |
 | 2d-3 -- the nginx flip (`migration/phase2d-nginx-flip`). Four locations move from `uwsgi_pass` to `proxy_pass http://relay_go` -- the three byte-path ones plus `^~ /proxy/relay/`, without which Django keeps asking the Python relay for a client list it no longer has and every live stream-limit check fails open -- behind a new `upstream relay_go` sed'd at boot from `DISPATCHARR_RELAY_GO_PORT` (A10.16) and a new `dispatcharr_api_params_proxy.conf` blanking twin, with the `COPY` line § Stage 2d never named (A13.7). The three byte-path locations RE-DECLARE all six server-level `proxy_set_header` lines, because `proxy_set_header` is an array directive and a location declaring any of its own inherits none -- uncaught, every live client's `ip_address` silently becomes nginx's own address while VOD and catch-up keep reporting correctly; `/proxy/relay/` deliberately re-declares none. `relay-go.conf` gains `DISPATCHARR_RELAY_GO_DEV_ROUTES="1"` (A10.2, without which every tune 404s) and the `nice` prefix its own comment promised at 2c-2 (A10.9), and `relay/drain/supervisord_priority_test.go` asserts both relay confs share `priority=205` by reading them. The plan opened with A10.10's measurement rather than a guess -- the minimal flip on a throwaway `migration/**` branch, full matrix -- and the failure set was exactly five assertions in two greybox specs, with all twenty-two black-box `streaming` specs passing against the Go relay through nginx for the first time. Amendment A13, eleven items (a11th added in PR review), five of which correct A10 or § Stage 2d in place: the forged-marker test needs re-VERIFYING, not re-pointing, because it already requests one of the flipped locations -- and the spec said otherwise in three places, not two (A13.3); `e2e/fixtures/types.ts`'s three required fields are measured present, so nothing is relaxed (A13.2); `streaming-split` Scenario B becomes two restarts with two clocks rather than a retarget, because `relay-go.conf` carries no `wait-for-stores.sh` and a one-command restart of both measured 23,946ms against a 30,000ms ceiling (A13.5); A10.1's precondition is recorded as satisfied (A13.1); A10.2's own "four tests" is corrected to five (A13.10); and a simple directive (`proxy_connect_timeout`) silently inherited an unrelated server-level value, exceeding `test_role_split`'s 70s budget -- fixed to an explicit `60s` on all four flipped locations and pinned in `nginx-stream-buffering.spec.ts` since `puid-pgid` only runs in full mode (A13.11). A10.12's four contract fields were exercised through the flipped nginx before the plan was written: a transcode tune, an Output Profile tune, the null-`argv` arm answering 500, `avg_chunk_size` at 255,868 (188 x 1361, off the `next-source` answer) and `ip_address` reading the real client rather than nginx. | `migration/phase2d-nginx-flip` | pending |
+| 2d-4 -- delete `apps/proxy/live_proxy/` (`migration/phase2d-delete-live-proxy`). Deleted `apps/proxy/live_proxy/` (97 files, 26,371 lines, 406 tests) and with it `relay_views.py`, `relay_urls.py`, `apps/proxy/tasks.py` and the `proxy` management command; closed the eight remaining module-level import sites including `INSTALLED_APPS`; re-pointed the three `url_utils` importers at `apps.proxy.next_source` and gave `resolve_base_url()` a per-direction `dev_url` so the dev shape reaches the Go relay; recomputed `worker_id` locally; deleted #190's five metadata-hash ranges with a break-check for the behaviour they changed; kept the live URL patterns, pointed at a new `apps/proxy/stream_routes.py`, because the authorize hop resolves the tune URI through Django's own urlconf and deleting them 403s every live tune behind nginx; disposed of seventeen outside test files (5 deleted whole, 5 split, 5 kept, 2 rewritten); replaced the parity matrix's Python column with Go citations and gave rows 26/27 a guard-checked `retired:` sentinel; moved the ffmpeg stderr corpus into `relay/internal/relaytest/testdata/`; deleted `go-tests.yml`'s `differential` job; took the label count 16 → 15 and Gate 2's module list 38 → 9 with a `--shape-only` re-baseline that leaves `missing` slack until 2d-5. Amendment A14. | `migration/phase2d-delete-live-proxy` | pending |
 
 ## Risks
 
