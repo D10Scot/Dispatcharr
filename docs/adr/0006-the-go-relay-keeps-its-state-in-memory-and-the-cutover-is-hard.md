@@ -111,19 +111,21 @@ D5's two) are recorded as rows, not discovered as incidents.
   measured ~17.3s from `supervisorctl restart` to a fresh tune's first byte.
 - **A rollback is a revert of the nginx flip, and only while the Python relay
   still exists.** Between stage 2d-3 and stage 2d-4 that was a one-file
-  change. After 2d-4 it is a revert of 106 deletions, four renames and 43
-  modifications: the package was 101 files, 97 deleted and four `git mv`'d
-  into the Go module, plus nine standalone paths. The window was
-  deliberately left open across one merge and deliberately closed.
+  change. After 2d-4 it is a revert of 106 deletions, four renames, 45
+  modifications and one addition (`apps/proxy/stream_routes.py` itself): the
+  package was 101 files, 97 deleted and four `git mv`'d into the Go module,
+  plus nine standalone paths. The window was deliberately left open across
+  one merge and deliberately closed.
 - **ADR 0005's canary machinery is still there and is still right — it just
   does not apply at this grain.** `$relay_name` is set per relay-bound
   location from one process-wide `settings.RELAY_DEFAULT_NAME`, so the map can
   say "this deployment's relay is X"; it cannot say "these four locations
   resolve differently than those six". (`docker/nginx.conf`'s own comment
   says "five"; measured, it is four `proxy_pass http://relay_go` against six
-  `uwsgi_pass $relay_upstream`, with two more naming `relay_py` literally and
-  consulting no map at all.) The four flipped locations name
-  `relay_go` literally and consult no map. The mechanism's real users are a
+  `uwsgi_pass $relay_upstream`, with one more — the nested recordings regex —
+  naming `relay_py` literally and consulting no map at all; `^~ /proxy/relay/`
+  is among the four and names `relay_go` literally.) The four flipped
+  locations name `relay_go` literally and consult no map. The mechanism's real users are a
   future per-channel assignment table and horizontal scale-out, neither of
   which this phase needed.
 - **Django still owns the live URL patterns even though Django no longer
@@ -176,6 +178,6 @@ D5's two) are recorded as rows, not discovered as incidents.
   runtime SQL record — so it was retired with the package rather than half of
   it surviving; a binary that links no Postgres driver cannot read the ORM. What was
   lost is the part that was never about the relay: the scanner's scope-2 walk
-  also ratcheted four surviving Django modules, and `apps/proxy/config.py`
-  carried five of its twelve edges while ending up in neither gate. Recorded
+  also ratcheted five surviving Django modules, and `apps/proxy/config.py`
+  carried four of its ten edges while ending up in neither gate. Recorded
   as a gap, deliberately not replaced in Phase 2.

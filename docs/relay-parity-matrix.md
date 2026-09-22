@@ -9,7 +9,7 @@ This document was Phase 2's load-bearing artifact
 (`docs/superpowers/specs/2026-09-09-phase2-go-relay-design.md` § Stage 2a, Gate 1): 2a's own
 checklist, 2c's implementation spec — each Go PR closed a named set of rows — and 2d's cutover
 checklist, whose rule was that every row show a passing Go-side equivalent before nginx's live
-locations moved. **That gate is met and the cutover is done** (stage 2d-3 flipped the locations,
+locations moved. **That checklist is satisfied and the cutover is done** (stage 2d-3 flipped the locations,
 stage 2d-4 deleted the Python implementation), so what the document is *now* is the regression
 catalogue for the one implementation left: the list a change to `relay/` is read against, and the
 place a newly found live behaviour gets a row. Rows are addressed **by number**, so **an id is never
