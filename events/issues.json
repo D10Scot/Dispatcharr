@@ -1,6 +1,6 @@
 {
  "detail": null,
- "fetched_at": "2026-09-22T11:02:49+00:00",
+ "fetched_at": "2026-09-23T10:51:38+00:00",
  "kind": "issues",
  "records": [
   {
@@ -358,7 +358,7 @@
    "updated_at": "2026-09-14T18:31:05Z"
   },
   {
-   "closed_at": null,
+   "closed_at": "2026-09-22T19:55:54Z",
    "created_at": "2026-09-14T18:30:59Z",
    "id": 295,
    "label_events": [
@@ -371,9 +371,9 @@
    "labels": [
     "needs-triage"
    ],
-   "state": "open",
+   "state": "closed",
    "title": "Python relay logs the provider URL at INFO through ffmpeg's stderr preamble",
-   "updated_at": "2026-09-14T19:19:19Z"
+   "updated_at": "2026-09-22T19:55:54Z"
   },
   {
    "closed_at": null,
@@ -610,7 +610,7 @@
    "updated_at": "2026-09-13T05:36:14Z"
   },
   {
-   "closed_at": null,
+   "closed_at": "2026-09-22T19:55:53Z",
    "created_at": "2026-09-12T21:10:14Z",
    "id": 273,
    "label_events": [
@@ -623,9 +623,9 @@
    "labels": [
     "needs-triage"
    ],
-   "state": "open",
+   "state": "closed",
    "title": "Flaky under --shuffle: test_a_buffering_threshold_change_does_not_reach_a_running_channel (pre-existing, timing-driven)",
-   "updated_at": "2026-09-15T17:09:06Z"
+   "updated_at": "2026-09-22T19:55:53Z"
   },
   {
    "closed_at": "2026-09-12T20:23:53Z",
@@ -978,7 +978,7 @@
    "updated_at": "2026-09-10T18:04:22Z"
   },
   {
-   "closed_at": null,
+   "closed_at": "2026-09-22T19:55:52Z",
    "created_at": "2026-09-10T17:07:17Z",
    "id": 244,
    "label_events": [
@@ -991,9 +991,9 @@
    "labels": [
     "needs-triage"
    ],
-   "state": "open",
+   "state": "closed",
    "title": "FMP4RemuxManager._handle_bsf_error's stop()-during-restart branch is unreachable",
-   "updated_at": "2026-09-10T17:07:17Z"
+   "updated_at": "2026-09-22T19:55:52Z"
   },
   {
    "closed_at": null,
@@ -1845,7 +1845,7 @@
    "updated_at": "2026-09-06T11:46:21Z"
   },
   {
-   "closed_at": null,
+   "closed_at": "2026-09-22T19:55:54Z",
    "created_at": "2026-09-06T10:36:13Z",
    "id": 195,
    "label_events": [
@@ -1868,9 +1868,9 @@
    "labels": [
     "wontfix"
    ],
-   "state": "open",
+   "state": "closed",
    "title": "Open question: does a same-channel reconnect after a relay restart wait for the 30s orphan sweep?",
-   "updated_at": "2026-09-06T11:09:07Z"
+   "updated_at": "2026-09-22T19:55:54Z"
   },
   {
    "closed_at": null,
@@ -1957,7 +1957,7 @@
    "updated_at": "2026-09-06T05:22:02Z"
   },
   {
-   "closed_at": null,
+   "closed_at": "2026-09-22T19:55:52Z",
    "created_at": "2026-09-06T00:44:09Z",
    "id": 190,
    "label_events": [
@@ -1980,9 +1980,9 @@
    "labels": [
     "wontfix"
    ],
-   "state": "open",
+   "state": "closed",
    "title": "Phase 2: Channel.release_stream() still hdel's the relay's metadata hash (last control-plane write to a relay key)",
-   "updated_at": "2026-09-06T00:48:18Z"
+   "updated_at": "2026-09-22T19:55:52Z"
   },
   {
    "closed_at": null,
