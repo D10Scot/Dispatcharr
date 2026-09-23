@@ -151,8 +151,18 @@ Sizes: S is under 30 changed lines, M is under 150, L is more.
   - Time: after the existing 12/24-hour conversion and the existing `% 24` wrap (kept unchanged), accept
     only `0 <= hour <= 23 and 0 <= minute <= 59`. Otherwise log a WARNING naming both values and leave
     `time_info = None`.
-  - Date: accept only `1 <= year <= 9999` and `1 <= month <= 12` and
-    `1 <= day <= calendar.monthrange(year, month)[1]`. Evaluate the year and month bounds first, so
+  - Date: accept only `2 <= year <= 9998` and `1 <= month <= 12` and
+    `1 <= day <= calendar.monthrange(year, month)[1]`. **The year bound is one year inside
+    `datetime`'s range on purpose.** With `1 <= year <= 9999`, the category-I planner's prototype found
+    two channel names that still raise `OverflowError`. I re-measured both at seed against this fix
+    with the wider bound:
+    - `Ch 23:30 12/31/9999`, time zone `UTC`, raises at the `+ timedelta(minutes=program_duration)`
+      line `:671` (twin `:729`).
+    - `Ch 0:10 1/1/1`, time zone `Asia/Kolkata`, raises inside pytz `localize` at `:572` (twin `:554`).
+
+    With `2 <= year <= 9998` both pass. So do the ±14-hour extremes `Pacific/Kiritimati` and
+    `Pacific/Pago_Pago` at 9998-12-31 23:30 and 0002-01-01 00:10, and `UTC` at 9998-12-31 23:59. The
+    margin covers any time-zone shift plus a `program_duration` under one year. Evaluate the year and month bounds first, so
     `monthrange` never sees an invalid year. Hoist the local `import calendar` at `:488` to the top of
     the block.
 
@@ -166,7 +176,11 @@ Sizes: S is under 30 changed lines, M is under 150, L is more.
     20-digit minute),
     `test_twelve_hour_capture_past_midnight_is_treated_as_no_time`,
     `test_impossible_calendar_date_is_treated_as_no_date` (`2/31`),
-    `test_out_of_range_year_is_treated_as_no_date` (`0`, `99999`). Each asserts that the call returns a
+    `test_out_of_range_year_is_treated_as_no_date` (`0`, `99999`), and
+    `test_edge_year_one_step_from_datetime_limits_is_treated_as_no_date`. That test runs two subTests, the
+    category-I prototype's names: `Ch 23:30 12/31/9999` in `UTC`, and `Ch 0:10 1/1/1` in `Asia/Kolkata`.
+    Both use the pattern `(?<month>\d+)/(?<day>\d+)/(?<year>\d+)`. Plan I carries the same two names as
+    `@example`s. Each asserts that the call returns a
     list. Each also uses `assertLogs('apps.output.epg', 'WARNING')` to check that one record's message
     names the rejection: `Invalid time values` for the time rows, and the existing `Invalid date values`
     for the date rows. The asserted record is identified by its message; the test does not count
@@ -438,9 +452,17 @@ Sizes: S is under 30 changed lines, M is under 150, L is more.
   groups, so `$01` is group 1. `$00` is literal.
 - **Fix (default: the JavaScript reading).** Change the rule inside
   `convert_js_numbered_backreferences` to
-  `regex.sub(r"\$(0*[1-9]\d*)", r"\\g<\1>", replacement)`. `$N` with N ≥ 1 becomes `\g<N>`, including
-  a leading-zero form such as `$01`. A bare `$0` or `$00` does not match, so it stays in the template
-  as literal text; `$` is not special in a Python replacement template. Make the other three sites
+  `regex.sub(r"\$(0[1-9]|[1-9]\d?)", r"\\g<\1>", replacement)`. This is JavaScript's own `$n`/`$nn`
+  grammar: exactly two digits `01`-`99`, or one digit `1`-`9`, and nothing longer. `$01` is therefore
+  group 1, and `$012` is `$01` followed by a literal `2`. `$0`, `$00`, `$001` and `$0012` do not match, so
+  they stay in the template as literal text; `$` is not special in a Python replacement template.
+  - An earlier revision used `\$(0*[1-9]\d*)`. That mapped `$001` to group 1, where JavaScript
+    (Node 22) keeps `$001` literal. The category-I planner found this.
+  - The lead's suggested `\$(0?[1-9]\d?)` also diverges. It reads `$012` as group 12, and
+    JavaScript reads it as `$01` then `2`. Measured: on a twelve-group pattern JavaScript gives `a2`
+    and that rule gives `l`.
+
+  The rule above matches Node on every case in the table below. Make the other three sites
   call the helper for their `$N` step. Each keeps its own `$<name>` line.
 
   Measured at seed with the proposed rule in Python and with `String.prototype.replace` in Node, the
@@ -454,10 +476,16 @@ Sizes: S is under 30 changed lines, M is under 150, L is more.
   | `[$0]` | `(a)` | `a` | `[$0]` |
   | `[$00]` | `(a)` | `a` | `[$00]` |
   | `[$1]` | `(a)` | `a` | `[a]` |
+  | `$001` | `(h)/(u)` | `http://h/u/p/1.ts` | `http://$001/p/1.ts` |
+  | `$0012` | `(h)/(u)` | `http://h/u/p/1.ts` | `http://$0012/p/1.ts` |
+  | `$012` | twelve groups `(a)`…`(l)` | `abcdefghijkl` | `a2` |
+  | `[$100]` | twelve groups `(a)`…`(l)` | `abcdefghijkl` | `[j0]` |
 
-  Invalid groups still raise, as `\12` does today: for example `$12` on a one-group pattern. So does
-  `$10` on a one-group pattern, where JavaScript instead reads group 1 followed by a literal `0`. That
-  divergence exists today and is unchanged. The rename-parity table at
+  One divergence remains, and it exists today. JavaScript falls back from `$nn` to `$n` plus a literal
+  digit when group `nn` does not exist: `$10` on a two-group pattern gives group 1 then `0`. Python
+  raises `invalid group reference` instead, as `\12` does today, and `transform_url` then falls back to
+  the original URL. The fallback depends on how many groups the pattern has, so a template rewrite cannot
+  express it. It is left unchanged. The rename-parity table at
   `apps/m3u/tests/test_rename_preview_parity.py:42-79` exercises preview and rename through the same
   helper, so parity holds by construction. Its `$10` "invalid group" rows still fail on both paths.
 - **Alternative (the user can rule for it): `$0` means the whole match.** The rule is
@@ -474,6 +502,9 @@ Sizes: S is under 30 changed lines, M is under 150, L is more.
     - `test_dollar_zero_is_a_literal_not_a_nul_byte` checks that `[$0]` gives `[$0]`.
     - `test_dollar_leading_zero_group_is_the_group_not_an_octal_escape` checks that `$02-$01` gives
       `http://u-h/p/1.ts`.
+    - `test_replacement_token_grammar_matches_javascript` runs one subTest per table row: `$001` and
+      `$0012` stay literal, `$012` gives `a2`, and `[$100]` gives `[j0]`.
+      **Break-check:** use `\$(0?[1-9]\d?)`; the `$012` subTest must redden with `'l' != 'a2'`.
     - `test_get_transformed_credentials_dollar_zero_does_not_corrupt_the_url` asserts that no
       `\x00` appears and that the `$0` survives literally.
   - Appended to `apps/proxy/tests/test_next_source_edges.py` as class `TransformUrlBackreferenceTests`:
@@ -616,7 +647,8 @@ run once without `--keepdb`, and open as a **draft**. No PR changes an existing 
   4. Add the time and date range checks in `epg.py` (`:452-458`, `:506`). Green.
      **Break-checks:** (a) remove `0 <= minute <= 59`, and the minute test must redden with
      `minute must be in 0..59`; (b) restore `1 <= day <= 31`, and the calendar-date test must redden
-     with `day is out of range for month`.
+     with `day is out of range for month`; (c) widen the year bound to `1 <= year <= 9999`, and only the
+     edge-year test must redden, with `OverflowError` (`date value out of range`).
   5. Run `apps.output.tests` whole.
 - **Category-I seam.** #210, #162 and #92 will add a "a matched channel name never raises" property
   over `generate_custom_dummy_programs`. It should carry C-1's counterexamples as `@example`s and cite
@@ -741,7 +773,7 @@ run once without `--keepdb`, and open as a **draft**. No PR changes an existing 
   a green gate.
 - **Tasks.**
   1. Write the tests. At seed `$0` must yield NUL bytes and `$01` a `\x01`, in all four places.
-  2. Change the helper's rule to `\$(0*[1-9]\d*)` → `\g<N>` and point the three sites at it. Green.
+  2. Change the helper's rule to `\$(0[1-9]|[1-9]\d?)` → `\g<N>` and point the three sites at it. Green.
      If the user rules for the whole-match alternative in the #171 section, the rule is instead
      `\$(\d+)` → `\g<N>`, and the two `$0` expected values change as listed there.
      **Break-check:** revert only `apps/proxy/vod_proxy/views.py:603` to the inline `\\\1` form; the
@@ -760,7 +792,7 @@ run once without `--keepdb`, and open as a **draft**. No PR changes an existing 
   >
   > Four copies of the JS-to-Python replacement rewrite turned `$0` into `\0` (NUL) and `$01` into
   > `\x01`, silently corrupting stream URLs, VOD URLs, XC credentials and channel renames. One helper
-  > now does the rewrite: `$1`…`$99` (leading zeros allowed) are groups and a bare `$0` is literal, as
+  > now does the rewrite with JavaScript's own grammar (`$1`–`$99`, `$01`–`$09`; `$0`, `$00`, `$001` literal), as
   > in the SPA's own JavaScript preview (`M3uProfileUtils.js:34-38`), so the preview, the WebSocket
   > preview and the live transform now agree. Invalid group numbers still fail exactly as before. Not
   > touched: the SPA previews, and the bulk-rename rule in `apps/channels/api_views.py:1552-1561`
@@ -913,8 +945,10 @@ Each has a default that this plan already adopts; answer only to override it.
    `:481`, and `frontend/src/utils/forms/ChannelBatchUtils.js:125-148`, rendered at
    `ChannelBatch.jsx:1051`.
    - **Default: JavaScript's reading.** A bare `$0` is literal, and `$01` is group 1. The rule is
-     `\$(0*[1-9]\d*)` → `\g<N>`. The M3U-profile preview the operator sees, the WebSocket preview
-     and the live transform then agree; this was measured identical in Python and Node on five cases.
+     `\$(0[1-9]|[1-9]\d?)` → `\g<N>`, which is JavaScript's `$n`/`$nn` grammar. The M3U-profile preview
+     the operator sees, the WebSocket preview and the live transform then agree. This was measured
+     identical in Python and Node on nine cases. The one exception is JavaScript's fallback when group
+     `nn` does not exist, which exists today.
    - **Alternative: the whole match.** The rule is `\$(\d+)` → `\g<N>`. This is the `$N` half of
      `apps/channels/api_views.py:1560` and satisfies the issue's identity property. It leaves the SPA
      preview showing a literal `$0` where the stream substitutes the whole match.
@@ -932,6 +966,25 @@ shape in `release_profile_slot`; `apps/m3u/admin.py:159-163` iterating a non-dic
 its JS preview shows it literally. `$&` and `$$` are not translated by the shared helper, so `$&` stays
 the literal string `'$&'` where JavaScript substitutes the whole match. That is pre-existing, and a
 fuzz run that finds it is not a regression of C-4. None of these is a tracked issue in this category.
+
+**A defect to file, found by the category-I planner and verified here: a second stream on one pooled
+profile leaks a shared credential slot.** C-5 does not fix it, and C-5 is not widened for it.
+- **Mechanism.** `reserve_profile_slot` records the credential key under one key per profile,
+  `profile_credential_release:{profile_id}`. `_remember_credential_release_key` writes it at
+  `apps/m3u/connection_pool.py:241-244`, and reservation calls it at `:310-311`.
+  `_release_credential_slot_by_profile_id` (`:247-258`) reads that key, decrements the counter, and
+  deletes the key at `:257`.
+- **Result.** With `max_streams=2`, two concurrent streams on the same profile both reserve (counter 2)
+  but share one release key. The first release decrements to 1 and deletes the key. The second finds
+  no key and returns without decrementing, so the counter stays at 1.
+- **Measured.** A throwaway `TestCase` on the module's own `FakeRedis` ran three cycles of reserve,
+  reserve, release, release. It showed counter 2 then 1 then 1 in cycle 0. In cycles 1 and 2 the second
+  reserve failed with `credential_full`, because the leaked slot already counted. So each overlapping
+  pair leaks one slot, and a profile ratchets toward permanent `credential_full`.
+- **C-5 does not cover it.** The same probe with Appendix C applied gave identical output. That fix
+  repairs negative counters, and this counter is positive and too high.
+- **The fix** needs a per-stream release token, or a count kept under the release key. That is a design
+  change to the reserve and release pair, so it is filed separately.
 
 ---
 
