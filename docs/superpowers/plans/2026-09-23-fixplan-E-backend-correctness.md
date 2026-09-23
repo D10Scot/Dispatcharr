@@ -14,7 +14,9 @@ is quoted in each issue's "Reproduced at seed" line.
 
 **Ordering position.** Sixth of ten: B, A, J, C, D, **E**, G, H, I, F. The lead re-seeds this plan
 when an earlier category's plan merges. Three PRs here must wait for an earlier plan to *merge*, not
-merely to be written: E-2 waits for J-1 and J-3, E-5 waits for C-3, E-7 waits for B-2 and C-1. The
+merely to be written: E-2 waits for J-1 and J-3, E-5 waits for C-3, E-7 waits for B-2 and C-1.
+One more waits for the user rather than a plan: E-9 (#138) starts only after open question Q2 is
+answered, because its default reverses a deliberate upstream change. The
 overlap section says why.
 
 **Architecture.** Django 6 + DRF control plane with Celery workers and Celery beat (database
@@ -89,7 +91,7 @@ report, never a judgement call.
 | `apps/proxy/next_source.py` (docstring of `_with_proxy_settings`, `:828-849`, only) | E-2 |
 | `apps/proxy/serializers.py` (docstring of `RelayProxySettingsSerializer`, `:143-155`, only) | E-2 |
 | `apps/channels/signals.py` | E-3 (`:271`, `:382`, `:385`), E-4 (`:238`) |
-| `apps/channels/tasks.py` | E-3 (`:888-895`, `:1038-1039`, `:1499`, `:2148`, `:2526`), E-4 (`:241-245`, `:345-349`, import block `:22-29`) |
+| `apps/channels/tasks.py` | E-3 (`:1038-1039`, `:1499`, `:2148`, `:2526`), E-9 (`:888-895`), E-4 (`:241-245`, `:345-349`, import block `:22-29`) |
 | `apps/channels/api_views.py` | E-3 (`:3583-3587`), E-4 (`:877`, `:887`, `:902`, `:2074`, `:2084`, `:2099`) |
 | `apps/channels/epg_matching.py` (`get_preferred_region_code`, `:428-433`) | E-4 |
 | `apps/channels/serializers.py` (`:121` only) | E-6 |
@@ -115,9 +117,9 @@ From `sweep-report.md`, the other category issue files, and the three plans alre
 
 | file | other plan and what it is assumed to do there | who goes first | collision risk |
 |---|---|---|---|
-| `apps/proxy/config.py` | **J-1** deletes `HLSConfig` (`:77-88`). **J-3** adds `apps/proxy/tests/test_tune_path_query_ledger.py`, whose `_cold()` helper sets `_proxy_settings_cache = None` and `_proxy_settings_cache_time = 0` on both `BaseConfig` and `TSConfig`, and whose static pin expects `config.py`'s only model import to be `("BaseConfig.get_proxy_settings", "core.models", "CoreSettings")`. The J plan's own overlap row says E updates that test if E adds a model import or renames the attribute. | J | **None by construction.** E-2 keeps both attribute names on `BaseConfig` and adds no import (Appendix A). `_cold()` still resets the one real copy; its `TSConfig` assignment becomes an inert attribute. **E-2 changes no J-3 test.** If J-3 has not merged when E-2 runs, there is nothing to update either way. |
+| `apps/proxy/config.py` | **J-1** deletes `HLSConfig` (`:77-88`). **J-3** adds `apps/proxy/tests/test_tune_path_query_ledger.py`, whose `_cold()` helper sets `_proxy_settings_cache = None` and `_proxy_settings_cache_time = 0` on both `BaseConfig` and `TSConfig`, and whose static pin expects `config.py`'s only model import to be `("BaseConfig.get_proxy_settings", "core.models", "CoreSettings")`. The J plan's own overlap row says E updates that test if E adds a model import or renames the attribute. | J | **None by construction.** E-2 keeps both attribute names on `BaseConfig` and adds no import (Appendix A). `_cold()` still resets the one real copy; its `TSConfig` assignment becomes an inert attribute. **E-2 changes no J-3 assertion.** One J-3 comment goes stale: `_cold()`'s docstring says CLAUDE.md records that `TSConfig`'s cache attribute shadows `BaseConfig`'s, which E-2 makes untrue. That is comment-only and is left for J-3's owner; E-2 names it in its PR description. If J-3 has not merged when E-2 runs, there is nothing to note. |
 | `apps/proxy/next_source.py` | **B-5** changes `:63`; **C-4** changes `transform_url` (`:285`); **J-3** measures it. | B, C, J | Low. E-2 edits only the `_with_proxy_settings` docstring (`:828-849`). All three PRs touch a Gate 2 module, so each runs the isolated coverage script. |
-| `apps/m3u/tasks.py` | **C-3** splits `refresh_m3u_groups` into an outer lock-holding function and `_refresh_m3u_groups_locked`, deleting the nine inline `lock_renewer.stop()`/`release_task_lock` pairs (C plan Appendix B). **B-5** changes `:942-945`. **C-4** changes `:3097`. | C, B | **Real.** E-5 edits the same nine return statements C-3 edits the lines above. **E-5 is implemented after C-3 merges**, on C-3's shape: the lock-miss return lives in the outer function, the other eight in `_refresh_m3u_groups_locked`. Appendix D is written against that shape and cites seed lines. |
+| `apps/m3u/tasks.py` | **C-3** splits `refresh_m3u_groups` into an outer lock-holding function and `_refresh_m3u_groups_locked`, deleting the nine inline `lock_renewer.stop()`/`release_task_lock` pairs (C plan Appendix B). C-3 also bounds `M3UFilter` regexes for #262 (`:1026`), with no textual collision with E-5. **B-5** changes `:942-945`. **C-4** changes `:3097`. | C, B | **Real.** E-5 edits the same nine return statements C-3 edits the lines above. **E-5 is implemented after C-3 merges**, on C-3's shape: the lock-miss return lives in the outer function, the other eight in `_refresh_m3u_groups_locked`. Appendix D is written against that shape and cites seed lines. |
 | `apps/output/views.py` | **B-2**: `xc_get_user` and the four XC views, lines 357-560 only, plus one import line. **C-1**: `xc_get_epg` (`:785-940`). **D #97**: `:1675-1680`. **D #94** is a decision memo; if the user rules for a `catchup=` attribute, its implementation edits the same `#EXTINF` f-string as E-7. | B, C, D | Low. E-7 adds a helper above `generate_m3u` (`:107`), edits `:300-306` and `:593` (`xc_get_live_categories`, `:564-615`), all outside B-2's range. If #94 is implemented first, E-7 rebases its f-string hunk over it and routes any new attribute through the same helper. |
 | `apps/channels/signals.py` | **H #86** (the `channel-profiles.spec.ts` flake) names `create_profile_memberships` (`:235-241`) as its candidate mechanism. | E | None textually. H should re-measure #86 after E-4, which removes that mechanism. |
 | `apps/channels/tasks.py` | **H #178** cites `:1234` (the DVR internal header) as evidence for an e2e-only test. | E | None. E touches no line near `:1234`. |
@@ -192,8 +194,9 @@ fix applies with a context rebase, since line numbers differ.
   oldest matching row (`filter(**lookup).order_by("id").first()`) and creates only when none exists.
   Use it at `:91` and `:121`, and in E-3 at `apps/channels/signals.py:271` (#131). A concurrent
   insert can still add a duplicate, but a duplicate is no longer fatal. Existing duplicates need no
-  data migration: the read tolerates them, and `_cleanup_orphaned_interval`/`_crontab`
-  (`core/scheduling.py:186-203`) delete an extra row once nothing references it. An advisory lock
+  data migration: the read tolerates them. A duplicate that was never chosen stays in the table,
+  harmlessly. `_cleanup_orphaned_interval`/`_crontab` (`core/scheduling.py:186-203`) are not a
+  sweep: they run only on a task's *old* schedule when it switches (`:112-116`). An advisory lock
   that would prevent the duplicate insert altogether is listed as a follow-up, not planned.
 - **Tests.** New `core/tests/test_schedule_duplicate_rows.py`:
   - `test_duplicate_interval_rows_no_longer_break_periodic_task_creation` seeds two identical rows.
@@ -225,7 +228,10 @@ fix applies with a context rebase, since line numbers differ.
   code path. It heals only because the frontend happens to send the merged form. (2) **The
   settings API never runs `ProxySettingsSerializer`'s range validators** (`core/serializers.py:93-140`),
   so any client can store `buffering_speed: 50` or `""`. (3) The unrouted viewset carries a third
-  hardcoded copy of the defaults (`core/api_views.py:224-232`).
+  hardcoded copy of the defaults (`core/api_views.py:224-232`). (4) `CoreSettingsViewSet.create`
+  (`frontend/src/api.js`'s `createSetting`) could still POST an unvalidated `proxy_settings` row.
+  The fix below leaves create alone on purpose: `core/migrations/0014` seeds the row, so the UI only
+  ever updates it, and a second row would violate `key`'s uniqueness anyway.
 - **Fix (default, see open question Q1).** In `CoreSettingsSerializer.update`, when
   `instance.key == PROXY_SETTINGS_KEY`, validate `{**CoreSettings.get_proxy_settings(), **value}`
   through `ProxySettingsSerializer`, refuse a 400 on error, and store `validated_data` (Appendix B).
@@ -235,13 +241,18 @@ fix applies with a context rebase, since line numbers differ.
   `value` for this group no longer drops the sibling keys. Today it does, and
   `e2e/tests/streaming-failover/failover-buffering.spec.ts:19-26` works around that with a
   read-modify-write, which keeps working.
-- **Tests.** New `core/tests/test_proxy_settings_write_path.py`, all through
-  `PATCH /api/core/settings/<id>/` as an admin, with literal expected dicts (never a second call to
+- **Tests.** New `core/tests/test_proxy_settings_write_path.py`, through
+  `/api/core/settings/<id>/` as an admin, with literal expected dicts (never a second call to
   `get_proxy_settings()`, per `ProxySettingsBackfillsMissingKeysTests`' docstring at
   `core/tests/test_core.py:840-854`):
-  - `test_saving_proxy_settings_through_the_settings_api_stores_every_key` seeds the six-key
-    pre-0026 row, PATCHes six keys, and asserts the stored row equals the literal seven-key dict.
-    At seed the row has six keys.
+  - `test_the_settings_page_put_stores_every_key` is the reporter's path. The UI saves with
+    `PUT /api/core/settings/<id>/` and body `{key, name, value}` (`frontend/src/api.js:2433-2440`,
+    `updateSetting`). The test seeds the six-key post-0026 row (every key but
+    `new_client_behind_seconds`), PUTs the UI's payload with a `value` carrying the six stored keys
+    and one changed, and asserts the stored row equals the literal seven-key dict. At seed the row
+    has six keys.
+  - `test_saving_proxy_settings_through_the_settings_api_stores_every_key` does the same through
+    `PATCH`, the other verb that reaches `CoreSettingsSerializer.update`.
   - `test_out_of_range_proxy_settings_are_refused_by_the_settings_api` sends `buffering_speed: 50`,
     expects 400, and expects the row unchanged. At seed the answer is 200 and 50 is stored.
   - `test_a_partial_proxy_settings_value_keeps_its_siblings` sends `{"buffering_speed": 2.0}` and
@@ -348,7 +359,13 @@ fix applies with a context rebase, since line numbers differ.
 - **e2e.** `e2e/tests/dvr/recurring-rules.spec.ts` posts `end_date` = today+14. It stays green
   unmodified, since its window equals the horizon and its 14-or-15 count holds. Only its header
   comment (`:24-110`), which explains the dead horizon, is rewritten as comment-only.
-- **Size** S. **Upstreamable** yes (upstream `dev` `tasks.py:1086`).
+- **Visible behaviour change.** The Upcoming list will show two weeks of a long rule, not its whole
+  run, and the rest appears as the hourly maintainer rolls the window forward. The PR description
+  must say so plainly.
+- **Size** S. **Upstreamable** no, contested. Upstream `dev` carries the same branch (`tasks.py:1086`),
+  but it is the upstream author's deliberate design from `6536f35d`, so the default reverses it
+  rather than fixing an oversight. It gets its own PR, E-9, gated on Q2, so an override re-plans one
+  small PR and not E-3.
 
 ### #132: three of the seven DVR WebSocket events carry no `recording_id`
 
@@ -635,6 +652,9 @@ fix applies with a context rebase, since line numbers differ.
   view's `__name__`. An unmatched `/api/` URI resolved to `TemplateView` before and resolves to
   `api_not_found` now. Neither is a streaming surface, so the authorize answer (403) is unchanged.
   `apps.proxy.tests` runs on this PR anyway.
+- **Behaviour change.** `apps/api/urls.py` has no root pattern, so `/api/` itself (and `/api`, via
+  the redirect at `dispatcharr/urls.py:17`) answers the SPA shell with 200 today and will answer the
+  JSON 404 after the fix. That is correct, and the PR description says so.
 - **Tests.** New `tests/test_unmatched_api_paths_404.py`:
   - `test_unmatched_api_paths_resolve_to_a_404_not_the_spa` is resolver-level and red at seed.
   - `test_unmatched_api_path_answers_json_404` uses the test client.
@@ -760,11 +780,16 @@ changed are the e2e pins each section lists.
      redden `0.5 != 9.0`.
   3. Re-verify that the cache has no production reader:
      `grep -rnE "new_client_behind_seconds\(\)|channel_shutdown_delay\(\)|redis_chunk_ttl\(\)|buffering_timeout\(\)|buffering_speed\(\)|channel_init_grace_period\(\)|channel_client_wait_period\(\)|get_proxy_settings\(\)" --include='*.py' apps core | grep -v /tests/`.
-     At the seed it prints only `config_helper.py` and `config.py` lines, plus the
-     `CoreSettings.get_proxy_settings()` calls. Any other line changes the CLAUDE.md text in step 7:
-     STOP and report.
-  4. #257: write `test_proxy_settings_write_path.py`. At seed the three tests must fail: six keys
-     stored; 200 not 400; siblings dropped.
+     Run it before applying Appendix A. At the seed it prints exactly these lines:
+     `apps/proxy/config_helper.py:51`, `:53`, `:61`, `:66`, `:80`, `:82`, `:125`, `:127`, `:130`,
+     `:132`, `:135`, `:137`, `:140`, `:142`; `apps/proxy/config.py:43`, `:70`, `:75`, `:130`,
+     `:136`, `:142`, `:148`, `:154`, `:160`, `:164`, `:168`, `:172`, `:176`;
+     `apps/proxy/next_source.py:860` (the `CoreSettings` call that bypasses the cache); and two
+     docstring lines, `apps/proxy/serializers.py:137` and `:153`. Line numbers may drift after J-1;
+     the files may not. **STOP only on a new call site**: a non-docstring line in any other file.
+     That would falsify the CLAUDE.md text in step 7.
+  4. #257: write `test_proxy_settings_write_path.py`. At seed the four tests must fail: six keys
+     stored (PUT and PATCH); 200 not 400; siblings dropped.
   5. Apply Appendix B. Delete `ProxySettingsViewSet` (`core/api_views.py:206-280`) and its
      `ProxySettingsSerializer` import (`:28`). Green.
      **Break-checks:** (a) validate `value` alone instead of the merged dict, and the partial-value
@@ -804,20 +829,23 @@ changed are the e2e pins each section lists.
   > `ProxySettingsViewSet`, which was never routed; the settings page writes through
   > `/api/core/settings/<id>/`, which stored `proxy_settings` verbatim with no validation. That path
   > now validates the effective value through `ProxySettingsSerializer` and stores all seven keys;
-  > the unrouted viewset and its third copy of the defaults are deleted. Closes #232, #257.
+  > the unrouted viewset and its third copy of the defaults are deleted. (J-3's `_cold()` docstring
+  > still describes the shadow; its assertions are unaffected.) Closes #232, #257.
   > Break-checks: <paste>. No existing test changed. Gate 2: <paste --gate line>.
   >
   > 🤖 Generated with [Claude Code](https://claude.com/claude-code)
 
 ### PR E-3: `fix/E-3-dvr`
 
-- **Closes** #131, #138, #132, #135 and #71.
+- **Closes** #131, #132, #135 and #71. (#138 moved to E-9 in review round 1.)
 - **Waits for** E-1 (`get_or_create_schedule`).
 - **Files** `apps/channels/signals.py`, `apps/channels/tasks.py`, `apps/channels/api_views.py`,
   `frontend/src/utils/pages/DVRUtils.js`, `frontend/src/utils/pages/__tests__/DVRUtils.test.js`
   (appended `it` only), `e2e/tests/dvr/recording-execution.spec.ts` (pin flip), comment-only edits to
-  `e2e/tests/dvr/{helpers.ts,comskip.spec.ts,recurring-rules.spec.ts}` and
-  `e2e/tests/frontend/dvr.spec.ts`, `e2e/COVERAGE.md`, five new backend test modules.
+  `e2e/tests/dvr/{helpers.ts,comskip.spec.ts}` and
+  `e2e/tests/frontend/dvr.spec.ts`, `e2e/COVERAGE.md`, three new backend test modules
+  (`test_recording_schedule_duplicate_clocked.py`, `test_dvr_ws_events_carry_recording_id.py`,
+  `test_adhoc_recording_output_path.py`); #71's test is a vitest append.
 - **Labels** `apps.channels.tests`, plus the frontend suite
   (`cd frontend && npx vitest --run src/utils/pages/__tests__/DVRUtils.test.js`, then `npm test`).
 - **Tasks.**
@@ -828,11 +856,8 @@ changed are the e2e pins each section lists.
      `logger.exception(...)`. Green.
      **Break-check:** restore `:271`. The first test must redden, and the ERROR log must now name
      `MultipleObjectsReturned`.
-  3. #138: write `test_recurring_rule_horizon.py`. At seed the first test must fail on a start date
-     of about today+59.
-  4. Replace `tasks.py:890-895` per the per-issue fix. Green.
-     **Break-check:** reinstate the `if drop_existing and end_limit:` branch. The first test must
-     redden.
+  3. (Removed: #138 is E-9.)
+  4. (Removed: #138 is E-9.)
   5. #132: write `test_dvr_ws_events_carry_recording_id.py`. At seed the static test must list the
      four `file:line`s, and both runtime tests must fail on a missing key.
   6. Add `recording_id` to the four payloads. Green.
@@ -844,11 +869,11 @@ changed are the e2e pins each section lists.
   8. #71: append the vitest case. At seed it fails with length 1 against 2. Apply the fix. Green.
      **Break-check:** restore the key. It must redden.
   9. e2e: flip `recording-execution.spec.ts:368` (constraint 11), replace its known-bug comment
-     block, and make the comment-only edits listed under #132, #138 and #71.
-     `grep -rnE "#(131|132|135|138|71)\b" e2e/` and update any sentence that describes a defect
+     block, and make the comment-only edits listed under #132 and #71.
+     `grep -rnE "#(131|132|135|71)\b" e2e/` and update any sentence that describes a defect
      here as present. Change no assertion except the flip.
-  10. `e2e/COVERAGE.md`: the DVR rows for #135 (`:156`), #131 (`:163`), #132 (`:164`) and #138
-      (`:165`) record the fix and point at the new backend tests.
+  10. `e2e/COVERAGE.md`: the DVR rows for #135 (`:156`), #131 (`:163`) and #132 (`:164`) record
+      the fix and point at the new backend tests.
   11. Run `apps.channels.tests` whole, then once without `--keepdb`, then `npm test` in `frontend/`.
 - **Pin flip, before and after.**
 
@@ -859,16 +884,14 @@ changed are the e2e pins each section lists.
 - **Upstreamable** yes.
 - **PR description draft.**
 
-  > **fix(dvr): schedule recordings that share a start time, bound recurring rules by the horizon, name the recording in every WS event, keep the channel directory for ad-hoc recordings, and stop grouping EPG-less upcoming cards (#131, #138, #132, #135, #71)**
+  > **fix(dvr): schedule recordings that share a start time, name the recording in every WS event, keep the channel directory for ad-hoc recordings, and stop grouping EPG-less upcoming cards (#131, #132, #135, #71)**
   >
   > A duplicate `ClockedSchedule` row left every later recording at that instant silently
   > unscheduled (201, no task, a `print()`); lookups now tolerate it and failures log at ERROR.
-  > Recurring rules created or edited over REST materialised every day to `end_date` inside the
-  > request; they now materialise the documented 14-day horizon and the hourly maintainer rolls it
-  > forward. `recording_started`, `recording_stopped` and both `recording_ended` payloads carry
+  > `recording_started`, `recording_stopped` and both `recording_ended` payloads carry
   > `recording_id`. An ad-hoc recording's `{show}` falls back to the channel name, as the dead
   > `else` branch intended. Upcoming recordings with no programme data no longer collapse into one
-  > "Next of N" card. Closes #131, #138, #132, #135, #71. Break-checks: <paste>. e2e: the #135 pin is
+  > "Next of N" card. Closes #131, #132, #135, #71. Break-checks: <paste>. e2e: the #135 pin is
   > flipped (before <run URL>, after <run URL>).
   >
   > 🤖 Generated with [Claude Code](https://claude.com/claude-code)
@@ -1083,12 +1106,47 @@ changed are the e2e pins each section lists.
   > **fix: 404 for unmatched /api/ paths, a readable error for an unreadable TLS cert, and 401 for a deleted user's refresh token (#57, #128, #12)**
   >
   > An unmatched `/api/…` path fell through to the SPA catch-all and answered 200 with `index.html`;
-  > it is now a JSON 404. `_validate_tls_cert_paths` let `Path.is_file()`'s `PermissionError`
+  > it is now a JSON 404. That includes `/api/` itself, which has no root route. `_validate_tls_cert_paths` let `Path.is_file()`'s `PermissionError`
   > escape as an import-time traceback; an unreadable certificate now raises the same
   > `ImproperlyConfigured` a missing one does, naming the variable and the reason. A refresh token
   > naming a deleted user now gets the 401 `token_not_valid` every other invalid token gets, not a
   > 500 (simplejwt 5.5.1's bare `.get()`). Closes #57, #128, #12. Break-checks: <paste>. e2e: the
   > #12 pin is flipped (before <run URL>, after <run URL>).
+  >
+  > 🤖 Generated with [Claude Code](https://claude.com/claude-code)
+
+### PR E-9: `fix/E-9-recurring-horizon`
+
+- **Closes** #138.
+- **Gated on** open question Q2. Start only after the user answers it. The tasks below implement the
+  default; if the user picks the `end_date` cap instead, re-plan this section (the serializer at
+  `apps/channels/serializers.py:844-847` becomes the edit, and `sync_recurring_rule_impl` is left
+  alone).
+- **Files** `apps/channels/tasks.py` (`:888-895`), comment-only
+  `e2e/tests/dvr/recurring-rules.spec.ts:24-110`, `e2e/COVERAGE.md`,
+  `apps/channels/tests/test_recurring_rule_horizon.py` (new).
+- **Labels** `apps.channels.tests`.
+- **Tasks.**
+  1. Write `test_recurring_rule_horizon.py`. At seed the first test must fail on a start date of
+     about today+59.
+  2. Replace `tasks.py:890-895` per the per-issue fix. Green.
+     **Break-check:** reinstate the `if drop_existing and end_limit:` branch. The first test must
+     redden.
+  3. Rewrite `recurring-rules.spec.ts`' header comment (comment-only). Its assertions stay
+     unmodified and green. `e2e/COVERAGE.md` row `:165` records the fix.
+  4. Run `apps.channels.tests` whole, then once without `--keepdb`.
+- **Upstreamable** no, contested (reverses `6536f35d`).
+- **PR description draft.**
+
+  > **fix(dvr): bound recurring-rule materialisation by the scheduling horizon (#138)**
+  >
+  > Creating or editing a recurring rule over REST materialised a `Recording` (and a beat schedule)
+  > for every matching day up to `end_date`, synchronously, inside the request: 365 for a daily rule
+  > a year out. Every sync now materialises at most the documented 14-day horizon, and the existing
+  > hourly `maintain_recurring_recordings` rolls it forward. **Visible change:** the Upcoming list
+  > shows two weeks of a long rule, not its whole run. This reverses upstream's `6536f35d`, which
+  > added the full-materialisation branch deliberately; the user ruled on it as Q2 of the category E
+  > plan. Closes #138. Break-check: <paste>. No existing test changed.
   >
   > 🤖 Generated with [Claude Code](https://claude.com/claude-code)
 
@@ -1107,7 +1165,7 @@ None. No rule-4 policy item (#82, #94, #16, #277, #109, #133) is in category E.
 | 232 | fix | E-2 |
 | 257 | fix (premise corrected: the named viewset is unrouted; default scope per Q1) | E-2 |
 | 140 | fix | E-4 |
-| 138 | fix (default per Q2) | E-3 |
+| 138 | fix (default per Q2; gated on Q2) | E-9 |
 | 132 | fix | E-3 |
 | 131 | fix | E-3 |
 | 128 | fix | E-8 |
@@ -1168,7 +1226,7 @@ None of these is a tracked issue in this category.
 - `BaseConfig.get_proxy_settings` closes the DB connection in its `finally` (`apps/proxy/config.py:60-65`)
   on every uncached call. That is why the new test must patch it.
 - The proxy-settings defaults still exist as a DB-failure fallback copy in `apps/proxy/config.py:50-58`
-  and as `getProxySettingDefaults()` in the frontend (`ProxySettingsFormUtils.js:10-20`).
+  and as `getProxySettingDefaults()` in the frontend (`frontend/src/utils/forms/settings/ProxySettingsFormUtils.js:10-20`).
 - `e2e/tests/streaming-failover/failover-buffering.spec.ts`'s 12-second cache sleep and its header,
   and `catchup-redirect.spec.ts:33-38`, describe the process-local cache as on the live path. After
   E-2 the sleep is unnecessary but harmless.
@@ -1283,8 +1341,9 @@ print only the rewritten docstring line in `apps/proxy/serializers.py`.
 +    every later get() raises MultipleObjectsReturned -- a permanent 500 on
 +    source creation (#7) or a silently unscheduled recording (#131). Take
 +    the oldest matching row instead; a concurrent insert can still add a
-+    duplicate, but a duplicate is no longer fatal, and the orphan cleanups
-+    below remove it once nothing references it.
++    duplicate, but a duplicate is no longer fatal. A never-chosen duplicate
++    stays in the table, harmlessly: the orphan cleanups below run only on a
++    task's previous schedule, not as a sweep.
 +    """
 +    existing = model.objects.filter(**lookup).order_by("id").first()
 +    if existing is not None:
@@ -1333,6 +1392,12 @@ E-3 then applies `clocked = get_or_create_schedule(ClockedSchedule, clocked_time
 +        )
 @@ _refresh_single_m3u_account_impl (seed :3503-3517)
              if not result or result[1] is None:
++                if result and len(result) > 2 and result[2] == GROUP_REFRESH_SKIPPED:
++                    logger.info(
++                        f"Group refresh skipped for account {account_id}: {result[0]}"
++                    )
++                    _set_m3u_account_status(account_id, M3UAccount.Status.IDLE, result[0])
++                    return result[0]
                  logger.error(
                      f"Failed to refresh M3U groups for account {account_id}: {result}"
                  )
@@ -1346,9 +1411,6 @@ E-3 then applies `clocked = get_or_create_schedule(ClockedSchedule, clocked_time
 -                    notify_error=True,
 -                    ws_error=error_msg,
 -                )
-+                if result and len(result) > 2 and result[2] == GROUP_REFRESH_SKIPPED:
-+                    _set_m3u_account_status(account_id, M3UAccount.Status.IDLE, result[0])
-+                    return result[0]
 +                recorded = (
 +                    M3UAccount.objects.filter(id=account_id)
 +                    .values_list("status", flat=True)
@@ -1370,8 +1432,7 @@ E-3 then applies `clocked = get_or_create_schedule(ClockedSchedule, clocked_time
                  return "Failed to update m3u account - download failed or other error"
 ```
 
-The `logger.error` above the branch drops to `logger.info` for the skip case. The implementer
-reorders the two blocks so a skip does not log at ERROR. The terminal write (seed `:3843-3935`):
+The skip branch sits above the `logger.error`, so a skip logs at INFO only. The terminal write (seed `:3843-3935`):
 
 ```diff
          auto_sync_message = ""
