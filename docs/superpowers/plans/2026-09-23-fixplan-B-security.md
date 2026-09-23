@@ -11,8 +11,8 @@ first step re-greps its anchor rather than trusting the number.
 Every later category that shares a file with it re-seeds on the merge of the B PR that touches that
 file (§ Overlap).
 
-**Shape.** Seven PRs plus one decision memo. #82 is a policy item under the brief's rule 4 and gets
-a memo, not an implementation. #182 is planned in full as PR B-7 but is **gated on Open question
+**Shape.** Seven PRs. #82 was a policy item under the brief's rule 4; the maintainer closed it as
+not planned on 2026-09-23 (a design decision), so it gets no memo and no PR. #182 is planned in full as PR B-7 but is **gated on Open question
 Q1**, because its fix reverses a default the upstream project chose deliberately.
 
 **Nothing in this plan is implemented.** The only file this branch commits is this document.
@@ -50,7 +50,7 @@ Q1**, because its fix reverses a default the upstream project chose deliberately
 | `scripts/e2e_up.sh` | B-7 | #182 |
 | `README.md` (line 109) | B-7 | #182 |
 | `e2e/README.md`, `e2e/COVERAGE.md` (the X-Real-IP paragraphs) | B-7 | #182 |
-| `metrics/curated/defects.yml` | B-1, B-2 | #84, #110, #134 |
+| `metrics/curated/defects.yml` | B-1, B-2, B-3 | #84, #110, #134, #82 (title only) |
 | `CLAUDE.md` (one sentence in § Known defects, Security) | B-2 | #84 |
 
 ## Overlap with later categories
@@ -241,7 +241,10 @@ A conflict between a constraint and a task step is a **STOP and report**, never 
 
 ### #82 — HDHomeRun endpoints authorize nothing
 
-Policy item under rule 4. See **Decision memo M1**. No implementation in this plan.
+Closed by the maintainer on 2026-09-23 as not planned (a design decision). No memo and no PR. The
+pin at `e2e/tests/seeded/hdhr.spec.ts:294` stays a `test.fail`, and the ledger row
+`hdhr-no-authorization` keeps its `pinned` status with a title clause saying why (PR B-3, Task 3.2),
+as `docs/agents/metrics.md` requires for an issue closed without a fix.
 
 ### #103, #104, #105 — plugin fetches follow redirects past the SSRF check
 
@@ -571,7 +574,7 @@ Record both runs.
 - **Branch** `fix/B-3-hdhr-device-xml`
 - **Closes** #83.
 - **Files** `apps/hdhr/api_views.py`, `apps/output/tests/test_hdhr_device_xml.py` (new),
-  `e2e/tests/seeded/hdhr.spec.ts` (comment only).
+  `e2e/tests/seeded/hdhr.spec.ts` (comment only), `metrics/curated/defects.yml` (one title, for #82).
 - **Labels** `apps.channels.tests`, `apps.output.tests` (the alias for `apps/hdhr/`).
 - **upstreamable** yes.
 
@@ -596,6 +599,14 @@ Record both runs.
    `apps/output/tests/test_hdhr_device_xml.py`, not here, because a row is instance-wide and this
    project runs `fullyParallel`." No test changes.
 
+### Task 3.2 — the #82 ledger row
+
+#82 was closed as not planned, not fixed. Per `docs/agents/metrics.md` § "A `wontfix`-labelled issue
+keeps its ledger status", leave `hdhr-no-authorization` (`metrics/curated/defects.yml:17`) at
+`status: pinned` and change nothing else in the row but its `title`, which gains: "; #82 closed as
+not planned by the maintainer on 2026-09-23: the HDHomeRun surface is principal-free by design and
+relies on the M3U_EPG network ACL". Validate the ledger. The `test.fail` pin stays as it is.
+
 ### PR description draft
 
 > **fix(hdhr): device.xml reads the configured HDHRDevice row**
@@ -604,6 +615,9 @@ Record both runs.
 > `FriendlyName`; `device.xml` always answered the hardcoded defaults, so the two disagreed about the
 > device's own identity. `device.xml` now reads the same row, XML-escapes the admin-editable name,
 > and keeps the old literals when no row exists.
+>
+> The ledger row for #82 (closed as not planned) keeps its `pinned` status and gains a title clause
+> saying why.
 >
 > 🤖 Generated with [Claude Code](https://claude.com/claude-code)
 
@@ -858,39 +872,6 @@ convention; do not edit `CHANGELOG.md`, which is upstream's.
 
 ---
 
-## Decision memo M1 — #82, HDHomeRun authorization
-
-**The facts.** The four HDHomeRun views are `AllowAny` and resolve no user
-(`apps/hdhr/api_views.py:49`, `:124`, `:188`, `:210`). Their only gate is the `M3U_EPG` network ACL
-(`_hdhr_network_check`, `:22-29`), whose default is the private and loopback ranges.
-`LineupAPIView` serves `Channel.objects.all()`, or a Channel Profile's enabled members when the
-URL names one, minus `hidden_from_output` (`:137-153`). It therefore lists admin-level
-(`user_level` 10) and adult channels to anything the ACL admits. `hide_adult_content` cannot apply,
-because it is a per-user preference and there is no user. The clients are HDHomeRun emulations
-(Plex, Emby, Jellyfin, Channels DVR), which send no credential of any kind. Each lineup entry's URL
-is `/proxy/ts/stream/<uuid>`, and an anonymous tune with a valid UUID streams any non-hidden channel
-(`authorize.py:425-430`). So **a filtered lineup would not stop a client that already holds a UUID**;
-the UUID stays the capability. The defect is pinned by `e2e/tests/seeded/hdhr.spec.ts:294`
-(`test.fail`) and recorded in the ledger as `hdhr-no-authorization`, `pinned`.
-
-**Options.**
-
-| Option | What changes | Cost | What it closes |
-|---|---|---|---|
-| **(a) Record it as the design.** | CLAUDE.md and the ledger title say the HDHomeRun surface is deliberately principal-free and is protected by its network ACL and by Channel Profile scoping. The pin stays. | Documentation only. | Nothing. It stops the item looking unowned. |
-| **(b) A configured HDHomeRun principal.** | A setting names one Dispatcharr user the HDHomeRun surface acts as. When set, the lineup applies that user's `user_level`, profile membership and `hide_adult_content`, through the same predicate the listings use. When unset, today's behaviour holds. | M. One settings key in an existing group (instance-wide, so the E2E allowlist needs it), one filter in `LineupAPIView`, a UI field, backend tests, and the pin flips when the setting is set. No client change. | The lineup leak, for an operator who sets it. Streaming by a known UUID stays open, as for every anonymous tune. |
-| **(c) Credentials in the path.** | New routes `/hdhr/<username>/<xc_password>/...`, resolved with `resolve_xc_user`. The lineup is filtered per user, and each lineup URL carries the same credentials so the tune is authorized as that user. The old routes stay or are removed. | L. New route family, URL generation for every entry, and a decision about the old routes. Removing them breaks every configured tuner. Keeping them keeps the leak. The credential then sits in the tuner's configuration and in nginx access logs. | The lineup leak and the tune, per user, for clients that are re-pointed. |
-
-**Recommendation: (b).** It is the only option that closes the leak without breaking a configured
-tuner. It reuses the listing predicate rather than inventing a third copy of the channel filter
-(CLAUDE.md already counts ten pasted blocks). It is honest about the residual: the UUID remains the
-capability, as it is for every M3U client. Option (c) is the complete answer and the right one if
-per-user HDHomeRun is ever a product requirement, but it costs a URL scheme and a migration story
-for every existing tuner. If the user picks (b), its implementation plan is a small category B
-addendum, and the ledger row moves only when the pin flips.
-
----
-
 ## Open questions
 
 **Q1 — #182: is the fail-open on upgrade acceptable?** Two readings lead to different PRs.
@@ -933,7 +914,7 @@ has nothing to filter on; #61 fixes the two live builders and files the VOD ones
 | Issue | Where |
 |---|---|
 | #61 | PR B-5 |
-| #82 | Decision memo M1 |
+| #82 | Closed by maintainer 2026-09-23 (design decision). Ledger title clause in PR B-3, Task 3.2 |
 | #83 | PR B-3 |
 | #84 | PR B-2 |
 | #89 | PR B-1 (and #186 closed as superseded by it) |
