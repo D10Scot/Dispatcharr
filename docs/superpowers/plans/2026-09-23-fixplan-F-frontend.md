@@ -8,8 +8,9 @@ row (#342)"). Every `file:line` below was opened at that SHA. Line numbers drift
 first step re-greps its anchor rather than trusting the number.
 
 **Ordering position.** Tenth and last (B, A, J, C, D, E, G, H, I, F). No earlier category changes a
-product file this plan changes (§ Overlap). The only shared file is `e2e/COVERAGE.md`, where B, D and
-H edit other rows.
+product file this plan changes (§ Overlap). Two non-product files are shared. In `e2e/COVERAGE.md`,
+B, D and H edit other rows. In `e2e/tests/frontend/dvr.spec.ts`, E-3 makes comment-only edits and
+F-3 changes one locator and its comment.
 
 **Shape.** Three PRs, plus a fourth that is optional and waits on Open question Q1.
 
@@ -99,6 +100,7 @@ cite no `frontend/` or `e2e/tests/frontend/` path.
 |---|---|---|---|---|---|
 | `frontend/src/components/forms/User.jsx`, `__tests__/User.test.jsx` | **B** (B-6, #204/#205) | Swaps `Math.random` for `generateSecurePassword` at `:77` and `:109`, and tightens one assertion. | Nothing. | B | None. F leaves `User.jsx`'s two unlabelled `ActionIcon`s for the follow-up list so that it never enters B-6's files. |
 | `e2e/COVERAGE.md` | **B** (B-7, `:170`), **D** (rows 90, 93, 94, 97, 101, 125), **H** (Guards table, `:191`, `:200`, new Streaming and DVR rows) | Row-level edits in other sections. | F-1 inserts one Frontend row after `:141`. | B, D, H | Adjacent-line rebase only. F-1 re-greps the anchor row ("An archive uploaded through the Backups panel") rather than trusting `:141`. |
+| `e2e/tests/frontend/dvr.spec.ts` | **E** (E-3, #71; E plan line 846 on `origin/docs/fixplan-E`) | Comment-only edits. E's plan names no line range. | F-3 replaces the cancel locator (`:274` at the seed) and the comment block above it (`:258-270`). | E | Rebase F-3 onto E-3's merge. Task 3.2 re-greps both anchors, `button:has(svg.lucide-square-x)` and "the same defect #65 already tracks", rather than trusting the seed lines. If E-3 rewrote that comment block, keep E's wording for anything about #71 and replace only the sentences about the missing accessible name. |
 | `frontend/src/utils/pages/DVRUtils.js` | **E** (E-3, #71) | Changes the upcoming-card grouping key at `:68`. | Nothing. F-3 edits `RecordingCard.jsx`, which renders those cards. | E | None. E-3's plan mentions `RecordingCard.jsx` only in prose. |
 | `frontend/src/components/forms/settings/ProxySettingsForm.jsx` | **E** (#257) | Proxy-settings defaults. | Nothing. | E | None. |
 
@@ -134,10 +136,30 @@ last.
   ```bash
   cd <wt>/e2e && npx playwright test --project=guards
   ```
-- **The e2e `frontend` project** needs the full two-container stack (`scripts/e2e_up.sh`, see
-  `e2e/README.md`). It runs in CI on every PR that touches `frontend/` or `e2e/`
-  (`.github/workflows/e2e-tests.yml:110`), and CI is the evidence for the e2e parts of F-1 and F-3.
-  A local run is optional.
+- **The e2e `frontend` project** runs in CI on every PR that touches `frontend/` or `e2e/`
+  (`.github/workflows/e2e-tests.yml:110`), under the required `E2E result`. **For F-1 and F-3, run
+  the affected specs locally before pushing.** A failure found only in CI costs a slow round.
+  Because other agents may have e2e stacks up in this session, start your own stack with its own
+  image tag, so that `e2e_up.sh` builds this worktree's frontend. It builds the AIO image only
+  when the tag is absent (`scripts/e2e_up.sh:143-145`), and the default tag is shared. Put
+  everything on one command line, because shell variables do not persist between Bash calls:
+  ```bash
+  cd <wt> && DISPATCHARR_E2E_IMAGE=dispatcharr-e2e:fix-F-<n> DISPATCHARR_E2E_CONTAINER=dispatcharr-e2e-f<n> DISPATCHARR_E2E_VOLUME=dispatcharr-e2e-f<n>-data DISPATCHARR_E2E_NETWORK=dispatcharr-e2e-f<n>-net DISPATCHARR_E2E_PORT=<port> ./scripts/e2e_up.sh
+  cd <wt>/e2e && npx playwright install chromium && E2E_BASE_URL=http://localhost:<port> npx playwright test --project=frontend <spec files>
+  ```
+  Use `<port>` 9195 for F-1 and 9197 for F-3, after checking with `docker ps` that nothing else
+  publishes it. The first build of the AIO image takes several minutes. The `frontend` project depends on
+  `bootstrap`, which Playwright runs first. When you are done, remove only your own stack:
+  ```bash
+  docker rm -f dispatcharr-e2e-f<n> && docker volume rm dispatcharr-e2e-f<n>-data && docker network rm dispatcharr-e2e-f<n>-net
+  ```
+  **Never run `e2e_up.sh --reset`, `--down` or `--stop` in this session**, with or without the
+  overrides. `destroy()` (`scripts/e2e_up.sh:68-73`) also removes the shared fake provider
+  `e2e-upstream`, whatever the overrides say, which breaks every other agent's run mid-test
+  (#168). For the same reason, if an `e2e-upstream` container is already running (`docker ps
+  --filter name=e2e-upstream`), add `DISPATCHARR_E2E_SKIP_UPSTREAM_BUILD=1` to the first command.
+  Otherwise a rebuild whose image id differs recreates that shared container
+  (`scripts/e2e_up.sh:181-194`).
 - **Formatting and lint.** `npx prettier --write <files>`. Then `npx eslint <files>`, which is
   advisory: about 112 errors already exist, and lint is commented out in CI
   (`.github/workflows/frontend-tests.yml:117-118`).
@@ -418,7 +440,10 @@ last.
 4. `e2e/COVERAGE.md`. After the row "An archive uploaded through the Backups panel re-appears…"
    (`:141` at the seed), add:
    `| Frontend | A fresh document load of every G6 surface, by direct URL and by reload, lands on that surface rather than /channels (#58) | F-1 | done |`
-5. Run the guards project and the e2e typecheck, which the edit hook also runs. Commit:
+5. Run the guards project and the e2e typecheck, which the edit hook also runs. **Before pushing,
+   run the `frontend` project locally** against this worktree's own stack (§ What the implementer
+   runs, with `<n>` = 1), for `tests/frontend/direct-navigation.spec.ts` plus every spec whose
+   comments you edited. All pass. Commit:
    `test(e2e): direct navigation to every surface (#58)`.
 
 ### Test changes in this PR (rule 5)
@@ -479,6 +504,10 @@ last.
    events in the test differ. Then change it to `key={0}`. The new test reddens. Revert to
    `sub.id`. The point of the pair: the test pins identity-preserving keys, and `sub.id` is chosen
    over `sub.event` by the serializer argument in § #62, not by the test.
+   Optionally, give `makeIntegration`'s default subscriptions ids (`{ id: 1, … }`, `{ id: 2, … }`
+   at `Connect.test.jsx:117-118`). That is a fixture tidy that moves no assertion: the file still
+   passes 27 of 27 with it. Several tests pass their own subscription arrays without ids, so it
+   does not remove every `key={undefined}`.
 4. `e2e/tests/frontend/connect.spec.ts:255-257`. The sentence "#62 itself is unaffected (the
    missing `key` is still there in source, and still a real reconciliation risk)" becomes "#62 is
    fixed (`Connect.jsx` keys each badge by `sub.id`), and the reconciliation test in
@@ -604,8 +633,13 @@ and 20 new tests. If F-1 and F-2 have merged first, expect their totals plus 8 f
 ### Task 3.2 — e2e: locators that relied on the defect
 
 These three specs located the controls by position, by an icon class or by a Mantine-internal class,
-because the controls had no name. Now they locate them by name. No assertion changes. Run the e2e
-typecheck and the guards project afterwards. The `frontend` project runs in CI.
+because the controls had no name. Now they locate them by name. No assertion changes. Line numbers
+are the seed's. Re-grep each anchor first (`row.locator('button').nth(`,
+`button:has(svg.lucide-square-x)`, `label.mantine-Switch-body`), because E-3 edits comments in
+`dvr.spec.ts` before this PR lands (§ Overlap). Run the e2e typecheck and the guards project
+afterwards. **Before pushing, run `tests/frontend/users.spec.ts`, `tests/frontend/dvr.spec.ts` and
+`tests/frontend/plugins.spec.ts` in the `frontend` project locally**, against this worktree's own
+stack (§ What the implementer runs, with `<n>` = 3). All pass.
 
 | Spec | Before | After |
 |---|---|---|
@@ -686,6 +720,15 @@ and asserts two things:
 - the count is at most `FLOOR`;
 - each of F-3's eight files has zero.
 
+**Its blind spot, and the escape hatch.** The scan reads source text. A control named through a
+prop spread (`<ActionIcon {...a11yProps}>`) or by a wrapper component is named at runtime but
+unnamed to the scan. Such a tag is marked on the line directly above it: `{/* a11y-name: <reason>
+*/}` inside JSX, or `// a11y-name: <reason>` outside it. A marker with no reason clears nothing, the
+rule `relay/internal/credlint`'s `// credential-logging: ok - <reason>` already uses. The file's
+header states the blind spot and the marker. The marker was prototyped on the F-3 tree: an
+unmarked unnamed tag reddens two tests, `{/* a11y-name: */}` and `{/* a11y-name */}` redden the same
+two, and `{/* a11y-name: <a reason> */}` passes 9 of 9.
+
 ### Task 4.1
 
 1. After F-3 has merged, measure the count on `main`. The prototype of this file, run on the tree
@@ -698,7 +741,9 @@ and asserts two things:
    floor test, whose message lists every offending site by file, and "components/tables/UsersTable.jsx
    has none left". Revert.
 4. A PR that later names more controls lowers `FLOOR` in the same PR. A PR that exceeds the floor
-   names its new controls. The floor is never raised to make a run green.
+   either names its new controls or, where the name comes from a spread or a wrapper that the scan
+   cannot see, marks them with `a11y-name: <reason>` as above. The floor is never raised to make a
+   run green.
 
 ### PR description draft
 
@@ -1522,8 +1567,8 @@ describe('RecordingCard controls have accessible names (#65)', () => {
 Assemble in this order:
 1. The header below.
 2. `StreamConnectionCard.test.jsx` lines `4-58`, with two edits inside the
-   `StreamConnectionCardUtils.js` mock. Line `50` becomes
-   `getChannelStreams: vi.fn(() => Promise.resolve([{ id: 42, name: 'S1' }])),` and line `55`
+   `StreamConnectionCardUtils.js` mock. File line `50` (not the 47th line of the excerpt) becomes
+   `getChannelStreams: vi.fn(() => Promise.resolve([{ id: 42, name: 'S1' }])),` and file line `55`
    becomes `getStreamOptions: vi.fn(() => [{ value: '42', label: 'S1' }]),`. The Preview button
    renders only when the card has streams (`StreamConnectionCard.jsx:626`,
    `availableStreams.length > 0`).
@@ -1792,6 +1837,13 @@ measurement on F-3's tree.
 // text contains none of `aria-label`, `aria-labelledby`, `title=` or `label=`.
 // The tag ends at the first `>` outside `{…}` that is not part of `=>`.
 //
+// Known blind spot: a control named through a prop spread
+// (`<ActionIcon {...a11yProps}>`) or by a wrapper component is named at
+// runtime and unnamed to this scan, which reads source text. Mark such a tag
+// on the line directly above it with `{/* a11y-name: <reason> */}` inside JSX,
+// or `// a11y-name: <reason>` outside it. A marker with no reason clears
+// nothing, the same rule as the relay's `// credential-logging: ok - <reason>`.
+//
 // Measured, never computed: 107 in 43 files at a54b09a9; 89 in 35 files on
 // the tree PR F-3 produced (F-3 named 18 controls in eight files). FLOOR is
 // the count measured on main after F-3 merged. A change that fixes more
@@ -1802,9 +1854,10 @@ import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const FLOOR = 89;
+const FLOOR = 89; // prototype value: Task 4.1 step 1 replaces it with the count on main
 const SRC = fileURLToPath(new URL('..', import.meta.url));
 const NAMED = ['aria-label', 'aria-labelledby', 'title=', 'label='];
+const MARKER = /a11y-name:\s*[^\s*]/;
 const FIXED_BY_F3 = [
   'components/tables/UsersTable.jsx',
   'components/tables/LogosTable.jsx',
@@ -1835,7 +1888,9 @@ const unnamedIn = (source) => {
       else if (c === '>' && depth === 0 && source[i - 1] !== '=') break;
     }
     const tag = source.slice(match.index, i + 1);
-    if (!NAMED.some((n) => tag.includes(n))) {
+    const before = source.slice(0, match.index).split('\n');
+    const lineAbove = before.length > 1 ? before[before.length - 2] : '';
+    if (!NAMED.some((n) => tag.includes(n)) && !MARKER.test(lineAbove)) {
       found.push(`${match[1]}@${source.slice(0, match.index).split('\n').length}`);
     }
   }
