@@ -4,7 +4,7 @@
 
 **Category A, planned second** (order B, A, J, C, D, E, G, H, I, F). **Seed: `a54b09a9`** (`main`, 2026-09-23). Every `file:line` below was opened at the seed.
 
-**What has already been verified, and how.** Every production change in this plan was prototyped in a scratch export of the seed (`git archive a54b09a9 relay core/… apps/proxy/…`), never in a worktree, and every test was run red against the seed code and green against the fix. The diff appendices (A, C, E, G, I, K, M, N) are the prototype's own `diff -u` output; extracted from this document and applied in PR order to a fresh seed export, they reproduce the prototype byte for byte (all fifteen files identical). The Go test appendices are the prototype's final test functions, verbatim. The prototype passes `go build`, `go vet`, `go test -race` on every edited package, `golangci-lint run` on darwin and with `GOOS=linux` (0 issues, repo `.golangci.yml`), and `relay/internal/credlint` (12 packages clean). The two Django halves were run in a private container (`fixplan-A`, its own DB volume, never `dispatcharr-testrunner`) against a writable copy of the tree: `core.tests` 107 OK, `apps.proxy.tests` 380 OK. The break-checks listed in each PR were each run and each reddened with the message quoted. **The implementer re-does all of it on the real branch; the prototype proves the plan is buildable, not that the PR is done.**
+**What has already been verified, and how.** Every production change in this plan was prototyped in a scratch export of the seed (`git archive a54b09a9 relay core/… apps/proxy/…`), never in a worktree, and every test was run red against the seed code and green against the fix. The diff appendices (A, C, E, G, I, K, M, N) are the prototype's own `diff -u` output. Extracted from this document and applied with `git apply` in PR order to a fresh seed export, they reproduce the prototype byte for byte. **Fix round 1**, on the fable comparison of #348 and this plan, absorbed #348's fragment ceiling and short-`moof` arm into A-4, widened `relaytest`'s copied regex in A-1, hoisted a `clock()` helper in A-2, stated row 6's `Max`/`Max+1` asymmetry, repaired Appendix N (the first assembly stripped the whitespace-only last context line off every block, so `git apply` refused N), and added open question 4. Every change was re-prototyped, re-run red at the seed and green after, and re-checked with the same appendix check. The Go test appendices are the prototype's final test functions, verbatim. The prototype passes `go build`, `go vet`, `go test -race` on every edited package, `golangci-lint run` on darwin and with `GOOS=linux` (0 issues, repo `.golangci.yml`), and `relay/internal/credlint` (12 packages clean). The two Django halves were run in a private container (`fixplan-A`, its own DB volume, never `dispatcharr-testrunner`) against a writable copy of the tree: `core.tests` 107 OK, `apps.proxy.tests` 380 OK. The break-checks listed in each PR were each run and each reddened with the message quoted. **The implementer re-does all of it on the real branch; the prototype proves the plan is buildable, not that the PR is done.**
 
 ---
 
@@ -12,7 +12,7 @@
 
 | PR | Production | Tests and fixtures | Docs and ledger |
 |---|---|---|---|
-| A-1 | `relay/ffmpeg/progress.go`, `relay/ffmpeg/spawn.go` | `relay/ffmpeg/progress_test.go`, `relay/ffmpeg/spawn_test.go`, `relay/channel/source_transcode_test.go`, `relay/internal/relaytest/corpus.go`, two new captures under `relay/internal/relaytest/testdata/ffmpeg_stderr/` | `relay/internal/relaytest/testdata/ffmpeg_stderr/CAPTURE.md`, `docs/relay-parity-matrix.md` (rows 4, 28), `CLAUDE.md`, `metrics/curated/defects.yml` |
+| A-1 | `relay/ffmpeg/progress.go`, `relay/ffmpeg/spawn.go` | `relay/ffmpeg/progress_test.go`, `relay/ffmpeg/spawn_test.go`, `relay/channel/source_transcode_test.go`, `relay/internal/relaytest/corpus.go`, `relay/internal/relaytest/corpus_test.go` (new), two new captures under `relay/internal/relaytest/testdata/ffmpeg_stderr/` | `relay/internal/relaytest/testdata/ffmpeg_stderr/CAPTURE.md`, `docs/relay-parity-matrix.md` (rows 4, 28), `CLAUDE.md`, `metrics/curated/defects.yml` |
 | A-2 | `relay/ffmpeg/detector.go`, `relay/channel/channel.go`, `relay/channel/failover.go`, `relay/channel/source_transcode.go`, `relay/channel/tuning.go` | `relay/ffmpeg/detector_test.go`, `relay/channel/source_transcode_test.go` | matrix (rows 1, 3, 4, 5, 6), `CLAUDE.md`, `defects.yml` |
 | A-3 | `relay/channel/source_transcode.go` | `relay/channel/source_transcode_test.go` | matrix (row 1), `CLAUDE.md`, `defects.yml` |
 | A-4 | `relay/output/fmp4.go` | `relay/output/scanner_test.go` | none |
@@ -45,7 +45,7 @@ Numbered so a task step can cite one. **A conflict between a constraint and a ta
 3. **Stage and commit in separate Bash calls**; write the message with the Write tool and commit with `git commit -F <file>`. The commit gate matches on command text. **The gate runs `go build`, `go vet` and `go test -race ./...` over the whole module for any staged `*.go` — about four minutes, dominated by `relay/httpapi` (≈125 s) and `relay/channel` (≈85 s).** Do not mistake the wait for a hang.
 4. **The test-modification rule, verbatim from the planner brief.** A test may change only when the behaviour it pins is the thing being changed, and every such change is listed in the PR section with its before and after assertion. A test that deliberately pins a defect is flipped to pin the fix, and the PR shows the flipped test failing before the fix and passing after. Never widen a tolerance, lower a count or delete an assertion to make a run green. New behaviour gets a new test named after the defect.
 5. **Red before green, on the real branch.** Every PR's Task 1 writes or flips its tests against the unmodified production code and records the failure message; Task 2 applies the fix. A test that is green before the fix is not a pin of it: STOP.
-6. **The Go coverage ratchet never moves in a fix PR.** `scripts/coverage_relay_go.floor` says `missing=589`, and `--gate` fails the run on any draw above it. Every statement a PR adds must be executed by **its own package's** tests (the gate measures per package, never `-coverpkg`). Verify with Task 4's per-package profile, then `scripts/coverage_relay_go.sh --measure && --gate` locally as indicative; CI's `Go result` is the authority. **A draw above the floor is a finding to attribute per block, never a floor edit in the same PR.** Prototype measurements, per package, seed → all seven PRs applied: `relay/ffmpeg` 34 → 31 missing, `relay/output` 15 → 14, `relay/channel` 219 → 219, `relay/httpapi` 126 → 111 (httpapi's figure moves run to run by more than this plan's change).
+6. **The Go coverage ratchet never moves in a fix PR.** `scripts/coverage_relay_go.floor` says `missing=589`, and `--gate` fails the run on any draw above it. Every statement a PR adds must be executed by **its own package's** tests (the gate measures per package, never `-coverpkg`). Verify with Task 4's per-package profile, then `scripts/coverage_relay_go.sh --measure && --gate` locally as indicative; CI's `Go result` is the authority. **A draw above the floor is a finding to attribute per block, never a floor edit in the same PR.** Prototype measurements, per package, seed → all seven PRs applied (round 1's `ffmpeg` and `output` re-measured after the fix round): `relay/ffmpeg` 34 → 28 missing, `relay/output` 15 → 12, `relay/channel` 219 → 219, `relay/httpapi` 126 → 111 (httpapi's figure moves run to run by more than this plan's change).
 7. **Gate 2 (the Python ratchet) is touched by A-6 alone.** `apps/proxy/relay_serializers.py` is one of its nine modules. A-6 deletes one covered declaration, so `missing` cannot rise and `modules=`/`rcfile=` do not move; run `scripts/coverage_live_path_isolated.sh` before pushing anyway (a green label does not imply a green gate).
 8. **Parity-matrix citations: shift, do not re-survey.** When a PR moves code a row's `Source` range cites, move the range by the PR's own line delta so it still covers what it covered. Correcting a range that was already imprecise at the seed is A9.9's chore, not a fix PR's. The guard checks only that a range lies inside its file, so this is a review obligation, not a mechanical one.
 9. **The guard is run, not assumed.** A PR that edits `docs/relay-parity-matrix.md`, or renames a Go test the matrix pins, runs `cd <worktree>/e2e && npx playwright test --project=guards parity-matrix` before pushing. A renamed pin with no matrix edit fails there.
@@ -63,7 +63,7 @@ The design choices this plan makes. Each is the plan's recommendation; the three
 
 **R1 — #221: a spent budget refuses the buffering switch and keeps the channel playing.** `MAX_STREAM_SWITCHES` becomes a counter both paths share (a `Channel` field under `mu`, replacing the run loop's local). A buffering switch counts against it; when it is spent, `failoverFromBuffering` returns `false` **without calling the resolver**. The main loop's own behaviour at its bound is unchanged: it ends the channel, because it reaches the bound with no working source. The buffering path reaches it with a source that is still delivering, only slowly, so ending the tune there would turn a degraded stream into a dead one. The stable-run reset (`STABLE_CONNECTION_THRESHOLD`, `channel.go:488-493`) is unchanged: it fires only where the main loop sees an attempt end, and a buffering-cancelled attempt leaves through the `takePending` branch before it. An operator's `Advance` also parks a pending source; it is **not** counted, because it is not automatic.
 
-**R2 — #302: a failed buffering switch defers the next ask by one `buffering_timeout`, and keeps the clock.** A new `Detector.Defer()` sets a hold; `Observe` returns `TimedOut` only once the hold has passed. `BufferingFor` still measures from the first sub-threshold sample, which is the `duration` a later `channel_failover` reports. `Ended` and `Reset` clear the hold. A bare detector that nobody defers still repeats `TimedOut` on every sample, so `TestTheDetectorFollowsPythonsTransitions`'s "a further sample after an unhandled timeout times out again" is **unchanged and still true**. R1's refusal returns through the same `false`, so a spent budget is re-checked once per timeout, locally, with no network call.
+**R2 — #302: a failed buffering switch defers the next ask by one `buffering_timeout`, and keeps the clock.** A new `Detector.Defer()` sets a hold; `Observe` returns `TimedOut` only once the hold has passed. The three methods that read the time go through one `clock()` helper (fix round 1). That replaces the seed's two copies of the nil-clock fallback, and would have been a third, with one statement, and the detector test covers it with a wall-clock case, so the PR adds no uncovered block to a package whose ratchet has no headroom. `BufferingFor` still measures from the first sub-threshold sample, which is the `duration` a later `channel_failover` reports. `Ended` and `Reset` clear the hold. A bare detector that nobody defers still repeats `TimedOut` on every sample, so `TestTheDetectorFollowsPythonsTransitions`'s "a further sample after an unhandled timeout times out again" is **unchanged and still true**. R1's refusal returns through the same `false`, so a spent budget is re-checked once per timeout, locally, with no network call.
 
 **R3 — #222: an fMP4 client leaves by the exit a TS client reaches, without the keepalive bytes.** The TS loop (`relay/httpapi/stream.go:1005-1031`) drops a client only on an unhealthy channel, and its keepalive packets refresh the very timer its `ClientTimeout` clause reads, so its reachable exit is `MaxKeepalive` (row 12's own Notes say so). The fMP4 loop gets the same exit: on a healthy channel it never times a client out; on an unhealthy one it drops the client once `MaxKeepalive` has passed with nothing to send, counted from the first such read and cleared by the next fragment, as `keepaliveStart` is. **No bytes are written**: an ISO-BMFF stream has no null packet a player is known to skip (a top-level `free` box is legal in the format, but no test in this repo can say whether every MSE implementation tolerates one between fragments). `nginx`'s `proxy_read_timeout 300s` on the live locations (`docker/nginx.conf:333`, `:490`) is at least the default `MaxKeepalive` of 300 s, so the silent wait is not cut short upstream. The `url_switching` exemption stays unported in both loops, for the reason `stream.go:1024-1028` gives.
 
@@ -71,7 +71,7 @@ The design choices this plan makes. Each is the plan's recommendation; the three
 
 **R5 — #233: Django classifies; the relay passes the identifier through.** The rule "not a UUID means a stream hash" already lives in Django (`apps/proxy/next_source.py:247-257`'s `get_stream_object`). `core/relay_events.py` applies the same rule to an event's `channel_id`: a non-UUID is moved to `details["stream_hash"]` and the row is written with no channel, as `vod_start`'s rows are. The relay keeps no identifier rule of its own; the relay side of this PR is a **contract pin** that it names the identifier verbatim (the property Django's fix depends on), not a code change. Putting a second copy of the rule in Go would be two mechanisms for one property, the shape `relay/channel/channel.go:431-434` warns against.
 
-**R6 — #306 and #119: the resync arm searches for the `moof` literal; the aligned scans keep striding.** `findMoofOffset` is correct wherever the scan starts on a box boundary (the init segment from offset 0, a fragment's successor from its own `moof`'s end) and is left alone there — striding is what stops a `moof` inside an `mdat` payload from being taken for a box. Only the desync arm (`relay/output/fmp4.go:217-227`) changes, to a new `resyncOffset` that finds the next `moof` literal whose length field reads between 8 and `maxMoofBoxBytes` (1 MiB). With nothing found, the arm keeps the last seven bytes (a four-byte length plus three of the type) instead of clearing the buffer, so a header split across two reads survives and the buffer stays bounded. The false comment at `:136-140` ("recovers at the next real box header either way") is corrected.
+**R6 — #306 and #119: the resync arm searches for the `moof` literal; the aligned scans keep striding; and no fragment can grow the buffer without bound.** `findMoofOffset` is correct wherever the scan starts on a box boundary: the init segment from offset 0, and a fragment's successor from its own `moof`'s end. It is left alone there, because striding is what stops a `moof` inside an `mdat` payload from being taken for a box. The desync arm (`relay/output/fmp4.go:217-227`) changes to a new `resyncOffset`. It finds the next `moof` literal whose length field reads between `minMoofBox` (16: a header plus an `mfhd`) and `maxMoofBoxBytes` (1 MiB). With nothing found, the arm keeps the last seven bytes (a four-byte length plus three of the type) instead of clearing the buffer, so a header split across two reads survives and the buffer stays bounded. **Two further changes are adopted from #348's A-4** (fix round 1), closing faults beside the arm that my first draft left in place. An aligned `moof` shorter than `minMoofBox` is resynchronised past: at the seed a length below 8 returned without consuming (`:229-231`) and stalled the buffer for good. And a fragment whose end cannot be found is abandoned past `maxFragmentBytes` (64 MiB) instead of held toward a length of up to 4 GiB; its end is unfindable when its own length is corrupt (`:233-236`) or the next box's is (`:238-240`). The false comment at `:136-140` ("recovers at the next real box header either way") is corrected.
 
 **R7 — #24: flush past 64 KiB whatever the buffer carries.** A new `maxStderrLine = 64 << 10` joins the existing 1 KiB rule: past it the buffer is emitted as a line and reset, `frame=` or not. It flushes; it never truncates or drops, so no byte of stderr is lost. The buffer is bounded by the cap plus one 4 KiB read.
 
@@ -79,7 +79,7 @@ The design choices this plan makes. Each is the plan's recommendation; the three
 
 **R9 — #296: a dropped argument takes its partner.** A dropped value takes the flag before it; a dropped flag takes the value after it. This also fixes the shipped Streamlink profile, `{streamUrl} --http-header User-Agent={userAgent} best --stdout` (`core/migrations/0011_fix_stream_profiles_and_user_agents.py:10`), which on a UDP upstream spawned as `--http-header best --stdout`, handing the quality selector to the header.
 
-**R10 — #227: widen `speedRe` only.** `fpsRe` keeps `[0-9.]+`: #227 itself records that ffmpeg is not observed to print a frame rate in scientific notation, and `bitrateRe` is anchored on its unit and fails to match rather than truncating. `relaytest.CorpusSpeeds`'s own copy of the old pattern (`corpus.go:110`) is left as it is: no caller reads the `truncation` corpus through it (checked), and its comment says it quotes the shipped parser deliberately.
+**R10 — #227: widen `speedRe`, and its copy in `relaytest`, and nothing else.** `fpsRe` keeps `[0-9.]+`: #227 itself records that ffmpeg is not observed to print a frame rate in scientific notation, and `bitrateRe` is anchored on its unit and fails to match rather than truncating. `relaytest.CorpusSpeeds` quotes the shipped parser by copy (`corpus.go:104-110`; its comment says "the PRODUCTION speed regex … the same literal"), so the copy is widened in the same PR and the comment rewritten, dropping its reference to the deleted `manager_support.py`. *Reversed in fix round 1*: the first draft left the copy narrow because no caller reads `truncation` through it, which made the divergence latent rather than absent. A new `relaytest` test (`TestCorpusSpeedsReadsAScientificNotationSpeedWhole`) pins the two together.
 
 **R11 — the ledger.** Three existing rows move to `fixed`: `max-stream-switches-unbounded` (#221), `fmp4-timeout-no-switch-exemption` (#222), `ffmpeg-speed-scientific-notation` (#227). Four defects that `CLAUDE.md` § Known defects lists **have no ledger row at the seed** (#296, #299, #302, #314) although `docs/agents/metrics.md` says every such item gets one; each fix PR adds its row directly as `fixed` (a new id, so the forward-only check has nothing to compare). #24, #119, #306 and #233 are not `CLAUDE.md` items and get no row.
 
@@ -99,8 +99,8 @@ Root causes verified at `a54b09a9`. "Upstreamable" is no for every PR: the Go re
 | 302 | `relay/channel/source_transcode.go:342-344`: a failed switch logs and leaves the detector as it was; `relay/ffmpeg/detector.go:86-88` then returns `TimedOut` on every later sample, and `:326` asks again each time | `Detector.Defer()` after a failed switch (R2) | **Flip** `source_transcode_test.go:442` `TestABufferingTimeoutWithNoAlternateKeepsPlayingAndAsksOnEveryRecord` → `…AsksOncePerTimeoutNotOnEveryRecord`; new `detector_test.go` `TestADeferredTimeoutIsHeldBackForAnotherTimeout` | S | A-2 |
 | 221 | `relay/channel/channel.go:455-457`: `switches` is a run-loop local; `failover.go:293-318` (`failoverFromBuffering`) never reads or increments it; `channel.go:476-482` adopts its result without counting | Shared counter, buffering path consults and counts it (R1) | **Flip** `source_transcode_test.go:396` `TestABufferingFailoverIgnoresMaxStreamSwitches` → `TestABufferingFailoverIsRefusedOnceMaxStreamSwitchesIsSpent`; new `TestABufferingFailoverCountsAgainstMaxStreamSwitches`; `failover_test.go:604` `TestMaxStreamSwitchesBoundsAMainLoopSwitch` unchanged | M | A-2 |
 | 296 | `relay/channel/source_transcode.go:105-119` drops each argument carrying the user agent and keeps the flag before it | Drop the partner too (R9) | **Flip** `source_transcode_test.go:569` `TestTheUDPFilterDropsUserAgentArguments` → `…WithTheirFlags`; new `TestTheUDPFilterLeavesNoDanglingFlag` | S | A-3 |
-| 306 | `relay/output/fmp4.go:221-225`: the desync arm calls the box-striding `findMoofOffset(s.frag, 1)`, which re-reads a length at a one-byte shift, strides past every box, returns -1, and the arm clears the whole buffer | `resyncOffset` + bounded tail (R6) | **Flip** `scanner_test.go:181` `TestAMisalignedWorkingBufferIsDiscardedWholeRatherThanResynchronised` → `TestAMisalignedWorkingBufferResynchronisesAtTheNextMoof`; new `TestAMoofHeaderSplitAcrossReadsSurvivesAResync`, `TestAMoofLiteralWithAnImplausibleLengthIsNotAResyncPoint` | S | A-4 |
-| 119 | Same code path as #306 (`fmp4.go:145-165` strides by any length ≥ 8; `:221-225` clears on -1). Its counterexample reaches the flush only with two garbage bytes, because the arm starts at offset 1 (measured: prefix `01` resyncs at 1 even at the seed; `01 01` returns -1) | As #306 | New `TestAGarbageRunThatReadsAsALargeLengthDoesNotHideTheNextMoof` carries the issue's shrunk counterexample at the finder and the two-byte form through the scanner | — | A-4 |
+| 306 | `relay/output/fmp4.go:221-225`: the desync arm calls the box-striding `findMoofOffset(s.frag, 1)`, which re-reads a length at a one-byte shift, strides past every box, returns -1, and the arm clears the whole buffer | `resyncOffset` + bounded tail; from #348, the short-`moof` arm and the fragment ceiling (R6) | **Flip** `scanner_test.go:181` `TestAMisalignedWorkingBufferIsDiscardedWholeRatherThanResynchronised` → `TestAMisalignedWorkingBufferResynchronisesAtTheNextMoof`; new `TestAMoofHeaderSplitAcrossReadsSurvivesAResync`, `TestAMoofLiteralWithAnImplausibleLengthIsNotAResyncPoint`, `TestAMoofShorterThanARealOneDoesNotStallTheBuffer`, `TestAFragmentThatNeverEndsIsAbandonedAtTheCeiling` | M | A-4 |
+| 119 | Same code path as #306 (`fmp4.go:145-165` strides by any length ≥ 8; `:221-225` clears on -1). Its counterexample reaches the flush only with two garbage bytes, because the arm starts at offset 1 (measured: prefix `01` resyncs at 1 even at the seed; `01 01` returns -1) | As #306 | New `TestAGarbageRunThatReadsAsALargeLengthDoesNotHideTheNextMoof` carries the counterexample at the finder (with a real 16-byte `moof`) and the two-byte form through the scanner; the issue's literal empty `moof` is a rejection case under the 16-byte floor | — | A-4 |
 | 222 | `relay/httpapi/fmp4.go:229-237`: on an empty wait, `time.Since(lastYield) > tuning.ClientTimeout` drops the client with no health check and no keepalive equivalent | R3 | **Flip** `fmp4_test.go:384` `TestAStalledFMP4ClientIsDroppedWhileATSClientIsNot` → `TestAStalledFMP4ClientOnAHealthyChannelStaysConnectedLikeATSClient`; new `TestAnFMP4ClientOnAnUnhealthyStallIsDroppedAtTheKeepaliveCap` | M | A-5 |
 | 314 | `relay/httpapi/detail.go:115-133` documents both fields as absences; `detailPayload` (`:134-173`) declares neither; `channel.Stats.FFmpegOutputBitrate` (`relay/channel/stats.go:39`) is set and never rendered. `apps/proxy/relay_serializers.py:133` declares `source_bitrate`, which nothing writes | R4 | **Flip** `detail_golden_test.go:222` `TestTheDetailPayloadOmitsTheTwoFieldsNothingWrites` → `TestTheDetailPayloadCarriesTheFFmpegOutputBitrate`; new `TestTheDetailEndpointCarriesTheFFmpegOutputBitrate`; Python `NEVER_WRITTEN` emptied and the fixture gains `ffmpeg_bitrate` | S | A-6 |
 | 233 | The relay posts the tuned identifier as `channel_id` (`relay/channel/events.go:38`, `manager.go:310-313`, `channel.go:651`); for `/proxy/ts/stream/<stream_hash>` that is a sha256 hex string. `core/relay_events.py:183` passes it to `log_system_event`, whose `SystemEvent.objects.create` raises on the `UUIDField` (`core/models.py:817`) and whose bare `except Exception` (`core/utils.py:922-924`) swallows it. **Reproduced at the seed**: `ERROR core.utils Failed to log system event channel_start: ['"9f86…0a08" is not a valid UUID.']`, and no row. Every event of a preview tune is lost, not only start and stop | R5 | New `test_a_stream_hash_tune_raised_no_lifecycle_rows`, `test_a_uuid_channel_id_is_not_mistaken_for_a_stream_hash`; Go contract pin `TestAStreamHashTuneNamesItsHashAsTheEventChannelID` | S | A-7 |
@@ -149,7 +149,7 @@ cp <scratch>/ff6/slow-trickle.stderr relay/internal/relaytest/testdata/ffmpeg_st
 
 The planner's run of exactly this printed `ffmpeg version 6.1.1-3ubuntu5`, `normal: 4501 bytes, 12 progress records`, `slow-trickle: 9371 bytes, 64 progress records`. **The digits will differ and do not matter** (`CAPTURE.md`'s own rule). **The shape must hold, and it is a STOP if it does not:** `grep -c 'frame=' <file>` prints `0` for both (the pin is about records with no `frame=`); every record begins `size=`; `slow-trickle`'s speeds start above 1.0 and end below it. `truncation.stderr` from this run is **not** committed. Never hand-edit a capture.
 
-**Step 2: tests.** Appendix B, placed as follows. `progress_test.go`: replace the `fullSpeedRe` declaration and the whole of `TestAScientificNotationSpeedIsUnderReportedAsItsMantissa` (seed `:11-47`) with Appendix B's `var (...)` block and `TestAScientificNotationSpeedIsReadWithItsExponent`; insert `TestAnFFmpeg6StreamCopyRecordIsAProgressRecord` before `// Every shape CAPTURE.md names`; add `"strings"` to the imports. `spawn_test.go`: append `TestAnUnterminatedFrameRecordCannotGrowTheReaderWithoutBound`. `source_transcode_test.go`: insert `TestAnFFmpeg6StreamCopyArmsTheBufferingDetector` before `// Recovery: a speed back at the threshold`. `corpus.go`: Appendix A's hunk (the two new names).
+**Step 2: tests.** Appendix B, placed as follows. `progress_test.go`: replace the `fullSpeedRe` declaration and the whole of `TestAScientificNotationSpeedIsUnderReportedAsItsMantissa` (seed `:11-47`) with Appendix B's `var (...)` block and `TestAScientificNotationSpeedIsReadWithItsExponent`; insert `TestAnFFmpeg6StreamCopyRecordIsAProgressRecord` before `// Every shape CAPTURE.md names`; add `"strings"` to the imports. `spawn_test.go`: append `TestAnUnterminatedFrameRecordCannotGrowTheReaderWithoutBound`. `source_transcode_test.go`: insert `TestAnFFmpeg6StreamCopyArmsTheBufferingDetector` before `// Recovery: a speed back at the threshold`. New file `relay/internal/relaytest/corpus_test.go` (`package relaytest`, importing only `testing`) holding `TestCorpusSpeedsReadsAScientificNotationSpeedWhole`. `corpus.go`: Appendix A's hunk (the two new names, and the widened copied regex, R10).
 
 **Expected red at the seed** (measured):
 
@@ -159,19 +159,21 @@ progress_test.go:…: a real ffmpeg 6.1.1 progress record is not a progress line
 spawn_test.go:105: the reader saw 0 progress lines, the corpus holds 12 records -- the split lost or merged records
 spawn_test.go:…: a 2098169-byte line reached the callback: the buffer grew past maxStderrLine (65536) plus one read
 source_transcode_test.go:…: timed out after 10s waiting for a speed reported off a 6.1.1 record
+corpus_test.go:16: CorpusSpeeds read the truncation record as 1.41, its mantissa: the copied regex has fallen behind package ffmpeg's (#227)
 ```
 
 (The #24 test references `maxStderrLine`, which the seed lacks; for its red run, declare `const maxStderrLine = 64 << 10` alone in `spawn.go` first — a constant nothing reads changes no behaviour — then add its use in Task 2.)
 
 ### Task 2 specifics
 
-Appendix A: `progress.go` (regex and gate), `spawn.go` (the cap), `corpus.go`.
+Appendix A: `progress.go` (regex and gate), `spawn.go` (the cap), `corpus.go` (the names, the widened copy and its comment).
 
 **Break-checks** (each run on the prototype):
 
 | Wrong edit | Test that reddens | Message |
 |---|---|---|
 | `speedRe` back to `speed=\s*([0-9.]+)x?` | `TestAScientificNotationSpeedIsReadWithItsExponent` | `Speed = 1.41, want the whole value 1410 …` |
+| `corpusSpeedRe` back to `speed=\s*([0-9.]+)x?` | `TestCorpusSpeedsReadsAScientificNotationSpeedWhole` | `CorpusSpeeds read the truncation record as 1.41, its mantissa …` |
 | `IsProgressLine`'s second clause replaced with `return false` | `TestAnFFmpeg6StreamCopyRecordIsAProgressRecord`, `TestReadStderrSplitsOnCROrLFAndSeesEveryRecord/ffmpeg6-*`, `TestAnFFmpeg6StreamCopyArmsTheBufferingDetector` | the three #299 messages above |
 | `len(buf) > maxStderrLine \|\|` removed from the flush condition | `TestAnUnterminatedFrameRecordCannotGrowTheReaderWithoutBound` | `a 2098169-byte line reached the callback …` |
 
@@ -201,7 +203,7 @@ Unchanged and still passing, named because they sit next to the edits: `TestAnUn
 
 ### Coverage
 
-Every statement A-1 adds to `relay/ffmpeg` (the gate's second clause, the cap's condition) is executed by the package's own new tests. Measured with A-1 and A-2 together: 352 → 361 statements, 34 → 31 missing. `relay/internal/relaytest` is outside the denominator.
+Every statement A-1 adds to `relay/ffmpeg` (the gate's second clause, the cap's condition) is executed by the package's own new tests. Measured with A-1 and A-2 together, after fix round 1: 352 → 355 statements, 34 → 28 missing. `relay/internal/relaytest` is outside the denominator.
 
 ### PR description draft
 
@@ -240,7 +242,7 @@ source_transcode_test.go:…: asks 0 and 1 were 22.007ms apart, under the 1s buf
 
 ### Task 2 specifics
 
-Appendix C: `detector.go` (`retryAt`, `Defer`, `Observe`, `Reset`, the `TimedOut` comment), `channel.go` (the `switches` field and its three accessors, the run loop's five uses), `failover.go` (the budget check and the count in `failoverFromBuffering`), `source_transcode.go` (the `Defer` call on a failed switch), `tuning.go` (the `MaxStreamSwitches` comment).
+Appendix C: `detector.go` (`retryAt`, the `clock()` helper, `Defer`, `Observe`, `BufferingFor`, `Reset`, the `TimedOut` comment), `channel.go` (the `switches` field and its three accessors, the run loop's five uses), `failover.go` (the budget check and the count in `failoverFromBuffering`), `source_transcode.go` (the `Defer` call on a failed switch), `tuning.go` (the `MaxStreamSwitches` comment).
 
 **Break-checks** (each run on the prototype):
 
@@ -257,7 +259,7 @@ Appendix C: `detector.go` (`retryAt`, `Defer`, `Observe`, `Reset`, the `TimedOut
 | `TestABufferingFailoverIgnoresMaxStreamSwitches` → **replaced by** `TestABufferingFailoverIsRefusedOnceMaxStreamSwitchesIsSpent` | with `MaxStreamSwitches = 0`: the channel reaches stream 2, the alternate runs once, state is `active` 300 ms later, exactly one `channel_failover` | with `MaxStreamSwitches = 0`, three `buffering_timeout`s after buffering: zero resolver requests, still on stream 1, alternate never ran, zero `channel_failover`, channel not ended. The setup (corpus, lever, resolver answer) is unchanged, so the only variable is the bound |
 | (new) `TestABufferingFailoverCountsAgainstMaxStreamSwitches` | — | with `MaxStreamSwitches = 1` and two answers, both sources slow: exactly one request, channel on stream 2 |
 | `TestABufferingTimeoutWithNoAlternateKeepsPlayingAndAsksOnEveryRecord` → **replaced by** `TestABufferingTimeoutWithNoAlternateAsksOncePerTimeoutNotOnEveryRecord` | at least 3 requests within 10 s (one per record); state `buffering`; channel not ended | at least 3 requests within 20 s **and every consecutive gap ≥ the 1 s timeout** (a lower bound only); state `buffering` — **kept**; channel not ended — **kept** |
-| (new) `TestADeferredTimeoutIsHeldBackForAnotherTimeout` | — | clock-injected: `TimedOut` → `Defer` → `Continuing` at +14 s → `TimedOut` at +15 s; `BufferingFor` keeps the original start; `Ended` clears the hold |
+| (new) `TestADeferredTimeoutIsHeldBackForAnotherTimeout` | — | clock-injected: `TimedOut` → `Defer` → `Continuing` at +14 s → `TimedOut` at +15 s; `BufferingFor` keeps the original start; `Ended` clears the hold; then a detector with **no** injected clock: a two-hour-old window times out, and a deferral taken now holds the next ask back (covers `clock()`'s wall-clock branch) |
 
 **Why the #302 test's corpus changed, and why that is not a tolerance.** The seed test replays `slow-trickle` with `--stderr-loop`; every pass re-opens with a record above the threshold, which ends buffering and restarts the clock. Under the defect that did not matter (three asks land inside one pass, tens of milliseconds apart). Under the fix, three asks span two seconds and cross passes, so "state is buffering" would be sampled at an arbitrary point of the loop. The replacement corpus is the capture's own records with its sub-threshold tail repeated four times — a synthetic **order**, not a synthetic line, the same exception `TestBufferingEndsWhenTheSpeedRecovers` (seed `:468-511`) takes with a stated reason — so the channel buffers once and stays buffering, and the seed's state assertion survives unchanged. Measured: 3/3 green, 3.1 s each.
 
@@ -268,7 +270,7 @@ Appendix C: `detector.go` (`retryAt`, `Defer`, `Observe`, `Reset`, the `TimedOut
 - **Matrix row 6**, replaced in place:
 
   ```text
-  | 6 | `MAX_STREAM_SWITCHES` bounds buffering-triggered switches as well as the main loop's: a buffering timeout with the budget spent does not ask for a next source, and the channel keeps playing on the slow source rather than ending | `relay/channel/channel.go:<run loop, setState through the needsSwitch branch>`, `relay/channel/failover.go:<failoverFromBuffering>` | `relay/channel/source_transcode_test.go::TestABufferingFailoverIsRefusedOnceMaxStreamSwitchesIsSpent`, `relay/channel/source_transcode_test.go::TestABufferingFailoverCountsAgainstMaxStreamSwitches`, `relay/channel/failover_test.go::TestMaxStreamSwitchesBoundsAMainLoopSwitch` | Filed as [#221](https://github.com/D10Scot/Dispatcharr/issues/221) and fixed in #<PR>. Python's stderr path called `_try_next_stream()` without touching `stream_switch_attempts`, which only the main loop checked, and the Go relay reproduced that per D5 until stage 2d-4. One counter now serves both paths. What the bound does differs, on purpose: the main loop ends the channel at its bound, having no working source, while the buffering path refuses the switch and keeps a source that is still delivering. The stable-run reset still fires only where the main loop sees an attempt end. The third pin is the main loop's side. |
+  | 6 | `MAX_STREAM_SWITCHES` bounds buffering-triggered switches as well as the main loop's: a buffering timeout with the budget spent does not ask for a next source, and the channel keeps playing on the slow source rather than ending | `relay/channel/channel.go:<run loop, setState through the needsSwitch branch>`, `relay/channel/failover.go:<failoverFromBuffering>` | `relay/channel/source_transcode_test.go::TestABufferingFailoverIsRefusedOnceMaxStreamSwitchesIsSpent`, `relay/channel/source_transcode_test.go::TestABufferingFailoverCountsAgainstMaxStreamSwitches`, `relay/channel/failover_test.go::TestMaxStreamSwitchesBoundsAMainLoopSwitch` | Filed as [#221](https://github.com/D10Scot/Dispatcharr/issues/221) and fixed in #<PR>. Python's stderr path called `_try_next_stream()` without touching `stream_switch_attempts`, which only the main loop checked, and the Go relay reproduced that per D5 until stage 2d-4. One counter now serves both paths. What the bound does differs, on purpose: the main loop ends the channel at its bound, having no working source, while the buffering path refuses the switch and keeps a source that is still delivering. So the counts differ by one: the main loop resolves at most `MAX_STREAM_SWITCHES + 1` switches, because its `<=` admits a pass at the bound and the switch it makes there is applied and then ends the channel unrun, while the buffering path makes at most `MAX_STREAM_SWITCHES`, all of which run. The stable-run reset still fires only where the main loop sees an attempt end. The third pin is the main loop's side. |
   ```
 
   (Prototype spans: `channel.go:455-491`, `failover.go:283-318`.)
@@ -279,7 +281,7 @@ Appendix C: `detector.go` (`retryAt`, `Defer`, `Observe`, `Reset`, the `TimedOut
 
 ### Coverage
 
-Every statement A-2 adds is executed by its package's own tests: in `relay/channel` the refusal by the bound-zero test, the count by the bound-one test, the accessors by every run; in `relay/ffmpeg` the hold by `TestADeferredTimeoutIsHeldBackForAnotherTimeout`. Measured with A-2 and A-3 together, `relay/channel` went 1063 → 1081 statements and 219 → 219 missing. **A9.2's rule applies** (spec A10's "Go coverage margin" bullet): this PR adds linked statements to `relay/channel`, so read the per-package figure before pushing, not after CI.
+Every statement A-2 adds is executed by its package's own tests: in `relay/channel` the refusal by the bound-zero test, the count by the bound-one test, the accessors by every run; in `relay/ffmpeg` the hold and the `clock()` helper's both branches by `TestADeferredTimeoutIsHeldBackForAnotherTimeout` (`go tool cover -func`: `clock`, `Observe`, `Defer` at 100%). Measured with A-2 and A-3 together, `relay/channel` went 1063 → 1081 statements and 219 → 219 missing. **A9.2's rule applies** (spec A10's "Go coverage margin" bullet): this PR adds linked statements to `relay/channel`, so read the per-package figure before pushing, not after CI.
 
 ### PR description draft
 
@@ -341,33 +343,47 @@ Every new branch is executed by the two tests (the value-takes-flag arm by the f
 
 ## PR A-4 — `fix/A-4-fmp4-scanner-resync`
 
-**Closes #306; closes #119 as its duplicate.** Size S. Upstreamable: no.
-**Go package:** `relay/output`. **Backend labels:** none. **E2E:** path-gated; `fix/` prefix (`relay/output/` is not in GC 12's list).
+**Closes #306; closes #119 as its duplicate.** Size M (it grew from S when round 1 absorbed #348's ceiling). Upstreamable: no.
+**Go package:** `relay/output`. **Backend labels:** none. **E2E:** path-gated; `fix/` prefix (`relay/output/` is not in GC 12's list). **The guards project does not run on this PR** (open question 4); no matrix row cites `relay/output/fmp4.go`, so there is nothing for it to catch.
+
+**What round 1 added, from #348's A-4 (attributed in the code comments too).** My first draft fixed the resync arm and left two faults beside it on the aligned path, both present at the seed and both surviving that draft (measured: the two tests below were red against it with only a stub field added). An aligned `moof` whose length is below 8 made `fmp4.go:229-231` return without consuming anything, so every later write grew the buffer and nothing was published again; a length from 8 to 15 was trusted and published as a bogus fragment of its own. And a corrupt length, either the aligned `moof`'s own (`:233-236`) or the next box's after a valid `moof` (`findMoofOffset` returning -1 at `:238-240`), held the buffer open toward a length of up to 4 GiB. #348's `MaxFragmentBytes` ceiling and `minMoofBox = 16` close both. They are adopted here as an unexported constant `maxFragmentBytes` (64 MiB) with a per-scanner `ceiling` field for tests, rather than an exported package `var` a test lowers, so no test can race another scanner's read. The resync candidate floor rises from 8 to 16, because a real `moof` carries an `mfhd` and 8 admits an empty box. The synthetic fragments every scanner test uses carry a 16-byte `moof` (`relaytest/fmp4.go:80-81`), so the floor is compatible with all of them.
 
 ### Task 1 specifics
 
-Appendix H. **Replace** `TestAMisalignedWorkingBufferIsDiscardedWholeRatherThanResynchronised` (seed `:181-218`) by `TestAMisalignedWorkingBufferResynchronisesAtTheNextMoof`, `TestAGarbageRunThatReadsAsALargeLengthDoesNotHideTheNextMoof`, `TestAMoofHeaderSplitAcrossReadsSurvivesAResync` and `TestAMoofLiteralWithAnImplausibleLengthIsNotAResyncPoint`, in that order.
+Appendix H. **Replace** `TestAMisalignedWorkingBufferIsDiscardedWholeRatherThanResynchronised` (seed `:181-218`) by, in this order: `TestAMisalignedWorkingBufferResynchronisesAtTheNextMoof`, `TestAGarbageRunThatReadsAsALargeLengthDoesNotHideTheNextMoof`, `TestAMoofHeaderSplitAcrossReadsSurvivesAResync`, `TestAMoofLiteralWithAnImplausibleLengthIsNotAResyncPoint`, `TestAMoofShorterThanARealOneDoesNotStallTheBuffer` and `TestAFragmentThatNeverEndsIsAbandonedAtTheCeiling`. Add `"encoding/binary"` and `"fmt"` to the imports.
 
-**Expected red at the seed** (measured; the two tests calling `resyncOffset` need a stub `func resyncOffset([]byte, int) int { return -1 }` and `const resyncTail = 7` to compile for the red run):
+**Expected red at the seed** (measured). For the red run only, add three compile stubs to `fmp4.go`: `func resyncOffset([]byte, int) int { return -1 }`, `const resyncTail = 7`, and a `ceiling int` field on `scanner`. None of them changes behaviour, since nothing calls or reads them:
 
 ```
-scanner_test.go:…: 0 fragments published behind a misaligned working buffer, want 1 (fragment 5; 6 is held back): the resync discarded them (#306)
-scanner_test.go:…: resyncOffset found the moof at -1, want 1 (#119)
-scanner_test.go:…: published 0 fragments, want fragment 0: its header straddled the read and was discarded
-scanner_test.go:…: resyncOffset chose -1, want the real moof at 9
+scanner_test.go:203: 0 fragments published behind a misaligned working buffer, want 1 (fragment 5; 6 is held back): the resync discarded them (#306)
+scanner_test.go:220: resyncOffset found the moof at -1, want 1 (#119)
+scanner_test.go:252: published 0 fragments, want fragment 0: its header straddled the read and was discarded
+scanner_test.go:268: longer than any moof: resyncOffset chose -1, want the real moof at 9
+scanner_test.go:298: published 0 fragments behind a 4-byte moof, want fragment 0 alone
+scanner_test.go:298: published 2 fragments behind a 12-byte moof, want fragment 0 alone
+scanner_test.go:333: the working buffer holds 4112 bytes after write 4, past the 4096-byte ceiling
+scanner_test.go:333: the working buffer holds 4120 bytes after write 4, past the 4096-byte ceiling
 ```
+
+(Line 268 names whichever rejection case the map yields first; every case fails at the seed.)
 
 ### Task 2 specifics
 
-Appendix G: the corrected `findMoofOffset` comment, `maxMoofBoxBytes`, `resyncTail`, `resyncOffset`, and the desync arm.
+Appendix G: the corrected `findMoofOffset` comment; `minMoofBox`, `maxFragmentBytes`, `maxMoofBoxBytes`, `resyncTail`, `resyncOffset`; the `ceiling` field with `fragmentCeiling` and `abandon`; and `flush`'s three changes (a short aligned `moof` is resynchronised past, the tail is kept, and each of the two waits is abandoned past the ceiling).
 
-**Break-checks** (each run on the prototype):
+**Break-checks** (each run on the prototype after round 1):
 
 | Wrong edit | Test that reddens | Message |
 |---|---|---|
-| the arm calls `findMoofOffset(s.frag, 1)` again | `…ResynchronisesAtTheNextMoof`, `…DoesNotHideTheNextMoof` | `0 fragments published behind a misaligned working buffer …`; `published 0 fragments after two garbage bytes, want fragment 0 alone (#119)` |
+| the arm calls `findMoofOffset(s.frag, 1)` again | `…ResynchronisesAtTheNextMoof`, `…DoesNotHideTheNextMoof`, and both new tests | `0 fragments published behind a misaligned working buffer …`; `published 0 fragments after two garbage bytes, want fragment 0 alone (#119)` |
 | the tail replaced by `s.frag = s.frag[:0]` | `TestAMoofHeaderSplitAcrossReadsSurvivesAResync` | `published 0 fragments, want fragment 0: its header straddled the read and was discarded` |
 | the `size <= maxMoofBoxBytes` bound removed | `TestAMoofLiteralWithAnImplausibleLengthIsNotAResyncPoint` | `resyncOffset chose 1, want the real moof at 9` |
+| the floor lowered to `size >= 8` | `TestAMoofLiteralWithAnImplausibleLengthIsNotAResyncPoint` | `#119's empty moof, 8 bytes: resyncOffset chose 1, want the real moof at 9` |
+| `\|\| size < minMoofBox` removed from the misaligned test | `TestAMoofShorterThanARealOneDoesNotStallTheBuffer` | `published 0 fragments behind a 4-byte moof …`; `published 2 fragments behind a 12-byte moof …` |
+| the ceiling check in the `size > len(s.frag)` arm disabled | `TestAFragmentThatNeverEndsIsAbandonedAtTheCeiling/the moof's own length is corrupt` **only** | `the working buffer holds 4112 bytes after write 4 …` |
+| the ceiling check in the `findMoofOffset == -1` arm disabled | `TestAFragmentThatNeverEndsIsAbandonedAtTheCeiling/the box after the moof is corrupt` **only** | `the working buffer holds 4120 bytes after write 4 …` |
+
+The last two rows are why the ceiling test has two shapes: each arm is reached by exactly one of them.
 
 ### Test changes under rule 4
 
@@ -375,21 +391,21 @@ Appendix G: the corrected `findMoofOffset` comment, `maxMoofBoxBytes`, `resyncTa
 |---|---|---|
 | `TestAMisalignedWorkingBufferIsDiscardedWholeRatherThanResynchronised` → **replaced by** `TestAMisalignedWorkingBufferResynchronisesAtTheNextMoof` | same input (a 72-byte `junk` box, fragments 5 and 6): zero fragments published, head 0 | same input: one fragment published, carrying index 5 (6 held back as every newest fragment is) |
 
-Unchanged: `TestABoxLengthBelowEightAdvancesOneByteRatherThanGivingUp` (it tests `findMoofOffset` directly, which R6 leaves alone), `TestABoxBetweenTwoFragmentsIsCarriedInsideThePrecedingOne`, `TestTheSameBytesSplitAcrossReadsProduceTheSameFragments`.
+The other five are new. **#119's literal counterexample** (one garbage byte before an *empty* 8-byte `moof`) is now a **rejection** case, because the 16-byte floor refuses an empty box on purpose. Its finder assertion runs on one garbage byte before a real 16-byte `moof`, and its scanner-level form is two garbage bytes, since a one-byte prefix resynchronises even at the seed. Unchanged: `TestABoxLengthBelowEightAdvancesOneByteRatherThanGivingUp` (it tests `findMoofOffset` directly, which R6 leaves alone), `TestABoxBetweenTwoFragmentsIsCarriedInsideThePrecedingOne`, `TestABoxLongerThanWhatHasArrivedIsNotAFragmentYet` (below the ceiling the wait is unchanged), `TestTheSameBytesSplitAcrossReadsProduceTheSameFragments`, `TestTenMegabytesWithNoMoofAborts`.
 
 ### Task 3 specifics
 
-No matrix row cites `relay/output/fmp4.go`, no `CLAUDE.md` line names #306 or #119, and neither is a ledger item (R11).
+No matrix row cites `relay/output/fmp4.go`, no `CLAUDE.md` line names #306 or #119, and neither is a ledger item (R11). Also run `go test -race -run 'FMP4|Profile' ./httpapi/`, the fMP4 end-to-end rigs that drive this scanner (prototype: green).
 
 ### Coverage
 
-`relay/output` measured 15 → 14 missing; every new statement is executed by the four tests.
+`relay/output` measured 243 → 261 statements and 15 → 12 missing. `go tool cover -func` shows `findMoofOffset`, `fragmentCeiling`, `abandon`, `write` and `flush` at 100% and `resyncOffset` at 100% (its trailing `return -1` is reached by the rejection test's "nothing after it" assertion, added for that reason).
 
 ### PR description draft
 
-> **fix(relay): the fMP4 scanner resynchronises instead of discarding its buffer**
+> **fix(relay): the fMP4 scanner resynchronises instead of discarding its buffer, and cannot grow without bound**
 >
-> When the working buffer did not start at a `moof`, the scanner searched from offset 1 with the box-striding scanner, read a length at a one-byte shift, jumped past every box, got -1 and cleared the whole buffer, fragments and all. It now searches for the next `moof` literal whose length is plausible, and with nothing found keeps only the seven bytes a split header could start in. The aligned scans still stride, which is what keeps a `moof` inside an `mdat` from being taken for a box. Closes #306; closes #119, the same defect found by fuzzing, whose counterexample is kept as a regression example.
+> When the working buffer did not start at a `moof`, the scanner searched from offset 1 with the box-striding scanner, read a length at a one-byte shift, jumped past every box, got -1 and cleared the whole buffer, fragments and all. It now searches for the next `moof` literal whose length is plausible (16 bytes to 1 MiB), and with nothing found keeps only the seven bytes a split header could start in. The aligned scans still stride, which is what keeps a `moof` inside an `mdat` from being taken for a box. Two adjacent faults are closed too, following #348's design. An aligned `moof` shorter than a real one no longer stalls the buffer. A fragment whose end cannot be found, because its own length or its successor's is corrupt, is abandoned past 64 MiB instead of buffering toward 4 GiB. Closes #306; closes #119, the same defect found by fuzzing, whose counterexample is kept as a regression example.
 
 ---
 
@@ -576,12 +592,13 @@ Each has a recommended answer the plan already follows; the implementation needs
 1. **#221 — what a spent budget does on the buffering path (R1).** The plan refuses the switch and keeps the slow source playing. The alternative is the main loop's behaviour, ending the channel. Two consequences the user should know, both of sharing one counter. Once buffering switches have spent the budget, the next dead-air or connect-failure failover is the main loop's last: it switches and then ends the channel, exactly as if the main loop had made the earlier switches itself. And the budget refills only when the main loop sees an attempt end after `STABLE_CONNECTION_THRESHOLD` (30 s default); a buffering-cancelled attempt never counts as stable, so a long-lived channel whose sources only ever degrade slowly can spend all ten switches and keep none for the rest of that tune. Refilling on some other signal (a quiet period with no buffering, say) is a design the issue does not ask for.
 2. **#222 — the fMP4 exit (R3).** The plan drops an fMP4 client on an unhealthy channel after `MAX_KEEPALIVE_DURATION` (300 s default) with no bytes sent. The smaller alternative keeps the old `stream_timeout + failover_grace_period` (40 s) but gates it on health, which fixes the stalled-remux case and still drops fMP4 viewers 40 s into a slow failover that TS viewers survive. A third option writes top-level `free` boxes as keepalives, which would need a player-compatibility check this repository cannot run.
 3. **#314 — `source_bitrate` (R4).** The plan deletes it from the serializer. The alternatives are to keep it declared and absent (no behaviour change, and the Python golden keeps an excuse entry forever) or to give it a writer from ffmpeg's input `bitrate:` field, which reads `N/A` for live inputs.
+4. **The guards project does not run on a relay-only PR.** `e2e-tests.yml:110`'s path pattern has no `relay/` prefix, and the guards trigger (`:127-133`) adds only `docs/relay-parity-matrix.md`. So a PR touching nothing but `relay/` can move a line a matrix row cites and pass PR CI, and the guard then fails on `main`. Raised by #348 and the round-1 review. **In this plan it reaches only A-4**, not A-3 as the review first had it: A-3 shifts row 1's `source_transcode.go:320-341` citation (its `argv()` rewrite adds lines above it), so it edits the matrix and triggers the guard. A-1, A-2, A-5 and A-6 edit the matrix, A-6 also edits `apps/`, and A-7 edits `core/`. A-4 edits only `relay/output/`, and no row cites `relay/output/fmp4.go` (`grep -c` is 0 at the seed), so nothing the guard checks can move. Every A PR still runs the guard locally (GC 9). The workflow's missing prefix is a one-line fix outside category A's issues, for the lead to route (category G owns workflows).
 
 ---
 
 ## Appendices
 
-Every diff below is the prototype's `diff -u` against the seed (Appendix E against the tree after A-2), relabelled `a/`/`b/` so `patch -p1` applies it from the worktree root; applied in order A, C, E, G, I, K, M to a fresh seed export they reproduce the prototype byte for byte. Every Go block is the prototype's final test function, extracted verbatim; placement is in each PR's Task 1. The timestamps diff prints have been dropped.
+Every diff below is the prototype's `diff -u` against the seed (Appendix E against the tree after A-2), relabelled `a/`/`b/` so `git apply` (or `patch -p1`) applies it from the worktree root. Applied with `git apply` in the order A, C, E, G, I, K, M, N to a fresh seed export, they reproduce the prototype byte for byte. Every Go block is the prototype's final test function, extracted verbatim; placement is in each PR's Task 1. The timestamps `diff` prints have been dropped.
 
 ### Appendix A — A-1 production: `progress.go`, `spawn.go`, `relaytest/corpus.go`
 
@@ -689,9 +706,25 @@ Every diff below is the prototype's `diff -u` against the seed (Appendix E again
  
  // pkgDir is this file's own directory, from its compiled-in path.
  //
+@@ -104,10 +107,12 @@
+ // The PRODUCTION speed regex, copied deliberately rather than imported from
+ // package ffmpeg: these helpers exist so a test can quote what the shipped
+ // parser sees, and importing the parser would make the quote move if the
+-// parser moved. Same rationale, and the same literal, as
+-// apps/proxy/live_proxy/tests/manager_support.py:24.
++// parser moved. The copy must therefore move WITH it, by hand: issue #227's
++// fix widened package ffmpeg's speedRe to read an exponent, and this literal
++// was widened in the same PR so the two agree on a scientific-notation
++// record.
+ var (
+-	corpusSpeedRe   = regexp.MustCompile(`speed=\s*([0-9.]+)x?`)
++	corpusSpeedRe   = regexp.MustCompile(`speed=\s*([0-9.]+(?:[eE][-+]?[0-9]+)?)x?`)
+ 	corpusElapsedRe = regexp.MustCompile(`elapsed=(\d+):(\d\d):(\d\d(?:\.\d+)?)`)
+ )
+ 
 ```
 
-### Appendix B — A-1 tests (`progress_test.go`, `spawn_test.go`, `source_transcode_test.go`)
+### Appendix B — A-1 tests (`progress_test.go`, `spawn_test.go`, `source_transcode_test.go`, new `relaytest/corpus_test.go`)
 
 ```go
 // progress_test.go: replaces the seed's single `var fullSpeedRe = ...` (:11-13)
@@ -806,6 +839,21 @@ func TestAnFFmpeg6StreamCopyArmsTheBufferingDetector(t *testing.T) {
 	waitFor(t, "buffering", 10*time.Second, func() bool { return ch.State() == StateBuffering })
 	m.Stop("ffmpeg6")
 }
+
+// Issue #227, the test-support half. CorpusSpeeds quotes the shipped parser's
+// speed regex by copy, so the copy has to read the truncation capture's
+// exponent exactly as package ffmpeg now does; a copy left at `[0-9.]+`
+// would hand every caller the mantissa, about a thousandth of the value,
+// while the parser under test reads the whole of it.
+func TestCorpusSpeedsReadsAScientificNotationSpeedWhole(t *testing.T) {
+	speeds := CorpusSpeeds("truncation")
+	if len(speeds) != 1 {
+		t.Fatalf("the truncation capture carries %d records, want exactly 1 (CAPTURE.md)", len(speeds))
+	}
+	if speeds[0] < 100 {
+		t.Fatalf("CorpusSpeeds read the truncation record as %v, its mantissa: the copied regex has fallen behind package ffmpeg's (#227)", speeds[0])
+	}
+}
 ```
 
 ### Appendix C — A-2 production: `detector.go`, `channel.go`, `failover.go`, `tuning.go`, `source_transcode.go`
@@ -837,17 +885,43 @@ func TestAnFFmpeg6StreamCopyArmsTheBufferingDetector(t *testing.T) {
  	TimedOut
  	// Ended: speed back at or above the threshold after buffering.
  	Ended
-@@ -83,7 +87,8 @@
+@@ -68,22 +72,29 @@
+ 	return "unknown"
+ }
+ 
++// clock is the detector's one reading of the time: Now, or the wall clock
++// when Now is nil. One helper rather than a nil check in each of the three
++// methods that read it, so the fallback is one statement a test can cover.
++func (d *Detector) clock() time.Time {
++	if d.Now == nil {
++		return time.Now()
++	}
++	return d.Now()
++}
++
+ // Observe feeds one reported speed to the detector.
+ func (d *Detector) Observe(speed float64) Verdict {
+-	now := d.Now
+-	if now == nil {
+-		now = time.Now
+-	}
+ 	if speed < d.Threshold {
+ 		if !d.buffering {
+ 			d.buffering = true
+-			d.since = now()
++			d.since = d.clock()
+ 			return Started
+ 		}
  		// input/manager.py:1174-1175's `if buffering_start_time is None`
  		// arm is unreachable: the two are set together at :1213-1214 and
  		// cleared together at :1185-1186 and :1240-1241. Not ported.
 -		if now().Sub(d.since) > d.Timeout {
-+		at := now()
++		at := d.clock()
 +		if at.Sub(d.since) > d.Timeout && !at.Before(d.retryAt) {
  			return TimedOut
  		}
  		return Continuing
-@@ -91,6 +96,7 @@
+@@ -91,6 +102,7 @@
  	if d.buffering {
  		d.buffering = false
  		d.since = time.Time{}
@@ -855,7 +929,20 @@ func TestAnFFmpeg6StreamCopyArmsTheBufferingDetector(t *testing.T) {
  		return Ended
  	}
  	return Steady
-@@ -119,4 +125,22 @@
+@@ -106,11 +118,7 @@
+ 	if !d.buffering {
+ 		return 0
+ 	}
+-	now := d.Now
+-	if now == nil {
+-		now = time.Now
+-	}
+-	return now().Sub(d.since)
++	return d.clock().Sub(d.since)
+ }
+ 
+ // Reset is the successful-switch branch (:1185-1186): buffering cleared and
+@@ -119,4 +127,16 @@
  func (d *Detector) Reset() {
  	d.buffering = false
  	d.since = time.Time{}
@@ -871,13 +958,7 @@ func TestAnFFmpeg6StreamCopyArmsTheBufferingDetector(t *testing.T) {
 +// reports) and holds the next TimedOut back for one more Timeout: a channel
 +// with nowhere to go asks once per buffering_timeout instead of once per
 +// record.
-+func (d *Detector) Defer() {
-+	now := d.Now
-+	if now == nil {
-+		now = time.Now
-+	}
-+	d.retryAt = now().Add(d.Timeout)
-+}
++func (d *Detector) Defer() { d.retryAt = d.clock().Add(d.Timeout) }
 --- a/relay/channel/channel.go
 +++ b/relay/channel/channel.go
 @@ -160,6 +160,11 @@
@@ -1102,6 +1183,20 @@ func TestADeferredTimeoutIsHeldBackForAnotherTimeout(t *testing.T) {
 	c.tick(15*time.Second + time.Millisecond)
 	if v := d.Observe(1.0); v != TimedOut {
 		t.Fatalf("a fresh window after recovery: got %s, want %s -- the old deferral survived Ended", v, TimedOut)
+	}
+
+	// A detector with no injected clock reads the wall clock, the relay's
+	// production shape: a deferral taken just now holds a one-hour timeout
+	// back, where an unset hold would let an hour-old window time out.
+	wall := &Detector{Threshold: 2.0, Timeout: time.Hour}
+	wall.Observe(1.0)
+	wall.since = wall.since.Add(-2 * time.Hour)
+	if v := wall.Observe(1.0); v != TimedOut {
+		t.Fatalf("a wall-clock window two hours old: got %s, want %s", v, TimedOut)
+	}
+	wall.Defer()
+	if v := wall.Observe(1.0); v != Continuing {
+		t.Fatalf("a wall-clock deferral: got %s, want %s -- Defer did not read the wall clock", v, Continuing)
 	}
 }
 
@@ -1388,10 +1483,26 @@ func TestTheUDPFilterLeavesNoDanglingFlag(t *testing.T) {
  //
  // Python's `except struct.error` arm is UNREACHABLE: unpack_from cannot fail
  // while offset+8 <= len(data). Not reproduced, because there is nothing to
-@@ -164,6 +167,41 @@
+@@ -164,6 +167,57 @@
  	return -1
  }
  
++// minMoofBox is the smallest real moof, and the smallest length resyncOffset
++// accepts for a candidate: its own 8-byte header plus an mfhd, 16 bytes. A
++// "moof" shorter than that is garbage that happens to spell the type, and an
++// aligned one is resynchronised past rather than trusted (flush). Adopted from
++// #348's A-4.
++const minMoofBox = 16
++
++// maxFragmentBytes is the most the working buffer holds while a fragment has
++// no end in sight -- an aligned moof whose own length is corrupt, or a valid
++// one followed by a box whose length is, both of which make the fragment's
++// end unfindable and would otherwise hold the buffer open toward a 4 GiB
++// length. Past it the fragment is abandoned and the scanner resynchronises.
++// 64 MiB is 50 Mbit/s over a 10-second keyframe interval with margin; adopted
++// from #348's A-4.
++const maxFragmentBytes = 64 << 20
++
 +// maxMoofBoxBytes is the largest length resyncOffset accepts for a candidate
 +// moof box's OWN header -- the moof, not the fragment: a moof holds a few
 +// track headers and a sample table and runs to kilobytes, where the mdat
@@ -1410,8 +1521,8 @@ func TestTheUDPFilterLeavesNoDanglingFlag(t *testing.T) {
 +// buffer that is NOT aligned on a box boundary, the fix for issues #306 and
 +// #119. It searches for the four-byte type literal and checks the length in
 +// front of it, rather than striding by lengths it cannot trust: the first
-+// candidate whose length is between 8 and maxMoofBoxBytes wins. -1 when there
-+// is none.
++// candidate whose length is between minMoofBox and maxMoofBoxBytes wins. -1
++// when there is none.
 +func resyncOffset(data []byte, start int) int {
 +	for from := start; from+8 <= len(data); {
 +		i := bytes.Index(data[from+4:], moofBox)
@@ -1419,7 +1530,7 @@ func TestTheUDPFilterLeavesNoDanglingFlag(t *testing.T) {
 +			return -1
 +		}
 +		at := from + i
-+		if size := binary.BigEndian.Uint32(data[at : at+4]); size >= 8 && size <= maxMoofBoxBytes {
++		if size := binary.BigEndian.Uint32(data[at : at+4]); size >= minMoofBox && size <= maxMoofBoxBytes {
 +			return at
 +		}
 +		from = at + 1
@@ -1430,15 +1541,49 @@ func TestTheUDPFilterLeavesNoDanglingFlag(t *testing.T) {
  // scanner turns the remux's fd 1 byte stream into an init segment and a
  // sequence of fragments, the port of _reader_loop's body (manager.py:289-349)
  // and _flush_complete_fragments (:252-287).
-@@ -217,10 +255,17 @@
- 		if !bytes.Equal(s.frag[4:8], moofBox) {
+@@ -173,8 +227,25 @@
+ 	init       []byte
+ 	initStored bool
+ 	frag       []byte
++
++	// ceiling overrides maxFragmentBytes for one scanner, for tests; zero
++	// means the constant. A field rather than a package variable a test
++	// lowers, so no test can race another scanner's read of it.
++	ceiling int
+ }
+ 
++func (s *scanner) fragmentCeiling() int {
++	if s.ceiling > 0 {
++		return s.ceiling
++	}
++	return maxFragmentBytes
++}
++
++// abandon gives up a fragment whose end cannot be found: dropping one byte
++// misaligns the buffer, so the next pass of flush resynchronises past the
++// moof that could not be bounded.
++func (s *scanner) abandon() { s.frag = s.frag[1:] }
++
+ // ErrNoInitSegment is the abort at manager.py:334-339: 10 MB of remux output
+ // with no moof box in it.
+ var ErrNoInitSegment = fmt.Errorf("output: no moof box in the first %d bytes of the remux output", MaxInitSegmentBytes)
+@@ -214,29 +285,47 @@
+ // stops mid-stream leaves one fragment unpublished until `final` runs.
+ func (s *scanner) flush() {
+ 	for len(s.frag) >= 8 {
+-		if !bytes.Equal(s.frag[4:8], moofBox) {
++		size := int64(binary.BigEndian.Uint32(s.frag[0:4]))
++		if !bytes.Equal(s.frag[4:8], moofBox) || size < minMoofBox {
  			// manager.py:259-266: the stream is not aligned to a moof, so drop
  			// bytes until one is found. start=1, not 0, or this would find the
 -			// box it has already rejected.
 -			next := findMoofOffset(s.frag, 1)
 +			// box it has already rejected. Through resyncOffset, not
 +			// findMoofOffset: Python strided from offset 1 by a garbage length
-+			// and cleared the whole buffer on the -1 it got (#306, #119).
++			// and cleared the whole buffer on the -1 it got (#306, #119). A
++			// moof shorter than minMoofBox is not one either: aligned on it,
++			// the seed returned without consuming anything and the buffer
++			// grew with every write (#348's A-4).
 +			next := resyncOffset(s.frag, 1)
  			if next < 0 {
 -				s.frag = s.frag[:0]
@@ -1451,6 +1596,34 @@ func TestTheUDPFilterLeavesNoDanglingFlag(t *testing.T) {
  				return
  			}
  			s.frag = s.frag[next:]
+ 			continue
+ 		}
+-		size := int64(binary.BigEndian.Uint32(s.frag[0:4]))
+-		if size < 8 {
+-			return
+-		}
+ 		if size > int64(len(s.frag)) {
+ 			// _find_moof_offset(frag_buf, start=moof_size) returns -1 for a
+-			// start past the end, and manager.py:279 breaks. Same answer.
++			// start past the end, and manager.py:279 breaks. Same answer --
++			// unless the moof's own length is corrupt and the wait would
++			// never end.
++			if len(s.frag) > s.fragmentCeiling() {
++				s.abandon()
++				continue
++			}
+ 			return
+ 		}
+ 		next := findMoofOffset(s.frag, int(size))
+ 		if next < 0 {
++			// The same wait, for the box after the moof.
++			if len(s.frag) > s.fragmentCeiling() {
++				s.abandon()
++				continue
++			}
+ 			return
+ 		}
+ 		s.out.Put(s.frag[:next])
 ```
 
 ### Appendix H — A-4 tests (`scanner_test.go`)
@@ -1485,12 +1658,14 @@ func TestAMisalignedWorkingBufferResynchronisesAtTheNextMoof(t *testing.T) {
 
 func TestAGarbageRunThatReadsAsALargeLengthDoesNotHideTheNextMoof(t *testing.T) {
 	// ISSUE #119's shrunk counterexample, both at the finder and through the
-	// scanner. One garbage byte before an empty moof box: the striding scan
-	// read 0x01000000 as a length at offset 0 and jumped clear past it. Two
-	// garbage bytes through the scanner: the resync arm starts at offset 1,
-	// reads 0x01000000 there, and did the same.
-	moof := relaytest.MP4Box("moof", nil)
-	if at := resyncOffset(slices.Concat([]byte{0x01}, moof), 0); at != 1 {
+	// scanner. One garbage byte before a moof: the striding scan read
+	// 0x01000000 as a length at offset 0 and jumped clear past it. The
+	// issue's own moof is EMPTY (8 bytes), which minMoofBox now refuses as a
+	// resync point on purpose, so the finder is asserted on a real 16-byte one
+	// and the empty box is kept in the rejection test below. Two garbage
+	// bytes through the scanner: the resync arm starts at offset 1, reads
+	// 0x01000000 there, and did the same.
+	if at := resyncOffset(slices.Concat([]byte{0x01}, relaytest.SyntheticFMP4Fragment(0)), 0); at != 1 {
 		t.Fatalf("resyncOffset found the moof at %d, want 1 (#119)", at)
 	}
 	f := buffer.NewFragments(buffer.FragmentsConfig{})
@@ -1528,12 +1703,92 @@ func TestAMoofHeaderSplitAcrossReadsSurvivesAResync(t *testing.T) {
 }
 
 func TestAMoofLiteralWithAnImplausibleLengthIsNotAResyncPoint(t *testing.T) {
-	// A "moof" inside a payload reads a garbage length. Accepted, it would
-	// align the buffer on a "box" the aligned path then waits for 4 GiB of.
-	bogus := []byte{0xFF, 0xFF, 0xFF, 0xFF, 'm', 'o', 'o', 'f'}
-	data := slices.Concat([]byte{0x00}, bogus, relaytest.SyntheticFMP4Fragment(0))
-	if at, want := resyncOffset(data, 1), 1+len(bogus); at != want {
-		t.Fatalf("resyncOffset chose %d, want the real moof at %d", at, want)
+	// A "moof" inside a payload reads a garbage length. Too long, and the
+	// aligned path would wait for 4 GiB of it; too short -- #119's own empty
+	// box among them -- and it is not a moof at all (minMoofBox). Each is
+	// skipped for the real moof after it.
+	for name, bogus := range map[string][]byte{
+		"longer than any moof":       {0xFF, 0xFF, 0xFF, 0xFF, 'm', 'o', 'o', 'f'},
+		"#119's empty moof, 8 bytes": relaytest.MP4Box("moof", nil),
+		"shorter than an mfhd needs": relaytest.MP4Box("moof", make([]byte, 4)),
+	} {
+		data := slices.Concat([]byte{0x00}, bogus, relaytest.SyntheticFMP4Fragment(0))
+		if at, want := resyncOffset(data, 1), 1+len(bogus); at != want {
+			t.Fatalf("%s: resyncOffset chose %d, want the real moof at %d", name, at, want)
+		}
+		// And with nothing after it, a refused candidate leaves no resync
+		// point at all, rather than being taken for want of a better one.
+		if at := resyncOffset(slices.Concat([]byte{0x00}, bogus), 1); at != -1 {
+			t.Fatalf("%s: resyncOffset chose %d with no real moof in the buffer, want -1", name, at)
+		}
+	}
+}
+
+func TestAMoofShorterThanARealOneDoesNotStallTheBuffer(t *testing.T) {
+	// Adopted from #348's A-4. A buffer ALIGNED on a "moof" whose length is
+	// below a real moof's 16 bytes (its own header plus an mfhd) is not on a
+	// fragment. The seed returned without consuming anything for a length
+	// below 8 (fmp4.go:229-231), so every later write grew the buffer and
+	// nothing was ever published again; a length from 8 to 15 was trusted and
+	// published as a bogus fragment of its own. Either way fragment 0, whole
+	// and right behind it, must be what comes out.
+	for _, size := range []uint32{4, 12} {
+		t.Run(fmt.Sprintf("length %d", size), func(t *testing.T) {
+			short := make([]byte, max(size, 8))
+			binary.BigEndian.PutUint32(short[0:4], size)
+			copy(short[4:8], "moof")
+			f := buffer.NewFragments(buffer.FragmentsConfig{})
+			s := &scanner{out: f, initStored: true}
+			if err := s.write(slices.Concat(short, relaytest.SyntheticFMP4Fragment(0), relaytest.SyntheticFMP4Fragment(1))); err != nil {
+				t.Fatalf("the scanner rejected the stream: %v", err)
+			}
+			got := collect(f)
+			if len(got) != 1 || relaytest.FMP4FragmentIndex(got[0]) != 0 {
+				t.Fatalf("published %d fragments behind a %d-byte moof, want fragment 0 alone", len(got), size)
+			}
+		})
+	}
+}
+
+func TestAFragmentThatNeverEndsIsAbandonedAtTheCeiling(t *testing.T) {
+	// Adopted from #348's A-4, both shapes of it. An aligned moof whose own
+	// length is corrupt waits for bytes that never come (fmp4.go:233-236); a
+	// valid moof followed by a box whose length is corrupt makes the search
+	// for the NEXT moof return -1 on every pass (:238-240). Either way the
+	// seed held the working buffer open toward a length of up to 4 GiB. Past
+	// the ceiling the scanner gives the fragment up and resynchronises, so
+	// the buffer stays bounded and the next real fragment is published. The
+	// ceiling is lowered on this scanner alone rather than fed 64 MiB.
+	const ceiling = 4096
+	shapes := map[string][]byte{
+		"the moof's own length is corrupt": slices.Concat(
+			[]byte{0x7f, 0xff, 0xff, 0xff}, []byte("moof"), make([]byte, 8)),
+		"the box after the moof is corrupt": slices.Concat(
+			relaytest.MP4Box("moof", make([]byte, 8)), []byte{0xff, 0xff, 0xff, 0x00}, []byte("mdat")),
+	}
+	for name, corrupt := range shapes {
+		t.Run(name, func(t *testing.T) {
+			f := buffer.NewFragments(buffer.FragmentsConfig{})
+			s := &scanner{out: f, initStored: true, ceiling: ceiling}
+			writes := [][]byte{corrupt}
+			for range 8 {
+				writes = append(writes, bytes.Repeat([]byte{0x01}, 1024))
+			}
+			for i, w := range writes {
+				if err := s.write(w); err != nil {
+					t.Fatalf("the scanner rejected write %d: %v", i, err)
+				}
+				if held := len(s.frag); held > ceiling {
+					t.Fatalf("the working buffer holds %d bytes after write %d, past the %d-byte ceiling", held, i, ceiling)
+				}
+			}
+			if err := s.write(slices.Concat(relaytest.SyntheticFMP4Fragment(0), relaytest.SyntheticFMP4Fragment(1))); err != nil {
+				t.Fatalf("the scanner rejected the stream: %v", err)
+			}
+			if got := collect(f); len(got) != 1 || relaytest.FMP4FragmentIndex(got[0]) != 0 {
+				t.Fatalf("published %d fragments after the ceiling, want fragment 0 alone", len(got))
+			}
+		})
 	}
 }
 ```
@@ -2130,6 +2385,7 @@ func TestTheDetailEndpointCarriesTheFFmpegOutputBitrate(t *testing.T) {
 +
      def test_an_unknown_event_type_is_counted_as_rejected_not_raised(self):
          from core.relay_events import apply_event_batch
+ 
 ```
 
 ### Appendix O — A-7 Go contract pin (`relay/channel/manager_test.go`, appended)
