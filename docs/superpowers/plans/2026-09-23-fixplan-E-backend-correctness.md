@@ -856,25 +856,23 @@ changed are the e2e pins each section lists.
      `logger.exception(...)`. Green.
      **Break-check:** restore `:271`. The first test must redden, and the ERROR log must now name
      `MultipleObjectsReturned`.
-  3. (Removed: #138 is E-9.)
-  4. (Removed: #138 is E-9.)
-  5. #132: write `test_dvr_ws_events_carry_recording_id.py`. At seed the static test must list the
+  3. #132: write `test_dvr_ws_events_carry_recording_id.py`. At seed the static test must list the
      four `file:line`s, and both runtime tests must fail on a missing key.
-  6. Add `recording_id` to the four payloads. Green.
+  4. Add `recording_id` to the four payloads. Green.
      **Break-check:** remove it from `tasks.py:2526` only. The static test alone must redden, naming
      that line.
-  7. #135: write `test_adhoc_recording_output_path.py`. At seed it fails on
+  5. #135: write `test_adhoc_recording_output_path.py`. At seed it fails on
      `/data/recordings/TV_Shows/<start>.mkv`. Apply the fix. Green.
      **Break-check:** restore `:1038`. The test must redden.
-  8. #71: append the vitest case. At seed it fails with length 1 against 2. Apply the fix. Green.
+  6. #71: append the vitest case. At seed it fails with length 1 against 2. Apply the fix. Green.
      **Break-check:** restore the key. It must redden.
-  9. e2e: flip `recording-execution.spec.ts:368` (constraint 11), replace its known-bug comment
+  7. e2e: flip `recording-execution.spec.ts:368` (constraint 11), replace its known-bug comment
      block, and make the comment-only edits listed under #132 and #71.
      `grep -rnE "#(131|132|135|71)\b" e2e/` and update any sentence that describes a defect
      here as present. Change no assertion except the flip.
-  10. `e2e/COVERAGE.md`: the DVR rows for #135 (`:156`), #131 (`:163`) and #132 (`:164`) record
-      the fix and point at the new backend tests.
-  11. Run `apps.channels.tests` whole, then once without `--keepdb`, then `npm test` in `frontend/`.
+  8. `e2e/COVERAGE.md`: the DVR rows for #135 (`:156`), #131 (`:163`) and #132 (`:164`) record
+     the fix and point at the new backend tests.
+  9. Run `apps.channels.tests` whole, then once without `--keepdb`, then `npm test` in `frontend/`.
 - **Pin flip, before and after.**
 
   | test | before | after |
@@ -1201,7 +1199,8 @@ Each has a default that this plan already adopts; answer only to override it.
    and the hourly maintainer rolls it forward. Alternative: keep full materialisation to `end_date`
    (the upstream author added that branch deliberately in `6536f35d`) but have the serializer cap
    `end_date`, for example at one year. The first changes what the Upcoming list shows for a
-   long rule (two weeks, not the whole run). The second keeps that and bounds the damage.
+   long rule (two weeks, not the whole run). The second keeps that and bounds the damage. Either way the
+   answer is implemented by PR E-9 alone, which does not start until this is answered.
 3. **#80 escaping form.** Default: replace `"` with `&quot;` in attribute values only. Alternatives:
    `html.escape(quote=True)`, which also turns `&`, `<`, `>` and `'` into entities and makes
    "AT&T" read `AT&amp;T` in players that do not decode; or substitute a typographic quote, which
