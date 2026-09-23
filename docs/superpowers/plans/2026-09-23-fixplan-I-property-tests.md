@@ -141,7 +141,7 @@ result, and what the module does once the fix merges.
 | PR | depends on | what it must have done | seed result | with the fix |
 |---|---|---|---|---|
 | I-1 epg | **C-2** (#75, #76/#156, #157) | Adjacent `±hhmm` offset normalised; `_decode_channel_id(raw, quote=b'"', entity_doctype=True)` plus `_xmltv_file_gets_entity_doctype(file_path)` (C Appendix A) | 52 run: 50 OK, 1 FAIL (`#75 -0800`), 1 ERROR (import of `_xmltv_file_gets_entity_doctype`) | 53 OK |
-| I-2 m3u | **C-3** (#199, #217, #262), **C-4 as adopted** (#171), **C-5** (#68, #146) | `OverflowError` caught and `_user_info()`; the `m3u_cp1252_fallback` decode; the `regex` filter wrapper; the `$N` rule `\$(0[1-9]|[1-9]\d?)` (see below); `.casefold()`; both counter repairs | 49 run, the same 10 red in 3 of 3 runs | 49 OK in 3 of 3 runs |
+| I-2 m3u | **C-3** (#199, #217, #262), **C-4 as adopted** (#171), **C-5** (#68, #146) | `OverflowError` caught and `_user_info()`; the `m3u_cp1252_fallback` decode; the `regex` filter wrapper; the `$N` rule `\$(0[1-9]\|[1-9]\d?)` (see below); `.casefold()`; both counter repairs | 49 run, the same 10 red in 3 of 3 runs | 49 OK in 3 of 3 runs |
 | I-3 output+vod | **C-1, AMENDED** (#90/#211), **C-6** (#242) | Out-of-range captures treated as "no time or date", **with the year bound `2 <= year <= 9998`**, not C-1's `1 <= year <= 9999` (see below); `extract_year` coerces with `str()` | custom dummy: 2 errors; vod provider helpers: 7 errors | 26 + 34 OK |
 | I-4 timeshift | **D-3, AMENDED** (#216, #141, #111) | D Appendix C as amended at `b84cc664`: one `_ascii_digits` helper (`isascii() and isdigit()`) guarding every digit run (see below) | 15 of 77 red, all on D-3 mechanisms | 77 OK |
 
@@ -821,9 +821,17 @@ reverts with `git checkout -- apps/epg/tasks.py`.
 - [ ] **Step 2.** D-3's non-ASCII digit guard: `grep -c 'def _ascii_digits' apps/timeshift/views.py`
   prints `1`, and prints `0` at seed. Read the helper. It must return
   `value.isascii() and value.isdigit()`, as plan D's Appendix C.2 at `b84cc664` has it. Then check
-  that `_parse_client_range`, `_is_suffix_range` and `_parse_content_range_header` call no bare
-  `isdigit()`: `grep -n 'isdigit()' apps/timeshift/views.py` may hit only inside `_ascii_digits`. If
-  either check fails, STOP: the five superscript `@example`s will raise `ValueError`.
+  that none of the three parsers calls a bare `isdigit()`. Run
+  `grep -n 'isdigit()' apps/timeshift/views.py` and place each hit by function:
+  - **Required:** at least one hit inside `_ascii_digits`. On D's final tree there are two: its
+    return line and its docstring's `str.isdigit()`.
+  - **Forbidden:** any hit inside `_parse_client_range`, `_is_suffix_range` or
+    `_parse_content_range_header`.
+  - **Allowed:** hits in any other function. That includes the one D-3 does not touch, in
+    `_stream_stop_requested`: `:2499` at seed, and `:2525` after D-3 per plan D.
+
+  If the required hit is missing or a forbidden one exists, STOP: the five superscript `@example`s
+  will raise `ValueError`.
 
 #### Task 1: extract and run
 
