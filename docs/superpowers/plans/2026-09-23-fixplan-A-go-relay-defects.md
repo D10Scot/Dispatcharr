@@ -4,7 +4,7 @@
 
 **Category A, planned second** (order B, A, J, C, D, E, G, H, I, F). **Seed: `a54b09a9`** (`main`, 2026-09-23). Every `file:line` below was opened at the seed.
 
-**What has already been verified, and how.** Every production change in this plan was prototyped in a scratch export of the seed (`git archive a54b09a9 relay core/… apps/proxy/…`), never in a worktree, and every test was run red against the seed code and green against the fix. The diff appendices (A, C, E, G, I, K, M, N) are the prototype's own `diff -u` output. Extracted from this document and applied with `git apply` in PR order to a fresh seed export, they reproduce the prototype byte for byte. **Fix round 1**, on the fable comparison of #348 and this plan, absorbed #348's fragment ceiling and short-`moof` arm into A-4, widened `relaytest`'s copied regex in A-1, hoisted a `clock()` helper in A-2, stated row 6's `Max`/`Max+1` asymmetry, repaired Appendix N (the first assembly stripped the whitespace-only last context line off every block, so `git apply` refused N), and added open question 4. Every change was re-prototyped, re-run red at the seed and green after, and re-checked with the same appendix check. The Go test appendices are the prototype's final test functions, verbatim. The prototype passes `go build`, `go vet`, `go test -race` on every edited package, `golangci-lint run` on darwin and with `GOOS=linux` (0 issues, repo `.golangci.yml`), and `relay/internal/credlint` (12 packages clean). The two Django halves were run in a private container (`fixplan-A`, its own DB volume, never `dispatcharr-testrunner`) against a writable copy of the tree: `core.tests` 107 OK, `apps.proxy.tests` 380 OK. The break-checks listed in each PR were each run and each reddened with the message quoted. **The implementer re-does all of it on the real branch; the prototype proves the plan is buildable, not that the PR is done.**
+**What has already been verified, and how.** Every production change in this plan was prototyped in a scratch export of the seed (`git archive a54b09a9 relay core/… apps/proxy/…`), never in a worktree, and every test was run red against the seed code and green against the fix. The diff appendices (A, C, E, G, I, K, M, N) are the prototype's own `diff -u` output. Extracted from this document and applied with `git apply` in PR order to a fresh seed export, they reproduce the prototype byte for byte. **Fix round 1**, on the fable comparison of #348 and this plan, absorbed #348's fragment ceiling and short-`moof` arm into A-4, widened `relaytest`'s copied regex in A-1, hoisted a `clock()` helper in A-2, stated row 6's `Max`/`Max+1` asymmetry, repaired Appendix N (the first assembly stripped the whitespace-only last context line off every block, so `git apply` refused N), and added open question 4; then, against #348's fixed head `499e1ede`, took its `fakeResolver.callTimes()` accessor and the shape of its per-PR guards table (GC 9). Every change was re-prototyped, re-run red at the seed and green after, and re-checked with the same appendix check. The Go test appendices are the prototype's final test functions, verbatim. The prototype passes `go build`, `go vet`, `go test -race` on every edited package, `golangci-lint run` on darwin and with `GOOS=linux` (0 issues, repo `.golangci.yml`), and `relay/internal/credlint` (12 packages clean). The two Django halves were run in a private container (`fixplan-A`, its own DB volume, never `dispatcharr-testrunner`) against a writable copy of the tree: `core.tests` 107 OK, `apps.proxy.tests` 380 OK. The break-checks listed in each PR were each run and each reddened with the message quoted. **The implementer re-does all of it on the real branch; the prototype proves the plan is buildable, not that the PR is done.**
 
 ---
 
@@ -13,7 +13,7 @@
 | PR | Production | Tests and fixtures | Docs and ledger |
 |---|---|---|---|
 | A-1 | `relay/ffmpeg/progress.go`, `relay/ffmpeg/spawn.go` | `relay/ffmpeg/progress_test.go`, `relay/ffmpeg/spawn_test.go`, `relay/channel/source_transcode_test.go`, `relay/internal/relaytest/corpus.go`, `relay/internal/relaytest/corpus_test.go` (new), two new captures under `relay/internal/relaytest/testdata/ffmpeg_stderr/` | `relay/internal/relaytest/testdata/ffmpeg_stderr/CAPTURE.md`, `docs/relay-parity-matrix.md` (rows 4, 28), `CLAUDE.md`, `metrics/curated/defects.yml` |
-| A-2 | `relay/ffmpeg/detector.go`, `relay/channel/channel.go`, `relay/channel/failover.go`, `relay/channel/source_transcode.go`, `relay/channel/tuning.go` | `relay/ffmpeg/detector_test.go`, `relay/channel/source_transcode_test.go` | matrix (rows 1, 3, 4, 5, 6), `CLAUDE.md`, `defects.yml` |
+| A-2 | `relay/ffmpeg/detector.go`, `relay/channel/channel.go`, `relay/channel/failover.go`, `relay/channel/source_transcode.go`, `relay/channel/tuning.go` | `relay/ffmpeg/detector_test.go`, `relay/channel/source_transcode_test.go`, `relay/channel/failover_test.go` (a `callTimes()` accessor, from #348) | matrix (rows 1, 3, 4, 5, 6), `CLAUDE.md`, `defects.yml` |
 | A-3 | `relay/channel/source_transcode.go` | `relay/channel/source_transcode_test.go` | matrix (row 1), `CLAUDE.md`, `defects.yml` |
 | A-4 | `relay/output/fmp4.go` | `relay/output/scanner_test.go` | none |
 | A-5 | `relay/httpapi/fmp4.go` | `relay/httpapi/fmp4_test.go` | matrix (row 12), `CLAUDE.md`, `defects.yml` |
@@ -48,7 +48,16 @@ Numbered so a task step can cite one. **A conflict between a constraint and a ta
 6. **The Go coverage ratchet never moves in a fix PR.** `scripts/coverage_relay_go.floor` says `missing=589`, and `--gate` fails the run on any draw above it. Every statement a PR adds must be executed by **its own package's** tests (the gate measures per package, never `-coverpkg`). Verify with Task 4's per-package profile, then `scripts/coverage_relay_go.sh --measure && --gate` locally as indicative; CI's `Go result` is the authority. **A draw above the floor is a finding to attribute per block, never a floor edit in the same PR.** Prototype measurements, per package, seed → all seven PRs applied (round 1's `ffmpeg` and `output` re-measured after the fix round): `relay/ffmpeg` 34 → 28 missing, `relay/output` 15 → 12, `relay/channel` 219 → 219, `relay/httpapi` 126 → 111 (httpapi's figure moves run to run by more than this plan's change).
 7. **Gate 2 (the Python ratchet) is touched by A-6 alone.** `apps/proxy/relay_serializers.py` is one of its nine modules. A-6 deletes one covered declaration, so `missing` cannot rise and `modules=`/`rcfile=` do not move; run `scripts/coverage_live_path_isolated.sh` before pushing anyway (a green label does not imply a green gate).
 8. **Parity-matrix citations: shift, do not re-survey.** When a PR moves code a row's `Source` range cites, move the range by the PR's own line delta so it still covers what it covered. Correcting a range that was already imprecise at the seed is A9.9's chore, not a fix PR's. The guard checks only that a range lies inside its file, so this is a review obligation, not a mechanical one.
-9. **The guard is run, not assumed.** A PR that edits `docs/relay-parity-matrix.md`, or renames a Go test the matrix pins, runs `cd <worktree>/e2e && npx playwright test --project=guards parity-matrix` before pushing. A renamed pin with no matrix edit fails there.
+9. **The guard is run, not assumed.** A PR that edits `docs/relay-parity-matrix.md`, or renames a Go test the matrix pins, runs `cd <worktree>/e2e && npx playwright test --project=guards parity-matrix` before pushing. A renamed pin with no matrix edit fails there. **Whether CI also runs it** depends on `e2e-tests.yml`'s `changes` job (`:108-133`): `guards=true` when the diff matches `:110`'s pattern (which has `apps/` and `core/` but no `relay/`) or touches the matrix. Per PR, in the shape of #348's table:
+
+   | PR | guard in CI? | why |
+   |---|---|---|
+   | A-1, A-2, A-3, A-5 | yes | each edits the matrix (A-3 by shifting row 1's citation) |
+   | A-6 | yes | edits the matrix and `apps/` |
+   | A-7 | yes | edits `core/` |
+   | A-4 | **no** | touches only `relay/output/`, which no row cites (open question 4) |
+
+   Every PR runs it locally regardless.
 10. **Lint as CI lints.** `cd <worktree>/relay && golangci-lint run ./... && GOOS=linux golangci-lint run ./...` — the second catches build-tagged files the first cannot see. Zero findings is a ratchet. `scripts/check_go_credential_logging.sh` must stay clean.
 11. **A channel UUID and a provider URL are secrets.** Neither appears in a log, a test, a commit message or a PR body. The stream hash in A-7's tests is `sha256("test")`, not a real one.
 12. **Branch names.** `migration/A-5-fmp4-client-timeout` and `migration/A-6-detail-ffmpeg-bitrate` touch `relay/httpapi/` and take the `migration/` prefix, which runs the full E2E matrix. Every other PR is `fix/A-<n>-<slug>`.
@@ -227,7 +236,7 @@ Every statement A-1 adds to `relay/ffmpeg` (the gate's second clause, the cap's 
 
 ### Task 1 specifics
 
-Appendix D. `detector_test.go`: append `TestADeferredTimeoutIsHeldBackForAnotherTimeout`. `source_transcode_test.go`: **replace** the seed's `TestABufferingFailoverIgnoresMaxStreamSwitches` (with its comment, `:387-434`) by `TestABufferingFailoverIsRefusedOnceMaxStreamSwitchesIsSpent` followed by `TestABufferingFailoverCountsAgainstMaxStreamSwitches`, and **replace** `TestABufferingTimeoutWithNoAlternateKeepsPlayingAndAsksOnEveryRecord` (with its comment, `:436-466`) by `TestABufferingTimeoutWithNoAlternateAsksOncePerTimeoutNotOnEveryRecord`.
+Appendix D. `failover_test.go`: add `fakeResolver.callTimes()` beside `firstCallAt` (from #348): a copy of `calledAt` under the lock, which the #302 test reads rather than taking the resolver's mutex itself. `detector_test.go`: append `TestADeferredTimeoutIsHeldBackForAnotherTimeout`. `source_transcode_test.go`: **replace** the seed's `TestABufferingFailoverIgnoresMaxStreamSwitches` (with its comment, `:387-434`) by `TestABufferingFailoverIsRefusedOnceMaxStreamSwitchesIsSpent` followed by `TestABufferingFailoverCountsAgainstMaxStreamSwitches`, and **replace** `TestABufferingTimeoutWithNoAlternateKeepsPlayingAndAsksOnEveryRecord` (with its comment, `:436-466`) by `TestABufferingTimeoutWithNoAlternateAsksOncePerTimeoutNotOnEveryRecord`.
 
 **Expected red at the seed** (measured; the detector test fails to compile until `Defer` exists, so add an empty `func (d *Detector) Defer() {}` for the red run — a method nothing calls changes no behaviour):
 
@@ -1138,9 +1147,18 @@ func TestCorpusSpeedsReadsAScientificNotationSpeedWhole(t *testing.T) {
  		s.log().Info("buffering ended", "channel", s.channelID(), "speed", *p.Speed)
 ```
 
-### Appendix D — A-2 tests (`detector_test.go`, `source_transcode_test.go`)
+### Appendix D — A-2 tests (`detector_test.go`, `source_transcode_test.go`, the `fakeResolver.callTimes()` accessor in `failover_test.go`)
 
 ```go
+// failover_test.go: beside firstCallAt (from #348)
+// callTimes is when each Next call arrived, in order: a copy taken under the
+// lock, for a test that bounds the gaps between asks (#302). From #348.
+func (r *fakeResolver) callTimes() []time.Time {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]time.Time(nil), r.calledAt...)
+}
+
 // Issue #302: after a failed switch the caller DEFERS, and the next TimedOut
 // is held back for one more Timeout -- the channel stays buffering throughout,
 // and BufferingFor keeps measuring from the first sub-threshold sample,
@@ -1330,9 +1348,7 @@ func TestABufferingTimeoutWithNoAlternateAsksOncePerTimeoutNotOnEveryRecord(t *t
 	if state := ch.State(); state != StateBuffering {
 		t.Fatalf("state = %q, want buffering: a failed switch leaves the channel where it was", state)
 	}
-	resolver.mu.Lock()
-	at := append([]time.Time(nil), resolver.calledAt...)
-	resolver.mu.Unlock()
+	at := resolver.callTimes()
 	for i := 1; i < len(at); i++ {
 		if gap := at[i].Sub(at[i-1]); gap < timeout {
 			t.Fatalf("asks %d and %d were %s apart, under the %s buffering_timeout: the channel is asking on every record (#302)", i-1, i, gap, timeout)
