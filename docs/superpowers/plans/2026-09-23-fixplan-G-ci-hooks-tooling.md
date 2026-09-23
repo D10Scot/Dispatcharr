@@ -19,11 +19,11 @@
 
 1. **#277 has one root cause per scanner, and neither is the "standing set" the issue fears.**
    - **OSV-Scanner** fails on one transitive frontend package, `@xmldom/xmldom` 0.8.13. That is eight GHSA advisories, all at CVSS 8.7, all fixed in 0.8.15. The fix is a three-line lockfile change. I measured it with the workflow's own pinned scanner: after the bump, the worst finding is CVSS 5.7.
-   - **Grype** fails on exactly **two** findings, identical on `:latest` and `:base`. Both are in the ffmpeg **8.1.2 binary**: CVE-2026-70632 (CFHD decoder) and CVE-2026-70628 (DVB-subtitle parser). Every other row of both tables is Medium. FFmpeg backported both fixes into **n8.1.3** on 2026-09-19. But linuxserver never published an 8.1.3 image. Its only fixed image is **9.0**, and that image is built on **Ubuntu 26.04**, where today's base is 24.04. Upstream Dispatcharr deliberately pinned *back* from `latest` (9.0) to 8.1.2 on 2026-08-19 (`fd413f0c`), with no recorded reason.
+   - **Grype** fails on exactly **two** findings, identical on `:latest` and `:base`. Both are in the ffmpeg **8.1.2 binary**: CVE-2026-70632 (CFHD decoder) and CVE-2026-70628 (DVB-subtitle parser). Those two are the only rows the blocking step (`--only-fixed`) counts; every other row with a fix is Medium. The images also carry **14 more High ffmpeg 8.1.2 CVEs with no fix in any version** (CVE-2026-64830 to -64835, -65703 to -65706, -66036, -66039 to -66041). `--only-fixed` has excluded those from the blocking step since Phase 0, and 9.0 may still carry them, since Grype has no fix data for them. FFmpeg backported both fixes into **n8.1.3** on 2026-09-19. But linuxserver never published an 8.1.3 image. Its only fixed image is **9.0**, and that image is built on **Ubuntu 26.04**, where today's base is 24.04. Upstream Dispatcharr deliberately pinned *back* from `latest` (9.0) to 8.1.2 on 2026-08-19 (`fd413f0c`), with no recorded reason.
    - So there are two real remedies. One is an accepted-risk ignore of exactly those two CVEs, time-boxed with an expiry the workflow enforces (G-3). The other is the 24.04 → 26.04 base migration (G-9). I ran the pinned Grype with just those two rules against both published images: both exit 0. **Q1** asks the user which remedy to take; the default is both.
 2. **#226 happens only on arm64.** In the base image, `/etc/ld.so.conf.d/aarch64-linux-gnu.conf` sorts *before* `libc.conf` (which carries `/usr/local/lib`). `x86_64-linux-gnu.conf` sorts *after* it. So on amd64 the linked-against librist 4.11 already wins, and CI's ffmpeg runs: the go-tests log prints `ffmpeg version 8.1.2`. On arm64 the distro librist 4.3.1 wins, and ffmpeg dies. Measured on both arches with `ghcr.io/d10scot/dispatcharr:base`. A `00-` conf file listing `/usr/local/lib`, plus `ldconfig`, fixes arm64 and changes nothing on amd64. Prototyped: ffmpeg runs, and comskip keeps its distro libav through its `DT_RPATH`.
 3. **#81's premise is inverted, and the issue's suggested fix would break two things that work today.**
-   - `include uwsgi_params` forwards *every* client header. So an outer proxy's `X-Forwarded-Proto/Host/Port` **already reach** `get_host_and_port` on every `uwsgi_pass` location, and branch 1 is live whenever an outer proxy sets them.
+   - `uwsgi_pass_request_headers` is on by default, so nginx forwards *every* client header as an `HTTP_*` param (`docker/dispatcharr_api_params.conf:5-7` says so). Stock `uwsgi_params` sets no `HTTP_*` itself. So an outer proxy's `X-Forwarded-Proto/Host/Port` **already reach** `get_host_and_port` on every `uwsgi_pass` location, and branch 1 is live whenever an outer proxy sets them.
    - Setting `uwsgi_param HTTP_X_FORWARDED_HOST $host:$server_port` would *overwrite* those values with nginx's own. That breaks outer TLS proxies (`https` would become `http`). It also breaks every direct client on a Docker port remap (`-p 1234:9191`), because `$server_port` is 9191. Two e2e tests pin exactly that remap today: `e2e/tests/seeded/output-m3u.spec.ts:53-64` and `hdhr.spec.ts:97-103`.
    - Trust-gating the headers adds nothing either. `Host` is exactly as client-controlled (`ALLOWED_HOSTS=["*"]`).
    - So G-7 corrects the docstring that says "set by our nginx", and pins the three deployment shapes with backend tests so the naive fix cannot land. This is consistent with B's plan, and it goes one step further: G adds **no** `uwsgi_param` at all. **Q2** asks the user to confirm.
@@ -65,6 +65,8 @@
 
 ### Overlap with other categories
 
+**Two sibling overlap rows are stale against this plan.** B's `fixplan-B-security.md:71` says G adds `uwsgi_param HTTP_X_FORWARDED_{HOST,PROTO,PORT}`. J's `fixplan-J-phase2-closeout.md:66` says G edits `nginx.conf:69-74`. Under Q2's default, G adds **no** `uwsgi_param` and changes no directive. Its only `nginx.conf` edit is a comment inserted *above* `:69` (G-6 Task 4), which leaves `:69-74` unchanged. B's semantic note still holds, and more strongly: G sets no forwarded header of any kind.
+
 | file | other plan and its lines | what I assume it does | order | conflict |
 |---|---|---|---|---|
 | `docker/nginx.conf` | **B** touches no nginx file (B plan row `:71`). **J-1** edits comments `:25-58` only. **H** #179 is a test of `:698`. | B's semantic note: G must not add `uwsgi_param HTTP_X_REAL_IP`/`X_FORWARDED_FOR`. G adds no `uwsgi_param` at all (finding 3), and its only nginx edit is a comment above `:69`. | J-1, then G-6 | none textual |
@@ -75,6 +77,7 @@
 | `.github/workflows/e2e-tests.yml` | **H** #168/#187 (`scripts/e2e_up.sh`; #185, a closed duplicate, also touched this workflow) | H edits the stack scoping, not the action pins | G-2, then H | trivial rebase if H edits a step G-2 re-pinned |
 | `metrics/curated/defects.yml` | B, D, J append or edit rows | G-4 edits row `:31` only | any | one row per line |
 | `CLAUDE.md` | A, B, D, E, I, J edit their own prose | G edits the sentences listed per PR, anchored by text with `assert count == 1` | G last among those | none expected |
+| `core/tests/test_core.py` | **B-7** flips and adds tests in `GetClientIpTests` (B plan `:872-889`); **E** cites `:122` and `:840-854` | G-7 appends a new class, `GetHostAndPortDeploymentShapeTests` | any | append-only |
 | `docker/DispatcharrBase` | **E** #128 cites `:36` (python3.13) as a premise | G-9 keeps `python3.13` from deadsnakes. Measured: `resolute` publishes `python3.13`. So E's premise holds after G-9. | any | none |
 | `scripts/coverage_live_path_isolated.sh` | **J-4** forwards every argument | G does not edit it | — | none |
 
@@ -114,7 +117,7 @@ Numbered so a task step can cite one. **A conflict between a constraint and a st
 ### #277 — vuln-scan.yml red on every run
 - **Root cause (measured on run `35843990227`, `a54b09a9`).**
   - OSV-Scanner: `@xmldom/xmldom` 0.8.13 (`frontend/package-lock.json:2574-2577`), reached only through `mpd-parser`'s `^0.8.3`. There are eight advisories at CVSS 8.7, all fixed in 0.8.15 (the GitHub advisory API gives each range).
-  - Grype: `ffmpeg` binary 8.1.2, CVE-2026-70632 and CVE-2026-70628 (NVD: "up to, but not including, 9.0"; CVSS 3.1 of 7.8). These are the only High rows on either image. Everything else is Medium and does not block.
+  - Grype: `ffmpeg` binary 8.1.2, CVE-2026-70632 and CVE-2026-70628 (NVD: "up to, but not including, 9.0"; CVSS 3.1 of 7.8). These two are the only rows that fail the blocking step, whose `--only-fixed` counts only findings with a fix; every other row with a fix is Medium. The images also carry **14 more High ffmpeg 8.1.2 CVEs with no fix in any version** (CVE-2026-64830 to -64835, -65703 to -65706, -66036, -66039 to -66041). `--only-fixed` has excluded those from the blocking step since Phase 0, and 9.0 may still carry them, since Grype has no fix data for them. Measured from the informational tables of both jobs: 16 High ffmpeg rows, 2 with a fix.
   - FFmpeg `n8.1.3` carries both fixes (`gh api repos/FFmpeg/FFmpeg/compare/n8.1.2...n8.1.3`: "avcodec/cfhd: reject transform-2 output wider than the plane" and "avcodec/dvbsub_parser: avoid signed overflow in the capacity check", 2026-09-19). But linuxserver's tag list jumps from `8.1.2` (2026-08-07) to `9.0` builds. `lscr.io/linuxserver/ffmpeg:version-9.0-cli` reports `VERSION_ID="26.04"` (resolute), where `:base` is `24.04` (noble).
   - Trivy passes both images, because it has no ffmpeg binary matcher.
 - **Why it rotted.** Nothing bumps the linuxserver digest. `renovate.json` would, but Renovate is not installed (CLAUDE.md § Supply chain: "Inert until the Renovate app is installed").
@@ -130,6 +133,7 @@ Numbered so a task step can cite one. **A conflict between a constraint and a st
 
 ### #226 — ffmpeg unrunnable in the test containers
 - **Root cause.** Finding 2. Measured on `ghcr.io/d10scot/dispatcharr:base`: on arm64, `ffmpeg -version` gives `undefined symbol: rist_peer_config_defaults_set_versioned`, and `ldd` resolves librist to `/usr/lib/aarch64-linux-gnu/librist.so.4` (4.3.1). On amd64 it prints `ffmpeg version 8.1.2`, and `ldd` resolves `/usr/local/lib/librist.so.4`. The distro librist comes in through `libavformat60` (`apt-cache rdepends --installed librist4`), which vlc pulls in, and vlc is a built-in stream profile. The config explains it: `/etc/ld.so.conf.d/` holds `aarch64-linux-gnu.conf` + `libc.conf` on arm64, and `libc.conf` + `x86_64-linux-gnu.conf` on amd64.
+- **Production equivalence.** `docker/entrypoint.sh:102` already exports `LD_LIBRARY_PATH=/usr/local/lib` for every supervised process, so production VLC, ffmpeg and comskip already run with `/usr/local/lib` first. The ld.so.conf change alters only contexts that skip the entrypoint: the hook container, CI's `--entrypoint ""` jobs and `docker exec`. VLC is the process whose libraries move: its distro `libavformat60` loads linuxserver's librist 4.11 instead of 4.3.1, exactly as it does under the entrypoint today. Prototyped: `cvlc --version` runs as a non-root user, and `ldd` on `libavformat.so.60` resolves `/usr/local/lib/librist.so.4`.
 - **Fix.** G-4 writes `/etc/ld.so.conf.d/00-usr-local-lib.conf` containing `/usr/local/lib`, runs `ldconfig`, then runs `RUN ffmpeg -version` as a build-time assertion. `base-image.yml` builds both arches on a PR, so a regression fails the image build. `docker/entrypoint.sh:102`'s export stays: it is harmless, and it also covers `LIBVA` paths. Prototyped on arm64: ffmpeg runs; comskip still resolves `libavformat.so.60`/`librist.so.4`/`libfontconfig.so.1` from `/usr/lib/aarch64-linux-gnu` (DT_RPATH, `DispatcharrBase:83-87`); Python's ssl is unaffected.
 - **Ledger.** `metrics/curated/defects.yml:31` `ffmpeg-unrunnable-without-ld-library-path` → `fixed`.
 - **Size / upstreamable / duplicates.** S / the ld.so.conf hunk is worth offering upstream by hand; the file differs, so no / none.
@@ -161,7 +165,7 @@ Numbered so a task step can cite one. **A conflict between a constraint and a st
 ### #81 — `X-Forwarded-*` on `uwsgi_pass` locations
 - **Root cause, as it actually is.** Finding 3.
   - `docker/nginx.conf:69-74` sets them with `proxy_set_header`, which applies only to `proxy_pass` locations (`/ws/`, the three relay_go locations, `/proxy/relay/`). None of those readers builds absolute URLs: `grep -rn -i forwarded relay/` is empty.
-  - On `uwsgi_pass` locations, `include uwsgi_params` passes the client's or outer proxy's own headers as `HTTP_*`. `core/utils.py:1008-1043` consumes them, and falls back to `Host` when they are absent.
+  - On `uwsgi_pass` locations, `uwsgi_pass_request_headers` (default on; `docker/dispatcharr_api_params.conf:5-7`) passes the client's or outer proxy's own headers as `HTTP_*`. `core/utils.py:1008-1043` consumes them, and falls back to `Host` when they are absent.
   - The issue's empirical note is the direct-client case, and it is correct behaviour: `Host: internaltest:1234` gave `http://internaltest:1234/`.
   - The only defects are the misleading docstring ("Prefers … (nginx)", `:1003`; "set by our nginx", `:1011`) and the absence of any backend test holding the three shapes.
 - **Fix.** Documentation plus guard tests (G-7), and one nginx comment (G-6). No `uwsgi_param`. **Q2.**
@@ -209,14 +213,14 @@ Numbered so a task step can cite one. **A conflict between a constraint and a st
 - [ ] **Task 4 — `run-affected-tests.sh` and `settings.json`.** Apply Appendix A.3 and A.4. `bash -n` all three scripts. Re-run the harness: **`17 passed, 0 failed`**.
 - [ ] **Task 5 — break-checks.** Each is a deliberate wrong edit, run and reverted. Paste the output of each into the PR.
   1. Restore `_hook_common.sh` alone to seed (`git show "a54b09a9:.claude/hooks/_hook_common.sh" > …`). Measured on the prototype: exactly `test_gate_refuses_loudly_on_a_nonexistent_override`, `test_gate_refuses_loudly_on_an_override_that_is_not_a_root` and `test_edit_hook_refuses_loudly_on_a_nonexistent_override` fail (`14 passed, 3 failed`).
-  2. Replace the `COMMIT_RE` test with the seed's `case "$CMD" in *"git commit"*) ;; *) exit 0 ;; esac`. The five `test_git_*`/`test_cd_*` cases fail.
-  3. Delete the canonical-path `*)` arm in `run-affected-tests.sh`'s `/*)` case, so it exits 0 as seed did. `test_edit_hook_refuses_loudly_on_a_file_outside_the_override` fails.
+  2. Replace the line `[[ "$CMD" =~ $COMMIT_RE ]] || exit 0` with `[[ "$CMD" =~ git[[:space:]]+commit ]] || exit 0`, the seed's literal-prefix filter as a regex. Measured: `13 passed, 4 failed`. The four are `test_git_dash_C_commit_is_gated_on_the_named_tree`, `test_git_dash_C_with_dash_c_options_is_gated`, `test_git_dash_C_add_and_commit_in_one_call_is_blocked` and `test_cd_then_git_dash_C_commit_is_refused_as_undetermined`. The `--git-dir` case stays green only because the temp path's `.git commit` contains the literal. Do not use the seed's `case` statement instead: it leaves `BASH_REMATCH` unset, and the next line's read of it under `set -u` kills the script, so ten tests fail, controls included.
+  3. In `run-affected-tests.sh`'s `/*)` case, replace the inner `*)` arm's body (the comment, the `[ -n "${CLAUDE_HOOK_REPO_ROOT:-}" ] || exit 0` guard and the `early_note` call) with `exit 0 ;;`, so it exits 0 as seed did. Measured: `16 passed, 1 failed`, and the failure is `test_edit_hook_refuses_loudly_on_a_file_outside_the_override`.
 - [ ] **Task 6 — CI, CLAUDE.md and live proof.**
   - Add the `hook-tests` job to `lint.yml` (Appendix B.2) with the Edit tool (constraint 6).
   - CLAUDE.md, anchored edits (`assert count == 1` on each old string):
     - (i) `:68`, "`PreToolUse` on `Bash(git commit*)` gates commits" → "`PreToolUse` on `Bash(git *)` (the script itself decides which git commands are commits, including `git -C <dir> commit`) gates commits".
     - (ii) `:64`, "and a leading `cd <dir> &&` is parsed for the same anchor; any other directory-changing prefix before `git commit`" → "and a leading `cd <dir> &&` or `git -C <dir>` is parsed for the same anchor; any other directory- or repository-changing form (`cd` elsewhere, `pushd`, `--git-dir`, `--work-tree`) before `commit`".
-    - (iii) Append to the same bullet: "A `CLAUDE_HOOK_REPO_ROOT` that is not a worktree root, or that does not contain the edited file, is refused with a note naming it rather than passed silently (#279); `.claude/hooks/tests/test_hooks.sh` tests both hooks directly and runs in `lint.yml`."
+    - (iii) Append to the same bullet: "A `CLAUDE_HOOK_REPO_ROOT` that is not a worktree root, or that does not contain the edited file, is refused with a note naming it rather than passed silently (#279); `.claude/hooks/tests/test_hooks.sh` tests both hooks directly and runs in `lint.yml`. The gate therefore runs, and shows its spinner, on every git command, exiting in milliseconds for anything that is not a commit. Do not narrow the filter back to `Bash(git commit*)`: that is the filter `git -C` bypassed."
   - **After merge**, in a scratch worktree off the new `main`, stage a one-line change to a file under `apps/epg/` and run `git -C <scratch> commit --dry-run -m probe` from a different cwd. The live gate must fire: its note or test run appears. `--dry-run` commits nothing. Record the result on the PR, then delete the scratch worktree.
 
 **Tests added** (all new, in `test_hooks.sh`; none changed or removed):
@@ -299,7 +303,7 @@ It also adds eight `control_*` cases, which pin today's behaviour: the plain for
 >
 > **OSV-Scanner:** `@xmldom/xmldom` 0.8.13 → 0.8.15, lockfile only. It was eight CVSS 8.7 advisories, reached through `mpd-parser`. The worst finding is now 5.7.
 >
-> **Grype:** the only High rows on either image are two ffmpeg 8.1.2 binary CVEs (CFHD, DVB-sub). FFmpeg fixed both in n8.1.3. linuxserver never published 8.1.3, and its fixed 9.0 image is an Ubuntu 26.04 platform move. This PR records them as **accepted risk until 2026-10-31**, scoped to `ffmpeg 8.1.2 binary`. The reason sits in the rule, and a step fails the job once the date passes. Everything else still blocks, and the informational step still prints both CVEs. The 9.0 migration that deletes the rules is PR G-9. Local measurements: <paste 2.0/2.1/break-checks>.
+> **Grype:** the blocking step (High, fixable only) fails on exactly two ffmpeg 8.1.2 binary CVEs (CFHD, DVB-sub). The same binary carries 14 more High CVEs with no fix anywhere, which `--only-fixed` never counted; this PR does not change that. FFmpeg fixed both in n8.1.3. linuxserver never published 8.1.3, and its fixed 9.0 image is an Ubuntu 26.04 platform move. This PR records them as **accepted risk until 2026-10-31**, scoped to `ffmpeg 8.1.2 binary`. The reason sits in the rule, and a step fails the job once the date passes. `vuln-scan.yml` runs on a daily `schedule:`, so on 2026-11-01 `main` goes red without anyone pushing. Everything else still blocks, and the informational step still prints both CVEs. The 9.0 migration that deletes the rules is PR G-9. Local measurements: <paste 2.0/2.1/break-checks>.
 
 ### PR G-4 — the base image gains `git`, and ffmpeg runs without the entrypoint
 
@@ -322,7 +326,7 @@ It also adds eight `control_*` cases, which pin today's behaviour: the plain for
 - [ ] **Task 2 — build natively and prove it** (constraint 9). `cd <wt> && docker build -f docker/DispatcharrBase -t dispatcharr-base:g4 .`, then:
   - `docker run --rm --entrypoint sh dispatcharr-base:g4 -c 'ffmpeg -version | head -1; git --version; ldd /usr/local/bin/comskip | grep -E "avformat|rist|fontconfig"'`. Expected: ffmpeg 8.1.2, a git version, and comskip still on `/usr/lib/<multiarch>/` for all three.
   - Build an AIO on it (`docker build -f docker/Dockerfile --build-arg BASE_IMAGE=dispatcharr-base:g4 -t dispatcharr-e2e-g4:local .`) and bring it up with `DISPATCHARR_E2E_IMAGE=dispatcharr-e2e-g4:local` plus the stack-scoping variables `scripts/e2e_up.sh:27-53` reads. Never touch the shared stack.
-  - Run the `streaming` and `dvr` Playwright projects against it; they spawn ffmpeg, VLC and comskip. Paste results.
+  - Run the `streaming` and `dvr` Playwright projects against it. They spawn ffmpeg, and `e2e/tests/dvr/comskip.spec.ts` runs comskip. **Nothing in `e2e/` exercises VLC** (`git grep -i vlc -- e2e/` finds only a comment in `e2e-upstream/scripts/make-asset.sh:13`). So add two explicit VLC checks: `docker run --rm --entrypoint sh dispatcharr-base:g4 -c 'su -s /bin/sh nobody -c "cvlc --version | head -1"'` (VLC refuses to run as root), and one tune through a channel on the built-in VLC stream profile against the AIO, with the first bytes received. Paste all results.
 - [ ] **Task 3 — break-check.** Remove the ld.so.conf line and rebuild natively on arm64. The build must fail at the `ffmpeg -version` step with the librist symbol error. Restore. On an amd64 host this break-check cannot redden (finding 2), so say which host you ran it on.
 - [ ] **Task 4 — ledger** (second commit, constraint 8). In `defects.yml:31`, set `status: fixed, fixed_in: <PR>, status_changed: <merge date>`. Validate with `python -m metrics.build --validate-only --curated metrics/curated`.
 - [ ] **Task 5 — after merge.**
@@ -365,7 +369,8 @@ It also adds eight `control_*` cases, which pin today's behaviour: the plain for
   ```nginx
   # proxy_set_header applies only to the proxy_pass locations below (/ws/ and
   # the relay_go ones), none of which builds absolute URLs. The uwsgi_pass
-  # locations deliberately get no X-Forwarded-* of nginx's own: uwsgi_params
+  # locations deliberately get no X-Forwarded-* of nginx's own:
+  # uwsgi_pass_request_headers (default on; see dispatcharr_api_params.conf)
   # forwards the client's -- or an outer proxy's -- and core/utils.py's
   # get_host_and_port falls back to Host, which is what keeps a Docker port
   # remap and an outer TLS proxy both correct (#81).
@@ -392,11 +397,11 @@ It also adds eight `control_*` cases, which pin today's behaviour: the plain for
   1. Change `:1012` to read `request.META.get("HTTP_X_FORWARDED_HOST_DISABLED")`, so branch 1 goes dead. The outer-proxy and forwarded-port tests fail.
   2. Model the naive nginx fix in the first test by adding `HTTP_X_FORWARDED_HOST="internaltest:9191"` (what `$host:$server_port` would send). It fails with `:9191`. That shows exactly the regression the two e2e pins would also catch.
   Restore both.
-- [ ] **Task 3 — docstring.** Replace "Prefers X-Forwarded-Host/X-Forwarded-Port (nginx)." (`:1003`) with "Prefers X-Forwarded-Host/X-Forwarded-Port when a client or an outer reverse proxy sends them; this image's nginx forwards them unchanged on uwsgi_pass locations and sets none of its own (#81)." Replace `# 1. Try X-Forwarded-Host (may include port) - set by our nginx` (`:1011`) with `# 1. Try X-Forwarded-Host (may include port) - from an outer proxy, never our nginx`.
+- [ ] **Task 3 — docstring.** Replace "Prefers X-Forwarded-Host/X-Forwarded-Port (nginx)." (`:1003`) with "Prefers X-Forwarded-Host/X-Forwarded-Port when a client or an outer reverse proxy sends them; this image's nginx sets none of its own on uwsgi_pass locations and passes the client's through (uwsgi_pass_request_headers, on by default) (#81)." Replace `# 1. Try X-Forwarded-Host (may include port) - set by our nginx` (`:1011`) with `# 1. Try X-Forwarded-Host (may include port) - from an outer proxy, never our nginx`.
 
 **PR description draft**
 
-> Closes #81. The report assumed nginx was meant to supply `X-Forwarded-*` on `uwsgi_pass` locations. It isn't, and supplying them would break things. `uwsgi_params` already forwards an outer proxy's headers, so TLS-terminating proxies get `https` URLs today. A direct client on a Docker port remap gets its own `Host`, which two e2e specs pin. nginx's `$host:$server_port` would give both of them the wrong answer. So this PR fixes the docstring that said "set by our nginx", and pins the three shapes in `core.tests`, so the tempting fix fails a test. The nginx comment is in G-6.
+> Closes #81. The report assumed nginx was meant to supply `X-Forwarded-*` on `uwsgi_pass` locations. It isn't, and supplying them would break things. nginx already forwards an outer proxy's headers (`uwsgi_pass_request_headers`, on by default), so TLS-terminating proxies get `https` URLs today. A direct client on a Docker port remap gets its own `Host`, which two e2e specs pin. nginx's `$host:$server_port` would give both of them the wrong answer. So this PR fixes the docstring that said "set by our nginx", and pins the three shapes in `core.tests`, so the tempting fix fails a test. The nginx comment is in G-6.
 
 ### PR G-8 — the "no TS sync" warning escapes its snippet
 
@@ -407,7 +412,7 @@ It also adds eight `control_*` cases, which pin today's behaviour: the plain for
 - **upstreamable** yes
 
 - [ ] **Task 1 — test, red.** In `StreamFromProviderStatusMappingTests` (`:134`), beside `test_php_error_200_cascades_to_next_candidate` (`:417`), add `test_a_non_ts_body_is_logged_without_raw_control_bytes`. It uses the same `_fake_upstream`/`raw.read` setup as `:420-429`, with body `b"\x00\x1b[31m<b>Warning</b>\r\n\x07tail"` followed by a TS candidate. Wrap the call in `self.assertLogs(views.logger, "WARNING") as cm`. Take the "no TS sync" record and assert two things: `not any(ord(c) < 32 for c in msg)`, and `"\\x1b" in msg`. It must fail on the seed.
-- [ ] **Task 2 — fix** (Appendix F). `snippet = repr(peek[:120]) if peek else "(empty)"`, and log `snippet` as is. Drop the `.replace("\n", " ")[:120]`, because `repr` already escapes and already truncates at 120 bytes of input. Keep the `# credential-logging: ignore - …` marker on the `logger.warning(` line, so `scripts/check_credential_logging.py` still clears it.
+- [ ] **Task 2 — fix** (Appendix F). `snippet = repr(peek[:120]) if peek else "(empty)"`, and log `snippet` as is. Drop the `.replace("\n", " ")[:120]`, because `repr` already escapes and already truncates at 120 bytes of input. Keep the `# credential-logging: ignore - …` marker on the `logger.warning(` line, so `scripts/check_credential_logging.py` still clears it. The marker's continuation comment cites `_redact_url` at `(:3621)`; the helper is at `:3578` on the seed and `:3580` after this PR's two added lines, so correct that one reference. Four other comments in the file carry the same stale `(:3621)` (seed `:3205`, `:3212`, `:3224`, `:3291`). They are left alone: they are outside this PR's lines.
 - [ ] **Task 3 — break-check.** Restore the seed `decode(..., errors="replace")` line. The test fails on `\x1b`. Restore.
 - [ ] Run `apps.timeshift.tests` in your own container (constraint 5), whole label, Redis flushed first. A log line in a Gate 2 module is not relevant here: `apps/timeshift/views.py` is not in `scripts/coverage_live_path.coveragerc`'s nine modules. Check with `grep -c timeshift scripts/coverage_live_path.coveragerc`, which should print `0`.
 
@@ -424,11 +429,11 @@ It also adds eight `control_*` cases, which pin today's behaviour: the plain for
 - **Measured facts it rests on** (2026-09-23):
   - `lscr.io/linuxserver/ffmpeg:version-9.0-cli` = `sha256:1e21ed2f3ebf2a17d654cf96e5bb7f7e7cd4b282796cc3490043683194e59cdf`. Re-resolve it (constraint 7).
   - Its OS is 26.04 `resolute`.
-  - deadsnakes `resolute` publishes `python3.13`, `resolute-pgdg` publishes `postgresql-17`, and `packages.redis.io` serves `resolute`.
+  - deadsnakes `resolute` publishes `python3.13`, `resolute-pgdg` publishes `postgresql-17`, and `packages.redis.io` serves `resolute`. **Re-measure all three at implementation time.** Constraint 7 covers pins, not apt availability, and a PPA can drop a series.
   - A `-c copy` remux on 9.0 prints `frame= … speed=1.54x`, so `relay/ffmpeg/progress.go:40`'s `frame=` gate still sees progress. That keeps parity-matrix row 4 alive.
   - `/usr/local/lib/x86_64-linux-gnu/dri` exists in 9.0, as `docker/entrypoint.sh:101` assumes.
   - 9.0's librist is 4.12.1.
-- **Unknown:** why upstream pinned back from 9.0 (`fd413f0c`, 2026-08-19, "compatibility with the current environment"; no issue or PR records it). Treat every runtime surface as suspect until measured.
+- **Unknown:** why upstream pinned back from 9.0 (`fd413f0c`, 2026-08-19, "compatibility with the current environment"; no issue or PR records it). `fd413f0c`'s own diff replaced a comment reading "Ubuntu 26.04 dropped the comskip package". The comskip stage had been built against 26.04 the day before (`ddc00483` … `12b121cb`, 2026-08-18), so whatever drove the pin-back was a runtime problem, not a build one. That is why Task 3 is runtime measurement. Treat every runtime surface as suspect until measured.
 
 - [ ] **Task 1.** Resolve the 9.0 digest and edit both `FROM`s. Keep `python3.13`: E's #128 rests on it.
 - [ ] **Task 2 — native build.** `docker build -f docker/DispatcharrBase -t dispatcharr-base:g9 .`. The most likely break is the comskip compile against resolute's libav (the `sed` at `:92-97` and the `LDFLAGS` at `:103`). The comments at `:69-76` were written for 26.04, so it may build clean. If it fails, STOP and report the compiler output. Do not patch comskip beyond what `:69-76` already anticipates without a ruling. G-4's `ffmpeg -version` assertion must pass.
@@ -437,6 +442,7 @@ It also adds eight `control_*` cases, which pin today's behaviour: the plain for
   - (b) AIO on the new base, as in G-4 Task 2. Run the `streaming`, `streaming-failover`, `streaming-split` and `dvr` projects, plus `lifecycle` `restart-persistence`.
   - (c) Backend `apps.channels.tests`, `apps.proxy.tests` and `apps.timeshift.tests` inside a container of that AIO.
   - (d) The four blocking scanner invocations from `vuln-scan.yml`, with the pinned digests and `-v /var/run/docker.sock:/var/run/docker.sock`, against `dispatcharr-base:g9` and the AIO, **without** the rules file. All must exit 0. Paste every result.
+  - (e) Record the count of High ffmpeg rows with and without a fix from Grype's informational table, on the 8.1.2 base and on `dispatcharr-base:g9`. The seed figure is 16 High, 2 with a fix. The migration's benefit is then measured rather than assumed.
 - [ ] **Task 4.** Delete both rules from the rules-file step. Keep the step and the expiry check with an empty list (`ignore: []`), so the next accepted risk has a home. Update the prose: CLAUDE.md `:63` "the production ffmpeg (8.1.2, `docker/DispatcharrBase`)" becomes 9.0, and so do `:135`'s "production ffmpeg (8.1.2)" and go-tests.yml's three comments. The relay's captured corpus stays labelled 8.1.2 (`relay/internal/relaytest/corpus.go:23`, `CAPTURE.md`), because it is a verbatim historical capture.
 - [ ] **Task 5 — break-check.** Scan the published 8.1.2 `:base` with the emptied rules file: exit 2. That shows removing the rules is only safe on the new base.
 - [ ] **Task 6 — after merge.** Wait for `base-image.yml`, dispatch `ci.yml` (G-4 Task 5's reason), then dispatch `vuln-scan.yml`: green. Watch the next scheduled go-tests `build` run for row 4.
@@ -477,8 +483,8 @@ Duplicates: none found in this category.
 - **Q1 — #277's Grype half: accepted risk now, migration later?**
   - **Default (planned): both.** G-3 accepts CVE-2026-70632/-70628 on ffmpeg 8.1.2 until 2026-10-31 with an enforced expiry. G-9 migrates to 9.0/26.04 and deletes the rules.
   - **(b) Migration only.** G-3 ships just the xmldom fix, and Grype stays red until G-9 lands. G-9 is L, and nothing upstream records why the 9.0 move was reverted.
-  - **(c) Stay on 8.1.2 and renew the ignore.** Not recommended: the 8.1 line on linuxserver is frozen at 8.1.2, so every future ffmpeg CVE lands here unfixable.
-  - The accepted risk in plain terms: a malicious or compromised provider stream in AVI (CFHD) or WTV (DVB subtitles), probed by an FFmpeg-profile channel or a DVR recording, can corrupt heap memory in the spawned ffmpeg.
+  - **(c) Stay on 8.1.2 and renew the ignore.** Not recommended: the 8.1 line on linuxserver is frozen at 8.1.2, so that is already happening. 14 of the binary's 16 High CVEs have no fix in any version today.
+  - The accepted risk in plain terms: a malicious or compromised provider stream in AVI (CFHD) or WTV (DVB subtitles), probed by an FFmpeg-profile channel or a DVR recording, can corrupt heap memory in the spawned ffmpeg. That is the whole of what the two rules accept. The binary's 14 unfixed High CVEs were never counted by the blocking step (`--only-fixed`), before or after G-3. The expiry is enforced on the daily `schedule:` run as well as on pushes, so the exception cannot outlive its date unnoticed.
 - **Q2 — #81: close with documentation and guard tests, or change nginx?**
   - **Default (planned): G-7 + a G-6 comment.** No behaviour change. Evidence: the naive `uwsgi_param` fix reddens two e2e pins and breaks outer TLS proxies.
   - **(b) Trust-gate the forwarded headers** on `DISPATCHARR_TRUSTED_PROXIES`, B-7's set. Blocks nothing an attacker cannot already do with `Host`, and costs unconfigured Traefik users their `https` URLs under B-7's loopback default.
@@ -950,7 +956,7 @@ Grype's ignore-rule fields at v0.117.0 (`grype/match/ignore.go:34-42`) are `vuln
      nginx libargtable2-0 \
      vlc-bin vlc-plugin-base \
      && apt-get clean && rm -rf /var/lib/apt/lists/*
-@@ -175,4 +175,17 @@
+@@ -175,4 +175,21 @@
  # symlink and replacing the IANA UTC zone with the host timezone.
  RUN rm -f /etc/localtime && cp -a /usr/share/zoneinfo/Etc/UTC /etc/localtime
  
@@ -961,6 +967,10 @@ Grype's ignore-rule fields at v0.117.0 (`grype/match/ignore.go:34-42`) are `vuln
 +# ffmpeg died on rist_peer_config_defaults_set_versioned wherever
 +# docker/entrypoint.sh had not exported LD_LIBRARY_PATH -- the hook container
 +# and CI's `--entrypoint ""` jobs. amd64 already sorted /usr/local/lib first.
++# Production is unchanged: entrypoint.sh already exports
++# LD_LIBRARY_PATH=/usr/local/lib for every supervised process, so VLC's distro
++# libavformat60 already loads the 4.11 librist there. This only makes the
++# contexts that skip the entrypoint (hook container, CI, docker exec) match.
 +# comskip is unaffected: it carries DT_RPATH to the distro libs (see above).
 +# The ffmpeg run fails this build if the ordering ever regresses on either arch.
 +RUN printf '/usr/local/lib\n' > /etc/ld.so.conf.d/00-usr-local-lib.conf \
@@ -1088,7 +1098,8 @@ test_nginx_rerendered_on_restart() {
 +            # which made the whole log (and a test run's output) binary (#183).
 +            snippet = repr(peek[:120]) if peek else "(empty)"
              logger.warning(  # credential-logging: ignore - already redacted by
-                 # the local _redact_url() helper (:3621), not redact_url().
+-                # the local _redact_url() helper (:3621), not redact_url().
++                # the local _redact_url() helper (:3580), not redact_url().
                  "Timeshift upstream returned %d but no TS sync in first %d "
                  "bytes (likely PHP error): %s, url=%s",
                  response.status_code,
