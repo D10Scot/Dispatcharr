@@ -464,7 +464,8 @@ Sizes: S is under 30 changed lines, M is under 150, L is more.
   `regex.sub(r"\$(\d+)", r"\\g<\1>", replacement)`. This is the `$N` half of
   `translate_js_replacement` at `apps/channels/api_views.py:1560`, and it satisfies the issue's
   identity property. The expected values change to `transform_url("/", "(.*)$", "$0") == "/"` and
-  `[$0]` giving `[a]`; the `$02-$01` and `[$1]` rows are unchanged. Its cost: an operator who types
+  `[$0]` giving `[a]`, and `[$00]` also gives `[a]`, because `\g<00>` is group 0. The `$02-$01` and
+  `[$1]` rows are unchanged. Its cost: an operator who types
   `$0` sees a literal `$0` in the SPA's M3U-profile preview, while the WebSocket preview and the live
   stream substitute the whole match. The code shape and the test names are the same under both rules.
   Only the expected values and one regex differ.
