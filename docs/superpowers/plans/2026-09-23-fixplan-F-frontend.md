@@ -154,9 +154,10 @@ last.
   docker rm -f dispatcharr-e2e-f<n> && docker volume rm dispatcharr-e2e-f<n>-data && docker network rm dispatcharr-e2e-f<n>-net
   ```
   **Never run `e2e_up.sh --reset`, `--down` or `--stop` in this session**, with or without the
-  overrides. `destroy()` (`scripts/e2e_up.sh:68-73`) also removes the shared fake provider
-  `e2e-upstream`, whatever the overrides say, which breaks every other agent's run mid-test
-  (#168). For the same reason, if an `e2e-upstream` container is already running (`docker ps
+  overrides. `--reset` and `--down` call `destroy()` (`scripts/e2e_up.sh:68-73`), which also
+  removes the shared fake provider `e2e-upstream`. `--stop` does not call `destroy()`, but it
+  runs `docker stop` on that same provider directly (`:120-127`). Either way the overrides do not
+  protect it, and every other agent's run breaks mid-test (#168). For the same reason, if an `e2e-upstream` container is already running (`docker ps
   --filter name=e2e-upstream`), add `DISPATCHARR_E2E_SKIP_UPSTREAM_BUILD=1` to the first command.
   Otherwise a rebuild whose image id differs recreates that shared container
   (`scripts/e2e_up.sh:181-194`).
