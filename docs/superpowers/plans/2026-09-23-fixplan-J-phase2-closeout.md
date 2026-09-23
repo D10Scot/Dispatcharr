@@ -5,7 +5,7 @@
 **Goal.** Pay the debts Phase 2 recorded and did not pay: delete the dead HLS package and its two
 dead consumers, delete the `RedisKeys` builders nothing calls, rebuild a Django-side ORM ratchet
 over the modules Gate 1's retirement left unguarded, fix the isolated coverage driver that drops
-every flag after its first, and settle what happens to the untracked Tower comparison datasets.
+every flag after its first.
 
 **Architecture.** No behaviour changes anywhere in this category. Three PRs delete or re-word
 code nothing executes; one adds a regression test for a local driver script; one adds a test
@@ -52,7 +52,6 @@ items); the only tracker issue in it is **#336**.
 | `apps/proxy/tests/test_tune_path_query_ledger.py` | J-3 | new |
 | `scripts/coverage_live_path_isolated.sh` | J-4 | forwards every argument |
 | `tests/test_coverage_isolated_dropped_shape_only.py` | J-4 | new |
-| `docs/comparisons/README.md` + two datasets | J-4 | new (R6, open question Q2) |
 | `CLAUDE.md` | J-1, J-2, J-3 | the sentences each PR invalidates, listed per PR |
 
 ### Overlap with other categories
@@ -198,28 +197,13 @@ it and leave it for the next PR that edits the rcfile for a real reason. J-1's P
 unused. It stays in `pyproject.toml`: plugins run unsandboxed from `/app/data/plugins/` and may import
 anything the image carries, so removing a package from the image can break a user's plugin without any
 test here seeing it. Dropping it also puts `pyproject.toml` and `uv.lock` in the PR, which forces every
-backend label. Open question Q3 lets the user overrule this.
+backend label. Open question Q2 lets the user overrule this.
 
-### R6 — the Tower comparison datasets: commit both, redacted, with a README
+### R6 — withdrawn: input item 7 is out of scope
 
-`docs/comparisons/` in the main checkout holds two untracked files:
-the 2026-09-09 capture (Phase 1 PR 7) the input file names, and a **second** capture written
-2026-09-23 20:32 (Phase 2, image `b2a47ae9`) that did not exist when the input file was written.
-The memory note `tower-side-by-side-capture` says both are meant to live there.
-
-Scanned at planning time:
-
-| check | 09-09 file | 09-23 file |
-|---|---|---|
-| channel UUIDs | none | **one**, `469a…a7e1`, deliberately kept (the file's own `method` says so) |
-| URLs | none | `http://relay_go.` only (an nginx upstream name) |
-| IPv4 | RFC 1918 only: `10.0.1.4`, `.50`, `.99`, plus `0.0.0.0` | same, plus `10.0.1.64` |
-| credential-shaped keys | none | none |
-
-The repository is **public**. CLAUDE.md says a channel UUID is a secret. So the recommendation is:
-commit both, replace the one UUID in the 09-23 file with `<redacted-channel-uuid>` before staging, and
-keep the private addresses (non-routable, and they are the capture's method). J-4 carries them, with
-a README. Q2 asks the user to confirm, because publishing is theirs to decide.
+User ruling, 2026-09-23: the `docs/comparisons/*.json` dataset is a local-only comparison file and
+stays untracked. This plan does not commit it, ignore it or document it. The ruling number is kept so
+R7 and R8 keep their names.
 
 ### R7 — `apps/proxy/views.py` and `apps/proxy/signals.py` go with the package
 
@@ -294,14 +278,9 @@ discovered `ProxyViewSet`), and the collectors moving by exactly the deleted cod
 - **Routing.** `scripts/coverage_live_path*` is aliased in `dispatcharr/test_discovery.py:53` to Gate 2's own two labels, `apps.proxy.tests` and `apps.channels.tests`. `tests/test_ci_test_routing.py:71` already pins that for this exact script. The new test file adds the root `tests` label.
 - **Size** S. **upstreamable** no.
 
-### Item 7 — the untracked `docs/comparisons/` dataset → J-4 (R6, Q2)
+### Item 7 — the untracked `docs/comparisons/` dataset → out of scope (R6)
 
-Commit it, and its 2026-09-23 sibling, as described in R6. **README line** (the file's first
-paragraph, J-4 Task 3): "Side-by-side captures of upstream Dispatcharr and this fork running on the
-same host (Tower). Each file is one capture: `meta` says how it was taken and what is not comparable,
-`findings` are the conclusions, and the raw capture files are kept out of the repo. Provider URLs,
-stream hashes and channel UUIDs are redacted. Private LAN addresses are kept because they describe
-the method."
+Withdrawn by user ruling. No PR touches `docs/comparisons/`.
 
 ### Item 8 — CLAUDE.md sentences these edits invalidate
 
@@ -973,12 +952,12 @@ all read the ORM by design now, and a line-keyed allowlist goes red when lines m
 
 ---
 
-## PR J-4 — the isolated coverage driver forwards every flag; the Tower datasets
+## PR J-4 — the isolated coverage driver forwards every flag
 
 - **Branch:** `fix/J-4-isolated-coverage-flags`.
 - **Closes:** no tracker issue (found by 2d-4's implementer, never filed).
 - **Labels:** `tests`, `apps.proxy.tests`, `apps.channels.tests` (the last two from the `scripts/coverage_live_path` alias, `dispatcharr/test_discovery.py:53`).
-- **Files:** modify `scripts/coverage_live_path_isolated.sh`; create `tests/test_coverage_isolated_dropped_shape_only.py`, `docs/comparisons/README.md`, and the two datasets (Task 3, subject to Q2).
+- **Files:** modify `scripts/coverage_live_path_isolated.sh`; create `tests/test_coverage_isolated_dropped_shape_only.py`.
 
 ### Task 1: the failing test
 
@@ -1066,25 +1045,15 @@ all read the ORM by design now, and a line-keyed allowlist goes red when lines m
 - [ ] **Step 4.** Re-run the test module. All three pass. Run `bash -n scripts/coverage_live_path_isolated.sh` and, if installed, `shellcheck scripts/coverage_live_path_isolated.sh` (no new findings against the seed's).
 - [ ] **Step 5. Break-check.** Restore `${1:---report}` at `:104` only. The first test must fail again with the `--write-floor /tmp/combined` line. Revert.
 - [ ] **Step 6.** Run `manage.py test --keepdb tests.test_ci_test_routing -v1`: it already pins this script's routing (`tests/test_ci_test_routing.py:71`) and must stay green.
-
-### Task 3: the Tower datasets (only if Q2 is answered yes or left at the default)
-
-- [ ] **Step 1. Occupancy check.** The files live in the main checkout, which another session writes. Run `stat -f '%Sm %N' /Users/dion/git/Dispatcharr/docs/comparisons/*`. If either file changed in the last few minutes, **STOP and ask the lead**: the capture may still be in progress (CLAUDE.md, multi-agent hazards).
-- [ ] **Step 2.** Copy both files into `<wt>/docs/comparisons/` unchanged. In the 09-23 copy, replace every occurrence of the one channel UUID with `<redacted-channel-uuid>`, and change the `method` sentence "the channel UUID of the running stream is kept" to "the channel UUID of the running stream is redacted". Do not edit the main checkout's copy.
-- [ ] **Step 3.** Re-run the secret scan on the copies; it must print no UUID, no `http(s)://` beyond `http://relay_go.`, and no credential-shaped key:
-  ```bash
-  cd <wt>/docs/comparisons && grep -o -E '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' *.json; \
-    grep -o -E 'https?://[^" ]+' *.json | sort -u; \
-    grep -o -i -E '"[^"]*(password|token|secret|api_key)[^"]*"\s*:\s*"[^"]+"' *.json; \
-    python3 -c "import json,sys;[json.load(open(f)) for f in sys.argv[1:]];print('json ok')" *.json
-  ```
-- [ ] **Step 4.** Create `docs/comparisons/README.md` with item 7's paragraph, then a two-row table: file, date, what was compared (upstream v0.27.0 against fork at Phase 1 PR 7; the same against fork at Phase 2, image `b2a47ae9`), and one line each from its own `caveats` saying why the upstream columns are not like-for-like.
-- [ ] **Step 5.** Commit (separate stage and commit calls), push, open the PR.
+- [ ] **Step 7.** Commit (separate stage and commit calls), push, open the PR.
 
 **PR description draft**
 
 ```
-fix(fixplan-J): J-4 -- coverage_live_path_isolated.sh forwards every flag; commit the Tower datasets
+fix(fixplan-J): J-4**PR description draft**
+
+```
+fix(fixplan-J): J-4 -- coverage_live_path_isolated.sh forwards every flag
 
 ## The bug
 The isolated driver's final call was `coverage_live_path.sh ${1:---report} /tmp/combined`, so
@@ -1095,10 +1064,6 @@ census. Found by the 2d-4 implementer; it was masked because the containers moun
 New tests/test_coverage_isolated_dropped_shape_only.py stubs docker on PATH and asserts the
 forwarded command. The first test failed before the fix and passes after; two controls pass on
 both sides. Break-check: restoring `${1:---report}` turns it red again.
-
-## Also: docs/comparisons/
-Two upstream-vs-fork captures from the same host, with a README. The 2026-09-23 capture's one
-channel UUID is redacted; the repo is public and CLAUDE.md treats a channel UUID as a secret.
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
 ```
@@ -1122,8 +1087,8 @@ measured on the 2d-1 branch.
 ## Decision memos
 
 None. No item in category J is on the brief's policy list (#82, #94, #16, #277, #109, #133). R2
-(the ratchet's shape) and R6 (publishing the datasets) are judgement calls with a recommendation
-each; Q1 and Q2 below let the user overrule them before implementation.
+(the ratchet's shape) and R5 (keeping `m3u8`) are judgement calls with a recommendation each; Q1
+and Q2 below let the user overrule them before implementation.
 
 ---
 
@@ -1137,7 +1102,7 @@ each; Q1 and Q2 below let the user overrule them before implementation.
 | 4 — `docker/nginx.conf` canary comment | — | PR J-1 Task 4 |
 | 5 — three shim docstrings | — | PR J-2 Task 3 |
 | 6 — isolated script drops `--shape-only` | — | PR J-4 Tasks 1-2 |
-| 7 — `docs/comparisons/` dataset | — | PR J-4 Task 3 (R6, Q2) |
+| 7 — `docs/comparisons/` dataset | — | **out of scope** by user ruling 2026-09-23 (R6); stays untracked |
 | 8 — CLAUDE.md sentences | — | J-1 Task 6 (seven), J-2 Task 4 (one), J-3 Task 4 (one); `:105` checked and left |
 
 **Tracker notes for the lead (deferred writes).** #336 closes via J-1; remove `needs-triage` and
@@ -1155,9 +1120,5 @@ prose (J-2 Task 3); `apps/proxy/apps.py:8-14` (past tense, still true); the `m3u
   drives plus a narrow static pin (R2). The alternative is the literal reading of A16.12: relocate
   the static scanner and its line-keyed allowlist, which is about 62 entries. That is a different
   PR of roughly three times the size. Default if unanswered: R2.
-- **Q2 — publish the Tower datasets?** The repository is public. The files carry RFC 1918
-  addresses, host hardware and container names, and after redaction no UUID or URL. Default if
-  unanswered: commit both, redacted, as in R6. If the answer is no, J-4 drops Task 3 and nothing
-  else changes.
-- **Q3 — drop `m3u8`?** R5 keeps it for plugin compatibility. Dropping it is a separate one-line
+- **Q2 — drop `m3u8`?** R5 keeps it for plugin compatibility. Dropping it is a separate one-line
   PR touching `pyproject.toml` and `uv.lock`, which runs every backend label.
