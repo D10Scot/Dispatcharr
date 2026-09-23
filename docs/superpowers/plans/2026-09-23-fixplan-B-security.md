@@ -411,8 +411,10 @@ as `docs/agents/metrics.md` requires for an issue closed without a fix.
      `hide_adult_content: True`, adult movie. `resolve_authorization` is patched to return that
      user. Asserts 403 and `stream_vod` never called (patched with `wraps` to count calls).
    - `test_stream_vod_redirect_branch_streamed_an_adult_movie_to_a_hide_adult_user` — Redirect
-     default on, `_select_vod_stream` returns the real adult movie as `content_obj`. Asserts 403 and
-     no `HttpResponseRedirect`.
+     default on. The `content_id` passed is a UUID **not in the database**, so call (4)'s lookup
+     returns `None` and lets the request through. This is the stream-id fallback shape that only
+     call (2) can see. `_select_vod_stream` is patched to return the real adult movie as
+     `content_obj`. Asserts 403 and no `HttpResponseRedirect`.
    - `test_stream_vod_session_branch_streamed_an_adult_movie_to_a_hide_adult_user` — Redirect off,
      `session_id` set, manager patched. Asserts 403 and `stream_content_with_session` not called.
    - `test_an_adopted_idle_session_streamed_an_adult_movie_to_a_hide_adult_user` — Redirect on, no
@@ -426,12 +428,23 @@ as `docs/agents/metrics.md` requires for an issue closed without a fix.
    - `test_a_hide_adult_user_still_streams_a_non_adult_movie` — the control. Asserts the Redirect.
 3. Run. The four `..._streamed_an_adult_movie_...` tests fail, each getting a redirect or a manager
    call. The three controls pass. Record the messages.
-4. Apply Appendix B. Run: seven pass.
+4. Apply Appendix B. Run: seven pass. Each failing test has exactly one intended refusal. If a test
+   passes by a different call than this one, it is shadowed, and a break-check below will not
+   redden:
+
+   | Test | Refused by |
+   |---|---|
+   | `test_stream_xc_movie_streamed_...` | the `stream_xc_movie` call; `stream_vod` is never reached |
+   | `test_stream_vod_redirect_branch_streamed_...` | call (2); call (4) passes, because the UUID is unknown |
+   | `test_stream_vod_session_branch_streamed_...` | call (3); call (4) is skipped, because `session_id` is set |
+   | `test_an_adopted_idle_session_streamed_...` | call (4), before `_find_idle_vod_session` is consulted |
 5. **Break-check A.** Change the helper's admin test from `< User.UserLevel.ADMIN` to `<= User.UserLevel.ADMIN`.
    `test_an_admin_with_hide_adult_content_still_streams_an_adult_movie` alone reddens. Revert.
 6. **Break-check B.** Delete the call in the session branch only. Only the session-branch test
    reddens. Revert.
 6a. **Break-check C.** Delete the first-request call (4) only. Only the adopted-idle-session test
+   reddens. Revert.
+6b. **Break-check D.** Delete the Redirect-branch call (2) only. Only the Redirect-branch test
    reddens. Revert.
 7. Flip the e2e pin (below). Run the `streaming` project's file against a local stack
    (`scripts/e2e_up.sh`, then `npx playwright test tests/streaming/vod-adult-streamable.spec.ts`) on
@@ -701,8 +714,9 @@ relies on the M3U_EPG network ACL". Validate the ledger. The `test.fail` pin sta
    `api_views.py:18` is the same `requests` module object that `core.http_security` imports, so a
    site still on `http_requests.get` also hits the mock. What it does not do is pass
    `allow_redirects=False`. On the unfixed tree all three tests fail. `_fetch_manifest` and the
-   install view fail on the kwarg assertion. The detail view fails on both, because it follows the
-   redirect.
+   install view fail on the kwarg assertion. The detail view fails on both. A mock follows nothing: the
+   view receives the fake 302, `raise_for_status()` does nothing on it, and the view answers 200
+   with the fake's `json()`. That is why the 502 assertion fails too.
 5. **Break-check.** After step 2, revert `:1149` alone to `http_requests.get(manifest_url,
    timeout=MANIFEST_FETCH_TIMEOUT)`. Only `test_repo_manifest_detail_followed_a_redirect_to_loopback`
    reddens, and its failure names the missing `allow_redirects=False`. Revert. Repeat once for `:780`
@@ -960,20 +974,24 @@ meaning.** Under (a) it pins configured trust. Under (b) and (c) it still pins t
 
 - **(a)** As written above.
 - **(b)** No default change, no flip and no e2e change. Branch `fix/B-7-trusted-proxies-warning`.
-  Files: `dispatcharr/utils.py` and `core/tests/test_core.py`. `_trusted_proxy_networks()` logs one
+  Files: `dispatcharr/utils.py`, `core/tests/test_core.py` and `README.md`. `_trusted_proxy_networks()` logs one
   WARNING, once per process, the first time it runs with `TRUSTED_PROXIES_ENV` unset. The message
   names the variable and says a LAN client can set its own address. Add one test,
   `test_an_unset_trusted_proxies_env_warned_nothing`, with `assertLogs` on the `dispatcharr.utils`
-  logger. Break-check: delete the warning, and the test reddens. #182 then closes as `wontfix` with
+  logger. Its `setUp` sets `dispatcharr.utils._trusted_proxies_key = None`. The function returns
+  early when the key is unchanged (`utils.py:322-323`), so the warning fires once per process. Any
+  earlier test in the same process that built the default would otherwise leave `assertLogs` with
+  nothing to see (memory: warm state hides a query). Break-check: delete the warning, and the test reddens. #182 then closes as `wontfix` with
   a comment linking the PR. There is no ledger row to annotate, because #182 has none. `README.md:109`
   gains one sentence about the warning. Labels: all fifteen, because `dispatcharr/` is a shared
   prefix.
 - **(c)** The default tuple becomes `("127.0.0.0/8", "::1/128", "172.16.0.0/12")`. The Task 7.1
   flip must change its peer. `172.18.0.1` is inside `172.16.0.0/12`, so a flip on that peer would
   pass before the fix, and break-check 7.1.4 could not redden. Use peer `192.168.1.10`. Add a
-  second control with peer `10.0.0.5`, asserting that the peer is returned. Add a third test for a
-  `172.18.0.1` peer, asserting that its header is honoured. Break-check: put `192.168.0.0/16` back
-  in the tuple, and only the `192.168.1.10` test reddens. **Keep Task 7.2 anyway.** Docker
+  **second flip** with peer `10.0.0.5`, asserting that the peer is returned. `10.0.0.0/8` is trusted
+  today, so this test fails before the fix too; expect two red tests, not one. Add a control for a
+  `172.18.0.1` peer, asserting that its header is honoured. It passes before and after. Break-check:
+  put `192.168.0.0/16` back in the tuple, and only the `192.168.1.10` test reddens. **Keep Task 7.2 anyway.** Docker
   sometimes allocates the e2e network from `192.168.0.0/16`, so explicit trust in `e2e_up.sh`
   beats relying on Docker's pool. The compose comments and the README describe the bridge-range
   default rather than loopback only. Branch `migration/B-7-trusted-proxies-bridge`.
@@ -1078,9 +1096,10 @@ Call sites, each immediately after the object is known:
 - `stream_vod`, Redirect branch, after the `if not selected:` block (seed `:760-766`):
   `if _hidden_adult_movie(user, content_type, selected["content_obj"]): return _adult_refusal()`
 - `stream_vod`, session branch, after the `if not selected:` block (seed `:812-818`): the same line.
-- `stream_vod`, first request, immediately before `if not session_id:` (seed `:724`):
+- `stream_vod`, first request, immediately before `if not session_id:` (seed `:724`). It is
+  gated on `not session_id` itself, so it runs on the first request only and never shadows call (3):
   ```python
-  if user is not None and content_type == "movie":
+  if not session_id and user is not None and content_type == "movie":
       movie = Movie.objects.filter(uuid=content_id).only("is_adult").first()
       if _hidden_adult_movie(user, content_type, movie):
           return _adult_refusal()
@@ -1088,7 +1107,11 @@ Call sites, each immediately after the object is known:
   `Movie` is already imported in `views.py`; `_content_type_for_obj` uses it at `:63`. A non-UUID
   `content_id` would raise `ValidationError` in `filter(uuid=...)`. So guard the lookup with
   `uuid.UUID(str(content_id))` in a `try`, the way `authorize.py:389-400` does, and skip the check on
-  failure (`views.py` has no `import uuid` yet; add it at module level), because content resolution then 404s as it does today.
+  failure (`views.py` has no `import uuid` yet; add it at module level). No real request can reach
+  that failure. The `/proxy/vod/` routes capture `<uuid:content_id>` (`apps/proxy/vod_proxy/urls.py:9-14`),
+  and the XC route passes `movie_relation.movie.uuid`. The guard exists for direct callers such as
+  `test_vod_redirect.py`, which passes `content_id="uuid"`. Those callers pass no user today, so they
+  never reach the lookup, but a guard costs less than a 500 the day one does.
 - `stream_xc_movie`, after the `except` at seed `:1437-1438` and before `return stream_vod(` at `:1440`:
   `if _hidden_adult_movie(decision.user, "movie", movie_relation.movie): return _adult_refusal()`
 
