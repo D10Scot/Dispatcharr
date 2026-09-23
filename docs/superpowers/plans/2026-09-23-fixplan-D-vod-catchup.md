@@ -21,13 +21,20 @@ prototypes, spliced from the files that ran, not re-typed. The measured numbers:
 
 | Label | Seed | After this plan | New tests |
 |---|---|---|---|
-| `apps.proxy.vod_proxy.tests` | 53 OK | 75 OK | 21 in D-1, 1 in D-2 |
-| `apps.timeshift.tests` | 349 OK | 362 OK | 13 in D-3 |
+| `apps.proxy.vod_proxy.tests` | 53 OK | 76 OK | 22 in D-1, 1 in D-2 |
+| `apps.timeshift.tests` | 349 OK | 363 OK | 14 in D-3 |
 | `apps.output.tests` | 71 OK | 73 OK | 2 in D-4 |
 | `apps.vod.tests` | 47 OK | 48 OK | 1 in D-4 |
 
-Every run was `--keepdb`, so each PR still owes one run without it (Global constraint 8). Measured
-D-1 at 74 and D-2 at 54 separately; 75 is their sum.
+Every run was `--keepdb`, so each PR still owes one run without it (Global constraint 8). The 76
+was measured with D-1 and D-2 applied together; D-2 alone measured 54, so D-1 alone is 75.
+
+**Where the upstream SHA comes from.** This checkout has no `upstream` remote, so `45c134d2` is not
+an object here. Every "upstreamable" check below fetched the upstream file with
+`gh api -H "Accept: application/vnd.github.raw" "repos/Dispatcharr/Dispatcharr/contents/<path>?ref=dev"`
+on 2026-09-23, when `dev`'s head was `45c134d2e28bef520da49506c247befd68dc23b1`. The same checks
+reproduce with `?ref=45c134d2e28bef520da49506c247befd68dc23b1`, placed in a throwaway `git init`
+tree and checked with `git apply --check`. Under the brief's rule 7 these notes are informational only.
 
 ---
 
@@ -53,7 +60,7 @@ D-1 at 74 and D-2 at 54 separately; 75 is their sum.
 | `apps/vod/api_views.py` (`:624` only) | D-4 | #96 |
 | `apps/vod/tests/test_vod_category_account_filter.py` (new) | D-4 | #96 |
 | `e2e/tests/seeded/xc-vod-catalogue.spec.ts`, `e2e/tests/seeded/vod-ingest-fidelity.spec.ts` | D-4 | pin flips |
-| `e2e/COVERAGE.md` (rows 90, 93, 94, 97; 101; 125; 98, 99) | D-1; D-2; D-3; D-4 | status `known-bug` to `done` |
+| `e2e/COVERAGE.md` (file lines 90, 93, 94, 97; 101; 125; 98, 99 at the seed) | D-1; D-2; D-3; D-4 | status `known-bug` to `done` |
 | `metrics/curated/defects.yml` (seven appended rows) | D-1, D-2, D-3, D-4 | the seven pinned issues |
 
 The #94 memo touches no file. If the user rules for an option that emits attributes, the
@@ -71,9 +78,9 @@ this plan assumes the other plan does there.
 | `apps/timeshift/views.py` | **G** #183 (`:3256-3264`); **I** #260, #192, #142, #215, #55 | G sanitises one log line. I writes Hypothesis properties over `_parse_client_range`, `_parse_content_range_header`, `_build_downstream_length_headers`, `_presentation_relative_content_range`, `_is_near_eof_probe` (`:1103`, `:1111`, `:1131`, `:1151`, `:1169`, `:1946`). | D-3 changes the contracts of five of those helpers. | D before G and I | **Semantic for I.** The `origin/fuzz/timeshift-*` branches encode pre-D answers, for example `_parse_client_range("bytes=-500") == (0, 500)`. After D-3 that returns `None`, an inverted range returns `None`, and `_parse_content_range_header` refuses `end < start` and `end >= total`. I's properties must be written against D-3's contracts, which is what the brief's rule 6 already says. |
 | `apps/timeshift/stats.py` | **I** #55 (`stats.py:130,219`) | Properties over `compute_playback_base_from_byte_range` and a second helper. | D-3 adds `is_near_eof_offset` at `:21` and calls it at `:187`. | D | None textually. I may add a property for the new helper. |
 | `apps/timeshift/helpers.py` | **B** #61 (comparison only); **I** #55, #260 | B-5 cites `:424-432` as the correct encoding and edits `apps/m3u/tasks.py`, not this file. I writes properties over `build_timeshift_candidate_urls` and `convert_timestamp_to_provider_tz`. | D-3 changes `convert_timestamp_to_provider_tz`'s return shape when the input carries seconds. | D | Semantic for I, as above. |
-| `apps/output/views.py` | **B** #84, #134 (B-2); **C** #91 (C-1); **E** #80, #85; **I** #92 | B-2 edits `:357-560`. C-1 edits `:785-940`. E's #80 escapes the `#EXTINF` attributes at `:305-306`. E's #85 edits `:593`. | D-4 edits `:1674-1705` only. | B, C, then D, then E | None for D-4. **The #94 memo's implementation, if ruled, adds attributes to the same `#EXTINF` f-string E #80 escapes.** It should land after E and pass the new values through E's escaping helper. |
+| `apps/output/views.py` | **B** #84, #134 (B-2); **C** #91 and its duplicate #212 (C-1); **E** #80, #85; **I** #92 | B-2 edits `:357-560`. C-1 edits `:785-940`, which covers #212's slices at `:881`, `:921` and `:933`. E's #80 escapes the `#EXTINF` attributes at `:305-306`. E's #85 edits `:593`. | D-4 edits `:1674-1705` only. | B, C, then D, then E | None for D-4. **The #94 memo's implementation, if ruled, adds attributes to the same `#EXTINF` f-string E #80 escapes.** It should land after E and pass the new values through E's escaping helper. |
 | `apps/vod/api_views.py` | none (C-6 edits `apps/vod/tasks.py`) | — | D-4 edits `:624`. | — | None. D-4 and C-6 share the labels `apps.output.tests` and `apps.vod.tests`. |
-| `e2e/COVERAGE.md` | **B** B-7 (`:170` paragraph) | B-7 edits one paragraph. | D edits eight table rows. | B | None. |
+| `e2e/COVERAGE.md` | **B** B-7 (`:170` paragraph) | B-7 edits one paragraph. | D edits eight table rows (by file line). | B | None. |
 | `metrics/curated/defects.yml` | **B** B-1, B-2, B-3 | Append rows. | Appends seven rows. | B | Trivial append conflicts only. |
 
 ---
@@ -105,15 +112,44 @@ A conflict between a constraint and a task step is a **STOP and report**, never 
 7. **One fixed body for every refusal a relay-served client sees** (B's constraint 7). Never
    interpolate an exception, URL or request value into a response body.
 8. **Run each PR's labels once without `--keepdb`** before pushing.
-9. **E2E runs use a private stack.** Another agent may hold the default stack and the shared
-   `e2e-upstream` provider. Never run `scripts/e2e_up.sh --reset` or `--down`, which remove the
-   shared provider regardless of overrides. Start your own stack with
-   `DISPATCHARR_E2E_CONTAINER=e2e-fixplan-D DISPATCHARR_E2E_VOLUME=e2e-fixplan-D-data
-   DISPATCHARR_E2E_PORT=9195 DISPATCHARR_E2E_NETWORK=e2e-fixplan-D-net
-   DISPATCHARR_E2E_IMAGE=dispatcharr-e2e:fixplan-D ./scripts/e2e_up.sh`, and run tests with
-   `E2E_BASE_URL=http://localhost:9195`. The image is built only when absent, so a before/after
-   pair needs `docker rmi dispatcharr-e2e:fixplan-D` between the two runs, then `docker rm -f` of
-   your own container and `docker volume rm` of your own volume before restarting it.
+9. **E2E runs use a private stack, and the "before" image is built from the PR's base, not from
+   your branch.** `scripts/e2e_up.sh` builds `docker/Dockerfile` from the tree the script sits in
+   (`:25`, `:143-145`), and only when the image tag is absent. By the time a PR's pin task runs, the
+   appendix is already applied to your branch, so an image built from it is the fixed backend.
+   - **Never run `e2e_up.sh --reset`, `--down` or `--stop`.** All three act on the shared
+     `e2e-upstream` provider regardless of the overrides below (`destroy()` at `:68-73`, and
+     `docker stop "$UPSTREAM_NAME"` at `:120-124`), which kills a sibling agent's run. `--recreate`
+     is the one mode that is safe. It replaces only your container, keeps your volume, and honours
+     `DISPATCHARR_E2E_IMAGE`.
+   - **Set `DISPATCHARR_E2E_SKIP_UPSTREAM_BUILD=1`** when `docker image inspect
+     dispatcharr-e2e-upstream:local` succeeds. Otherwise the script rebuilds the provider image and
+     recreates the shared provider if its image ID moved (`:167-195`).
+   - **The environment**, written once here as `E2E_ENV`:
+     `DISPATCHARR_E2E_CONTAINER=e2e-fixplan-D DISPATCHARR_E2E_VOLUME=e2e-fixplan-D-data
+     DISPATCHARR_E2E_PORT=9195 DISPATCHARR_E2E_NETWORK=e2e-fixplan-D-net`.
+   - **The procedure, per PR.** `<n>` is the PR number in this plan, `<wt>` your worktree, `<base>`
+     the SHA your branch forked from, and `<scratch>` your scratchpad directory.
+     1. `git -C <wt> worktree add --detach <scratch>/fixplan-D-base-<n> <base>`
+     2. Build the before image and start the stack: `env $E2E_ENV
+        DISPATCHARR_E2E_IMAGE=dispatcharr-e2e:fixplan-D-<n>-before
+        <scratch>/fixplan-D-base-<n>/scripts/e2e_up.sh`
+     3. With the pin already flipped in `<wt>`, run it from **your** worktree:
+        `cd <wt>/e2e && E2E_BASE_URL=http://localhost:9195 npx playwright test --project=<project>
+        <spec> --reporter=json > <scratch>/d<n>-before.json`. It must fail.
+     4. Build the after image into the same container name and volume: `env $E2E_ENV
+        DISPATCHARR_E2E_IMAGE=dispatcharr-e2e:fixplan-D-<n>-after <wt>/scripts/e2e_up.sh --recreate`.
+        This builds from `<wt>`, the fixed tree.
+     5. Re-run step 3's command into `<scratch>/d<n>-after.json`. It must pass.
+     6. Tear down only your own objects: `docker rm -f e2e-fixplan-D`, `docker volume rm
+        e2e-fixplan-D-data`, `docker network disconnect e2e-fixplan-D-net e2e-upstream`,
+        `docker network rm e2e-fixplan-D-net`, both `docker rmi` tags, and
+        `git -C <wt> worktree remove <scratch>/fixplan-D-base-<n>`.
+   - **Reading the JSON.** Each test is at `suites[].specs[]`, recursing through nested
+     `suites[]`, with `title`, `ok`, and `tests[].results[].status` (`passed` or `failed`). A
+     failure's first assertion is at `tests[].results[].errors[].location.line`. That line must be
+     the assertion the plan names, not a premise assertion above it. `--project=streaming` and
+     `--project=seeded` both depend on `bootstrap` (`e2e/playwright.config.ts:81-83`), which
+     Playwright runs first automatically. Its results appear in the same JSON and must pass.
 
 ---
 
@@ -131,7 +167,11 @@ A conflict between a constraint and a task step is a **STOP and report**, never 
   `Content-Length: 501`. The prototype test measured `bytes 0-100/1000` for `bytes=-100`.
 - **Fix.** One resolver, `resolve_range(header, total)`, implementing RFC 9110 §14.1.2 suffix
   semantics (`bytes=-N` is `max(0, total-N)` to `total-1`; `bytes=-0` is unsatisfiable). `get_stream`
-  sends the resolved absolute range. The response headers follow what the provider sent (#66
+  sends the resolved absolute range. Every numeric guard in the new module is ASCII-only
+  (`_digits`: `isascii() and isdigit()`), because `"²".isdigit()` is true and `int("²")` raises,
+  and WSGI decodes headers as Latin-1. The one stored-length read, `parse_length`, uses the same
+  guard. That also retires a latent seed crash: `get_stream` stores a `Content-Range` total that
+  passed `isdigit()` (`:523-524`), and the old code later called `int()` on it (`:469`). The response headers follow what the provider sent (#66
   below), so the first-request case is fixed by the same change.
 - **Tests.** New, in `test_byte_range.py` and `test_vod_range_responses.py` (D-1). E2E pin
   `vod-range.spec.ts:328` flips.
@@ -265,7 +305,10 @@ A conflict between a constraint and a task step is a **STOP and report**, never 
   `_parse_content_range_header` accepts only `a-b/T` with `a <= b` and `b < T`. The builder forwards
   an upstream `Content-Range` only when it parses, synthesises only when `start <= end`, and never
   computes a length from an invalid range. `_presentation_relative_content_range` returns `None`
-  when it cannot translate, instead of the absolute value.
+  when it cannot translate, instead of the absolute value. The seed's parsers used `try: int()`,
+  which rejected `"²"` safely. The replacements test digits first, so they use an ASCII-only
+  `_ascii_digits` rather than a bare `str.isdigit()`. Otherwise `Range: bytes=²-` would become an
+  uncaught 500 (raised by the category I planner and verified; regression test below).
 - **What a client sees now in the degenerate case.** A 206 whose provider sent no usable
   `Content-Range` now carries no `Content-Range` at all, rather than a false one. That is still not
   RFC-compliant. A 502 would be stricter, but the main path has already reserved a pool slot and
@@ -273,6 +316,14 @@ A conflict between a constraint and a task step is a **STOP and report**, never 
 - **Behaviour changes callers see.** A suffix range now records `serving_range` as `range`, not
   `start` (`_store_pool_serving_range`, `:1816-1829`), and passes `None` rather than 0 as the stats
   range start (`:3395`). Both are more accurate. No existing test pins either.
+  **`_extract_representation_length` (`:1151-1166`) also changes.** It reads the total from
+  `_parse_content_range_header`. A provider that sends an invalid `Content-Range` such as
+  `bytes 0-1000/1000` (end not below total) used to yield 1000. It now falls through to
+  `Content-Length`, which on a 206 is the partial length. That length then feeds the near-EOF
+  classification and the stats anchor. The plan keeps the strict refusal: the header is invalid
+  under RFC 9110, and a total taken from an invalid range is not trustworthy either. The effect is
+  confined to a provider that already breaks the protocol. Narrowing the refusal for this one caller
+  would mean a second parser with different rules.
 - **Tests.** New (D-3), with the issue's five counterexamples verbatim. No existing test moved: 349
   of 349 green.
 - **Size** M. **Upstreamable** yes (checked).
@@ -326,10 +377,14 @@ ingest reader reads `tv_archive`/`tv_archive_duration` (`apps/m3u/tasks.py:1391-
    call (`:469`). Any other caller is a STOP: this PR deletes the method.
 2. Write `test_byte_range.py` (Appendix A.2) and `byte_range.py` (Appendix A.1). The module is new,
    so there is no red run for the helper by itself; its tests are red-green through Task 1.2's
-   integration tests. Run the module: 14 tests pass.
+   integration tests. Run the module: 15 tests pass.
 3. **Break-check.** In `resolve_range`, replace the suffix branch's return with `return 0, length`.
    Exactly `test_a_suffix_range_was_resolved_as_a_prefix` and
    `test_a_suffix_longer_than_the_file_is_the_whole_file` redden. Revert.
+4. **Break-check.** Change `_digits` to `return value.isdigit()`. Exactly
+   `NonAsciiDigitTests.test_a_non_ascii_digit_passed_an_isdigit_guard_and_crashed_int` errors, with
+   `ValueError: invalid literal for int()` in six subtests (measured). Revert. This test has no red
+   run against the seed because the module is new. The break-check is what proves it bites.
 
 ### Task 1.2 — the connection manager
 
@@ -352,7 +407,7 @@ ingest reader reads `tv_archive`/`tv_archive_duration` (`apps/m3u/tasks.py:1391-
    | `test_an_unsatisfiable_range_on_an_established_session_is_still_416` | passes (control) |
    | `test_a_provider_206_is_relayed_with_its_own_content_range` | passes (control) |
 
-3. Apply Appendix A.3. Run the module: 7 pass. Run the label: 74 pass (53 + 14 + 7).
+3. Apply Appendix A.3. Run the module: 7 pass. Run the label: 75 pass (53 + 15 + 7).
 4. **Break-check A.** Pass `0, None` instead of `plan.skip, plan.limit` to `slice_chunks`. Exactly
    `test_a_range_ignoring_provider_had_its_head_served_as_the_requested_slice` reddens, on the body.
    Revert. (Measured.)
@@ -365,11 +420,11 @@ ingest reader reads `tv_archive`/`tv_archive_duration` (`apps/m3u/tasks.py:1391-
 
 ### Task 1.3 — flip the three e2e pins
 
-Run `tests/streaming/vod-range.spec.ts` against a private stack (Global constraint 9) built from the
-unfixed tree first, then rebuilt from the fixed tree. On the unfixed tree the three flipped tests
-fail at their final assertions with every premise assertion passing (use `--reporter=json` to
-confirm the failing line). On the fixed tree all five tests in the file pass. Record both runs in
-the PR.
+Flip the three pins as tabled below, then follow Global constraint 9's procedure with
+`<project>` = `streaming` and `<spec>` = `tests/streaming/vod-range.spec.ts`. Against the before
+image the three flipped tests fail, each at the assertion named in its row below, with every
+premise assertion above it passing. The file's two untouched tests pass. Against the after image
+all five pass. Attach both JSON summaries to the PR.
 
 **Test changes under the rule.**
 
@@ -384,16 +439,18 @@ is a determinism fix the first test in the file already applies.
 
 ### Task 1.4 — COVERAGE.md and the ledger
 
-- `e2e/COVERAGE.md` rows 90, 93, 94 and 97: status `known-bug` becomes `done`, and each row's text
+- `e2e/COVERAGE.md` file lines 90, 93, 94 and 97 at the seed (`sed -n 90p` reaches the first):
+  status `known-bug` becomes `done`, and each row's text
   gains one sentence: "Fixed in #<this PR>; the pin is now a passing `test()`." Keep the defect
   description as the record.
 - Append three rows to `metrics/curated/defects.yml`, directly at `fixed` (B-1's precedent for a
-  new row):
+  new row). In every ledger row in this plan, `status_changed` is the date the row is written, as
+  `docs/agents/metrics.md:102-103` says ("today's `status_changed`"), not a merge date.
 
 ```yaml
-- {id: vod-suffix-range-served-as-prefix, title: "vod_proxy resolved a suffix Range (bytes=-N) as bytes=0-N on an established session, and labelled a first request's correct tail bytes with a prefix Content-Range", area: correctness, severity: medium, status: fixed, source: null, issue: 64, test: e2e/tests/streaming/vod-range.spec.ts, fixed_in: <this PR>, carried_as: null, first_seen: 2026-08-29, status_changed: <merge date>}
-- {id: vod-range-ignored-206-wrong-bytes, title: "vod_proxy answered 206 with a Content-Range for the requested slice while streaming the head of the file when the provider ignored Range and sent 200", area: correctness, severity: medium, status: fixed, source: null, issue: 66, test: e2e/tests/streaming/vod-range.spec.ts, fixed_in: <this PR>, carried_as: null, first_seen: 2026-08-29, status_changed: <merge date>}
-- {id: vod-first-request-416-is-500, title: "A provider 416 on a VOD session's first request hit raise_for_status() and was answered 500 instead of 416", area: correctness, severity: low, status: fixed, source: null, issue: 98, test: e2e/tests/streaming/vod-range.spec.ts, fixed_in: <this PR>, carried_as: null, first_seen: 2026-08-31, status_changed: <merge date>}
+- {id: vod-suffix-range-served-as-prefix, title: "vod_proxy resolved a suffix Range (bytes=-N) as bytes=0-N on an established session, and labelled a first request's correct tail bytes with a prefix Content-Range", area: correctness, severity: medium, status: fixed, source: null, issue: 64, test: e2e/tests/streaming/vod-range.spec.ts, fixed_in: <this PR>, carried_as: null, first_seen: 2026-08-29, status_changed: <date written>}
+- {id: vod-range-ignored-206-wrong-bytes, title: "vod_proxy answered 206 with a Content-Range for the requested slice while streaming the head of the file when the provider ignored Range and sent 200", area: correctness, severity: medium, status: fixed, source: null, issue: 66, test: e2e/tests/streaming/vod-range.spec.ts, fixed_in: <this PR>, carried_as: null, first_seen: 2026-08-29, status_changed: <date written>}
+- {id: vod-first-request-416-is-500, title: "A provider 416 on a VOD session's first request hit raise_for_status() and was answered 500 instead of 416", area: correctness, severity: low, status: fixed, source: null, issue: 98, test: e2e/tests/streaming/vod-range.spec.ts, fixed_in: <this PR>, carried_as: null, first_seen: 2026-08-31, status_changed: <date written>}
 ```
 
 Validate with `python3 -m metrics.build --validate-only --curated metrics/curated`.
@@ -454,11 +511,13 @@ Validate with `python3 -m metrics.build --validate-only --curated metrics/curate
 |---|---|---|
 | `xc-vod-playback.spec.ts` `'an unknown episode id on the XC series route is a 404, not a 500'` (`:222`) | `test.fail(...)`; `expect(res.status()).toBe(404)` | `test(...)`; the same assertion. The explanatory comment above it (`:205-221`) is replaced by one paragraph naming #99 as fixed. |
 
-Show it failing on the unfixed tree and passing on the fixed tree (Global constraint 9). Set
-`e2e/COVERAGE.md` row 101 to `done` with the same one-sentence note as D-1. Append:
+Run it with Global constraint 9's procedure, `<project>` = `streaming`,
+`<spec>` = `tests/streaming/xc-vod-playback.spec.ts`. Before: the pin fails at
+`expect(res.status()).toBe(404)` (`:245`). After: every test in the file passes. Set
+`e2e/COVERAGE.md` line 101 to `done` with the same one-sentence note as D-1. Append:
 
 ```yaml
-- {id: xc-episode-unknown-id-500, title: "stream_xc_episode guarded .first() with a dead except DoesNotExist and dereferenced None, so an unknown episode id was a 500, not a 404", area: correctness, severity: low, status: fixed, source: null, issue: 99, test: e2e/tests/streaming/xc-vod-playback.spec.ts, fixed_in: <this PR>, carried_as: null, first_seen: 2026-08-31, status_changed: <merge date>}
+- {id: xc-episode-unknown-id-500, title: "stream_xc_episode guarded .first() with a dead except DoesNotExist and dereferenced None, so an unknown episode id was a 500, not a 404", area: correctness, severity: low, status: fixed, source: null, issue: 99, test: e2e/tests/streaming/xc-vod-playback.spec.ts, fixed_in: <this PR>, carried_as: null, first_seen: 2026-08-31, status_changed: <date written>}
 ```
 
 ### PR description draft
@@ -500,10 +559,15 @@ Show it failing on the unfixed tree and passing on the fixed tree (Global constr
 3. Write `test_catchup_range_hygiene.py` (Appendix C.3). Writing it after the refactor is
    deliberate: the module imports `is_near_eof_offset`, and before the refactor it would fail as an
    `ImportError` rather than on any mechanism.
-4. Run the module. Measured: **12 failures across 13 tests** (subtests count separately). The only
-   passes are the two controls, `test_a_large_archive_tail_is_still_an_eof_probe` and
-   `test_a_minute_precision_start_keeps_its_minute_shape`, plus the UTC subtest of
-   `test_the_colon_seconds_candidate_keeps_the_seconds_in_every_zone`.
+4. Run the module. Measured: **14 tests, 12 failures and 1 error.** Subtests are counted separately.
+   The error is `test_a_non_ascii_digit_passed_an_isdigit_guard_and_crashed_int`, with
+   `AttributeError: ... no attribute '_is_suffix_range'`, which is expected until Task 3.3 adds the
+   helper. That test pins a regression the new code could introduce, not a seed defect: the seed's
+   `try: int()` already returned `None` for these inputs. Task 3.3's break-check is what proves it
+   bites. The only passes are the two controls, `test_a_large_archive_tail_is_still_an_eof_probe`
+   and `test_a_minute_precision_start_keeps_its_minute_shape`, plus the UTC subtest of
+   `test_the_colon_seconds_candidate_keeps_the_seconds_in_every_zone`. The label measured 363 tests,
+   12 failures and 1 error, all in the new module.
 
 ### Task 3.2 — #216
 
@@ -516,18 +580,27 @@ Show it failing on the unfixed tree and passing on the fixed tree (Global constr
 
 ### Task 3.3 — #141
 
-1. Apply the rest of Appendix C.2's `views.py` hunks. Run the module: the six `CatchupRangeHeaderTests` pass.
+1. Apply the rest of Appendix C.2's `views.py` hunks. Run the module: the seven `CatchupRangeHeaderTests` pass.
 2. **Break-check.** In `_build_downstream_length_headers`, change `if parsed_upstream:` back to
    `if upstream_content_range:`. Exactly
    `test_an_inverted_upstream_content_range_gave_a_negative_content_length` reddens (measured).
    Revert.
-3. **Break-check.** Delete the `_is_suffix_range` early return in `_is_near_eof_probe`. Exactly
-   `test_a_suffix_range_was_parsed_as_a_prefix` reddens. Revert.
+3. **Break-check (finding 1).** Delete the `_is_suffix_range` early return in `_is_near_eof_probe`.
+   Exactly `test_a_suffix_range_was_parsed_as_a_prefix` reddens. Revert.
+4. **Break-check (finding 2).** In `_parse_client_range`, change `if end < start:` to `if False:`.
+   Exactly `test_an_inverted_client_range_was_accepted` reddens, on its first assertion (measured).
+   Revert.
+5. **Break-check (finding 5).** In `_presentation_relative_content_range`, make the
+   `rel_start < 0 or rel_end >= ...` branch `return upstream_content_range`. Exactly
+   `test_an_untranslatable_upstream_range_leaked_absolute_coordinates` reddens (measured). Revert.
+6. **Break-check (non-ASCII digits).** Change `_ascii_digits` to `return value.isdigit()`. Exactly
+   `test_a_non_ascii_digit_passed_an_isdigit_guard_and_crashed_int` errors with `ValueError` in its
+   subtests (measured). Revert.
 
 ### Task 3.4 — #111
 
-1. Apply Appendix C.2's `helpers.py` hunk. Run the module: 13 pass. Run the label: 362 pass
-   (measured).
+1. Apply Appendix C.2's `helpers.py` hunk, which also updates the function's docstring for the
+   `-SS` case. Run the module: 14 pass. Run the label: 363 pass (measured).
 2. **Break-check.** Drop the `if local_dt.second:` branch. Exactly
    `test_a_non_utc_provider_zone_truncated_the_start_to_the_minute` and the Brussels subtest of
    `test_the_colon_seconds_candidate_keeps_the_seconds_in_every_zone` redden. Revert.
@@ -540,16 +613,18 @@ Show it failing on the unfixed tree and passing on the fixed tree (Global constr
 |---|---|---|
 | `catchup-provider-timezone.spec.ts` `'a requested start keeps its seconds whatever the provider timezone is'` (`:181`) | `test.fail(...)`; final assertion `expect(bxlAsked[2].start, ...).toBe('2026-01-15:13:00:45')` | `test(...)`; every assertion unchanged. The "KNOWN BUG" comment (`:184-201`) and the "FAILS TODAY" comment (`:260-263`) are replaced by one paragraph saying the test pins #111's fix, and the file header's "and drops the seconds while it is at it" (`:8`) is deleted. |
 
-Show it failing on the unfixed tree and passing on the fixed tree. The file's other two tests,
+Run it with Global constraint 9's procedure, `<project>` = `streaming`,
+`<spec>` = `tests/streaming/catchup-provider-timezone.spec.ts`. Before: the pin fails at the
+`bxlAsked[2].start` assertion (`:264-267`). After: it passes. The file's other two tests,
 including the minute-precision `'...converts the requested start before it is sent'` (`:97`, which
 asserts `2026-01-15:13-00`), must pass on both trees: that is the check that a minute-precision
 request did not change shape.
 
-Set `e2e/COVERAGE.md` row 125 to `done` with the one-sentence note. #216 and #141 have no e2e pin
+Set `e2e/COVERAGE.md` line 125 to `done` with the one-sentence note. #216 and #141 have no e2e pin
 and no COVERAGE row. Append one ledger row:
 
 ```yaml
-- {id: catchup-provider-tz-drops-seconds, title: "convert_timestamp_to_provider_tz dropped the requested seconds for a non-UTC provider timezone while the UTC branch kept them, so the precision asked for depended on the provider's declared zone", area: correctness, severity: low, status: fixed, source: null, issue: 111, test: e2e/tests/streaming/catchup-provider-timezone.spec.ts, fixed_in: <this PR>, carried_as: null, first_seen: 2026-09-01, status_changed: <merge date>}
+- {id: catchup-provider-tz-drops-seconds, title: "convert_timestamp_to_provider_tz dropped the requested seconds for a non-UTC provider timezone while the UTC branch kept them, so the precision asked for depended on the provider's declared zone", area: correctness, severity: low, status: fixed, source: null, issue: 111, test: e2e/tests/streaming/catchup-provider-timezone.spec.ts, fixed_in: <this PR>, carried_as: null, first_seen: 2026-09-01, status_changed: <date written>}
 ```
 
 ### PR description draft
@@ -624,14 +699,18 @@ and no COVERAGE row. Append one ledger row:
 | `xc-vod-catalogue.spec.ts` `'XC get_vod_info returns the advanced data the REST API returns (G9 row 20, defect)'` (`:427`) | `test.fail(...)` | `test(...)`; title loses "`, defect`"; assertions unchanged; the explanatory comments inside (`:490-500`) are rewritten to say what is pinned. |
 | `vod-ingest-fidelity.spec.ts` `'GET /api/vod/categories/ accepts an m3u_account filter'` (`:285`) | `test.fail(...)` | `test(...)`; assertions unchanged; the comment at `:277-284` rewritten. |
 
-Show each failing on the unfixed tree and passing on the fixed tree. Rename carefully: the
+Run both with Global constraint 9's procedure, `<project>` = `seeded`, and both files as `<spec>`
+in one command. Before: the first pin fails at `expect(xcInfo.info.bitrate).toBe(restInfo.bitrate)`
+(`:510`), after its REST premise `expect(restInfo.bitrate).toBe(4321)` (`:500`) has passed. The
+second fails at `expect(res.status()).toBe(200)` (`:306`). After: every test in both
+files passes. Rename carefully: the
 `test.fail` title is referenced from comments elsewhere in `xc-vod-catalogue.spec.ts` (`:54`,
 `:201`); `grep -n "row-20" e2e/tests/seeded/xc-vod-catalogue.spec.ts` and update each reference in
-the same commit. Set `e2e/COVERAGE.md` rows 98 and 99 to `done`. Append:
+the same commit. Set `e2e/COVERAGE.md` lines 98 and 99 to `done`. Append:
 
 ```yaml
-- {id: xc-vod-info-detailed-info-gate, title: "xc_get_vod_info gated the relation's detailed_info merge on Movie.custom_properties, so a movie with none lost bitrate, video, audio and the plot override on the XC surface", area: correctness, severity: low, status: fixed, source: null, issue: 97, test: e2e/tests/seeded/xc-vod-catalogue.spec.ts, fixed_in: <this PR>, carried_as: null, first_seen: 2026-08-31, status_changed: <merge date>}
-- {id: vod-category-account-filter-500, title: "VODCategoryFilter.m3u_account named m3u_account__id, a relation VODCategory does not have, so ?m3u_account= on /api/vod/categories/ was a 500", area: correctness, severity: low, status: fixed, source: null, issue: 96, test: e2e/tests/seeded/vod-ingest-fidelity.spec.ts, fixed_in: <this PR>, carried_as: null, first_seen: 2026-08-30, status_changed: <merge date>}
+- {id: xc-vod-info-detailed-info-gate, title: "xc_get_vod_info gated the relation's detailed_info merge on Movie.custom_properties, so a movie with none lost bitrate, video, audio and the plot override on the XC surface", area: correctness, severity: low, status: fixed, source: null, issue: 97, test: e2e/tests/seeded/xc-vod-catalogue.spec.ts, fixed_in: <this PR>, carried_as: null, first_seen: 2026-08-31, status_changed: <date written>}
+- {id: vod-category-account-filter-500, title: "VODCategoryFilter.m3u_account named m3u_account__id, a relation VODCategory does not have, so ?m3u_account= on /api/vod/categories/ was a 500", area: correctness, severity: low, status: fixed, source: null, issue: 96, test: e2e/tests/seeded/vod-ingest-fidelity.spec.ts, fixed_in: <this PR>, carried_as: null, first_seen: 2026-08-30, status_changed: <date written>}
 ```
 
 ### PR description draft
@@ -737,7 +816,7 @@ playlist. D is defensible but leaves a working feature undiscoverable.
 
 **If B is ruled, the implementation is one PR** in `apps/output/views.py:304-307`, after category E's
 #80 escaping lands on the same f-string, plus the pin move, a backend test in `apps.output.tests`,
-and the COVERAGE.md row 122 update. It should also decide whether `catchup-days` uses
+and the COVERAGE.md line 122 update. It should also decide whether `catchup-days` uses
 `channel.catchup_days` as the XC surface does (`:729`). Recommended: yes, for parity.
 
 ---
@@ -773,9 +852,9 @@ survives.
 
 ## Follow-ups for the lead to file
 
-- **F1.** `e2e/COVERAGE.md` rows 100, 102 and 124 still read `known-bug` for #100, #110 and #95. #100
-  and #95 were fixed by #176, and B-1's plan flips #110's pin without updating row 102. The plan-B
-  author may want to add row 102 to B-1's task list.
+- **F1.** `e2e/COVERAGE.md` file lines 100, 102 and 124 still read `known-bug` for #100, #110 and #95. #100
+  and #95 were fixed by #176, and B-1's plan flips #110's pin without updating line 102. The plan-B
+  author may want to add line 102 to B-1's task list.
 - **F2.** A provider 4xx or 5xx other than 416 on a VOD request (a 404 for a withdrawn title, for
   example) still becomes a client-facing 500. A 502, or relaying 404 as 404, would be more accurate.
 - **F3.** Neither VOD 416 answer carries `Content-Range: bytes */<total>`, which RFC 9110 says a 416
@@ -787,6 +866,11 @@ survives.
 - **F6.** `convert_timestamp_to_provider_tz`'s UTC branch sends epoch and ISO inputs to the provider
   verbatim, while the non-UTC branch reshapes them to colon-dash. That is the other half of #111's
   inconsistency, visible in redirect mode.
+- **F8.** The same `isdigit()`-then-`int()` hazard already exists at the seed in
+  `normalize_catchup_timestamp_input` (`apps/timeshift/helpers.py:70-76`). Measured:
+  `parse_catchup_timestamp("²" * 10)` raises `ValueError`, so an authenticated catch-up request with
+  `?start=²²²²²²²²²²` is an uncaught error. D-3 does not touch that function. The other `isdigit()`
+  at `apps/timeshift/views.py:2525` reads a value Dispatcharr writes itself, not client input.
 - **F7.** `TimeshiftDownstreamLengthHeaderTests.test_206_synthesizes_range_when_upstream_omits_it`
   (`apps/timeshift/tests/test_views.py:5430-5439`) pins a `Content-Range` of 9,000 bytes beside a
   `Content-Length` of 1048. That disagreement predates this plan and D-3 leaves it alone.
@@ -827,6 +911,21 @@ UNSATISFIABLE = _Unsatisfiable()
 ResolvedRange = Union[None, _Unsatisfiable, Tuple[int, int]]
 
 
+def _digits(value: str) -> bool:
+    """ASCII digits only. ``str.isdigit()`` is also true for "²" and "³",
+    which ``int()`` rejects, and WSGI decodes headers as Latin-1, so a bare
+    ``isdigit()`` guard would turn ``Range: bytes=²-`` into a 500."""
+    return value.isascii() and value.isdigit()
+
+
+def parse_length(value) -> Optional[int]:
+    """A non-negative integer from a header or stored field, else ``None``."""
+    if value is None:
+        return None
+    text = str(value)
+    return int(text) if _digits(text) else None
+
+
 def resolve_range(range_header: Optional[str], total: int) -> ResolvedRange:
     """Resolve a single ``bytes=`` range against a representation of ``total`` bytes.
 
@@ -844,18 +943,18 @@ def resolve_range(range_header: Optional[str], total: int) -> ResolvedRange:
     first, last = spec.split("-", 1)
     if first == "":
         # Suffix form: the final N bytes (#64). bytes=-0 selects nothing.
-        if not last.isdigit():
+        if not _digits(last):
             return None
         length = int(last)
         if length == 0 or total <= 0:
             return UNSATISFIABLE
         return max(0, total - length), total - 1
-    if not first.isdigit():
+    if not _digits(first):
         return None
     start = int(first)
     if last == "":
         end = total - 1
-    elif last.isdigit():
+    elif _digits(last):
         if int(last) < start:
             return UNSATISFIABLE
         end = min(int(last), total - 1)
@@ -882,22 +981,15 @@ def parse_content_range(value: Optional[str]) -> Optional[Tuple[int, int, Option
     if "-" not in span:
         return None
     first, last = span.split("-", 1)
-    if not (first.isdigit() and last.isdigit()):
+    if not (_digits(first) and _digits(last)):
         return None
-    if total_part != "*" and not total_part.isdigit():
+    if total_part != "*" and not _digits(total_part):
         return None
     start, end = int(first), int(last)
     total = None if total_part == "*" else int(total_part)
     if end < start or (total is not None and end >= total):
         return None
     return start, end, total
-
-
-def _int_or_none(value) -> Optional[int]:
-    try:
-        return int(value) if value is not None and str(value).isdigit() else None
-    except (TypeError, ValueError):
-        return None
 
 
 @dataclass(frozen=True)
@@ -928,7 +1020,7 @@ def plan_downstream(
     - Upstream 200 to a Range request (Range ignored, #66): cut the body to
       the requested range so the 206 we send is true.
     """
-    upstream_length = _int_or_none(upstream_content_length)
+    upstream_length = parse_length(upstream_content_length)
     if not client_range:
         return DownstreamPlan(status=200, content_length=known_total if known_total is not None else upstream_length)
 
@@ -1012,6 +1104,7 @@ from django.test import SimpleTestCase
 from apps.proxy.vod_proxy.byte_range import (
     UNSATISFIABLE,
     parse_content_range,
+    parse_length,
     plan_downstream,
     resolve_range,
     slice_chunks,
@@ -1045,6 +1138,21 @@ class ResolveRangeTests(SimpleTestCase):
         for header in (None, "", "items=0-1", "bytes=0-1,5-9", "bytes=abc-", "bytes=5"):
             with self.subTest(header=header):
                 self.assertIsNone(resolve_range(header, 1000))
+
+
+class NonAsciiDigitTests(SimpleTestCase):
+    """"\u00b2".isdigit() is True and int("\u00b2") raises; WSGI decodes headers
+    as Latin-1, so a bare isdigit() guard turns these headers into a 500."""
+
+    def test_a_non_ascii_digit_passed_an_isdigit_guard_and_crashed_int(self):
+        for header in ("bytes=\u00b2-", "bytes=0-\u00b2", "bytes=-\u00b2"):
+            with self.subTest(header=header):
+                self.assertIsNone(resolve_range(header, 1000))
+        for value in ("bytes \u00b2-5/10", "bytes 0-\u00b3/10", "bytes 0-5/\u00b9"):
+            with self.subTest(value=value):
+                self.assertIsNone(parse_content_range(value))
+        self.assertIsNone(parse_length("\u00b2"))
+        self.assertIsNone(plan_downstream(None, 200, None, "\u00b2", None).content_length)
 
 
 class ParseContentRangeTests(SimpleTestCase):
@@ -1092,15 +1200,16 @@ The header block `:1306-1381` is replaced whole; the seek-info bookkeeping insid
 
 ```diff
 diff --git a/apps/proxy/vod_proxy/multi_worker_connection_manager.py b/apps/proxy/vod_proxy/multi_worker_connection_manager.py
-index 04df8ee0..d0f286fb 100644
+index 04df8ee0..018caf24 100644
 --- a/apps/proxy/vod_proxy/multi_worker_connection_manager.py
 +++ b/apps/proxy/vod_proxy/multi_worker_connection_manager.py
-@@ -13,6 +13,12 @@ from urllib.parse import urlparse
+@@ -13,6 +13,13 @@ from urllib.parse import urlparse
  from typing import Optional, Dict, Any
  from django.http import StreamingHttpResponse, HttpResponse
  from core.utils import RedisClient
 +from apps.proxy.vod_proxy.byte_range import (
 +    UNSATISFIABLE,
++    parse_length,
 +    plan_downstream,
 +    resolve_range,
 +    slice_chunks,
@@ -1108,14 +1217,15 @@ index 04df8ee0..d0f286fb 100644
  from apps.vod.models import Movie, Episode
  from apps.m3u.models import M3UAccountProfile
  from dispatcharr.utils import redact_url
-@@ -463,15 +469,17 @@ class RedisBackedVODConnection:
+@@ -463,15 +470,18 @@ class RedisBackedVODConnection:
  
              # Prepare headers
              headers = state.headers.copy()
-+            if range_header and state.content_length and str(state.content_length).isdigit():
++            known_length = parse_length(state.content_length)
++            if range_header and known_length is not None:
 +                # The size is known: resolve the client's Range to absolute
 +                # bytes before asking the provider, suffix form included (#64).
-+                resolved = resolve_range(range_header, int(state.content_length))
++                resolved = resolve_range(range_header, known_length)
 +                if resolved is UNSATISFIABLE:
 +                    logger.warning(f"[{self.session_id}] Range not satisfiable: {range_header}")
 +                    return None
@@ -1134,7 +1244,7 @@ index 04df8ee0..d0f286fb 100644
                  headers['Range'] = range_header
                  logger.info(f"[{self.session_id}] Setting Range header: {range_header}")
  
-@@ -509,6 +517,13 @@ class RedisBackedVODConnection:
+@@ -509,6 +519,13 @@ class RedisBackedVODConnection:
                      allow_redirects=True
                  )
  
@@ -1148,7 +1258,7 @@ index 04df8ee0..d0f286fb 100644
              response.raise_for_status()
  
              # Update state with response info on first request
-@@ -580,44 +595,6 @@ class RedisBackedVODConnection:
+@@ -580,44 +597,6 @@ class RedisBackedVODConnection:
              self.cleanup()
              raise
  
@@ -1193,7 +1303,7 @@ index 04df8ee0..d0f286fb 100644
      def increment_active_streams(self):
          """Atomically increment active_streams via Redis Lua (no session lock).
  
-@@ -1107,16 +1084,41 @@ class MultiWorkerVODConnectionManager:
+@@ -1107,16 +1086,37 @@ class MultiWorkerVODConnectionManager:
              # Get stream from Redis-backed connection
              upstream_response = redis_connection.get_stream(range_header)
  
@@ -1217,11 +1327,7 @@ index 04df8ee0..d0f286fb 100644
 +                return refuse_unsatisfiable()
 +
 +            state = redis_connection._get_connection_state()
-+            known_total = (
-+                int(state.content_length)
-+                if state and state.content_length and str(state.content_length).isdigit()
-+                else None
-+            )
++            known_total = parse_length(state.content_length) if state else None
 +            plan = plan_downstream(
 +                range_header,
 +                upstream_response.status_code,
@@ -1236,7 +1342,7 @@ index 04df8ee0..d0f286fb 100644
              # Get connection headers
              connection_headers = redis_connection.get_headers()
  
-@@ -1153,7 +1155,11 @@ class MultiWorkerVODConnectionManager:
+@@ -1153,7 +1153,11 @@ class MultiWorkerVODConnectionManager:
                      # Get the stop signal key for this client
                      stop_key = get_vod_client_stop_key(client_id)
  
@@ -1249,7 +1355,7 @@ index 04df8ee0..d0f286fb 100644
                          if chunk:
                              yield chunk
                              bytes_sent += len(chunk)
-@@ -1303,8 +1309,10 @@ class MultiWorkerVODConnectionManager:
+@@ -1303,8 +1307,10 @@ class MultiWorkerVODConnectionManager:
                  content_type=connection_headers.get('content_type', 'video/mp4')
              )
  
@@ -1262,7 +1368,7 @@ index 04df8ee0..d0f286fb 100644
  
              # Set required headers
              response['Cache-Control'] = 'no-cache'
-@@ -1315,70 +1323,39 @@ class MultiWorkerVODConnectionManager:
+@@ -1315,70 +1321,39 @@ class MultiWorkerVODConnectionManager:
  
              if connection_headers.get('content_length'):
                  response['Accept-Ranges'] = 'bytes'
@@ -1643,7 +1749,7 @@ Cumulative: the `views.py` diff carries #216's import and call as well as every 
 
 ```diff
 diff --git a/apps/timeshift/views.py b/apps/timeshift/views.py
-index 7562e95c..866383d0 100644
+index 7562e95c..287d139a 100644
 --- a/apps/timeshift/views.py
 +++ b/apps/timeshift/views.py
 @@ -72,6 +72,7 @@ from .helpers import (
@@ -1654,14 +1760,27 @@ index 7562e95c..866383d0 100644
      resolve_stats_playback_fields,
      seed_stream_stats_metadata,
  )
-@@ -1116,16 +1117,26 @@ def _parse_client_range(range_header):
+@@ -1108,6 +1109,12 @@ def _parse_range_start(range_header):
+     return parsed[0]
+ 
+ 
++def _ascii_digits(value):
++    """ASCII digits only: ``str.isdigit()`` also accepts "²", which ``int()``
++    rejects, and WSGI decodes headers as Latin-1 (#141 review)."""
++    return value.isascii() and value.isdigit()
++
++
+ def _parse_client_range(range_header):
+     """Return ``(start, end)`` from a client Range header; ``end`` may be None."""
+     if not range_header or not range_header.startswith("bytes="):
+@@ -1116,16 +1123,26 @@ def _parse_client_range(range_header):
      if "-" not in range_part:
          return None
      start_str, end_str = range_part.split("-", 1)
 -    try:
 -        start = int(start_str) if start_str else 0
 -    except (TypeError, ValueError):
-+    if not start_str.isdigit():
++    if not _ascii_digits(start_str):
 +        # The suffix form (bytes=-N) has no start; see _is_suffix_range (#141).
          return None
 +    start = int(start_str)
@@ -1670,7 +1789,7 @@ index 7562e95c..866383d0 100644
 -    try:
 -        return start, int(end_str)
 -    except (TypeError, ValueError):
-+    if not end_str.isdigit():
++    if not _ascii_digits(end_str):
          return None
 +    end = int(end_str)
 +    if end < start:
@@ -1683,11 +1802,11 @@ index 7562e95c..866383d0 100644
 +    if not range_header or not range_header.startswith("bytes="):
 +        return False
 +    length = range_header[6:]
-+    return length.startswith("-") and length[1:].isdigit() and int(length[1:]) > 0
++    return length.startswith("-") and _ascii_digits(length[1:]) and int(length[1:]) > 0
  
  
  def _parse_content_range_header(content_range):
-@@ -1139,12 +1150,14 @@ def _parse_content_range_header(content_range):
+@@ -1139,12 +1156,14 @@ def _parse_content_range_header(content_range):
      if "-" not in range_part:
          return None
      start_str, end_str = range_part.split("-", 1)
@@ -1696,9 +1815,9 @@ index 7562e95c..866383d0 100644
 -        end = int(end_str) if end_str else None
 -        total = None if total_part == "*" else int(total_part)
 -    except (TypeError, ValueError):
-+    if not (start_str.isdigit() and end_str.isdigit()):
++    if not (_ascii_digits(start_str) and _ascii_digits(end_str)):
 +        return None
-+    if total_part != "*" and not total_part.isdigit():
++    if total_part != "*" and not _ascii_digits(total_part):
          return None
 +    start, end = int(start_str), int(end_str)
 +    total = None if total_part == "*" else int(total_part)
@@ -1707,7 +1826,7 @@ index 7562e95c..866383d0 100644
      return {"start": start, "end": end, "total": total}
  
  
-@@ -1186,8 +1199,10 @@ def _build_downstream_length_headers(
+@@ -1186,8 +1205,10 @@ def _build_downstream_length_headers(
          representation_length = parsed_upstream.get("total")
  
      if status_code == 206:
@@ -1720,7 +1839,7 @@ index 7562e95c..866383d0 100644
              headers["Content-Range"] = upstream_content_range
          elif range_header and representation_length is not None:
              client_range = _parse_client_range(range_header)
-@@ -1197,12 +1212,13 @@ def _build_downstream_length_headers(
+@@ -1197,12 +1218,13 @@ def _build_downstream_length_headers(
                      end = representation_length - 1
                  else:
                      end = min(end, representation_length - 1)
@@ -1738,7 +1857,7 @@ index 7562e95c..866383d0 100644
              up_start = parsed_upstream["start"]
              up_end = parsed_upstream["end"]
              headers["Content-Length"] = str(up_end - up_start + 1)
-@@ -1229,6 +1245,8 @@ def _build_downstream_length_headers(
+@@ -1229,6 +1251,8 @@ def _build_downstream_length_headers(
  
  def _is_near_eof_probe(range_header, content_length=None):
      """True for tail/duration probes IPTV clients fire during startup."""
@@ -1747,7 +1866,7 @@ index 7562e95c..866383d0 100644
      start = _parse_range_start(range_header)
      if start is None:
          return False
-@@ -1238,7 +1256,7 @@ def _is_near_eof_probe(range_header, content_length=None):
+@@ -1238,7 +1262,7 @@ def _is_near_eof_probe(range_header, content_length=None):
          except (TypeError, ValueError):
              total = None
          else:
@@ -1756,7 +1875,7 @@ index 7562e95c..866383d0 100644
      return start >= _EOF_PROBE_UNKNOWN_LENGTH_MIN
  
  
-@@ -1969,13 +1987,15 @@ def _presentation_relative_content_range(
+@@ -1969,13 +1993,15 @@ def _presentation_relative_content_range(
      ):
          return upstream_content_range
      parsed = _parse_content_range_header(upstream_content_range)
@@ -1777,10 +1896,20 @@ index 7562e95c..866383d0 100644
  
  
 diff --git a/apps/timeshift/helpers.py b/apps/timeshift/helpers.py
-index 2a9997c0..a4e7871e 100644
+index 2a9997c0..cd0603f3 100644
 --- a/apps/timeshift/helpers.py
 +++ b/apps/timeshift/helpers.py
-@@ -157,6 +157,12 @@ def convert_timestamp_to_provider_tz(timestamp_str, provider_tz_name):
+@@ -140,7 +140,8 @@ def convert_timestamp_to_provider_tz(timestamp_str, provider_tz_name):
+             (e.g. ``Europe/Brussels``). Falsy, ``UTC``, or unknown: no conversion.
+ 
+     Returns:
+-        ``YYYY-MM-DD:HH-MM`` in the provider zone, or the input unchanged on skip/failure.
++        ``YYYY-MM-DD:HH-MM`` in the provider zone (``YYYY-MM-DD:HH-MM-SS`` when
++        the instant has non-zero seconds), or the input unchanged on skip/failure.
+     """
+     if not provider_tz_name or provider_tz_name == "UTC":
+         return timestamp_str
+@@ -157,6 +158,12 @@ def convert_timestamp_to_provider_tz(timestamp_str, provider_tz_name):
          return timestamp_str
      # timezone.utc, not ZoneInfo("UTC"): avoids mis-set Docker /etc/timezone.
      local_dt = dt.replace(tzinfo=timezone.utc).astimezone(target)
@@ -1895,6 +2024,19 @@ class CatchupRangeHeaderTests(SimpleTestCase):
                 "bytes 400-499/1000", presentation_byte_base=500, presentation_length=100,
             )
         )
+
+
+    def test_a_non_ascii_digit_passed_an_isdigit_guard_and_crashed_int(self):
+        # "\u00b2".isdigit() is True and int("\u00b2") raises. The seed's
+        # try/except int() returned None for these; the stricter parsers must too.
+        for header in ("bytes=\u00b2-", "bytes=0-\u00b2"):
+            with self.subTest(header=header):
+                self.assertIsNone(views._parse_client_range(header))
+        self.assertFalse(views._is_suffix_range("bytes=-\u00b2"))
+        self.assertFalse(views._is_near_eof_probe("bytes=-\u00b2", None))
+        for value in ("bytes \u00b2-5/10", "bytes 0-\u00b3/10", "bytes 0-5/\u00b9"):
+            with self.subTest(value=value):
+                self.assertIsNone(views._parse_content_range_header(value))
 
 
 class ProviderTimezoneSecondsTests(SimpleTestCase):
