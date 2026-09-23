@@ -38,6 +38,7 @@ Q1**, because its fix reverses a default the upstream project chose deliberately
 | `core/http_security.py` | B-4 | #103, #104, #105 |
 | `core/tests/test_http_security.py` | B-4 | #103, #104, #105 |
 | `apps/plugins/api_views.py` (lines 777–780, 1149, 1267) | B-4 | #103, #104, #105 |
+| `apps/plugins/tests/test_plugin_fetch_redirects.py` (new) | B-4 | #103, #104, #105 |
 | `apps/m3u/tasks.py` (lines 942–945 only) | B-5 | #61 |
 | `apps/proxy/next_source.py` (line 63 only) | B-5 | #61 |
 | `apps/m3u/tests/test_xc_live_url.py` | B-5 | #61 |
@@ -49,6 +50,7 @@ Q1**, because its fix reverses a default the upstream project chose deliberately
 | `core/tests/test_core.py` (`GetClientIpTests`) | B-7 | #182 |
 | `scripts/e2e_up.sh` | B-7 | #182 |
 | `README.md` (line 109) | B-7 | #182 |
+| `docker/docker-compose{,.aio,.dev,.debug}.yml` (comment blocks only) | B-7 | #182 |
 | `e2e/README.md`, `e2e/COVERAGE.md` (the X-Real-IP paragraphs) | B-7 | #182 |
 | `metrics/curated/defects.yml` | B-1, B-2, B-3 | #84, #110, #134, #82 (title only) |
 | `CLAUDE.md` (one sentence in § Known defects, Security) | B-2 | #84 |
@@ -63,7 +65,7 @@ B hunks below edits a line another category's fix needs to change.
 |---|---|---|---|---|
 | `apps/proxy/vod_proxy/multi_worker_connection_manager.py` | **D** #98 (`:512` `raise_for_status`, the `:1386` handler, `:1409`), #64 (`:593-601`), #66 (`:1307`, `:1337-1339`, `:1156`) | B-1 changes **only the return statement at `:1409`** (the body string). It does not touch the `except` clause, the rollback block above it or `:512`. | D-#98 adds a narrower arm ahead of the broad `except Exception` (an upstream 416 becomes a 416, not a 500). That arm must answer a **fixed** body too. D rebases over B's one-line change at `:1409`; the conflict is at most adjacent context. | Low. Adjacent lines, no shared edit. |
 | `apps/proxy/vod_proxy/views.py` | **D** #99 (`stream_xc_episode`, `:1468-1478`); **C** #171 (`_transform_url`, `:603`) | B-1 changes `stream_vod`'s final `except` (`:860-862`), `head_vod`'s final `except` (`:1075-1077`), adds a helper near `_content_type_for_obj` (`:61`), and adds refusals inside `stream_vod`'s two `selected` branches and in `stream_xc_movie` (`:1428-1438`). **B does not touch `stream_xc_episode`** (see #110 below: `Episode` has no `is_adult` field) and does not touch `_transform_url`. | D fixes the dead `DoesNotExist` guard in `stream_xc_episode`; C fixes the `$0` backreference in `_transform_url`. | Low. Different functions. |
-| `apps/output/views.py` | **C** #91/#212 (`:881`, `:921`, `:933`); **D** #97 (`:1675-1680`), #94 (`:305`, `:727`); **E** #80 (`:305-306`), #85 (`:593`) | B-2 changes `xc_get_user` and the four XC views, **lines 357–560 only**, plus one import line. | Each fixes its own line range, all outside 357–560. | None beyond the import block, if another plan also adds an import. |
+| `apps/output/views.py` | **C** #91 (`:881`, `:921`, `:933`; #212 was closed as its duplicate); **D** #97 (`:1675-1680`), #94 (`:305`, `:727`); **E** #80 (`:305-306`), #85 (`:593`) | B-2 changes `xc_get_user` and the four XC views, **lines 357–560 only**, plus one import line. | Each fixes its own line range, all outside 357–560. | None beyond the import block, if another plan also adds an import. |
 | `apps/m3u/tasks.py` | **C** #171 (`:3097`, inside `get_transformed_credentials`) | B-5 changes `:942-945` only. | C rewrites the backreference translation at `:3097`. | None. |
 | `apps/proxy/next_source.py` | **C** #171 (`transform_url`, `:285`) | B-5 changes `:63` only. | C changes `:285`. | None. Both PRs touch a Gate 2 module and both must run the isolated coverage script. |
 | `docker/nginx.conf` | **G** #81 (`:69-74`, forwarded headers on `uwsgi_pass`) | **B touches no nginx file.** B-7 changes which peers Django trusts, not what nginx sends. | G adds `uwsgi_param HTTP_X_FORWARDED_{HOST,PROTO,PORT}` for `core/utils.py`'s `get_host_and_port`. **G must not add `uwsgi_param HTTP_X_REAL_IP` or `HTTP_X_FORWARDED_FOR` expecting `get_client_ip` to honour them**: under B-7 the peer on a `uwsgi_pass` location is the client itself and is not trusted, so those headers are ignored. That is correct, and G's plan should say so rather than discover it. | None textually. A semantic dependency, recorded for G. |
@@ -155,14 +157,22 @@ A conflict between a constraint and a task step is a **STOP and report**, never 
 - **Fix.** One helper in `vod_proxy/views.py`, `_hidden_adult_movie(user, content_type, content_obj)`,
   true when the content is a `Movie` with `is_adult`, the user is non-admin, and the user's
   `custom_properties.hide_adult_content` is set. It mirrors the listing predicate exactly. It is
-  called in three places, each answering `authorize_error_response(AuthorizeDenied(403, "Forbidden"))`:
+  called in four places, each answering `authorize_error_response(AuthorizeDenied(403, "Forbidden"))`:
   (1) `stream_xc_movie`, right after the relation resolves, so an XC client is refused before a
   session is minted; (2) `stream_vod`'s Redirect branch, after its `if not selected:` block (`:760-766`); (3) `stream_vod`'s
   session branch, after its `if not selected:` block (`:812-818`), where `user` may have come from the Redis session
-  mapping (`:783-793`). Selection reserves no slot (`_select_vod_stream` and `_get_m3u_profile` only
+  mapping (`:783-793`); (4) `stream_vod`'s first request, before the `if not session_id:` block at
+  `:724`, by UUID. Call (4) exists because of an adopted idle session. In Redirect mode `:742-749`
+  answers 301 to an *existing* session. On the follow-up request, `:783-793` reads
+  `vod_session_user` only when `vod_persistent_connection:{session_id}` does not yet exist. For an
+  adopted session the key exists, so `user` stays `None` and call (3) cannot refuse. That happens,
+  for example, with two accounts on one device, sharing an IP and a user agent. Call (4) runs when
+  `content_type == "movie"` and `user` is set, and reads
+  `Movie.objects.filter(uuid=content_id).only("is_adult").first()`. Calls (2) and (3) stay, because
+  they check the resolved object and so cover the stream-id fallback. Selection reserves no slot (`_select_vod_stream` and `_get_m3u_profile` only
   read counters), so refusing after selection leaks nothing. The proxy-mode first request mints a
-  session and redirects without resolving content (`:774-778`); the follow-up session request is the
-  one refused. The check is on the resolved object, not the UUID, so the stream-id fallback in
+  session and redirects without resolving content (`:774-778`). Call (4) refuses that first request
+  for a known UUID, and call (3) refuses the follow-up. The check is on the resolved object, not the UUID, so the stream-id fallback in
   `_get_content_and_relation` (`:236-274`) cannot route around it.
 - **Tests.** New `apps/proxy/vod_proxy/tests/test_vod_adult_filter.py`. The e2e pin in
   `e2e/tests/streaming/vod-adult-streamable.spec.ts:121` flips.
@@ -270,7 +280,8 @@ as `docs/agents/metrics.md` requires for an issue closed without a fix.
 - **CodeQL.** `py/full-ssrf` does not model a `ValueError`-raising validator as a sanitizer, so the
   three alerts (102, 103, 104) may stay open after the fix. If they do, the lead dismisses them as
   "won't fix" citing B-4's PR. That is a tracker action, not a code change.
-- **Tests.** Four new tests in `core/tests/test_http_security.py`. No existing test changes.
+- **Tests.** Four new tests in `core/tests/test_http_security.py` for the helper. Three new tests in
+  `apps/plugins/tests/test_plugin_fetch_redirects.py`, one per call site. No existing test changes.
 - **Size** S–M. **Upstreamable** yes.
 - **Duplicates.** Not duplicates in the tracker sense. Each issue is the canonical record of one
   CodeQL alert (the `codeql-alert:` marker), so **all three survive and all three close on B-4**.
@@ -404,18 +415,23 @@ as `docs/agents/metrics.md` requires for an issue closed without a fix.
      no `HttpResponseRedirect`.
    - `test_stream_vod_session_branch_streamed_an_adult_movie_to_a_hide_adult_user` — Redirect off,
      `session_id` set, manager patched. Asserts 403 and `stream_content_with_session` not called.
+   - `test_an_adopted_idle_session_streamed_an_adult_movie_to_a_hide_adult_user` — Redirect on, no
+     `session_id`, `_find_idle_vod_session` patched to return `"idle_session_abc"`, and the content
+     UUID a real adult movie. Asserts 403 and no 301 to the idle session.
    - `test_an_admin_with_hide_adult_content_still_streams_an_adult_movie` — **user level 10 and
      `hide_adult_content: True`**, a non-default pairing, so the test fails if the admin bypass is
      dropped (memory: a pin that supplies the default pins nothing). Asserts the Redirect.
    - `test_a_user_without_hide_adult_content_still_streams_an_adult_movie` — level 1, the key absent.
      Asserts the Redirect.
    - `test_a_hide_adult_user_still_streams_a_non_adult_movie` — the control. Asserts the Redirect.
-3. Run. The three `..._streamed_an_adult_movie_...` tests fail (they get a redirect or a manager
-   call). The three controls pass. Record the messages.
-4. Apply Appendix B. Run: six pass.
+3. Run. The four `..._streamed_an_adult_movie_...` tests fail, each getting a redirect or a manager
+   call. The three controls pass. Record the messages.
+4. Apply Appendix B. Run: seven pass.
 5. **Break-check A.** Change the helper's admin test from `< User.UserLevel.ADMIN` to `<= User.UserLevel.ADMIN`.
    `test_an_admin_with_hide_adult_content_still_streams_an_adult_movie` alone reddens. Revert.
 6. **Break-check B.** Delete the call in the session branch only. Only the session-branch test
+   reddens. Revert.
+6a. **Break-check C.** Delete the first-request call (4) only. Only the adopted-idle-session test
    reddens. Revert.
 7. Flip the e2e pin (below). Run the `streaming` project's file against a local stack
    (`scripts/e2e_up.sh`, then `npx playwright test tests/streaming/vod-adult-streamable.spec.ts`) on
@@ -527,6 +543,7 @@ Record both runs.
 |---|---|---|
 | `xc-auth.spec.ts` `'player_api.php does not distinguish an unknown user from a wrong password'` | `test.fail(...)`; asserts wrong password 401 and unknown user 401 | `test(...)`; the same two assertions. Title becomes `'player_api.php answers an unknown user and a wrong password identically'`. The comment above it (`:132-144`) is replaced by one paragraph naming #84 as fixed. |
 | `network-acl.spec.ts` `'a network-blocked XC user gets 401 from player_api.php, not the correct 403 (#134)'` | `test.fail(...)`; final assertion `expect(res.status()).toBe(403); // correct behaviour; today it is 401` | `test(...)`; the same assertion without the trailing comment. Title becomes `'a network-blocked XC user gets 403 from player_api.php (#134)'`. The comment block above it (`:354-374`) is replaced by one paragraph. |
+| (no test; behaviour note) | A client outside a narrowed **global** `XC_API` row got 401 from `player_api.php` and `panel_api.php` even with valid credentials, from the per-user check inside `xc_get_user` | It gets 403 from the new pre-check, as `get.php` already did. This is intended. No e2e test pins the old 401: the D2 test asserts 403 on `get.php` and `xmltv.php` only (`network-acl.spec.ts:269`, `:275`). The new backend test `test_a_global_xc_api_block_answered_401_on_player_api` pins the new answer. |
 | `network-acl.spec.ts` `'a per-user XC_API allowlist refuses that user on all three XC surfaces (D4)'` | `isXcRefused(res)` (401 or 403) on three paths | **Unchanged.** Its comment at `:339-340` says it stays green whichever way #134 resolves, and it does. Tightening it to 403 is not this PR's business. |
 
 ### Task 2.4 — the ledger and CLAUDE.md
@@ -627,7 +644,8 @@ relies on the M3U_EPG network ACL". Validate the ledger. The `test.fail` pin sta
 
 - **Branch** `fix/B-4-plugin-fetch-redirects`
 - **Closes** #103, #104, #105.
-- **Files** `core/http_security.py`, `core/tests/test_http_security.py`, `apps/plugins/api_views.py`.
+- **Files** `core/http_security.py`, `core/tests/test_http_security.py`, `apps/plugins/api_views.py`,
+  `apps/plugins/tests/test_plugin_fetch_redirects.py` (new).
 - **Labels** `core.tests`, `apps.plugins.tests`.
 - **upstreamable** yes.
 
@@ -658,11 +676,38 @@ relies on the M3U_EPG network ACL". Validate the ledger. The `test.fail` pin sta
 2. Replace the three calls (Appendix E, second hunk). `_fetch_manifest`'s own `_validate_fetch_url`
    call becomes redundant and is removed; the two views keep theirs, because they answer a
    validation failure with a 400 before any network I/O, and that answer is useful to an admin.
-3. The zip download at `:1267` currently wraps its fetch in `except Exception` and answers 502. A
-   redirect to a refused target now raises `ValueError` inside that `try` and becomes the same 502
-   with the same fixed message. That is acceptable and needs no test of its own; the helper's tests
-   cover the mechanism. Say so in the PR.
-4. Run both labels.
+3. The zip download at `:1267` wraps its fetch in `except Exception` and answers 502 with a fixed
+   body (`:1269-1274`). A redirect to a refused target now raises `ValueError` inside that `try` and
+   becomes the same 502 with the same fixed message.
+4. **The three call sites are what #103, #104 and #105 are about, so each gets its own test.** The
+   helper tests in Task 4.1 pass with every site still on `http_requests.get`. Write a new
+   `apps/plugins/tests/test_plugin_fetch_redirects.py` (label `apps.plugins.tests`) **before** step 2.
+   Each test patches `core.http_security.socket.getaddrinfo` with a `side_effect` keyed by hostname
+   (`public.example` answers `93.184.216.34`, `127.0.0.1` answers itself) and patches
+   `core.http_security.requests.get`. The first hop answers 302 with `Location:
+   http://127.0.0.1:5656/x`. Each test asserts two things. First, **every** recorded call to the
+   patched `get` carried `allow_redirects=False`. Second, the site's own outcome.
+   - `test_fetch_manifest_followed_a_redirect_to_loopback` calls `_fetch_manifest("http://public.example/m.json")`
+     and expects `ValueError`. This is #103.
+   - `test_repo_manifest_detail_followed_a_redirect_to_loopback` POSTs as an admin to the
+     manifest-detail view that holds `:1149`, with a real `PluginRepo` row. It expects 502. This is
+     #104. Find the route name in `apps/plugins/api_urls.py` first.
+   - `test_plugin_install_followed_a_redirect_to_loopback` POSTs as an admin to the install view that
+     holds `:1267`, and expects 502 with the fixed body `"Failed to download plugin. Check the URL and
+     try again."`. This is #105. Supply the smallest request body that reaches the download, which
+     means reading the view's checks above `:1262` first.
+
+   The `allow_redirects=False` assertion is what makes these tests real. `http_requests` in
+   `api_views.py:18` is the same `requests` module object that `core.http_security` imports, so a
+   site still on `http_requests.get` also hits the mock. What it does not do is pass
+   `allow_redirects=False`. On the unfixed tree all three tests fail. `_fetch_manifest` and the
+   install view fail on the kwarg assertion. The detail view fails on both, because it follows the
+   redirect.
+5. **Break-check.** After step 2, revert `:1149` alone to `http_requests.get(manifest_url,
+   timeout=MANIFEST_FETCH_TIMEOUT)`. Only `test_repo_manifest_detail_followed_a_redirect_to_loopback`
+   reddens, and its failure names the missing `allow_redirects=False`. Revert. Repeat once for `:780`
+   and once for `:1267`. Each time, only that site's test reddens.
+6. Run both labels.
 
 ### PR description draft
 
@@ -700,10 +745,13 @@ relies on the M3U_EPG network ACL". Validate the ledger. The `test.fail` pin sta
    - `test_resolve_live_stream_url_interpolated_a_slash_in_the_password_raw` — an XC account whose
      password is `p/ss%w@rd`. `_resolve_live_stream_url` returns
      `.../live/alice/p%2Fss%25w%40rd/12345.ts`. Assert the exact string.
-   - `test_collect_xc_streams_stored_a_slash_in_the_password_raw` — patch `XCClient` so
-     `get_all_live_streams` returns one stream in an enabled category. Assert the stored `url` is the
-     quoted form. Check the context-manager protocol the test must fake by reading `core/xtream_codes.py`'s
-     `Client.__enter__`.
+   - `test_collect_xc_streams_stored_a_slash_in_the_password_raw` — use the
+     `@patch("apps.m3u.tasks.XCClient")` pattern at `apps/m3u/tests/test_memory_cleanup.py:133`.
+     The mock's `__enter__` returns a client whose `server_url`, `username` and `password` are set,
+     and whose `get_all_live_streams` returns `[{"stream_id": 12345, "name": "News 1",
+     "category_id": 7}]`. Call `collect_xc_streams(account.id, {"News": {"xc_id": 7}})`. That
+     function keys on `props["xc_id"]` (`tasks.py:924-930`). Assert that the one returned entry's
+     `url` is `.../live/alice/p%2Fss%25w%40rd/12345.ts`.
 3. Run. Both fail with the raw string.
 4. Apply Appendix F. Run the file: all pass, including the existing
    `.../live/alice/secret/12345.ts` expectation at `:77`, which proves an unreserved credential is
@@ -758,16 +806,20 @@ relies on the M3U_EPG network ACL". Validate the ledger. The `test.fail` pin sta
 2. Run: all fail with an import error. Add the module. Run: all pass.
 3. **Break-check.** Replace the body with `Math.random().toString(36).slice(2)`. The first test
    reddens with "Math.random called". Revert.
-4. In `User.test.jsx`, add `vi.mock('../../../utils/securePassword', () => ({ generateSecurePassword: vi.fn(() => 'GENERATED') }))`
-   and two tests:
-   - `creating a Streamer sends a password from generateSecurePassword` — `formValuesToPayload`
-     returns `{ user_level: <STREAMER> }`, submit with no `user`, assert `createUser` was called with
-     `password: 'GENERATED'`.
-   - `the XC password button fills xc_password from generateSecurePassword` — click the generate
-     control, assert `mockForm.setValues` was called with `{ xc_password: 'GENERATED' }`. Find the
-     control's accessible name in `User.jsx` before writing the query.
+4. In `User.test.jsx`, add `vi.mock('../../../utils/securePassword', () => ({ generateSecurePassword: vi.fn(() => 'GENERATED') }))`.
+   Then make two test changes:
+   - Add `creating a Streamer sends a password from generateSecurePassword`. `formValuesToPayload`
+     returns `{ user_level: <STREAMER> }`. Submit with no `user` and assert that `createUser` was
+     called with `password: 'GENERATED'`.
+   - Tighten the existing `'calls setValues with a generated xc_password when rotate icon is
+     clicked'` (`User.test.jsx:712`). It already clicks `getByTestId('icon-rotate-ccw-key')`. The
+     table below gives the before and after.
 5. Run: both fail. Apply the two call-site edits. Run the whole frontend suite (`npm test`) and
    `npx eslint` on the four files; eslint is advisory.
+
+| Test | Before | After |
+|---|---|---|
+| `User.test.jsx` `'calls setValues with a generated xc_password when rotate icon is clicked'` (`:712`) | `expect(mockForm.setValues).toHaveBeenCalledWith(expect.objectContaining({ xc_password: expect.any(String) }))` | `expect(mockForm.setValues).toHaveBeenCalledWith(expect.objectContaining({ xc_password: 'GENERATED' }))`. The behaviour it pins, where the XC password comes from, is the thing this PR changes. |
 
 ### PR description draft
 
@@ -784,18 +836,21 @@ relies on the M3U_EPG network ACL". Validate the ledger. The `test.fail` pin sta
 
 ## PR B-7 — trust forwarded client addresses from loopback only (gated on Q1)
 
-**Do not start this PR until the user rules on Q1.** If the user picks option (b) or (c) in Q1, this
-section is replaced by that option's shape before implementation.
+**Do not start this PR until the user rules on Q1.** This section is written for option (a). Q1
+carries the delta for (b) and (c), so any ruling can be executed without another planning round.
 
-- **Branch** `fix/B-7-trusted-proxies-loopback`
+- **Branch** `migration/B-7-trusted-proxies-loopback`
 - **Closes** #182.
 - **Files** `dispatcharr/utils.py`, `core/tests/test_core.py`, `scripts/e2e_up.sh`, `README.md`,
-  `e2e/tests/seeded/network-acl.spec.ts` (comments), `e2e/README.md`, `e2e/COVERAGE.md`.
+  `e2e/tests/seeded/network-acl.spec.ts` (comments), `e2e/README.md`, `e2e/COVERAGE.md`, and the
+  trusted-proxy comment block in four compose files: `docker/docker-compose.aio.yml:28-32`,
+  `docker/docker-compose.yml:102-106`, `docker/docker-compose.dev.yml` and
+  `docker/docker-compose.debug.yml` (each at `:25-29`; re-grep for `Outer reverse proxy trust`).
 - **Labels** all fifteen. `dispatcharr/` is a shared prefix. E2E and lifecycle both run, because
   `scripts/e2e_up.sh` is in both workflows' change patterns.
-- **Branch prefix.** `fix/`, not `migration/`. The PR touches no `docker/`, `relay/httpapi/` or
-  `docker/nginx.conf` path. The `seeded` project, the one this PR can break, runs on the ordinary
-  path gate.
+- **Branch prefix.** `migration/`, under the brief's rule 3, because the PR edits `docker/`. The
+  cost is small. `dispatcharr/` and `scripts/` already put B-7 on the nine-project matrix
+  (`e2e-tests.yml:110`). `migration/` adds only `lifecycle-upgrade` and the two bash suites.
 - **upstreamable** the diff applies; it reverses upstream's own default.
 
 ### Task 7.1 — the default
@@ -843,6 +898,12 @@ new default that peer is not trusted, so every test in the file loses its premis
    depends on. Restore the line.
 
 ### Task 7.3 — the docs
+
+The four compose comment blocks each read "When unset, private/loopback peers may set X-Real-IP /
+X-Forwarded-For (typical Docker/Traefik setups)." Replace that sentence with "When unset, only
+loopback peers may set X-Real-IP / X-Forwarded-For. Behind a reverse proxy such as Traefik, set this
+to the proxy's IP/CIDR." Leave the two example lines as they are. These are comment-only edits, so
+no test applies.
 
 `README.md:109`: "defaults trust private/loopback peers" becomes "defaults trust loopback peers
 only; set it to your proxy's address or CIDR, or the whole private range if you must, when running
@@ -892,7 +953,30 @@ convention; do not edit `CHANGELOG.md`, which is upstream's.
 **Recommendation: (a)**, because it is the issue's own stated direction and the only one that is a
 rule rather than a guess, provided the upgrade note ships in the PR description and the README. If
 the user wants no install to change behaviour on upgrade, (b) is the honest alternative; (c) is not
-recommended.
+recommended. **(a) is the only option under which `network-acl.spec.ts`'s first test changes
+meaning.** Under (a) it pins configured trust. Under (b) and (c) it still pins the default.
+
+**What PR B-7 becomes under each ruling.**
+
+- **(a)** As written above.
+- **(b)** No default change, no flip and no e2e change. Branch `fix/B-7-trusted-proxies-warning`.
+  Files: `dispatcharr/utils.py` and `core/tests/test_core.py`. `_trusted_proxy_networks()` logs one
+  WARNING, once per process, the first time it runs with `TRUSTED_PROXIES_ENV` unset. The message
+  names the variable and says a LAN client can set its own address. Add one test,
+  `test_an_unset_trusted_proxies_env_warned_nothing`, with `assertLogs` on the `dispatcharr.utils`
+  logger. Break-check: delete the warning, and the test reddens. #182 then closes as `wontfix` with
+  a comment linking the PR. There is no ledger row to annotate, because #182 has none. `README.md:109`
+  gains one sentence about the warning. Labels: all fifteen, because `dispatcharr/` is a shared
+  prefix.
+- **(c)** The default tuple becomes `("127.0.0.0/8", "::1/128", "172.16.0.0/12")`. The Task 7.1
+  flip must change its peer. `172.18.0.1` is inside `172.16.0.0/12`, so a flip on that peer would
+  pass before the fix, and break-check 7.1.4 could not redden. Use peer `192.168.1.10`. Add a
+  second control with peer `10.0.0.5`, asserting that the peer is returned. Add a third test for a
+  `172.18.0.1` peer, asserting that its header is honoured. Break-check: put `192.168.0.0/16` back
+  in the tuple, and only the `192.168.1.10` test reddens. **Keep Task 7.2 anyway.** Docker
+  sometimes allocates the e2e network from `192.168.0.0/16`, so explicit trust in `e2e_up.sh`
+  beats relying on Docker's pool. The compose comments and the README describe the bridge-range
+  default rather than loopback only. Branch `migration/B-7-trusted-proxies-bridge`.
 
 No other item has two readings that change the plan. Assumptions taken instead of questions:
 #134 logs network refusals only, under `login_failed`; #110 leaves episodes alone because the model
@@ -994,7 +1078,18 @@ Call sites, each immediately after the object is known:
 - `stream_vod`, Redirect branch, after the `if not selected:` block (seed `:760-766`):
   `if _hidden_adult_movie(user, content_type, selected["content_obj"]): return _adult_refusal()`
 - `stream_vod`, session branch, after the `if not selected:` block (seed `:812-818`): the same line.
-- `stream_xc_movie`, after the `if not movie_relation:` check (seed `:1435-1436`), outside the `try`:
+- `stream_vod`, first request, immediately before `if not session_id:` (seed `:724`):
+  ```python
+  if user is not None and content_type == "movie":
+      movie = Movie.objects.filter(uuid=content_id).only("is_adult").first()
+      if _hidden_adult_movie(user, content_type, movie):
+          return _adult_refusal()
+  ```
+  `Movie` is already imported in `views.py`; `_content_type_for_obj` uses it at `:63`. A non-UUID
+  `content_id` would raise `ValidationError` in `filter(uuid=...)`. So guard the lookup with
+  `uuid.UUID(str(content_id))` in a `try`, the way `authorize.py:389-400` does, and skip the check on
+  failure (`views.py` has no `import uuid` yet; add it at module level), because content resolution then 404s as it does today.
+- `stream_xc_movie`, after the `except` at seed `:1437-1438` and before `return stream_vod(` at `:1440`:
   `if _hidden_adult_movie(decision.user, "movie", movie_relation.movie): return _adult_refusal()`
 
 `User` is already imported at module level in `views.py` (`:21`).
@@ -1088,6 +1183,36 @@ def xc_player_api(request, full=False):
         return JsonResponse({'error': 'Unauthorized'}, status=401)
     ...  # the action dispatch, unchanged
 ```
+
+`xc_get` keeps its global pre-check and gains the network arm **before** its existing
+credentials arm. `xc_xmltv` mirrors it exactly, with `event_type='epg_blocked'`:
+
+```python
+def xc_get(request):
+    if not network_access_allowed(request, 'XC_API'):
+        ...  # unchanged: m3u_blocked, 'Network access denied (XC API)', 403
+
+    action = request.GET.get("action")
+    user, denied = xc_authenticate(request)
+
+    if denied == XC_DENIED_NETWORK:
+        log_system_event(
+            event_type='m3u_blocked',
+            user=request.GET.get('username', 'unknown'),
+            reason='Network access denied (XC API)',
+            client_ip=get_client_ip(request) or "unknown",
+            user_agent=request.META.get('HTTP_USER_AGENT', 'unknown'),
+        )
+        return JsonResponse({'error': 'Forbidden'}, status=403)
+
+    if user is None:
+        ...  # unchanged: m3u_blocked, 'Invalid XC credentials', 401
+
+    return generate_m3u(request, None, user)
+```
+
+The order matters. The network arm has to come first, because the credentials arm treats any `None`
+user as a bad password.
 
 `log_system_event` is already imported at module level (`apps/output/views.py:27`). The function-local
 `from core.utils import log_system_event` lines inside `xc_get` and `xc_xmltv` can stay; removing
