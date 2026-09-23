@@ -54,7 +54,8 @@ report, never a judgement call.
 7. **No category-I work.** These PRs add no `test_property_*` module, no `@given`, and no Hypothesis
    import. Where a category-I issue will later cover the same helper, the PR section names the seam.
 8. **No `metrics/curated/` edits.** None of the sixteen issues has a `defects.yml` entry (checked:
-   `grep -cE "^\s*issue:\s*<n>\s*$" metrics/curated/defects.yml` is `0` for all sixteen), none is a
+   `grep -cE 'issue: <n>[,}]' metrics/curated/defects.yml` is `0` for all sixteen; the file is one inline
+   mapping per line, `- {id: …, issue: 154, …}`), none is a
    CLAUDE.md "Known defects" bullet, and none has an e2e `test.fail()` pin or a parity-matrix row.
    A PR that discovers otherwise STOPs and reports.
 9. **Branch names** are `fix/C-<n>-<slug>`. No PR here touches `docker/`, `relay/httpapi/` or
@@ -90,7 +91,7 @@ From `sweep-report.md` and the category issue files. "First" is the lead's order
 | `apps/m3u/tasks.py` | **E #56 / #60 / #70**: lock-miss return at `:1555`, the caller's generic message at `:3502-3514`, and the auto-sync SUCCESS at `:3891`. | C | **Real.** C-3 moves the body of `refresh_m3u_groups` into a new function and deletes its nine inline lock releases (Appendix B). E's #56 edits the lock-acquire line, which C-3 leaves in the outer function. E rebases onto C-3 and edits the outer function. |
 | `apps/output/views.py` | **B #84 / #134 / #110**: `xc_get_user`, the XC 401s and the VOD listing filter. **D #97 / #94**: `xc_get_vod_info` and the M3U `#EXTINF`. **E #80 / #85**: `#EXTINF` escaping and `xc_get_live_categories`. | B, then C, then D and E | None. C-1 touches only `xc_get_epg` (`:785-940`). |
 | `apps/proxy/vod_proxy/views.py` | **B #89 / #110**: the 500 body at `:862` and the adult filter at `:619`, `:1410`, `:1447`. **D #99**: `stream_xc_episode` at `:1468-1478`. | B, then C, then D | Low. C-4 edits one line of `_transform_url` (`:603`), thirteen lines above B's `:616-619` hunk. Expect a context-only rebase. |
-| `apps/proxy/next_source.py` | **J-3**: a Django-side zero-ORM ratchet over `apps/proxy/{next_source,...}.py`. | J | None. C-4 adds an import from `apps.m3u.utils` and performs no ORM read, so the ratchet's allowlist is unaffected. |
+| `apps/proxy/next_source.py` | **J-3**: a Django-side zero-ORM ratchet over `apps/proxy/{next_source,...}.py`. | J | None, **on one assumption**. C-4 adds an import from `apps.m3u.utils` and performs no ORM read. That leaves the allowlist unaffected only if J-3 keeps the retired scanner's rule that an import edge needs an entry only when the scan finds ORM hits (`b6ae174b~1:apps/proxy/live_proxy/tests/test_zero_orm_reads.py:210-213`). `apps/m3u/utils.py:5` imports `django.db.models` at module level, so a stricter rule that no model-bearing module may be imported would flag this edge. |
 | `apps/m3u/connection_pool.py`, `apps/m3u/models.py`, `apps/epg/tasks.py`, `apps/output/epg.py`, `apps/vod/tasks.py` | **I #145, #200, #218, #69, #274, #158, #202, #210, #162, #92, #243**: Hypothesis property tests over the same helpers. | C | None in code. I lands later and its properties assume C's fixes. The seams are named per PR below. |
 
 ---
@@ -166,7 +167,12 @@ Sizes: S is under 30 changed lines, M is under 150, L is more.
     `test_twelve_hour_capture_past_midnight_is_treated_as_no_time`,
     `test_impossible_calendar_date_is_treated_as_no_date` (`2/31`),
     `test_out_of_range_year_is_treated_as_no_date` (`0`, `99999`). Each asserts that the call returns a
-    list and emits one WARNING from `apps.output.epg` (`assertLogs`).
+    list. Each also uses `assertLogs('apps.output.epg', 'WARNING')` to check that one record's message
+    names the rejection: `Invalid time values` for the time rows, and the existing `Invalid date values`
+    for the date rows. The asserted record is identified by its message; the test does not count
+    records. The date rows must reach the existing `else:` log at `:508-509` rather than a new log,
+    so the new check sits in that `if` condition and adds no second WARNING. The time check is new
+    and logs `Invalid time values: hour=…, minute=…` once.
   - `CustomDummyExportSurvivesBadChannelNameTests(TestCase)`,
     `test_one_out_of_range_channel_name_does_not_abort_the_xmltv_export`: one dummy source configured
     with #90's patterns, two channels (one named `Team A @ 10:75`, one well-formed), and a request to the
@@ -284,8 +290,13 @@ Sizes: S is under 30 changed lines, M is under 150, L is more.
 - **Fix.**
   - Compile with `regex.compile(..., regex.IGNORECASE or 0)`.
   - Wrap each compiled pattern in a small `_BoundedFilterPattern` that exposes `.pattern` and
-    `.search(target)`. Every search passes `timeout=M3U_FILTER_REGEX_TIMEOUT`, a new 0.1 s constant in
-    `apps/m3u/utils.py` beside the rename path's value.
+    `.search(target)`. Every search passes `timeout=M3U_FILTER_REGEX_TIMEOUT`, a new module-level 0.1 s
+    constant in `apps/m3u/utils.py`. It is the first regex-timeout constant there. The same value
+    exists elsewhere but is not reused: the rename path's is a function-local
+    `rename_regex_timeout = 0.1` at `apps/m3u/tasks.py:2054`. The URL transform's is
+    `URL_TRANSFORM_REGEX_TIMEOUT` at `apps/proxy/next_source.py:262`, and the WebSocket preview's is
+    `_M3U_PROFILE_TEST_REGEX_TIMEOUT` at `dispatcharr/consumers.py:29`. Hoisting the rename local is
+    deliberately not done here, because it would widen C-3.
   - On `TimeoutError` the wrapper sets `tripped`, logs one WARNING naming the pattern, and from then on
     returns `None` (non-matching) for the rest of that compiled set, that is, for that refresh. Without
     the trip, one pathological filter still costs 0.1 s times the stream count, about 17 minutes for
@@ -334,7 +345,9 @@ Sizes: S is under 30 changed lines, M is under 150, L is more.
      `replace` for cp1252's five undefined bytes). Use `errors="m3u_cp1252_fallback"` at all four
      sites: `:172`, `:174`, `:175` and `:551`. Valid UTF-8 is unchanged. A Latin-1 or Windows-1252
      provider gets `Séries`, not `S�ries`. `_open_m3u_text_source` still returns a text file, so
-     `test_xz_playlist.py`'s `.read()` assertions hold. See the open questions for the alternative.
+     `test_xz_playlist.py`'s `.read()` assertions hold. This is right for Western providers. A
+     cp1251, GBK or ISO-8859-2 provider gets mojibake instead: wrong characters, but no crash, which is
+     still an improvement on today. The open questions list the alternatives and what each one costs.
   2. **Release the lock on every exit.** Split `refresh_m3u_groups` the same way
      `refresh_single_m3u_account` is already split. The outer function acquires the lock, starts the
      renewer, and runs `try: return _refresh_m3u_groups_locked(...)` with `finally:
@@ -399,8 +412,8 @@ Sizes: S is under 30 changed lines, M is under 150, L is more.
 
 - **Root cause.** Four copies of `regex.sub(r'\$(\d+)', r'\\\1', ...)` rewrite `$N` to `\N`.
   `\0` is an octal escape for NUL, and `\01` is `\x01`. The copies are:
-  - `apps/m3u/utils.py:22` (`convert_js_numbered_backreferences`, used by the channel rename and
-    its preview);
+  - `apps/m3u/utils.py:22` (`convert_js_numbered_backreferences`, used by the auto-sync channel
+    rename and its server-side preview at `apps/channels/api_views.py:404`);
   - `apps/proxy/next_source.py:285` (`transform_url`, used by every live tune and by the WebSocket
     `m3u_profile_test` preview at `dispatcharr/consumers.py:163`);
   - `apps/proxy/vod_proxy/views.py:603` (`_transform_url`);
@@ -411,29 +424,72 @@ Sizes: S is under 30 changed lines, M is under 150, L is more.
   |---|---|
   | `transform_url("/", r"(.*)$", "$0")` | `'\x00\x00'` |
   | `transform_url("http://h/u/p/1.ts", r"(h)/(u)", "$01/$2")` | `'http://\x01/u/p/1.ts'`. The `$01` variant is found here. It has the same root cause. |
-- **Fix.** Change the rule inside `convert_js_numbered_backreferences` to
-  `regex.sub(r"\$(\d+)", r"\\g<\1>", replacement)`, so `$N` becomes `\g<N>`, and make the other three
-  sites call it for their `$N` step. Each keeps its own `$<name>` line. With this rule `$0` is the
-  whole match, which satisfies the issue's own identity property (`transform_url("/", "(.*)$", "$0") ==
-  "/"`), and `$01` is group 1. This is **the rule the codebase already uses** at
-  `apps/channels/api_views.py:1560` (`translate_js_replacement`). Invalid groups (`$12` on a
-  one-group pattern) still raise, exactly as `\12` does today (measured). The rename-parity table at
+- **The SPA also evaluates these patterns, in JavaScript.** Two frontend previews run the operator's
+  pattern with `String.prototype.replace`:
+  - `frontend/src/utils/forms/M3uProfileUtils.js:34-38` (`applyRegex`, `new RegExp(pattern, 'g')`),
+    rendered as the M3U-profile sample preview at `frontend/src/components/forms/M3UProfile.jsx:251-252`
+    and `:481`. This is the same `replace_pattern` that the three URL sites consume.
+  - `frontend/src/utils/forms/ChannelBatchUtils.js:125-148` (`computeRegexPreview`), rendered as the
+    bulk-rename preview at `frontend/src/components/forms/ChannelBatch.jsx:1051`. The server side of
+    that preview is `translate_js_replacement` at `apps/channels/api_views.py:1552-1561`, which is not
+    one of the four copies above.
+
+  In JavaScript, `$0` is not a substitution token and stays a literal `$0`. `$01` to `$99` refer to
+  groups, so `$01` is group 1. `$00` is literal.
+- **Fix (default: the JavaScript reading).** Change the rule inside
+  `convert_js_numbered_backreferences` to
+  `regex.sub(r"\$(0*[1-9]\d*)", r"\\g<\1>", replacement)`. `$N` with N ≥ 1 becomes `\g<N>`, including
+  a leading-zero form such as `$01`. A bare `$0` or `$00` does not match, so it stays in the template
+  as literal text; `$` is not special in a Python replacement template. Make the other three sites
+  call the helper for their `$N` step. Each keeps its own `$<name>` line.
+
+  Measured at seed with the proposed rule in Python and with `String.prototype.replace` in Node, the
+  two engines give identical output on every case below. So the SPA preview, the WebSocket preview
+  and the live transform all agree.
+
+  | replacement | pattern | input | output in Python and in JS |
+  |---|---|---|---|
+  | `$0` | `(.*)$` | `/` | `$0$0` (both engines replace globally, and `(.*)$` also matches the empty tail) |
+  | `$02-$01` | `(h)/(u)` | `http://h/u/p/1.ts` | `http://u-h/p/1.ts` |
+  | `[$0]` | `(a)` | `a` | `[$0]` |
+  | `[$00]` | `(a)` | `a` | `[$00]` |
+  | `[$1]` | `(a)` | `a` | `[a]` |
+
+  Invalid groups still raise, as `\12` does today: for example `$12` on a one-group pattern. So does
+  `$10` on a one-group pattern, where JavaScript instead reads group 1 followed by a literal `0`. That
+  divergence exists today and is unchanged. The rename-parity table at
   `apps/m3u/tests/test_rename_preview_parity.py:42-79` exercises preview and rename through the same
-  helper, so parity holds by construction. JavaScript's own reading, a literal `$0`, was considered
-  and rejected: see the open questions.
-- **Tests.**
+  helper, so parity holds by construction. Its `$10` "invalid group" rows still fail on both paths.
+- **Alternative (the user can rule for it): `$0` means the whole match.** The rule is
+  `regex.sub(r"\$(\d+)", r"\\g<\1>", replacement)`. This is the `$N` half of
+  `translate_js_replacement` at `apps/channels/api_views.py:1560`, and it satisfies the issue's
+  identity property. The expected values change to `transform_url("/", "(.*)$", "$0") == "/"` and
+  `[$0]` giving `[a]`; the `$02-$01` and `[$1]` rows are unchanged. Its cost: an operator who types
+  `$0` sees a literal `$0` in the SPA's M3U-profile preview, while the WebSocket preview and the live
+  stream substitute the whole match. The code shape and the test names are the same under both rules.
+  Only the expected values and one regex differ.
+- **Tests (expected values for the default).**
   - New file `apps/m3u/tests/test_js_backreference_conversion.py`:
-    `test_dollar_zero_is_the_whole_match_not_a_nul_byte`,
-    `test_dollar_leading_zero_group_is_the_group_not_an_octal_escape`,
-    `test_get_transformed_credentials_dollar_zero_does_not_corrupt_the_url`.
+    - `test_dollar_zero_is_a_literal_not_a_nul_byte` checks that `[$0]` gives `[$0]`.
+    - `test_dollar_leading_zero_group_is_the_group_not_an_octal_escape` checks that `$02-$01` gives
+      `http://u-h/p/1.ts`.
+    - `test_get_transformed_credentials_dollar_zero_does_not_corrupt_the_url` asserts that no
+      `\x00` appears and that the `$0` survives literally.
   - Appended to `apps/proxy/tests/test_next_source_edges.py` as class `TransformUrlBackreferenceTests`:
-    `test_transform_url_dollar_zero_round_trips_instead_of_injecting_nul_bytes` (the issue's shrunk
-    counterexample) and `test_transform_url_dollar_leading_zero_is_group_one`.
+    - `test_transform_url_dollar_zero_is_literal_instead_of_nul_bytes` uses the issue's shrunk
+      counterexample, expecting `"$0$0"`.
+    - `test_transform_url_dollar_leading_zero_is_group_one`.
   - New file `apps/proxy/vod_proxy/tests/test_transform_url_backreferences.py`:
     `test_vod_transform_dollar_zero_does_not_inject_nul_bytes`.
 
   Existing tests that must stay green unmodified: the parity table, `TransformUrlNoMatchTests`, and the
   consumer's ReDoS and rewrite tests (`tests/test_websocket_consumer_filter.py:271-340`).
+- **Not touched.** Neither SPA preview changes. `translate_js_replacement`
+  (`apps/channels/api_views.py:1552-1561`) also keeps its own rule. That rule maps `$0` to the whole
+  match, and its JS preview at `ChannelBatchUtils.js` shows it literally. That divergence is pre-existing
+  and outside the four copies, so it is listed under follow-ups. The same applies to `$&` and `$$`,
+  which the shared helper does not translate: `$&` stays the literal string `'$&'` in Python, while
+  JavaScript substitutes the whole match.
 - **Size** S. **Upstreamable** no. `apps/proxy/next_source.py` is fork-only (upstream's copy is
   `apps/proxy/live_proxy/url_utils.py:243`). The `apps/m3u/utils.py:22` hunk would apply unchanged.
 
@@ -509,7 +565,11 @@ Sizes: S is under 30 changed lines, M is under 150, L is more.
   SQLite rejects) in `migrate_vod_logos_forward` (`:7-66`), plus a cleanup at `:149-178`. With both
   files guarded, `TEST_USE_SQLITE=1 manage.py test apps.timeshift.tests.test_helpers` ran 58 tests, OK,
   exit 0. That prototype was reverted and is not committed. The other raw-SQL migrations
-  (`channels/0037`, `epg/0025`, `vod/0005`) are already vendor-guarded or passed.
+  are `epg/0025` and `vod/0005`, and both are vendor-guarded. `channels/0037` is **neither guarded nor portable**. Its
+  `SET CONSTRAINTS ALL IMMEDIATE` at `:65-66` (and `:107-108` in the reverse) is PostgreSQL-only. It
+  passes on SQLite only because the forward function returns early on an empty database
+  (`orphans.count() == 0` at `:36-38`). It is left alone, because an empty test database never reaches
+  it. Nobody should cite it as an example of a guarded migration.
 - **Fix.**
   - 0038: add `if schema_editor.connection.vendor != "postgresql": return` to both `RunPython`
     functions.
@@ -640,8 +700,10 @@ run once without `--keepdb`, and open as a **draft**. No PR changes an existing 
      **Break-check:** remove `OverflowError`; the four refresh-save subTests must redden with
      `timestamp out of range for platform time_t`.
   7. Run `apps.m3u.tests` whole. Among the tests that must stay green are all of `test_stream_filters.py`,
-     `test_xz_playlist.py`, `test_refresh_db_recovery.py`, `test_profile_exp_date_sync.py` and
-     `test_rename_preview_parity.py`.
+     `test_xz_playlist.py`, `test_refresh_db_recovery.py`, `test_profile_exp_date_sync.py`,
+     `test_rename_preview_parity.py` and `test_memory_cleanup.py`. `test_memory_cleanup.py`'s
+     `LockReleaseTests` (`:74-125`) patches the `refresh_m3u_groups` name, which the split keeps; it is
+     the lock test a reviewer will check first.
 - **Category-I seam.** #145 (stream filters) must not assert timing on generated patterns and must
   treat a timed-out filter as non-matching. #200 (exp_date) can assert totality over all JSON scalars
   after C-3. #218 and #69 (M3U parsing) can generate arbitrary bytes into `_open_m3u_text_source`
@@ -678,22 +740,30 @@ run once without `--keepdb`, and open as a **draft**. No PR changes an existing 
   a green gate.
 - **Tasks.**
   1. Write the tests. At seed `$0` must yield NUL bytes and `$01` a `\x01`, in all four places.
-  2. Change the helper's rule to `\g<N>` and point the three sites at it. Green.
+  2. Change the helper's rule to `\$(0*[1-9]\d*)` → `\g<N>` and point the three sites at it. Green.
+     If the user rules for the whole-match alternative in the #171 section, the rule is instead
+     `\$(\d+)` → `\g<N>`, and the two `$0` expected values change as listed there.
      **Break-check:** revert only `apps/proxy/vod_proxy/views.py:603` to the inline `\\\1` form; the
      VOD test alone must redden with `'\x00' in result`.
   3. Run the three labels plus `tests` (for `test_websocket_consumer_filter.py`, which exercises
      `transform_url` through the preview), then the isolated coverage script.
-- **Category-I seam.** The issue's Hypothesis identity property (`transform_url(target, "(.*)$", "$0")
-  == target`) belongs to I and becomes true after C-4.
+- **Category-I seam.** The property for category I is "no replacement template produces a byte the input
+  and template did not contain": no NUL and no control byte. Under the default rule, the issue's
+  identity property (`transform_url(target, "(.*)$", "$0") == target`) is **false by design**, and I
+  must not adopt it. Under the whole-match alternative it holds. A stronger property for I: output
+  equals `String.prototype.replace` for templates using only `$N` tokens with N ≥ 1.
 - **Upstreamable** no. The `apps/m3u/utils.py` hunk alone would apply.
 - **PR description draft.**
 
-  > **fix(m3u,proxy): `$N` backreferences become `\g<N>` everywhere, so `$0` is the whole match rather than a NUL byte (#171)**
+  > **fix(m3u,proxy): `$N` backreferences follow JavaScript, so `$0` stays literal instead of becoming a NUL byte (#171)**
   >
   > Four copies of the JS-to-Python replacement rewrite turned `$0` into `\0` (NUL) and `$01` into
   > `\x01`, silently corrupting stream URLs, VOD URLs, XC credentials and channel renames. One helper
-  > now does the rewrite, using the rule `apps/channels/api_views.py` already used; invalid group
-  > numbers still fail exactly as before.
+  > now does the rewrite: `$1`…`$99` (leading zeros allowed) are groups and a bare `$0` is literal, as
+  > in the SPA's own JavaScript preview (`M3uProfileUtils.js:34-38`), so the preview, the WebSocket
+  > preview and the live transform now agree. Invalid group numbers still fail exactly as before. Not
+  > touched: the SPA previews, and the bulk-rename rule in `apps/channels/api_views.py:1552-1561`
+  > (which maps `$0` to the whole match and so still disagrees with its own JS preview — a follow-up).
   > Gate 2: `coverage_live_path_isolated.sh` <paste result>. Closes #171. Break-check: <paste>. No existing
   > test changed.
   >
@@ -819,14 +889,36 @@ None. No rule-4 policy item (#82, #94, #16, #277, #109, #133) is in category C.
 
 Each has a default that this plan already adopts; answer only to override it.
 
-1. **#217 decoding policy.** Default: invalid UTF-8 byte runs are decoded as cp1252, so a Latin-1
-   playlist imports with correct names. The alternatives are `errors="replace"` (imports, with `�` in
-   names) or rejecting the playlist with the account set to ERROR (the issue's first suggestion). The
-   code shape is the same for all three; only user-visible behaviour differs.
-2. **#171 meaning of `$0`.** Default: the whole match (`\g<0>`), matching the issue's own identity
-   property and `apps/channels/api_views.py:1560`. The alternative is JavaScript's reading, a literal
-   `$0`. That is JS-faithful, but nothing in this codebase evaluates these patterns in JavaScript: the
-   preview is server-side (`dispatcharr/consumers.py:163`).
+1. **#217 decoding policy.** The plan is executable as written for options (a) and (b). Option (d) needs
+   C-3 tasks 3-4 re-planned, and option (c) needs a new design.
+   - (a) **Default: a cp1252 fallback for invalid byte runs.** A Latin-1 or Windows-1252 playlist
+     imports with correct names. A cp1251, GBK or ISO-8859-2 one imports with mojibake.
+   - (b) `errors="replace"`. It imports, with `�` in names. The code shape is the same as (a), a
+     different `errors=` value at the same four sites. The decode tests' expected name becomes
+     `TF1 S\ufffdries HD`.
+   - (c) **Detection with `charset_normalizer`.** It is already installed as a transitive dependency of
+     `requests` (3.5.1 in `uv.lock`). It would give correct names for non-Western encodings too.
+     The plan rejects it as the default for two reasons. It needs the whole file, or a sample, before
+     decoding, which does not fit the streamed `_open_m3u_text_source` path. And a wrong guess on a
+     short or mostly-ASCII file silently mis-decodes valid UTF-8, which (a) never does.
+   - (d) **Reject the playlist and set the account to ERROR.** This is the issue's own *Expected*, and
+     its shape differs. `UnicodeDecodeError` joins the tuple at `apps/m3u/tasks.py:569` for the ZIP
+     branch. It must also be caught around the streamed iteration at `:1763-1767` inside
+     `refresh_m3u_groups`, with the same status write and `send_m3u_update` the `:569` handler does.
+     Every C-3 decode test then asserts "status ERROR and lock released" instead of "contains
+     `TF1 Séries HD`". The lock-release half of C-3 (Appendix B) is unchanged under all four options.
+2. **#171 meaning of `$0`.** Two SPA previews evaluate these patterns in JavaScript:
+   `frontend/src/utils/forms/M3uProfileUtils.js:34-38`, rendered at `M3UProfile.jsx:251-252` and
+   `:481`, and `frontend/src/utils/forms/ChannelBatchUtils.js:125-148`, rendered at
+   `ChannelBatch.jsx:1051`.
+   - **Default: JavaScript's reading.** A bare `$0` is literal, and `$01` is group 1. The rule is
+     `\$(0*[1-9]\d*)` → `\g<N>`. The M3U-profile preview the operator sees, the WebSocket preview
+     and the live transform then agree; this was measured identical in Python and Node on five cases.
+   - **Alternative: the whole match.** The rule is `\$(\d+)` → `\g<N>`. This is the `$N` half of
+     `apps/channels/api_views.py:1560` and satisfies the issue's identity property. It leaves the SPA
+     preview showing a literal `$0` where the stream substitutes the whole match.
+
+   Both stop the NUL injection. The #171 section gives the expected test values under each rule.
 3. **#191 routing gap.** Should a follow-up teach `labels_for_changed_paths` to send any
    `apps/*/migrations/` change to the `tests` label as well, so the new SQLite migration test runs on the
    PR that adds a PostgreSQL-only migration? Not part of this plan.
@@ -834,8 +926,11 @@ Each has a default that this plan already adopts; answer only to override it.
 Follow-ups noted, not planned: an atomic Lua `_safe_decr` and reserve; the same negative-counter
 shape in `release_profile_slot`; `apps/m3u/admin.py:159-163` iterating a non-dict `user_info`;
 `parse_xmltv_time`'s traceback-per-failure ERROR log on a polled path; and `_transform_url` in
-`apps/proxy/vod_proxy/views.py` still calling `regex.sub` with no timeout. None of these is a tracked
-issue in this category.
+`apps/proxy/vod_proxy/views.py` still calling `regex.sub` with no timeout. The bulk-rename rule
+`translate_js_replacement` (`apps/channels/api_views.py:1552-1561`) maps `$0` to the whole match while
+its JS preview shows it literally. `$&` and `$$` are not translated by the shared helper, so `$&` stays
+the literal string `'$&'` where JavaScript substitutes the whole match. That is pre-existing, and a
+fuzz run that finds it is not a regression of C-4. None of these is a tracked issue in this category.
 
 ---
 
@@ -892,7 +987,10 @@ issue in this category.
 ```
 
 At each of the three call sites (`:3007`, `:3184`, `:3277`) compute
-`entity_doctype = _xmltv_file_gets_entity_doctype(file_path)` once, before the read loop, and call
+`entity_doctype = _xmltv_file_gets_entity_doctype(file_path)` once, before the read loop. In
+`build_programme_index(source_id)` (`:2953`) `file_path` is the local set from
+`_resolve_source_file(source)` at `:2967`, not a parameter. The two helpers take `file_path` as their
+first parameter (`:3141`, `:3229`). Then call
 `_decode_channel_id(m.group(1), b'"', entity_doctype) if m.group(1) is not None else
 _decode_channel_id(m.group(2), b"'", entity_doctype)`. Add `import functools`, which is absent at the
 seed. The cache needs hashable arguments. `m.group()` on the `bytearray` buffer already returns
