@@ -197,7 +197,7 @@ it and leave it for the next PR that edits the rcfile for a real reason. J-1's P
 unused. It stays in `pyproject.toml`: plugins run unsandboxed from `/app/data/plugins/` and may import
 anything the image carries, so removing a package from the image can break a user's plugin without any
 test here seeing it. Dropping it also puts `pyproject.toml` and `uv.lock` in the PR, which forces every
-backend label. Open question Q2 lets the user overrule this.
+backend label. **Ruled 2026-09-23: the user accepted this; `m3u8` stays.**
 
 ### R6 — withdrawn: input item 7 is out of scope
 
@@ -1087,8 +1087,8 @@ measured on the 2d-1 branch.
 ## Decision memos
 
 None. No item in category J is on the brief's policy list (#82, #94, #16, #277, #109, #133). R2
-(the ratchet's shape) and R5 (keeping `m3u8`) are judgement calls with a recommendation each; Q1
-and Q2 below let the user overrule them before implementation.
+(the ratchet's shape) and R5 (keeping `m3u8`) were judgement calls with a recommendation each. The
+user accepted R5 on 2026-09-23. R2 is still open as Q1 below.
 
 ---
 
@@ -1120,5 +1120,4 @@ prose (J-2 Task 3); `apps/proxy/apps.py:8-14` (past tense, still true); the `m3u
   drives plus a narrow static pin (R2). The alternative is the literal reading of A16.12: relocate
   the static scanner and its line-keyed allowlist, which is about 62 entries. That is a different
   PR of roughly three times the size. Default if unanswered: R2.
-- **Q2 — drop `m3u8`?** R5 keeps it for plugin compatibility. Dropping it is a separate one-line
-  PR touching `pyproject.toml` and `uv.lock`, which runs every backend label.
+- **Q2 — drop `m3u8`?** Ruled 2026-09-23: no. The user accepted R5's recommendation, and the dependency stays.
