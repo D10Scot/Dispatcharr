@@ -144,7 +144,9 @@ A conflict between a constraint and a task step is a **STOP and report**, never 
         ```
 
      3. Once per worktree, install the e2e packages: `cd <wt>/e2e && npm ci && npx playwright
-        install chromium`. Then, with the pin already flipped in `<wt>`, run it from **your**
+        install chromium`. (`e2e/README.md` writes it as `npx playwright install --with-deps
+        chromium`; the flag installs system libraries, which matters on Linux and not on macOS.)
+        Then, with the pin already flipped in `<wt>`, run it from **your**
         worktree:
         `cd <wt>/e2e && E2E_BASE_URL=http://localhost:9195 npx playwright test --project=<project>
         <spec> --reporter=json > <scratch>/d<n>-before.json`. It must fail.
