@@ -141,15 +141,26 @@ result, and what the module does once the fix merges.
 | PR | depends on | what it must have done | seed result | with the fix |
 |---|---|---|---|---|
 | I-1 epg | **C-2** (#75, #76/#156, #157) | Adjacent `±hhmm` offset normalised; `_decode_channel_id(raw, quote=b'"', entity_doctype=True)` plus `_xmltv_file_gets_entity_doctype(file_path)` (C Appendix A) | 52 run: 50 OK, 1 FAIL (`#75 -0800`), 1 ERROR (import of `_xmltv_file_gets_entity_doctype`) | 53 OK |
-| I-2 m3u | **C-3** (#199, #217, #262), **C-4 as adopted** (#171), **C-5** (#68, #146) | `OverflowError` caught and `_user_info()`; the `m3u_cp1252_fallback` decode; the `regex` filter wrapper; the `$N` rule `\$(0[1-9]\|[1-9]\d?)` (see below); `.casefold()`; both counter repairs | 49 run, the same 10 red in 3 of 3 runs | 49 OK in 3 of 3 runs |
+| I-2 m3u | **C-3** (#199, #217, #262), **C-4 as adopted** (#171), **C-5** (#68, #146) | `OverflowError` caught and `_user_info()`; the `m3u_cp1252_fallback` decode; the `regex` filter wrapper; the `$N` rule `\$(0[1-9]|[1-9]\d?)` (see below); `.casefold()`; both counter repairs | 49 run, the same 10 red in 3 of 3 runs | 49 OK in 3 of 3 runs |
 | I-3 output+vod | **C-1, AMENDED** (#90/#211), **C-6** (#242) | Out-of-range captures treated as "no time or date", **with the year bound `2 <= year <= 9998`**, not C-1's `1 <= year <= 9999` (see below); `extract_year` coerces with `str()` | custom dummy: 2 errors; vod provider helpers: 7 errors | 26 + 34 OK |
-| I-4 timeshift | **D-3, AMENDED** (#216, #141, #111) | D Appendix C **plus** the ASCII guard at its five `isdigit()` sites (see below) | 15 of 77 red, all on D-3 mechanisms | 77 OK |
+| I-4 timeshift | **D-3, AMENDED** (#216, #141, #111) | D Appendix C as amended at `b84cc664`: one `_ascii_digits` helper (`isascii() and isdigit()`) guarding every digit run (see below) | 15 of 77 red, all on D-3 mechanisms | 77 OK |
 
-**Two sibling plans had to be amended before this plan can land.** Both were found by these
-modules, measured, and reported to the lead on 2026-09-23. The lead relayed both the same day: plan C
-takes C-1's bound as `2 <= year <= 9998`, and D-3's correction reached plan D through its review.
-**This plan assumes both as stated here.** A reviewer should check each against C's and D's final
-heads, and each PR's Task 0 checks it again against `main`.
+**Two sibling plans had to be amended before this plan can land, and both amendments have landed
+in their plans.** Both gaps were found by these modules, measured, and reported to the lead on
+2026-09-23.
+
+| plan | head | what it now says | where |
+|---|---|---|---|
+| C | `8eebb05f` | C-1's bound is `2 <= year <= 9998`; C-4's rule is `\$(0[1-9]\|[1-9]\d?)` | plan C `:154`, `:455`, `:776` at that head |
+| D | `b84cc664` | D-3 guards every digit run with one helper, `_ascii_digits(value)`: `value.isascii() and value.isdigit()` | plan D Appendix C.2 at that head |
+
+I re-ran the five timeshift modules on D's final Appendix C, extracted from `b84cc664` with
+`git apply`: 77 of 77 passed in three of three runs. D's own break-check for the guard, changing
+`_ascii_digits` to `return value.isdigit()`, reddens five ranges properties with
+`ValueError: invalid literal for int() with base 10: '²'`.
+
+**This plan assumes both heads as stated.** Each PR's Task 0 checks the fix again against `main`, by
+content, never by plan head.
 
 - **C-1's year bound still crashes** (plan C, #90 section, "Fix", Date bullet). With C-1 applied as
   written, two channel names raise `OverflowError`:
@@ -167,8 +178,10 @@ heads, and each PR's Task 0 checks it again against `main`.
   `_parse_client_range('bytes=²-')` and `('bytes=0-²')`, `_is_suffix_range('bytes=-²')`, and
   `_parse_content_range_header('bytes ²-5/10')` and `('bytes 0-5/²')`. Hypothesis also found
   `bytes=¹-` unaided. They are reachable because WSGI decodes the client's `Range` header as Latin-1,
-  and `requests` decodes the provider's `Content-Range` the same way. The fix is
-  `(x.isascii() and x.isdigit())` at each of the five sites, with which all 77 pass.
+  and `requests` decodes the provider's `Content-Range` the same way. Plan D fixed it with one
+  helper, `_ascii_digits`, used at every digit check. D also added a U+0663 (Arabic-Indic three)
+  example, which it now refuses. This plan's properties are indifferent to that: `None` is a
+  permitted answer.
 
 **If either amendment has not landed** when the PR comes up, Task 0 STOPs. The two `@example` rows
 are not dropped (Global constraint 6).
@@ -220,7 +233,7 @@ text.
 | `apps/epg/tests/test_property_programme_index.py` | I-1 | 242 | 10 |
 | `apps/epg/tests/test_property_channel_id_parity.py` | I-1 | 142 | 2 |
 | `apps/epg/tests/test_property_programme_metadata.py` | I-1 | 387 | 17 |
-| `apps/epg/tests/test_property_text_query.py` | I-1 | 111 | 5 |
+| `apps/epg/tests/test_property_text_query.py` | I-1 | 112 | 5 |
 | `apps/epg/tests/test_property_sd_helpers.py` | I-1 | 246 | 14 |
 | `CLAUDE.md` (§ Testing, one sentence) | I-1 | — | — |
 | `apps/m3u/tests/test_property_m3u_parsing.py` | I-2 | 261 | 14 |
@@ -233,10 +246,10 @@ text.
 | `apps/m3u/tests/test_property_xc_account_values.py` | I-2 | 146 | 7 |
 | `apps/output/tests/test_property_epg_export_helpers.py` | I-3 | 150 | 5 |
 | `apps/output/tests/test_property_custom_dummy_programs.py` | I-3 | 171 | 3 |
-| `apps/output/tests/test_property_output_formatting.py` | I-3 | 188 | 18 |
+| `apps/output/tests/test_property_output_formatting.py` | I-3 | 190 | 18 |
 | `apps/vod/tests/test_property_image_proxy.py` | I-3 | 294 | 10 |
 | `apps/vod/tests/test_property_provider_helpers.py` | I-3 | 308 | 24 |
-| `apps/timeshift/tests/test_property_timestamps.py` | I-4 | 309 | 20 |
+| `apps/timeshift/tests/test_property_timestamps.py` | I-4 | 320 | 20 |
 | `apps/timeshift/tests/test_property_url_builders.py` | I-4 | 170 | 8 |
 | `apps/timeshift/tests/test_property_ranges.py` | I-4 | 345 | 23 |
 | `apps/timeshift/tests/test_property_pool_decisions.py` | I-4 | 262 | 12 |
@@ -309,7 +322,7 @@ difference is named below.
   characters as "parser behaviour". It is a defect that raises `IndexError` (finding F-1 below). The
   module keeps the no-raise property to length-preserving text, with a comment naming the finding.
 - **Tests.** Six new modules, 53 tests. Existing tests changed: none.
-- **Size** L (1,266 lines, all test). **Upstreamable** no: the parity module needs C-2's fork-side
+- **Size** L (1,267 lines, all test). **Upstreamable** no: the parity module needs C-2's fork-side
   signature. The other five would apply to upstream `dev` once C-2 is upstreamed.
 
 ### m3u: #218 (survivor), #145, #200, #69 — PR I-2
@@ -386,7 +399,7 @@ difference is named below.
 - **Not a property target.** #91 is a view's query parameter (`apps/output/views.py:881`). C-1 pins it
   with example tests.
 - **Tests.** Five new modules, 60 tests. Existing tests changed: none.
-- **Size** L (1,111 lines). **Upstreamable** no: `generate_custom_dummy_programs` is fork-only (plan C,
+- **Size** L (1,113 lines). **Upstreamable** no: `generate_custom_dummy_programs` is fork-only (plan C,
   #90).
 
 ### timeshift: #192 (survivor), #260, #142, #215, #55 — PR I-4
@@ -422,8 +435,15 @@ difference is named below.
     `position_anchor_at=0.0`. The stats strategies draw realistic epoch anchors (1e9 to 1e10) and cite
     #54.
   - Timestamp instants are drawn from 1900 to 2100, with a comment naming finding F-5.
+  - The arbitrary-text strategy `timestamp_text` excludes both of F-5's input shapes:
+    - Unicode category No, where `²` lives;
+    - an ISO string starting with year `0001` or `9999`.
+
+    Before review round 1 it drew from all text, and passed only because the derandomized draw
+    missed those shapes (reviewer's finding). The exclusion is now explicit and commented, and
+    widening it is part of F-5's fix.
 - **Tests.** Five new modules, 77 tests. Existing tests changed: none.
-- **Size** L (1,334 lines). **Upstreamable** no: it depends on D-3 plus the amendment. D-3 itself is
+- **Size** L (1,345 lines). **Upstreamable** no: it depends on D-3 plus the amendment. D-3 itself is
   upstreamable (plan D), so this would follow it.
 
 ---
@@ -505,7 +525,7 @@ gate still runs the label on commit.
 
 - [ ] **Step 1.** Branch off current `main`: `git switch -c fix/I-1-epg-property-tests origin/main`.
 - [ ] **Step 2.** Run the extraction script with prefix `apps/epg/tests/`. It must print six files,
-  with 138, 242, 142, 387, 111 and 246 lines.
+  with 138, 242, 142, 387, 112 and 246 lines.
 - [ ] **Step 3.** Run the six modules together, three times:
   `manage.py test apps.epg.tests.test_property_xmltv_time apps.epg.tests.test_property_programme_index apps.epg.tests.test_property_channel_id_parity apps.epg.tests.test_property_programme_metadata apps.epg.tests.test_property_text_query apps.epg.tests.test_property_sd_helpers`.
   Expected: `Ran 53 tests`, `OK`, identical each time, about 8 s of wall time.
@@ -533,7 +553,7 @@ reverts with `git checkout -- apps/epg/tasks.py`.
 | programme_index | `_PrependStream`: at the prefix/body boundary read `size - remaining + 1` (`:278`) | `3 not less than or equal to 2` |
 | channel_id_parity | as Task 2 Step 2 | `'aéb' != 'ab'` |
 | programme_metadata | drop the `+ 1` on the `xmltv_ns` season (`apps/epg/tasks.py:2571`) | the one-based property: `0 != 1` |
-| text_query | fold every operator with `&` (`apps/epg/query_utils.py:131`) | binary-operator property: `'AND' != 'OR'` |
+| text_query | fold every operator with `&` (`apps/epg/query_utils.py:132-134`, the `op == '&'` choice) | binary-operator property: `'AND' != 'OR'` |
 | sd_helpers | stop stripping the password in `sd_credential_fingerprint` (`apps/epg/sd_utils.py:116`) | whitespace property: a hex mismatch |
 
 - [ ] **Step 1.** Make each edit, run its module, and paste the failure line into the PR description.
@@ -709,8 +729,10 @@ reverts with `git checkout -- apps/epg/tasks.py`.
 
 #### Task 0: prerequisites
 
-- [ ] **Step 1.** C-6: `grep -c "str(date_string)" apps/vod/tasks.py` prints at least `1`.
-- [ ] **Step 2.** C-1: `grep -c 'Invalid time values' apps/output/epg.py` prints at least `1`.
+- [ ] **Step 1.** C-6: `grep -c "str(date_string)" apps/vod/tasks.py` prints at least `1`. It prints
+  `0` at seed (checked).
+- [ ] **Step 2.** C-1: `grep -c 'Invalid time values' apps/output/epg.py` prints at least `1`. It
+  prints `0` at seed (checked).
 - [ ] **Step 3.** C-1's amendment: read the date condition in `generate_custom_dummy_programs`. The
   year bound must exclude `1` and `9999`, for example `2 <= year <= 9998`. If it reads
   `1 <= year <= 9999`, STOP: the two edge-year `@example`s will fail with `OverflowError`
@@ -720,7 +742,7 @@ reverts with `git checkout -- apps/epg/tasks.py`.
 
 - [ ] **Step 1.** `git switch -c fix/I-3-output-vod-property-tests origin/main`.
 - [ ] **Step 2.** Extract with prefix `apps/output/tests/`, which gives three files of 150, 171 and
-  188 lines. Then extract with `apps/vod/tests/`, which gives two files of 294 and 308.
+  190 lines. Then extract with `apps/vod/tests/`, which gives two files of 294 and 308.
 - [ ] **Step 3.** Run the five modules together, three times. Expected: `Ran 60 tests`, `OK`,
   identical each time, about 12 s in total.
 
@@ -796,16 +818,17 @@ reverts with `git checkout -- apps/epg/tasks.py`.
 - [ ] **Step 1.** D-3 merged:
   `grep -c 'def _is_suffix_range' apps/timeshift/views.py` and
   `grep -c 'def is_near_eof_offset' apps/timeshift/stats.py` each print `1`.
-- [ ] **Step 2.** D-3's amendment: `grep -n 'isdigit()' apps/timeshift/views.py`. Every hit inside
-  `_parse_client_range`, `_is_suffix_range` and `_parse_content_range_header` must be paired with
-  `isascii()`. Equivalent spellings pass, such as a helper `_ascii_digits(s)` or `isdecimal()` with
-  `isascii()`. If any bare `isdigit()` remains in those three functions, STOP: the five superscript
-  `@example`s will raise `ValueError`.
+- [ ] **Step 2.** D-3's non-ASCII digit guard: `grep -c 'def _ascii_digits' apps/timeshift/views.py`
+  prints `1`, and prints `0` at seed. Read the helper. It must return
+  `value.isascii() and value.isdigit()`, as plan D's Appendix C.2 at `b84cc664` has it. Then check
+  that `_parse_client_range`, `_is_suffix_range` and `_parse_content_range_header` call no bare
+  `isdigit()`: `grep -n 'isdigit()' apps/timeshift/views.py` may hit only inside `_ascii_digits`. If
+  either check fails, STOP: the five superscript `@example`s will raise `ValueError`.
 
 #### Task 1: extract and run
 
 - [ ] **Step 1.** `git switch -c fix/I-4-timeshift-property-tests origin/main`.
-- [ ] **Step 2.** Extract with prefix `apps/timeshift/tests/`. It must print five files, with 309,
+- [ ] **Step 2.** Extract with prefix `apps/timeshift/tests/`. It must print five files, with 320,
   170, 345, 262 and 248 lines.
 - [ ] **Step 3.** Run the five modules together, three times. Expected: `Ran 77 tests`, `OK`,
   identical each time, about 9 to 10 s of wall time.
@@ -817,7 +840,7 @@ reverts with `git checkout -- apps/epg/tasks.py`.
 | D-3 #141 | in `_build_downstream_length_headers`, `if parsed_upstream:` back to `if upstream_content_range:` | `test_headers_never_carry_an_unsatisfiable_range_or_a_negative_length`: `-49 not >= 0` |
 | D-3 #216 | `is_near_eof_offset` body back to `start >= max(0, total - EOF_PROBE_TAIL_BYTES)` | `test_an_archive_no_larger_than_the_window_has_no_tail` and the pool and stats #216 properties: `False is not true` and `'1700000000.0' != 1700000100.0` |
 | D-3 #111 | drop the `if local_dt.second:` branch | `test_provider_zone_conversion_is_the_same_instant_and_keeps_requested_seconds`: `'2026-01-15:13-00' != '2026-01-15:13-00-45'` |
-| D-3 amendment | remove `isascii()` from `_parse_client_range`'s start check | `test_parse_client_range_is_none_or_a_satisfiable_pair_for_any_header`: `ValueError: invalid literal for int() with base 10: '²'` |
+| D-3 non-ASCII digit guard | plan D's own break-check (Task 3.3 step 6 at `b84cc664`): change `_ascii_digits` to `return value.isdigit()` | `test_parse_client_range_is_none_or_a_satisfiable_pair_for_any_header`: `ValueError: invalid literal for int() with base 10: '²'` |
 
 - [ ] **Step 1.** Run each row, paste the line, revert, and confirm
   `git diff --stat -- apps/timeshift` is empty.
@@ -862,7 +885,8 @@ reverts with `git checkout -- apps/epg/tasks.py`.
 > Stats strategies draw real epoch anchors, per #54's invalid ruling.
 >
 > Not asserted, filed separately: `normalize_catchup_timestamp_input` raises on `111111111²` and on
-> ISO timestamps at the calendar edge. Instants are drawn from 1900 to 2100 until that is fixed.
+> ISO timestamps at the calendar edge. Until that is fixed, instants are drawn from 1900 to 2100,
+> and the arbitrary-text strategy excludes both input shapes.
 >
 > Break-checks: <paste>. Seams: <paste>. Closes #192, #260, #142, #215 and #55. No existing test
 > changed.
@@ -913,7 +937,7 @@ fix PR widens that strategy and adds the `@example`.
 | F-2 | low | One `<programme` start tag over 4096 bytes with no `>` drops every later programme in that 8 MiB read from the index. `build_programme_index` `break`s and discards the unscanned middle. Measured with the DB stubbed: 36 of 200 channels indexed, against 200 in the control. | `apps/epg/tasks.py:2929-2934`, `:3027-3031` | a 5000-byte unterminated tag | I-1 programme_index oracle property (buffers under `_MAX_START_TAG`) |
 | F-3 | low | `xmltv_ns` totals (`s/total . e/total`, allowed by the XMLTV DTD) are silently dropped because `int("0/3")` fails. A negative part stores season 0 or lower. | `apps/epg/tasks.py:2568-2582` | `"0/3 . 1/10 ."` | I-1 `test_xmltv_ns_is_zero_based_and_stored_one_based` |
 | F-4 | **medium** | A second stream on one pooled profile leaks a shared credential slot. One release key is stored per profile (`_remember_credential_release_key`), and the first release deletes it, so the second release decrements nothing. With `max_streams=2`, two reserves then two releases leave the credential counter at 1. The key has no TTL, so the counter ratchets toward a permanent `credential_full`. Channels, timeshift and VOD all reserve against multi-stream profiles. Reproduced with the module's fake Redis and verified by reading. | `apps/m3u/connection_pool.py:241-244`, `:247-258` | reserve, reserve, release, release on `max_streams=2` | I-2 `test_counters_track_the_streams_held_one_stream_per_profile`: allow N streams per profile |
-| F-5 | low | `normalize_catchup_timestamp_input` raises instead of returning `None`. `isdigit()` then `int()` fails on `'111111111²'` (`:70`). The ISO branch catches only `ValueError`, so `OverflowError` escapes at the calendar edges (`:80-87`). `convert_timestamp_to_provider_tz` raises `OverflowError` for `'9999-12-31:23-59'` in Asia/Tokyo (`:159`). `_serve_catchup` (`apps/timeshift/views.py:341`) and the native API (`apps/timeshift/api_views.py:127`) answer 500 where 400 belongs, for an authenticated catch-up user. A three-line fix was prototyped and verified: `isascii()`, `except (ValueError, OverflowError)`, and a `try` around `astimezone`. | `apps/timeshift/helpers.py:70`, `:80-87`, `:159` | `'111111111²'`, `'0001-01-01T00:00+01:00'` | I-4 `test_normalize_returns_iso_shape_or_none_for_arbitrary_text`: widen the years and add the four `@example`s |
+| F-5 | low | `normalize_catchup_timestamp_input` raises instead of returning `None`. `isdigit()` then `int()` fails on `'111111111²'` (`:70`). The ISO branch catches only `ValueError`, so `OverflowError` escapes at the calendar edges (`:80-87`). `convert_timestamp_to_provider_tz` raises `OverflowError` for `'9999-12-31:23-59'` in Asia/Tokyo (`:159`). `_serve_catchup` (`apps/timeshift/views.py:341`) and the native API (`apps/timeshift/api_views.py:127`) answer 500 where 400 belongs, for an authenticated catch-up user. A three-line fix was prototyped and verified: `isascii()`, `except (ValueError, OverflowError)`, and a `try` around `astimezone`. | `apps/timeshift/helpers.py:70`, `:80-87`, `:159` | `'111111111²'`, `'0001-01-01T00:00+01:00'` | I-4 `timestamp_text`: drop the category-No and edge-year exclusions and the 1900 to 2100 window, then add `'111111111²'`, `'0001-01-01T00:00+01:00'` and `'9999-12-31T23:59-01:00'` as `@example`s on `test_normalize_returns_iso_shape_or_none_for_arbitrary_text` |
 | F-6 | low | `extract_duration_from_data` calls `int(duration_secs)` outside any `try` (`:1171`), so `"1.5"`, `"abc"`, a list, inf and nan raise. `isdigit()` then `int()` (`:1175-1176`) raises on `"²"`. The per-movie `try` drops one movie per bad row, the impact C-6 records for #242. | `apps/vod/tasks.py:1171`, `:1175-1176` | `{"duration_secs": "1.5"}`, `{"duration": "²"}` | I-3 `test_extract_duration_never_raises_on_integer_seconds_or_duration_text` |
 | F-7 | low (traced, not run end to end) | `format_channel_number` raises on NaN or infinity (`:53`, `value == int(value)`). `float()` accepts `tvg-chno="inf"` (`apps/m3u/tasks.py:1381`, `:1165`). Provider-mode auto-sync uses it verbatim (`apps/m3u/tasks.py:1948-1950`, `apps/channels/tasks.py:3503`). The M3U, XMLTV and HDHR lineup format it unguarded (`apps/output/views.py:271`, `apps/output/epg.py:1242`, `apps/hdhr/api_views.py:166`). #162 judged it unreachable; the trace says otherwise. The fix belongs at the parse sites (`math.isfinite`). | `apps/channels/utils.py:53` | `float("inf")` | I-3 finite-float properties in output_formatting |
 | F-8 | low | `coerce_channel_profile_ids` raises `OverflowError` on a profile id of `1e999`: `json.loads` yields `inf`, and `(TypeError, ValueError)` misses it. Callers are admin-only (`apps/m3u/api_views.py:523`, `apps/channels/serializers.py:222`). | `apps/channels/utils.py:40-42` | `[1e999]` | I-3 `test_any_json_value_returns_a_dict_with_int_ids` |
@@ -1001,7 +1025,26 @@ Three domains were also taken to green from the extracted text:
 | vod | C-6's one-line `str()` coercion | 34 OK |
 
 The tree was then reverted. The epg and output green runs, with C-2 Appendix A and the amended C-1
-applied by hand, were measured on the prototypes before splicing.
+applied by hand, were measured on the prototypes before splicing, not on the extracted text. The
+extracted text is byte-identical to those prototypes: the round trip is checked with `cmp`. Each
+PR's Task 1 Step 3 is the run on the extracted text against the merged fix, so I-1 and I-3 get that
+run at implementation time.
+
+**Round 1 fixes, re-run after editing (2026-09-23).** Editing a test's source re-seeds its
+derandomized draws, so each edited module was re-run three times.
+
+- **Modules edited.** Six changed comments and docstrings only: the finding labels now match
+  § Findings (F-1, F-3, F-4, F-6, F-7, F-8, F-9). One, timestamps, changed its strategy (F-5, below).
+- **Re-run on the C fixes (C-6 for vod), three runs.** The eight m3u modules, vod provider_helpers,
+  output formatting and the two edited epg modules: 113 of 113 OK in all three runs.
+- **Timestamps.** 77 of 77 OK in three runs on D's final Appendix C. At seed its only failure is still
+  the #111 test.
+- **F-5 shapes.** Probed on D's final tree, all three still raise: `'111111111²'` raises
+  `ValueError`, and `'0001-01-01T00:00+01:00'` and `'9999-12-31T23:59-01:00'` raise `OverflowError`.
+  So the exclusions guard a live defect, not a fixed one.
+- **The category-No exclusion closes the whole class.** Every character that is `isdigit()` but not
+  decimal is in Unicode category No. That is 128 code points on Python 3.13.15, checked
+  exhaustively, and the same count on the host.
 
 
 ### Appendix A: PR I-1, epg
@@ -1774,7 +1817,7 @@ class ExtractCustomPropertiesProperties(SimpleTestCase):
 
     # Totals-free form only: the XMLTV DTD also allows "s/total . e/total",
     # which int() refuses, so the season is silently dropped (plan I
-    # finding; see the plan's findings section).
+    # finding F-3).
     @given(
         season=st.integers(0, 500),
         episode=st.integers(0, 5000),
@@ -1951,7 +1994,8 @@ The shared search-expression parser behind the EPG search API
 (apps/channels/api_views.py:4219, :4225). Its input is whatever a user types.
 
 Two seed behaviours are deliberately kept out of these properties and are
-reported as findings in plan I rather than pinned:
+reported in plan I's findings section rather than pinned (the first is
+finding F-1; the second is noted there without a number):
 
 * Text whose ``str.upper()`` is longer than itself (``\\u00df``, ``\\u0149``,
   ``\\ufb03``, ...) next to an operator word raises ``IndexError``: the
@@ -3258,7 +3302,7 @@ class ReserveReleaseConservationProperties(SimpleTestCase):
         ONE release key per profile id, and the first release deletes it
         (``:257``). A second stream on the same pooled profile therefore
         never returns its credential slot. That is a defect filed separately
-        (plan I, finding M1), not behaviour this test blesses. Widen ``held``
+        (plan I, finding F-4), not behaviour this test blesses. Widen ``held``
         to a multiset once it is fixed.
         """
         redis = FakeRedis({CRED_KEY: start})
@@ -3506,7 +3550,7 @@ class NormalizeServerUrlProperties(SimpleTestCase):
     def test_normalising_twice_changes_nothing(self, value):
         # ';' is excluded: urlparse splits ';params' off the LAST path segment
         # and the rebuild drops them, so 'http://h/a;b' loses ';b' and ';/'
-        # takes two passes to settle (plan I, finding M2).
+        # takes two passes to settle (plan I, finding F-9).
         once = normalize_server_url(value)
         self.assertEqual(normalize_server_url(once), once)
 ```
@@ -3892,7 +3936,9 @@ hyp_settings.register_profile(
 hyp_settings.load_profile("dispatcharr-ci")
 
 # Values a JSONField can hold. Floats are finite: PostgreSQL jsonb rejects NaN and
-# Infinity, and DRF's JSON parser refuses the NaN/Infinity tokens.
+# Infinity, and DRF's JSON parser refuses the NaN/Infinity tokens. One gap: json.loads
+# reads the literal 1e999 as inf, and coerce_channel_profile_ids then raises
+# OverflowError (plan I finding F-8), so finite floats are also that finding's exclusion.
 json_values = st.recursive(
     st.none() | st.booleans() | st.integers(-(10**6), 10**6)
     | st.floats(allow_nan=False, allow_infinity=False, width=32) | st.text(max_size=10),
@@ -3948,7 +3994,7 @@ class ChunkCacheCodecProperties(SimpleTestCase):
 
 class FormatChannelNumberProperties(SimpleTestCase):
     # Finite values only. format_channel_number(nan) raises ValueError and inf raises
-    # OverflowError; see this PR's findings for whether a provider can store either.
+    # OverflowError; plan I finding F-7 traces how a provider can probably store either.
     @given(whole=st.integers(-(10**9), 10**9))
     def test_whole_valued_float_renders_as_int(self, whole):
         result = format_channel_number(float(whole))
@@ -4424,7 +4470,7 @@ def _has_text(value):
 
 
 class ExtractDurationProperties(SimpleTestCase):
-    # Finding (plan I, not filed at a54b09a9): a non-integer ``duration_secs`` ("1.5", "abc", a list,
+    # Plan I finding F-6 (not filed at a54b09a9): a non-integer ``duration_secs`` ("1.5", "abc", a list,
     # inf, nan) raises at apps/vod/tasks.py:1171, and a ``duration`` made of isdigit()-but-not-decimal
     # characters ("²") raises at :1176, both outside any try. The per-movie try at :434/:545 drops
     # that one movie. Until that is fixed, the never-raises domain below is integer
@@ -4685,6 +4731,7 @@ Closes the timestamp/duration/ordering scope of #192 (survivor), #260 and #55.
 """
 
 import math
+import re
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
@@ -4720,14 +4767,24 @@ hyp_settings.load_profile("dispatcharr-ci")
 
 ISO_SHAPE = r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$"
 
-# Arbitrary client text, weighted toward the characters the parser half-matches.
-timestamp_text = st.text(max_size=64) | st.text(
-    alphabet="0123456789-_:TZ.+ ", min_size=1, max_size=40
-)
+# Plan I finding F-5 (not filed at a54b09a9): normalize_catchup_timestamp_input raises instead
+# of returning None on two input shapes. (1) An isdigit()-but-not-decimal run such as
+# "111111111\u00b2": "\u00b2" is Unicode category No, isdigit() is true and int() refuses it
+# (helpers.py:70). (2) An ISO timestamp whose offset pushes year 1 or 9999 out of range, such as
+# "0001-01-01T00:00+01:00" (OverflowError past the ValueError-only except at helpers.py:80-87).
+# Both shapes are excluded from the arbitrary-text domain on purpose, so that no test passes
+# only because the derandomized draw happened to miss them. Once F-5 is fixed, drop both
+# exclusions and add those two inputs as @examples on
+# test_normalize_returns_iso_shape_or_none_for_arbitrary_text.
+_F5_EDGE_YEAR = re.compile(r"^\s*(0001|9999)-")
+timestamp_text = (
+    st.text(st.characters(exclude_categories=("No", "Cs")), max_size=64)
+    | st.text(alphabet="0123456789-_:TZ.+ ", min_size=1, max_size=40)
+).filter(lambda s: not _F5_EDGE_YEAR.match(s))
 
-# Wall-clock instants. Years are kept inside 1900..2100: at the calendar's edges the
-# ISO-offset branch and the provider-zone conversion raise OverflowError at seed (a
-# separate finding, not asserted here); every real catch-up start is well inside.
+# Wall-clock instants. Years are kept inside 1900..2100 for the same finding (F-5): at the
+# calendar's edges the ISO-offset branch and the provider-zone conversion raise
+# OverflowError at seed. Every real catch-up start is well inside.
 instants = st.datetimes(
     min_value=datetime(1900, 1, 1), max_value=datetime(2100, 12, 31, 23, 59, 59)
 )
