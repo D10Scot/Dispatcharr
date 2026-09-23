@@ -124,21 +124,41 @@ A conflict between a constraint and a task step is a **STOP and report**, never 
    - **Set `DISPATCHARR_E2E_SKIP_UPSTREAM_BUILD=1`** when `docker image inspect
      dispatcharr-e2e-upstream:local` succeeds. Otherwise the script rebuilds the provider image and
      recreates the shared provider if its image ID moved (`:167-195`).
-   - **The environment**, written once here as `E2E_ENV`:
-     `DISPATCHARR_E2E_CONTAINER=e2e-fixplan-D DISPATCHARR_E2E_VOLUME=e2e-fixplan-D-data
-     DISPATCHARR_E2E_PORT=9195 DISPATCHARR_E2E_NETWORK=e2e-fixplan-D-net`.
+   - **The environment is written out in full on every command below.** Do not collect the
+     assignments in a variable and expand it: zsh does not word-split an unquoted `$VAR`, so
+     `env $E2E_ENV ...` passes one argument, only the first assignment takes effect, and the
+     other three fall back to the script's defaults, which are the sibling stack's names (measured
+     by the round-2 review). Drop `DISPATCHARR_E2E_SKIP_UPSTREAM_BUILD=1` only if
+     `dispatcharr-e2e-upstream:local` does not exist yet.
    - **The procedure, per PR.** `<n>` is the PR number in this plan, `<wt>` your worktree, `<base>`
      the SHA your branch forked from, and `<scratch>` your scratchpad directory.
      1. `git -C <wt> worktree add --detach <scratch>/fixplan-D-base-<n> <base>`
-     2. Build the before image and start the stack: `env $E2E_ENV
-        DISPATCHARR_E2E_IMAGE=dispatcharr-e2e:fixplan-D-<n>-before
-        <scratch>/fixplan-D-base-<n>/scripts/e2e_up.sh`
-     3. With the pin already flipped in `<wt>`, run it from **your** worktree:
+     2. Build the before image and start the stack:
+
+        ```bash
+        DISPATCHARR_E2E_CONTAINER=e2e-fixplan-D DISPATCHARR_E2E_VOLUME=e2e-fixplan-D-data \
+        DISPATCHARR_E2E_PORT=9195 DISPATCHARR_E2E_NETWORK=e2e-fixplan-D-net \
+        DISPATCHARR_E2E_SKIP_UPSTREAM_BUILD=1 \
+        DISPATCHARR_E2E_IMAGE=dispatcharr-e2e:fixplan-D-<n>-before \
+          <scratch>/fixplan-D-base-<n>/scripts/e2e_up.sh
+        ```
+
+     3. Once per worktree, install the e2e packages: `cd <wt>/e2e && npm ci && npx playwright
+        install chromium`. Then, with the pin already flipped in `<wt>`, run it from **your**
+        worktree:
         `cd <wt>/e2e && E2E_BASE_URL=http://localhost:9195 npx playwright test --project=<project>
         <spec> --reporter=json > <scratch>/d<n>-before.json`. It must fail.
-     4. Build the after image into the same container name and volume: `env $E2E_ENV
-        DISPATCHARR_E2E_IMAGE=dispatcharr-e2e:fixplan-D-<n>-after <wt>/scripts/e2e_up.sh --recreate`.
-        This builds from `<wt>`, the fixed tree.
+     4. Build the after image into the same container name and volume. This builds from `<wt>`,
+        the fixed tree:
+
+        ```bash
+        DISPATCHARR_E2E_CONTAINER=e2e-fixplan-D DISPATCHARR_E2E_VOLUME=e2e-fixplan-D-data \
+        DISPATCHARR_E2E_PORT=9195 DISPATCHARR_E2E_NETWORK=e2e-fixplan-D-net \
+        DISPATCHARR_E2E_SKIP_UPSTREAM_BUILD=1 \
+        DISPATCHARR_E2E_IMAGE=dispatcharr-e2e:fixplan-D-<n>-after \
+          <wt>/scripts/e2e_up.sh --recreate
+        ```
+
      5. Re-run step 3's command into `<scratch>/d<n>-after.json`. It must pass.
      6. Tear down only your own objects: `docker rm -f e2e-fixplan-D`, `docker volume rm
         e2e-fixplan-D-data`, `docker network disconnect e2e-fixplan-D-net e2e-upstream`,
@@ -385,7 +405,8 @@ ingest reader reads `tv_archive`/`tv_archive_duration` (`apps/m3u/tasks.py:1391-
    `test_a_suffix_longer_than_the_file_is_the_whole_file` redden. Revert.
 4. **Break-check.** Change `_digits` to `return value.isdigit()`. Exactly
    `NonAsciiDigitTests.test_a_non_ascii_digit_passed_an_isdigit_guard_and_crashed_int` errors, with
-   `ValueError: invalid literal for int()` in six subtests (measured). Revert. This test has no red
+   `ValueError: invalid literal for int()` seven times: in the six subtests and in the bare
+   `parse_length("²")` assertion that follows them (measured). Revert. This test has no red
    run against the seed because the module is new. The break-check is what proves it bites.
 
 ### Task 1.2 — the connection manager
