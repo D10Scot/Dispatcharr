@@ -308,7 +308,9 @@ A conflict between a constraint and a task step is a **STOP and report**, never 
   when it cannot translate, instead of the absolute value. The seed's parsers used `try: int()`,
   which rejected `"²"` safely. The replacements test digits first, so they use an ASCII-only
   `_ascii_digits` rather than a bare `str.isdigit()`. Otherwise `Range: bytes=²-` would become an
-  uncaught 500 (raised by the category I planner and verified; regression test below).
+  uncaught 500 (raised by the category I planner and verified; regression test below). The same
+  guard also rejects `'٣'`, which is `isdecimal()` and which `int()` accepts. The seed parsed
+  `bytes=٣-` as `(3, None)`; RFC 9110's grammar allows ASCII DIGIT only, so `None` is correct.
 - **What a client sees now in the degenerate case.** A 206 whose provider sent no usable
   `Content-Range` now carries no `Content-Range` at all, rather than a false one. That is still not
   RFC-compliant. A 502 would be stricter, but the main path has already reserved a pool slot and
@@ -1152,6 +1154,10 @@ class NonAsciiDigitTests(SimpleTestCase):
             with self.subTest(value=value):
                 self.assertIsNone(parse_content_range(value))
         self.assertIsNone(parse_length("\u00b2"))
+        # "\u0663" (Arabic-Indic three) is isdecimal() and int() ACCEPTS it, so it
+        # does not crash; it is still not the ASCII DIGIT RFC 9110 allows.
+        self.assertIsNone(resolve_range("bytes=\u0663-", 1000))
+        self.assertIsNone(parse_content_range("bytes \u0663-5/10"))
         self.assertIsNone(plan_downstream(None, 200, None, "\u00b2", None).content_length)
 
 
@@ -2033,6 +2039,10 @@ class CatchupRangeHeaderTests(SimpleTestCase):
             with self.subTest(header=header):
                 self.assertIsNone(views._parse_client_range(header))
         self.assertFalse(views._is_suffix_range("bytes=-\u00b2"))
+        # "\u0663" is isdecimal() and int() accepts it (the seed parsed
+        # bytes=\u0663- as (3, None)); RFC 9110 allows ASCII DIGIT only.
+        self.assertIsNone(views._parse_client_range("bytes=\u0663-"))
+        self.assertIsNone(views._parse_content_range_header("bytes \u0663-5/10"))
         self.assertFalse(views._is_near_eof_probe("bytes=-\u00b2", None))
         for value in ("bytes \u00b2-5/10", "bytes 0-\u00b3/10", "bytes 0-5/\u00b9"):
             with self.subTest(value=value):
