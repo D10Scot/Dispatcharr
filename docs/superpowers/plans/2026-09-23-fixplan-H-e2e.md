@@ -83,7 +83,7 @@ defects, and no PR here adds or flips a `test.fail()` pin. No parity-matrix row 
 | `CLAUDE.md` | **B-2** #84 (one sentence in § Known defects, Security) | H-2 changes one word in § Testing ("twelve injectable faults" → thirteen, `CLAUDE.md:160` at the seed). | B-2 edits the Xtream-passwords sentence. | Disjoint paragraphs. B first. None. |
 | `e2e/tests/seeded/*` pins | **B-1, B-2** flip `test.fail()` pins in `vod-adult-streamable`, `xc-auth`, `network-acl` | H touches none of those files. | — | None. |
 | `.github/workflows/e2e-tests.yml` | **G** (#16 Node 24 actions, owned by G) | **H edits no workflow.** The `guards` job already runs on any `scripts/` or `e2e/` change, which is what H-1's new spec needs. | G bumps action pins and runtimes. | None. |
-| `apps/channels/signals.py:234-241`, `apps/channels/api_views.py:873-880` | **E** #72 | **H edits no product code.** H-5 is verification only, and it depends on E's fix. | E makes both `bulk_create` calls conflict-tolerant (the issue's suggested direction: `ignore_conflicts=True` on both). | E first, hard dependency. If E's plan rules #72 out of scope or memo-only, H-5 has no fix to verify and #86 needs re-planning; see Q1. |
+| `apps/channels/signals.py:234-241`, `apps/channels/api_views.py:873-880` | **E** #72 | **H edits no product code** unless the fallback is ruled in. H-5 is verification only, and it depends on E's fix. | E makes both `bulk_create` calls conflict-tolerant (the issue's suggested direction: `ignore_conflicts=True` on both). | E first, hard dependency. If E's plan rules #72 out of scope or memo-only, H-5 switches to its written fallback (PR H-5, "Fallback if category E memos or defers #72"), which carries the minimal fix itself; see Q1. |
 | `apps/m3u/tasks.py` | **C-3** (#217, #262, #199 split `refresh_m3u_groups`), **E** #56 | None. H-2 relies only on `fetch_m3u_lines`' `timeout=(30, 60)` at `:207` and on one playlist fetch per refresh (`:1752`). | C and E restructure the refresh. | H-2's delay must stay below the read timeout. If C or E lowers that 60 s timeout, H-2's constant moves with it; the constant's comment carries the formula for this reason. |
 | `docker/nginx.conf:696-700` | **G** #81, #180 | None. H-3 only exercises `@authorize_denied`'s 429 line. | G edits forwarded headers and templating. | None. If G's #180 templating rewrite moves the file inside the image, H-3's break-check path (`/etc/nginx/sites-enabled/default`) moves with it. |
 
@@ -821,7 +821,7 @@ flips H-5 into carrying the minimal fix with one ruling, and nothing else here c
   sets after its commit). Assert neither answers 500 and the new profile's membership set contains
   every channel. Break-check: drop `ignore_conflicts` from the receiver only; the test reddens with
   the `IntegrityError`.
-- **Test label** `apps.channels` (app label `dispatcharr_channels`; no model change, so no migration).
+- **Test label** `apps.channels.tests`, as `scripts/ci_backend_test_labels.py` prints it (app label `dispatcharr_channels`; no model change, so no migration).
   **Upstreamable** yes. **Ledger** none (#72 has no row in `defects.yml`). It also closes #72.
 - **Evidence.** The same before/after campaign as Tasks 5.1 and 5.2, with this PR's image as "after".
 
