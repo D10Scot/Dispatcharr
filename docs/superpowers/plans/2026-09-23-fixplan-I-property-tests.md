@@ -104,7 +104,7 @@ report, never a judgement call.**
      needed.
    - **`deadline=None`.** CI containers are loaded. A per-example deadline is a wall-clock assertion
      and would flake. It buys nothing here: none of these helpers has a latency contract.
-   - **`max_examples=200`.** This matches the existing module. The whole plan adds 238 tests, 232 of
+   - **`max_examples=200`.** This matches the existing module. The whole plan adds 239 tests, 232 of
      them `@given`, and about 35 s of wall time spread across five labels (§ Timings). Each label runs
      in its own CI container, so no job grows by more than about 9 s.
    - **One profile name, one set of values, registered in every module.** `load_profile` is global.
@@ -141,12 +141,15 @@ result, and what the module does once the fix merges.
 | PR | depends on | what it must have done | seed result | with the fix |
 |---|---|---|---|---|
 | I-1 epg | **C-2** (#75, #76/#156, #157) | Adjacent `±hhmm` offset normalised; `_decode_channel_id(raw, quote=b'"', entity_doctype=True)` plus `_xmltv_file_gets_entity_doctype(file_path)` (C Appendix A) | 52 run: 50 OK, 1 FAIL (`#75 -0800`), 1 ERROR (import of `_xmltv_file_gets_entity_doctype`) | 53 OK |
-| I-2 m3u | **C-3** (#199, #217, #262), **C-4** (#171), **C-5** (#68, #146) | `OverflowError` caught and `_user_info()`; the `m3u_cp1252_fallback` decode; the `regex` filter wrapper; the `$N` rule; `.casefold()`; both counter repairs | 48 run, the same 9 red in 3 of 3 runs | 48 OK in 3 of 3 runs |
+| I-2 m3u | **C-3** (#199, #217, #262), **C-4 as adopted** (#171), **C-5** (#68, #146) | `OverflowError` caught and `_user_info()`; the `m3u_cp1252_fallback` decode; the `regex` filter wrapper; the `$N` rule `\$(0[1-9]|[1-9]\d?)` (see below); `.casefold()`; both counter repairs | 49 run, the same 10 red in 3 of 3 runs | 49 OK in 3 of 3 runs |
 | I-3 output+vod | **C-1, AMENDED** (#90/#211), **C-6** (#242) | Out-of-range captures treated as "no time or date", **with the year bound `2 <= year <= 9998`**, not C-1's `1 <= year <= 9999` (see below); `extract_year` coerces with `str()` | custom dummy: 2 errors; vod provider helpers: 7 errors | 26 + 34 OK |
 | I-4 timeshift | **D-3, AMENDED** (#216, #141, #111) | D Appendix C **plus** the ASCII guard at its five `isdigit()` sites (see below) | 15 of 77 red, all on D-3 mechanisms | 77 OK |
 
-**Two sibling plans must be amended before this plan can land.** Both were found by these modules,
-measured, and reported to the lead on 2026-09-23.
+**Two sibling plans had to be amended before this plan can land.** Both were found by these
+modules, measured, and reported to the lead on 2026-09-23. The lead relayed both the same day: plan C
+takes C-1's bound as `2 <= year <= 9998`, and D-3's correction reached plan D through its review.
+**This plan assumes both as stated here.** A reviewer should check each against C's and D's final
+heads, and each PR's Task 0 checks it again against `main`.
 
 - **C-1's year bound still crashes** (plan C, #90 section, "Fix", Date bullet). With C-1 applied as
   written, two channel names raise `OverflowError`:
@@ -170,11 +173,39 @@ measured, and reported to the lead on 2026-09-23.
 **If either amendment has not landed** when the PR comes up, Task 0 STOPs. The two `@example` rows
 are not dropped (Global constraint 6).
 
-A third, smaller seam is compatible and needs nothing. C-4's rule `\$(0*[1-9]\d*)` maps `$001` to
-group 1, while JavaScript's `String.prototype.replace` reads `$001` as literal text (Node 22). JS reads
-at most two digits after `$`. I-2's JS-model property therefore draws at most one leading zero and
-says why. It passes under C-4's default rule, under the whole-match alternative, and under a stricter
-`\$(0?[1-9]\d?)` should plan C adopt one.
+**A third seam, C-4's `$N` grammar, was changed by plan C after this plan reported it.** C-4 first
+proposed `\$(0*[1-9]\d*)`, which maps `$001` to group 1 and `$012` to group 12. JavaScript's
+`String.prototype.replace` reads at most two digits after `$`, and a leading zero only as `$0n`.
+**Plan C adopted `\$(0[1-9]|[1-9]\d?)` → `\g<N>`** (lead, 2026-09-23), which is exactly that grammar.
+**This plan assumes the adopted rule.**
+
+I-2's backreference module pins it with `test_multi_digit_tokens_read_exactly_as_javascript_does`.
+That test runs eight templates on a twelve-group pattern over `abcdefghijkl`, against outputs
+recorded from Node 22 on 2026-09-23:
+
+| template | Node 22 output |
+|---|---|
+| `$012` | `a2` |
+| `$001` | `$001` |
+| `$0012` | `$0012` |
+| `[$100]` | `[j0]` |
+| `$12` | `l` |
+| `$01` | `a` |
+| `$1x` | `ax` |
+| `$010` | `a0` |
+
+Measured results:
+
+| rule | result |
+|---|---|
+| seed | the test fails with NUL and control bytes |
+| C-4's first rule | fails on five of the eight rows, e.g. `'l' != 'a2'` on `$012` |
+| the adopted rule | green |
+
+The one remaining divergence is not asserted. JavaScript falls back to reading `$10` with two groups
+as `$1` followed by `0`, while the helper refuses it; plan C records that as pre-existing. The two
+Hypothesis properties and the new test are all indifferent to the user's pending ruling on a bare
+`$0`: whole match, or literal.
 
 ---
 
@@ -193,7 +224,7 @@ text.
 | `apps/epg/tests/test_property_sd_helpers.py` | I-1 | 246 | 14 |
 | `CLAUDE.md` (§ Testing, one sentence) | I-1 | — | — |
 | `apps/m3u/tests/test_property_m3u_parsing.py` | I-2 | 261 | 14 |
-| `apps/m3u/tests/test_property_backreferences.py` | I-2 | 130 | 2 |
+| `apps/m3u/tests/test_property_backreferences.py` | I-2 | 160 | 3 |
 | `apps/m3u/tests/test_property_credentials.py` | I-2 | 123 | 6 |
 | `apps/m3u/tests/test_property_numbering.py` | I-2 | 135 | 9 |
 | `apps/m3u/tests/test_property_stream_filters.py` | I-2 | 77 | 3 |
@@ -317,8 +348,8 @@ difference is named below.
 - **Not covered, by design.** `transform_url` (`apps/proxy/next_source.py`) belongs to the
   `apps.proxy.tests` label, and C-4 pins it with example tests. The shared helper's property covers
   the rule it now calls.
-- **Tests.** Eight new modules, 48 tests. Existing tests changed: none.
-- **Size** L (1,122 lines). **Upstreamable** no: it depends on C-3, C-4 and C-5, and C-4 is not
+- **Tests.** Eight new modules, 49 tests. Existing tests changed: none.
+- **Size** L (1,152 lines). **Upstreamable** no: it depends on C-3, C-4 and C-5, and C-4 is not
   upstreamable (plan C).
 
 ### output + vod: #92 (survivor), #210, #162, #243 — PR I-3
@@ -597,8 +628,8 @@ reverts with `git checkout -- apps/epg/tasks.py`.
 
 - [ ] **Step 1.** `git switch -c fix/I-2-m3u-property-tests origin/main`.
 - [ ] **Step 2.** Run the extraction script with prefix `apps/m3u/tests/`. It must print eight files,
-  with 261, 130, 123, 135, 77, 175, 75 and 146 lines.
-- [ ] **Step 3.** Run the eight modules together, three times. Expected: `Ran 48 tests`, `OK`,
+  with 261, 160, 123, 135, 77, 175, 75 and 146 lines.
+- [ ] **Step 3.** Run the eight modules together, three times. Expected: `Ran 49 tests`, `OK`,
   identical each time, about 6 to 7 s of wall time.
 
 #### Task 2: prove the seams (each edit is reverted)
@@ -619,7 +650,7 @@ reverts with `git checkout -- apps/epg/tasks.py`.
 | module | wrong edit | expected failure |
 |---|---|---|
 | m3u_parsing | `parse_extinf_line`: `attrs[match.group(1)]`, dropping `.lower()` | `test_generated_attributes_and_display_name_round_trip`: `{'A': ''} != {'a': ''}` |
-| backreferences | C-4's default rule without leading zeros: `\$([1-9]\d*)` | `test_group_tokens_substitute_like_javascript_string_replace`: `'http://$02-$01/p/1.ts' != 'http://u-h/p/1.ts'` |
+| backreferences | C-4's first-draft rule `\$(0*[1-9]\d*)` in place of the adopted one | `test_multi_digit_tokens_read_exactly_as_javascript_does` (template `$012`): `'l' != 'a2'` |
 | credentials | drop the username `.strip()` | whitespace-variant property: digests differ for `username='0'` padded |
 | numbering | delete `_next_available_number`'s post-loop `if end is not None and n > end: return None` | `0 != None` (`used=set(), start=0, end=-1`) |
 | stream_filters | swap the `url` and `group` target selection in `_stream_passes_m3u_filters` | first-match property: `False != True` |
@@ -633,14 +664,14 @@ reverts with `git checkout -- apps/epg/tasks.py`.
 
 - [ ] **Step 1.** Profile check (I-1 Task 4 Step 2). The count grows by 8.
 - [ ] **Step 2.** `redis-cli flushall`, then run `apps.m3u.tests` whole, with and without `--keepdb`.
-  Expected: OK, with the seed's 164 plus C-3, C-4 and C-5's additions plus 48.
+  Expected: OK, with the seed's 164 plus C-3, C-4 and C-5's additions plus 49.
 - [ ] **Step 3.** Commit in two calls, push, and open a draft PR.
 
 #### PR description draft
 
 > **test(m3u): Hypothesis property tests for M3U parsing, numbering, filters, credentials, pool counters and XC account values (#218)**
 >
-> Eight `SimpleTestCase` modules, 48 tests, about 6 s, under the shared derandomized profile. The
+> Eight `SimpleTestCase` modules, 49 tests, about 6 s, under the shared derandomized profile. The
 > connection-pool properties run against an in-module fake Redis.
 >
 > The counterexamples of the defects C-3, C-4 and C-5 fixed are `@example`s: #199's out-of-range
@@ -649,8 +680,9 @@ reverts with `git checkout -- apps/epg/tasks.py`.
 >
 > The backreference properties do not depend on how the user rules on `$0`. They assert that no
 > output character is absent from both the target and the template, and that the output equals a
-> hand-written model of JavaScript's `String.prototype.replace` for `$N` tokens with N ≥ 1. Both of
-> C-4's rules satisfy both.
+> hand-written model of JavaScript's `String.prototype.replace` for `$N` tokens with N ≥ 1. C-4's
+> adopted `\$(0[1-9]|[1-9]\d?)` grammar is pinned separately against eight outputs recorded from
+> Node 22 (`$012` → `a2`, `$001` stays literal, `[$100]` → `[j0]`).
 >
 > Reference-branch properties that pinned defects were dropped:
 > - #145's "a negative counter stays negative";
@@ -847,7 +879,7 @@ figures are for the modules on the fixed tree, not the whole label.
 | PR | modules | tests | wall per run |
 |---|---|---|---|
 | I-1 epg | 6 | 53 | 7.9 to 8.3 s |
-| I-2 m3u | 8 | 48 | 6.7 to 7.2 s |
+| I-2 m3u | 8 | 49 | 6.7 to 8.3 s |
 | I-3 output | 3 | 26 | about 6 s (1.3 + 3.8 + 1.0) |
 | I-3 vod | 2 | 34 | 7 to 8 s (2.5 to 2.9 + 4.0 to 4.3) |
 | I-4 timeshift | 5 | 77 | 9.2 to 9.6 s |
@@ -955,7 +987,7 @@ run at seed. Every domain reproduced the seed column of § Prerequisites exactly
 | domain | tests | seed result |
 |---|---|---|
 | epg | 52 | 1 FAIL (#75), 1 import ERROR (C-2's helper) |
-| m3u | 48 | 9 red |
+| m3u | 49 | 10 red |
 | output | 26 | 2 ERROR |
 | vod | 34 | 7 ERROR |
 | timeshift | 77 | 15 red |
@@ -964,7 +996,7 @@ Three domains were also taken to green from the extracted text:
 
 | domain | fix applied | result |
 |---|---|---|
-| m3u | the C-3, C-4 and C-5 hunks | 48 OK |
+| m3u | the C-3, C-4 (adopted rule) and C-5 hunks | 49 OK, 3 of 3 runs |
 | timeshift | D Appendix C plus the ASCII guard | 77 OK |
 | vod | C-6's one-line `str()` coercion | 34 OK |
 
@@ -2572,6 +2604,16 @@ that ruling:
    global regex (ECMA-262 GetSubstitution): ``$N`` is group N's text, or ""
    when the group did not participate. The model uses ``regex.finditer`` only
    to find matches; it never calls the helper under test.
+
+C-4's adopted rule is ``\$(0[1-9]|[1-9]\d?)`` -> ``\g<N>``, JavaScript's own
+``$n``/``$nn`` grammar: at most two digits after ``$``, and a leading zero only
+as ``$0n``. ``test_multi_digit_tokens_read_exactly_as_javascript_does`` pins
+the multi-digit cases against outputs recorded from Node 22's
+``String.prototype.replace`` (the oracle is a table of constants, not the
+code under test). The one remaining divergence is JavaScript's fallback
+when group ``nn`` does not exist (``$10`` with two groups reads ``$1`` then
+``0``); the helper refuses it instead, and C-4 records that as pre-existing,
+so it is not asserted here.
 """
 
 import regex
@@ -2680,6 +2722,26 @@ class JsBackreferenceConversionProperties(SimpleTestCase):
             _javascript_replace(pattern, pieces, target),
             f"template={template!r}",
         )
+
+    # "abcdefghijkl".replace(TWELVE_GROUPS, template), recorded in Node 22.
+    TWELVE_GROUPS = r"(a)(b)(c)(d)(e)(f)(g)(h)(i)(j)(k)(l)"
+    NODE_22_OUTPUTS = [
+        ("$012", "a2"),  # $01 then a literal 2, not group 12
+        ("$001", "$001"),  # no $0 token, and $00 is not a group
+        ("$0012", "$0012"),
+        ("[$100]", "[j0]"),  # at most two digits: $10 then a literal 0
+        ("$12", "l"),
+        ("$01", "a"),
+        ("$1x", "ax"),
+        ("$010", "a0"),
+    ]
+
+    def test_multi_digit_tokens_read_exactly_as_javascript_does(self):
+        for template, expected in self.NODE_22_OUTPUTS:
+            with self.subTest(template=template):
+                self.assertEqual(
+                    _apply(self.TWELVE_GROUPS, template, "abcdefghijkl"), expected
+                )
 ```
 
 #### `apps/m3u/tests/test_property_credentials.py`
