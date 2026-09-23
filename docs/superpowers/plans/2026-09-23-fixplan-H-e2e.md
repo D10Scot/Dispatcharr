@@ -42,7 +42,7 @@ later PR's Playwright verification runs on one.
 | `e2e/README.md` (`:20-50` lifecycle, `:63` guards row, `:155-180` destroy prose, new "Running a second stack" subsection) | H-1 | #168, #187 |
 | `e2e/README.md` (none) | H-2..H-5 | — |
 | `e2e/COVERAGE.md` (Guards table) | H-1 | #168, #187 |
-| `e2e/COVERAGE.md` (Lifecycle bounded-restart row `:200`) | H-2 | #197 |
+| `e2e/COVERAGE.md` (Lifecycle bounded-restart row `:200`; fault-count sentences `:236`, `:379`) | H-2 | #197 |
 | `e2e/COVERAGE.md` (one new Streaming row after `:197`) | H-3 | #179 |
 | `e2e/COVERAGE.md` (one new DVR row) | H-4 | #178 |
 | `e2e/COVERAGE.md` (Sources row `:191`) | H-5 | #86 |
@@ -78,8 +78,9 @@ defects, and no PR here adds or flips a `test.fail()` pin. No parity-matrix row 
 
 | File | Other category and issue | What H does there | What the other plan is assumed to do | Order and collision risk |
 |---|---|---|---|---|
-| `scripts/e2e_up.sh` | **B-7** #182 (PR #343, Task 7.2) | H-1 edits the scoping variables (`:27-53`), `destroy()` (`:68-73`), `--stop` (`:120-128`) and the **provider** block (`:181-207`). H-1 does not touch the app-container `docker run` at `:250-261`. | B-7 resolves the network gateway with `docker network inspect "$NETWORK" -f '{{(index .IPAM.Config 0).Gateway}}'` before the **app** `docker run` at `:254`, fails loudly if empty, and adds `-e DISPATCHARR_TRUSTED_PROXIES="$GATEWAY"`. | B goes first. Hunks are disjoint. **One semantic join:** H-1's stub (`e2e-up-stub.sh`) must answer B-7's gateway template, or H-1's start-path tests hit the stub's `UNHANDLED` branch. H-1 Task 1.3 adds that answer if B-7 has merged when H-1 starts; if H-1 lands first, B-7 must add it (B-7's plan should then say so). |
+| `scripts/e2e_up.sh` | **B-7** #182 (PR #343, Task 7.2) | H-1 edits the scoping variables (`:27-53`), `destroy()` (`:68-73`), `--stop` (`:120-128`) and the **provider** block (`:181-207`). H-1 does not touch the app-container `docker run` at `:250-261`. | B-7 resolves the network gateway with `docker network inspect "$NETWORK" -f '{{(index .IPAM.Config 0).Gateway}}'` before the **app** `docker run` at `:254`, fails loudly if empty, and adds `-e DISPATCHARR_TRUSTED_PROXIES="$GATEWAY"`. | B goes first. Hunks are disjoint. **One semantic join:** H-1's stub (`e2e-up-stub.sh`) answers B-7's gateway template **unconditionally** from Task 1.1, so H-1's start-path tests pass in either landing order and B-7 (past review at 123152ef, and gated on B's Q1) owes nothing. |
 | `e2e/README.md`, `e2e/COVERAGE.md` | **B-7** #182 (X-Real-IP paragraphs, README `:355-363`, COVERAGE `:170`) | H edits the lifecycle section, the Projects table's `guards` row, a new subsection, and the rows named above. | B-7 rewrites the X-Real-IP prose. | Disjoint paragraphs. B first. |
+| `CLAUDE.md` | **B-2** #84 (one sentence in § Known defects, Security) | H-2 changes one word in § Testing ("twelve injectable faults" → thirteen, `CLAUDE.md:160` at the seed). | B-2 edits the Xtream-passwords sentence. | Disjoint paragraphs. B first. None. |
 | `e2e/tests/seeded/*` pins | **B-1, B-2** flip `test.fail()` pins in `vod-adult-streamable`, `xc-auth`, `network-acl` | H touches none of those files. | — | None. |
 | `.github/workflows/e2e-tests.yml` | **G** (#16 Node 24 actions, owned by G) | **H edits no workflow.** The `guards` job already runs on any `scripts/` or `e2e/` change, which is what H-1's new spec needs. | G bumps action pins and runtimes. | None. |
 | `apps/channels/signals.py:234-241`, `apps/channels/api_views.py:873-880` | **E** #72 | **H edits no product code.** H-5 is verification only, and it depends on E's fix. | E makes both `bulk_create` calls conflict-tolerant (the issue's suggested direction: `ignore_conflicts=True` on both). | E first, hard dependency. If E's plan rules #72 out of scope or memo-only, H-5 has no fix to verify and #86 needs re-planning; see Q1. |
@@ -359,7 +360,8 @@ A conflict between a constraint and a task step is a **STOP and report**, never 
    `docker` (and, with `STUB_AS=curl`, for `curl`) keeping containers, networks, volumes and images
    as files under `$STUB_STATE`, appending every argv to `$STUB_STATE/log`, and answering any
    invocation it does not recognise by appending `UNHANDLED <argv>` to the log and exiting 97.
-   `git update-index --chmod=+x` it.
+   `git update-index --chmod=+x` it. It answers B-7's gateway lookup from the start, whether or not
+   B-7 has landed (§ Overlap).
 2. Write `e2e/tests/guards/e2e-up-stacks.spec.ts` (Appendix B). Every test runs
    `bash <REPO_ROOT>/scripts/e2e_up.sh <mode>` with `spawnSync`, `PATH=<tmpdir>:$PATH`, where
    `<tmpdir>` holds two two-line wrappers, `docker` and `curl`, that `exec` the stub. **Safety
@@ -387,7 +389,7 @@ A conflict between a constraint and a task step is a **STOP and report**, never 
      `UPSTREAM_CONTAINER=h1g-…-up` → the logged provider `run` carries
      `-e UPSTREAM_INTERNAL_ORIGIN=http://h1g-…-up:8080`.
    - `a partially scoped invocation refuses before touching docker (#187)`: for each of `_CONTAINER`,
-     `_VOLUME`, `_NETWORK` set alone, and for each mode in `['', '--stop', '--down', '--reset']`:
+     `_VOLUME`, `_NETWORK` set alone, and for each mode in `['', '--stop', '--down', '--reset', '--recreate']`:
      exit 2, stderr names every missing variable, and the stub log is empty.
    - `an upstream override without its port refuses (#187)` and the converse.
    - `a Playwright upstream URL that names another provider refuses (#187)`:
@@ -416,12 +418,13 @@ A conflict between a constraint and a task step is a **STOP and report**, never 
    `test.skip`'s message.
 5. Replace the stale comment at `:44-50` with what is now true (Appendix A).
 
-### Task 1.3 — B-7's gateway template, if B-7 has merged
+### Task 1.3 — B-7's gateway template
 
-`git log --oneline origin/main -- scripts/e2e_up.sh` (with `set -o pipefail`, stderr kept). If B-7's
-`{{(index .IPAM.Config 0).Gateway}}` is on `main`, make the stub answer it with a fixed
-`172.30.0.1` for any network it knows, and rebase. Otherwise skip, and add a sentence to the PR
-description telling B-7 to extend the stub.
+The stub already answers B-7's `network inspect <N> -f '{{(index .IPAM.Config 0).Gateway}}'` with a
+fixed `172.30.0.1` for any network it knows (Task 1.1, Appendix B). An extra answered shape harms
+nothing, and the `UNHANDLED` catch-all still guards every other shape. So there is nothing to add
+here: `git log --oneline origin/main -- scripts/e2e_up.sh` (with `set -o pipefail`, stderr kept); if
+B-7 has merged, rebase and confirm the start-path tests still pass.
 
 ### Task 1.4 — the same claims against real Docker
 
@@ -461,7 +464,7 @@ Each on the fixed tree, one at a time, then reverted:
 | `--stop` back to an unconditional `docker stop` | the `--stop` second-stack test only | the provider not running |
 | Drop the reconnect loop in the image-moved branch | the recreate test only | netA missing from the provider's networks |
 | Drop the `-e UPSTREAM_INTERNAL_ORIGIN` line | the renamed-provider test only | the missing `-e` |
-| Delete the `check_scope` call | every partial-scope case | exit 0 (not 2) and a non-empty stub log |
+| Delete the `check_scope` call | every partial-scope case, all five modes (`''`, `--stop`, `--down`, `--reset`, `--recreate`) | exit 0 (not 2) and a non-empty stub log |
 | Swap `container_networks` for the old `{{json …}} \| grep` | the #168 tests | the stub's `UNHANDLED` line (the stub answers only the range template) |
 
 The last row proves the spec cannot pass on the parser #261's review rejected. Task 1.4 proves the
@@ -483,7 +486,8 @@ range template is what real Docker answers.
      `e2e-upstream/`, because every start rebuilds the provider from *your* tree and recreates the
      shared one when its image id moves, which drops every sibling stack's scenarios.
    - Projects table, `guards` row (`:63`): add "plus one behavioural check of `scripts/e2e_up.sh`
-     against a stub `docker`".
+     against a stub `docker`", and change "runs in about a second" to "runs in a few seconds" (H-1
+     adds some twenty spawns of the real script).
 2. `e2e-upstream/README.md:20-24`: the same one-sentence correction for `--stop`/`--reset`/`--down`.
 3. `e2e/fixtures/instance.ts:10-27` and the `down()` doc at `:317`: `destroy()` removes the network
    and the provider **when this stack is the provider's last**. Comments only.
@@ -531,7 +535,7 @@ range template is what real Docker answers.
   `e2e-upstream/CONTRACT.md`, `e2e-upstream/README.md`, `e2e-upstream/package.json`,
   `e2e-upstream/package-lock.json`, `e2e/fixtures/upstream.ts`, `e2e/fixtures/index.ts`,
   `e2e/tests/streaming-split/process-restart.spec.ts`, `e2e/playwright.config.ts`,
-  `e2e/COVERAGE.md`, `CLAUDE.md` (one word).
+  `e2e/COVERAGE.md` (`:200`, `:236`, `:379`), `CLAUDE.md` (one word).
 - **Test labels** none on the backend. `cd e2e-upstream && npm ci && npm test` (vitest), `cd e2e &&
   npm run typecheck && npx playwright test --project=guards`, and one `streaming-split` run on a
   private stack with a private provider (Global constraint 6).
@@ -559,7 +563,9 @@ range template is what real Docker answers.
    test reddens, with an elapsed time under 400. Revert.
 5. Update every count: `faults.ts` class comment (`:212-218`, "Nine of the twelve"), `FaultResult`'s
    doc in `e2e/fixtures/upstream.ts` (`:64-76`), `e2e/fixtures/index.ts:318-326`,
-   `e2e-upstream/README.md:4` and `:219`, `CLAUDE.md` § Testing ("a fake provider image with twelve
+   `e2e-upstream/README.md:4` and `:219`, `e2e/COVERAGE.md:236` and `:379` (both "drive any of the
+   twelve faults"; historical unblock notes, so make them count-free: "drive any fault in the
+   catalogue"), `CLAUDE.md` § Testing ("a fake provider image with twelve
    injectable faults" → thirteen), and `CONTRACT.md` (`:42-45` "all twelve faults",
    `:153-161` "nine of the twelve"). `slow-playlist` joins the next-request group. Add its row to the
    README's fault table and a scoping sentence beside `range-unsupported`'s (`:246`).
@@ -651,8 +657,10 @@ refresh in flight, which is #197's subject.
    with the entry and red without it (that is the guard's own break-check, record it).
 2. Write the spec per Appendix E. Test title:
    `'a user at their stream limit gets 429, not 403 or 500, through the authorize hop'`. Tag
-   `@contract`, with a header comment saying why, and that it is allowlisted for its global write in
-   the same way `catchup-redirect.spec.ts` is.
+   `@contract`, with a header comment saying why in one sentence: ADR 0003's "every file on a
+   capability allowlist is `@characterization`" covers the four capabilities, `GLOBAL_SETTINGS_WRITE`
+   is not one of them, and `catchup-redirect.spec.ts` (on that list, `@contract` at `:60`) is the
+   precedent.
 3. `e2e/playwright.config.ts` `streaming-failover` block: "two specs in this directory mutate
    container-global state" → three, and one paragraph for `user_limit_settings`.
 4. `authorize-matrix.spec.ts:327-334`: the comment says the 404 row is the only restoration row.
@@ -669,7 +677,9 @@ refresh in flight, which is #197's subject.
    green.
 2. **Break-check A, the restoration.**
    `docker exec dispatcharr-e2e-h3 sed -i '/authorize_status = 429/d' /etc/nginx/sites-enabled/default
-   && docker exec dispatcharr-e2e-h3 nginx -s reload`. Rerun: fails with `StreamStatusError` status
+   && docker exec dispatcharr-e2e-h3 nginx -s reload`. If `nginx -s reload` cannot find the master's
+   pid file (supervisord runs nginx in the foreground), use `docker exec dispatcharr-e2e-h3
+   supervisorctl -c /app/docker/supervisord/supervisorctl.conf restart nginx` instead. Rerun: fails with `StreamStatusError` status
    **403** where 429 was expected (the `return 403` fall-through at `nginx.conf:699`). Restore with
    `scripts/e2e_up.sh --recreate` (same exports), which re-creates the container from the unmodified
    image.
@@ -773,15 +783,47 @@ assertion does.
    in a row (`npx playwright test --project=seeded --repeat-each=1`, looped in the shell, **not**
    `--repeat-each=8`, which multiplies tests inside one run and changes the load shape). Keep each
    run's report.
-2. After the loop:
-   `docker logs dispatcharr-e2e-h5 2>&1 | grep -c 'channelprofilemembership'` and save the matching
-   `IntegrityError` tracebacks. The mechanism is confirmed when at least one traceback's request is
+2. After the loop, count **failures, not matching lines**. The constraint name appears on several
+   lines of one Django traceback (the `IntegrityError` message and the SQL), so a `grep -c` on it
+   overcounts. Count distinct `Internal Server Error: /api/channels/profiles/` lines
+   (`docker logs dispatcharr-e2e-h5 2>&1 | grep -c 'Internal Server Error: /api/channels/profiles/'`,
+   under `set -o pipefail`), and save the traceback that follows each one. That line reaches the
+   container log by this path: `django.request`'s 500 log (`log_response`, ERROR, with `exc_info`)
+   propagates because `dispatcharr/settings.py:541` sets `disable_existing_loggers: False` and the
+   root logger (`:606-609`) has the `console` handler at `LOG_LEVEL`; `api-uwsgi`'s stdout goes to
+   the container's (`docker/supervisord.d/api-uwsgi.conf:13-15`). The mechanism is confirmed when at least one traceback's request is
    `POST /api/channels/profiles/`, the `post_save` receiver `create_profile_memberships` is in its
    stack, and the constraint is the membership table's `(channel_profile_id, channel_id)` unique
    key. Count the Playwright failures and flaky retries too.
 3. **If no traceback appears in eight runs,** say so and run eight more. If sixteen runs show none,
    STOP and report: the mechanism is unconfirmed, and closing #86 on E's fix would be a true
-   positive for a false reason (memory note).
+   positive for a false reason (memory note). The arithmetic behind the numbers: at the reported
+   rate of one failure in six to eight runs (taking 1 in 7), eight clean runs happen about 29%
+   of the time with the mechanism present (0.857^8; 34% at 1 in 8), so eight is not evidence of
+   absence. Sixteen clean runs happen about 8% of the time (12% at 1 in 8). That is a reasonable
+   point to stop and report rather than keep spending runs. The log signature is also more
+   sensitive than the Playwright count, because it records a race that retry absorbed.
+
+### Fallback if category E memos or defers #72
+
+Q1's recommendation stands: the fix belongs to E. If E's plan lands without a #72 PR, the lead
+flips H-5 into carrying the minimal fix with one ruling, and nothing else here changes shape:
+
+- **Fix.** `ignore_conflicts=True` on both `bulk_create` calls: the receiver's at
+  `apps/channels/signals.py:238` and the viewset's at `apps/channels/api_views.py:877` (the omitted
+  `channel_profile_ids` branch; the sentinel-`0` branch's copy below it gets the same argument). Both
+  populate a set where an existing row is not an error. The receiver relies on `enabled`'s `True`
+  default and the viewset passes `enabled=True`, so the rows they would collide on are identical.
+- **Test.** `apps/channels/tests/test_profile_membership_race.py`, a `TransactionTestCase`,
+  `test_a_profile_created_during_a_channel_create_answers_500`. Two threads, one creating a
+  profile through the API and one creating a channel with `channel_profile_ids` omitted, with the
+  receiver's `Channel.objects.all()` held open (patched to wait on an `Event` the channel thread
+  sets after its commit). Assert neither answers 500 and the new profile's membership set contains
+  every channel. Break-check: drop `ignore_conflicts` from the receiver only; the test reddens with
+  the `IntegrityError`.
+- **Test label** `apps.channels` (app label `dispatcharr_channels`; no model change, so no migration).
+  **Upstreamable** yes. **Ledger** none (#72 has no row in `defects.yml`). It also closes #72.
+- **Evidence.** The same before/after campaign as Tasks 5.1 and 5.2, with this PR's image as "after".
 
 ### Task 5.2 — after E's fix
 
@@ -818,7 +860,8 @@ assertion does.
 `bulk_create` calls conflict-tolerant, the direction #72's own body suggests. If E instead writes a
 memo or defers #72, #86 has a confirmed cause and no fix. The two readings lead to different work:
 H-5 grows a product change in `apps/channels/signals.py` and `api_views.py` plus the backend
-regression test, which is exactly E's #72 PR moved into H. Recommendation: keep the fix in E, and
+regression test, which is exactly E's #72 PR moved into H. That fallback is written out in full
+under PR H-5, so the lead can switch to it with one ruling. Recommendation: keep the fix in E, and
 treat Q1 as a check the lead makes when E's plan lands.
 
 Every other choice here has a default the plan adopts and states. The main ones are the #187
@@ -924,8 +967,9 @@ The helpers and the three rewritten sites:
 # One network per line. A Go template over the map's keys, never a grep of
 # {{json .NetworkSettings.Networks}}: each real endpoint object carries a
 # dozen nested keys, and a line grep for names matches them (#261's review).
-# A stopped container still lists its attachments; a missing one prints
-# nothing here.
+# A stopped container still lists its attachments. A missing one exits 1
+# with `no such object` on stderr and one blank line on stdout, which the
+# sed strips, so it yields no names here.
 container_networks() {
   docker inspect -f '{{range $n, $_ := .NetworkSettings.Networks}}{{println $n}}{{end}}' \
     "$1" 2>/dev/null | sed '/^$/d' || true
@@ -1025,7 +1069,7 @@ It handles exactly the invocations the script makes. Each is listed with its ans
 
 | argv shape | effect / output |
 |---|---|
-| `inspect -f '{{range $n, $_ := .NetworkSettings.Networks}}{{println $n}}{{end}}' C` | cat `networks`, then one blank line (as real Docker prints); exit 1 if C is absent |
+| `inspect -f '{{range $n, $_ := .NetworkSettings.Networks}}{{println $n}}{{end}}' C` | cat `networks`, then one blank line (as real Docker prints); if C is absent, print one blank line on stdout, `error: no such object: C` on stderr, exit 1 (as Docker 29.8 does) |
 | `inspect -f '{{.Image}}' C` | cat `image`; exit 1 if absent |
 | `inspect -f '{{.State.Running}}' C` | `true`/`false` |
 | `image inspect [-f '{{.Id}}'] T` | cat `i/T`; exit 1 if absent |
@@ -1036,9 +1080,15 @@ It handles exactly the invocations the script makes. Each is listed with its ans
 | `run -d --name C --network N -p … [-e K=V]… [-v …] IMAGE` | create C, running, networks = N, env lines, image = `i/IMAGE` |
 | `ps [-a] --format '{{.Names}}'` | names (running only unless `-a`) |
 | `volume rm V`, `logs …` | remove / no output |
-| B-7's `network inspect N -f '{{(index .IPAM.Config 0).Gateway}}'` (Task 1.3) | `172.30.0.1` |
+| `network inspect N -f '{{(index .IPAM.Config 0).Gateway}}'` (B-7's call, flag after the name; answered unconditionally) | `172.30.0.1` if N exists, else exit 1 |
 | `STUB_AS=curl …` | exit 0 |
 | anything else | append `UNHANDLED <argv>` to the log, exit 97 |
+
+Two rules the table leaves implicit. **`run`'s argv parser:** `--name`, `--network`, `-p`, `-e` and
+`-v` each consume exactly one following value, `-d` consumes none, and the first remaining
+positional is the image; anything else is `UNHANDLED`. **Environment:** `runScript` passes
+`STUB_STATE=<tmpdir>/state` to the script (the wrappers inherit it), the `curl` wrapper is
+`exec env STUB_AS=curl bash <stub> "$@"` and the `docker` wrapper is `exec bash <stub> "$@"`.
 
 The spec's own helpers: `mkStack()` returns the throwaway names and an env object;
 `seedContainer(state, name, {image, running, networks})`; `runScript(mode, env)` returns
