@@ -45,10 +45,11 @@ items); the only tracker issue in it is **#336**.
 | `docker/nginx.conf:25-29`, `:45-49` | J-1 | comments only (A16.7) |
 | `.github/workflows/claude-md-maintenance.md:122` | J-1 | prompt body only |
 | `metrics/curated/defects.yml:25` | J-1 | `hls-proxy-dead` → `fixed` |
-| `apps/proxy/redis_keys.py` | J-2 | 25 builders deleted, docstring rewritten |
+| `apps/proxy/redis_keys.py` | J-2 | 26 builders deleted, docstring rewritten |
 | `apps/proxy/constants.py:1-17`, `apps/proxy/config_helper.py:1-19` | J-2 | docstrings only |
 | `apps/proxy/relay_client.py:30-33` | J-2 | docstring only |
 | `apps/proxy/tests/test_redis_keys_dead_builders.py` | J-2 | new |
+| `apps/channels/tests/test_get_stream_assignment.py:10`, `:102`, `:266` | J-2 | two `setUp` lines inline the key literal; the import goes (rule 5, listed in J-2) |
 | `apps/proxy/tests/test_tune_path_query_ledger.py` | J-3 | new |
 | `scripts/coverage_live_path_isolated.sh` | J-4 | forwards every argument |
 | `tests/test_coverage_isolated_dropped_shape_only.py` | J-4 | new |
@@ -75,7 +76,8 @@ assumes the other plan does there, and which goes first.
 ## Global Constraints
 
 - **Test-modification rule, verbatim from the brief:** a test may change only when the behaviour it pins is the thing being changed, and every such change is listed in the PR section with its before and after assertion. A test that deliberately pins a defect is flipped to pin the fix, and the plan shows the flipped test failing before the fix and passing after. Never widen a tolerance, lower a count or delete an assertion to make a run green. New behaviour gets a new test named after the defect.
-- **No existing test changes in this category.** Every PR below was checked for it. Deleted code has no tests; the three new test modules are additions.
+- **One existing test file changes, in J-2 only.** `apps/channels/tests/test_get_stream_assignment.py` builds its #190 fixture key with `RedisKeys.channel_metadata`, which J-2 deletes. The two `setUp` lines inline the same literal and no assertion changes; J-2 lists both lines before and after. Every other PR was checked: deleted code has no tests, and the three new test modules are additions.
+- **PR numbers.** `#<PR>` in a ledger or CLAUDE.md edit is the PR's real number. Each PR therefore commits its code first, opens its draft PR, and only then makes those edits in a second commit (`docs/agents/metrics.md`: fill `fixed_in` once the number exists). `status_changed` is the date of the edit.
 - **Stage and commit in separate Bash calls.** Write commit messages with the Write tool and commit with `git commit -F <file>`. End messages with the attribution line the session's system reminder names.
 - **Anchor every command** with an absolute path or a leading `cd` into your own worktree. Brace `git show "${ref}:path"`. Use `set -o pipefail` before reading `$?` through a pipe.
 - **Your own test container.** Start one per PR with `DISPATCHARR_TEST_CONTAINER=<pr>`, `DISPATCHARR_TEST_DB_VOLUME=<pr>-db` and `CLAUDE_HOOK_REPO_ROOT=<your worktree>` in front of `.claude/hooks/start-test-container.sh`. The PostToolUse hooks still use `dispatcharr-testrunner` and will refuse on a mount mismatch; that refusal is expected and is **not** a test result. Run the labels yourself against your own container.
@@ -137,11 +139,28 @@ Two runs of each drive from a cold cache gave identical multisets. The first and
 calls differ because the second takes the assignment-reuse branch; the ledger therefore pins them
 as two drives rather than treating the difference as noise.
 
-**`config_helper.py` is not on the tune path** (its callers are catch-up, `apps/timeshift/views.py:40`,
-and the DVR retry window, `apps/channels/tasks.py:1125`). So J-3 adds one narrow static test: the
-only model import in `config.py` is `CoreSettings`, inside `BaseConfig.get_proxy_settings`, and
-`config_helper.py` imports no model at all; neither contains `.objects`. That is the "these modules
-read the ORM only here" guard A10.8 describes, at a grain that does not move on ordinary edits.
+**The ledger sees only the branches its drives enter.** The XC and catch-up surfaces of
+`authorize.py`, the failover and degraded branches of `next_source.py`, the non-live paths of
+`authorize_views.py`, and `config_helper.py` (catch-up, `apps/timeshift/views.py:40`, and the DVR
+retry window, `apps/channels/tasks.py:1125`) are all outside it. So J-3 adds a static half over all
+five modules, keyed by **enclosing qualname and counted per module, never by line**. For each module
+it pins three things: the set of `(qualname, models module, name)` model imports; the number of
+`.objects` attributes and of `get_object_or_404` calls; and the count of each direct call on an
+imported model class, such as `CoreSettings.get_proxy_settings`. Measured at the seed:
+
+| module | model imports | `.objects` | `get_object_or_404` | model-class calls |
+|---|---|---|---|---|
+| `next_source.py` | 5 at module level; `OutputProfile` in `_with_output_profiles`; `CoreSettings` in `_with_proxy_settings` | 11 | 6 | `CoreSettings.get_proxy_settings` ×1 |
+| `authorize.py` | `User` at module level; `Channel` in `_resolve_channel`; `CoreSettings` in `resolve_output_format`; `OutputProfile` in `resolve_output_profile` | 6 | 0 | `CoreSettings.get_default_output_format` ×1 |
+| `authorize_views.py` | `User` at module level | 1 | 0 | none |
+| `config.py` | `CoreSettings` in `BaseConfig.get_proxy_settings` | 0 | 0 | `CoreSettings.get_proxy_settings` ×1 |
+| `config_helper.py` | none | 0 | 0 | none |
+
+A read added on any branch changes a count and goes red; moving lines changes nothing. What the
+static half cannot see is a read made through an instance method or a related-object descriptor
+(`channel.get_stream()`, `stream.m3u_account`). The ledger sees those on the mainline drives only,
+and the plan says so in the module rather than claiming more. This is the "these modules read the
+ORM only here" guard A10.8 describes, at a grain that does not move on ordinary edits.
 
 **Counting discrepancy, recorded.** A10.8 says twelve `EdgeEntry` rows reached four modules. The
 allowlist as it stood at `b6ae174b~1` has **ten** rows over **five** modules (`next_source` 2,
@@ -149,39 +168,46 @@ allowlist as it stood at `b6ae174b~1` has **ten** rows over **five** modules (`n
 `views.py` rows and 2d-1 turned one `config` row into the `config_helper` row. A16.12 item 3's
 "10 entries across these five modules, `config` carrying four" is the correct later figure.
 
-### R3 — `RedisKeys`: three builders survive, and `channel_metadata` survives for a test
+### R3 — `RedisKeys`: two builders survive
 
 Measured at the seed, `apps/proxy/redis_keys.py` defines **28** builders, not the 24 the input file
 assumed. Each `RedisKeys.<name>` hit was resolved to its import, because `apps/timeshift/redis_keys.py`
 defines `TimeshiftRedisKeys` with four same-named builders (`channel_metadata`, `clients`,
 `client_metadata`, `client_stop`), and three test files import it **as `RedisKeys`**
-(`apps/proxy/tests/test_stream_limits.py:8`, `apps/timeshift/tests/test_stats.py:13`, and 36 local
+(`apps/proxy/tests/test_stream_limits.py:8`, `apps/timeshift/tests/test_stats.py:13`, and 38 local
 imports in `apps/timeshift/tests/test_views.py`). None of those three imports `apps.proxy.redis_keys`.
 
 | builder | real callers of `apps.proxy.redis_keys.RedisKeys` | verdict |
 |---|---|---|
 | `channel_stream` | `apps/channels/models.py`, `core/utils.py:779`, `apps/proxy/next_source.py`, tests | keep |
 | `stream_profile` | same, plus `core/utils.py:812` | keep |
-| `channel_metadata` | tests only: `apps/channels/tests/test_get_stream_assignment.py:102`, `:266` | keep, with a comment |
+| `channel_metadata` | tests only: two `setUp` lines, `apps/channels/tests/test_get_stream_assignment.py:102`, `:266` | delete, and inline the literal there (rule 5, below) |
 | `switch_status` | **none**. The one hit is prose, `apps/proxy/relay_client.py:31`'s module docstring | delete |
 | `clients`, `client_metadata` | **none**. Hits in `apps/channels/tests/test_dvr_client_teardown.py:3` and `test_recording_stop_cancel.py:282-283` are historical docstrings | delete |
 | the other 22 | none anywhere | delete |
 
-`channel_metadata` builds `live:channel:<uuid>:metadata`, a key no process writes since 2d-3. It
-stays because two #190 regression tests seed that exact key to prove `release_stream()` no longer
-touches it. Inlining the literal into those tests would change a test for a reason that is not the
-behaviour it pins, which rule 5 forbids. Its comment says so.
+`channel_metadata` builds `live:channel:<uuid>:metadata`, a key no process writes since 2d-3. Its
+only callers are two `setUp` lines in the #190 regression tests, which seed that key to prove
+`release_stream()` no longer touches it. Those tests pin that `release_stream()` leaves the key
+alone; they do not pin how the fixture spells it. So the builder goes, and the two `setUp` lines
+inline the identical literal. Keeping it would make `SURVIVORS` certify a builder nothing writes,
+which is the smell J-2 removes. The change is listed under rule 5 in J-2.
 
-The census command (re-run at implementation; it must list only the prose and alias hits above):
+The census command (re-run at implementation; it must list only the prose and fixture hits below):
 
 ```bash
 cd <worktree> && git grep -n -P '(?<!Timeshift)RedisKeys\.[a-z_]+\b' -- . ':!docs/superpowers' ':!CHANGELOG.md' \
-  | grep -v -E 'RedisKeys\.(channel_stream|stream_profile|channel_metadata)\b' \
+  | grep -v -E 'RedisKeys\.(channel_stream|stream_profile)\b' \
   | grep -v -E '^apps/(timeshift/tests/test_(views|stats)|proxy/tests/test_stream_limits)\.py:'
 ```
 
-At the seed that prints exactly four lines: `test_dvr_client_teardown.py:3`,
-`test_recording_stop_cancel.py:282` and `:283`, and `relay_client.py:31`.
+At the seed that prints exactly seven lines:
+
+- five prose lines: `CLAUDE.md:144`, `apps/channels/tests/test_dvr_client_teardown.py:3`, `apps/channels/tests/test_recording_stop_cancel.py:282` and `:283`, and `apps/proxy/relay_client.py:31`;
+- two fixture lines: `apps/channels/tests/test_get_stream_assignment.py:102` and `:266`.
+
+After J-2, `CLAUDE.md:144`'s rewritten sentence still names `RedisKeys.worker_heartbeat`, so it still
+appears; the two fixture lines and `relay_client.py:31` do not.
 
 ### R4 — `scripts/coverage_live_path.coveragerc`'s "the dead hls_proxy" clause is left, on A16.7's precedent
 
@@ -228,15 +254,15 @@ it … setting self.live_proxy for apps/proxy/signals.py …"). It stays true an
 ### Item 1 — Django-side ORM ratchet (A16.12 item 3) → J-3
 
 - **Root cause.** 2d-4 deleted `apps/proxy/live_proxy/tests/{test_zero_orm_reads,zero_orm_allowlist,zero_orm_scan,test_zero_orm_scan}.py` with the package. Their scope-2 walk was the only ratchet over `apps/proxy/{next_source,authorize,authorize_views,config,config_helper}.py`, and `config.py` is in neither Gate 2's `coveragerc` (`scripts/coverage_live_path.coveragerc`'s `[report] include` at the seed lists nine modules, not it) nor any other guard.
-- **Fix.** R2: `apps/proxy/tests/test_tune_path_query_ledger.py`, a cold-cache exact query ledger over four drives, plus one static model-import pin over `config.py` and `config_helper.py`.
+- **Fix.** R2: `apps/proxy/tests/test_tune_path_query_ledger.py`, a cold-cache exact query ledger over four drives, plus a static per-module pin of every ORM site in all five modules, keyed by qualname.
 - **Tests.** Added: five tests in one new module. Changed: none. Removed: none.
 - **Size** M. **upstreamable** no. **Duplicates** none.
 
 ### Item 2 — dead `RedisKeys` builders (A16.12 item 7) → J-2
 
-- **Root cause.** 2d-1 moved `redis_keys.py` whole out of `live_proxy/` (`apps/proxy/redis_keys.py:3-6`), and 2d-4 deleted every reader and writer of 25 of its 28 builders without auditing the module (A16.12 item 7 says so). `RedisKeys.worker_heartbeat` at `:89-92` is the one CLAUDE.md names (`CLAUDE.md:144`).
-- **Fix.** R3: delete 25 builders; keep `channel_stream`, `stream_profile` and `channel_metadata`; rewrite the module docstring, which at `:1-16` still describes "the live relay's channel state" and a re-export shim that no longer exists.
-- **Tests.** Added: `apps/proxy/tests/test_redis_keys_dead_builders.py`, two tests (the exact surviving set, and that both boot-trap leaf modules import nothing). Changed: none. Removed: none.
+- **Root cause.** 2d-1 moved `redis_keys.py` whole out of `live_proxy/` (`apps/proxy/redis_keys.py:3-6`), and 2d-4 deleted every reader and writer of 25 of its 28 builders without auditing the module (A16.12 item 7 says so); a 26th, `channel_metadata`, is left with only test-fixture callers. `RedisKeys.worker_heartbeat` at `:89-92` is the one CLAUDE.md names (`CLAUDE.md:144`).
+- **Fix.** R3: delete 26 builders; keep `channel_stream` and `stream_profile`; rewrite the module docstring, which at `:1-16` still describes "the live relay's channel state" and a re-export shim that no longer exists.
+- **Tests.** Added: `apps/proxy/tests/test_redis_keys_dead_builders.py`, two tests (the exact surviving set, and that both boot-trap leaf modules import nothing). Changed: two `setUp` lines in `apps/channels/tests/test_get_stream_assignment.py`, fixture only (J-2 Task 2 Step 3). Removed: none.
 - **Size** S. **upstreamable** no. **Duplicates** none.
 
 ### Item 3 — delete `apps/proxy/hls_proxy/` (A16.12 item 5) → J-1
@@ -244,7 +270,7 @@ it … setting self.live_proxy for apps/proxy/signals.py …"). It stays true an
 - **Root cause.** The package is unrouted: `apps/proxy/urls.py:7-13` includes `ts_admin_urls`, `stream_routes`, `timeshift.urls` and `vod_proxy.urls`, and `dispatcharr/urls.py` includes no hls urlconf. Its only import from elsewhere in `apps/proxy` is `HLSConfig` from `apps/proxy/config.py:77` (`hls_proxy/server.py:20`), and nothing but the package uses `HLSConfig`.
 - **Fix.** Delete the package, `HLSConfig`, and the two dead consumers of R7. Close the `hls-proxy-dead` ledger row. Correct the prose that describes the package as present: CLAUDE.md, two Go comments, the gh-aw maintenance prompt.
 - **Tests.** Added: none (R8 below). Changed: none. Removed: none; the package has no tests.
-- **#336.** It closes, with `Closes #336` in the PR body. The sweep marked it INVALID because the code is unreachable. Either way the right end state is the file gone and the alert fixed by CodeQL's next analysis of `main`. It currently carries `needs-triage` and `re-triage`. The lead removes both labels at close (deferred tracker write).
+- **#336.** It closes, with `Closes #336` in the PR body. The sweep marked it INVALID because the code is unreachable. Either way the right end state is the file gone and the alert fixed by CodeQL's next analysis of `main`. It currently carries `needs-triage`, `priority:p1` and `re-triage`. The lead removes all three at close (deferred tracker write).
 - **Size** M (mostly deletion). **upstreamable** no. **Duplicates** none.
 
 **R8 — why the deletion carries no new test.** A test asserting a module does not exist pins nothing
@@ -307,6 +333,7 @@ alone. `:156`'s mention of `coverage_live_path_isolated.sh` stays true after J-4
 ## PR J-1 — delete `apps/proxy/hls_proxy/` and its dead consumers
 
 - **Branch:** `migration/J-1-delete-hls-proxy` (R1: touches `docker/` and `relay/httpapi/`).
+- **upstreamable:** no. It edits fork-only files (see the header table).
 - **Closes:** #336. Resolves CodeQL alerts #64, #65, #66, #81, #82, #105. Ledger row `hls-proxy-dead`.
 - **Labels:** `apps.proxy.tests` (`python scripts/ci_backend_test_labels.py` over the file list prints `["apps.proxy.tests"]`). Go checks run for the two `relay/httpapi/` files. `migration/**` runs the full E2E matrix.
 - **Files:** delete `apps/proxy/hls_proxy/` (four files), `apps/proxy/views.py`, `apps/proxy/signals.py`. Modify `apps/proxy/config.py`, `relay/httpapi/stream.go`, `relay/httpapi/fanout_test.go`, `docker/nginx.conf`, `.github/workflows/claude-md-maintenance.md`, `metrics/curated/defects.yml`, `CLAUDE.md`.
@@ -366,10 +393,10 @@ Both are comments; no assertion changes. The Go hook runs build, vet, lint and `
   with:
   ```go
   		// 2c-6 SERVES fmp4, so this row moved to a format NEITHER relay has.
-  		// `hls` is the honest choice: apps/proxy/hls_proxy/ was 1,206 lines,
+  		// `hls` is the honest choice: apps/proxy/hls_proxy/ was 1,216 lines,
   		// 0% covered and routed nowhere (fix plan J-1 deleted it), and
   ```
-  Leave the rest of the comment and the table row unchanged.
+  The old comment said 1,206; `wc -l` over the package gives 1,216, as CLAUDE.md and A16.12 item 5 say. Leave the rest of the comment and the table row unchanged.
 - [ ] **Step 3.** `cd <wt>/relay && go build ./... && go vet ./... && go test -race ./httpapi/ && golangci-lint run ./...` and `GOOS=linux golangci-lint run ./...` (memory: build-tagged files escape host lint). All clean.
 
 ### Task 4: the nginx comment (A16.7)
@@ -392,15 +419,17 @@ Both are comments; no assertion changes. The Go hook runs build, vet, lint and `
   # http://relay_go` with no canary period (ADR 0006), so every entry here
   # still resolves to relay_py, which serves VOD and catch-up. A second
   # entry and a second upstream block remain how a later per-channel or
-  # scale-out assignment would route (ADR 0005). Since stage 2d-3 every location still passing to
+  # scale-out assignment would route (ADR 0005).
+  # Since stage 2d-3 every location still passing to
   ```
   The sentence that follows (`$relay_upstream runs the hop …`) is unchanged.
 - [ ] **Step 2 note.** ADR 0006's parenthetical ("`docker/nginx.conf`'s own comment says 'five'") becomes a record of what the comment said. ADRs are records and are not edited.
 
-### Task 5: the maintenance prompt and the ledger
+### Task 5: open the draft PR, then the maintenance prompt and the ledger
 
+- [ ] **Step 0.** Commit Tasks 2–4 (stage and commit in separate calls), push, and open the draft PR now with the body from Task 7. Its number is `<PR>` in Tasks 5 and 6, which go in a second commit.
 - [ ] **Step 1.** `.github/workflows/claude-md-maintenance.md:122`: remove `` `hls_proxy/`, `` from the Tier 2 example list, so it reads `` (`entrypoint.aio.sh`, `persistent_lock.py`, `renovate.json`, ``. The lock file runtime-imports this prompt (`claude-md-maintenance.lock.yml:269`, `{{#runtime-import .github/workflows/claude-md-maintenance.md}}`), so a body edit needs no recompile. Run a bare `gh aw compile` anyway and require `git status --short .github/` to show only the `.md`. If a lock changes, stage it too and say so in the PR body.
-- [ ] **Step 2.** `metrics/curated/defects.yml:25`, row `hls-proxy-dead`: set `status: fixed`, `fixed_in: <this PR's number>`, `status_changed: <merge date>`. Keep `source` and the title. The move `open → fixed` is legal (`docs/agents/metrics.md`). Validate with `python3 -m metrics.build --validate-only --curated metrics/curated`.
+- [ ] **Step 2.** `metrics/curated/defects.yml:25`, row `hls-proxy-dead`: set `status: fixed`, `fixed_in: <PR>` (the number from Step 0), `status_changed: <the date of this edit>`. Keep `source` and the title. The move `open → fixed` is legal (`docs/agents/metrics.md`). Validate with `python3 -m metrics.build --validate-only --curated metrics/curated`.
 
 ### Task 6: CLAUDE.md
 
@@ -408,12 +437,12 @@ Both are comments; no assertion changes. The Go hook runs build, vet, lint and `
 
   | metric | before | after |
   |---|---|---|
-  | `loc_per_app.apps.proxy` | 16,952 | 15,864 |
+  | `loc_per_app.apps.proxy` | 16,952 | 15,852 |
   | `except_exception` | 651 | 632 |
   | `cross_app_import_statements` | 193 | 192 |
 
-  Everything else is unchanged: `except_pass_handlers` 200, `bare_except` 16, `os_environ_reads` 176, `function_local_imports` 1,191, 39 edges, one cycle, `reverse_imports_into_proxy` 28. **If B or A has already moved a before-figure, use your tree's numbers; if the delta differs from the table, STOP and attribute it.**
-- [ ] **Step 2.** Apply the edits with an anchored script (`assert text.count(old) == 1` per edit, STOP on a miss). `<N_LOC>`, `<N_EXC>`, `<N_XAPP>` are the after-figures from Step 1; `<PR>` is this PR's number.
+  The LOC delta is 1,100: 1,085 non-blank lines in the three deleted paths plus `HLSConfig`'s 12. Everything else is unchanged: `except_pass_handlers` 200, `bare_except` 16, `os_environ_reads` 176, `function_local_imports` 1,191, 39 edges, one cycle, `reverse_imports_into_proxy` 28. **If B or A has already moved a before-figure, use your tree's numbers; if the delta differs from the table, STOP and attribute it.**
+- [ ] **Step 2.** Apply the edits with an anchored script (`assert text.count(old) == 1` per edit, STOP on a miss). `<N_LOC>`, `<N_EXC>`, `<N_XAPP>` are the after-figures from Step 1; `<PR>` is the number from Task 5 Step 0.
 
   | anchor (old) | replacement |
   |---|---|
@@ -431,7 +460,7 @@ Both are comments; no assertion changes. The Go hook runs build, vet, lint and `
 ### Task 7: verify and ship
 
 - [ ] **Step 1.** In your container: `manage.py test --keepdb apps.proxy.tests -v1` and `manage.py test --keepdb tests.test_openapi_schema -v1`. Assert the output ends in `OK` (grep `^OK`, never pipe the runner's exit status — memory: CI backend runner pipes lose exit status). Flush Redis first.
-- [ ] **Step 2.** Commit (stage and commit in separate calls). Push. Open the PR with the body below. The full E2E matrix runs because of the branch name.
+- [ ] **Step 2.** Commit Tasks 5–6 as the second commit (stage and commit in separate calls) and push. The draft PR from Task 5 Step 0 already exists; the full E2E matrix runs because of the branch name.
 
 **PR description draft**
 
@@ -473,9 +502,10 @@ Go build/vet/lint/-race, and the full E2E matrix (migration/**).
 ## PR J-2 — delete the dead `RedisKeys` builders and re-tense three docstrings
 
 - **Branch:** `fix/J-2-dead-redis-keys-builders`.
+- **upstreamable:** no. It edits fork-only files (see the header table).
 - **Closes:** no tracker issue (A16.12 item 7; spec 2d-6 disclosure).
-- **Labels:** `apps.proxy.tests`. The boot-check hook arm (`manage.py check`) fires on `redis_keys.py`, `constants.py` and `config_helper.py`.
-- **Files:** modify `apps/proxy/redis_keys.py`, `apps/proxy/constants.py`, `apps/proxy/config_helper.py`, `apps/proxy/relay_client.py` (docstring), `CLAUDE.md`. Create `apps/proxy/tests/test_redis_keys_dead_builders.py`.
+- **Labels:** `apps.proxy.tests`, `apps.channels.tests` (the fixture change). The boot-check hook arm (`manage.py check`) fires on `redis_keys.py`, `constants.py` and `config_helper.py`.
+- **Files:** modify `apps/proxy/redis_keys.py`, `apps/proxy/constants.py`, `apps/proxy/config_helper.py`, `apps/proxy/relay_client.py` (docstring), `apps/channels/tests/test_get_stream_assignment.py` (two `setUp` lines and one import), `CLAUDE.md`. Create `apps/proxy/tests/test_redis_keys_dead_builders.py`.
 
 ### Task 1: the failing test
 
@@ -484,15 +514,13 @@ Go build/vet/lint/-race, and the full E2E matrix (migration/**).
   """RedisKeys carried builders for keys nothing reads or writes.
 
   Phase 2 stage 2d-1 moved apps/proxy/redis_keys.py out of live_proxy/ whole,
-  and 2d-4 deleted every reader and writer of 25 of its 28 builders without
-  auditing it (spec Amendment A16.12 item 7). A dead builder is not harmless:
+  and 2d-4 deleted every production reader and writer of 26 of its 28
+  builders without auditing it (spec Amendment A16.12 item 7). A dead builder is not harmless:
   it tells a reader the key is live, and CLAUDE.md had to carry a sentence
   explaining that RedisKeys.worker_heartbeat meant nothing.
 
   The surviving set is pinned exactly, so a builder added back needs a caller
-  and a deliberate edit here. channel_metadata survives for one reason only:
-  apps/channels/tests/test_get_stream_assignment.py's #190 regression tests
-  seed that exact key to prove release_stream() no longer touches it.
+  and a deliberate edit here.
   """
 
   import ast
@@ -504,7 +532,7 @@ Go build/vet/lint/-race, and the full E2E matrix (migration/**).
 
   REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
 
-  SURVIVORS = {"channel_metadata", "channel_stream", "stream_profile"}
+  SURVIVORS = {"channel_stream", "stream_profile"}
 
   # CLAUDE.md, Structural constraints: apps/channels/models.py imports
   # RedisKeys at module level, so one import added to either module can stop
@@ -535,11 +563,11 @@ Go build/vet/lint/-race, and the full E2E matrix (migration/**).
                   ]
                   self.assertEqual(imports, [], f"{rel} must stay a leaf")
   ```
-- [ ] **Step 2.** Run `manage.py test --keepdb apps.proxy.tests.test_redis_keys_dead_builders -v2` in your container. Expect the first test to **FAIL** with `unexpected builders: ['buffer_chunk', …, 'worker_heartbeat']` (25 names) and the second to pass (both leaves import nothing at the seed).
+- [ ] **Step 2.** Run `manage.py test --keepdb apps.proxy.tests.test_redis_keys_dead_builders -v2` in your container. Expect the first test to **FAIL** with `unexpected builders: ['buffer_chunk', …, 'worker_heartbeat']` (26 names, `channel_metadata` among them) and the second to pass (both leaves import nothing at the seed).
 
 ### Task 2: the census and the deletion
 
-- [ ] **Step 1.** Run R3's census command. It must print exactly the four prose lines R3 lists. Anything else is a caller: **STOP**.
+- [ ] **Step 1.** Run R3's census command. It must print exactly the seven lines R3 lists (five prose, two fixture). Anything else is a caller: **STOP**.
 - [ ] **Step 2.** Replace `apps/proxy/redis_keys.py` with:
   ```python
   """Redis key builders Django still uses.
@@ -557,21 +585,11 @@ Go build/vet/lint/-race, and the full E2E matrix (migration/**).
 
   Phase 2 stage 2d-1 moved this module here from the live relay's package, and
   it then held 28 builders for the Python relay's channel state. The Go relay
-  opens no Redis connection, so fix plan J-2 deleted the 25 nothing called.
+  opens no Redis connection, so fix plan J-2 deleted the 26 whose keys nothing
+  in production reads or writes.
   """
 
   class RedisKeys:
-      @staticmethod
-      def channel_metadata(channel_id):
-          """The deleted Python relay's per-channel metadata hash.
-
-          NOTHING WRITES OR READS THIS KEY in production since Phase 2 stage
-          2d-3. It is kept only because the #190 regression tests in
-          apps/channels/tests/test_get_stream_assignment.py seed this exact key
-          to prove release_stream() no longer reads or clears it.
-          """
-          return f"live:channel:{channel_id}:metadata"
-
       # Written only by apps/channels/models.py — Channel.get_stream(),
       # release_stream(), update_stream_profile() — and reached only through
       # apps/proxy/next_source.py since Phase 1 PR 6. They were hand-rolled
@@ -588,8 +606,17 @@ Go build/vet/lint/-race, and the full E2E matrix (migration/**).
           return f"stream_profile:{stream_id}"
   ```
   The last two builders and their comment are byte-for-byte the seed's `:159-172`.
-- [ ] **Step 3.** Re-run the test module. Both tests pass.
-- [ ] **Step 4. Break-checks.** (a) Add back `worker_heartbeat` verbatim from the seed. The first test must fail naming `['worker_heartbeat']`. Revert. (b) Add `import os` as the first line after the docstring. The second test must fail with `apps/proxy/redis_keys.py must stay a leaf` and `['import os']`, and `manage.py check` must still pass (an unused stdlib import is not a cycle, which is why the test exists alongside the hook). Revert. (c) Add `from apps.channels.models import Channel` instead. `manage.py check` must fail with `ImportError: cannot import name … from partially initialized module` (CLAUDE.md's measured symptom), and the test must be red too. Revert.
+- [ ] **Step 3. The fixture change (rule 5).** In `apps/channels/tests/test_get_stream_assignment.py`, the key the #190 tests seed is built by the builder Step 2 deleted. No assertion changes. Both `setUp` lines change identically:
+
+  | line | before | after |
+  |---|---|---|
+  | `:102` | `self.metadata_key = RedisKeys.channel_metadata(str(self.channel.uuid))` | `self.metadata_key = f"live:channel:{self.channel.uuid}:metadata"  # the #190 key; its RedisKeys builder was deleted by J-2` |
+  | `:266` | same | same |
+  | `:10` | `from apps.proxy.redis_keys import RedisKeys` | deleted (no other use in the file) |
+
+  The literal is the deleted builder's own return value, `f"live:channel:{channel_id}:metadata"`, with `str(uuid)` implied by the f-string. Run `apps.channels.tests.test_get_stream_assignment` before and after: same test count, `OK` both times.
+- [ ] **Step 4.** Re-run the new test module. Both tests pass.
+- [ ] **Step 5. Break-checks.** (a) Add back `worker_heartbeat` verbatim from the seed. The first test must fail naming `['worker_heartbeat']`. Revert. (b) Add `import os` as the first line after the docstring. The second test must fail with `apps/proxy/redis_keys.py must stay a leaf` and `['import os']`, and `manage.py check` must still pass (an unused stdlib import is not a cycle, which is why the test exists alongside the hook). Revert. (c) Add `from apps.channels.models import Channel` instead. `manage.py check` must fail with `ImportError: cannot import name … from partially initialized module` (CLAUDE.md's measured symptom), and the test must be red too. Revert.
 
 ### Task 3: the three docstrings, plus the relay_client line
 
@@ -643,24 +670,25 @@ Go build/vet/lint/-race, and the full E2E matrix (migration/**).
 
 ### Task 4: CLAUDE.md and ship
 
-- [ ] **Step 1.** Anchored edit, `CLAUDE.md:144`. Replace `` (`RedisKeys.worker_heartbeat` survives at `apps/proxy/redis_keys.py:90-92`, relocated by 2d-1 and untouched by 2d-4, with nothing reading or writing it) `` with `` (`RedisKeys.worker_heartbeat` survived 2d-4 with nothing reading or writing it, and #<PR> deleted it with the other 24 dead builders) ``.
+- [ ] **Step 0.** Commit Tasks 1–3 (stage and commit in separate calls), push, and open the draft PR with the body below. Its number is `<PR>` in Step 1, which goes in a second commit.
+- [ ] **Step 1.** Anchored edit, `CLAUDE.md:144`. Replace `` (`RedisKeys.worker_heartbeat` survives at `apps/proxy/redis_keys.py:90-92`, relocated by 2d-1 and untouched by 2d-4, with nothing reading or writing it) `` with `` (`RedisKeys.worker_heartbeat` survived 2d-4 with nothing reading or writing it, and #<PR> deleted it with the other 25 dead builders) ``.
 - [ ] **Step 2.** In your container: `manage.py check`; `manage.py test --keepdb apps.proxy.tests -v1` and `apps.channels.tests.test_get_stream_assignment -v1`. Assert `^OK`.
 - [ ] **Step 3.** Gate 2, because `relay_client.py` is a coveragerc module. The edit is inside the module docstring, which is one statement whatever its length, so `statements` and `missing` must not move. Start two containers named `fixj2-proxy` and `fixj2-channels` (CLAUDE_HOOK_REPO_ROOT set to your worktree), then `COVERAGE_ISOLATED_PREFIX=fixj2 bash scripts/coverage_live_path_isolated.sh --gate`. Require exit 0. Remove both containers afterwards.
-- [ ] **Step 4.** Commit, push, open the PR.
+- [ ] **Step 4.** Commit Step 1 as the second commit and push.
 
 **PR description draft**
 
 ```
-chore(fixplan-J): J-2 -- delete the 25 dead RedisKeys builders; re-tense three shim docstrings
+chore(fixplan-J): J-2 -- delete the 26 dead RedisKeys builders; re-tense three shim docstrings
 
 ## What
 apps/proxy/redis_keys.py held 28 builders for the deleted Python relay's Redis state.
-25 have no caller (census in the plan, R3; TimeshiftRedisKeys aliases excluded by import).
-Three survive: channel_stream and stream_profile (Django's assignment keys), and
-channel_metadata, kept only for the #190 regression tests that seed that key.
+25 have no caller (census in the plan, R3; TimeshiftRedisKeys aliases excluded by import), and
+channel_metadata's only callers were two #190 test setUp lines, which now inline the same literal
+(no assertion changed). Two survive: channel_stream and stream_profile, Django's assignment keys.
 
 New test apps/proxy/tests/test_redis_keys_dead_builders.py pins the surviving set exactly and
-asserts both boot-trap leaf modules import nothing. It failed before the deletion (25 names)
+asserts both boot-trap leaf modules import nothing. It failed before the deletion (26 names)
 and passes after.
 
 ## Also
@@ -682,6 +710,7 @@ coverage_live_path_isolated.sh --gate: exit 0.
 ## PR J-3 — the tune-path query ledger (Gate 1's Django-side replacement)
 
 - **Branch:** `fix/J-3-tune-path-query-ledger`. Implement **after J-1 merges** (J-1 edits `config.py`) and after A and B (both touch modules this measures).
+- **upstreamable:** no. It edits fork-only files (see the header table).
 - **Closes:** no tracker issue (A16.12 item 3, A10.8).
 - **Labels:** `apps.proxy.tests`.
 - **Files:** create `apps/proxy/tests/test_tune_path_query_ledger.py`; modify `CLAUDE.md`.
@@ -694,6 +723,7 @@ expected value the code under test computes cannot fail (memory: *the tautologic
 - [ ] **Step 1.** Create the module below with every `LEDGER` value set to `{}`. Run it. Each drive test fails and its message prints the observed multiset. Copy each into `LEDGER` by hand.
 - [ ] **Step 2.** Compare with R2's seed table. If a drive differs, attribute it to the A or B commit that moved it (`git log a54b09a9..HEAD -- apps/proxy/ apps/channels/models.py core/models.py`) and say so in the PR body. **Do not accept an unexplained difference.**
 - [ ] **Step 3.** Run the module three times in a row (`--keepdb`, Redis flushed before each). All three must pass. A drive that is not deterministic is a finding: STOP and report it rather than loosening anything.
+- [ ] **Step 4.** Measure the static half the same way: set every `BOUNDARY_MODULES` entry to `{}`, run, and type each module's observed dict in by hand. Compare with R2's static table and attribute any difference to its commit, as in Step 2.
 
 ### Task 2: the module
 
@@ -862,13 +892,67 @@ expected value the code under test computes cannot fail (memory: *the tautologic
           self._assert_ledger("release", self._observe(lambda: self._post(path, {})))
 
 
-  def _model_imports(rel):
-      """(enclosing qualname, module, name) for every import from a models module."""
-      found, objects = set(), 0
+  # The static half: every ORM site in the five modules Gate 1's scope-2 walk
+  # covered (spec A16.12 item 3), keyed by enclosing qualname and counted per
+  # module, never by line. The ledger above sees only the four drives it runs;
+  # this sees every branch -- XC and catch-up in authorize.py, failover and
+  # release in next_source.py, the non-live paths of authorize_views.py -- and
+  # does not move when lines move. What it cannot see: a new read made through
+  # an instance method or a related-object descriptor (channel.get_stream(),
+  # stream.m3u_account). The ledger sees those on the mainline drives only.
+  # Typed by hand from a measurement at <implementation SHA> (Task 1 Step 4).
+  BOUNDARY_MODULES = {
+      "apps/proxy/next_source.py": {
+          "model_imports": {
+              ("", "apps.channels.models", "Channel"),
+              ("", "apps.channels.models", "Stream"),
+              ("", "apps.m3u.models", "M3UAccount"),
+              ("", "apps.m3u.models", "M3UAccountProfile"),
+              ("", "core.models", "StreamProfile"),
+              ("_with_output_profiles", "core.models", "OutputProfile"),
+              ("_with_proxy_settings", "core.models", "CoreSettings"),
+          },
+          "objects": 11,
+          "get_object_or_404": 6,
+          "model_class_calls": {"CoreSettings.get_proxy_settings": 1},
+      },
+      "apps/proxy/authorize.py": {
+          "model_imports": {
+              ("", "apps.accounts.models", "User"),
+              ("_resolve_channel", "apps.channels.models", "Channel"),
+              ("resolve_output_format", "core.models", "CoreSettings"),
+              ("resolve_output_profile", "core.models", "OutputProfile"),
+          },
+          "objects": 6,
+          "get_object_or_404": 0,
+          "model_class_calls": {"CoreSettings.get_default_output_format": 1},
+      },
+      "apps/proxy/authorize_views.py": {
+          "model_imports": {("", "apps.accounts.models", "User")},
+          "objects": 1,
+          "get_object_or_404": 0,
+          "model_class_calls": {},
+      },
+      "apps/proxy/config.py": {
+          "model_imports": {("BaseConfig.get_proxy_settings", "core.models", "CoreSettings")},
+          "objects": 0,
+          "get_object_or_404": 0,
+          "model_class_calls": {"CoreSettings.get_proxy_settings": 1},
+      },
+      "apps/proxy/config_helper.py": {
+          "model_imports": set(),
+          "objects": 0,
+          "get_object_or_404": 0,
+          "model_class_calls": {},
+      },
+  }
+
+
+  def _orm_sites(rel):
       tree = ast.parse((REPO_ROOT / rel).read_text())
+      imports, bound_names = set(), set()
 
       def visit(node, scope):
-          nonlocal objects
           for child in ast.iter_child_nodes(node):
               if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
                   visit(child, scope + [child.name])
@@ -877,50 +961,60 @@ expected value the code under test computes cannot fail (memory: *the tautologic
                   child.module.endswith(".models") or child.module == "django.db.models"
               ):
                   for alias in child.names:
-                      found.add((".".join(scope), child.module, alias.name))
-              if isinstance(child, ast.Attribute) and child.attr == "objects":
-                  objects += 1
+                      imports.add((".".join(scope), child.module, alias.name))
+                      bound_names.add(alias.asname or alias.name)
               visit(child, scope)
 
       visit(tree, [])
-      return found, objects
-
-
-  class ConfigModulesReadOnlyCoreSettingsTests(SimpleTestCase):
-      """config.py and config_helper.py sit on every proxy path (config_helper
-      is catch-up and DVR, not the live tune, so the ledger above cannot see
-      it). Their only ORM access is CoreSettings, through one method."""
-
-      EXPECTED = {
-          "apps/proxy/config.py": {("BaseConfig.get_proxy_settings", "core.models", "CoreSettings")},
-          "apps/proxy/config_helper.py": set(),
+      objects = get_404 = 0
+      class_calls = Counter()
+      for node in ast.walk(tree):
+          if isinstance(node, ast.Attribute) and node.attr == "objects":
+              objects += 1
+          elif isinstance(node, ast.Call):
+              func = node.func
+              if isinstance(func, ast.Name) and func.id == "get_object_or_404":
+                  get_404 += 1
+              elif (
+                  isinstance(func, ast.Attribute)
+                  and isinstance(func.value, ast.Name)
+                  and func.value.id in bound_names
+              ):
+                  class_calls[f"{func.value.id}.{func.attr}"] += 1
+      return {
+          "model_imports": imports,
+          "objects": objects,
+          "get_object_or_404": get_404,
+          "model_class_calls": dict(class_calls),
       }
 
-      def test_the_config_modules_gained_no_orm_read_after_gate_1_was_retired(self):
-          for rel, expected in self.EXPECTED.items():
+
+  class BoundaryModulesOrmSitesTests(SimpleTestCase):
+      def test_the_boundary_modules_gained_no_orm_read_after_gate_1_was_retired(self):
+          for rel, expected in BOUNDARY_MODULES.items():
               with self.subTest(module=rel):
-                  imports, objects = _model_imports(rel)
-                  self.assertEqual(imports, expected)
-                  self.assertEqual(objects, 0, f"{rel} reaches a manager directly")
+                  self.assertEqual(_orm_sites(rel), expected)
   ```
-- [ ] **Step 2.** Run the module in your container. All five tests pass.
+- [ ] **Step 2.** Run the module in your container. All five tests pass (four drives, one static).
 
 ### Task 3: break-checks
 
 Each is a deliberate wrong edit, run, observed red, reverted. Quote the failure line in the PR body.
 
 - [ ] **(a) A new query on the tune path.** In `apps/proxy/next_source.py`'s `_with_proxy_settings` (`:827` at the seed, run on every next-source answer), insert `from core.models import StreamProfile` and `StreamProfile.objects.count()` just before its `return answer` (`:862`). Both next-source drives must fail with `added or more: [(('SELECT', 'core_streamprofile'), 1)]`. Revert.
-- [ ] **(b) A redundant query of an existing shape.** In `apps/proxy/authorize.py`'s `_resolve_channel`, `SURFACE_LIVE` branch (`:383` at the seed), duplicate the line `target = get_stream_object(identifier)`. `test_the_authorize_hop_…` must fail with `added or more: [(('SELECT', 'dispatcharr_channels_channel'), 1)]`. This is the case the deleted runtime half admitted it could not catch. **Not** `:401`'s `Channel.objects.filter(uuid=…)`: that is the catch-up branch, a live tune never reaches it, and duplicating it leaves every test green (measured). Revert.
+- [ ] **(b) A redundant query of an existing shape.** In `apps/proxy/authorize.py`'s `_resolve_channel`, `SURFACE_LIVE` branch (`:383` at the seed), duplicate the line `target = get_stream_object(identifier)`. `test_the_authorize_hop_…` must fail with `added or more: [(('SELECT', 'dispatcharr_channels_channel'), 1)]`. This is the case the deleted runtime half admitted it could not catch. Revert. (At `:401`, the catch-up branch, the ledger stays green because no drive reaches it; that case is (e).)
 - [ ] **(c) A warm cache hides reads.** Comment out the `_cold()` call in `_observe` and run the module in one process. At the seed two drives fail: the authorize hop loses `('core_coresettings', 'stream_settings')`, and next-source reuse loses both `core_coresettings` reads and `core_useragent` (the first-tune drive warmed them). This proves the ledger was measured cold. Revert.
-- [ ] **(d) A new model import in config.py.** In `apps/proxy/config.py`, add `from core.models import StreamProfile` inside `TSConfig.get_channel_shutdown_delay`. The static test must fail naming `('TSConfig.get_channel_shutdown_delay', 'core.models', 'StreamProfile')`. Revert.
+- [ ] **(d) A new model import in config.py.** In `apps/proxy/config.py`, add `from core.models import StreamProfile` inside `TSConfig.get_channel_shutdown_delay`. `test_the_boundary_modules_…` must fail, its diff showing `('TSConfig.get_channel_shutdown_delay', 'core.models', 'StreamProfile')` in `model_imports`. Revert.
+- [ ] **(e) A redundant read on a branch no drive enters.** In `apps/proxy/authorize.py`, duplicate `:401`'s `channel = Channel.objects.filter(uuid=identifier).first()` (the catch-up branch). The ledger stays green; `test_the_boundary_modules_…` must fail with `'objects': 7` against `'objects': 6`. Revert.
 
 ### Task 4: CLAUDE.md and ship
 
+- [ ] **Step 0.** Commit Tasks 1–3 (stage and commit in separate calls), push, and open the draft PR with the body below. Its number is `<PR>` in Step 1, which goes in a second commit.
 - [ ] **Step 1.** Anchored edit, `CLAUDE.md:158`. Replace `Recorded as a gap, deliberately not replaced in 2d (spec A10.8): a Django-side guard with a new allowlist in a new home is real work unrelated to the cutover, and it is on the post-2d list beside the coverage re-scope.` with:
 
-  `Recorded as a gap in 2d (spec A10.8) and closed after it by #<PR>, deliberately narrower than the scanner: `` `apps/proxy/tests/test_tune_path_query_ledger.py` `` pins, from a cold cache, the exact multiset of queries the authorize hop, next-source (first tune and reuse) and release run, keyed by table and by settings-group key, and pins that `` `config.py` `` and `` `config_helper.py` `` import no model but `` `CoreSettings` ``. The scanner itself was not relocated: those modules read the ORM by design now, so a line-keyed allowlist of their 62 reads would go red when lines move rather than when a read is added.`
+  `Recorded as a gap in 2d (spec A10.8) and closed after it by #<PR>, deliberately narrower than the scanner: `` `apps/proxy/tests/test_tune_path_query_ledger.py` `` pins, from a cold cache, the exact multiset of queries the authorize hop, next-source (first tune and reuse) and release run, keyed by table and by settings-group key; and, over all five modules, pins every model import by enclosing qualname and the per-module count of `` `.objects` ``, `` `get_object_or_404` `` and direct model-class calls, so a read added on any branch fails without the test moving when lines move. It does not see a read made through an instance method or a related-object descriptor off the four drives. The scanner itself was not relocated: those modules read the ORM by design now, so a line-keyed allowlist of their 62 reads would go red when lines move rather than when a read is added.`
 - [ ] **Step 2.** `manage.py test --keepdb apps.proxy.tests -v1`. Assert `^OK`.
-- [ ] **Step 3.** Commit, push, open the PR.
+- [ ] **Step 3.** Commit Step 1 as the second commit and push.
 
 **PR description draft**
 
@@ -934,8 +1028,9 @@ A16.12 item 3). This adds apps/proxy/tests/test_tune_path_query_ledger.py:
 
 - four drives (authorize hop, next-source first tune, next-source reuse, release), each pinned to
   the exact multiset of queries it runs from a cold cache;
-- one static pin: config.py imports CoreSettings in get_proxy_settings and nothing else from a
-  models module; config_helper.py imports none.
+- a static half over all five modules: every model import by enclosing qualname, and per module
+  the count of .objects, get_object_or_404 and direct model-class calls. A read added on any
+  branch goes red, including the XC, catch-up and failover branches no drive enters.
 
 ## Why not relocate the scanner
 Measured at a54b09a9 its rule flags 62 sites in these five modules (46 in next_source.py). They
@@ -945,7 +1040,7 @@ all read the ORM by design now, and a line-keyed allowlist goes red when lines m
 <the four drives, as typed into LEDGER, and any difference from the plan's seed table with the commit that caused it>
 
 ## Break-checks
-<the four failure lines from Task 3>
+<the five failure lines from Task 3>
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
 ```
@@ -955,6 +1050,7 @@ all read the ORM by design now, and a line-keyed allowlist goes red when lines m
 ## PR J-4 — the isolated coverage driver forwards every flag
 
 - **Branch:** `fix/J-4-isolated-coverage-flags`.
+- **upstreamable:** no. It edits fork-only files (see the header table).
 - **Closes:** no tracker issue (found by 2d-4's implementer, never filed).
 - **Labels:** `tests`, `apps.proxy.tests`, `apps.channels.tests` (the last two from the `scripts/coverage_live_path` alias, `dispatcharr/test_discovery.py:53`).
 - **Files:** modify `scripts/coverage_live_path_isolated.sh`; create `tests/test_coverage_isolated_dropped_shape_only.py`.
@@ -1077,11 +1173,12 @@ dedicated container (`fixplan-J`), then deleted before commit:
 
 | run | result |
 |---|---|
-| all three modules, seed tree | 10 tests; exactly two red: J-2's surviving-set test (the 25 names) and J-4's `--shape-only` test (`… --write-floor /tmp/combined`); J-3's five green |
+| all three modules, seed tree | 10 tests; exactly two red: J-2's surviving-set test (the builder names) and J-4's `--shape-only` test (`… --write-floor /tmp/combined`); J-3's five green |
 | J-2 Task 2's `redis_keys.py` and J-4 Task 2's three edits applied | J-2, J-4 and `apps.channels.tests.test_get_stream_assignment`: 12 tests, `OK`; `bash -n` clean; `manage.py check` unchanged from the seed |
-| J-3 break-checks (a), (b) at `:383`, (c), (d) | each red with the message quoted in Task 3; (b) at `:401` stayed green, which is why the plan names `:383` |
+| J-3 break-checks (a), (b) at `:383`, (c), (d) | each red with the message quoted in Task 3 |
+| review round 1: J-3's five-module static half | green at the seed; (d) and (e) each red with the diff quoted in Task 3 |
 
-J-2's break-check (c) (a cycling import) was not re-run; its symptom is the one CLAUDE.md records as
+Review round 1's J-2 was re-run the same way. At the seed its surviving-set test fails naming 26 builders, `channel_metadata` among them. With the new `redis_keys.py` and the two inlined `setUp` lines applied, `test_get_stream_assignment` still runs its 7 tests `OK`, and all of J-2's and J-3's tests pass. J-2's break-check (c) (a cycling import) was not run; its symptom is the one CLAUDE.md records as
 measured on the 2d-1 branch.
 
 ## Decision memos
@@ -1105,12 +1202,12 @@ user accepted R5 on 2026-09-23. R2 is still open as Q1 below.
 | 7 — `docs/comparisons/` dataset | — | **out of scope** by user ruling 2026-09-23 (R6); stays untracked |
 | 8 — CLAUDE.md sentences | — | J-1 Task 6 (seven), J-2 Task 4 (one), J-3 Task 4 (one); `:105` checked and left |
 
-**Tracker notes for the lead (deferred writes).** #336 closes via J-1; remove `needs-triage` and
-`re-triage` at close. No duplicates in this category.
+**Tracker notes for the lead (deferred writes).** #336 closes via J-1; remove `needs-triage`,
+`priority:p1` and `re-triage` at close. No duplicates in this category.
 
 **Left deliberately, recorded so they are decisions:** `scripts/coverage_live_path.coveragerc:21`'s
 "the dead hls_proxy" clause (R4); `apps/proxy/relay_client.py:14-20`'s present-tense `live_proxy`
-prose (J-2 Task 3); `apps/proxy/apps.py:8-14` (past tense, still true); the `m3u8` dependency (R5).
+prose (J-2 Task 3); `apps/proxy/apps.py:8-14` (past tense, still true); the `m3u8` dependency (R5); `README.md:151`'s "HLS Output" feature bullet, which was already false before J-1 (CLAUDE.md:84: there is no HLS output), is the product description shared with upstream, and is not made false by the deletion.
 
 ---
 
