@@ -84,14 +84,17 @@ function isWithinLocalNetworkCidrs(ip: string): boolean {
 }
 
 /**
- * "Refused" for the XC surfaces, pinned to the two statuses the ACL actually
- * produces: `401` (test 5's known defect, #134 — the per-user branch mapping
- * a denial to "wrong password") and `403` (the correct/eventual status). Any
- * other status — a `500` from a broken view, a `404` from a moved route — is
- * *not* a refusal and must fail the calling test rather than pass it; this
- * stays green whichever way #134 resolves without also accepting server
- * errors as a stand-in for the ACL working. No body check is needed: neither
- * `401` nor `403` ever carries the `player_api.php` `user_info` envelope.
+ * "Refused" for the XC surfaces, pinned to the two statuses the ACL
+ * legitimately produces: `403` (a network refusal — `xc_authenticate`'s
+ * own outcome since #134 was fixed by #395, on all four XC endpoints) and
+ * `401` (a credentials failure — the unrelated, still-possible reason any
+ * of these calls could be refused). Any other status — a `500` from a
+ * broken view, a `404` from a moved route — is *not* a refusal and must
+ * fail the calling test rather than pass it; accepting both real statuses
+ * here keeps this helper usable for a call whose premise doesn't pin which
+ * of the two applies, without also accepting server errors as a stand-in
+ * for the ACL working. No body check is needed: neither `401` nor `403`
+ * ever carries the `player_api.php` `user_info` envelope.
  */
 function isXcRefused(res: { status(): number }): boolean {
   return [401, 403].includes(res.status());

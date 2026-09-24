@@ -9,10 +9,12 @@ import { test, expect, xcQuery } from '../../fixtures';
  * instead of returning the 401 these tests exist to assert.
  *
  * The XC username IS the Django username — there is no separate
- * `xc_username` custom property anywhere in the product. `xc_get_user`,
- * `stream_xc` and timeshift's `_authenticate_user` all resolve the account
- * with `get_object_or_404(User, username=…)` and then compare
- * `custom_properties["xc_password"]`.
+ * `xc_username` custom property anywhere in the product. `xc_get_user`
+ * (`apps/output/views.py`) delegates the lookup and the credential compare
+ * to `apps.proxy.authorize.resolve_xc_user` — the same constant-time check
+ * every streaming surface uses (the live tune's `authorize_stream`, catch-up)
+ * — so an unknown username and a wrong password are indistinguishable (#84,
+ * fixed by #395): no `get_object_or_404` runs first.
  */
 
 test('player_api.php returns a user_info / server_info envelope for valid credentials', { tag: '@contract' }, async ({

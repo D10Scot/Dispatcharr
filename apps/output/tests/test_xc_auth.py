@@ -73,6 +73,13 @@ class XCAuthTests(TestCase):
                 self.assertEqual(no_xc_password.status_code, 401)
                 self.assertEqual(ghost_username.json(), wrong_password.json())
                 self.assertEqual(ghost_username.json(), no_xc_password.json())
+                # Byte-for-byte, not just JSON-equal: a client comparing raw
+                # bodies or the Content-Type header must see no difference
+                # either between an unknown username and a wrong password.
+                self.assertEqual(ghost_username.content, wrong_password.content)
+                self.assertEqual(
+                    ghost_username["Content-Type"], wrong_password["Content-Type"]
+                )
 
     def test_a_non_ascii_xc_password_is_refused_not_500(self):
         response = self._get("xc_player_api", self.xc_user.username, "café☕")
@@ -130,6 +137,10 @@ class XCAuthTests(TestCase):
         self.assertEqual(endpoints, {"player_api", "panel_api"})
         for event in events:
             self.assertEqual(event.details.get("user"), blocked_user.username)
+            # The credential in the query string must not leak into the
+            # event, even though it was a real (correct) xc_password here.
+            for value in event.details.values():
+                self.assertNotIn("correct-horse-battery-staple", str(value))
 
     def test_a_global_xc_api_block_answered_401_on_player_api(self):
         # TestCase wraps each test in a transaction that is rolled back at
