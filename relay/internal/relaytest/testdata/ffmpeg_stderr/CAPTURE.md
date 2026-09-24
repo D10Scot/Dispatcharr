@@ -40,15 +40,31 @@ with `docker cp` before committing them.
   provenance, ffmpeg `6.1.1-3ubuntu5` (`ffmpeg -version | head -1`), captured
   2026-09-24 in `ubuntu:24.04@sha256:008173c23f95b170204355c12626cb5a965d779a7e1283b09e9cffbb1bf33ca3`
   with `docker run` (no `dispatcharr-testrunner` involved — this image's own
-  apt ffmpeg is the point). Same command, same script
+  apt ffmpeg is the point). Same script
   (`scripts/capture_ffmpeg_stderr.py`, unmodified), same three runs
   (`normal`, `slow-trickle`, `truncation`); only `normal` and `slow-trickle`
   are committed here, as `ffmpeg6-normal.stderr` and
-  `ffmpeg6-slow-trickle.stderr` — `truncation` from this run was captured and
-  inspected but not kept, matching the rule for the 8.1.2 corpus below.
-  Captured for issue #299: ffmpeg 6.x's stream-copy progress records begin
-  `size=` and carry no `frame=` at all, which the `frame=`-gated
-  `IsProgressLine` never accepted.
+  `ffmpeg6-slow-trickle.stderr` — the `truncation` run from this capture was
+  not needed for issue #299 (which is about the `normal`/`slow-trickle`
+  shape, not the scientific-notation speed `truncation` exists to carry) and
+  was not kept. Captured for issue #299: ffmpeg 6.x's stream-copy progress
+  records begin `size=` and carry no `frame=` at all, which the
+  `frame=`-gated `IsProgressLine` never accepted. Regenerate with:
+
+  ```bash
+  docker buildx imagetools inspect ubuntu:24.04 --format '{{json .Manifest.Digest}}'
+  mkdir -p <scratch>/ff6 && docker run --rm --name <yourname>-ff6cap \
+    -v <worktree>:/repo:ro -v <scratch>/ff6:/out ubuntu:24.04@sha256:008173c23f95b170204355c12626cb5a965d779a7e1283b09e9cffbb1bf33ca3 bash -c '
+      set -e; export DEBIAN_FRONTEND=noninteractive
+      apt-get update -qq >/dev/null && apt-get install -y -qq ffmpeg python3 >/dev/null 2>&1
+      ffmpeg -version | head -1
+      python3 /repo/scripts/capture_ffmpeg_stderr.py /out'
+  cp <scratch>/ff6/normal.stderr       relay/internal/relaytest/testdata/ffmpeg_stderr/ffmpeg6-normal.stderr
+  cp <scratch>/ff6/slow-trickle.stderr relay/internal/relaytest/testdata/ffmpeg_stderr/ffmpeg6-slow-trickle.stderr
+  ```
+
+  The digest above is what this capture actually resolved to on 2026-09-24;
+  re-resolve it (`ubuntu:24.04` moves) rather than reusing this one verbatim.
 
 ## What each fixture is, and its shape
 
