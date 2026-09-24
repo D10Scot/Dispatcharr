@@ -84,6 +84,14 @@ def _hidden_adult_movie(user, content_type, content_obj):
 
 
 def _adult_refusal():
+    """403, not a concealing 404, deliberately: matches authorize_stream's
+    precedent for hide_adult_content against Channel.is_adult on the live
+    tune path (Phase 1 PR 5), so the two streaming surfaces refuse the same
+    way, and gives operability a support-distinguishable refusal. The movie
+    id and its is_adult flag are already visible to any listing user
+    without the preference, so a 403 here confirms nothing a listing does
+    not already reveal.
+    """
     return authorize_error_response(AuthorizeDenied(403, "Forbidden"))
 
 
