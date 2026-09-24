@@ -84,14 +84,17 @@ function isWithinLocalNetworkCidrs(ip: string): boolean {
 }
 
 /**
- * "Refused" for the XC surfaces, pinned to the two statuses the ACL actually
- * produces: `401` (test 5's known defect, #134 — the per-user branch mapping
- * a denial to "wrong password") and `403` (the correct/eventual status). Any
- * other status — a `500` from a broken view, a `404` from a moved route — is
- * *not* a refusal and must fail the calling test rather than pass it; this
- * stays green whichever way #134 resolves without also accepting server
- * errors as a stand-in for the ACL working. No body check is needed: neither
- * `401` nor `403` ever carries the `player_api.php` `user_info` envelope.
+ * "Refused" for the XC surfaces, pinned to the two statuses the ACL
+ * legitimately produces: `403` (a network refusal — `xc_authenticate`'s
+ * own outcome since #134 was fixed by #395, on all four XC endpoints) and
+ * `401` (a credentials failure — the unrelated, still-possible reason any
+ * of these calls could be refused). Any other status — a `500` from a
+ * broken view, a `404` from a moved route — is *not* a refusal and must
+ * fail the calling test rather than pass it; accepting both real statuses
+ * here keeps this helper usable for a call whose premise doesn't pin which
+ * of the two applies, without also accepting server errors as a stand-in
+ * for the ACL working. No body check is needed: neither `401` nor `403`
+ * ever carries the `player_api.php` `user_info` envelope.
  */
 function isXcRefused(res: { status(): number }): boolean {
   return [401, 403].includes(res.status());
@@ -351,29 +354,12 @@ test(
   }
 );
 
-// D5, D13a: the known bug. apps/output/views.py:xc_get_user (:374) applies
-// network_access_allowed(request, 'XC_API', user) and returns None on
-// denial; xc_player_api (:449-454) — like xc_panel_api, xc_get and xc_xmltv
-// — maps a None user to 401 {"error": "Unauthorized"}. So a client blocked
-// by the PER-USER allowed_networks CIDR is told its password is wrong, not
-// that its network is refused. get.php/xmltv.php do have a real 403
-// (apps/output/views.py:496-508, :531-543), but only from the separate,
-// earlier GLOBAL network_access_allowed(request, 'XC_API') call that passes
-// no user — the per-user branch inside xc_get_user can never produce a 403
-// on any surface, player_api.php included. Filed as
-// https://github.com/D10Scot/Dispatcharr/issues/134.
-//
-// test.fail() caveat, matching hidden-channel-streamable.spec.ts: it is
-// satisfied by ANY failure in the body, guards included — so a broken
-// premise (e.g. a wrong xc_password, or the per-user write itself failing)
-// would also read as "expected failure" and this test would go green while
-// proving nothing. The premise and the positive control are therefore
-// asserted first, each with its own message, and only the final assertion
-// is inverted. Verified with `--reporter=json` that this pin fails at the
-// final expect below, with every assertion above it passing — re-verify the
-// same way after any edit here.
-test.fail(
-  'a network-blocked XC user gets 401 from player_api.php, not the correct 403 (#134)',
+// Fixed (#134). `xc_authenticate` (apps/output/views.py) now distinguishes
+// a credentials failure from a network refusal and returns the latter as
+// its own outcome; `xc_player_api` maps that to 403 `{"error": "Forbidden"}`
+// instead of folding it into the same 401 a wrong password gets.
+test(
+  'a network-blocked XC user gets 403 from player_api.php (#134)',
   { tag: '@contract' },
   async ({ api, seed, request }) => {
     const user = await seed.xcUser();
@@ -400,6 +386,6 @@ test.fail(
     expect(patched.status(), 'premise: the per-user write must itself succeed').toBe(200);
 
     const res = await request.get(`/player_api.php${xcQuery(user)}`);
-    expect(res.status()).toBe(403); // correct behaviour; today it is 401
+    expect(res.status()).toBe(403);
   }
 );

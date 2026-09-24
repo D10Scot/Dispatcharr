@@ -139,21 +139,9 @@ test('hdhr device.xml is well-formed and agrees with discover.json', { tag: '@co
   expect(lineupUrl).toBe(discover.LineupURL);
 });
 
-// Investigated, not pinned: HDHRDeviceXMLAPIView (api_views.py:210-233)
-// hardcodes FriendlyName/DeviceID unconditionally and never reads
-// HDHRDevice at all, while DiscoverAPIView (api_views.py:66-67) reads
-// HDHRDevice.objects.first() and prefers its fields when a row exists. So a
-// configured HDHRDevice row would make these two endpoints permanently
-// disagree — a real, source-provable defect, independent of any test state.
-//
-// Deliberately not pinned with a live test.fail() here: HDHRDevice has no
-// seed fixture, and `.objects.first()` is a single unnamespaced row with no
-// per-test scoping — creating one, even transiently, would leak into every
-// OTHER concurrent /hdhr/discover.json call under this project's
-// `fullyParallel: true, workers: 4` (playwright.config.ts), including the
-// two exact-literal assertions a few lines above in this same file. Filed
-// without a live repro — https://github.com/D10Scot/Dispatcharr/issues/83 —
-// on the source citations alone.
+// device.xml and discover.json read the same HDHRDevice row since #83;
+// pinned by apps/output/tests/test_hdhr_device_xml.py, not here, because a
+// row is instance-wide and this project runs fullyParallel.
 
 
 test('hdhr lineup_status.json reports a scannable cable source', { tag: '@contract' }, async ({ request }) => {
