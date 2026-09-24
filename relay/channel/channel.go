@@ -160,6 +160,11 @@ type Channel struct {
 	failoverDegraded bool
 	pending          *Resolved
 	failures         failureCounter
+	// switches is stream_switch_attempts: the switches made since the
+	// rotation last reset, bounded by Tuning.MaxStreamSwitches. A channel
+	// field under mu rather than a run-loop local since issue #221's fix,
+	// because the stderr reader's buffering switch counts against it too.
+	switches int
 
 	cancel context.CancelFunc
 	done   chan struct{}
@@ -452,9 +457,8 @@ func (c *Channel) run(ctx context.Context, first Source) {
 	go c.monitorHealth(ctx)
 
 	source := first
-	switches := 0
 	var last error
-	for ctx.Err() == nil && switches <= c.tuning.MaxStreamSwitches {
+	for ctx.Err() == nil && c.switchCount() <= c.tuning.MaxStreamSwitches {
 		urlFailed := false
 		for ctx.Err() == nil && c.failures.count < c.tuning.MaxRetries && !urlFailed && !c.flagSet(&c.needsSwitch) {
 			attempt := c.failures.count + 1
@@ -476,7 +480,9 @@ func (c *Channel) run(ctx context.Context, first Source) {
 			if resolved := c.takePending(); resolved != nil {
 				// The stderr reader switched on a buffering timeout
 				// (:1178-1211) and has already cleared the failure history,
-				// as update_url does. It never touched `switches`: row 6.
+				// as update_url does, and counted the switch (issue #221,
+				// row 6) -- or an operator's Advance parked it, which is
+				// not counted.
 				source = resolved.Source
 				break
 			}
@@ -489,7 +495,7 @@ func (c *Channel) run(ctx context.Context, first Source) {
 				// :508-513: a stable run resets the rotation.
 				c.log.Info("stream was stable; resetting the switch rotation", "channel", c.id, "duration", duration.Round(time.Second))
 				c.noteStable()
-				switches = 0
+				c.resetSwitches()
 			}
 			if c.takeFlag(&c.needsReconnect) {
 				// :521-531: the monitor asked for a same-URL reconnect on a
@@ -537,7 +543,7 @@ func (c *Channel) run(ctx context.Context, first Source) {
 		if c.takeFlag(&c.needsSwitch) {
 			// :428-438: the health monitor's switch.
 			if resolved, ok := c.failover(ctx, "health_monitor"); ok {
-				switches++
+				c.countSwitch()
 				source = resolved.Source
 				continue
 			}
@@ -548,11 +554,11 @@ func (c *Channel) run(ctx context.Context, first Source) {
 		if urlFailed {
 			// :596-611.
 			if resolved, ok := c.failover(ctx, "max_retries_exceeded"); ok {
-				switches++
+				c.countSwitch()
 				source = resolved.Source
 				continue
 			}
-			c.log.Error("no alternative stream after the switch attempts", "channel", c.id, "switches", switches)
+			c.log.Error("no alternative stream after the switch attempts", "channel", c.id, "switches", c.switchCount())
 			break
 		}
 	}
@@ -603,6 +609,27 @@ func (c *Channel) runAttempt(ctx context.Context, source Source) error {
 	c.cancelAttempt = nil
 	c.mu.Unlock()
 	return err
+}
+
+// switchCount, countSwitch and resetSwitches are the switch counter's three
+// operations, under mu because the run loop and the stderr reader both reach
+// it (issue #221).
+func (c *Channel) switchCount() int {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.switches
+}
+
+func (c *Channel) countSwitch() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.switches++
+}
+
+func (c *Channel) resetSwitches() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.switches = 0
 }
 
 // takePending hands the run loop a source the stderr reader adopted.

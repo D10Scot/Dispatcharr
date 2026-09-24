@@ -68,6 +68,14 @@ func (r *fakeResolver) firstCallAt() time.Time {
 	return r.calledAt[0]
 }
 
+// callTimes is when each Next call arrived, in order: a copy taken under the
+// lock, for a test that bounds the gaps between asks (#302). From #348.
+func (r *fakeResolver) callTimes() []time.Time {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]time.Time(nil), r.calledAt...)
+}
+
 // eventLog is an EventSink that keeps everything, with the wall clock each
 // event arrived at.
 type eventLog struct {
@@ -595,12 +603,21 @@ func TestAFailoverFromTheCacheRaisesDegradedFailoverOnRecovery(t *testing.T) {
 	m.Stop("degraded")
 }
 
-// The other half of row 6: MAX_STREAM_SWITCHES DOES bound a main-loop
-// switch. With the bound at zero, `stream_switch_attempts <= 0` admits the
+// The other half of row 6, now that #221 is fixed: both paths share one
+// counter (Channel.switches), but what happens AT the bound still differs by
+// design. With the bound at zero, `stream_switch_attempts <= 0` admits the
 // first pass, the connect-failure switch happens, and the loop then exits
 // without ever running the new source (input/manager.py:388-402) -- the
-// channel errors although its alternate would have flowed. Together with
-// TestABufferingFailoverIgnoresMaxStreamSwitches this pins the asymmetry.
+// channel errors although its alternate would have flowed. The main loop's
+// `<=` therefore resolves at most MaxStreamSwitches+1 switches, the last one
+// unrun, and ends the channel at its bound because it has no working source.
+// The buffering path, in source_transcode_test.go's
+// TestABufferingFailoverIsRefusedOnceMaxStreamSwitchesIsSpent and
+// TestABufferingFailoverCountsAgainstMaxStreamSwitches, makes at most
+// MaxStreamSwitches switches, all of which run, and REFUSES rather than ends
+// the channel once the budget is spent, because its source is still
+// delivering, only slowly. Together the three tests pin the shared counter
+// and the Max/Max+1 asymmetry at the bound, not merely that a bound exists.
 func TestMaxStreamSwitchesBoundsAMainLoopSwitch(t *testing.T) {
 	m := NewManager(ManagerConfig{BudgetBytes: buffer.TSPacketSize * 400})
 	t.Cleanup(m.StopAll)

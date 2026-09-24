@@ -384,16 +384,13 @@ func TestASustainedSubThresholdSpeedFailsTheChannelOver(t *testing.T) {
 	m.Stop("row1")
 }
 
-// PARITY-MATRIX ROW 6 (issue #221, reproduced not fixed): MAX_STREAM_SWITCHES
-// bounds the main loop's switches (input/manager.py:388-402) and NOT a
-// buffering-triggered one, which the stderr thread makes without touching
-// the counter (:1134-1138). With the bound at ZERO a buffering failover
-// still switches. Falsifiable in the direction that matters: teach the
-// stderr path to consult the counter -- the natural fix for #221 -- and a
-// bound of zero refuses this switch. Its sibling in failover_test.go shows
-// the same bound DOES stop a main-loop switch, so the two together pin the
-// asymmetry rather than the absence of a bound.
-func TestABufferingFailoverIgnoresMaxStreamSwitches(t *testing.T) {
+// PARITY-MATRIX ROW 6, issue #221, FIXED: MAX_STREAM_SWITCHES bounds a
+// buffering-triggered switch as it bounds the main loop's. With the bound at
+// ZERO the buffering path never asks the control plane at all, and -- unlike
+// the main loop, which ends the channel at its bound -- the channel keeps
+// playing, slowly, on the source it has. Python's stderr thread never touched
+// the counter (input/manager.py:1134-1138), so this switched regardless.
+func TestABufferingFailoverIsRefusedOnceMaxStreamSwitchesIsSpent(t *testing.T) {
 	slowTrickleTail(t)
 	const apiMax = 10.0
 	path, _ := assetFile(t, 8)
@@ -401,10 +398,6 @@ func TestABufferingFailoverIgnoresMaxStreamSwitches(t *testing.T) {
 	m := NewManager(ManagerConfig{BudgetBytes: buffer.TSPacketSize * 400, Events: events})
 	t.Cleanup(m.StopAll)
 
-	// The alternate's child is SILENT on stderr: with the threshold at the
-	// API maximum every record of any capture is below it, so a child that
-	// replayed one would put the channel straight back into buffering and
-	// hide the active edge the switch itself produces (:1190-1197).
 	alternate := standInSource(t, "-i", path, "--dead-air-after-bytes", "1504")
 	ran := &int32Counter{}
 	resolver := &fakeResolver{answers: []Resolved{{
@@ -419,43 +412,113 @@ func TestABufferingFailoverIgnoresMaxStreamSwitches(t *testing.T) {
 	ch, release := attachWith(t, m, "row6", src, tuning, resolver)
 	defer release()
 
-	waitFor(t, "the switch despite a bound of zero", 15*time.Second, func() bool { return ch.Source().StreamID == 2 })
-	waitFor(t, "the alternate's child to run", 10*time.Second, func() bool { return ran.get() == 1 })
-	// And the channel keeps going on the new source: the bound of zero,
-	// which ends the main loop after ITS first switch, is never consulted.
-	time.Sleep(300 * time.Millisecond)
-	if state := ch.State(); state != StateActive {
-		t.Fatalf("state = %q after a buffering failover under MAX_STREAM_SWITCHES = 0, want active: the stderr path consulted the main loop's bound", state)
+	waitFor(t, "buffering", 10*time.Second, func() bool { return ch.State() == StateBuffering })
+	// Three buffering_timeouts: the defect asked, and switched, inside the
+	// first one.
+	time.Sleep(3 * time.Second)
+	if n := len(resolver.requests()); n != 0 {
+		t.Fatalf("the resolver was asked %d times under MAX_STREAM_SWITCHES = 0: the buffering path ignored the bound (#221)", n)
 	}
-	if len(events.of("channel_failover")) != 1 {
-		t.Fatal("the switch was not the buffering path's: no channel_failover event")
+	if ch.Source().StreamID != 1 || ran.get() != 0 {
+		t.Fatalf("the channel moved to stream %d (alternate ran %d times) with no switch budget", ch.Source().StreamID, ran.get())
+	}
+	if n := len(events.of("channel_failover")); n != 0 {
+		t.Fatalf("channel_failover raised %d times with no switch budget", n)
+	}
+	select {
+	case <-ch.Done():
+		t.Fatalf("the channel ended (%v): a spent budget refuses the switch, it does not end a source that is still delivering", ch.Err())
+	default:
 	}
 	m.Stop("row6")
 }
 
-// The failure branch of the same arm (input/manager.py:1210): with nothing
-// to fail over to, Python logs an error, stays buffering, and asks the
-// control plane AGAIN ON THE VERY NEXT RECORD -- one next-source call per
-// progress record, for as long as the speed stays low. Reproduced per D5
-// and filed as an issue; the assertion is that the channel keeps playing
-// (the child is never killed) while the resolver is asked repeatedly.
-func TestABufferingTimeoutWithNoAlternateKeepsPlayingAndAsksOnEveryRecord(t *testing.T) {
+// The other half of row 6: a buffering switch is COUNTED, so with a bound of
+// one the first buffering timeout switches and the second, on the alternate,
+// does not. The alternate replays the same slow capture, so it buffers too;
+// the resolver holds a second answer, so only the bound can stop the ask.
+func TestABufferingFailoverCountsAgainstMaxStreamSwitches(t *testing.T) {
 	slowTrickleTail(t)
 	const apiMax = 10.0
 	path, _ := assetFile(t, 8)
 	m := NewManager(ManagerConfig{BudgetBytes: buffer.TSPacketSize * 400})
 	t.Cleanup(m.StopAll)
-	resolver := &fakeResolver{} // every answer is ErrNoAlternate
-	src := standInSource(t, "-i", path, "--dead-air-after-bytes", "1504",
-		"--stderr-corpus", relaytest.CorpusPath("slow-trickle"), "--stderr-interval", "0.02", "--stderr-loop")
 
-	ch, release := attachWith(t, m, "no-alt", src, transcodeTuning(apiMax, time.Second), resolver)
+	slow := func() *TranscodeSource {
+		return standInSource(t, "-i", path, "--dead-air-after-bytes", "1504",
+			"--stderr-corpus", relaytest.CorpusPath("slow-trickle"), "--stderr-interval", "0.02", "--stderr-loop")
+	}
+	resolver := &fakeResolver{answers: []Resolved{
+		{Source: slow(), Info: SourceInfo{URL: "http://provider.invalid/two.ts", StreamID: 2, M3UProfileID: 1}},
+		{Source: slow(), Info: SourceInfo{URL: "http://provider.invalid/three.ts", StreamID: 3, M3UProfileID: 1}},
+	}}
+	tuning := transcodeTuning(apiMax, time.Second)
+	tuning.MaxStreamSwitches = 1
+
+	ch, release := attachWith(t, m, "row6-count", slow(), tuning, resolver)
 	defer release()
 
-	waitFor(t, "the first failed switch", 10*time.Second, func() bool { return len(resolver.requests()) >= 1 })
-	waitFor(t, "a third failed switch, one per record", 10*time.Second, func() bool { return len(resolver.requests()) >= 3 })
+	waitFor(t, "the first switch", 15*time.Second, func() bool { return ch.Source().StreamID == 2 })
+	waitFor(t, "the alternate to buffer", 10*time.Second, func() bool { return ch.State() == StateBuffering })
+	time.Sleep(3 * time.Second)
+	if n := len(resolver.requests()); n != 1 {
+		t.Fatalf("the resolver was asked %d times under MAX_STREAM_SWITCHES = 1, want 1: the buffering switch was not counted (#221)", n)
+	}
+	if id := ch.Source().StreamID; id != 2 {
+		t.Fatalf("the channel is on stream %d, want 2", id)
+	}
+	m.Stop("row6-count")
+}
+
+// Issue #302, FIXED. The failure branch of the same arm (input/manager.py:
+// 1210) left Python buffering with its clock unchanged, so the very next
+// progress record -- here every 20 ms -- timed out again and asked the
+// control plane again. The detector now defers after a failed ask: the
+// channel keeps playing and stays buffering, and consecutive asks are at
+// least one buffering_timeout apart -- a LOWER BOUND ONLY.
+//
+// A SYNTHETIC ORDER, NOT A SYNTHETIC LINE, which the corpus rule permits with
+// a reason (TestBufferingEndsWhenTheSpeedRecovers uses the same exception):
+// the slow-trickle capture's own records, with its sub-threshold tail
+// repeated, so the channel buffers once and stays buffering for five
+// seconds. Replaying the capture with --stderr-loop instead would re-open
+// every pass with a record above the threshold, end the buffering and
+// restart the clock, and "still buffering" could not be asserted at all.
+func TestABufferingTimeoutWithNoAlternateAsksOncePerTimeoutNotOnEveryRecord(t *testing.T) {
+	slowTrickleTail(t)
+	const apiMax = 10.0
+	const timeout = time.Second
+	_, records := relaytest.SplitCorpus(relaytest.Corpus("slow-trickle"))
+	body := append(append([]byte{}, records[0]...), '\r')
+	for range 4 {
+		for _, r := range records[1:] {
+			body = append(body, r...)
+			body = append(body, '\r')
+		}
+	}
+	corpus := filepath.Join(t.TempDir(), "long-tail.stderr")
+	if err := os.WriteFile(corpus, body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	path, _ := assetFile(t, 8)
+	m := NewManager(ManagerConfig{BudgetBytes: buffer.TSPacketSize * 400})
+	t.Cleanup(m.StopAll)
+	resolver := &fakeResolver{} // every answer is ErrNoAlternate
+	src := standInSource(t, "-i", path, "--dead-air-after-bytes", "1504",
+		"--stderr-corpus", corpus, "--stderr-interval", "0.02")
+
+	ch, release := attachWith(t, m, "no-alt", src, transcodeTuning(apiMax, timeout), resolver)
+	defer release()
+
+	waitFor(t, "a third failed switch", 20*time.Second, func() bool { return len(resolver.requests()) >= 3 })
 	if state := ch.State(); state != StateBuffering {
 		t.Fatalf("state = %q, want buffering: a failed switch leaves the channel where it was", state)
+	}
+	at := resolver.callTimes()
+	for i := 1; i < len(at); i++ {
+		if gap := at[i].Sub(at[i-1]); gap < timeout {
+			t.Fatalf("asks %d and %d were %s apart, under the %s buffering_timeout: the channel is asking on every record (#302)", i-1, i, gap, timeout)
+		}
 	}
 	select {
 	case <-ch.Done():
