@@ -27,6 +27,9 @@ type Detector struct {
 
 	buffering bool
 	since     time.Time
+	// retryAt holds a TimedOut back after a failed switch (Defer). Zero
+	// means no hold.
+	retryAt time.Time
 }
 
 // Verdict is what one observation changed.
@@ -44,9 +47,10 @@ const (
 	// Continuing: a further sub-threshold sample, within the timeout.
 	Continuing
 	// TimedOut: a sub-threshold sample more than Timeout after buffering
-	// started. Python tries the next stream here; on success it resets
-	// (Reset), on failure it stays buffering and tries again on the NEXT
-	// sample (:1210), so this verdict repeats until something resets it.
+	// started. The caller tries the next stream here; on success it resets
+	// (Reset), on failure it defers (Defer) and the verdict is held back for
+	// another Timeout. A caller that does neither sees it on every sample,
+	// which is what Python did (:1210, issue #302).
 	TimedOut
 	// Ended: speed back at or above the threshold after buffering.
 	Ended
@@ -68,22 +72,29 @@ func (v Verdict) String() string {
 	return "unknown"
 }
 
+// clock is the detector's one reading of the time: Now, or the wall clock
+// when Now is nil. One helper rather than a nil check in each of the three
+// methods that read it, so the fallback is one statement a test can cover.
+func (d *Detector) clock() time.Time {
+	if d.Now == nil {
+		return time.Now()
+	}
+	return d.Now()
+}
+
 // Observe feeds one reported speed to the detector.
 func (d *Detector) Observe(speed float64) Verdict {
-	now := d.Now
-	if now == nil {
-		now = time.Now
-	}
 	if speed < d.Threshold {
 		if !d.buffering {
 			d.buffering = true
-			d.since = now()
+			d.since = d.clock()
 			return Started
 		}
 		// input/manager.py:1174-1175's `if buffering_start_time is None`
 		// arm is unreachable: the two are set together at :1213-1214 and
 		// cleared together at :1185-1186 and :1240-1241. Not ported.
-		if now().Sub(d.since) > d.Timeout {
+		at := d.clock()
+		if at.Sub(d.since) > d.Timeout && !at.Before(d.retryAt) {
 			return TimedOut
 		}
 		return Continuing
@@ -91,6 +102,7 @@ func (d *Detector) Observe(speed float64) Verdict {
 	if d.buffering {
 		d.buffering = false
 		d.since = time.Time{}
+		d.retryAt = time.Time{}
 		return Ended
 	}
 	return Steady
@@ -106,11 +118,7 @@ func (d *Detector) BufferingFor() time.Duration {
 	if !d.buffering {
 		return 0
 	}
-	now := d.Now
-	if now == nil {
-		now = time.Now
-	}
-	return now().Sub(d.since)
+	return d.clock().Sub(d.since)
 }
 
 // Reset is the successful-switch branch (:1185-1186): buffering cleared and
@@ -119,4 +127,16 @@ func (d *Detector) BufferingFor() time.Duration {
 func (d *Detector) Reset() {
 	d.buffering = false
 	d.since = time.Time{}
+	d.retryAt = time.Time{}
 }
+
+// Defer is the failed-switch branch, and it is issue #302's fix. Python left
+// the detector untouched when _try_next_stream failed (:1210), so the very
+// next record -- about every half second -- timed out again and asked the
+// control plane again, for as long as the speed stayed low. Defer keeps the
+// channel buffering and keeps the clock (BufferingFor still measures from the
+// first sub-threshold sample, which is the duration a later channel_failover
+// reports) and holds the next TimedOut back for one more Timeout: a channel
+// with nowhere to go asks once per buffering_timeout instead of once per
+// record.
+func (d *Detector) Defer() { d.retryAt = d.clock().Add(d.Timeout) }
