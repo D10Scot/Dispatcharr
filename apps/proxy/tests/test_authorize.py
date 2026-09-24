@@ -401,6 +401,22 @@ class AuthHelpersDbTests(TestCase):
     def test_unknown_username_rejected(self):
         self.assertIsNone(authorize.resolve_xc_user("ts-test-ghost", "x"))
 
+    def test_an_unknown_xc_user_took_the_fast_path(self):
+        """An unknown username must still run hmac.compare_digest once.
+
+        Without it, the DB-miss branch returned in less time than a known
+        user's wrong-password branch (which does run the compare), making
+        the two distinguishable by timing even though #84 made the response
+        itself (status, body) identical on every caller.
+        """
+        # resolve_xc_user imports hmac function-locally (module convention);
+        # patching the hmac module itself (rather than a nonexistent
+        # apps.proxy.authorize.hmac attribute) reaches the same call.
+        with patch("hmac.compare_digest") as mock_compare:
+            mock_compare.return_value = False
+            self.assertIsNone(authorize.resolve_xc_user("ts-test-ghost", "x"))
+        mock_compare.assert_called_once()
+
     def test_user_level_gate(self):
         # Level-0 viewer with no profiles: allowed on level-0, denied on level-10.
         self.assertTrue(authorize.user_can_access_channel(self.viewer, self.basic_channel))

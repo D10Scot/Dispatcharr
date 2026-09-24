@@ -18,6 +18,7 @@ from django.contrib.auth import get_user_model
 from django.test import Client, TestCase
 from django.urls import reverse
 
+from apps.output.views import XC_UNAUTHENTICATED_USER
 from core.models import NETWORK_ACCESS_KEY, CoreSettings, SystemEvent
 
 User = get_user_model()
@@ -136,11 +137,14 @@ class XCAuthTests(TestCase):
         endpoints = {event.details.get("endpoint") for event in events}
         self.assertEqual(endpoints, {"player_api", "panel_api"})
         for event in events:
-            self.assertEqual(event.details.get("user"), blocked_user.username)
-            # The credential in the query string must not leak into the
-            # event, even though it was a real (correct) xc_password here.
+            # A fixed placeholder, not the raw (unauthenticated) request
+            # parameter: the network-refusal path never resolves a user,
+            # so the request's own username string must appear nowhere in
+            # the event, the same as the credential.
+            self.assertEqual(event.details.get("user"), XC_UNAUTHENTICATED_USER)
             for value in event.details.values():
                 self.assertNotIn("correct-horse-battery-staple", str(value))
+                self.assertNotIn(blocked_user.username, str(value))
 
     def test_a_global_xc_api_block_answered_401_on_player_api(self):
         # TestCase wraps each test in a transaction that is rolled back at

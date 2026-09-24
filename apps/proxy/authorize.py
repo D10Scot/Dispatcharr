@@ -147,6 +147,16 @@ def mint_client_id() -> str:
     return f"client_{int(time.time() * 1000)}_{random.randint(1000, 9999)}"
 
 
+# Compared against, in constant time, on the unknown-username path in
+# resolve_xc_user, so that branch does the same hmac.compare_digest work a
+# known user's wrong-password check does. Without this, the DB miss
+# returned in less time than a real comparison, and the difference is a
+# username-enumeration oracle by timing even though #84 made the response
+# itself (status code, body) identical. Fixed shape, never compared against
+# a real password.
+_XC_DUMMY_PASSWORD = "x" * 32
+
+
 def resolve_xc_user(username, password):
     """An Xtream principal, or None. Constant-time compare, plaintext at rest.
 
@@ -154,15 +164,21 @@ def resolve_xc_user(username, password):
     used compare_digest; live_proxy and vod_proxy used `!=` and now share
     this one.
     """
+    import hmac
+
     if not username:
         return None
     user = User.objects.filter(username=username).first()
     if user is None:
+        # Same compare_digest call an existing user's wrong password takes,
+        # against a fixed dummy, so an unknown username costs the same time.
+        hmac.compare_digest(
+            _XC_DUMMY_PASSWORD.encode("utf-8"), str(password or "").encode("utf-8")
+        )
         return None
     expected = (user.custom_properties or {}).get("xc_password")
     if not expected:
         return None
-    import hmac
 
     # Bytes, not str: hmac.compare_digest raises TypeError on a non-ASCII
     # str operand, which would 500 the tune instead of authorizing or

@@ -356,6 +356,14 @@ def generate_m3u(request, profile_name=None, user=None):
 XC_DENIED_CREDENTIALS = 401
 XC_DENIED_NETWORK = 403
 
+# The client is unauthenticated on a network-refusal path: neither the
+# global nor the per-user network ACL check ever resolves a user, so
+# there is no real identity to log, only whatever the request supplied.
+# Logging that verbatim would put an attacker-controlled string into a
+# SystemEvent that fans out to Connect (webhook/script/API) -- a fixed
+# placeholder instead.
+XC_UNAUTHENTICATED_USER = "<unauthenticated>"
+
 
 def xc_authenticate(request):
     """(user, None) on success, else (None, 401) or (None, 403).
@@ -458,7 +466,7 @@ def xc_get_info(request, full=False):
 def _xc_network_refused(request, endpoint):
     log_system_event(
         event_type='login_failed',
-        user=request.GET.get('username', 'unknown'),
+        user=XC_UNAUTHENTICATED_USER,
         reason='Network access denied (XC API)',
         endpoint=endpoint,
         client_ip=get_client_ip(request) or "unknown",
@@ -550,7 +558,7 @@ def xc_get(request):
         user_agent = request.META.get('HTTP_USER_AGENT', 'unknown')
         log_system_event(
             event_type='m3u_blocked',
-            user=request.GET.get('username', 'unknown'),
+            user=XC_UNAUTHENTICATED_USER,
             reason='Network access denied (XC API)',
             client_ip=client_ip,
             user_agent=user_agent,
@@ -598,7 +606,7 @@ def xc_xmltv(request):
         user_agent = request.META.get('HTTP_USER_AGENT', 'unknown')
         log_system_event(
             event_type='epg_blocked',
-            user=request.GET.get('username', 'unknown'),
+            user=XC_UNAUTHENTICATED_USER,
             reason='Network access denied (XC API)',
             client_ip=client_ip,
             user_agent=user_agent,
