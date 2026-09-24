@@ -310,10 +310,22 @@ func TestAFragmentThatNeverEndsIsAbandonedAtTheCeiling(t *testing.T) {
 	// the ceiling the scanner gives the fragment up and resynchronises, so
 	// the buffer stays bounded and the next real fragment is published. The
 	// ceiling is lowered on this scanner alone rather than fed 64 MiB.
+	//
+	// The first shape declares 500000, not an internet-scale value: review
+	// round 1's nit on #399 made flush refuse an ALIGNED moof above
+	// maxMoofBoxBytes outright (resynchronising past it at once, pinned by
+	// TestAnAlignedMoofClaimingMoreThanAnyRealOneCanIsResynchronisedPastAtOnce),
+	// so a declared length past that bound no longer reaches this arm at
+	// all. 500000 stays under maxMoofBoxBytes (so it is still "aligned" and
+	// still waited on) while staying far past both a real moof's few
+	// kilobytes and this test's own 4096-byte ceiling, so the wait still
+	// never resolves and still gets abandoned at the ceiling.
 	const ceiling = 4096
+	corruptMoofLength := make([]byte, 4)
+	binary.BigEndian.PutUint32(corruptMoofLength, 500000)
 	shapes := map[string][]byte{
 		"the moof's own length is corrupt": slices.Concat(
-			[]byte{0x7f, 0xff, 0xff, 0xff}, []byte("moof"), make([]byte, 8)),
+			corruptMoofLength, []byte("moof"), make([]byte, 8)),
 		"the box after the moof is corrupt": slices.Concat(
 			relaytest.MP4Box("moof", make([]byte, 8)), []byte{0xff, 0xff, 0xff, 0x00}, []byte("mdat")),
 	}
@@ -401,6 +413,47 @@ func TestTheSameBytesSplitAcrossReadsProduceTheSameFragments(t *testing.T) {
 				t.Fatalf("%s produced a different fragment %d (%d bytes vs %d)", name, i, len(got[i]), len(want[i]))
 			}
 		}
+	}
+}
+
+func TestAResyncTailIsNotPublishedWhenTheRemuxEnds(t *testing.T) {
+	// Review round 1's should-fix on #399. When the remux's fd 1 ends while
+	// the working buffer is misaligned, the only thing left in s.frag can be
+	// the up-to-resyncTail-byte remnant a resync-with-nothing-found kept.
+	// final() published it as though it were a whole fragment -- junk at the
+	// end of every fMP4 viewer's stream, since the writer defers final() at
+	// the fd 1 close. final() must publish only a buffer aligned on a real
+	// moof, the same idiom flush already uses to recognise one.
+	f := buffer.NewFragments(buffer.FragmentsConfig{})
+	s := &scanner{out: f, initStored: true}
+	if err := s.write(bytes.Repeat([]byte{0x01}, 100)); err != nil {
+		t.Fatalf("the scanner rejected the stream: %v", err)
+	}
+	if held := len(s.frag); held == 0 || held > resyncTail {
+		t.Fatalf("the working buffer holds %d bytes after 100 bytes of garbage, want 1..%d to exercise the guard", held, resyncTail)
+	}
+	s.final()
+	if got := len(collect(f)); got != 0 {
+		t.Fatalf("%d fragments published from the resync tail when the remux ended, want 0: it is not a moof and must not be published as one", got)
+	}
+}
+
+func TestAnAlignedMoofClaimingMoreThanAnyRealOneCanIsResynchronisedPastAtOnce(t *testing.T) {
+	// Review round 1's nit on #399. resyncOffset already refuses a candidate
+	// above maxMoofBoxBytes; the aligned path did not, so an aligned "moof"
+	// whose own corrupt length exceeds it waited toward the 64 MiB ceiling
+	// even though no real moof runs anywhere near that large. Treating it as
+	// misaligned instead resynchronises past it immediately.
+	bogus := make([]byte, 8)
+	binary.BigEndian.PutUint32(bogus[0:4], 2<<20) // 2 MiB: > maxMoofBoxBytes
+	copy(bogus[4:8], "moof")
+	f := buffer.NewFragments(buffer.FragmentsConfig{})
+	s := &scanner{out: f, initStored: true}
+	if err := s.write(slices.Concat(bogus, relaytest.SyntheticFMP4Fragment(0), relaytest.SyntheticFMP4Fragment(1))); err != nil {
+		t.Fatalf("the scanner rejected the stream: %v", err)
+	}
+	if got := collect(f); len(got) != 1 || relaytest.FMP4FragmentIndex(got[0]) != 0 {
+		t.Fatalf("published %d fragments behind an aligned moof claiming 2 MiB, want fragment 0 alone at once, not after waiting toward the ceiling", len(got))
 	}
 }
 

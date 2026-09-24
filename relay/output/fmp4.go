@@ -286,7 +286,7 @@ func (s *scanner) write(data []byte) error {
 func (s *scanner) flush() {
 	for len(s.frag) >= 8 {
 		size := int64(binary.BigEndian.Uint32(s.frag[0:4]))
-		if !bytes.Equal(s.frag[4:8], moofBox) || size < minMoofBox {
+		if !bytes.Equal(s.frag[4:8], moofBox) || size < minMoofBox || size > maxMoofBoxBytes {
 			// manager.py:259-266: the stream is not aligned to a moof, so drop
 			// bytes until one is found. start=1, not 0, or this would find the
 			// box it has already rejected. Through resyncOffset, not
@@ -294,7 +294,12 @@ func (s *scanner) flush() {
 			// and cleared the whole buffer on the -1 it got (#306, #119). A
 			// moof shorter than minMoofBox is not one either: aligned on it,
 			// the seed returned without consuming anything and the buffer
-			// grew with every write (#348's A-4).
+			// grew with every write (#348's A-4). A moof longer than
+			// maxMoofBoxBytes is not a real one either -- resyncOffset already
+			// refuses it as a resync candidate for the same reason, and
+			// waiting for it here would hold the buffer toward the 64 MiB
+			// ceiling for a length no real moof ever declares (review round 1
+			// of #399).
 			next := resyncOffset(s.frag, 1)
 			if next < 0 {
 				// Nothing yet. Keep only the tail a header could be arriving
@@ -336,8 +341,14 @@ func (s *scanner) flush() {
 // final publishes whatever is left when fd 1 ends: manager.py:346-348's
 // `finally: if frag_buf and init_stored: put_fragment(...)`. The last fragment
 // has no successor to bound it, so without this it would never be published.
+//
+// The buffer must be aligned on a real moof to be a fragment at all -- the
+// same idiom flush uses to recognise one. Without this, ending mid-desync
+// left only the up-to-resyncTail-byte remnant a resync-with-nothing-found
+// kept, and that got published as though it were a whole fragment: junk at
+// the end of every fMP4 viewer's stream (review round 1 of #399).
 func (s *scanner) final() {
-	if s.initStored && len(s.frag) > 0 {
+	if s.initStored && len(s.frag) >= 8 && bytes.Equal(s.frag[4:8], moofBox) {
 		s.out.Put(s.frag)
 		s.frag = nil
 	}
