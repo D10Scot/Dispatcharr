@@ -4,6 +4,7 @@ from rest_framework.views import APIView
 from rest_framework.permissions import AllowAny
 from apps.accounts.permissions import Authenticated, permission_classes_by_action
 from django.http import JsonResponse, HttpResponseForbidden, HttpResponse
+from xml.sax.saxutils import escape
 import logging
 from drf_spectacular.utils import extend_schema, OpenApiParameter
 from drf_spectacular.types import OpenApiTypes
@@ -218,11 +219,16 @@ class HDHRDeviceXMLAPIView(APIView):
             return blocked
 
         base_url = build_absolute_uri_with_port(request, "/hdhr/").rstrip("/")
+        # The same row discover.json reads (DiscoverAPIView, above), so the
+        # two documents agree on the device's identity (#83).
+        device = HDHRDevice.objects.first()
+        device_id = escape(device.device_id) if device else "12345678"
+        friendly_name = escape(device.friendly_name) if device else "Dispatcharr HDHomeRun"
 
         xml_response = f"""<?xml version="1.0" encoding="utf-8"?>
         <root>
-            <DeviceID>12345678</DeviceID>
-            <FriendlyName>Dispatcharr HDHomeRun</FriendlyName>
+            <DeviceID>{device_id}</DeviceID>
+            <FriendlyName>{friendly_name}</FriendlyName>
             <ModelNumber>HDTC-2US</ModelNumber>
             <FirmwareName>hdhomerun3_atsc</FirmwareName>
             <FirmwareVersion>20200101</FirmwareVersion>
