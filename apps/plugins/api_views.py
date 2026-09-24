@@ -21,8 +21,8 @@ from apps.accounts.permissions import (
     Authenticated,
     permission_classes_by_method,
 )
-from core.http_security import validate_outbound_http_url
-from dispatcharr.utils import network_access_allowed
+from core.http_security import fetch_outbound_http, validate_outbound_http_url
+from dispatcharr.utils import network_access_allowed, redact_url
 
 from .loader import PluginManager
 from .models import PluginConfig, PluginRepo
@@ -88,6 +88,16 @@ def _validate_fetch_url(url):
     non-routable targets are rejected.
     """
     validate_outbound_http_url(url, allow_private=False, allow_loopback=False)
+
+
+def _fetch(url, **kwargs):
+    """requests.get that validates every redirect hop (SSRF prevention).
+
+    Plugin installs stay strict: loopback, private, link-local, and other
+    non-routable targets are rejected, for every hop a redirect follows
+    (#103-#105).
+    """
+    return fetch_outbound_http(url, allow_private=False, allow_loopback=False, **kwargs)
 
 
 def _absolutize_logo_url(request, url: str | None) -> str | None:
@@ -776,8 +786,7 @@ def _is_official_sounding(name):
 
 def _fetch_manifest(url, public_key_text=None):
     """Fetch a remote manifest JSON, validate structure, return (data, verified)."""
-    _validate_fetch_url(url)
-    with http_requests.get(url, timeout=MANIFEST_FETCH_TIMEOUT, stream=True) as resp:
+    with _fetch(url, timeout=MANIFEST_FETCH_TIMEOUT, stream=True) as resp:
         resp.raise_for_status()
         body = b"".join(resp.iter_content(8192))
     data = json.loads(body)
@@ -909,7 +918,10 @@ class PluginRepoPreviewAPIView(PluginAuthMixin, APIView):
             # as-is; only substitute the generic JSON message for actual parse errors.
             if "missing" in msg.lower() and "plugins" in msg.lower():
                 friendly = msg
-            elif any(kw in msg.lower() for kw in ("non-routable", "scheme", "hostname", "resolve")):
+            elif any(
+                kw in msg.lower()
+                for kw in ("non-routable", "scheme", "hostname", "resolve", "redirect", "refused")
+            ):
                 friendly = msg
             else:
                 friendly = "The URL did not return valid JSON. Make sure it points directly to a manifest .json file."
@@ -1146,7 +1158,7 @@ class PluginDetailManifestAPIView(PluginAuthMixin, APIView):
             return Response(cached)
 
         try:
-            resp = http_requests.get(manifest_url, timeout=MANIFEST_FETCH_TIMEOUT)
+            resp = _fetch(manifest_url, timeout=MANIFEST_FETCH_TIMEOUT)
             resp.raise_for_status()
             data = resp.json()
 
@@ -1180,7 +1192,9 @@ class PluginDetailManifestAPIView(PluginAuthMixin, APIView):
             cache.set(cache_key, result, PLUGIN_DETAIL_CACHE_TTL)
             return Response(result)
         except Exception as e:
-            logger.exception("Failed to fetch plugin manifest from %s", manifest_url)
+            logger.exception(
+                "Failed to fetch plugin manifest from %s", redact_url(manifest_url)
+            )
             return Response(
                 {"error": f"Failed to fetch plugin manifest: {e}"},
                 status=status.HTTP_502_BAD_GATEWAY,
@@ -1264,10 +1278,12 @@ class PluginInstallFromRepoAPIView(PluginAuthMixin, APIView):
         except ValueError as e:
             return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
         try:
-            resp = http_requests.get(download_url, timeout=60, stream=True)
+            resp = _fetch(download_url, timeout=60, stream=True)
             resp.raise_for_status()
         except Exception as e:
-            logger.exception("Failed to download plugin from %s", download_url)
+            logger.exception(
+                "Failed to download plugin from %s", redact_url(download_url)
+            )
             return Response(
                 {"error": "Failed to download plugin. Check the URL and try again."},
                 status=status.HTTP_502_BAD_GATEWAY,
@@ -1298,7 +1314,7 @@ class PluginInstallFromRepoAPIView(PluginAuthMixin, APIView):
                 if actual_sha256 != expected_sha256:
                     logger.warning(
                         "SHA256 mismatch for plugin '%s' from %s: expected %s, got %s",
-                        slug, download_url, expected_sha256, actual_sha256,
+                        slug, redact_url(download_url), expected_sha256, actual_sha256,
                     )
                     return Response(
                         {
