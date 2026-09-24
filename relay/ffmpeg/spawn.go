@@ -223,6 +223,10 @@ func (p *Process) Stdout() io.Reader { return p.stdout }
 // PID is the process id, for tests and logs.
 func (p *Process) PID() int { return p.cmd.Process.Pid }
 
+// maxStderrLine is the most ReadStderr holds without a terminator before it
+// flushes the buffer as a line regardless of what it carries (issue #24).
+const maxStderrLine = 64 << 10
+
 // ReadStderr drains fd 2 to EOF, calling fn for every line.
 //
 // THE SPLIT IS input/manager.py:981-1003's: whichever of CR or LF comes
@@ -233,6 +237,13 @@ func (p *Process) PID() int { return p.cmd.Process.Pid }
 // that grows past 1 KiB with no terminator and no "frame=" in it is flushed
 // as a line (:986-991), which is how a long diagnostic with no newline still
 // reaches the log rather than waiting for the next record.
+//
+// A BUFFER PAST maxStderrLine IS FLUSHED WHATEVER IT CARRIES (issue #24).
+// The 1 KiB rule exempts a buffer containing "frame=" so a progress record is
+// never cut in half -- and Python applied nothing else, so a child writing
+// "frame=" with no CR or LF grew the buffer until EOF, without bound, in the
+// process that carries every live viewer. A real record is a few hundred
+// bytes; nothing that long is one.
 //
 // It never returns an error: a broken stderr pipe means the process is
 // going, and Wait is where that is reported.
@@ -251,7 +262,7 @@ func (p *Process) ReadStderr(fn func(line string)) {
 				cr := bytes.IndexByte(buf, '\r')
 				nl := bytes.IndexByte(buf, '\n')
 				if cr == -1 && nl == -1 {
-					if len(buf) > 1024 && !bytes.Contains(buf, []byte("frame=")) {
+					if len(buf) > maxStderrLine || (len(buf) > 1024 && !bytes.Contains(buf, []byte("frame="))) {
 						emit(fn, buf)
 						buf = buf[:0]
 					}

@@ -465,6 +465,25 @@ func TestABufferingTimeoutWithNoAlternateKeepsPlayingAndAsksOnEveryRecord(t *tes
 	m.Stop("no-alt")
 }
 
+// ISSUE #299 at the channel: a transcode source whose ffmpeg is 6.x -- a
+// user-supplied Stream Profile pointing at a system ffmpeg -- arms the
+// buffering detector. The stand-in replays the real 6.1.1 slow-trickle
+// capture with the threshold at the API maximum, above every record; before
+// the fix the frame= gate dropped every record and the state never moved.
+func TestAnFFmpeg6StreamCopyArmsTheBufferingDetector(t *testing.T) {
+	const apiMax = 10.0
+	path, _ := assetFile(t, 8)
+	m := NewManager(ManagerConfig{BudgetBytes: buffer.TSPacketSize * 400})
+	t.Cleanup(m.StopAll)
+	src := standInSource(t, "-i", path, "--dead-air-after-bytes", "1504",
+		"--stderr-corpus", relaytest.CorpusPath("ffmpeg6-slow-trickle"), "--stderr-interval", "0.02")
+	ch, release := attachTranscode(t, m, "ffmpeg6", src, transcodeTuning(apiMax, 300*time.Second))
+	defer release()
+	waitFor(t, "a speed reported off a 6.1.1 record", 10*time.Second, func() bool { return ch.Stats().FFmpegSpeed != nil })
+	waitFor(t, "buffering", 10*time.Second, func() bool { return ch.State() == StateBuffering })
+	m.Stop("ffmpeg6")
+}
+
 // Recovery: a speed back at the threshold moves buffering to active, and
 // only from buffering. Driven with the normal capture, whose records all sit
 // between 0.1 and 10, first with the threshold above them (buffering from

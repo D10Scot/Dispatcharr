@@ -3,31 +3,30 @@ package ffmpeg
 import (
 	"regexp"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/D10Scot/Dispatcharr/relay/internal/relaytest"
 )
 
-// The whole speed field, exponent included -- what the production regex
-// declines to read. The gap between the two is parity-matrix row 28.
-var fullSpeedRe = regexp.MustCompile(`speed=\s*([0-9.]+(?:[eE][+-]?[0-9]+)?)x?`)
+var (
+	fullSpeedRe     = regexp.MustCompile(`speed=\s*([0-9.]+(?:[eE][+-]?[0-9]+)?)x?`)
+	mantissaSpeedRe = regexp.MustCompile(`speed=\s*([0-9.]+)`)
+)
 
-// PINS A DEFECT: issue #227, parity-matrix row 28. Do not "fix" this.
-//
-// The truncation capture's one record reads speed=<mantissa>e+03x on a real
-// ffmpeg 8.1.2. The production regex stops at the 'e' and reports the
-// mantissa, a roughly thousandfold under-report; D5 is strict parity, defects
-// included, so this asserts the WRONG value. It fails if someone widens the
-// character class to read the exponent, which is exactly the change that must
-// not be made without changing the Python side and the row together.
-func TestAScientificNotationSpeedIsUnderReportedAsItsMantissa(t *testing.T) {
+// Issue #227, parity-matrix row 28: FIXED. The truncation capture's one
+// record reads speed=<mantissa>e+03x on a real ffmpeg 8.1.2, and the parser
+// reports the whole value -- the Python relay's `[0-9.]+` stopped at the 'e'
+// and reported the mantissa, a roughly thousandfold under-report on both
+// status surfaces. Reddens if the character class is narrowed back.
+func TestAScientificNotationSpeedIsReadWithItsExponent(t *testing.T) {
 	_, records := relaytest.SplitCorpus(relaytest.Corpus("truncation"))
 	if len(records) != 1 {
 		t.Fatalf("the truncation capture carries %d records, want exactly 1 (CAPTURE.md)", len(records))
 	}
 	record := string(records[0])
 	actual, _ := strconv.ParseFloat(fullSpeedRe.FindStringSubmatch(record)[1], 64)
-	mantissa, _ := strconv.ParseFloat(speedRe.FindStringSubmatch(record)[1], 64)
+	mantissa, _ := strconv.ParseFloat(mantissaSpeedRe.FindStringSubmatch(record)[1], 64)
 	if actual/mantissa < 100 {
 		t.Fatalf("the truncation capture no longer carries a scientific-notation speed=; "+
 			"re-derive this test against the new capture (CAPTURE.md): %q", record)
@@ -37,12 +36,35 @@ func TestAScientificNotationSpeedIsUnderReportedAsItsMantissa(t *testing.T) {
 	if !ok || p.Speed == nil {
 		t.Fatalf("the record did not parse as progress: %q", record)
 	}
-	if *p.Speed != mantissa {
-		t.Fatalf("Speed = %v, want the mantissa %v", *p.Speed, mantissa)
+	if *p.Speed != actual {
+		t.Fatalf("Speed = %v, want the whole value %v (the mantissa alone is %v: issue #227)", *p.Speed, actual, mantissa)
 	}
-	if *p.Speed >= actual/100 {
-		t.Fatalf("the parser reported the true speed %v; #227 appears to have been fixed, "+
-			"which makes this row a parity CHANGE, not a pin", *p.Speed)
+}
+
+// ISSUE #299: ffmpeg 6.x's stream-copy progress record begins size= and
+// carries no frame=, so the frame= gate saw none of them and no speed was
+// ever recorded. Every record of the real 6.1.1 capture is now a progress
+// record, and every one whose speed is a number yields it.
+func TestAnFFmpeg6StreamCopyRecordIsAProgressRecord(t *testing.T) {
+	_, records := relaytest.SplitCorpus(relaytest.Corpus("ffmpeg6-normal"))
+	if len(records) < 3 {
+		t.Fatalf("the ffmpeg6-normal capture carries %d records; re-derive (CAPTURE.md)", len(records))
+	}
+	speeds := 0
+	for _, raw := range records {
+		record := strings.TrimSpace(string(raw))
+		if strings.Contains(record, "frame=") {
+			t.Fatalf("the 6.1.1 capture carries frame=, so it no longer exercises #299: %q", record)
+		}
+		if !IsProgressLine(record) {
+			t.Fatalf("a real ffmpeg 6.1.1 progress record is not a progress line (#299): %q", record)
+		}
+		if p, ok := ParseProgress(record); ok && p.Speed != nil {
+			speeds++
+		}
+	}
+	if speeds != len(records)-1 {
+		t.Fatalf("%d of %d records yielded a speed, want all but the opening speed=N/A", speeds, len(records))
 	}
 }
 
