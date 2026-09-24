@@ -175,12 +175,18 @@ func findMoofOffset(data []byte, start int) int {
 const minMoofBox = 16
 
 // maxFragmentBytes is the most the working buffer holds while a fragment has
-// no end in sight -- an aligned moof whose own length is corrupt, or a valid
-// one followed by a box whose length is, both of which make the fragment's
-// end unfindable and would otherwise hold the buffer open toward a 4 GiB
-// length. Past it the fragment is abandoned and the scanner resynchronises.
-// 64 MiB is 50 Mbit/s over a 10-second keyframe interval with margin; adopted
-// from #348's A-4.
+// no end in sight -- a valid moof followed by a box whose length is corrupt,
+// which makes the fragment's end unfindable and would otherwise hold the
+// buffer open toward a 4 GiB length. Past it the fragment is abandoned and
+// the scanner resynchronises. The same ceiling also guards an aligned moof
+// whose own length is corrupt, but that check is a backstop only (flush):
+// since maxMoofBoxBytes bounds an aligned moof's own length before this
+// ceiling is ever consulted for one, it cannot fire while maxMoofBoxBytes
+// stays below it, as it does today (1 MiB against 64 MiB) -- kept for the
+// invariant that a fragment never grows past the ceiling however it fails to
+// end, and live again only if maxMoofBoxBytes is ever raised past it. 64 MiB
+// is 50 Mbit/s over a 10-second keyframe interval with margin; adopted from
+// #348's A-4.
 const maxFragmentBytes = 64 << 20
 
 // maxMoofBoxBytes is the largest length resyncOffset accepts for a candidate
@@ -189,7 +195,11 @@ const maxFragmentBytes = 64 << 20
 // after it can run to megabytes. A "moof" literal inside a payload reads a
 // length that is garbage; one past this bound is refused as a resync point
 // rather than trusted, because the aligned path would then wait for that many
-// bytes before publishing anything.
+// bytes before publishing anything. flush's aligned check refuses the same
+// bound (review round 1 of #399): an ALIGNED moof declaring more than this is
+// resynchronised past at once rather than waited on. That is why flush's
+// ceiling-abandon for an aligned moof's own corrupt length is now a backstop
+// that cannot fire in practice -- see maxFragmentBytes.
 const maxMoofBoxBytes = 1 << 20
 
 // resyncTail is how much of a working buffer with no resync point in it is
@@ -317,7 +327,14 @@ func (s *scanner) flush() {
 			// _find_moof_offset(frag_buf, start=moof_size) returns -1 for a
 			// start past the end, and manager.py:279 breaks. Same answer --
 			// unless the moof's own length is corrupt and the wait would
-			// never end.
+			// never end. This ceiling check is a backstop, not a live path:
+			// size is bounded by maxMoofBoxBytes before flush ever reaches
+			// here (the condition above), so this arm cannot see a size large
+			// enough to hold the wait open past fragmentCeiling() while
+			// maxMoofBoxBytes stays below it, as it does today. Kept for the
+			// invariant -- a fragment never grows past the ceiling, however
+			// it fails to end -- and live again only if maxMoofBoxBytes is
+			// ever raised past maxFragmentBytes.
 			if len(s.frag) > s.fragmentCeiling() {
 				s.abandon()
 				continue
