@@ -74,9 +74,9 @@ type Tuning struct {
 	// this long resets the switch rotation (input/manager.py:52, :508-513).
 	StableThreshold time.Duration
 
-	// MaxStreamSwitches is MAX_STREAM_SWITCHES: the main loop's bound on
-	// switches (input/manager.py:388-402), which the buffering path does
-	// not consult (row 6).
+	// MaxStreamSwitches is MAX_STREAM_SWITCHES: the bound on automatic
+	// switches (input/manager.py:388-402), the main loop's and, since issue
+	// #221's fix, the buffering path's too (row 6).
 	MaxStreamSwitches int
 
 	// ClientTimeout is STREAM_TIMEOUT + FAILOVER_GRACE_PERIOD, the sum

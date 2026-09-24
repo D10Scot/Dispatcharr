@@ -121,3 +121,62 @@ func TestTheCapturedLeadIsNeverCalledBufferingBeforeItCrosses(t *testing.T) {
 		t.Fatal("the capture ends below the threshold, so the detector must end buffering")
 	}
 }
+
+// Issue #302: after a failed switch the caller DEFERS, and the next TimedOut
+// is held back for one more Timeout -- the channel stays buffering throughout,
+// and BufferingFor keeps measuring from the first sub-threshold sample,
+// because that is the duration a later channel_failover reports.
+func TestADeferredTimeoutIsHeldBackForAnotherTimeout(t *testing.T) {
+	c := &clock{at: time.Unix(1_789_000_000, 0)}
+	d := newDetector(c, 2.0, 15*time.Second)
+
+	if v := d.Observe(1.0); v != Started {
+		t.Fatalf("got %s, want %s", v, Started)
+	}
+	c.tick(15*time.Second + time.Millisecond)
+	if v := d.Observe(1.0); v != TimedOut {
+		t.Fatalf("got %s, want %s", v, TimedOut)
+	}
+	d.Defer()
+	c.tick(14 * time.Second)
+	if v := d.Observe(1.0); v != Continuing {
+		t.Fatalf("14s after a deferral: got %s, want %s -- the timeout was not held back", v, Continuing)
+	}
+	if !d.Buffering() {
+		t.Fatal("a deferral left the detector not buffering")
+	}
+	if got, want := d.BufferingFor(), 29*time.Second+time.Millisecond; got != want {
+		t.Fatalf("BufferingFor = %s, want %s: a deferral must not restart the clock", got, want)
+	}
+	c.tick(time.Second)
+	if v := d.Observe(1.0); v != TimedOut {
+		t.Fatalf("a full timeout after the deferral: got %s, want %s", v, TimedOut)
+	}
+	// Recovery clears the hold with the rest of the state, so a fresh dip
+	// times out on its own window rather than on a stale deferral.
+	d.Defer()
+	if v := d.Observe(2.0); v != Ended {
+		t.Fatalf("got %s, want %s", v, Ended)
+	}
+	if v := d.Observe(1.0); v != Started {
+		t.Fatalf("got %s, want %s", v, Started)
+	}
+	c.tick(15*time.Second + time.Millisecond)
+	if v := d.Observe(1.0); v != TimedOut {
+		t.Fatalf("a fresh window after recovery: got %s, want %s -- the old deferral survived Ended", v, TimedOut)
+	}
+
+	// A detector with no injected clock reads the wall clock, the relay's
+	// production shape: a deferral taken just now holds a one-hour timeout
+	// back, where an unset hold would let an hour-old window time out.
+	wall := &Detector{Threshold: 2.0, Timeout: time.Hour}
+	wall.Observe(1.0)
+	wall.since = wall.since.Add(-2 * time.Hour)
+	if v := wall.Observe(1.0); v != TimedOut {
+		t.Fatalf("a wall-clock window two hours old: got %s, want %s", v, TimedOut)
+	}
+	wall.Defer()
+	if v := wall.Observe(1.0); v != Continuing {
+		t.Fatalf("a wall-clock deferral: got %s, want %s -- Defer did not read the wall clock", v, Continuing)
+	}
+}

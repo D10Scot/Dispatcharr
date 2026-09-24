@@ -283,8 +283,16 @@ func (c *Channel) applySwitch(resolved Resolved) {
 // failoverFromBuffering is the stderr reader's entry: _parse_ffmpeg_stats'
 // buffering-timeout branch (input/manager.py:1178-1211, parity-matrix row
 // 1), which calls _try_next_stream from the reader thread and, on success,
-// clears the buffering state and raises channel_failover. It never touches
-// the main loop's switch counter, which is row 6.
+// clears the buffering state and raises channel_failover.
+//
+// IT COUNTS AGAINST MAX_STREAM_SWITCHES, which is issue #221's fix and
+// parity-matrix row 6. Python's stderr path never touched the main loop's
+// counter, so a source that kept speed below the threshold could switch
+// without limit. Here a spent budget REFUSES the switch without asking the
+// control plane -- and, unlike the main loop, does not end the channel: the
+// main loop reaches its bound with no working source, where this source is
+// still delivering, only slowly. The caller defers (Detector.Defer), so a
+// spent budget is re-checked once per buffering_timeout, locally.
 //
 // The new source is parked for the run loop and the running attempt is
 // cancelled; Run returns to the loop once this reader has returned, because
@@ -295,10 +303,16 @@ func (c *Channel) failoverFromBuffering(bufferingFor time.Duration) bool {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	if used := c.switchCount(); used >= c.tuning.MaxStreamSwitches {
+		c.log.Warn("buffering timeout with the stream switch budget spent; staying on the current stream",
+			"channel", c.id, "switches", used, "max", c.tuning.MaxStreamSwitches)
+		return false
+	}
 	resolved, ok := c.failover(ctx, "buffering_timeout")
 	if !ok {
 		return false
 	}
+	c.countSwitch()
 	c.mu.Lock()
 	c.pending = &resolved
 	cancel := c.cancelAttempt

@@ -68,6 +68,14 @@ func (r *fakeResolver) firstCallAt() time.Time {
 	return r.calledAt[0]
 }
 
+// callTimes is when each Next call arrived, in order: a copy taken under the
+// lock, for a test that bounds the gaps between asks (#302). From #348.
+func (r *fakeResolver) callTimes() []time.Time {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]time.Time(nil), r.calledAt...)
+}
+
 // eventLog is an EventSink that keeps everything, with the wall clock each
 // event arrived at.
 type eventLog struct {

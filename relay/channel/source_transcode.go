@@ -326,10 +326,10 @@ func (r *stderrReader) progress(line string) {
 	case ffmpeg.TimedOut:
 		// :1178-1211, parity-matrix row 1: the next stream, asked for from
 		// THIS goroutine, as Python asks from its stderr thread. On success
-		// the channel has parked the new source and cancelled this attempt;
-		// on failure Python stays buffering and asks again on the very next
-		// record (:1210) -- one control-plane call per progress record until
-		// something answers, reproduced and filed rather than rate-limited.
+		// the channel has parked the new source and cancelled this attempt.
+		// On failure the channel stays buffering and the detector DEFERS:
+		// the next ask is one buffering_timeout away, not one progress
+		// record away as it was in Python (:1210, issue #302).
 		bufferingFor := r.detector.BufferingFor()
 		s.log().Error("buffering timeout reached", "channel", s.channelID(), "speed", *p.Speed, "buffering_for", bufferingFor.Round(100*time.Millisecond), "timeout", r.detector.Timeout)
 		if s.channel != nil && s.channel.failoverFromBuffering(bufferingFor) {
@@ -340,7 +340,8 @@ func (r *stderrReader) progress(line string) {
 			// for the next record.
 			r.detector.Reset()
 		} else {
-			s.log().Error("failed to switch to the next stream after a buffering timeout", "channel", s.channelID())
+			s.log().Error("failed to switch to the next stream after a buffering timeout", "channel", s.channelID(), "retry_in", r.detector.Timeout)
+			r.detector.Defer()
 		}
 	case ffmpeg.Ended:
 		s.log().Info("buffering ended", "channel", s.channelID(), "speed", *p.Speed)
