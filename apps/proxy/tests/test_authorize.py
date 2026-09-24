@@ -417,6 +417,18 @@ class AuthHelpersDbTests(TestCase):
             self.assertIsNone(authorize.resolve_xc_user("ts-test-ghost", "x"))
         mock_compare.assert_called_once()
 
+    def test_a_user_with_no_xc_password_also_took_the_fast_path(self):
+        """An existing user with no xc_password must also run compare_digest.
+
+        Same timing-oracle reasoning as the unknown-username branch above,
+        for the other early-return miss: self.no_xc exists but carries no
+        xc_password at all.
+        """
+        with patch("hmac.compare_digest") as mock_compare:
+            mock_compare.return_value = False
+            self.assertIsNone(authorize.resolve_xc_user("ts-test-noxc", "x"))
+        mock_compare.assert_called_once()
+
     def test_user_level_gate(self):
         # Level-0 viewer with no profiles: allowed on level-0, denied on level-10.
         self.assertTrue(authorize.user_can_access_channel(self.viewer, self.basic_channel))

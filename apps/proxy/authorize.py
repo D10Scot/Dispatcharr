@@ -147,13 +147,14 @@ def mint_client_id() -> str:
     return f"client_{int(time.time() * 1000)}_{random.randint(1000, 9999)}"
 
 
-# Compared against, in constant time, on the unknown-username path in
-# resolve_xc_user, so that branch does the same hmac.compare_digest work a
-# known user's wrong-password check does. Without this, the DB miss
-# returned in less time than a real comparison, and the difference is a
-# username-enumeration oracle by timing even though #84 made the response
-# itself (status code, body) identical. Fixed shape, never compared against
-# a real password.
+# Compared against, in constant time, on every miss branch in
+# resolve_xc_user -- unknown username AND an existing user with no
+# xc_password set -- so each does the same hmac.compare_digest work a
+# known user's wrong-password check does. Without this, a miss returned in
+# less time than a real comparison, and the difference is a
+# username/no-credential-enumeration oracle by timing even though #84 made
+# the response itself (status code, body) identical. Fixed shape, never
+# compared against a real password.
 _XC_DUMMY_PASSWORD = "x" * 32
 
 
@@ -178,6 +179,12 @@ def resolve_xc_user(username, password):
         return None
     expected = (user.custom_properties or {}).get("xc_password")
     if not expected:
+        # Same reasoning as the unknown-username branch above: an existing
+        # user with no xc_password set must cost the same time as one with
+        # a real, wrong one.
+        hmac.compare_digest(
+            _XC_DUMMY_PASSWORD.encode("utf-8"), str(password or "").encode("utf-8")
+        )
         return None
 
     # Bytes, not str: hmac.compare_digest raises TypeError on a non-ASCII

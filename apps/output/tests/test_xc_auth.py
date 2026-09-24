@@ -137,14 +137,15 @@ class XCAuthTests(TestCase):
         endpoints = {event.details.get("endpoint") for event in events}
         self.assertEqual(endpoints, {"player_api", "panel_api"})
         for event in events:
-            # A fixed placeholder, not the raw (unauthenticated) request
-            # parameter: the network-refusal path never resolves a user,
-            # so the request's own username string must appear nowhere in
-            # the event, the same as the credential.
-            self.assertEqual(event.details.get("user"), XC_UNAUTHENTICATED_USER)
+            # This is the PER-USER network refusal: resolve_xc_user already
+            # accepted the password by the time it fires, so the username
+            # is real, and #134's whole complaint was that a per-user
+            # denial was invisible in the events log -- so it is logged,
+            # unlike the (still unresolved) global-block path.
+            self.assertEqual(event.details.get("user"), blocked_user.username)
+            # The credential must still never leak, resolved user or not.
             for value in event.details.values():
                 self.assertNotIn("correct-horse-battery-staple", str(value))
-                self.assertNotIn(blocked_user.username, str(value))
 
     def test_a_global_xc_api_block_answered_401_on_player_api(self):
         # TestCase wraps each test in a transaction that is rolled back at
@@ -164,6 +165,22 @@ class XCAuthTests(TestCase):
                 response = self._get(url_name, self.xc_user.username, "wrong-password")
                 self.assertEqual(response.status_code, 403)
                 self.assertEqual(response.json(), {"error": "Forbidden"})
+
+        # The GLOBAL pre-check runs before any credential read, so unlike
+        # the per-user refusal above it never resolves a user: the event
+        # must carry the fixed placeholder, and neither the request's
+        # username nor its (here, wrong) password may appear anywhere in
+        # it.
+        events = SystemEvent.objects.filter(
+            event_type="login_failed",
+            details__reason="Network access denied (XC API)",
+        )
+        self.assertEqual(events.count(), 2)
+        for event in events:
+            self.assertEqual(event.details.get("user"), XC_UNAUTHENTICATED_USER)
+            for value in event.details.values():
+                self.assertNotIn(self.xc_user.username, str(value))
+                self.assertNotIn("wrong-password", str(value))
 
     def test_wrong_credentials_from_an_allowed_network_still_answer_401(self):
         for url_name in XC_ENDPOINTS:
