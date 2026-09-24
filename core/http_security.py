@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import ipaddress
 import socket
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
+
+import requests
 
 
 def validate_outbound_http_url(
@@ -75,3 +77,34 @@ def validate_outbound_http_url(
 
     if not saw_ip:
         raise ValueError(f"Could not resolve hostname '{hostname}' to an IP address.")
+
+
+_REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
+
+
+def fetch_outbound_http(url, *, allow_private=False, allow_loopback=False,
+                        max_redirects=5, **kwargs):
+    """requests.get that validates every hop, not just the first.
+
+    requests follows redirects by default, and validate_outbound_http_url
+    only ever sees the URL it is handed, so a public URL answering 302 to
+    169.254.169.254 used to be followed (#103-#105). Each hop here is fetched
+    with allow_redirects=False and its Location validated before it is
+    followed. DNS can still change between a hop's check and its connect;
+    that residual is accepted for this module's callers.
+    """
+    kwargs.pop("allow_redirects", None)
+    current = url
+    for _hop in range(max_redirects + 1):
+        validate_outbound_http_url(
+            current, allow_private=allow_private, allow_loopback=allow_loopback
+        )
+        resp = requests.get(current, allow_redirects=False, **kwargs)
+        if resp.status_code not in _REDIRECT_STATUSES:
+            return resp
+        location = resp.headers.get("Location")
+        resp.close()
+        if not location:
+            raise ValueError("Redirect without a Location header.")
+        current = urljoin(current, location)
+    raise ValueError(f"More than {max_redirects} redirects.")
