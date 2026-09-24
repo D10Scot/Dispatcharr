@@ -15,9 +15,9 @@ is quoted in each issue's "Reproduced at seed" line.
 **Ordering position.** Sixth of ten: B, A, J, C, D, **E**, G, H, I, F. The lead re-seeds this plan
 when an earlier category's plan merges. Three PRs here must wait for an earlier plan to *merge*, not
 merely to be written: E-2 waits for J-1 and J-3, E-5 waits for C-3, E-7 waits for B-2 and C-1.
-One more waits for the user rather than a plan: E-9 (#138) starts only after open question Q2 is
-answered, because its default reverses a deliberate upstream change. The
-overlap section says why.
+E-9 (#138) waited for the user rather than a plan: open question Q2 was answered on 2026-09-24
+(the serializer caps `end_date`; `sync_recurring_rule_impl` is untouched), so E-9 is ready to
+implement in order. The overlap section says why the other three wait.
 
 **Architecture.** Django 6 + DRF control plane with Celery workers and Celery beat (database
 scheduler, `django_celery_beat`). The live relay is the Go binary in `relay/` and is untouched here.
@@ -91,10 +91,13 @@ report, never a judgement call.
 | `apps/proxy/next_source.py` (docstring of `_with_proxy_settings`, `:828-849`, only) | E-2 |
 | `apps/proxy/serializers.py` (docstring of `RelayProxySettingsSerializer`, `:143-155`, only) | E-2 |
 | `apps/channels/signals.py` | E-3 (`:271`, `:382`, `:385`), E-4 (`:238`) |
-| `apps/channels/tasks.py` | E-3 (`:1038-1039`, `:1499`, `:2148`, `:2526`), E-9 (`:888-895`), E-4 (`:241-245`, `:345-349`, import block `:22-29`) |
+| `apps/channels/tasks.py` | E-3 (`:1038-1039`, `:1499`, `:2148`, `:2526`), E-4 (`:241-245`, `:345-349`, import block `:22-29`) |
 | `apps/channels/api_views.py` | E-3 (`:3583-3587`), E-4 (`:877`, `:887`, `:902`, `:2074`, `:2084`, `:2099`) |
 | `apps/channels/epg_matching.py` (`get_preferred_region_code`, `:428-433`) | E-4 |
 | `apps/channels/serializers.py` (`:121` only) | E-6 |
+| `apps/channels/serializers.py` (imports `:1-2`, `:19`; a constant and a helper above `:813`; one block after `:847`) | E-9 |
+| `apps/channels/tests/test_recurring_rule_end_date_cap.py` (new) | E-9 |
+| `e2e/tests/dvr/recurring-rules.spec.ts` (`:24-91`, comment-only), `e2e/COVERAGE.md` (`:165`) | E-9 |
 | `frontend/src/utils/pages/DVRUtils.js` (`:66-68`) | E-3 |
 | `frontend/src/utils/pages/__tests__/DVRUtils.test.js` (appended `it` only) | E-3 |
 | `apps/m3u/tasks.py` (`refresh_m3u_groups`' nine failure returns; the caller at `:3503-3517`; the terminal write at `:3891`, `:3918`) | E-5 |
@@ -1194,9 +1197,8 @@ changed are the e2e pins each section lists.
   `50b69c83`, which carries every seed line unchanged (the per-issue analysis says so).
 - **Files** `apps/channels/serializers.py` (imports `:1-2` and `:19`; a constant and a helper above
   `:813`; one block after `:847`), `apps/channels/tests/test_recurring_rule_end_date_cap.py` (new),
-  comment-only `e2e/tests/dvr/recurring-rules.spec.ts:24-91`, `e2e/COVERAGE.md:165`. **Not**
-  `apps/channels/tasks.py`: the files table above still lists `:888-895` for E-9 from the default
-  plan and is superseded by this section.
+  comment-only `e2e/tests/dvr/recurring-rules.spec.ts:24-91`, `e2e/COVERAGE.md:165`. Not
+  `apps/channels/tasks.py`.
 - **Labels** `apps.channels.tests` (`scripts/ci_backend_test_labels.py` on the four paths returns
   exactly that list; the two e2e paths add nothing).
 - **Tasks.**
