@@ -22,22 +22,38 @@ type Progress struct {
 	OutputBitrateKbps *float64
 }
 
-// The three regexes, input/manager.py:1109, :1113 and :1117, verbatim.
+// The three regexes. fpsRe and bitrateRe are input/manager.py:1113 and :1117
+// verbatim.
 //
-// speedRe STOPS AT THE 'e' OF SCIENTIFIC NOTATION, and that is parity-matrix
-// row 28 (issue #227): real ffmpeg emits "speed=1.41e+03x" on a truncated
-// input and both status surfaces then report 1.41, a thousandfold
-// under-report. Spec D5 is strict parity, defects included; do not widen the
-// character class without changing the Python side and the row together.
+// speedRe READS AN EXPONENT, and that is parity-matrix row 28 (issue #227,
+// fixed): real ffmpeg emits "speed=1.41e+03x" on a truncated input, and the
+// Python relay's `[0-9.]+` (input/manager.py:1109) stopped at the 'e' and
+// reported 1.41, a thousandfold under-report on both status surfaces.
+// fpsRe keeps the narrow class: ffmpeg is not observed to print a frame rate
+// in scientific notation, and a speculative widening is a change with no
+// capture behind it.
 var (
-	speedRe   = regexp.MustCompile(`speed=\s*([0-9.]+)x?`)
+	speedRe   = regexp.MustCompile(`speed=\s*([0-9.]+(?:[eE][-+]?[0-9]+)?)x?`)
 	fpsRe     = regexp.MustCompile(`fps=\s*([0-9.]+)`)
 	bitrateRe = regexp.MustCompile(`(?i)bitrate=\s*([0-9.]+(?:\.[0-9]+)?)\s*([kmg]?)bits/s`)
 )
 
-// IsProgressLine is the gate input/manager.py:993 and :1017 apply before
-// calling _parse_ffmpeg_stats: the substring "frame=" anywhere in the line.
-func IsProgressLine(line string) bool { return strings.Contains(line, "frame=") }
+// IsProgressLine is the gate in front of ParseProgress.
+//
+// input/manager.py:993 and :1017 required the substring "frame=", and that
+// is blind on ffmpeg 6.x (issue #299): a stream-copy progress record there
+// begins "size=" and carries no frame= at all
+// ("size=      19kB time=00:00:01.06 bitrate= 148.5kbits/s speed=2.01x"),
+// so no speed was ever recorded and the buffering detector could never arm.
+// 7.1, 8.1.2 (the shipped ffmpeg) and 9.0 lead with frame= and pass the first
+// clause; ffmpeg 6.x passes the second. Lines arrive trimmed (emit), so the
+// prefix test sees the record's first token.
+func IsProgressLine(line string) bool {
+	if strings.Contains(line, "frame=") {
+		return true
+	}
+	return (strings.HasPrefix(line, "size=") || strings.HasPrefix(line, "Lsize=")) && strings.Contains(line, "speed=")
+}
 
 // ParseProgress extracts the four values from a progress record.
 //

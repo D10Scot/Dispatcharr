@@ -1,6 +1,6 @@
 # The ffmpeg stderr corpus
 
-These three files are **verbatim captures of real ffmpeg stderr**, byte for
+These five files are **verbatim captures of real ffmpeg stderr**, byte for
 byte, `\r` record separators included. **Never hand-edit them.** Regenerate
 with:
 
@@ -36,6 +36,36 @@ with `docker cp` before committing them.
   ordered image-first, with exporting the variable in the test bootstraps as
   the last resort.
 
+- **ffmpeg6-normal.stderr / ffmpeg6-slow-trickle.stderr**: a second
+  provenance, ffmpeg `6.1.1-3ubuntu5` (`ffmpeg -version | head -1`), captured
+  2026-09-24 in `ubuntu:24.04@sha256:008173c23f95b170204355c12626cb5a965d779a7e1283b09e9cffbb1bf33ca3`
+  with `docker run` (no `dispatcharr-testrunner` involved — this image's own
+  apt ffmpeg is the point). Same script
+  (`scripts/capture_ffmpeg_stderr.py`, unmodified), same three runs
+  (`normal`, `slow-trickle`, `truncation`); only `normal` and `slow-trickle`
+  are committed here, as `ffmpeg6-normal.stderr` and
+  `ffmpeg6-slow-trickle.stderr` — the `truncation` run from this capture was
+  not needed for issue #299 (which is about the `normal`/`slow-trickle`
+  shape, not the scientific-notation speed `truncation` exists to carry) and
+  was not kept. Captured for issue #299: ffmpeg 6.x's stream-copy progress
+  records begin `size=` and carry no `frame=` at all, which the
+  `frame=`-gated `IsProgressLine` never accepted. Regenerate with:
+
+  ```bash
+  docker buildx imagetools inspect ubuntu:24.04 --format '{{json .Manifest.Digest}}'
+  mkdir -p <scratch>/ff6 && docker run --rm --name <yourname>-ff6cap \
+    -v <worktree>:/repo:ro -v <scratch>/ff6:/out ubuntu:24.04@sha256:008173c23f95b170204355c12626cb5a965d779a7e1283b09e9cffbb1bf33ca3 bash -c '
+      set -e; export DEBIAN_FRONTEND=noninteractive
+      apt-get update -qq >/dev/null && apt-get install -y -qq ffmpeg python3 >/dev/null 2>&1
+      ffmpeg -version | head -1
+      python3 /repo/scripts/capture_ffmpeg_stderr.py /out'
+  cp <scratch>/ff6/normal.stderr       relay/internal/relaytest/testdata/ffmpeg_stderr/ffmpeg6-normal.stderr
+  cp <scratch>/ff6/slow-trickle.stderr relay/internal/relaytest/testdata/ffmpeg_stderr/ffmpeg6-slow-trickle.stderr
+  ```
+
+  The digest above is what this capture actually resolved to on 2026-09-24;
+  re-resolve it (`ubuntu:24.04` moves) rather than reusing this one verbatim.
+
 ## What each fixture is, and its shape
 
 | Fixture | Capture | Shape observed |
@@ -43,6 +73,8 @@ with `docker cp` before committing them.
 | `normal.stderr` | upstream at 2.0× real time, 8 s | a few KB; a handful of progress records; preamble carrying the banner, `Input #0, mpegts`, `Stream mapping:`, `Output #0, mpegts, to 'pipe:1'` and `Press [q] to stop`; `speed=` starts well above 1.0 and decays without crossing it |
 | `slow-trickle.stderr` | upstream at 0.25× real time, 45 s | roughly ten KB and several dozen records; same preamble; `speed=` starts well above 5.0, crosses below 1.0 partway through, and the **last record stays below 1.0** — that crossing is the whole point of the fixture |
 | `truncation.stderr` | upstream at 2.0×, cut after 3 s of media | a few KB; **exactly one** progress record, LF-terminated, so this fixture contains **zero CR bytes**; preamble carrying `Stream ends prematurely at …` and `Error during demuxing: Input/output error`; the one record's `speed=` is in scientific notation (`speed=…e+03x`) |
+| `ffmpeg6-normal.stderr` | ffmpeg 6.1.1, upstream at 2.0× real time, 8 s | shape only, no digit compared run to run: **zero `frame=` bytes anywhere in the file**; every progress record begins `size=`; the first record reads `speed=N/A` |
+| `ffmpeg6-slow-trickle.stderr` | ffmpeg 6.1.1, upstream at 0.25× real time, 45 s | same shape as `ffmpeg6-normal.stderr` — zero `frame=`, every record `size=`-led, opens `speed=N/A` — over more records, long enough to also cross below 1.0× as `slow-trickle.stderr` does |
 
 **Every digit above is a timing measurement, not a fact about ffmpeg.** The
 record count, the exact `speed=` values and the index at which the curve
@@ -92,5 +124,5 @@ not, and no test asserts one.
   mantissa, so this line is read as `1.41` instead of `1410` — a roughly
   1000× under-report. Filed as
   [D10Scot/Dispatcharr#227](https://github.com/D10Scot/Dispatcharr/issues/227)
-  and parity-matrix row 28. Reproduced here, not fixed: D5 is strict parity,
-  defects included.
+  and parity-matrix row 28. Fixed in #393; the parser now reads the
+  exponent.
