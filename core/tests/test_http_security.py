@@ -74,19 +74,43 @@ class ValidateOutboundHttpUrlTests(SimpleTestCase):
         mock_gai.assert_called_once_with("xn--mnchen-3ya.example", None)
 
     def test_a_refusal_message_never_carries_userinfo_or_a_query_token(self):
-        # Round 2 finding 2: the parser-differential refusal messages used
-        # to interpolate the whole URL or netloc, which can carry a
-        # credential in userinfo or a query string -- and
-        # scripts/check_credential_logging.py cannot see inside a raised
-        # ValueError's message to catch that once it reaches a response
-        # body or a log line.
-        url = r"http://user:s3cret@127.0.0.1:8765\@public.example/?token=abc"
-        with self.assertRaises(ValueError) as ctx:
-            validate_outbound_http_url(url, allow_private=False, allow_loopback=False)
-        msg = str(ctx.exception)
-        self.assertNotIn("s3cret", msg)
-        self.assertNotIn("token=abc", msg)
-        self.assertNotIn(url, msg)
+        # Round 2 finding 2, extended by round 3 finding 5: the
+        # parser-differential refusal messages used to interpolate the
+        # whole URL or netloc, which can carry a credential in userinfo or
+        # a query string -- and scripts/check_credential_logging.py cannot
+        # see inside a raised ValueError's message to catch that once it
+        # reaches a response body or a log line. Parametrised over the four
+        # distinct branches that can raise before a bare hostname is all
+        # that is left to name, so a future message edit on any one of them
+        # trips this test rather than only the branch someone happened to
+        # think of:
+        cases = {
+            # urlparse() itself raises: a netloc character (fullwidth '@')
+            # NFKC-normalises to '@', which urlparse refuses to parse
+            # rather than silently reinterpreting -- round 3 finding 1.
+            "urlparse_raises": "http://user:s3cret@public.example＠127.0.0.1/?token=abc",
+            # The literal-backslash authority check.
+            "backslash_authority": (
+                r"http://user:s3cret@127.0.0.1:8765\@public.example/?token=abc"
+            ),
+            # urlparse and urllib3 parse a percent-encoded host label
+            # differently ('%41.example' vs the decoded 'a.example'),
+            # tripping the host-disagreement check.
+            "host_disagreement": "http://user:s3cret@%41.example/?token=abc",
+            # requests.Request(...).prepare() itself raises (a wildcard
+            # host label is invalid per RFC 3986 and requests refuses it).
+            "prepare_failure": "http://user:s3cret@*.example.com/?token=abc",
+        }
+        for case_name, url in cases.items():
+            with self.subTest(case=case_name):
+                with self.assertRaises(ValueError) as ctx:
+                    validate_outbound_http_url(
+                        url, allow_private=True, allow_loopback=True
+                    )
+                msg = str(ctx.exception)
+                self.assertNotIn("s3cret", msg)
+                self.assertNotIn("token=abc", msg)
+                self.assertNotIn(url, msg)
 
     def test_rejects_a_backslash_authority_before_resolving_any_host(self):
         # urlparse reads http://127.0.0.1:8765\@public.example/'s host as
@@ -400,3 +424,27 @@ class FetchOutboundHttpTests(SimpleTestCase):
 
         second_kwargs = mock_get.call_args_list[1].kwargs
         self.assertEqual(second_kwargs.get("auth"), ("user", "pass"))
+
+    @patch("core.http_security.requests.get")
+    @patch("core.http_security.socket.getaddrinfo")
+    def test_params_are_not_resent_on_a_later_hop(self, mock_gai, mock_get):
+        # requests bakes `params` into hop 0's URL once and then follows a
+        # redirect's Location literally; it never re-appends them. Calling
+        # requests.get fresh on every hop with the same kwargs would append
+        # the same query string to every Location too, unless dropped
+        # (round 3 finding 4).
+        mock_gai.side_effect = _addrinfo_side_effect(
+            {"public.example": "93.184.216.34"}
+        )
+        first = MagicMock(status_code=302, headers={"Location": "/next"})
+        second = MagicMock(status_code=200, headers={})
+        mock_get.side_effect = [first, second]
+
+        fetch_outbound_http(
+            "http://public.example/m.json", params={"token": "abc"}
+        )
+
+        first_kwargs = mock_get.call_args_list[0].kwargs
+        second_kwargs = mock_get.call_args_list[1].kwargs
+        self.assertEqual(first_kwargs.get("params"), {"token": "abc"})
+        self.assertNotIn("params", second_kwargs)
