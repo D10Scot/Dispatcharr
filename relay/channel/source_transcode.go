@@ -96,7 +96,13 @@ func (s *TranscodeSource) log() *slog.Logger {
 
 // argv applies the one transformation input/manager.py:808-812 applies at
 // spawn time: on a UDP upstream every argument that contains the user agent,
-// or "user-agent" or "user_agent" in any case, is dropped.
+// or "user-agent" or "user_agent" in any case, is dropped -- AND ITS PARTNER
+// WITH IT, which is issue #296's fix. Python dropped the argument alone, so
+// `-headers 'User-Agent: X'` spawned as a bare `-headers` whose value became
+// the next argument, and the shipped Streamlink profile's
+// `--http-header User-Agent=X best` spawned as `--http-header best`. A
+// dropped VALUE takes the flag in front of it; a dropped FLAG
+// (`-user_agent`) takes the value after it.
 //
 // Python filters self.transcode_cmd, which INCLUDES the command at index 0;
 // a command containing "user-agent" would be dropped there and the spawn
@@ -106,17 +112,39 @@ func (s *TranscodeSource) argv() []string {
 	if StreamTypeOf(s.URL) != "udp" {
 		return s.Argv
 	}
-	kept := make([]string, 0, len(s.Argv))
-	for _, arg := range s.Argv {
-		lower := strings.ToLower(arg)
-		if (s.UserAgent != "" && strings.Contains(arg, s.UserAgent)) ||
-			strings.Contains(lower, "user-agent") || strings.Contains(lower, "user_agent") {
+	drop := make([]bool, len(s.Argv))
+	for i, arg := range s.Argv {
+		if !s.carriesUserAgent(arg) {
 			continue
 		}
-		kept = append(kept, arg)
+		drop[i] = true
+		switch {
+		case isFlag(arg) && i+1 < len(s.Argv) && !isFlag(s.Argv[i+1]):
+			drop[i+1] = true
+		case !isFlag(arg) && i > 0 && isFlag(s.Argv[i-1]):
+			drop[i-1] = true
+		}
+	}
+	kept := make([]string, 0, len(s.Argv))
+	for i, arg := range s.Argv {
+		if !drop[i] {
+			kept = append(kept, arg)
+		}
 	}
 	return kept
 }
+
+// carriesUserAgent is input/manager.py:811's test: the user agent itself, or
+// "user-agent" or "user_agent" in any case.
+func (s *TranscodeSource) carriesUserAgent(arg string) bool {
+	lower := strings.ToLower(arg)
+	return (s.UserAgent != "" && strings.Contains(arg, s.UserAgent)) ||
+		strings.Contains(lower, "user-agent") || strings.Contains(lower, "user_agent")
+}
+
+// isFlag is an argv element that names an option rather than carrying a
+// value: a leading dash and something after it.
+func isFlag(arg string) bool { return len(arg) > 1 && arg[0] == '-' }
 
 // fail records why the source is ending and stops the process. The first
 // cause wins; a later one (the SIGKILL's own exit status, say) does not

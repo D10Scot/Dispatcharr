@@ -647,22 +647,43 @@ func TestAMissingCommandFailsTheChannelWithoutEchoingArgv(t *testing.T) {
 
 // The UDP filter, input/manager.py:808-812: on a udp:// upstream every
 // argument carrying the user agent, or "user-agent"/"user_agent" in any
-// case, is dropped; on any other upstream nothing is.
-func TestTheUDPFilterDropsUserAgentArguments(t *testing.T) {
+// case, is dropped together with its partner; on any other upstream nothing
+// is.
+func TestTheUDPFilterDropsUserAgentArgumentsWithTheirFlags(t *testing.T) {
 	argv := []string{"-user_agent", "VLC/3.0.20", "-headers", "User-Agent: VLC/3.0.20", "-i", "udp://239.0.0.1:1234", "-c", "copy", "-f", "mpegts", "pipe:1"}
 	udp := &TranscodeSource{Argv: argv, URL: "udp://239.0.0.1:1234", UserAgent: "VLC/3.0.20"}
-	// "-headers" SURVIVES: the filter drops the arguments that carry the
-	// user agent, not the flags that introduced them, so Python spawns a
-	// dangling -headers whose value becomes the next argument (-i). A defect
-	// of the Python relay's own, reproduced per D5 and recorded rather than
-	// tidied; an earlier draft of this test expected the flag gone too.
-	want := []string{"-headers", "-i", "udp://239.0.0.1:1234", "-c", "copy", "-f", "mpegts", "pipe:1"}
+	// "-headers" GOES WITH ITS VALUE (issue #296). Python dropped the value
+	// alone and spawned a dangling -headers whose value became the next
+	// argument, -i.
+	want := []string{"-i", "udp://239.0.0.1:1234", "-c", "copy", "-f", "mpegts", "pipe:1"}
 	if got := udp.argv(); strings.Join(got, " ") != strings.Join(want, " ") {
 		t.Fatalf("UDP argv = %q, want %q", got, want)
 	}
 	http := &TranscodeSource{Argv: argv, URL: "http://p/1.ts", UserAgent: "VLC/3.0.20"}
 	if got := http.argv(); strings.Join(got, " ") != strings.Join(argv, " ") {
 		t.Fatalf("HTTP argv was filtered: %q", got)
+	}
+}
+
+// ISSUE #296 on a shipped profile: Streamlink's parameters are
+// "{streamUrl} --http-header User-Agent={userAgent} best --stdout"
+// (core/migrations/0011_fix_stream_profiles_and_user_agents.py:10). The
+// filter used to leave `--http-header best`, taking the quality selector as
+// the header's value; a flag whose value is dropped must go with it. And a
+// dropped FLAG takes its value: `-user_agent` with an empty user agent
+// substituted leaves no stray "" behind.
+func TestTheUDPFilterLeavesNoDanglingFlag(t *testing.T) {
+	const url = "udp://239.0.0.1:1234"
+	streamlink := &TranscodeSource{
+		Argv: []string{url, "--http-header", "User-Agent=VLC/3.0.20", "best", "--stdout"},
+		URL:  url, UserAgent: "VLC/3.0.20",
+	}
+	if got, want := strings.Join(streamlink.argv(), " "), url+" best --stdout"; got != want {
+		t.Fatalf("streamlink UDP argv = %q, want %q", got, want)
+	}
+	blank := &TranscodeSource{Argv: []string{"-user_agent", "", "-i", url, "pipe:1"}, URL: url}
+	if got := blank.argv(); len(got) != 3 || got[0] != "-i" {
+		t.Fatalf("argv = %q, want the flag and its empty value both gone", got)
 	}
 }
 
