@@ -85,40 +85,21 @@ test('an adult movie is unlistable for a hide_adult_content user and the control
   expect(listed.map((s) => s.stream_id)).toContain(controlMovie!.id);
 });
 
-// Asserts the behaviour Dispatcharr SHOULD have. `xc_get_vod_streams` and
-// `xc_get_vod_info` (apps/output/views.py) filter `movie__is_adult=False`
-// for a non-admin with hide_adult_content. `stream_xc_movie`,
-// `stream_xc_episode` and `stream_vod` (apps/proxy/vod_proxy/views.py)
-// apply no adult filter at all — so a movie this user cannot list is one
-// they can still watch by asking for it by primary key.
-//
-// This is the VOD analogue of G5's live defect (stream_xc omitting the
-// is_adult and hidden_from_output filters), on different functions with a
-// different fix, so it is a separate issue: closing one does not close the
-// other.
+// #110 is fixed: `stream_xc_movie` and `stream_vod` (apps/proxy/vod_proxy/views.py)
+// now apply the same is_adult / hide_adult_content predicate
+// `xc_get_vod_streams` and `xc_get_vod_info` (apps/output/views.py) already
+// applied to the listing, so a movie this user cannot list is refused (403)
+// rather than streamed when asked for by primary key. This is the VOD
+// analogue of G5's live defect (stream_xc omitting the is_adult and
+// hidden_from_output filters), on different functions with a different fix,
+// closed separately. The non-inverted control above ('an adult movie is
+// unlistable for a hide_adult_content user and the control movie remains
+// listable') repeats this test's seed-and-ingest sequence outside this test
+// and is what guards that premise, since a broken seed or a stalled ingest
+// here would otherwise fail this test for a reason unrelated to #110.
 //
 // Issue: https://github.com/D10Scot/Dispatcharr/issues/110
-//
-// test.fail() caveat: it is satisfied by ANY failure in the body, guards
-// included — so a broken premise, not just the intended assertion, would
-// also read as "expected failure" and this test would go green while
-// proving nothing. The premise below (that this user genuinely cannot list
-// the adult movie, and genuinely can list the control movie) is asserted
-// non-vacuously: the positive control (`toContain(controlMovie.id)`) fails
-// on an empty or broken listing, so the absence assertion above it cannot
-// be quietly passing on a listing that never worked at all. Verified with
-// `--reporter=json` that this pin fails at the `not.toBe(200)` below, with
-// both premise assertions passing — re-verify the same way after any edit
-// here. This test's own body performs the seed-and-ingest sequence (the
-// upstream scenario, the refresh-vod POST, and the ingest wait) that both
-// the listing and streaming assertions below depend on — but inside this
-// test.fail() block, which is satisfied by ANY failure, a broken seed or a
-// stalled ingest would be swallowed as an "expected failure" just as
-// readily as the intended streaming defect. The non-inverted control above
-// ('an adult movie is unlistable for a hide_adult_content user and the
-// control movie remains listable') repeats that same seed-and-ingest
-// sequence outside test.fail() and is what actually guards it.
-test.fail('an adult movie a user cannot list is not streamable by that user', { tag: '@contract' }, async ({
+test('an adult movie a user cannot list is not streamable by that user', { tag: '@contract' }, async ({
   upstream,
   seed,
   api,
@@ -192,6 +173,6 @@ test.fail('an adult movie a user cannot list is not streamable by that user', { 
   const res = await request.get(`/movie/${user.username}/${user.xcPassword}/${adultMovie!.id}.mp4`);
   expect(
     res.status(),
-    'a movie hidden from this user by hide_adult_content must not stream'
-  ).not.toBe(200);
+    'a movie hidden from this user by hide_adult_content is refused, not streamed'
+  ).toBe(403);
 });
