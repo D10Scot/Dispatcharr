@@ -7,6 +7,7 @@ import os
 import gc
 import gzip, zipfile
 import lzma
+from urllib.parse import quote
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from celery import shared_task
 from django.conf import settings
@@ -941,7 +942,9 @@ def collect_xc_streams(account_id, enabled_groups):
 
             stream_url_prefix = (
                 f"{xc_client.server_url.rstrip('/')}/live/"
-                f"{xc_client.username}/{xc_client.password}/"
+                # Quoted as build_timeshift_url_format_b quotes them (#61).
+                f"{quote(str(xc_client.username), safe='')}/"
+                f"{quote(str(xc_client.password), safe='')}/"
             )
 
             # Fetch ALL live streams in a single API call (much more efficient)
@@ -3084,8 +3087,15 @@ def get_transformed_credentials(account, profile=None):
     if base_url and base_username and base_password:
         clean_server_url = base_url.rstrip('/')
 
-        # Build the complete URL with embedded credentials
-        complete_url = f"{clean_server_url}/live/{base_username}/{base_password}/1234.ts"
+        # Build the complete URL with embedded credentials. The credentials are
+        # percent-encoded here (and unquoted back out below, after the profile's
+        # transform runs) so a literal '/' in either one can't be mistaken for a
+        # path separator by the split-on-'/' extraction further down (#370).
+        complete_url = (
+            f"{clean_server_url}/live/"
+            f"{urllib.parse.quote(str(base_username), safe='')}/"
+            f"{urllib.parse.quote(str(base_password), safe='')}/1234.ts"
+        )
         logger.debug("Built complete URL: %s", redact_url(complete_url))
 
         # Apply profile-specific transformations if profile is provided
@@ -3112,9 +3122,12 @@ def get_transformed_credentials(account, profile=None):
                 if len(path_parts) >= 4 and path_parts[-1] == '1234.ts':
                     # Extract username and password from the known structure:
                     # .../{live}/{username}/{password}/1234.ts
-                    # Using negative indices so sub-paths in the server URL don't shift extraction
-                    transformed_username = path_parts[-3]
-                    transformed_password = path_parts[-2]
+                    # Using negative indices so sub-paths in the server URL don't shift extraction.
+                    # Both segments were percent-encoded going in (above), so a literal '/'
+                    # inside either one is safely %2F here rather than an extra path
+                    # segment, and unquoting after the split recovers the raw value (#370).
+                    transformed_username = urllib.parse.unquote(path_parts[-3])
+                    transformed_password = urllib.parse.unquote(path_parts[-2])
 
                     # Rebuild server URL: preserve any sub-path that precedes
                     # /live/username/password/1234.ts (path_parts[:-4]).
