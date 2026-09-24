@@ -62,6 +62,32 @@ class ValidateOutboundHttpUrlTests(SimpleTestCase):
             allow_loopback=True,
         )
 
+    @patch("core.http_security.socket.getaddrinfo", return_value=_fake_addrinfo("93.184.216.34"))
+    def test_allows_and_normalises_an_internationalised_hostname(self, mock_gai):
+        # requests IDNA-encodes a non-ASCII host before dialling it
+        # (xn--mnchen-3ya.example); urlparse leaves it as the raw unicode
+        # 'münchen.example'. Comparing the two without encoding both sides
+        # the same way falsely refuses every internationalised domain --
+        # a regression for core.image_proxy and any other caller, not just
+        # the plugin fetches (round 2 finding 1).
+        validate_outbound_http_url("http://münchen.example/x.png", allow_private=True)
+        mock_gai.assert_called_once_with("xn--mnchen-3ya.example", None)
+
+    def test_a_refusal_message_never_carries_userinfo_or_a_query_token(self):
+        # Round 2 finding 2: the parser-differential refusal messages used
+        # to interpolate the whole URL or netloc, which can carry a
+        # credential in userinfo or a query string -- and
+        # scripts/check_credential_logging.py cannot see inside a raised
+        # ValueError's message to catch that once it reaches a response
+        # body or a log line.
+        url = r"http://user:s3cret@127.0.0.1:8765\@public.example/?token=abc"
+        with self.assertRaises(ValueError) as ctx:
+            validate_outbound_http_url(url, allow_private=False, allow_loopback=False)
+        msg = str(ctx.exception)
+        self.assertNotIn("s3cret", msg)
+        self.assertNotIn("token=abc", msg)
+        self.assertNotIn(url, msg)
+
     def test_rejects_a_backslash_authority_before_resolving_any_host(self):
         # urlparse reads http://127.0.0.1:8765\@public.example/'s host as
         # 'public.example' (everything after the last '@' in the netloc),
@@ -287,6 +313,7 @@ class FetchOutboundHttpTests(SimpleTestCase):
         fetch_outbound_http(
             "http://public.example/m.json",
             auth=("user", "pass"),
+            cookies={"session": "abc"},
             headers={
                 "Authorization": "Bearer secret",
                 "Cookie": "a=b",
@@ -297,8 +324,79 @@ class FetchOutboundHttpTests(SimpleTestCase):
         first_kwargs = mock_get.call_args_list[0].kwargs
         second_kwargs = mock_get.call_args_list[1].kwargs
         self.assertEqual(first_kwargs.get("auth"), ("user", "pass"))
+        self.assertEqual(first_kwargs.get("cookies"), {"session": "abc"})
         self.assertEqual(first_kwargs["headers"].get("Authorization"), "Bearer secret")
         self.assertNotIn("auth", second_kwargs)
+        self.assertNotIn("cookies", second_kwargs)
         self.assertNotIn("Authorization", second_kwargs.get("headers", {}))
         self.assertNotIn("Cookie", second_kwargs.get("headers", {}))
         self.assertEqual(second_kwargs.get("headers", {}).get("X-Custom"), "keep")
+
+    @patch("core.http_security.requests.get")
+    @patch("core.http_security.socket.getaddrinfo")
+    def test_auth_and_cookies_are_dropped_on_an_https_to_http_downgrade(
+        self, mock_gai, mock_get
+    ):
+        # requests.Session.should_strip_auth strips on ANY scheme change
+        # except the http-to-https upgrade at default ports (the next test)
+        # -- a same-host https-to-http downgrade must still strip, or a
+        # credential meant for an encrypted connection is replayed in the
+        # clear (round 2 finding 3).
+        mock_gai.side_effect = _addrinfo_side_effect(
+            {"public.example": "93.184.216.34"}
+        )
+        first = MagicMock(
+            status_code=302, headers={"Location": "http://public.example/next"}
+        )
+        second = MagicMock(status_code=200, headers={})
+        mock_get.side_effect = [first, second]
+
+        fetch_outbound_http(
+            "https://public.example/m.json",
+            auth=("user", "pass"),
+            cookies={"session": "abc"},
+        )
+
+        second_kwargs = mock_get.call_args_list[1].kwargs
+        self.assertNotIn("auth", second_kwargs)
+        self.assertNotIn("cookies", second_kwargs)
+
+    @patch("core.http_security.requests.get")
+    @patch("core.http_security.socket.getaddrinfo")
+    def test_auth_is_dropped_on_a_port_change(self, mock_gai, mock_get):
+        mock_gai.side_effect = _addrinfo_side_effect(
+            {"public.example": "93.184.216.34"}
+        )
+        first = MagicMock(
+            status_code=302,
+            headers={"Location": "http://public.example:8080/next"},
+        )
+        second = MagicMock(status_code=200, headers={})
+        mock_get.side_effect = [first, second]
+
+        fetch_outbound_http("http://public.example/m.json", auth=("user", "pass"))
+
+        second_kwargs = mock_get.call_args_list[1].kwargs
+        self.assertNotIn("auth", second_kwargs)
+
+    @patch("core.http_security.requests.get")
+    @patch("core.http_security.socket.getaddrinfo")
+    def test_auth_is_kept_on_an_http_to_https_upgrade_at_default_ports(
+        self, mock_gai, mock_get
+    ):
+        # The one exemption requests.Session.should_strip_auth carries,
+        # kept for backwards compatibility: upgrading to https on the
+        # standard ports is not treated as a new origin.
+        mock_gai.side_effect = _addrinfo_side_effect(
+            {"public.example": "93.184.216.34"}
+        )
+        first = MagicMock(
+            status_code=302, headers={"Location": "https://public.example/next"}
+        )
+        second = MagicMock(status_code=200, headers={})
+        mock_get.side_effect = [first, second]
+
+        fetch_outbound_http("http://public.example/m.json", auth=("user", "pass"))
+
+        second_kwargs = mock_get.call_args_list[1].kwargs
+        self.assertEqual(second_kwargs.get("auth"), ("user", "pass"))
