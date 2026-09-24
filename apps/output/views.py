@@ -10,7 +10,6 @@ from apps.epg.models import ProgramData
 from apps.accounts.models import User
 from dispatcharr.utils import get_client_ip, network_access_allowed
 from django.utils import timezone as django_timezone
-from django.shortcuts import get_object_or_404
 from datetime import datetime, timedelta, timezone as dt_timezone
 import html
 import time
