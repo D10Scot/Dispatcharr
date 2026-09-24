@@ -135,9 +135,12 @@ var moofBox = []byte("moof")
 //
 // MP4 boxes are [4-byte big-endian length][4-byte type][payload]. A length
 // below 8 is not a valid box, and Python advances ONE byte on it rather than
-// giving up -- a resynchronisation, reproduced here because a stream that
-// desynchronises mid-fragment recovers at the next real box header either way
-// and the two implementations must recover at the same byte.
+// giving up. That is NOT a resynchronisation: any length of 8 or more is
+// trusted and strided over, so a scan that starts off a box boundary reads a
+// garbage length, jumps past every real box and returns -1 (issues #306 and
+// #119). This function is therefore used only where the scan starts ON a
+// boundary -- the init segment from offset 0, a fragment's successor from its
+// own moof's end -- and resyncOffset below is what a misaligned buffer uses.
 //
 // Python's `except struct.error` arm is UNREACHABLE: unpack_from cannot fail
 // while offset+8 <= len(data). Not reproduced, because there is nothing to
@@ -164,6 +167,57 @@ func findMoofOffset(data []byte, start int) int {
 	return -1
 }
 
+// minMoofBox is the smallest real moof, and the smallest length resyncOffset
+// accepts for a candidate: its own 8-byte header plus an mfhd, 16 bytes. A
+// "moof" shorter than that is garbage that happens to spell the type, and an
+// aligned one is resynchronised past rather than trusted (flush). Adopted from
+// #348's A-4.
+const minMoofBox = 16
+
+// maxFragmentBytes is the most the working buffer holds while a fragment has
+// no end in sight -- an aligned moof whose own length is corrupt, or a valid
+// one followed by a box whose length is, both of which make the fragment's
+// end unfindable and would otherwise hold the buffer open toward a 4 GiB
+// length. Past it the fragment is abandoned and the scanner resynchronises.
+// 64 MiB is 50 Mbit/s over a 10-second keyframe interval with margin; adopted
+// from #348's A-4.
+const maxFragmentBytes = 64 << 20
+
+// maxMoofBoxBytes is the largest length resyncOffset accepts for a candidate
+// moof box's OWN header -- the moof, not the fragment: a moof holds a few
+// track headers and a sample table and runs to kilobytes, where the mdat
+// after it can run to megabytes. A "moof" literal inside a payload reads a
+// length that is garbage; one past this bound is refused as a resync point
+// rather than trusted, because the aligned path would then wait for that many
+// bytes before publishing anything.
+const maxMoofBoxBytes = 1 << 20
+
+// resyncTail is how much of a working buffer with no resync point in it is
+// kept: the most of a moof header that can sit at the end without its "moof"
+// literal being complete -- a four-byte length and three bytes of the type.
+const resyncTail = 7
+
+// resyncOffset finds the next plausible moof header at or after start in a
+// buffer that is NOT aligned on a box boundary, the fix for issues #306 and
+// #119. It searches for the four-byte type literal and checks the length in
+// front of it, rather than striding by lengths it cannot trust: the first
+// candidate whose length is between minMoofBox and maxMoofBoxBytes wins. -1
+// when there is none.
+func resyncOffset(data []byte, start int) int {
+	for from := start; from+8 <= len(data); {
+		i := bytes.Index(data[from+4:], moofBox)
+		if i < 0 {
+			return -1
+		}
+		at := from + i
+		if size := binary.BigEndian.Uint32(data[at : at+4]); size >= minMoofBox && size <= maxMoofBoxBytes {
+			return at
+		}
+		from = at + 1
+	}
+	return -1
+}
+
 // scanner turns the remux's fd 1 byte stream into an init segment and a
 // sequence of fragments, the port of _reader_loop's body (manager.py:289-349)
 // and _flush_complete_fragments (:252-287).
@@ -173,7 +227,24 @@ type scanner struct {
 	init       []byte
 	initStored bool
 	frag       []byte
+
+	// ceiling overrides maxFragmentBytes for one scanner, for tests; zero
+	// means the constant. A field rather than a package variable a test
+	// lowers, so no test can race another scanner's read of it.
+	ceiling int
 }
+
+func (s *scanner) fragmentCeiling() int {
+	if s.ceiling > 0 {
+		return s.ceiling
+	}
+	return maxFragmentBytes
+}
+
+// abandon gives up a fragment whose end cannot be found: dropping one byte
+// misaligns the buffer, so the next pass of flush resynchronises past the
+// moof that could not be bounded.
+func (s *scanner) abandon() { s.frag = s.frag[1:] }
 
 // ErrNoInitSegment is the abort at manager.py:334-339: 10 MB of remux output
 // with no moof box in it.
@@ -214,29 +285,47 @@ func (s *scanner) write(data []byte) error {
 // stops mid-stream leaves one fragment unpublished until `final` runs.
 func (s *scanner) flush() {
 	for len(s.frag) >= 8 {
-		if !bytes.Equal(s.frag[4:8], moofBox) {
+		size := int64(binary.BigEndian.Uint32(s.frag[0:4]))
+		if !bytes.Equal(s.frag[4:8], moofBox) || size < minMoofBox {
 			// manager.py:259-266: the stream is not aligned to a moof, so drop
 			// bytes until one is found. start=1, not 0, or this would find the
-			// box it has already rejected.
-			next := findMoofOffset(s.frag, 1)
+			// box it has already rejected. Through resyncOffset, not
+			// findMoofOffset: Python strided from offset 1 by a garbage length
+			// and cleared the whole buffer on the -1 it got (#306, #119). A
+			// moof shorter than minMoofBox is not one either: aligned on it,
+			// the seed returned without consuming anything and the buffer
+			// grew with every write (#348's A-4).
+			next := resyncOffset(s.frag, 1)
 			if next < 0 {
-				s.frag = s.frag[:0]
+				// Nothing yet. Keep only the tail a header could be arriving
+				// in, so the buffer stays bounded and a moof whose header
+				// straddles this read is still found on the next.
+				if len(s.frag) > resyncTail {
+					s.frag = append(s.frag[:0], s.frag[len(s.frag)-resyncTail:]...)
+				}
 				return
 			}
 			s.frag = s.frag[next:]
 			continue
 		}
-		size := int64(binary.BigEndian.Uint32(s.frag[0:4]))
-		if size < 8 {
-			return
-		}
 		if size > int64(len(s.frag)) {
 			// _find_moof_offset(frag_buf, start=moof_size) returns -1 for a
-			// start past the end, and manager.py:279 breaks. Same answer.
+			// start past the end, and manager.py:279 breaks. Same answer --
+			// unless the moof's own length is corrupt and the wait would
+			// never end.
+			if len(s.frag) > s.fragmentCeiling() {
+				s.abandon()
+				continue
+			}
 			return
 		}
 		next := findMoofOffset(s.frag, int(size))
 		if next < 0 {
+			// The same wait, for the box after the moof.
+			if len(s.frag) > s.fragmentCeiling() {
+				s.abandon()
+				continue
+			}
 			return
 		}
 		s.out.Put(s.frag[:next])
