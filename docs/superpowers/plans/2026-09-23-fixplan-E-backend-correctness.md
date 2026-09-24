@@ -15,9 +15,9 @@ is quoted in each issue's "Reproduced at seed" line.
 **Ordering position.** Sixth of ten: B, A, J, C, D, **E**, G, H, I, F. The lead re-seeds this plan
 when an earlier category's plan merges. Three PRs here must wait for an earlier plan to *merge*, not
 merely to be written: E-2 waits for J-1 and J-3, E-5 waits for C-3, E-7 waits for B-2 and C-1.
-One more waits for the user rather than a plan: E-9 (#138) starts only after open question Q2 is
-answered, because its default reverses a deliberate upstream change. The
-overlap section says why.
+E-9 (#138) waited for the user rather than a plan: open question Q2 was answered on 2026-09-24
+(the serializer caps `end_date`; `sync_recurring_rule_impl` is untouched), so E-9 is ready to
+implement in order. The overlap section says why the other three wait.
 
 **Architecture.** Django 6 + DRF control plane with Celery workers and Celery beat (database
 scheduler, `django_celery_beat`). The live relay is the Go binary in `relay/` and is untouched here.
@@ -91,10 +91,13 @@ report, never a judgement call.
 | `apps/proxy/next_source.py` (docstring of `_with_proxy_settings`, `:828-849`, only) | E-2 |
 | `apps/proxy/serializers.py` (docstring of `RelayProxySettingsSerializer`, `:143-155`, only) | E-2 |
 | `apps/channels/signals.py` | E-3 (`:271`, `:382`, `:385`), E-4 (`:238`) |
-| `apps/channels/tasks.py` | E-3 (`:1038-1039`, `:1499`, `:2148`, `:2526`), E-9 (`:888-895`), E-4 (`:241-245`, `:345-349`, import block `:22-29`) |
+| `apps/channels/tasks.py` | E-3 (`:1038-1039`, `:1499`, `:2148`, `:2526`), E-4 (`:241-245`, `:345-349`, import block `:22-29`) |
 | `apps/channels/api_views.py` | E-3 (`:3583-3587`), E-4 (`:877`, `:887`, `:902`, `:2074`, `:2084`, `:2099`) |
 | `apps/channels/epg_matching.py` (`get_preferred_region_code`, `:428-433`) | E-4 |
 | `apps/channels/serializers.py` (`:121` only) | E-6 |
+| `apps/channels/serializers.py` (imports `:1-2`, `:19`; a constant and a helper above `:813`; one block after `:847`) | E-9 |
+| `apps/channels/tests/test_recurring_rule_end_date_cap.py` (new) | E-9 |
+| `e2e/tests/dvr/recurring-rules.spec.ts` (`:24-91`, comment-only), `e2e/COVERAGE.md` (`:165`) | E-9 |
 | `frontend/src/utils/pages/DVRUtils.js` (`:66-68`) | E-3 |
 | `frontend/src/utils/pages/__tests__/DVRUtils.test.js` (appended `it` only) | E-3 |
 | `apps/m3u/tasks.py` (`refresh_m3u_groups`' nine failure returns; the caller at `:3503-3517`; the terminal write at `:3891`, `:3918`) | E-5 |
@@ -334,38 +337,141 @@ fix applies with a context rebase, since line numbers differ.
   `sync_recurring_rule_impl(rule.id, drop_existing=True)` (`apps/channels/api_views.py:3190`,
   `:3199`). In `sync_recurring_rule_impl` (`apps/channels/tasks.py:861`),
   `if drop_existing and end_limit: end_window = end_limit` (`:890-891`) therefore always wins, and the
-  14-day `horizon` branch (`:892-895`) is dead on every REST path.
+  14-day `horizon` branch (`:892-895`) is dead on every REST path. Every matching day's
+  `Recording.objects.create` (`:940-945`) fires `schedule_task_on_save`: one `ClockedSchedule`
+  `get_or_create` and one `PeriodicTask` `update_or_create` per row (`apps/channels/signals.py:271-285`).
 - **Correction to the issue.** The hourly `maintain_recurring_recordings` (`tasks.py:962-971`)
   calls with `drop_existing=False`, so it **does** use the horizon. Only create and update are
   unbounded.
 - **History.** The branch was added deliberately by the upstream author in `6536f35d` ("FIxed bug"),
-  the same commit that made `end_date` required. That is why this is open question Q2 rather than a
-  plain fix.
-- **Reproduced at seed.** A rule with all seven days and `end_date` 60 days out, synced as the REST
-  path does, created **60** recordings in one call.
-- **Fix (default, Q2).** Always bound the window by the horizon:
-  `end_window = min(horizon_local_date, end_limit)`. Delete the `drop_existing and end_limit`
-  special case. `drop_existing` keeps its purge role (`:869-870`). The hourly maintainer then rolls
-  the window forward, exactly as the docstring (`:862`) and `horizon_days` describe.
-- **Tests.** New `apps/channels/tests/test_recurring_rule_horizon.py`:
-  - `test_a_rest_created_rule_materialises_only_the_scheduling_horizon` POSTs to
-    `/api/channels/recurring-rules/` with all days and `end_date` = today+60. Every created
-    recording's local start date must be `<= local_today + 14`. At seed the latest is today+59.
-  - `test_hourly_maintenance_rolls_the_horizon_forward` patches `django.utils.timezone.now` to +7
-    days and runs `maintain_recurring_recordings()`. Recordings must now reach today+21 and none may
-    go past it.
-  - `apps/channels/tests/test_recurring_rules.py` stays unmodified: its rule has no `end_date` and
-    already took the horizon branch.
-- **e2e.** `e2e/tests/dvr/recurring-rules.spec.ts` posts `end_date` = today+14. It stays green
-  unmodified, since its window equals the horizon and its 14-or-15 count holds. Only its header
-  comment (`:24-110`), which explains the dead horizon, is rewritten as comment-only.
-- **Visible behaviour change.** The Upcoming list will show two weeks of a long rule, not its whole
-  run, and the rest appears as the hourly maintainer rolls the window forward. The PR description
-  must say so plainly.
-- **Size** S. **Upstreamable** no, contested. Upstream `dev` carries the same branch (`tasks.py:1086`),
-  but it is the upstream author's deliberate design from `6536f35d`, so the default reverses it
-  rather than fixing an oversight. It gets its own PR, E-9, gated on Q2, so an override re-plans one
-  small PR and not E-3.
+  the same commit that made `end_date` required. That is why this was open question Q2.
+- **Ruling (Q2, answered 2026-09-24).** The user rejected the default (the 14-day horizon on every
+  sync) and adopted the alternative: full materialisation to `end_date` stays, `sync_recurring_rule_impl`
+  is not touched, and the serializer caps `end_date`. Live streaming is the priority and DVR is
+  secondary, so the fix is the smallest edit that bounds the request. This section, PR E-9, the
+  coverage row and Q2 were amended on 2026-09-24 against `50b69c83`; none of the five files named
+  here changed between `a54b09a9` and `50b69c83` (`git diff --stat` is empty), so the seed lines hold.
+- **Measured at `50b69c83`** (private container `amend-E9`, Postgres, a throwaway probe module deleted
+  afterwards). One REST create of an all-seven-days rule with `start_date` two days back, timed around
+  the `POST` alone; every row also created one `ClockedSchedule` and one `PeriodicTask`. Two probe
+  shapes, because they disagree and the difference is the DB's state, not the code's:
+  - **Fresh** (the figures the cap decision uses): one size per test method, each in its own
+    transaction on a DB that had only run the migrations. The whole six-test module below, which
+    includes one 365-day create, runs in 2.0-2.5 s under the same conditions.
+  - **Accumulated**: all sizes in one test method in one transaction, in the order shown, each rule
+    deleted over REST before the next. The deletes removed the rows but a transaction cannot vacuum, so
+    every later size walked the dead tuples of every earlier one.
+
+  | `end_date` | rows (`Recording` = `ClockedSchedule` = `PeriodicTask`) | fresh | accumulated |
+  |---|---|---|---|
+  | today+14 | 14 | — | 0.08 s |
+  | today+30 | 30 | — | 0.12 s |
+  | today+90 | 90 | — | 0.51 s |
+  | today+180 | 180 | — | 1.20 s |
+  | today+365 | 365 | 2.11 s | 3.76 s, then 5.45 s |
+  | today+730 | 730 | 5.08 s | — |
+  | today+3650 | 3,650 | 61.7 s | 104.7 s |
+
+  Under the fresh shape the cost is still superlinear: twice the rows cost 2.4× the time and ten times
+  the rows 29×. The probable reason is the per-day
+  `Recording.objects.filter(custom_properties__rule__id=…).exists()` (`tasks.py:915-919`), a JSON
+  containment scan over a table the same loop is growing, with the
+  `ClockedSchedule.objects.get_or_create(clocked_time=…)` beside it; neither was profiled and the plan
+  does not depend on which. Ten years is within a factor of two of the API process's 120 s `harakiri`
+  (`docker/uwsgi.ini`) on a fresh table and about 15 s short of it on a used one, so today a long enough rule
+  kills the worker and every other request on it; production Postgres over a network is slower than
+  this container.
+- **Cap: 365 days from today.** One year covers a season of anything ("every weekday until next
+  summer") and is the value Q2 itself offered. At the cap the request is 2-6 s in the test DB
+  depending on the table's state, twenty to sixty times inside `harakiri`, and the superlinear tail
+  is cut before it matters: twice the cap measured 5.1 s fresh. 90 or 180 days would be faster but
+  would refuse a whole-season rule for no gain a viewer would notice. The cap is a module constant,
+  `RECURRING_RULE_MAX_DAYS`, so a later change is one line, and the test that pins the number is its
+  companion edit.
+- **Fix.** `apps/channels/serializers.py` only (Appendix I): the constant; a helper
+  `_system_local_today()` that resolves the system time zone exactly as `sync_recurring_rule_impl`
+  does (`tasks.py:879-884`: `CoreSettings.get_system_time_zone()`, `ZoneInfo`, fallback to Django's
+  current zone) so the cap and the walk share a calendar; and one guarded block in `validate` after
+  the "End date is required" check (`:844-847`). **Only when the request itself carries `end_date`**
+  (`"end_date" in attrs`) and it is later than today+365, raise a field error keyed on `end_date`:
+  `End date must be no more than 365 days from today (<YYYY-MM-DD> at the latest)`. The date in the
+  message is the latest accepted value, so the user sees what to enter.
+  - A `PATCH` that does not carry `end_date` (the SPA's enable/disable toggle sends `{enabled}`
+    alone, `frontend/src/utils/forms/RecurringRuleModalUtils.js:44-46`) is not re-capped, so a row
+    created before the cap with a longer `end_date` still toggles and re-syncs as before. Deliberate:
+    re-validating an untouched field would refuse a toggle with a message about a date the user did
+    not enter. Such a row keeps materialising to its own `end_date` on every re-sync, unchanged from
+    today; the operator shortens it through the edit modal, which sends the whole form (`:33-38`)
+    and is therefore capped.
+  - A `PATCH` that extends `end_date` past the cap is refused with the same message and changes
+    nothing: DRF validates before `perform_update`, so no purge and no re-sync run.
+  - `core.models` is already imported at module level here (`:19`, `StreamProfile`), so adding
+    `CoreSettings` to that line creates no new import edge; `timedelta` and `ZoneInfo` are stdlib.
+- **Tests.** New `apps/channels/tests/test_recurring_rule_end_date_cap.py` (Appendix J): six
+  tests through `APIClient` as an admin, the cap pinned as the literal `365` and deliberately not
+  imported from the serializer (an import turns the red run into an `ImportError`, which is not a
+  red: the first prototype did exactly that and was corrected). **The clock is frozen** for the whole
+  class (`django.utils.timezone.now` patched to 2026-09-24T12:00Z in `setUp`): the serializer
+  computes "today" at request time and the tests compute it in `setUp`, so a real midnight between
+  the two would make an over-cap `end_date` land exactly on the cap and pass on correct code. The
+  patch reaches the serializer's helper, `sync_recurring_rule_impl` and every `auto_now` field
+  (all call `timezone.now()` through the module). `apps/channels/signals.py` imports `now` by name
+  (`:5`) and keeps the real clock, in `schedule_task_on_save` (`:356`) as well as in
+  `schedule_recording_task`'s `eta` clamp: once real time passes the frozen dates, every recording
+  the module creates has a `start_time` in the real past and the signal schedules none of them,
+  so the `PeriodicTask` counts here can only be asserted at zero, and the at-cap test's timing
+  figure will drift downward as the `ClockedSchedule`/`PeriodicTask` writes drop out.
+  - `test_a_rule_past_the_cap_is_refused_before_it_materialises_anything`: `end_date` today+366 →
+    400 with the message under `end_date`; zero `RecurringRecordingRule`, zero `Recording`, zero
+    `dvr-recording-*` `PeriodicTask`. **Red at seed:** `AssertionError: 201 != 400`, the body
+    carrying `"end_date":"2027-09-25"`.
+  - `test_a_patch_that_extends_end_date_past_the_cap_is_refused_and_changes_nothing`: a 14-day rule
+    is created, then `PATCH {"end_date": today+366}` → 400; `end_date` and the row count are
+    unchanged. **Red at seed:** `AssertionError: 200 != 400`.
+  - `test_a_rule_exactly_at_the_cap_is_accepted`: today+365 → 201 with at least 365 rows (control,
+    green at seed; the one slow test, about 1.5 s).
+  - `test_a_create_with_no_end_date_is_still_refused_as_required`: the existing "End date is
+    required" 400 is untouched (control, green at seed).
+  - `test_a_patch_that_leaves_end_date_alone_is_not_re_capped`: an ORM-created row with `end_date`
+    today+395, `PATCH {"enabled": false}` → 200 and the date survives (control, green at seed;
+    `enabled: false` takes the purge path, so the test materialises nothing).
+  - `test_the_cap_counts_from_today_in_the_system_time_zone_not_django_s`: pins the calendar the
+    cap is measured on, which no other test can, because the test settings' system zone and Django's
+    `TIME_ZONE` are both `UTC`. It sets the system zone to `Pacific/Kiritimati` (UTC+14), where the
+    frozen instant is already 2026-09-25, posts `end_date` = 2027-09-25 (that calendar's today+365)
+    with a single weekday, and expects 201. Green at seed (nothing refuses it there); it is the test
+    break-check 3 reddens. The settings group is cached in Redis (`core/models.py:220-222`, 300 s
+    TTL), which the transaction rollback does not touch, so the test restores the zone through
+    `addCleanup(CoreSettings.set_system_time_zone, <previous>)`; without that, the first prototype
+    leaked the zone into the next run and reddened an unrelated control.
+  - `apps/channels/tests/test_recurring_rules.py` stays unmodified: it never goes through the
+    serializer. Under rule 4 no existing test changes.
+- **e2e.** `e2e/tests/dvr/recurring-rules.spec.ts` posts `end_date` = today+14, inside the cap, and
+  stays green unmodified. Its "Brief vs. source" header section (`:24-91`) says the endpoint
+  imposes no bound on `end_date`; that is rewritten as comment-only. `e2e/COVERAGE.md:165` moves
+  from `known-bug` to `done`.
+- **Frontend.** No change. Both forms already surface the serializer's message: the create form's
+  `createRecurringRule` (`frontend/src/api.js:3096-3106`) and the edit modal's `updateRecurringRule`
+  (`:3108-3121`) route a non-2xx through `errorNotification`, which renders a field-keyed 400 body
+  as `end_date: End date must be no more than 365 days from today (…)` (`frontend/src/utils.js:120-128`)
+  in a red notification before rethrowing. A `maxDate` on the two `DatePickerInput`s
+  (`frontend/src/components/forms/Recording.jsx:290-298`, `RecurringRuleModal.jsx:351-356`) or a
+  clause in `recurringFormValidators.end_date` (`frontend/src/utils/forms/RecordingUtils.js:174-180`)
+  would state the rule a second time on a second clock, the browser's, which can disagree with the
+  system time zone by a day at the boundary; the server message is the one source. If the user wants
+  the picker to stop at the cap anyway, it is a `maxDate` prop on those two inputs plus one `it` in
+  `frontend/src/utils/forms/__tests__/RecordingUtils.test.js` (which mocks `getNow` to 2024-06-15,
+  so a validator is testable there), and it is not part of E-9.
+- **Visible behaviour change.** A create or edit whose `end_date` is more than a year out gets a 400
+  naming the latest accepted date. A rule created before the cap with an `end_date` past it keeps
+  working from the list (the toggle sends `{enabled}` alone) but **any save from its edit modal is
+  refused** with that message until its `end_date` is shortened, because the modal sends the whole
+  form, including the rename and the in-modal enable. Otherwise nothing changes: a rule within the
+  cap materialises every matching day to `end_date`, exactly as `6536f35d` intended, and the Upcoming
+  list shows its whole run.
+- **Size** S (about 35 lines in one file). **Upstreamable** yes: upstream `dev`'s `validate` carries
+  the same "End date is required" block (`serializers.py:903-906` there), so the hunk applies, and the
+  fix reverses nothing of `6536f35d`.
 
 ### #132: three of the seven DVR WebSocket events carry no `recording_id`
 
@@ -1113,38 +1219,73 @@ changed are the e2e pins each section lists.
   >
   > 🤖 Generated with [Claude Code](https://claude.com/claude-code)
 
-### PR E-9: `fix/E-9-recurring-horizon`
+### PR E-9: `fix/E-9-recurring-end-date-cap`
 
 - **Closes** #138.
-- **Gated on** open question Q2. Start only after the user answers it. The tasks below implement the
-  default; if the user picks the `end_date` cap instead, re-plan this section (the serializer at
-  `apps/channels/serializers.py:844-847` becomes the edit, and `sync_recurring_rule_impl` is left
-  alone).
-- **Files** `apps/channels/tasks.py` (`:888-895`), comment-only
-  `e2e/tests/dvr/recurring-rules.spec.ts:24-110`, `e2e/COVERAGE.md`,
-  `apps/channels/tests/test_recurring_rule_horizon.py` (new).
-- **Labels** `apps.channels.tests`.
+- **Gate lifted.** Open question Q2 was answered on 2026-09-24: the serializer caps `end_date` at
+  365 days from today; `sync_recurring_rule_impl` (`apps/channels/tasks.py:861-953`) is not touched
+  and full materialisation to `end_date` stays. This section was re-planned that day against
+  `50b69c83`, which carries every seed line unchanged (the per-issue analysis says so).
+- **Files** `apps/channels/serializers.py` (imports `:1-2` and `:19`; a constant and a helper above
+  `:813`; one block after `:847`), `apps/channels/tests/test_recurring_rule_end_date_cap.py` (new),
+  comment-only `e2e/tests/dvr/recurring-rules.spec.ts:24-91`, `e2e/COVERAGE.md:165`. Not
+  `apps/channels/tasks.py`.
+- **Labels** `apps.channels.tests` (`scripts/ci_backend_test_labels.py` on the four paths returns
+  exactly that list; the two e2e paths add nothing).
 - **Tasks.**
-  1. Write `test_recurring_rule_horizon.py`. At seed the first test must fail on a start date of
-     about today+59.
-  2. Replace `tasks.py:890-895` per the per-issue fix. Green.
-     **Break-check:** reinstate the `if drop_existing and end_limit:` branch. The first test must
-     redden.
-  3. Rewrite `recurring-rules.spec.ts`' header comment (comment-only). Its assertions stay
-     unmodified and green. `e2e/COVERAGE.md` row `:165` records the fix.
-  4. Run `apps.channels.tests` whole, then once without `--keepdb`.
-- **Upstreamable** no, contested (reverses `6536f35d`).
+  1. Extract Appendix J's fenced block verbatim and apply it (`git apply --check` first; the block
+     was applied clean to a fresh `git archive 50b69c83` export). Run
+     `apps.channels.tests.test_recurring_rule_end_date_cap`: exactly two of six tests fail,
+     `…_refused_before_it_materialises_anything` with `AssertionError: 201 != 400` and
+     `…_extends_end_date_past_the_cap_…` with `AssertionError: 200 != 400`; the four others pass.
+     That is the red; an `ImportError` here is not. Flush Redis before every run you launch by hand
+     (the hook and CI do), or a stale `system_settings` group from an earlier run moves "today".
+  2. Extract and apply Appendix I the same way. Green: `Ran 6 tests`, `OK` (2.0-2.5 s on the prototype).
+     **Break-check 1:** change `if end_date > latest:` to `if end_date >= latest:`.
+     `test_a_rule_exactly_at_the_cap_is_accepted` must redden with
+     `AssertionError: 400 != 201 : b'{"end_date":["End date must be no more than 365 days from today (2027-09-24 at the latest)"]}'`
+     (the time-zone test reddens with it, on `2027-09-25`, since it also posts an at-cap date).
+     Revert. **Break-check 2:** change `if "end_date" in attrs and end_date:` to `if end_date:`.
+     `test_a_patch_that_leaves_end_date_alone_is_not_re_capped` must redden with
+     `AssertionError: 400 != 200` and the same body. Revert. **Break-check 3:** replace
+     `_system_local_today()`'s body with `return timezone.localdate()` (Django's `TIME_ZONE`, not the
+     system zone). Only `test_the_cap_counts_from_today_in_the_system_time_zone_not_django_s` must
+     redden, with `AssertionError: 400 != 201 : b'{"end_date":["End date must be no more than 365 days
+     from today (2027-09-24 at the latest)"]}'`: the posted date was 2027-09-25, a day later than a
+     UTC "today" allows. Revert. All three ran on the prototype and failed exactly so; record the
+     three lines in the PR description.
+  3. Rewrite the "Brief vs. source" section of `recurring-rules.spec.ts`' header (`:24-91`,
+     comment-only; every assertion and the 14-day `end_date` stay). It must say: the serializer caps
+     `end_date` at `RECURRING_RULE_MAX_DAYS` (365) days from today in the system time zone
+     (`apps/channels/serializers.py`, #138); an in-cap rule still materialises every matching day to
+     `end_date` synchronously, so the row-count reasoning below it is unchanged; and this test's
+     14-day window sits inside the cap by choice. Rewrite `e2e/COVERAGE.md:165` from `known-bug` to
+     `done`: the horizon branch is still dead on the REST path by design (`6536f35d`), the request is
+     bounded by the serializer's cap instead, fixed in this PR.
+  4. `python scripts/check_credential_logging.py apps/channels/serializers.py` (the edit hook runs
+     it; zero findings on the prototype). Run `apps.channels.tests` whole with `--keepdb` (348
+     tests, `OK` on the prototype), then once without `--keepdb` before push (constraint 6).
+- **Ledger.** No `metrics/curated/defects.yml` row names #138 (constraint 8); no parity-matrix row.
+- **Upstreamable** yes: upstream `dev`'s serializer carries the same `validate`, and the fix keeps
+  `6536f35d`'s branch.
 - **PR description draft.**
 
-  > **fix(dvr): bound recurring-rule materialisation by the scheduling horizon (#138)**
+  > **fix(dvr): cap a recurring rule's end_date at 365 days from today (#138)**
   >
-  > Creating or editing a recurring rule over REST materialised a `Recording` (and a beat schedule)
-  > for every matching day up to `end_date`, synchronously, inside the request: 365 for a daily rule
-  > a year out. Every sync now materialises at most the documented 14-day horizon, and the existing
-  > hourly `maintain_recurring_recordings` rolls it forward. **Visible change:** the Upcoming list
-  > shows two weeks of a long rule, not its whole run. This reverses upstream's `6536f35d`, which
-  > added the full-materialisation branch deliberately; the user ruled on it as Q2 of the category E
-  > plan. Closes #138. Break-check: <paste>. No existing test changed.
+  > Creating or editing a recurring rule over REST materialises a `Recording`, a `ClockedSchedule`
+  > and a `PeriodicTask` for every matching day up to `end_date`, synchronously, inside the request.
+  > Measured in the test DB: 365 days took under 6 s and ten years 105 s, against the API process's
+  > 120 s `harakiri`. The serializer now refuses an `end_date` more than 365 days from today (system
+  > time zone) with a field error naming the latest accepted date, on create and on any PATCH that
+  > sets `end_date`. **This keeps full materialisation to `end_date` and reverses nothing upstream:**
+  > `sync_recurring_rule_impl` and the branch `6536f35d` added are untouched, and a rule within the
+  > cap still materialises its whole run. A PATCH that does not carry `end_date` is not re-capped,
+  > so a row created before this change keeps toggling from the list; saving it from the edit modal,
+  > which sends the whole form, is refused until its `end_date` is shortened. No frontend change:
+  > both forms already show the server's message. Ruling: Q2 of the category E plan, 2026-09-24.
+  > New module `test_recurring_rule_end_date_cap.py` (frozen clock): two tests red at base, three
+  > controls, and one that pins the system time zone as the cap's calendar. Break-checks: <paste
+  > the three lines>. No existing test changed. Closes #138.
   >
   > 🤖 Generated with [Claude Code](https://claude.com/claude-code)
 
@@ -1163,7 +1304,7 @@ None. No rule-4 policy item (#82, #94, #16, #277, #109, #133) is in category E.
 | 232 | fix | E-2 |
 | 257 | fix (premise corrected: the named viewset is unrouted; default scope per Q1) | E-2 |
 | 140 | fix | E-4 |
-| 138 | fix (default per Q2; gated on Q2) | E-9 |
+| 138 | fix (Q2 answered 2026-09-24: the serializer caps `end_date` at 365 days from today) | E-9 |
 | 132 | fix | E-3 |
 | 131 | fix | E-3 |
 | 128 | fix | E-8 |
@@ -1195,12 +1336,13 @@ Each has a default that this plan already adopts; answer only to override it.
    seven keys and out-of-range values get a 400, and delete the dead viewset. Alternative: close
    #257 as not reproducible and delete only the dead viewset. That leaves proxy-settings writes
    unvalidated, which is then a new issue.
-2. **#138 policy.** Default: every sync, REST included, materialises at most the 14-day horizon,
-   and the hourly maintainer rolls it forward. Alternative: keep full materialisation to `end_date`
-   (the upstream author added that branch deliberately in `6536f35d`) but have the serializer cap
-   `end_date`, for example at one year. The first changes what the Upcoming list shows for a
-   long rule (two weeks, not the whole run). The second keeps that and bounds the damage. Either way the
-   answer is implemented by PR E-9 alone, which does not start until this is answered.
+2. **#138 policy.** **Answered 2026-09-24.** The user rejected the default (every sync, REST
+   included, materialises at most the 14-day horizon and the hourly maintainer rolls it forward;
+   it would change what the Upcoming list shows for a long rule) and adopted the alternative: keep
+   full materialisation to `end_date` (the upstream author added that branch deliberately in
+   `6536f35d`) and have the serializer cap `end_date`. E-9 implements the cap at 365 days from
+   today; the #138 analysis carries the measurement behind that number, and
+   `sync_recurring_rule_impl` is not touched.
 3. **#80 escaping form.** Default: replace `"` with `&quot;` in attribute values only. Alternatives:
    `html.escape(quote=True)`, which also turns `&`, `<`, `>` and `'` into entities and makes
    "AT&T" read `AT&amp;T` in players that do not decode; or substitute a typographic quote, which
@@ -1543,4 +1685,216 @@ Add `from rest_framework_simplejwt.exceptions import InvalidToken`. `User` is al
 +            f'tvg-logo="{_m3u_attr(tvg_logo)}" tvg-chno="{_m3u_attr(formatted_channel_number)}" '
 +            f'{tvc_guide_stationid}group-title="{_m3u_attr(group_title)}",{effective_name}\n'
          )
+```
+
+## Appendix I: E-9, the `end_date` cap (against `50b69c83`)
+
+A real unified diff, unlike Appendices A-H: extract the fenced block verbatim and `git apply --check` it
+from the repository root. It was applied clean to a fresh `git archive 50b69c83` export, and the result
+was byte-identical to the prototype that produced the red, green and break-check runs above.
+
+```diff
+--- a/apps/channels/serializers.py
++++ b/apps/channels/serializers.py
+@@ -1,5 +1,6 @@
+ import json
+-from datetime import datetime
++from datetime import datetime, timedelta
++from zoneinfo import ZoneInfo
+ 
+ from rest_framework import serializers
+ from .models import (
+@@ -16,7 +17,7 @@
+     RecurringRecordingRule,
+ )
+ from apps.epg.serializers import EPGDataSerializer
+-from core.models import StreamProfile
++from core.models import CoreSettings, StreamProfile
+ from apps.epg.models import EPGData
+ from django.db import connection, transaction
+ from django.urls import reverse
+@@ -808,6 +809,26 @@
+             raise serializers.ValidationError("End time must be after start time.")
+ 
+         return data
++
++
++# A recurring rule materialises one Recording (and one ClockedSchedule/PeriodicTask
++# pair) per matching day up to its own end_date, synchronously, inside the request:
++# sync_recurring_rule_impl's 14-day horizon never applies on the REST path
++# (upstream 6536f35d made end_date required and full materialisation deliberate).
++# The request is bounded here instead (#138). Measured in the test DB: 365 days
++# took under 6 s per request and ten years 105 s, against a 120 s API harakiri.
++RECURRING_RULE_MAX_DAYS = 365
++
++
++def _system_local_today():
++    """Today in the configured system time zone, as sync_recurring_rule_impl computes
++    local_today (apps/channels/tasks.py), so the cap and the walk share a calendar."""
++    tz_name = CoreSettings.get_system_time_zone()
++    try:
++        tz = ZoneInfo(tz_name)
++    except (KeyError, ValueError, TypeError):
++        tz = timezone.get_current_timezone()
++    return timezone.now().astimezone(tz).date()
+ 
+ 
+ class RecurringRecordingRuleSerializer(serializers.ModelSerializer):
+@@ -845,6 +866,19 @@
+             existing_end = getattr(self.instance, "end_date", None)
+             if existing_end is None:
+                 raise serializers.ValidationError("End date is required")
++        # Only a request that sets end_date is capped: a row from before the cap keeps
++        # its end_date on a PATCH that does not touch it (the operator can shorten it).
++        if "end_date" in attrs and end_date:
++            latest = _system_local_today() + timedelta(days=RECURRING_RULE_MAX_DAYS)
++            if end_date > latest:
++                raise serializers.ValidationError(
++                    {
++                        "end_date": (
++                            f"End date must be no more than {RECURRING_RULE_MAX_DAYS} days "
++                            f"from today ({latest.isoformat()} at the latest)"
++                        )
++                    }
++                )
+         if start and end and start_date and end_date:
+             start_dt = datetime.combine(start_date, start)
+             end_dt = datetime.combine(end_date, end)
+```
+
+## Appendix J: E-9, `test_recurring_rule_end_date_cap.py` (against `50b69c83`)
+
+Same form as Appendix I; a new file, so `git apply` creates it.
+
+```diff
+--- /dev/null
++++ b/apps/channels/tests/test_recurring_rule_end_date_cap.py
+@@ -0,0 +1,127 @@
++"""#138: a recurring rule materialises one Recording (and one ClockedSchedule/PeriodicTask
++pair) per matching day up to its own end_date, synchronously, inside the request. The
++serializer caps end_date so the request stays bounded; sync_recurring_rule_impl is unchanged.
++
++The clock is frozen for the whole class: the serializer computes "today" at request time and
++these tests compute it in setUp, so a real midnight between the two would make an over-cap
++end_date land exactly on the cap and pass on correct code.
++"""
++from datetime import datetime, timedelta, timezone as dt_timezone
++from unittest import mock
++from zoneinfo import ZoneInfo
++
++from django.contrib.auth import get_user_model
++from django.test import TestCase
++from django_celery_beat.models import PeriodicTask
++from rest_framework.test import APIClient
++
++from apps.channels.models import Channel, Recording, RecurringRecordingRule
++# The cap is pinned here as a number, deliberately not imported from the serializer.
++from core.models import CoreSettings
++
++RULES_URL = "/api/channels/recurring-rules/"
++CAP_DAYS = 365
++CAP_MESSAGE = f"End date must be no more than {CAP_DAYS} days from today"
++# Noon UTC: the same calendar date in UTC (Django's TIME_ZONE in the test settings) and in
++# every zone west of UTC+12, a different one in UTC+13/+14, which the last test relies on.
++FROZEN_NOW = datetime(2026, 9, 24, 12, 0, tzinfo=dt_timezone.utc)
++
++
++class RecurringRuleEndDateCapTests(TestCase):
++    def setUp(self):
++        patcher = mock.patch("django.utils.timezone.now", return_value=FROZEN_NOW)
++        patcher.start()
++        self.addCleanup(patcher.stop)
++        User = get_user_model()
++        self.admin = User.objects.create_user(username="cap_admin", password="pass")
++        self.admin.user_level = 10
++        self.admin.save()
++        self.client = APIClient()
++        self.client.force_authenticate(user=self.admin)
++        self.channel = Channel.objects.create(channel_number=1, name="Cap Channel")
++        # The same "today" sync_recurring_rule_impl walks from (apps/channels/tasks.py).
++        tz = ZoneInfo(CoreSettings.get_system_time_zone())
++        self.today = FROZEN_NOW.astimezone(tz).date()
++
++    def _payload(self, **overrides):
++        payload = {
++            "channel": self.channel.id,
++            "days_of_week": [0, 1, 2, 3, 4, 5, 6],
++            "start_time": "12:00:00",
++            "end_time": "13:00:00",
++            "start_date": (self.today - timedelta(days=2)).isoformat(),
++            "end_date": (self.today + timedelta(days=14)).isoformat(),
++            "name": "cap",
++        }
++        payload.update(overrides)
++        return payload
++
++    def _rows_for(self, rule_id):
++        return Recording.objects.filter(custom_properties__rule__id=rule_id).count()
++
++    def test_a_rule_past_the_cap_is_refused_before_it_materialises_anything(self):
++        over = (self.today + timedelta(days=CAP_DAYS + 1)).isoformat()
++        resp = self.client.post(RULES_URL, self._payload(end_date=over), format="json")
++        self.assertEqual(resp.status_code, 400, resp.content)
++        self.assertIn(CAP_MESSAGE, " ".join(resp.json().get("end_date", [])))
++        self.assertEqual(RecurringRecordingRule.objects.count(), 0)
++        self.assertEqual(Recording.objects.count(), 0)
++        self.assertEqual(PeriodicTask.objects.filter(name__startswith="dvr-recording-").count(), 0)
++
++    def test_a_rule_exactly_at_the_cap_is_accepted(self):
++        at = (self.today + timedelta(days=CAP_DAYS)).isoformat()
++        resp = self.client.post(RULES_URL, self._payload(end_date=at), format="json")
++        self.assertEqual(resp.status_code, 201, resp.content)
++        self.assertGreaterEqual(self._rows_for(resp.json()["id"]), CAP_DAYS)
++
++    def test_a_create_with_no_end_date_is_still_refused_as_required(self):
++        payload = self._payload()
++        del payload["end_date"]
++        resp = self.client.post(RULES_URL, payload, format="json")
++        self.assertEqual(resp.status_code, 400, resp.content)
++        self.assertIn("End date is required", resp.content.decode())
++        self.assertEqual(RecurringRecordingRule.objects.count(), 0)
++
++    def test_a_patch_that_leaves_end_date_alone_is_not_re_capped(self):
++        # A row from before the cap, with an end_date the cap would now refuse.
++        rule = RecurringRecordingRule.objects.create(
++            channel=self.channel,
++            days_of_week=[0, 1, 2, 3, 4, 5, 6],
++            start_time="12:00:00",
++            end_time="13:00:00",
++            start_date=self.today,
++            end_date=self.today + timedelta(days=CAP_DAYS + 30),
++        )
++        resp = self.client.patch(f"{RULES_URL}{rule.id}/", {"enabled": False}, format="json")
++        self.assertEqual(resp.status_code, 200, resp.content)
++        rule.refresh_from_db()
++        self.assertFalse(rule.enabled)
++        self.assertEqual(rule.end_date, self.today + timedelta(days=CAP_DAYS + 30))
++
++    def test_a_patch_that_extends_end_date_past_the_cap_is_refused_and_changes_nothing(self):
++        resp = self.client.post(RULES_URL, self._payload(), format="json")
++        self.assertEqual(resp.status_code, 201, resp.content)
++        rule_id = resp.json()["id"]
++        before = self._rows_for(rule_id)
++        self.assertGreaterEqual(before, 13)
++        over = (self.today + timedelta(days=CAP_DAYS + 1)).isoformat()
++        resp = self.client.patch(f"{RULES_URL}{rule_id}/", {"end_date": over}, format="json")
++        self.assertEqual(resp.status_code, 400, resp.content)
++        self.assertIn(CAP_MESSAGE, " ".join(resp.json().get("end_date", [])))
++        rule = RecurringRecordingRule.objects.get(pk=rule_id)
++        self.assertEqual(rule.end_date, self.today + timedelta(days=14))
++        self.assertEqual(self._rows_for(rule_id), before)
++
++    def test_the_cap_counts_from_today_in_the_system_time_zone_not_django_s(self):
++        # In UTC+14 the frozen instant is already the next calendar day, so the latest
++        # accepted end_date is one day later than a Django-TIME_ZONE (UTC) "today" would allow.
++        # The settings group is cached in Redis, which the transaction rollback does not
++        # touch, so the zone is restored explicitly (the cleanup runs before the rollback).
++        self.addCleanup(CoreSettings.set_system_time_zone, CoreSettings.get_system_time_zone())
++        CoreSettings.set_system_time_zone("Pacific/Kiritimati")
++        self.assertEqual(CoreSettings.get_system_time_zone(), "Pacific/Kiritimati")
++        local_today = FROZEN_NOW.astimezone(ZoneInfo("Pacific/Kiritimati")).date()
++        self.assertEqual(local_today, FROZEN_NOW.date() + timedelta(days=1))
++        at = (local_today + timedelta(days=CAP_DAYS)).isoformat()
++        resp = self.client.post(RULES_URL, self._payload(end_date=at, days_of_week=[0]), format="json")
++        self.assertEqual(resp.status_code, 201, resp.content)
 ```
