@@ -354,26 +354,36 @@ def generate_m3u(request, profile_name=None, user=None):
     return response
 
 
-def xc_get_user(request):
+XC_DENIED_CREDENTIALS = 401
+XC_DENIED_NETWORK = 403
+
+
+def xc_authenticate(request):
+    """(user, None) on success, else (None, 401) or (None, 403).
+
+    401 means the credentials did not resolve: an unknown username, no
+    xc_password, or a wrong one are deliberately indistinguishable (#84).
+    403 means they did, and the XC_API network ACL refused this client for
+    this user (#134). The credential check is resolve_xc_user's, the same
+    constant-time comparison every streaming surface uses.
+    """
+    from apps.proxy.authorize import resolve_xc_user
+
     username = request.GET.get("username")
     password = request.GET.get("password")
-
     if not username or not password:
-        return None
-
-    user = get_object_or_404(User, username=username)
-
-    custom_properties = user.custom_properties or {}
-
-    if "xc_password" not in custom_properties:
-        return None
-
-    if custom_properties["xc_password"] != password:
-        return None
-
+        return None, XC_DENIED_CREDENTIALS
+    user = resolve_xc_user(username, password)
+    if user is None:
+        return None, XC_DENIED_CREDENTIALS
     if not network_access_allowed(request, 'XC_API', user):
-        return None
+        return None, XC_DENIED_NETWORK
+    return user, None
 
+
+def xc_get_user(request):
+    """The authenticated XC user, or None. For callers that have already refused."""
+    user, _denied = xc_authenticate(request)
     return user
 
 
@@ -446,9 +456,27 @@ def xc_get_info(request, full=False):
     return info
 
 
+def _xc_network_refused(request, endpoint):
+    log_system_event(
+        event_type='login_failed',
+        user=request.GET.get('username', 'unknown'),
+        reason='Network access denied (XC API)',
+        endpoint=endpoint,
+        client_ip=get_client_ip(request) or "unknown",
+        user_agent=request.META.get('HTTP_USER_AGENT', 'unknown'),
+    )
+    return JsonResponse({'error': 'Forbidden'}, status=403)
+
+
 def xc_player_api(request, full=False):
+    if not network_access_allowed(request, 'XC_API'):
+        return _xc_network_refused(request, 'player_api')
+
     action = request.GET.get("action")
-    user = xc_get_user(request)
+    user, denied = xc_authenticate(request)
+
+    if denied == XC_DENIED_NETWORK:
+        return _xc_network_refused(request, 'player_api')
 
     if user is None:
         return JsonResponse({'error': 'Unauthorized'}, status=401)
@@ -484,7 +512,13 @@ def xc_player_api(request, full=False):
 
 
 def xc_panel_api(request):
-    user = xc_get_user(request)
+    if not network_access_allowed(request, 'XC_API'):
+        return _xc_network_refused(request, 'panel_api')
+
+    user, denied = xc_authenticate(request)
+
+    if denied == XC_DENIED_NETWORK:
+        return _xc_network_refused(request, 'panel_api')
 
     if user is None:
         return JsonResponse({'error': 'Unauthorized'}, status=401)
@@ -508,7 +542,21 @@ def xc_get(request):
         return JsonResponse({'error': 'Forbidden'}, status=403)
 
     action = request.GET.get("action")
-    user = xc_get_user(request)
+    user, denied = xc_authenticate(request)
+
+    if denied == XC_DENIED_NETWORK:
+        # Log blocked M3U download due to the per-user network ACL
+        from core.utils import log_system_event
+        client_ip = get_client_ip(request) or "unknown"
+        user_agent = request.META.get('HTTP_USER_AGENT', 'unknown')
+        log_system_event(
+            event_type='m3u_blocked',
+            user=request.GET.get('username', 'unknown'),
+            reason='Network access denied (XC API)',
+            client_ip=client_ip,
+            user_agent=user_agent,
+        )
+        return JsonResponse({'error': 'Forbidden'}, status=403)
 
     if user is None:
         # Log blocked M3U download due to invalid credentials
@@ -542,7 +590,21 @@ def xc_xmltv(request):
         )
         return JsonResponse({'error': 'Forbidden'}, status=403)
 
-    user = xc_get_user(request)
+    user, denied = xc_authenticate(request)
+
+    if denied == XC_DENIED_NETWORK:
+        # Log blocked EPG download due to the per-user network ACL
+        from core.utils import log_system_event
+        client_ip = get_client_ip(request) or "unknown"
+        user_agent = request.META.get('HTTP_USER_AGENT', 'unknown')
+        log_system_event(
+            event_type='epg_blocked',
+            user=request.GET.get('username', 'unknown'),
+            reason='Network access denied (XC API)',
+            client_ip=client_ip,
+            user_agent=user_agent,
+        )
+        return JsonResponse({'error': 'Forbidden'}, status=403)
 
     if user is None:
         # Log blocked EPG download due to invalid credentials

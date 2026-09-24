@@ -129,20 +129,13 @@ test('player_api.php rejects a user with no xc_password at all', { tag: '@contra
   expect(res.status()).toBe(401);
 });
 
-// Asserts the behaviour Dispatcharr SHOULD have. `xc_get_user` returns None
-// for a wrong password — which xc_player_api turns into 401 — but calls
-// `get_object_or_404(User, username=…)` first, so an unknown username escapes
-// as an Http404 and Django answers 404.
-//
-// An unauthenticated caller can therefore tell "no such account" from "wrong
-// password" by status code alone, on an endpoint that takes credentials in a
-// URL. Both failures should be indistinguishable.
-//
-// Found while specifying G5; it is not in the original brief. See D10 in the
-// design doc.
-//
-// Issue: https://github.com/D10Scot/Dispatcharr/issues/84
-test.fail('player_api.php does not distinguish an unknown user from a wrong password', { tag: '@contract' }, async ({
+// Fixed (#84). `xc_authenticate` now delegates the credential check to
+// `apps.proxy.authorize.resolve_xc_user`, which returns None for an unknown
+// username, a missing xc_password, or a wrong one alike — no
+// `get_object_or_404` lookup runs first, so an unknown username no longer
+// escapes as an Http404. An unauthenticated caller cannot tell "no such
+// account" from "wrong password" by status code alone.
+test('player_api.php answers an unknown user and a wrong password identically', { tag: '@contract' }, async ({
   seed,
   request,
 }) => {
