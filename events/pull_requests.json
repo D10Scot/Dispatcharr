@@ -1,8 +1,195 @@
 {
  "detail": null,
- "fetched_at": "2026-09-23T10:50:03+00:00",
+ "fetched_at": "2026-09-24T11:10:17+00:00",
  "kind": "pull_requests",
  "records": [
+  {
+   "additions": 1919,
+   "author": "Dionmm",
+   "author_type": "User",
+   "changed_files": 1,
+   "closed_at": null,
+   "created_at": "2026-09-23T21:47:53Z",
+   "deletions": 0,
+   "files": [
+    "docs/superpowers/plans/2026-09-23-fixplan-F-frontend.md"
+   ],
+   "head_ref": "docs/fixplan-F",
+   "id": 354,
+   "merged_at": null,
+   "title": "docs(fixplan): category F \u2014 frontend",
+   "updated_at": "2026-09-23T22:11:33Z"
+  },
+  {
+   "additions": 6089,
+   "author": "Dionmm",
+   "author_type": "User",
+   "changed_files": 1,
+   "closed_at": null,
+   "created_at": "2026-09-23T21:35:06Z",
+   "deletions": 0,
+   "files": [
+    "docs/superpowers/plans/2026-09-23-fixplan-I-property-tests.md"
+   ],
+   "head_ref": "docs/fixplan-I",
+   "id": 352,
+   "merged_at": null,
+   "title": "docs(fixplan): category I \u2014 property-tests",
+   "updated_at": "2026-09-23T22:02:15Z"
+  },
+  {
+   "additions": 1112,
+   "author": "Dionmm",
+   "author_type": "User",
+   "changed_files": 1,
+   "closed_at": null,
+   "created_at": "2026-09-23T21:24:45Z",
+   "deletions": 0,
+   "files": [
+    "docs/superpowers/plans/2026-09-23-fixplan-G-ci-hooks-tooling.md"
+   ],
+   "head_ref": "docs/fixplan-G",
+   "id": 351,
+   "merged_at": null,
+   "title": "docs(fixplan): category G \u2014 CI, hooks and tooling",
+   "updated_at": "2026-09-23T21:51:05Z"
+  },
+  {
+   "additions": 2440,
+   "author": "Dionmm",
+   "author_type": "User",
+   "changed_files": 1,
+   "closed_at": null,
+   "created_at": "2026-09-23T21:23:15Z",
+   "deletions": 0,
+   "files": [
+    "docs/superpowers/plans/2026-09-23-fixplan-A-go-relay-defects.md"
+   ],
+   "head_ref": "docs/fixplan-A",
+   "id": 350,
+   "merged_at": null,
+   "title": "docs(fixplan): category A \u2014 the Go relay's carried defects",
+   "updated_at": "2026-09-23T21:53:05Z"
+  },
+  {
+   "additions": 1546,
+   "author": "Dionmm",
+   "author_type": "User",
+   "changed_files": 1,
+   "closed_at": null,
+   "created_at": "2026-09-23T21:17:32Z",
+   "deletions": 0,
+   "files": [
+    "docs/superpowers/plans/2026-09-23-fixplan-E-backend-correctness.md"
+   ],
+   "head_ref": "docs/fixplan-E",
+   "id": 349,
+   "merged_at": null,
+   "title": "docs(fixplan): category E \u2014 backend correctness",
+   "updated_at": "2026-09-23T21:38:09Z"
+  },
+  {
+   "additions": 1051,
+   "author": "Dionmm",
+   "author_type": "User",
+   "changed_files": 1,
+   "closed_at": "2026-09-23T21:53:07Z",
+   "created_at": "2026-09-23T21:15:42Z",
+   "deletions": 0,
+   "files": [
+    "docs/superpowers/plans/2026-09-23-fixplan-A-go-relay-defects.md"
+   ],
+   "head_ref": "docs/fixplan-A2",
+   "id": 348,
+   "merged_at": null,
+   "title": "docs(fixplan): category A \u2014 Go relay defects",
+   "updated_at": "2026-09-23T21:53:07Z"
+  },
+  {
+   "additions": 1274,
+   "author": "Dionmm",
+   "author_type": "User",
+   "changed_files": 1,
+   "closed_at": null,
+   "created_at": "2026-09-23T21:13:05Z",
+   "deletions": 0,
+   "files": [
+    "docs/superpowers/plans/2026-09-23-fixplan-H-e2e.md"
+   ],
+   "head_ref": "docs/fixplan-H",
+   "id": 347,
+   "merged_at": null,
+   "title": "docs(fixplan): category H \u2014 the E2E suite",
+   "updated_at": "2026-09-23T21:39:43Z"
+  },
+  {
+   "additions": 2283,
+   "author": "Dionmm",
+   "author_type": "User",
+   "changed_files": 1,
+   "closed_at": null,
+   "created_at": "2026-09-23T21:01:04Z",
+   "deletions": 0,
+   "files": [
+    "docs/superpowers/plans/2026-09-23-fixplan-D-vod-catchup.md"
+   ],
+   "head_ref": "docs/fixplan-D",
+   "id": 346,
+   "merged_at": null,
+   "title": "docs(fixplan): category D \u2014 VOD and catch-up correctness",
+   "updated_at": "2026-09-23T21:32:41Z"
+  },
+  {
+   "additions": 1160,
+   "author": "Dionmm",
+   "author_type": "User",
+   "changed_files": 1,
+   "closed_at": null,
+   "created_at": "2026-09-23T20:36:34Z",
+   "deletions": 0,
+   "files": [
+    "docs/superpowers/plans/2026-09-23-fixplan-C-input-crashes.md"
+   ],
+   "head_ref": "docs/fixplan-C",
+   "id": 345,
+   "merged_at": null,
+   "title": "docs(fixplan): category C \u2014 input crashes",
+   "updated_at": "2026-09-23T21:27:35Z"
+  },
+  {
+   "additions": 1220,
+   "author": "Dionmm",
+   "author_type": "User",
+   "changed_files": 1,
+   "closed_at": null,
+   "created_at": "2026-09-23T20:34:31Z",
+   "deletions": 0,
+   "files": [
+    "docs/superpowers/plans/2026-09-23-fixplan-J-phase2-closeout.md"
+   ],
+   "head_ref": "docs/fixplan-J",
+   "id": 344,
+   "merged_at": null,
+   "title": "docs(fixplan): category J \u2014 phase2-closeout",
+   "updated_at": "2026-09-23T20:58:49Z"
+  },
+  {
+   "additions": 1429,
+   "author": "Dionmm",
+   "author_type": "User",
+   "changed_files": 1,
+   "closed_at": null,
+   "created_at": "2026-09-23T20:30:36Z",
+   "deletions": 0,
+   "files": [
+    "docs/superpowers/plans/2026-09-23-fixplan-B-security.md"
+   ],
+   "head_ref": "docs/fixplan-B",
+   "id": 343,
+   "merged_at": null,
+   "title": "docs(fixplan): category B \u2014 security",
+   "updated_at": "2026-09-23T20:56:48Z"
+  },
   {
    "additions": 1,
    "author": "Dionmm",
