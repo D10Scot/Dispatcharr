@@ -5,6 +5,7 @@ Supports M3U profiles for authentication and URL transformation.
 
 import time
 import random
+import uuid
 import logging
 import requests
 from urllib.parse import urlencode
@@ -63,6 +64,27 @@ def _content_type_for_obj(content_obj):
     if isinstance(content_obj, Movie):
         return "movie"
     return "episode"
+
+
+def _hidden_adult_movie(user, content_type, content_obj):
+    """True when this user may not stream this movie because of hide_adult_content.
+
+    The same predicate xc_get_vod_streams and xc_get_vod_info apply to the
+    listings (apps/output/views.py): non-admin, the preference set, the movie
+    flagged. Only Movie carries is_adult; Series and Episode have no such
+    field, so nothing else is hidden and nothing else is refused (#110).
+    """
+    if user is None or content_type != "movie":
+        return False
+    if user.user_level >= User.UserLevel.ADMIN:
+        return False
+    if not (user.custom_properties or {}).get("hide_adult_content", False):
+        return False
+    return bool(getattr(content_obj, "is_adult", False))
+
+
+def _adult_refusal():
+    return authorize_error_response(AuthorizeDenied(403, "Forbidden"))
 
 
 def _find_idle_vod_session(
@@ -716,6 +738,21 @@ def stream_vod(request, content_type, content_id, session_id=None, profile_id=No
             request
         )
 
+        # First request (no session_id), a known movie UUID: refuse before a
+        # session is minted or the client is redirected to the provider.
+        # Gated on `not session_id` itself, so it runs once, here, and never
+        # shadows call (3) below. Covers the adopted-idle-session case, where
+        # the session branch never resolves a user (#110).
+        if not session_id and user is not None and content_type == "movie":
+            try:
+                movie_uuid = uuid.UUID(str(content_id))
+            except (ValueError, AttributeError, TypeError):
+                movie_uuid = None
+            if movie_uuid is not None:
+                movie = Movie.objects.filter(uuid=movie_uuid).only("is_adult").first()
+                if _hidden_adult_movie(user, content_type, movie):
+                    return _adult_refusal()
+
         # First request (no session_id): decide Redirect vs mint. The idle
         # fingerprint match (ip/user-agent/content, same as the connection
         # manager already uses for reconnects) only needs checking when
@@ -764,6 +801,8 @@ def stream_vod(request, content_type, content_id, session_id=None, profile_id=No
                         content_id,
                     )
                     return HttpResponse("No available stream", status=503)
+                if _hidden_adult_movie(user, content_type, selected["content_obj"]):
+                    return _adult_refusal()
                 logger.info(
                     "[VOD-REDIRECT] Redirecting to provider URL: %s",
                     redact_url(selected["final_stream_url"]),
@@ -816,6 +855,8 @@ def stream_vod(request, content_type, content_id, session_id=None, profile_id=No
                 content_id,
             )
             return HttpResponse("No available stream", status=503)
+        if _hidden_adult_movie(user, content_type, selected["content_obj"]):
+            return _adult_refusal()
 
         content_obj = selected["content_obj"]
         m3u_account = selected["m3u_account"]
@@ -859,7 +900,7 @@ def stream_vod(request, content_type, content_id, session_id=None, profile_id=No
 
     except Exception as e:
         logger.error(f"[VOD-EXCEPTION] Error streaming {content_type} {content_id}: {e}", exc_info=True)
-        return HttpResponse(f"Streaming error: {str(e)}", status=500)
+        return HttpResponse("Streaming error", status=500)
 
 @api_view(["HEAD"])
 @authentication_classes([JWTAuthentication, ApiKeyAuthentication, QueryParamJWTAuthentication])
@@ -1074,7 +1115,7 @@ def head_vod(request, content_type, content_id, session_id=None, profile_id=None
 
     except Exception as e:
         logger.error(f"[VOD-HEAD] Error in HEAD request: {e}", exc_info=True)
-        return HttpResponse(f"HEAD error: {str(e)}", status=500)
+        return HttpResponse("HEAD error", status=500)
 
 def build_vod_stats_data(redis_client):
     """
@@ -1436,6 +1477,9 @@ def stream_xc_movie(request, username, password, stream_id, extension):
             return JsonResponse({"error": "Movie not found"}, status=404)
     except (M3UMovieRelation.DoesNotExist, M3UMovieRelation.MultipleObjectsReturned):
         return JsonResponse({"error": "Movie not found"}, status=404)
+
+    if _hidden_adult_movie(decision.user, "movie", movie_relation.movie):
+        return _adult_refusal()
 
     return stream_vod(
         request._request, 'movie', movie_relation.movie.uuid, session_id, profile_id,
