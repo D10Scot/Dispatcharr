@@ -85,9 +85,15 @@ def validate_outbound_http_url(
 
     try:
         prepared_url = requests.Request("GET", url).prepare().url
+        dialled_host = (parse_url(prepared_url).host or "").strip("[]").lower()
     except Exception as exc:
+        # Both requests' own prepare_url() and this second, independent
+        # parse_url(prepared_url) call can raise (urllib3's LocationParseError
+        # carries the whole URL it was given, userinfo included, as its
+        # message -- int(port) raising on an out-of-range port is one way
+        # in). Whichever of the two raises, the same fixed message applies;
+        # neither the URL nor the caught exception's text is safe to surface.
         raise ValueError("URL could not be prepared for a request and is refused.") from exc
-    dialled_host = (parse_url(prepared_url).host or "").strip("[]").lower()
     if dialled_host != urlparse_dial_host:
         raise ValueError(
             f"URL host '{urlparse_dial_host}' would dial a different host "

@@ -112,6 +112,38 @@ class ValidateOutboundHttpUrlTests(SimpleTestCase):
                 self.assertNotIn("token=abc", msg)
                 self.assertNotIn(url, msg)
 
+    @patch("core.http_security.parse_url")
+    def test_a_refusal_message_is_safe_when_parse_url_itself_raises(
+        self, mock_parse_url
+    ):
+        # A fifth branch, found by the PR-review bot: parse_url(prepared_url)
+        # is a second, independent parse of the string requests.prepare()
+        # produced, and urllib3's LocationParseError carries the whole URL
+        # it was given -- including userinfo -- as its own message (its
+        # int(port) range check is one way in, since it runs inside the
+        # same try/except that turns a ValueError into
+        # LocationParseError(source_url)). No real URL in this requests
+        # 2.34.2 / urllib3 2.7.0 pair was found to reach this branch after
+        # extensive fuzzing (over 30 adversarial port/host/userinfo shapes):
+        # prepare_url() reconstructs the netloc from fields parse_url()
+        # already validated once, so the two calls agree in every case
+        # tried. Mocking parse_url directly pins the contract itself --
+        # whatever raises here must not leak -- independent of whether
+        # today's library versions happen to make it reachable.
+        from urllib3.exceptions import LocationParseError
+
+        leaky_url = "http://user:s3cret@public.example:99999/?token=abc"
+        mock_parse_url.side_effect = LocationParseError(leaky_url)
+
+        with self.assertRaises(ValueError) as ctx:
+            validate_outbound_http_url(
+                "http://public.example/x", allow_private=True, allow_loopback=True
+            )
+        msg = str(ctx.exception)
+        self.assertNotIn("s3cret", msg)
+        self.assertNotIn("token=abc", msg)
+        self.assertNotIn(leaky_url, msg)
+
     def test_rejects_a_backslash_authority_before_resolving_any_host(self):
         # urlparse reads http://127.0.0.1:8765\@public.example/'s host as
         # 'public.example' (everything after the last '@' in the netloc),
