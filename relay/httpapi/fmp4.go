@@ -110,52 +110,35 @@ func serveFMP4(
 }
 
 // serveFMP4Client is the fMP4 client loop: the port of
-// _stream_data_generator and _is_timeout (output/fmp4/generator.py:268-357).
+// _stream_data_generator and _is_timeout (output/fmp4/generator.py:268-357),
+// with issue #222 fixed.
 //
-// PARITY-MATRIX ROW 12 IS THIS FUNCTION, and specifically what it does NOT do.
-// Set it beside serveClient, which is the TS generator's loop, and TWO
-// mechanisms are missing from this one -- both absent from the Python fMP4
-// generator too, and both reproduced as absences:
+// IT LEAVES A CLIENT ON THE SAME EXIT serveClient DOES, which is what
+// parity-matrix row 12 now records. Python's fMP4 generator dropped a client
+// on elapsed time since its last fragment ALONE -- no health check, no
+// keepalive -- so a stall that left a TS viewer on the same channel
+// connected dropped an fMP4 viewer stream_timeout + failover_grace_period
+// (40s by default) in, including in the middle of a slow failover. Set this
+// beside serveClient:
 //
-//   - NO HEALTH GATE. serveClient disconnects only when the channel is
-//     unhealthy (`!ch.Healthy()`, output/ts/generator.py:592's
-//     `not stream_manager.healthy`). Here, elapsed time ALONE ends the client
-//     (generator.py:350-357: `if time.time() - self.last_yield_time > timeout`
-//     and nothing else). A channel whose upstream is fine and whose remux has
-//     merely stalled drops its fMP4 viewers and keeps its TS ones. THIS IS THE
-//     ONE THE ROW'S TEST RESTS ON.
-//   - NO KEEPALIVE. serveClient sends a null TS packet every KeepaliveInterval
-//     to a waiting client on an unhealthy channel, and each one REFRESHES the
-//     very timer the timeout reads (output/ts/generator.py:366-389), which is
-//     why on the TS path the reachable exit is MaxKeepalive and not
-//     ClientTimeout at all. There is nothing to refresh lastYield here but a
-//     real fragment.
+//   - THE HEALTH GATE. A healthy channel never times its clients out: a
+//     remux that has merely stalled while the upstream is fine is waited
+//     for, as serveClient waits (output/ts/generator.py:592's
+//     `not stream_manager.healthy`).
+//   - THE KEEPALIVE CAP, WITHOUT THE KEEPALIVE BYTES. On an unhealthy
+//     channel serveClient sends a null TS packet every KeepaliveInterval,
+//     each refreshing the timer ClientTimeout reads, so its reachable exit
+//     is MaxKeepalive and never ClientTimeout. An fMP4 byte stream has no
+//     null packet a player is known to skip, so nothing is written here --
+//     and the exit is the same one: MaxKeepalive of an unhealthy channel with
+//     nothing to send, counted from the first such read and cleared by the
+//     next fragment, as serveClient's keepaliveStart is. The one timing
+//     difference is where the clock starts: serveClient waits five empty
+//     reads first (at most 1.5s of its backoff), this loop starts it on the
+//     first.
 //
-// THE url_switching EXEMPTION IS A THIRD DIFFERENCE IN PYTHON AND NOT IN GO,
-// and saying so is more useful than listing it as one. Python's TS generator
-// gives a client more time while a switch is in progress
-// (output/ts/generator.py:594-599) and its fMP4 generator does not -- but 2c-5
-// did not port that exemption to serveClient either, on the ground that the
-// keepalive path shadows it (parity-matrix row 12's own Notes say the same:
-// "the url_switching clause is carried in the citations, not tested"). So
-// NEITHER Go loop has it, it is not a divergence between them, and the row's
-// contrast rests on the health gate alone. If a later PR ports it to
-// serveClient, it must NOT be ported here, and this comment goes back to
-// naming three.
-//
-// The consequence is the row's claim, in one sentence: an fMP4 viewer is
-// dropped ClientTimeout into a stall that leaves a TS viewer on the same
-// channel connected. It is filed as issue #222 and it is REPRODUCED, NOT
-// FIXED, per spec D5 -- the Python fix would add the health check, the
-// switching exemption and a keepalive to output/fmp4/generator.py:350-357, and
-// it would change this function, the Python test, the matrix row and the issue
-// together. Do not "improve" this loop.
-//
-// THE THRESHOLD IS THE SAME SUM, which is the part that makes the divergence a
-// gating difference rather than a timing one: Tuning.ClientTimeout is
-// STREAM_TIMEOUT + FAILOVER_GRACE_PERIOD, exactly the sum _is_timeout computes
-// at generator.py:351 and exactly the sum the TS generator computes at
-// output/ts/generator.py:585-587.
+// Neither loop has the url_switching exemption, for the reason serveClient's
+// own branch gives.
 func serveFMP4Client(
 	ctx context.Context,
 	w http.ResponseWriter,
@@ -179,7 +162,10 @@ func serveFMP4Client(
 	// TestAnFMP4ClientOnAFreshBufferStartsAtTheFirstFragment.
 	cursor := fragments.Join(tuning.JoinBehind)
 
-	lastYield := time.Now()
+	// stallStart is when this client last found nothing to send on an
+	// UNHEALTHY channel after having been fed: serveClient's keepaliveStart,
+	// with no keepalive to send.
+	var stallStart time.Time
 	for {
 		if ctx.Err() != nil {
 			// serveClient's reason: the admin stop and the hang-up both
@@ -198,13 +184,13 @@ func serveFMP4Client(
 			if !writeChunks(w, rc, frags) {
 				return
 			}
-			lastYield = time.Now()
+			stallStart = time.Time{}
 			// Touch, not Sent: the fMP4 generator writes last_active and no
 			// byte counter (output/fmp4/generator.py:288-295), so an fMP4
 			// client's detail row carries no bytes_sent, avg_rate_KBps or
 			// current_rate_KBps -- reproduced as an absence with a
 			// mechanism rather than a format check in the renderer.
-			client.Touch(lastYield)
+			client.Touch(time.Now())
 			continue
 		}
 
@@ -227,11 +213,16 @@ func serveFMP4Client(
 			}
 			return
 		case errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil:
-			// ROW 12. No health check, no switching exemption, no keepalive:
-			// elapsed time since the last fragment, and nothing else.
-			if time.Since(lastYield) > tuning.ClientTimeout {
-				log.Warn("fMP4 no data for the client timeout, disconnecting",
-					"channel", ch.ID(), "client", client.ID, "timeout", tuning.ClientTimeout)
+			// ROW 12, issue #222: serveClient's exit, as the doc comment says.
+			if ch.Healthy() {
+				continue
+			}
+			if stallStart.IsZero() {
+				stallStart = time.Now()
+			}
+			if time.Since(stallStart) > tuning.MaxKeepalive {
+				log.Warn("fMP4 client waited out the keepalive cap with no stream recovery, disconnecting",
+					"channel", ch.ID(), "client", client.ID, "max", tuning.MaxKeepalive)
 				return
 			}
 			continue
@@ -245,5 +236,6 @@ func serveFMP4Client(
 // where serveClient's TS loop backs off to a second
 // (output/ts/generator.py:400-403's min(0.1 * consecutive_empty, 1.0)) --
 // _stream_data_generator has no such backoff, and the difference is
-// observable as how promptly the timeout below fires once a stall begins.
+// observable as how promptly the keepalive cap's clock starts once a stall
+// begins.
 const fmp4EmptyReadWait = 50 * time.Millisecond

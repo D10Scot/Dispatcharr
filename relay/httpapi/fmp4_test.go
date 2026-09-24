@@ -353,60 +353,37 @@ func TestAnFMP4TuneWhoseRemuxCannotBeSpawnedIsAFiveHundred(t *testing.T) {
 	}
 }
 
-// PARITY-MATRIX ROW 12, issue #222, REPRODUCED AND NOT FIXED (spec D5).
+// PARITY-MATRIX ROW 12, issue #222, FIXED.
 //
-// An fMP4 client whose fragments stop arriving is disconnected
-// stream_timeout + failover_grace_period later, on elapsed time ALONE -- no
-// health check, no url_switching exemption, no keepalive -- while a TS client
-// on the SAME channel, silent for at least as long, stays connected because
-// serveClient's own timeout is gated on the channel being unhealthy and this
-// channel is healthy throughout.
+// A healthy channel whose fragments stop arriving keeps its fMP4 client
+// connected, exactly as it keeps its TS client: the stall here is on the
+// UPSTREAM, so both clients go quiet together, and the health monitor keeps
+// its default CONNECTION_TIMEOUT (10s), so the channel stays healthy for the
+// whole window. Before the fix the fMP4 client was dropped at
+// stream_timeout + failover_grace_period -- compressed here to 1 + 1 = 2s --
+// on elapsed time alone. Watched for three times that.
 //
-// The Go counterpart of test_fmp4_client_timeout.py::
-// FMP4ClientTimeoutTests::test_a_stalled_fmp4_client_is_dropped_while_a_ts_client_is_not,
-// and it is driven the same way: the timeout and the grace period are
-// compressed (they are wire settings, so the rig sends them), and the health
-// monitor's own thresholds are LEFT ALONE, because an unhealthy channel would
-// start the TS keepalives and blur which of the two mechanisms held the TS
-// client open.
-//
-// THE STALL IS ON THE UPSTREAM, NOT ON THE REMUX, and that is what makes the
-// contrast meaningful: the provider stops sending after DeadAirAfterBytes, so
-// BOTH the ring and the fragment buffer go quiet together and the TS client
-// is silent for exactly as long as the fMP4 client is. CONNECTION_TIMEOUT is
-// deliberately left at its default (10s, relaytest.ControlPlane's own), well
-// past this test's two-second window, so the channel stays HEALTHY -- which
-// is what keeps the TS client's own timeout gate shut and makes the contrast
-// about row 12's missing health check rather than about the channel's health.
-// If row 12 were "fixed" by adding that gate to serveFMP4Client (break-check
-// 14), it is this same health guard that would then govern the fMP4 client's
-// drop too, and the two loops would agree.
-func TestAStalledFMP4ClientIsDroppedWhileATSClientIsNot(t *testing.T) {
+// BOTH CLIENTS ARE STARVED. The upstream stalls, so the TS client goes
+// quiet, and the stand-in remux -- which ignores its input -- writes its five
+// fragments at once and then stays alive producing nothing, so the fMP4
+// client is quiet from its first second. A remux that kept producing would
+// feed the fMP4 client and hide the timeout this window exists to catch: the
+// defect-era version of this test used 200 fragments at 20 ms, four seconds
+// of them.
+func TestAStalledFMP4ClientOnAHealthyChannelStaysConnectedLikeATSClient(t *testing.T) {
 	const (
 		streamTimeout = 1.0
 		failoverGrace = 1.0
 	)
-	// THE STALL IS ON THE UPSTREAM, so BOTH clients go quiet -- which is what
-	// makes the contrast mean anything. An earlier version stalled only the
-	// remux, leaving the TS client still receiving bytes: its "the TS client
-	// is still connected" assertion was then true because that client was
-	// never silent, and removing the TS loop's health gate did not redden it.
-	// Demonstrated by break-check, and corrected here rather than explained
-	// away. test_fmp4_client_timeout.py stalls its source for the same reason.
-	//
-	// CONNECTION_TIMEOUT IS DELIBERATELY NOT COMPRESSED. The wire settings
-	// this test does compress are the two _is_timeout sums (1 + 1 = 2s against
-	// a default of 20 + 20 = 40); the health monitor keeps its own default, so
-	// the channel is still HEALTHY when the fMP4 client is dropped two seconds
-	// in, and the TS client's timeout gate is therefore still shut. An
-	// unhealthy channel would start the TS keepalives and blur which of the
-	// two mechanisms held that client open -- the Python test says the same
-	// and for the same reason.
 	upstreamStall := 200_000
 	r := fanRig(t, relaytest.Config{Rate: 8, DeadAirAfterBytes: upstreamStall}, map[string]any{
 		"STREAM_TIMEOUT":        streamTimeout,
 		"FAILOVER_GRACE_PERIOD": failoverGrace,
-	}, withRemux(standInRemux(t, "--fmp4-fragments", "200", "--fmp4-interval", "0.02")))
+		// Compressed too, below the window: the fix's other exit, so a loop
+		// that dropped the health gate and kept the cap is dropped at one
+		// second here rather than passing on the 300s default.
+		"MAX_KEEPALIVE_DURATION": 1.0,
+	}, withRemux(standInRemux(t, "--fmp4-fragments", "5", "--fmp4-interval", "0")))
 
 	ts := r.tuneAs(t, "c-row12", "client-ts")
 	defer func() { _ = ts.Body.Close() }()
@@ -415,51 +392,110 @@ func TestAStalledFMP4ClientIsDroppedWhileATSClientIsNot(t *testing.T) {
 	fmp4 := r.tuneFMP4(t, "c-row12", "client-fmp4")
 	defer func() { _ = fmp4.Body.Close() }()
 
-	// THE CLOCK IS TAKEN BEFORE THE THING IT MEASURES STARTS: everything after
-	// this point only makes the measured gap LONGER, never shorter, so the
-	// lower-bound assertion below cannot pass by being early.
-	started := time.Now()
-
-	// Read to EOF. The body ends only when serveFMP4Client returns, which for
-	// this client is the row-12 disconnect.
 	drained := make(chan int, 1)
 	go func() {
 		body, _ := io.ReadAll(fmp4.Body)
 		drained <- len(body)
 	}()
 
-	var sent int
+	window := 3 * time.Duration((streamTimeout+failoverGrace)*float64(time.Second))
 	select {
-	case sent = <-drained:
-	case <-time.After(30 * time.Second):
-		t.Fatal("the fMP4 client was still connected thirty seconds into a stall, against a two-second client timeout: row 12's disconnect did not happen")
-	}
-	took := time.Since(started)
-
-	if sent == 0 {
-		t.Fatal("the fMP4 client received nothing at all, so it was not dropped mid-stream and this is not row 12's disconnect")
-	}
-	// A LOWER BOUND ONLY, and it exists to catch a FALSE POSITIVE: a teardown
-	// that ended the response before the timeout could have. It fails in one
-	// direction and is silent in the other, which is the only shape a clock is
-	// allowed to take here. The pin is the two facts around it -- the fMP4
-	// response ended and the TS response did not.
-	if want := time.Duration((streamTimeout + failoverGrace) * float64(time.Second)); took < want {
-		t.Fatalf("the fMP4 client was dropped %s after the tune, sooner than stream_timeout + failover_grace_period (%s): this is not the _is_timeout disconnect", took, want)
+	case sent := <-drained:
+		t.Fatalf("the fMP4 client was dropped (%d bytes sent) on a HEALTHY channel inside %s: the loop timed it out on elapsed time alone (#222)", sent, window)
+	case <-time.After(window):
 	}
 
-	// AND THE CONTRAST, which is the whole content of row 12: the TS client on
-	// the same channel, silent for at least as long, is still connected. Its
-	// own timeout carries the health gate the fMP4 loop lacks, and this channel
-	// is still healthy.
 	ch := r.Manager.Get("c-row12")
 	if ch == nil {
-		t.Fatal("the channel stopped, so both clients ended for a reason that is not row 12")
+		t.Fatal("the channel stopped, so the window says nothing about either client")
 	}
 	if !ch.Healthy() {
-		t.Fatal("the channel went unhealthy, which opens the TS client's own timeout gate: the contrast this test asserts would then be about the health monitor rather than about row 12")
+		t.Fatal("the channel went unhealthy inside the window, which opens both loops' own exits: the assertion above would then be about the health monitor")
 	}
-	if got := ch.Clients(); got != 1 {
-		t.Fatalf("the channel has %d clients after the fMP4 one was dropped, want 1 (the TS client, still connected)", got)
+	if got := ch.Clients(); got != 2 {
+		t.Fatalf("the channel has %d clients after the stall, want 2: both loops hold a client on a healthy channel", got)
+	}
+}
+
+// The other half of row 12: on an UNHEALTHY channel the fMP4 client is
+// dropped where the TS client is -- MAX_KEEPALIVE_DURATION in, not
+// stream_timeout + failover_grace_period in. Both are compressed, the cap
+// (2s) well above the client timeout (0.5s), so the clock tells the two
+// exits apart. The remux writes its five fragments at once and then stalls,
+// so the fMP4 client is starved before the channel goes unhealthy -- under
+// the defect it is dropped before the channel is even unhealthy, and the
+// first check below says so.
+//
+// THE CLOCK IS TAKEN BEFORE THE EVENT IT BOUNDS: lastHealthy is read just
+// before the last Healthy() call that returned true, so the flip -- and the
+// cap's clock, which cannot start before it -- came after it, and the gap
+// asserted is never shorter than the real one. (A first draft took it after
+// the poll's own wait and measured 1.99s against a 2s cap once in a full
+// package run under -race: the flip had landed inside the wait.) The control plane is held for 8s after
+// the tune, so the failover the health monitor asks for cannot end the
+// channel inside the six-second window: an fMP4 end well inside it is the cap's.
+func TestAnFMP4ClientOnAnUnhealthyStallIsDroppedAtTheKeepaliveCap(t *testing.T) {
+	const maxKeepalive = 2 * time.Second
+	r := fanRig(t, relaytest.Config{Rate: 8, DeadAirAfterBytes: 200_000}, map[string]any{
+		"CONNECTION_TIMEOUT": 0.3, "HEALTH_CHECK_INTERVAL": 0.05, "KEEPALIVE_INTERVAL": 0.05,
+		"STREAM_TIMEOUT": 0.25, "FAILOVER_GRACE_PERIOD": 0.25,
+		"MAX_KEEPALIVE_DURATION": maxKeepalive.Seconds(),
+	}, withRemux(standInRemux(t, "--fmp4-fragments", "5", "--fmp4-interval", "0")))
+
+	ts := r.tuneAs(t, "c-row12-cap", "client-ts")
+	defer func() { _ = ts.Body.Close() }()
+	waitForHead(t, r, "c-row12-cap", 1)
+	fmp4 := r.tuneFMP4(t, "c-row12-cap", "client-fmp4")
+	defer func() { _ = fmp4.Body.Close() }()
+	r.Control.SetDelay(8 * time.Second)
+	ch := r.Manager.Get("c-row12-cap")
+	if ch == nil {
+		t.Fatal("the channel is not running")
+	}
+
+	ended := func(body io.Reader) chan struct{} {
+		done := make(chan struct{})
+		go func() {
+			_, _ = io.Copy(io.Discard, body)
+			close(done)
+		}()
+		return done
+	}
+	fmp4Done, tsDone := ended(fmp4.Body), ended(ts.Body)
+
+	// lastHealthy is read BEFORE the Healthy() call that saw true, so the
+	// flip -- which that call had not seen yet -- came after it.
+	var lastHealthy time.Time
+	for deadline := time.Now().Add(15 * time.Second); ; {
+		before := time.Now()
+		if !ch.Healthy() {
+			break
+		}
+		lastHealthy = before
+		if before.After(deadline) {
+			t.Fatal("the channel never went unhealthy")
+		}
+		select {
+		case <-fmp4Done:
+			t.Fatal("the fMP4 client was dropped while the channel was still HEALTHY: it was timed out on elapsed time alone (#222)")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	if lastHealthy.IsZero() {
+		t.Fatal("the channel was already unhealthy at the first look, so there is no clock taken before the flip")
+	}
+
+	select {
+	case <-fmp4Done:
+	case <-time.After(6 * time.Second):
+		t.Fatal("the fMP4 client was still connected six seconds into an unhealthy stall against a two-second keepalive cap")
+	}
+	if took := time.Since(lastHealthy); took < maxKeepalive {
+		t.Fatalf("the fMP4 client was dropped %s after the channel went unhealthy, before the %s keepalive cap: stream_timeout + failover_grace_period ended it (#222)", took, maxKeepalive)
+	}
+	select {
+	case <-tsDone:
+	case <-time.After(12 * time.Second):
+		t.Fatal("the TS client outlived the fMP4 one by twelve seconds: the two loops no longer share an exit")
 	}
 }
