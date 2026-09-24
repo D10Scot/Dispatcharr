@@ -26,8 +26,11 @@ import (
 // the digits are a timing measurement, only the SHAPE is asserted -- binds
 // these tests.
 
-// CorpusNames are the three captures.
-var CorpusNames = []string{"normal", "slow-trickle", "truncation"}
+// CorpusNames are the captures: three from the shipped ffmpeg 8.1.2, and two
+// from ffmpeg 6.1.1 (issue #299), whose stream-copy progress records begin
+// size= and carry no frame= at all. CorpusSpeeds panics on the 6.1.1 pair --
+// each opens with a speed=N/A record -- so read those through SplitCorpus.
+var CorpusNames = []string{"normal", "slow-trickle", "truncation", "ffmpeg6-normal", "ffmpeg6-slow-trickle"}
 
 // pkgDir is this file's own directory, from its compiled-in path.
 //
@@ -104,10 +107,12 @@ func SplitCorpus(raw []byte) (preamble []byte, records [][]byte) {
 // The PRODUCTION speed regex, copied deliberately rather than imported from
 // package ffmpeg: these helpers exist so a test can quote what the shipped
 // parser sees, and importing the parser would make the quote move if the
-// parser moved. Same rationale, and the same literal, as
-// apps/proxy/live_proxy/tests/manager_support.py:24.
+// parser moved. The copy must therefore move WITH it, by hand: issue #227's
+// fix widened package ffmpeg's speedRe to read an exponent, and this literal
+// was widened in the same PR so the two agree on a scientific-notation
+// record.
 var (
-	corpusSpeedRe   = regexp.MustCompile(`speed=\s*([0-9.]+)x?`)
+	corpusSpeedRe   = regexp.MustCompile(`speed=\s*([0-9.]+(?:[eE][-+]?[0-9]+)?)x?`)
 	corpusElapsedRe = regexp.MustCompile(`elapsed=(\d+):(\d\d):(\d\d(?:\.\d+)?)`)
 )
 
