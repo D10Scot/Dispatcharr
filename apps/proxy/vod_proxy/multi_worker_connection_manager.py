@@ -1406,7 +1406,7 @@ class MultiWorkerVODConnectionManager:
                     except Exception as cleanup_error:
                         logger.error(f"[{client_id}] Error during cleanup after connection failure: {cleanup_error}")
 
-            return HttpResponse(f"Streaming error: {str(e)}", status=500)
+            return HttpResponse("Streaming error", status=500)
 
     def _apply_timeshift_parameters(self, original_url, utc_start=None, utc_end=None, offset=None):
         """Apply timeshift parameters to URL"""
