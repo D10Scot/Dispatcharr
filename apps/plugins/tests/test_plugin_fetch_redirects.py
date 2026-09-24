@@ -118,8 +118,22 @@ class PluginFetchRedirectsTests(TestCase):
             reverse(url_name), data=body, content_type="application/json"
         )
 
-    def _assert_every_call_refused_redirects(self, mock_get):
-        self.assertTrue(mock_get.call_args_list, "requests.get was never called")
+    def _assert_refused_at_first_redirect(self, mock_get):
+        """Prove the loopback destination is what got the redirect refused,
+        not the hop-count bound (`More than N redirects.`). Exactly one
+        request was made (hop 0); hop 1 -- the redirect to 127.0.0.1 -- was
+        refused before any request was made for it. Without this, a helper
+        that silently loosened validation after the first hop would still
+        pass a "was it eventually refused" check: the canned 302 in
+        _redirect_to_loopback repeats forever, so an unbounded-validation
+        bug still ends in a ValueError, just from max_redirects (six calls)
+        rather than from the address (one call).
+        """
+        self.assertEqual(
+            mock_get.call_count,
+            1,
+            f"expected exactly one request (hop 0 only); got {mock_get.call_count}",
+        )
         for call in mock_get.call_args_list:
             self.assertIs(
                 call.kwargs.get("allow_redirects"),
@@ -134,10 +148,13 @@ class PluginFetchRedirectsTests(TestCase):
         mock_gai.side_effect = _addrinfo_side_effect(_ADDR_MAP)
         mock_get.return_value = _redirect_to_loopback()
 
-        with self.assertRaises(ValueError):
+        with self.assertRaises(ValueError) as ctx:
             _fetch_manifest("http://public.example/m.json")
 
-        self._assert_every_call_refused_redirects(mock_get)
+        # The message names the refused address, not the hop-count bound.
+        self.assertIn("127.0.0.1", str(ctx.exception))
+        self.assertNotIn("redirect", str(ctx.exception).lower())
+        self._assert_refused_at_first_redirect(mock_get)
 
     @patch("core.http_security.requests.get")
     @patch("core.http_security.socket.getaddrinfo")
@@ -156,8 +173,11 @@ class PluginFetchRedirectsTests(TestCase):
             {"repo_id": repo.id, "manifest_url": "http://public.example/m.json"},
         )
 
-        self._assert_every_call_refused_redirects(mock_get)
+        self._assert_refused_at_first_redirect(mock_get)
         self.assertEqual(response.status_code, 502)
+        body = response.json()["error"]
+        self.assertIn("127.0.0.1", body)
+        self.assertNotIn("redirect", body.lower())
 
     @patch("core.http_security.requests.get")
     @patch("core.http_security.socket.getaddrinfo")
@@ -179,9 +199,45 @@ class PluginFetchRedirectsTests(TestCase):
             },
         )
 
-        self._assert_every_call_refused_redirects(mock_get)
+        # This view answers a fixed, generic body regardless of cause
+        # (deliberately, so the client never sees the refused address), so
+        # the hop-count-vs-address distinction can only be read off the call
+        # count here, not the response body.
+        self._assert_refused_at_first_redirect(mock_get)
         self.assertEqual(response.status_code, 502)
         self.assertEqual(
             response.json()["error"],
             "Failed to download plugin. Check the URL and try again.",
         )
+
+    @patch("core.http_security.requests.get")
+    @patch("core.http_security.socket.getaddrinfo")
+    def test_repo_preview_surfaces_a_too_many_redirects_refusal_clearly(
+        self, mock_gai, mock_get
+    ):
+        """PluginRepoPreviewAPIView's ValueError/JSONDecodeError handler
+        only passed through messages matching a fixed keyword list.
+        fetch_outbound_http's own refusals ("More than N redirects.",
+        "Redirect without a Location header.") matched none of them and
+        fell through to a generic "did not return valid JSON" response --
+        misleading for an admin diagnosing a rejected manifest URL. A
+        self-redirecting URL (never resolves, never 200s) exercises the
+        "More than N redirects." message specifically, which the
+        pre-existing keywords (non-routable/scheme/hostname/resolve) did
+        not cover.
+        """
+        mock_gai.side_effect = _addrinfo_side_effect(_ADDR_MAP)
+        mock_get.return_value = _FakeResponse(
+            302, headers={"Location": "http://public.example/m.json"}
+        )
+
+        response = self._post_json(
+            "api:plugins:repo-preview",
+            {"url": "http://public.example/m.json"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        errors = response.json()["errors"]
+        self.assertEqual(len(errors), 1)
+        self.assertIn("redirects", errors[0])
+        self.assertNotIn("valid JSON", errors[0])

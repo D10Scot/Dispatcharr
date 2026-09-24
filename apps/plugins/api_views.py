@@ -918,7 +918,10 @@ class PluginRepoPreviewAPIView(PluginAuthMixin, APIView):
             # as-is; only substitute the generic JSON message for actual parse errors.
             if "missing" in msg.lower() and "plugins" in msg.lower():
                 friendly = msg
-            elif any(kw in msg.lower() for kw in ("non-routable", "scheme", "hostname", "resolve")):
+            elif any(
+                kw in msg.lower()
+                for kw in ("non-routable", "scheme", "hostname", "resolve", "redirect", "refused")
+            ):
                 friendly = msg
             else:
                 friendly = "The URL did not return valid JSON. Make sure it points directly to a manifest .json file."
