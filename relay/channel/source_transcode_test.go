@@ -685,6 +685,18 @@ func TestTheUDPFilterLeavesNoDanglingFlag(t *testing.T) {
 	if got := blank.argv(); len(got) != 3 || got[0] != "-i" {
 		t.Fatalf("argv = %q, want the flag and its empty value both gone", got)
 	}
+	// A FLAG WHOSE VALUE IS INLINE, via "=", carries no separate next
+	// argument: the "dropped flag takes the value after it" arm must not
+	// mistake the argument that follows -- here the URL itself -- for that
+	// flag's value. Found in review: an earlier draft's flag-takes-value
+	// case had no "=" guard and dropped url too.
+	inline := &TranscodeSource{
+		Argv: []string{"--http-user-agent=VLC/3.0.20", url, "--sout", "#x"},
+		URL:  url, UserAgent: "VLC/3.0.20",
+	}
+	if got, want := strings.Join(inline.argv(), " "), url+" --sout #x"; got != want {
+		t.Fatalf("inline-value UDP argv = %q, want %q", got, want)
+	}
 }
 
 // The argv Django built is what the child receives, verbatim and in order:

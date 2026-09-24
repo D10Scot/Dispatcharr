@@ -102,7 +102,11 @@ func (s *TranscodeSource) log() *slog.Logger {
 // the next argument, and the shipped Streamlink profile's
 // `--http-header User-Agent=X best` spawned as `--http-header best`. A
 // dropped VALUE takes the flag in front of it; a dropped FLAG
-// (`-user_agent`) takes the value after it.
+// (`-user_agent`) takes the value after it -- UNLESS the flag already
+// carries its value inline via "=" (`--http-user-agent=X`), in which case
+// there is no separate value argument to take, and the element after the
+// flag (an upstream URL, say) is left alone. Found in review: an earlier
+// draft of this fix had no "=" guard and dropped that next argument too.
 //
 // Python filters self.transcode_cmd, which INCLUDES the command at index 0;
 // a command containing "user-agent" would be dropped there and the spawn
@@ -119,7 +123,7 @@ func (s *TranscodeSource) argv() []string {
 		}
 		drop[i] = true
 		switch {
-		case isFlag(arg) && i+1 < len(s.Argv) && !isFlag(s.Argv[i+1]):
+		case isFlag(arg) && !strings.Contains(arg, "=") && i+1 < len(s.Argv) && !isFlag(s.Argv[i+1]):
 			drop[i+1] = true
 		case !isFlag(arg) && i > 0 && isFlag(s.Argv[i-1]):
 			drop[i-1] = true
