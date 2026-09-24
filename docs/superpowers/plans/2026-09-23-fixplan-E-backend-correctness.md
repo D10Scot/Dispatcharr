@@ -378,7 +378,7 @@ fix applies with a context rebase, since line numbers differ.
   containment scan over a table the same loop is growing, with the
   `ClockedSchedule.objects.get_or_create(clocked_time=…)` beside it; neither was profiled and the plan
   does not depend on which. Ten years is within a factor of two of the API process's 120 s `harakiri`
-  (`docker/uwsgi.ini`) on a fresh table and within 15 s of it on a used one, so today a long enough rule
+  (`docker/uwsgi.ini`) on a fresh table and about 15 s short of it on a used one, so today a long enough rule
   kills the worker and every other request on it; production Postgres over a network is slower than
   this container.
 - **Cap: 365 days from today.** One year covers a season of anything ("every weekday until next
@@ -415,8 +415,12 @@ fix applies with a context rebase, since line numbers differ.
   computes "today" at request time and the tests compute it in `setUp`, so a real midnight between
   the two would make an over-cap `end_date` land exactly on the cap and pass on correct code. The
   patch reaches the serializer's helper, `sync_recurring_rule_impl` and every `auto_now` field
-  (all call `timezone.now()` through the module); `schedule_recording_task` imports `now` by name
-  and keeps the real clock, which only clamps a past `eta`.
+  (all call `timezone.now()` through the module). `apps/channels/signals.py` imports `now` by name
+  (`:5`) and keeps the real clock, in `schedule_task_on_save` (`:356`) as well as in
+  `schedule_recording_task`'s `eta` clamp: once real time passes the frozen dates, every recording
+  the module creates has a `start_time` in the real past and the signal schedules none of them,
+  so the `PeriodicTask` counts here can only be asserted at zero, and the at-cap test's timing
+  figure will drift downward as the `ClockedSchedule`/`PeriodicTask` writes drop out.
   - `test_a_rule_past_the_cap_is_refused_before_it_materialises_anything`: `end_date` today+366 →
     400 with the message under `end_date`; zero `RecurringRecordingRule`, zero `Recording`, zero
     `dvr-recording-*` `PeriodicTask`. **Red at seed:** `AssertionError: 201 != 400`, the body
