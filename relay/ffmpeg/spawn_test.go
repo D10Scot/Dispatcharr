@@ -402,3 +402,37 @@ func TestEveryStderrLineSurvivesTheWaitThatPrecedesTheJoin(t *testing.T) {
 			records, wantRecords)
 	}
 }
+
+// ISSUE #24: a child that writes "frame=" with no CR or LF must not grow the
+// reader's buffer without bound. The 1 KiB flush exempts a buffer containing
+// frame= so a progress record is never cut, and before the fix nothing else
+// bounded it: 2 MiB of such output reached fn as ONE 2 MiB line at EOF, held
+// in memory the whole way. Driven through ReadStderr itself over an in-memory
+// pipe, no child process, so the only variable is the splitter.
+func TestAnUnterminatedFrameRecordCannotGrowTheReaderWithoutBound(t *testing.T) {
+	const total = 2 << 20
+	chunk := bytes.Repeat([]byte("frame=  1 "), 4096/10)
+	var input []byte
+	for len(input) < total {
+		input = append(input, chunk...)
+	}
+	p := &Process{stderr: io.NopCloser(bytes.NewReader(input))}
+	var lines []string
+	p.ReadStderr(func(line string) { lines = append(lines, line) })
+
+	delivered := 0
+	for _, l := range lines {
+		if len(l) > maxStderrLine+4096 {
+			t.Fatalf("a %d-byte line reached the callback: the buffer grew past maxStderrLine (%d) plus one read", len(l), maxStderrLine)
+		}
+		delivered += len(l)
+	}
+	if len(lines) < 2 {
+		t.Fatalf("%d lines from %d unterminated bytes, want the buffer flushed repeatedly", len(lines), len(input))
+	}
+	// Nothing is dropped: the cap flushes, it does not truncate. Trimming
+	// removes at most the trailing space of each flushed line.
+	if delivered < len(input)-len(lines) {
+		t.Fatalf("%d of %d bytes were delivered: the cap discarded output instead of flushing it", delivered, len(input))
+	}
+}
