@@ -139,3 +139,18 @@ class ProviderTimezoneSecondsTests(SimpleTestCase):
             convert_timestamp_to_provider_tz("2026-01-15:12-00", "Europe/Brussels"),
             "2026-01-15:13-00",
         )
+
+    def test_seconds_survive_a_provider_zone_dst_boundary(self):
+        # The fix keys off local_dt.second, which is unaffected by which side
+        # of a DST transition the converted instant lands on; every 2026
+        # Brussels offset is a whole number of minutes. Confirmed on both
+        # sides of the 2026-03-29 Europe/Brussels spring-forward (01:00 UTC).
+        for utc_input, expected in (
+            ("2026-03-29:00-59-59", "2026-03-29:01-59-59"),  # CET, before
+            ("2026-03-29:01-00-30", "2026-03-29:03-00-30"),  # CEST, after
+        ):
+            with self.subTest(utc_input=utc_input):
+                self.assertEqual(
+                    convert_timestamp_to_provider_tz(utc_input, "Europe/Brussels"),
+                    expected,
+                )

@@ -4,7 +4,7 @@ import { catchupRequests, catchupTimestampWithSeconds, withDeadline } from './he
 
 /**
  * `server_info.timezone` from the provider's own handshake drives
- * `convert_timestamp_to_provider_tz` (`apps/timeshift/helpers.py:134-160`).
+ * `convert_timestamp_to_provider_tz` (`apps/timeshift/helpers.py:134-167`).
  *
  * THE LIMIT: every assertion here reads the URL Dispatcharr **sent**, out of
  * the provider's scenario log. G8's archive is not time-addressable, so
@@ -225,7 +225,7 @@ test(
     // PATH correctly" from "walked PATH five times", and the shape assertion
     // below indexes [2], which needs the walk pinned rather than bounded.
     expect(utcAsked, 'three PATH candidates then the QUERY winner, under UTC').toHaveLength(4);
-    // PASSES: candidate 2, %Y-%m-%d:%H:%M:%S, keeps the requested :45.
+    // Candidate 2, %Y-%m-%d:%H:%M:%S, keeps the requested :45.
     expect(utcAsked[2].start, 'UTC preserves the requested seconds').toBe('2026-01-15:12:00:45');
 
     const brussels = await seedCatchupChannelInZone(
