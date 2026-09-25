@@ -178,6 +178,13 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Trust the workspace for git
+        # The base image gains git (#254); a container job runs as root against a
+        # checkout owned by another uid, and a raw git call (Go's VCS stamping in
+        # `go build`) is refused as "dubious ownership" without this. A no-op on
+        # an image without git.
+        run: if command -v git >/dev/null; then git config --global --add safe.directory "$GITHUB_WORKSPACE"; fi
+
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
