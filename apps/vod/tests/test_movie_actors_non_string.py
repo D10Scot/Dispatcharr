@@ -21,8 +21,10 @@ existed a second time in `refresh_movie_advanced_data`'s advanced-info actors me
 fixed the same way there.
 
 Invariant pinned here: the movie is NOT dropped, and
-`M3UMovieRelation.custom_properties['actors']`, when present, is always a string.
+`Movie.custom_properties['actors']`, when present, is always a string.
 """
+
+from unittest.mock import MagicMock, patch
 
 from django.test import TestCase
 from django.utils import timezone
@@ -34,7 +36,7 @@ from apps.vod.models import (
     Movie,
     VODCategory,
 )
-from apps.vod.tasks import process_movie_batch
+from apps.vod.tasks import process_movie_batch, refresh_movie_advanced_data
 
 
 class VODMovieActorsNonStringTests(TestCase):
@@ -99,7 +101,8 @@ class VODMovieActorsNonStringTests(TestCase):
         movie, props = self._custom_props("468001")
         self.assertEqual(movie.name, "Int Actors Film")
         actors = props.get("actors")
-        self.assertTrue(actors is None or isinstance(actors, str))
+        # Pin the chosen "scalar = absent" semantics, not just "didn't crash".
+        self.assertIsNone(actors)
 
     def test_dict_actors_value_does_not_drop_the_movie(self):
         row = self._list_row(4682, "468002", "Dict Actors Film", actors={"name": "Bob"})
@@ -120,7 +123,8 @@ class VODMovieActorsNonStringTests(TestCase):
         movie, props = self._custom_props("468003")
         self.assertEqual(movie.name, "Int Cast Film")
         actors = props.get("actors")
-        self.assertTrue(actors is None or isinstance(actors, str))
+        # Pin the chosen "scalar = absent" semantics, not just "didn't crash".
+        self.assertIsNone(actors)
 
     def test_list_with_non_string_element_does_not_drop_the_movie(self):
         row = self._list_row(4684, "468004", "Mixed List Film", actors=["Alice", 5, "Bob"])
@@ -145,3 +149,37 @@ class VODMovieActorsNonStringTests(TestCase):
         self.assertEqual(Movie.objects.count(), 1)
         movie, _props = self._custom_props("468005")
         self.assertEqual(movie.name, "Int Logo Film")
+
+    @patch("core.xtream_codes.Client")
+    def test_advanced_refresh_actors_list_with_non_string_element(self, mock_client_cls):
+        # refresh_movie_advanced_data's own actors-merge list branch
+        # (apps/vod/tasks.py, ~line 2341) has the identical shape bug as
+        # process_movie_batch's: s.strip() called on a raw, possibly non-string,
+        # list element. Drive it through the provider "info" payload rather than
+        # a list-sync row, mocking the XC client the way
+        # test_vod_sync_preserve_details.py's
+        # test_refresh_runs_when_detailed_fetched_false_despite_recent_timestamp does.
+        movie = Movie.objects.create(name="Advanced Actors Film", year=2020, tmdb_id="468006")
+        relation = M3UMovieRelation.objects.create(
+            m3u_account=self.account,
+            movie=movie,
+            category=self.category,
+            stream_id="4686",
+            container_extension="mkv",
+        )
+
+        mock_client = MagicMock()
+        mock_client_cls.return_value.__enter__.return_value = mock_client
+        mock_client.get_vod_info.return_value = {
+            "info": {"actors": ["A", 5]},
+            "movie_data": {"stream_id": "4686", "name": movie.name},
+        }
+
+        result = refresh_movie_advanced_data(relation.id, force_refresh=True)
+
+        self.assertEqual(result, "Advanced data refreshed.")
+        movie.refresh_from_db()
+        actors = (movie.custom_properties or {}).get("actors")
+        self.assertIsInstance(actors, str)
+        self.assertIn("A", actors)
+        self.assertIn("5", actors)
