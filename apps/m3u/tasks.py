@@ -46,6 +46,13 @@ _NON_TERMINAL_REFRESH_STATUSES = frozenset({
     M3UAccount.Status.PARSING,
 })
 
+# Third element of refresh_m3u_groups' failure tuple when it did NOT run
+# (group-refresh lock held by another task, or the account is missing or
+# inactive): not a failure, and the caller must not report one (#56). Every
+# other (message, None) return has already recorded its specific error on
+# the account (#60). Success still returns a plain 2-tuple.
+GROUP_REFRESH_SKIPPED = "skipped"
+
 
 def _delete_channels_stopping_streams(channels):
     """Delete channels after stopping any active live proxy sessions.
@@ -1567,7 +1574,11 @@ def refresh_m3u_groups(account_id, use_cache=False, full_refresh=False, scan_sta
         scan_start_time: Timestamp when the scan started (for consistent last_seen marking)
     """
     if not acquire_task_lock("refresh_m3u_account_groups", account_id):
-        return f"Task already running for account_id={account_id}.", None
+        return (
+            "Refresh skipped: another refresh of this account's groups is already running.",
+            None,
+            GROUP_REFRESH_SKIPPED,
+        )
 
     lock_renewer = TaskLockRenewer("refresh_m3u_account_groups", account_id)
     lock_renewer.start()
@@ -1587,7 +1598,11 @@ def _refresh_m3u_groups_locked(account_id, use_cache, full_refresh, scan_start_t
     try:
         account = M3UAccount.objects.select_related("user_agent").get(id=account_id, is_active=True)
     except M3UAccount.DoesNotExist:
-        return f"M3UAccount with ID={account_id} not found or inactive.", None
+        return (
+            "Refresh skipped: the account was deleted or deactivated.",
+            None,
+            GROUP_REFRESH_SKIPPED,
+        )
 
     extinf_data = []
     groups = {"Default Group": {}}
@@ -3099,10 +3114,10 @@ def get_transformed_credentials(account, profile=None):
         # Apply profile-specific transformations if profile is provided
         if profile and profile.search_pattern and profile.replace_pattern:
             try:
-                # Handle backreferences: convert JS-style $<name> -> \g<name>, $1 -> \1
+                # Handle backreferences: convert JS-style $<name> -> \g<name>, $1 -> \g<1>
                 # regex module accepts JS-style (?<name>...) named groups natively
                 safe_replace_pattern = regex.sub(r'\$<([^>]+)>', r'\\g<\1>', profile.replace_pattern)
-                safe_replace_pattern = regex.sub(r'\$(\d+)', r'\\\1', safe_replace_pattern)
+                safe_replace_pattern = convert_js_numbered_backreferences(safe_replace_pattern)
 
                 # Apply transformation to the complete URL
                 transformed_complete_url = regex.sub(profile.search_pattern, safe_replace_pattern, complete_url)
@@ -3531,19 +3546,33 @@ def _refresh_single_m3u_account_impl(account_id):
 
             # Check for completely empty result or missing groups
             if not result or result[1] is None:
+                if result and len(result) > 2 and result[2] == GROUP_REFRESH_SKIPPED:
+                    logger.info(
+                        f"Group refresh skipped for account {account_id}: {result[0]}"
+                    )
+                    _set_m3u_account_status(account_id, M3UAccount.Status.IDLE, result[0])
+                    return result[0]
                 logger.error(
                     f"Failed to refresh M3U groups for account {account_id}: {result}"
                 )
-                error_msg = (
-                    "Failed to refresh M3U groups - download failed or other error"
-                )
-                _set_m3u_account_status(
-                    account_id,
-                    M3UAccount.Status.ERROR,
-                    error_msg,
-                    notify_error=True,
-                    ws_error=error_msg,
-                )
+                recorded = (
+                    M3UAccount.objects.filter(id=account_id)
+                    .values_list("status", flat=True)
+                    .first()
+                ) == M3UAccount.Status.ERROR
+                if not recorded:
+                    error_msg = (
+                        result[0]
+                        if result and isinstance(result[0], str) and result[0]
+                        else "Failed to refresh M3U groups - download failed or other error"
+                    )
+                    _set_m3u_account_status(
+                        account_id,
+                        M3UAccount.Status.ERROR,
+                        error_msg,
+                        notify_error=True,
+                        ws_error=error_msg,
+                    )
                 return "Failed to update m3u account - download failed or other error"
 
             extinf_data, groups = result
@@ -3873,6 +3902,7 @@ def _refresh_single_m3u_account_impl(account_id):
         # Run auto channel sync after successful refresh
         auto_sync_message = ""
         auto_sync_result = {}
+        auto_sync_failed = False
         try:
             auto_sync_result = sync_auto_channels(
                 account_id, scan_start_time=str(refresh_start_timestamp)
@@ -3897,10 +3927,13 @@ def _refresh_single_m3u_account_impl(account_id):
                         parts.append(f"{failed} failed")
                     auto_sync_message = f" Auto-sync: {', '.join(parts)}."
             elif auto_sync_result.get("status") == "error":
+                auto_sync_failed = True
                 auto_sync_message = (
                     f" Auto-sync error: {auto_sync_result.get('error', 'unknown')}."
                 )
         except Exception as e:
+            auto_sync_failed = True
+            auto_sync_message = f" Auto-sync error: {str(e)[:200]}."
             logger.error(
                 f"Error running auto channel sync for account {account_id}: {str(e)}"
             )
@@ -3918,7 +3951,11 @@ def _refresh_single_m3u_account_impl(account_id):
         streams_processed = streams_created + streams_updated + streams_unchanged
 
         # Set status to success and update timestamp BEFORE sending the final update
-        account.status = M3UAccount.Status.SUCCESS
+        # #70: a failed auto channel sync must not read as a successful
+        # refresh. updated_at still advances: the stream refresh succeeded.
+        account.status = (
+            M3UAccount.Status.ERROR if auto_sync_failed else M3UAccount.Status.SUCCESS
+        )
         account.last_message = (
             f"Processing completed in {elapsed_time:.1f} seconds. "
             f"Streams: {streams_created} created, {streams_updated} updated, "
@@ -3940,12 +3977,13 @@ def _refresh_single_m3u_account_impl(account_id):
             total_processed=streams_processed,
         )
 
-        # Send final update with complete metrics and explicitly include success status
+        # Send final update with complete metrics and the resolved status (#70:
+        # error when auto channel sync failed, success otherwise)
         send_m3u_update(
             account_id,
             "parsing",
             100,
-            status="success",  # Explicitly set status to success
+            status="error" if auto_sync_failed else "success",
             elapsed_time=elapsed_time,
             time_remaining=0,
             streams_processed=streams_processed,
@@ -3962,6 +4000,7 @@ def _refresh_single_m3u_account_impl(account_id):
             channels_failed=auto_sync_result.get("channels_failed", 0),
             failed_stream_details=auto_sync_result.get("failed_stream_details", []),
             message=account.last_message,
+            **({"error": account.last_message} if auto_sync_failed else {}),
         )
 
         del auto_sync_result

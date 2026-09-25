@@ -111,9 +111,10 @@ export function hasLifeLeft(accessToken: string): boolean {
  * `status` is the discriminator callers actually need: a **200** here means the
  * endpoint accepted the refresh token and answered with no usable `access`,
  * which is a different failure from a refusal and deserves a different message.
- * A **500** is the product returning the wrong status when the refresh token
- * names a deleted user (D10Scot/Dispatcharr#12 — `rest_framework_simplejwt`
- * does a bare `.get()` and lets `User.DoesNotExist` escape).
+ * A refresh token naming a deleted user used to surface here as a **500**
+ * (D10Scot/Dispatcharr#12 — `rest_framework_simplejwt` did a bare `.get()` and
+ * let `User.DoesNotExist` escape); fixed, it is now an ordinary 401,
+ * indistinguishable from any other rejected refresh.
  */
 export type RefreshFailure = {
   access?: undefined;
