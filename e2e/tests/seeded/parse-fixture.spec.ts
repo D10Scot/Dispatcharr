@@ -48,10 +48,12 @@ test('parseM3u does not read attributes out of the title', { tag: '@contract' },
 });
 
 test('parseM3u flags an EXTINF line whose attribute value was not closed', { tag: '@contract' }, () => {
-  // What D10Scot/Dispatcharr#80 emits: an unescaped `"` inside tvg-name ends
-  // the value early and the rest spills out as unquoted text. The parser must
-  // report that rather than invent a well-formed reading of it — that report
-  // is what output-m3u.spec.ts's pin on #80 asserts on.
+  // What D10Scot/Dispatcharr#80 used to emit before it was fixed: an
+  // unescaped `"` inside tvg-name ends the value early and the rest spills
+  // out as unquoted text. This is a synthetic malformed input, not
+  // something the fixed product still produces — the parser must still
+  // report a line shaped like this as not well-formed rather than invent a
+  // well-formed reading of it.
   const entry = parseM3u(
     '#EXTM3U\n#EXTINF:-1 tvg-name="Ch-"quoted"" group-title="G",Ch-"quoted"\nhttp://h/1'
   ).entries[0];
