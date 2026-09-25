@@ -238,3 +238,41 @@ class ProviderContentLengthHygieneTests(SimpleTestCase):
             views._extract_representation_length(self._upstream(content_length="1234")),
             1234,
         )
+
+    def test_a_stale_pool_cache_representation_length_of_negative_one_was_forwarded(self):
+        # #491 round 2: a pre-fix process could have cached
+        # _extract_representation_length's old int("-1") == -1 result in the
+        # Redis pool `content_length` hash (views.py ~:3393). A cached value
+        # reaches the builder as representation_length directly, bypassing
+        # upstream_content_length's own sanitization entirely.
+        headers = views._build_downstream_length_headers(
+            range_header=None,
+            status_code=200,
+            representation_length=-1,
+            upstream_content_range=None,
+            upstream_content_length=None,
+            streaming=True,
+        )
+        self.assertNotIn("Content-Length", headers)
+
+    def test_a_zero_representation_length_on_a_plain_streaming_200_was_forwarded(self):
+        headers = views._build_downstream_length_headers(
+            range_header=None,
+            status_code=200,
+            representation_length=0,
+            upstream_content_range=None,
+            upstream_content_length=None,
+            streaming=True,
+        )
+        self.assertNotIn("Content-Length", headers)
+
+    def test_a_zero_representation_length_on_a_non_streaming_answer_is_kept(self):
+        headers = views._build_downstream_length_headers(
+            range_header=None,
+            status_code=200,
+            representation_length=0,
+            upstream_content_range=None,
+            upstream_content_length=None,
+            streaming=False,
+        )
+        self.assertEqual(headers.get("Content-Length"), "0")

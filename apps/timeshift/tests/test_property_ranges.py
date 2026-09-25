@@ -180,7 +180,11 @@ class DownstreamHeaderProperties(SimpleTestCase):
     @given(
         range_header=st.none() | client_range_text,
         status_code=st.sampled_from([200, 206]),
-        representation_length=st.none() | st.integers(min_value=0, max_value=10**10),
+        # #491 round 2: representation_length can reach the builder as 0 or
+        # negative through doors other than _extract_representation_length
+        # (a stale pool cache, a clamped scrub remainder, an unsigned pool
+        # field read) -- widened from min_value=0 to also cover negative.
+        representation_length=st.none() | st.integers(min_value=-5, max_value=10**10),
         upstream_content_range=st.none() | content_range_text,
         # #491: callers pass the raw ``Content-Length`` header text, which can be
         # negative, non-digit or an empty/whitespace string -- not just a clean
@@ -212,6 +216,13 @@ class DownstreamHeaderProperties(SimpleTestCase):
              upstream_content_range=None, upstream_content_length="0", streaming=True)
     @example(range_header=None, status_code=206, representation_length=None,
              upstream_content_range=None, upstream_content_length="-1", streaming=True)
+    # #491 round 2: representation_length itself (not just upstream_content_length)
+    # can be 0 or negative on a streaming response, through the three doors named
+    # above the strategy. The builder must normalise it the same way.
+    @example(range_header=None, status_code=200, representation_length=0,
+             upstream_content_range=None, upstream_content_length=None, streaming=True)
+    @example(range_header="bytes=0-", status_code=206, representation_length=-1,
+             upstream_content_range=None, upstream_content_length=None, streaming=True)
     def test_headers_never_carry_an_unsatisfiable_range_or_a_negative_length(
         self, range_header, status_code, representation_length,
         upstream_content_range, upstream_content_length, streaming,

@@ -1222,6 +1222,22 @@ def _build_downstream_length_headers(
     if representation_length is None and parsed_upstream:
         representation_length = parsed_upstream.get("total")
 
+    # #491: representation_length can reach here as 0 or negative through
+    # three doors that bypass _extract_representation_length's own
+    # positivity guard -- a stale Redis pool `content_length` cache a
+    # pre-fix process could have written (~:3393), the scrub rewrite's
+    # clamped `remaining = max(rep - start, 0)` read back as
+    # `presentation_remaining` (~:2798, :3428), and `_pool_int_field`'s
+    # unsigned read of `presentation_length` (~:1447/:1466, :1535).
+    # Normalise here, once, rather than at each door: negative is always
+    # None; on a streaming response a 0 is also None (same rule R2 gives
+    # upstream_content_length); a non-streaming 0 stays, for a genuinely
+    # empty body.
+    if representation_length is not None and representation_length < 0:
+        representation_length = None
+    elif representation_length == 0 and streaming:
+        representation_length = None
+
     if status_code == 206:
         # Trust upstream partial headers only when they describe a real
         # range; an invalid one is treated as absent (#141). Peek bytes are
@@ -1242,7 +1258,9 @@ def _build_downstream_length_headers(
                     )
         # #491: a non-positive/non-digit upstream Content-Length is absent, not
         # forwarded; a sanitized 0 is also excluded here (falsy int) since a
-        # 206 partial response cannot genuinely be zero bytes long.
+        # 206 partial response cannot genuinely be zero bytes long. A 0 or
+        # invalid value here falls through to the parsed_upstream span
+        # computation below rather than to no Content-Length at all.
         sanitized_length = _sanitized_content_length(upstream_content_length)
         if sanitized_length:
             headers["Content-Length"] = str(sanitized_length)
