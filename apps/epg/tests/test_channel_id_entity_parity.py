@@ -105,31 +105,63 @@ class ChannelIdIndexLxmlParityTests(TestCase):
                     os.unlink(tmp_path)
 
 
+class ChannelIdSurrogateCharacterReferenceTests(TestCase):
+    def test_build_programme_index_indexes_the_good_channel_past_a_surrogate_reference(self):
+        # A character reference to a lone UTF-16 surrogate (valid XML syntax,
+        # invalid Unicode text on its own) makes lxml recovery emit the
+        # surrogate as unpaired UTF-8 bytes; decoding that back to a Python
+        # str for elem.get('c') raises UnicodeDecodeError. One bad channel id
+        # must not stop the whole file's index from being built.
+        xml = (
+            '<?xml version="1.0" encoding="UTF-8"?>\n'
+            "<tv>\n"
+            '  <programme start="20000101000000 +0000" '
+            'stop="20991231235959 +0000" channel="good">\n'
+            "    <title>Good</title>\n"
+            "  </programme>\n"
+            '  <programme start="20000101000000 +0000" '
+            'stop="20991231235959 +0000" channel="bad&#xD800;id">\n'
+            "    <title>Bad</title>\n"
+            "  </programme>\n"
+            "</tv>\n"
+        )
+        tmp_path = _write_xmltv(xml)
+        try:
+            src = EPGSource.objects.create(
+                name="Surrogate Reference", source_type="xmltv", file_path=tmp_path
+            )
+            build_programme_index(src.id)
+            src.refresh_from_db()
+
+            self.assertIsNotNone(
+                src.programme_index,
+                "a surrogate character reference in one channel id must not "
+                "abort the whole index build",
+            )
+            self.assertIn(
+                "good",
+                src.programme_index["channels"],
+                "the well-formed channel before the surrogate reference "
+                "must still be indexed",
+            )
+        finally:
+            os.unlink(tmp_path)
+
+
 class ChannelIdEntityLookupTests(TestCase):
     def test_current_programme_found_for_html5_entity_channel_id(self):
         # &NewLine; is an HTML5-only named entity (not in the HTML 4 set
         # this module's injected DOCTYPE declares), so lxml recovery drops
         # it entirely rather than substituting a character: the channel
-        # attribute "a&NewLine;b" reads as "ab". A second, well-formed
-        # programme for the same (post-decode) channel follows it: the
-        # HTML5-only entity also makes the *whole* first <programme>
-        # element unparseable by _parse_programme_element, which always
-        # injects the same fixed HTML-4 DOCTYPE regardless of the source
-        # file's own -- a pre-existing, narrower limitation than #157 that
-        # this fix does not touch. _read_programs_at_offsets already skips
-        # an element it cannot parse and keeps scanning (see
-        # test_malformed_xmltv_timestamp.py), so the point under test here
-        # -- that the index key equals lxml's value and the lookup reaches
-        # this channel's block at all -- is still exercised end to end.
+        # attribute "a&NewLine;b" reads as "ab". A single programme is
+        # enough: _parse_programme_element also injects the fixed HTML-4
+        # DOCTYPE (now with recover=True), so the same entity that made the
+        # decoded index key "ab" also lets the element itself parse.
         xml = (
             '<?xml version="1.0" encoding="UTF-8"?>\n'
             "<tv>\n"
-            '  <programme start="20260101000000 +0000" '
-            'stop="20260101010000 +0000" channel="a&NewLine;b">\n'
-            "    <title>Unparseable Element</title>\n"
-            "  </programme>\n"
             '  <programme start="20000101000000 +0000" '
-            'stop="20991231235959 +0000" channel="ab">\n'
+            'stop="20991231235959 +0000" channel="a&NewLine;b">\n'
             "    <title>HTML5 Entity Channel</title>\n"
             "  </programme>\n"
             "</tv>\n"
@@ -149,9 +181,45 @@ class ChannelIdEntityLookupTests(TestCase):
             self.assertIsNotNone(
                 result,
                 "the index key must equal lxml's dropped-entity value "
-                "'ab' so the lookup reaches this channel's block",
+                "'ab' so the lookup finds the programme",
             )
             self.assertEqual(result["title"], "HTML5 Entity Channel")
+        finally:
+            os.unlink(tmp_path)
+
+    def test_current_programme_found_for_entity_missing_semicolon_channel_id(self):
+        # "a&eacuteb" (no terminating ;) is not a well-formed entity
+        # reference at all: libxml2's recover mode truncates at the bare
+        # '&' rather than substituting a character, so the channel
+        # attribute reads as "a", not "aéb". A single programme is enough
+        # for the same reason as the HTML5-only case above.
+        xml = (
+            '<?xml version="1.0" encoding="UTF-8"?>\n'
+            "<tv>\n"
+            '  <programme start="20000101000000 +0000" '
+            'stop="20991231235959 +0000" channel="a&eacuteb">\n'
+            "    <title>Missing Semicolon Channel</title>\n"
+            "  </programme>\n"
+            "</tv>\n"
+        )
+        tmp_path = _write_xmltv(xml)
+        try:
+            src = EPGSource.objects.create(
+                name="Missing Semicolon", source_type="xmltv", file_path=tmp_path
+            )
+            build_programme_index(src.id)
+            epg = EPGData.objects.create(
+                tvg_id="a", name="Missing Semicolon Channel", epg_source=src
+            )
+
+            result = find_current_program_for_tvg_id(epg)
+
+            self.assertIsNotNone(
+                result,
+                "the index key must equal lxml's truncated-at-'&' value "
+                "'a' so the lookup finds the programme",
+            )
+            self.assertEqual(result["title"], "Missing Semicolon Channel")
         finally:
             os.unlink(tmp_path)
 

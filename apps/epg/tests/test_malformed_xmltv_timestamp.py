@@ -126,6 +126,48 @@ class MalformedOffsetLookupTests(TestCase):
         finally:
             os.unlink(tmp_path)
 
+    def test_out_of_range_year_offset_is_skipped_by_offset_lookup_not_raised(self):
+        # astimezone() on a year at either end of datetime's representable
+        # range raises OverflowError, not ValueError -- a narrower arm than
+        # (ValueError, TypeError) alone would catch. Same one-offset,
+        # two-programme shape as the +2400 case above.
+        xml = (
+            '<?xml version="1.0" encoding="UTF-8"?>\n'
+            "<tv>\n"
+            '  <channel id="year.overflow"/>\n'
+            '  <programme start="99991231235959 -0100" '
+            'stop="99991231235959 -0100" channel="year.overflow">\n'
+            "    <title>Year Overflow</title>\n"
+            "  </programme>\n"
+            '  <programme start="20000101000000 +0000" '
+            'stop="20991231235959 +0000" channel="year.overflow">\n'
+            "    <title>Always On</title>\n"
+            "  </programme>\n"
+            "</tv>\n"
+        )
+        tmp_path = _write_xmltv(xml)
+        try:
+            src = EPGSource.objects.create(
+                name="Year Overflow", source_type="xmltv", file_path=tmp_path
+            )
+            build_programme_index(src.id)
+            src.refresh_from_db()
+            offsets = src.programme_index["channels"]["year.overflow"]
+
+            result = _read_programs_at_offsets(
+                tmp_path, "year.overflow", offsets, self.now
+            )
+
+            self.assertIsNotNone(
+                result,
+                "an OverflowError from astimezone() on an out-of-range "
+                "year must be skipped, not raised, so the scan can reach "
+                "the well-formed programme after it",
+            )
+            self.assertEqual(result["title"], "Always On")
+        finally:
+            os.unlink(tmp_path)
+
     def test_current_programs_api_does_not_500_on_a_malformed_programme_timestamp(self):
         xml = (
             '<?xml version="1.0" encoding="UTF-8"?>\n'

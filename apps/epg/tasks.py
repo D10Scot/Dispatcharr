@@ -243,8 +243,17 @@ _HTML_ENTITY_DOCTYPE = _build_html_entity_doctype()
 
 def _parse_programme_element(element_bytes):
     """Parse a single <programme> element, prepending the HTML-entity DOCTYPE
-    so references like &eacute; in the text resolve instead of failing."""
-    parser = etree.XMLParser(resolve_entities=True, load_dtd=True, no_network=True)
+    so references like &eacute; in the text resolve instead of failing.
+
+    recover=True so an entity reference the injected DOCTYPE does not declare
+    (an HTML5-only name, or one missing its terminating semicolon) is dropped
+    like any other recoverable error rather than aborting the whole element --
+    matching how _decode_channel_id already reads the same byte-offset index's
+    channel attribute. Every other setting (no DTD load beyond the injected
+    one, no network, no huge_tree) is unchanged."""
+    parser = etree.XMLParser(
+        resolve_entities=True, load_dtd=True, no_network=True, recover=True
+    )
     return etree.fromstring(_HTML_ENTITY_DOCTYPE + element_bytes, parser)
 
 
@@ -2923,18 +2932,28 @@ _NEEDS_LXML_DECODE = (b'&', b'\t', b'\n', b'\r')
 @functools.lru_cache(maxsize=4096)
 def _decode_channel_id(raw, quote=b'"', entity_doctype=True):
     """Return the channel id exactly as lxml's recover-mode iterparse reads it
-    (entity resolution under the same DOCTYPE decision as _open_xmltv_file,
-    attribute-value whitespace normalisation), stripped -- so byte-level index
-    keys equal EPGData.tvg_id. Ids with no entity or whitespace escape take a
-    fast path."""
+    (entity resolution under the same injected-DOCTYPE decision as
+    _open_xmltv_file; entities a file declares itself are not resolved,
+    attribute-value whitespace normalisation), stripped -- so byte-level
+    index keys equal EPGData.tvg_id. Ids with no entity or whitespace escape
+    take a fast path."""
     if not any(b in raw for b in _NEEDS_LXML_DECODE):
         return raw.decode('utf-8', errors='replace').strip()
     prefix = _HTML_ENTITY_DOCTYPE if entity_doctype else b''
-    elem = etree.fromstring(
-        prefix + b'<p c=' + quote + raw + quote + b'/>',
-        etree.XMLParser(recover=True, remove_blank_text=True),
-    )
-    value = elem.get('c') if elem is not None else None
+    try:
+        elem = etree.fromstring(
+            prefix + b'<p c=' + quote + raw + quote + b'/>',
+            etree.XMLParser(recover=True, remove_blank_text=True),
+        )
+        value = elem.get('c') if elem is not None else None
+    except (UnicodeDecodeError, etree.XMLSyntaxError):
+        # A character reference to a lone UTF-16 surrogate (e.g. &#xD800;)
+        # recovers as an unpaired surrogate that libxml2 cannot re-encode as
+        # UTF-8, and elem.get() raises. lxml's own file-level import raises
+        # the same way reading this attribute, so no EPGData row can hold
+        # this id either -- fall back rather than let one bad channel id
+        # abort the whole index build or lookup.
+        return raw.decode('utf-8', errors='replace').strip()
     return (value or '').strip()
 
 
@@ -3252,9 +3271,11 @@ def _read_programs_at_offsets(file_path, tvg_id, offsets, now):
                     try:
                         start_time = parse_xmltv_time(start_str)
                         end_time = parse_xmltv_time(stop_str)
-                    except (ValueError, TypeError):
+                    except (ValueError, TypeError, OverflowError):
                         # A malformed timestamp on this element must not abort
                         # the scan for the rest of the channel's block.
+                        # OverflowError: astimezone() on a year at either end
+                        # of datetime's range (e.g. "99991231235959 -0100").
                         continue
                     if start_time is None or end_time is None:
                         continue
@@ -3355,9 +3376,11 @@ def _scan_from_offset_for_tvg_id(file_path, tvg_id, start_offset, now, timeout_s
                 try:
                     start_time = parse_xmltv_time(start_str)
                     end_time = parse_xmltv_time(stop_str)
-                except (ValueError, TypeError):
+                except (ValueError, TypeError, OverflowError):
                     # A malformed timestamp on this element must not abort
                     # the interleaved scan for the rest of the channel.
+                    # OverflowError: astimezone() on a year at either end
+                    # of datetime's range (e.g. "99991231235959 -0100").
                     continue
                 if start_time is None or end_time is None:
                     continue
