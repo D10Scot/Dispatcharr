@@ -11,7 +11,7 @@
 | seed SHA | **`36e4ce10`** (`main`, 2026-09-25). Every `file:line` below was re-grepped there with `git show "36e4ce10:<path>"`. |
 | PRs | **one**, small: one new script, one new test module, one deleted test module, one hook arm, three hook-harness cases, one `lint.yml` job, one ledger field, one CLAUDE.md phrase. |
 | branch | `fix/444-read-only-fields-lint` (not `migration/…`: nothing under `docker/` or the relay is touched) |
-| backend labels | `tests` only (measured: `printf '%s\n' <the PR's nine paths> \| python3 scripts/ci_backend_test_labels.py` → `["tests"]`) |
+| backend labels | `tests` only (measured: `printf '%s\n' <the PR's eight paths> \| python3 scripts/ci_backend_test_labels.py` → `["tests"]`) |
 | upstreamable | no: `.claude/hooks/`, the fork's `lint.yml` jobs and `metrics/curated/` are fork-only |
 
 **What this plan finds that the issue does not say.** A reviewer should check these first.
@@ -76,7 +76,7 @@ If an open PR touching any of these appears before this one is opened, rebase on
    - `apps/proxy/relay_serializers.py`, `apps/proxy/serializers.py`, `apps/vod/serializers.py`
    - `core/serializers.py`
 7. **Routing.** `scripts/check_read_only_fields.py` → `[]`; `tests/test_read_only_fields_guard.py` → `["tests"]`; `.claude/hooks/…`, `.github/workflows/lint.yml`, `metrics/curated/defects.yml`, `CLAUDE.md` → `[]` (all measured). The PR as a whole selects `["tests"]`. **No `_PATH_ALIASES` entry**, for two reasons: the resolver cannot express "the root `tests` label" (finding 5), and the lint job runs the unit test on every PR anyway. `tests/test_ci_test_routing.py` pins four behaviours (`:30`, `:51`, `:76`, `:85`), none of which this PR touches.
-8. **Metrics.** Yes, one field. Row `read-only-fields-misplaced` (`defects.yml:24`) changes `test:` to `tests/test_read_only_fields_guard.py`. Its `status` (`fixed`), `fixed_in` (436) and `status_changed` do not change: the defect's status did not move. No new row. Validate with `python3 -m metrics.build --validate-only`. On the scratch copy, the only errors after the edit were the milestone first-parent checks, which fail there because that copy has no git history. There was no defect error. In a real worktree those checks pass.
+8. **Metrics.** Yes, one field. Row `read-only-fields-misplaced` (`defects.yml:24`) changes `test:` to `tests/test_read_only_fields_guard.py`. Its `status` (`fixed`), `fixed_in` (436) and `status_changed` do not change: the defect's status did not move. No new row. Validate with `python3 -m metrics.build --validate-only`. On the scratch copy, the only errors after the edit were the milestone first-parent checks, which fail there because that copy has no git history. There was no defect error. In a real worktree those checks pass. The plan deliberately does not update CLAUDE.md's "2083 tests" figure: it dates from #332 (only `b6ae174b` carries it, per `git log -S"2083 tests"`), and #436, #455 and #488 have since added tests without moving it, so it is already stale and a bump belongs to a re-measurement, not to this PR.
 
 ---
 
@@ -135,7 +135,7 @@ If an open PR touching any of these appears before this one is opened, rebase on
   ```bash
   cd <wt> && python3 -m metrics.build --validate-only; echo "exit=$?"
   ```
-  Expected: `exit=0`. If `python3` lacks the build's dependency, use `scripts/run_metrics_tests.sh build`.
+  Expected: `exit=0`. If `python3` lacks the build's dependency, run the commit gate's own command, exactly as `pre-commit-tests.sh:225-226` has it: `.venv/bin/python -m metrics.build --validate-only --curated metrics/curated`. `scripts/run_metrics_tests.sh build` is only a second, indirect check: it runs the build-step unit tests (`run_metrics_tests.sh:42-44`), which catch a stale `test:` path only through `metrics/build/tests/test_real_curated.py:30-32`.
 
 - [ ] **Task 5 — delete the old test.** Run `git -C <wt> rm tests/test_no_class_body_read_only_fields.py`, then re-run the Task 4 command, expecting `exit=0`. Then check that nothing else references it:
   ```bash
