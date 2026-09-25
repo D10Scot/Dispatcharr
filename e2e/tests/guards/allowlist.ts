@@ -46,7 +46,8 @@ export const CONTAINER_LIFECYCLE: Capability = {
     // Owns and resets a container: leaves an enabled hourly beat task behind.
     'tests/lifecycle/refresh-scheduling.spec.ts',
     // Stops and starts one supervisord program at a time (`api-uwsgi`,
-    // `relay-uwsgi`) through `instance.supervisorctl()`. It never calls
+    // `relay-uwsgi`, `celery-default`) through `instance.supervisorctl()`.
+    // It never calls
     // `up`/`restart`/`recreate`/`down`, so it neither replaces nor destroys
     // the container — but taking the API process away is container-wide state
     // in the same sense, which is why it has its own project and its own CI
