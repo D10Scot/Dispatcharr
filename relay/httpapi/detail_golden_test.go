@@ -93,6 +93,7 @@ func detailGoldenPayload() detailPayload {
 		FFmpegSpeed:   &speed,
 		FFmpegFPS:     "25.0",
 		ActualFPS:     "24.5",
+		FFmpegBitrate: "4200.0",
 		StreamType:    "mpegts",
 		Clients: []detailClientPayload{
 			{
@@ -213,34 +214,20 @@ func TestOwnerAndSourceFPSDifferBetweenTheTwoEndpoints(t *testing.T) {
 	}
 }
 
-// The two fields NEITHER relay can emit, asserted as absences on the golden.
-//
-// source_bitrate has no writer anywhere in the tree, and ffmpeg_bitrate is
-// read under one constant and written under another (constants.py:90-91).
-// Reproduced rather than fixed per D5, and asserted here so a later PR that
-// "helpfully" starts emitting one has to change this test and say why.
-func TestTheDetailPayloadOmitsTheTwoFieldsNothingWrites(t *testing.T) {
-	encoded, err := json.Marshal(detailGoldenPayload())
-	if err != nil {
-		t.Fatalf("encoding the payload: %v", err)
+// Issue #314, FIXED: ffmpeg_bitrate is on the payload, a string like the
+// other detail-endpoint rates. Asserted against the GOLDEN, which Django's
+// serializer rendered, so a relay that emitted the key under another name
+// fails here. That source_bitrate is gone from the SERIALIZER is pinned on
+// the Python side, by test_the_fixture_covers_every_serializer_field with
+// NEVER_WRITTEN empty: a golden rendered from a fixture that never set the
+// key cannot tell whether the serializer still declares it.
+func TestTheDetailPayloadCarriesTheFFmpegOutputBitrate(t *testing.T) {
+	golden, ok := decodeDetailGolden(t).(map[string]any)
+	if !ok {
+		t.Fatalf("the detail golden is not an object")
 	}
-	var payload map[string]any
-	if err := json.Unmarshal(encoded, &payload); err != nil {
-		t.Fatalf("decoding: %v", err)
-	}
-	for _, key := range []string{"source_bitrate", "ffmpeg_bitrate"} {
-		if _, present := payload[key]; present {
-			t.Errorf("the detail payload carries %q, which the Python relay never "+
-				"emits either -- see NEVER_WRITTEN in "+
-				"apps/proxy/tests/test_relay_detail_payload_golden.py", key)
-		}
-	}
-	// The near neighbours that ARE emitted, so "every bitrate vanished"
-	// cannot be what makes this pass.
-	for _, key := range []string{"video_bitrate", "audio_bitrate", "avg_bitrate"} {
-		if _, present := payload[key]; !present {
-			t.Errorf("the detail payload is missing %q, which the hash does carry", key)
-		}
+	if got, isString := golden["ffmpeg_bitrate"].(string); !isString || got == "" {
+		t.Errorf("ffmpeg_bitrate on the detail golden is %v (%T), want the output bitrate as a string (#314)", golden["ffmpeg_bitrate"], golden["ffmpeg_bitrate"])
 	}
 }
 
