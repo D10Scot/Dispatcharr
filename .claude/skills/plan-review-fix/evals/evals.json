@@ -1,0 +1,19 @@
+{
+  "skill_name": "plan-review-fix",
+  "evals": [
+    {
+      "id": 0,
+      "name": "plan-for-open-issue",
+      "prompt": "Put together an implementation plan for issue #452 on D10Scot/Dispatcharr (a backslash in an M3U replace template still injects NUL/control bytes; it needs a grammar ruling). The plan goes in docs/superpowers/plans/ in the house style (goal, seed SHA, per-task steps with break-checks, a PR-description draft) and should be ready for a sonnet implementer to execute without re-deriving anything. Open it as a draft PR and tell me the PR number and the SHA the plan is good at. Work in /Users/dion/git/Dispatcharr.",
+      "expected_output": "A planner subagent on opus or fable writes the plan in its own worktree and opens a draft PR; a separate reviewer subagent reviews it pinned to a named SHA and returns PASS or findings; findings are relayed with the expected SHA and fixed; the final report names the PR, the passing SHA and the review rounds. The PR body carries no closing keyword for #452.",
+      "files": []
+    },
+    {
+      "id": 1,
+      "name": "casual-how-should-we-approach",
+      "prompt": "how should we approach #444 (the read_only_fields class-body guard never runs on serializer edits, needs recasting as a scripts/check_*.py lint)? write it up as a plan someone else can execute, in the repo at /Users/dion/git/Dispatcharr. Don't implement anything.",
+      "expected_output": "Same shape as eval 0 despite the casual phrasing: an opus/fable planner in a worktree, a pinned independent review, fix round if needed, a draft PR with no closing keyword, a report with PR number, passing SHA and rounds. A baseline agent typically writes the plan itself in the root checkout with no review.",
+      "files": []
+    }
+  ]
+}
