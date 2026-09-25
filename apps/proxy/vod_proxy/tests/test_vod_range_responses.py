@@ -171,3 +171,37 @@ class VodRangeResponseTests(SimpleTestCase):
         self.assertEqual(response.status_code, 206)
         self.assertEqual(response["Content-Range"], "bytes 100-199/1000")
         self.assertEqual(b"".join(response.streaming_content), ASSET[100:200])
+
+    # --- Round 2 (bot review) ---------------------------------------------
+
+    def _seek_state(self):
+        return mwcm.RedisBackedVODConnection(self.SESSION, self.redis)._get_connection_state()
+
+    def test_a_first_request_suffix_range_does_not_record_seek_info(self):
+        # #64's fix makes plan.start/plan.total accurate even on a session's
+        # first request (from the provider's own Content-Range), but the
+        # seek-info gate stays scoped to an already-established session, as
+        # it was pre-fix (behaviour-preserving; not one of the three defects
+        # this PR closes).
+        response = self._get("bytes=-100")
+        b"".join(response.streaming_content)
+        state = self._seek_state()
+        self.assertEqual(state.last_seek_byte, 0)
+        self.assertEqual(state.last_seek_percentage, 0.0)
+
+    def test_an_established_session_seek_records_seek_info(self):
+        self._establish()
+        response = self._get("bytes=100-199")
+        b"".join(response.streaming_content)
+        state = self._seek_state()
+        self.assertEqual(state.last_seek_byte, 100)
+        self.assertEqual(state.last_seek_percentage, 10.0)
+
+    def test_a_range_ignoring_provider_had_its_unread_remainder_closed_once_the_slice_completed(self):
+        self._establish()
+        upstream = FakeUpstream(200, ASSET, {"Content-Length": "1000"})
+        self.answer = lambda rng: upstream
+        response = self._get("bytes=100-199")
+        self.assertFalse(upstream.closed)
+        b"".join(response.streaming_content)
+        self.assertTrue(upstream.closed)

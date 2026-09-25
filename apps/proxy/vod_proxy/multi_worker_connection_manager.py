@@ -1190,6 +1190,13 @@ class MultiWorkerVODConnectionManager:
                         logger.info(f"[{client_id}] Worker {self.worker_id} - Stream stopped by signal: {bytes_sent} bytes sent")
                     else:
                         logger.info(f"[{client_id}] Worker {self.worker_id} - Redis-backed stream completed: {bytes_sent} bytes sent")
+                        if plan.limit is not None:
+                            # The provider ignored Range and sent its whole body
+                            # (#66); slice_chunks stopped after the requested
+                            # slice, but the provider connection may still hold
+                            # an unread remainder. Close it now rather than
+                            # leaving it to the ~1s delayed cleanup below.
+                            upstream_response.close()
                     stream_decremented, has_remaining = redis_connection.decrement_active_streams_and_check()
 
                     # Schedule smart cleanup if no active streams after normal completion
@@ -1327,8 +1334,16 @@ class MultiWorkerVODConnectionManager:
                 response['Content-Range'] = plan.content_range
                 logger.info(f"[{client_id}] Worker {self.worker_id} - Set Content-Range: {plan.content_range}, Content-Length: {plan.content_length}")
 
-            # Store range information for the VOD stats API to calculate position
-            if plan.start and plan.total:
+            # Store range information for the VOD stats API to calculate position.
+            # Gated to an already-established session (existing_state, read before
+            # this request): plan.start/plan.total can now come from the
+            # provider's own Content-Range even on a session's first request
+            # (e.g. a first-request suffix range, #64), which the old
+            # `if state.content_length:` + `if start > 0:` gate never recorded
+            # against, because the pre-fix header block re-derived `start` from
+            # the client's raw, unresolved Range string and got 0 for a suffix.
+            # Preserve that behaviour rather than widen what gets recorded.
+            if existing_state and plan.start and plan.total:
                 start, full_content_size = plan.start, plan.total
                 try:
                     position_percentage = (start / full_content_size) * 100
