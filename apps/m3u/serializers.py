@@ -133,7 +133,6 @@ class M3UAccountSerializer(serializers.ModelSerializer):
         allow_null=True,
     )
     profiles = M3UAccountProfileSerializer(many=True, read_only=True)
-    read_only_fields = ["locked", "created_at", "updated_at"]
     # channel_groups = serializers.SerializerMethodField()
     channel_groups = ChannelGroupM3UAccountSerializer(
         source="channel_group", many=True, required=False
@@ -192,6 +191,7 @@ class M3UAccountSerializer(serializers.ModelSerializer):
                 "write_only": True,
             },
         }
+        read_only_fields = ["locked", "created_at", "updated_at"]
 
     def to_representation(self, instance):
         # When the list() view pre-aggregates stream counts for all accounts

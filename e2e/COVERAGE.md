@@ -33,7 +33,7 @@ resolve (see the G8/G10 Gap rows).
 | Sources | Channel groups and Channel Profiles | G3 | done |
 | Sources | Logo upload and assignment | G3 | done |
 | Sources | M3U refresh failure records the error and leaves no partial catalogue | G3 | done |
-| Sources | `M3UAccount.locked` is writable over the API — `read_only_fields` is declared on the serializer class instead of `Meta` ([#15](https://github.com/D10Scot/Dispatcharr/issues/15)); asserted correct and `test.fail()`ed | G3 | known-bug |
+| Sources | `M3UAccount.locked` is not writable over the API — `read_only_fields` moved into `Meta` ([#15](https://github.com/D10Scot/Dispatcharr/issues/15)) | G3 | done |
 | Sources | **Fixed by [#441](https://github.com/D10Scot/Dispatcharr/pull/441):** a failed M3U refresh no longer discards the HTTP-status-specific message: `fetch_m3u_lines` writes "M3U file not found (404) at URL: …" and records ERROR on the account before returning, and `_refresh_single_m3u_account_impl` now leaves that message alone instead of overwriting it with a generic string, for 404, 401, 403, 500 and a connection refusal alike. Was filed as [#60](https://github.com/D10Scot/Dispatcharr/issues/60). Pinned by `m3u-refresh-failure.spec.ts`'s flipped plain test (was `test.fail()`) | G3 | done |
 | Sources | Deliberate G3 gaps: EPG fuzzy auto-matching (`match-epg`, `set-names-from-epg`, `set-logos-from-epg`, `set-tvg-ids-from-epg`, `fetch_schedules_direct()`) and `get_preferred_region_code()`'s regional weighting -- fixed by #429, though exercising it here still needs the ML band this goal avoids -- are out of scope, not missed; auto-sync **rename-in-place** is not expressible because `ScenarioRegistry` has no update operation and `Stream.stream_hash` derives from a URL carrying the scenario id, so the mutation test proves create-and-delete instead (see `auto-channel-sync.spec.ts`'s second test); **multi-group catalogues** are not expressible because `renderPlaylist` hardcodes `group-title="E2E"`; logo *image fetching* is out because the provider's `tvg-logo` points at RFC 2606-reserved `example.invalid`, though row-level logo ingest is covered; and [#7](https://github.com/D10Scot/Dispatcharr/issues/7) (the `IntervalSchedule` duplicate-create race) is **deliberately not reproduced** — provoking it poisons the shared container permanently for every remaining test in the run, with no API or UI able to repair it, so every G3 source uses the pre-warmed `refresh_interval: 0`. The first three would be closed by a provider `PATCH /scenarios/<id>` and a `group` field on `ChannelSpec` — `e2e-upstream`'s scope, a later goal | G3 | todo |
 | Streaming | Single client receives aligned TS | G4 | done |
@@ -275,11 +275,11 @@ than covered by a test. See the row itself for the full trace and
 spec and allowlist entry.
 
 The `done` G3 rows above are covered by these specs (several rows share a
-file; the one remaining known-bug row lives beside the test it qualifies —
-#60's own known-bug row is fixed as of #441):
+file; no known-bug row remains here -- #15's and #60's own regression tests,
+each beside the test it qualifies, are both fixed as of this PR and #441):
 
 - `e2e/tests/seeded/m3u-ingest.spec.ts` — catalogue fidelity and group wiring,
-  plus the `M3UAccount.locked` known bug (#15)
+  plus the `M3UAccount.locked` regression test (#15, fixed)
 - `e2e/tests/seeded/m3u-refresh-failure.spec.ts` — `not-found` and
   `auth-failure`, plus the kept-message regression test (#60, fixed)
 - `e2e/tests/seeded/epg-ingest.spec.ts` — refresh → `EPGData` with zero
