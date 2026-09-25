@@ -61,15 +61,43 @@ test('ws fixture is subscribed before a test can act', { tag: '@contract' }, asy
 // why `updated_at` can't be used to detect this instead.
 test('waitFor.m3uRefreshComplete resolves promptly on a fast failure', { tag: '@contract' }, async ({
   seed,
+  upstream,
   waitFor,
 }) => {
-  // seed.m3uAccount()'s default server_url (the discard port) refuses the
-  // connection fast enough to reproduce the race above — measured at ~20ms
-  // from trigger to `error`, comfortably inside one 250ms poll interval.
+  // A create-time refresh that fails on a DIFFERENT fault (401) first, then
+  // `not-found` (404) armed for the trigger this test actually exercises —
+  // both fail in a few ms, same as the discard-port connection refusal this
+  // test used to use, but the two outcomes are now guaranteed to differ.
+  // Arming `not-found` from the very start would make the create-time
+  // refresh ALSO fail on `not-found`, leaving the pre-trigger baseline and
+  // this test's own triggered refresh at an identical `(status,
+  // last_message)` pair — `waitFor.m3uRefreshComplete` (`fixtures/wait.ts:
+  // 377-397`) can only detect a fast failure through that exact
+  // terminal-differs-from-baseline check, so a repeated identical failure
+  // is otherwise invisible to it (D10Scot/Dispatcharr#60 is what makes the
+  // two outcomes' messages differ and survive to the account row).
   // refresh_interval must be distinct from every other M3U account this
   // harness creates concurrently: a collision on IntervalSchedule bricks
   // the container (issue #7).
-  const account = await seed.m3uAccount({ is_active: true, refresh_interval: 8531 });
+  const prefix = seed.generatedName('fastfail');
+  const scenario = await upstream.scenario({
+    username: `${prefix}-user`,
+    password: `${prefix}-pass`,
+    channels: [{ id: 1, name: `${prefix}-a`, tvgId: `${prefix}-a.e2e`, logo: null }],
+  });
+  await upstream.fault(scenario, 'auth-failure');
+  const account = await seed.m3uAccount({
+    server_url: upstream.playlistUrl(scenario),
+    is_active: true,
+    refresh_interval: 8531,
+  });
+  // NOT seed.upstreamM3UAccount(): that helper's own explicit trigger can
+  // land on the still-held refresh_single_m3u_account lock
+  // (D10Scot/Dispatcharr#59) with no retry margin left, because this test's
+  // own `startTimeoutMs` below equals `M3U_RETRIGGER_INTERVAL_MS`.
+  await seed.waitForCreateTimeGroupRefreshToSettle(account.id);
+  await upstream.clearFault(scenario, 'auth-failure');
+  await upstream.fault(scenario, 'not-found');
 
   const start = Date.now();
   const result = await waitFor.m3uRefreshComplete(account.id, { startTimeoutMs: 5_000 });

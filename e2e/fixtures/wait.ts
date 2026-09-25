@@ -258,9 +258,20 @@ export class Waiter {
    * already sitting in the exact same terminal status from an earlier,
    * unrelated failure, where the new attempt fails with byte-identical
    * status *and* `last_message`. No REST-polling fix closes that — there is
-   * no monotonic completion marker in the product for the error path — and
-   * it's narrow enough (identical failure, twice, back to back) not to be
-   * worth a bigger contract change for.
+   * no monotonic completion marker in the product for the error path.
+   * D10Scot/Dispatcharr#60 (fixed) removed the one thing that used to paper
+   * over it: before that fix, a repeated failure's `last_message` was
+   * always overwritten with the same generic text regardless of the real
+   * cause, which happened to differ from a *specific* baseline message and
+   * satisfied this diff-check by accident. Now that the specific message
+   * survives, two failures against the same fault produce byte-identical
+   * output and this fallback cannot tell them apart. **Any caller that
+   * expects `error` from a baseline that might already BE that same error
+   * must arrange for its own outcome to differ from the baseline** — a
+   * different fault before the one under test, a prior successful refresh,
+   * or anything else that changes `status` or `last_message` — rather than
+   * relying on this method to detect a truly identical repeat. See
+   * `m3u-refresh-failure.spec.ts` and `async-wait.spec.ts` for the pattern.
    *
    * **A second, distinct gap this closes as of D10Scot/Dispatcharr#59**: a
    * trigger that lands while `refresh_single_m3u_account`'s own task lock

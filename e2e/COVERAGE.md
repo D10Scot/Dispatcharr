@@ -278,7 +278,7 @@ file; the two known-bug rows live beside the tests they qualify):
 - `e2e/tests/seeded/m3u-ingest.spec.ts` — catalogue fidelity and group wiring,
   plus the `M3UAccount.locked` known bug (#15)
 - `e2e/tests/seeded/m3u-refresh-failure.spec.ts` — `not-found` and
-  `auth-failure`, plus the discarded-message known bug (#60)
+  `auth-failure`, plus the kept-message regression test (#60, fixed)
 - `e2e/tests/seeded/epg-ingest.spec.ts` — refresh → `EPGData` with zero
   `ProgramData`, a mapped-channel refresh whose baseline a later wait cannot
   resolve on instantly, then `set-epg` and `batch-set-epg`
