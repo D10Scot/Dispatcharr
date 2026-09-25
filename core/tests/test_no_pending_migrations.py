@@ -17,7 +17,9 @@ class NoPendingMigrationsTests(TestCase):
     def test_no_app_has_model_changes_without_a_migration(self):
         buf = io.StringIO()
         try:
-            call_command("makemigrations", check=True, dry_run=True, stdout=buf)
+            call_command(
+                "makemigrations", check=True, dry_run=True, interactive=False, stdout=buf
+            )
         except SystemExit:
             self.fail(
                 "makemigrations --check --dry-run found model changes with no "
