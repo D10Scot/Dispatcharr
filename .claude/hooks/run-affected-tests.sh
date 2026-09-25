@@ -40,14 +40,44 @@ FILE="$(printf '%s' "$INPUT" | jq -r '.tool_response.filePath // .tool_input.fil
 [ -n "$FILE" ] || exit 0
 [ -f "$FILE" ] || exit 0
 
+# early_note <message>: the report block's JSON shape, for the two exits
+# below that happen before NOTES exists. "Could not run" exits 0 but is
+# stated loudly (header, above).
+early_note() {
+  jq -cn --arg m "$1" '{systemMessage:$m,hookSpecificOutput:{hookEventName:"PostToolUse",additionalContext:$m}}'
+  exit 0
+}
+
 # REPO_ROOT is derived from the EDITED FILE's own worktree, never from this
 # script's location — see _hook_common.sh's hook_repo_root() (issue #258).
-REPO_ROOT="$(hook_repo_root "$(dirname "$FILE")")" || exit 0
-cd "$REPO_ROOT" || exit 0
+# Status 2 is a CLAUDE_HOOK_REPO_ROOT that is not a worktree root (#279):
+# that used to fall through to a silent `exit 0`. Status 1 — the edited file
+# is in no git repo at all (a scratchpad file, say) — stays quiet.
+RR_ERR_FILE="$(mktemp)"
+REPO_ROOT="$(hook_repo_root "$(dirname "$FILE")" 2>"$RR_ERR_FILE")"
+RR_ST=$?
+RR_ERR="$(cat "$RR_ERR_FILE")"; rm -f "$RR_ERR_FILE"
+case $RR_ST in
+  0) ;;
+  2) early_note "Did NOT check ${FILE}: ${RR_ERR} Unset CLAUDE_HOOK_REPO_ROOT, or point it at a worktree root. The edit was NOT verified." ;;
+  *) exit 0 ;;
+esac
+cd "$REPO_ROOT" || early_note "Did NOT check ${FILE}: could not cd into ${REPO_ROOT}. The edit was NOT verified."
 
 case "$FILE" in
   "$REPO_ROOT"/*) REL="${FILE#"$REPO_ROOT"/}" ;;
-  /*) exit 0 ;;
+  /*)
+    # Compare canonical spellings before concluding the file is elsewhere:
+    # /tmp and /private/tmp are one directory on macOS.
+    CANON_DIR="$(hook_canon_path "$(dirname "$FILE")")"
+    CANON_ROOT="$(hook_canon_path "$REPO_ROOT")"
+    case "$CANON_DIR/" in
+      "$CANON_ROOT"/*) REL="${CANON_DIR#"$CANON_ROOT"}/${FILE##*/}"; REL="${REL#/}" ;;
+      *)
+        # Only an override can put the file outside the root derived for it.
+        [ -n "${CLAUDE_HOOK_REPO_ROOT:-}" ] || exit 0
+        early_note "Did NOT check ${FILE}: it is outside CLAUDE_HOOK_REPO_ROOT=${CLAUDE_HOOK_REPO_ROOT}. Unset the variable, or point it at the worktree being edited. The edit was NOT verified." ;;
+    esac ;;
   *) REL="$FILE" ;;
 esac
 

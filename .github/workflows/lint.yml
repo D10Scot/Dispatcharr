@@ -211,3 +211,16 @@ jobs:
       - name: Dashboard unit tests
         working-directory: ./frontend
         run: npx vitest --run --config vitest.dashboard.config.js
+
+  hook-tests:
+    name: Claude Code hook tests
+    # Runs the hook scripts directly against throwaway repos. The live hooks
+    # run from the main checkout, so an edit to a hook is only ever tested
+    # here or by hand (#278, #279).
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - name: Hook tests
+        run: bash .claude/hooks/tests/test_hooks.sh
