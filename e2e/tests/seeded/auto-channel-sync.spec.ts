@@ -127,16 +127,20 @@ test('enabling auto channel sync creates one channel per stream inside the decla
   // `sync_auto_channels()` (apps/m3u/tasks.py:2018) opens with three local
   // imports and two assignments (:2024-2038), then wraps everything after
   // them in a `try` (:2039) whose `except` (:3018-3028) returns
-  // `{"status": "error", ...}` instead of raising. So the *caller's* outer
-  // `try`/`except` (:3820, :3847) — the mechanism D10Scot/Dispatcharr#70
-  // describes — is unreachable in practice through this path: a
+  // `{"status": "error", ...}` instead of raising. So the *caller's* own
+  // outer `except` (apps/m3u/tasks.py, just above the block this comment
+  // sits beside) is unreachable in practice through this path: a
   // `sync_auto_channels()` failure surfaces as a returned status, not a
   // raised exception. (A raise from those first five statements would reach
-  // the caller's handler and produce an absent segment, but they are three
-  // imports, a `_meta` field lookup and a float literal.)
-  // That returned `status: "error"` is rendered at :3843-3846 as a
-  // *present* `" Auto-sync error: {error}."` segment, not an absent one —
-  // the opposite of what #70 would predict here.
+  // the caller's handler, but they are three imports, a `_meta` field lookup
+  // and a float literal.)
+  // That returned `status: "error"` is rendered as a *present*
+  // `" Auto-sync error: {error}."` segment, and -- since D10Scot/Dispatcharr#70
+  // was fixed -- now also ends the whole refresh at `Status.ERROR` instead of
+  // `Status.SUCCESS`. Before the fix, this rare residual would have left
+  // `second.status` reading `'success'` above despite the failed sync; now,
+  // if it occurs, the assertion above this comment block fails loudly on its
+  // own, which is the correct outcome for a genuinely failed auto-sync.
   // An absent "Auto-sync:" segment is instead the benign, routine case: the
   // all-zeros guard at :3832 (`if created or updated or deleted or failed:`)
   // skips the message whenever nothing changed. Both plausible

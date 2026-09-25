@@ -291,11 +291,12 @@ export async function provisionPrincipals(
     }
 
     if (!tokens && previous?.refresh) {
-      // Any failure falls through to a login — including the 500 the product
-      // returns when the refresh token names a deleted user
-      // (D10Scot/Dispatcharr#12 — `rest_framework_simplejwt` does a bare
-      // `.get()` and lets `User.DoesNotExist` escape). A login is the right
-      // answer for every one of them, so the status is not inspected here.
+      // Any failure falls through to a login — including a refresh token
+      // naming a deleted user, which used to answer 500
+      // (D10Scot/Dispatcharr#12 — `rest_framework_simplejwt` did a bare
+      // `.get()` and let `User.DoesNotExist` escape) and now answers 401
+      // like any other rejected refresh. A login is the right answer for
+      // every one of them, so the status is not inspected here.
       const { access } = await refreshAccessToken(request, previous.refresh);
       if (access) {
         const identity = await whoAmI(request, access);
