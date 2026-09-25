@@ -14,7 +14,11 @@ from unittest.mock import patch
 from django.core.cache import cache
 from django.test import TestCase
 
-from apps.channels.epg_matching import get_preferred_region_code
+from apps.channels.epg_matching import (
+    build_epg_tvg_id_index,
+    get_preferred_region_code,
+    normalize_name,
+)
 from apps.channels.models import Channel
 from apps.channels.tasks import match_epg_channels, match_selected_channels_epg
 from core.models import CoreSettings, SYSTEM_SETTINGS_KEY
@@ -102,3 +106,74 @@ class BulkEpgMatchingRegionTests(PreferredRegionSettingsMixin, TestCase):
             ):
                 match_selected_channels_epg([channel.id])
             self.assertEqual(mock_match.call_args.args[2], "uk")
+
+    def test_the_preferred_region_changes_which_epg_row_a_tied_channel_matches(self):
+        """End-to-end: the region bonus must reach `_compute_fuzzy_score` and
+        change which EPG row wins, not just reach `match_channels_to_epg`'s
+        argument list. Only `build_epg_matching_catalog` and
+        `apply_matched_epg_to_channels` are patched here -- `match_channels_to_epg`,
+        `fuzzy_scan_epg_list` and `_compute_fuzzy_score` all run for real.
+
+        Two synthetic EPG rows both named "BBC One" tie on plain fuzzy score
+        (both normalize to "bbc one", `fuzz.ratio` 100) and differ only by a
+        region suffix on `tvg_id`: `bbcone.us` (id 10, listed first) and
+        `bbcone.uk` (id 11). With no region set, the scan's tie-break keeps
+        whichever row it saw first (`_fuzzy_scan_core`: a later row must
+        strictly beat the current best score to replace it), so both channels
+        land on the `.us` row. With `preferred_region` set to "uk",
+        `_compute_fuzzy_score`'s region bonus is +15 for `.uk` and -15 for
+        `.us` (`apps/channels/epg_matching.py:211-224`), so the `.uk` row wins
+        outright (115 vs 85) -- both comfortably clear the bulk "no ML needed"
+        threshold (`FUZZY_HIGH_CONFIDENCE=90`), so this never touches the ML
+        band.
+        """
+        us_row = {
+            "id": 10,
+            "tvg_id": "bbcone.us",
+            "original_tvg_id": "bbcone.us",
+            "name": "BBC One",
+            "epg_source_id": 1,
+            "epg_source_priority": 0,
+            "norm_name": normalize_name("BBC One"),
+        }
+        uk_row = {
+            "id": 11,
+            "tvg_id": "bbcone.uk",
+            "original_tvg_id": "bbcone.uk",
+            "name": "BBC One",
+            "epg_source_id": 1,
+            "epg_source_priority": 0,
+            "norm_name": normalize_name("BBC One"),
+        }
+        epg_data = [us_row, uk_row]
+        tvg_id_index = build_epg_tvg_id_index(epg_data)
+
+        channel_a = Channel.objects.create(channel_number=1, name="BBC One")
+        channel_b = Channel.objects.create(channel_number=2, name="BBC One")
+
+        with self.subTest("no preferred region: ties keep the first-seen row"):
+            with patch(
+                "apps.channels.tasks.build_epg_matching_catalog",
+                return_value=(epg_data, tvg_id_index),
+            ), patch(
+                "apps.channels.tasks.apply_matched_epg_to_channels",
+                return_value=[],
+            ) as mock_apply:
+                match_epg_channels()
+            matched = mock_apply.call_args.args[0]
+            won_ids = sorted({chan["epg_data_id"] for chan in matched})
+            self.assertEqual(won_ids, [us_row["id"]])
+
+        with self.subTest("preferred region uk: the .uk row wins outright"):
+            self._set_preferred_region("UK")
+            with patch(
+                "apps.channels.tasks.build_epg_matching_catalog",
+                return_value=(epg_data, tvg_id_index),
+            ), patch(
+                "apps.channels.tasks.apply_matched_epg_to_channels",
+                return_value=[],
+            ) as mock_apply:
+                match_epg_channels()
+            matched = mock_apply.call_args.args[0]
+            won_ids = sorted({chan["epg_data_id"] for chan in matched})
+            self.assertEqual(won_ids, [uk_row["id"]])

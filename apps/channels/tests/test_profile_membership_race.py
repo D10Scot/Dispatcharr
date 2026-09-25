@@ -60,12 +60,20 @@ class ProfileMembershipRaceTests(TestCase):
         )
 
     def test_channel_create_tolerates_a_membership_a_concurrent_profile_create_inserted(self):
-        """Deterministic simulation of the reverse race: a `ChannelProfile`
-        post_save handler (standing in for a concurrent profile create)
-        inserts `(profile, channel)` the instant the channel row is saved --
-        before the view's own `bulk_create` runs for the "add to all
-        profiles" default. The view must tolerate the pre-existing row
-        rather than 500."""
+        """Deterministic simulation of the reverse race: a `Channel`
+        post_save receiver (standing in for a concurrent profile create,
+        since the real race is between two unguarded `bulk_create`s and
+        there is no `Channel`-side hook to race against otherwise) inserts
+        `(profile, channel)` the instant the channel row is saved -- before
+        the view's own `bulk_create` runs. The view must tolerate the
+        pre-existing row rather than 500, on all three of
+        `ChannelViewSet.create`/`from_stream`'s `channel_profile_ids`
+        branches: omitted (all-profiles, `api_views.py:877`/`:2074`),
+        sentinel `[0]` (also all-profiles, `:887`/`:2084`) and a specific id
+        list (`:902`/`:2099`) -- three of the plan's seven `ignore_conflicts`
+        sites are otherwise never reached by this module, and reverting any
+        one of them alone would stay green.
+        """
         profile = ChannelProfile.objects.create(name="Race Profile B")
 
         def _simulate_concurrent_profile_create(sender, instance, created, **kwargs):
@@ -86,33 +94,48 @@ class ProfileMembershipRaceTests(TestCase):
             dispatch_uid="test-race-concurrent-profile-create",
         )
 
-        with self.subTest("channel create"):
-            response = self.client.post(
-                "/api/channels/channels/",
-                {"channel_number": 902, "name": "Race Channel B"},
-                format="json",
-            )
-            self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
-            channel_id = response.data["id"]
-            self.assertEqual(
-                ChannelProfileMembership.objects.filter(
-                    channel_profile=profile, channel_id=channel_id
-                ).count(),
-                1,
-            )
+        cases = [
+            ("omitted", None),
+            ("sentinel [0]", [0]),
+            ("specific [profile.id]", [profile.id]),
+        ]
+        channel_number = 902
 
-        with self.subTest("from-stream"):
-            stream = Stream.objects.create(name="Race Stream")
-            response = self.client.post(
-                "/api/channels/channels/from-stream/",
-                {"stream_id": stream.id, "channel_number": 903},
-                format="json",
-            )
-            self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
-            channel_id = response.data["id"]
-            self.assertEqual(
-                ChannelProfileMembership.objects.filter(
-                    channel_profile=profile, channel_id=channel_id
-                ).count(),
-                1,
-            )
+        for label, channel_profile_ids in cases:
+            with self.subTest(f"channel create: {label}"):
+                payload = {
+                    "channel_number": channel_number,
+                    "name": f"Race Channel B ({label})",
+                }
+                if channel_profile_ids is not None:
+                    payload["channel_profile_ids"] = channel_profile_ids
+                response = self.client.post(
+                    "/api/channels/channels/", payload, format="json"
+                )
+                self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+                channel_id = response.data["id"]
+                self.assertEqual(
+                    ChannelProfileMembership.objects.filter(
+                        channel_profile=profile, channel_id=channel_id
+                    ).count(),
+                    1,
+                )
+            channel_number += 1
+
+            with self.subTest(f"from-stream: {label}"):
+                stream = Stream.objects.create(name=f"Race Stream ({label})")
+                payload = {"stream_id": stream.id, "channel_number": channel_number}
+                if channel_profile_ids is not None:
+                    payload["channel_profile_ids"] = channel_profile_ids
+                response = self.client.post(
+                    "/api/channels/channels/from-stream/", payload, format="json"
+                )
+                self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+                channel_id = response.data["id"]
+                self.assertEqual(
+                    ChannelProfileMembership.objects.filter(
+                        channel_profile=profile, channel_id=channel_id
+                    ).count(),
+                    1,
+                )
+            channel_number += 1
