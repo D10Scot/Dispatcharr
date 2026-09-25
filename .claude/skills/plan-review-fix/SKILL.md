@@ -24,7 +24,7 @@ Give it: its own worktree and branch (`worktree-per-change`), the base SHA, the 
 The planner commits, pushes, opens the PR and reports the head SHA; `references/project.md` says whether the PR opens as a draft and when it is marked ready, since that depends on how the project's review bot behaves. A plan describes a future fix and does not make one, so its body carries no closing keyword: GitHub closes the issue on merge whatever the PR changed, and the keyword belongs to the PR that lands the fix. Check with:
 
 ```bash
-gh pr view <n> --repo <owner/repo> --json body --jq .body | grep -inE '(close|fix|resolve)\w* +#'
+gh pr view <n> --repo <owner/repo> --json closingIssuesReferences --jq '.closingIssuesReferences | length'   # must print 0; it reads every form the platform honours
 ```
 
 ## 2. Freeze and verify the tip
