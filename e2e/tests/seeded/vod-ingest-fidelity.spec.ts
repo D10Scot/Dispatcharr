@@ -19,12 +19,12 @@ import {
  * the plumbing proof that a movie/series/episode row appears at all after an
  * XC refresh — it is untouched here. This file asserts what those rows
  * *contain*, that categories are created correctly with the right per-account
- * relation, and pins the `VODCategoryFilter.m3u_account` defect.
+ * relation, and pins the `VODCategoryFilter.m3u_account` fix.
  *
  * One scenario shape, declared fresh per test via `seedCatalogue()` — not
- * shared as a single seeded fixture — because `test.fail()` in Step 4 must
- * not depend on Step 2/3 having already run in the same test, and a shared
- * `beforeEach` would hide that dependency. Every name is generated:
+ * shared as a single seeded fixture — because Step 4 must not depend on
+ * Step 2/3 having already run in the same test, and a shared `beforeEach`
+ * would hide that dependency. Every name is generated:
  * `VODCategory` is unique on `(name, category_type)` **globally**, and
  * `Movie`/`Series` are matched across *all* accounts by TMDB → IMDB →
  * `(name, year)` when no external id is present — an unscoped name here
@@ -220,10 +220,10 @@ test('a VOD refresh creates one category row per declared category, enabled for 
   // refresh_vod_content is a separate Celery task queued by the 202 above,
   // not completed by it — poll rather than reading once. Unpaginated and
   // instance-global (no pagination_class on VODCategoryViewSet), so the read
-  // must be scoped: VODCategoryFilter.m3u_account is broken (pinned by the
-  // test.fail() below, which is why it cannot be used here either), so
-  // `name` (icontains, scoped by the generated prefix no other worker's
-  // fixture can share) is the only usable filter. Wait for exactly the three
+  // must be scoped: this test deliberately does not depend on the
+  // m3u_account filter the test below pins, so `name` (icontains, scoped by
+  // the generated prefix no other worker's fixture can share) is used here
+  // too. Wait for exactly the three
   // categories this test declared, then locate each with find rather than a
   // length or an index, and assert nothing about a category this test did
   // not declare.
@@ -261,51 +261,111 @@ test('a VOD refresh creates one category row per declared category, enabled for 
   }
 });
 
-// Asserts the behaviour Dispatcharr SHOULD have. VODCategoryFilter
-// (apps/vod/api_views.py:624) declares
+// Pins the fix for #96. VODCategoryFilter (apps/vod/api_views.py) used to
+// declare
 //   m3u_account = NumberFilter(field_name="m3u_account__id")
 // but VODCategory has no `m3u_account` relation — the reverse accessor is
-// `m3u_relations`. The filter is in Meta.fields too, so it imports cleanly
-// and fails only at query time with
+// `m3u_relations`. The filter was in Meta.fields too, so it imported cleanly
+// and failed only at query time with
 //   FieldError: Cannot resolve keyword 'm3u_account' into field. Choices are:
 //   category_type, created_at, id, m3u_relations, m3umovierelation,
 //   m3useriesrelation, name, updated_at
-// MovieFilter and SeriesFilter get this right ("m3u_relations__m3u_account__id");
-// only VODCategoryFilter does not. The frontend never passes the filter,
-// which is why nothing has hit it.
-//
-// test.fail() is satisfied by ANY failure in its body, so a broken premise —
-// the account failing to seed, or /api/vod/categories/ being broken outright
-// — would also turn this green without ever reaching the m3u_account filter.
-// That premise (account creation succeeds, and GET /api/vod/categories/
-// without the filter returns 200 with correctly-related rows) is asserted
-// directly, without inversion, in the category-rows test above.
+// MovieFilter and SeriesFilter always had this right
+// ("m3u_relations__m3u_account__id"); only VODCategoryFilter did not. The
+// frontend never passed the filter, which is why nothing had hit it. The
+// premise this test depends on (account creation succeeds, and
+// GET /api/vod/categories/ without the filter returns 200 with
+// correctly-related rows) is asserted directly, without inversion, in the
+// category-rows test above.
 //
 // Issue: https://github.com/D10Scot/Dispatcharr/issues/96
-test.fail('GET /api/vod/categories/ accepts an m3u_account filter', { tag: '@contract' }, async ({
+test('GET /api/vod/categories/ accepts an m3u_account filter', { tag: '@contract' }, async ({
   upstream,
   seed,
   api,
+  waitFor,
 }) => {
-  test.setTimeout(150_000);
+  // seedCatalogue() twice (the main account and the decoy) plus two
+  // waitFor.resource calls, each with its own 120s budget: 120_000 * 2 for
+  // the waiters, plus headroom for both seeds and the one-shot status check.
+  // 150_000 was enough for one waiter but not two, and a test-level timeout
+  // fires as Playwright's own generic message rather than either waiter's
+  // "last observed" one, so a regression that reaches only the second wait
+  // would lose its diagnostic text to a budget that was never the point
+  // under test.
+  test.setTimeout(270_000);
 
-  // refresh-vod does not need to complete — the filter raises before any row
-  // is read — so this does NOT make the post-fix assertion (every returned
-  // category actually relates to this account) meaningful: seedCatalogue()
-  // fires the refresh and returns on its 202 with no wait for the
-  // categories to actually exist, the same unsynchronised gap fixed in the
-  // category-rows test above. Once VODCategoryFilter is fixed, this body
-  // races the same Celery task and can just as easily run the loop below
-  // over zero rows as over three.
-  const { account } = await seedCatalogue(upstream, seed, api);
+  const { prefix, account } = await seedCatalogue(upstream, seed, api);
 
-  const res = await api.get(`/api/vod/categories/?m3u_account=${account.id}`);
-  // A status-only assertion would go green on a fix that returned 200 with
-  // an unfiltered list — every returned row must actually relate to this
-  // account.
-  expect(res.status()).toBe(200);
-  const categories = await api.json<VodCategory[]>(res, 'vod categories filtered by account');
+  // A second, minimal account with its own category, seeded before the read
+  // below and confirmed to exist first. Without it, a broken filter that
+  // returns an unfiltered (or wrongly `gte`-scoped) list is caught only when
+  // some OTHER seeded spec's account already happens to have a category in
+  // the shared instance at read time — true under this project's normal
+  // parallel load, but not guaranteed by this test on its own. Seeding it
+  // here, and waiting for it before the read, makes the negative assertion
+  // below deterministic regardless of what else is running.
+  const decoyPrefix = seed.generatedName('vodfid-decoy');
+  const decoyScenario = await upstream.scenario({
+    xc: true,
+    username: `${decoyPrefix}-user`,
+    password: `${decoyPrefix}-pass`,
+    vodCategories: [{ id: 1, name: `${decoyPrefix}-decoy` }],
+  });
+  const decoyAccount = await seed.xcAccount(decoyScenario, { enable_vod: true });
+  const decoyRefresh = await api.post(`/api/m3u/accounts/${decoyAccount.id}/refresh-vod/`, {});
+  expect(decoyRefresh.status(), 'POST refresh-vod/ (decoy account)').toBe(202);
+  await waitFor.resource<VodCategory[]>(
+    `/api/vod/categories/?name=${encodeURIComponent(decoyPrefix)}`,
+    (body) => body.length === 1,
+    { description: `the decoy ${decoyPrefix}-decoy category to exist`, timeoutMs: 120_000 }
+  );
+
+  const url = `/api/vod/categories/?m3u_account=${account.id}`;
+  // A one-shot status assertion first: the filter must not 500. Without it, a
+  // pre-fix regression is caught only by the waiter below timing out after a
+  // deterministic 120s of HTTP 500 — which can exceed this test's own 150s
+  // budget depending on how long seeding above took, losing the waiter's
+  // "last observed: HTTP 500" message in favour of a generic Playwright
+  // "Test timeout of 150000ms exceeded" that names no mechanism.
+  expect((await api.get(url)).status(), 'the m3u_account filter must not 500').toBe(200);
+
+  // Still not deterministic on status alone: refresh_vod_content is a
+  // separate Celery task queued by the 202 above, not completed by it, so a
+  // read straight after the POST can return 200 with zero rows whether the
+  // filter is scoping correctly or not. Wait for the three ${prefix}
+  // categories the category-rows test above declares, the same way it does,
+  // but through the m3u_account filter instead of name — that is the
+  // property under test. Not an exact-length predicate: VODCategoryViewSet.list()
+  // (apps/vod/api_views.py) also get_or_creates a movie and a series
+  // "Uncategorized" category and relation for every active XC account with
+  // VOD enabled, including this one, on every call to this same endpoint —
+  // so a correctly-scoped answer for this account is these three plus up to
+  // two Uncategorized rows, never exactly three.
+  const expectedNames = [`${prefix}-movies-a`, `${prefix}-movies-b`, `${prefix}-shows`];
+  const categories = await waitFor.resource<VodCategory[]>(
+    url,
+    (body) => expectedNames.every((n) => body.some((c) => c.name === n)),
+    { description: `all 3 ${prefix} categories via the m3u_account filter`, timeoutMs: 120_000 }
+  );
+
+  for (const name of expectedNames) {
+    const category = categories.find((c) => c.name === name);
+    expect(category, `${name} among the m3u_account-filtered categories`).toBeDefined();
+  }
+  // Every returned row must actually relate to this account, and the decoy
+  // account's category must be absent — together these are guaranteed (not
+  // merely likely) to fail an unfiltered list or a wrongly `gte`-scoped one,
+  // because the decoy account above exists and was confirmed before this
+  // read. The backend's own scoping is pinned deterministically by
+  // apps.vod.tests.test_vod_category_account_filter, which seeds two
+  // accounts up front and asserts the other account's category is absent —
+  // this e2e pin now asserts the same shape through the live endpoint.
   for (const category of categories) {
     expect(category.m3u_accounts.some((r) => r.m3u_account === account.id)).toBe(true);
   }
+  expect(
+    categories.some((c) => c.name === `${decoyPrefix}-decoy`),
+    `the decoy account's category must not appear under account ${account.id}'s filter`
+  ).toBe(false);
 });
