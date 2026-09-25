@@ -46,22 +46,28 @@ async function findRecording(api: ApiClient, channelId: number): Promise<Recordi
 // would be a cross-test race; this file relies on that inherited default
 // holding, not on it happening to be pinned some other way.
 //
-// This is the most important cleanup in the whole goal, not just hygiene: a
-// leaked "Custom Recording" here is actively dangerous to every later run,
-// not merely untidy. `categorizeRecordings()`
-// (`frontend/src/utils/pages/DVRUtils.js:63-73`) groups "Upcoming
-// Recordings" by `${program.tvg_id}|${program.title}`, which is `'|'` for
-// *every* ad-hoc recording with no EPG match — so any leaked recording here
-// collapses into the same "Series" card as the next run's fresh one, and
-// `RecordingCard.jsx` renders only the first grouped recording's
-// channel/time, hiding the rest from the DOM entirely. This is exactly how
-// this test failed twice while under development (three leaked debug
-// recordings merged into one card and hid the real assertion target) —
-// filed as https://github.com/D10Scot/Dispatcharr/issues/71. The timeout
-// hole this `afterEach` closes is precisely how that leak was most likely to
-// recur: a 120s-budget browser test forced-aborted mid-flow is the failure
-// mode most likely to skip a body-level cleanup, which is exactly the case
-// `afterEach` survives and a body-level block does not.
+// This cleanup still matters, though its sharpest edge is gone: a leaked
+// "Custom Recording" here — `buildSinglePayload` (`frontend/src/utils/forms/RecordingUtils.js:124`)
+// sends no `custom_properties`, so the row this modal creates carries
+// neither `program.tvg_id` nor `program.title`, and "Custom Recording" is
+// only `RecordingCard.jsx`'s display fallback for that absence — used to be
+// actively dangerous to every later run, not merely untidy.
+// `categorizeRecordings()` (`frontend/src/utils/pages/DVRUtils.js:65-80`)
+// grouped "Upcoming Recordings" by `${program.tvg_id}|${program.title}`,
+// which was `'|'` for *every* ad-hoc recording with no EPG match, so any
+// leaked recording here collapsed into the same card as the next run's
+// fresh one and hid it from the DOM. This is exactly how this test failed
+// twice while under development (three leaked debug recordings merged into
+// one card and hid the real assertion target) — filed as
+// https://github.com/D10Scot/Dispatcharr/issues/71, fixed in fix/E-3-dvr:
+// the grouping key now falls back to the recording's own id when neither
+// field is set, so a leaked row can no longer hide another run's card. It
+// is still an orphaned server-side recording and `PeriodicTask`/
+// `ClockedSchedule` pair, which is reason enough to keep deleting it here.
+// The timeout hole this `afterEach` closes is precisely how that leak was
+// most likely to recur: a 120s-budget browser test forced-aborted mid-flow
+// is the failure mode most likely to skip a body-level cleanup, which is
+// exactly the case `afterEach` survives and a body-level block does not.
 let channelIdToCleanup: number | undefined;
 
 test.afterEach(async ({ api }, testInfo) => {

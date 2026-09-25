@@ -13,19 +13,22 @@ import type { ApiClient, Recording, WaitOptions, Waiter } from '../../fixtures';
  * ---------------------------------------------------------------------------
  * `schedule_task_on_save` (`apps/channels/signals.py:337-386`, the
  * `Recording` `post_save` receiver) calls `schedule_recording_task`, which
- * does `ClockedSchedule.objects.get_or_create(clocked_time=eta)`
- * (`signals.py:271`). `get_or_create` is not race-proof against a `clocked_time`
- * two concurrent (or merely close-together) creates both resolve to: if two
- * `ClockedSchedule` rows ever exist for the exact same instant — nothing in
- * the schema stops that — a later `get_or_create` at that same instant raises
- * `MultipleObjectsReturned`. That exception lands inside `schedule_task_on_save`'s
- * own blanket `except Exception as e: ... print(...)` (`signals.py:383-386`),
- * so it is swallowed rather than raised: the `POST` to
- * `/api/channels/recordings/` still returns `201`, but `task_id` is left
- * `null` and the recording is never scheduled — and every later create that
- * lands on the same `clocked_time` repeats the same silent failure. Filed as
- * D10Scot/Dispatcharr#131 (the missing-`recording_id` gap this same signal
- * has is the separate D10Scot/Dispatcharr#132, not relevant here).
+ * does `core.scheduling.get_or_create_schedule(ClockedSchedule, clocked_time=eta)`
+ * (`signals.py:272`). Before the fix for D10Scot/Dispatcharr#131 (fixed in
+ * fix/E-3-dvr) that line was a bare `ClockedSchedule.objects.get_or_create(clocked_time=eta)`,
+ * which is not race-proof against a `clocked_time` two concurrent (or merely
+ * close-together) creates both resolve to: if two `ClockedSchedule` rows
+ * ever existed for the exact same instant — nothing in the schema stops
+ * that — a later `get_or_create` at that same instant raised
+ * `MultipleObjectsReturned`, swallowed by `schedule_task_on_save`'s own
+ * blanket `except Exception as e: ... print(...)`, so the `POST` to
+ * `/api/channels/recordings/` still returned `201` with `task_id` left
+ * `null` and the recording never scheduled. `get_or_create_schedule` now
+ * takes the oldest matching row instead, so a duplicate `clocked_time` no
+ * longer breaks scheduling, and a genuine scheduling failure now reaches
+ * `logger.exception` at ERROR rather than `print()`. The missing-`recording_id`
+ * gap this same signal used to have was the separate D10Scot/Dispatcharr#132,
+ * also fixed in fix/E-3-dvr.
  *
  * `uniqueStartTime` exists to make that instant never repeat. A plain
  * `new Date(Date.now() + offsetMs).toISOString()` is not enough on its own:
@@ -34,10 +37,11 @@ import type { ApiClient, Recording, WaitOptions, Waiter } from '../../fixtures';
  * future rounding of the result (down to the second, or the minute — exactly
  * what `RecordingUtils.js`'s `createRoundedDate()` does on the frontend, and
  * exactly what produced three collided "Custom Recording" rows during G6's
- * work, filed as D10Scot/Dispatcharr#71) would make an accidental collision
- * far *more* likely, not less. **Never round or truncate the string this
- * returns** — doing so reopens #131 with better odds than the un-rounded
- * form already carries.
+ * work, filed as D10Scot/Dispatcharr#71, fixed in fix/E-3-dvr) would make an
+ * accidental collision far *more* likely, not less. **Never round or
+ * truncate the string this returns** — a collision no longer breaks
+ * scheduling or hides a card (both #131 and #71 are fixed), but it is still
+ * unnecessary `ClockedSchedule` row bloat this factory exists to avoid.
  *
  * ---------------------------------------------------------------------------
  * `end_time` must always be in the future
@@ -69,21 +73,25 @@ import type { ApiClient, Recording, WaitOptions, Waiter } from '../../fixtures';
  * `revoke_task_on_delete` (`signals.py:388-390`, a `post_delete` receiver)
  * calls `revoke_task()`, which deletes the row's `PeriodicTask` and, if
  * nothing else references it, its `ClockedSchedule` too (`signals.py:289-303`).
- * Skipping that cleanup has two independent costs, not one:
+ * Skipping that cleanup still has a real cost, even though the sharper of
+ * the two this section used to warn about is now fixed:
  *
- *  - **D10Scot/Dispatcharr#71** — `categorizeRecordings()`
- *    (`frontend/src/utils/pages/DVRUtils.js:63-73`) groups the DVR page's
- *    "Upcoming Recordings" list by `${program.tvg_id}|${program.title}`,
- *    which collapses to the literal string `'|'` for every ad-hoc recording
- *    with no EPG `program` — i.e. every recording this file creates. A
- *    leaked row here silently merges into the *next* run's card and hides
- *    it from the DOM, however unrelated in channel or time.
- *  - **A stale `PeriodicTask`/`ClockedSchedule` pair survives the test**,
- *    sitting in the database at its own `clocked_time` indefinitely. That
- *    directly widens the collision surface `uniqueStartTime` exists to
- *    avoid: every leaked row is one more `clocked_time` a later run's
- *    `get_or_create` can land on, compounding the #131 race across runs
- *    instead of containing it to one.
+ *  - **D10Scot/Dispatcharr#71 (fixed in fix/E-3-dvr)** — `categorizeRecordings()`
+ *    (`frontend/src/utils/pages/DVRUtils.js:63-77`) used to group the DVR
+ *    page's "Upcoming Recordings" list by `${program.tvg_id}|${program.title}`,
+ *    which collapsed to the literal string `'|'` for every ad-hoc recording
+ *    with no EPG `program` — i.e. every recording this file creates — so a
+ *    leaked row silently merged into the *next* run's card and hid it from
+ *    the DOM. The key now falls back to the recording's own id when neither
+ *    field is set, so a leaked row no longer hides another run's card.
+ *  - **A stale `PeriodicTask`/`ClockedSchedule` pair still survives the
+ *    test**, sitting in the database at its own `clocked_time` indefinitely.
+ *    That still widens the row count `uniqueStartTime` exists to keep down:
+ *    every leaked row is one more `clocked_time` a later run's
+ *    `get_or_create_schedule` can land on. Landing on one is harmless now
+ *    (#131 fixed in fix/E-3-dvr — the oldest matching row is reused, and the
+ *    recording still schedules), but the row itself is still dead weight in
+ *    the shared database, which is reason enough to keep deleting it here.
  *
  * A body-level `try`/`finally` is not enough on its own: Playwright tears a
  * timed-out test down mid-`await` without raising a catchable exception, so
