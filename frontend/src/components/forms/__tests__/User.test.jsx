@@ -26,6 +26,10 @@ vi.mock('../../../utils/forms/UserUtils.js', () => ({
   userToFormValues: vi.fn(() => ({})),
 }));
 
+vi.mock('../../../utils/securePassword', () => ({
+  generateSecurePassword: vi.fn(() => 'GENERATED'),
+}));
+
 // ── Mantine form ───────────────────────────────────────────────────────────────
 const mockForm = {
   getInputProps: vi.fn(() => ({})),
@@ -155,6 +159,8 @@ import useOutputProfilesStore from '../../../store/outputProfiles';
 import useAuthStore from '../../../store/auth';
 import * as UserUtils from '../../../utils/forms/UserUtils.js';
 import { copyToClipboard } from '../../../utils';
+import { USER_LEVELS } from '../../../constants';
+import { generateSecurePassword } from '../../../utils/securePassword';
 import User from '../User';
 
 // ── Factories ──────────────────────────────────────────────────────────────────
@@ -607,6 +613,23 @@ describe('User', () => {
       });
     });
 
+    it('creating a Streamer sends a password from generateSecurePassword', async () => {
+      setupMocks({ authUser: makeAdminUser() });
+      vi.mocked(UserUtils.formValuesToPayload).mockReturnValue({
+        user_level: USER_LEVELS.STREAMER,
+      });
+
+      render(<User isOpen={true} onClose={vi.fn()} />);
+      fireEvent.click(screen.getByText('Save'));
+
+      await waitFor(() => {
+        expect(UserUtils.createUser).toHaveBeenCalledWith(
+          expect.objectContaining({ password: 'GENERATED' })
+        );
+      });
+      expect(generateSecurePassword).toHaveBeenCalled();
+    });
+
     it('calls updateUser when editing an existing user', async () => {
       const admin = makeAdminUser();
       setupMocks({ authUser: admin });
@@ -725,7 +748,7 @@ describe('User', () => {
       fireEvent.click(rotateButton);
 
       expect(mockForm.setValues).toHaveBeenCalledWith(
-        expect.objectContaining({ xc_password: expect.any(String) })
+        expect.objectContaining({ xc_password: 'GENERATED' })
       );
     });
 

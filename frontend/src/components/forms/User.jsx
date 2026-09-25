@@ -36,6 +36,7 @@ import {
   updateUser,
   userToFormValues,
 } from '../../utils/forms/UserUtils.js';
+import { generateSecurePassword } from '../../utils/securePassword';
 
 const User = ({ user = null, isOpen, onClose }) => {
   const profiles = useChannelsStore((s) => s.profiles);
@@ -74,7 +75,7 @@ const User = ({ user = null, isOpen, onClose }) => {
     const payload = formValuesToPayload(form.getValues(), user);
 
     if (!user && payload.user_level == USER_LEVELS.STREAMER) {
-      payload.password = Math.random().toString(36).slice(2);
+      payload.password = generateSecurePassword();
     }
 
     if (!user) {
@@ -106,7 +107,7 @@ const User = ({ user = null, isOpen, onClose }) => {
 
   const generateXCPassword = () => {
     form.setValues({
-      xc_password: Math.random().toString(36).slice(2),
+      xc_password: generateSecurePassword(),
     });
   };
 
