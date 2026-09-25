@@ -183,36 +183,13 @@ test('a profiled level-1 user lists a level-1 channel', { tag: '@contract' }, as
   ).toContain(channel.id);
 });
 
-// Asserts the behaviour Dispatcharr SHOULD have. `xc_get_live_categories` in
-// apps/output/views.py has three branches. The no-profiles branch and the
-// admin branch both filter `channels__user_level__lte=user.user_level`. The
-// has-profiles branch — the one a user with at least one Channel Profile
-// takes — filters `"channels__user_level": 0`, an exact match.
-//
-// Symptom, and what this test asserts against: a channel at user_level 1 is
-// listed by get_live_streams (which uses __lte everywhere) but its category
-// is missing from get_live_categories, so an XC client shows a stream that
-// belongs to no category.
-//
-// 'the XC live catalogue lists a seeded channel under its own category'
-// above is not a positive control for this test, despite the matching
-// setup: it shares this test's profiled-user shape
-// (`channel_profiles: [profile.id]`) but at channel user_level 0, where
-// get_live_categories' has-profiles exact-match filter
-// (channels__user_level == 0) and get_live_streams' __lte filter agree by
-// construction — it cannot confirm the level-1 half of this test's premise.
-// It is a contrast case: the two tests differ in exactly one field (the
-// channel's user_level), which is what makes this a located defect rather
-// than a guess.
-//
-// This test's own body already performs that level-1 premise sequence, but
-// inside this test.fail() block, where it is guarded only by test.fail()'s
-// "any failure" net rather than by the assertion itself — see the
-// non-inverted control above ('a profiled level-1 user lists a level-1
-// channel') for why that gap matters and what closes it.
-//
-// Issue: https://github.com/D10Scot/Dispatcharr/issues/85
-test.fail('a profiled user sees the category of every channel it can list', { tag: '@contract' }, async ({
+// Fixed (#85). `xc_get_live_categories`'s has-profiles branch (the one a
+// user with at least one Channel Profile takes) filtered
+// `"channels__user_level": 0`, an exact match, where the no-profiles
+// branch, the admin branch and `get_live_streams` all use `__lte`. It now
+// filters `channels__user_level__lte=user.user_level` too, so a level-1
+// user's level-1 channel has a category again.
+test('a profiled user sees the category of every channel it can list', { tag: '@contract' }, async ({
   seed,
   request,
 }) => {

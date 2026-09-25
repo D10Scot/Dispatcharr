@@ -138,60 +138,18 @@ test('/output/m3u/<profile> 404s on a profile that does not exist', { tag: '@con
   expect(res.status()).toBe(404);
 });
 
-/**
- * `apps/output/views.py:306-308` interpolates the raw channel name into
- * `tvg-name="{tvg_name}"` (and `group-title="{group_title}"`) with no
- * quote-escaping. A channel whose name contains a `"` therefore breaks the
- * EXTINF line: the embedded quote closes the attribute early and the rest of
- * the value spills out as unquoted text, so no parser can round-trip the name
- * back out of the response.
- *
- * `seed.channel()` always overwrites `name` with its generated value (Task 1
- * pins this), so a quote can't be seeded through the factory. This PATCHes
- * the name after creation instead — an admin write via `api`, not a
- * client-facing surface, so it doesn't violate the request-fixture rule
- * above.
- *
- * Asserts the CORRECT behaviour and is expected to fail until the product
- * escapes the value. Filed as https://github.com/D10Scot/Dispatcharr/issues/80.
- * Do not patch the product from this harness; do not file a duplicate issue.
- *
- * WHAT THIS ASSERTS, AND WHY NOT THE OBVIOUS THING. The obvious pin —
- * `entries.find(e => e.attributes['tvg-name'] === quotedName)` — can never go
- * green, whatever the fix. `parseM3u` reads attribute values as `[^"]*`, so a
- * raw `"` inside a value is unrepresentable by construction, and every
- * candidate fix produces something that is not `quotedName`: `html.escape`
- * gives `&quot;`, stripping gives the character gone, backslashes leave the
- * value truncated at the inner quote. A pin that stays red for every possible
- * fix cannot signal the one thing a pin exists to signal.
- *
- * So it asserts two things a fix CAN satisfy:
- *
- *  1. `wellFormed` — the EXTINF line's attribute region ends at the title
- *     comma rather than in spilled text. Every plausible fix satisfies this;
- *     it is the structural half of the defect and it is fix-agnostic.
- *  2. The name round-trips once XML entities are decoded. This half does
- *     assume the fix is `html.escape(..., quote=True)`, which is what
- *     Dispatcharr already writes with everywhere else (see
- *     `decodeXmlEntities`' own note) and what `&quot;` in an M3U attribute
- *     means to real clients.
- *
- * The entry is located by URL, not by `tvg-name`: the UUID is on the line
- * BELOW the malformed one, so it is the one locator that works both before
- * and after the fix. Locating by an attribute the defect corrupts would make
- * the pin fail at `toBeDefined()` — a hollow failure that says nothing about
- * escaping.
- *
- * Verified with `--reporter=json` that this pin fails at the `wellFormed`
- * assertion. The rename round-trip at the end of the first test above
- * ('/output/m3u renders a parseable playlist with a well-formed proxy URL')
- * is the non-inverted assertion that a PATCH-rename over
- * `/api/channels/channels/<id>/` is accepted and actually persists — the
- * premise this pin's own PATCH depends on, proven outside a test.fail()
- * block where a regression in it would otherwise be swallowed as "expected
- * failure". Re-verify the failure point the same way after any edit here.
- */
-test.fail(
+// Fixed (#80). `apps.output.views._m3u_attr` now escapes `"` (to `&quot;`)
+// in every quoted #EXTINF attribute value, so a channel or group name
+// containing a double quote no longer closes the attribute early and
+// spills the rest of the value out as unquoted text. `&` is left literal
+// on purpose: players and Dispatcharr's own importer read M3U attributes
+// verbatim. `seed.channel()` always overwrites `name` with its generated
+// value (Task 1 pins this), so the quote is introduced with a PATCH after
+// creation — an admin write via `api`, not a client-facing surface, so it
+// doesn't violate the request-fixture rule above. The entry is located by
+// URL, not by `tvg-name`, so the locator works whether or not the value is
+// escaped.
+test(
   'a channel name containing a double quote still produces a well-formed EXTINF line (#80)', { tag: '@contract' },
   async ({ seed, api, request }) => {
     const channel = await seed.channel();
