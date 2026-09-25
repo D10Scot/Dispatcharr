@@ -143,12 +143,13 @@ class RelayProxySettingsSerializer(serializers.Serializer):
     NOT core.serializers.ProxySettingsSerializer (the settings UI's own
     validator for the same seven keys) -- drf-spectacular names OpenAPI
     components by class name, and two classes named ProxySettingsSerializer
-    collided on one component until this was renamed. It was latent only
-    because core.serializers.ProxySettingsSerializer's own viewset
-    (core/api_views.py's ProxySettingsViewSet) is unrouted; the day someone
-    routes it, spectacular keeps whichever registers first, and the two
-    disagree on type: core's declares buffering_timeout, channel_shutdown_
-    delay and channel_init_grace_period as IntegerField (with validators),
+    collided on one component until this was renamed. It is latent because
+    core.serializers.ProxySettingsSerializer is never a schema component:
+    since #257 it validates imperatively inside CoreSettingsSerializer.
+    update. If it is ever declared as a field, spectacular keeps whichever
+    registers first, and the two disagree on type: core's declares
+    buffering_timeout, channel_shutdown_delay and channel_init_grace_period
+    as IntegerField (with validators),
     this one as FloatField (this module renders whatever
     CoreSettings.get_proxy_settings() returns, e.g. 15.0, verbatim) -- a Go
     client generated against the wrong one gets json.Unmarshal refusing

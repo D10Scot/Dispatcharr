@@ -3584,6 +3584,7 @@ class RecordingViewSet(viewsets.ModelViewSet):
                 "success": True,
                 "type": "recording_stopped",
                 "channel": channel_name,
+                "recording_id": recording_id,
             })
         except Exception:
             pass
