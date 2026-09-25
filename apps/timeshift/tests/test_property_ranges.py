@@ -232,8 +232,8 @@ class DownstreamHeaderProperties(SimpleTestCase):
             # Scoped to the path #491 changed: representation_length=0 on the
             # untouched streaming-200 branch (e.g. the presentation path)
             # legitimately forwards Content-Length: 0, and a valid upstream
-            # Content-Range legitimately derives a total of 0 -- neither is
-            # part of this fix's contract.
+            # Content-Range derives its own total, which is not this fix's
+            # fallback path -- neither is part of this fix's contract.
             if streaming and representation_length is None and upstream_content_range is None:
                 self.assertGreater(int(value), 0, headers)
         if "Content-Range" in headers:
