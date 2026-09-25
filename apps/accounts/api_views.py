@@ -22,6 +22,7 @@ from dispatcharr.utils import (
 from .models import User
 from .serializers import UserSerializer, GroupSerializer, PermissionSerializer
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
+from rest_framework_simplejwt.exceptions import InvalidToken
 
 logger = logging.getLogger(__name__)
 
@@ -148,7 +149,13 @@ class TokenRefreshView(TokenRefreshView):
             )
             return Response({"error": "Unauthorized"}, status=status.HTTP_403_FORBIDDEN)
 
-        return super().post(request, *args, **kwargs)
+        try:
+            return super().post(request, *args, **kwargs)
+        except User.DoesNotExist:
+            # simplejwt 5.5.1's TokenRefreshSerializer.validate looks the
+            # token's user up with a bare .get(); a deleted user is an invalid
+            # token (401 token_not_valid), not a server error (#12).
+            raise InvalidToken()
 
 
 @csrf_exempt  # Bootstrap only; POST is IP-gated and closes once an admin exists.

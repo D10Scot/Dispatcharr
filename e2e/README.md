@@ -536,11 +536,12 @@ carries no `throttle_classes`, and `DEFAULT_THROTTLE_CLASSES` is `[]`), which
 is what makes the middle row free: an access token lives 30 minutes, a refresh
 token a day, so bootstrap and `ApiClient` both renew rather than re-login. One
 sharp edge in that endpoint, filed as
-[#12](https://github.com/D10Scot/Dispatcharr/issues/12): a refresh token naming
-a *deleted* user gets a **500**, not a 401. Setup treats that as "log in
-instead" and is unaffected; in a worker it surfaces as
-`token refresh failed: 500`, which means `playwright/.auth/` is left over from
-a container that has since been reset — delete it and run again.
+[#12](https://github.com/D10Scot/Dispatcharr/issues/12) and fixed: a refresh
+token naming a *deleted* user used to get a **500**, not a 401. Setup treats
+any refresh failure as "log in instead" and was unaffected either way; in a
+worker it now surfaces as `token refresh failed: 401`, which means
+`playwright/.auth/` is left over from a container that has since been
+reset — delete it and run again.
 
 The cold path sits exactly on the cap. Two things push it over: **adding a
 principal**, and a principal whose **password has drifted**, which spends a
