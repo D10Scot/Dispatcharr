@@ -960,7 +960,16 @@ def xc_get_epg(request, user, short=False):
 
     from apps.channels.utils import resolve_xc_epg_prev_days
 
-    limit = int(request.GET.get('limit', 4))
+    # 1000 is well beyond any sane EPG listing size; it exists only to keep an
+    # absurdly large value (Postgres rejects a LIMIT above 2^63-1 with
+    # DataError: bigint out of range) from reaching the queryset slice below.
+    XC_EPG_LIMIT_MAX = 1000
+    try:
+        limit = int(request.GET.get('limit', 4))
+    except (ValueError, TypeError):
+        limit = 4
+    if limit < 0 or limit > XC_EPG_LIMIT_MAX:
+        limit = 4
     user_custom = user.custom_properties or {}
     try:
         num_days = int(request.GET.get('days', user_custom.get('epg_days', 0)))
