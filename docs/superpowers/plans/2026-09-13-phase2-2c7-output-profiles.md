@@ -1,6 +1,6 @@
 # Phase 2 PR 2c-7 — the Go relay's Output Profiles Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** implement this plan task by task with subagents, per CLAUDE.md § Delegation for phase work. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Serve **Output Profiles** from the Go relay: an optional downstream transcode reading the channel's shared ring on `pipe:0` and writing MPEG-TS on `pipe:1`, **one process per active `(channel, profile)` pair shared by every client on that profile** — parity-matrix **row 11**, "ten AC3 clients cost one ffmpeg". A client on a profile reads that process's output instead of the channel's own ring; an fMP4 client on a profile runs **two chained processes**, the transcode under `mpegts:p<id>` and 2c-6's remux under `fmp4:p<id>` reading it, exactly as `views.py:765-792` composes them. Row 11 gets a Go pin.
 

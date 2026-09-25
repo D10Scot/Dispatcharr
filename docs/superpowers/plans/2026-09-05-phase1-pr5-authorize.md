@@ -1,7 +1,6 @@
 # Phase 1 PR 5 — Authorize Hop Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development
-> (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use
+> **For agentic workers:** implement this plan task by task with subagents, per CLAUDE.md § Delegation for phase work. Steps use
 > checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Put every long-lived stream surface behind one Django function, `authorize_stream()`,

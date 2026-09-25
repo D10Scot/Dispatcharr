@@ -1,6 +1,6 @@
 # Phase 2 Stage 2c-9 — the Go coverage gate, and 2c's close-out
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** implement this plan task by task with subagents, per CLAUDE.md § Delegation for phase work. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Turn the Go relay's test suite into an enforced coverage ratchet measured where it is enforced, make "the parity matrix is 100% Go-columned" a mechanical check rather than a claim, give CodeQL a Go pack, and add the one test that drives both relays from the same bytes — then close stage 2c.
 

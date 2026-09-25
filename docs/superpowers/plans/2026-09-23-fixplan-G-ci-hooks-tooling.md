@@ -1,7 +1,6 @@
 # Fix plan, category G — CI, hooks and tooling
 
-> **For agentic workers:** REQUIRED SUB-SKILL: use superpowers:subagent-driven-development (recommended)
-> or superpowers:executing-plans to implement this plan task by task. Implementers are `sonnet`; a
+> **For agentic workers:** implement this plan task by task with subagents, per CLAUDE.md § Delegation for phase work. Implementers are `sonnet`; a
 > stuck implementer escalates to `opus`. Every PR is reviewed by `fable` (`opus` when fable credits are
 > unavailable) against this plan before it leaves draft. Steps use checkbox (`- [ ]`) syntax.
 

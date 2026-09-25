@@ -1,6 +1,6 @@
 # G2 Fake Upstream Provider Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** implement this plan task by task with subagents, per CLAUDE.md § Delegation for phase work. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Build a controllable IPTV provider — M3U playlist, XMLTV EPG, a paced looping MPEG-TS stream, and a control API for eight fault modes — that Dispatcharr can ingest from and stream through in E2E tests.
 

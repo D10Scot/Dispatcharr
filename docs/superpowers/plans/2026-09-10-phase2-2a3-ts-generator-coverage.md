@@ -1,6 +1,6 @@
 # Phase 2 PR 2a-3 — TS generator and channel-service coverage Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** implement this plan task by task with subagents, per CLAUDE.md § Delegation for phase work. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Pin parity-matrix rows 7, 8, 9, 10 and 13 with harness tests that drive the relay over HTTP against real dependencies, and raise measured statement coverage on `apps/proxy/live_proxy/output/ts/generator.py` and `apps/proxy/live_proxy/services/channel_service.py`.
 

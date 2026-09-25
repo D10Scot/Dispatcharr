@@ -1,7 +1,6 @@
 # Phase 2 PR 2a-5 — `server.py` Coverage and the Eight Unowned Matrix Rows Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development
-> (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use
+> **For agentic workers:** implement this plan task by task with subagents, per CLAUDE.md § Delegation for phase work. Steps use
 > checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Close the eight parity-matrix rows no other PR owns — 14, 15, 16, 17, 19, 20, 23 and

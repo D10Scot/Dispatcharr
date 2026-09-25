@@ -1,6 +1,6 @@
 # Phase 1 PR 3 — supervisord replaces the bash supervision loop Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** implement this plan task by task with subagents, per CLAUDE.md § Delegation for phase work. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Replace `docker/entrypoint.sh`'s bash `pkill`-based `trap cleanup` process supervision with `supervisord`, in every `DISPATCHARR_ENV` and under a new `DISPATCHARR_ROLE` (`all`/`api`/`relay`/`worker`), with no relay program and no routing change.
 

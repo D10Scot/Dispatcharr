@@ -1,6 +1,6 @@
 # G6 — Frontend Surfaces Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** implement this plan task by task with subagents, per CLAUDE.md § Delegation for phase work. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Prove the SPA and a real backend agree — that each of nine product surfaces mounts without error and that a write driven through its UI actually reaches the server, asserted against the server's own state.
 

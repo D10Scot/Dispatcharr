@@ -1,6 +1,6 @@
 # Phase 2 PR 2c-8 — the Go relay's control routes and drain Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** implement this plan task by task with subagents, per CLAUDE.md § Delegation for phase work. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Finish the Go relay's externally-observable surface. The four `/proxy/relay/…` routes 2c-3 did not serve — the single-channel `GET` (with its `?fields=state` form), the channel `DELETE`, the client `DELETE` and the `advance` `POST`; the detail endpoint's five extra client fields and parity-matrix **row 14**'s `owner` asymmetry; the **XC live roots**, which spec D1 scopes and no PR owned (Ruling R1); the four events the tune and stop paths raise — `channel_start`, `channel_stop`, `client_connect` (both client types) and `client_disconnect` (TS only); the dev-only `POST /_dispatcharr/authorize-internal` fallback and the Go half that calls it; and D6's SIGTERM drain, a `/readyz` that reports something real and a Docker `HEALTHCHECK`. **Every remaining un-Go'd parity-matrix row gets a Go pin: thirteen of them, taking the matrix from 14 Go-pinned rows to 28 of the 28 that can carry one.**
 

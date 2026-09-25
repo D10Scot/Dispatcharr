@@ -1,6 +1,6 @@
 # Phase 2 PR 2b-2 — Output Profile and User Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** implement this plan task by task with subagents, per CLAUDE.md § Delegation for phase work. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Add `X-Relay-Output-Format` and `X-Relay-Client-IP` to the authorize hop end to end, make the live relay path read both so `authorize_views.py`'s `User.objects.filter(...)` no longer runs on any live tune, and fold every active `OutputProfile`'s built command into `next-source`'s response body.
 

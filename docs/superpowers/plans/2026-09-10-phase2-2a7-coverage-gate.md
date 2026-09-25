@@ -1,6 +1,6 @@
 # Phase 2 PR 2a-7 — the coverage gate, its floor and its CI wiring
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** implement this plan task by task with subagents, per CLAUDE.md § Delegation for phase work. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Turn Gate 2 from a number in a spec into a CI-enforced ratchet — a floor file measured on the tree it gates, a `--gate` mode in `scripts/coverage_live_path.sh` that fails a PR that regresses it, per-label CI wiring in `backend-tests.yml`, and an honest record of where stage 2a actually lands against the spec's ≥80%.
 

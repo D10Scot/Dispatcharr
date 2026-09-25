@@ -1,6 +1,6 @@
 # Fix plan, category I — Hypothesis property tests for the fuzz-hardening surfaces
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** implement this plan task by task with subagents, per CLAUDE.md § Delegation for phase work. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal.** Land permanent, deterministic Hypothesis property tests over the provider- and
 client-controlled parsing surfaces of `apps/epg`, `apps/m3u`, `apps/output`, `apps/vod` and

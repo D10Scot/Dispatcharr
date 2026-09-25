@@ -1,7 +1,6 @@
 # Phase 1 PR 8 — Django-down and Docs Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development
-> (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use
+> **For agentic workers:** implement this plan task by task with subagents, per CLAUDE.md § Delegation for phase work. Steps use
 > checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Close Phase 1 by proving the two properties the acceptance suite still cannot check —

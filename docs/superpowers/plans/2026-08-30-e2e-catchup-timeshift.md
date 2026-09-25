@@ -1,6 +1,6 @@
 # G10 — Catch-up / Timeshift Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** implement this plan task by task with subagents, per CLAUDE.md § Delegation for phase work. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Prove Dispatcharr's catch-up path end to end — that the XC ingest fields catch-up depends on reach `Channel.is_catchup` through the ingest rollup, that all four client entry points converge on the same code, that redirect mode mirrors the client's own URL layout and fetches nothing, and that proxy mode's seven-candidate cascade walks real HTTP against a real server, emits exactly four timestamp shapes, finds a live one, and caches the winner per account.
 

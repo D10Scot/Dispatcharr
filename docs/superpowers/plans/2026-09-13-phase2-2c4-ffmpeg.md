@@ -1,6 +1,6 @@
 # Phase 2 PR 2c-4 — the Go relay's ffmpeg source Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** implement this plan task by task with subagents, per CLAUDE.md § Delegation for phase work. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Make the Go relay serve the **FFmpeg, VLC and Streamlink stream-profile architectures**: a transcode profile's command line is spawned as a subprocess in its own process group that dies with the relay, its fd 1 is the video, its fd 2 is parsed line by line with a port of `apps/proxy/live_proxy/services/log_parsers.py`, the parsed stream info and ffmpeg's `speed=` reach the status payload, and the buffering detector arms exactly as slowly as ffmpeg's cumulative average makes it — pinned by a real ffmpeg, which is parity-matrix row 4. Plus the contract change that lets the relay carry no shell word splitter (Amendment A4.1), and the Go credential-logging guard #283 asked for, because ffmpeg's argv and stderr both carry the provider URL.
 

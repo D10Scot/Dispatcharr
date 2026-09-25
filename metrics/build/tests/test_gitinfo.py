@@ -77,7 +77,7 @@ class GitInfoTests(unittest.TestCase):
 
     def test_default_ref_falls_back_to_main_when_no_origin_remote(self):
         # A worktree with no `origin` remote at all (this repo's own
-        # `.superpowers` worktrees, a fresh `git init`) has no
+        # `.worktrees/` checkouts, a fresh `git init`) has no
         # `origin/main` to prefer.
         with tempfile.TemporaryDirectory() as tmp:
             repo, shas = make_repo(Path(tmp))

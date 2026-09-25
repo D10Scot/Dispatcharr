@@ -1,6 +1,6 @@
 # Phase 2 PR 2b-3 — the zero-ORM guard, and Gate 1 Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** implement this plan task by task with subagents, per CLAUDE.md § Delegation for phase work. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Build a two-part guard — static and runtime — that makes "the relay reaches the ORM at exactly these named sites, for these written reasons" a checked fact rather than a claim, record the answer to parity-matrix row 18, and close Gate 1.
 

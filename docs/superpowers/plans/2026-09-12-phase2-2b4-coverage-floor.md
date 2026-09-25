@@ -1,6 +1,6 @@
 # Phase 2 PR 2b-4 — closing Gate 2's ≥80% floor Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** implement this plan task by task with subagents, per CLAUDE.md § Delegation for phase work. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Take Gate 2's live-path statement coverage from ~75.2% to ≥80% and move `scripts/coverage_live_path.floor`'s `missing` to the number a fresh CI census earns, so D7 stops blocking stage 2c. This is the last PR of Phase 2b.
 

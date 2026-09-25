@@ -1,6 +1,6 @@
 # Phase 2 PR 2b-1 — Names and Profiles on the Contract: Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** implement this plan task by task with subagents, per CLAUDE.md § Delegation for phase work. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Move five ORM reads out of the relay process by carrying the channel name, stream name, M3U profile name and the locked-ffmpeg `StreamProfile` on the `next-source`/`advance` contract, delete the dead `get_connections_left`, and add `proxy_settings` to the `next-source` response.
 

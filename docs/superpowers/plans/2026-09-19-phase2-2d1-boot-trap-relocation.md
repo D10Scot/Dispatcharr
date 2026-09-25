@@ -1,6 +1,6 @@
 # Phase 2 Stage 2d-1 — the boot-trap relocation
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** implement this plan task by task with subagents, per CLAUDE.md § Delegation for phase work. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Move the four names surviving code imports out of `apps/proxy/live_proxy/` — `RedisKeys`, `ChannelMetadataField`, `ChannelState` and `ConfigHelper` — into Django-owned modules, so that no file stage 2d KEEPS points at the directory stage 2d-4 deletes, and so the module-level boot trap `apps/channels/models.py:6-7` carries has a home that outlives the relay package.
 
