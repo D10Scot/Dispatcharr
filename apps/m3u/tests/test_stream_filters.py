@@ -200,17 +200,27 @@ class StreamFilterRegexTimeoutTests(SimpleTestCase):
                     _stream_passes_m3u_filters(name, "http://x", "News", compiled)
                 )
 
-        self.assertEqual(len(cm.records), 1)
+        self.assertEqual(
+            len(cm.records),
+            1,
+            "timed-out filter warned per stream; the wrapper did not trip",
+        )
 
     def test_applies_to_is_time_bounded(self):
         """M3UFilter.applies_to -- the model method's own non-test caller --
-        is bounded the same way as the batch compile path."""
+        is bounded the same way as the batch compile path. (a+)+$ is solved
+        instantly by regex's own optimizer regardless of timeout, so it
+        would not catch a dropped timeout=; (a|a)*$ genuinely needs the
+        bound (the house test idiom the warned-once test above also uses),
+        and an unbounded search on it matches the empty string at the end
+        of the target, so a dropped timeout= returns True, not False."""
         from apps.m3u.models import M3UFilter
 
-        filter_obj = M3UFilter(filter_type="name", regex_pattern=r"(a+)+$")
+        filter_obj = M3UFilter(filter_type="name", regex_pattern=r"(a|a)*$")
 
         start = time.monotonic()
-        filter_obj.applies_to("a" * 28 + "b", "group")
+        result = filter_obj.applies_to("a" * 28 + "!", "group")
         elapsed = time.monotonic() - start
 
         self.assertLess(elapsed, M3U_FILTER_REGEX_TIMEOUT * 20)
+        self.assertFalse(result)

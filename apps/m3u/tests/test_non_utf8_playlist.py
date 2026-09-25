@@ -114,10 +114,17 @@ class GroupRefreshLockReleaseTests(TestCase):
                     refresh_m3u_groups(account.id)
 
             self.assertTrue(
-                acquire_task_lock("refresh_m3u_account_groups", account.id)
+                acquire_task_lock("refresh_m3u_account_groups", account.id),
+                "group-refresh lock still held after an escaped exception; "
+                "the finally did not release it",
             )
             renewer_thread_name = f"lock-renew-refresh_m3u_account_groups-{account.id}"
             alive_thread_names = {t.name for t in threading.enumerate()}
-            self.assertNotIn(renewer_thread_name, alive_thread_names)
+            self.assertNotIn(
+                renewer_thread_name,
+                alive_thread_names,
+                "lock renewer thread still alive after an escaped exception; "
+                "the finally did not stop it",
+            )
         finally:
             release_task_lock("refresh_m3u_account_groups", account.id)
