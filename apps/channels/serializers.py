@@ -1,5 +1,6 @@
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 from rest_framework import serializers
 from .models import (
@@ -16,7 +17,7 @@ from .models import (
     RecurringRecordingRule,
 )
 from apps.epg.serializers import EPGDataSerializer
-from core.models import StreamProfile
+from core.models import CoreSettings, StreamProfile
 from apps.epg.models import EPGData
 from django.db import connection, transaction
 from django.urls import reverse
@@ -810,6 +811,26 @@ class RecordingSerializer(serializers.ModelSerializer):
         return data
 
 
+# A recurring rule materialises one Recording (and one ClockedSchedule/PeriodicTask
+# pair) per matching day up to its own end_date, synchronously, inside the request:
+# sync_recurring_rule_impl's 14-day horizon never applies on the REST path
+# (upstream 6536f35d made end_date required and full materialisation deliberate).
+# The request is bounded here instead (#138). Measured in the test DB: 365 days
+# took under 6 s per request and ten years 105 s, against a 120 s API harakiri.
+RECURRING_RULE_MAX_DAYS = 365
+
+
+def _system_local_today():
+    """Today in the configured system time zone, as sync_recurring_rule_impl computes
+    local_today (apps/channels/tasks.py), so the cap and the walk share a calendar."""
+    tz_name = CoreSettings.get_system_time_zone()
+    try:
+        tz = ZoneInfo(tz_name)
+    except (KeyError, ValueError, TypeError):
+        tz = timezone.get_current_timezone()
+    return timezone.now().astimezone(tz).date()
+
+
 class RecurringRecordingRuleSerializer(serializers.ModelSerializer):
     class Meta:
         model = RecurringRecordingRule
@@ -845,6 +866,19 @@ class RecurringRecordingRuleSerializer(serializers.ModelSerializer):
             existing_end = getattr(self.instance, "end_date", None)
             if existing_end is None:
                 raise serializers.ValidationError("End date is required")
+        # Only a request that sets end_date is capped: a row from before the cap keeps
+        # its end_date on a PATCH that does not touch it (the operator can shorten it).
+        if "end_date" in attrs and end_date:
+            latest = _system_local_today() + timedelta(days=RECURRING_RULE_MAX_DAYS)
+            if end_date > latest:
+                raise serializers.ValidationError(
+                    {
+                        "end_date": (
+                            f"End date must be no more than {RECURRING_RULE_MAX_DAYS} days "
+                            f"from today ({latest.isoformat()} at the latest)"
+                        )
+                    }
+                )
         if start and end and start_date and end_date:
             start_dt = datetime.combine(start_date, start)
             end_dt = datetime.combine(end_date, end)
