@@ -486,3 +486,31 @@ func TestAReleaseCannotStopAChannelAConcurrentAttachJustJoined(t *testing.T) {
 		}
 	}
 }
+
+// ISSUE #233's relay half: a channel tuned by a STREAM HASH -- the admin
+// single-stream preview, /proxy/ts/stream/<stream_hash> -- names that hash,
+// verbatim, as the ChannelID of every event it raises. core/relay_events.py
+// tells a hash from a channel UUID by parsing it, the rule next_source.py's
+// get_stream_object applies, and records it as details["stream_hash"]; that
+// only works if the relay passes the identifier through untouched, which is
+// what this pins. The relay holds no rule of its own about identifiers.
+func TestAStreamHashTuneNamesItsHashAsTheEventChannelID(t *testing.T) {
+	const streamHash = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
+	events := &eventLog{}
+	m := NewManager(ManagerConfig{BudgetBytes: buffer.TSPacketSize * 400, Events: events})
+	t.Cleanup(m.StopAll)
+	ch, release := attachWith(t, m, streamHash, flowingSource{runs: &int32Counter{}}, testTuning(), nil)
+	defer release()
+	m.Stop(streamHash)
+	<-ch.Done()
+
+	for _, typ := range []string{"channel_start", "channel_stop"} {
+		got := events.of(typ)
+		if len(got) != 1 {
+			t.Fatalf("%d %s events, want 1", len(got), typ)
+		}
+		if got[0].ChannelID != streamHash {
+			t.Fatalf("%s named channel %q, want the stream hash it was tuned by, verbatim", typ, got[0].ChannelID)
+		}
+	}
+}

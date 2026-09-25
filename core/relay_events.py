@@ -12,6 +12,7 @@ is in apps/proxy/api_views.py (D12); the writes are here.
 
 import logging
 import time
+import uuid
 
 from django.db import close_old_connections
 from django.utils import timezone
@@ -54,6 +55,36 @@ def _clean(value):
     are written today.
     """
     return None if value == "" else value
+
+
+def _channel_uuid(value, details):
+    """The channel UUID an event names, or None -- and never a stream hash.
+
+    Issue #233. The relay posts the identifier it was tuned by as
+    channel_id, and /proxy/ts/stream/<stream_hash> -- the admin single-stream
+    preview -- is tuned by a Stream's sha256 hash, not a Channel's UUID
+    (apps/proxy/next_source.py's get_stream_object: "UUID check failed,
+    assume stream hash"). SystemEvent.channel_id is a UUIDField, so the hash
+    raised ValidationError inside log_system_event, whose bare
+    `except Exception` swallowed it: no row and no Connect fan-out for any
+    event of a preview tune -- channel_start, channel_stop and everything
+    between. The same rule get_stream_object applies decides it here: a
+    value that is not a UUID is written as details["stream_hash"] and the
+    row carries no channel, as vod_start's rows do.
+    """
+    if value is None:
+        return None
+    try:
+        uuid.UUID(str(value))
+    except ValueError:
+        # Overwrite, not setdefault: the posted channel_id is the truth
+        # about what the channel was tuned by. A hand-built batch (or a
+        # future relay) could put its own stream_hash inside details, and
+        # that value must not survive over the one this event was
+        # actually raised for (pr-review round 1, #406).
+        details["stream_hash"] = value
+        return None
+    return value
 
 
 def _push(event):
@@ -192,6 +223,7 @@ def apply_event_batch(events):
         details.pop("channel_id", None)
         details.pop("channel_name", None)
         details.pop("event_type", None)
+        channel_id = _channel_uuid(channel_id, details)
 
         # 2b-2: the relay posts a user id because it no longer holds a
         # User row on a live surface (apps/proxy/authorize_views.py's
