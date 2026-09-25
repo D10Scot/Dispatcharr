@@ -1,8 +1,170 @@
 {
  "detail": null,
- "fetched_at": "2026-09-25T06:49:10+00:00",
+ "fetched_at": "2026-09-25T11:16:26+00:00",
  "kind": "issues",
  "records": [
+  {
+   "closed_at": null,
+   "created_at": "2026-09-25T11:05:20Z",
+   "id": 452,
+   "label_events": [
+    {
+     "at": "2026-09-25T11:05:22Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    }
+   ],
+   "labels": [
+    "needs-triage"
+   ],
+   "state": "open",
+   "title": "A backslash in an M3U replace template still injects NUL/control bytes (Python template escapes vs JS literal); needs a grammar ruling",
+   "updated_at": "2026-09-25T11:05:20Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-09-25T08:19:40Z",
+   "id": 450,
+   "label_events": [
+    {
+     "at": "2026-09-25T08:19:41Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    }
+   ],
+   "labels": [
+    "needs-triage"
+   ],
+   "state": "open",
+   "title": "comskip crashes (SIGABRT/SIGSEGV) on MPEG-2 + MP2 recordings on both the 8.1.2 and 9.0 bases; comskip.spec.ts cannot tell a crash from 'no commercials'",
+   "updated_at": "2026-09-25T08:19:40Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-09-25T08:19:38Z",
+   "id": 449,
+   "label_events": [
+    {
+     "at": "2026-09-25T08:19:39Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    }
+   ],
+   "labels": [
+    "needs-triage"
+   ],
+   "state": "open",
+   "title": "ffmpeg 9.0 verifies provider TLS certificates by default: add a scoped per-account escape hatch and surface 'certificate verify failed' as the tune's error reason",
+   "updated_at": "2026-09-25T08:36:53Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-09-25T08:19:36Z",
+   "id": 448,
+   "label_events": [
+    {
+     "at": "2026-09-25T08:19:37Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    }
+   ],
+   "labels": [
+    "needs-triage"
+   ],
+   "state": "open",
+   "title": "nginx IPv6 listeners are silently dropped when the ip binary is missing: 03-init-dispatcharr.sh should detect IPv6 from /proc/net/if_inet6",
+   "updated_at": "2026-09-25T08:19:36Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-09-25T08:01:56Z",
+   "id": 447,
+   "label_events": [
+    {
+     "at": "2026-09-25T08:01:58Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    }
+   ],
+   "labels": [
+    "needs-triage"
+   ],
+   "state": "open",
+   "title": "Concurrent channel creates can receive the same channel_number: get_next_available_channel_number allocates without a lock and the column is not unique (output-epg.spec.ts flake)",
+   "updated_at": "2026-09-25T08:01:56Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-09-25T07:55:00Z",
+   "id": 445,
+   "label_events": [
+    {
+     "at": "2026-09-25T07:55:01Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    }
+   ],
+   "labels": [
+    "needs-triage"
+   ],
+   "state": "open",
+   "title": "create_profile_memberships races a concurrent channel delete: ForeignKeyViolation 500 on POST /api/channels/profiles/ (not covered by #429's ignore_conflicts)",
+   "updated_at": "2026-09-25T07:55:00Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-09-25T07:51:23Z",
+   "id": 444,
+   "label_events": [
+    {
+     "at": "2026-09-25T07:51:25Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    }
+   ],
+   "labels": [
+    "needs-triage"
+   ],
+   "state": "open",
+   "title": "The class-body read_only_fields guard (#436) never runs on the serializers edit it guards against; recast it as a scripts/check_*.py lint",
+   "updated_at": "2026-09-25T08:14:35Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-09-25T07:50:49Z",
+   "id": 443,
+   "label_events": [
+    {
+     "at": "2026-09-25T07:50:51Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    }
+   ],
+   "labels": [
+    "needs-triage"
+   ],
+   "state": "open",
+   "title": "keepdb: apps.m3u.tests' two TransactionTestCases flush migration-seeded rows, so later labels (tune-path query ledger, stream tests) fail on the kept database",
+   "updated_at": "2026-09-25T07:50:49Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-09-25T07:41:48Z",
+   "id": 442,
+   "label_events": [
+    {
+     "at": "2026-09-25T07:41:49Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    }
+   ],
+   "labels": [
+    "needs-triage"
+   ],
+   "state": "open",
+   "title": "fMP4 client joining mid-GOP gets a 200 with zero bytes: the remux dies on 'dimensions not set' before the init segment",
+   "updated_at": "2026-09-25T07:41:48Z"
+  },
   {
    "closed_at": null,
    "created_at": "2026-09-24T18:52:44Z",
@@ -1688,7 +1850,7 @@
    "updated_at": "2026-09-23T19:39:53Z"
   },
   {
-   "closed_at": null,
+   "closed_at": "2026-09-25T07:23:25Z",
    "created_at": "2026-09-12T05:10:14Z",
    "id": 262,
    "label_events": [
@@ -1725,9 +1887,9 @@
     "type:reliability",
     "priority:p2"
    ],
-   "state": "open",
+   "state": "closed",
    "title": "[domain-fuzz] M3U stream filters run provider regexes with stdlib re and no timeout \u2014 one nested-quantifier filter stalls the re\n[Content truncated due to length]",
-   "updated_at": "2026-09-12T05:10:14Z"
+   "updated_at": "2026-09-25T07:23:25Z"
   },
   {
    "closed_at": "2026-09-23T20:21:50Z",
@@ -2024,7 +2186,7 @@
    "updated_at": "2026-09-24T18:37:53Z"
   },
   {
-   "closed_at": null,
+   "closed_at": "2026-09-25T09:47:14Z",
    "created_at": "2026-09-10T16:55:55Z",
    "id": 242,
    "label_events": [
@@ -2061,9 +2223,9 @@
     "type:crash",
     "priority:p1"
    ],
-   "state": "open",
+   "state": "closed",
    "title": "[domain-fuzz] VOD extract_year crashes series refresh on non-string releaseDate (uncaught AttributeError)",
-   "updated_at": "2026-09-10T16:55:55Z"
+   "updated_at": "2026-09-25T09:47:14Z"
   },
   {
    "closed_at": null,
@@ -2385,7 +2547,7 @@
    "updated_at": "2026-09-24T18:36:37Z"
   },
   {
-   "closed_at": null,
+   "closed_at": "2026-09-25T07:23:25Z",
    "created_at": "2026-09-09T17:07:38Z",
    "id": 217,
    "label_events": [
@@ -2422,12 +2584,12 @@
     "type:crash",
     "priority:p1"
    ],
-   "state": "open",
+   "state": "closed",
    "title": "[domain-fuzz] M3U zip upload with non-UTF-8 playlist crashes fetch_m3u_lines with unhandled UnicodeDecodeError",
-   "updated_at": "2026-09-09T17:07:38Z"
+   "updated_at": "2026-09-25T07:23:25Z"
   },
   {
-   "closed_at": null,
+   "closed_at": "2026-09-25T11:15:01Z",
    "created_at": "2026-09-09T05:24:47Z",
    "id": 216,
    "label_events": [
@@ -2464,9 +2626,9 @@
     "type:correctness",
     "priority:p2"
    ],
-   "state": "open",
+   "state": "closed",
    "title": "[domain-fuzz] Catch-up treats every Range as an EOF probe on archives \u22642 MB \u2014 mid-file seeks on busy pool get 503",
-   "updated_at": "2026-09-09T05:24:47Z"
+   "updated_at": "2026-09-25T11:15:01Z"
   },
   {
    "closed_at": "2026-09-24T18:37:59Z",
@@ -2877,7 +3039,7 @@
    "updated_at": "2026-09-24T18:37:44Z"
   },
   {
-   "closed_at": null,
+   "closed_at": "2026-09-25T07:23:26Z",
    "created_at": "2026-09-06T16:11:53Z",
    "id": 199,
    "label_events": [
@@ -2914,12 +3076,12 @@
     "type:reliability",
     "priority:p1"
    ],
-   "state": "open",
+   "state": "closed",
    "title": "[domain-fuzz] M3U profile save() and admin page crash on provider-controlled out-of-range exp_date (uncaught OverflowError)",
-   "updated_at": "2026-09-06T16:11:53Z"
+   "updated_at": "2026-09-25T07:23:26Z"
   },
   {
-   "closed_at": null,
+   "closed_at": "2026-09-25T07:36:44Z",
    "created_at": "2026-09-06T11:46:21Z",
    "id": 197,
    "label_events": [
@@ -2932,9 +3094,9 @@
    "labels": [
     "needs-triage"
    ],
-   "state": "open",
+   "state": "closed",
    "title": "e2e: hold a refresh in flight with a slow-playlist fault instead of thirty decoy accounts",
-   "updated_at": "2026-09-24T18:36:16Z"
+   "updated_at": "2026-09-25T07:36:44Z"
   },
   {
    "closed_at": "2026-09-22T19:55:54Z",
@@ -3013,7 +3175,7 @@
    "updated_at": "2026-09-24T18:36:42Z"
   },
   {
-   "closed_at": null,
+   "closed_at": "2026-09-25T10:14:29Z",
    "created_at": "2026-09-06T05:22:02Z",
    "id": 191,
    "label_events": [
@@ -3050,9 +3212,9 @@
     "type:correctness",
     "priority:p2"
    ],
-   "state": "open",
+   "state": "closed",
    "title": "[domain-fuzz] Migration 0038_add_catchup_fields uses PostgreSQL-only syntax, breaking TEST_USE_SQLITE=1 test runs",
-   "updated_at": "2026-09-06T05:22:02Z"
+   "updated_at": "2026-09-25T10:14:29Z"
   },
   {
    "closed_at": "2026-09-22T19:55:52Z",
@@ -3290,7 +3452,7 @@
    "updated_at": "2026-09-25T04:35:55Z"
   },
   {
-   "closed_at": null,
+   "closed_at": "2026-09-25T07:55:34Z",
    "created_at": "2026-09-05T14:48:49Z",
    "id": 179,
    "label_events": [
@@ -3303,12 +3465,12 @@
    "labels": [
     "needs-triage"
    ],
-   "state": "open",
+   "state": "closed",
    "title": "E2E: 429 through @authorize_denied (stream limit restored through the hop)",
-   "updated_at": "2026-09-24T18:36:19Z"
+   "updated_at": "2026-09-25T07:55:34Z"
   },
   {
-   "closed_at": null,
+   "closed_at": "2026-09-25T10:26:56Z",
    "created_at": "2026-09-05T14:48:48Z",
    "id": 178,
    "label_events": [
@@ -3321,9 +3483,9 @@
    "labels": [
     "needs-triage"
    ],
-   "state": "open",
+   "state": "closed",
    "title": "E2E: prove the DVR internal principal end to end (record a hidden_from_output channel through nginx)",
-   "updated_at": "2026-09-24T18:36:21Z"
+   "updated_at": "2026-09-25T10:26:56Z"
   },
   {
    "closed_at": "2026-09-25T05:25:14Z",
@@ -3381,7 +3543,7 @@
    "updated_at": "2026-09-23T19:39:14Z"
   },
   {
-   "closed_at": null,
+   "closed_at": "2026-09-25T11:03:02Z",
    "created_at": "2026-09-05T05:12:02Z",
    "id": 171,
    "label_events": [
@@ -3418,9 +3580,9 @@
     "type:correctness",
     "priority:p1"
    ],
-   "state": "open",
+   "state": "closed",
    "title": "[domain-fuzz] M3U profile replace_pattern \"$0\" silently corrupts stream URLs with NUL bytes (JS backreference rewrite maps $0 \u2192 \\0, an octal N\n[Content truncated due to length]",
-   "updated_at": "2026-09-05T05:12:02Z"
+   "updated_at": "2026-09-25T11:03:02Z"
   },
   {
    "closed_at": "2026-09-25T05:42:28Z",
@@ -3527,7 +3689,7 @@
    "updated_at": "2026-09-24T18:37:36Z"
   },
   {
-   "closed_at": null,
+   "closed_at": "2026-09-25T07:10:46Z",
    "created_at": "2026-09-04T05:22:59Z",
    "id": 157,
    "label_events": [
@@ -3564,9 +3726,9 @@
     "type:correctness",
     "priority:p2"
    ],
-   "state": "open",
+   "state": "closed",
    "title": "[domain-fuzz] Programme index keys mismatch DB tvg_id for channel ids containing HTML-only entities (e.g. &NewLine;)",
-   "updated_at": "2026-09-04T05:22:59Z"
+   "updated_at": "2026-09-25T07:10:46Z"
   },
   {
    "closed_at": "2026-09-23T20:21:46Z",
@@ -3635,7 +3797,7 @@
    "updated_at": "2026-09-23T19:39:10Z"
   },
   {
-   "closed_at": null,
+   "closed_at": "2026-09-25T10:00:29Z",
    "created_at": "2026-09-03T16:55:31Z",
    "id": 146,
    "label_events": [
@@ -3672,9 +3834,9 @@
     "type:correctness",
     "priority:p2"
    ],
-   "state": "open",
+   "state": "closed",
    "title": "[domain-fuzz] Negative ServerGroup credential counter is never repaired and silently disables the connection cap",
-   "updated_at": "2026-09-03T16:55:31Z"
+   "updated_at": "2026-09-25T10:00:29Z"
   },
   {
    "closed_at": "2026-09-24T18:37:41Z",
@@ -3713,7 +3875,7 @@
    "updated_at": "2026-09-24T18:37:57Z"
   },
   {
-   "closed_at": null,
+   "closed_at": "2026-09-25T11:15:02Z",
    "created_at": "2026-09-03T05:17:02Z",
    "id": 141,
    "label_events": [
@@ -3750,12 +3912,12 @@
     "type:correctness",
     "priority:p2"
    ],
-   "state": "open",
+   "state": "closed",
    "title": "[domain-fuzz] Catch-up proxy emits invalid Content-Range/negative Content-Length for adversarial or suffix Range headers",
-   "updated_at": "2026-09-03T05:17:02Z"
+   "updated_at": "2026-09-25T11:15:02Z"
   },
   {
-   "closed_at": null,
+   "closed_at": "2026-09-25T10:42:05Z",
    "created_at": "2026-09-02T18:47:26Z",
    "id": 140,
    "label_events": [
@@ -3768,12 +3930,12 @@
    "labels": [
     "needs-triage"
    ],
-   "state": "open",
+   "state": "closed",
    "title": "EPG regional weighting is permanently inert: preferred-region is read at three dead sites",
-   "updated_at": "2026-09-02T18:47:26Z"
+   "updated_at": "2026-09-25T10:42:05Z"
   },
   {
-   "closed_at": null,
+   "closed_at": "2026-09-25T06:57:36Z",
    "created_at": "2026-09-02T18:08:53Z",
    "id": 138,
    "label_events": [
@@ -3786,9 +3948,9 @@
    "labels": [
     "needs-triage"
    ],
-   "state": "open",
+   "state": "closed",
    "title": "Recurring rules materialise unboundedly: the 14-day horizon in sync_recurring_rule_impl is dead code on every REST path",
-   "updated_at": "2026-09-02T18:08:53Z"
+   "updated_at": "2026-09-25T06:57:36Z"
   },
   {
    "closed_at": null,
@@ -4111,7 +4273,7 @@
    "updated_at": "2026-09-24T23:09:38Z"
   },
   {
-   "closed_at": null,
+   "closed_at": "2026-09-25T11:15:03Z",
    "created_at": "2026-09-01T13:08:48Z",
    "id": 111,
    "label_events": [
@@ -4137,9 +4299,9 @@
     }
    ],
    "labels": [],
-   "state": "open",
+   "state": "closed",
    "title": "A non-UTC provider server_info.timezone silently truncates the requested catch-up start to the minute",
-   "updated_at": "2026-09-23T20:21:31Z"
+   "updated_at": "2026-09-25T11:15:03Z"
   },
   {
    "closed_at": "2026-09-24T20:34:18Z",
@@ -4696,10 +4858,10 @@
    "labels": [],
    "state": "open",
    "title": "Flaky E2E test: channel-profiles.spec.ts 'bulk-update sets several memberships in one call' fails under parallel load",
-   "updated_at": "2026-09-24T18:36:27Z"
+   "updated_at": "2026-09-25T07:55:35Z"
   },
   {
-   "closed_at": null,
+   "closed_at": "2026-09-25T09:36:52Z",
    "created_at": "2026-08-30T12:36:26Z",
    "id": 85,
    "label_events": [
@@ -4722,9 +4884,9 @@
    "labels": [
     "ready-for-human"
    ],
-   "state": "open",
+   "state": "closed",
    "title": "xc_get_live_categories filters user_level exactly instead of __lte for profiled users",
-   "updated_at": "2026-08-30T12:42:09Z"
+   "updated_at": "2026-09-25T09:36:53Z"
   },
   {
    "closed_at": "2026-09-24T21:34:42Z",
@@ -4831,17 +4993,17 @@
    "updated_at": "2026-09-25T04:02:00Z"
   },
   {
-   "closed_at": null,
+   "closed_at": "2026-09-25T09:36:52Z",
    "created_at": "2026-08-30T10:51:23Z",
    "id": 80,
    "label_events": [],
    "labels": [],
-   "state": "open",
+   "state": "closed",
    "title": "M3U output: unescaped double quote in tvg-name/group-title breaks EXTINF line",
-   "updated_at": "2026-08-30T10:51:23Z"
+   "updated_at": "2026-09-25T09:36:52Z"
   },
   {
-   "closed_at": null,
+   "closed_at": "2026-09-25T07:10:46Z",
    "created_at": "2026-08-30T06:06:37Z",
    "id": 76,
    "label_events": [
@@ -4872,12 +5034,12 @@
     "type:crash",
     "priority:p1"
    ],
-   "state": "open",
+   "state": "closed",
    "title": "[domain-fuzz] Malformed XMLTV timestamp crashes the Current Programs API (uncaught ValueError in now-playing lookup)",
-   "updated_at": "2026-08-30T06:06:37Z"
+   "updated_at": "2026-09-25T07:10:46Z"
   },
   {
-   "closed_at": null,
+   "closed_at": "2026-09-25T07:10:46Z",
    "created_at": "2026-08-30T06:06:37Z",
    "id": 75,
    "label_events": [
@@ -4908,9 +5070,9 @@
     "type:correctness",
     "priority:p1"
    ],
-   "state": "open",
+   "state": "closed",
    "title": "[domain-fuzz] XMLTV timezone offset without a space is silently ignored, shifting all programme times",
-   "updated_at": "2026-08-30T06:06:37Z"
+   "updated_at": "2026-09-25T07:10:46Z"
   },
   {
    "closed_at": "2026-09-24T18:37:38Z",
@@ -4975,7 +5137,7 @@
    "updated_at": "2026-08-29T22:46:20Z"
   },
   {
-   "closed_at": null,
+   "closed_at": "2026-09-25T10:42:06Z",
    "created_at": "2026-08-29T20:49:15Z",
    "id": 72,
    "label_events": [
@@ -4988,9 +5150,9 @@
    "labels": [
     "needs-triage"
    ],
-   "state": "open",
+   "state": "closed",
    "title": "Concurrent channel and profile creation can 500: two bulk_create calls race on ChannelProfileMembership's unique_together",
-   "updated_at": "2026-09-24T18:36:29Z"
+   "updated_at": "2026-09-25T10:42:06Z"
   },
   {
    "closed_at": "2026-09-25T06:33:50Z",
@@ -5063,7 +5225,7 @@
    "updated_at": "2026-09-24T18:37:46Z"
   },
   {
-   "closed_at": null,
+   "closed_at": "2026-09-25T10:00:29Z",
    "created_at": "2026-08-29T17:11:45Z",
    "id": 68,
    "label_events": [
@@ -5100,9 +5262,9 @@
     "type:correctness",
     "priority:p3"
    ],
-   "state": "open",
+   "state": "closed",
    "title": "[domain-fuzz] Credential fingerprint is not fully case-insensitive: usernames differing only by case (e.g. \u03bc vs M) escape the ServerGroup shar\n[Content truncated due to length]",
-   "updated_at": "2026-08-29T17:11:45Z"
+   "updated_at": "2026-09-25T10:00:29Z"
   },
   {
    "closed_at": null,
