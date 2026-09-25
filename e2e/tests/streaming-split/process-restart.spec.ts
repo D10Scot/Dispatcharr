@@ -120,39 +120,19 @@ const RUNNING_TIMEOUT_MS = 60_000;
 const RELAY_RESTART_CEILING_MS = 30_000;
 
 /**
- * How many filler channels the Celery scenario's dedicated M3U catalogue
- * carries, and how many decoy `M3UAccount`s share it.
+ * How long the fake provider withholds the tracked account's playlist, so its
+ * refresh is still running when `supervisorctl restart relay-uwsgi` returns.
  *
- * A single account's own refresh cannot be made to outlast the restart by
- * catalogue size alone: the fake provider's `POST /scenarios` caps the
- * request body at 1 MiB (`e2e-upstream/src/server.ts`), which tops out
- * around 10,000 channels, and measured against this container even an
- * 8,000-channel refresh completes in ~2-3s — nowhere near
- * `RELAY_RESTART_CEILING_MS`'s ~7-9s measured restart duration. What
- * reliably takes longer is **queueing behind other work**: Celery's
- * `default` queue autoscales to 6 workers
- * (`docker/supervisord.d/celery-default.conf`), so `SLOW_REFRESH_DECOY_COUNT`
- * accounts against the same 8,000-channel catalogue, refreshed in the same
- * instant as the tracked account, force it to wait through several
- * worker-queue waves.
- * Measured empirically (see the whole-branch fix round in
- * task-4-report.md): 30 decoys, refreshed in the same instant as the
- * tracked account, pushed its completion to ~20s, roughly 2-3x the
- * restart's own duration — margin against reasonable host-to-host variance
- * in worker throughput, not a number tuned to just clear it.
- *
- * The decoys are created inactive and activated only at the moment they are
- * triggered (see the CI fix round below, same report), so this contention
- * lands entirely inside the TIMED phase. **Raising `SLOW_REFRESH_DECOY_COUNT`
- * alone is still not free**: activation is one PATCH per decoy (cheap,
- * unqueued), but the `Promise.all` that fires it and the trigger batch are
- * both still one HTTP round trip per decoy from the test process, and a much
- * larger count would need that batching reconsidered — this number was
- * chosen for margin over the restart, not stress-tested for how high it can
- * go before request fan-out itself becomes the bottleneck.
+ * Derived, not tuned: at least 3x the measured relay-uwsgi restart
+ * (6,867 ms, e2e/COVERAGE.md's bounded-restart row) and below
+ * fetch_m3u_lines' 60 s read timeout (apps/m3u/tasks.py, `timeout=(30, 60)`),
+ * which a withheld response counts against. A refresh fetches the playlist
+ * once, so the delay is paid once. If the in-flight assertion below ever
+ * fires, raise this within that bound; if the restart outgrows a third of
+ * the timeout, the formula no longer has room and the design needs
+ * revisiting.
  */
-const SLOW_REFRESH_CHANNEL_COUNT = 8_000;
-const SLOW_REFRESH_DECOY_COUNT = 30;
+const SLOW_PLAYLIST_DELAY_MS = 30_000;
 
 async function expectRunning(
   instance: Instance,
@@ -298,28 +278,35 @@ async function openOutcome(
 }
 
 /**
- * Backstop, not the primary cleanup — the primary is the `try`/`finally`
- * inside the first test below. A Playwright timeout abandons a test body
- * without running its `finally` (only `afterEach` hooks still run), so
- * without this an abandoned run would leave `api-uwsgi` stopped for the rest
- * of the project and the second test would fail naming something unrelated.
+ * Backstop, not the primary cleanup — the primary is each test's own
+ * `try`/`finally`. A Playwright timeout abandons a test body without running
+ * its `finally` (only `afterEach` hooks still run), so without this an
+ * abandoned run would leave `api-uwsgi` or `celery-default` stopped for the
+ * rest of the project and a later test would fail naming something
+ * unrelated. `celery-default` joined this hook in review round 2, for the
+ * same reason and the same shape as `api-uwsgi`: the second test's `try` body
+ * holds a 25s restart, a 60s RUNNING poll, a 120s tune poll and a 60s read
+ * before its own `finally` restarts the pool, all inside `playwright.config.ts`'s
+ * 600s test timeout but long enough that an abandoned run is not implausible.
  * Checks the actual status rather than trusting a variable the abandoned body
- * never got to set, and is a no-op — one cheap `supervisorctl status` call —
- * for the second test, which never touches `api-uwsgi`.
+ * never got to set, and is a no-op — one cheap `supervisorctl status` call
+ * per program — for the first test, which touches neither.
  */
 test.afterEach(async ({ instance }) => {
-  const status = await instance.supervisorctl(['status', 'api-uwsgi']);
-  if (!/RUNNING/.test(status.stdout)) {
-    // Asserted, not fired and forgotten: `supervisorctl()` returns the exit
-    // code rather than throwing, so a `start` that failed here would
-    // otherwise leave the hook green and the next test would fail elsewhere,
-    // naming a symptom instead of this cause.
-    const started = await instance.supervisorctl(['start', 'api-uwsgi']);
-    expect(
-      started.code,
-      `afterEach could not restart api-uwsgi (exit ${started.code}): ` +
-        `${started.stdout}${started.stderr}`
-    ).toBe(0);
+  for (const program of ['api-uwsgi', 'celery-default']) {
+    const status = await instance.supervisorctl(['status', program]);
+    if (!/RUNNING/.test(status.stdout)) {
+      // Asserted, not fired and forgotten: `supervisorctl()` returns the exit
+      // code rather than throwing, so a `start` that failed here would
+      // otherwise leave the hook green and the next test would fail elsewhere,
+      // naming a symptom instead of this cause.
+      const started = await instance.supervisorctl(['start', program]);
+      expect(
+        started.code,
+        `afterEach could not restart ${program} (exit ${started.code}): ` +
+          `${started.stdout}${started.stderr}`
+      ).toBe(0);
+    }
   }
 });
 
@@ -482,7 +469,7 @@ test(
 );
 
 test(
-  'both relay processes restart bounded, and a Celery task queued across the uWSGI one still finishes',
+  'both relay processes restart bounded, and a queued Celery task survives the relay-uwsgi restart',
   { tag: '@contract' },
   async ({ instance, api, seed, upstream, streamClient, baseURL }) => {
     await expectRunning(instance, 'api-uwsgi', 'api-uwsgi was not RUNNING before this test began');
@@ -499,48 +486,24 @@ test(
     });
     const proxy = await lockedProfile(api, 'Proxy');
     // The Celery half needs a refresh that is provably still running the
-    // instant the blocking restart returns — a two-channel catalogue's
-    // refresh finished inside that ~7s window in measurement, which made the
-    // in-flight assertion below fail (correctly: the task had already
-    // completed, so nothing about surviving the restart was under test).
-    // `SLOW_REFRESH_CHANNEL_COUNT`/`SLOW_REFRESH_DECOY_COUNT`'s own comment
-    // has the reasoning and the measurements; the streaming scenario above
-    // stays small on purpose since scenario size has no bearing on tune
-    // latency.
+    // instant the blocking restart returns. Held in flight with the fake
+    // provider's `slow-playlist` fault (#197) rather than by contending
+    // decoy accounts against a large catalogue — see
+    // `SLOW_PLAYLIST_DELAY_MS`'s own comment for the timing. The streaming
+    // scenario above and this one both stay small on purpose since scenario
+    // size has no bearing on tune latency, and the fault — not catalogue
+    // size — is what makes the refresh slow.
     const slowScenario = await upstream.scenario({
-      channels: Array.from({ length: SLOW_REFRESH_CHANNEL_COUNT }, (_, i) => ({
-        id: i + 1,
-        name: `slow-refresh-filler-${i + 1}`,
-        tvgId: `slow-refresh-filler-${i + 1}.e2e`,
-        logo: null,
-      })),
+      channels: [
+        { id: 1, name: 'split slow refresh 1', tvgId: 'split-slow-refresh-1.e2e', logo: null },
+        { id: 2, name: 'split slow refresh 2', tvgId: 'split-slow-refresh-2.e2e', logo: null },
+      ],
     });
-    // Created inactive, via the bare `seed.m3uAccount()` — NOT
-    // `seed.upstreamM3UAccount()`, and NOT settled here. `M3UAccount`'s
-    // `post_save` handler fires `refresh_m3u_groups.delay()` on every
-    // create regardless of `is_active` (`apps/m3u/signals.py`), but that
-    // task's own first line is `M3UAccount.objects.get(id=…, is_active=True)`
-    // (`apps/m3u/tasks.py:1561`) — inactive, it raises `DoesNotExist` and
-    // returns immediately, so 30 concurrent creates cost 30 near-instant
-    // failed lookups, not 30 real catalogue parses. This is the fix CI's
-    // slow-host failure asked for: the first version of this test settled
-    // each decoy through its own create-time refresh before proceeding
-    // (`seed.upstreamM3UAccount`), which put SLOW_REFRESH_DECOY_COUNT
-    // catalogue parses on the SAME worker pool DURING setup — exactly the
-    // contention this test means to create, just at the wrong time, against
-    // fixed 30s/20s "did the refresh start / settle" budgets in
-    // `fixtures/wait.ts` that assume ordinary, uncontended setup. Decoys
-    // stay inactive, and therefore inert, all the way through channel
-    // seeding, tuning and the first packet read below.
-    const decoys = await Promise.all(
-      Array.from({ length: SLOW_REFRESH_DECOY_COUNT }, () =>
-        seed.m3uAccount({ server_url: upstream.playlistUrl(slowScenario) })
-      )
-    );
     // An M3U account is the Celery half: refreshing one is a real queued task
     // whose completion is visible over REST. Seeded (and refreshed) before
-    // anything else so the create-time group refresh has settled and the
-    // account's task lock is free by the time the test triggers its own.
+    // anything else so the create-time group refresh has settled — with no
+    // fault armed yet — and the account's task lock is free by the time the
+    // test triggers its own, later, slow-playlist-held refresh.
     const account = await seed.upstreamM3UAccount(slowScenario);
     const { channel: running } = await seed.upstreamChannel(scenario, {
       channelIds: [1],
@@ -639,135 +602,188 @@ test(
       return `${body.status}:${body.updated_at === before.updated_at ? 'unchanged' : 'bumped'}`;
     }
 
-    // Activated the instant before triggering, not at creation: `is_active`
-    // going true on an UPDATE does not re-run the create-only `post_save`
-    // handler that dispatches `refresh_m3u_groups` (`if created and …` in
-    // `apps/m3u/signals.py`), so this PATCH queues nothing — it only makes
-    // `refresh_single_m3u_account`'s own `is_active=True` lookup succeed once
-    // triggered below, turning each decoy from an inert row into real
-    // catalogue work at exactly the moment this test wants contention.
-    await Promise.all(
-      decoys.map((d) => api.patch(`/api/m3u/accounts/${d.id}/`, { is_active: true }))
-    );
+    // Armed after `before` is read, so it cannot withhold the create-time
+    // refresh settled above — only the tracked refresh triggered below. Not
+    // load-bearing for the in-flight proof any more (stopping celery-default,
+    // next, is what does that): armed here so that once celery-default is
+    // restarted, the resumed fetch is observably slow rather than instant,
+    // giving the completion poll below a real duration to exercise instead
+    // of resolving in under a second. `slow-playlist` is #197's own
+    // deliverable, so this is exercising the capability the issue asked for
+    // rather than leaving it with no consumer in this spec.
+    await upstream.fault(slowScenario, 'slow-playlist', { delayMs: SLOW_PLAYLIST_DELAY_MS });
 
-    // Every decoy and the tracked account fire in the SAME `Promise.all`,
-    // tracked account last: submitted together, Celery's workers pull
-    // roughly in submission order, so the tracked refresh queues behind
-    // whichever decoys land on a worker first rather than racing them for
-    // the very first slot. This is the exact shape measured in the
-    // calibration this constant's comment cites — firing the tracked
-    // account from a separate, later call would not reproduce it.
-    const triggerResponses = await Promise.all([
-      ...decoys.map((d) => api.post(`/api/m3u/refresh/${d.id}/`, {})),
-      api.post(`/api/m3u/refresh/${account.id}/`, {}),
-    ]);
-    const triggered = triggerResponses[triggerResponses.length - 1];
-    expect(
-      triggerResponses.every((res) => res.status() === 202),
-      'every refresh — decoys and the tracked account alike — must be queued, or the tracked ' +
-        'refresh is not actually contending for a worker slot'
-    ).toBe(true);
+    // Stopped before the trigger, not merely raced against it, and wrapped
+    // in try/finally so a failure anywhere below still restarts the pool —
+    // leaving celery-default stopped would strand every later test sharing
+    // this container. With no worker running, the message
+    // `refresh_single_m3u_account.delay()` publishes has nowhere to go but
+    // the Redis broker, and it sits there untouched until celery-default is
+    // started again in `finally`. Without this, the tracked task is picked
+    // up by an idle worker pool within milliseconds and is *executing* —
+    // blocked inside `fetch_m3u_lines`, not queued — by the time
+    // relay-uwsgi restarts. Celery uses early ack (`dispatcharr/settings.py`
+    // sets neither `task_acks_late` nor a prefetch override) and
+    // `refresh_m3u_groups` dispatches no further Celery work of its own, so
+    // an *executing* task depends on Redis DB 0 in no way a blind flush on
+    // relay-uwsgi's start path would break — which would make this test
+    // pass even with that regression reintroduced. Stopping the pool first
+    // is what makes "the message survives relay-uwsgi's start path" the
+    // thing actually proven, not "a task already past that dependency
+    // happens to finish afterwards".
+    let celeryStopped = false;
+    let refreshTriggeredAt: number;
+    try {
+      // Asserted, not fired and forgotten: `supervisorctl()` returns the exit
+      // code rather than throwing (same convention as the `api-uwsgi`
+      // afterEach above), so a stop that silently failed — a renamed
+      // program, a supervisord hiccup — would otherwise leave the pool
+      // running, the tracked task executing rather than queued by the time
+      // the restart happens, and this test green in exactly the hollow shape
+      // review round 1 found.
+      const stopped = await instance.supervisorctl(['stop', 'celery-default']);
+      celeryStopped = true;
+      expect(
+        stopped.code,
+        `could not stop celery-default (exit ${stopped.code}): ${stopped.stdout}${stopped.stderr}`
+      ).toBe(0);
 
-    // ---- restart 2: relay-uwsgi, for D15's Celery half ----
-    //
-    // relay-uwsgi no longer serves live traffic, but it still exists (narrowed
-    // to VOD and catch-up) and its start path still runs
-    // docker/supervisord.d/wait-for-stores.sh -> scripts/wait_for_redis.py.
-    // That is the one place a reintroduced flush of Redis DB 0 could bite, and
-    // DB 0 holds the Celery broker and result backend as well as the relay's
-    // channel state. relay-go cannot make this claim: it has no
-    // wait-for-stores.sh wrapper by design, because it opens no Redis
-    // connection at all (relay-go.conf's own header). So this restart stays
-    // pointed here — and the tune assertion below is deliberately a SECOND,
-    // independent bounded measurement rather than a repeat of the first.
-    const uwsgiRestartBegan = Date.now();
-    await instance.supervisorctl(['restart', 'relay-uwsgi']);
-    console.log(
-      `[relay-restart] relay-uwsgi: supervisorctl returned after ` +
-        `${Date.now() - uwsgiRestartBegan}ms`
-    );
+      refreshTriggeredAt = Date.now();
+      const triggered = await api.post(`/api/m3u/refresh/${account.id}/`, {});
+      expect(triggered.status(), 'the tracked refresh must be queued').toBe(202);
 
-    // In-flight proof, taken the instant the blocking restart call returns:
-    // without this, the poll below can pass even if the task completed
-    // during the restart itself rather than surviving it — `wait-for-stores.sh`
-    // runs `wait_for_redis.py` on relay-uwsgi's own start, the only place a
-    // reintroduced flush could bite, and a refresh that finished before that
-    // point would never exercise it. If this fires reliably, the fix is more
-    // contention, but `SLOW_REFRESH_DECOY_COUNT` cannot move on its own: the
-    // decoys' create-time `.delay()` calls above (near-instant, but real
-    // queue entries) sit ahead of the tracked account's own create-time
-    // settle at `seed.upstreamM3UAccount(slowScenario)`, which waits on
-    // `fixtures/wait.ts`'s fixed 30s/20s "did the refresh start / settle"
-    // budgets — raising the count deepens that same queue and can blow those
-    // budgets before this assertion ever runs. Move the count together with
-    // those budgets, or batch the decoy seeding so it no longer shares one
-    // queue with the create-time settle; do not loosen this assertion, since
-    // the spec asks for a task that survives the relay's start path, not one
-    // that merely predates it.
-    const midRestart = await refreshState();
-    expect(
-      midRestart,
-      `the refresh had already reached '${midRestart}' by the moment the restart returned, so ` +
-        'the poll below would prove nothing about surviving the relay start path'
-    ).not.toBe('success:bumped');
+      // ---- restart 2: relay-uwsgi, for D15's Celery half ----
+      //
+      // relay-uwsgi no longer serves live traffic, but it still exists (narrowed
+      // to VOD and catch-up) and its start path still runs
+      // docker/supervisord.d/wait-for-stores.sh -> scripts/wait_for_redis.py.
+      // That is the one place a reintroduced flush of Redis DB 0 could bite, and
+      // DB 0 holds the Celery broker and result backend as well as the relay's
+      // channel state. relay-go cannot make this claim: it has no
+      // wait-for-stores.sh wrapper by design, because it opens no Redis
+      // connection at all (relay-go.conf's own header). So this restart stays
+      // pointed here — and the tune assertion below is deliberately a SECOND,
+      // independent bounded measurement rather than a repeat of the first.
+      const uwsgiRestartBegan = Date.now();
+      await instance.supervisorctl(['restart', 'relay-uwsgi']);
+      console.log(
+        `[relay-restart] relay-uwsgi: supervisorctl returned after ` +
+          `${Date.now() - uwsgiRestartBegan}ms`
+      );
 
-    await expectRunning(instance, 'relay-uwsgi', 'relay-uwsgi did not return to RUNNING');
+      // In-flight proof, taken the instant the blocking restart call returns:
+      // without this, the poll below can pass even if the task completed
+      // during the restart itself rather than surviving it. With
+      // celery-default stopped above, the message cannot have been touched —
+      // this reads back a state deterministically unchanged from `before`,
+      // never a race against a worker that might have finished it early. A
+      // reintroduced blind flush on relay-uwsgi's start path would delete the
+      // still-queued message, and celery-default (restarted in `finally`)
+      // would then have nothing to pick up — the completion poll below would
+      // time out rather than this assertion firing, which is why this check
+      // and that poll together are what proves the D15 regression stays
+      // caught, not this check alone.
+      //
+      // Exactly `${before.status}:unchanged`, not merely `.not.toBe('success:bumped')`.
+      // The looser form also accepts `fetching:unchanged` — the value a
+      // running worker writes the instant it picks the task up (review
+      // round 1's own finding) — so it cannot tell "the stop above worked"
+      // from "the stop silently failed and a worker got to the message
+      // anyway". A worker that IS running can only ever produce a value the
+      // looser check still passes, which is exactly the gap review round 2
+      // closes: this check now fails whenever anything wrote a state the
+      // stop should have made impossible.
+      const midRestart = await refreshState();
+      console.log(`[relay-restart] relay-uwsgi: tracked refresh state at restart return: '${midRestart}'`);
+      expect(
+        midRestart,
+        `the refresh had already moved to '${midRestart}' by the moment the restart returned ` +
+          `(expected '${before.status}:unchanged', meaning celery-default genuinely never touched ` +
+          'it) — either the stop above silently failed, or something else is running the task'
+      ).toBe(`${before.status}:unchanged`);
 
-    // The bounded half, second measurement: a tune the Go relay has never
-    // served answers with real, aligned TS bytes inside the same ceiling,
-    // across a restart of the OTHER relay process. After 2d-3 this is the
-    // weaker of the two claims — relay-uwsgi carries no live traffic — but it
-    // is not vacuous: a start path that flushed Redis DB 0 would take the
-    // running relay's channel state with it.
-    const client = newStreamClient(baseURL!);
-    await expect
-      .poll(async () => openOutcome(client, `/proxy/ts/stream/${afterUwsgi.uuid}`), {
-        // Deliberately above the ceiling. The assertion below is on the
-        // measured number, so an over-budget restart fails with the number it
-        // took rather than with a bare poll timeout — the shape
-        // `tests/streaming/time-to-first-byte.spec.ts` uses.
-        timeout: 120_000,
-        intervals: [1_000],
-        message: 'the relay never served a tune after the restart',
-      })
-      .toBe('ok');
-    // 200, not 1: the synthetic-packet builder (relay/httpapi, ported from
-    // the deleted live_proxy/utils.py:82-100's create_ts_packet)
-    // returns a valid-looking 188-byte packet for a synthetic 'error' or
-    // 'keepalive' TS packet too, which the generator emits on every abort
-    // path while a channel is coming up — so a single packet cannot tell a
-    // real tune apart from one that failed to start. `client` is opened for
-    // the first time above, not reused across the restart the way Scenario
-    // A's `streamClient` is, so there is nothing stale in its buffer to
-    // `drain()` first — every byte it ever reads arrived after the restart
-    // by construction. `readPackets` itself is the load-bearing assertion:
-    // it throws if the stream ends before 200 packets arrive, so a channel
-    // that never truly starts fails loudly instead of passing on one
-    // synthetic packet. The extra bytes cost well under a second at this
-    // scenario's rate against a 30s ceiling.
-    const packet = await withDeadline(
-      client.readPackets(200),
-      60_000,
-      'the first 200 TS packets after the relay-uwsgi restart'
-    );
-    const elapsedMs = Date.now() - uwsgiRestartBegan;
-    console.log(
-      `[relay-restart] relay-uwsgi: first TS bytes ${elapsedMs}ms after the restart began ` +
-        `(ceiling ${RELAY_RESTART_CEILING_MS}ms)`
-    );
-    expectTsAligned(packet);
-    expect(
-      elapsedMs,
-      `relay-uwsgi served its first bytes ${elapsedMs}ms after the restart began; the ceiling ` +
-        `is ${RELAY_RESTART_CEILING_MS}ms (stopwaitsecs=20 + startsecs=5)`
-    ).toBeLessThanOrEqual(RELAY_RESTART_CEILING_MS);
-    await client.close();
+      await expectRunning(instance, 'relay-uwsgi', 'relay-uwsgi did not return to RUNNING');
 
-    // D15's Celery half: the task dispatched a moment before the restart —
-    // and confirmed still in flight the instant the restart returned, above —
-    // still ran to completion afterwards. A blind flush on any start path
-    // would take the broker and the result backend with it — they share
-    // Redis DB 0 with the relay's channel state.
+      // The bounded half, second measurement: a tune the Go relay has never
+      // served answers with real, aligned TS bytes inside the same ceiling,
+      // across a restart of the OTHER relay process. After 2d-3 this is the
+      // weaker of the two claims — relay-uwsgi carries no live traffic — but it
+      // is not vacuous: a start path that flushed Redis DB 0 would take the
+      // running relay's channel state with it.
+      const client = newStreamClient(baseURL!);
+      await expect
+        .poll(async () => openOutcome(client, `/proxy/ts/stream/${afterUwsgi.uuid}`), {
+          // Deliberately above the ceiling. The assertion below is on the
+          // measured number, so an over-budget restart fails with the number it
+          // took rather than with a bare poll timeout — the shape
+          // `tests/streaming/time-to-first-byte.spec.ts` uses.
+          timeout: 120_000,
+          intervals: [1_000],
+          message: 'the relay never served a tune after the restart',
+        })
+        .toBe('ok');
+      // 200, not 1: the synthetic-packet builder (relay/httpapi, ported from
+      // the deleted live_proxy/utils.py:82-100's create_ts_packet)
+      // returns a valid-looking 188-byte packet for a synthetic 'error' or
+      // 'keepalive' TS packet too, which the generator emits on every abort
+      // path while a channel is coming up — so a single packet cannot tell a
+      // real tune apart from one that failed to start. `client` is opened for
+      // the first time above, not reused across the restart the way Scenario
+      // A's `streamClient` is, so there is nothing stale in its buffer to
+      // `drain()` first — every byte it ever reads arrived after the restart
+      // by construction. `readPackets` itself is the load-bearing assertion:
+      // it throws if the stream ends before 200 packets arrive, so a channel
+      // that never truly starts fails loudly instead of passing on one
+      // synthetic packet. The extra bytes cost well under a second at this
+      // scenario's rate against a 30s ceiling.
+      const packet = await withDeadline(
+        client.readPackets(200),
+        60_000,
+        'the first 200 TS packets after the relay-uwsgi restart'
+      );
+      const elapsedMs = Date.now() - uwsgiRestartBegan;
+      console.log(
+        `[relay-restart] relay-uwsgi: first TS bytes ${elapsedMs}ms after the restart began ` +
+          `(ceiling ${RELAY_RESTART_CEILING_MS}ms)`
+      );
+      expectTsAligned(packet);
+      expect(
+        elapsedMs,
+        `relay-uwsgi served its first bytes ${elapsedMs}ms after the restart began; the ceiling ` +
+          `is ${RELAY_RESTART_CEILING_MS}ms (stopwaitsecs=20 + startsecs=5)`
+      ).toBeLessThanOrEqual(RELAY_RESTART_CEILING_MS);
+      await client.close();
+    } finally {
+      // Unconditional on the try block's own outcome, guarded only by
+      // whether the stop above actually ran — the same shape as this
+      // spec's `api-uwsgi` restore above. Runs before the completion poll
+      // below in the success path, and instead of it on any failure path,
+      // either way leaving celery-default running for whatever test shares
+      // this container next.
+      //
+      // Asserted for the same reason the stop is: an unasserted failed
+      // start here would surface, several lines away, as the completion
+      // poll's own timeout message — which names a stuck task lock
+      // (D10Scot/Dispatcharr#59) as the likely cause, the wrong one, since
+      // the real cause would be that no worker is running at all.
+      if (celeryStopped) {
+        const started = await instance.supervisorctl(['start', 'celery-default']);
+        expect(
+          started.code,
+          `could not restart celery-default (exit ${started.code}): ` +
+            `${started.stdout}${started.stderr}`
+        ).toBe(0);
+      }
+    }
+
+    // D15's Celery half: the message dispatched a moment before the restart —
+    // and confirmed still genuinely queued, never executing, the instant the
+    // restart returned, above — still ran to completion once celery-default
+    // was running again. A blind flush on relay-uwsgi's start path would have
+    // deleted the still-queued message; this poll would then time out rather
+    // than resolve, which is the shape that regression takes here. The
+    // `slow-playlist` fault armed above makes the resumed fetch take
+    // `SLOW_PLAYLIST_DELAY_MS`, so this is a real wait, not an instant re-poll.
     await expect
       .poll(refreshState, {
         timeout: 120_000,
@@ -778,5 +794,9 @@ test(
           'was triggered (D10Scot/Dispatcharr#59) rather than the restart having eaten it',
       })
       .toBe('success:bumped');
+    console.log(
+      `[relay-restart] tracked refresh reached 'success:bumped' ` +
+        `${Date.now() - refreshTriggeredAt}ms after it was triggered`
+    );
   }
 );
