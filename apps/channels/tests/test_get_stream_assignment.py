@@ -7,7 +7,6 @@ from django.test import TestCase
 from apps.channels.models import Channel, ChannelStream, Stream
 from apps.m3u.models import M3UAccount, M3UAccountProfile
 from apps.proxy.constants import ChannelMetadataField, ChannelState
-from apps.proxy.redis_keys import RedisKeys
 
 
 class FakeAssignmentRedis:
@@ -99,7 +98,7 @@ class ChannelGetStreamAssignmentTests(TestCase):
         self.channel = Channel.objects.create(channel_number=501, name="Assignment Ch")
         ChannelStream.objects.create(channel=self.channel, stream=self.stream, order=0)
 
-        self.metadata_key = RedisKeys.channel_metadata(str(self.channel.uuid))
+        self.metadata_key = f"live:channel:{self.channel.uuid}:metadata"  # the #190 key; its RedisKeys builder was deleted by J-2
 
     def _seed_assignment(self):
         self.redis.set(f"channel_stream:{self.channel.id}", self.stream.id)
@@ -263,7 +262,7 @@ class MetadataOnlyReleaseTests(TestCase):
         self.channel = Channel.objects.create(name="c", channel_number=1)
         ChannelStream.objects.create(channel=self.channel, stream=self.stream, order=0)
         self.redis = FakeAssignmentRedis()
-        self.metadata_key = RedisKeys.channel_metadata(str(self.channel.uuid))
+        self.metadata_key = f"live:channel:{self.channel.uuid}:metadata"  # the #190 key; its RedisKeys builder was deleted by J-2
         # ONLY the relay's metadata hash: no channel_stream:, no stream_profile:.
         # This is precisely the shape the deleted recovery branch existed for.
         self.redis.hset(

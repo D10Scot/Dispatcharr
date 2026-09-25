@@ -1,19 +1,18 @@
 """Channel state and metadata-field names shared by Django and the relay.
 
-Moved here from ``apps/proxy/live_proxy/constants.py`` in Phase 2 stage 2d-1
-(spec Amendment A10.3). ``apps/channels/models.py`` imports
-``ChannelMetadataField`` at module level, and the catch-up surface --
-``apps/timeshift/views.py`` and ``apps/timeshift/stats.py``, which stage 2d
-KEEPS -- imports both names; neither may be left pointing at a directory
-stage 2d-4 deletes.
+Moved here from the deleted apps/proxy/live_proxy/constants.py in Phase 2
+stage 2d-1 (spec Amendment A10.3). Importers today: apps/proxy/relay_client.py
+(ChannelState), apps/timeshift/views.py and apps/timeshift/stats.py
+(ChannelMetadataField, and ChannelState in views.py), and
+apps/channels/tasks.py function-locally. apps/channels/models.py no longer
+imports anything from here: stage 2d-4 deleted its ChannelMetadataField
+import with issue #190's five ranges.
 
 THIS MODULE MUST STAY A LEAF -- no imports, at all, for the reason
 ``apps/proxy/redis_keys.py``'s docstring gives.
 
-Only the two names surviving code needs are here. ``EventType``,
-``StreamType``, ``REDIS_TTL_*``, ``REDIS_KEY_PREFIX`` and the TS packet
-constants stay in ``apps/proxy/live_proxy/constants.py``: nothing outside
-that package imports them, and 2d-4 deletes them with it.
+Only the two names surviving code needs moved here. The rest of the old
+module went with apps/proxy/live_proxy/ at stage 2d-4.
 """
 
 # Channel states
