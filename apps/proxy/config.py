@@ -16,9 +16,12 @@ class BaseConfig:
     BUFFERING_TIMEOUT = 15  # Seconds to wait for buffering before switching streams
     BUFFER_SPEED = 1 # What speed to condsider the stream buffering, 1x is normal speed, 2x is double speed, etc.
 
-    # Cache for proxy settings (class-level, shared across all instances).
-    # Backed by CoreSettings Redis group cache; this local copy avoids Redis
-    # chatter inside the proxy hot path. Cleared when proxy_settings is saved.
+    # Process-local cache for proxy settings: ONE copy per process, always on
+    # BaseConfig. Every method below names BaseConfig explicitly, never cls:
+    # `cls._proxy_settings_cache = ...` reached through TSConfig used to create
+    # a TSConfig attribute that shadowed this one, and the save-time
+    # invalidation (CoreSettings.invalidate_group_cache ->
+    # BaseConfig.clear_proxy_settings_cache) never cleared it (#232).
     _proxy_settings_cache = None
     _proxy_settings_cache_time = 0
     _proxy_settings_cache_ttl = 10  # Cache for 10 seconds
@@ -26,23 +29,24 @@ class BaseConfig:
     @classmethod
     def clear_proxy_settings_cache(cls):
         """Drop process-local proxy settings (called on CoreSettings invalidate)."""
-        cls._proxy_settings_cache = None
-        cls._proxy_settings_cache_time = 0
+        BaseConfig._proxy_settings_cache = None
+        BaseConfig._proxy_settings_cache_time = 0
 
     @classmethod
     def get_proxy_settings(cls):
         """Get proxy settings from CoreSettings JSON data with fallback to defaults (cached)"""
         # Check if cache is still valid
         now = time.time()
-        if cls._proxy_settings_cache is not None and (now - cls._proxy_settings_cache_time) < cls._proxy_settings_cache_ttl:
-            return cls._proxy_settings_cache
+        cached = BaseConfig._proxy_settings_cache
+        if cached is not None and (now - BaseConfig._proxy_settings_cache_time) < BaseConfig._proxy_settings_cache_ttl:
+            return cached
 
         # Cache miss or expired - fetch from database
         try:
             from core.models import CoreSettings
             settings = CoreSettings.get_proxy_settings()
-            cls._proxy_settings_cache = settings
-            cls._proxy_settings_cache_time = now
+            BaseConfig._proxy_settings_cache = settings
+            BaseConfig._proxy_settings_cache_time = now
             return settings
 
         except Exception:

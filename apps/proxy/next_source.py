@@ -835,12 +835,10 @@ def _with_proxy_settings(answer):
     (channel-start-time values only, matching D5's 'thresholds snapshotted
     at channel start' parity row)". Read through CoreSettings directly, not
     apps/proxy/config.py's TSConfig, so the 10-second process-local cache is
-    not in the path. That cache is worse than merely stale: saving
-    proxy_settings clears it in NO worker on the proxy path, because
-    CoreSettings.invalidate_group_cache calls
-    BaseConfig.clear_proxy_settings_cache() while every proxy read goes
-    through TSConfig, whose own class attribute shadows the parent's
-    (issue #232). The 10-second TTL is what actually ends the staleness.
+    not in the path. That cache is also not in the path for a better reason
+    than staleness: this answer must reflect a save at once, and
+    CoreSettings' Redis group cache is invalidated for every process by
+    post_save.
 
     Nothing in the PYTHON relay consumes this yet, deliberately -- see this
     plan's § Self-review for the ruling and the reason, and this PR's
