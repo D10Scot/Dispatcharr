@@ -3087,15 +3087,8 @@ def get_transformed_credentials(account, profile=None):
     if base_url and base_username and base_password:
         clean_server_url = base_url.rstrip('/')
 
-        # Build the complete URL with embedded credentials. The credentials are
-        # percent-encoded here (and unquoted back out below, after the profile's
-        # transform runs) so a literal '/' in either one can't be mistaken for a
-        # path separator by the split-on-'/' extraction further down (#370).
-        complete_url = (
-            f"{clean_server_url}/live/"
-            f"{urllib.parse.quote(str(base_username), safe='')}/"
-            f"{urllib.parse.quote(str(base_password), safe='')}/1234.ts"
-        )
+        # Build the complete URL with embedded credentials
+        complete_url = f"{clean_server_url}/live/{base_username}/{base_password}/1234.ts"
         logger.debug("Built complete URL: %s", redact_url(complete_url))
 
         # Apply profile-specific transformations if profile is provided
@@ -3114,6 +3107,28 @@ def get_transformed_credentials(account, profile=None):
                     redact_url(transformed_complete_url),
                 )
 
+                # If the credentials themselves are untouched by the transform --
+                # true of the default identity profile and of any profile that
+                # only rewrites the host or a leading sub-path -- the transformed
+                # URL still ends with this exact raw suffix. Take that shortcut
+                # rather than the split-on-'/' extraction below: a profile's
+                # search_pattern is written against the RAW credentials (the
+                # frontend's "simple" XC profile mode does this by construction,
+                # matching e.g. "alice@x.com/secret" verbatim -- see
+                # M3uProfileUtils.js's applyXcSimplePatterns), so the credentials
+                # can't be percent-encoded going into the split, and a raw
+                # credential containing '/' would otherwise shift the split onto
+                # the wrong path segments (#370). This path never mis-splits
+                # because it never splits.
+                raw_suffix = f"/live/{base_username}/{base_password}/1234.ts"
+                if transformed_complete_url.endswith(raw_suffix):
+                    transformed_url = transformed_complete_url[: -len(raw_suffix)]
+                    logger.debug(
+                        "Extracted transformed credentials from server URL %s",
+                        redact_url(transformed_url),
+                    )
+                    return transformed_url, base_username, base_password
+
                 # Extract components from the transformed URL
                 # Pattern: http://server.com:port/live/username/password/1234.ts
                 parsed_url = urllib.parse.urlparse(transformed_complete_url)
@@ -3122,12 +3137,9 @@ def get_transformed_credentials(account, profile=None):
                 if len(path_parts) >= 4 and path_parts[-1] == '1234.ts':
                     # Extract username and password from the known structure:
                     # .../{live}/{username}/{password}/1234.ts
-                    # Using negative indices so sub-paths in the server URL don't shift extraction.
-                    # Both segments were percent-encoded going in (above), so a literal '/'
-                    # inside either one is safely %2F here rather than an extra path
-                    # segment, and unquoting after the split recovers the raw value (#370).
-                    transformed_username = urllib.parse.unquote(path_parts[-3])
-                    transformed_password = urllib.parse.unquote(path_parts[-2])
+                    # Using negative indices so sub-paths in the server URL don't shift extraction
+                    transformed_username = path_parts[-3]
+                    transformed_password = path_parts[-2]
 
                     # Rebuild server URL: preserve any sub-path that precedes
                     # /live/username/password/1234.ts (path_parts[:-4]).

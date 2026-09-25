@@ -56,12 +56,17 @@ class GetTransformedCredentialsTests(TestCase):
 
     def test_a_slash_in_the_password_round_trips_through_the_default_profile(self):
         """The default profile's identity search/replace pattern still routes
-        every XC account through the regex-transform branch, which used to
-        recover the credentials by splitting the synthetic URL on '/' and
-        indexing fixed positions. A literal '/' in the password inserted an
-        extra path segment there and shifted the extraction onto the wrong
-        pieces (#370) — the credential this function returned was wrong
-        before _resolve_live_stream_url's own quoting (#61) ever ran.
+        every XC account through the regex-transform branch, which recovers
+        the credentials by splitting the synthetic URL on '/' and indexing
+        fixed positions when the credentials themselves were rewritten. A
+        literal '/' in the password used to insert an extra path segment
+        there and shift the extraction onto the wrong pieces (#370) — the
+        credential this function returned was wrong before
+        _resolve_live_stream_url's own quoting (#61) ever ran. Fixed by a
+        shortcut ahead of the split: when the transformed URL still ends
+        with the exact raw "/live/{username}/{password}/1234.ts" suffix —
+        true here, since the identity pattern changes nothing — the raw
+        credentials are returned directly and the split is never reached.
         """
         account = M3UAccount.objects.create(
             name="Slash password XC",
@@ -79,11 +84,12 @@ class GetTransformedCredentialsTests(TestCase):
         self.assertEqual(password, "p/ss%w@rd")
 
     def test_a_custom_profile_transform_still_applies_with_a_slash_in_the_password(self):
-        """Control for #370: a profile whose pattern rewrites the host still
-        gets that transform applied, and the credential segments still
-        round-trip intact even though the password contains a '/'. Only the
-        credential-segment extraction changed; the transform mechanism did
-        not.
+        """Control for #370: a profile whose pattern rewrites only the host
+        still gets that transform applied, and the credential segments still
+        round-trip intact even though the password contains a '/', because
+        the transformed URL still ends with the exact raw credential suffix
+        (only the host preceding it changed) and hits the same shortcut as
+        the identity-profile case above.
         """
         account = M3UAccount.objects.create(
             name="Custom profile XC",
@@ -102,6 +108,39 @@ class GetTransformedCredentialsTests(TestCase):
         self.assertEqual(server_url, "https://mirror.example/server1")
         self.assertEqual(username, "alice")
         self.assertEqual(password, "p/ss%w@rd")
+
+    def test_a_simple_mode_credential_swap_matches_the_raw_shape_the_frontend_writes(self):
+        """The frontend's "simple" XC profile mode
+        (M3uProfileUtils.js's applyXcSimplePatterns) stores search_pattern as
+        the literal raw "{username}/{password}" string and replace_pattern as
+        the new ones — a credential swap written against RAW credentials, not
+        a host rewrite, and the common custom-profile shape (getDetectedMode
+        defaults new profiles to "simple"). Percent-encoding the credentials
+        before running the profile's regex against them (round 1's rejected
+        approach) would have made a raw pattern like this stop matching, so
+        the swap silently fell through to the primary account's own
+        credentials. The transformed URL here ends with "/live/bob/other/…",
+        not the raw suffix built from alice@x.com/secret, so this exercises
+        the split-based extraction path, not the shortcut the two tests above
+        take.
+        """
+        account = M3UAccount.objects.create(
+            name="Simple mode swap XC",
+            account_type="XC",
+            server_url="https://myserver.fun/server1",
+            username="alice@x.com",
+            password="secret",
+        )
+        profile = M3UAccountProfile.objects.get(m3u_account=account, is_default=True)
+        profile.search_pattern = "alice@x.com/secret"
+        profile.replace_pattern = "bob/other"
+        profile.save()
+
+        server_url, username, password = get_transformed_credentials(account, profile)
+
+        self.assertEqual(server_url, "https://myserver.fun/server1")
+        self.assertEqual(username, "bob")
+        self.assertEqual(password, "other")
 
 
 class ResolveLiveStreamUrlTests(TestCase):
