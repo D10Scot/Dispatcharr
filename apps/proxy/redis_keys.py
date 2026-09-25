@@ -1,8 +1,9 @@
 """Redis key builders Django still uses.
 
 apps/channels/models.py imports RedisKeys at module level (Channel.get_stream,
-release_stream, update_stream_profile and _release_stale_stream_assignment),
-and so do core/utils.py and apps/proxy/next_source.py function-locally.
+release_stream, update_stream_profile, _release_stale_stream_assignment and
+_stream_assignment_is_reusable), and so do core/utils.py and
+apps/proxy/next_source.py function-locally.
 
 THIS MODULE MUST STAY A LEAF -- no imports, at all. It is loaded by every
 migration and every management command through that models.py import, so a
