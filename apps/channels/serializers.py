@@ -119,7 +119,6 @@ class StreamSerializer(serializers.ModelSerializer):
         allow_null=True,
         required=False,
     )
-    read_only_fields = ["is_custom", "m3u_account", "stream_hash", "stream_id", "stream_chno"]
 
     class Meta:
         model = Stream
@@ -147,6 +146,7 @@ class StreamSerializer(serializers.ModelSerializer):
             "is_catchup",
             "catchup_days",
         ]
+        read_only_fields = ["is_custom", "m3u_account", "stream_hash", "stream_id", "stream_chno"]
 
     def get_fields(self):
         fields = super().get_fields()

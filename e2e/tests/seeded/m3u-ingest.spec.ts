@@ -335,25 +335,9 @@ test('an M3U account round-trips a PATCH of a writable field', { tag: '@contract
   expect(readBack.name).toBe(newName);
 });
 
-/**
- * Known bug: D10Scot/Dispatcharr#15. `M3UAccountSerializer` declares
- * `read_only_fields = ["locked", "created_at", "updated_at"]` in its **class
- * body** instead of inside `Meta`, so DRF never reads it and `locked` is
- * writable over the API. `locked` marks the built-in custom account
- * (`M3UAccount.get_custom_account`), and nothing else in `apps/` or `core/`
- * checks it — so a client can both set and clear it at will.
- *
- * Asserts the CORRECT behaviour and is expected to fail until #15 is fixed.
- * Do not patch the product from this harness; do not file a duplicate issue.
- *
- * This test's own body already performs the PATCH-and-read-back sequence its
- * premise depends on — but inside a test.fail() block, which is satisfied by
- * ANY failure, so a regression in the read-back mechanism itself (not just
- * in `locked`) would be swallowed as "expected failure" and never surface.
- * The non-inverted assertion in the test above ('an M3U account round-trips
- * a PATCH of a writable field') is what actually guards it.
- */
-test.fail('M3UAccount.locked is not writable over the API', { tag: '@contract' }, async ({ seed, api }) => {
+// Fixed: D10Scot/Dispatcharr#15. `M3UAccountSerializer.read_only_fields` now
+// lives in `Meta`, where DRF reads it, so `locked` is no longer writable.
+test('M3UAccount.locked is not writable over the API', { tag: '@contract' }, async ({ seed, api }) => {
   const account = await seed.m3uAccount();
   expect(account.locked).toBe(false);
 
