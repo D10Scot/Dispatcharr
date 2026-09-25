@@ -30,10 +30,11 @@ test('a live user\'s refresh token is accepted by /api/accounts/token/refresh/',
   expect(typeof body.access).toBe('string');
 });
 
-// Asserts the behaviour Dispatcharr SHOULD have. A refresh token naming a
-// user who has since been deleted gets a 500 from TokenRefreshView, not the
-// 401 that would tell a client to log in again. Filed as
-// https://github.com/D10Scot/Dispatcharr/issues/12.
+// Asserts the behaviour Dispatcharr now has, fixed by #12: a refresh token
+// naming a user who has since been deleted gets a 401 `token_not_valid` from
+// TokenRefreshView, the same response every other invalid refresh already
+// gets, telling the client to log in again — not the 500 it used to. Filed
+// as https://github.com/D10Scot/Dispatcharr/issues/12.
 //
 // **This test costs ONE login out of three per minute for the entire suite,
 // and it is the only login G5 spends.** seed.user() generates a fresh
@@ -48,25 +49,9 @@ test('a live user\'s refresh token is accepted by /api/accounts/token/refresh/',
 // `playwright/.auth/` and no cache-restore step, and `setup/principals.ts`
 // documents the cold bootstrap cost as "3, which is exactly the per-minute
 // cap" — the whole budget spent before this test's own `asUser` login even
-// runs. So this pin's login can 429 on any CI run, not just an occasional
+// runs. So this test's login can 429 on any CI run, not just an occasional
 // local one. See "The login throttle" in e2e/README.md.
-//
-// test.fail() caveat: it is satisfied by ANY failure in the body, guards
-// included — including the delete's own `toBe(204)` premise below and the
-// seed-and-login machinery above it, neither of which the control above
-// touches. The route premise IS now guarded: the non-inverted control above
-// ('a live user's refresh token is accepted by /api/accounts/token/refresh/')
-// already exercises that route and would go red on its own if a broken
-// refresh endpoint were the cause, so a broken endpoint can no longer green
-// this pin by accident. What remains unguarded is the seed-and-login half
-// above, including that `toBe(204)` premise — a cold-run 429 from `asUser`
-// reads as "expected failure" without ever reaching the refresh call this
-// test exists to exercise, and that is a harness cost (the shared login
-// throttle), not a product signal the control could meaningfully assert.
-// Verified with `--reporter=json` that this pin fails at the `toBe(401)`
-// below, with the premise `toBe(204)` passing — re-verify the same way
-// after any edit here.
-test.fail('refreshing a deleted user\'s token returns 401, not 500', { tag: '@contract' }, async ({
+test('refreshing a deleted user\'s token returns 401, not 500', { tag: '@contract' }, async ({
   seed,
   api,
   asUser,

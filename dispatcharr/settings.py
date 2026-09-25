@@ -16,7 +16,19 @@ def _validate_tls_cert_paths(paths, service_name):
     service and missing file so operators can fix their environment.
     """
     for env_var, file_path in paths:
-        if file_path and not Path(file_path).is_file():
+        if not file_path:
+            continue
+        try:
+            is_file = Path(file_path).is_file()
+        except OSError as exc:
+            # Python 3.13's Path.is_file() re-raises EACCES from os.stat
+            # instead of returning False (#128).
+            raise ImproperlyConfigured(
+                f"{service_name} TLS: {env_var}={file_path!r} — cannot read file "
+                f"({exc.strerror or exc}). Check that the application user can "
+                f"traverse the directory and read the file."
+            ) from exc
+        if not is_file:
             raise ImproperlyConfigured(
                 f"{service_name} TLS: {env_var}={file_path!r} — file not found. "
                 f"Check that the certificate file exists and the volume is mounted correctly."
