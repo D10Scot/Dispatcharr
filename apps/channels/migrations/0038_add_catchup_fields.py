@@ -5,6 +5,8 @@ from django.db import migrations, models
 
 def backfill_stream_catchup(apps, schema_editor):
     """Derive is_catchup/catchup_days from Stream.custom_properties JSON."""
+    if schema_editor.connection.vendor != "postgresql":
+        return  # PostgreSQL-only SQL; a fresh non-PG (test) database has no rows
     with schema_editor.connection.cursor() as cursor:
         cursor.execute("""
             UPDATE dispatcharr_channels_stream
@@ -30,6 +32,8 @@ def backfill_stream_catchup(apps, schema_editor):
 
 def backfill_channel_catchup(apps, schema_editor):
     """Roll up catch-up fields from streams to channels."""
+    if schema_editor.connection.vendor != "postgresql":
+        return
     with schema_editor.connection.cursor() as cursor:
         cursor.execute("""
             UPDATE dispatcharr_channels_channel c SET
