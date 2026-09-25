@@ -1,7 +1,7 @@
 """Helper module to access configuration values with proper defaults.
 
-Moved here from ``apps/proxy/live_proxy/config_helper.py`` in Phase 2 stage
-2d-1 (spec Amendment A10.3). Two surfaces stage 2d KEEPS call it --
+Moved here from the deleted ``apps/proxy/live_proxy/config_helper.py`` in
+Phase 2 stage 2d-1 (spec Amendment A10.3). Two surfaces call it --
 catch-up (``apps/timeshift/views.py``, four call sites, imported at module
 level) and the DVR retry window (``apps/channels/tasks.py:1125``) -- so it
 cannot stay in a directory stage 2d-4 deletes.
@@ -14,8 +14,8 @@ first-party. That is boot-safe, and it is safe only for that reason --
 the migration-loader path, but the same "no first-party import" discipline
 applies to anything added here.
 
-``apps/proxy/live_proxy/config_helper.py`` re-exports ``ConfigHelper`` from
-here until stage 2d-4 deletes the package.
+Stage 2d-4 deleted ``apps/proxy/live_proxy/config_helper.py``, the
+re-export shim that stood here until then.
 """
 
 from apps.proxy.config import TSConfig as Config
