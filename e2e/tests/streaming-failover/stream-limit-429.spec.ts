@@ -233,10 +233,15 @@ test(
     // (auth_request denies it first), so it costs nothing against the limit.
     const probeRes = await fetch(new URL(secondPath, baseURL!).toString());
     expect(probeRes.status, 'the probe should also see the limit').toBe(429);
+    // Positive, not negative: an absent header or a `text/plain` answer
+    // would both pass a bare `not.toContain('application/json')`. nginx
+    // 1.24.0's `return 429` through `error_page 403 = @authorize_denied`
+    // answers its own 178-byte `text/html` page (measured), so that is what
+    // this asserts.
     expect(
       probeRes.headers.get('content-type') ?? '',
-      "a nginx-restored 429 answers nginx's own error page, not the relay's JSON"
-    ).not.toContain('application/json');
+      "a nginx-restored 429 answers nginx's own text/html error page, not the relay's JSON"
+    ).toContain('text/html');
 
     await streamClient.close();
     // Control: the refusal was the limit, not a broken second channel. The
