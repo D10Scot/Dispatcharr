@@ -40,28 +40,19 @@ GOLDEN = (
     / "channel_detail.json"
 )
 
-# Two RelayChannelDetailSerializer fields the Go relay never emits, because
-# NEITHER RELAY CAN: each is read by channel_status.py and written by nothing
-# in the tree. Kept as a mapping with a reason for the list golden's reason --
-# a field in neither this mapping nor the fully-populated fixture fails
+# RelayChannelDetailSerializer fields the Go relay never emits, each with the
+# reason. Kept as a mapping with a reason for the list golden's reason -- a
+# field in neither this mapping nor the fully-populated fixture fails
 # test_the_fixture_covers_every_serializer_field, which is what stops the
 # golden from narrowing as the endpoint grows.
-NEVER_WRITTEN = {
-    "source_bitrate": (
-        "ChannelMetadataField.SOURCE_BITRATE has no writer anywhere in the "
-        "tree: apps/proxy/live_proxy/channel_status.py:359 is its only "
-        "reference beside the constant declaration itself, so the key is "
-        "never in the metadata hash and the `if source_bitrate:` never fires"
-    ),
-    "ffmpeg_bitrate": (
-        "channel_status.py:404 reads ChannelMetadataField.FFMPEG_BITRATE "
-        "('ffmpeg_bitrate') and the only writer, input/manager.py:1269, "
-        "writes FFMPEG_OUTPUT_BITRATE ('ffmpeg_output_bitrate'), which "
-        "nothing reads -- two different strings at constants.py:90-91, so "
-        "the operator's output bitrate never reaches this payload in either "
-        "relay"
-    ),
-}
+#
+# EMPTY SINCE ISSUE #314. It held source_bitrate, which nothing in either
+# relay ever wrote and which the serializer no longer declares, and
+# ffmpeg_bitrate, which the Go relay now emits from the output bitrate its
+# stderr reader parses. With it empty, a serializer that still declared
+# source_bitrate fails the completeness test below -- the pin for its
+# removal.
+NEVER_WRITTEN = {}
 
 
 def fixture():
@@ -135,6 +126,9 @@ def fixture():
         "ffmpeg_speed": 1.02,
         "ffmpeg_fps": "25.0",
         "actual_fps": "24.5",
+        # Issue #314: the output bitrate, str(round(kbps, 1)) as the other
+        # detail-endpoint rates are.
+        "ffmpeg_bitrate": "4200.0",
         "stream_type": "mpegts",
         "clients": [
             {
