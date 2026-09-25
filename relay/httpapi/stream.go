@@ -391,8 +391,9 @@ func identify(r *http.Request, secret string, now func() time.Time, decision *co
 	}
 	// 2c-6: fmp4 joins mpegts. Anything else is still refused rather than
 	// served under a label that is not true -- and there is no third format to
-	// refuse today (_OUTPUT_FORMAT_MANAGERS registers only fmp4,
-	// server.py:1352-1353, and apps/proxy/hls_proxy/ is dead and unrouted).
+	// refuse today: the deleted Python relay's _OUTPUT_FORMAT_MANAGERS
+	// registered only fmp4, and the unrouted apps/proxy/hls_proxy/ was deleted
+	// by fix plan J-1.
 	outputFormat := OutputFormatMPEGTS
 	if format := header("X-Relay-Output-Format"); format != "" {
 		if format != OutputFormatMPEGTS && format != output.FormatFMP4 {

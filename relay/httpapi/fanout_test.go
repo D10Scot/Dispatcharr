@@ -441,8 +441,8 @@ func TestAnOutputThisRelayDoesNotServeIsRefused(t *testing.T) {
 		status int
 	}{
 		// 2c-6 SERVES fmp4, so this row moved to a format NEITHER relay has.
-		// `hls` is the honest choice: apps/proxy/hls_proxy/ exists, is 1,206
-		// lines, is 0% covered and is routed nowhere, and
+		// `hls` is the honest choice: apps/proxy/hls_proxy/ was 1,216 lines,
+		// 0% covered and routed nowhere (fix plan J-1 deleted it), and
 		// _OUTPUT_FORMAT_MANAGERS (server.py:1352-1353) registers only fmp4 --
 		// so Python's own resolved format can never be this and the refusal is
 		// what both implementations do. Before 2c-6 this row said "fmp4"; a
