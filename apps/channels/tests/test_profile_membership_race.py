@@ -66,13 +66,30 @@ class ProfileMembershipRaceTests(TestCase):
         there is no `Channel`-side hook to race against otherwise) inserts
         `(profile, channel)` the instant the channel row is saved -- before
         the view's own `bulk_create` runs. The view must tolerate the
-        pre-existing row rather than 500, on all three of
+        pre-existing row and return 201, on all three of
         `ChannelViewSet.create`/`from_stream`'s `channel_profile_ids`
         branches: omitted (all-profiles, `api_views.py:877`/`:2074`),
         sentinel `[0]` (also all-profiles, `:887`/`:2084`) and a specific id
         list (`:902`/`:2099`) -- three of the plan's seven `ignore_conflicts`
         sites are otherwise never reached by this module, and reverting any
         one of them alone would stay green.
+
+        At base, dropping `ignore_conflicts=True` on the omitted or sentinel
+        branches surfaces as an uncaught `IntegrityError` (a 500 in
+        production). The specific-ids branch already wraps its `bulk_create`
+        in `try/except Exception`, so in production (`ATOMIC_REQUESTS =
+        False`, so the view's `with transaction.atomic():` is the outermost
+        transaction) it is caught and answered as a 400 that echoes the raw
+        `duplicate key value violates unique constraint …` text, silently
+        rolling back the channel the client asked for -- not a 500. Under
+        this `TestCase`, that same `atomic()` block is a *nested* savepoint,
+        so leaving it after the caught error runs `RELEASE SAVEPOINT`
+        against a transaction PostgreSQL has already aborted, which raises
+        an unhandled `InternalError: current transaction is aborted,
+        commands ignored until end of transaction block` instead -- a
+        test-harness artefact of the savepoint nesting, not the production
+        failure mode, but still a correct red against this test's 201
+        expectation.
         """
         profile = ChannelProfile.objects.create(name="Race Profile B")
 
