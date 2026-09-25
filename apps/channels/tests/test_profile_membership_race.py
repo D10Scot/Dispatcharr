@@ -118,6 +118,17 @@ class ProfileMembershipRaceTests(TestCase):
         ]
         channel_number = 902
 
+        # Each subTest below deletes the channel it created (cascading to
+        # its ChannelProfileMembership rows, apps/channels/models.py:875)
+        # and, for from-stream, the Stream it created, once its own
+        # assertions pass. Without this, iteration 2 and 3 would run against
+        # a set the earlier iterations left behind: harmless for the exact
+        # `channel_id`-scoped assertions here, but silently order-dependent
+        # for any assertion a later change made less specific. A subTest
+        # that FAILS needs no matching cleanup: Django's TestCase wraps each
+        # subTest in its own savepoint and rolls it back on failure, so a
+        # failing case's row (or the row a wrong edit made never exist, per
+        # the break-checks below) never survives to the next iteration.
         for label, channel_profile_ids in cases:
             with self.subTest(f"channel create: {label}"):
                 payload = {
@@ -137,6 +148,7 @@ class ProfileMembershipRaceTests(TestCase):
                     ).count(),
                     1,
                 )
+                Channel.objects.filter(id=channel_id).delete()
             channel_number += 1
 
             with self.subTest(f"from-stream: {label}"):
@@ -155,4 +167,6 @@ class ProfileMembershipRaceTests(TestCase):
                     ).count(),
                     1,
                 )
+                Channel.objects.filter(id=channel_id).delete()
+                stream.delete()
             channel_number += 1
