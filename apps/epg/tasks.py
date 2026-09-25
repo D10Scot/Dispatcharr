@@ -1,6 +1,7 @@
 # apps/epg/tasks.py
 
 import logging
+import functools
 import gzip
 import html.entities
 import lzma
@@ -23,6 +24,7 @@ from django.db.models import Q
 from django.utils import timezone
 from apps.channels.models import Channel
 from core.models import UserAgent, CoreSettings
+from dispatcharr.utils import redact_url
 
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
@@ -241,9 +243,37 @@ _HTML_ENTITY_DOCTYPE = _build_html_entity_doctype()
 
 def _parse_programme_element(element_bytes):
     """Parse a single <programme> element, prepending the HTML-entity DOCTYPE
-    so references like &eacute; in the text resolve instead of failing."""
-    parser = etree.XMLParser(resolve_entities=True, load_dtd=True, no_network=True)
-    return etree.fromstring(_HTML_ENTITY_DOCTYPE + element_bytes, parser)
+    so references like &eacute; in the text resolve instead of failing.
+
+    recover=True so an entity reference the injected DOCTYPE does not declare
+    (an HTML5-only name, or one missing its terminating semicolon) is dropped
+    like any other recoverable error rather than aborting the whole element --
+    matching how _decode_channel_id already reads the same byte-offset index's
+    channel attribute. Every other setting (no DTD load beyond the injected
+    one, no network, no huge_tree) is unchanged.
+
+    recover=True also lets a character reference to a lone UTF-16 surrogate
+    (e.g. &#xD800;) parse successfully, stored by libxml2 as an unpaired
+    surrogate that only raises UnicodeDecodeError when its text is actually
+    decoded to a Python str -- which .text/.tail/.attrib access do lazily.
+    Force that decode here by serialising the whole element with
+    etree.tostring() and discarding the result, so a bad reference anywhere
+    in it (text, tail, an attribute, or a nested element) fails at parse
+    time like any other malformed element, and the callers' `except
+    (etree.XMLSyntaxError, UnicodeDecodeError): continue` skips it uniformly
+    rather than raising later out of the result-building code. A per-node
+    `elem.iter()` walk touching `.text`/`.tail`/`.attrib.values()` did this
+    too in an earlier revision, but lxml's attribute lookup by name is O(n)
+    per node, making that walk O(n^2) in attribute count; a hand-built
+    provider element with thousands of attributes cost seconds per call.
+    tostring() serialises once, linearly."""
+    parser = etree.XMLParser(
+        resolve_entities=True, load_dtd=True, no_network=True, recover=True
+    )
+    elem = etree.fromstring(_HTML_ENTITY_DOCTYPE + element_bytes, parser)
+    if elem is not None:
+        etree.tostring(elem, encoding='unicode')
+    return elem
 
 
 class _PrependStream:
@@ -287,6 +317,14 @@ class _PrependStream:
         self.close()
 
 
+def _xmltv_file_gets_entity_doctype(file_path: str) -> bool:
+    """True when _open_xmltv_file will prepend _HTML_ENTITY_DOCTYPE, i.e. the
+    file does not declare its own DOCTYPE in its first 512 bytes."""
+    with open(file_path, 'rb') as f:
+        start = f.read(512)
+    return not (b'<!DOCTYPE' in start or b'<!doctype' in start.lower())
+
+
 def _open_xmltv_file(file_path: str):
     """Open an XMLTV file for lxml iterparse, injecting an HTML entity DOCTYPE.
 
@@ -303,7 +341,8 @@ def _open_xmltv_file(file_path: str):
     f = open(file_path, 'rb')
     start = f.read(512)
 
-    # Do not inject if the file already declares a DOCTYPE.
+    # Do not inject if the file already declares a DOCTYPE (same test as
+    # _xmltv_file_gets_entity_doctype, which the byte-offset index uses).
     if b'<!DOCTYPE' in start or b'<!doctype' in start.lower():
         f.seek(0)
         return f
@@ -333,7 +372,7 @@ def validate_icon_url_fast(icon_url, max_length=None):
         max_length = EPGData._meta.get_field('icon_url').max_length
 
     if icon_url and len(icon_url) > max_length:
-        logger.warning(f"Icon URL too long ({len(icon_url)} > {max_length}), skipping: {icon_url[:100]}...")
+        logger.warning(f"Icon URL too long ({len(icon_url)} > {max_length}), skipping: {redact_url(icon_url)[:100]}...")  # credential-logging: ignore - length only, the logged value itself is redact_url()'d
         return None
     return icon_url
 
@@ -604,7 +643,7 @@ def fetch_xmltv(source):
         with requests.get(source.url, headers=headers, stream=True, timeout=60) as response:
             # Handle 404 specifically
             if response.status_code == 404:
-                logger.error(f"EPG URL not found (404): {source.url}")
+                logger.error(f"EPG URL not found (404): {redact_url(source.url)}")
                 # Update status to error in the database
                 source.status = 'error'
                 source.last_message = f"EPG source '{source.name}' returned 404 error - will retry on next scheduled run"
@@ -1133,12 +1172,12 @@ def parse_channels_only(source):
 
             # If the source has a URL, fetch the data before continuing
             if source.url:
-                logger.info(f"Fetching new EPG data from URL: {source.url}")
+                logger.info(f"Fetching new EPG data from URL: {redact_url(source.url)}")
                 fetch_success = fetch_xmltv(source)  # Store the result
 
                 # Only proceed if fetch was successful AND file exists
                 if not fetch_success:
-                    logger.error(f"Failed to fetch EPG data from URL: {source.url}")
+                    logger.error(f"Failed to fetch EPG data from URL: {redact_url(source.url)}")
                     # Update status to error
                     source.status = 'error'
                     source.last_message = f"Failed to fetch EPG data from URL"
@@ -1652,7 +1691,7 @@ def parse_programs_for_tvg_id(epg_id, force=False, _defer_retry=0):
                     logger.info(f"Updating file_path from '{file_path}' to '{new_path}'")
                     epg_source.file_path = new_path
                     epg_source.save(update_fields=['file_path'])
-                    logger.info(f"Fetching new EPG data from URL: {epg_source.url}")
+                    logger.info(f"Fetching new EPG data from URL: {redact_url(epg_source.url)}")
                 else:
                     logger.info(f"EPG source does not have a URL, using existing file path: {file_path} to rebuild cache")
     
@@ -2155,7 +2194,7 @@ def parse_programs_for_source(epg_source, tvg_id=None):
                 logger.info(f"Updating file_path from '{file_path}' to '{new_path}'")
                 epg_source.file_path = new_path
                 epg_source.save(update_fields=['file_path'])
-                logger.info(f"Fetching new EPG data from URL: {epg_source.url}")
+                logger.info(f"Fetching new EPG data from URL: {redact_url(epg_source.url)}")
 
                 # Fetch new data before continuing
                 fetch_success = fetch_xmltv(epg_source)
@@ -2511,6 +2550,13 @@ def parse_xmltv_time(time_str):
 
         # Parse base datetime
         dt_obj = datetime.strptime(time_str[:14], '%Y%m%d%H%M%S')
+
+        # An offset written without the separating space before the sign
+        # (e.g. "20260728183000+0530" instead of "20260728183000 +0530") is
+        # otherwise read as if no timezone were present and silently treated
+        # as UTC. Insert the missing space so the branch below recognises it.
+        if len(time_str) >= 19 and time_str[14] in ('+', '-'):
+            time_str = time_str[:14] + ' ' + time_str[14:]
 
         # Handle timezone if present
         if len(time_str) >= 20:  # Has timezone info
@@ -2899,12 +2945,37 @@ _MAX_START_TAG = 4096  # generous upper bound for a start tag with namespaces/ex
 _OFFSET_CAP = 10  # max block-starts recorded per channel; exceeding this flags the channel as interleaved
 
 
-def _decode_channel_id(raw):
-    """Match how EPGData.tvg_id is stored: resolve XML entities and strip, so byte-level index keys equal the lxml-parsed channel ids."""
-    s = raw.decode('utf-8', errors='replace')
-    if '&' in s:
-        s = html.unescape(s)
-    return s.strip()
+_NEEDS_LXML_DECODE = (b'&',) + tuple(bytes([c]) for c in range(0x20))
+
+
+@functools.lru_cache(maxsize=4096)
+def _decode_channel_id(raw, quote=b'"', entity_doctype=True):
+    """Return the channel id exactly as lxml's recover-mode iterparse reads it
+    (entity resolution under the same injected-DOCTYPE decision as
+    _open_xmltv_file; entities a file declares itself are not resolved,
+    attribute-value whitespace normalisation, and every C0 control byte --
+    not just tab/LF/CR -- reads as U+FFFD, matching how the XML import's own
+    parser replaces an invalid character), stripped -- so byte-level index
+    keys equal EPGData.tvg_id. Ids with no entity reference or C0 control
+    byte take a fast path."""
+    if not any(b in raw for b in _NEEDS_LXML_DECODE):
+        return raw.decode('utf-8', errors='replace').strip()
+    prefix = _HTML_ENTITY_DOCTYPE if entity_doctype else b''
+    try:
+        elem = etree.fromstring(
+            prefix + b'<p c=' + quote + raw + quote + b'/>',
+            etree.XMLParser(recover=True, remove_blank_text=True),
+        )
+        value = elem.get('c') if elem is not None else None
+    except (UnicodeDecodeError, etree.XMLSyntaxError):
+        # A character reference to a lone UTF-16 surrogate (e.g. &#xD800;)
+        # recovers as an unpaired surrogate that libxml2 cannot re-encode as
+        # UTF-8, and elem.get() raises. lxml's own file-level import raises
+        # the same way reading this attribute, so no EPGData row can hold
+        # this id either -- fall back rather than let one bad channel id
+        # abort the whole index build or lookup.
+        return raw.decode('utf-8', errors='replace').strip()
+    return (value or '').strip()
 
 
 def _find_programme_tag(buf, start):
@@ -2980,6 +3051,7 @@ def build_programme_index(source_id):
     interleaved_channels = set()
 
     CHUNK = 8 * 1024 * 1024  # 8MB
+    entity_doctype = _xmltv_file_gets_entity_doctype(file_path)
 
     with open(file_path, 'rb') as f:
         buf = bytearray()
@@ -3004,7 +3076,11 @@ def build_programme_index(source_id):
                     buf, idx, tag_end + 1 if tag_end != -1 else idx + _MAX_START_TAG
                 )
                 if m:
-                    channel_id = _decode_channel_id(m.group(1) or m.group(2))
+                    channel_id = (
+                        _decode_channel_id(m.group(1), b'"', entity_doctype)
+                        if m.group(1) is not None
+                        else _decode_channel_id(m.group(2), b"'", entity_doctype)
+                    )
                     if channel_id not in index:
                         index[channel_id] = [abs_pos]
                     elif channel_id != prev_channel:
@@ -3146,6 +3222,7 @@ def _read_programs_at_offsets(file_path, tvg_id, offsets, now):
     PROG_CLOSE = b'</programme>'
     CLOSE_LEN = len(PROG_CLOSE)
     READ_SIZE = 2 * 1024 * 1024  # 2MB per read
+    entity_doctype = _xmltv_file_gets_entity_doctype(file_path)
 
     with open(file_path, 'rb') as f:
         for offset in offsets:
@@ -3181,7 +3258,11 @@ def _read_programs_at_offsets(file_path, tvg_id, offsets, now):
                         )
                         continue
 
-                    ch = _decode_channel_id(m.group(1) or m.group(2))
+                    ch = (
+                        _decode_channel_id(m.group(1), b'"', entity_doctype)
+                        if m.group(1) is not None
+                        else _decode_channel_id(m.group(2), b"'", entity_doctype)
+                    )
                     if ch != tvg_id:
                         done = True  # different channel, end of block
                         break
@@ -3201,15 +3282,26 @@ def _read_programs_at_offsets(file_path, tvg_id, offsets, now):
 
                     try:
                         prog = _parse_programme_element(element_bytes)
-                    except etree.XMLSyntaxError:
+                    except (etree.XMLSyntaxError, UnicodeDecodeError):
+                        continue
+                    if prog is None:
+                        # recover=True can return None for bytes that never
+                        # open a well-formed element at all.
                         continue
 
                     start_str = prog.get('start')
                     stop_str = prog.get('stop')
                     if not start_str or not stop_str:
                         continue
-                    start_time = parse_xmltv_time(start_str)
-                    end_time = parse_xmltv_time(stop_str)
+                    try:
+                        start_time = parse_xmltv_time(start_str)
+                        end_time = parse_xmltv_time(stop_str)
+                    except (ValueError, TypeError, OverflowError):
+                        # A malformed timestamp on this element must not abort
+                        # the scan for the rest of the channel's block.
+                        # OverflowError: astimezone() on a year at either end
+                        # of datetime's range (e.g. "99991231235959 -0100").
+                        continue
                     if start_time is None or end_time is None:
                         continue
                     if start_time <= now < end_time:
@@ -3237,6 +3329,7 @@ def _scan_from_offset_for_tvg_id(file_path, tvg_id, start_offset, now, timeout_s
     CLOSE_LEN = len(PROG_CLOSE)
     READ_SIZE = 2 * 1024 * 1024
     deadline = time.monotonic() + timeout_sec
+    entity_doctype = _xmltv_file_gets_entity_doctype(file_path)
 
     with open(file_path, 'rb') as f:
         f.seek(start_offset)
@@ -3274,7 +3367,11 @@ def _scan_from_offset_for_tvg_id(file_path, tvg_id, start_offset, now, timeout_s
                     )
                     continue
 
-                ch = _decode_channel_id(m.group(1) or m.group(2))
+                ch = (
+                    _decode_channel_id(m.group(1), b'"', entity_doctype)
+                    if m.group(1) is not None
+                    else _decode_channel_id(m.group(2), b"'", entity_doctype)
+                )
                 if ch != tvg_id:
                     search_from = (
                         tag_end + 1 if tag_end != -1 else tag_start + _PROGRAMME_TAG_LEN
@@ -3294,15 +3391,26 @@ def _scan_from_offset_for_tvg_id(file_path, tvg_id, start_offset, now, timeout_s
 
                 try:
                     prog = _parse_programme_element(element_bytes)
-                except etree.XMLSyntaxError:
+                except (etree.XMLSyntaxError, UnicodeDecodeError):
+                    continue
+                if prog is None:
+                    # recover=True can return None for bytes that never open
+                    # a well-formed element at all.
                     continue
 
                 start_str = prog.get('start')
                 stop_str = prog.get('stop')
                 if not start_str or not stop_str:
                     continue
-                start_time = parse_xmltv_time(start_str)
-                end_time = parse_xmltv_time(stop_str)
+                try:
+                    start_time = parse_xmltv_time(start_str)
+                    end_time = parse_xmltv_time(stop_str)
+                except (ValueError, TypeError, OverflowError):
+                    # A malformed timestamp on this element must not abort
+                    # the interleaved scan for the rest of the channel.
+                    # OverflowError: astimezone() on a year at either end
+                    # of datetime's range (e.g. "99991231235959 -0100").
+                    continue
                 if start_time is None or end_time is None:
                     continue
                 if start_time <= now < end_time:
