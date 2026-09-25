@@ -1035,8 +1035,8 @@ def _build_output_paths(channel, program, start_time, end_time, recording_id):
     library_root = '/data/recordings'
 
     is_movie, season, episode, year, sub_title = _parse_epg_tv_movie_info(program)
-    show = _safe_name(program.get('title') if isinstance(program, dict) else channel.name)
-    title = _safe_name(program.get('title') if isinstance(program, dict) else channel.name)
+    name = (program.get('title') if isinstance(program, dict) else None) or channel.name
+    show = title = _safe_name(name)
     sub_title = _safe_name(sub_title)
     season = int(season) if season is not None else 0
     episode = int(episode) if episode is not None else 0
@@ -1496,7 +1496,7 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
         "updates",
         {
             "type": "update",
-            "data": {"success": True, "type": "recording_started", "channel": channel.name}
+            "data": {"success": True, "type": "recording_started", "channel": channel.name, "recording_id": recording_id}
         },
     )
 
@@ -2145,7 +2145,7 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
                 "updates",
                 {
                     "type": "update",
-                    "data": {"success": True, "type": "recording_ended", "channel": channel.name}
+                    "data": {"success": True, "type": "recording_ended", "channel": channel.name, "recording_id": recording_id}
                 },
             )
             # After the loop, the file and response are closed automatically.
@@ -2523,7 +2523,7 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
                 "updates",
                 {
                     "type": "update",
-                    "data": {"success": True, "type": "recording_ended", "channel": channel.name},
+                    "data": {"success": True, "type": "recording_ended", "channel": channel.name, "recording_id": recording_id},
                 },
             )
         except Exception:

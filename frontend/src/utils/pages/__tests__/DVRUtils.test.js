@@ -471,6 +471,31 @@ describe('DVRUtils', () => {
       expect(result.upcoming[0]._group_count).toBe(1);
     });
 
+    it('does not group upcoming recordings that have no program data (#71)', () => {
+      const recordings = [
+        {
+          id: 1,
+          start_time: '2024-01-01T14:00:00',
+          end_time: '2024-01-01T15:00:00',
+          channel: 'ch1',
+          custom_properties: {},
+        },
+        {
+          id: 2,
+          start_time: '2024-01-01T15:00:00',
+          end_time: '2024-01-01T16:00:00',
+          channel: 'ch2',
+          custom_properties: {},
+        },
+      ];
+
+      const result = DVRUtils.categorizeRecordings(recordings, toUserTime, now);
+
+      expect(result.upcoming).toHaveLength(2);
+      expect(result.upcoming[0]._group_count).toBe(1);
+      expect(result.upcoming[1]._group_count).toBe(1);
+    });
+
     it('should handle recording without id', () => {
       const recordings = [
         {

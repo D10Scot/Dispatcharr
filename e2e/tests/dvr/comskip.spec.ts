@@ -274,9 +274,10 @@ test('comskip dispatch reaches a terminal state', { tag: '@characterization' }, 
   // runs (the fixture awaits `connection_established` at setup), so this
   // wait cannot miss the event even though it is registered after
   // `scheduleRecording` above — same reasoning recording-execution.spec.ts
-  // documents. `recording_started` carries only `channel`
-  // (D10Scot/Dispatcharr#132), never `recording_id`, so correlate on the
-  // seeded channel's generated name.
+  // documents. `recording_started` now also carries `recording_id`
+  // (D10Scot/Dispatcharr#132, fixed by #422), but this still
+  // correlates on the seeded channel's generated name — no assertion here
+  // depends on the id.
   await ws.waitForMessage('recording_started', {
     where: (data) => data.channel === channel.name,
     timeoutMs: 60_000,
