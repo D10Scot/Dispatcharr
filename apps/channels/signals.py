@@ -239,7 +239,7 @@ def create_profile_memberships(sender, instance, created, **kwargs):
         ChannelProfileMembership.objects.bulk_create([
             ChannelProfileMembership(channel_profile=instance, channel=channel)
             for channel in channels
-        ])
+        ], ignore_conflicts=True)
 
 def _dvr_task_name(recording_id):
     """Predictable PeriodicTask name for a DVR recording."""
