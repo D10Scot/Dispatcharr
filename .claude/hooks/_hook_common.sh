@@ -21,7 +21,8 @@
 #   Django label / staged-path diff relative to, and returns 0.
 #
 #   CLAUDE_HOOK_REPO_ROOT always wins — the documented escape hatch for
-#   manual and test runs (see CLAUDE.md).
+#   manual and test runs (see CLAUDE.md) — but only once it is verified to
+#   be a worktree root; otherwise returns 2 with the reason on stderr.
 #
 #   Otherwise resolves `git -C <anchor-dir> rev-parse --show-toplevel`, which
 #   follows wherever <anchor-dir> actually lives: for a linked worktree, git
@@ -43,6 +44,28 @@
 hook_repo_root() {
   local anchor="${1:-.}"
   if [ -n "${CLAUDE_HOOK_REPO_ROOT:-}" ]; then
+    # Issue #279: the override used to be printed verbatim. A stale value
+    # (a deleted worktree, a typo, a subdirectory) then failed the caller's
+    # `cd` and the hook exited 0 with no output -- a silent pass. Validate it
+    # the same way the anchor is validated below, and require the override
+    # to BE a worktree root, not merely something inside one: a
+    # subdirectory would resolve, and every label derived relative to it
+    # would be wrong. Return 2 -- distinct from 1, "the anchor is in no
+    # repo", which is a legitimate nothing-to-do -- so callers can refuse
+    # loudly for this case alone.
+    local o_out o_st o_top o_want
+    o_out="$(git -C "$CLAUDE_HOOK_REPO_ROOT" rev-parse --show-toplevel 2>&1)"
+    o_st=$?
+    if [ $o_st -ne 0 ]; then
+      printf 'CLAUDE_HOOK_REPO_ROOT=%s is not a git worktree: %s\n' "$CLAUDE_HOOK_REPO_ROOT" "$o_out" >&2
+      return 2
+    fi
+    o_top="$(hook_canon_path "$o_out")"
+    o_want="$(hook_canon_path "$CLAUDE_HOOK_REPO_ROOT")"
+    if [ -z "$o_top" ] || [ "$o_top" != "$o_want" ]; then
+      printf 'CLAUDE_HOOK_REPO_ROOT=%s is inside the worktree %s but is not its root\n' "$CLAUDE_HOOK_REPO_ROOT" "$o_out" >&2
+      return 2
+    fi
     printf '%s\n' "$CLAUDE_HOOK_REPO_ROOT"
     return 0
   fi
