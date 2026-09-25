@@ -11,7 +11,7 @@ def migrate_vod_logos_forward(apps, schema_editor):
     Uses pure SQL for maximum performance.
     """
     if schema_editor.connection.vendor != "postgresql":
-        return  # PostgreSQL-only SQL; a fresh non-PG (test) database has no rows
+        return  # unsupported off PostgreSQL; a fresh test database has nothing to migrate
 
     from django.db import connection
 

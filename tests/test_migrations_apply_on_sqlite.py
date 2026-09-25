@@ -26,19 +26,28 @@ class SqliteMigrationGraphTests(SimpleTestCase):
             "TEST_USE_SQLITE": "1",
             "DJANGO_SETTINGS_MODULE": "dispatcharr.settings_test",
         }
-        result = subprocess.run(
-            [
-                sys.executable,
-                str(manage_py),
-                "migrate",
-                "--noinput",
-                "-v0",
-            ],
-            cwd=settings.BASE_DIR,
-            env=env,
-            capture_output=True,
-            text=True,
-        )
+        try:
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(manage_py),
+                    "migrate",
+                    "--noinput",
+                    "-v0",
+                ],
+                cwd=settings.BASE_DIR,
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+        except subprocess.TimeoutExpired as exc:
+            self.fail(
+                "manage.py migrate against an in-memory SQLite database did "
+                f"not finish within {exc.timeout:.0f}s (a normal run takes "
+                "2.3-2.8s). stderr tail:\n"
+                + (exc.stderr or "")[-4000:]
+            )
         self.assertEqual(
             result.returncode,
             0,

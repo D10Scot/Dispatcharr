@@ -6,7 +6,7 @@ from django.db import migrations, models
 def backfill_stream_catchup(apps, schema_editor):
     """Derive is_catchup/catchup_days from Stream.custom_properties JSON."""
     if schema_editor.connection.vendor != "postgresql":
-        return  # PostgreSQL-only SQL; a fresh non-PG (test) database has no rows
+        return  # unsupported off PostgreSQL; a fresh test database has nothing to migrate
     with schema_editor.connection.cursor() as cursor:
         cursor.execute("""
             UPDATE dispatcharr_channels_stream
