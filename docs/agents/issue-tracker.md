@@ -30,6 +30,26 @@ forks) and were enabled as part of this setup.
 - **Apply / remove labels**: `gh issue edit <number> --repo D10Scot/Dispatcharr --add-label "..."` / `--remove-label "..."`
 - **Close**: `gh issue close <number> --repo D10Scot/Dispatcharr --comment "..."`
 
+## Closing keywords close issues whatever the PR changes
+
+GitHub honours `close`/`closes`/`closed`, `fix`/`fixes`/`fixed` and `resolve`/`resolves`/`resolved`
+followed by `#N` anywhere in a PR body or in the squash-commit message, and closes issue N when
+the PR merges to `main`. It does not look at what the PR changes. On 2026-09-24 ten docs-only PRs
+(#343-#354) carried fix plans that quoted each future fix's draft PR description, and merging
+them closed thirteen issues as completed with nothing fixed; every one had to be reopened by hand.
+
+- In a plan, spec, memo or any other docs-only PR, name an issue as `#N (planned in PR X)`.
+  Never write the keyword next to the number, even inside a quoted draft or a code block: the
+  match is textual.
+- Only the PR that lands the fix carries `Closes #N`, and only for the issues it actually fixes.
+- Before marking a docs PR ready, check its body:
+  `gh pr view <number> --repo D10Scot/Dispatcharr --json body --jq .body | grep -iE '(close|fix|resolve)\w* +#[0-9]'`.
+  The squash-commit message is composed from the PR title and body by default, so a clean body is
+  a clean commit message.
+- After merging any docs PR, list what just closed (`gh issue list --repo D10Scot/Dispatcharr
+  --state closed --json number,title,closedAt`) and reopen anything the merge closed, with a comment
+  saying which PR did it.
+
 ## Pull requests as a triage surface
 
 **PRs as a request surface: no.** _(Set to `yes` if this repo treats external PRs as feature requests; `/triage` reads this flag.)_
