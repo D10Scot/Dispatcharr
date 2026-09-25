@@ -72,6 +72,7 @@ from .helpers import (
 from .sessions import catchup_session_exists, delete_catchup_session, resolve_catchup_playback
 from .stats import (
     EOF_PROBE_TAIL_BYTES,
+    is_near_eof_offset,
     resolve_stats_playback_fields,
     seed_stream_stats_metadata,
 )
@@ -1108,6 +1109,12 @@ def _parse_range_start(range_header):
     return parsed[0]
 
 
+def _ascii_digits(value):
+    """ASCII digits only: ``str.isdigit()`` also accepts "²", which ``int()``
+    rejects, and WSGI decodes headers as Latin-1 (#141 review)."""
+    return value.isascii() and value.isdigit()
+
+
 def _parse_client_range(range_header):
     """Return ``(start, end)`` from a client Range header; ``end`` may be None."""
     if not range_header or not range_header.startswith("bytes="):
@@ -1116,16 +1123,26 @@ def _parse_client_range(range_header):
     if "-" not in range_part:
         return None
     start_str, end_str = range_part.split("-", 1)
-    try:
-        start = int(start_str) if start_str else 0
-    except (TypeError, ValueError):
+    if not _ascii_digits(start_str):
+        # The suffix form (bytes=-N) has no start; see _is_suffix_range (#141).
         return None
+    start = int(start_str)
     if not end_str:
         return start, None
-    try:
-        return start, int(end_str)
-    except (TypeError, ValueError):
+    if not _ascii_digits(end_str):
         return None
+    end = int(end_str)
+    if end < start:
+        return None  # RFC 9110: an inverted range-spec is invalid (#141).
+    return start, end
+
+
+def _is_suffix_range(range_header):
+    """True for RFC 9110 ``bytes=-N``: the final N bytes, N > 0."""
+    if not range_header or not range_header.startswith("bytes="):
+        return False
+    length = range_header[6:]
+    return length.startswith("-") and _ascii_digits(length[1:]) and int(length[1:]) > 0
 
 
 def _parse_content_range_header(content_range):
@@ -1139,12 +1156,14 @@ def _parse_content_range_header(content_range):
     if "-" not in range_part:
         return None
     start_str, end_str = range_part.split("-", 1)
-    try:
-        start = int(start_str) if start_str else 0
-        end = int(end_str) if end_str else None
-        total = None if total_part == "*" else int(total_part)
-    except (TypeError, ValueError):
+    if not (_ascii_digits(start_str) and _ascii_digits(end_str)):
         return None
+    if total_part != "*" and not _ascii_digits(total_part):
+        return None
+    start, end = int(start_str), int(end_str)
+    total = None if total_part == "*" else int(total_part)
+    if end < start or (total is not None and end >= total):
+        return None  # Not a range any byte could satisfy (#141).
     return {"start": start, "end": end, "total": total}
 
 
@@ -1186,8 +1205,10 @@ def _build_downstream_length_headers(
         representation_length = parsed_upstream.get("total")
 
     if status_code == 206:
-        # Trust upstream partial headers; peek bytes are forwarded verbatim.
-        if upstream_content_range:
+        # Trust upstream partial headers only when they describe a real
+        # range; an invalid one is treated as absent (#141). Peek bytes are
+        # forwarded verbatim.
+        if parsed_upstream:
             headers["Content-Range"] = upstream_content_range
         elif range_header and representation_length is not None:
             client_range = _parse_client_range(range_header)
@@ -1197,12 +1218,13 @@ def _build_downstream_length_headers(
                     end = representation_length - 1
                 else:
                     end = min(end, representation_length - 1)
-                headers["Content-Range"] = (
-                    f"bytes {start}-{end}/{representation_length}"
-                )
+                if start <= end:
+                    headers["Content-Range"] = (
+                        f"bytes {start}-{end}/{representation_length}"
+                    )
         if upstream_content_length:
             headers["Content-Length"] = str(upstream_content_length)
-        elif parsed_upstream and parsed_upstream.get("end") is not None:
+        elif parsed_upstream:
             up_start = parsed_upstream["start"]
             up_end = parsed_upstream["end"]
             headers["Content-Length"] = str(up_end - up_start + 1)
@@ -1229,6 +1251,8 @@ def _build_downstream_length_headers(
 
 def _is_near_eof_probe(range_header, content_length=None):
     """True for tail/duration probes IPTV clients fire during startup."""
+    if _is_suffix_range(range_header):
+        return True  # bytes=-N asks for the tail by definition (#141).
     start = _parse_range_start(range_header)
     if start is None:
         return False
@@ -1238,7 +1262,7 @@ def _is_near_eof_probe(range_header, content_length=None):
         except (TypeError, ValueError):
             total = None
         else:
-            return start >= max(0, total - _EOF_PROBE_TAIL_BYTES)
+            return is_near_eof_offset(start, total)
     return start >= _EOF_PROBE_UNKNOWN_LENGTH_MIN
 
 
@@ -1969,13 +1993,15 @@ def _presentation_relative_content_range(
     ):
         return upstream_content_range
     parsed = _parse_content_range_header(upstream_content_range)
-    if not parsed or parsed.get("end") is None:
-        return upstream_content_range
+    if not parsed:
+        return None
     base = int(presentation_byte_base)
     rel_start = parsed["start"] - base
     rel_end = parsed["end"] - base
-    if rel_start < 0 or rel_end < rel_start:
-        return upstream_content_range
+    if rel_start < 0 or rel_end >= int(presentation_length):
+        # Not expressible in the presented file's coordinates. Never leak the
+        # absolute CDN range beside a presentation-sized length (#141).
+        return None
     return f"bytes {rel_start}-{rel_end}/{int(presentation_length)}"
 
 

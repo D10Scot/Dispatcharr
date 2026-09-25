@@ -20,6 +20,16 @@ logger = logging.getLogger(__name__)
 # Shared with views near-EOF classification (common ~1.88MB duration probes).
 EOF_PROBE_TAIL_BYTES = 2_097_152
 
+
+def is_near_eof_offset(start, total):
+    """True when byte ``start`` of a ``total``-byte archive is in the tail probe window.
+
+    An archive no larger than the window has no tail distinct from its body,
+    so no offset in it is a duration probe: every seek into it is a scrub
+    (#216). Shared by views' busy-pool classification and the stats anchor.
+    """
+    return total > EOF_PROBE_TAIL_BYTES and start >= total - EOF_PROBE_TAIL_BYTES
+
 _STREAM_STATS_TO_METADATA = {
     "video_codec": ChannelMetadataField.VIDEO_CODEC,
     "resolution": ChannelMetadataField.RESOLUTION,
@@ -184,7 +194,7 @@ def resolve_stats_playback_fields(
             start = None
             total = None
         if start is not None and total is not None and total > 0:
-            if start >= max(0, total - EOF_PROBE_TAIL_BYTES):
+            if is_near_eof_offset(start, total):
                 try:
                     keep_base = (
                         float(existing_playback_base)
