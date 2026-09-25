@@ -133,21 +133,14 @@ test('Range and seek on the VOD proxy match the provider byte-for-byte', { tag: 
   expect(outOfRange.status()).toBe(416);
 });
 
-// Asserts the behaviour Dispatcharr SHOULD have. On a session's FIRST
-// request, `state.content_length` is unset — `get_stream`
-// (apps/proxy/vod_proxy/multi_worker_connection_manager.py:467) only
-// validates a Range when it already knows the size, and it only learns the
-// size at `request_count == 1` (:513). So an unsatisfiable Range on a fresh
-// session is passed to the provider verbatim; the provider's 416 then hits
-// `response.raise_for_status()` (:509) and becomes
-// `HttpResponse("Streaming error: ...", status=500)` (:1405). The SAME
-// request on an established session returns a correct 416
-// ("Requested Range Not Satisfiable", :1114), which the non-inverted control
-// assertion in the test above ('Range and seek on the VOD proxy match the
-// provider byte-for-byte') proves.
+// Fixed in #<PR>: get_stream now answers a provider 416 with a 416 of its
+// own, on a session's first request as well as an established one, instead
+// of letting the provider's 416 hit raise_for_status() and become a 500.
+// The established-session control lives in the test above ('Range and seek
+// on the VOD proxy match the provider byte-for-byte').
 //
 // Issue: https://github.com/D10Scot/Dispatcharr/issues/98
-test.fail('an unsatisfiable Range on a fresh session is 416, not 500', { tag: '@contract' }, async ({
+test('an unsatisfiable Range on a fresh session is 416, not 500', { tag: '@contract' }, async ({
   upstream,
   seed,
   api,
@@ -156,14 +149,6 @@ test.fail('an unsatisfiable Range on a fresh session is 416, not 500', { tag: '@
 }) => {
   test.setTimeout(180_000);
 
-  // The control this test used to run inline — an ESTABLISHED session
-  // answering 416 correctly — sat inside this test.fail() body, where
-  // test.fail() is satisfied by ANY failure in the body: a regression in
-  // the control itself would have been swallowed as "expected failure" and
-  // never surfaced. It now lives as a non-inverted assertion in the test
-  // above ('Range and seek on the VOD proxy match the provider
-  // byte-for-byte'), which actually guards it.
-  //
   // Subject: a FRESH session (own scenario/account/movie — no earlier
   // request in this test has opened it) gets an unsatisfiable Range as its
   // very first request.
@@ -172,6 +157,7 @@ test.fail('an unsatisfiable Range on a fresh session is 416, not 500', { tag: '@
     headers: { Range: `bytes=99999999-` },
   });
   expect(res.status()).toBe(416);
+  expect(await res.text()).toBe('Requested Range Not Satisfiable');
 });
 
 // Non-inverted control for the test.fail() below ('a provider that ignores
@@ -241,26 +227,22 @@ test('the range-unsupported fault makes the provider ignore Range', { tag: '@con
   }
 });
 
-// Asserts the behaviour Dispatcharr SHOULD have. With `range-unsupported`
-// armed, the provider ignores Range and answers 200 with the whole asset
-// from offset zero. `stream_content_with_session`
-// (apps/proxy/vod_proxy/multi_worker_connection_manager.py:1303) then sets
-// `status_code = 206 if range_header else 200` regardless of what the
-// upstream actually answered, and :1312-1377 fabricates Content-Range and a
-// shortened Content-Length purely from the client's requested range and the
-// previously-known full size. `stream_generator()` (:1152) is a pure
-// passthrough with no offset skipping. So the client gets the HEAD of the
-// file under headers describing the slice it asked for — internally
-// consistent, spec-shaped, and silently wrong.
+// Fixed in #<PR>: stream_content_with_session now decides the client-facing
+// status and Content-Range from what the provider actually sent
+// (byte_range.plan_downstream), not from the client's own Range header. With
+// `range-unsupported` armed the provider ignores Range and answers 200 with
+// the whole asset from offset zero; Dispatcharr now cuts that body to the
+// requested slice and sends a TRUE 206, rather than fabricating headers over
+// an unsliced passthrough.
 //
-// The fault-arming premise is now guarded above ('the range-unsupported
-// fault makes the provider ignore Range'), which arms the identical fault
-// against its own scenario and proves, directly against the provider, that
-// Range really is ignored before this test's own byte comparison ever runs.
+// The fault-arming premise is guarded above ('the range-unsupported fault
+// makes the provider ignore Range'), which arms the identical fault against
+// its own scenario and proves, directly against the provider, that Range
+// really is ignored before this test's own byte comparison ever runs.
 //
 // Filed as https://github.com/D10Scot/Dispatcharr/issues/66. Do not file a
 // second issue for this.
-test.fail('a provider that ignores Range still yields the requested bytes', { tag: '@contract' }, async ({
+test('a provider that ignores Range still yields the requested bytes', { tag: '@contract' }, async ({
   upstream,
   seed,
   api,
@@ -271,10 +253,17 @@ test.fail('a provider that ignores Range still yields the requested bytes', { ta
   const { scenario, movie } = await seedVodMovie(upstream, seed, api, waitFor);
 
   // Establish the session with a full request first, so content_length is
-  // known and Content-Range can be fabricated at all.
+  // known and Content-Range can be computed at all.
   const full = await request.get(`/proxy/vod/movie/${movie.uuid}`);
   expect(full.status()).toBe(200);
   const total = Number(full.headers()['content-length']);
+
+  // Pin the established session explicitly (memory: VOD session reuse is
+  // heuristic), exactly as the first test in this file does, so this request
+  // lands on the session `full` already minted rather than racing
+  // `find_matching_idle_session` and possibly falling back to a fresh one.
+  const sessionId = new URL(full.url()).pathname.split('/').pop() ?? '';
+  const sessionUrl = `/proxy/vod/movie/${movie.uuid}/${sessionId}`;
 
   const start = Math.floor(total / 3);
   const end = start + 8_191;
@@ -294,16 +283,18 @@ test.fail('a provider that ignores Range still yields the requested bytes', { ta
     // is not a channel id.
     await upstream.fault(scenario, 'range-unsupported');
 
-    const partial = await request.get(`/proxy/vod/movie/${movie.uuid}`, {
+    const partial = await request.get(sessionUrl, {
       headers: { Range: `bytes=${start}-${end}` },
     });
 
-    // Assert the BYTES, not the length and not the headers. COVERAGE.md's
-    // G8 row records the measured symptom precisely: with a 125,585-byte
-    // asset and Range: bytes=100-199, the 100-byte body was byte-identical
-    // to bytes 0-99 while the response claimed
-    // Content-Range: bytes 100-199/125585. A length-only assertion passes
-    // today.
+    // Assert the BYTES, not just the length: COVERAGE.md's G8 row records
+    // the measured symptom precisely — with a 125,585-byte asset and
+    // Range: bytes=100-199, the 100-byte body used to be byte-identical to
+    // bytes 0-99 while the response claimed
+    // Content-Range: bytes 100-199/125585. Also assert the status and the
+    // Content-Range itself are now true, not merely internally consistent.
+    expect(partial.status()).toBe(206);
+    expect(partial.headers()['content-range']).toBe(`bytes ${start}-${end}/${total}`);
     expect(await partial.body()).toEqual(expectedBytes);
   } finally {
     // range-unsupported is scenario-scoped and the scenario outlives the
@@ -313,19 +304,21 @@ test.fail('a provider that ignores Range still yields the requested bytes', { ta
   }
 });
 
-// Asserts the behaviour Dispatcharr SHOULD have. RFC 9110's `bytes=-500`
-// means "the last 500 bytes". `_validate_range_header`
-// (apps/proxy/vod_proxy/multi_worker_connection_manager.py:580-612) splits
-// on the first '-' and treats an empty start_str as `start_byte = 0`, then
-// rewrites the header to `bytes=0-500` — the client asking for the tail of a
-// file is served the head, with a 206 and a Content-Range describing the
-// wrong slice, and no error anywhere. The provider's own `parseRange`
-// (e2e-upstream/src/vod-asset.ts) implements the suffix form correctly, so
-// the upstream is not the source of this.
+// Fixed in #<PR>: byte_range.resolve_range implements RFC 9110 section
+// 14.1.2 suffix semantics directly — `bytes=-500` is the LAST 500 bytes of
+// the representation, resolved to an absolute range before the request ever
+// reaches the provider. The client asking for the tail of a file is now
+// served the tail, with a 206 and a Content-Range describing the correct
+// slice. The provider's own `parseRange` (e2e-upstream/src/vod-asset.ts)
+// implements the suffix form correctly, so the upstream was never the
+// source of this; the pin below chooses the established-session path
+// because that is where the resolution now lives (`get_stream`, not the
+// header block), not because the first-request path is untested — the
+// 'Range and seek' test above exercises a first-request suffix range too.
 //
 // Filed as https://github.com/D10Scot/Dispatcharr/issues/64. Do not file a
 // second issue for this.
-test.fail('a suffix Range returns the tail of the file', { tag: '@contract' }, async ({
+test('a suffix Range returns the tail of the file', { tag: '@contract' }, async ({
   upstream,
   seed,
   api,
@@ -335,14 +328,16 @@ test.fail('a suffix Range returns the tail of the file', { tag: '@contract' }, a
   test.setTimeout(180_000);
   const { scenario, movie } = await seedVodMovie(upstream, seed, api, waitFor);
 
-  // The rewrite happens in _validate_range_header, which only runs once
-  // content_length is known — on a fresh session the suffix header would
-  // reach the provider unmodified and succeed, which would make this test
-  // pass for the wrong reason. So establish the session with a full request
-  // first.
+  // Establish the session with a full request first, so content_length is
+  // known before the suffix range is sent.
   const full = await request.get(`/proxy/vod/movie/${movie.uuid}`);
   expect(full.status()).toBe(200);
   const total = Number(full.headers()['content-length']);
+
+  // Pin the established session explicitly (memory: VOD session reuse is
+  // heuristic), exactly as the first test in this file does.
+  const sessionId = new URL(full.url()).pathname.split('/').pop() ?? '';
+  const sessionUrl = `/proxy/vod/movie/${movie.uuid}/${sessionId}`;
 
   expect(total).toBeGreaterThan(500);
   const direct = await fetch(
@@ -352,11 +347,12 @@ test.fail('a suffix Range returns the tail of the file', { tag: '@contract' }, a
   const assetBytes = Buffer.from(await direct.arrayBuffer());
   expect(assetBytes.byteLength).toBe(total);
 
-  const res = await request.get(`/proxy/vod/movie/${movie.uuid}`, {
+  const res = await request.get(sessionUrl, {
     headers: { Range: `bytes=-500` },
   });
   expect(res.status()).toBe(206);
   const body = await res.body();
   expect(body.byteLength).toBe(500);
   expect(body).toEqual(assetBytes.subarray(total - 500));
+  expect(res.headers()['content-range']).toBe(`bytes ${total - 500}-${total - 1}/${total}`);
 });

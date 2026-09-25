@@ -13,6 +13,13 @@ from urllib.parse import urlparse
 from typing import Optional, Dict, Any
 from django.http import StreamingHttpResponse, HttpResponse
 from core.utils import RedisClient
+from apps.proxy.vod_proxy.byte_range import (
+    UNSATISFIABLE,
+    parse_length,
+    plan_downstream,
+    resolve_range,
+    slice_chunks,
+)
 from apps.vod.models import Movie, Episode
 from apps.m3u.models import M3UAccountProfile
 from dispatcharr.utils import redact_url
@@ -463,15 +470,18 @@ class RedisBackedVODConnection:
 
             # Prepare headers
             headers = state.headers.copy()
+            known_length = parse_length(state.content_length)
+            if range_header and known_length is not None:
+                # The size is known: resolve the client's Range to absolute
+                # bytes before asking the provider, suffix form included (#64).
+                resolved = resolve_range(range_header, known_length)
+                if resolved is UNSATISFIABLE:
+                    logger.warning(f"[{self.session_id}] Range not satisfiable: {range_header}")
+                    return None
+                range_header = (
+                    f"bytes={resolved[0]}-{resolved[1]}" if resolved is not None else None
+                )
             if range_header:
-                # Validate range against content length if available
-                if state.content_length:
-                    validated_range = self._validate_range_header(range_header, int(state.content_length))
-                    if validated_range is None:
-                        logger.warning(f"[{self.session_id}] Range not satisfiable: {range_header}")
-                        return None
-                    range_header = validated_range
-
                 headers['Range'] = range_header
                 logger.info(f"[{self.session_id}] Setting Range header: {range_header}")
 
@@ -508,6 +518,13 @@ class RedisBackedVODConnection:
                     timeout=(10, 10),
                     allow_redirects=True
                 )
+
+            if response.status_code == 416:
+                # The provider says the Range selects nothing. That is the
+                # client's answer, not a server error (#98).
+                logger.warning(f"[{self.session_id}] Provider answered 416 for Range: {range_header}")
+                response.close()
+                return None
 
             response.raise_for_status()
 
@@ -579,44 +596,6 @@ class RedisBackedVODConnection:
             logger.error(f"[{self.session_id}] Error establishing connection: {e}")
             self.cleanup()
             raise
-
-    def _validate_range_header(self, range_header: str, content_length: int):
-        """Validate range header against content length"""
-        try:
-            if not range_header or not range_header.startswith('bytes='):
-                return range_header
-
-            range_part = range_header.replace('bytes=', '')
-            if '-' not in range_part:
-                return range_header
-
-            start_str, end_str = range_part.split('-', 1)
-
-            # Parse start byte
-            if start_str:
-                start_byte = int(start_str)
-                if start_byte >= content_length:
-                    return None  # Not satisfiable
-            else:
-                start_byte = 0
-
-            # Parse end byte
-            if end_str:
-                end_byte = int(end_str)
-                if end_byte >= content_length:
-                    end_byte = content_length - 1
-            else:
-                end_byte = content_length - 1
-
-            # Ensure start <= end
-            if start_byte > end_byte:
-                return None
-
-            return f"bytes={start_byte}-{end_byte}"
-
-        except (ValueError, IndexError) as e:
-            logger.warning(f"[{self.session_id}] Could not validate range header {range_header}: {e}")
-            return range_header
 
     def increment_active_streams(self):
         """Atomically increment active_streams via Redis Lua (no session lock).
@@ -1107,15 +1086,36 @@ class MultiWorkerVODConnectionManager:
             # Get stream from Redis-backed connection
             upstream_response = redis_connection.get_stream(range_header)
 
-            if upstream_response is None:
+            def refuse_unsatisfiable():
+                nonlocal profile_connections_incremented
                 logger.warning(f"[{client_id}] Worker {self.worker_id} - Range not satisfiable")
                 if existing_state:
                     # Roll back the active_streams increment from the else branch
                     redis_connection.decrement_active_streams()
+                else:
+                    # A session this request created serves nothing: drop it,
+                    # as the exception path below does (#98).
+                    redis_connection.cleanup(current_worker_id=self.worker_id)
                 if profile_connections_incremented:
                     self._decrement_profile_connections(m3u_profile.id)
                     profile_connections_incremented = False
                 return HttpResponse("Requested Range Not Satisfiable", status=416)
+
+            if upstream_response is None:
+                return refuse_unsatisfiable()
+
+            state = redis_connection._get_connection_state()
+            known_total = parse_length(state.content_length) if state else None
+            plan = plan_downstream(
+                range_header,
+                upstream_response.status_code,
+                upstream_response.headers.get('content-range'),
+                upstream_response.headers.get('content-length'),
+                known_total,
+            )
+            if plan.unsatisfiable:
+                upstream_response.close()
+                return refuse_unsatisfiable()
 
             # Get connection headers
             connection_headers = redis_connection.get_headers()
@@ -1153,7 +1153,11 @@ class MultiWorkerVODConnectionManager:
                     # Get the stop signal key for this client
                     stop_key = get_vod_client_stop_key(client_id)
 
-                    for chunk in upstream_response.iter_content(chunk_size=8192):
+                    for chunk in slice_chunks(
+                        upstream_response.iter_content(chunk_size=8192),
+                        plan.skip,
+                        plan.limit,
+                    ):
                         if chunk:
                             yield chunk
                             bytes_sent += len(chunk)
@@ -1303,8 +1307,10 @@ class MultiWorkerVODConnectionManager:
                 content_type=connection_headers.get('content_type', 'video/mp4')
             )
 
-            # Set appropriate status code
-            response.status_code = 206 if range_header else 200
+            # Status and length headers describe the bytes actually sent: the
+            # provider's own range when it honoured the Range, or the slice
+            # cut from its whole body when it ignored it (#64, #66).
+            response.status_code = plan.status
 
             # Set required headers
             response['Cache-Control'] = 'no-cache'
@@ -1315,70 +1321,39 @@ class MultiWorkerVODConnectionManager:
 
             if connection_headers.get('content_length'):
                 response['Accept-Ranges'] = 'bytes'
+            if plan.content_length is not None:
+                response['Content-Length'] = str(plan.content_length)
+            if plan.content_range:
+                response['Content-Range'] = plan.content_range
+                logger.info(f"[{client_id}] Worker {self.worker_id} - Set Content-Range: {plan.content_range}, Content-Length: {plan.content_length}")
 
-                # For range requests, Content-Length should be the partial content size, not full file size
-                if range_header and 'bytes=' in range_header:
-                    try:
-                        range_part = range_header.replace('bytes=', '')
-                        if '-' in range_part:
-                            start_byte, end_byte = range_part.split('-', 1)
-                            start = int(start_byte) if start_byte else 0
+            # Store range information for the VOD stats API to calculate position
+            if plan.start and plan.total:
+                start, full_content_size = plan.start, plan.total
+                try:
+                    position_percentage = (start / full_content_size) * 100
+                    current_timestamp = time.time()
 
-                            # Get the FULL content size from the connection state (from initial request)
+                    # Update the Redis connection state with seek information
+                    if redis_connection._acquire_lock():
+                        try:
+                            # Refresh state in case it changed
                             state = redis_connection._get_connection_state()
-                            if state and state.content_length:
-                                full_content_size = int(state.content_length)
-                                end = int(end_byte) if end_byte else full_content_size - 1
-
-                                # Calculate partial content size for Content-Length header
-                                partial_content_size = end - start + 1
-                                response['Content-Length'] = str(partial_content_size)
-
-                                # Content-Range should show full file size per HTTP standards
-                                content_range = f"bytes {start}-{end}/{full_content_size}"
-                                response['Content-Range'] = content_range
-                                logger.info(f"[{client_id}] Worker {self.worker_id} - Set Content-Range: {content_range}, Content-Length: {partial_content_size}")
-
-                                # Store range information for the VOD stats API to calculate position
-                                if start > 0:
-                                    try:
-                                        position_percentage = (start / full_content_size) * 100
-                                        current_timestamp = time.time()
-
-                                        # Update the Redis connection state with seek information
-                                        if redis_connection._acquire_lock():
-                                            try:
-                                                # Refresh state in case it changed
-                                                state = redis_connection._get_connection_state()
-                                                if state:
-                                                    # Store range/seek information for stats API
-                                                    state.last_seek_byte = start
-                                                    state.last_seek_percentage = position_percentage
-                                                    state.total_content_size = full_content_size
-                                                    state.last_seek_timestamp = current_timestamp
-                                                    state.last_activity = current_timestamp
-                                                    redis_connection._save_connection_state(state)
-                                                    logger.info(f"[{client_id}] *** SEEK INFO STORED *** {position_percentage:.1f}% at byte {start:,}/{full_content_size:,} (timestamp: {current_timestamp})")
-                                            finally:
-                                                redis_connection._release_lock()
-                                        else:
-                                            logger.warning(f"[{client_id}] Could not acquire lock to update seek info")
-                                    except Exception as pos_e:
-                                        logger.error(f"[{client_id}] Error storing seek info: {pos_e}")
-                            else:
-                                # Fallback to partial content size if full size not available
-                                partial_size = int(connection_headers['content_length'])
-                                end = int(end_byte) if end_byte else partial_size - 1
-                                content_range = f"bytes {start}-{end}/{partial_size}"
-                                response['Content-Range'] = content_range
-                                response['Content-Length'] = str(end - start + 1)
-                                logger.warning(f"[{client_id}] Using partial content size for Content-Range (full size not available): {content_range}")
-                    except Exception as e:
-                        logger.warning(f"[{client_id}] Worker {self.worker_id} - Could not set Content-Range: {e}")
-                        response['Content-Length'] = connection_headers['content_length']
-                else:
-                    # For non-range requests, use the full content length
-                    response['Content-Length'] = connection_headers['content_length']
+                            if state:
+                                # Store range/seek information for stats API
+                                state.last_seek_byte = start
+                                state.last_seek_percentage = position_percentage
+                                state.total_content_size = full_content_size
+                                state.last_seek_timestamp = current_timestamp
+                                state.last_activity = current_timestamp
+                                redis_connection._save_connection_state(state)
+                                logger.info(f"[{client_id}] *** SEEK INFO STORED *** {position_percentage:.1f}% at byte {start:,}/{full_content_size:,} (timestamp: {current_timestamp})")
+                        finally:
+                            redis_connection._release_lock()
+                    else:
+                        logger.warning(f"[{client_id}] Could not acquire lock to update seek info")
+                except Exception as pos_e:
+                    logger.error(f"[{client_id}] Error storing seek info: {pos_e}")
 
             logger.info(f"[{client_id}] Worker {self.worker_id} - Redis-backed response ready (status: {response.status_code})")
             return response
