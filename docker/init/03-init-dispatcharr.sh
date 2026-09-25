@@ -69,6 +69,12 @@ if [[ "$DISPATCHARR_ROLE" == "all" || "$DISPATCHARR_ROLE" == "api" ]]; then
         echo "⚠️  Warning: DISPATCHARR_PORT is not a valid integer, using default port 9191"
         DISPATCHARR_PORT=9191
     fi
+    # Render from the pristine template on EVERY boot (#180). Every sed below
+    # consumes its placeholder, so templating in place kept the first boot's
+    # values across a `docker restart` -- most visibly the relay trust token
+    # after a /data/jwt rotation.
+    mkdir -p /etc/nginx/sites-enabled
+    cp /usr/share/dispatcharr/nginx.conf.template /etc/nginx/sites-enabled/default
     sed -i "s/NGINX_PORT/${DISPATCHARR_PORT}/g" /etc/nginx/sites-enabled/default
 
     # Relay upstream address (Phase 1 PR 4), sed'd exactly like
@@ -130,13 +136,8 @@ PY
         echo "   nginx would forward an unauthorized marker and every tune would 403."
         exit 1
     fi
-    # This sed consumes the RELAY_TRUST_TOKEN placeholder on first boot: once
-    # substituted, a `docker restart` (same writable layer, no fresh copy of
-    # this file) finds no placeholder left to replace, so a later /data/jwt
-    # rotation leaves the stale, pre-rotation token in nginx. Fails safe --
-    # every hop-authorized tune then falls through to inline authorization,
-    # same as NGINX_PORT/RELAY_UPSTREAM above; re-templating from a pristine
-    # copy on every boot is a follow-up shared with those two.
+    # Re-derived on every boot, because the file was rendered fresh above:
+    # a /data/jwt rotation reaches nginx on the next restart (#180).
     sed -i "s/RELAY_TRUST_TOKEN/${RELAY_TRUST_TOKEN}/g" /etc/nginx/sites-enabled/default
 
     # Configure nginx based on IPv6 availability

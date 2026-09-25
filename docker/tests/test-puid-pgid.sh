@@ -694,6 +694,48 @@ test_restart_idempotent() {
     cleanup_scenario
 }
 
+# A `docker restart` after a /data/jwt rotation must carry the new relay trust
+# token into nginx (#180): the config is rendered from a template every boot.
+test_nginx_rerendered_on_restart() {
+    CURRENT_SCENARIO="nginx_rerendered_on_restart"
+    section "nginx re-rendered on restart (jwt rotation)"
+
+    local name="${TEST_PREFIX}_nginxrender"
+    local vol="${name}_data"
+    cleanup_scenario
+    fresh_volume "$vol"
+    track_container "$name"
+
+    docker run -d --name "$name" -e DISPATCHARR_ENV=aio \
+        -e PUID=1000 -e PGID=1000 -v "${vol}:/data" "$IMAGE_NAME" >/dev/null
+    if ! wait_for_ready "$name"; then
+        log_fail "First run failed to start"; dump_logs_on_fail "$name"; cleanup_scenario; return
+    fi
+    local tok1 tok2 want
+    tok1=$(docker exec "$name" grep -o -m1 'HTTP_X_DISPATCHARR_AUTHORIZED "[0-9a-f]\{64\}"' /etc/nginx/sites-enabled/default)
+
+    docker exec "$name" rm -f /data/jwt
+    docker restart "$name" >/dev/null
+    if ! wait_for_ready "$name"; then
+        log_fail "Restart failed"; dump_logs_on_fail "$name"; cleanup_scenario; return
+    fi
+    tok2=$(docker exec "$name" grep -o -m1 'HTTP_X_DISPATCHARR_AUTHORIZED "[0-9a-f]\{64\}"' /etc/nginx/sites-enabled/default)
+    want=$(docker exec "$name" python3 -c 'import hashlib,hmac;k=open("/data/jwt").read().strip().encode();print(hmac.new(k,b"relay-trust",hashlib.sha256).hexdigest())')
+
+    if [ -n "$tok1" ] && [ "$tok2" = "HTTP_X_DISPATCHARR_AUTHORIZED \"${want}\"" ] && [ "$tok1" != "$tok2" ]; then
+        log_pass "trust token re-derived after /data/jwt rotation"
+    else
+        log_fail "trust token not re-derived after /data/jwt rotation (before=${tok1:-none} after=${tok2:-none})"
+    fi
+    if [ "$(docker exec "$name" grep -c -E 'NGINX_PORT|RELAY_UPSTREAM|RELAY_GO_UPSTREAM|RELAY_TRUST_TOKEN' /etc/nginx/sites-enabled/default)" = "0" ]; then
+        log_pass "no placeholder left unrendered"
+    else
+        log_fail "a placeholder survived rendering"
+    fi
+    dump_logs_on_fail "$name"
+    cleanup_scenario
+}
+
 # Verifies that changing PUID between restarts triggers ownership migration.
 # First run: PUID=1000. Second run: PUID=2000 — should chown all PG data.
 test_puid_change() {
@@ -2014,6 +2056,7 @@ SCENARIOS=(
     upgrade_explicit_puid
     upgrade_default_puid
     restart_idempotent
+    nginx_rerendered_on_restart
     puid_change
     uid_collision_102
     puid_zero
