@@ -1,6 +1,6 @@
 {
  "detail": null,
- "fetched_at": "2026-09-24T11:12:48+00:00",
+ "fetched_at": "2026-09-25T06:50:00+00:00",
  "kind": "scorecard",
  "records": [
   {
@@ -22,12 +22,12 @@
     "Security-Policy": 10,
     "Signed-Releases": -1,
     "Token-Permissions": 10,
-    "Vulnerabilities": 7
+    "Vulnerabilities": 6
    },
-   "commit": "a54b09a987186a6135b6c44ab0f2b50aa55d976c",
-   "date": "2026-09-22T20:11:11Z",
-   "id": "2026-09-22T20:11:11Z",
-   "score": 6.8
+   "commit": "e19b5499131c2bbb11ccedc518a3f969d128e925",
+   "date": "2026-09-25T06:44:46Z",
+   "id": "2026-09-25T06:44:46Z",
+   "score": 6.7
   }
  ],
  "repo": "D10Scot/Dispatcharr",

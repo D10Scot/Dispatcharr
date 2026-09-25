@@ -1,8 +1,842 @@
 {
  "detail": null,
- "fetched_at": "2026-09-24T11:12:13+00:00",
+ "fetched_at": "2026-09-25T06:49:10+00:00",
  "kind": "issues",
  "records": [
+  {
+   "closed_at": null,
+   "created_at": "2026-09-24T18:52:44Z",
+   "id": 390,
+   "label_events": [
+    {
+     "at": "2026-09-24T18:52:46Z",
+     "event": "labeled",
+     "label": "documentation"
+    }
+   ],
+   "labels": [
+    "documentation"
+   ],
+   "state": "open",
+   "title": "Fix plans B and J assume plan G adds uwsgi_param X-Forwarded-* / edits nginx.conf:69-74; G changes no nginx directive (B-7 and J-1 implementers: read G's overlap section)",
+   "updated_at": "2026-09-24T18:52:44Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-09-24T18:52:31Z",
+   "id": 389,
+   "label_events": [
+    {
+     "at": "2026-09-24T18:52:32Z",
+     "event": "labeled",
+     "label": "documentation"
+    }
+   ],
+   "labels": [
+    "documentation"
+   ],
+   "state": "open",
+   "title": "Docs input corrections from plan J: RedisKeys has 28 builders, nginx.conf:28 says five locations (six), spec A10.8's twelve edges over four modules (ten over five)",
+   "updated_at": "2026-09-24T18:52:31Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-09-24T18:52:15Z",
+   "id": 388,
+   "label_events": [
+    {
+     "at": "2026-09-24T18:52:16Z",
+     "event": "labeled",
+     "label": "bug"
+    },
+    {
+     "at": "2026-09-24T18:52:16Z",
+     "event": "labeled",
+     "label": "type:correctness"
+    }
+   ],
+   "labels": [
+    "bug",
+    "type:correctness"
+   ],
+   "state": "open",
+   "title": "89 icon-only controls in 35 frontend files still have no accessible name after F-3 (table row actions, User.jsx)",
+   "updated_at": "2026-09-24T18:52:15Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-09-24T18:52:00Z",
+   "id": 387,
+   "label_events": [
+    {
+     "at": "2026-09-24T18:52:01Z",
+     "event": "labeled",
+     "label": "bug"
+    },
+    {
+     "at": "2026-09-24T18:52:01Z",
+     "event": "labeled",
+     "label": "type:correctness"
+    }
+   ],
+   "labels": [
+    "bug",
+    "type:correctness"
+   ],
+   "state": "open",
+   "title": "A deep link opened with an expired refresh token still drops the requested page: two hard redirects to /login carry no next",
+   "updated_at": "2026-09-24T18:52:00Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-09-24T18:51:43Z",
+   "id": 386,
+   "label_events": [
+    {
+     "at": "2026-09-24T18:51:45Z",
+     "event": "labeled",
+     "label": "bug"
+    },
+    {
+     "at": "2026-09-24T18:51:45Z",
+     "event": "labeled",
+     "label": "type:test-gap"
+    }
+   ],
+   "labels": [
+    "bug",
+    "type:test-gap"
+   ],
+   "state": "open",
+   "title": "go-tests.yml's ffmpeg version step pipes to head without pipefail, so an unrunnable ffmpeg passes it",
+   "updated_at": "2026-09-24T18:51:43Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-09-24T18:51:42Z",
+   "id": 385,
+   "label_events": [
+    {
+     "at": "2026-09-24T18:51:43Z",
+     "event": "labeled",
+     "label": "bug"
+    },
+    {
+     "at": "2026-09-24T18:51:43Z",
+     "event": "labeled",
+     "label": "type:test-gap"
+    }
+   ],
+   "labels": [
+    "bug",
+    "type:test-gap"
+   ],
+   "state": "open",
+   "title": "A base-image PR is never tested by CI before merge: every test workflow consumes the published :base",
+   "updated_at": "2026-09-24T18:51:42Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-09-24T18:51:22Z",
+   "id": 384,
+   "label_events": [
+    {
+     "at": "2026-09-24T18:51:24Z",
+     "event": "labeled",
+     "label": "documentation"
+    },
+    {
+     "at": "2026-09-24T18:51:24Z",
+     "event": "labeled",
+     "label": "type:test-gap"
+    }
+   ],
+   "labels": [
+    "documentation",
+    "type:test-gap"
+   ],
+   "state": "open",
+   "title": "failover-buffering and catchup-redirect e2e specs describe the process-local proxy_settings cache as on the live path; the 12s sleep is unnecessary",
+   "updated_at": "2026-09-24T18:51:22Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-09-24T18:51:10Z",
+   "id": 383,
+   "label_events": [
+    {
+     "at": "2026-09-24T18:51:12Z",
+     "event": "labeled",
+     "label": "bug"
+    },
+    {
+     "at": "2026-09-24T18:51:12Z",
+     "event": "labeled",
+     "label": "type:correctness"
+    }
+   ],
+   "labels": [
+    "bug",
+    "type:correctness"
+   ],
+   "state": "open",
+   "title": "Auto-sync channels that fail with RANGE_EXHAUSTED still end the M3U refresh at SUCCESS",
+   "updated_at": "2026-09-24T18:51:10Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-09-24T18:50:54Z",
+   "id": 382,
+   "label_events": [
+    {
+     "at": "2026-09-24T18:50:55Z",
+     "event": "labeled",
+     "label": "bug"
+    },
+    {
+     "at": "2026-09-24T18:50:55Z",
+     "event": "labeled",
+     "label": "type:correctness"
+    }
+   ],
+   "labels": [
+    "bug",
+    "type:correctness"
+   ],
+   "state": "open",
+   "title": "DVR \"Entire series + rule\" posts an empty tvg_id for title-grouped cards and fails silently with a 400",
+   "updated_at": "2026-09-24T18:50:54Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-09-24T18:50:39Z",
+   "id": 381,
+   "label_events": [
+    {
+     "at": "2026-09-24T18:50:40Z",
+     "event": "labeled",
+     "label": "bug"
+    },
+    {
+     "at": "2026-09-24T18:50:41Z",
+     "event": "labeled",
+     "label": "type:reliability"
+    }
+   ],
+   "labels": [
+    "bug",
+    "type:reliability"
+   ],
+   "state": "open",
+   "title": "revoke_task can delete a shared ClockedSchedule that a concurrent recording save is about to reference",
+   "updated_at": "2026-09-24T18:50:39Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-09-24T18:50:27Z",
+   "id": 380,
+   "label_events": [
+    {
+     "at": "2026-09-24T18:50:28Z",
+     "event": "labeled",
+     "label": "bug"
+    },
+    {
+     "at": "2026-09-24T18:50:28Z",
+     "event": "labeled",
+     "label": "type:reliability"
+    }
+   ],
+   "labels": [
+    "bug",
+    "type:reliability"
+   ],
+   "state": "open",
+   "title": "Profile membership bulk edit can race a concurrent membership create and 500 on unique_together (the #72 site plan E leaves alone)",
+   "updated_at": "2026-09-24T18:50:27Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-09-24T18:50:07Z",
+   "id": 379,
+   "label_events": [
+    {
+     "at": "2026-09-24T18:50:08Z",
+     "event": "labeled",
+     "label": "documentation"
+    }
+   ],
+   "labels": [
+    "documentation"
+   ],
+   "state": "open",
+   "title": "e2e/COVERAGE.md rows 100 and 124 still list fixed defects (#100, #95) as known bugs, and row 102 (#110) goes stale when B-1 lands",
+   "updated_at": "2026-09-24T18:50:07Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-09-24T18:49:55Z",
+   "id": 378,
+   "label_events": [
+    {
+     "at": "2026-09-24T18:49:57Z",
+     "event": "labeled",
+     "label": "bug"
+    },
+    {
+     "at": "2026-09-24T18:49:57Z",
+     "event": "labeled",
+     "label": "type:test-gap"
+    }
+   ],
+   "labels": [
+    "bug",
+    "type:test-gap"
+   ],
+   "state": "open",
+   "title": "test_206_synthesizes_range_when_upstream_omits_it pins a Content-Range of 9,000 bytes beside a Content-Length of 1048",
+   "updated_at": "2026-09-24T18:49:55Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-09-24T18:49:44Z",
+   "id": 377,
+   "label_events": [
+    {
+     "at": "2026-09-24T18:49:45Z",
+     "event": "labeled",
+     "label": "bug"
+    },
+    {
+     "at": "2026-09-24T18:49:45Z",
+     "event": "labeled",
+     "label": "type:correctness"
+    }
+   ],
+   "labels": [
+    "bug",
+    "type:correctness"
+   ],
+   "state": "open",
+   "title": "convert_timestamp_to_provider_tz's UTC branch forwards epoch and ISO start values verbatim while the non-UTC branch reshapes them (other half of #111)",
+   "updated_at": "2026-09-24T18:49:44Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-09-24T18:49:32Z",
+   "id": 376,
+   "label_events": [
+    {
+     "at": "2026-09-24T18:49:34Z",
+     "event": "labeled",
+     "label": "bug"
+    },
+    {
+     "at": "2026-09-24T18:49:34Z",
+     "event": "labeled",
+     "label": "type:correctness"
+    }
+   ],
+   "labels": [
+    "bug",
+    "type:correctness"
+   ],
+   "state": "open",
+   "title": "Catch-up relays a provider's degenerate 206 with no Content-Range; a compliant 502 needs its own pool-state unwind",
+   "updated_at": "2026-09-24T18:49:32Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-09-24T18:49:15Z",
+   "id": 375,
+   "label_events": [
+    {
+     "at": "2026-09-24T18:49:16Z",
+     "event": "labeled",
+     "label": "bug"
+    },
+    {
+     "at": "2026-09-24T18:49:16Z",
+     "event": "labeled",
+     "label": "type:correctness"
+    }
+   ],
+   "labels": [
+    "bug",
+    "type:correctness"
+   ],
+   "state": "open",
+   "title": "VOD 416 answers lack Content-Range: bytes */<total>, unlike catch-up's",
+   "updated_at": "2026-09-24T18:49:15Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-09-24T18:49:05Z",
+   "id": 374,
+   "label_events": [
+    {
+     "at": "2026-09-24T18:49:07Z",
+     "event": "labeled",
+     "label": "bug"
+    },
+    {
+     "at": "2026-09-24T18:49:07Z",
+     "event": "labeled",
+     "label": "type:correctness"
+    }
+   ],
+   "labels": [
+    "bug",
+    "type:correctness"
+   ],
+   "state": "open",
+   "title": "VOD proxy turns any provider 4xx/5xx other than 416 (e.g. a 404 for a withdrawn title) into a client-facing 500",
+   "updated_at": "2026-09-24T18:49:05Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-09-24T18:48:47Z",
+   "id": 373,
+   "label_events": [
+    {
+     "at": "2026-09-24T18:48:48Z",
+     "event": "labeled",
+     "label": "bug"
+    },
+    {
+     "at": "2026-09-24T18:48:49Z",
+     "event": "labeled",
+     "label": "type:test-gap"
+    }
+   ],
+   "labels": [
+    "bug",
+    "type:test-gap"
+   ],
+   "state": "open",
+   "title": "Route apps/*/migrations/ changes to the tests label too, so the SQLite migration-graph test runs on the PR that adds a migration",
+   "updated_at": "2026-09-24T18:48:47Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-09-24T18:48:26Z",
+   "id": 372,
+   "label_events": [
+    {
+     "at": "2026-09-24T18:48:28Z",
+     "event": "labeled",
+     "label": "bug"
+    },
+    {
+     "at": "2026-09-24T18:48:28Z",
+     "event": "labeled",
+     "label": "type:correctness"
+    }
+   ],
+   "labels": [
+    "bug",
+    "type:correctness"
+   ],
+   "state": "open",
+   "title": "Channel bulk rename: translate_js_replacement reads $0 as the whole match while its own JavaScript preview shows it literally",
+   "updated_at": "2026-09-24T18:48:26Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-09-24T18:48:14Z",
+   "id": 371,
+   "label_events": [
+    {
+     "at": "2026-09-24T18:48:16Z",
+     "event": "labeled",
+     "label": "bug"
+    },
+    {
+     "at": "2026-09-24T18:48:16Z",
+     "event": "labeled",
+     "label": "type:correctness"
+    }
+   ],
+   "labels": [
+    "bug",
+    "type:correctness"
+   ],
+   "state": "open",
+   "title": "M3U profile replace patterns: $& and $$ are not translated from JavaScript syntax, so the live transform disagrees with the SPA preview",
+   "updated_at": "2026-09-24T18:48:14Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-09-24T18:48:00Z",
+   "id": 370,
+   "label_events": [
+    {
+     "at": "2026-09-24T18:48:01Z",
+     "event": "labeled",
+     "label": "bug"
+    },
+    {
+     "at": "2026-09-24T18:48:02Z",
+     "event": "labeled",
+     "label": "type:correctness"
+    }
+   ],
+   "labels": [
+    "bug",
+    "type:correctness"
+   ],
+   "state": "open",
+   "title": "get_transformed_credentials parses credentials back out of a synthetic URL by path segment, so a credential containing / is split wrong",
+   "updated_at": "2026-09-25T00:33:44Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-09-24T18:47:49Z",
+   "id": 369,
+   "label_events": [
+    {
+     "at": "2026-09-24T18:47:50Z",
+     "event": "labeled",
+     "label": "bug"
+    },
+    {
+     "at": "2026-09-24T18:47:50Z",
+     "event": "labeled",
+     "label": "type:correctness"
+    }
+   ],
+   "labels": [
+    "bug",
+    "type:correctness"
+   ],
+   "state": "open",
+   "title": "Generated XC playlist interpolates the user's own XC credentials into Dispatcharr stream URLs unencoded (output/views.py:311)",
+   "updated_at": "2026-09-24T18:47:49Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-09-24T18:47:38Z",
+   "id": 368,
+   "label_events": [
+    {
+     "at": "2026-09-24T18:47:40Z",
+     "event": "labeled",
+     "label": "bug"
+    },
+    {
+     "at": "2026-09-24T18:47:40Z",
+     "event": "labeled",
+     "label": "type:correctness"
+    }
+   ],
+   "labels": [
+    "bug",
+    "type:correctness"
+   ],
+   "state": "open",
+   "title": "VOD URL builders and core/xtream_codes.py interpolate provider credentials into URLs unencoded (sibling of #61)",
+   "updated_at": "2026-09-24T18:47:38Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-09-24T18:47:28Z",
+   "id": 367,
+   "label_events": [
+    {
+     "at": "2026-09-24T18:47:29Z",
+     "event": "labeled",
+     "label": "bug"
+    },
+    {
+     "at": "2026-09-24T18:47:29Z",
+     "event": "labeled",
+     "label": "type:security"
+    }
+   ],
+   "labels": [
+    "bug",
+    "type:security"
+   ],
+   "state": "open",
+   "title": "VOD proxy logs the exception text, and so the provider URL with credentials, unredacted at ERROR in three handlers",
+   "updated_at": "2026-09-24T18:47:28Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-09-24T18:47:13Z",
+   "id": 366,
+   "label_events": [
+    {
+     "at": "2026-09-24T18:47:15Z",
+     "event": "labeled",
+     "label": "bug"
+    },
+    {
+     "at": "2026-09-24T18:47:15Z",
+     "event": "labeled",
+     "label": "type:test-gap"
+    }
+   ],
+   "labels": [
+    "bug",
+    "type:test-gap"
+   ],
+   "state": "open",
+   "title": "e2e-tests.yml never runs the guards project on a relay-only PR, so a broken parity-matrix citation is first seen on main",
+   "updated_at": "2026-09-24T18:47:13Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-09-24T18:47:01Z",
+   "id": 365,
+   "label_events": [
+    {
+     "at": "2026-09-24T18:47:02Z",
+     "event": "labeled",
+     "label": "enhancement"
+    }
+   ],
+   "labels": [
+    "enhancement"
+   ],
+   "state": "open",
+   "title": "Relay: add a liveness watchdog for a stuck fMP4 remux on a healthy channel (after A-5 closes #222)",
+   "updated_at": "2026-09-24T18:47:01Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-09-24T18:46:50Z",
+   "id": 364,
+   "label_events": [
+    {
+     "at": "2026-09-24T18:46:51Z",
+     "event": "labeled",
+     "label": "enhancement"
+    }
+   ],
+   "labels": [
+    "enhancement"
+   ],
+   "state": "open",
+   "title": "Relay: refill the stream-switch budget after a quiet period, so buffering switches cannot exhaust it for the life of a tune",
+   "updated_at": "2026-09-24T18:46:50Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-09-24T18:46:39Z",
+   "id": 363,
+   "label_events": [
+    {
+     "at": "2026-09-24T18:46:40Z",
+     "event": "labeled",
+     "label": "bug"
+    },
+    {
+     "at": "2026-09-24T18:46:40Z",
+     "event": "labeled",
+     "label": "type:correctness"
+    }
+   ],
+   "labels": [
+    "bug",
+    "type:correctness"
+   ],
+   "state": "open",
+   "title": "normalize_server_url drops ;params from the last path segment and is not idempotent on ';/'",
+   "updated_at": "2026-09-24T18:46:39Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-09-24T18:46:30Z",
+   "id": 362,
+   "label_events": [
+    {
+     "at": "2026-09-24T18:46:31Z",
+     "event": "labeled",
+     "label": "bug"
+    },
+    {
+     "at": "2026-09-24T18:46:31Z",
+     "event": "labeled",
+     "label": "type:crash"
+    }
+   ],
+   "labels": [
+    "bug",
+    "type:crash"
+   ],
+   "state": "open",
+   "title": "coerce_channel_profile_ids raises OverflowError on a profile id of 1e999",
+   "updated_at": "2026-09-24T18:46:30Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-09-24T18:46:21Z",
+   "id": 361,
+   "label_events": [
+    {
+     "at": "2026-09-24T18:46:22Z",
+     "event": "labeled",
+     "label": "bug"
+    },
+    {
+     "at": "2026-09-24T18:46:22Z",
+     "event": "labeled",
+     "label": "type:crash"
+    }
+   ],
+   "labels": [
+    "bug",
+    "type:crash"
+   ],
+   "state": "open",
+   "title": "tvg-chno=\"inf\" or \"nan\" reaches format_channel_number, which raises on non-finite floats in M3U, XMLTV and HDHR output",
+   "updated_at": "2026-09-24T18:46:21Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-09-24T18:46:09Z",
+   "id": 360,
+   "label_events": [
+    {
+     "at": "2026-09-24T18:46:11Z",
+     "event": "labeled",
+     "label": "bug"
+    },
+    {
+     "at": "2026-09-24T18:46:11Z",
+     "event": "labeled",
+     "label": "type:crash"
+    }
+   ],
+   "labels": [
+    "bug",
+    "type:crash"
+   ],
+   "state": "open",
+   "title": "extract_duration_from_data raises on non-integer duration_secs and superscript digits, dropping the movie from a VOD refresh",
+   "updated_at": "2026-09-24T18:46:09Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-09-24T18:46:00Z",
+   "id": 359,
+   "label_events": [
+    {
+     "at": "2026-09-24T18:46:01Z",
+     "event": "labeled",
+     "label": "bug"
+    },
+    {
+     "at": "2026-09-24T18:46:01Z",
+     "event": "labeled",
+     "label": "type:correctness"
+    }
+   ],
+   "labels": [
+    "bug",
+    "type:correctness"
+   ],
+   "state": "open",
+   "title": "xmltv_ns episode numbers with totals (s/total . e/total) are silently dropped, and negative parts are stored",
+   "updated_at": "2026-09-24T18:46:00Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-09-24T18:45:50Z",
+   "id": 358,
+   "label_events": [
+    {
+     "at": "2026-09-24T18:45:51Z",
+     "event": "labeled",
+     "label": "bug"
+    },
+    {
+     "at": "2026-09-24T18:45:52Z",
+     "event": "labeled",
+     "label": "type:correctness"
+    }
+   ],
+   "labels": [
+    "bug",
+    "type:correctness"
+   ],
+   "state": "open",
+   "title": "build_programme_index drops every later programme in an 8 MiB read after one start tag over 4096 bytes",
+   "updated_at": "2026-09-24T18:45:50Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-09-24T18:45:40Z",
+   "id": 357,
+   "label_events": [
+    {
+     "at": "2026-09-24T18:45:42Z",
+     "event": "labeled",
+     "label": "bug"
+    },
+    {
+     "at": "2026-09-24T18:45:42Z",
+     "event": "labeled",
+     "label": "type:crash"
+    }
+   ],
+   "labels": [
+    "bug",
+    "type:crash"
+   ],
+   "state": "open",
+   "title": "Catch-up timestamp parsing raises on superscript digits and calendar-edge years, so a malformed ?start= answers 500",
+   "updated_at": "2026-09-24T18:45:40Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-09-24T18:45:27Z",
+   "id": 356,
+   "label_events": [
+    {
+     "at": "2026-09-24T18:45:29Z",
+     "event": "labeled",
+     "label": "bug"
+    },
+    {
+     "at": "2026-09-24T18:45:29Z",
+     "event": "labeled",
+     "label": "type:correctness"
+    }
+   ],
+   "labels": [
+    "bug",
+    "type:correctness"
+   ],
+   "state": "open",
+   "title": "Pooled-profile credential slot leaks: a second stream on one profile shares a single release key, so the counter ratchets to permanent credential_full",
+   "updated_at": "2026-09-24T18:45:27Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-09-24T18:45:14Z",
+   "id": 355,
+   "label_events": [
+    {
+     "at": "2026-09-24T18:45:16Z",
+     "event": "labeled",
+     "label": "bug"
+    },
+    {
+     "at": "2026-09-24T18:45:16Z",
+     "event": "labeled",
+     "label": "type:crash"
+    }
+   ],
+   "labels": [
+    "bug",
+    "type:crash"
+   ],
+   "state": "open",
+   "title": "parse_text_query raises IndexError when \u00df or another case-expanding letter precedes AND/OR, 500ing EPG, DVR and recordings search",
+   "updated_at": "2026-09-24T18:45:14Z"
+  },
   {
    "closed_at": null,
    "created_at": "2026-09-23T21:43:41Z",
@@ -142,7 +976,7 @@
    "updated_at": "2026-09-23T19:40:22Z"
   },
   {
-   "closed_at": null,
+   "closed_at": "2026-09-25T02:24:19Z",
    "created_at": "2026-09-21T16:03:06Z",
    "id": 336,
    "label_events": [
@@ -167,9 +1001,9 @@
     "priority:p1",
     "re-triage"
    ],
-   "state": "open",
+   "state": "closed",
    "title": "[codeql] py/reflective-xss: Reflected server-side cross-site scripting (apps/proxy/hls_proxy/views.py:23)",
-   "updated_at": "2026-09-23T19:40:20Z"
+   "updated_at": "2026-09-25T02:24:19Z"
   },
   {
    "closed_at": null,
@@ -214,7 +1048,7 @@
    "updated_at": "2026-09-17T09:07:00Z"
   },
   {
-   "closed_at": null,
+   "closed_at": "2026-09-25T01:54:12Z",
    "created_at": "2026-09-15T18:07:54Z",
    "id": 314,
    "label_events": [
@@ -227,9 +1061,9 @@
    "labels": [
     "needs-triage"
    ],
-   "state": "open",
+   "state": "closed",
    "title": "source_bitrate and ffmpeg_bitrate are read by channel_status.py and written by nothing",
-   "updated_at": "2026-09-15T18:07:54Z"
+   "updated_at": "2026-09-25T01:54:12Z"
   },
   {
    "closed_at": null,
@@ -304,7 +1138,7 @@
    "updated_at": "2026-09-23T19:40:13Z"
   },
   {
-   "closed_at": null,
+   "closed_at": "2026-09-24T23:09:38Z",
    "created_at": "2026-09-15T05:14:59Z",
    "id": 306,
    "label_events": [
@@ -317,9 +1151,9 @@
    "labels": [
     "needs-triage"
    ],
-   "state": "open",
+   "state": "closed",
    "title": "fMP4 fragment scanner's resynchronisation arm discards the whole working buffer instead of resynchronising",
-   "updated_at": "2026-09-15T06:13:19Z"
+   "updated_at": "2026-09-24T23:09:38Z"
   },
   {
    "closed_at": null,
@@ -346,7 +1180,7 @@
    "updated_at": "2026-09-23T19:40:11Z"
   },
   {
-   "closed_at": null,
+   "closed_at": "2026-09-24T21:06:45Z",
    "created_at": "2026-09-15T00:21:44Z",
    "id": 302,
    "label_events": [
@@ -359,9 +1193,9 @@
    "labels": [
     "needs-triage"
    ],
-   "state": "open",
+   "state": "closed",
    "title": "A buffering timeout with no alternate stream calls next-source on every ffmpeg progress record",
-   "updated_at": "2026-09-15T00:21:44Z"
+   "updated_at": "2026-09-24T21:06:45Z"
   },
   {
    "closed_at": null,
@@ -388,7 +1222,7 @@
    "updated_at": "2026-09-23T19:40:10Z"
   },
   {
-   "closed_at": null,
+   "closed_at": "2026-09-24T20:12:58Z",
    "created_at": "2026-09-14T19:39:13Z",
    "id": 299,
    "label_events": [
@@ -401,9 +1235,9 @@
    "labels": [
     "needs-triage"
    ],
-   "state": "open",
+   "state": "closed",
    "title": "Both relays' ffmpeg progress parser is blind on ffmpeg 6.x: stream-copy progress lines begin size=, not frame=",
-   "updated_at": "2026-09-14T19:39:13Z"
+   "updated_at": "2026-09-24T20:12:58Z"
   },
   {
    "closed_at": "2026-09-23T20:21:13Z",
@@ -424,7 +1258,7 @@
    "updated_at": "2026-09-23T20:21:13Z"
   },
   {
-   "closed_at": null,
+   "closed_at": "2026-09-24T22:06:41Z",
    "created_at": "2026-09-14T18:31:05Z",
    "id": 296,
    "label_events": [
@@ -437,9 +1271,9 @@
    "labels": [
     "needs-triage"
    ],
-   "state": "open",
+   "state": "closed",
    "title": "The UDP user-agent filter leaves dangling flags in the transcode argv",
-   "updated_at": "2026-09-14T18:31:05Z"
+   "updated_at": "2026-09-24T22:06:41Z"
   },
   {
    "closed_at": "2026-09-22T19:55:54Z",
@@ -658,7 +1492,7 @@
    "updated_at": "2026-09-23T19:39:58Z"
   },
   {
-   "closed_at": null,
+   "closed_at": "2026-09-25T03:19:32Z",
    "created_at": "2026-09-13T09:13:03Z",
    "id": 279,
    "label_events": [
@@ -671,12 +1505,12 @@
    "labels": [
     "needs-triage"
    ],
-   "state": "open",
+   "state": "closed",
    "title": "Test hooks: a stale CLAUDE_HOOK_REPO_ROOT exits 0 silently instead of refusing",
-   "updated_at": "2026-09-13T09:13:03Z"
+   "updated_at": "2026-09-25T03:19:32Z"
   },
   {
-   "closed_at": null,
+   "closed_at": "2026-09-25T03:19:32Z",
    "created_at": "2026-09-13T09:13:02Z",
    "id": 278,
    "label_events": [
@@ -689,12 +1523,12 @@
    "labels": [
     "needs-triage"
    ],
-   "state": "open",
+   "state": "closed",
    "title": "Commit gate: git -C <dir> commit bypasses the PreToolUse hook entirely",
-   "updated_at": "2026-09-13T09:13:02Z"
+   "updated_at": "2026-09-25T03:19:32Z"
   },
   {
-   "closed_at": null,
+   "closed_at": "2026-09-25T03:46:50Z",
    "created_at": "2026-09-13T07:34:34Z",
    "id": 277,
    "label_events": [
@@ -707,12 +1541,12 @@
    "labels": [
     "needs-triage"
    ],
-   "state": "open",
+   "state": "closed",
    "title": "vuln-scan.yml's blocking Grype jobs have failed on every run for weeks \u2014 a permanently red gate signals nothing",
-   "updated_at": "2026-09-13T07:34:34Z"
+   "updated_at": "2026-09-25T03:46:50Z"
   },
   {
-   "closed_at": null,
+   "closed_at": "2026-09-24T18:37:33Z",
    "created_at": "2026-09-13T05:36:14Z",
    "id": 274,
    "label_events": [
@@ -731,9 +1565,9 @@
     "fuzzing",
     "agentic-workflows"
    ],
-   "state": "open",
+   "state": "closed",
    "title": "[fuzz-hardening] test(epg): Hypothesis property tests for XMLTV/EPG parsing surfaces",
-   "updated_at": "2026-09-13T05:36:14Z"
+   "updated_at": "2026-09-24T18:37:33Z"
   },
   {
    "closed_at": "2026-09-22T19:55:53Z",
@@ -914,7 +1748,7 @@
    "updated_at": "2026-09-23T20:21:50Z"
   },
   {
-   "closed_at": null,
+   "closed_at": "2026-09-24T18:37:55Z",
    "created_at": "2026-09-11T16:59:57Z",
    "id": 260,
    "label_events": [
@@ -927,9 +1761,9 @@
    "labels": [
     "agentic-workflows"
    ],
-   "state": "open",
+   "state": "closed",
    "title": "[fuzz-hardening] test(timeshift): property-based tests for catch-up parsing surfaces",
-   "updated_at": "2026-09-11T16:59:57Z"
+   "updated_at": "2026-09-24T18:37:55Z"
   },
   {
    "closed_at": null,
@@ -974,7 +1808,7 @@
    "updated_at": "2026-09-13T09:33:46Z"
   },
   {
-   "closed_at": null,
+   "closed_at": "2026-09-25T06:17:56Z",
    "created_at": "2026-09-11T14:18:10Z",
    "id": 257,
    "label_events": [
@@ -987,12 +1821,12 @@
    "labels": [
     "ready-for-agent"
    ],
-   "state": "open",
+   "state": "closed",
    "title": "proxy_settings: the UI edit path still bypasses the defaults merge, so new_client_behind_seconds has no control on older databases",
-   "updated_at": "2026-09-11T14:18:10Z"
+   "updated_at": "2026-09-25T06:17:56Z"
   },
   {
-   "closed_at": null,
+   "closed_at": "2026-09-25T06:44:32Z",
    "created_at": "2026-09-11T11:53:51Z",
    "id": 254,
    "label_events": [
@@ -1005,9 +1839,9 @@
    "labels": [
     "ready-for-agent"
    ],
-   "state": "open",
+   "state": "closed",
    "title": "Bake git into the base image: a bad Ubuntu mirror can fail a required check",
-   "updated_at": "2026-09-11T11:53:51Z"
+   "updated_at": "2026-09-25T06:44:32Z"
   },
   {
    "closed_at": "2026-09-12T20:35:54Z",
@@ -1172,7 +2006,7 @@
    "updated_at": "2026-09-22T19:55:52Z"
   },
   {
-   "closed_at": null,
+   "closed_at": "2026-09-24T18:37:53Z",
    "created_at": "2026-09-10T16:56:00Z",
    "id": 243,
    "label_events": [
@@ -1185,9 +2019,9 @@
    "labels": [
     "agentic-workflows"
    ],
-   "state": "open",
+   "state": "closed",
    "title": "[fuzz-hardening] test(vod): Hypothesis property tests for provider-data normalization helpers",
-   "updated_at": "2026-09-10T16:56:00Z"
+   "updated_at": "2026-09-24T18:37:53Z"
   },
   {
    "closed_at": null,
@@ -1298,7 +2132,7 @@
    "updated_at": "2026-09-23T19:39:37Z"
   },
   {
-   "closed_at": null,
+   "closed_at": "2026-09-25T02:36:26Z",
    "created_at": "2026-09-10T11:50:22Z",
    "id": 233,
    "label_events": [
@@ -1311,12 +2145,12 @@
    "labels": [
     "ready-for-human"
    ],
-   "state": "open",
+   "state": "closed",
    "title": "live_proxy: a stream-by-hash tune raises no channel_start or channel_stop event",
-   "updated_at": "2026-09-10T11:50:22Z"
+   "updated_at": "2026-09-25T02:36:26Z"
   },
   {
-   "closed_at": null,
+   "closed_at": "2026-09-25T06:17:56Z",
    "created_at": "2026-09-10T11:25:57Z",
    "id": 232,
    "label_events": [
@@ -1329,9 +2163,9 @@
    "labels": [
     "needs-triage"
    ],
-   "state": "open",
+   "state": "closed",
    "title": "Saving proxy_settings never invalidates the relay's cache: the receiver clears BaseConfig while readers use TSConfig",
-   "updated_at": "2026-09-10T11:56:15Z"
+   "updated_at": "2026-09-25T06:17:56Z"
   },
   {
    "closed_at": null,
@@ -1400,7 +2234,7 @@
    "updated_at": "2026-09-10T20:26:34Z"
   },
   {
-   "closed_at": null,
+   "closed_at": "2026-09-24T20:12:57Z",
    "created_at": "2026-09-10T08:11:18Z",
    "id": 227,
    "label_events": [
@@ -1413,12 +2247,12 @@
    "labels": [
     "needs-triage"
    ],
-   "state": "open",
+   "state": "closed",
    "title": "ffmpeg speed= in scientific notation is mis-parsed, under-reporting the displayed stream speed 1000x",
-   "updated_at": "2026-09-10T08:19:32Z"
+   "updated_at": "2026-09-24T20:12:57Z"
   },
   {
-   "closed_at": null,
+   "closed_at": "2026-09-25T06:04:47Z",
    "created_at": "2026-09-10T07:57:20Z",
    "id": 226,
    "label_events": [
@@ -1431,9 +2265,9 @@
    "labels": [
     "needs-triage"
    ],
-   "state": "open",
+   "state": "closed",
    "title": "ffmpeg is installed but unrunnable in the test containers: duplicate librist, ld.so.conf ordering",
-   "updated_at": "2026-09-10T07:57:20Z"
+   "updated_at": "2026-09-25T06:04:47Z"
   },
   {
    "closed_at": null,
@@ -1454,7 +2288,7 @@
    "updated_at": "2026-09-23T19:39:33Z"
   },
   {
-   "closed_at": null,
+   "closed_at": "2026-09-25T00:11:58Z",
    "created_at": "2026-09-09T22:44:58Z",
    "id": 222,
    "label_events": [
@@ -1470,19 +2304,19 @@
     }
    ],
    "labels": [],
-   "state": "open",
+   "state": "closed",
    "title": "fMP4 generator's _is_timeout() lacks the TS generator's url_switching exemption \u2014 viewers dropped at 40s during a slow failover",
-   "updated_at": "2026-09-15T05:16:19Z"
+   "updated_at": "2026-09-25T00:11:58Z"
   },
   {
-   "closed_at": null,
+   "closed_at": "2026-09-24T21:06:44Z",
    "created_at": "2026-09-09T22:44:48Z",
    "id": 221,
    "label_events": [],
    "labels": [],
-   "state": "open",
+   "state": "closed",
    "title": "MAX_STREAM_SWITCHES does not bound buffering-triggered stream switches",
-   "updated_at": "2026-09-09T22:44:48Z"
+   "updated_at": "2026-09-24T21:06:44Z"
   },
   {
    "closed_at": null,
@@ -1548,7 +2382,7 @@
    ],
    "state": "open",
    "title": "[fuzz-hardening] test(m3u): Hypothesis property tests for M3U parsing and numbering surfaces",
-   "updated_at": "2026-09-09T17:07:43Z"
+   "updated_at": "2026-09-24T18:36:37Z"
   },
   {
    "closed_at": null,
@@ -1635,7 +2469,7 @@
    "updated_at": "2026-09-09T05:24:47Z"
   },
   {
-   "closed_at": null,
+   "closed_at": "2026-09-24T18:37:59Z",
    "created_at": "2026-09-09T05:24:45Z",
    "id": 215,
    "label_events": [
@@ -1648,9 +2482,9 @@
    "labels": [
     "agentic-workflows"
    ],
-   "state": "open",
+   "state": "closed",
    "title": "[fuzz-hardening] test(timeshift): Hypothesis property tests for pool decisions and response headers",
-   "updated_at": "2026-09-09T05:24:45Z"
+   "updated_at": "2026-09-24T18:37:59Z"
   },
   {
    "closed_at": "2026-09-23T20:21:52Z",
@@ -1737,7 +2571,7 @@
    "updated_at": "2026-09-23T20:21:43Z"
   },
   {
-   "closed_at": null,
+   "closed_at": "2026-09-25T05:10:32Z",
    "created_at": "2026-09-08T05:32:55Z",
    "id": 211,
    "label_events": [
@@ -1774,12 +2608,12 @@
     "type:crash",
     "priority:p1"
    ],
-   "state": "open",
+   "state": "closed",
    "title": "[domain-fuzz] Custom dummy EPG: out-of-range time/date capture crashes /output/epg mid-stream",
-   "updated_at": "2026-09-08T05:32:55Z"
+   "updated_at": "2026-09-25T05:10:32Z"
   },
   {
-   "closed_at": null,
+   "closed_at": "2026-09-24T18:37:48Z",
    "created_at": "2026-09-08T05:32:53Z",
    "id": 210,
    "label_events": [
@@ -1792,9 +2626,9 @@
    "labels": [
     "agentic-workflows"
    ],
-   "state": "open",
+   "state": "closed",
    "title": "[fuzz-hardening] test(output): property-based tests for output-API pure helpers",
-   "updated_at": "2026-09-08T05:32:53Z"
+   "updated_at": "2026-09-24T18:37:48Z"
   },
   {
    "closed_at": "2026-09-23T20:21:54Z",
@@ -1899,7 +2733,7 @@
    "updated_at": "2026-09-23T19:39:24Z"
   },
   {
-   "closed_at": null,
+   "closed_at": "2026-09-25T00:49:37Z",
    "created_at": "2026-09-07T15:21:27Z",
    "id": 205,
    "label_events": [
@@ -1918,12 +2752,12 @@
     "needs-triage",
     "priority:p1"
    ],
-   "state": "open",
+   "state": "closed",
    "title": "[codeql] js/insecure-randomness: Insecure randomness (frontend/src/components/forms/User.jsx:109)",
-   "updated_at": "2026-09-07T15:21:27Z"
+   "updated_at": "2026-09-25T00:49:37Z"
   },
   {
-   "closed_at": null,
+   "closed_at": "2026-09-25T00:49:36Z",
    "created_at": "2026-09-07T15:21:25Z",
    "id": 204,
    "label_events": [
@@ -1942,9 +2776,9 @@
     "needs-triage",
     "priority:p1"
    ],
-   "state": "open",
+   "state": "closed",
    "title": "[codeql] js/insecure-randomness: Insecure randomness (frontend/src/components/forms/User.jsx:77)",
-   "updated_at": "2026-09-07T15:21:25Z"
+   "updated_at": "2026-09-25T00:49:36Z"
   },
   {
    "closed_at": null,
@@ -2004,7 +2838,7 @@
    ],
    "state": "open",
    "title": "[fuzz-hardening] test(epg): Hypothesis property tests for XMLTV parsing, metadata extraction, and SD helpers",
-   "updated_at": "2026-09-07T05:25:45Z"
+   "updated_at": "2026-09-24T18:36:34Z"
   },
   {
    "closed_at": "2026-09-23T20:21:56Z",
@@ -2025,7 +2859,7 @@
    "updated_at": "2026-09-23T20:21:56Z"
   },
   {
-   "closed_at": null,
+   "closed_at": "2026-09-24T18:37:44Z",
    "created_at": "2026-09-06T16:11:56Z",
    "id": 200,
    "label_events": [
@@ -2038,9 +2872,9 @@
    "labels": [
     "agentic-workflows"
    ],
-   "state": "open",
+   "state": "closed",
    "title": "[fuzz-hardening] test(m3u): Hypothesis property tests for exp_date parsing and server-URL normalization",
-   "updated_at": "2026-09-06T16:11:56Z"
+   "updated_at": "2026-09-24T18:37:44Z"
   },
   {
    "closed_at": null,
@@ -2100,7 +2934,7 @@
    ],
    "state": "open",
    "title": "e2e: hold a refresh in flight with a slow-playlist fault instead of thirty decoy accounts",
-   "updated_at": "2026-09-06T11:46:21Z"
+   "updated_at": "2026-09-24T18:36:16Z"
   },
   {
    "closed_at": "2026-09-22T19:55:54Z",
@@ -2176,7 +3010,7 @@
    ],
    "state": "open",
    "title": "[fuzz-hardening] test(timeshift): Hypothesis property tests for catch-up helpers, range parsers, stats",
-   "updated_at": "2026-09-06T05:22:06Z"
+   "updated_at": "2026-09-24T18:36:42Z"
   },
   {
    "closed_at": null,
@@ -2273,7 +3107,7 @@
    "updated_at": "2026-09-23T19:39:19Z"
   },
   {
-   "closed_at": null,
+   "closed_at": "2026-09-25T05:42:28Z",
    "created_at": "2026-09-05T23:44:03Z",
    "id": 187,
    "label_events": [
@@ -2286,12 +3120,12 @@
    "labels": [
     "needs-triage"
    ],
-   "state": "open",
+   "state": "closed",
    "title": "e2e_up.sh falls back to the shared stack when scoping vars are partially set",
-   "updated_at": "2026-09-05T23:44:03Z"
+   "updated_at": "2026-09-25T05:42:28Z"
   },
   {
-   "closed_at": null,
+   "closed_at": "2026-09-24T18:38:04Z",
    "created_at": "2026-09-05T22:46:34Z",
    "id": 186,
    "label_events": [
@@ -2314,15 +3148,22 @@
      "at": "2026-09-23T19:39:17Z",
      "event": "labeled",
      "label": "re-triage"
+    },
+    {
+     "at": "2026-09-24T18:38:06Z",
+     "event": "unlabeled",
+     "label": "wontfix"
+    },
+    {
+     "at": "2026-09-24T18:38:06Z",
+     "event": "unlabeled",
+     "label": "re-triage"
     }
    ],
-   "labels": [
-    "wontfix",
-    "re-triage"
-   ],
-   "state": "open",
+   "labels": [],
+   "state": "closed",
    "title": "live_proxy views return str(e) in 500 bodies, including on the anonymous stream_ts",
-   "updated_at": "2026-09-23T19:39:17Z"
+   "updated_at": "2026-09-24T18:38:06Z"
   },
   {
    "closed_at": "2026-09-23T20:21:58Z",
@@ -2367,7 +3208,7 @@
    "updated_at": "2026-09-23T19:39:15Z"
   },
   {
-   "closed_at": null,
+   "closed_at": "2026-09-25T04:15:00Z",
    "created_at": "2026-09-05T14:48:54Z",
    "id": 183,
    "label_events": [
@@ -2390,12 +3231,12 @@
    "labels": [
     "ready-for-agent"
    ],
-   "state": "open",
+   "state": "closed",
    "title": "apps.timeshift.tests emits raw control bytes into its log",
-   "updated_at": "2026-09-05T14:59:17Z"
+   "updated_at": "2026-09-25T04:15:00Z"
   },
   {
-   "closed_at": null,
+   "closed_at": "2026-09-25T01:33:41Z",
    "created_at": "2026-09-05T14:48:53Z",
    "id": 182,
    "label_events": [
@@ -2408,9 +3249,9 @@
    "labels": [
     "needs-triage"
    ],
-   "state": "open",
+   "state": "closed",
    "title": "get_client_ip trusts X-Forwarded-For from any private-network peer",
-   "updated_at": "2026-09-05T14:48:53Z"
+   "updated_at": "2026-09-25T01:33:41Z"
   },
   {
    "closed_at": "2026-09-06T08:58:51Z",
@@ -2431,7 +3272,7 @@
    "updated_at": "2026-09-06T08:58:51Z"
   },
   {
-   "closed_at": null,
+   "closed_at": "2026-09-25T04:35:55Z",
    "created_at": "2026-09-05T14:48:51Z",
    "id": 180,
    "label_events": [
@@ -2444,9 +3285,9 @@
    "labels": [
     "needs-triage"
    ],
-   "state": "open",
+   "state": "closed",
    "title": "03-init: template nginx.conf from a pristine copy on every boot",
-   "updated_at": "2026-09-05T14:48:51Z"
+   "updated_at": "2026-09-25T04:35:55Z"
   },
   {
    "closed_at": null,
@@ -2464,7 +3305,7 @@
    ],
    "state": "open",
    "title": "E2E: 429 through @authorize_denied (stream limit restored through the hop)",
-   "updated_at": "2026-09-05T14:48:49Z"
+   "updated_at": "2026-09-24T18:36:19Z"
   },
   {
    "closed_at": null,
@@ -2482,10 +3323,10 @@
    ],
    "state": "open",
    "title": "E2E: prove the DVR internal principal end to end (record a hidden_from_output channel through nginx)",
-   "updated_at": "2026-09-05T14:48:48Z"
+   "updated_at": "2026-09-24T18:36:21Z"
   },
   {
-   "closed_at": null,
+   "closed_at": "2026-09-25T05:25:14Z",
    "created_at": "2026-09-05T14:00:51Z",
    "id": 177,
    "label_events": [
@@ -2511,9 +3352,9 @@
     }
    ],
    "labels": [],
-   "state": "open",
+   "state": "closed",
    "title": "makemigrations --check: pending AlterField on core.StreamProfile.parameters on main",
-   "updated_at": "2026-09-23T20:21:28Z"
+   "updated_at": "2026-09-25T05:25:14Z"
   },
   {
    "closed_at": null,
@@ -2582,7 +3423,7 @@
    "updated_at": "2026-09-05T05:12:02Z"
   },
   {
-   "closed_at": null,
+   "closed_at": "2026-09-25T05:42:28Z",
    "created_at": "2026-09-04T20:40:07Z",
    "id": 168,
    "label_events": [
@@ -2611,9 +3452,9 @@
     "ready-for-agent",
     "priority:p1"
    ],
-   "state": "open",
+   "state": "closed",
    "title": "e2e_up.sh --down/--reset removes the shared e2e-upstream container even for an overridden stack",
-   "updated_at": "2026-09-05T10:41:26Z"
+   "updated_at": "2026-09-25T05:42:28Z"
   },
   {
    "closed_at": null,
@@ -2650,7 +3491,7 @@
    "updated_at": "2026-09-23T19:39:12Z"
   },
   {
-   "closed_at": null,
+   "closed_at": "2026-09-24T18:37:50Z",
    "created_at": "2026-09-04T16:50:30Z",
    "id": 162,
    "label_events": [
@@ -2663,12 +3504,12 @@
    "labels": [
     "agentic-workflows"
    ],
-   "state": "open",
+   "state": "closed",
    "title": "[fuzz-hardening] test(output): Hypothesis property tests for output/vod helper surfaces",
-   "updated_at": "2026-09-04T16:50:30Z"
+   "updated_at": "2026-09-24T18:37:50Z"
   },
   {
-   "closed_at": null,
+   "closed_at": "2026-09-24T18:37:36Z",
    "created_at": "2026-09-04T05:23:04Z",
    "id": 158,
    "label_events": [
@@ -2681,9 +3522,9 @@
    "labels": [
     "agentic-workflows"
    ],
-   "state": "open",
+   "state": "closed",
    "title": "[fuzz-hardening] test(epg): Hypothesis property tests for XMLTV/EPG parsing surfaces",
-   "updated_at": "2026-09-04T05:23:04Z"
+   "updated_at": "2026-09-24T18:37:36Z"
   },
   {
    "closed_at": null,
@@ -2836,7 +3677,7 @@
    "updated_at": "2026-09-03T16:55:31Z"
   },
   {
-   "closed_at": null,
+   "closed_at": "2026-09-24T18:37:41Z",
    "created_at": "2026-09-03T16:55:30Z",
    "id": 145,
    "label_events": [
@@ -2849,12 +3690,12 @@
    "labels": [
     "agentic-workflows"
    ],
-   "state": "open",
+   "state": "closed",
    "title": "[fuzz-hardening] test(m3u): Hypothesis property tests for stream filters, numbering, and connection-pool counters",
-   "updated_at": "2026-09-03T16:55:30Z"
+   "updated_at": "2026-09-24T18:37:41Z"
   },
   {
-   "closed_at": null,
+   "closed_at": "2026-09-24T18:37:57Z",
    "created_at": "2026-09-03T05:17:07Z",
    "id": 142,
    "label_events": [
@@ -2867,9 +3708,9 @@
    "labels": [
     "agentic-workflows"
    ],
-   "state": "open",
+   "state": "closed",
    "title": "[fuzz-hardening] test(timeshift): Hypothesis property tests for catch-up HTTP Range helpers",
-   "updated_at": "2026-09-03T05:17:07Z"
+   "updated_at": "2026-09-24T18:37:57Z"
   },
   {
    "closed_at": null,
@@ -2995,7 +3836,7 @@
    "updated_at": "2026-09-23T19:39:09Z"
   },
   {
-   "closed_at": null,
+   "closed_at": "2026-09-25T06:33:49Z",
    "created_at": "2026-09-02T12:31:02Z",
    "id": 135,
    "label_events": [
@@ -3021,12 +3862,12 @@
     }
    ],
    "labels": [],
-   "state": "open",
+   "state": "closed",
    "title": "Ad-hoc recordings lose their channel subdirectory: _build_output_paths' channel.name fallback is dead code",
-   "updated_at": "2026-09-23T20:21:30Z"
+   "updated_at": "2026-09-25T06:33:49Z"
   },
   {
-   "closed_at": null,
+   "closed_at": "2026-09-24T21:34:42Z",
    "created_at": "2026-09-02T12:19:42Z",
    "id": 134,
    "label_events": [
@@ -3042,9 +3883,9 @@
     }
    ],
    "labels": [],
-   "state": "open",
+   "state": "closed",
    "title": "XC API returns 401 for a network-blocked user, not 403, and logs no event on player_api.php",
-   "updated_at": "2026-09-02T12:23:57Z"
+   "updated_at": "2026-09-24T21:34:42Z"
   },
   {
    "closed_at": null,
@@ -3065,7 +3906,7 @@
    "updated_at": "2026-09-02T11:58:11Z"
   },
   {
-   "closed_at": null,
+   "closed_at": "2026-09-25T06:33:49Z",
    "created_at": "2026-09-02T11:49:22Z",
    "id": 132,
    "label_events": [
@@ -3078,12 +3919,12 @@
    "labels": [
     "needs-triage"
    ],
-   "state": "open",
+   "state": "closed",
    "title": "Three of the seven DVR WebSocket events carry no recording_id",
-   "updated_at": "2026-09-02T11:49:22Z"
+   "updated_at": "2026-09-25T06:33:49Z"
   },
   {
-   "closed_at": null,
+   "closed_at": "2026-09-25T06:33:49Z",
    "created_at": "2026-09-02T11:49:17Z",
    "id": 131,
    "label_events": [
@@ -3109,9 +3950,9 @@
     }
    ],
    "labels": [],
-   "state": "open",
+   "state": "closed",
    "title": "Concurrent recordings at an identical start_time can permanently and silently fail to schedule",
-   "updated_at": "2026-09-23T20:21:39Z"
+   "updated_at": "2026-09-25T06:33:49Z"
   },
   {
    "closed_at": null,
@@ -3228,7 +4069,7 @@
    "updated_at": "2026-09-23T19:39:03Z"
   },
   {
-   "closed_at": null,
+   "closed_at": "2026-09-24T23:09:38Z",
    "created_at": "2026-09-01T17:12:08Z",
    "id": 119,
    "label_events": [
@@ -3265,9 +4106,9 @@
     "type:correctness",
     "priority:p3"
    ],
-   "state": "open",
+   "state": "closed",
    "title": "[domain-fuzz] fMP4 desync recovery silently gives up when garbage bytes parse as a large box length",
-   "updated_at": "2026-09-01T17:12:08Z"
+   "updated_at": "2026-09-24T23:09:38Z"
   },
   {
    "closed_at": null,
@@ -3301,7 +4142,7 @@
    "updated_at": "2026-09-23T20:21:31Z"
   },
   {
-   "closed_at": null,
+   "closed_at": "2026-09-24T20:34:18Z",
    "created_at": "2026-09-01T12:48:04Z",
    "id": 110,
    "label_events": [
@@ -3314,9 +4155,9 @@
    "labels": [
     "needs-triage"
    ],
-   "state": "open",
+   "state": "closed",
    "title": "stream_xc_movie, stream_xc_episode and stream_vod apply no is_adult filter, so a hidden movie is streamable",
-   "updated_at": "2026-09-01T12:48:14Z"
+   "updated_at": "2026-09-24T20:34:18Z"
   },
   {
    "closed_at": null,
@@ -3421,7 +4262,7 @@
    "updated_at": "2026-09-23T19:38:58Z"
   },
   {
-   "closed_at": null,
+   "closed_at": "2026-09-24T23:39:34Z",
    "created_at": "2026-08-31T17:16:32Z",
    "id": 105,
    "label_events": [
@@ -3440,12 +4281,12 @@
     "needs-triage",
     "priority:p1"
    ],
-   "state": "open",
+   "state": "closed",
    "title": "[codeql] py/full-ssrf: Full server-side request forgery (apps/plugins/api_views.py:1267)",
-   "updated_at": "2026-08-31T17:16:32Z"
+   "updated_at": "2026-09-24T23:39:34Z"
   },
   {
-   "closed_at": null,
+   "closed_at": "2026-09-24T23:39:33Z",
    "created_at": "2026-08-31T17:16:29Z",
    "id": 104,
    "label_events": [
@@ -3464,12 +4305,12 @@
     "needs-triage",
     "priority:p1"
    ],
-   "state": "open",
+   "state": "closed",
    "title": "[codeql] py/full-ssrf: Full server-side request forgery (apps/plugins/api_views.py:1149)",
-   "updated_at": "2026-08-31T17:16:29Z"
+   "updated_at": "2026-09-24T23:39:33Z"
   },
   {
-   "closed_at": null,
+   "closed_at": "2026-09-24T23:39:33Z",
    "created_at": "2026-08-31T17:16:27Z",
    "id": 103,
    "label_events": [
@@ -3488,9 +4329,9 @@
     "needs-triage",
     "priority:p1"
    ],
-   "state": "open",
+   "state": "closed",
    "title": "[codeql] py/full-ssrf: Full server-side request forgery (apps/plugins/api_views.py:780)",
-   "updated_at": "2026-08-31T17:16:27Z"
+   "updated_at": "2026-09-24T23:39:33Z"
   },
   {
    "closed_at": null,
@@ -3638,7 +4479,7 @@
    ],
    "state": "open",
    "title": "VODCategoryFilter.m3u_account names a relation VODCategory does not have, so the filter is a 500",
-   "updated_at": "2026-08-30T20:42:17Z"
+   "updated_at": "2026-09-24T18:36:25Z"
   },
   {
    "closed_at": "2026-09-06T10:36:44Z",
@@ -3712,10 +4553,10 @@
    ],
    "state": "open",
    "title": "[fuzz-hardening] test(output,vod): add Hypothesis property tests for output-API helper surfaces",
-   "updated_at": "2026-08-30T17:12:45Z"
+   "updated_at": "2026-09-24T18:36:39Z"
   },
   {
-   "closed_at": null,
+   "closed_at": "2026-09-25T05:10:31Z",
    "created_at": "2026-08-30T17:12:41Z",
    "id": 91,
    "label_events": [
@@ -3752,12 +4593,12 @@
     "type:correctness",
     "priority:p2"
    ],
-   "state": "open",
+   "state": "closed",
    "title": "[domain-fuzz] XC get_short_epg/get_simple_data_table 500 on non-numeric `limit` query param (unguarded int())",
-   "updated_at": "2026-08-30T17:12:41Z"
+   "updated_at": "2026-09-25T05:10:31Z"
   },
   {
-   "closed_at": null,
+   "closed_at": "2026-09-25T05:10:31Z",
    "created_at": "2026-08-30T17:12:40Z",
    "id": 90,
    "label_events": [
@@ -3794,12 +4635,12 @@
     "type:crash",
     "priority:p1"
    ],
-   "state": "open",
+   "state": "closed",
    "title": "[domain-fuzz] Provider-controlled channel names crash dummy-EPG generation (ValueError escapes into XMLTV export)",
-   "updated_at": "2026-08-30T17:12:40Z"
+   "updated_at": "2026-09-25T05:10:31Z"
   },
   {
-   "closed_at": null,
+   "closed_at": "2026-09-24T20:34:18Z",
    "created_at": "2026-08-30T16:39:21Z",
    "id": 89,
    "label_events": [
@@ -3812,9 +4653,9 @@
    "labels": [
     "ready-for-agent"
    ],
-   "state": "open",
+   "state": "closed",
    "title": "Provider credentials can reach an unauthenticated client in a 500 response body from the VOD proxy",
-   "updated_at": "2026-08-30T16:43:07Z"
+   "updated_at": "2026-09-24T20:34:18Z"
   },
   {
    "closed_at": "2026-09-06T10:36:41Z",
@@ -3855,7 +4696,7 @@
    "labels": [],
    "state": "open",
    "title": "Flaky E2E test: channel-profiles.spec.ts 'bulk-update sets several memberships in one call' fails under parallel load",
-   "updated_at": "2026-08-30T14:55:13Z"
+   "updated_at": "2026-09-24T18:36:27Z"
   },
   {
    "closed_at": null,
@@ -3886,7 +4727,7 @@
    "updated_at": "2026-08-30T12:42:09Z"
   },
   {
-   "closed_at": null,
+   "closed_at": "2026-09-24T21:34:42Z",
    "created_at": "2026-08-30T12:15:16Z",
    "id": 84,
    "label_events": [
@@ -3899,12 +4740,12 @@
    "labels": [
     "needs-triage"
    ],
-   "state": "open",
+   "state": "closed",
    "title": "XC player_api.php distinguishes an unknown username (404) from a wrong password (401)",
-   "updated_at": "2026-08-30T12:15:16Z"
+   "updated_at": "2026-09-24T21:34:42Z"
   },
   {
-   "closed_at": null,
+   "closed_at": "2026-09-24T22:00:25Z",
    "created_at": "2026-08-30T11:57:47Z",
    "id": 83,
    "label_events": [
@@ -3933,9 +4774,9 @@
     "needs-info",
     "ready-for-agent"
    ],
-   "state": "open",
+   "state": "closed",
    "title": "HDHomeRun device.xml never reflects a configured HDHRDevice row, unlike discover.json",
-   "updated_at": "2026-08-30T12:01:29Z"
+   "updated_at": "2026-09-24T22:00:25Z"
   },
   {
    "closed_at": "2026-09-23T20:22:00Z",
@@ -3972,7 +4813,7 @@
    "updated_at": "2026-09-23T20:22:02Z"
   },
   {
-   "closed_at": null,
+   "closed_at": "2026-09-25T04:02:00Z",
    "created_at": "2026-08-30T11:09:43Z",
    "id": 81,
    "label_events": [
@@ -3985,9 +4826,9 @@
    "labels": [
     "ready-for-agent"
    ],
-   "state": "open",
+   "state": "closed",
    "title": "nginx sets X-Forwarded-* with proxy_set_header, which has no effect on the uwsgi_pass locations",
-   "updated_at": "2026-08-30T11:13:59Z"
+   "updated_at": "2026-09-25T04:02:00Z"
   },
   {
    "closed_at": null,
@@ -4072,7 +4913,7 @@
    "updated_at": "2026-08-30T06:06:37Z"
   },
   {
-   "closed_at": null,
+   "closed_at": "2026-09-24T18:37:38Z",
    "created_at": "2026-08-30T06:06:36Z",
    "id": 74,
    "label_events": [
@@ -4091,9 +4932,9 @@
     "fuzzing",
     "agentic-workflows"
    ],
-   "state": "open",
+   "state": "closed",
    "title": "[fuzz-hardening] test(epg): add Hypothesis property tests for XMLTV/SD parsing surfaces",
-   "updated_at": "2026-08-30T06:06:36Z"
+   "updated_at": "2026-09-24T18:37:38Z"
   },
   {
    "closed_at": null,
@@ -4149,10 +4990,10 @@
    ],
    "state": "open",
    "title": "Concurrent channel and profile creation can 500: two bulk_create calls race on ChannelProfileMembership's unique_together",
-   "updated_at": "2026-08-29T20:49:15Z"
+   "updated_at": "2026-09-24T18:36:29Z"
   },
   {
-   "closed_at": null,
+   "closed_at": "2026-09-25T06:33:50Z",
    "created_at": "2026-08-29T17:25:04Z",
    "id": 71,
    "label_events": [
@@ -4175,9 +5016,9 @@
    "labels": [
     "needs-triage"
    ],
-   "state": "open",
+   "state": "closed",
    "title": "Upcoming custom recordings with no EPG program data all collapse into one grouped card",
-   "updated_at": "2026-08-29T20:34:37Z"
+   "updated_at": "2026-09-25T06:33:50Z"
   },
   {
    "closed_at": null,
@@ -4198,7 +5039,7 @@
    "updated_at": "2026-08-29T20:33:27Z"
   },
   {
-   "closed_at": null,
+   "closed_at": "2026-09-24T18:37:46Z",
    "created_at": "2026-08-29T17:11:50Z",
    "id": 69,
    "label_events": [
@@ -4217,9 +5058,9 @@
     "fuzzing",
     "agentic-workflows"
    ],
-   "state": "open",
+   "state": "closed",
    "title": "[fuzz-hardening] test(m3u): add Hypothesis property tests for M3U ingestion parsing, credentials, and retry surfaces",
-   "updated_at": "2026-08-29T17:11:50Z"
+   "updated_at": "2026-09-24T18:37:46Z"
   },
   {
    "closed_at": null,
@@ -4407,7 +5248,7 @@
    "updated_at": "2026-09-23T20:21:33Z"
   },
   {
-   "closed_at": null,
+   "closed_at": "2026-09-25T00:31:45Z",
    "created_at": "2026-08-29T12:54:14Z",
    "id": 61,
    "label_events": [
@@ -4430,9 +5271,9 @@
    "labels": [
     "ready-for-agent"
    ],
-   "state": "open",
+   "state": "closed",
    "title": "collect_xc_streams builds live URLs with unencoded credentials, unlike catch-up's quote()",
-   "updated_at": "2026-08-29T12:58:08Z"
+   "updated_at": "2026-09-25T00:31:45Z"
   },
   {
    "closed_at": null,
@@ -4460,7 +5301,7 @@
    ],
    "state": "open",
    "title": "The specific upstream refresh error is overwritten by a generic message, discarding the diagnostic",
-   "updated_at": "2026-08-29T12:46:38Z"
+   "updated_at": "2026-09-24T18:36:31Z"
   },
   {
    "closed_at": "2026-08-30T09:58:20Z",
@@ -4568,7 +5409,7 @@
    "updated_at": "2026-08-29T11:25:50Z"
   },
   {
-   "closed_at": null,
+   "closed_at": "2026-09-24T18:38:02Z",
    "created_at": "2026-08-29T11:19:33Z",
    "id": 55,
    "label_events": [
@@ -4581,9 +5422,9 @@
    "labels": [
     "agentic-workflows"
    ],
-   "state": "open",
+   "state": "closed",
    "title": "[fuzz-hardening] timeshift: property-based tests for catch-up timestamp parsing, URL builders, and playback stats",
-   "updated_at": "2026-08-29T11:19:33Z"
+   "updated_at": "2026-09-24T18:38:02Z"
   },
   {
    "closed_at": null,
@@ -4838,7 +5679,7 @@
    "updated_at": "2026-09-23T19:38:44Z"
   },
   {
-   "closed_at": null,
+   "closed_at": "2026-09-24T20:12:58Z",
    "created_at": "2026-08-28T16:07:54Z",
    "id": 24,
    "label_events": [
@@ -4889,9 +5730,9 @@
     "type:reliability",
     "priority:p2"
    ],
-   "state": "open",
+   "state": "closed",
    "title": "[domain-fuzz] Live relay stderr reader grows without bound on unterminated frame output",
-   "updated_at": "2026-09-23T20:21:37Z"
+   "updated_at": "2026-09-24T20:12:58Z"
   },
   {
    "closed_at": null,
@@ -4972,7 +5813,7 @@
    "updated_at": "2026-08-27T14:39:59Z"
   },
   {
-   "closed_at": null,
+   "closed_at": "2026-09-25T04:47:54Z",
    "created_at": "2026-08-24T20:57:14Z",
    "id": 16,
    "label_events": [
@@ -5001,9 +5842,9 @@
     "documentation",
     "ready-for-agent"
    ],
-   "state": "open",
+   "state": "closed",
    "title": "Upgrade E2E workflow actions from Node 20 runtime to supported Node 24 actions",
-   "updated_at": "2026-09-03T00:49:19Z"
+   "updated_at": "2026-09-25T04:47:54Z"
   },
   {
    "closed_at": null,
@@ -5122,7 +5963,7 @@
    "updated_at": "2026-08-24T21:00:34Z"
   },
   {
-   "closed_at": null,
+   "closed_at": "2026-09-25T05:25:14Z",
    "created_at": "2026-08-24T17:59:43Z",
    "id": 7,
    "label_events": [
@@ -5148,9 +5989,9 @@
     }
    ],
    "labels": [],
-   "state": "open",
+   "state": "closed",
    "title": "M3U/EPG source creation 500s permanently after a concurrent-create race duplicates an IntervalSchedule",
-   "updated_at": "2026-09-23T21:18:23Z"
+   "updated_at": "2026-09-25T05:25:14Z"
   },
   {
    "closed_at": "2026-09-23T20:21:48Z",
