@@ -4,7 +4,7 @@
 # builds the legacy (CPU-baseline=none) NumPy wheel. None of these compilers end
 # up in the final image — only the artifacts below are copied forward.
 # ==============================================================================
-FROM lscr.io/linuxserver/ffmpeg:version-8.1.2-cli@sha256:2e7000921be8de2704a4f27dfd3d988562697a346eaabb937a81046c306f0af7 AS builder
+FROM lscr.io/linuxserver/ffmpeg:version-9.0-cli@sha256:47fbdc93828be04d7c52ca9a9a95f7957f887b80369f3581b8ff661873ed77a0 AS builder
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV UV_PROJECT_ENVIRONMENT=/dispatcharrpy
@@ -112,7 +112,7 @@ RUN apt-get update && apt-get install --no-install-recommends -y \
 # Same ffmpeg base, but installs only the runtime system libraries (no compilers)
 # and copies the prebuilt virtual environment + NumPy wheel from the builder.
 # ==============================================================================
-FROM lscr.io/linuxserver/ffmpeg:version-8.1.2-cli@sha256:2e7000921be8de2704a4f27dfd3d988562697a346eaabb937a81046c306f0af7 AS final
+FROM lscr.io/linuxserver/ffmpeg:version-9.0-cli@sha256:47fbdc93828be04d7c52ca9a9a95f7957f887b80369f3581b8ff661873ed77a0 AS final
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV UV_PROJECT_ENVIRONMENT=/dispatcharrpy
