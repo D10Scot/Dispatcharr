@@ -49,6 +49,71 @@ class EventBatchWritesSystemEventRowsTests(TestCase):
         self.assertEqual(str(failover.channel_id), channel_id)
         self.assertEqual(failover.details, {"reason": "dead_air"})
 
+    def test_a_stream_hash_tune_raised_no_lifecycle_rows(self):
+        """Issue #233. A /proxy/ts/stream/<stream_hash> preview tune posts
+        the Stream's sha256 hash as channel_id, and SystemEvent.channel_id
+        is a UUIDField: the write raised inside log_system_event and was
+        swallowed, so neither channel_start nor channel_stop left a row. The
+        hash now travels in details and the row carries no channel."""
+        from core.relay_events import apply_event_batch
+
+        stream_hash = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
+        counts = apply_event_batch(
+            [
+                {
+                    "type": "channel_start",
+                    "channel_id": stream_hash,
+                    "channel_name": "Preview Stream",
+                    "stream_id": 7,
+                    "details": {"stream_name": "Preview Stream", "stream_id": 7},
+                },
+                {
+                    "type": "channel_stop",
+                    "channel_id": stream_hash,
+                    "channel_name": "Preview Stream",
+                    "details": {"runtime": 12.5, "total_bytes": 1024},
+                },
+            ]
+        )
+
+        self.assertEqual(counts, {"accepted": 2, "rejected": 0})
+        for event_type in ("channel_start", "channel_stop"):
+            row = SystemEvent.objects.get(event_type=event_type)
+            self.assertIsNone(row.channel_id)
+            self.assertEqual(row.channel_name, "Preview Stream")
+            self.assertEqual(row.details["stream_hash"], stream_hash)
+
+    def test_a_uuid_channel_id_is_not_mistaken_for_a_stream_hash(self):
+        from core.relay_events import apply_event_batch
+
+        channel_id = "66666666-6666-4666-8666-666666666666"
+        apply_event_batch([{"type": "channel_start", "channel_id": channel_id, "details": {}}])
+
+        row = SystemEvent.objects.get()
+        self.assertEqual(str(row.channel_id), channel_id)
+        self.assertNotIn("stream_hash", row.details)
+
+    def test_a_details_stream_hash_cannot_shadow_the_posted_identifier(self):
+        """A hand-built batch (or a future relay) could put its own
+        stream_hash inside details. The posted channel_id is the truth
+        about what the channel was tuned by; a value already sitting in
+        details must not survive over it."""
+        from core.relay_events import apply_event_batch
+
+        stream_hash = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
+        apply_event_batch(
+            [
+                {
+                    "type": "channel_start",
+                    "channel_id": stream_hash,
+                    "details": {"stream_hash": "not-the-real-hash"},
+                }
+            ]
+        )
+
+        row = SystemEvent.objects.get()
+        self.assertEqual(row.details["stream_hash"], stream_hash)
+
     def test_an_unknown_event_type_is_counted_as_rejected_not_raised(self):
         from core.relay_events import apply_event_batch
 
