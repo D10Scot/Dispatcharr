@@ -100,9 +100,9 @@ export default defineConfig({
       // process's cumulative speed= to cross a threshold. 300s is the same
       // ceiling `streaming` uses and is not generous here.
       timeout: 300_000,
-      // One worker, unlike its siblings: two specs in this directory mutate
-      // container-global state for the duration of their run, and this
-      // project's serialisation is what keeps both safe.
+      // One worker, unlike its siblings: three specs in this directory
+      // mutate container-global state for the duration of their run, and
+      // this project's serialisation is what keeps all three safe.
       //
       // `failover-buffering.spec.ts` mutates the global `proxy_settings` row
       // (raising `buffering_speed`). That is only safe because every other
@@ -124,9 +124,9 @@ export default defineConfig({
       // `proxy_settings` above, wider blast radius: while it is flipped,
       // *every* channel in the container answers a session-less catch-up or
       // live request with a 302 to the provider instead of proxying it. The
-      // single worker is what makes that safe. Two specs in this directory
-      // now depend on it; do not raise `workers` back to 2 without
-      // confirming neither still needs serialising.
+      // single worker is what makes that safe. Three specs in this
+      // directory now depend on it; do not raise `workers` back to 2
+      // without confirming none of them still needs serialising.
       //
       // The same row is also mutated by
       // `streaming-greybox/vod-redirect-profile.spec.ts` — a different
@@ -137,11 +137,21 @@ export default defineConfig({
       // overlap *within* streaming-failover; it says nothing about
       // streaming-greybox.
       //
+      // `stream-limit-429.spec.ts` mutates the third:
+      // `user_limit_settings.terminate_on_limit_exceeded`, turned off for
+      // the duration of its run so a user at `stream_limit` gets refused
+      // (429) instead of having their oldest stream terminated for them —
+      // the default. Narrower blast radius than the two above (it only
+      // changes behaviour for a user already at a nonzero `stream_limit`),
+      // but the same reason for living here: a concurrent worker tuning any
+      // channel as a `stream_limit`-bound user would race the flipped
+      // setting.
+      //
       // Note what the single worker does NOT protect: a run that dies
-      // between either spec's write and its `finally` leaves the container
-      // mutated for every later project too. Both specs guard their own
-      // next run with an up-front assertion, and that guard protects the
-      // test itself — not the specs that would run before it.
+      // between any of the three specs' writes and their restore leaves
+      // the container mutated for every later project too. All three guard
+      // their own next run with an up-front assertion, and that guard
+      // protects the test itself — not the specs that would run before it.
       workers: 1,
       use: { storageState: 'playwright/.auth/admin.json' },
     },
@@ -175,9 +185,10 @@ export default defineConfig({
       use: { storageState: 'playwright/.auth/admin.json' },
     },
     {
-      // Owns one supervisord program at a time: `supervisorctl stop api-uwsgi`
-      // and `supervisorctl restart relay-uwsgi` inside the shared container.
-      // Its own project, not a spec under `streaming-greybox`, for the reason
+      // Owns the supervisord programs it touches: `supervisorctl stop
+      // api-uwsgi`, and — since review round 2 — `celery-default` stopped
+      // across a `supervisorctl restart relay-uwsgi`, inside the shared
+      // container. Its own project, not a spec under `streaming-greybox`, for the reason
       // the lifecycle projects have their own: in CI every matrix project gets
       // its own container, so a project is the only unit that confines an
       // outage. A greybox spec would stop the API process inside a container
@@ -195,13 +206,17 @@ export default defineConfig({
       // projects' 300s. Each test here is a chain of sequential poll budgets,
       // and the sum is what has to fit. Scenario B's post-restart chain is
       // 385s: 25s in the restart, 60s waiting for RUNNING, 120s polling for a
-      // tune, 60s on the first packet, 120s on the refresh. 600s is that 385s
-      // plus ~215s of margin for what precedes it — two `expectRunning`
-      // pre-checks at 60s each, `seed.upstreamM3UAccount`, which wraps a
-      // refresh wait of its own, and (as of the whole-branch fix round)
-      // settling `SLOW_REFRESH_DECOY_COUNT` decoy M3U accounts before
-      // Scenario B's timed phase — measured at ~20-60s in `task-4-report.md`,
-      // itself inside this margin. That margin is not the sum of those worst
+      // tune, 60s on the first packet, 120s on the refresh (which itself
+      // absorbs the fake provider's `slow-playlist` fault delay,
+      // `SLOW_PLAYLIST_DELAY_MS` = 30s — see that constant's own comment).
+      // Since review round 2 this also brackets a `celery-default` stop and
+      // start (`docker/supervisord.d/celery-default.conf`'s own
+      // `stopwaitsecs=30` plus `startsecs=5` and its own wait-for-stores
+      // pass) around the relay-uwsgi restart — worst case well under a
+      // minute, and still comfortably inside 600s alongside everything else
+      // here. 600s is that 385s plus ~215s of margin for what precedes it — two
+      // `expectRunning` pre-checks at 60s each and `seed.upstreamM3UAccount`,
+      // which wraps a refresh wait of its own. That margin is not the sum of those worst
       // cases (they total ~350s, so the theoretical worst case is ~735s); it
       // is deliberately sized for one thing going wrong at a time, because a
       // run in which the pre-checks AND the seeding AND the restart all take
