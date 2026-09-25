@@ -14,7 +14,7 @@ into. Under JavaScript's own ``$n``/``$nn`` grammar (``$1``-``$9``,
 ``$01``-``$99``; anything else, including a bare ``$0``, stays literal),
 the SPA's own JS preview (``M3uProfileUtils.js:34-38``), the WebSocket
 preview and the live transform all agree, and no NUL or control byte is
-ever injected by a ``$0``/`$00`` template.
+ever injected by a ``$0``/``$00`` template.
 """
 import regex
 from django.test import SimpleTestCase, TestCase
