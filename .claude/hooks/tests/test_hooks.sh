@@ -26,8 +26,8 @@ EDIT="$HOOK_DIR/run-affected-tests.sh"
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
-A="$TMP/repo-a"; B="$TMP/repo-b"
-for r in "$A" "$B"; do
+A="$TMP/repo-a"; B="$TMP/repo-b"; SPACED="$TMP/repo with space"
+for r in "$A" "$B" "$SPACED"; do
   git init -q "$r"
   git -C "$r" -c user.name=t -c user.email=t@t commit -q --allow-empty -m init
 done
@@ -73,6 +73,10 @@ out="$(gate "$B" "cd $B && git -C $A commit -m x")"; st=$?
 check "test_cd_then_git_dash_C_commit_is_refused_as_undetermined" 0 "cannot safely determine" $st "$out"
 out="$(gate "$B" "git --git-dir=$A/.git commit -m x")"; st=$?
 check "test_git_dir_commit_is_refused_as_undetermined" 0 "cannot safely determine" $st "$out"
+out="$(gate "$B" "git -C \"$SPACED\" commit -m x")"; st=$?
+check "test_git_dash_C_with_a_spaced_path_is_refused_as_undetermined_dquote" 0 "cannot safely determine" $st "$out"
+out="$(gate "$B" "git -C '$SPACED' commit -m x")"; st=$?
+check "test_git_dash_C_with_a_spaced_path_is_refused_as_undetermined_squote" 0 "cannot safely determine" $st "$out"
 # ---- unchanged behaviour ---------------------------------------------------
 out="$(gate "$A" "git commit -m x")"; st=$?
 check "control_plain_commit_is_gated_on_the_cwd" 0 "$MAPPED" $st "$out"

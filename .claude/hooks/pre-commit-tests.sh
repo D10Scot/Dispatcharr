@@ -2,7 +2,7 @@
 # Gate `git commit` on the tests covering whatever is being committed.
 #
 # Wired two ways, sharing this one script:
-#   * Claude Code PreToolUse hook on Bash(git commit*) — fires when Claude commits.
+#   * Claude Code PreToolUse hook on Bash(git *) — fires when Claude commits.
 #   * .git/hooks/pre-commit (optional) — fires when a human commits.
 # Detected via $1 == "--git-hook", which skips the stdin payload parse.
 #
@@ -40,7 +40,7 @@ else
   # any global options (`-C <dir>`, `-c k=v`, `--git-dir=...`, `--no-pager`,
   # ...), then `commit` as a whole word. `git log --grep commit` does not
   # match: `log` is not an option.
-  GIT_GLOBAL='([[:space:]]+(-[Cc][[:space:]]+[^[:space:]]+|--(git-dir|work-tree|namespace)([[:space:]]+|=)[^[:space:]]+|--?[A-Za-z][-A-Za-z]*))*'
+  GIT_GLOBAL="([[:space:]]+(-[Cc][[:space:]]+(\"[^\"]*\"|'[^']*'|[^[:space:]]+)|--(git-dir|work-tree|namespace)([[:space:]]+|=)[^[:space:]]+|--?[A-Za-z][-A-Za-z]*))*"
   COMMIT_RE="(^|[;&|(\`[:space:]])git${GIT_GLOBAL}[[:space:]]+commit([[:space:]]|\$)"
   [[ "$CMD" =~ $COMMIT_RE ]] || exit 0
   # Everything up to and including the matched `git ... commit`.
