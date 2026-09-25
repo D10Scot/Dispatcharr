@@ -89,9 +89,13 @@ class ProxySettingsWritePathTests(TestCase):
         )
 
     def test_saving_proxy_settings_through_the_settings_api_stores_every_key(self):
-        """The other verb that reaches CoreSettingsSerializer.update."""
+        """The other verb that reaches CoreSettingsSerializer.update, sending
+        the same six-key-plus-one-changed shape as the PUT test above so
+        the two differ only in HTTP method."""
         response = self.client.patch(
-            self.url, {"value": {"buffering_speed": 3.5}}, format="json"
+            self.url,
+            {"value": {**SIX_KEY_ROW, "buffering_speed": 3.5}},
+            format="json",
         )
         self.assertEqual(response.status_code, 200, response.data)
         self.assertEqual(
