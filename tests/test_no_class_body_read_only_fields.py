@@ -11,12 +11,17 @@ three apps (`M3UAccountSerializer`, `EPGSourceSerializer`,
 a repo-wide scan rather than four one-off tests because the failure mode is
 "the same typo, repeated", and a new serializer can make it again.
 
-WHAT COUNTS. Only a `read_only_fields = [...]` assignment made directly in a
-class's own body counts as a violation. The identical assignment made
-directly in that class's own `class Meta:` body is correct and is not
-flagged -- the scan skips any `ClassDef` named `Meta` before checking its
-body, so it never descends into a legitimate declaration while walking the
-outer class that contains it.
+WHAT COUNTS. Only a `read_only_fields = [...]` (or an annotated
+`read_only_fields: list = [...]`) assignment made directly in the body of a
+class that looks like a serializer counts as a violation: one with a nested
+`class Meta`, or with a base class whose name ends in `Serializer`. That
+excludes a helper base meant to be inherited by an actual `Meta` -- a
+`class BaseMeta:` shared across several serializers' `Meta`s, say -- which
+has neither trait and is not itself a serializer class body. The identical
+assignment made directly in a class's own `class Meta:` body is correct and
+is not flagged -- the scan skips any `ClassDef` named `Meta` before checking
+its body, so it never descends into a legitimate declaration while walking
+the outer class that contains it.
 """
 
 import ast
@@ -26,23 +31,53 @@ from django.test import SimpleTestCase
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 
-# Every non-test serializers.py in the tree: one per Django app plus core's.
-SERIALIZER_FILES = sorted(REPO_ROOT.glob("apps/*/serializers.py")) + [
-    REPO_ROOT / "core" / "serializers.py"
-]
+# Every non-test serializers.py in the tree, at any depth under apps/ (so
+# apps/proxy/relay_serializers.py and a nested app's own serializers.py are
+# both included, not just one literally named serializers.py one level
+# down), plus core's.
+SERIALIZER_FILES = sorted(
+    p for p in REPO_ROOT.glob("apps/**/*serializers.py") if "tests" not in p.parts
+) + [REPO_ROOT / "core" / "serializers.py"]
+
+
+def _base_name(base):
+    """The trailing identifier of a base-class expression: `Name` for
+    `ModelSerializer`, `Attribute.attr` for `serializers.ModelSerializer`."""
+    if isinstance(base, ast.Attribute):
+        return base.attr
+    if isinstance(base, ast.Name):
+        return base.id
+    return None
+
+
+def _looks_like_serializer_class(node):
+    has_nested_meta = any(
+        isinstance(child, ast.ClassDef) and child.name == "Meta" for child in node.body
+    )
+    has_serializer_base = any(
+        (_base_name(base) or "").endswith("Serializer") for base in node.bases
+    )
+    return has_nested_meta or has_serializer_base
 
 
 def _class_body_read_only_fields(path):
-    """Yield (lineno, class_name) for each `read_only_fields = ...` assignment
-    made directly in a class body other than `Meta`'s own."""
+    """Yield (lineno, class_name) for each `read_only_fields = ...` (plain or
+    annotated) assignment made directly in the body of a serializer-like
+    class, other than `Meta`'s own body."""
     tree = ast.parse(path.read_text(), filename=str(path))
     for node in ast.walk(tree):
         if not isinstance(node, ast.ClassDef) or node.name == "Meta":
             continue
+        if not _looks_like_serializer_class(node):
+            continue
         for stmt in node.body:
-            if not isinstance(stmt, ast.Assign):
+            if isinstance(stmt, ast.Assign):
+                targets = stmt.targets
+            elif isinstance(stmt, ast.AnnAssign):
+                targets = [stmt.target]
+            else:
                 continue
-            for target in stmt.targets:
+            for target in targets:
                 if isinstance(target, ast.Name) and target.id == "read_only_fields":
                     yield stmt.lineno, node.name
 

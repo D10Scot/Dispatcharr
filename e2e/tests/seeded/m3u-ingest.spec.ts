@@ -305,18 +305,19 @@ test("upstreamM3UAccount() still calls waitForCreateTimeGroupRefreshToSettle() b
   ).toBe(true);
 });
 
-// The non-inverted control for the test.fail() below ('M3UAccount.locked is
-// not writable over the API'): a PATCH to an account over the real API is
+// The non-inverted control for the regression test below ('M3UAccount.locked
+// is not writable over the API', formerly a test.fail() pin on #15 -- see
+// that test's own comment): a PATCH to an account over the real API is
 // accepted, and the write actually persists to a later read. Three tests
 // above already seed via `seed.m3uAccount()` directly, and one of them
 // ("waitFor.m3uRefreshComplete re-fires its trigger...") even PATCHes the
 // account's `is_active` and asserts the response is `ok()` — but no other
 // test in this file reads an account back after a PATCH to confirm the write
-// actually took. That read-back is exactly what the pin's own final
-// assertion depends on, and a break in it would be swallowed by the pin
-// below as an "expected failure", since test.fail() is satisfied by ANY
-// failure in its body, not specifically the `locked` regression it exists
-// to pin.
+// actually took. That read-back is exactly what the regression test's own
+// final assertion depends on: this control isolates the read-back mechanism
+// itself from the `locked`-specific behaviour the regression test exists to
+// pin, so a break in the mechanism reads as this test failing, not as a
+// false pass or fail of that one.
 test('an M3U account round-trips a PATCH of a writable field', { tag: '@contract' }, async ({
   seed,
   api,

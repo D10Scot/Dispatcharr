@@ -276,7 +276,7 @@ The `done` G3 rows above are covered by these specs (several rows share a
 file; the two known-bug rows live beside the tests they qualify):
 
 - `e2e/tests/seeded/m3u-ingest.spec.ts` — catalogue fidelity and group wiring,
-  plus the `M3UAccount.locked` known bug (#15)
+  plus the `M3UAccount.locked` regression test (#15, fixed)
 - `e2e/tests/seeded/m3u-refresh-failure.spec.ts` — `not-found` and
   `auth-failure`, plus the discarded-message known bug (#60)
 - `e2e/tests/seeded/epg-ingest.spec.ts` — refresh → `EPGData` with zero

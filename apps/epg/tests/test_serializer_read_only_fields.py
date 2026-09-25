@@ -15,7 +15,7 @@ from django.contrib.auth import get_user_model
 from django.test import TestCase
 from rest_framework.test import APIClient
 
-from apps.epg.models import EPGData, EPGSource
+from apps.epg.models import EPGSource
 from apps.epg.serializers import EPGDataSerializer
 
 User = get_user_model()
@@ -48,12 +48,6 @@ class EPGSourceReadOnlyFieldsTests(TestCase):
 
 
 class EPGDataReadOnlyFieldsTests(TestCase):
-    def setUp(self):
-        self.epg_source = EPGSource.objects.create(name="Owner source", source_type="xmltv")
-        self.epg_data = EPGData.objects.create(
-            tvg_id="test-tvg", name="Test EPG", epg_source=self.epg_source
-        )
-
     def test_epg_data_epg_source_is_read_only(self):
         self.assertTrue(
             EPGDataSerializer().fields["epg_source"].read_only,

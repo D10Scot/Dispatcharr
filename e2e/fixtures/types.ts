@@ -793,10 +793,19 @@ export type EpgSourceOverrides = {
   custom_properties?: Record<string, unknown>;
 };
 
-/** Omits `name`: the factory owns it. See the ordering note in seed.ts. */
+/**
+ * Omits `name`: the factory owns it. See the ordering note in seed.ts. Also
+ * omits `is_custom`: `StreamSerializer.read_only_fields` now covers it
+ * (#15), so the server ignores it on write. `seed.stream()` no longer sends
+ * it either -- every created stream is still custom, because
+ * `apps/channels/signals.py`'s `set_default_m3u_account` pre_save receiver
+ * sets `is_custom=True` whenever `m3u_account` is empty, which it always is
+ * here (`m3u_account` is also read-only and this factory never supplies
+ * one). See seed-fixture.spec.ts's 'seed.stream creates a custom stream
+ * with a generated name'.
+ */
 export type StreamOverrides = {
   url?: string;
-  is_custom?: boolean;
   channel_group?: number | null;
 };
 
