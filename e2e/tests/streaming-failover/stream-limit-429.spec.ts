@@ -57,6 +57,16 @@ import { lockedProfile, newStreamClient, withDeadline } from '../streaming/helpe
  * writes (`failover-buffering.spec.ts`'s `proxy_settings`,
  * `catchup-redirect.spec.ts`'s `stream_settings`); this is the third, and
  * `playwright.config.ts`'s project comment is updated to say so.
+ *
+ * WHY @contract, on an instance-wide write. ADR 0003's "every file on a
+ * capability allowlist is `@characterization`" covers the four capabilities
+ * in `tests/guards/allowlist.ts` (`CONTAINER_LIFECYCLE`, `SUBPROCESS`,
+ * `GREYBOX_REDIS`, `CONTAINER_INTROSPECTION`) — `GLOBAL_SETTINGS_WRITE` is
+ * not one of them, because a global settings write is not itself a fact
+ * about this container's internals; it is ordinary product behaviour
+ * (a settings PATCH) used to reach a state a client-facing contract needs.
+ * `catchup-redirect.spec.ts`, on that same list and `@contract` at `:59`,
+ * is the precedent.
  */
 
 const CORE_SETTINGS_PATH = '/api/core/settings/';
@@ -85,11 +95,25 @@ let settingsRowId: number | undefined;
 let originalValue: Record<string, unknown> | undefined;
 
 test.afterEach(async ({ api }) => {
-  if (settingsRowId !== undefined && originalValue !== undefined) {
-    await api.patch(`${CORE_SETTINGS_PATH}${settingsRowId}/`, { value: originalValue });
-  }
+  const rowId = settingsRowId;
+  const original = originalValue;
   settingsRowId = undefined;
   originalValue = undefined;
+  if (rowId === undefined || original === undefined) return;
+
+  // `ApiClient.patch` never throws on a non-2xx answer, so a failed restore
+  // would otherwise be silent — exactly the outcome this hook exists to
+  // prevent. Checked and logged loudly, the `comskip.spec.ts` shape, rather
+  // than trusted.
+  const res = await api.patch(`${CORE_SETTINGS_PATH}${rowId}/`, { value: original });
+  if (!res.ok()) {
+    console.error(
+      'stream-limit-429.spec.ts: FAILED TO RESTORE user_limit_settings — the ' +
+        `shared container is left with the stream limit mutated. row id=${rowId}, ` +
+        `status=${res.status()}, intended value=${JSON.stringify(original)}.`
+    );
+    throw new Error(`restoring user_limit_settings failed: ${res.status()} ${await res.text()}`);
+  }
 });
 
 // How long a fresh open is allowed to take before this test gives up on it —
@@ -175,22 +199,44 @@ test(
     ).not.toBe(false);
     settingsRowId = row.id;
     originalValue = row.value;
-    await api.patch(`${CORE_SETTINGS_PATH}${row.id}/`, {
-      value: { ...row.value, terminate_on_limit_exceeded: false },
-    });
+    // `api.json` throws on a non-2xx answer, so a failed forward write fails
+    // here with its own cause rather than surfacing later as "must get 429",
+    // which would name the wrong mechanism.
+    await api.json(
+      await api.patch(`${CORE_SETTINGS_PATH}${row.id}/`, {
+        value: { ...row.value, terminate_on_limit_exceeded: false },
+      }),
+      'flip terminate_on_limit_exceeded'
+    );
 
     await streamClient.open(`/live/${viewer.username}/${viewer.xcPassword}/${held.id}`);
     // Read enough to be sure the client is registered in the relay's
     // connection count, not merely that the HTTP connection opened.
     expectTsAligned(await streamClient.readPackets(200));
 
+    const secondPath = `/live/${viewer.username}/${viewer.xcPassword}/${second.id}`;
     const secondClient = newStreamClient(baseURL!);
     await expectRefused(
       secondClient,
-      `/live/${viewer.username}/${viewer.xcPassword}/${second.id}`,
+      secondPath,
       429,
       'a user at stream_limit must get 429 back through @authorize_denied'
     );
+
+    // The status alone doesn't tell nginx's own @authorize_denied page apart
+    // from a 429 the relay's inline authorize path could answer as JSON
+    // (relay/httpapi/authorize.go) — so this is the test's own proof that
+    // the refusal came "through the authorize hop", not only the PR's
+    // nginx break-check. `open()` throws before recording headers on a
+    // non-ok response (fixtures/stream-client.ts), so this is a fresh probe
+    // rather than a read off `secondClient`; it never reaches the relay
+    // (auth_request denies it first), so it costs nothing against the limit.
+    const probeRes = await fetch(new URL(secondPath, baseURL!).toString());
+    expect(probeRes.status, 'the probe should also see the limit').toBe(429);
+    expect(
+      probeRes.headers.get('content-type') ?? '',
+      "a nginx-restored 429 answers nginx's own error page, not the relay's JSON"
+    ).not.toContain('application/json');
 
     await streamClient.close();
     // Control: the refusal was the limit, not a broken second channel. The

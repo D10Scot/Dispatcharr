@@ -148,10 +148,10 @@ export default defineConfig({
       // setting.
       //
       // Note what the single worker does NOT protect: a run that dies
-      // between either spec's write and its `finally` leaves the container
-      // mutated for every later project too. Both specs guard their own
-      // next run with an up-front assertion, and that guard protects the
-      // test itself — not the specs that would run before it.
+      // between any of the three specs' writes and their restore leaves
+      // the container mutated for every later project too. All three guard
+      // their own next run with an up-front assertion, and that guard
+      // protects the test itself — not the specs that would run before it.
       workers: 1,
       use: { storageState: 'playwright/.auth/admin.json' },
     },
