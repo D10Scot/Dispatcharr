@@ -353,15 +353,20 @@ default: `M3U_EPG` → `LOCAL_NETWORK_CIDRS` (private/loopback only); `STREAMS`,
 `["0.0.0.0/0", "::/0"]`.
 
 **The `X-Real-IP` mechanism.** `get_client_ip` honours `X-Real-IP` only when `REMOTE_ADDR` — the
-TCP peer — is itself inside `LOCAL_NETWORK_CIDRS`. In this container that peer is not nginx's own
-address; it is the Docker bridge gateway that `include uwsgi_params` forwards as nginx's
-`$remote_addr` (Probe A measured `172.25.0.1`), which is inside those CIDRs and therefore trusted
-by default; nginx's
-`uwsgi_pass` routes neither set nor strip the header, so a client that supplies its own `X-Real-IP`
-is believed verbatim ([#81](https://github.com/D10Scot/Dispatcharr/issues/81)). That is a fact about
-*this* topology's `DISPATCHARR_TRUSTED_PROXIES` default, not a portable one — a deployment setting
-it to `none` correctly refuses a spoofed header. `network-acl.spec.ts`'s first test pins this and is
-the premise every other test in that file depends on.
+TCP peer — is itself a trusted proxy. Since [#182](https://github.com/D10Scot/Dispatcharr/issues/182),
+`DISPATCHARR_TRUSTED_PROXIES` defaults to loopback only, so this is no longer true out of the box.
+In this container the peer is not nginx's own address; it is the Docker bridge gateway that
+`include uwsgi_params` forwards as nginx's `$remote_addr` (Probe A measured `172.25.0.1`), and it is
+trusted here **only because `scripts/e2e_up.sh` resolves that gateway and passes it as
+`DISPATCHARR_TRUSTED_PROXIES` on `docker run`** — the same thing a deployment behind a reverse proxy
+on a Docker network has to configure. A container started before that change keeps its old
+environment; `--down` or `--recreate` picks it up. nginx's `uwsgi_pass` routes neither set nor strip
+the header, so a client that supplies its own `X-Real-IP` is believed verbatim once that trust is
+configured ([#81](https://github.com/D10Scot/Dispatcharr/issues/81)). That is a fact about *this
+configured* topology, not a portable one and not the product's default any more — a deployment that
+leaves `DISPATCHARR_TRUSTED_PROXIES` unset correctly refuses a spoofed header from anywhere but
+loopback. `network-acl.spec.ts`'s first test pins this and is the premise every other test in that
+file depends on.
 
 **Never write `network_access["UI"]`.** `apps/accounts/permissions.py:Authenticated` gates every
 DRF endpoint on that scope — including the settings-write endpoint that would undo a mistake — so a
