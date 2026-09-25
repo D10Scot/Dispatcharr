@@ -30,6 +30,7 @@ from core.xtream_codes import Client as XCClient
 from core.utils import send_websocket_update
 from dispatcharr.utils import redact_headers, redact_url
 from .utils import (
+    _BoundedFilterPattern,
     convert_js_numbered_backreferences,
     normalize_stream_url,
     parse_is_adult,
@@ -168,12 +169,16 @@ _EXTINF_ATTR_RE = re.compile(r'([^\s=]+)\s*=\s*(["\'])(.*?)\2')
 
 
 def _open_m3u_text_source(source_path):
-    """Open an on-disk M3U (or .m3u.gz / .m3u.xz) file for line-by-line parsing."""
+    """Open an on-disk M3U (or .m3u.gz / .m3u.xz) file for line-by-line parsing.
+
+    Provider playlists are not always valid UTF-8 (#217); an invalid byte run
+    decodes via the m3u_cp1252_fallback error handler instead of raising.
+    """
     if source_path.endswith(".gz"):
-        return gzip.open(source_path, "rt", encoding="utf-8")
+        return gzip.open(source_path, "rt", encoding="utf-8", errors="m3u_cp1252_fallback")
     if source_path.endswith(".xz"):
-        return lzma.open(source_path, "rt", encoding="utf-8")
-    return open(source_path, "r", encoding="utf-8")
+        return lzma.open(source_path, "rt", encoding="utf-8", errors="m3u_cp1252_fallback")
+    return open(source_path, "r", encoding="utf-8", errors="m3u_cp1252_fallback")
 
 
 def fetch_m3u_lines(account, use_cache=False):
@@ -549,7 +554,8 @@ def fetch_m3u_lines(account, use_cache=False):
                         if name.endswith(".m3u"):
                             with zip_file.open(name) as f:
                                 return [
-                                    line.decode("utf-8") for line in f.readlines()
+                                    line.decode("utf-8", errors="m3u_cp1252_fallback")
+                                    for line in f.readlines()
                                 ], True
 
                     error_msg = (
@@ -1018,15 +1024,21 @@ def collect_xc_streams(account_id, enabled_groups):
 
 
 def _compile_m3u_stream_filters(filter_queryset):
-    """Compile account M3UFilter rows once per refresh for batch workers."""
+    """Compile account M3UFilter rows once per refresh for batch workers.
+
+    Uses the regex module (not stdlib re), each search time-bounded via
+    _BoundedFilterPattern, so a pathological operator-authored pattern
+    cannot stall the refresh (#262).
+    """
     compiled = []
     for filter_obj in filter_queryset:
         flags = (
-            re.IGNORECASE
+            regex.IGNORECASE
             if (filter_obj.custom_properties or {}).get("case_sensitive", True) is False
             else 0
         )
-        compiled.append((re.compile(filter_obj.regex_pattern, flags), filter_obj))
+        pattern = _BoundedFilterPattern(regex.compile(filter_obj.regex_pattern, flags))
+        compiled.append((pattern, filter_obj))
     return compiled
 
 
@@ -1559,12 +1571,22 @@ def refresh_m3u_groups(account_id, use_cache=False, full_refresh=False, scan_sta
 
     lock_renewer = TaskLockRenewer("refresh_m3u_account_groups", account_id)
     lock_renewer.start()
+    try:
+        return _refresh_m3u_groups_locked(
+            account_id, use_cache, full_refresh, scan_start_time
+        )
+    finally:
+        # Every exit, including an unexpected exception (#217), stops the
+        # renewer and releases the lock -- mirrors refresh_single_m3u_account.
+        lock_renewer.stop()
+        release_task_lock("refresh_m3u_account_groups", account_id)
 
+
+def _refresh_m3u_groups_locked(account_id, use_cache, full_refresh, scan_start_time):
+    """Body of refresh_m3u_groups; runs with the group-refresh lock held."""
     try:
         account = M3UAccount.objects.select_related("user_agent").get(id=account_id, is_active=True)
     except M3UAccount.DoesNotExist:
-        lock_renewer.stop()
-        release_task_lock("refresh_m3u_account_groups", account_id)
         return f"M3UAccount with ID={account_id} not found or inactive.", None
 
     extinf_data = []
@@ -1595,8 +1617,6 @@ def refresh_m3u_groups(account_id, use_cache=False, full_refresh=False, scan_sta
             send_m3u_update(
                 account_id, "processing_groups", 100, status="error", error=error_msg
             )
-            lock_renewer.stop()
-            release_task_lock("refresh_m3u_account_groups", account_id)
             return error_msg, None
 
         if not account.username or not account.password:
@@ -1608,8 +1628,6 @@ def refresh_m3u_groups(account_id, use_cache=False, full_refresh=False, scan_sta
             send_m3u_update(
                 account_id, "processing_groups", 100, status="error", error=error_msg
             )
-            lock_renewer.stop()
-            release_task_lock("refresh_m3u_account_groups", account_id)
             return error_msg, None
 
         try:
@@ -1680,8 +1698,6 @@ def refresh_m3u_groups(account_id, use_cache=False, full_refresh=False, scan_sta
                                 status="error",
                                 error=error_msg,
                             )
-                            lock_renewer.stop()
-                            release_task_lock("refresh_m3u_account_groups", account_id)
                             return error_msg, None
 
                         if len(xc_categories) == 0:
@@ -1719,8 +1735,6 @@ def refresh_m3u_groups(account_id, use_cache=False, full_refresh=False, scan_sta
                             status="error",
                             error=error_msg,
                         )
-                        lock_renewer.stop()
-                        release_task_lock("refresh_m3u_account_groups", account_id)
                         return error_msg, None
 
             except Exception as e:
@@ -1736,8 +1750,6 @@ def refresh_m3u_groups(account_id, use_cache=False, full_refresh=False, scan_sta
                     status="error",
                     error=error_msg,
                 )
-                lock_renewer.stop()
-                release_task_lock("refresh_m3u_account_groups", account_id)
                 return error_msg, None
         except Exception as e:
             error_msg = f"Unexpected error occurred in XC Client: {str(e)}"
@@ -1748,15 +1760,11 @@ def refresh_m3u_groups(account_id, use_cache=False, full_refresh=False, scan_sta
             send_m3u_update(
                 account_id, "processing_groups", 100, status="error", error=error_msg
             )
-            lock_renewer.stop()
-            release_task_lock("refresh_m3u_account_groups", account_id)
             return error_msg, None
     else:
         source, success = fetch_m3u_lines(account, use_cache)
         if not success:
             # If fetch failed, don't continue processing
-            lock_renewer.stop()
-            release_task_lock("refresh_m3u_account_groups", account_id)
             return f"Failed to fetch M3U data for account_id={account_id}.", None
 
         valid_stream_count = 0
@@ -1819,9 +1827,6 @@ def refresh_m3u_groups(account_id, use_cache=False, full_refresh=False, scan_sta
     send_m3u_update(account_id, "processing_groups", 0)
 
     process_groups(account, groups, scan_start_time)
-
-    lock_renewer.stop()
-    release_task_lock("refresh_m3u_account_groups", account_id)
 
     if not full_refresh:
         # Use update() instead of save() to avoid triggering signals

@@ -3,10 +3,12 @@ from django.db import models
 from django.core.exceptions import ValidationError
 from core.models import CoreSettings, UserAgent
 import re
+import regex
 from django.dispatch import receiver
 from apps.channels.models import StreamProfile
 from django_celery_beat.models import PeriodicTask
 from core.utils import custom_properties_as_dict
+from .utils import M3U_FILTER_REGEX_TIMEOUT
 
 CUSTOM_M3U_ACCOUNT_NAME = "custom"
 
@@ -197,7 +199,17 @@ class M3UFilter(models.Model):
 
     def applies_to(self, stream_name, group_name):
         target = group_name if self.filter_type == "group" else stream_name
-        return bool(re.search(self.regex_pattern, target, re.IGNORECASE))
+        try:
+            return bool(
+                regex.search(
+                    self.regex_pattern,
+                    target,
+                    regex.IGNORECASE,
+                    timeout=M3U_FILTER_REGEX_TIMEOUT,
+                )
+            )
+        except TimeoutError:
+            return False
 
     def clean(self):
         try:
@@ -316,16 +328,28 @@ class M3UAccountProfile(models.Model):
                     return datetime.fromtimestamp(float(raw_value), tz=timezone.utc)
                 except ValueError:
                     return datetime.fromisoformat(raw_value)
-        except (ValueError, TypeError, OSError):
+        except (ValueError, TypeError, OSError, OverflowError):
+            # OverflowError: datetime.fromtimestamp raises it (not ValueError)
+            # for a value beyond the platform's time_t range (#199) -- e.g. a
+            # provider-sent exp_date of 1e30 or a 24-digit numeric string.
             pass
         return None
 
+    def _user_info(self):
+        """Return custom_properties['user_info'] as a dict.
+
+        A provider's XC response can leave user_info as None, a list or a
+        string (#199); treat anything that is not a dict as absent rather
+        than raising from a bare .get() call on a non-dict value.
+        """
+        if not self.custom_properties:
+            return {}
+        user_info = self.custom_properties.get('user_info', {})
+        return user_info if isinstance(user_info, dict) else {}
+
     def _parse_exp_date_from_custom_properties(self):
         """Extract exp_date from custom_properties JSON."""
-        if not self.custom_properties:
-            return None
-        user_info = self.custom_properties.get('user_info', {})
-        return self._parse_exp_date(user_info.get('exp_date'))
+        return self._parse_exp_date(self._user_info().get('exp_date'))
 
     def get_account_expiration(self):
         """Get account expiration date — uses the dedicated field if set, otherwise parses JSON."""
@@ -335,27 +359,15 @@ class M3UAccountProfile(models.Model):
 
     def get_account_status(self):
         """Get account status from custom properties if available"""
-        if not self.custom_properties:
-            return None
-
-        user_info = self.custom_properties.get('user_info', {})
-        return user_info.get('status')
+        return self._user_info().get('status')
 
     def get_max_connections(self):
         """Get maximum connections from custom properties if available"""
-        if not self.custom_properties:
-            return None
-
-        user_info = self.custom_properties.get('user_info', {})
-        return user_info.get('max_connections')
+        return self._user_info().get('max_connections')
 
     def get_active_connections(self):
         """Get active connections from custom properties if available"""
-        if not self.custom_properties:
-            return None
-
-        user_info = self.custom_properties.get('user_info', {})
-        return user_info.get('active_cons')
+        return self._user_info().get('active_cons')
 
     def get_last_refresh(self):
         """Get last refresh timestamp from custom properties if available"""

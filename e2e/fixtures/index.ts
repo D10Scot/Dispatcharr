@@ -315,7 +315,7 @@
  *       be unique. The same applies to `liveCategories`/`vodCategories`/
  *       `seriesCategories` names, unique globally by `(name, category_type)`.
  *   fault(scenario, name, options?) / clearFault(scenario, name, options?)
- *       → Promise<FaultResult>   arms/disarms one of the twelve `FaultName`s.
+ *       → Promise<FaultResult>   arms/disarms one of the thirteen `FaultName`s.
  *       The original eight (`dead-air`, `slow-trickle`, `disconnect`,
  *       `not-found`, `auth-failure`, `connection-limit`, `redirect-chain`,
  *       `non-ts-bytes`) act on a live stream; `options.channel` scopes one to
@@ -326,6 +326,11 @@
  *       four (`xc-auth-envelope`, `range-unsupported`) are scenario-wide
  *       *only* and **reject** an `options.channel` with a 400, and arming
  *       `catchup-layout-404` requires `options.layout: 'path' | 'query'`.
+ *       The thirteenth, `slow-playlist` (#197), withholds `/playlist.m3u`
+ *       for `options.delayMs` (required when arming, 1–120,000ms), then
+ *       serves it unchanged; it too is scenario-wide *only* and rejects an
+ *       `options.channel` with a 400 — a playlist refresh has no channel to
+ *       narrow to.
  *       `FaultResult`'s `appliedTo` counts only *live* connections actually
  *       reached — **`not-found`, `auth-failure`, `connection-limit`,
  *       `redirect-chain` and `non-ts-bytes` can only affect the next
