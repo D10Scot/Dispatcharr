@@ -19,12 +19,12 @@ import {
  * the plumbing proof that a movie/series/episode row appears at all after an
  * XC refresh — it is untouched here. This file asserts what those rows
  * *contain*, that categories are created correctly with the right per-account
- * relation, and pins the `VODCategoryFilter.m3u_account` defect.
+ * relation, and pins the `VODCategoryFilter.m3u_account` fix.
  *
  * One scenario shape, declared fresh per test via `seedCatalogue()` — not
- * shared as a single seeded fixture — because `test.fail()` in Step 4 must
- * not depend on Step 2/3 having already run in the same test, and a shared
- * `beforeEach` would hide that dependency. Every name is generated:
+ * shared as a single seeded fixture — because Step 4 must not depend on
+ * Step 2/3 having already run in the same test, and a shared `beforeEach`
+ * would hide that dependency. Every name is generated:
  * `VODCategory` is unique on `(name, category_type)` **globally**, and
  * `Movie`/`Series` are matched across *all* accounts by TMDB → IMDB →
  * `(name, year)` when no external id is present — an unscoped name here
@@ -220,10 +220,10 @@ test('a VOD refresh creates one category row per declared category, enabled for 
   // refresh_vod_content is a separate Celery task queued by the 202 above,
   // not completed by it — poll rather than reading once. Unpaginated and
   // instance-global (no pagination_class on VODCategoryViewSet), so the read
-  // must be scoped: VODCategoryFilter.m3u_account is broken (pinned by the
-  // test.fail() below, which is why it cannot be used here either), so
-  // `name` (icontains, scoped by the generated prefix no other worker's
-  // fixture can share) is the only usable filter. Wait for exactly the three
+  // must be scoped: this test deliberately does not depend on the
+  // m3u_account filter the test below pins, so `name` (icontains, scoped by
+  // the generated prefix no other worker's fixture can share) is used here
+  // too. Wait for exactly the three
   // categories this test declared, then locate each with find rather than a
   // length or an index, and assert nothing about a category this test did
   // not declare.
@@ -261,28 +261,25 @@ test('a VOD refresh creates one category row per declared category, enabled for 
   }
 });
 
-// Asserts the behaviour Dispatcharr SHOULD have. VODCategoryFilter
-// (apps/vod/api_views.py:624) declares
+// Pins the fix for #96. VODCategoryFilter (apps/vod/api_views.py) used to
+// declare
 //   m3u_account = NumberFilter(field_name="m3u_account__id")
 // but VODCategory has no `m3u_account` relation — the reverse accessor is
-// `m3u_relations`. The filter is in Meta.fields too, so it imports cleanly
-// and fails only at query time with
+// `m3u_relations`. The filter was in Meta.fields too, so it imported cleanly
+// and failed only at query time with
 //   FieldError: Cannot resolve keyword 'm3u_account' into field. Choices are:
 //   category_type, created_at, id, m3u_relations, m3umovierelation,
 //   m3useriesrelation, name, updated_at
-// MovieFilter and SeriesFilter get this right ("m3u_relations__m3u_account__id");
-// only VODCategoryFilter does not. The frontend never passes the filter,
-// which is why nothing has hit it.
-//
-// test.fail() is satisfied by ANY failure in its body, so a broken premise —
-// the account failing to seed, or /api/vod/categories/ being broken outright
-// — would also turn this green without ever reaching the m3u_account filter.
-// That premise (account creation succeeds, and GET /api/vod/categories/
-// without the filter returns 200 with correctly-related rows) is asserted
-// directly, without inversion, in the category-rows test above.
+// MovieFilter and SeriesFilter always had this right
+// ("m3u_relations__m3u_account__id"); only VODCategoryFilter did not. The
+// frontend never passed the filter, which is why nothing had hit it. The
+// premise this test depends on (account creation succeeds, and
+// GET /api/vod/categories/ without the filter returns 200 with
+// correctly-related rows) is asserted directly, without inversion, in the
+// category-rows test above.
 //
 // Issue: https://github.com/D10Scot/Dispatcharr/issues/96
-test.fail('GET /api/vod/categories/ accepts an m3u_account filter', { tag: '@contract' }, async ({
+test('GET /api/vod/categories/ accepts an m3u_account filter', { tag: '@contract' }, async ({
   upstream,
   seed,
   api,

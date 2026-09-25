@@ -1770,37 +1770,36 @@ def xc_get_vod_info(request, user, vod_id):
             movie.refresh_from_db()
             movie_relation.refresh_from_db()
 
-        # Add detailed info from custom_properties if available
-        if movie.custom_properties:
-            custom_data = movie.custom_properties or {}
+        # Movie.custom_properties carries director/actors/trailer/backdrop;
+        # the relation's detailed_info carries bitrate/video/audio/plot. Read
+        # both unconditionally: gating on the movie's dict dropped the
+        # relation's data whenever the movie had none (#97).
+        custom_data = movie.custom_properties or {}
+        detailed_info = (movie_relation.custom_properties or {}).get('detailed_info', {})
+        # Update movie_data with detailed info
+        movie_data.update({
+            'director': custom_data.get('director') or detailed_info.get('director', ''),
+            'actors': custom_data.get('actors') or detailed_info.get('actors', ''),
+            'country': custom_data.get('country') or detailed_info.get('country', ''),
+            'release_date': custom_data.get('release_date') or detailed_info.get('release_date') or detailed_info.get('releasedate', ''),
+            'youtube_trailer': custom_data.get('youtube_trailer') or detailed_info.get('youtube_trailer') or detailed_info.get('trailer', ''),
+            'backdrop_path': custom_data.get('backdrop_path') or detailed_info.get('backdrop_path', []),
+            'cover_big': detailed_info.get('cover_big', ''),
+            'bitrate': detailed_info.get('bitrate', 0),
+            'video': detailed_info.get('video', {}),
+            'audio': detailed_info.get('audio', {}),
+        })
 
-            # Extract detailed info
-            #detailed_info = custom_data.get('detailed_info', {})
-            detailed_info = movie_relation.custom_properties.get('detailed_info', {})
-            # Update movie_data with detailed info
-            movie_data.update({
-                'director': custom_data.get('director') or detailed_info.get('director', ''),
-                'actors': custom_data.get('actors') or detailed_info.get('actors', ''),
-                'country': custom_data.get('country') or detailed_info.get('country', ''),
-                'release_date': custom_data.get('release_date') or detailed_info.get('release_date') or detailed_info.get('releasedate', ''),
-                'youtube_trailer': custom_data.get('youtube_trailer') or detailed_info.get('youtube_trailer') or detailed_info.get('trailer', ''),
-                'backdrop_path': custom_data.get('backdrop_path') or detailed_info.get('backdrop_path', []),
-                'cover_big': detailed_info.get('cover_big', ''),
-                'bitrate': detailed_info.get('bitrate', 0),
-                'video': detailed_info.get('video', {}),
-                'audio': detailed_info.get('audio', {}),
-            })
+        # Override with detailed_info values where available
+        for key in ['name', 'description', 'year', 'genre', 'rating', 'tmdb_id', 'imdb_id']:
+            if detailed_info.get(key):
+                movie_data[key] = detailed_info[key]
 
-            # Override with detailed_info values where available
-            for key in ['name', 'description', 'year', 'genre', 'rating', 'tmdb_id', 'imdb_id']:
-                if detailed_info.get(key):
-                    movie_data[key] = detailed_info[key]
-
-            # Handle plot vs description
-            if detailed_info.get('plot'):
-                movie_data['description'] = detailed_info['plot']
-            elif detailed_info.get('description'):
-                movie_data['description'] = detailed_info['description']
+        # Handle plot vs description
+        if detailed_info.get('plot'):
+            movie_data['description'] = detailed_info['plot']
+        elif detailed_info.get('description'):
+            movie_data['description'] = detailed_info['description']
 
     except Exception as e:
         logger.error(f"Failed to process movie data: {e}")

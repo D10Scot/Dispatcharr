@@ -51,7 +51,7 @@ test('the XC VOD actions answer a real catalogue with Dispatcharr identities, no
         tmdbId: null,
         imdbId: null,
         // Feeds the provider-info guard below, which exists to cover the
-        // premise of the row-20 test.fail() at the bottom of this file: that
+        // premise of the row-20 test at the bottom of this file: that
         // /api/vod/movies/<pk>/provider-info/ actually reports bitrate.
         vodInfo: { bitrate: 4321 },
       },
@@ -198,13 +198,13 @@ test('the XC VOD actions answer a real catalogue with Dispatcharr identities, no
 
   // --- provider-info: the advanced-data half of the fidelity check --------
   //
-  // The row-20 test.fail() below rests on the premise that
+  // The row-20 test below rests on the premise that
   // /api/vod/movies/<pk>/provider-info/ reports the bitrate the provider's
-  // get_vod_info fetched. Nothing non-inverted asserted that anywhere in the
+  // get_vod_info fetched. Nothing else asserted that anywhere in the
   // suite — the sibling vod-advanced-data.spec.ts guards the advanced fetch
   // via director/actors, not bitrate/video/audio — so a regression in the
-  // bitrate half of that endpoint would leave the inverted pin silently
-  // green instead of red. This assertion is what would catch it.
+  // bitrate half of that endpoint would leave the row-20 test passing for
+  // the wrong reason. This assertion is what would catch it.
   const alphaProviderInfo = await api.json<{ bitrate: number }>(
     await api.get(`/api/vod/movies/${alpha!.id}/provider-info/`),
     'alpha provider-info (advanced data fetch)'
@@ -408,23 +408,23 @@ test('the XC series actions, and the series_id/Movie.pk asymmetry, and adult fil
   ).toBe(true);
 });
 
-// Asserts the behaviour Dispatcharr SHOULD have. `xc_get_vod_info`
-// (apps/output/views.py:1675) gates the whole detailed_info merge on
+// Pins the fix for #97. `xc_get_vod_info` (apps/output/views.py) used to gate
+// the whole detailed_info merge on
 //     if movie.custom_properties:
-// and then, one line later (:1680), reads the data off the *relation*:
+// and then read the data off the *relation*:
 //     detailed_info = movie_relation.custom_properties.get('detailed_info', {})
-// — the wrong object's truthiness. The commented-out :1679 shows the source
-// that was intended. A movie whose provider payload carries none of
-// trailer/director/actors/backdrop has Movie.custom_properties = None
-// (clean_custom_properties({}) returns None, apps/vod/tasks.py:2132), so
-// bitrate, video, audio, cover_big and the plot override never reach an XC
-// client even though refresh_movie_advanced_data just fetched and stored
-// them on the relation. /api/vod/movies/<pk>/provider-info/ reads the same
-// relation and returns them correctly, which is what makes the two
-// disagree.
+// — the wrong object's truthiness. A movie whose provider payload carries
+// none of trailer/director/actors/backdrop has Movie.custom_properties = None
+// (clean_custom_properties({}) returns None, apps/vod/tasks.py), so bitrate,
+// video, audio, cover_big and the plot override never reached an XC client
+// even though refresh_movie_advanced_data had just fetched and stored them on
+// the relation. /api/vod/movies/<pk>/provider-info/ reads the same relation
+// and returns them correctly, which is what made the two disagree. Both
+// dictionaries are now read unconditionally, so this test asserts they still
+// agree.
 //
 // Issue: https://github.com/D10Scot/Dispatcharr/issues/97
-test.fail('XC get_vod_info returns the advanced data the REST API returns (G9 row 20, defect)', { tag: '@contract' }, async ({
+test('XC get_vod_info returns the advanced data the REST API returns (G9 row 20)', { tag: '@contract' }, async ({
   upstream,
   seed,
   api,
@@ -491,12 +491,10 @@ test.fail('XC get_vod_info returns the advanced data the REST API returns (G9 ro
     'movie provider-info (advanced data fetch)'
   );
 
-  // Premise, not the defect under test: a failure on THIS line means the
+  // Premise, not the fix under test: a failure on THIS line means the
   // advanced fetch never happened or the fixture is wrong, not that the
-  // product is broken. test.fail() is satisfied by any failure in this
-  // block, so if this were the assertion that failed, the test would still
-  // report "expected failure" and tell us nothing about the actual defect —
-  // guarding it first, and separately, is what makes the two distinguishable.
+  // product regressed. Guarding it first, and separately, is what makes the
+  // two distinguishable if either one breaks.
   expect(restInfo.bitrate).toBe(4321);
 
   const xcRes = await request.get(
@@ -505,8 +503,8 @@ test.fail('XC get_vod_info returns the advanced data the REST API returns (G9 ro
   expect(xcRes.status()).toBe(200);
   const xcInfo = await xcRes.json();
 
-  // The defect: these should agree with the REST payload above (both read
-  // the same relation's fetched advanced data) and do not.
+  // The fix: these agree with the REST payload above (both read the same
+  // relation's fetched advanced data).
   expect(xcInfo.info.bitrate).toBe(restInfo.bitrate);
   expect(xcInfo.info.video).toEqual(restInfo.video);
   expect(xcInfo.info.audio).toEqual(restInfo.audio);
