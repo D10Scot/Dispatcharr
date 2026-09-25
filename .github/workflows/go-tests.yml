@@ -59,10 +59,12 @@ jobs:
 
       # The same own-built image backend-tests.yml's `plan` job selects
       # (base-image.yml, built from docker/DispatcharrBase): it ships the
-      # production ffmpeg (8.1.2), which the `build` job's container: now
+      # production ffmpeg (9.0), which the `build` job's container: now
       # uses so parity-matrix row 4's real-ffmpeg pin runs against the
-      # version production and the harness capture actually use, not
-      # whatever a bare ubuntu-latest runner's apt carries.
+      # version production actually uses (the harness capture stays a
+      # historical 8.1.2 recording -- relay/internal/relaytest/testdata/
+      # ffmpeg_stderr/, CAPTURE.md), not whatever a bare ubuntu-latest
+      # runner's apt carries.
       - name: Select base image
         id: base_image
         env:
@@ -143,7 +145,7 @@ jobs:
     # backend-tests.yml's `test`/`coverage-label` jobs use), NOT a bare
     # ubuntu-latest runner: parity-matrix row 4's one real-ffmpeg pin
     # (relay/channel/source_transcode_real_test.go) must run against the
-    # product's OWN ffmpeg (8.1.2, docker/DispatcharrBase), not merely
+    # product's OWN ffmpeg (9.0, docker/DispatcharrBase), not merely
     # "any" ffmpeg. A stream-copy progress line's leading token differs by
     # major version -- `frame=` from 7.x on, `size=` on 6.x -- and both
     # relays' progress gate looks for `frame=` verbatim
