@@ -27,10 +27,11 @@ Three timeout budgets, no retries anywhere:
                            next-source call with a 5s read timeout.
                            Three seconds worst case leaves room.
   ADMIN_TIMEOUT   (2, 5)   reads and stops behind an admin request.
-  ADVANCE_TIMEOUT (2, 20)  ChannelService.change_stream_url polls
-                           RedisKeys.switch_status for up to
-                           STREAM_SWITCH_CONFIRM_TIMEOUT = 15s on the
-                           non-owner path before answering.
+  ADVANCE_TIMEOUT (2, 20)  sized for the deleted Python relay, whose
+                           change_stream_url polled a switch-status key
+                           for up to 15s on the non-owner path. The Go
+                           relay answers without that wait; the budget
+                           is unchanged here.
 
 No retry, deliberately: a retried advance switches twice, a retried
 stop doubles an admin's wait for an operation the relay has already
