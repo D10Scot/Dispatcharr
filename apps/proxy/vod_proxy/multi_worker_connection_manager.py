@@ -1347,7 +1347,18 @@ class MultiWorkerVODConnectionManager:
             # returning). The rule was suffix vs. non-suffix, not
             # first-request vs. established; gate on that, not on
             # existing_state.
-            is_suffix_range = bool(range_header) and range_header.startswith("bytes=-")
+            #
+            # Strip the same leading whitespace byte_range.resolve_range()
+            # strips before deciding suffix-ness (its `spec = ...strip()`),
+            # so "bytes= -100" (a space after "=") is a suffix to this check
+            # the same way it is a suffix there -- a second, looser rule here
+            # would otherwise record a seek for a header the resolver treats
+            # as a suffix.
+            is_suffix_range = (
+                bool(range_header)
+                and range_header.startswith("bytes=")
+                and range_header[len("bytes="):].strip().startswith("-")
+            )
             if not is_suffix_range and plan.start and plan.total:
                 start, full_content_size = plan.start, plan.total
                 try:

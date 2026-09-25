@@ -189,11 +189,18 @@ class VodRangeResponseTests(SimpleTestCase):
     # pin all four cells of that suffix x established matrix.
 
     def test_a_first_request_suffix_range_does_not_record_seek_info(self):
-        response = self._get("bytes=-100")
-        b"".join(response.streaming_content)
-        state = self._seek_state()
-        self.assertEqual(state.last_seek_byte, 0)
-        self.assertEqual(state.last_seek_percentage, 0.0)
+        # "bytes= -100" (a space after "=") is a suffix to
+        # byte_range.resolve_range(), which strips it -- the gate must strip
+        # the same way, or this header would be misclassified as non-suffix
+        # and its resolved start (900) would get recorded.
+        for i, header in enumerate(("bytes=-100", "bytes= -100")):
+            with self.subTest(range_header=header):
+                self.SESSION = f"vod_1_{i + 1}"
+                response = self._get(header)
+                b"".join(response.streaming_content)
+                state = self._seek_state()
+                self.assertEqual(state.last_seek_byte, 0)
+                self.assertEqual(state.last_seek_percentage, 0.0)
 
     def test_an_established_session_suffix_range_does_not_record_seek_info(self):
         self._establish()
