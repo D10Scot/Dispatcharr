@@ -192,34 +192,15 @@ test('wrong XC credentials against the movie route are a 401, not a 500', { tag:
   expect(res.status()).toBe(401);
 });
 
-// Asserts the behaviour Dispatcharr SHOULD have. `stream_xc_episode`
-// (apps/proxy/vod_proxy/views.py:1449-1454) wraps its lookup in
-//     try: episode_relation = M3UEpisodeRelation.objects.filter(...).first()
-//     except M3UEpisodeRelation.DoesNotExist: return 404
-// but `.first()` returns None and never raises DoesNotExist, so the guard is
-// dead: the next line dereferences `episode_relation.episode`, raising
-// AttributeError, and the client gets a 500. `stream_xc_movie`, four
-// functions above, does the same lookup and correctly checks `if not
-// movie_relation` before returning 404. One guard clause closes it, and this
-// test goes green when it lands.
+// Asserts the behaviour Dispatcharr SHOULD have, and now does. `stream_xc_episode`
+// wrapped its `M3UEpisodeRelation.objects.filter(...).first()` lookup in
+// `except M3UEpisodeRelation.DoesNotExist`, which `.first()` never raises, so
+// the guard was dead: the next line dereferenced the `None` it returned,
+// raising `AttributeError`, and the client got a 500. It now uses the `if not
+// episode_relation` guard `stream_xc_movie` already had, and answers 404.
 //
-// Deliberate departure from the plan: the spec asked to fold this into row
-// 14's assertions while also saying row 14 "will go green on the fix" — both
-// cannot be true if row 14 must fail today. Splitting it here keeps row 14
-// (above) green and still pins the defect, at the cost of one more
-// test.fail() in the goal.
-//
-// Issue: https://github.com/D10Scot/Dispatcharr/issues/99
-//
-// test.fail() caveat: it is satisfied by ANY failure in the body, guards
-// included — so a broken premise, not just the intended assertion, would
-// also read as "expected failure" and this test would go green while proving
-// nothing. The premise (that the route, credentials, and a real episode id
-// all work) is proven separately by assertion 5 of the passing test above,
-// so nothing here needs to re-guard it. Verified with --reporter=json that
-// this pin fails at the `toBe(404)` assertion below, not before it —
-// re-verify the same way after any edit here.
-test.fail('an unknown episode id on the XC series route is a 404, not a 500', { tag: '@contract' }, async ({
+// Issue: https://github.com/D10Scot/Dispatcharr/issues/99 — closed by this PR.
+test('an unknown episode id on the XC series route is a 404, not a 500', { tag: '@contract' }, async ({
   upstream,
   seed,
   api,

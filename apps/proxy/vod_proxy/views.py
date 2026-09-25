@@ -1519,11 +1519,11 @@ def stream_xc_episode(request, username, password, stream_id, extension):
     # Content resolution stays here on purpose: the hop resolves the
     # principal, not the content object (spec § ORM reads that remain).
     filters = {"episode_id": stream_id, "m3u_account__is_active": True}
-    try:
-        episode_relation = M3UEpisodeRelation.objects.select_related('episode').filter(
-            **filters
-        ).order_by('-m3u_account__priority', 'id').first()
-    except M3UEpisodeRelation.DoesNotExist:
+    episode_relation = M3UEpisodeRelation.objects.select_related('episode').filter(
+        **filters
+    ).order_by('-m3u_account__priority', 'id').first()
+    if not episode_relation:
+        # .first() returns None on no match; it never raises DoesNotExist (#99).
         return JsonResponse({"error": "Episode not found"}, status=404)
 
     return stream_vod(
