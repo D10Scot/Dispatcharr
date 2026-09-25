@@ -426,11 +426,11 @@ def apply_matched_epg_to_channels(channels_to_update_dicts):
 
 
 def get_preferred_region_code():
-    try:
-        region_obj = CoreSettings.objects.get(key="preferred-region")
-        return region_obj.value.strip().lower()
-    except CoreSettings.DoesNotExist:
+    region = CoreSettings.get_preferred_region()
+    if not isinstance(region, str):
         return None
+    region = region.strip().lower()
+    return region or None
 
 
 def _fuzzy_scan_core(chan_norm, rows, region_code=None, candidate_limit=ML_CANDIDATE_LIMIT):
