@@ -765,7 +765,7 @@ class GetClientIpTests(SimpleTestCase):
         return request
 
     def test_untrusted_peer_ignores_spoofed_x_real_ip(self):
-        """Public peers never get header trust, even with default local CIDRs."""
+        """Public peers never get header trust, even with the default trusted set."""
         from dispatcharr.utils import get_client_ip
 
         with patch.dict("os.environ"):

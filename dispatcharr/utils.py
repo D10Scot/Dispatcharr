@@ -37,7 +37,7 @@ _trusted_proxies_key = None
 _trusted_proxies_networks = ()
 
 # Sentinel values for DISPATCHARR_TRUSTED_PROXIES when explicitly disabling
-# header trust (env unset still means default local CIDRs).
+# header trust (env unset still means the loopback default, _DEFAULT_TRUSTED_PROXIES).
 _TRUSTED_PROXIES_NONE = frozenset({"", "none", "off", "false", "0"})
 
 
