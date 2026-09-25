@@ -1222,7 +1222,7 @@ def extract_year(date_string):
     if not date_string:
         return None
     try:
-        return int(date_string.split('-')[0])
+        return int(str(date_string).split('-')[0])
     except (ValueError, IndexError):
         return None
 

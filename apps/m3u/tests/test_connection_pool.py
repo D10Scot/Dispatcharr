@@ -4,6 +4,8 @@ from django.test import TestCase
 from unittest.mock import patch
 
 from apps.m3u.connection_pool import (
+    _safe_decr,
+    compute_credential_fingerprint,
     extract_credentials_from_stream_url,
     get_credential_connection_count,
     get_enforced_server_group_for_profile,
@@ -592,3 +594,89 @@ class VodProfileSelectionTests(TestCase):
         self.assertIsNotNone(result)
         selected, _connections = result
         self.assertEqual(selected.id, alt.id)
+
+
+class CredentialFingerprintCasefoldTests(TestCase):
+    """#68: compute_credential_fingerprint must be Unicode-caseless, not just
+    lower()-equal -- .lower()/.upper() are not inverse-closed for ~1,531
+    codepoints, so a username differing only by case could escape the shared
+    ServerGroup cap."""
+
+    def test_fingerprint_groups_usernames_that_differ_only_by_unicode_case(self):
+        # Shrunk counterexample from #68: U+00B5 MICRO SIGN uppercases to
+        # U+039C GREEK CAPITAL MU, which lowercases to U+03BC GREEK SMALL
+        # LETTER MU -- never back to U+00B5. casefold() maps both forms to
+        # U+03BC.
+        micro_sign = "µ"
+        fp_lower = compute_credential_fingerprint(micro_sign, "0")
+        fp_upper = compute_credential_fingerprint(micro_sign.upper(), "0")
+        self.assertEqual(fp_lower, fp_upper)
+
+    def test_ascii_case_variants_still_group(self):
+        fp_lower = compute_credential_fingerprint("alice", "0")
+        fp_upper = compute_credential_fingerprint("ALICE", "0")
+        self.assertEqual(fp_lower, fp_upper)
+
+
+class CredentialCounterRepairTests(TestCase):
+    """#146: a credential counter that has drifted below zero (no TTL) must
+    be repaired on sight, both on release (_safe_decr) and on reserve (the
+    INCR-first path in _reserve_server_group_slot_for_profile), or the
+    ServerGroup cap stays lifted until the counter climbs back past zero on
+    its own."""
+
+    def test_safe_decr_repairs_a_counter_already_below_zero(self):
+        redis = FakeRedis()
+
+        redis.set("negative_one", -1)
+        _safe_decr(redis, "negative_one")
+        self.assertEqual(int(redis.get("negative_one")), 0)
+
+        # The issue's own counterexample.
+        redis.set("negative_three", -3)
+        _safe_decr(redis, "negative_three")
+        self.assertEqual(int(redis.get("negative_three")), 0)
+
+    def test_negative_credential_counter_does_not_lift_the_cap(self):
+        group = ServerGroup.objects.create(name="negative-drift")
+        account1 = M3UAccount.objects.create(
+            name="Negative drift account 1",
+            account_type="XC",
+            username="user",
+            password="pass",
+            server_url="http://xc.example.com",
+            server_group=group,
+            max_streams=5,
+        )
+        account2 = M3UAccount.objects.create(
+            name="Negative drift account 2",
+            account_type="XC",
+            username="user",
+            password="pass",
+            server_url="http://xc.example.com",
+            server_group=group,
+            max_streams=5,
+        )
+        profile1 = M3UAccountProfile.objects.get(
+            m3u_account=account1, is_default=True
+        )
+        profile1.max_streams = 1
+        profile1.save()
+        profile2 = M3UAccountProfile.objects.get(
+            m3u_account=account2, is_default=True
+        )
+        profile2.max_streams = 1
+        profile2.save()
+
+        redis = FakeRedis()
+        fp = get_profile_credential_fingerprint(profile1)
+        cred_key = server_group_connections_key(group.id, fp)
+        # The issue's own counterexample: a counter drifted to -3 with no TTL.
+        redis.set(cred_key, -3)
+
+        reserved1, _, _ = reserve_profile_slot(profile1, redis)
+        self.assertTrue(reserved1)
+
+        reserved2, _, reason2 = reserve_profile_slot(profile2, redis)
+        self.assertFalse(reserved2)
+        self.assertEqual(reason2, "credential_full")
