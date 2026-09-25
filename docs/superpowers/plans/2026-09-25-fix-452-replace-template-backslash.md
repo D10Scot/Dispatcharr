@@ -1,5 +1,9 @@
 # Fix plan, #452 — a backslash in an M3U replace template is literal text, by ruling
 
+> **For agentic workers:** implement this plan with a `sonnet` implementer, escalate a stuck one to
+> `opus`, and have a `fable` (or `opus`) reviewer pass the PR against this plan before it lands, per
+> CLAUDE.md § Delegation for phase work. Task steps are numbered; tick them off in the PR description.
+
 **Goal.** Close the half of #171 that #440 left open. #440 made `$0`/`$01` safe by adopting JavaScript's
 `$n` grammar for the *dollar* tokens, but every replace template still reaches Python's regex
 replacement-template parser with its backslashes intact, so `\0` puts a NUL byte into a stream URL,
@@ -63,7 +67,11 @@ report, never a judgement call.
    occupancy check (`docker ps --filter name=dispatcharr-testrunner` plus mtimes); for runs you launch
    yourself prefer a private container:
    `DISPATCHARR_TEST_CONTAINER=fix-452 DISPATCHARR_TEST_DB_VOLUME=fix-452-db CLAUDE_HOOK_REPO_ROOT=<wt> .claude/hooks/start-test-container.sh`,
-   then `docker exec -w /repo fix-452 python manage.py test --keepdb <label>`.
+   then `docker exec -w /repo -e DJANGO_SECRET_KEY=hook-test-secret fix-452 python manage.py test --keepdb <label>`.
+   **Every `manage.py` exec must carry `-e DJANGO_SECRET_KEY=hook-test-secret`** (the container bakes
+   none in, and `manage.py check` and `manage.py test` both die with `The SECRET_KEY setting must not
+   be empty.` without it — measured at seed; `scripts/coverage_live_path_isolated.sh:18-23` records
+   the same rule and `.claude/hooks/run-affected-tests.sh:121` is where the hook supplies it).
    Run one label at a time and **once without `--keepdb`** before push (the seeded-row drift trap;
    the #440 review reproduced the `--keepdb` ledger artefact on exactly this label pair).
 7. **Gate 2.** `apps/proxy/next_source.py` is in `scripts/coverage_live_path.coveragerc:44`. Run
@@ -143,7 +151,9 @@ detail. What it would need, so its size is visible: a `validate_replace_pattern`
 writes `ChannelGroupM3UAccount.custom_properties["name_replace_pattern"]`; a refusal in
 `dispatcharr/consumers.py`'s `m3u_profile_test` branch; a point-of-use guard in the helper for rows at
 rest; a documented grammar in the two UI descriptions and in the helper docstring; and it leaves
-grounds 2 above unfixed. If the user rules for (b), this plan is re-issued; no task below survives as
+grounds 2 above unfixed and F3 open — `IndexError` is not a `regex.error` subclass, so both rename
+`except` clauses (`tasks.py:2638`, `api_views.py:434`) would need it added. If the user rules for
+(b), this plan is re-issued; no task below survives as
 written.
 
 ### Ruling 2 — default: no data migration; an audit query instead
@@ -232,7 +242,7 @@ files before pushing; the nearest known neighbours:
 |---|---|---|
 | `apps/m3u/tasks.py` | fixplan E's remaining PRs (lock messages around `:1555`, `:3502-3514`, `:3891`) | None at function level; this plan edits two lines inside `get_transformed_credentials` (`:3119-3120`). |
 | `apps/proxy/next_source.py` | J-3's `test_tune_path_query_ledger.py` pins the module's *model* imports by qualname and its `.objects` count | None by construction: the import this plan touches is a function, and no ORM read is added. |
-| `apps/proxy/vod_proxy/views.py` | fixplan B/D hunks at `:862`, `:1410`, `:1447`, `:1468-1478` | Context-only rebase at worst; `_transform_url` is at `:621-647`. |
+| `apps/proxy/vod_proxy/views.py` | fixplan B/D hunks at `:862`, `:1410`, `:1447`, `:1468-1478` | Context-only rebase at worst; `_transform_url` is at `:621-646`. |
 
 ---
 
@@ -272,11 +282,12 @@ and falls back to the original URL. All pre-existing, all recorded in the ADR.
 1. `cd /Users/dion/git/Dispatcharr && git worktree add .worktrees/fix-452 -b fix/452-replace-template-backslash main`.
    Confirm `git -C .worktrees/fix-452 log -1 --format=%H` is the seed or a descendant of it
    (`git merge-base --is-ancestor 36e4ce10 HEAD`).
-2. Start the private container (constraint 6). `docker exec -w /repo fix-452 python manage.py check`
+2. Start the private container (constraint 6).
+   `docker exec -w /repo -e DJANGO_SECRET_KEY=hook-test-secret fix-452 python manage.py check`
    must exit 0 before anything else.
 3. Reproduce at seed, so the PR description can quote it:
    ```
-   docker exec -w /repo -e DJANGO_SETTINGS_MODULE=dispatcharr.settings_test -e TEST_USE_SQLITE=1 fix-452 \
+   docker exec -w /repo -e DJANGO_SECRET_KEY=hook-test-secret -e DJANGO_SETTINGS_MODULE=dispatcharr.settings_test -e TEST_USE_SQLITE=1 fix-452 \
      python -c "import django; django.setup(); import logging; logging.disable(logging.CRITICAL)
    from apps.proxy.next_source import transform_url
    print(repr(transform_url('a', '(a)', '[\\\\0]')))"
@@ -319,7 +330,7 @@ and falls back to the original URL. All pre-existing, all recorded in the ADR.
    `convert_js_replacement_template` (`next_source.py:31` module-level; `vod_proxy/views.py:626`
    function-local; `tasks.py:34` module-level — check nothing else in `tasks.py` still needs the old
    name: the rename site at `:2631` does, so `tasks.py` imports **both**).
-2. `docker exec -w /repo fix-452 python manage.py check` — exit 0 (the boot trap: `next_source.py`
+2. `docker exec -w /repo -e DJANGO_SECRET_KEY=hook-test-secret fix-452 python manage.py check` — exit 0 (the boot trap: `next_source.py`
    already imported `apps.m3u.utils` at seed, so no new module enters its closure).
 3. **Break-check (ordering).** In `convert_js_replacement_template` swap the escape and named-group
    steps (`numbered(escape(named(t)))`). `test_named_group_rewrite_runs_after_backslash_escaping`
@@ -341,7 +352,7 @@ and falls back to the original URL. All pre-existing, all recorded in the ADR.
    - `test_vod_transform_named_token_still_substitutes`.
 3. In `apps/m3u/tests/test_replace_template_backslash.py`, class
    `GetTransformedCredentialsBackslashTests(TestCase)`, modelled on
-   `test_js_backreference_conversion.py:60-82` (account via `M3UAccount.objects.create`, default
+   `test_js_backreference_conversion.py:61-83` (account via `M3UAccount.objects.create`, default
    profile from the `post_save` signal): the XC simple-mode shape, `search_pattern="myuser/mypass"`,
    `replace_pattern="myuser/p\\0ss"`; assert `transformed_password == "p\\0ss"`, no `\x00` in either
    credential, and `transformed_username == "myuser"`. Docstring: grounds 2 of the ruling — this is the
@@ -395,10 +406,16 @@ No assertion, `max_examples` or `except` clause changes; the one `@example` adde
 Create `docs/adr/0007-m3u-replace-templates-use-javascripts-substitution-grammar.md` in the house
 shape (`# 7. <title>`, `Date: 2026-09-25`, `## Status` Accepted, `## Context`, `## Decision`,
 `## Consequences`), from § The ruling above: Context is #171/#440 plus the three previews; Decision
-is (a) in one sentence plus the token list; Consequences list (i) the migration note and the audit
-query, (ii) the sixth site as a filed follow-up, (iii) the recorded divergences that remain (`$$`,
-`$&`, `` $` ``, `$'`, the two-digit fallback, `$<missing>`), (iv) that `apps/m3u/utils.py` is the only
-place the grammar is implemented and the property test is what enforces it. Under 120 lines. No
+is (a) in one sentence plus the token list **per field**: the three URL fields (M3U-profile
+`replace_pattern` on the live, VOD and XC-credential transforms) take `$n`, `$nn` and `$<name>`; the
+two rename fields (`name_replace_pattern` on the auto-sync rename and its preview) take `$n` and
+`$nn` only, and `$<name>` is literal there as it always was. Consequences list (i) the migration note
+and the audit query, (ii) the sixth site as a filed follow-up, (iii) the recorded divergences that
+remain (`$$`, `$&`, `` $` ``, `$'`, the two-digit fallback, `$<missing>`), (iv) that
+`apps/m3u/utils.py` is the only place the grammar is implemented, that
+`test_property_backreferences.py` enforces the rename variant (it exercises only
+`convert_js_numbered_backreferences`, `:84`) and that `test_replace_template_backslash.py` pins the
+URL variant and the escape-first ordering. Under 120 lines. No
 test; `python scripts/ci_backend_test_labels.py docs/adr/0007-….md` is `[]`, so the commit gate runs
 nothing for it — commit it with the code, not alone.
 
@@ -409,8 +426,10 @@ nothing for it — commit it with the code, not alone.
    `statements` one lower than at your base (one statement deleted in `next_source.py`). Paste the
    result line.
 2. Each of the three labels once **without** `--keepdb`, plus the `tests` label (routes
-   `tests/test_websocket_consumer_filter.py`, which drives `transform_url` through the WebSocket
-   preview; CI does not route it for these paths, so run it yourself as #440 did).
+   `tests/test_websocket_consumer_filter.py`, whose `m3u_profile_test` cases mock `transform_url`
+   (`:232-236`) or drive it with `$n` templates only — the run is #440-style parity, not coverage of
+   this PR's change, so do not report it as such; CI does not route it for these paths, so run it
+   yourself as #440 did).
 3. `python scripts/check_credential_logging.py` over the touched `.py` files (the edit hook runs it;
    confirm exit 0 in the log).
 4. Stage; commit with the message in § PR section; push; open the PR as a **draft** against `main`
@@ -435,7 +454,7 @@ nothing for it — commit it with the code, not alone.
 - **Commit message** (first line under 72 characters):
 
   ```
-  fix(m3u,proxy): a backslash in a replace template is literal, per ADR 0007 (#452)
+  fix(m3u,proxy): backslash in a replace template is literal (#452)
   ```
 
 - **PR description draft.**
@@ -446,7 +465,8 @@ nothing for it — commit it with the code, not alone.
   > parser, so `\0` put a NUL byte into a stream URL, `\x01` a control byte and `\n` a newline, while
   > the SPA's own preview (`String.prototype.replace`) showed the operator literal text. This PR
   > adopts the ruling in ADR 0007: **a replace template is JavaScript's replacement grammar in full —
-  > `$1`–`$99`, `$01`–`$09` and `$<name>` substitute; every other character, backslash included, is
+  > `$1`–`$99` and `$01`–`$09` substitute, plus `$<name>` on the three URL fields (never on the two
+  > rename fields, where it was always literal); every other character, backslash included, is
   > literal.** One helper module implements it (`apps/m3u/utils.py`: escape, then `$<name>`, then
   > `$n`; the order is load-bearing and pinned), the three URL sites call the new
   > `convert_js_replacement_template` and lose their own `$<name>` line, and the two rename sites gain
@@ -503,6 +523,11 @@ nothing for it — commit it with the code, not alone.
 3. **The F2 divergences** (`$$`, `$&`, `` $` ``, `$'`, the two-digit fallback) and `$<missing>` raising
    where JS gives `""`: pre-existing, now recorded in the ADR; an issue if anyone wants them.
 4. **`$<name>` name grammar** is `[^>]+` here and an identifier in JS. Cosmetic.
+5. **XC simple mode's `search_pattern` is unescaped too.** `applyXcSimplePatterns`
+   (`M3uProfileUtils.js:146`) writes the *base* username and password verbatim into the regex
+   `search_pattern`, so a base password containing a regex metacharacter never matches and the
+   profile silently does nothing. Grounds 2 of the ruling fixes the *replace* side only; this is a
+   separate defect on the search side and ADR 0007 must not imply simple mode is round-trip safe.
 
 ---
 
