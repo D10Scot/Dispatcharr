@@ -1335,15 +1335,20 @@ class MultiWorkerVODConnectionManager:
                 logger.info(f"[{client_id}] Worker {self.worker_id} - Set Content-Range: {plan.content_range}, Content-Length: {plan.content_length}")
 
             # Store range information for the VOD stats API to calculate position.
-            # Gated to an already-established session (existing_state, read before
-            # this request): plan.start/plan.total can now come from the
-            # provider's own Content-Range even on a session's first request
-            # (e.g. a first-request suffix range, #64), which the old
-            # `if state.content_length:` + `if start > 0:` gate never recorded
-            # against, because the pre-fix header block re-derived `start` from
-            # the client's raw, unresolved Range string and got 0 for a suffix.
-            # Preserve that behaviour rather than widen what gets recorded.
-            if existing_state and plan.start and plan.total:
+            # Skipped for a suffix Range (bytes=-N), matching the pre-fix
+            # behaviour exactly: the old header block re-derived `start` from
+            # the client's raw, unresolved Range string, and a suffix's empty
+            # start_str always produced start=0, so `if start > 0:` never
+            # fired for a suffix -- on a first request OR an established
+            # session. It DID fire for a non-suffix range (e.g. bytes=100-199)
+            # on a first request too, because state.content_length is already
+            # populated by the time this block runs (get_stream() captures it
+            # from the provider's Content-Range/Content-Length before
+            # returning). The rule was suffix vs. non-suffix, not
+            # first-request vs. established; gate on that, not on
+            # existing_state.
+            is_suffix_range = bool(range_header) and range_header.startswith("bytes=-")
+            if not is_suffix_range and plan.start and plan.total:
                 start, full_content_size = plan.start, plan.total
                 try:
                     position_percentage = (start / full_content_size) * 100
