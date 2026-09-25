@@ -73,16 +73,15 @@ test('/output/m3u renders a parseable playlist with a well-formed proxy URL', { 
   // matters: a channel whose auto-assignment silently did not happen.
   expect(mine!.attributes['group-title']).toBe('Default Group');
 
-  // Rename round-trip. The quote-escaping pin below (#80) PATCHes this same
-  // route, `/api/channels/channels/<id>/`, with a name — but inside its own
-  // test.fail() block, where a regression in the PATCH-and-persist mechanism
-  // itself (not just in quote escaping) would be swallowed as "expected
-  // failure" and never surface. This proves the mechanism for an ordinary
-  // name, with no quote character, through the API alone: the PATCH is
-  // accepted, and the rename actually persists on a read-back. No second
-  // `/output/m3u` fetch here — that route's 2-second anonymous cache (see the
-  // `m3uQuery()` note at the top of this test) would make a second fetch a
-  // source of flake, and the API alone already proves the rename.
+  // Rename round-trip. The #80 test below (a `test.fail()` pin until #427)
+  // PATCHes this same route, `/api/channels/channels/<id>/`, with a name.
+  // This proves the PATCH-and-persist mechanism for an ordinary name, with
+  // no quote character, through the API alone, independently of that test's
+  // own body: the PATCH is accepted, and the rename actually persists on a
+  // read-back. No second `/output/m3u` fetch here — that route's 2-second
+  // anonymous cache (see the `m3uQuery()` note at the top of this test)
+  // would make a second fetch a source of flake, and the API alone already
+  // proves the rename.
   const newName = seed.generatedName('output-m3u-renamed');
   const renamed = await api.patch(`/api/channels/channels/${channel.id}/`, {
     name: newName,
@@ -161,9 +160,8 @@ test(
     expect(patched.status()).toBe(200);
 
     // Same shared 2-second anonymous cache key as the first test in this
-    // file. Without a buster a stale hit makes `mine` undefined, and under
-    // test.fail() that reads as the pin holding for a reason that has nothing
-    // to do with quote escaping.
+    // file. Without a buster a stale hit makes `mine` undefined — a false
+    // failure unrelated to quote escaping.
     const res = await request.get(`/output/m3u${m3uQuery()}`);
     expect(res.status()).toBe(200);
 

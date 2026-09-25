@@ -152,21 +152,17 @@ test('the EPG actions 404 without a stream_id', { tag: '@contract' }, async ({ s
   }
 });
 
-// The non-inverted control for the test.fail() below ('a profiled user sees
-// the category of every channel it can list'): get_live_streams filters
-// `user_level__lte=user.user_level` in every branch, so it should
-// list a level-1 channel for a profiled level-1 user — the pin's own
-// premise assertion, currently reachable only inside its test.fail() body.
-// The test at the top of the file ('the XC live catalogue lists a seeded
+// The non-inverted control for 'a profiled user sees the category of every
+// channel it can list' below (a `test.fail()` pin until #427):
+// get_live_streams filters `user_level__lte=user.user_level` in every
+// branch, so it should list a level-1 channel for a profiled level-1
+// user — the same premise that test's own body establishes before
+// asserting on the category, duplicated here as its own assertion. The
+// test at the top of the file ('the XC live catalogue lists a seeded
 // channel under its own category') also calls xcLiveStreams with a
 // profiled user, but against a user_level 0 channel, so it does not
 // exercise this at level-1 — and no other *non-inverted* test in this file
-// calls xcLiveStreams at level-1: the pin below does too, but from inside
-// its own test.fail() body, which is exactly the gap this control closes,
-// not a second control. A break in this listing (not just in category
-// assignment) would be swallowed by the pin below as an "expected failure",
-// since test.fail() is satisfied by ANY failure in its body, not
-// specifically the category defect it exists to pin.
+// calls xcLiveStreams at level-1.
 test('a profiled level-1 user lists a level-1 channel', { tag: '@contract' }, async ({
   seed,
   request,
@@ -198,10 +194,10 @@ test('a profiled user sees the category of every channel it can list', { tag: '@
   const profile = await seed.channelProfile();
   const user = await seed.xcUser({ user_level: 1, channel_profiles: [profile.id] });
 
-  // Establish the premise before asserting the defect: the channel really is
-  // visible to this user. Without this, a missing category could equally mean
-  // the channel was filtered out for an unrelated reason, and the test would
-  // indict the wrong line.
+  // Establish the premise before asserting on the category: the channel
+  // really is visible to this user. Without this, a missing category could
+  // equally mean the channel was filtered out for an unrelated reason, and
+  // the test would indict the wrong line.
   const streams = await xcLiveStreams(request, user);
   expect(streams.map((s) => s.stream_id)).toContain(channel.id);
 

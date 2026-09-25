@@ -41,16 +41,23 @@ class M3UAttributeQuotingTests(OutputEndpointTestMixin, TestCase):
         # This channel is the only one in the playlist, so an unescaped
         # quote corrupting its own #EXTINF line can't be masked, or
         # confused with another entry's, by a second channel sharing the
-        # profile.
+        # profile. tvg_id and tvc_guide_stationid also carry a quote, and
+        # ?tvg_id_source=tvg_id routes the raw tvg_id value into the
+        # tvg-id attribute (the default source is the channel number,
+        # which can't carry a quote) — between them, four of the five
+        # quotable attributes are exercised (tvg-logo is a URL and is not
+        # given a quote here).
         group = ChannelGroup.objects.create(name='World "Feed" News')
         channel = self._add_channel_to_profile(
             self.profile,
             group,
             channel_number=1.0,
             name='Chan "Quoted" Name',
+            tvg_id='id-"42"',
+            tvc_guide_stationid='station-"7"',
         )
 
-        response = self.client.get(self._m3u_url())
+        response = self.client.get(f"{self._m3u_url()}?tvg_id_source=tvg_id")
         self.assertEqual(response.status_code, 200)
 
         entry = self._entry_for(channel, _response_text(response))
@@ -64,9 +71,20 @@ class M3UAttributeQuotingTests(OutputEndpointTestMixin, TestCase):
         self.assertEqual(
             entry["attributes"]["group-title"], "World &quot;Feed&quot; News"
         )
+        self.assertEqual(entry["attributes"]["tvg-id"], "id-&quot;42&quot;")
+        self.assertEqual(
+            entry["attributes"]["tvc-guide-stationid"], "station-&quot;7&quot;"
+        )
         self.assertEqual(
             set(entry["attributes"]),
-            {"tvg-id", "tvg-name", "tvg-logo", "tvg-chno", "group-title"},
+            {
+                "tvg-id",
+                "tvg-name",
+                "tvg-logo",
+                "tvg-chno",
+                "tvc-guide-stationid",
+                "group-title",
+            },
             "no attribute should have spilled from an unescaped quote",
         )
         # The display name after the comma is raw, not escaped: it runs to
