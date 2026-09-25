@@ -93,6 +93,27 @@ class EventBatchWritesSystemEventRowsTests(TestCase):
         self.assertEqual(str(row.channel_id), channel_id)
         self.assertNotIn("stream_hash", row.details)
 
+    def test_a_details_stream_hash_cannot_shadow_the_posted_identifier(self):
+        """A hand-built batch (or a future relay) could put its own
+        stream_hash inside details. The posted channel_id is the truth
+        about what the channel was tuned by; a value already sitting in
+        details must not survive over it."""
+        from core.relay_events import apply_event_batch
+
+        stream_hash = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
+        apply_event_batch(
+            [
+                {
+                    "type": "channel_start",
+                    "channel_id": stream_hash,
+                    "details": {"stream_hash": "not-the-real-hash"},
+                }
+            ]
+        )
+
+        row = SystemEvent.objects.get()
+        self.assertEqual(row.details["stream_hash"], stream_hash)
+
     def test_an_unknown_event_type_is_counted_as_rejected_not_raised(self):
         from core.relay_events import apply_event_batch
 

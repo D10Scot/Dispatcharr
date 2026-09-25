@@ -77,7 +77,12 @@ def _channel_uuid(value, details):
     try:
         uuid.UUID(str(value))
     except ValueError:
-        details.setdefault("stream_hash", value)
+        # Overwrite, not setdefault: the posted channel_id is the truth
+        # about what the channel was tuned by. A hand-built batch (or a
+        # future relay) could put its own stream_hash inside details, and
+        # that value must not survive over the one this event was
+        # actually raised for (pr-review round 1, #406).
+        details["stream_hash"] = value
         return None
     return value
 
