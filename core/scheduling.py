@@ -13,6 +13,25 @@ from core.models import CoreSettings
 logger = logging.getLogger(__name__)
 
 
+def get_or_create_schedule(model, **lookup):
+    """get_or_create for django_celery_beat's schedule tables.
+
+    IntervalSchedule, CrontabSchedule and ClockedSchedule carry no uniqueness
+    constraint beyond the primary key, so Django's get_or_create has no
+    IntegrityError to fall back on: two concurrent callers both insert, and
+    every later get() raises MultipleObjectsReturned -- a permanent 500 on
+    source creation (#7) or a silently unscheduled recording (#131). Take
+    the oldest matching row instead; a concurrent insert can still add a
+    duplicate, but a duplicate is no longer fatal. A never-chosen duplicate
+    stays in the table, harmlessly: the orphan cleanups below run only on a
+    task's previous schedule, not as a sweep.
+    """
+    existing = model.objects.filter(**lookup).order_by("id").first()
+    if existing is not None:
+        return existing
+    return model.objects.create(**lookup)
+
+
 def parse_cron_expression(cron_expression):
     """
     Parse a 5-part cron expression into its components.
@@ -88,7 +107,8 @@ def create_or_update_periodic_task(
         cron_parts = parse_cron_expression(cron_expression)
         system_tz = CoreSettings.get_system_time_zone()
 
-        crontab, _ = CrontabSchedule.objects.get_or_create(
+        crontab = get_or_create_schedule(
+            CrontabSchedule,
             minute=cron_parts["minute"],
             hour=cron_parts["hour"],
             day_of_week=cron_parts["day_of_week"],
@@ -118,7 +138,8 @@ def create_or_update_periodic_task(
 
     else:
         # ---- Interval-based schedule ----
-        interval, _ = IntervalSchedule.objects.get_or_create(
+        interval = get_or_create_schedule(
+            IntervalSchedule,
             every=max(int(interval_hours), 1) if interval_hours else 1,
             period=IntervalSchedule.HOURS,
         )

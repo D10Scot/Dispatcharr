@@ -18,14 +18,12 @@ from .models import (
     STREAM_SETTINGS_KEY,
     DVR_SETTINGS_KEY,
     NETWORK_ACCESS_KEY,
-    PROXY_SETTINGS_KEY,
 )
 from .serializers import (
     UserAgentSerializer,
     StreamProfileSerializer,
     OutputProfileSerializer,
     CoreSettingsSerializer,
-    ProxySettingsSerializer,
 )
 
 import socket
@@ -38,7 +36,6 @@ from core.tasks import rehash_streams
 from apps.accounts.permissions import (
     Authenticated,
     IsAdmin,
-    IsStandardUser,
     permission_classes_by_action,
 )
 from dispatcharr.utils import get_client_ip
@@ -202,91 +199,6 @@ class CoreSettingsViewSet(viewsets.ModelViewSet):
             return Response(response_data, status=status.HTTP_200_OK)
 
         return Response({}, status=status.HTTP_200_OK)
-
-class ProxySettingsViewSet(viewsets.ViewSet):
-    """
-    API endpoint for proxy settings stored as JSON in CoreSettings.
-    """
-    serializer_class = ProxySettingsSerializer
-
-    def get_permissions(self):
-        if self.action in ('list', 'retrieve'):
-            return [IsStandardUser()]
-        return [IsAdmin()]
-
-    def _get_or_create_settings(self):
-        """Get or create the proxy settings CoreSettings entry"""
-        try:
-            settings_obj = CoreSettings.objects.get(key=PROXY_SETTINGS_KEY)
-            settings_data = settings_obj.value
-        except CoreSettings.DoesNotExist:
-            # Create default settings
-            settings_data = {
-                "buffering_timeout": 15,
-                "buffering_speed": 1.0,
-                "redis_chunk_ttl": 60,
-                "channel_shutdown_delay": 0,
-                "channel_init_grace_period": 60,
-                "channel_client_wait_period": 5,
-                "new_client_behind_seconds": 5,
-            }
-            settings_obj, created = CoreSettings.objects.get_or_create(
-                key=PROXY_SETTINGS_KEY,
-                defaults={
-                    "name": "Proxy Settings",
-                    "value": settings_data
-                }
-            )
-        return settings_obj, settings_data
-
-    def list(self, request):
-        """Return proxy settings"""
-        settings_obj, settings_data = self._get_or_create_settings()
-        return Response(settings_data)
-
-    def retrieve(self, request, pk=None):
-        """Return proxy settings regardless of ID"""
-        settings_obj, settings_data = self._get_or_create_settings()
-        return Response(settings_data)
-
-    def update(self, request, pk=None):
-        """Update proxy settings"""
-        settings_obj, current_data = self._get_or_create_settings()
-
-        serializer = ProxySettingsSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-
-        # Update the JSON data - store as dict directly
-        settings_obj.value = serializer.validated_data
-        settings_obj.save()
-
-        return Response(serializer.validated_data)
-
-    def partial_update(self, request, pk=None):
-        """Partially update proxy settings"""
-        settings_obj, current_data = self._get_or_create_settings()
-
-        # Merge current data with new data
-        updated_data = {**current_data, **request.data}
-
-        serializer = ProxySettingsSerializer(data=updated_data)
-        serializer.is_valid(raise_exception=True)
-
-        # Update the JSON data - store as dict directly
-        settings_obj.value = serializer.validated_data
-        settings_obj.save()
-
-        return Response(serializer.validated_data)
-
-    @action(detail=False, methods=['get', 'patch'])
-    def settings(self, request):
-        """Get or update the proxy settings."""
-        if request.method == 'GET':
-            return self.list(request)
-        elif request.method == 'PATCH':
-            return self.partial_update(request)
-
-
 
 _IP_CACHE_KEY = "dispatcharr:ip_lookup_result"
 _IP_CACHE_TTL = 3600  # 1 hour

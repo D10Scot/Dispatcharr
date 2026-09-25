@@ -17,8 +17,11 @@ starting Dispatcharr. Its control port is published at `http://127.0.0.1:9402`.
 curl http://127.0.0.1:9402/scenarios   # lists live scenarios; empty at startup
 ```
 
-`./scripts/e2e_up.sh --stop` / `--reset` / `--down` cover this container the same way they cover
-the Dispatcharr one. Unlike the Dispatcharr image, this one is rebuilt on **every** invocation by
+`./scripts/e2e_up.sh --stop` / `--reset` / `--down` stop or remove this container too, **but only
+when no other stack's network is still attached to it** — it is shared by default, and a private
+stack disconnects from it (or, for `--stop`, just leaves it running) rather than taking it down
+from under a sibling. See `e2e/README.md`'s "Running a second stack". Unlike the Dispatcharr
+image, this one is rebuilt on **every** invocation by
 default — it's small and fast to build, so there's no reason to risk serving a stale routes table
 — and the container is recreated automatically whenever that rebuild actually changes the image,
 so a local edit to `src/` always reaches the running container on the next `e2e_up.sh`. CI sets
