@@ -168,6 +168,96 @@ class MalformedOffsetLookupTests(TestCase):
         finally:
             os.unlink(tmp_path)
 
+    def test_out_of_range_year_offset_is_skipped_by_interleaved_scan_not_raised(self):
+        # Review round 2, nit: the same OverflowError arm exists a second
+        # time in _scan_from_offset_for_tvg_id (:3379 at the time of
+        # review); the test above only exercises _read_programs_at_offsets.
+        # Mirrors #156's interleaved-scan test above, with the +2460 offset
+        # swapped for an out-of-range year.
+        xml = (
+            '<?xml version="1.0" encoding="UTF-8"?>\n'
+            "<tv>\n"
+            '  <channel id="other.channel"/>\n'
+            '  <channel id="year.overflow.scan"/>\n'
+            '  <programme start="20000101000000 +0000" '
+            'stop="20991231235959 +0000" channel="other.channel">\n'
+            "    <title>Other</title>\n"
+            "  </programme>\n"
+            '  <programme start="99991231235959 -0100" '
+            'stop="99991231235959 -0100" channel="year.overflow.scan">\n'
+            "    <title>Year Overflow</title>\n"
+            "  </programme>\n"
+            '  <programme start="20000101000000 +0000" '
+            'stop="20991231235959 +0000" channel="year.overflow.scan">\n'
+            "    <title>Always On</title>\n"
+            "  </programme>\n"
+            "</tv>\n"
+        )
+        tmp_path = _write_xmltv(xml)
+        try:
+            result = _scan_from_offset_for_tvg_id(
+                tmp_path, "year.overflow.scan", 0, self.now
+            )
+
+            self.assertNotEqual(
+                result, "timeout", "the scan must not time out on a small file"
+            )
+            self.assertIsNotNone(
+                result,
+                "an OverflowError from astimezone() on an out-of-range "
+                "year must be skipped, not raised, so the interleaved scan "
+                "can reach the well-formed programme after it",
+            )
+            self.assertEqual(result["title"], "Always On")
+        finally:
+            os.unlink(tmp_path)
+
+    def test_surrogate_reference_in_airing_programme_text_is_skipped_not_raised(self):
+        # Review round 2, blocking: recover=True lets a character reference
+        # to a lone UTF-16 surrogate (&#xD800;, &#xDFFF;, &#55296;) parse
+        # successfully instead of raising XMLSyntaxError at parse time; the
+        # crash moved one layer down, to the first read of the offending
+        # node's text -- which _programme_to_dict does while building the
+        # result, past both callers' except clause. A bad-surrogate
+        # programme airing right now, followed by a good one also airing
+        # right now, must return the good one rather than raising.
+        xml = (
+            '<?xml version="1.0" encoding="UTF-8"?>\n'
+            "<tv>\n"
+            '  <channel id="surrogate.text"/>\n'
+            '  <programme start="20000101000000 +0000" '
+            'stop="20991231235959 +0000" channel="surrogate.text">\n'
+            "    <title>Bad &#xD800; title</title>\n"
+            "  </programme>\n"
+            '  <programme start="20000101000000 +0000" '
+            'stop="20991231235959 +0000" channel="surrogate.text">\n'
+            "    <title>Good</title>\n"
+            "  </programme>\n"
+            "</tv>\n"
+        )
+        tmp_path = _write_xmltv(xml)
+        try:
+            src = EPGSource.objects.create(
+                name="Surrogate Text", source_type="xmltv", file_path=tmp_path
+            )
+            build_programme_index(src.id)
+            src.refresh_from_db()
+            offsets = src.programme_index["channels"]["surrogate.text"]
+
+            result = _read_programs_at_offsets(
+                tmp_path, "surrogate.text", offsets, self.now
+            )
+
+            self.assertIsNotNone(
+                result,
+                "a surrogate character reference in one programme's title "
+                "must be skipped, not raised, so the scan can reach the "
+                "well-formed programme after it",
+            )
+            self.assertEqual(result["title"], "Good")
+        finally:
+            os.unlink(tmp_path)
+
     def test_current_programs_api_does_not_500_on_a_malformed_programme_timestamp(self):
         xml = (
             '<?xml version="1.0" encoding="UTF-8"?>\n'

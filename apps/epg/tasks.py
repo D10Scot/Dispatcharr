@@ -250,11 +250,26 @@ def _parse_programme_element(element_bytes):
     like any other recoverable error rather than aborting the whole element --
     matching how _decode_channel_id already reads the same byte-offset index's
     channel attribute. Every other setting (no DTD load beyond the injected
-    one, no network, no huge_tree) is unchanged."""
+    one, no network, no huge_tree) is unchanged.
+
+    recover=True also lets a character reference to a lone UTF-16 surrogate
+    (e.g. &#xD800;) parse successfully, stored by libxml2 as an unpaired
+    surrogate that only raises UnicodeDecodeError when its text is actually
+    decoded to a Python str -- which .text/.tail/.attrib access do lazily.
+    Force that decode here, for every node and attribute, so a bad reference
+    fails at parse time like any other malformed element, and the callers'
+    `except (etree.XMLSyntaxError, UnicodeDecodeError): continue` skips it
+    uniformly rather than raising later out of the result-building code."""
     parser = etree.XMLParser(
         resolve_entities=True, load_dtd=True, no_network=True, recover=True
     )
-    return etree.fromstring(_HTML_ENTITY_DOCTYPE + element_bytes, parser)
+    elem = etree.fromstring(_HTML_ENTITY_DOCTYPE + element_bytes, parser)
+    if elem is not None:
+        for node in elem.iter():
+            node.text
+            node.tail
+            list(node.attrib.values())
+    return elem
 
 
 class _PrependStream:
@@ -3261,7 +3276,11 @@ def _read_programs_at_offsets(file_path, tvg_id, offsets, now):
 
                     try:
                         prog = _parse_programme_element(element_bytes)
-                    except etree.XMLSyntaxError:
+                    except (etree.XMLSyntaxError, UnicodeDecodeError):
+                        continue
+                    if prog is None:
+                        # recover=True can return None for bytes that never
+                        # open a well-formed element at all.
                         continue
 
                     start_str = prog.get('start')
@@ -3366,7 +3385,11 @@ def _scan_from_offset_for_tvg_id(file_path, tvg_id, start_offset, now, timeout_s
 
                 try:
                     prog = _parse_programme_element(element_bytes)
-                except etree.XMLSyntaxError:
+                except (etree.XMLSyntaxError, UnicodeDecodeError):
+                    continue
+                if prog is None:
+                    # recover=True can return None for bytes that never open
+                    # a well-formed element at all.
                     continue
 
                 start_str = prog.get('start')
