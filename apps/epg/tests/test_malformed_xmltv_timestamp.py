@@ -1,0 +1,382 @@
+"""#76 (dup #156): a malformed <programme> timestamp must not abort the
+byte-offset lookup for the rest of the channel's block, and must not 500
+POST /api/epg/programs/current/ for every channel in the request.
+
+#75: an offset written without the separating space before the sign (e.g.
+"...183000+0530" instead of "...183000 +0530") is silently read as if no
+timezone were present and treated as UTC.
+"""
+
+import os
+import tempfile
+from datetime import datetime, timezone as dt_timezone
+
+from django.contrib.auth import get_user_model
+from django.test import SimpleTestCase, TestCase
+from django.utils import timezone
+from rest_framework import status
+from rest_framework.test import APIClient
+
+from apps.epg.models import EPGData, EPGSource
+from apps.epg.tasks import (
+    _read_programs_at_offsets,
+    _scan_from_offset_for_tvg_id,
+    build_programme_index,
+    parse_xmltv_time,
+)
+
+User = get_user_model()
+
+CURRENT_PROGRAMS_URL = "/api/epg/current-programs/"
+
+
+def _write_xmltv(xml):
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".xml", encoding="utf-8", delete=False
+    ) as f:
+        f.write(xml)
+        return f.name
+
+
+class MalformedOffsetLookupTests(TestCase):
+    """#76: a +2400 offset (hour out of range for a timezone) 500'd the
+    offset-based lookup instead of being skipped like the bulk parser does."""
+
+    def setUp(self):
+        self.now = timezone.now()
+
+    def test_malformed_offset_is_skipped_by_offset_lookup_not_raised(self):
+        # #76's counterexample: an out-of-range +2400 offset on the first
+        # programme of a block, an always-on programme right after it for
+        # the same channel, so both land under the one recorded offset.
+        xml = (
+            '<?xml version="1.0" encoding="UTF-8"?>\n'
+            "<tv>\n"
+            '  <channel id="offset.lookup"/>\n'
+            '  <programme start="20260101120000 +2400" '
+            'stop="20260101130000 +0000" channel="offset.lookup">\n'
+            "    <title>Bad Offset</title>\n"
+            "  </programme>\n"
+            '  <programme start="20000101000000 +0000" '
+            'stop="20991231235959 +0000" channel="offset.lookup">\n'
+            "    <title>Always On</title>\n"
+            "  </programme>\n"
+            "</tv>\n"
+        )
+        tmp_path = _write_xmltv(xml)
+        try:
+            src = EPGSource.objects.create(
+                name="Offset Lookup", source_type="xmltv", file_path=tmp_path
+            )
+            build_programme_index(src.id)
+            src.refresh_from_db()
+            offsets = src.programme_index["channels"]["offset.lookup"]
+
+            result = _read_programs_at_offsets(
+                tmp_path, "offset.lookup", offsets, self.now
+            )
+
+            self.assertIsNotNone(
+                result,
+                "the malformed +2400 offset must be skipped, not raised, so "
+                "the scan can reach the well-formed programme after it",
+            )
+            self.assertEqual(result["title"], "Always On")
+        finally:
+            os.unlink(tmp_path)
+
+    def test_malformed_offset_is_skipped_by_interleaved_scan_not_raised(self):
+        # #156's counterexample, +2460, through the interleaved forward
+        # scan. A leading programme for a different channel exercises the
+        # "skip, don't stop at a boundary" behaviour this helper is for.
+        xml = (
+            '<?xml version="1.0" encoding="UTF-8"?>\n'
+            "<tv>\n"
+            '  <channel id="other.channel"/>\n'
+            '  <channel id="interleaved.scan"/>\n'
+            '  <programme start="20000101000000 +0000" '
+            'stop="20991231235959 +0000" channel="other.channel">\n'
+            "    <title>Other</title>\n"
+            "  </programme>\n"
+            '  <programme start="20260101120000 +2460" '
+            'stop="20260101130000 +0000" channel="interleaved.scan">\n'
+            "    <title>Bad Offset</title>\n"
+            "  </programme>\n"
+            '  <programme start="20000101000000 +0000" '
+            'stop="20991231235959 +0000" channel="interleaved.scan">\n'
+            "    <title>Always On</title>\n"
+            "  </programme>\n"
+            "</tv>\n"
+        )
+        tmp_path = _write_xmltv(xml)
+        try:
+            result = _scan_from_offset_for_tvg_id(
+                tmp_path, "interleaved.scan", 0, self.now
+            )
+
+            self.assertNotEqual(
+                result, "timeout", "the scan must not time out on a small file"
+            )
+            self.assertIsNotNone(
+                result,
+                "the malformed +2460 offset must be skipped, not raised, so "
+                "the scan can reach the well-formed programme after it",
+            )
+            self.assertEqual(result["title"], "Always On")
+        finally:
+            os.unlink(tmp_path)
+
+    def test_out_of_range_year_offset_is_skipped_by_offset_lookup_not_raised(self):
+        # astimezone() on a year at either end of datetime's representable
+        # range raises OverflowError, not ValueError -- a narrower arm than
+        # (ValueError, TypeError) alone would catch. Same one-offset,
+        # two-programme shape as the +2400 case above.
+        xml = (
+            '<?xml version="1.0" encoding="UTF-8"?>\n'
+            "<tv>\n"
+            '  <channel id="year.overflow"/>\n'
+            '  <programme start="99991231235959 -0100" '
+            'stop="99991231235959 -0100" channel="year.overflow">\n'
+            "    <title>Year Overflow</title>\n"
+            "  </programme>\n"
+            '  <programme start="20000101000000 +0000" '
+            'stop="20991231235959 +0000" channel="year.overflow">\n'
+            "    <title>Always On</title>\n"
+            "  </programme>\n"
+            "</tv>\n"
+        )
+        tmp_path = _write_xmltv(xml)
+        try:
+            src = EPGSource.objects.create(
+                name="Year Overflow", source_type="xmltv", file_path=tmp_path
+            )
+            build_programme_index(src.id)
+            src.refresh_from_db()
+            offsets = src.programme_index["channels"]["year.overflow"]
+
+            result = _read_programs_at_offsets(
+                tmp_path, "year.overflow", offsets, self.now
+            )
+
+            self.assertIsNotNone(
+                result,
+                "an OverflowError from astimezone() on an out-of-range "
+                "year must be skipped, not raised, so the scan can reach "
+                "the well-formed programme after it",
+            )
+            self.assertEqual(result["title"], "Always On")
+        finally:
+            os.unlink(tmp_path)
+
+    def test_out_of_range_year_offset_is_skipped_by_interleaved_scan_not_raised(self):
+        # Review round 2, nit: the same OverflowError arm exists a second
+        # time in _scan_from_offset_for_tvg_id (:3379 at the time of
+        # review); the test above only exercises _read_programs_at_offsets.
+        # Mirrors #156's interleaved-scan test above, with the +2460 offset
+        # swapped for an out-of-range year.
+        xml = (
+            '<?xml version="1.0" encoding="UTF-8"?>\n'
+            "<tv>\n"
+            '  <channel id="other.channel"/>\n'
+            '  <channel id="year.overflow.scan"/>\n'
+            '  <programme start="20000101000000 +0000" '
+            'stop="20991231235959 +0000" channel="other.channel">\n'
+            "    <title>Other</title>\n"
+            "  </programme>\n"
+            '  <programme start="99991231235959 -0100" '
+            'stop="99991231235959 -0100" channel="year.overflow.scan">\n'
+            "    <title>Year Overflow</title>\n"
+            "  </programme>\n"
+            '  <programme start="20000101000000 +0000" '
+            'stop="20991231235959 +0000" channel="year.overflow.scan">\n'
+            "    <title>Always On</title>\n"
+            "  </programme>\n"
+            "</tv>\n"
+        )
+        tmp_path = _write_xmltv(xml)
+        try:
+            result = _scan_from_offset_for_tvg_id(
+                tmp_path, "year.overflow.scan", 0, self.now
+            )
+
+            self.assertNotEqual(
+                result, "timeout", "the scan must not time out on a small file"
+            )
+            self.assertIsNotNone(
+                result,
+                "an OverflowError from astimezone() on an out-of-range "
+                "year must be skipped, not raised, so the interleaved scan "
+                "can reach the well-formed programme after it",
+            )
+            self.assertEqual(result["title"], "Always On")
+        finally:
+            os.unlink(tmp_path)
+
+    def test_surrogate_reference_in_airing_programme_is_skipped_wherever_it_appears(self):
+        # Review round 2, blocking: recover=True lets a character reference
+        # to a lone UTF-16 surrogate (&#xD800;, &#xDFFF;, &#55296;) parse
+        # successfully instead of raising XMLSyntaxError at parse time; the
+        # crash moved one layer down, to the first read of the offending
+        # node's text -- which _programme_to_dict does while building the
+        # result, past both callers' except clause. Round 3/4 fixed this by
+        # forcing the decode inside _parse_programme_element via
+        # etree.tostring(), which walks every node's text, tail and
+        # attributes. A pr-review bot question (round 5) asked to pin that
+        # the fix covers more than the text placement the round-2 test
+        # happened to use: a tail, an attribute on a child element, the
+        # `start` attribute on <programme> itself (the one both callers
+        # actually read), and a nested element. Each subTest is a
+        # bad-surrogate programme airing right now, followed by a
+        # well-formed one also airing right now for the same channel; each
+        # must return the well-formed one rather than raising.
+        cases = {
+            "text": (
+                "surrogate.text",
+                '    <title>Bad &#xD800; title</title>\n',
+                None,
+            ),
+            "tail": (
+                "surrogate.tail",
+                '    <title>ok</title>tail&#xD800;\n',
+                None,
+            ),
+            "title_attribute": (
+                "surrogate.title.attribute",
+                '    <title lang="&#xD800;">ok</title>\n',
+                None,
+            ),
+            "start_attribute": (
+                "surrogate.start.attribute",
+                '    <title>ok</title>\n',
+                # Corrupts the bad programme's own start= value; both
+                # callers read prog.get('start'), so this is the one
+                # attribute placement they actually consume.
+                "20000101000000&#xD800; +0000",
+            ),
+            "nested_element": (
+                "surrogate.nested.element",
+                '    <title>ok</title>\n    <category>Bad &#xD800;</category>\n',
+                None,
+            ),
+        }
+        for name, (channel_id, bad_body, bad_start) in cases.items():
+            with self.subTest(name):
+                start_attr = bad_start or "20000101000000 +0000"
+                xml = (
+                    '<?xml version="1.0" encoding="UTF-8"?>\n'
+                    "<tv>\n"
+                    f'  <channel id="{channel_id}"/>\n'
+                    f'  <programme start="{start_attr}" '
+                    f'stop="20991231235959 +0000" channel="{channel_id}">\n'
+                    f"{bad_body}"
+                    "  </programme>\n"
+                    f'  <programme start="20000101000000 +0000" '
+                    f'stop="20991231235959 +0000" channel="{channel_id}">\n'
+                    "    <title>Good</title>\n"
+                    "  </programme>\n"
+                    "</tv>\n"
+                )
+                tmp_path = _write_xmltv(xml)
+                try:
+                    src = EPGSource.objects.create(
+                        name=f"Surrogate {name}", source_type="xmltv", file_path=tmp_path
+                    )
+                    build_programme_index(src.id)
+                    src.refresh_from_db()
+                    offsets = src.programme_index["channels"][channel_id]
+
+                    result = _read_programs_at_offsets(
+                        tmp_path, channel_id, offsets, self.now
+                    )
+
+                    self.assertIsNotNone(
+                        result,
+                        f"a surrogate character reference in the '{name}' "
+                        "placement must be skipped, not raised, so the scan "
+                        "can reach the well-formed programme after it",
+                    )
+                    self.assertEqual(result["title"], "Good")
+                finally:
+                    os.unlink(tmp_path)
+
+    def test_current_programs_api_does_not_500_on_a_malformed_programme_timestamp(self):
+        xml = (
+            '<?xml version="1.0" encoding="UTF-8"?>\n'
+            "<tv>\n"
+            '  <channel id="api.channel"/>\n'
+            '  <programme start="20260101120000 +2400" '
+            'stop="20260101130000 +0000" channel="api.channel">\n'
+            "    <title>Bad Offset</title>\n"
+            "  </programme>\n"
+            '  <programme start="20000101000000 +0000" '
+            'stop="20991231235959 +0000" channel="api.channel">\n'
+            "    <title>Always On</title>\n"
+            "  </programme>\n"
+            "</tv>\n"
+        )
+        tmp_path = _write_xmltv(xml)
+        try:
+            src = EPGSource.objects.create(
+                name="API Timestamp", source_type="xmltv", file_path=tmp_path
+            )
+            build_programme_index(src.id)
+            epg = EPGData.objects.create(
+                tvg_id="api.channel", name="API Channel", epg_source=src
+            )
+
+            user = User.objects.create_user(
+                username="malformed-timestamp-tester", password="testpass123"
+            )
+            user.user_level = 10
+            user.save()
+            client = APIClient()
+            client.force_authenticate(user=user)
+
+            response = client.post(
+                CURRENT_PROGRAMS_URL,
+                {"epg_data_ids": [epg.id]},
+                format="json",
+            )
+
+            self.assertEqual(
+                response.status_code,
+                status.HTTP_200_OK,
+                "a malformed timestamp on one channel must not 500 the "
+                "whole multi-channel request",
+            )
+            self.assertEqual(len(response.data), 1)
+            self.assertEqual(response.data[0]["title"], "Always On")
+        finally:
+            os.unlink(tmp_path)
+
+
+class AdjacentOffsetXmltvTimestampTests(SimpleTestCase):
+    """#75: "20260728183000+0530" (no space before the sign) is read as if
+    it carried no timezone at all, and the +0530 offset is dropped."""
+
+    def test_adjacent_positive_offset_is_applied_not_read_as_utc(self):
+        result = parse_xmltv_time("20260728183000+0530")
+        self.assertEqual(
+            result,
+            datetime(2026, 7, 28, 13, 0, tzinfo=dt_timezone.utc),
+            "the +0530 offset must be applied instead of the timestamp "
+            "being read as bare UTC",
+        )
+
+    def test_adjacent_negative_offset_is_applied_not_read_as_utc(self):
+        result = parse_xmltv_time("20260728183000-0800")
+        self.assertEqual(
+            result,
+            datetime(2026, 7, 29, 2, 30, tzinfo=dt_timezone.utc),
+            "the -0800 offset must be applied instead of the timestamp "
+            "being read as bare UTC",
+        )
+
+    def test_spaced_offset_still_parses_the_same(self):
+        # Control: the already-correctly-spaced form must be unaffected.
+        result = parse_xmltv_time("20260728183000 +0530")
+        self.assertEqual(
+            result,
+            datetime(2026, 7, 28, 13, 0, tzinfo=dt_timezone.utc),
+            "a properly spaced offset must keep parsing the same way",
+        )
