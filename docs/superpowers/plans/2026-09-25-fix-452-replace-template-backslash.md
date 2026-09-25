@@ -427,7 +427,7 @@ nothing for it — commit it with the code, not alone.
    result line.
 2. Each of the three labels once **without** `--keepdb`, plus the `tests` label (routes
    `tests/test_websocket_consumer_filter.py`, whose `m3u_profile_test` cases mock `transform_url`
-   (`:232-236`) or drive it with `$n` templates only — the run is #440-style parity, not coverage of
+   (`:232-236`) or drive it with a plain literal replacement (`:284`, `"x"`) — the run is #440-style parity, not coverage of
    this PR's change, so do not report it as such; CI does not route it for these paths, so run it
    yourself as #440 did).
 3. `python scripts/check_credential_logging.py` over the touched `.py` files (the edit hook runs it;
