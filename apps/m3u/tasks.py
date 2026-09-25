@@ -7,6 +7,7 @@ import os
 import gc
 import gzip, zipfile
 import lzma
+from urllib.parse import quote
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from celery import shared_task
 from django.conf import settings
@@ -941,7 +942,9 @@ def collect_xc_streams(account_id, enabled_groups):
 
             stream_url_prefix = (
                 f"{xc_client.server_url.rstrip('/')}/live/"
-                f"{xc_client.username}/{xc_client.password}/"
+                # Quoted as build_timeshift_url_format_b quotes them (#61).
+                f"{quote(str(xc_client.username), safe='')}/"
+                f"{quote(str(xc_client.password), safe='')}/"
             )
 
             # Fetch ALL live streams in a single API call (much more efficient)
@@ -3103,6 +3106,28 @@ def get_transformed_credentials(account, profile=None):
                     redact_url(complete_url),
                     redact_url(transformed_complete_url),
                 )
+
+                # If the credentials themselves are untouched by the transform --
+                # true of the default identity profile and of any profile that
+                # only rewrites the host or a leading sub-path -- the transformed
+                # URL still ends with this exact raw suffix. Take that shortcut
+                # rather than the split-on-'/' extraction below: a profile's
+                # search_pattern is written against the RAW credentials (the
+                # frontend's "simple" XC profile mode does this by construction,
+                # matching e.g. "alice@x.com/secret" verbatim -- see
+                # M3uProfileUtils.js's applyXcSimplePatterns), so the credentials
+                # can't be percent-encoded going into the split, and a raw
+                # credential containing '/' would otherwise shift the split onto
+                # the wrong path segments (#370). This path never mis-splits
+                # because it never splits.
+                raw_suffix = f"/live/{base_username}/{base_password}/1234.ts"
+                if transformed_complete_url.endswith(raw_suffix):
+                    transformed_url = transformed_complete_url[: -len(raw_suffix)]
+                    logger.debug(
+                        "Extracted transformed credentials from server URL %s",
+                        redact_url(transformed_url),
+                    )
+                    return transformed_url, base_username, base_password
 
                 # Extract components from the transformed URL
                 # Pattern: http://server.com:port/live/username/password/1234.ts
