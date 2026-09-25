@@ -1167,8 +1167,26 @@ def _parse_content_range_header(content_range):
     return {"start": start, "end": end, "total": total}
 
 
+def _parse_content_length(value):
+    """Return a provider ``Content-Length`` as a non-negative int, else None.
+
+    ASCII digits only, like ``_parse_content_range_header``: ``-1``, ``abc``
+    and ``²`` are not lengths and are treated as absent (#491).
+    """
+    if value is None:
+        return None
+    text = str(value)
+    if not text or not _ascii_digits(text):
+        return None
+    return int(text)
+
+
 def _extract_representation_length(upstream_response):
-    """Return the full archived file size from upstream response headers."""
+    """Return the full archived file size from upstream response headers.
+
+    A non-positive or non-digit provider ``Content-Length`` is treated as
+    absent, never forwarded (#491).
+    """
     if upstream_response is None:
         return None
     parsed = _parse_content_range_header(
@@ -1176,13 +1194,8 @@ def _extract_representation_length(upstream_response):
     )
     if parsed and parsed.get("total") is not None:
         return parsed["total"]
-    content_length = upstream_response.headers.get("Content-Length")
-    if content_length:
-        try:
-            return int(content_length)
-        except (TypeError, ValueError):
-            return None
-    return None
+    length = _parse_content_length(upstream_response.headers.get("Content-Length"))
+    return length or None  # 0 is no archive size (#491)
 
 
 def _build_downstream_length_headers(
@@ -1200,6 +1213,7 @@ def _build_downstream_length_headers(
         _parse_content_range_header(upstream_content_range)
         if upstream_content_range else None
     )
+    upstream_length = _parse_content_length(upstream_content_length)
 
     if representation_length is None and parsed_upstream:
         representation_length = parsed_upstream.get("total")
@@ -1222,8 +1236,8 @@ def _build_downstream_length_headers(
                     headers["Content-Range"] = (
                         f"bytes {start}-{end}/{representation_length}"
                     )
-        if upstream_content_length:
-            headers["Content-Length"] = str(upstream_content_length)
+        if upstream_length:
+            headers["Content-Length"] = str(upstream_length)
         elif parsed_upstream:
             up_start = parsed_upstream["start"]
             up_end = parsed_upstream["end"]
@@ -1231,20 +1245,22 @@ def _build_downstream_length_headers(
         return headers
 
     # Plain GET streaming 200: match provider/CDN Content-Length (clients use
-    # it for archive duration; omitting it breaks FF reconnect playback).
+    # it for archive duration; omitting it breaks FF reconnect playback). A
+    # non-positive or non-digit provider value is dropped rather than
+    # forwarded -- the response goes chunked instead (#491).
     if streaming and status_code == 200 and not range_header:
         if representation_length is not None:
             headers["Content-Length"] = str(representation_length)
-        elif upstream_content_length:
-            headers["Content-Length"] = str(upstream_content_length)
+        elif upstream_length:
+            headers["Content-Length"] = str(upstream_length)
         return headers
 
     # Omit Content-Length on other streaming full-file responses (seeks may preempt).
     if not streaming:
         if representation_length is not None:
             headers["Content-Length"] = str(representation_length)
-        elif upstream_content_length:
-            headers["Content-Length"] = str(upstream_content_length)
+        elif upstream_length is not None:
+            headers["Content-Length"] = str(upstream_length)
 
     return headers
 

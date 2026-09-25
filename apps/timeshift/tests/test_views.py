@@ -5432,6 +5432,45 @@ class TimeshiftProviderFaithfulPlainGetTests(_ProxyLoopTestMixin, TestCase):
         self.assertEqual(response["Accept-Ranges"], "bytes")
         self.assertEqual(response["Content-Length"], str(len(ts)))
 
+    @patch.object(views, "_trigger_timeshift_stats_update")
+    @patch.object(views, "_open_upstream")
+    def test_plain_get_drops_a_negative_provider_content_length(
+        self, mocked_open, _trigger_mock,
+    ):
+        # #491: a provider Content-Length of "-1" must not reach the client.
+        ts = _make_ts_payload(188 * 7)
+        upstream = _fake_upstream(200, body=ts)
+        upstream.headers["Content-Length"] = "-1"
+        mocked_open.return_value = upstream
+
+        response = views._stream_from_provider(
+            candidate_urls=["http://example.test/timeshift.ts"],
+            user_agent="provider-agent",
+            range_header=None,
+            virtual_channel_id=self.virtual_channel_id,
+            stats_channel_id=self.stats_channel_id,
+            client_id=self.client_id,
+            client_ip="1.2.3.4",
+            client_user_agent="test-agent",
+            user=self.user,
+            channel_display_name="A&E",
+            timestamp_utc="2026-06-08:17-00",
+            channel_logo_id=None,
+            m3u_profile_id=31,
+            debug=False,
+            account_id=None,
+            redis_client=self.redis,
+            pool_session_id=self.client_id,
+            channel_id=8,
+            channel_uuid="00000000-0000-0000-0000-000000000008",
+            duration_minutes=40,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn("Content-Range", response)
+        self.assertEqual(response["Accept-Ranges"], "bytes")
+        self.assertFalse(response.has_header("Content-Length"))
+
 
 class TimeshiftDownstreamLengthHeaderTests(TestCase):
     def test_open_ended_range_passthrough_upstream_headers(self):
@@ -5496,6 +5535,32 @@ class TimeshiftDownstreamLengthHeaderTests(TestCase):
         response = views._passthrough_response(416, "bytes */10000")
         self.assertEqual(response["Content-Range"], "bytes */10000")
         self.assertEqual(response["Accept-Ranges"], "bytes")
+
+
+class StorePoolContentLengthTests(TestCase):
+    """#491: a non-positive provider Content-Length must not be cached either."""
+
+    def test_a_negative_upstream_content_length_stores_nothing(self):
+        redis = _FakeRedis()
+        session_id = "session-491"
+        upstream = _fake_upstream(200, body=b"")
+        upstream.headers["Content-Length"] = "-1"
+
+        views._store_pool_content_length(redis, session_id, upstream)
+
+        self.assertIsNone(redis.hget(views._pool_key(session_id), "content_length"))
+
+    def test_a_positive_upstream_content_length_stores(self):
+        redis = _FakeRedis()
+        session_id = "session-491"
+        upstream = _fake_upstream(200, body=b"")
+        upstream.headers["Content-Length"] = "12345"
+
+        views._store_pool_content_length(redis, session_id, upstream)
+
+        self.assertEqual(
+            redis.hget(views._pool_key(session_id), "content_length"), "12345",
+        )
 
 
 class RollupSelfHealDbTests(TestCase):

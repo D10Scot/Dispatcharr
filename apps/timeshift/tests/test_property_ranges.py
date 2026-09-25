@@ -12,7 +12,8 @@ apps/timeshift/views.py unless named:
   ``b < T`` (or ``T == '*'``), else None (#141).
 - ``_extract_representation_length`` (:1151) and ``_build_downstream_length_headers``
   (:1169): never a negative Content-Length, and never an unsatisfiable Content-Range
-  (#141).
+  (#141). A non-positive or non-digit provider Content-Length is absent, not
+  forwarded (#491).
 - ``_is_near_eof_probe`` (:1230) and ``is_near_eof_offset`` (apps/timeshift/stats.py,
   new in D-3): an archive no larger than the probe window has no tail (#216), and a
   suffix range is a tail probe by definition (#141).
@@ -143,15 +144,21 @@ class ContentRangeParserProperties(SimpleTestCase):
     @given(content_range=st.none() | content_range_text,
            content_length=st.none() | st.text(max_size=12)
            | st.integers(min_value=0, max_value=10**12).map(str))
-    # "0" and "-1" are truthy strings, so _extract_representation_length's
-    # ``if content_length:`` check does not treat them as absent: it returns
-    # int("0") == 0 and int("-1") == -1 respectively (views.py, near :1151).
-    # Pinned explicitly rather than left to the derandomized draw: "0" is a
-    # likely boundary value from the integers() branch, but "-1" is reachable
-    # only through the free-text branch and is not guaranteed to be drawn in
-    # 200 examples (review round 1).
+    # Until #491, "0" and "-1" were truthy strings, so
+    # _extract_representation_length's ``if content_length:`` check did not
+    # treat them as absent: it returned int("0") == 0 and int("-1") == -1
+    # respectively (views.py, near :1151). Now a non-positive or non-ASCII-digit
+    # provider Content-Length is absent (#491), so these two examples pin the
+    # NEW contract: both resolve to None. Pinned explicitly rather than left to
+    # the derandomized draw: "0" is a likely boundary value from the
+    # integers() branch, but "-1" is reachable only through the free-text
+    # branch and is not guaranteed to be drawn in 200 examples (review round
+    # 1). "²" (isdigit() True, isascii() False) and "12" (an ordinary positive
+    # value) are added for #491.
     @example(content_range=None, content_length="0")
     @example(content_range=None, content_length="-1")
+    @example(content_range=None, content_length="²")
+    @example(content_range=None, content_length="12")
     def test_representation_length_prefers_the_content_range_total(
         self, content_range, content_length,
     ):
@@ -165,12 +172,12 @@ class ContentRangeParserProperties(SimpleTestCase):
         parsed = ts_views._parse_content_range_header(content_range or "")
         if parsed and parsed["total"] is not None:
             self.assertEqual(result, parsed["total"])
-        elif content_length:
-            try:
-                expected = int(content_length)
-            except ValueError:
-                expected = None
-            self.assertEqual(result, expected)
+        elif (
+            content_length is not None
+            and content_length.isascii() and content_length.isdigit()
+            and int(content_length) > 0
+        ):
+            self.assertEqual(result, int(content_length))
         else:
             self.assertIsNone(result)
         self.assertIsNone(ts_views._extract_representation_length(None))
@@ -182,7 +189,8 @@ class DownstreamHeaderProperties(SimpleTestCase):
         status_code=st.sampled_from([200, 206]),
         representation_length=st.none() | st.integers(min_value=0, max_value=10**10),
         upstream_content_range=st.none() | content_range_text,
-        upstream_content_length=st.none() | st.integers(min_value=1, max_value=10**10),
+        upstream_content_length=st.none() | st.text(max_size=12)
+        | st.integers(min_value=0, max_value=10**10).map(str),
         streaming=st.booleans(),
     )
     # #141: an inverted client range, a start past EOF, and an inverted upstream range.
@@ -193,6 +201,16 @@ class DownstreamHeaderProperties(SimpleTestCase):
     @example(range_header="bytes=0-", status_code=206, representation_length=None,
              upstream_content_range="bytes 100-50/1000", upstream_content_length=None,
              streaming=True)
+    # #491: a non-positive or non-digit provider Content-Length must never reach
+    # the downstream client.
+    @example(range_header=None, status_code=200, representation_length=None,
+             upstream_content_range=None, upstream_content_length="-1", streaming=True)
+    @example(range_header=None, status_code=200, representation_length=None,
+             upstream_content_range=None, upstream_content_length="0", streaming=True)
+    @example(range_header=None, status_code=200, representation_length=None,
+             upstream_content_range=None, upstream_content_length="0", streaming=False)
+    @example(range_header=None, status_code=200, representation_length=None,
+             upstream_content_range=None, upstream_content_length="²", streaming=True)
     def test_headers_never_carry_an_unsatisfiable_range_or_a_negative_length(
         self, range_header, status_code, representation_length,
         upstream_content_range, upstream_content_length, streaming,
@@ -207,11 +225,31 @@ class DownstreamHeaderProperties(SimpleTestCase):
         )
         self.assertEqual(headers["Accept-Ranges"], "bytes")
         if "Content-Length" in headers:
-            self.assertGreaterEqual(int(headers["Content-Length"]), 0, headers)
+            value = headers["Content-Length"]
+            # #491: a forwarded Content-Length is always ASCII digits, never a
+            # sign or a Latin-1 digit look-alike ("-1" fails this by shape).
+            self.assertTrue(value.isascii() and value.isdigit(), (value, headers))
+            if streaming:
+                self.assertGreater(int(value), 0, headers)
         if "Content-Range" in headers:
             self.assertIsNotNone(
                 ts_views._parse_content_range_header(headers["Content-Range"]), headers
             )
+        # #491: the defect was pass-through, not a negative value alone -- a
+        # bare non-negative check would not have caught "0". Pin the absent
+        # case directly, computed independently of the views helper.
+        upstream_length_is_positive_digits = (
+            upstream_content_length is not None
+            and upstream_content_length.isascii()
+            and upstream_content_length.isdigit()
+            and int(upstream_content_length) > 0
+        )
+        if (
+            streaming and status_code == 200 and not range_header
+            and representation_length is None
+            and not upstream_length_is_positive_digits
+        ):
+            self.assertNotIn("Content-Length", headers, headers)
 
     @given(total=st.integers(min_value=1, max_value=10**10),
            upstream_content_length=st.none() | st.integers(min_value=1, max_value=10**10))

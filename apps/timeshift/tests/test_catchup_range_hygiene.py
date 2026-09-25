@@ -1,8 +1,10 @@
-"""Catch-up Range and timestamp hygiene: #216, #141 and #111.
+"""Catch-up Range and timestamp hygiene: #216, #141, #111 and #491.
 
 Each test is named for the defect it pins. The #141 and #216 inputs are the
 shrunk counterexamples from the issue bodies, kept verbatim.
 """
+
+from types import SimpleNamespace
 
 from django.test import SimpleTestCase
 
@@ -154,3 +156,72 @@ class ProviderTimezoneSecondsTests(SimpleTestCase):
                     convert_timestamp_to_provider_tz(utc_input, "Europe/Brussels"),
                     expected,
                 )
+
+
+class CatchupContentLengthHygieneTests(SimpleTestCase):
+    """#491: a provider's non-positive or non-digit Content-Length is absent,
+    never forwarded -- mirroring D-3's Content-Range hygiene."""
+
+    def _upstream(self, content_length=None, content_range=None):
+        headers = {}
+        if content_length is not None:
+            headers["Content-Length"] = content_length
+        if content_range is not None:
+            headers["Content-Range"] = content_range
+        return SimpleNamespace(headers=headers)
+
+    def test_a_non_positive_or_non_digit_content_length_extracts_as_absent(self):
+        for value in ("-1", "0", "abc", "²", "٣", ""):
+            with self.subTest(value=value):
+                self.assertIsNone(
+                    views._extract_representation_length(self._upstream(content_length=value))
+                )
+
+    def test_a_positive_digit_content_length_extracts(self):
+        self.assertEqual(
+            views._extract_representation_length(self._upstream(content_length="123")),
+            123,
+        )
+
+    def test_the_content_range_total_wins_over_a_negative_content_length(self):
+        self.assertEqual(
+            views._extract_representation_length(
+                self._upstream(content_length="-1", content_range="bytes 0-9/500")
+            ),
+            500,
+        )
+
+    def test_plain_streaming_200_drops_a_negative_or_non_digit_provider_length(self):
+        for value in ("-1", "0", "²"):
+            with self.subTest(value=value):
+                headers = views._build_downstream_length_headers(
+                    range_header=None, status_code=200,
+                    representation_length=None, upstream_content_range=None,
+                    upstream_content_length=value, streaming=True,
+                )
+                self.assertNotIn("Content-Length", headers)
+
+    def test_plain_streaming_200_forwards_a_positive_digit_provider_length(self):
+        headers = views._build_downstream_length_headers(
+            range_header=None, status_code=200,
+            representation_length=None, upstream_content_range=None,
+            upstream_content_length="1048", streaming=True,
+        )
+        self.assertEqual(headers["Content-Length"], "1048")
+
+    def test_a_non_streaming_200_keeps_a_genuinely_empty_body(self):
+        headers = views._build_downstream_length_headers(
+            range_header=None, status_code=200,
+            representation_length=None, upstream_content_range=None,
+            upstream_content_length="0", streaming=False,
+        )
+        self.assertEqual(headers["Content-Length"], "0")
+
+    def test_206_derives_content_length_from_the_range_never_the_raw_negative_header(self):
+        headers = views._build_downstream_length_headers(
+            range_header="bytes=1000-", status_code=206,
+            representation_length=10000,
+            upstream_content_range="bytes 1000-2047/10000",
+            upstream_content_length="-1",
+        )
+        self.assertEqual(headers["Content-Length"], "1048")
