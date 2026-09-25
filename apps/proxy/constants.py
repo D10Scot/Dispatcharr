@@ -12,7 +12,9 @@ THIS MODULE MUST STAY A LEAF -- no imports, at all, for the reason
 ``apps/proxy/redis_keys.py``'s docstring gives.
 
 Only the two names surviving code needs moved here. The rest of the old
-module went with apps/proxy/live_proxy/ at stage 2d-4.
+module went with apps/proxy/live_proxy/ at stage 2d-4. #461 trimmed
+ChannelMetadataField further, to the 24 names a non-test caller still
+reads, the same precedent #407 set for RedisKeys's dead builders.
 """
 
 # Channel states
@@ -31,13 +33,20 @@ class ChannelState:
     PRE_ACTIVE = frozenset([INITIALIZING, CONNECTING, BUFFERING, WAITING_FOR_CLIENTS])
 
 
-# Channel metadata field names stored in Redis
+# The catch-up (timeshift) metadata hash's field names -- still a Redis
+# hash, written by apps/timeshift/views.py and read by
+# apps/timeshift/stats.py -- plus the relay detail payload keys
+# apps/channels/tasks.py's recording capture reads by the same names.
+# #461 deleted the 29 names with no `ChannelMetadataField.<NAME>`
+# reference in CODE anywhere outside this module -- a comment or doc
+# mention does not count (a fix round found one: STATE_CHANGED_AT was
+# named only in relay/channel/channel.go comments, not read anywhere).
+# Every surviving name has a non-test reader in apps/timeshift/stats.py,
+# apps/timeshift/views.py or apps/channels/tasks.py.
 class ChannelMetadataField:
     # Basic fields
     URL = "url"
-    USER_AGENT = "user_agent"
     STATE = "state"
-    OWNER = "owner"
     STREAM_ID = "stream_id"
     CHANNEL_NAME = "channel_name"
     STREAM_NAME = "stream_name"
@@ -46,37 +55,13 @@ class ChannelMetadataField:
     LOGO_ID = "logo_id"
 
     # Profile fields
-    STREAM_PROFILE = "stream_profile"
     M3U_PROFILE = "m3u_profile"
-    M3U_PROFILE_NAME = "m3u_profile_name"
-    # The locked ffmpeg StreamProfile, JSON-encoded {"id", "command", "args"},
-    # written from the next-source answer so input/manager.py's force-ffmpeg
-    # path (HLS/RTSP/UDP upstreams) needs no StreamProfile query in the relay
-    # process. Phase 2 PR 2b-1.
-    FFMPEG_STREAM_PROFILE = "ffmpeg_stream_profile"
 
     # Status and error fields
-    ERROR_MESSAGE = "error_message"
-    ERROR_TIME = "error_time"
-    STATE_CHANGED_AT = "state_changed_at"
     INIT_TIME = "init_time"
-    CONNECTION_READY_TIME = "connection_ready_time"
 
     # Buffer and data tracking
-    BUFFER_CHUNKS = "buffer_chunks"
     TOTAL_BYTES = "total_bytes"
-
-    # Stream switching
-    STREAM_SWITCH_TIME = "stream_switch_time"
-    STREAM_SWITCH_REASON = "stream_switch_reason"
-
-    # FFmpeg performance metrics
-    FFMPEG_SPEED = "ffmpeg_speed"
-    FFMPEG_FPS = "ffmpeg_fps"
-    ACTUAL_FPS = "actual_fps"
-    FFMPEG_OUTPUT_BITRATE = "ffmpeg_output_bitrate"
-    FFMPEG_BITRATE = "ffmpeg_bitrate"
-    FFMPEG_STATS_UPDATED = "ffmpeg_stats_updated"
 
     # Video stream info
     VIDEO_CODEC = "video_codec"
@@ -86,7 +71,6 @@ class ChannelMetadataField:
     SOURCE_FPS = "source_fps"
     PIXEL_FORMAT = "pixel_format"
     VIDEO_BITRATE = "video_bitrate"
-    SOURCE_BITRATE = "source_bitrate"
 
     # Audio stream info
     AUDIO_CODEC = "audio_codec"
@@ -98,15 +82,3 @@ class ChannelMetadataField:
     STREAM_TYPE = "stream_type"
     # Stream info timestamp
     STREAM_INFO_UPDATED = "stream_info_updated"
-
-    # Client metadata fields
-    CONNECTED_AT = "connected_at"
-    LAST_ACTIVE = "last_active"
-    OUTPUT_FORMAT = "output_format"
-    BYTES_SENT = "bytes_sent"
-    AVG_RATE_KBPS = "avg_rate_KBps"
-    CURRENT_RATE_KBPS = "current_rate_KBps"
-    IP_ADDRESS = "ip_address"
-    WORKER_ID = "worker_id"
-    CHUNKS_SENT = "chunks_sent"
-    STATS_UPDATED_AT = "stats_updated_at"
