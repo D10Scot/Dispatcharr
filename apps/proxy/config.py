@@ -74,19 +74,6 @@ class BaseConfig:
     def REDIS_CHUNK_TTL(self):
         return self.get_redis_chunk_ttl()
 
-class HLSConfig(BaseConfig):
-    MIN_SEGMENTS = 12
-    MAX_SEGMENTS = 16
-    WINDOW_SIZE = 12
-    INITIAL_SEGMENTS = 3
-    INITIAL_CONNECTION_WINDOW = 10
-    CLIENT_TIMEOUT_FACTOR = 1.5
-    CLIENT_CLEANUP_INTERVAL = 10
-    FIRST_SEGMENT_TIMEOUT = 5.0
-    INITIAL_BUFFER_SECONDS = 25.0
-    MAX_INITIAL_SEGMENTS = 10
-    BUFFER_READY_TIMEOUT = 30.0
-
 class TSConfig(BaseConfig):
     """Configuration settings for TS proxy"""
 
