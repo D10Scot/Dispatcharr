@@ -11,7 +11,6 @@ from apps.channels.models import Channel, Stream
 class EPGSourceSerializer(serializers.ModelSerializer):
     epg_data_count = serializers.SerializerMethodField()
     has_channels = serializers.BooleanField(read_only=True, default=False)
-    read_only_fields = ['created_at', 'updated_at']
     url = serializers.CharField(
         required=False,
         allow_blank=True,
@@ -43,6 +42,7 @@ class EPGSourceSerializer(serializers.ModelSerializer):
             'has_channels',
         ]
         extra_kwargs = {'password': {'write_only': True}}
+        read_only_fields = ['created_at', 'updated_at']
 
     def get_epg_data_count(self, obj):
         """Return the count of EPG data entries instead of all IDs to prevent large payloads"""
@@ -200,7 +200,6 @@ class EPGDataSerializer(serializers.ModelSerializer):
     Only returns the tvg_id and the 'name' field from EPGData.
     We assume 'name' is effectively the channel name.
     """
-    read_only_fields = ['epg_source']
 
     class Meta:
         model = EPGData
@@ -211,6 +210,7 @@ class EPGDataSerializer(serializers.ModelSerializer):
             'icon_url',
             'epg_source',
         ]
+        read_only_fields = ['epg_source']
 
 
 class ProgramSearchChannelSerializer(serializers.ModelSerializer):
