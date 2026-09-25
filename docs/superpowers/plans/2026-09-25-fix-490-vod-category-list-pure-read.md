@@ -123,7 +123,7 @@ Read, not changed (each is cited below): `apps/accounts/permissions.py:42-49`,
 `:455-465` and `:827-837` (the `__uncategorized__` routing), `apps/vod/models.py:315-333`
 (`M3UVODCategoryRelation`, `unique_together = [('m3u_account', 'category')]` at `:333`),
 `apps/m3u/signals.py:12-20`, `apps/m3u/tasks.py:4009-4014`, `apps/m3u/serializers.py:270-299` and
-`:354-367`, `frontend/src/components/forms/M3UGroupFilter.jsx:54-64`,
+`:354-370`, `frontend/src/components/forms/M3UGroupFilter.jsx:54-64`,
 `frontend/src/components/forms/VODCategoryFilter.jsx:30-55`, `frontend/src/store/useVODStore.jsx:287-302`.
 
 ---
@@ -131,13 +131,20 @@ Read, not changed (each is cited below): `apps/accounts/permissions.py:42-49`,
 ## Overlap with sibling plans
 
 - **Open PRs.** `gh pr list --repo D10Scot/Dispatcharr --state open` on 2026-09-25 listed #496, #498,
-  #499, #501, #502, #504, #505. None touches any file in the table above (checked with `--json files`).
+  #499, #501, #502, #504, #505, none of which touches any file in the table above (checked with
+  `--json files`), and, opened after that listing, **#506** (`fix/468-vod-actors-non-string`). #506 is
+  a **same-file, non-conflicting overlap**: it edits `apps/vod/tasks.py` (hunks at `:495` in
+  `process_movie_batch` and `:2321` in `refresh_movie_advanced_data`) and adds
+  `apps/vod/tests/test_movie_actors_non_string.py`. Appendix A's only hunk sits at `:27`, and #506's
+  diff (`gh pr diff 506`) `git apply --check`s cleanly on top of Appendix A at seed. If #506 merges
+  first, Task 0 Step 3's `git apply --check` of every appendix against current `main` is the re-check.
 - **Merged work already in the seed.** D-4 (#453) edited `apps/vod/api_views.py:624` (the
   `m3u_account` filter) and `vod-ingest-fidelity.spec.ts`; it is the PR that found #490. C-6 (#430)
   edited `apps/vod/tasks.py`. Both are in `93d1e424`.
 - **Sibling plans.** `grep -ln "Uncategorized\|VODCategoryViewSet" docs/superpowers/plans/2026-09-2*.md`
-  finds only `2026-09-23-fixplan-D-vod-catchup.md`, whose D-4 section is merged. No other plan edits
-  `create`/`update` in `apps/m3u/api_views.py` or `refresh_movies`/`refresh_series`.
+  finds nothing at seed. No other plan edits `create`/`update` in `apps/m3u/api_views.py` or
+  `refresh_movies`/`refresh_series`; the one recent plan that touched `apps/vod/api_views.py`,
+  `2026-09-23-fixplan-D-vod-catchup.md` (D-4, the filter at `:624`), is merged.
 - **A parallel planner branch for the same issue exists locally**:
   `docs/plan-490-vod-category-pure-read-b2` (worktree `.worktrees/plan-490-b2`, not pushed when this
   plan was written). I don't know what it plans. Exactly one plan for #490 should be implemented; the
@@ -207,10 +214,12 @@ with VOD (`M3UGroupFilter.jsx:54-64` → `useVODStore.fetchCategories` → `api.
 for a new account. Deleting it without a replacement would make the row appear only after the first
 refresh.
 
-Two smaller gaps the list also covered, which this plan leaves to the next refresh: `enable_vod` set
+Three smaller gaps the list also covered, which this plan leaves to the next refresh: `enable_vod` set
 through the raw `custom_properties` payload rather than the top-level flag (the serializer merges it,
 `apps/m3u/serializers.py:283-289`, but `update` only watches `request.data["enable_vod"]`,
-`:195`), and an account whose refreshes abort on empty categories (`refresh_movies` never runs).
+`:195`); an XC account with `enable_vod` created or edited outside `M3UAccountViewSet` altogether
+(a Django shell, a plugin writing the ORM, a fixture), which neither `create` nor `update` sees; and
+an account whose refreshes abort on empty categories (`refresh_movies` never runs).
 
 ### The issue's diagnosis needs one correction
 
@@ -249,7 +258,13 @@ The discrimination lives in the backend pin (Appendix D), which fails on the see
   relations exist even when the provider fails (`create` runs both round-trips with no `try`;
   recorded at `docs/superpowers/specs/2026-08-30-e2e-vod-series-design.md:278-282`). The gate reads
   the value the serializer stored as a boolean (`apps/m3u/serializers.py:355` and `:366` on create,
-  `:271` and `:291-292` on update), not `request.data`.
+  `:271` and `:291-292` on update), not `request.data`. The gate is deliberately narrower than the old
+  list's, which also required `is_active=True` (`apps/vod/api_views.py:665-668`): the helper has no
+  `is_active` check, so an inactive XC account created with VOD on, or switched to it, gets its
+  relations at that moment rather than on activation. That is acceptable because the relations are
+  inert until a refresh reads them, a refresh runs only for an active account (`refresh_vod_content`
+  fetches the account with `is_active=True`, `apps/vod/tasks.py:58`), and having the row present
+  before activation is what the group-filter modal wants anyway.
 - **D3. A new series relation's `enabled` comes from `auto_enable_new_groups_series`.** That is the
   key `batch_create_categories` (`apps/vod/tasks.py:312-315`) and `refresh_series` (`:251`) use,
   and the one the modal's series tab edits (`M3UGroupFilter.jsx:165-173`,
@@ -268,8 +283,8 @@ The discrimination lives in the backend pin (Appendix D), which fails on the see
   `:267-271`) and log on creation. Folding them into the helper is a refactor this issue does not
   need.
 - **D6. No data migration and no management command.** (a) Any install where the VOD UI or the group
-  filter was ever opened already has both relations for every account that had VOD on at the time,
-  because the list ran. (b) The relation's only functional consumer is the refresh, which creates it
+  filter was ever opened already has both relations for every active account that had VOD on at the
+  time, because the list ran. (b) The relation's only functional consumer is the refresh, which creates it
   before use: `refresh_movies` puts it into `relations` before any movie is processed, and movies are
   routed to `Uncategorized` only inside a refresh (`apps/vod/tasks.py:455-465`, `:827-837`). (c) Any
   account still missing one gets it from its next VOD refresh, which every scheduled M3U refresh
