@@ -869,6 +869,74 @@ class GetClientIpTests(SimpleTestCase):
             self.assertEqual(get_client_ip(request), "192.168.1.50")
 
 
+class GetHostAndPortDeploymentShapeTests(SimpleTestCase):
+    """core.utils.get_host_and_port / build_absolute_uri_with_port, pinned
+    against the three deployment shapes #81's finding names (no nginx
+    involved; RequestFactory only).
+
+    These are guards against the tempting wrong fix (adding an
+    `uwsgi_param HTTP_X_FORWARDED_*` in our own nginx), not defect pins:
+    they already pass on the seed. See CLAUDE.md's #81 finding and this
+    plan's PR G-7."""
+
+    def setUp(self):
+        from django.test import RequestFactory
+
+        self.factory = RequestFactory()
+
+    def _request(self, **extra):
+        request = self.factory.get("/x")
+        request.META.update(extra)
+        return request
+
+    def test_a_direct_client_on_a_remapped_port_keeps_its_own_host_and_port(self):
+        """A client hitting a Docker port remap (`-p 1234:9191`) sends its
+        own Host; nginx's $server_port (9191) must never override it.
+        Pinned in production by e2e/tests/seeded/output-m3u.spec.ts:53-64
+        and hdhr.spec.ts:97-103."""
+        from core.utils import build_absolute_uri_with_port
+
+        request = self._request(
+            HTTP_HOST="internaltest:1234",
+            SERVER_PORT="9191",
+        )
+        self.assertEqual(
+            build_absolute_uri_with_port(request, "/x"),
+            "http://internaltest:1234/x",
+        )
+
+    def test_an_outer_tls_proxys_forwarded_proto_and_host_win(self):
+        """An outer reverse proxy's X-Forwarded-Proto/Host reach us today
+        because uwsgi_pass_request_headers is on by default (nginx sets
+        none of its own); they must still win over the inner Host."""
+        from core.utils import build_absolute_uri_with_port
+
+        request = self._request(
+            HTTP_HOST="dispatcharr:9191",
+            HTTP_X_FORWARDED_PROTO="https",
+            HTTP_X_FORWARDED_HOST="tv.example.com",
+        )
+        self.assertEqual(
+            build_absolute_uri_with_port(request, "/x"),
+            "https://tv.example.com/x",
+        )
+
+    def test_a_forwarded_host_without_port_takes_the_forwarded_port(self):
+        """X-Forwarded-Host with no embedded port falls back to
+        X-Forwarded-Port, not to SERVER_PORT."""
+        from core.utils import build_absolute_uri_with_port
+
+        request = self._request(
+            HTTP_X_FORWARDED_HOST="tv.example.com",
+            HTTP_X_FORWARDED_PORT="8443",
+            HTTP_X_FORWARDED_PROTO="https",
+        )
+        self.assertEqual(
+            build_absolute_uri_with_port(request, "/x"),
+            "https://tv.example.com:8443/x",
+        )
+
+
 class ProxySettingsBackfillsMissingKeysTests(TestCase):
     """Phase 2 PR 2b-1, review round: get_proxy_settings() merges code-level
     defaults over the stored row so a row saved before new_client_behind_
