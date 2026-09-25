@@ -161,8 +161,10 @@ test('the EPG actions 404 without a stream_id', { tag: '@contract' }, async ({ s
 // test at the top of the file ('the XC live catalogue lists a seeded
 // channel under its own category') also calls xcLiveStreams with a
 // profiled user, but against a user_level 0 channel, so it does not
-// exercise this at level-1 — and no other *non-inverted* test in this file
-// calls xcLiveStreams at level-1.
+// exercise this at level-1. The category test below also calls
+// xcLiveStreams at level-1, as its own premise check, so this control is
+// no longer the only non-inverted assertion of that fact — it stays as an
+// explicit, independent one.
 test('a profiled level-1 user lists a level-1 channel', { tag: '@contract' }, async ({
   seed,
   request,
