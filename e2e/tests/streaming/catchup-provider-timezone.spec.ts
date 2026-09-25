@@ -4,8 +4,7 @@ import { catchupRequests, catchupTimestampWithSeconds, withDeadline } from './he
 
 /**
  * `server_info.timezone` from the provider's own handshake drives
- * `convert_timestamp_to_provider_tz` (`apps/timeshift/helpers.py:134-160`),
- * and drops the seconds while it is at it.
+ * `convert_timestamp_to_provider_tz` (`apps/timeshift/helpers.py:134-167`).
  *
  * THE LIMIT: every assertion here reads the URL Dispatcharr **sent**, out of
  * the provider's scenario log. G8's archive is not time-addressable, so
@@ -178,23 +177,16 @@ test('row 13 premise: under UTC, the colon-seconds PATH candidate preserves the 
   expect(utcAsked[2].start, 'UTC preserves the requested seconds').toBe('2026-01-15:12:00:45');
 });
 
-test.fail(
+test(
   'a requested start keeps its seconds whatever the provider timezone is', { tag: '@contract' },
   async ({ upstream, seed, api, waitFor, streamClient }) => {
-    // KNOWN BUG — defect C3, filed as #111. Under a
-    // non-UTC provider timezone, `convert_timestamp_to_provider_tz`
-    // reformats through `strftime("%Y-%m-%d:%H-%M")` (helpers.py:160) and
-    // drops the seconds, BEFORE `build_timeshift_candidate_urls`
-    // re-derives the colon-seconds shape from the already-truncated value.
-    // Under "UTC" the same start keeps them, because the function returns
-    // its input unchanged (helpers.py:145-146). The precision of the
-    // moment Dispatcharr asks for therefore depends on a field the
-    // provider declares.
-    //
-    // The UTC control runs FIRST and PASSES, in this same test, so the
-    // finding recorded here is the INCONSISTENCY between the two zones —
-    // not truncation on its own, which someone could reasonably defend as
-    // a minute-resolution product.
+    // Pins #111's fix. `convert_timestamp_to_provider_tz` keeps the
+    // requested seconds under a non-UTC provider timezone exactly as the
+    // UTC branch already did, by emitting `%Y-%m-%d:%H-%M-%S` whenever the
+    // converted instant has a non-zero second (helpers.py:158-165) before
+    // `build_timeshift_candidate_urls` re-derives the colon-seconds shape.
+    // The UTC control runs FIRST, so this test also proves the two zones
+    // now agree rather than merely that one of them keeps the seconds.
     //
     // The `catchup-layout-404 { layout: 'path' }` fault is what makes
     // candidate 2 observable at all: unfaulted, candidate 0 wins and the
@@ -233,7 +225,7 @@ test.fail(
     // PATH correctly" from "walked PATH five times", and the shape assertion
     // below indexes [2], which needs the walk pinned rather than bounded.
     expect(utcAsked, 'three PATH candidates then the QUERY winner, under UTC').toHaveLength(4);
-    // PASSES: candidate 2, %Y-%m-%d:%H:%M:%S, keeps the requested :45.
+    // Candidate 2, %Y-%m-%d:%H:%M:%S, keeps the requested :45.
     expect(utcAsked[2].start, 'UTC preserves the requested seconds').toBe('2026-01-15:12:00:45');
 
     const brussels = await seedCatchupChannelInZone(
@@ -257,10 +249,6 @@ test.fail(
       bxlAsked,
       'three PATH candidates then the QUERY winner, under Europe/Brussels'
     ).toHaveLength(4);
-    // FAILS TODAY: this is the CORRECT value. The actual value is
-    // '2026-01-15:13:00:00'. Never invert this to assert the :00 — a
-    // test.fail() that asserts the bug goes green the wrong way and locks
-    // the defect in.
     expect(
       bxlAsked[2].start,
       'a non-UTC provider timezone must not truncate the requested seconds'

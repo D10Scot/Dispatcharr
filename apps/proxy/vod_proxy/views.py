@@ -623,14 +623,16 @@ def _transform_url(original_url, m3u_profile):
     try:
         import regex
 
+        from apps.m3u.utils import convert_js_numbered_backreferences
+
         if not original_url:
             return None
 
         search_pattern = m3u_profile.search_pattern
         replace_pattern = m3u_profile.replace_pattern
-        # Convert JS-style backreferences in replace: $<name> -> \g<name>, $1 -> \1
+        # Convert JS-style backreferences in replace: $<name> -> \g<name>, $1 -> \g<1>
         safe_replace_pattern = regex.sub(r'\$<([^>]+)>', r'\\g<\1>', replace_pattern)
-        safe_replace_pattern = regex.sub(r'\$(\d+)', r'\\\1', safe_replace_pattern)
+        safe_replace_pattern = convert_js_numbered_backreferences(safe_replace_pattern)
 
         if search_pattern and replace_pattern:
             # regex module accepts JS-style (?<name>...) named groups natively

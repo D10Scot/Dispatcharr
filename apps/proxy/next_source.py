@@ -28,6 +28,7 @@ from apps.m3u.connection_pool import (
     profile_available_for_channel_switch,
 )
 from apps.m3u.models import M3UAccount, M3UAccountProfile
+from apps.m3u.utils import convert_js_numbered_backreferences
 from core.models import StreamProfile
 from dispatcharr.utils import redact_url
 
@@ -283,10 +284,10 @@ def transform_url(input_url: str, search_pattern: str, replace_pattern: str) -> 
         logger.debug(f"  base URL: {redact_url(input_url)}")
         logger.debug(f"  search: {search_pattern}")
 
-        # Convert JS-style backreferences in replace pattern: $<name> -> \g<name>, $1 -> \1
+        # Convert JS-style backreferences in replace pattern: $<name> -> \g<name>, $1 -> \g<1>
         # Fixed conversion patterns only; timeout is reserved for the user search.
         safe_replace_pattern = regex.sub(r'\$<([^>]+)>', r'\\g<\1>', replace_pattern)
-        safe_replace_pattern = regex.sub(r'\$(\d+)', r'\\\1', safe_replace_pattern)
+        safe_replace_pattern = convert_js_numbered_backreferences(safe_replace_pattern)
         logger.debug(f"  replace: {replace_pattern}")
         logger.debug(f"  safe replace: {safe_replace_pattern}")
 

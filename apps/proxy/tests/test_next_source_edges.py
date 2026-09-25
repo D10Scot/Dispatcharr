@@ -81,6 +81,39 @@ class TransformUrlNoMatchTests(SimpleTestCase):
         self.assertEqual(result, "http://example.com/stream.ts")
 
 
+class TransformUrlBackreferenceTests(SimpleTestCase):
+    """#171: a JS-authored $N template must not inject a NUL or control byte.
+
+    transform_url's $N step now goes through
+    apps.m3u.utils.convert_js_numbered_backreferences, JavaScript's own
+    $n/$nn grammar, instead of a raw \\$(\\d+) -> \\1 rewrite that read a
+    bare $0 as the octal escape \\0 and $01 as \\x01.
+    """
+
+    def test_transform_url_dollar_zero_is_literal_instead_of_nul_bytes(self):
+        from apps.proxy.next_source import transform_url
+
+        # Issue #171's shrunk counterexample. (.*)$ matches twice (the
+        # whole string, then the empty tail), so a literal $0 template is
+        # substituted in twice.
+        result = transform_url("/", r"(.*)$", "$0")
+        self.assertEqual(result, "$0$0")
+        self.assertNotIn("\x00", result)
+
+    def test_transform_url_dollar_leading_zero_is_group_one(self):
+        from apps.proxy.next_source import transform_url
+
+        # Issue #171's own repro for the leading-zero variant: $01 is
+        # group 1 and $2 is group 2, so substituting "$01/$2" for the
+        # matched "h/u" reconstructs it unchanged rather than injecting
+        # \x01.
+        result = transform_url(
+            "http://h/u/p/1.ts", r"(h)/(u)", "$01/$2"
+        )
+        self.assertEqual(result, "http://h/u/p/1.ts")
+        self.assertNotIn("\x01", result)
+
+
 class OrderAlternatesFromCurrentTests(SimpleTestCase):
     def test_a_current_stream_id_missing_from_ordered_ids_returns_unrotated(self):
         from apps.proxy.next_source import order_alternates_from_current
