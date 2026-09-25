@@ -435,7 +435,8 @@ same convention G3's and G5's blocks set):
 - `e2e/tests/streaming/vod-stream.spec.ts` — the `vod_proxy` streaming path: session mint,
   redirect, byte delivery
 - `e2e/tests/streaming/xc-vod-playback.spec.ts` — the root XC `/movie/`/`/series/` routes, plus
-  the `Response`-not-imported (`#100`) and episode-`DoesNotExist`-guard (`#99`) known bugs
+  the `Response`-not-imported (`#100`) known bug and the episode-`DoesNotExist`-guard fix
+  (`#99`, fixed by `#454`)
 - `e2e/tests/streaming/vod-range.spec.ts` — Range and seek, plus the range-unsupported (`#66`,
   both the capability row and its byte-level elaboration), suffix-range (`#64`) and
   fresh-session-416 (`#98`) known bugs
