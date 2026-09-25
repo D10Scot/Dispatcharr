@@ -47,13 +47,18 @@ class CustomDummyOutOfRangeCaptureTests(SimpleTestCase):
             with self.subTest(channel_name=channel_name):
                 with self.assertLogs("apps.output.epg", "WARNING") as cm:
                     programs = self._call(channel_name, custom_properties)
-                self.assertIsInstance(programs, list)
+                self.assertIsInstance(
+                    programs, list,
+                    "an out-of-range minute must return the filler program list "
+                    "(#90), not raise ValueError/OverflowError out of datetime construction",
+                )
                 self.assertTrue(
                     any(
                         f"Invalid time values: hour={hour}, minute={minute}" in record
                         for record in cm.output
                     ),
-                    cm.output,
+                    "capture rejected with 'Invalid time values' (#90), not silently "
+                    f"accepted or logged under a different message: {cm.output}",
                 )
 
     def test_twelve_hour_capture_past_midnight_is_treated_as_no_time(self):
@@ -65,7 +70,11 @@ class CustomDummyOutOfRangeCaptureTests(SimpleTestCase):
         channel_name = "X 13:30pm"
         with self.assertLogs("apps.output.epg", "WARNING") as cm:
             programs = self._call(channel_name, custom_properties)
-        self.assertIsInstance(programs, list)
+        self.assertIsInstance(
+            programs, list,
+            "a 12-hour capture that overflows past midnight must return the "
+            "filler program list (#90), not raise",
+        )
         # 13 is not a valid 12-hour value paired with pm, but the existing code
         # has no upper bound on the 12-hour digits; pm adds 12, landing on 25.
         self.assertTrue(
@@ -73,7 +82,8 @@ class CustomDummyOutOfRangeCaptureTests(SimpleTestCase):
                 "Invalid time values: hour=25, minute=30" in record
                 for record in cm.output
             ),
-            cm.output,
+            f"capture rejected with 'Invalid time values' (#90) after the pm "
+            f"conversion pushes hour to 25: {cm.output}",
         )
 
     def test_impossible_calendar_date_is_treated_as_no_date(self):
@@ -86,13 +96,18 @@ class CustomDummyOutOfRangeCaptureTests(SimpleTestCase):
         channel_name = "Game 2/31 @ 10:30"
         with self.assertLogs("apps.output.epg", "WARNING") as cm:
             programs = self._call(channel_name, custom_properties)
-        self.assertIsInstance(programs, list)
+        self.assertIsInstance(
+            programs, list,
+            "an impossible calendar date (Feb 31) must return the filler "
+            "program list (#90), not raise",
+        )
         self.assertTrue(
             any(
                 "Invalid date values: month=2, day=31" in record
                 for record in cm.output
             ),
-            cm.output,
+            f"capture rejected with 'Invalid date values' (#90) via monthrange, "
+            f"not silently accepted: {cm.output}",
         )
 
     def test_out_of_range_year_is_treated_as_no_date(self):
@@ -113,13 +128,18 @@ class CustomDummyOutOfRangeCaptureTests(SimpleTestCase):
             with self.subTest(channel_name=channel_name):
                 with self.assertLogs("apps.output.epg", "WARNING") as cm:
                     programs = self._call(channel_name, custom_properties)
-                self.assertIsInstance(programs, list)
+                self.assertIsInstance(
+                    programs, list,
+                    f"an out-of-range year ({year}) must return the filler "
+                    "program list (#90), not raise 'year ... is out of range'",
+                )
                 self.assertTrue(
                     any(
                         f"Invalid date values: month=1, day=2, year={year}" in record
                         for record in cm.output
                     ),
-                    cm.output,
+                    f"capture rejected with 'Invalid date values' (#90) via the "
+                    f"year bound, not silently accepted: {cm.output}",
                 )
 
     def test_edge_year_one_step_from_datetime_limits_is_treated_as_no_date(self):
@@ -140,13 +160,19 @@ class CustomDummyOutOfRangeCaptureTests(SimpleTestCase):
                 props = {**custom_properties, "timezone": tz}
                 with self.assertLogs("apps.output.epg", "WARNING") as cm:
                     programs = self._call(channel_name, props)
-                self.assertIsInstance(programs, list)
+                self.assertIsInstance(
+                    programs, list,
+                    f"a year ({year}) one step outside datetime's own 1..9999 "
+                    "range must return the filler program list, not raise "
+                    "OverflowError once a timezone shift or duration is applied",
+                )
                 self.assertTrue(
                     any(
                         f"Invalid date values: month={month}, day={day}, year={year}" in record
                         for record in cm.output
                     ),
-                    cm.output,
+                    f"capture rejected with 'Invalid date values' via the "
+                    f"2..9998 year bound, not silently accepted: {cm.output}",
                 )
 
 

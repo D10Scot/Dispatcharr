@@ -65,8 +65,24 @@ class XcEpgLimitGuardTests(TestCase):
 
     def test_non_numeric_limit_falls_back_to_default_instead_of_500(self):
         listings = self._listings(limit_value="abc")
-        self.assertEqual(len(listings), 4)
+        self.assertEqual(
+            len(listings), 4,
+            "a non-numeric limit must fall back to the default of 4 (#91), not raise",
+        )
 
     def test_negative_limit_falls_back_to_default_instead_of_500(self):
         listings = self._listings(limit_value="-5")
-        self.assertEqual(len(listings), 4)
+        self.assertEqual(
+            len(listings), 4,
+            "a negative limit must fall back to the default of 4 (#91/#212), not slice negatively",
+        )
+
+    def test_huge_limit_falls_back_to_default_instead_of_500(self):
+        # Postgres rejects a LIMIT above 2^63-1 with DataError: bigint out of
+        # range; a 20-digit value is well past that.
+        listings = self._listings(limit_value="99999999999999999999")
+        self.assertEqual(
+            len(listings), 4,
+            "a limit beyond the sane cap must fall back to the default of 4, "
+            "not reach the queryset slice as a bigint Postgres rejects",
+        )

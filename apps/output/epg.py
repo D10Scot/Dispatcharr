@@ -23,6 +23,7 @@ from apps.epg.models import ProgramData
 from apps.epg.utils import sd_poster_proxy_path
 from apps.output.streaming_chunk_cache import stream_cached_response
 from core.utils import build_absolute_uri_with_port, log_system_event
+from dispatcharr.utils import redact_url
 
 logger = logging.getLogger(__name__)
 
@@ -542,13 +543,13 @@ def generate_custom_dummy_programs(
     channel_logo_url = None
     if channel_logo_url_template:
         channel_logo_url = format_template(channel_logo_url_template, all_groups, url_encode=True)
-        logger.debug(f"Formatted channel logo URL: {channel_logo_url}")  # credential-logging: ignore - a dummy-EPG logo template, not a provider URL; carries no credential
+        logger.debug(f"Formatted channel logo URL: {redact_url(channel_logo_url)}")
 
     # Format program poster URL if template provided (with URL encoding)
     program_poster_url = None
     if program_poster_url_template:
         program_poster_url = format_template(program_poster_url_template, all_groups, url_encode=True)
-        logger.debug(f"Formatted program poster URL: {program_poster_url}")  # credential-logging: ignore - a dummy-EPG poster template, not a provider URL; carries no credential
+        logger.debug(f"Formatted program poster URL: {redact_url(program_poster_url)}")
 
     # Add formatted time strings for better display (handles minutes intelligently)
     if time_info:
