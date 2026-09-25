@@ -1,6 +1,6 @@
 # `e2e-upstream` contract
 
-**Version:** 1.1.0
+**Version:** 1.2.0
 
 **An unlisted behaviour is not a guarantee.** If it isn't named below, a
 consumer test must not depend on it, however consistently it happens to
@@ -40,7 +40,7 @@ the README section that documents the mechanism.
   true count — that is documented fault behaviour, not a break in this
   guarantee (see "Fault catalogue" below).
 - **The fault catalogue behaves exactly as the README's fault table
-  documents** — all twelve faults, their scoping rules (`channel` vs
+  documents** — all thirteen faults, their scoping rules (`channel` vs
   scenario-wide, and which faults reject a `channel` filter outright), and
   `appliedTo`'s meaning. See "Fault catalogue" in the README.
 - **The finite VOD asset's `Range` handling is RFC-9110-shaped and honest**:
@@ -150,14 +150,14 @@ test can prove Dispatcharr does *not* rely on them either.
   already-created scenario has stable, predictable ids (channel `1` is
   always `Fake Channel 1` under the count form) — the scenario id wrapping
   it is not, and never two calls apart.
-- **`appliedTo` does not mean "this fault is now armed" for nine of the
-  twelve faults.** Only `dead-air`, `slow-trickle` and `disconnect` reach an
-  already-open connection and can report a nonzero count; the other nine
+- **`appliedTo` does not mean "this fault is now armed" for ten of the
+  thirteen faults.** Only `dead-air`, `slow-trickle` and `disconnect` reach an
+  already-open connection and can report a nonzero count; the other ten
   (`not-found`, `auth-failure`, `connection-limit`, `redirect-chain`,
   `non-ts-bytes`, `xc-auth-envelope`, `no-tv-archive`, `catchup-layout-404`,
-  `range-unsupported`) can only ever affect the *next* request, so
-  `appliedTo: 0` is their correct, expected result — not a sign the fault
-  failed to apply. See `FaultStore.apply` (`src/faults.ts`).
+  `range-unsupported`, `slow-playlist`) can only ever affect the *next*
+  request, so `appliedTo: 0` is their correct, expected result — not a sign
+  the fault failed to apply. See `FaultStore.apply` (`src/faults.ts`).
 - **The TS asset carries no per-stream identity (spec D6).** `getAsset()`
   (`src/server.ts`) serves one shared file to every channel and every
   scenario; the mux is built with fixed PIDs (`scripts/make-asset.sh`'s
@@ -208,6 +208,11 @@ surface). None of them reads `e2e-upstream/src/` directly — that is the
 point of this document existing: a consumer author works from this contract
 and the README, never from the implementation.
 
+`slow-playlist`'s only consumer is
+`e2e/tests/streaming-split/process-restart.spec.ts`'s Scenario B, which arms
+it to hold an M3U refresh in flight across a `relay-uwsgi` restart instead of
+contending decoy accounts against a large catalogue (#197).
+
 `e2e-upstream`'s own `test/*.test.ts` (vitest) is not a consumer in this
 sense — it is the thing that keeps this document honest (see "Enforcement").
 
@@ -238,6 +243,12 @@ the bump-and-enforce procedure itself works before any later, real bump
 depends on it. Per the plan's Global Constraints (spec D10), this task adds
 no `e2e-upstream/src/` change and no `/version` endpoint — the version lives
 only in `package.json` and this document, kept in sync by the guard below.
+
+**This landing is 1.2.0, a minor bump from 1.1.0.** It adds `slow-playlist`,
+a new fault (#197) — a backward-compatible addition per the rule above: no
+existing guarantee changes, and every existing consumer keeps working
+unmodified. `package-lock.json`'s stale `1.0.0` — pre-existing drift the
+guard below does not read — is corrected in the same PR.
 
 ## Enforcement
 
