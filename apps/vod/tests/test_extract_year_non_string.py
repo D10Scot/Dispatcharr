@@ -2,10 +2,9 @@
 
 A provider sending `"releaseDate": 2011` (a bare JSON number, not a string) made
 `apps/vod/tasks.py::extract_year` raise `AttributeError: 'int' object has no attribute
-'split'`, because `date_string.split('-')` ran outside the function's own
-`except (ValueError, IndexError)`. That exception is not caught by
-`process_series_batch`, so one malformed series row aborted the whole series
-refresh task. See https://github.com/D10Scot/Dispatcharr/issues/242.
+'split'`. That exception escaped the function's own `except (ValueError, IndexError)`;
+`process_series_batch`'s per-row `except Exception` caught it, so the series was
+skipped with an ERROR log. See https://github.com/D10Scot/Dispatcharr/issues/242.
 """
 
 from django.test import SimpleTestCase
