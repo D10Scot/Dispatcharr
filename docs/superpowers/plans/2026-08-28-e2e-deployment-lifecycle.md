@@ -1,6 +1,6 @@
 # G7 — Deployment Lifecycle E2E Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** implement this plan task by task with subagents, per CLAUDE.md § Delegation for phase work. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Prove a Dispatcharr container survives restart, upgrade-onto-an-existing-volume, a foreign PUID/PGID, and a TLS-only PostgreSQL — by wiring up the two never-executed bash suites and writing the two Playwright specs that do not exist.
 

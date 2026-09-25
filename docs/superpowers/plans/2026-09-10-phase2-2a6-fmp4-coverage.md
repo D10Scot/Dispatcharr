@@ -1,6 +1,6 @@
 # Phase 2 PR 2a-6 — fMP4 and Output Profile Coverage Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** implement this plan task by task with subagents, per CLAUDE.md § Delegation for phase work. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Pin the output side of the live path — Output Profile process sharing
 (matrix row 11) and the fMP4 generator's health-blind client timeout (matrix row 12,

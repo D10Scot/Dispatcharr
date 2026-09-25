@@ -1,6 +1,6 @@
 # Phase 2 Stage 2d-2 — the admin wrappers relocation
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** implement this plan task by task with subagents, per CLAUDE.md § Delegation for phase work. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Move the five `IsAdmin` control views the admin Stats UI drives — `change_stream`, `channel_status`, `stop_channel`, `stop_client`, `next_stream` — and the six URL patterns that register them out of `apps/proxy/live_proxy/`, so that the whole admin control surface survives stage 2d-4's deletion of that directory with no route re-created from memory and no behaviour changed.
 

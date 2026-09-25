@@ -1,6 +1,6 @@
 # G9 — VOD and Series End to End Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** implement this plan task by task with subagents, per CLAUDE.md § Delegation for phase work. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Prove that an Xtream Codes catalogue becomes `VODCategory`, `Movie`, `Series` and `Episode` rows with the right fields and the right gating; that the four XC VOD/series list actions and the two detail actions answer correctly against **real content**; and that `vod_proxy` delivers those bytes to a client, including Range and seek.
 

@@ -1,6 +1,6 @@
 # Phase 2 PR 2c-3 — the Go relay's multi-client fan-out Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** implement this plan task by task with subagents, per CLAUDE.md § Delegation for phase work. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Make the Go relay serve **N clients on one channel**. Three clients tune the same uuid, one upstream connection is opened, each of them reads an unbroken run of that upstream's bytes from its own join point roughly five seconds behind live, the relay knows who is attached, and `GET /proxy/relay/channels?clients=all` tells Django exactly what the Python relay tells it today. The last client leaving stops the channel; a client arriving as the last one leaves does not lose it.
 

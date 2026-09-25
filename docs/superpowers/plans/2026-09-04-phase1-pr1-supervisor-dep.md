@@ -1,6 +1,6 @@
 # Phase 1 PR 1 — Supervisor Dependency Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** implement this plan task by task with subagents, per CLAUDE.md § Delegation for phase work. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Land `supervisor==4.3.0` as a pinned main dependency, alone, so `base-image.yml` rebuilds
 `ghcr.io/…:base` with supervisord on `main` before any later PR execs it.

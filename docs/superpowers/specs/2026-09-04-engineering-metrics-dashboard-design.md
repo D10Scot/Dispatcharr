@@ -311,7 +311,6 @@ Everything runs on plain Python and Node, no Postgres or Docker, except the cove
 2. Land `metrics/curated/` seeded from Appendix A and CLAUDE.md, with `docs/agents/metrics.md`.
 3. Land the build step and pages, replacing `dashboard/` wholesale; dispatch `pages.yml`; confirm the site at https://d10scot.github.io/Dispatcharr/.
 4. Delete `scripts/metrics/collect_{security,delivery,agentic}.py` in favour of the event-dump collectors; leave the old JSONL files on the branch; update the branch README.
-5. Add `.superpowers/` to `.gitignore` (brainstorm artefacts from this design session).
 
 ## 11. Out of scope
 

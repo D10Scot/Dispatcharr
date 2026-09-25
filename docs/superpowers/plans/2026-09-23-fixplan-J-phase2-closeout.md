@@ -1,6 +1,6 @@
 # Fix plan, category J — Phase 2 close-out housekeeping
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking. Implementers are `sonnet`; every review is `fable` (or `opus` when fable credits are unavailable), per CLAUDE.md § Delegation.
+> **For agentic workers:** implement this plan task by task with subagents, per CLAUDE.md § Delegation for phase work. Steps use checkbox (`- [ ]`) syntax for tracking. Implementers are `sonnet`; every review is `fable` (or `opus` when fable credits are unavailable), per CLAUDE.md § Delegation.
 
 **Goal.** Pay the debts Phase 2 recorded and did not pay: delete the dead HLS package and its two
 dead consumers, delete the `RedisKeys` builders nothing calls, rebuild a Django-side ORM ratchet

@@ -1,6 +1,6 @@
 # G13 — DVR Execution Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** implement this plan task by task with subagents, per CLAUDE.md § Delegation for phase work. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Make a recording actually fire. The fake upstream provider serves a stream, `run_recording` executes for the first time in this repository's history, ffmpeg writes HLS segments, the segments concatenate to an MKV, the `Recording` row transitions, and the recording plays back — plus recurring rules, the seven-member DVR WebSocket event family, and a bounded characterization of comskip's dispatch chain.
 

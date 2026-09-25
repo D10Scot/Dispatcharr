@@ -36,8 +36,5 @@ e2e-upstream/dist/
 # also needs to stay untracked for anyone who runs the script on the host.
 e2e-upstream/assets/
 
-# brainstorming visual-companion artefacts (superpowers plugin)
-.superpowers/
-
 # build output, never committed
 dashboard/site.json

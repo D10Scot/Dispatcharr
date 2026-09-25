@@ -1,6 +1,6 @@
 # G8 XC Provider Emulation Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** implement this plan task by task with subagents, per CLAUDE.md § Delegation for phase work. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Teach the G2 fake upstream provider to speak Xtream Codes — `player_api.php`, a VOD and series catalogue served as a finite Range-capable file, and catch-up URLs in both layouts — and ship five Dispatcharr-facing plumbing proofs that the wiring works.
 

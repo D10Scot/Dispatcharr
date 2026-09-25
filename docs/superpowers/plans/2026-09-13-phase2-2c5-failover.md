@@ -1,6 +1,6 @@
 # Phase 2 PR 2c-5 — the Go relay's failover and the Redirect architecture Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** implement this plan task by task with subagents, per CLAUDE.md § Delegation for phase work. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Make the Go relay **fail over**: the three triggers of parity-matrix rows 1, 2 and 3 (buffering, dead air, connect failure) drive one port of `StreamManager.run`'s two loops; a channel asks the control plane for its next source through the `next-source` client 2c-2 built, falls back to the candidate list cached at channel start when the control plane is unreachable, and never on a refusal; the chunk index is untouched by a switch; the `release` and `events` routes land, with an emitter that posts fire-and-forget and logs an outage once. Plus the **Redirect** stream-profile architecture (the 302, `validate_stream_url`'s probe, the fall-through to the cached alternates, the internal-principal override), and the **health flag** that opens the keepalive and client-timeout gates 2c-2 deferred (Amendment A2.5), with the error TS packet that amendment recorded as a divergence. Rows 1, 2, 3 and 6 get a Go column; row 7 gains a pin across a switch; row 5 keeps 2c-4's.
 

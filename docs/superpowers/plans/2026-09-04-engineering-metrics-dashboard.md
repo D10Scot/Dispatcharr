@@ -1,6 +1,6 @@
 # Engineering Metrics Dashboard Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** implement this plan task by task with subagents, per CLAUDE.md § Delegation for phase work. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Replace the M1/M2/M3 metrics stack with a three-layer system: raw-fact collectors, a
 tested Python build step that emits one `site.json`, and five static pages that render it.
@@ -5447,7 +5447,6 @@ genuinely behind (coverage until its first daily run).
   tile background per the brainstorm: Task 17 CSS (`fill-opacity .06`, `stroke-opacity .35`).
 - §9 testing: unit tests in every task; the fake `gh` in Task 2; real-file validation in
   Task 10; vitest without Playwright in Tasks 16–19.
-- §10 migration order: Parts A → B → C, retirements in Tasks 7 and 16, `.superpowers/` was
-  ignored with the spec commit.
+- §10 migration order: Parts A → B → C, retirements in Tasks 7 and 16.
 - Not covered by design: the Dependabot PAT and secret-scanning toggle (spec §11).
 

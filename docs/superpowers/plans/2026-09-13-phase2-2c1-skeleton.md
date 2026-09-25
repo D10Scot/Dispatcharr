@@ -1,6 +1,6 @@
 # Phase 2 PR 2c-1 — the Go relay skeleton Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** implement this plan task by task with subagents, per CLAUDE.md § Delegation for phase work. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Put a Go module at `relay/`, start it as a supervisord program in the `all` and `relay` roles, build it in the Docker image, and gate it in CI — with `/healthz` and `/readyz` answering 200 and nothing else reachable outside `dev`. Plus one Python contract field, `stream_profile.kind`, without which the PR cannot honestly claim the spec's own precondition met. This is the first PR of Stage 2c and the first line of Go in the repository. It ships no streaming behaviour at all.
 

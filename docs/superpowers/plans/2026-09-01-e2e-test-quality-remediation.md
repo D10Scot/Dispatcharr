@@ -1,6 +1,6 @@
 # G15 — Test-Quality Remediation Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** implement this plan task by task with subagents, per CLAUDE.md § Delegation for phase work. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Remove the ways the existing E2E suite can be green for the wrong reason, deepen three frontend surfaces that are wired but not exercised, and give the fake upstream provider a versioned contract. One PR of small, individually verified fixes. **No product code changes.**
 

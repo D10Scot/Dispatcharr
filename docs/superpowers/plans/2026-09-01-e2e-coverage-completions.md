@@ -1,6 +1,6 @@
 # G14 — Coverage Completions Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** implement this plan task by task with subagents, per CLAUDE.md § Delegation for phase work. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Close the seven accepted coverage gaps from the 2026-09-01 programme review — blocked-network ACL 403 negatives, EPG matching and the `set-*-from-epg` family, row-scoped behavioural settings, plugin `run`, channel bulk operations and reordering, M3U filters, and product WebSocket events — **without adding a Playwright project, a CI job, or an isolated instance.**
 
