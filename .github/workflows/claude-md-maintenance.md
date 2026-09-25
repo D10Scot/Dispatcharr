@@ -119,7 +119,7 @@ to verify, in two tiers:
 - **Tier 2 — cheap global invariants (verify all, every run).** Claims that
   re-derive in one command regardless of what changed: the workflow inventory
   (`ls .github/workflows/`), existence of files the doc calls dead or missing
-  (`hls_proxy/`, `entrypoint.aio.sh`, `persistent_lock.py`, `renovate.json`,
+  (`entrypoint.aio.sh`, `persistent_lock.py`, `renovate.json`,
   absence of `.github/zizmor.yml`), the `npm install` vs `npm ci` claim in
   `docker/Dockerfile`, and the docs the "Agent skills" section points at
   (`docs/agents/*.md`, `CONTEXT.md`, `docs/adr/`).
