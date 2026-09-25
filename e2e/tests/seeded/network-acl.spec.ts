@@ -121,9 +121,9 @@ test(
     const failureContext =
       'This is the premise for tests 2 and 3 in this file: they only mean something if ' +
       "this container's nginx/uwsgi topology honours X-Real-IP from the Docker-bridge " +
-      'peer, which since #182 requires scripts/e2e_up.sh to have passed that peer as ' +
-      'DISPATCHARR_TRUSTED_PROXIES on docker run (a container started before that change ' +
-      'needs --down or --recreate to pick it up). If this fails, check ' +
+      'peer, which since #182 requires the e2e harness (scripts/e2e_up.sh) to have passed ' +
+      'that peer as DISPATCHARR_TRUSTED_PROXIES when the container was started (an ' +
+      'existing container needs --down or --recreate to pick it up). If this fails, check ' +
       'DISPATCHARR_TRUSTED_PROXIES (dispatcharr/utils.py) — a deployment that sets it to ' +
       '"none" correctly fails this test — and ' +
       'https://github.com/D10Scot/Dispatcharr/issues/81.';
