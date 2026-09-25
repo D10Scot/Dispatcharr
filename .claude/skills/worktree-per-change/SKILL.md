@@ -13,19 +13,19 @@ This project's names (the worktree directory, the shared test container, the hoo
 
 ```bash
 cd <repo-root> && git fetch origin && \
-  git worktree add -b <type>/<id>-<slug> .worktrees/<id> origin/main && \
-  git -C .worktrees/<id> rev-parse --short HEAD
+  git worktree add -b <type>/<id>-<slug> <worktree-dir>/<id> origin/main && \
+  git -C <worktree-dir>/<id> rev-parse --short HEAD
 ```
 
 Name the worktree after the change (a PR id, a plan stage, an issue number), not after yourself. Record the base SHA the branch was cut from: every later review is pinned to it and every plan anchor is re-grepped against it. A `/goal`, a multi-file change or anything unattended always gets a worktree. A genuinely one-file edit may take a branch in the root checkout only when no other agent is active in the repository; when in doubt, a worktree costs seconds.
 
 ## 2. Confirm the tree is unoccupied
 
-Before writing into any worktree you did not create this turn (a handover, a fix round, a tree the orchestrator pointed you at), ask whether it is **occupied**, not whether it is clean. `git status` answers the wrong question: an agent in a measurement task writes no files, and an agent mid-edit has uncommitted changes with no author attached. Run all three:
+Before writing into any worktree you did not create yourself (a handover, a fix round, a tree the orchestrator pointed you at), ask whether it is **occupied**, not whether it is clean. `git status` answers the wrong question: an agent in a measurement task writes no files, and an agent mid-edit has uncommitted changes with no author attached. Run all three:
 
 ```bash
 cd <worktree> && git status --porcelain && git log --oneline -3
-stat -f '%Sm %N' <the files you intend to touch>      # a modification younger than a few minutes is someone's in-flight edit
+stat -f '%Sm %N' <files you intend to touch>   # BSD; GNU: stat -c '%y %n'. A modification younger than a few minutes is someone's in-flight edit
 docker ps --filter name=<container the plan names>     # a measurement phase leaves only this trace
 ```
 
@@ -33,7 +33,7 @@ Any sign of occupation means the tree is occupied. Send your diff to the orchest
 
 ## 3. Anchor every command
 
-The shell's working directory is shared or correlated across concurrent sessions and moves without a `cd`, always toward the busier agent's tree. Prefix every command with `cd <absolute worktree> &&` or use absolute paths. A relative path resolves somewhere plausible and wrong, with nothing in `git status` to show for it.
+The shell's working directory is shared or correlated across concurrent sessions and moves without a `cd`, into another agent's tree. Prefix every command with `cd <absolute worktree> &&` or use absolute paths. A relative path resolves somewhere plausible and wrong, with nothing in `git status` to show for it.
 
 Two git habits belong here because they fail silently in the same way:
 
@@ -42,7 +42,7 @@ Two git habits belong here because they fail silently in the same way:
 
 ## 4. Keep git pointed at your own tree
 
-Never run `git --work-tree=`, `git --git-dir=`, `git config core.worktree`, or export `GIT_DIR`, `GIT_WORK_TREE` or `GIT_INDEX_FILE` into a command that runs a script or a test suite. A test fixture that does its own `git init` inherits those variables and writes into the shared `.git` (this happened: three scratch commits landed on local `main` and every git command in the root checkout started answering "must be run in a work tree"). A scratch repository is `git init`ed inside the scratch directory, and `git rev-parse --git-dir` is checked to print a scratch path before the first commit. For history at a SHA use `git worktree add --detach <scratch> <sha>` and remove it by path afterwards.
+Never run `git --work-tree=`, `git --git-dir=`, `git config core.worktree`, or export `GIT_DIR`, `GIT_WORK_TREE` or `GIT_INDEX_FILE` into a command that runs a script or a test suite. A test fixture that does its own `git init` inherits those variables and writes into the shared `.git`, leaving scratch commits on the shared `main` and every git command in the root checkout answering "must be run in a work tree" (`references/project.md` records the incident). A scratch repository is `git init`ed inside the scratch directory, and `git rev-parse --git-dir` is checked to print a scratch path before the first commit. For history at a SHA use `git worktree add --detach <scratch> <sha>` and remove it by path afterwards.
 
 ## 5. Tests and hooks
 
@@ -54,12 +54,12 @@ Completion criterion: `git worktree list` shows only live work, no local branch 
 
 ```bash
 cd <repo-root> && git pull --ff-only origin main && \
-  git worktree remove --force .worktrees/<id> && git branch -D <branch> && \
+  git worktree remove <worktree-dir>/<id> && git branch -D <branch> && \
   git worktree prune && git worktree list
 docker rm -f <your containers>; docker network rm <your network>; docker rmi <your image tag>
 ```
 
-Run this when the PR merges or the work is abandoned. A worktree whose PR is still open stays until then: the merge gate may need a fix commit, and a reviewer may need to read the tree. When an orchestration ends with a PR still open, the branch is pushed, the worktree is left in place, and the report says so by path, so the next agent knows it is live rather than abandoned. A worktree left behind after its PR merged is the next agent's occupancy false positive.
+A removal that refuses because the tree is dirty is the signal to look at what is there, never to add `--force`: an uncommitted change in a tree you thought finished is someone's work. Run this when the PR merges or the work is abandoned. A worktree whose PR is still open stays until then: the merge gate may need a fix commit, and a reviewer may need to read the tree. When an orchestration ends with a PR still open, the branch is pushed, the worktree is left in place, and the report says so by path, so the next agent knows it is live rather than abandoned. A worktree left behind after its PR merged is the next agent's occupancy false positive.
 
 ## Orchestrating several agents
 

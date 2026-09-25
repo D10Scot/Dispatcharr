@@ -11,8 +11,8 @@ Read `references/project.md` for this repository's names (where plans live, whic
 
 ## Roles and models
 
-- **Planner** writes the document. Run it on `opus` or `fable`, never `sonnet`: every sonnet plan draft in this programme's history failed its first review and was rewritten on opus, so starting on sonnet buys a wasted round.
-- **Reviewer** is a separate agent on `fable` (`opus` when fable credits are unavailable). It verifies against the tree and pushes back with `file:line` evidence; it is told not to comply with a claim because the document makes it.
+- **Planner** writes the document. Run it on `opus` or `fable`, never `sonnet`: `references/project.md` records why (every sonnet plan draft here failed its first review and was rewritten on opus).
+- **Reviewer** is a separate agent on the strongest reviewing model the project allows; `references/project.md` names it and the cadence when its credits are rationed. It verifies against the tree and pushes back with `file:line` evidence; it is told not to comply with a claim because the document makes it.
 - **Orchestrator** neither writes nor reviews. Its context is reserved for coordination: dispatching, pinning SHAs, relaying findings, ruling on disputes.
 
 **Getting reports back.** A subagent's hand-back reaches you only while you are still running; an orchestrator that ends its turn with a subagent in flight gets "the spawning agent is no longer running" and the report is stranded. So every dispatch names you and says: "report by SendMessage to <your name or agent id> as well as by hand-back", and you treat the message as the delivery that resumes you. Record which channel each report arrived on (hand-back, message, or recovered from the file it was told to write), so a stranded report is a fact rather than a feeling. If you are yourself a subagent, spawn without a `name` (a subagent cannot spawn named teammates) and address your agents by the id the spawn returned.
@@ -51,7 +51,7 @@ A disputed finding is checked at the reviewed SHA (`git show "${sha}:path"`), ne
 
 ## 5. Fix round and re-review
 
-The planner fixes, pushes, reports the new SHA; the branch freezes again; the same reviewer re-checks the findings against the new SHA (a full re-read on round one, a targeted re-check on later rounds unless the diff is large). A round **fails** when it returns a blocking or should-fix finding; a round that returns only nits passes, the nits are applied in one commit, and the reviewer confirms that commit with a targeted re-check rather than a new round. Count the failed rounds. After the second failed round, escalate: move the planner, or the reviewer, to `fable`.
+The planner fixes, pushes, reports the new SHA; the branch freezes again; the same reviewer re-checks the findings against the new SHA (a full re-read on round one, a targeted re-check on later rounds unless the diff is large). A round **fails** when it returns a blocking or should-fix finding; a round that returns only nits passes, the nits are applied in one commit, and the reviewer confirms that commit with a targeted re-check rather than a new round. Count the failed rounds. After the second failed round, escalate: the review moves to the strongest reviewing model if it was not already there and a fresh reviewer reads the branch cold; a planner that keeps missing the same class of finding moves to `fable`.
 
 The SHA the plan is "good at" is the last SHA a reviewer passed. Any commit after that PASS, however small, moves the branch off the reviewed state and gets a targeted re-check before the plan is handed on; a one-line wording change committed after PASS and called final is how an unreviewed plan reaches an implementer. A fixer that agrees with every finding is a signal to test, not to trust; ask it for the `grep -n` of the shipped file where a report says "added and verified", since a change verified in scratch and never copied into the document has happened.
 

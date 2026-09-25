@@ -1,6 +1,6 @@
 ---
 name: implement-review-escalate
-description: Execute a plan section or a bug fix with a sonnet implementer in its own worktree, review the result on opus pinned to a commit SHA, run fix rounds, and escalate to fable after two failed rounds; enforces the test-modification rule and break-check evidence throughout. Use whenever implementing from a plan, fixing an issue, dispatching an implementer or reviewer subagent, reviewing an implementation PR, or judging a report that says tests were changed, a test went red before the fix, or "verified"; use it even for a change that looks small enough to skip review.
+description: Execute a plan section or a bug fix with a sonnet implementer in its own worktree, review the result with an independent reviewer pinned to a commit SHA, run fix rounds, and escalate the reviewer after two failed rounds; enforces the test-modification rule and break-check evidence throughout. Use whenever implementing from a plan, fixing an issue, dispatching an implementer or reviewer subagent, reviewing an implementation PR, or judging a report that says tests were changed, a test went red before the fix, or "verified"; use it even for a change that looks small enough to skip review.
 ---
 
 # Implement, review, escalate
@@ -12,7 +12,7 @@ Read `references/project.md` for this repository's names: the test commands, the
 ## Roles and models
 
 - **Implementer** on `sonnet`: an agent writing code against a plan that already exists. Escalate it to `opus` when it is stuck or reports short.
-- **Reviewer** on `opus` for rounds one and two; `fable` from round three, or from round one for a security-adjacent change. The reviewer is a separate agent, told to verify findings against the code and push back with `file:line` evidence rather than comply.
+- **Reviewer** is a separate agent on the strongest reviewing model the project allows; `references/project.md` names the default reviewer and the cadence when that model's credits are rationed (which rounds get it, and that a security-adjacent change gets it from round one). It is told to verify findings against the code and push back with `file:line` evidence rather than comply.
 - **Orchestrator** relays, pins SHAs, rules on disputes, counts rounds.
 
 **Getting reports back.** A subagent's hand-back reaches you only while you are still running; an orchestrator that ends its turn with a subagent in flight gets "the spawning agent is no longer running" and the report is stranded. Every dispatch therefore names you and says "report by SendMessage to <your name or agent id> as well as by hand-back", and the message is the delivery that resumes you. Record in the ledger which channel each report arrived on (hand-back, message, or recovered from the file it was told to write), so a stranded report is a fact rather than a feeling. If you are yourself a subagent, spawn without a `name` (a subagent cannot spawn named teammates) and address your agents by the id the spawn returned.
@@ -62,6 +62,6 @@ When a reviewer shows that a new assertion claims something the code does not gu
 
 ## 4. Re-review and escalate
 
-Round two: same reviewer, new SHA, targeted re-check of the findings plus anything the fix touched. A round **fails** when it returns a blocking or should-fix finding. A round that returns only nits passes: the nits are applied in one commit and the reviewer confirms that commit with a targeted re-check, not a new round, and a nit the implementer disputes with evidence is left as it is. After the second failed round, the third review runs on `fable`; if the implementer is the one stalling, it moves to `opus`. Count failed rounds explicitly in the ledger so escalation is a rule rather than a feeling.
+Round two: same reviewer, new SHA, targeted re-check of the findings plus anything the fix touched. A round **fails** when it returns a blocking or should-fix finding. A round that returns only nits passes: the nits are applied in one commit and the reviewer confirms that commit with a targeted re-check, not a new round, and a nit the implementer disputes with evidence is left as it is. After the second failed round, the review escalates to the strongest reviewing model if it was not already there, and a fresh reviewer reads the branch cold; if the implementer is the one stalling, it moves to `opus`. Count failed rounds explicitly in the ledger so escalation is a rule rather than a feeling.
 
 Completion criterion: the reviewer's last output is `PASS` against the SHA at the branch tip (a commit after the PASS, however small, gets its targeted re-check first), every test change is accounted for in the report, and every break-check row carries an observed message. Then hand the PR to `pr-merge-gate`, with the worktree left in place until it merges.

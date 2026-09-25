@@ -8,10 +8,10 @@ They encode how work is done here, and they chain: a change starts in `worktree-
 
 - `worktree-per-change`: one worktree and branch per change, occupancy checks before writing into a shared tree, anchored commands, tidy-up when the PR merges.
 - `plan-review-fix`: plan → independent review pinned to a SHA → fix → re-review until PASS, on opus/fable; the "good at" SHA is the last PASS.
-- `implement-review-escalate`: sonnet implementer → opus review pinned to a SHA → fix rounds → fable after two failed rounds; the test-modification rule and break-check evidence.
+- `implement-review-escalate`: sonnet implementer → independent review pinned to a SHA → fix rounds → escalation after two failed rounds; the test-modification rule and break-check evidence.
 - `pr-merge-gate`: branch up to date, marked ready, the review bot's verdict and/or every thread actioned and resolved, every check green, squash merge, post-merge housekeeping.
 
-Every PR from the plan and implement skills opens as a **draft** and stays one until its internal review passes; `pr-merge-gate` marks it ready. The reason is the review bot's once-per-PR behaviour, stated in each skill's `references/project.md`.
+Every PR from the plan and implement skills opens as a **draft** and stays one until its internal review passes; `pr-merge-gate` marks it ready. The reason is the review bot's once-per-PR behaviour, stated in the plan, implement and merge-gate skills' `references/project.md`.
 
 ## Porting a skill to another repository
 
