@@ -1,18 +1,18 @@
 import { test, expect, SEEDED_USER_PASSWORD } from '../../fixtures';
 
-// The non-inverted control for the test.fail() below ('refreshing a deleted
-// user's token returns 401, not 500'): the premise that /api/accounts/token/
-// refresh/ is a working route at all — a live user's refresh token is
-// accepted and answered with a fresh access token. The pin below remains
-// the only test in this file that calls this route with a *deleted* user's
-// token, inside a test.fail() block — this control's own call, immediately
-// above, uses a live user's token in a non-inverted body instead.
-// A broken refresh endpoint (wrong status, no `access` in the body, a 500 on
-// every input) would be swallowed by the pin below as an "expected
-// failure", since test.fail() is satisfied by ANY failure in its body, not
-// specifically the 401-vs-500 regression it exists to pin. `asPrincipal`
-// costs no login — `standard`'s tokens are pre-minted by `bootstrap` — so
-// this control keeps the file's login spend at the one the pin below still
+// The control for the test below ('refreshing a deleted user's token
+// returns 401, not 500'): it proves /api/accounts/token/refresh/ is a
+// working route at all — a live user's refresh token is accepted and
+// answered with a fresh access token. The test below is the only one in
+// this file that calls this route with a *deleted* user's token; this
+// control's own call, immediately above, uses a live user's token instead.
+// Without this control, a broken refresh endpoint (wrong status, no
+// `access` in the body, a 500 on every input) could fail the test below for
+// the wrong reason. This control isolates the route itself as working, so
+// the test below's 401 assertion is specifically about the deletion, not
+// about the endpoint being broken in general. `asPrincipal` costs no
+// login — `standard`'s tokens are pre-minted by `bootstrap` — so this
+// control keeps the file's login spend at the one the test below still
 // costs.
 test('a live user\'s refresh token is accepted by /api/accounts/token/refresh/', { tag: '@contract' }, async ({
   asPrincipal,
@@ -50,7 +50,16 @@ test('a live user\'s refresh token is accepted by /api/accounts/token/refresh/',
 // documents the cold bootstrap cost as "3, which is exactly the per-minute
 // cap" — the whole budget spent before this test's own `asUser` login even
 // runs. So this test's login can 429 on any CI run, not just an occasional
-// local one. See "The login throttle" in e2e/README.md.
+// local one. **Unlike before the #12 fix (#428), a 429 here now fails this
+// test outright** — `asUser` throws on any non-OK login response
+// (e2e/fixtures/auth.ts:115-124), where `test.fail()` used to absorb that
+// throw as the "expected failure" regardless of cause. In the run that
+// first exercised this test as a plain test() (36103684984, `seeded` job),
+// this login landed about 69s after bootstrap's logins, well clear of the
+// 3/minute window — but that margin comes from test/file execution order
+// within the run, not from anything that bounds it, so it is not
+// guaranteed to hold on every run. See "The login throttle" in
+// e2e/README.md.
 test('refreshing a deleted user\'s token returns 401, not 500', { tag: '@contract' }, async ({
   seed,
   api,

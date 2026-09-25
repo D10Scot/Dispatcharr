@@ -21,8 +21,10 @@ def _validate_tls_cert_paths(paths, service_name):
         try:
             is_file = Path(file_path).is_file()
         except OSError as exc:
-            # Python 3.13's Path.is_file() re-raises EACCES from os.stat
-            # instead of returning False (#128).
+            # Path.is_file() re-raises EACCES from os.stat when a parent
+            # directory is not traversable, instead of returning False
+            # (#128). A merely-unreadable *file* in a traversable directory
+            # still reports is_file() == True and is not caught here.
             raise ImproperlyConfigured(
                 f"{service_name} TLS: {env_var}={file_path!r} — cannot read file "
                 f"({exc.strerror or exc}). Check that the application user can "
