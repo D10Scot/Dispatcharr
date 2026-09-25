@@ -213,14 +213,55 @@ jobs:
           docker run --rm anchore/grype@sha256:ddf9e9f204049f3a4a0955ef70873cabab6a31432125ad4f20a490b54950a253 \
             "$IMAGE_REF" -o table || true
 
+      - name: Write the accepted-risk rules
+        # Each rule names ONE finding, scoped to the exact package, version and
+        # type, with a reason and an EXPIRES date that the next step enforces.
+        # A rule is a decision with an end date, never a mute. The informational
+        # step above is unaffected and keeps printing every accepted finding.
+        run: |
+          cat > "$RUNNER_TEMP/grype.yaml" <<'YAML'
+          ignore:
+            - vulnerability: CVE-2026-70632
+              package: {name: ffmpeg, version: 8.1.2, type: binary}
+              reason: >-
+                EXPIRES 2026-10-31. CFHD decoder heap write. Fixed upstream in
+                FFmpeg n8.1.3 (2026-09-19) and 9.0; linuxserver publishes no
+                8.1.3 and its 9.0 image is an Ubuntu 26.04 move, planned as
+                fixplan G-9. Reach: a provider stream in AVI probed by an
+                FFmpeg-profile channel or DVR recording. #277.
+            - vulnerability: CVE-2026-70628
+              package: {name: ffmpeg, version: 8.1.2, type: binary}
+              reason: >-
+                EXPIRES 2026-10-31. DVB-subtitle parser signed overflow. Same
+                fix status and plan as CVE-2026-70632. Reach: a provider stream
+                in WTV. #277.
+          YAML
+
+      - name: Refuse an expired or undated accepted-risk rule
+        run: |
+          set -euo pipefail
+          f="$RUNNER_TEMP/grype.yaml"
+          rules=$(grep -c -- '- vulnerability:' "$f" || true)
+          dated=$(grep -c 'EXPIRES [0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}' "$f" || true)
+          if [ "$rules" != "$dated" ]; then
+            echo "::error::every accepted-risk rule needs an EXPIRES date ($dated of $rules have one)"; exit 1
+          fi
+          today=$(date -u +%F); bad=0
+          for d in $(grep -o 'EXPIRES [0-9-]*' "$f" | cut -d' ' -f2); do
+            if [[ "$d" < "$today" ]]; then echo "::error::an accepted-risk rule expired on $d"; bad=1; fi
+          done
+          exit $bad
+
       - name: Grype (blocking — CRITICAL/HIGH, fixable only)
         # --fail-on high, not critical: matches the CRITICAL/HIGH policy
         # documented at the top of this file (and what Trivy's blocking
         # step above already does) — the two independent-DB blocking
         # passes should actually share a threshold, not silently diverge.
+        # --config applies ONLY the rules written above, each dated.
         env:
           IMAGE_REF: ${{ steps.image.outputs.ref }}
         run: |
           # anchore/grype v0.117.0
-          docker run --rm anchore/grype@sha256:ddf9e9f204049f3a4a0955ef70873cabab6a31432125ad4f20a490b54950a253 \
-            "$IMAGE_REF" --fail-on high --only-fixed -o table
+          docker run --rm -v "$RUNNER_TEMP/grype.yaml:/grype.yaml:ro" \
+            anchore/grype@sha256:ddf9e9f204049f3a4a0955ef70873cabab6a31432125ad4f20a490b54950a253 \
+            "$IMAGE_REF" --config /grype.yaml --fail-on high --only-fixed -o table
