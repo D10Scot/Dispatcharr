@@ -434,6 +434,36 @@ class StreamFromProviderStatusMappingTests(TestCase):
         self.assertEqual(mocked_open.call_count, 2)
 
     @patch.object(views, "_open_upstream")
+    def test_a_non_ts_body_is_logged_without_raw_control_bytes(self, mocked_open):
+        """The "no TS sync" warning must not leak raw control bytes (NUL,
+        ESC, BEL) from a non-TS body into the log line (#183)."""
+        control_body = b"\x00\x1b[31m<b>Warning</b>\r\n\x07tail"
+        bad_resp = _fake_upstream(200, body=control_body)
+        bad_resp.raw = MagicMock()
+        bad_resp.raw.read = MagicMock(return_value=control_body)
+
+        ts_resp = _fake_upstream(200, body=_make_ts_payload())
+
+        mocked_open.side_effect = [bad_resp, ts_resp]
+        with patch.object(views, "RedisClient"), \
+             patch.object(views, "_register_stats_client"), \
+             patch.object(views, "_unregister_stats_client"), \
+             self.assertLogs(views.logger, "WARNING") as cm:
+            response = views._stream_from_provider(**self.kwargs)
+        self.assertEqual(response.status_code, 200)
+        # Bad body rejected, second candidate accepted
+        self.assertEqual(mocked_open.call_count, 2)
+        no_sync_records = [msg for msg in cm.output if "no TS sync" in msg]
+        self.assertEqual(len(no_sync_records), 1)
+        msg = no_sync_records[0]
+        raw = [c for c in msg if ord(c) < 32]
+        self.assertEqual(
+            raw, [],
+            f"raw control bytes {raw!r} reached the 'no TS sync' warning: {msg!r}",
+        )
+        self.assertIn("\\x1b", msg, "ESC not repr-escaped in the warning")
+
+    @patch.object(views, "_open_upstream")
     def test_416_range_not_satisfiable_passes_through(self, mocked_open):
         # A tail/seek probe past EOF must go back to the client verbatim,
         # never cascaded to other URL shapes (byte offsets are file-specific,
