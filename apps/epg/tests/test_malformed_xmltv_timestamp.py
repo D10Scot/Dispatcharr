@@ -212,51 +212,92 @@ class MalformedOffsetLookupTests(TestCase):
         finally:
             os.unlink(tmp_path)
 
-    def test_surrogate_reference_in_airing_programme_text_is_skipped_not_raised(self):
+    def test_surrogate_reference_in_airing_programme_is_skipped_wherever_it_appears(self):
         # Review round 2, blocking: recover=True lets a character reference
         # to a lone UTF-16 surrogate (&#xD800;, &#xDFFF;, &#55296;) parse
         # successfully instead of raising XMLSyntaxError at parse time; the
         # crash moved one layer down, to the first read of the offending
         # node's text -- which _programme_to_dict does while building the
-        # result, past both callers' except clause. A bad-surrogate
-        # programme airing right now, followed by a good one also airing
-        # right now, must return the good one rather than raising.
-        xml = (
-            '<?xml version="1.0" encoding="UTF-8"?>\n'
-            "<tv>\n"
-            '  <channel id="surrogate.text"/>\n'
-            '  <programme start="20000101000000 +0000" '
-            'stop="20991231235959 +0000" channel="surrogate.text">\n'
-            "    <title>Bad &#xD800; title</title>\n"
-            "  </programme>\n"
-            '  <programme start="20000101000000 +0000" '
-            'stop="20991231235959 +0000" channel="surrogate.text">\n'
-            "    <title>Good</title>\n"
-            "  </programme>\n"
-            "</tv>\n"
-        )
-        tmp_path = _write_xmltv(xml)
-        try:
-            src = EPGSource.objects.create(
-                name="Surrogate Text", source_type="xmltv", file_path=tmp_path
-            )
-            build_programme_index(src.id)
-            src.refresh_from_db()
-            offsets = src.programme_index["channels"]["surrogate.text"]
+        # result, past both callers' except clause. Round 3/4 fixed this by
+        # forcing the decode inside _parse_programme_element via
+        # etree.tostring(), which walks every node's text, tail and
+        # attributes. A pr-review bot question (round 5) asked to pin that
+        # the fix covers more than the text placement the round-2 test
+        # happened to use: a tail, an attribute on a child element, the
+        # `start` attribute on <programme> itself (the one both callers
+        # actually read), and a nested element. Each subTest is a
+        # bad-surrogate programme airing right now, followed by a
+        # well-formed one also airing right now for the same channel; each
+        # must return the well-formed one rather than raising.
+        cases = {
+            "text": (
+                "surrogate.text",
+                '    <title>Bad &#xD800; title</title>\n',
+                None,
+            ),
+            "tail": (
+                "surrogate.tail",
+                '    <title>ok</title>tail&#xD800;\n',
+                None,
+            ),
+            "title_attribute": (
+                "surrogate.title.attribute",
+                '    <title lang="&#xD800;">ok</title>\n',
+                None,
+            ),
+            "start_attribute": (
+                "surrogate.start.attribute",
+                '    <title>ok</title>\n',
+                # Corrupts the bad programme's own start= value; both
+                # callers read prog.get('start'), so this is the one
+                # attribute placement they actually consume.
+                "20000101000000&#xD800; +0000",
+            ),
+            "nested_element": (
+                "surrogate.nested.element",
+                '    <title>ok</title>\n    <category>Bad &#xD800;</category>\n',
+                None,
+            ),
+        }
+        for name, (channel_id, bad_body, bad_start) in cases.items():
+            with self.subTest(name):
+                start_attr = bad_start or "20000101000000 +0000"
+                xml = (
+                    '<?xml version="1.0" encoding="UTF-8"?>\n'
+                    "<tv>\n"
+                    f'  <channel id="{channel_id}"/>\n'
+                    f'  <programme start="{start_attr}" '
+                    f'stop="20991231235959 +0000" channel="{channel_id}">\n'
+                    f"{bad_body}"
+                    "  </programme>\n"
+                    f'  <programme start="20000101000000 +0000" '
+                    f'stop="20991231235959 +0000" channel="{channel_id}">\n'
+                    "    <title>Good</title>\n"
+                    "  </programme>\n"
+                    "</tv>\n"
+                )
+                tmp_path = _write_xmltv(xml)
+                try:
+                    src = EPGSource.objects.create(
+                        name=f"Surrogate {name}", source_type="xmltv", file_path=tmp_path
+                    )
+                    build_programme_index(src.id)
+                    src.refresh_from_db()
+                    offsets = src.programme_index["channels"][channel_id]
 
-            result = _read_programs_at_offsets(
-                tmp_path, "surrogate.text", offsets, self.now
-            )
+                    result = _read_programs_at_offsets(
+                        tmp_path, channel_id, offsets, self.now
+                    )
 
-            self.assertIsNotNone(
-                result,
-                "a surrogate character reference in one programme's title "
-                "must be skipped, not raised, so the scan can reach the "
-                "well-formed programme after it",
-            )
-            self.assertEqual(result["title"], "Good")
-        finally:
-            os.unlink(tmp_path)
+                    self.assertIsNotNone(
+                        result,
+                        f"a surrogate character reference in the '{name}' "
+                        "placement must be skipped, not raised, so the scan "
+                        "can reach the well-formed programme after it",
+                    )
+                    self.assertEqual(result["title"], "Good")
+                finally:
+                    os.unlink(tmp_path)
 
     def test_current_programs_api_does_not_500_on_a_malformed_programme_timestamp(self):
         xml = (
