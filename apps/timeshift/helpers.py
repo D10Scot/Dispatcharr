@@ -140,7 +140,8 @@ def convert_timestamp_to_provider_tz(timestamp_str, provider_tz_name):
             (e.g. ``Europe/Brussels``). Falsy, ``UTC``, or unknown: no conversion.
 
     Returns:
-        ``YYYY-MM-DD:HH-MM`` in the provider zone, or the input unchanged on skip/failure.
+        ``YYYY-MM-DD:HH-MM`` in the provider zone (``YYYY-MM-DD:HH-MM-SS`` when
+        the instant has non-zero seconds), or the input unchanged on skip/failure.
     """
     if not provider_tz_name or provider_tz_name == "UTC":
         return timestamp_str
@@ -157,6 +158,12 @@ def convert_timestamp_to_provider_tz(timestamp_str, provider_tz_name):
         return timestamp_str
     # timezone.utc, not ZoneInfo("UTC"): avoids mis-set Docker /etc/timezone.
     local_dt = dt.replace(tzinfo=timezone.utc).astimezone(target)
+    # Keep requested seconds. The UTC branch above returns its input
+    # unchanged, so dropping them here made the precision of the moment asked
+    # for depend on the provider's declared zone (#111). A minute-precision
+    # request keeps its minute shape: redirect mode sends this value verbatim.
+    if local_dt.second:
+        return local_dt.strftime("%Y-%m-%d:%H-%M-%S")
     return local_dt.strftime("%Y-%m-%d:%H-%M")
 
 

@@ -3099,10 +3099,10 @@ def get_transformed_credentials(account, profile=None):
         # Apply profile-specific transformations if profile is provided
         if profile and profile.search_pattern and profile.replace_pattern:
             try:
-                # Handle backreferences: convert JS-style $<name> -> \g<name>, $1 -> \1
+                # Handle backreferences: convert JS-style $<name> -> \g<name>, $1 -> \g<1>
                 # regex module accepts JS-style (?<name>...) named groups natively
                 safe_replace_pattern = regex.sub(r'\$<([^>]+)>', r'\\g<\1>', profile.replace_pattern)
-                safe_replace_pattern = regex.sub(r'\$(\d+)', r'\\\1', safe_replace_pattern)
+                safe_replace_pattern = convert_js_numbered_backreferences(safe_replace_pattern)
 
                 # Apply transformation to the complete URL
                 transformed_complete_url = regex.sub(profile.search_pattern, safe_replace_pattern, complete_url)
